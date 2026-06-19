@@ -1112,6 +1112,11 @@
     const isCashMode =
       isEquity ||
       ((kind === 'CE' || kind === 'PE') && _side === 'BUY');
+    // pairedCount > 0 when the preflight margin number reflects parent
+    // + wing (or any other auto-attached leg). Surfaced to the shell
+    // chip so the Req value reads "Req ₹X · +wing" instead of being
+    // mistaken for the naked-short margin.
+    const pairedCount = _previewPlan?.wing ? 1 : 0;
     return {
       isCashMode,
       cash:         _accountFunds ? Number(_accountFunds.cash || 0)         : null,
@@ -1120,6 +1125,7 @@
       fundsAccount: _accountFunds ? String(_accountFunds.account || '')     : '',
       kind,
       side: _side,
+      pairedCount,
       // Surfacing _type lets the shell hide chase pills for MARKET
       // and SL-M (operator: "chase needs to be active for limit or
       // stop limit. stop limit market does not need chase").
@@ -1176,6 +1182,22 @@
     onMarginUpdate?.(_marginPreview, true, _chipMeta);
     _marginTimer = setTimeout(async () => {
       try {
+        // Paired legs — when the template preview has resolved a wing,
+        // factor it into the basket_margin call so the operator sees
+        // the BRACKETED-strategy margin (parent SELL net of protective
+        // BUY) instead of the scarier naked-short margin.
+        const _wing = _previewPlan?.wing;
+        const paired_legs = (_wing && _wing.tradingsymbol)
+          ? [{
+              tradingsymbol:    _wing.tradingsymbol,
+              exchange:         _wing.exchange || _exchange,
+              transaction_type: _wing.transaction_type || 'BUY',
+              quantity:         Number(_wing.quantity) || Number(_qty),
+              product:          _wing.product || _product,
+              order_type:       _wing.order_type || 'MARKET',
+              price:            Number(_wing.estimated_price) || 0,
+            }]
+          : [];
         const payload = {
           account: _account,
           tradingsymbol: _resolvedSymbol || symbol,
@@ -1188,6 +1210,7 @@
           validity: _validity,
           price: showLimit ? Number(_price) || 0 : 0,
           trigger_price: showTrigger ? Number(_trigger) || 0 : 0,
+          paired_legs,
         };
         _marginPreview = await previewOrderMargin(payload);
       } catch (e) {

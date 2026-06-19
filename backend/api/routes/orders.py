@@ -1718,6 +1718,14 @@ class OrdersController(Controller):
         side          = str(body.get("side") or body.get("transaction_type") or "BUY").strip().upper()
         price         = float(body.get("price") or 0)
         trigger_price = float(body.get("trigger_price") or 0)
+        # Optional paired legs — typically the template's auto-wing for
+        # a SELL option. Factored into basket_order_margins so the
+        # "Required" number reads as the bracketed-strategy margin,
+        # not the naked-short margin. Frontend pipes this in only when
+        # the preview plan resolved a wing successfully.
+        paired_legs   = body.get("paired_legs") or []
+        if not isinstance(paired_legs, list):
+            paired_legs = []
 
         if not account:
             raise HTTPException(status_code=400, detail="account is required")
@@ -1741,7 +1749,7 @@ class OrdersController(Controller):
             "transaction_type": side,
             "price":            price,
             "trigger_price":    trigger_price,
-        })
+        }, paired_orders=paired_legs)
         return result
 
     @post("/place")

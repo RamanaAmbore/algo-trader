@@ -776,7 +776,11 @@ async def _basket_margin_validate(broker, order: dict) -> tuple[bool, str]:
         return False, str(e)[:240]
 
 
-async def run_preflight(account: str, order: dict) -> dict:
+async def run_preflight(
+    account: str,
+    order: dict,
+    paired_orders: list[dict] | None = None,
+) -> dict:
     """
     Pre-validate an order before any broker placement.
 
@@ -917,15 +921,61 @@ async def run_preflight(account: str, order: dict) -> dict:
         "price":            float(price) if price else 0.0,
         "variety":          variety,
     }
+    # Paired legs (typically the template's wing) factored into the
+    # basket. Kite's basket_order_margins returns the NET margin across
+    # every leg, so a short option + protective long wing reads as the
+    # capped spread margin instead of the naked SPAN. Operator sees the
+    # actual margin they'll be charged, not a scarier naked-short
+    # number.
+    basket_orders = [basket_order]
+    for pl in paired_orders or []:
+        try:
+            _pl_exchange = str(pl.get("exchange") or exchange)
+            _pl_symbol   = str(pl.get("tradingsymbol") or pl.get("symbol") or "")
+            if not _pl_symbol:
+                continue
+            _pl_qty = int(pl.get("quantity") or 0)
+            if _pl_qty <= 0:
+                continue
+            _pl_lot = await get_lot_size(_pl_exchange, _pl_symbol)
+            basket_orders.append({
+                "exchange":         _pl_exchange,
+                "tradingsymbol":    _pl_symbol,
+                "transaction_type": str(pl.get("transaction_type") or pl.get("side") or "BUY"),
+                "quantity":         broker.normalise_qty(_pl_exchange, _pl_qty, _pl_lot),
+                "order_type":       str(pl.get("order_type") or "MARKET"),
+                "product":          str(pl.get("product") or product),
+                "price":            float(pl.get("price") or 0),
+                "variety":          str(pl.get("variety") or "regular"),
+            })
+        except Exception as _e:
+            logger.debug(f"[PREFLIGHT] paired leg skipped: {_e}")
     try:
         bm_result = await loop.run_in_executor(
-            None, broker.basket_order_margins, [basket_order]
+            None, broker.basket_order_margins, basket_orders
         )
-        # Kite returns a list; take the first element.
+        # Kite returns a list per leg + an aggregate; sum the per-leg
+        # `total` when there's more than one entry so the paired-margin
+        # number reflects the whole basket. Single-leg path keeps the
+        # original first-element shape.
         if isinstance(bm_result, list) and bm_result:
-            bm_result = bm_result[0]
-        required  = float((bm_result or {}).get("initial", {}).get("total") or
-                          (bm_result or {}).get("required") or 0)
+            if len(bm_result) > 1:
+                required = float(sum(
+                    float((r or {}).get("initial", {}).get("total") or
+                          (r or {}).get("required") or 0)
+                    for r in bm_result
+                ))
+                bm_result = {
+                    "required": required,
+                    "_legs":    bm_result,
+                }
+            else:
+                bm_result = bm_result[0]
+                required  = float((bm_result or {}).get("initial", {}).get("total") or
+                                  (bm_result or {}).get("required") or 0)
+        else:
+            required  = float((bm_result or {}).get("initial", {}).get("total") or
+                              (bm_result or {}).get("required") or 0)
 
         # Available margin is NOT in the basket_order_margins response —
         # that endpoint only returns the REQUIRED margin breakdown
