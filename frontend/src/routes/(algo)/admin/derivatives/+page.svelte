@@ -717,17 +717,10 @@
    *  shown without dimming but ranked second. Operator: "in the symbol
    *  dropdown, if options position exists for underlying, color code
    *  the root differently, show them first in default order." */
-  // Operator: "in positions, when the underlying for the positions
-  // only in the account should be displayed. underlyings for positions
-  // in other accounts should not be displayed." When the Order-routing
-  // picker narrows to a subset of accounts, the Underlying dropdown
-  // scopes to roots that have a derivative position in THAT account
-  // set — a CRUDEOIL position in DH6847 doesn't surface when ZG0790
-  // is the picked routing account. Legs panel still shows all legs
-  // across accounts once an underlying is picked (Legs deliberately
-  // ignores the account filter for total-exposure analysis), so the
-  // dropdown narrowing + Legs breadth together read as "pick from
-  // what I can route an order against; analyse total exposure".
+  // Underlying dropdown narrows to roots with a derivative position
+  // in the filtered accounts — picking ZG0790 hides CRUDEOIL when
+  // it's only on DH6847. Legs panel applies the same account filter
+  // so the analysis stays consistent with the picker scope.
   const _accountAllow = $derived.by(() => {
     if (selectedAccounts.length === 0) return null;
     return new Set(selectedAccounts.map(String));
@@ -2488,20 +2481,6 @@
     realAccounts.length ? realAccounts : accountChoices.map(String)
   );
 
-  /** Chain picker is gated on having exactly ONE real (un-masked)
-   *  account selected at the page level. Reasoning:
-   *   - Every leg added through the chain goes straight to OrderTicket
-   *     for placement, and an order needs exactly one routing account.
-   *   - With zero accounts picked, the picker would default to "all
-   *     accounts" which is meaningless for placement.
-   *   - With multiple accounts picked, the picker has no way to know
-   *     which account a basket leg should land on — operator could
-   *     pick the wrong one in the ticket and split a strategy across
-   *     accounts by accident.
-   *  Account selection now lives inside the SymbolPanel's order
-   *  panel — the Chain button on this page bar is always enabled,
-   *  and the operator picks the routable account from the modal. */
-
   // Surface a banner when /api/positions fails so the operator sees
   // WHY the page is empty (instead of an opaque "no candidates" hint).
   let positionsLoadErr = $state('');
@@ -3214,18 +3193,13 @@
 <!-- Picker bar — two dropdowns + a "+" toggle for the option-chain
      picker. Strategy auto-recomputes whenever the leg set changes;
      no Analyze button needed. -->
-<!-- Picker bar — no card wrapper. Account + Underlying + + sit
+<!-- Picker bar — no card wrapper. Account + Underlying + Expiry sit
      directly on the page so they read as inline page-level
-     controls rather than as content inside a panel. -->
+     controls rather than as content inside a panel. Both Account
+     and Expiry are filters on the Candidates panel; empty = all. -->
 <div class="opt-picker mb-3">
   <div class="opt-field opt-field-grow">
-    <label class="field-label" for="opt-acct" title="Default routing account for new orders placed from this page. Does NOT filter the Legs panel — payoff analysis spans every account regardless of this pick.">Order routing</label>
-    <!-- Picker semantics: scopes the OrderTicket's default account
-         only. Legs / payoff / risk all walk the full book regardless,
-         since exposure on an underlying is exposure regardless of
-         which broker handle holds the contract. Label was previously
-         "Account" which implied analysis-wide filtering it no longer
-         does. -->
+    <label class="field-label" for="opt-acct" title="Filter the Candidates / Legs panel to positions held in these accounts. Empty = all accounts. Payoff updates automatically as legs are toggled.">Account</label>
     <AccountMultiSelect id="opt-acct"
       bind:value={selectedAccounts}
       options={accountChoices.map(a => ({ value: a, label: a }))}
