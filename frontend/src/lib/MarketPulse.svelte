@@ -54,6 +54,7 @@
   import { resolveUnderlying, INDEX_LTP_KEY, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
   import CollapseButton from '$lib/CollapseButton.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
+  import GridSearchButton from '$lib/GridSearchButton.svelte';
   import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { createPerformanceSocket } from '$lib/ws';
@@ -933,6 +934,36 @@
   let _colLosers    = $state(false);
   let _colPositions = $state(false);
   let _colHoldings  = $state(false);
+
+  // Per-card symbol filters — bound by <GridSearchButton> in each
+  // bucket header. Empty string = no filter. Each filter pipes into
+  // its grid via setGridOption('quickFilterText') below.
+  let _filterPinWatch  = $state('');
+  let _filterWinners   = $state('');
+  let _filterLosers    = $state('');
+  let _filterPositions = $state('');
+  let _filterHoldings  = $state('');
+  $effect(() => {
+    const v = _filterPinWatch;
+    try { gridPinned?.setGridOption('quickFilterText', v); } catch (_) {}
+    try { gridWatch?.setGridOption('quickFilterText', v); } catch (_) {}
+  });
+  $effect(() => {
+    const v = _filterWinners;
+    try { gridWin?.setGridOption('quickFilterText', v); } catch (_) {}
+  });
+  $effect(() => {
+    const v = _filterLosers;
+    try { gridLose?.setGridOption('quickFilterText', v); } catch (_) {}
+  });
+  $effect(() => {
+    const v = _filterPositions;
+    try { gridPositions?.setGridOption('quickFilterText', v); } catch (_) {}
+  });
+  $effect(() => {
+    const v = _filterHoldings;
+    try { gridHoldings?.setGridOption('quickFilterText', v); } catch (_) {}
+  });
   // Per-card fullscreen toggles — pair with the existing collapse
   // toggles so every bucket gets the canonical card-control trio
   // (Fullscreen / Default / Collapse). Each card owns its own
@@ -4495,6 +4526,7 @@
             {#if _fsPinWatch}
               <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="pulse" />
             {/if}
+            <GridSearchButton bind:filter={_filterPinWatch} label="Pinned/Watchlist" />
             <CollapseButton bind:isCollapsed={_colPinWatch} cardId="pulse-pinwatch" label="Pinned/Watchlist" />
             <DefaultSizeButton bind:isFullscreen={_fsPinWatch} bind:isCollapsed={_colPinWatch} label="Pinned/Watchlist" />
             <FullscreenButton bind:isFullscreen={_fsPinWatch} label="Pinned/Watchlist" />
@@ -4535,6 +4567,7 @@
               {#if _fsWinners}
                 <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="winners" />
               {/if}
+              <GridSearchButton bind:filter={_filterWinners} label="Winners" />
               <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
               <DefaultSizeButton bind:isFullscreen={_fsWinners} bind:isCollapsed={_colWinners} label="Winners" />
               <FullscreenButton bind:isFullscreen={_fsWinners} label="Winners" />
@@ -4564,6 +4597,7 @@
               {#if _fsLosers}
                 <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="losers" />
               {/if}
+              <GridSearchButton bind:filter={_filterLosers} label="Losers" />
               <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
               <DefaultSizeButton bind:isFullscreen={_fsLosers} bind:isCollapsed={_colLosers} label="Losers" />
               <FullscreenButton bind:isFullscreen={_fsLosers} label="Losers" />
@@ -4596,6 +4630,7 @@
             {#if _fsPositions}
               <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="positions" />
             {/if}
+            <GridSearchButton bind:filter={_filterPositions} label="Positions" />
             <CollapseButton bind:isCollapsed={_colPositions} cardId="pulse-positions" label="Positions" />
             <DefaultSizeButton bind:isFullscreen={_fsPositions} bind:isCollapsed={_colPositions} label="Positions" />
             <FullscreenButton bind:isFullscreen={_fsPositions} label="Positions" />
@@ -4618,6 +4653,7 @@
             {#if _fsHoldings}
               <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="holdings" />
             {/if}
+            <GridSearchButton bind:filter={_filterHoldings} label="Holdings" />
             <CollapseButton bind:isCollapsed={_colHoldings} cardId="pulse-holdings" label="Holdings" />
             <DefaultSizeButton bind:isFullscreen={_fsHoldings} bind:isCollapsed={_colHoldings} label="Holdings" />
             <FullscreenButton bind:isFullscreen={_fsHoldings} label="Holdings" />

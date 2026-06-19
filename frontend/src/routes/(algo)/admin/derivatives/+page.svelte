@@ -26,6 +26,7 @@
   import CollapseButton  from '$lib/CollapseButton.svelte';
   import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
+  import GridSearchButton from '$lib/GridSearchButton.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import {
     loadInstruments, suggestUnderlyings,
@@ -627,6 +628,10 @@
   // the theta-DESC ordering survives the trip to the rendered grid.
   // All three bands (close / netted / otm) are surfaced; _expiryStatus
   // encodes both segment and band so the CSS tint applies correctly.
+  // Header symbol filter — bound by <GridSearchButton> in the Legs
+  // card header. Empty = no filter; otherwise case-insensitive
+  // substring match against the row's symbol field.
+  let _filterLegs = $state('');
   const displayedCandidates = $derived.by(() => {
     let rows;
     if (legsTab !== 'expiry') {
@@ -646,6 +651,10 @@
     // its TOTAL row in lockstep with the payoff.
     if (!_includeHoldings) {
       rows = rows.filter(c => c.kind !== 'eq');
+    }
+    if (_filterLegs) {
+      const q = _filterLegs.toUpperCase();
+      rows = rows.filter(c => String(c.symbol || '').toUpperCase().includes(q));
     }
     return rows;
   });
@@ -3475,6 +3484,7 @@
           <RefreshButton onClick={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
                          loading={loading} label="legs" />
         {/if}
+        <GridSearchButton bind:filter={_filterLegs} label="Legs" />
         <CollapseButton bind:isCollapsed={_colLegs} cardId="optLegs" label="Legs" />
         <DefaultSizeButton bind:isFullscreen={_fsLegs} bind:isCollapsed={_colLegs} label="Legs" />
         <FullscreenButton bind:isFullscreen={_fsLegs} label="Legs" />

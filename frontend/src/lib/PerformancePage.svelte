@@ -7,6 +7,7 @@
   import { dataCache, authStore } from '$lib/stores';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
+  import GridSearchButton from '$lib/GridSearchButton.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
 
@@ -217,6 +218,19 @@
   let holdingsAllGrid      = null;
   let positionsSummaryGrid = null;
   let positionsAllGrid     = null;
+
+  // Header symbol filters — bound by <GridSearchButton> next to the
+  // Positions / Holdings section headings. Empty = no filter.
+  let _filterPositions = $state('');
+  let _filterHoldings  = $state('');
+  $effect(() => {
+    const v = _filterPositions;
+    try { positionsAllGrid?.setGridOption('quickFilterText', v); } catch (_) {}
+  });
+  $effect(() => {
+    const v = _filterHoldings;
+    try { holdingsAllGrid?.setGridOption('quickFilterText', v); } catch (_) {}
+  });
 
   // Strip from the first digit onward — Zerodha F&O tradingsymbols are
   // "<UNDERLYING><expiry><strike><opt-type>" (NIFTY25APR22000CE,
@@ -993,7 +1007,11 @@
   <h2 class="section-heading">Summary</h2>
   <div bind:this={positionsSummaryEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
 
-  <h2 class="section-heading">Positions</h2>
+  <div class="perf-grid-headrow">
+    <h2 class="section-heading">Positions</h2>
+    <span class="perf-grid-headrow-spacer"></span>
+    <GridSearchButton bind:filter={_filterPositions} label="Positions" />
+  </div>
   <div bind:this={positionsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>
 
@@ -1001,7 +1019,11 @@
   <h2 class="section-heading">Summary</h2>
   <div bind:this={holdingsSummaryEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
 
-  <h2 class="section-heading">Holdings</h2>
+  <div class="perf-grid-headrow">
+    <h2 class="section-heading">Holdings</h2>
+    <span class="perf-grid-headrow-spacer"></span>
+    <GridSearchButton bind:filter={_filterHoldings} label="Holdings" />
+  </div>
   <div bind:this={holdingsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>
 
@@ -1326,6 +1348,24 @@
     align-items: center;
   }
   .funds-heading-refresh { margin-left: auto; }
+
+  /* Heading row for the Positions / Holdings grids — pairs the h2
+     with a <GridSearchButton> at the right. Same baseline-pull as
+     funds-heading-row so the icon doesn't visually drift above the
+     heading text. */
+  .perf-grid-headrow {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+  }
+  .perf-grid-headrow .section-heading {
+    margin-bottom: 0;
+    line-height: 1.4;
+    display: inline-flex;
+    align-items: center;
+  }
+  .perf-grid-headrow-spacer { flex: 1; }
 
   /* ── Dark (algo) overrides ─────────────────────────────────────────────── */
   /* Section headings ("Fund Balances", "Summary", "Positions",
