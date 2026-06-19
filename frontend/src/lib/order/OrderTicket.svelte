@@ -376,6 +376,18 @@
     ? ['CNC', 'MIS']
     : ['NRML', 'MIS']);
 
+  // Exchange choices — every Indian instrument lives on one of these
+  // six segments. For dual-listed equities (e.g. IFCI on NSE + BSE),
+  // the operator overrides whichever the instruments cache happened
+  // to index last. Cash market exchanges only show for equity; F&O
+  // exchanges only show for options/futures.
+  const exchangeOptions = $derived.by(() => {
+    if (isEquity) return ['NSE', 'BSE'];
+    if (kind === 'CE' || kind === 'PE') return ['NFO', 'BFO'];
+    if (kind === 'FUT') return ['NFO', 'BFO', 'MCX', 'CDS'];
+    return ['NSE', 'BSE', 'NFO', 'BFO', 'MCX', 'CDS'];
+  });
+
   // Local form state — start from prop defaults, then operator edits.
   let _side    = $state(side);
   // Re-sync the internal side state when the parent updates the
@@ -700,6 +712,37 @@
     }
   }
   let _product = $state(productVal);
+  // Local exchange state — seeded from the resolved exchange. Operator
+  // can override via the Exchange Select (essential for dual-listed
+  // equities like IFCI where the instruments cache only indexes one
+  // of NSE / BSE per symbol; Dhan rejects BSE+NRML for equity).
+  let _exchange = $state(_resolvedExchange || exchange || 'NSE');
+  // Re-sync the picker when the symbol changes (so the operator
+  // doesn't carry NSE over to an MCX commodity by accident). Reads
+  // the freshly-resolved exchange; only overrides if the current
+  // pick isn't in the new options list. Operator's manual pick on
+  // the SAME symbol persists.
+  $effect(() => {
+    void _resolvedExchange; void exchangeOptions;
+    untrack(() => {
+      if (!_resolvedExchange) return;
+      if (!exchangeOptions.includes(_exchange)) {
+        _exchange = _resolvedExchange;
+      }
+    });
+  });
+  // Auto-correct stale product when the symbol kind flips (e.g.
+  // operator typed a futures contract, ticket defaulted to NRML, then
+  // they switched to equity — without this _product stays NRML, and
+  // Dhan rejects equity orders submitted with NRML).
+  $effect(() => {
+    void productOptions;
+    untrack(() => {
+      if (!productOptions.includes(_product)) {
+        _product = productVal;
+      }
+    });
+  });
   // Wave C: _mode is READ from $executionMode store unconditionally.
   // The store is the single source of truth for execution mode (set
   // by the navbar dropdown). Earlier this resolver filtered against
@@ -990,7 +1033,7 @@
     return {
       side:       _side,
       sym:        symbol,
-      exchange:   _resolvedExchange || exchange || 'NFO',
+      exchange:   _exchange || _resolvedExchange || exchange || 'NFO',
       account:    _account,
       lots:       Math.max(1, Number(_lots) || 1),
       lotSize:    Number(_lotSize) || 1,
@@ -1136,7 +1179,7 @@
         const payload = {
           account: _account,
           tradingsymbol: _resolvedSymbol || symbol,
-          exchange: _resolvedExchange || exchange || 'NFO',
+          exchange: _exchange || _resolvedExchange || exchange || 'NFO',
           quantity: Number(_qty),
           side: _side,
           order_type: _type,
@@ -1256,7 +1299,7 @@
           mode:             _mode,
           side:             _side,
           tradingsymbol:    _resolvedSymbol || symbol,
-          exchange:         _resolvedExchange || exchange || 'NFO',
+          exchange:         _exchange || _resolvedExchange || exchange || 'NFO',
           quantity:         Number(_qty),
           product:          _product,
           order_type:       _type,
@@ -1464,7 +1507,7 @@
           side:             _side,
           tradingsymbol:    symbol,
           quantity:         Number(_qty),
-          exchange:         _resolvedExchange || exchange || 'NFO',
+          exchange:         _exchange || _resolvedExchange || exchange || 'NFO',
           product:          _product || 'NRML',
           account:          _account || '',
           reference_price:  refPx,
@@ -1718,6 +1761,18 @@
                 ariaLabel="Product"
                 options={productOptions.map(p => ({ value: p, label: p }))} />
       </div>
+      <!-- Exchange — operator override for dual-listed symbols
+           (IFCI on NSE+BSE, RELIANCE futures on NFO+BFO, etc.).
+           Defaults from the instruments cache; the cache only stores
+           one listing per symbol so the override is required to route
+           orders to the listing the operator actually wants. -->
+      <div class="ot-knob">
+        <label class="ot-label" for="ot-exchange-sel">Exchange</label>
+        <Select id="ot-exchange-sel"
+                bind:value={_exchange}
+                ariaLabel="Exchange"
+                options={exchangeOptions.map(e => ({ value: e, label: e }))} />
+      </div>
       <div class="ot-knob">
         <label class="ot-label" for="ot-variety-sel">Variety</label>
         <Select id="ot-variety-sel"
@@ -1941,7 +1996,7 @@
          NIFTY, etc.) since the raw root isn't a quotable contract. -->
     <OrderDepth
       symbol={_resolvedSymbol || symbol}
-      exchange={_resolvedExchange || exchange || 'NFO'}
+      exchange={_exchange || _resolvedExchange || exchange || 'NFO'}
       {refreshKey}
       paused={suspended}
       onQuote={onDepthQuote} />
