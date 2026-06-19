@@ -3490,7 +3490,7 @@
         <FullscreenButton bind:isFullscreen={_fsLegs} label="Legs" />
       </span>
     </div>
-    {#if !_colLegs && displayedCandidates.length}
+    {#if !_colLegs}
       {#if hiddenByAccount.rows > 0}
         <div class="cand-hidden-hint" title="Picker scopes legs to the chosen accounts. Clear the Account filter to include these rows in the payoff.">
           Hiding {hiddenByAccount.rows} position{hiddenByAccount.rows === 1 ? '' : 's'} on {hiddenByAccount.accts} other account{hiddenByAccount.accts === 1 ? '' : 's'}
@@ -3810,6 +3810,21 @@
               <span class="num">{lg ? aggCompact(lg.greeks.vega) : '—'}</span>
             </div>
           {/each}
+          {#if displayedCandidates.length === 0}
+            <!-- Empty-state row — keeps the scroll wrapper + header
+                 mounted across symbol switches so the card doesn't
+                 visually rebuild when the operator picks a new
+                 underlying. Spans the whole grid via cand-empty. -->
+            <div class="cand-empty">
+              {#if !selectedUnderlying}
+                Pick an underlying to surface candidates.
+              {:else if loading}
+                Loading candidates…
+              {:else}
+                No candidates for {selectedUnderlying} on the current filter.
+              {/if}
+            </div>
+          {/if}
           {#if displayedCandidates.length > 0}
             <!-- TOTAL row — always the last row of the grid. Sums
                  pnl + day_change_val across the CHECKED candidates only
@@ -4542,6 +4557,21 @@
     border: 1px solid rgba(126,151,184,0.30);
     border-radius: 3px;
     cursor: help;
+  }
+
+  /* Empty-state row inside .cand-grid — spans the whole grid width
+     so it reads as a single placeholder line, not a half-width cell
+     in the leftmost column. Keeps the scroll wrapper + header row
+     mounted across underlying switches (the grid only rebuilds its
+     row contents, not its chrome). */
+  .cand-empty {
+    grid-column: 1 / -1;
+    padding: 0.85rem 0.7rem;
+    font-family: monospace;
+    font-size: 0.65rem;
+    color: #7e97b8;
+    font-style: italic;
+    text-align: center;
   }
 
   .cand-scroll {
