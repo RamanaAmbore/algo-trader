@@ -544,6 +544,48 @@
     const s = (_selectedTemplate?.applies_to || '').toLowerCase();
     return s === 'sell_option';
   });
+  // True when the active template will auto-attach a protective wing
+  // on fill — used to surface a "+ wing" indicator inside every
+  // eligible (SELL option) basket pill so the operator knows which
+  // legs will get a paired protective BUY at fill time. Combines the
+  // template's wing params (saved) with the operator's shell-level
+  // overrides (per-submit).
+  const _sharedWingPlanned = $derived.by(() => {
+    if (!_selectedTemplate || _selectedTemplate.slug === 'none') return false;
+    if ((_selectedTemplate.applies_to || '').toLowerCase() !== 'sell_option') return false;
+    const effPrem = _sharedWingPremPctOverride !== ''
+      ? Number(_sharedWingPremPctOverride)
+      : (_selectedTemplate.wing_premium_pct ?? null);
+    const effOff  = _sharedWingStrikeOffsetOverride !== ''
+      ? Number(_sharedWingStrikeOffsetOverride)
+      : (_selectedTemplate.wing_strike_offset ?? null);
+    return (effPrem != null && effPrem > 0) || (effOff != null && effOff !== 0);
+  });
+  // Compute the protective wing's tradingsymbol when the template
+  // uses a fixed `wing_strike_offset` — pure JS port of the backend
+  // `_wing_symbol` helper. Returns null for premium-scan wings (the
+  // exact strike comes from the chain scan at fill time, so we show
+  // a generic "+ wing on fill" instead).
+  function _wingSymbolFor(/** @type {string} */ parentSym) {
+    if (!_sharedWingPlanned || !_selectedTemplate) return null;
+    const effOff = _sharedWingStrikeOffsetOverride !== ''
+      ? Number(_sharedWingStrikeOffsetOverride)
+      : (_selectedTemplate.wing_strike_offset ?? null);
+    if (!effOff || isNaN(effOff)) return null;
+    // Parse parent: ROOT + EXPIRY-TOKEN + STRIKE + (CE|PE). The
+    // expiry token can be either YY-MMM (monthly, e.g. 26JUN) or
+    // YY-MM-DD (weekly, e.g. 26424). Match the backend regex shape.
+    const m = String(parentSym || '').toUpperCase().match(
+      /^([A-Z]+?)(\d{2}[A-Z]{3}|\d{4,5})(\d+(?:\.\d+)?)(CE|PE)$/
+    );
+    if (!m) return null;
+    const [, root, expTok, strikeStr, opt] = m;
+    const strike = parseInt(strikeStr, 10);
+    if (!Number.isFinite(strike)) return null;
+    const wingStrike = opt === 'CE' ? strike + effOff : strike - effOff;
+    if (wingStrike <= 0) return null;
+    return `${root}${expTok}${wingStrike}${opt}`;
+  }
   // Reset overrides when the template changes — operator's overrides
   // were tied to a SPECIFIC template's defaults; carrying them across
   // to a different template would silently surface unintended values.
@@ -1573,6 +1615,15 @@
               {:else if _legAcct}
                 <span class="oes-basket-pill-acct-static" title="Routing account (single broker loaded)">{_legAcct}</span>
               {/if}
+              {#if _sharedWingPlanned && leg.side === 'SELL' && /(CE|PE)$/.test(leg.sym)}
+                {@const _wingSym = _wingSymbolFor(leg.sym)}
+                <span class="oes-basket-pill-wing"
+                      title={_wingSym
+                        ? `Wing BUY ${_wingSym} will attach on fill (qty matches leg).`
+                        : 'Protective wing BUY will be picked from the option chain at fill time (premium-scan).'}>
+                  + wing{_wingSym ? ` ${_wingSym}` : ''}
+                </span>
+              {/if}
               <button type="button" class="oes-basket-pill-remove"
                       title="Remove leg from basket"
                       disabled={basketSubmitting}
@@ -2419,6 +2470,27 @@
   }
   .oes-basket-pill-remove:hover:not(:disabled) { color: #f87171; }
   .oes-basket-pill-remove:disabled { opacity: 0.35; cursor: not-allowed; }
+  /* Wing-attach indicator chip — sits inline inside a SELL option
+     pill, before the × remove button. Purple palette matches the
+     wing chip in OrderTicket's template preview row + the OrderCard
+     "wing/wings:" chip so the paired-leg identity reads consistently
+     across surfaces. Compact + tabular-nums so the symbol string
+     doesn't shift the pill's height. */
+  .oes-basket-pill-wing {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 0.25rem;
+    padding: 0.05rem 0.35rem;
+    background: rgba(192, 132, 252, 0.14);
+    border: 1px solid rgba(192, 132, 252, 0.45);
+    border-radius: 3px;
+    color: #c084fc;
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums;
+  }
   .oes-basket-pill.is-disabled { opacity: 0.55; }
   .oes-basket-pill-limit-wrap {
     display: inline-flex;
