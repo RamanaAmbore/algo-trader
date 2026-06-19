@@ -2549,7 +2549,7 @@
     background: rgba(8, 14, 28, 0.78);
     border: 1px solid rgba(192, 132, 252, 0.65);
     border-radius: 3px;
-    color: #e8d9ff;
+    color: #f8fafc;
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
     font-weight: 600;
@@ -2882,7 +2882,7 @@
     background: rgba(8, 14, 28, 0.78);
     border: 1px solid rgba(34, 211, 238, 0.65);
     border-radius: 3px;
-    color: #d9f5fb;
+    color: #f8fafc;
     font-family: ui-monospace, monospace;
     font-size: 0.58rem;
     font-weight: 600;
