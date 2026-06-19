@@ -4051,9 +4051,9 @@
     <div class="byund-scroll">
       <div class="byund-grid">
         <div class="byund-headrow">
+          <span>Underlying</span>
           <span class="num" title="Today's P&L change from F&O legs only.">Day</span>
           <span class="num" title="Total P&L from F&O legs only — what the derivative book alone is doing.">P&amp;L</span>
-          <span>Underlying</span>
           <span class="num" title="Today's P&L change including any equity holding leg.">Day P&amp;L Hold</span>
           <span class="num" title="Total P&L including any equity holding leg's contribution.">P&amp;L Hold</span>
           <span class="num">Legs</span>
@@ -4073,9 +4073,9 @@
         {/if}
         {#each _byUnderlyingTotals as g (g.underlying)}
           <div class="byund-row">
+            <span class="byund-und">{g.underlying}</span>
             <span class="num {g.day_without > 0 ? 'cell-pos' : g.day_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.day_without)}</span>
             <span class="num {g.pnl_without > 0 ? 'cell-pos' : g.pnl_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.pnl_without)}</span>
-            <span class="byund-und">{g.underlying}</span>
             <span class="num {g.day_with > 0 ? 'cell-pos' : g.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.day_with)}</span>
             <span class="num {g.pnl_with > 0 ? 'cell-pos' : g.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.pnl_with)}</span>
             <span class="num cell-muted">{g.legs_with}{g.legs_with !== g.legs_without ? `/${g.legs_without}` : ''}</span>
@@ -4085,9 +4085,9 @@
         {/each}
         {#if _byUnderlyingTotals.length > 0}
           <div class="byund-row byund-row-total">
+            <span class="byund-und">TOTAL</span>
             <span class="num {_byUnderlyingTotal.day_without > 0 ? 'cell-pos' : _byUnderlyingTotal.day_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_without)}</span>
             <span class="num {_byUnderlyingTotal.pnl_without > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_without)}</span>
-            <span class="byund-und">TOTAL</span>
             <span class="num {_byUnderlyingTotal.day_with > 0 ? 'cell-pos' : _byUnderlyingTotal.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_with)}</span>
             <span class="num {_byUnderlyingTotal.pnl_with > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_with)}</span>
             <span class="num">{_byUnderlyingTotal.legs_with}{_byUnderlyingTotal.legs_with !== _byUnderlyingTotal.legs_without ? `/${_byUnderlyingTotal.legs_without}` : ''}</span>
@@ -4816,9 +4816,9 @@
   .byund-grid {
     display: grid;
     grid-template-columns:
+      minmax(7rem, 1.4fr)    /* underlying */
       minmax(5.5rem, 0.9fr)  /* Day */
       minmax(5.5rem, 0.9fr)  /* P&L */
-      minmax(7rem, 1.4fr)    /* underlying */
       minmax(5.5rem, 0.9fr)  /* Day P&L Hold */
       minmax(5.5rem, 0.9fr)  /* P&L Hold */
       minmax(3rem, 0.55fr)   /* Legs */
