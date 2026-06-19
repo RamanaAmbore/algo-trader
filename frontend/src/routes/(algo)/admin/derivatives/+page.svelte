@@ -3433,7 +3433,10 @@
      row carries position info (qty / cost / LTP / P&L) plus per-leg
      analytics (IV / Δ / Θ / 𝒱) joined from the latest strategy
      response by symbol. Horizontal + vertical overflow scrolling. -->
-{#if selectedUnderlying || drafts.length}
+<!-- Card always mounted — empty-state placeholder lives inside.
+     Operator: "The cards should always exist. The grids should have
+     refreshed data in the cards without destroying the cards and
+     grids." -->
   <div class="algo-status-card cmd-surface p-3 opt-legs-card"
     data-status="inactive"
     class:fs-card-on={_fsLegs}
@@ -3879,7 +3882,6 @@
       </div>
     {/if}
   </div>
-{/if}
 </div>
 
 <!-- Aggregate / Greeks / Risk cards — three cards in a horizontal
