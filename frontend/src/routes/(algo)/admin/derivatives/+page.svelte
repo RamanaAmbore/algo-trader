@@ -1004,24 +1004,18 @@
     });
   });
 
-  /** Distinct expiries (YYYY-MM-DD) available on the chosen
-   *  underlying — derived by looking up each loaded position's
-   *  symbol in the instruments cache. Drafts contribute too. */
+  /** Distinct expiries (YYYY-MM-DD) listed for the chosen underlying —
+   *  union of CE + PE + FUT contracts from the instruments cache.
+   *  Filter only: empty = all, picked = scope candidates to those.
+   *  Lists the full universe (not just expiries the operator holds)
+   *  so drafts can model legs on contracts they don't yet own. */
   const expiryChoicesForUnderlying = $derived.by(() => {
     if (!instrumentsReady || !selectedUnderlying) return [];
     const target = selectedUnderlying.toUpperCase();
-    // Construct the symbol-prefix regex once per re-derivation; the
-    // closure below would otherwise rebuild it for every position/draft.
-    const prefixRe = new RegExp(`^${target}\\d`, 'i');
     const set = new Set();
-    const consider = /** @param {string} sym */ (sym) => {
-      const upper = String(sym || '').toUpperCase();
-      if (!upper || !prefixRe.test(upper)) return;
-      const inst = getInstrument(upper);
-      if (inst?.x) set.add(inst.x);
-    };
-    for (const p of positions) consider(p.symbol);
-    for (const d of drafts)    consider(d.symbol);
+    for (const e of listExpiries(target, 'CE')) set.add(e);
+    for (const e of listExpiries(target, 'PE')) set.add(e);
+    for (const f of listFutures(target)) if (f?.x) set.add(f.x);
     return Array.from(set).sort();
   });
 
@@ -1063,29 +1057,18 @@
       const inst = getInstrument(String(sym || '').toUpperCase());
       return selectedExpiries.includes(inst?.x);
     };
-    // Account filter intentionally NOT applied here. The payoff workspace
-    // analyses the operator's TOTAL exposure on the underlying — a CE on
-    // ZG0790 hedges a future on DH6847 just as well as if they were on
-    // the same handle, and the broker nets them at expiry settlement.
-    // Operator: "legs is not showing correct derivatives from accounts"
-    // — the silent account scope was hiding cross-account positions
-    // (e.g. CRUDEOIL spread across ZG0790 + ZJ6294 + DH6847, GOLDM on
-    // ZG0790 hidden when only ZJ6294 was picked). Symmetric with the eq
-    // holdings merge below which already ignores selectedAccounts for
-    // the same reason — payoff is exposure-driven, not account-scoped.
+    const matchAccount = /** @param {string} acct */ (acct) => {
+      if (!selectedAccounts.length) return true;
+      return selectedAccounts.includes(String(acct || ''));
+    };
     for (const p of positions) {
       if (p.source !== wantedSource) continue;
+      if (!matchAccount(p.account)) continue;
       const sym = p.symbol;
       if (!prefixRe.test(sym)) continue;
       const isFut = /FUT$/i.test(sym);
       const isOpt = /(CE|PE)$/i.test(sym);
       if (!isFut && !isOpt) continue;
-      // Hard expiry filter — when the operator picks an expiry, the
-      // payoff + legs panel + every P&L overlay must scope to JUST
-      // that expiry. Closed-position bypass was retired because it
-      // dragged realised cash from other-expiry positions into TDAY/
-      // unrealised aggregates. The dashboard grid is the right surface
-      // for cross-expiry closed-row context; this page stays focused.
       if (!matchExpiry(sym)) continue;
       out.push({
         ...p,
@@ -1103,22 +1086,11 @@
     for (const h of holdings) {
       const sym = String(h.symbol || '').toUpperCase();
       if (sym !== target) continue;
-      // Intentionally NOT filtering by account here. The operator may
-      // hold the stock in one broker and run option positions in
-      // another (Kite + Dhan + Groww layout). For payoff purposes the
-      // total exposure on this underlying is what matters; an
-      // account-scoped option view should still see the full stock
-      // layer. Operator: "the payoff and legs is not showing
-      // underlying holding if it exists" — the previous account
-      // filter was the silent culprit on cross-broker books.
+      if (!matchAccount(h.account)) continue;
       out.push({
         ...h,
         source: 'live',
         kind:   'eq',
-        // Holdings carry the operator's lifetime exposure but have no
-        // expiry — they need to be visible regardless of the expiry
-        // filter (the option legs above already enforce it for the
-        // chart's expiration scope).
       });
     }
     // Proxy hedges (GOLDBEES → GOLD, NIFTYBEES → NIFTY etc.). Same
@@ -1135,6 +1107,7 @@
       for (const h of holdings) {
         const sym = String(h.symbol || '').toUpperCase();
         if (!_allowedProxies.has(sym)) continue;
+        if (!matchAccount(h.account)) continue;
         out.push({
           ...h,
           source: 'live',
@@ -1175,6 +1148,42 @@
       return ac - bc;
     });
     return out;
+  });
+
+  /** Count of opt/fut/eq rows that would have matched the underlying +
+   *  expiry filter but are hidden by the account filter. Surfaces a
+   *  hint chip so the operator knows the payoff is a partial view —
+   *  the silent-hide bug the line 1066 comment block used to describe. */
+  const hiddenByAccount = $derived.by(() => {
+    if (!selectedAccounts.length || !selectedUnderlying) return { rows: 0, accts: 0 };
+    const target = selectedUnderlying.toUpperCase();
+    const prefixRe = new RegExp(`^${target}\\d`, 'i');
+    const wantedSource = simActive ? 'sim' : 'live';
+    const inFilter = (acct) => selectedAccounts.includes(String(acct || ''));
+    const inExpiry = (sym) => {
+      if (!selectedExpiries.length) return true;
+      const inst = getInstrument(String(sym || '').toUpperCase());
+      return selectedExpiries.includes(inst?.x);
+    };
+    const accts = new Set();
+    let rows = 0;
+    for (const p of positions) {
+      if (p.source !== wantedSource) continue;
+      const sym = p.symbol;
+      if (!prefixRe.test(sym)) continue;
+      if (!/FUT$|(CE|PE)$/i.test(sym)) continue;
+      if (!inExpiry(sym)) continue;
+      if (inFilter(p.account)) continue;
+      rows++; accts.add(String(p.account || ''));
+    }
+    const proxies = new Set(proxiesForTarget(target));
+    for (const h of holdings) {
+      const sym = String(h.symbol || '').toUpperCase();
+      if (sym !== target && !proxies.has(sym)) continue;
+      if (inFilter(h.account)) continue;
+      rows++; accts.add(String(h.account || ''));
+    }
+    return { rows, accts: accts.size };
   });
 
   // Sum of broker P&L across CHECKED candidates only. The chart's
@@ -2201,23 +2210,15 @@
     return !!(a && !String(a).includes('#'));
   }
   function _ticketAccountDefault() {
-    // Prefer the operator's filter (single account picked in the
-    // multiselect) when it's a real value. Then a single available
-    // real account. Then the masked-but-only choice. Finally fall
-    // back to the FIRST real account so the operator can drop legs
-    // without needing to open the account picker first — previously
-    // the empty fallback caused the chain Buy/Sell buttons to fail
-    // silently (addOptionToBasket has an early `if (!_account)
-    // return`, no toast). Operator can still switch accounts via
-    // the picker inside the modal.
+    // Filter is a leg filter, not an order-routing hint. Only seed when
+    // the choice is unambiguous: exactly one real account is on the
+    // page, or the operator's filter picks exactly one. Otherwise
+    // leave blank so the OrderTicket modal's own picker forces a
+    // deliberate choice.
     if (selectedAccounts.length === 1 && _isRealAccount(selectedAccounts[0])) {
       return selectedAccounts[0];
     }
     if (realAccounts.length === 1) return realAccounts[0];
-    if (accountChoices.length === 1 && _isRealAccount(accountChoices[0])) {
-      return String(accountChoices[0]);
-    }
-    if (realAccounts.length > 0) return realAccounts[0];
     return '';
   }
   // Per-row buttons pass the side explicitly. Default to chainSide so
@@ -3247,57 +3248,6 @@
       options={expiryChoicesForUnderlying.map(x => ({ value: x, label: x }))}
       placeholder={expiryChoicesForUnderlying.length ? 'All expiries' : '—'} />
   </div>
-  <!-- OChain launcher — single toggle that opens / closes the chain
-       picker. Per-row +/− inside the picker decides each leg's side
-       (BUY / SELL); the outer button is now purely "show / hide
-       picker." Disabled until the operator picks exactly one real
-       account on the page — every leg landed via the chain routes
-       through OrderTicket which needs an unambiguous routing
-       account. -->
-  <div class="opt-trade" role="group" aria-label="Open chain picker">
-    <button type="button"
-            class="opt-add-btn opt-add-btn-ochain"
-            class:opt-add-btn-on={showAddPanel}
-            title={showAddPanel
-              ? 'Hide the chain picker'
-              : 'Open the chain picker — pick or change account inside the order panel.'}
-            aria-label="Toggle chain picker"
-            aria-pressed={showAddPanel}
-            onclick={() => {
-              // Seed the chain picker from the operator's already-
-              // chosen underlying / expiry on the picker bar above.
-              // Earlier the chain picker kept its own independent
-              // chainUnderlying state, defaulting to NIFTY — an
-              // operator analysing BANKNIFTY / GOLDM had to pick the
-              // underlying again inside the panel.
-              if (!showAddPanel) {
-                if (selectedUnderlying)          chainUnderlying = selectedUnderlying;
-                if (selectedExpiries.length > 0) chainExpiry     = selectedExpiries[0];
-              }
-              showAddPanel = !showAddPanel;
-              // Also open the 3-tab shell on the Chain tab so the
-              // operator can build and submit a basket directly from
-              // the shell. The in-page panel stays for visual scan;
-              // the shell is the action surface.
-              if (showAddPanel) {
-                // Pass `selectedUnderlying` as the symbol so the
-                // OrderTicket chain tab seeds its own underlying
-                // picker from the page's active underlying instead
-                // of opening blank.
-                openTicket({
-                  defaultTab: 'chain',
-                  symbol:     selectedUnderlying || '',
-                  exchange:   'NFO',
-                  side:       'BUY',
-                  action:     'open',
-                  qty:        0,
-                  lotSize:    0,
-                  accounts:   ticketAccounts,
-                  account:    _ticketAccountDefault(),
-                });
-              }
-            }}>Chain</button>
-  </div>
 </div>
 
 {#if positionsLoadErr}
@@ -3557,11 +3507,11 @@
       </span>
     </div>
     {#if !_colLegs && displayedCandidates.length}
-      <!-- Legs ALWAYS show the Account column now — the picker no
-           longer scopes the analysis (it's order-routing only), so
-           legs can span multiple accounts even when the picker is
-           narrowed to one. The previous `hideAcct` shortcut hid useful
-           per-leg context whenever the operator narrowed routing. -->
+      {#if hiddenByAccount.rows > 0}
+        <div class="cand-hidden-hint" title="Picker scopes legs to the chosen accounts. Clear the Account filter to include these rows in the payoff.">
+          Hiding {hiddenByAccount.rows} position{hiddenByAccount.rows === 1 ? '' : 's'} on {hiddenByAccount.accts} other account{hiddenByAccount.accts === 1 ? '' : 's'}
+        </div>
+      {/if}
       <div class="cand-scroll">
         <div class="cand-grid">
           <!-- Header row checkbox = master toggle. Checked when
@@ -4291,74 +4241,8 @@
     }
   }
 
-  /* Chain-launcher slot — single OChain pill aligned with the
-     Select-trigger row. (Earlier this hosted a paired BUY (+) /
-     SELL (−) toggle; per-row +/− inside the picker now decides
-     side, so the outer is just an open / close affordance.) */
-  .opt-trade {
-    display: inline-flex;
-    flex: 0 0 auto;
-    align-self: flex-end;
-  }
-  /* OChain pill — height matches the Select trigger
-     (min-height: 1.55rem) so the row reads as one consistent
-     control bar. Amber palette to identify it as an action button
-     in the same family as the chart-corner Refresh. Wider than
-     the old square pills since "OChain" needs the room. */
-  .opt-add-btn {
-    height: 1.55rem;
-    min-height: 1.55rem;
-    padding: 0 0.65rem;
-    flex: 0 0 auto;
-    align-self: flex-end;
-    border-radius: 3px;          /* match Select's 3px radius */
-    border: 1px solid rgba(251,191,36,0.5);
-    background: rgba(251,191,36,0.10);
-    color: #fbbf24;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.65rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    line-height: 1;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.1s, border-color 0.1s, color 0.1s;
-  }
-  .opt-add-btn:hover {
-    background: rgba(251,191,36,0.22);
-    border-color: rgba(251,191,36,0.75);
-  }
-  /* Disabled state — chain picker requires exactly one account
-     selected on the page. Greyed border + faded glyph + not-allowed
-     cursor; hover styling suppressed so it doesn't flash on
-     mouse-over. */
-  .opt-add-btn:disabled,
-  .opt-add-btn[disabled] {
-    opacity: 0.45;
-    cursor: not-allowed;
-    background: rgba(126,151,184,0.08);
-    border-color: rgba(126,151,184,0.30);
-    color: #a3b9d0;
-  }
-  .opt-add-btn:disabled:hover,
-  .opt-add-btn[disabled]:hover {
-    background: rgba(126,151,184,0.08);
-    border-color: rgba(126,151,184,0.30);
-  }
-  /* Active (panel-open) — invert the palette so the OChain pill
-     visually links to the picker panel below it. */
-  .opt-add-btn-on {
-    background: #fbbf24;
-    color: #0c1830;
-    border-color: #fbbf24;
-  }
-
-
   /* Refresh button moved onto the chart's top-right corner — see
-     OptionsPayoff.svelte for its styles. The picker bar now ends
-     with the "+" toggle. */
+     OptionsPayoff.svelte for its styles. */
 
   .opt-grid {
     display: grid;
@@ -4660,6 +4544,22 @@
          instead of breaking layout
        - vertical: capped at ~16 rows; longer lists scroll inside
    */
+  /* Hint chip — appears above the Legs grid when the Account filter
+     is hiding rows. Grey palette so it reads as informational, not
+     alarming. */
+  .cand-hidden-hint {
+    margin-top: 0.4rem;
+    padding: 0.25rem 0.55rem;
+    font-size: 0.6rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: #a3b9d0;
+    background: rgba(126,151,184,0.10);
+    border: 1px solid rgba(126,151,184,0.30);
+    border-radius: 3px;
+    cursor: help;
+  }
+
   .cand-scroll {
     overflow-x: auto;
     overflow-y: auto;
