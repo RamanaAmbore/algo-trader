@@ -954,7 +954,18 @@ def _normalise_holdings(resp: Any) -> list[dict]:
     """
     out: list[dict] = []
     for h in _unwrap(resp):
-        qty = int(h.get("totalQty",  0) or 0)
+        # Dhan splits "settled to demat" (totalQty) and "T+1 pending"
+        # (t1Qty) cleanly: a CNC buy executed today shows up as
+        # totalQty=0 + t1Qty=N for the rest of T-day and only moves
+        # into totalQty after settlement. Without folding t1Qty in
+        # here, the row's quantity is 0 and downstream surfaces
+        # (Pulse / PerformancePage / Dashboard holdings grids) all
+        # treat the freshly-bought stock as invisible for ~24 h.
+        # Operator: "I bought ifci shares in dhan account today.
+        # However, I don't see them in positions or holdings in pulse
+        # in other places."
+        t1q = int(h.get("t1Qty",     0) or 0)
+        qty = int(h.get("totalQty",  0) or 0) + t1q
         # Dhan returns securityId as a numeric string ("21131"); coerce
         # to int so concat with Kite holdings doesn't trip polars.
         try:
