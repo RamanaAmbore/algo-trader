@@ -1970,8 +1970,12 @@
                   </span>
                 {/each}
                 {#if _previewPlan.wing}
-                  <span class="ot-tpl-preview-chip wing">
-                    Wing BUY <LegLabel sym={_previewPlan.wing.tradingsymbol} compact={true} />
+                  <span class="ot-tpl-preview-chip wing"
+                        title={`Protective BUY leg auto-attached to your SELL on fill. Reduces SPAN margin and caps tail risk. ${_previewPlan.wing.order_type || 'MARKET'} order, qty matches parent.`}>
+                    + Wing BUY {_previewPlan.wing.quantity}× <LegLabel sym={_previewPlan.wing.tradingsymbol} compact={true} />
+                    {#if _previewPlan.wing.estimated_price != null && _previewPlan.wing.estimated_price > 0}
+                      <span class="ot-tpl-preview-chip-px">@ ~₹{Number(_previewPlan.wing.estimated_price).toFixed(2)}</span>
+                    {/if}
                   </span>
                 {/if}
                 {#each _previewPlan.notes || [] as n}
@@ -3058,6 +3062,14 @@
     color: #c084fc;
     background: rgba(192,132,252,0.10);
     border-color: rgba(192,132,252,0.40);
+  }
+  /* Subtle in-chip price suffix — operator sees "+ Wing BUY 1×
+     SYM @ ~₹2.40" as one visual unit; the price half is dimmed
+     so the symbol stays the dominant element. */
+  .ot-tpl-preview-chip-px {
+    margin-left: 0.3rem;
+    color: rgba(192,132,252,0.78);
+    font-weight: 500;
   }
   .ot-tpl-preview-note {
     color: rgba(180,200,230,0.6);
