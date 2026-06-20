@@ -32,6 +32,7 @@
   import { portal } from '$lib/portal';
   import { ORDER_TABS } from '$lib/order/tabs.js';
   import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';
+  import { aggregateCapWarnings } from '$lib/data/brokerCapWarnings';
   import { placeTicketOrder, placeBasket, fetchBasketMargin, fetchLiveStatus, fetchOrders, fetchAlgoOrdersRecent, previewTicketTemplate } from '$lib/api';
   import ChartModal from '$lib/ChartModal.svelte';
   import { logTime, executionMode } from '$lib/stores';
@@ -429,6 +430,69 @@
       if (a) seen.add(a);
     }
     return [...seen];
+  });
+  // Per-leg (account, exchange) tuples — needed by the cap-warning
+  // aggregator (H-5) so the MCX check fires on the leg whose
+  // exchange is MCX, not on every leg in the basket. Same de-dup
+  // pattern as _basketAccounts; key is "ACCT|EXCHANGE".
+  const _basketAccountExchanges = $derived.by(() => {
+    const seen = new Map();
+    for (const leg of basketLegs) {
+      const a = leg.account || _sharedAccount || account || '';
+      const e = leg.exchange || '';
+      if (!a) continue;
+      const k = `${a}|${e}`;
+      if (!seen.has(k)) seen.set(k, { account: a, exchange: e });
+    }
+    return [...seen.values()];
+  });
+  // Per-account BrokerCapabilities cache. Populated lazily by the
+  // $effect below; reads from the same /api/admin/brokers/{acct}/
+  // capabilities endpoint OrderTicket already hits. Cached so an
+  // operator who adds + removes + re-adds a leg only fetches caps
+  // once per account per modal lifetime.
+  /** @type {Record<string, any>} */
+  let _basketCapsCache = $state({});
+  $effect(() => {
+    const accts = _basketAccounts;
+    if (!Array.isArray(accts) || accts.length === 0) return;
+    const _needed = accts.filter(a => !_basketCapsCache[a]);
+    if (_needed.length === 0) return;
+    // Fire each fetch independently so a slow / failing one doesn't
+    // block the others. Cache result on success; on failure we leave
+    // the cache empty so the next basket change re-tries (rare).
+    untrack(() => {
+      for (const a of _needed) {
+        (async () => {
+          try {
+            const { fetchBrokerCapabilities } = await import('$lib/api');
+            const c = await fetchBrokerCapabilities(a);
+            if (c) _basketCapsCache = { ..._basketCapsCache, [a]: c };
+          } catch (_e) {
+            // Silent — demo / unauthed sessions can't see admin
+            // endpoints. The cap chip falls back to OrderTicket's
+            // single-account warning.
+          }
+        })();
+      }
+    });
+  });
+  // Aggregated cap warning across all (account, exchange) pairs in
+  // the basket. Imported helper de-dupes warning strings + tags each
+  // with the originating account so the operator can map back. When
+  // basket is empty, returns ''; the chip render falls back to the
+  // Ticket-tab single-account warning piped up from OrderTicket.
+  const _basketCapWarning = $derived.by(() => {
+    if (basketLegs.length === 0) return '';
+    if (!_selectedTemplate || _shellUsingNone) return '';
+    /** @type {Array<{account:string, caps:any, exchange:string}>} */
+    const tuples = [];
+    for (const { account: a, exchange: e } of _basketAccountExchanges) {
+      const c = _basketCapsCache[a];
+      if (!c) continue;   // caps not loaded yet — chip stays empty
+      tuples.push({ account: a, caps: c, exchange: e });
+    }
+    return aggregateCapWarnings(_selectedTemplate, tuples);
   });
 
   // Debounced effect — fires 500 ms after any basket change when basket
@@ -1969,9 +2033,21 @@
                + Wing BUY 22000PE @ ~₹85" — the most useful piece of
                context the operator has at submit time. -->
         {#if !_shellUsingNone}
-          {#if _modalCapWarning}
-            <div class="oes-tpl-cap-warn" title={_modalCapWarning}>
-              ⚠ {_modalCapWarning}
+          <!-- Audit fix (H-5) — when basket has legs spanning ≥1
+               account, surface the aggregated cross-account cap
+               warning instead of the Ticket-tab's single-account
+               warning. Multi-broker baskets (Kite + Dhan + Groww)
+               now show the union of broker-specific gaps with each
+               warning tagged by the originating account so the
+               operator can map back to the affected leg. Empty
+               basket falls back to OrderTicket's chip (single-
+               account context). -->
+          {@const _activeCapWarning = basketLegs.length > 0
+            ? _basketCapWarning
+            : _modalCapWarning}
+          {#if _activeCapWarning}
+            <div class="oes-tpl-cap-warn" title={_activeCapWarning}>
+              ⚠ {_activeCapWarning}
             </div>
           {/if}
           {#if _activePreviewError}

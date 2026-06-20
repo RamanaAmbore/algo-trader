@@ -32,6 +32,7 @@
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { placeTicketOrder, previewOrderMargin, fetchAccounts, fetchFunds, modifyOrder, previewTicketTemplate } from '$lib/api';
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
+  import { capWarningFor } from '$lib/data/brokerCapWarnings';
   import { getDefaultAccount } from '$lib/data/accounts';
   import { aggFmt } from '$lib/format';
   import { executionMode } from '$lib/stores';
@@ -646,42 +647,14 @@
   });
   // Warning text — returned non-empty only when the SELECTED template
   // produces a bracket the broker can't handle natively. Drives a
-  // small amber chip rendered next to the template summary.
+  // small amber chip rendered next to the template summary. Logic
+  // extracted to `$lib/data/brokerCapWarnings` so SymbolPanel can
+  // reuse the same vocabulary when aggregating across basket accounts
+  // (H-5). One source of truth for "OCO emulated" / "can't trail" /
+  // MCX / postback-lag warnings.
   const _templateCapWarning = $derived.by(() => {
-    const t = _selectedTemplate;
-    const c = _brokerCaps;
-    if (!t || !c) return '';
-    const wantsOco = (t.tp_pct != null && t.sl_pct != null);
-    const wantsTrail = t.sl_trail_pct != null;
-    // Audit fix (H-4) — MCX/NCO GTT support check. Dhan Forever
-    // doesn't cover MCX; Groww Smart Order GTT not verified on MCX.
-    // Pre-fix this was runtime-only — operator submitted MCX
-    // template, fill landed, attach raised post-hoc. Now surface at
-    // submit time so the operator can either skip the template or
-    // pick a different account.
-    const isMcx = ['MCX', 'NCO'].includes(String(_exchange || _resolvedExchange || exchange || '').toUpperCase());
-    // Postback latency — Dhan + Groww are poll-only via the OCO
-    // pair-watcher (~15s). Surface so the operator knows GTT-fire
-    // detection isn't instant.
-    const wantsGtt = wantsOco || wantsTrail || t.tp_pct != null || t.sl_pct != null
-                     || !!t.tp_scales_json;
-    const parts = [];
-    if (wantsOco && !c.gtt_oco) {
-      parts.push(`${c.display_name || 'broker'} OCO emulated — ~15s race window`);
-    }
-    if (wantsTrail && !c.gtt_modify) {
-      parts.push(`${c.display_name || 'broker'} can't trail — SL stays fixed`);
-    }
-    if (t.tp_scales_json && !c.gtt_single) {
-      parts.push(`${c.display_name || 'broker'} has no GTT — scale-out won't attach`);
-    }
-    if (isMcx && c.gtt_supports_mcx === false) {
-      parts.push(`${c.display_name || 'broker'} GTT can't run on MCX — template won't attach`);
-    }
-    if (wantsGtt && c.postback_gtt === 'poll_only') {
-      parts.push(`${c.display_name || 'broker'} GTT fires via poll — up to ~15s detection lag`);
-    }
-    return parts.join(' · ');
+    const ex = String(_exchange || _resolvedExchange || exchange || '');
+    return capWarningFor(_selectedTemplate, _brokerCaps, ex);
   });
   const _isUsingNone = $derived(
     _selectedTemplate?.slug === 'none' || templateId === null
