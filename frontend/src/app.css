@@ -1171,6 +1171,7 @@
     color: #1e3050;
     outline: none !important;
     transition: border-color 0.05s;
+    font-variant-numeric: tabular-nums;
   }
   .field-input:focus { border-color: #0c1830; }
   /* Readonly chip — used when an input is replaced with a fixed-value

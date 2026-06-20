@@ -178,7 +178,9 @@
             class="btn-primary w-full disabled:opacity-50 mt-1"
           >{loading ? 'Signing in…' : 'Sign In'}</button>
           <div class="flex justify-end">
-            <button type="button" class="text-[0.65rem] text-primary hover:underline"
+            <button type="button"
+              class="text-[0.65rem] text-primary hover:underline"
+              style="min-height: 2.75rem; padding: 0.5rem; display: inline-flex; align-items: center;"
               onclick={() => { tab = 'forgot'; error = ''; info = ''; }}>Forgot password?</button>
           </div>
         </div>

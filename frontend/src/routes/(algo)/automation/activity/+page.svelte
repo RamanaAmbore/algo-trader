@@ -51,8 +51,10 @@
 <AutomationTabs />
 
 <section class="bucket-card bucket-card-activity">
-  <span class="mp-section-label">Agent Activity</span>
-  <ActionEventsToggle bind:value={showActions} />
+  <div class="bucket-header">
+    <span class="mp-section-label">Agent Activity</span>
+    <ActionEventsToggle bind:value={showActions} />
+  </div>
   <UnifiedLog
     filter={{ kinds }}
     excludeSim={true}

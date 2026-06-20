@@ -273,9 +273,10 @@
   }
   .ps-agg-k {
     color: var(--algo-muted);
-    font-size: 0.5rem;
+    font-size: 0.55rem;
     font-weight: 700;
     text-transform: uppercase;
+    letter-spacing: 0.04em;
   }
   .ps-agg-v {
     font-size: 0.7rem;

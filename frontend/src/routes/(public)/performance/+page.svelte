@@ -32,4 +32,19 @@
   <meta name="twitter:image:alt" content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
 </svelte:head>
 
+<style>
+  .perf-heading {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: #1e3050;
+    letter-spacing: -0.01em;
+    padding: 1.25rem 1.25rem 0.25rem;
+    margin: 0;
+  }
+  @media (max-width: 600px) {
+    .perf-heading { font-size: 1.1rem; padding: 1rem 0.75rem 0.15rem; }
+  }
+</style>
+
+<h1 class="perf-heading">Live Portfolio Performance</h1>
 <PerformancePage />

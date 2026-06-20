@@ -553,13 +553,13 @@
        visually unanchored on its lower side. */
     border-top:    1px solid rgba(200,168,75,0.45);
     border-bottom: 1px solid rgba(200,168,75,0.45);
-    height: 1.4rem;
+    min-height: 2rem;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 0 0.75rem;
+    padding: 0.4rem 0.75rem;
   }
   .pub-footer p { width: 100%; }
-  .pub-footer-text { color: rgba(210,225,255,0.75); font-size: 0.65rem; line-height: 1; }
+  .pub-footer-text { color: rgba(210,225,255,0.75); font-size: 0.7rem; line-height: 1.3; }
   .pub-sep { color: #c8a84b; font-weight: bold; margin: 0 0.35rem; }
 </style>
