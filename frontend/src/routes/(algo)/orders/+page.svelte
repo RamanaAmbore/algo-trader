@@ -21,6 +21,7 @@
   } from '$lib/data/accounts';
   import { createPerformanceSocket } from '$lib/ws';
   import ChartModal from '$lib/ChartModal.svelte';
+  import Select from '$lib/Select.svelte';
 
   let orders        = $state([]);
   let loading       = $state(true);
@@ -271,39 +272,37 @@
       </svg>
       ORDER ENTRY
     </span>
-    <!-- Operator: "the mode and chase should be on header after order
-         entry and before expand/contract icon". Cluster mirrors the
-         modal's `.oes-header-cluster` shape. State is two-way bound to
-         the SymbolPanel below so flipping CHASE / L M H here is the
-         same as flipping it inside the card. -->
+    <!-- Operator: "mode and chase should be left aligned. chase value
+         should be selectable." Cluster sits left, immediately after
+         the ORDER ENTRY label. The chase + aggressiveness collapse
+         into a single Select dropdown so the operator picks one of
+         off / low / med / high in one click. State is two-way bound
+         to the SymbolPanel below so a flip in either surface updates
+         the other. -->
     <span class="oc-header-cluster">
       <span class="oes-common-mode-chip mode-pill-{_execMode}"
             title="Execution mode (read-only — change from the navbar dropdown)">
         {_execMode.toUpperCase()}
       </span>
-      <label class="oes-common-chase-toggle"
-             title={_pageChase
-               ? 'Chase ON — re-quote the limit each tick until filled'
-               : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
-        <input type="checkbox" bind:checked={_pageChase} />
-        <span class="oes-common-chase-label" class:on={_pageChase}>CHASE</span>
-      </label>
-      {#if _pageChase}
-        <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
-          <button type="button" class="oes-common-chase-agg-pill"
-                  class:on={_pageChaseAgg === 'low'}
-                  title="Low — patient. Pegs to your own side; fills only if the market lifts it."
-                  onclick={() => _pageChaseAgg = 'low'}>L</button>
-          <button type="button" class="oes-common-chase-agg-pill"
-                  class:on={_pageChaseAgg === 'med'}
-                  title="Medium — peg to midpoint of bid+ask."
-                  onclick={() => _pageChaseAgg = 'med'}>M</button>
-          <button type="button" class="oes-common-chase-agg-pill"
-                  class:on={_pageChaseAgg === 'high'}
-                  title="High — urgent. Crosses the spread to take liquidity on the next tick."
-                  onclick={() => _pageChaseAgg = 'high'}>H</button>
-        </div>
-      {/if}
+      <div class="oes-header-chase-pick"
+           title="Chase off / low (patient) / medium (midpoint) / high (cross spread)">
+        <Select
+          value={_pageChase ? _pageChaseAgg : 'off'}
+          options={[
+            { value: 'off',  label: 'Chase off' },
+            { value: 'low',  label: 'Chase low',  hint: 'patient — pegs own side' },
+            { value: 'med',  label: 'Chase med',  hint: 'midpoint of bid/ask' },
+            { value: 'high', label: 'Chase high', hint: 'cross spread to take' },
+          ]}
+          ariaLabel="Chase mode + aggressiveness"
+          onValueChange={(v) => {
+            const s = String(v);
+            if (s === 'off') { _pageChase = false; return; }
+            _pageChase = true;
+            if (s === 'low' || s === 'med' || s === 'high') _pageChaseAgg = s;
+          }}
+        />
+      </div>
       {#if _pageBasketCount > 0}
         <button type="button" class="oes-common-clear oes-common-clear-inline"
           title="Clear all basket legs"
@@ -664,6 +663,15 @@
     align-items: center;
     gap: 0.35rem;
     flex-shrink: 0;
+  }
+  .oc-header-cluster .oes-header-chase-pick {
+    width: 6.2rem;
+    flex-shrink: 0;
+  }
+  .oc-header-cluster .oes-header-chase-pick :global(.rbq-select-trigger) {
+    width: 100%;
+    padding: 0.18rem 0.5rem;
+    font-size: 0.6rem;
   }
   /* Header — plain row matching every other bucket-card on the page.
      Small inset padding so the label + collapse/fullscreen trio
