@@ -24,9 +24,16 @@
     pollMs   = 3000,
     compact  = false,
     onKilled = null,
+    // Bindable outward count — lets the parent gate its container's
+    // visibility on whether any chase is active without needing to
+    // mount a second poller.
+    activeCount = $bindable(0),
   } = $props();
 
   let _chases  = $state(/** @type {any[]} */ ([]));
+  // Mirror the chase count out to the bindable prop so the parent's
+  // `{#if openOrders > 0 || chaseActive > 0}` gate can react.
+  $effect(() => { const n = _chases.length; if (n !== activeCount) activeCount = n; });
   // Group children directly under their parents so the operator sees
   // parent + protective wing as a visual cluster. Rows are partitioned
   // into "parents and standalones" first, then each child is spliced

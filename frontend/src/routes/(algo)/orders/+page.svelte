@@ -76,6 +76,19 @@
   let _pageChaseAgg    = $state(/** @type {'low'|'med'|'high'} */ ('low'));
   let _pageBasketCount = $state(0);
   let _triggerClear    = $state(0);
+  // Operator: "when orders are open or chase is active, chase activity
+  // container should be shown before log panel with order activity tab
+  // active". Bind ChaseCard's active count + derive the open-order
+  // count from the polled orders list. Hide the Chases section when
+  // both are zero — no point showing an empty card when nothing's
+  // moving. LogPanel defaults to the 'order' tab already, so the
+  // operator lands on Order Activity by default whenever the section
+  // shows.
+  let _activeChases = $state(0);
+  const _openOrderCount = $derived(
+    orders.filter(o => o.status === 'OPEN' || o.status === 'TRIGGER PENDING').length
+  );
+  const _showChases = $derived(_openOrderCount > 0 || _activeChases > 0);
   // Mirror the navbar mode store so the bucket-header pill colour +
   // label stays in sync with the global selection.
   const _execMode = $derived($executionMode ?? 'paper');
@@ -360,15 +373,24 @@
 <!-- Chases in flight — every OPEN algo_orders row across paper /
      live / shadow. Per-row Kill button cancels the chase
      (paper-engine flip OR broker.cancel_order). Reusable card; see
-     ChaseCard.svelte for the markup + polling. -->
+     ChaseCard.svelte for the markup + polling. Section hides when
+     no chases are running AND no orders are OPEN — keeps the page
+     clean during idle hours. -->
+{#if _showChases}
 <section class="bucket-card bucket-card-chase mb-2">
   <div class="bucket-header oc-chase-header">
     <span class="mp-section-label">Chases</span>
   </div>
   <div class="card-body oc-chase-body">
-    <ChaseCard pollMs={3000} onKilled={() => loadOrders()} />
+    <ChaseCard pollMs={3000} onKilled={() => loadOrders()} bind:activeCount={_activeChases} />
   </div>
 </section>
+{:else}
+<!-- Even when hidden, keep ChaseCard mounted so its poller updates
+     _activeChases — without this the section would never re-appear on
+     the first chase fire. compact + display:none keeps the DOM small. -->
+<div style="display:none"><ChaseCard pollMs={3000} compact bind:activeCount={_activeChases} /></div>
+{/if}
 
 <!-- Order Activity card — same 6-tab LogPanel surface the ActivityLogModal
      mounts (Orders · Agents · Terminal · Ticks · System · News). The card
