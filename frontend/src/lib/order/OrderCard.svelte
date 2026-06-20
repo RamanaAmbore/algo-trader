@@ -51,7 +51,14 @@
   function _statusDataAttr(s) {
     const c = (s || '').toUpperCase();
     if (c === 'COMPLETE')                              return 'active';
-    if (c === 'REJECTED' || c === 'CANCELLED')         return 'error';
+    // Audit fix (H-1, H-2) — CANCEL_FAILED is a distinct state from
+    // CANCELLED: the operator clicked Kill but the broker.cancel call
+    // failed; the order is still live at the broker. Pre-fix it
+    // dropped through to "inactive" (grey, indistinguishable from
+    // long-dead rows). Now treated as `error` so the row's left-edge
+    // stripe reads as a danger signal — operator must verify broker
+    // state + reattempt the kill or reconcile.
+    if (c === 'REJECTED' || c === 'CANCELLED' || c === 'CANCEL_FAILED') return 'error';
     if (c === 'OPEN' || c === 'TRIGGER PENDING')       return 'running';
     return 'inactive';
   }
@@ -150,12 +157,20 @@
         oncontextmenu={(e) => { e.preventDefault(); onSymbolContext?.(order, e); }}
         use:longPress={(ev) => { onSymbolContext?.(order, ev); }}>{_sym}</span>
     </span>
-    <span class="text-[0.55rem] px-1.5 py-0.5 rounded font-medium uppercase border
+    <!-- Audit fix (H-2) — distinct CANCEL_FAILED pill (red-orange, danger
+         signal). Pre-fix it dropped through to amber (the default) so the
+         operator couldn't distinguish it from a healthy OPEN row at a
+         glance. -->
+    <span class="text-[0.55rem] px-1.5 py-0.5 rounded font-medium uppercase border whitespace-nowrap
       {order.status === 'COMPLETE' || order.status === 'FILLED' ? 'bg-green-500/15 text-green-400 border-green-500/40'
       : order.status === 'REJECTED' ? 'bg-red-500/15 text-red-400 border-red-500/40'
+      : order.status === 'CANCEL_FAILED' ? 'bg-red-700/25 text-orange-300 border-red-700/55'
       : order.status === 'UNFILLED' ? 'bg-orange-500/15 text-orange-400 border-orange-500/40'
       : order.status === 'CANCELLED' ? 'bg-slate-500/20 text-slate-300 border-slate-500/40'
-      : 'bg-amber-500/15 text-amber-400 border-amber-500/40'}">{order.status}</span>
+      : 'bg-amber-500/15 text-amber-400 border-amber-500/40'}"
+      title={order.status === 'CANCEL_FAILED'
+        ? 'Kill attempt failed — order may still be live at broker. Reconcile or retry kill.'
+        : ''}>{order.status === 'CANCEL_FAILED' ? '⚠ KILL FAILED' : order.status}</span>
   </div>
   <!-- Chip row — same .log-chip / .log-chip-key family the LogPanel
        order rows used to render via _orderRowHtml, so the chips read
@@ -177,7 +192,37 @@
     {#if _ts}<span class="log-chip"><span class="log-chip-key">time:</span>{formatDualTz(new Date(_ts))}</span>{/if}
     {#if order.tag}<span class="log-chip {_tagClass(order.tag)}"><span class="log-chip-key">tag:</span>{order.tag}</span>{/if}
     {#if order.target_pct != null}<span class="log-chip log-chip-tp"><span class="log-chip-key">tp:</span>+{(Number(order.target_pct) * 100).toFixed(1)}%</span>{/if}
-    {#if order.template_id != null}<span class="log-chip log-chip-template" title={order.attached_gtts_json ? 'Template attached on fill: ' + order.attached_gtts_json : (order.status === 'FILLED' ? 'Template was selected but attach did not run — click Re-attach to retry.' : 'Template selected — will attach on fill')}><span class="log-chip-key">tmpl:</span>#{order.template_id}{order.attached_gtts_json ? ' ✓' : (order.status === 'FILLED' ? ' ⟳' : '…')}</span>{/if}
+    {#if order.template_id != null}
+      <!-- Audit fix (H-3) — distinguish full attach vs partial. Pre-fix
+           `attached_gtts_json != null` = ✓ (full). A row where TP
+           attached but the wing failed (e.g. low-OI chain scan)
+           still has attached_gtts_json populated; the chip showed ✓
+           even though the wing didn't land. Now inspect the JSON for
+           a wing entry and render `✓+w` (full, with wing), `✓` (full,
+           no wing was expected), or `✓⚠` (partial — at least one
+           GTT spec missing its broker id). Operator can hover for the
+           full JSON breakdown. -->
+      {@const _atJson = order.attached_gtts_json}
+      {@const _at = (() => {
+        if (!_atJson) return null;
+        try { const a = JSON.parse(_atJson); return Array.isArray(a) ? a : null; } catch { return null; }
+      })()}
+      {@const _hasWing = !!(_at && _at.some(e => e?.kind === 'wing' && e.id))}
+      {@const _gttCount = _at ? _at.filter(e => e?.kind === 'gtt').length : 0}
+      {@const _missingId = !!(_at && _at.some(e => e?.kind === 'gtt' && !e.id))}
+      {@const _chipBadge = !_atJson
+        ? (order.status === 'FILLED' ? ' ⟳' : '…')
+        : (_missingId ? ' ✓⚠' : (_hasWing ? ' ✓+w' : (_gttCount > 0 ? ' ✓' : ' ✓∅')))}
+      <span class="log-chip log-chip-template"
+            class:log-chip-template-partial={_missingId}
+            title={_atJson
+              ? `Template attached on fill — ${_gttCount} GTT spec(s)${_hasWing ? ', wing attached' : ''}${_missingId ? '. ⚠ At least one spec is missing its broker id — partial attach.' : '.'} Full JSON: ${_atJson}`
+              : (order.status === 'FILLED'
+                  ? 'Template was selected but attach did not run — click Re-attach to retry.'
+                  : 'Template selected — will attach on fill')}>
+        <span class="log-chip-key">tmpl:</span>#{order.template_id}{_chipBadge}
+      </span>
+    {/if}
     {#if order.template_id != null && (order.status || '').toUpperCase() === 'FILLED' && !order.attached_gtts_json}
       <button type="button"
               class="log-chip log-chip-retry-attach"

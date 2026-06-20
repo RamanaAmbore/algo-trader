@@ -405,7 +405,13 @@
   function removeBasketLeg(/** @type {number} */ i) {
     basketLegs = basketLegs.filter((_, k) => k !== i);
   }
-  function clearBasket() { basketLegs = []; basketResultMsg = ''; _basketMarginRows = []; }
+  function clearBasket() {
+    basketLegs = []; basketResultMsg = ''; _basketMarginRows = [];
+    // Audit fix (H-6) — also clear the persistent partial-fail
+    // sticky banner so it doesn't outlive the basket it described.
+    if (_stickyResultTimer) { clearTimeout(_stickyResultTimer); _stickyResultTimer = null; }
+    _stickyResultMsg = ''; _stickyResultLevel = '';
+  }
 
   // ── Per-account basket margin strip ──────────────────────────────────
   // When the basket spans >1 account, show Required / Available / After
@@ -1403,7 +1409,14 @@
       _stickyResultMsg = `${ok} placed · ${fails.length} rejected — check /orders for live legs`;
       _stickyResultLevel = 'warn';
       if (_stickyResultTimer) clearTimeout(_stickyResultTimer);
-      _stickyResultTimer = setTimeout(() => { _stickyResultMsg = ''; _stickyResultLevel = ''; }, 8000);
+      // Audit fix (H-6) — partial-fail banner stays persistent until
+      // the operator clears the basket or closes the modal. Pre-fix
+      // it expired in 8s; the modal stays open with failed legs in
+      // the basket, and after the timer ran out the operator had no
+      // visible reminder that `ok` legs were already live at the
+      // broker → resubmit risk on the retained legs. Persistent
+      // banner is dismissed by basket-clear or modal-close.
+      _stickyResultTimer = null;
     } else {
       basketResultMsg = `Failed: ${fails[0]}`;
       _stickyResultMsg = `All ${total} legs rejected — no orders placed`;

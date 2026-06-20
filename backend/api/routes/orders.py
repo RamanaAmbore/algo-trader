@@ -1174,9 +1174,15 @@ class OrdersController(Controller):
             logger.debug(f"chases/active broker snapshot failed: {_oe}")
 
         async with async_session() as s:
+            # Audit fix (H-1) — also include CANCEL_FAILED rows so the
+            # operator sees orders where the Kill click hit a broker
+            # failure. Pre-fix these rows fell off the chase grid
+            # (status != OPEN) and the operator had no surface short of
+            # browsing /orders. The order is still LIVE at the broker;
+            # recovery is via Reconcile or another Kill attempt.
             rows = (await s.execute(
                 sql_select(AlgoOrder)
-                .where(AlgoOrder.status == "OPEN")
+                .where(AlgoOrder.status.in_(["OPEN", "CANCEL_FAILED"]))
                 .order_by(desc(AlgoOrder.id))
                 .limit(500)
             )).scalars().all()

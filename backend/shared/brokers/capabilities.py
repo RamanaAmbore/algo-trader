@@ -44,6 +44,13 @@ class BrokerCapabilities:
     gtt_modify: bool            # Modify an existing GTT in place (vs cancel+replace)
     gtt_cap_per_account: int    # Max active GTTs per account; 0 = unknown
     gtt_validity_days: int      # Default GTT validity in days
+    # Whether GTT/OCO orders are supported on MCX/NCO commodity exchanges.
+    # Kite covers MCX natively; Dhan Forever does NOT cover MCX (place_gtt
+    # raises NotImplementedError for MCX/NCO); Groww similarly limited.
+    # Pre-fix the absence of this field meant a Dhan account with an MCX
+    # option + template silently failed at attach time post-fill — too
+    # late. Now read by the cap-warning chip at submit time.
+    gtt_supports_mcx: bool = False
 
     # ── Bracket / Cover ──────────────────────────────────────────────
     bracket_order: bool         # Entry + SL + Target as one ticket (Dhan only today)
@@ -90,6 +97,7 @@ KITE_CAPS = BrokerCapabilities(
     gtt_modify=True,
     gtt_cap_per_account=100,
     gtt_validity_days=365,
+    gtt_supports_mcx=True,      # Kite GTT covers MCX natively
     bracket_order=False,        # Deprecated by Zerodha in 2020
     cover_order=True,
     atomic_basket=False,        # Web-UI basket only; API has no batch place_order
@@ -107,6 +115,7 @@ DHAN_CAPS = BrokerCapabilities(
     gtt_modify=True,
     gtt_cap_per_account=50,     # Tier-dependent; conservative default
     gtt_validity_days=365,      # Forever orders are long-lived
+    gtt_supports_mcx=False,     # Dhan Forever doesn't cover MCX/NCO
     bracket_order=True,         # Dhan still supports BO
     cover_order=True,
     atomic_basket=True,         # API-supported multi-leg basket
@@ -131,12 +140,16 @@ GROWW_CAPS = BrokerCapabilities(
     gtt_modify=True,
     gtt_cap_per_account=25,     # Conservative; Groww doesn't publish a hard cap
     gtt_validity_days=90,       # Shorter validity than Kite/Dhan
+    gtt_supports_mcx=False,     # Groww Smart Order GTT not verified on MCX
     bracket_order=False,
     cover_order=False,
     atomic_basket=False,        # No batch API; fan-out in parallel
     order_tag=False,            # Use the broker_order_link sidecar
     margin_preview=False,       # No public pre-submit margin API
-    postback_gtt="partial",     # Order webhook exists, GTT trigger delivery is patchy
+    # Audit fix — was "partial" but no Groww inbound webhook handler
+    # exists. GTT-fire detection on Groww is entirely poll-based via
+    # _task_oco_pair_watcher. Matches the Dhan correction.
+    postback_gtt="poll_only",
     rate_limit_orders_sec=5,
 )
 
