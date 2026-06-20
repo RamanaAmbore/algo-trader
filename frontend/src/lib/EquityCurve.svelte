@@ -167,7 +167,8 @@
     <div class="eq-empty">No P&amp;L history yet. Start the sim to populate.</div>
   {:else}
     <svg viewBox="0 0 {W} {height}" preserveAspectRatio="none"
-         class="eq-svg" onpointermove={onPointerMove} onpointerleave={onPointerLeave}>
+         class="eq-svg" role="img" aria-label="Equity P&L curve"
+         onpointermove={onPointerMove} onpointerleave={onPointerLeave}>
       <!-- Filled area (green above zero, red below) -->
       <path d={filledArea}
             fill="url(#eq-grad-up)"

@@ -1066,6 +1066,7 @@
     <div class="sim-empty">No past simulations yet.</div>
   {/if}
   </section>
+  </section><!-- /sim-grid-main -->
 
 <!-- Recordings panel — saved deterministic event logs for replay.
      Inline at the bottom of the Scenario tab so operators see saved

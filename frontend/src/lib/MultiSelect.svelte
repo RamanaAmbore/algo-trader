@@ -44,7 +44,7 @@
     singleSelect = false,
   } = $props();
   let triggerEl;
-  let panelEl;
+  let panelEl = $state(/** @type {HTMLElement | undefined} */ (undefined));
 
   const displayLabel = $derived.by(() => {
     if (!value || !value.length) return placeholder || '';
@@ -112,20 +112,24 @@
 </script>
 
 <div class="rbq-multi rbq-multi-{theme} {open ? 'rbq-multi-open' : ''}">
-  <button type="button" bind:this={triggerEl}
-    {id} {disabled} aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel}
-    class="rbq-multi-trigger"
-    onclick={toggle}
-    onkeydown={onKey}>
-    <span class="rbq-multi-label {!value?.length ? 'rbq-multi-placeholder' : ''}">
-      {displayLabel || '\u00a0'}
-    </span>
+  <!-- Trigger wrap keeps the clear button as a sibling (not nested inside)
+       the trigger button, avoiding an invalid button-in-button DOM structure. -->
+  <div class="rbq-multi-trigger-wrap">
+    <button type="button" bind:this={triggerEl}
+      {id} {disabled} aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel}
+      class="rbq-multi-trigger"
+      onclick={toggle}
+      onkeydown={onKey}>
+      <span class="rbq-multi-label {!value?.length ? 'rbq-multi-placeholder' : ''}">
+        {displayLabel || '\u00a0'}
+      </span>
+      <span class="rbq-multi-caret" aria-hidden="true">▾</span>
+    </button>
     {#if value?.length && allowClear}
       <button type="button" class="rbq-multi-clear" onclick={clearAll}
               aria-label="Clear selection">×</button>
     {/if}
-    <span class="rbq-multi-caret" aria-hidden="true">▾</span>
-  </button>
+  </div>
 
   {#if open}
     <ul class="rbq-multi-panel" role="listbox" aria-multiselectable="true" bind:this={panelEl}>
@@ -150,6 +154,21 @@
     width: 100%;
     font-family: ui-monospace, monospace;
     color: var(--algo-slate);
+  }
+
+  .rbq-multi-trigger-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 100%;
+  }
+  .rbq-multi-trigger-wrap .rbq-multi-trigger {
+    flex: 1 1 auto;
+  }
+  .rbq-multi-trigger-wrap .rbq-multi-clear {
+    position: absolute;
+    right: 1.4rem; /* leave room for the caret */
+    flex: none;
   }
 
   .rbq-multi-trigger {

@@ -770,7 +770,7 @@
       <p class="jwt-or">Or mint a fresh JWT non-interactively (handy for cron / CI):</p>
       <pre class="code-block">export RAMBOQ_TOKEN=$(curl -s -X POST {baseUrl}/api/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{`{`}"username":"<your-username>","password":"<your-password>"{`}`}' \
+  -d '{`{`}"username":"&lt;your-username&gt;","password":"&lt;your-password&gt;"{`}`}' \
   | jq -r .access_token)</pre>
       <button class="copy-btn" type="button" onclick={() => copy(
         `export RAMBOQ_TOKEN=$(curl -s -X POST ${baseUrl}/api/auth/login -H 'Content-Type: application/json' -d '{"username":"<your-username>","password":"<your-password>"}' | jq -r .access_token)`,

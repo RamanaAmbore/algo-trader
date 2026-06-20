@@ -1628,6 +1628,7 @@
      avoid nested dialog ARIA roles. The inner ot-modal remains the visual
      container; SymbolPanel's own dialog role already covers it. -->
 <div class="ot-overlay" class:ot-overlay-embedded={!standalone}
+     role="presentation"
      onclick={standalone ? onClose : undefined}>
   <div class="ot-modal" role={standalone ? 'dialog' : 'document'}
        aria-modal={standalone ? 'true' : undefined}
@@ -2388,7 +2389,7 @@
     flex: 1 1 0;
     min-width: 0;
   }
-  .ot-qty-block .ot-meta { font-size: 0.65rem; color: #a3b9d0; }
+  .ot-meta { font-size: 0.65rem; color: #a3b9d0; }
 
   /* [−] [1 ▼] [+] (× 50 = 50) — lots-driven Qty UI. Sits inline on
      a single row; nowrap so the +/− and the dropdown can never

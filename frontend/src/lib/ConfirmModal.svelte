@@ -112,8 +112,10 @@
 
 {#if _open}
   <div class="cm-overlay" role="dialog" aria-modal="true" aria-label={_title}
-       onclick={() => _resolve_and_close(false)}>
-    <div class="cm-modal" role="document"
+       tabindex="-1"
+       onclick={() => _resolve_and_close(false)}
+       onkeydown={(e) => { if (e.key === 'Escape') _resolve_and_close(false); }}>
+    <div class="cm-modal" role="presentation"
          onclick={(e) => e.stopPropagation()}>
       <div class="cm-title">{_title}</div>
       {#if _message}<div class="cm-message">{@html _message}</div>{/if}

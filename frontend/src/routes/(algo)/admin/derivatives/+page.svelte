@@ -3955,6 +3955,10 @@
                        if (c.kind === 'eq') _persistEqMemory(c, checked);
                      }} />
               <!-- svelte-ignore a11y_interactive_supports_focus -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <!-- Context-menu is a secondary affordance (right-click / long-press).
+                   Primary symbol selection is via checkbox. No keyboard equivalent
+                   needed here — the context-menu items are also accessible via row buttons. -->
               <span class="font-mono cand-sym cand-sym-acct"
                 oncontextmenu={(ev) => { ev.preventDefault(); _ctxMenu = { symbol: c.symbol, exchange: c.exchange || 'NFO', x: ev.clientX, y: ev.clientY }; }}
                 use:longPress={(ev) => {

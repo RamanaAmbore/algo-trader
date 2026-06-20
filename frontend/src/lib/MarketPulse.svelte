@@ -4315,7 +4315,7 @@
 
   // ── Keyboard shortcuts ────────────────────────────────────────────
   let pulseWrapper = $state(/** @type {HTMLElement | null} */ (null));
-  /** @type {HTMLInputElement | null} */ let symInputEl = null;
+  /** @type {HTMLInputElement | null} */ let symInputEl = $state(null);
 
   function handleKeydown(ev) {
     // Never intercept shortcuts when typing in an input/textarea.
@@ -4758,8 +4758,10 @@
      (EQ / FU / CE / PE), then Add. Click-outside / Esc to dismiss. -->
 {#if searchOpen}
   <div class="search-overlay" role="dialog" aria-modal="true"
-       aria-label="Add to Pulse" onclick={closeSearch}>
-    <div class="search-modal" role="document" onclick={(e) => e.stopPropagation()}>
+       aria-label="Add to Pulse" tabindex="-1"
+       onclick={closeSearch}
+       onkeydown={(e) => { if (e.key === 'Escape') closeSearch(); }}>
+    <div class="search-modal" role="presentation" onclick={(e) => e.stopPropagation()}>
       <div class="search-header">
         <span class="search-title">Manage watchlists</span>
         <button type="button" class="search-close" title="Close" aria-label="Close" onclick={closeSearch}>×</button>
@@ -4968,8 +4970,10 @@
      _resolveTargetListId. -->
 {#if optionPickerUnderlying}
   <div class="search-overlay" role="dialog" aria-modal="true"
-       aria-label="Pick option strike" onclick={closeOptionPicker}>
-    <div class="search-modal" role="document" onclick={(e) => e.stopPropagation()}>
+       aria-label="Pick option strike" tabindex="-1"
+       onclick={closeOptionPicker}
+       onkeydown={(e) => { if (e.key === 'Escape') closeOptionPicker(); }}>
+    <div class="search-modal" role="presentation" onclick={(e) => e.stopPropagation()}>
       <div class="search-header">
         <span class="search-title">{optionPickerUnderlying.name} — pick contract</span>
         <button type="button" class="search-close" title="Close" aria-label="Close" onclick={closeOptionPicker}>×</button>

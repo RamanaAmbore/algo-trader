@@ -43,7 +43,7 @@
 
   let open = $state(false);
   let triggerEl;
-  let panelEl;
+  let panelEl = $state(/** @type {HTMLElement | undefined} */ (undefined));
   /** @type {HTMLInputElement | undefined} */
   let searchInputEl = $state();
   let highlighted   = $state(-1);

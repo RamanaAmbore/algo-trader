@@ -438,9 +438,14 @@
       Ticks are recorded once an order is open against the symbol{mode === 'sim' ? ' or the simulator is running' : ''}.
     </div>
   {:else if ticks.length}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <!-- Chart SVG: wheel-zoom + drag-pan + click-pin are pointer-native
+         interactions. role="application" communicates this to AT; a
+         keyboard-only zoom/pan equivalent is not practical for this chart type. -->
     <svg viewBox="0 0 {W} {height}" preserveAspectRatio="none"
          class="chart-svg" class:chart-panning={pan !== null}
-         role="img" aria-label="Price chart — wheel to zoom, drag to pan, click to pin"
+         role="application" aria-label="Price chart — wheel to zoom, drag to pan, click to pin"
          onwheel={onWheel}
          onpointerdown={onPointerDown}
          onpointerup={onPointerUp}

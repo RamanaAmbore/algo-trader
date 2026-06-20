@@ -240,6 +240,7 @@
     <div class="mpc-empty">{emptyMsg}</div>
   {:else}
     <svg viewBox="0 0 {W} {height}" preserveAspectRatio="none" class="mpc-svg"
+         role="img" aria-label="Multi-leg premium chart"
          onpointermove={onPointerMove} onpointerleave={onPointerLeave}>
       <!-- y-axis grid lines + labels (pct) -->
       {#each yTicks as v}

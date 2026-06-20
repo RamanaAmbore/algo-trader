@@ -434,7 +434,7 @@
 
 <style>
   .clt-root { display: flex; flex-direction: column; }
-  .clt-standalone { /* no extra styles needed — caller owns layout */ }
+  /* .clt-standalone intentionally has no extra styles — caller owns layout */
 
   /* Drop CommandBar's amber 2px left-edge accent inside the
      command-line tab body. The parent /orders Order Entry card

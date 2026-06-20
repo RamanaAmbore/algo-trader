@@ -765,9 +765,14 @@
       seeing was the fg curve drifting off the bg coordinate grid.
     -->
     <div class="payoff-svg-stack">
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <!-- Payoff SVG: wheel-zoom + drag-pan + click-pin are pointer-native.
+         role="application" communicates this to AT; keyboard zoom/pan is
+         not practical for this chart type. -->
     <svg viewBox="0 0 {W} {height}" preserveAspectRatio="none"
          class="payoff-svg" class:payoff-panning={pan !== null}
-         role="img" aria-label="Option payoff diagram — wheel to zoom, drag to pan, click to pin"
+         role="application" aria-label="Option payoff diagram — wheel to zoom, drag to pan, click to pin"
          onwheel={onWheel}
          onpointerdown={onPointerDown}
          onpointerup={onPointerUp}

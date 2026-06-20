@@ -1809,7 +1809,7 @@
      onclick={inline ? undefined : (_chartModalOpen ? undefined : onClose)}
      use:portal={!inline}>
   <div class={inline ? 'oes-modal oes-modal-inline' : 'canonical-modal-panel oes-modal'}
-       role="document"
+       role="presentation"
        bind:this={_modalEl}
        onclick={inline ? undefined : (e) => e.stopPropagation()}>
 
@@ -2255,6 +2255,10 @@
           {:else if _activePreviewLoading}
             <div class="oes-tpl-preview-loading">resolving plan…</div>
           {:else if _activePreviewPlan && (_activePreviewPlan.gtts?.length > 0 || _activePreviewPlan.wing)}
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+            <!-- role and tabindex are conditionally 'button'/0 when multi-leg
+                 (genuinely interactive) or undefined otherwise. Svelte can't
+                 track the conditional so we suppress the false-positive. -->
             <div class="oes-tpl-preview"
                  class:oes-tpl-preview-clickable={_previewFromLeg && basketLegs.length > 1}
                  title={_previewChipTooltip || undefined}
@@ -2343,6 +2347,11 @@
           {#each basketLegs as leg, i (leg.key)}
             {@const _legAcct = leg.account || _sharedAccount || ''}
             {@const _isFocused = !!(_focusedLeg && _focusedLeg.key === leg.key)}
+            <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+            <!-- Basket pill is a compound widget: the <span role="listitem">
+                 contains interactive button children and also responds to
+                 click/keydown to focus the preview. Keyboard handler is
+                 already attached; the listitem role is intentional for AT. -->
             <span class="oes-basket-pill oes-basket-pill-{leg.side === 'BUY' ? 'buy' : 'sell'} oes-basket-pill-type-{/CE$/.test(leg.sym) ? 'ce' : /PE$/.test(leg.sym) ? 'pe' : /FUT$/.test(leg.sym) ? 'fut' : 'eq'}"
                   class:is-disabled={basketSubmitting}
                   class:is-focused={_isFocused}
@@ -2358,6 +2367,14 @@
                     const tgt = /** @type {HTMLElement} */ (e.target);
                     if (tgt?.closest('button, input, select, label')) return;
                     _focusedLegKey = leg.key;
+                  }}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      const tgt = /** @type {HTMLElement} */ (e.target);
+                      if (tgt?.closest('button, input, select, label')) return;
+                      e.preventDefault();
+                      _focusedLegKey = leg.key;
+                    }
                   }}>
               <span class="oes-basket-pill-side">{leg.side === 'BUY' ? 'B' : 'S'}</span>
               <span class="oes-basket-pill-sym"><LegLabel sym={leg.sym} compact={true} /></span>

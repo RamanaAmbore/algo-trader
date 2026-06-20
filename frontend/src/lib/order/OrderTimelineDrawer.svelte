@@ -135,7 +135,7 @@
   ></div>
 
   <!-- Drawer panel -->
-  <aside class="otd-drawer" role="dialog" aria-label="Chase timeline">
+  <div class="otd-drawer" role="dialog" aria-modal="true" aria-label="Chase timeline">
     <!-- Header -->
     <div class="otd-header">
       <span class="otd-title">Chase Timeline</span>
@@ -182,7 +182,7 @@
         {/each}
       {/if}
     </div>
-  </aside>
+  </div>
 {/if}
 
 <style>

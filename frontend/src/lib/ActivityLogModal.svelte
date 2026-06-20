@@ -141,7 +141,7 @@
   /* Matches the page-header Activity button's new orange resting
      colour (#fb923c = orange-400) so the modal title icon is the
      exact same shade as the button that opened it. */
-  .alm-title-icon { color: #fbbf24; flex-shrink: 0; }
+  :global(.alm-title-icon) { color: #fbbf24; flex-shrink: 0; }
   .alm-close {
     /* Standard close — square 1.4rem matches ChartModal +
        SymbolPanel close buttons; glyph 0.95rem is proportional to
