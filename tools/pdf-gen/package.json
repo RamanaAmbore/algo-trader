@@ -1,0 +1,14 @@
+{
+  "name": "ramboq-pdf-gen",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Self-contained PDF generator for repo markdown docs. Run with `npm install && npm run build:design`.",
+  "scripts": {
+    "build:design": "node build.mjs ../../DESIGN_GUIDE.md ../../DESIGN_GUIDE.pdf"
+  },
+  "dependencies": {
+    "marked": "^14.1.3",
+    "playwright": "^1.59.1"
+  }
+}
