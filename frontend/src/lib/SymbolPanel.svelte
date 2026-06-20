@@ -1010,6 +1010,33 @@
       untrack(() => { _focusedLegKey = null; });
     }
   });
+  // Click-to-cycle handler — advances the focused-leg pointer through
+  // the basket in order, wrapping to leg 1 after the last. Used by the
+  // preview chip's onclick so the operator can flip through legs
+  // without leaving the chip surface. Released back to "track last
+  // leg" only via × on the focused pill (per the existing cleanup).
+  function _cycleFocusedLeg() {
+    if (basketLegs.length < 2) return;
+    const curIdx = _focusedLeg
+      ? basketLegs.findIndex(l => l.key === _focusedLeg.key)
+      : -1;
+    const nextIdx = (curIdx + 1) % basketLegs.length;
+    _focusedLegKey = basketLegs[nextIdx].key;
+  }
+  // Rich tooltip for the preview chip — shows the focused leg's
+  // identity + effective template so hovering anywhere on the chip
+  // surfaces the context the ₹ triggers below come from.
+  const _previewChipTooltip = $derived.by(() => {
+    if (!_previewFromLeg || !_focusedLeg) return '';
+    const leg = _focusedLeg;
+    const tplName = _legEffectiveTpl(leg)?.name
+      || _legEffectiveTpl(leg)?.slug
+      || 'no template';
+    const acct = legAccountOf(leg) || '—';
+    const qty = ((leg.lots || 1) * (leg.lotSize || 1));
+    const cycleHint = basketLegs.length > 1 ? ' · click to cycle to next leg' : '';
+    return `${leg.side} ${qty} ${leg.sym} · acct ${acct} · template: ${tplName}${cycleHint}`;
+  });
   // Which preview drives the displayed chip — last-leg on Chain when
   // basket has legs, Ticket form everywhere else. Single derivation
   // so the chip swap is atomic + the label rendering doesn't have to
@@ -1910,7 +1937,27 @@
           {:else if _activePreviewLoading}
             <div class="oes-tpl-preview-loading">resolving plan…</div>
           {:else if _activePreviewPlan && (_activePreviewPlan.gtts?.length > 0 || _activePreviewPlan.wing)}
-            <div class="oes-tpl-preview">
+            <div class="oes-tpl-preview"
+                 class:oes-tpl-preview-clickable={_previewFromLeg && basketLegs.length > 1}
+                 title={_previewChipTooltip || undefined}
+                 role={_previewFromLeg && basketLegs.length > 1 ? 'button' : undefined}
+                 tabindex={_previewFromLeg && basketLegs.length > 1 ? 0 : undefined}
+                 onclick={(e) => {
+                   if (!(_previewFromLeg && basketLegs.length > 1)) return;
+                   // Don't intercept clicks on existing chips inside —
+                   // they have their own affordances (none today, but
+                   // future-proof). Cycle on bare chip-area clicks.
+                   const tgt = /** @type {HTMLElement} */ (e.target);
+                   if (tgt && tgt !== e.currentTarget && tgt.closest('button, a, input')) return;
+                   _cycleFocusedLeg();
+                 }}
+                 onkeydown={(e) => {
+                   if (!(_previewFromLeg && basketLegs.length > 1)) return;
+                   if (e.key === 'Enter' || e.key === ' ') {
+                     e.preventDefault();
+                     _cycleFocusedLeg();
+                   }
+                 }}>
               <span class="oes-tpl-preview-label">on fill →</span>
               {#if _previewFromLeg}
                 <span class="oes-tpl-preview-leg-badge"
@@ -3009,6 +3056,21 @@
     border-radius: 3px;
     font-size: 0.6rem;
     line-height: 1.35;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  /* Clickable variant — Chain tab with 2+ legs. Cursor + hover ring
+     surface the "click to cycle" affordance without a textual hint.
+     Keyboard focus ring matches so Tab + Enter cycles too. */
+  .oes-tpl-preview-clickable {
+    cursor: pointer;
+  }
+  .oes-tpl-preview-clickable:hover {
+    background: rgba(34, 211, 238, 0.10);
+    border-color: rgba(34, 211, 238, 0.45);
+  }
+  .oes-tpl-preview-clickable:focus-visible {
+    outline: 2px solid rgba(165, 180, 252, 0.65);
+    outline-offset: 1px;
   }
   .oes-tpl-preview-label {
     color: rgba(180, 200, 230, 0.85);
