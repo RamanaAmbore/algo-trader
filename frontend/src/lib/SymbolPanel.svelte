@@ -105,7 +105,7 @@
    *   showCommonActions?: boolean,
    * }} */
   let {
-    defaultTab     = /** @type {'chain'|'ticket'} */ ('chain'),
+    defaultTab     = /** @type {'chain'|'ticket'} */ ('ticket'),
     symbol         = '',
     exchange       = '',
     instrument     = /** @type {{kind?:string,exchange?:string}} */ ({}),
@@ -1071,15 +1071,32 @@
   // request: "buy sell button can be a single button as buy/sell
   // selected within order tab. it should change based on add or close
   // when clicking order on existing symbol."
+  // Operator: "add/close is active only when order modal is opened from
+  // symbol row, from which it gets symbol, qty etc. in that case order
+  // ticket should have submit - add/close - buy/sell. in other cases
+  // submit - buy/sell."
+  //
+  // Detect "opened from symbol row" via currentQty != 0 — the symbol-row
+  // entry path (LogPanel modify/repeat, position grid click) seeds the
+  // modal with the position's current qty. Cold opens / +Basket flows
+  // / new tickets all have currentQty == 0.
+  //
+  // Format:
+  //   basket has legs           → "Submit (N)"
+  //   modal cold + side null    → "Submit"
+  //   modal cold + side set     → "Submit · BUY"  /  "Submit · SELL"
+  //   from symbol row + side    → "Submit · ADD · BUY"  /  "Submit · CLOSE · SELL"
+  //                               (verb derived from side vs position direction)
   const _submitLabel = $derived.by(() => {
-    if (basketLegs.length > 0) return `Submit basket (${basketLegs.length})`;
+    if (basketLegs.length > 0) return `Submit (${basketLegs.length})`;
+    if (!_modalSide) return 'Submit';
     const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
-    const verb = (() => {
-      if (cq === 0) return _modalSide === 'BUY' ? 'Buy' : 'Sell';
-      if (cq > 0)   return _modalSide === 'BUY' ? 'Add to position' : 'Close position';
-      /* cq < 0 */  return _modalSide === 'BUY' ? 'Close position' : 'Add to position';
-    })();
-    return verb;
+    if (cq === 0) return `Submit · ${_modalSide}`;
+    // ADD = same direction as the existing position
+    // CLOSE = opposite direction
+    const verb = (cq > 0 ? (_modalSide === 'BUY' ? 'ADD' : 'CLOSE')
+                         : (_modalSide === 'BUY' ? 'CLOSE' : 'ADD'));
+    return `Submit · ${verb} · ${_modalSide}`;
   });
   // Style class for the submit button — green when the submit will
   // place a BUY OR add to long OR close short; red when it will place

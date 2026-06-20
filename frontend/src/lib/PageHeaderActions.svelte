@@ -196,7 +196,7 @@
     symbol={_effectiveSymbol}
     exchange={_effectiveExchange}
     side={_effectiveSymbol ? 'BUY' : null}
-    defaultTab="chain"
+    defaultTab="ticket"
     accounts={[]}
     account=""
     onClose={() => { _orderOpen = false; }}

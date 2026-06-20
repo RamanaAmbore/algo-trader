@@ -54,7 +54,9 @@
   $effect(() => { if (_entryAccount) setRecentAccount(_entryAccount); });
   // Default to 'chain' — basket-building option chain is the most-used
   // surface per operator. Ticket / Command are one click away.
-  let _entryActiveTab = $state(/** @type {'chain'|'ticket'} */ ('chain'));
+  // Operator: "order ticket should be first tab and chain should be
+  // second tab." Ticket is the operator's most-used surface.
+  let _entryActiveTab = $state(/** @type {'chain'|'ticket'} */ ('ticket'));
   let _entryAccounts  = $state(/** @type {string[]} */ ([]));
 
   // Counter-prop dispatch — SymbolPanel's common-actions footer
@@ -335,7 +337,7 @@
       bind:chaseAgg={_pageChaseAgg}
       bind:basketCount={_pageBasketCount}
       bind:activeTab={_entryActiveTab}
-      defaultTab="chain"
+      defaultTab="ticket"
       symbol={_entrySymbol}
       exchange={_entryExchange}
       account={_entryAccount}
