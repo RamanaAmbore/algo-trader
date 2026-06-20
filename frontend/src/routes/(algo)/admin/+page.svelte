@@ -360,11 +360,11 @@
     <div class="algo-status-card p-4 mb-4" data-status="running">
       <h3 class="section-heading mb-3">New User</h3>
       <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
-        <div><label class="field-label">Username</label><input bind:value={createForm.username} class="field-input" placeholder="login username" /></div>
-        <div><label class="field-label">Password</label><input type="password" bind:value={createForm.password} class="field-input" placeholder="min 8 chars" /></div>
-        <div><label class="field-label">Full Name</label><input bind:value={createForm.display_name} class="field-input" /></div>
-        <div><label class="field-label">Email</label><input type="email" bind:value={createForm.email} class="field-input" /></div>
-        <div><label class="field-label">Phone</label><input bind:value={createForm.phone} class="field-input" /></div>
+        <div><span class="field-label">Username</span><input bind:value={createForm.username} class="field-input" placeholder="login username" /></div>
+        <div><span class="field-label">Password</span><input type="password" bind:value={createForm.password} class="field-input" placeholder="min 8 chars" /></div>
+        <div><span class="field-label">Full Name</span><input bind:value={createForm.display_name} class="field-input" /></div>
+        <div><span class="field-label">Email</span><input type="email" bind:value={createForm.email} class="field-input" /></div>
+        <div><span class="field-label">Phone</span><input bind:value={createForm.phone} class="field-input" /></div>
         <!-- Role picker — admin can only create partners. Designated
              can create any role (partner / admin / designated).
              Backend (admin.py::create_user) coerces non-designated
@@ -372,7 +372,7 @@
              elevated choices to match the mental model.
              {@const} is invalid here (not a direct block child) so
              the designated check is inlined in both branches. -->
-        <div><label class="field-label">Role</label>
+        <div><span class="field-label">Role</span>
           {#if $authStore.user?.role === 'designated'}
             <Select ariaLabel="Role" bind:value={createForm.role}
               options={[
@@ -388,8 +388,8 @@
              coerces non-designated attempts to 0.0, but the inputs
              are hidden for admin so the form matches the policy. -->
         {#if $authStore.user?.role === 'designated'}
-          <div><label class="field-label">Contribution (₹)</label><input type="number" bind:value={createForm.contribution} class="field-input" /></div>
-          <div><label class="field-label">Profit Share (%)</label><input type="number" step="0.1" bind:value={createForm.share_pct} class="field-input" /></div>
+          <div><span class="field-label">Contribution (₹)</span><input type="number" bind:value={createForm.contribution} class="field-input" /></div>
+          <div><span class="field-label">Profit Share (%)</span><input type="number" step="0.1" bind:value={createForm.share_pct} class="field-input" /></div>
         {/if}
         <div class="flex items-end">
           <button onclick={doCreate} disabled={creating || !createForm.username || !createForm.password}
@@ -527,13 +527,13 @@
               <div>
                 <h3 class="section-heading mb-2">Personal</h3>
                 <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
-                  <div><label class="field-label">Display Name</label><input bind:value={editForm.display_name} class="field-input" /></div>
-                  <div><label class="field-label">Email</label><input type="email" bind:value={editForm.email} class="field-input" /></div>
-                  <div><label class="field-label">Phone</label><input bind:value={editForm.phone} class="field-input" /></div>
-                  <div><label class="field-label">PAN</label><input bind:value={editForm.pan} class="field-input" maxlength="10" style="text-transform:uppercase" /></div>
-                  <div><label class="field-label">Date of Birth</label><input type="date" bind:value={editForm.date_of_birth} class="field-input" /></div>
+                  <div><span class="field-label">Display Name</span><input bind:value={editForm.display_name} class="field-input" /></div>
+                  <div><span class="field-label">Email</span><input type="email" bind:value={editForm.email} class="field-input" /></div>
+                  <div><span class="field-label">Phone</span><input bind:value={editForm.phone} class="field-input" /></div>
+                  <div><span class="field-label">PAN</span><input bind:value={editForm.pan} class="field-input" maxlength="10" style="text-transform:uppercase" /></div>
+                  <div><span class="field-label">Date of Birth</span><input type="date" bind:value={editForm.date_of_birth} class="field-input" /></div>
                   <div class="flex items-end gap-2">
-                    <label class="field-label">KYC Verified</label>
+                    <span class="field-label">KYC Verified</span>
                     <input type="checkbox" bind:checked={editForm.kyc_verified} class="mt-1" />
                   </div>
                   <!-- Email Verified — designated only. Admin actors
@@ -544,7 +544,7 @@
                        email link.
                   -->
                   <div class="flex items-end gap-2">
-                    <label class="field-label" title="Designated only — manually flips email_verified without going through the email-token flow.">Email Verified</label>
+                    <span class="field-label" title="Designated only — manually flips email_verified without going through the email-token flow.">Email Verified</span>
                     <input type="checkbox"
                            bind:checked={editForm.email_verified}
                            disabled={!iAmDesignated}
@@ -558,7 +558,7 @@
                        as a visual hint. -->
                   {#if user.role !== 'partner'}
                     <div class="flex items-end gap-2">
-                      <label class="field-label" title="Send platform alerts (loss, agent fires, summaries) to this user's email.">Receive Alerts</label>
+                      <span class="field-label" title="Send platform alerts (loss, agent fires, summaries) to this user's email.">Receive Alerts</span>
                       <input type="checkbox"
                              bind:checked={editForm.receive_alerts}
                              disabled={user.role === 'designated'}
@@ -570,17 +570,17 @@
               <div>
                 <h3 class="section-heading mb-2">Address</h3>
                 <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
-                  <div class="col-span-2 md:col-span-3"><label class="field-label">Address Line 1</label><input bind:value={editForm.address_line1} class="field-input" /></div>
-                  <div class="col-span-2 md:col-span-3"><label class="field-label">Address Line 2</label><input bind:value={editForm.address_line2} class="field-input" /></div>
-                  <div><label class="field-label">City</label><input bind:value={editForm.city} class="field-input" /></div>
-                  <div><label class="field-label">State</label><input bind:value={editForm.state} class="field-input" /></div>
-                  <div><label class="field-label">Pincode</label><input bind:value={editForm.pincode} class="field-input" maxlength="6" /></div>
+                  <div class="col-span-2 md:col-span-3"><span class="field-label">Address Line 1</span><input bind:value={editForm.address_line1} class="field-input" /></div>
+                  <div class="col-span-2 md:col-span-3"><span class="field-label">Address Line 2</span><input bind:value={editForm.address_line2} class="field-input" /></div>
+                  <div><span class="field-label">City</span><input bind:value={editForm.city} class="field-input" /></div>
+                  <div><span class="field-label">State</span><input bind:value={editForm.state} class="field-input" /></div>
+                  <div><span class="field-label">Pincode</span><input bind:value={editForm.pincode} class="field-input" maxlength="6" /></div>
                 </div>
               </div>
               <div>
                 <h3 class="section-heading mb-2">Investment</h3>
                 <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
-                  <div><label class="field-label">Role</label>
+                  <div><span class="field-label">Role</span>
                     <Select ariaLabel="Role" bind:value={editForm.role}
                       options={[
                         { value: 'partner', label: 'Partner' },
@@ -594,27 +594,27 @@
                        still SEES the values in the user-card display
                        above (read-only). -->
                   {#if iAmDesignated}
-                    <div><label class="field-label">Contribution (₹)</label><input type="number" bind:value={editForm.contribution} class="field-input" /></div>
-                    <div><label class="field-label">Contribution Date</label><input type="date" bind:value={editForm.contribution_date} class="field-input" /></div>
-                    <div><label class="field-label">Profit Share (%)</label><input type="number" step="0.1" bind:value={editForm.share_pct} class="field-input" /></div>
+                    <div><span class="field-label">Contribution (₹)</span><input type="number" bind:value={editForm.contribution} class="field-input" /></div>
+                    <div><span class="field-label">Contribution Date</span><input type="date" bind:value={editForm.contribution_date} class="field-input" /></div>
+                    <div><span class="field-label">Profit Share (%)</span><input type="number" step="0.1" bind:value={editForm.share_pct} class="field-input" /></div>
                   {/if}
-                  <div><label class="field-label">Join Date</label><input type="date" bind:value={editForm.join_date} class="field-input" /></div>
+                  <div><span class="field-label">Join Date</span><input type="date" bind:value={editForm.join_date} class="field-input" /></div>
                 </div>
               </div>
               <div>
                 <h3 class="section-heading mb-2">Bank Details</h3>
                 <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
-                  <div><label class="field-label">Bank Name</label><input bind:value={editForm.bank_name} class="field-input" /></div>
-                  <div><label class="field-label">Account Number</label><input bind:value={editForm.bank_account} class="field-input" /></div>
-                  <div><label class="field-label">IFSC</label><input bind:value={editForm.bank_ifsc} class="field-input" /></div>
+                  <div><span class="field-label">Bank Name</span><input bind:value={editForm.bank_name} class="field-input" /></div>
+                  <div><span class="field-label">Account Number</span><input bind:value={editForm.bank_account} class="field-input" /></div>
+                  <div><span class="field-label">IFSC</span><input bind:value={editForm.bank_ifsc} class="field-input" /></div>
                 </div>
               </div>
               <div>
                 <h3 class="section-heading mb-2">Nominee</h3>
                 <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
-                  <div><label class="field-label">Name</label><input bind:value={editForm.nominee_name} class="field-input" /></div>
-                  <div><label class="field-label">Relation</label><input bind:value={editForm.nominee_relation} class="field-input" placeholder="Spouse, Child, etc." /></div>
-                  <div><label class="field-label">Phone</label><input bind:value={editForm.nominee_phone} class="field-input" /></div>
+                  <div><span class="field-label">Name</span><input bind:value={editForm.nominee_name} class="field-input" /></div>
+                  <div><span class="field-label">Relation</span><input bind:value={editForm.nominee_relation} class="field-input" placeholder="Spouse, Child, etc." /></div>
+                  <div><span class="field-label">Phone</span><input bind:value={editForm.nominee_phone} class="field-input" /></div>
                 </div>
               </div>
               <div>
@@ -681,12 +681,12 @@
   <!-- Recipient row -->
   <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
     <div>
-      <label class="field-label">Preset recipients</label>
+      <span class="field-label">Preset recipients</span>
       <Select ariaLabel="Recipient preset" bind:value={emailPreset}
         options={PRESET_OPTIONS} />
     </div>
     <div>
-      <label class="field-label" class:opacity-40={emailPreset !== ''}>Or pick specific</label>
+      <span class="field-label" class:opacity-40={emailPreset !== ''}>Or pick specific</span>
       <MultiSelect
         ariaLabel="Pick recipients"
         bind:value={emailPicked}
@@ -698,7 +698,7 @@
 
   <!-- Subject -->
   <div class="mb-1">
-    <label class="field-label">Subject</label>
+    <span class="field-label">Subject</span>
     <input
       bind:value={emailSubject}
       maxlength="200"
@@ -709,7 +709,7 @@
 
   <!-- Body -->
   <div class="mb-3">
-    <label class="field-label">Body</label>
+    <span class="field-label">Body</span>
     <textarea
       bind:value={emailBody}
       rows="8"

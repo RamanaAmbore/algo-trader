@@ -754,24 +754,24 @@
               <!-- ── FORM FIELDS ── -->
               <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
-                  <label class="field-label">Name</label>
+                  <span class="field-label">Name</span>
                   <input bind:value={editForm.name} class="field-input" />
                 </div>
                 <div>
-                  <label class="field-label">
+                  <span class="field-label">
                     Long name
                     <InfoHint popup text="Operator-readable 3-part label: <b>when:&lt;condition&gt;</b> &mdash; <b>alert:&lt;notify&gt;</b> &mdash; <b>do:&lt;action&gt;</b>. Surfaces under the short name on the agents row so an operator scanning the list sees what each agent actually does without expanding." />
-                  </label>
+                  </span>
                   <input bind:value={editForm.long_name}
                          placeholder="when:positions.total.pnl<=-50k   alert:critical/tg+email   do:notify-only"
                          class="field-input font-mono text-[0.6rem]" />
                 </div>
                 <div class="md:col-span-2">
-                  <label class="field-label">Description</label>
+                  <span class="field-label">Description</span>
                   <input bind:value={editForm.description} class="field-input" />
                 </div>
                 <div>
-                  <label class="field-label">Scope</label>
+                  <span class="field-label">Scope</span>
                   <Select ariaLabel="Scope" bind:value={editForm.scope}
                     options={[
                       { value: 'total',       label: 'Total Only' },
@@ -779,7 +779,7 @@
                     ]} />
                 </div>
                 <div>
-                  <label class="field-label">Schedule</label>
+                  <span class="field-label">Schedule</span>
                   <Select ariaLabel="Schedule" bind:value={editForm.schedule}
                     options={[
                       { value: 'market_hours', label: 'Market Hours' },
@@ -787,23 +787,23 @@
                     ]} />
                 </div>
                 <div>
-                  <label class="field-label">Cooldown (minutes)</label>
+                  <span class="field-label">Cooldown (minutes)</span>
                   <input type="number" bind:value={editForm.cooldown_minutes} class="field-input" />
                 </div>
                 <div>
-                  <label class="field-label">
+                  <span class="field-label">
                     Debounce (minutes)
                     <InfoHint popup text="Fire only when the condition holds for N consecutive evaluations spanning at least N minutes. <b>0</b> = fire immediately on first true tick. Use to suppress single-tick spikes (e.g. a Kite glitch dropping pnl_pct to -2.1% for one cycle). Industry analogue: Datadog/Grafana <b>For:</b>, CloudWatch <b>EvaluationPeriods</b>." />
-                  </label>
+                  </span>
                   <input type="number" min="0"
                          bind:value={editForm.debounce_minutes}
                          class="field-input" />
                 </div>
                 <div>
-                  <label class="field-label">
+                  <span class="field-label">
                     Trade mode
                     <InfoHint popup text="Per-agent execution mode. <b>paper</b> = simulated fills against real bid/ask (default). <b>live</b> = real broker orders. Resolved against the engine's master <code>execution.paper_trading_mode</code> setting + the branch gate — dev always forces paper regardless." />
-                  </label>
+                  </span>
                   <Select ariaLabel="Trade mode" bind:value={editForm.trade_mode}
                     options={[
                       { value: 'paper', label: 'Paper (simulated)' },
@@ -811,10 +811,10 @@
                     ]} />
                 </div>
                 <div>
-                  <label class="field-label">
+                  <span class="field-label">
                     Fire at (IST)
                     <InfoHint popup text="Optional <b>HH:MM IST</b> time-of-day gate. When set, agent only evaluates inside a small window around this wall-clock time (covers one background poll cycle ~ 6 min). Empty = no gate, evaluates every tick. Use for daily summaries, EOD scans, expiry-day close orders." />
-                  </label>
+                  </span>
                   <input type="time"
                     bind:value={editForm.fire_at_time}
                     placeholder="HH:MM"
@@ -827,7 +827,7 @@
                      active set on completion instead of needing a manual
                      deactivate. -->
                 <div>
-                  <label class="field-label">Lifespan</label>
+                  <span class="field-label">Lifespan</span>
                   <Select ariaLabel="Lifespan" bind:value={editForm.lifespan_type}
                     options={[
                       { value: 'persistent', label: 'Persistent (default)' },
@@ -848,7 +848,7 @@
                 </div>
                 {#if editForm.lifespan_type === 'n_fires'}
                   <div>
-                    <label class="field-label">Max fires</label>
+                    <span class="field-label">Max fires</span>
                     <input type="number" min="1"
                            bind:value={editForm.lifespan_max_fires}
                            class="field-input"
@@ -857,7 +857,7 @@
                 {/if}
                 {#if editForm.lifespan_type === 'until_date'}
                   <div>
-                    <label class="field-label">Expires at (UTC)</label>
+                    <span class="field-label">Expires at (UTC)</span>
                     <input type="datetime-local"
                            bind:value={editForm.lifespan_expires_at}
                            class="field-input" />
@@ -876,10 +876,10 @@
                    label so it doesn't dominate. -->
               <div class="tier-strip">
                 <div class="tier-strip-left">
-                  <label class="field-label" style="margin-right: 0.5rem; display: inline-flex; align-items: center; gap: 0.25rem;">
+                  <span class="field-label" style="margin-right: 0.5rem; display: inline-flex; align-items: center; gap: 0.25rem;">
                     Priority
                     <InfoHint popup text="Severity bucket (a.k.a. <b>tier</b>) — <b>critical &gt; high &gt; medium &gt; low</b>. Drives topic-scoped suppression: when multiple agents in the same topic fire on one tick, only the highest priority dispatches; the others are logged as suppressed. Industry analogue: PagerDuty <b>Urgency</b>, Opsgenie <b>Priority P1-P5</b>, Datadog <b>monitor priority</b>." />
-                  </label>
+                  </span>
                   <div class="tier-pill-row">
                     {#each TIER_PILLS as t}
                       <button type="button"
@@ -894,7 +894,7 @@
                 </div>
                 <div class="tier-strip-right">
                   <div>
-                    <label class="field-label">Topic</label>
+                    <span class="field-label">Topic</span>
                     <input list="agent-topics"
                            bind:value={editForm.topic}
                            class="field-input"
@@ -908,7 +908,7 @@
                     </datalist>
                   </div>
                   <div>
-                    <label class="field-label" title="Reserved for future digest batching. 0 = fire immediately.">Digest&nbsp;(s)</label>
+                    <span class="field-label" title="Reserved for future digest batching. 0 = fire immediately.">Digest&nbsp;(s)</span>
                     <input type="number" min="0" max="600"
                            bind:value={editForm.digest_window_sec}
                            class="field-input"
@@ -923,19 +923,19 @@
                    Grafana silences / PagerDuty maintenance windows. -->
               <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
                 <div>
-                  <label class="field-label">
+                  <span class="field-label">
                     Tags
                     <InfoHint popup text="Free-form labels for filtering. Comma-separated. Examples: <b>iron-condor, nifty, review-q3</b>. Surfaces on the agents list as chips. Industry analogue: Datadog tags, Grafana labels." />
-                  </label>
+                  </span>
                   <input bind:value={editForm.tags}
                          placeholder="iron-condor, nifty, review-q3"
                          class="field-input" />
                 </div>
                 <div>
-                  <label class="field-label">
+                  <span class="field-label">
                     Blackout windows (JSON)
                     <InfoHint popup text="List of <b>&#123;start: 'HH:MM', end: 'HH:MM'&#125;</b> entries in IST. Agent is skipped while wall-clock IST is inside any window. Crossing-midnight windows like <code>&#123;start:'23:00',end:'01:00'&#125;</code> are supported. Industry analogue: PagerDuty maintenance windows, Grafana silences, Datadog <b>mute_until</b>." />
-                  </label>
+                  </span>
                   <textarea bind:value={editForm.blackout_windows}
                             class="field-input font-mono text-[0.6rem]" rows="3"
                             placeholder={'[{"start":"12:00","end":"13:00"}]'}></textarea>
@@ -944,11 +944,11 @@
 
               <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
                 <div>
-                  <label class="field-label">Conditions (JSON)</label>
+                  <span class="field-label">Conditions (JSON)</span>
                   <textarea bind:value={editForm.conditions} class="field-input font-mono text-[0.6rem]" rows="5"></textarea>
                 </div>
                 <div>
-                  <label class="field-label">Alert channels</label>
+                  <span class="field-label">Alert channels</span>
                   <!-- Per-agent notify routing. Each tick adds a row
                        {channel, enabled:true} to the agent's events
                        JSONB; the dispatcher (backend/api/algo/events.py)
@@ -970,10 +970,10 @@
                 </div>
                 <div>
                   <div class="flex items-center justify-between flex-wrap gap-1">
-                    <label class="field-label">
+                    <span class="field-label">
                       Actions (JSON)
                       <InfoHint popup text="Each <code>place_order</code> action can attach an <b>Order Template</b> (TP/SL/Wing exit rules) via <code>template_slug</code> on its params. Use <b>+ place_order (templated)</b> for entries with auto-exit attach; use <b>+ place_order</b> for entry-only. The template runs on fill — sim path goes through SimGttBook; live path through broker GTT (when fill-postback wiring lands). Catalog at <a href='/automation/templates' target='_blank'>/automation/templates</a>." />
-                    </label>
+                    </span>
                     <!-- Quick-add pills — click appends a skeleton action
                          entry so operators don't have to remember the
                          exact shape. Params are templated to legal values;

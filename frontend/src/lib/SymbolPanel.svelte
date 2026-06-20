@@ -3861,8 +3861,7 @@
      for an unmistakable active cue. Per-leg overrides ride the cyan
      palette (matches the `.has-override` per-leg chip + the OrderCard
      `has-override` styling). */
-  .oes-leg-editor-field > input,
-  .oes-leg-editor-field > select {
+  .oes-leg-editor-field > input {
     height: 1.3rem;
     padding: 0 0.3rem;
     background: rgba(8, 14, 28, 0.78);
@@ -3876,15 +3875,13 @@
     font-variant-numeric: tabular-nums;
     box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.08);
     transition: border-color 0.12s, background 0.12s;
+    width: 3.2rem;
+    text-align: right;
   }
-  .oes-leg-editor-field > input { width: 3.2rem; text-align: right; }
-  .oes-leg-editor-field > select { min-width: 5.6rem; }
-  .oes-leg-editor-field > input:hover,
-  .oes-leg-editor-field > select:hover {
+  .oes-leg-editor-field > input:hover {
     border-color: rgba(34, 211, 238, 0.90);
   }
-  .oes-leg-editor-field > input:focus,
-  .oes-leg-editor-field > select:focus {
+  .oes-leg-editor-field > input:focus {
     outline: none;
     border-color: var(--algo-cyan, #22d3ee);
     background: rgba(12, 24, 40, 0.92);
@@ -4561,16 +4558,11 @@
     letter-spacing: 0.05em;
     color: var(--algo-muted);
   }
-  /* TOTAL prefix gets the amber accent that ties to the modal title. */
-  .oes-funds-line .oes-funds-k:first-child:is(:nth-child(1)) {
-    color: #fbbf24;
-  }
   .oes-funds-v {
     color: #e2e8f0;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
   }
-  .oes-funds-line-low .oes-funds-v { color: #f87171; }
   .oes-funds-sep { opacity: 0.5; }
 
   /* Margin pill — single chip showing "Req ₹X · Avail ₹Y" tinted by

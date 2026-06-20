@@ -197,11 +197,6 @@
      the button that opened it. */
   .cm-title-icon { color: #22d3ee; flex-shrink: 0; }
 
-  .cm-sym {
-    color: #7dd3fc;
-    font-weight: 700;
-  }
-
   .cm-close {
     /* Operator: "X and refresh rotating icon should be of similar
        size and consistent with header text font size". Square 1.4rem

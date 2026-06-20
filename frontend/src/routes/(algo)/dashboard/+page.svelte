@@ -2311,11 +2311,6 @@
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
                 0 0 0 1px rgba(251, 191, 36, 0.18);
   }
-  .dash-agent[open] > .dash-agent-summary {
-    border-color: rgba(251, 191, 36, 0.65);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                0 0 0 1px rgba(251, 191, 36, 0.18);
-  }
   .dash-agent-chip {
     display: inline-flex;
     /* Center-align the count + label vertically — baseline-align made
@@ -2487,9 +2482,6 @@
     font-weight: 700;
     line-height: 1.15rem;
     letter-spacing: 0.02em;
-  }
-  .wl-tab-on .wl-tab-count {
-    background: rgba(251, 191, 36, 0.18);
   }
   .wl-bucket-empty {
     padding: 0.5rem 0.3rem;
@@ -2688,13 +2680,6 @@
   .dash-pnl-summary::-webkit-details-marker { display: none; }
   .dash-pnl-summary:hover {
     border-color: rgba(251, 191, 36, 0.50);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                0 0 0 1px rgba(251, 191, 36, 0.18);
-  }
-  /* Open state — amber accent stays so the operator knows which
-     section is currently exposing its inner content. */
-  .dash-pnl-details[open] > .dash-pnl-summary {
-    border-color: rgba(251, 191, 36, 0.65);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
                 0 0 0 1px rgba(251, 191, 36, 0.18);
   }

@@ -2270,21 +2270,6 @@
     align-items: center;
     gap: 0.5rem;
   }
-  .ot-quick-qty .ot-label {
-    /* Inline-mode label: stop taking 100% width of the column, drop
-       the bottom margin, align baseline with the value. */
-    width: auto;
-    min-width: 2.2rem;
-    margin: 0;
-    flex-shrink: 0;
-  }
-  .ot-quick-qty .ot-lots-row {
-    flex: 1 1 auto;
-  }
-  .ot-quick-qty .ot-input.ot-num {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
   /* Symbol display chip — read-only label showing the symbol from
      SymbolPanel's shared picker. Operator picks the symbol once at
      the shell level; this chip mirrors it inside the ticket form
@@ -2359,7 +2344,6 @@
      baseline. Without the label the pills would float up to the
      top of the row while Lots data sat below its own label. */
   .ot-side-block { display: flex; flex-direction: column; }
-  .ot-side-block .ot-label { margin-bottom: 0.18rem; }
 
   /* Side toggle (BUY / SELL / ADD / CLOSE). Fixed height + flex
      centring so it lines up exactly with the lots row + steppers
@@ -2390,13 +2374,6 @@
   }
   .ot-side-buy.on  { background: rgba(74,222,128,0.18);  color: #4ade80; }
   .ot-side-sell.on { background: rgba(248,113,113,0.18); color: #f87171; }
-  /* Locked side toggle (action='modify') — Kite doesn't support
-     flipping side on a working order; the button visibly reads as
-     disabled and the click is a no-op. */
-  .ot-side-toggle.ot-locked .ot-side-btn:disabled {
-    cursor: not-allowed;
-    opacity: 0.55;
-  }
 
   /* Stacks label above the [−] N [+] row so the block lines up with
      the sibling .ot-side-block (also label-on-top). Previously the
@@ -2411,7 +2388,6 @@
     flex: 1 1 0;
     min-width: 0;
   }
-  .ot-qty-block .ot-label { margin: 0 0 0.18rem; }
   .ot-qty-block .ot-meta { font-size: 0.65rem; color: #a3b9d0; }
 
   /* [−] [1 ▼] [+] (× 50 = 50) — lots-driven Qty UI. Sits inline on
@@ -2505,14 +2481,6 @@
     font-variant-numeric: tabular-nums;
     text-align: center;
   }
-  .ot-qty-block .ot-lots-row .ot-meta {
-    /* Meta tag sits inline next to the [+] button without padding
-       below — was inheriting `.ot-meta { padding-bottom: 0.5rem }`
-       from the cash-equity Qty path which mis-aligned it on the
-       lots row. */
-    padding-bottom: 0;
-    white-space: nowrap;
-  }
 
   .ot-input {
     width: 100%;
@@ -2573,9 +2541,6 @@
     gap: 0.35rem;
     flex: 0 0 auto;
     min-width: 0;
-  }
-  .ot-label-inline .ot-label {
-    margin: 0;
   }
   .ot-row-tight {
     flex-wrap: nowrap;

@@ -142,10 +142,6 @@
      colour (#fb923c = orange-400) so the modal title icon is the
      exact same shade as the button that opened it. */
   .alm-title-icon { color: #fbbf24; flex-shrink: 0; }
-  /* 3D bell variant — colour comes from the inline SVG gradient, so
-     the base `color` is irrelevant; small vertical lift so the bell
-     reads as a dimensional pin sitting on the chip rather than text. */
-  .alm-title-icon-3d { transform: translateY(-0.5px); }
   .alm-close {
     /* Standard close — square 1.4rem matches ChartModal +
        SymbolPanel close buttons; glyph 0.95rem is proportional to

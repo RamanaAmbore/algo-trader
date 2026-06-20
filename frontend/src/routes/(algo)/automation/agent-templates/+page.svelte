@@ -260,7 +260,7 @@
     <h2 class="form-title">{editingId ? `Edit template #${editingId}` : 'Create custom template'}</h2>
 
     <div class="form-row">
-      <label>Kind</label>
+      <span>Kind</span>
       {#if editingId}
         <span class="form-readonly">{formKind} (cannot change after create)</span>
       {:else}
@@ -272,7 +272,7 @@
     </div>
 
     <div class="form-row">
-      <label>Name <span class="muted">(lowercase, hyphens)</span></label>
+      <span>Name <span class="muted">(lowercase, hyphens)</span></span>
       {#if editingId}
         <span class="form-readonly">{formName}</span>
       {:else}
@@ -281,12 +281,12 @@
     </div>
 
     <div class="form-row">
-      <label>Description</label>
+      <span>Description</span>
       <input class="form-input" bind:value={formDescription} placeholder="One-line summary of what this template does" />
     </div>
 
     <div class="form-row form-row-body">
-      <label>Body <span class="muted">(JSON)</span></label>
+      <span>Body <span class="muted">(JSON)</span></span>
       <textarea class="form-body-area" bind:value={formBodyText} rows="10"
                 placeholder={formKind === 'notify'
                   ? '[{"channel":"telegram","enabled":true}]'
@@ -508,7 +508,7 @@
     gap: 0.5rem;
     margin-bottom: 0.5rem;
   }
-  .form-row label {
+  .form-row span {
     font-size: 0.65rem;
     color: rgba(180,200,230,0.7);
     font-family: ui-monospace, monospace;

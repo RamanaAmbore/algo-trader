@@ -1,6 +1,11 @@
 <script>
-  import { onMount, onDestroy } from 'svelte';
-  import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
+  import { onMount, onDestroy, tick } from 'svelte';
+  // ag-Grid is lazy-loaded in onMount so it doesn't bloat the initial bundle
+  // for public /performance visitors. createGrid is populated after the
+  // dynamic import resolves; makeGrid() guards on _agGridReady.
+  /** @type {typeof import('ag-grid-community').createGrid | null} */
+  let _createGrid = null;
+  let _agGridReady = $state(false);
   import ChartModal from '$lib/ChartModal.svelte';
   import { fetchHoldings, fetchPositions, fetchFunds } from '$lib/api';
   import { createPerformanceSocket } from '$lib/ws';
@@ -40,7 +45,7 @@
   import NavCard from '$lib/NavCard.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
 
-  ModuleRegistry.registerModules([AllCommunityModule]);
+  // ModuleRegistry is registered inside onMount after the dynamic import.
 
   const {
     theme             = 'ag-theme-ramboq',
@@ -544,7 +549,8 @@
   ];
 
   function makeGrid(el, colDefs, rowData = [], onRowClick = null) {
-    return createGrid(el, {
+    if (!_createGrid) throw new Error('ag-Grid not yet loaded');
+    return _createGrid(el, {
       // ag-Grid v33 changed the default theme to the Theming-API
       // (themeQuartz). Pinning to 'legacy' keeps the existing CSS-file
       // theming we've built up (ag-theme-ramboq + ag-theme-algo) so we
@@ -813,6 +819,18 @@
   let unsub;
 
   onMount(async () => {
+    // Dynamic import — keeps AllCommunityModule (~200KB gzip) out of the
+    // initial bundle so public /performance visitors don't pay the cost.
+    const { createGrid, ModuleRegistry, AllCommunityModule } =
+      await import('ag-grid-community');
+    ModuleRegistry.registerModules([AllCommunityModule]);
+    _createGrid = createGrid;
+    _agGridReady = true;
+    // Wait for Svelte to paint the grid container divs before calling
+    // createGrid on them (they are always in the DOM — no {#if} wrapper
+    // needed — but _agGridReady triggers the loading-placeholder swap).
+    await tick();
+
     holdingsSummaryGrid  = makeGrid(holdingsSummaryEl,  holdingsSummaryCols);
     holdingsAllGrid      = makeGrid(holdingsAllEl,      holdingsCols, [], (r) => openOrderTicket(r, 'holdings'));
     positionsSummaryGrid = makeGrid(positionsSummaryEl, positionsSummaryCols);
@@ -1016,6 +1034,9 @@
     </span>
   {/if}
 </div>
+{#if !_agGridReady}
+  <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
+{/if}
 <div bind:this={fundsEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
 
 <section class:hidden={activeTab !== 'positions'}>
@@ -1115,6 +1136,17 @@
 </div><!-- /perf-dark -->
 
 <style>
+  /* Grid loading placeholder — shown while the ag-Grid dynamic import
+     resolves (~100–300ms on first visit). Minimal height so the page
+     doesn't jump when the real grid paints below it. */
+  .perf-grid-loading {
+    padding: 0.6rem 0.25rem;
+    font-size: 0.65rem;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.03em;
+  }
+
   /* Public /performance: no inner cream card. Content sits directly
      on the public layout's <main class="pub-content"> wrapper. The
      only chrome is the hairline divider below the timestamp/Refresh

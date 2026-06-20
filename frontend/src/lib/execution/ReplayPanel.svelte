@@ -463,42 +463,6 @@
   .sim-banner-warn   { background: rgba(251,191,36,0.10); color: #fbbf24; border: 1px solid rgba(251,191,36,0.20); }
   .sim-banner-error  { background: rgba(248,113,113,0.10); color: #f87171; border: 1px solid rgba(248,113,113,0.20); }
 
-  .sim-controls      { background: rgba(15,23,42,0.6); border: 1px solid rgba(148,163,184,0.12);
-                        border-radius: 0.5rem; padding: 1rem; }
-  .sim-form-row      { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 0.75rem; align-items: flex-end; }
-  .sim-label         { display: block; font-size: 0.65rem; color: #94a3b8; margin-bottom: 0.2rem; text-transform: uppercase; letter-spacing: 0.04em; }
-  .sim-input         { background: rgba(15,23,42,0.8); border: 1px solid rgba(148,163,184,0.20);
-                        border-radius: 0.375rem; padding: 0.35rem 0.5rem; color: var(--algo-slate);
-                        font-size: 0.8rem; min-width: 10rem; }
-  .sim-input-sm      { min-width: 6rem; }
-  .sim-input:focus   { outline: none; border-color: rgba(74,222,128,0.5); }
-  /* Width-only wrapper for the custom <Select> — matches the
-     min-width sim-input declares so the field lines up with the
-     surrounding inputs without inheriting their bg/border (the
-     Select component carries its own). */
-  .rbq-select-wrap { min-width: 10rem; }
-
-  .bypass-label {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    cursor: pointer;
-    padding-bottom: 0.35rem;
-  }
-  .bypass-check {
-    accent-color: #4ade80;
-    width: 0.8rem;
-    height: 0.8rem;
-    flex-shrink: 0;
-  }
-  .bypass-text {
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-    margin-bottom: 0;
-  }
-
-  .sim-btn-row       { display: flex; gap: 0.5rem; margin-top: 0.25rem; }
   .sim-btn           { padding: 0.4rem 1rem; border-radius: 0.375rem; font-size: 0.75rem; font-weight: 600;
                         cursor: pointer; border: 1px solid transparent; transition: all 0.15s; }
   .sim-btn:disabled  { opacity: 0.4; cursor: not-allowed; }
@@ -511,7 +475,6 @@
   .sim-progress-bar  { height: 6px; background: rgba(148,163,184,0.15); border-radius: 3px; overflow: hidden; }
   .sim-progress-fill { height: 100%; background: #4ade80; border-radius: 3px; transition: width 0.3s; }
   .sim-progress-label { font-size: 0.65rem; color: #94a3b8; margin-top: 0.25rem; display: block; }
-  .bypass-active      { color: #fbbf24; font-weight: 600; }
 
   .replay-charts {
     display: grid;
@@ -534,10 +497,6 @@
   .sim-empty-charts  { font-size: 0.65rem; color: #64748b; font-style: italic; margin-bottom: 0.75rem; }
 
   @media (max-width: 768px) {
-    .sim-controls        { padding: 0.75rem; }
-    .sim-form-row        { flex-direction: column; gap: 0.5rem; }
-    .sim-input           { min-width: 0; width: 100%; }
-    .sim-input-sm        { min-width: 0; width: 100%; }
     .replay-charts       { grid-template-columns: 1fr; }
     .sim-table-wrap      { -webkit-overflow-scrolling: touch; }
     .sim-table td,

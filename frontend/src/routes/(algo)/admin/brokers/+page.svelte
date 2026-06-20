@@ -485,7 +485,7 @@
         </label>
       </div>
       <div class="bf-field bf-field-toggle">
-        <label class="field-label">Historical data</label>
+        <span class="field-label">Historical data</span>
         <button type="button"
                 class="brokers-form-toggle"
                 class:active={_formHistEnabled}

@@ -250,7 +250,7 @@
 
     <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
       <div>
-        <label class="field-label">Category</label>
+        <span class="field-label">Category</span>
         <Select ariaLabel="Category" bind:value={form.grammar_kind}
           disabled={editingId != null}
           options={[
@@ -260,7 +260,7 @@
           ]} />
       </div>
       <div>
-        <label class="field-label">Token kind</label>
+        <span class="field-label">Token kind</span>
         {#if form.grammar_kind === 'condition'}
           <Select ariaLabel="Token kind" bind:value={form.token_kind}
             disabled={editingId != null}
@@ -284,11 +284,11 @@
         {/if}
       </div>
       <div>
-        <label class="field-label">Token name</label>
+        <span class="field-label">Token name</span>
         <input bind:value={form.token} disabled={editingId != null} class="field-input" placeholder="e.g. pnl_rate_abs" />
       </div>
       <div>
-        <label class="field-label">Value type</label>
+        <span class="field-label">Value type</span>
         <Select ariaLabel="Value type" bind:value={form.value_type}
           options={[
             { value: '',        label: '—' },
@@ -302,30 +302,30 @@
           ]} />
       </div>
       <div>
-        <label class="field-label">Units</label>
+        <span class="field-label">Units</span>
         <input bind:value={form.units} class="field-input" placeholder="e.g. ₹  or %/min" />
       </div>
       <div class="col-span-2 md:col-span-3">
-        <label class="field-label">Description</label>
+        <span class="field-label">Description</span>
         <input bind:value={form.description} class="field-input" />
       </div>
       <div class="col-span-2 md:col-span-4">
-        <label class="field-label">Resolver (python dotted path)</label>
+        <span class="field-label">Resolver (python dotted path)</span>
         <input bind:value={form.resolver} class="field-input font-mono text-[0.65rem]"
                placeholder="backend.api.algo.grammar._metric_pnl" />
       </div>
       <div class="col-span-2">
-        <label class="field-label">params_schema (JSON)</label>
+        <span class="field-label">params_schema (JSON)</span>
         <textarea bind:value={form.params_schema_json} class="field-input font-mono text-[0.6rem]" rows="5"
                   placeholder={'{"account": {"type": "string", "required": true}}'}></textarea>
       </div>
       <div class="col-span-2">
-        <label class="field-label">enum_values (JSON array)</label>
+        <span class="field-label">enum_values (JSON array)</span>
         <textarea bind:value={form.enum_values_json} class="field-input font-mono text-[0.6rem]" rows="5"
                   placeholder='["BUY","SELL"]'></textarea>
       </div>
       <div class="col-span-2 md:col-span-4">
-        <label class="field-label">Template body (for notify.template tokens)</label>
+        <span class="field-label">Template body (for notify.template tokens)</span>
         <textarea bind:value={form.template_body} class="field-input font-mono text-[0.6rem]" rows="4"
                   placeholder="Use dollar-brace placeholders like timestamp and row_lines"></textarea>
       </div>

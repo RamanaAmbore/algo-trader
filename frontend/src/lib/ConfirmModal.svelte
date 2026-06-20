@@ -119,9 +119,10 @@
       {#if _message}<div class="cm-message">{@html _message}</div>{/if}
       {#if _inputType}
         <div class="cm-input-wrap">
-          {#if _inputLabel}<label class="cm-input-label">{_inputLabel}</label>{/if}
+          {#if _inputLabel}<label class="cm-input-label" for="cm-input">{_inputLabel}</label>{/if}
           <!-- svelte-ignore a11y_autofocus -->
-          <input type={_inputType}
+          <input id="cm-input"
+                 type={_inputType}
                  class="cm-input"
                  placeholder={_inputPlaceholder}
                  bind:value={_inputValue}

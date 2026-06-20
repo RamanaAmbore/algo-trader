@@ -5383,8 +5383,6 @@
     border-left: 3px solid currentColor;
     color: var(--algo-slate);
   }
-  .mp-bucket-label-pinned    { color: rgba(251, 191, 36, 0.85); }
-  .mp-bucket-label-watch     { color: rgba(251, 191, 36, 0.65); }
   .mp-bucket-label-positions { color: rgba(125, 211, 252, 0.85); }
   .mp-bucket-label-holdings  { color: rgba(134, 239, 172, 0.85); }
   .mp-bucket-label-winners   { color: rgba(74, 222, 128, 0.85); }
@@ -5415,16 +5413,6 @@
      the button. */
   .mp-bucket-head-spacer {
     flex: 1 1 0;
-  }
-  /* Sub-header row — sits BETWEEN the bucket-head and the grid.
-     Watchlist / Winners / Losers tabs render here so the main
-     header stays single-row + uniform across cards. */
-  .mp-bucket-subhead {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    margin-bottom: 0.2rem;
-    flex-wrap: wrap;
   }
   .mp-wl-tabs {
     display: flex;
@@ -5502,18 +5490,6 @@
   .mp-wl-tab-on {
     color: #fbbf24;
     border-bottom-color: #fbbf24;
-  }
-  .mp-wl-tab-count {
-    font-size: 0.5rem;
-    font-weight: 800;
-    padding: 0 0.3rem;
-    border-radius: 999px;
-    background: rgba(126, 151, 184, 0.18);
-    color: rgba(200, 216, 240, 0.85);
-  }
-  .mp-wl-tab-on .mp-wl-tab-count {
-    background: var(--algo-amber-bg-strong);
-    color: #fbbf24;
   }
 
   /* Symbol cell on the RIGHT grid — account-tinted left + right
@@ -5730,15 +5706,6 @@
      was painted under the next row). flex-wrap:wrap dodges the
      overflow trap entirely while still allowing horizontal layout
      when the viewport is wide enough. */
-  .mp-chrome-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.25rem;
-    overflow: visible;
-  }
-  /* Tab buttons inside the row never shrink (would clip the label). */
-  .mp-chrome-row > button { flex: 0 0 auto; white-space: nowrap; }
 
   /* Per-card Account picker inside each bucket-head. LEFT-aligned
      (canonical rule) — sits immediately after the card label, before

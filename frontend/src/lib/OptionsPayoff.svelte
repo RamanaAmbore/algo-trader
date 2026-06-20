@@ -1554,10 +1554,6 @@
     font-size: 0.55rem;
     line-height: 1.4;
   }
-  .payoff-anchor-chip .anchor-contract {
-    font-weight: 600;
-    letter-spacing: 0.02em;
-  }
   /* Amber roll-warning state */
   .payoff-anchor-chip--amber {
     color: #fbbf24;

@@ -608,17 +608,6 @@
      pill so the "ORDER ENTRY" reads at a glance from across the
      screen. Activity card label scoped separately so it keeps its
      section-specific cyan. */
-  .bucket-card-entry .mp-section-label {
-    font-size: 0.72rem;
-    font-weight: 800;
-    letter-spacing: 0.12em;
-    color: #fbbf24;
-    background: rgba(251, 191, 36, 0.16);
-    border: 1px solid var(--algo-amber-border);
-    padding: 0.22rem 0.55rem;
-    border-radius: 4px;
-    box-shadow: 0 1px 4px rgba(251, 191, 36, 0.18);
-  }
 
   /* History list — retired with the History tab. Style block kept
      empty for callsite stability but no element uses it. */

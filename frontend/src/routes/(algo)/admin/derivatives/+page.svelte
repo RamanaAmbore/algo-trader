@@ -5933,37 +5933,9 @@
        depending on per-row content width. */
     table-layout: fixed;
   }
-  .chain-grid col.chain-col-strike { width: 4.4rem; }
-  .chain-grid col.chain-col-ce,
-  .chain-grid col.chain-col-pe { width: calc((100% - 4.4rem) / 2); }
-  .chain-grid th {
-    position: sticky;
-    top: 0;
-    z-index: 2;
-    /* Stack a solid panel base under the amber tint so rows don't
-       bleed through when the body scrolls under the sticky header.
-       The panel gradient base is #1d2a44; matching it here keeps the
-       header visually contiguous with the surrounding card. */
-    background:
-      linear-gradient(rgba(251,191,36,0.10), rgba(251,191,36,0.10)),
-      #1d2a44;
-    color: #a3b9d0;
-    font-weight: 700;
-    text-transform: uppercase;
-    font-size: 0.65rem;
-    letter-spacing: 0.04em;
-    padding: 0.25rem 0.4rem;
-    border-bottom: 1px solid rgba(251,191,36,0.45);
-    box-shadow: 0 2px 0 rgba(0,0,0,0.25);
-  }
   .chain-th-ce     { text-align: left; color: #4ade80; }
   .chain-th-pe     { text-align: right; color: #f87171; }
   .chain-th-strike { text-align: center; color: var(--algo-slate); }
-  .chain-grid td {
-    padding: 0.18rem 0.4rem;
-    border-bottom: 1px solid rgba(255,255,255,0.04);
-  }
-  .chain-grid tr:last-child td { border-bottom: 0; }
   /* CE / PE cells host an inner flex wrapper (chain-cell-row) so
      the cells themselves stay regular table-cells (which keeps the
      colgroup widths reliable). The wrapper distributes action +
@@ -6021,9 +5993,7 @@
      ATM row (closest to spot) gets a warm amber highlight + amber
      borders top/bottom — paired with the bolder amber strike numeral
      it identifies the row without taking extra horizontal space. */
-  .chain-row-itm-call > td { background: rgba(56,189,248,0.05); }
-  .chain-row-itm-put  > td { background: rgba(251,146,60,0.05); }
-  .chain-row-atm > td {
+  .chain-row-atm {
     background: rgba(251,191,36,0.18);
     border-top:    1px solid rgba(251,191,36,0.55);
     border-bottom: 1px solid rgba(251,191,36,0.55);

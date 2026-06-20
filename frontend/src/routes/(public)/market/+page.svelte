@@ -97,6 +97,23 @@
     } finally { loading = false; }
   }
 
+  // Visibility-aware reconnect — Mobile Safari kills WebSockets when
+  // the tab is backgrounded. The existing close→reconnect backoff
+  // eventually recovers, but only after the next ping timeout (~25s).
+  // This handler fires immediately on tab foreground restore so the
+  // socket is live within one event-loop tick.
+  function _onVisibilityChange() {
+    if (document.visibilityState === 'visible') {
+      // Force a fresh socket by tearing down the old one (which the
+      // browser may have silently closed) and creating a new one.
+      unsub?.();
+      unsub = createPerformanceSocket(() => load());
+      // Also reload content — the page may have been backgrounded for
+      // minutes; stale market report is unhelpful.
+      load();
+    }
+  }
+
   onMount(async () => {
     // Show cached data immediately — no empty flash on back-navigation
     if (dataCache.market) {
@@ -105,6 +122,7 @@
     }
     await load();
     unsub = createPerformanceSocket(() => load());
+    document.addEventListener('visibilitychange', _onVisibilityChange);
     // News refreshes independently — server caps the upstream feed at
     // ~10 min so polling faster wastes calls. First load is immediate;
     // subsequent reloads on a 10-min cadence keep the section live.
@@ -113,6 +131,7 @@
   });
 
   onDestroy(() => {
+    document.removeEventListener('visibilitychange', _onVisibilityChange);
     unsub?.();
     if (newsTimer) clearInterval(newsTimer);
   });
