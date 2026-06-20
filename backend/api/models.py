@@ -274,6 +274,15 @@ class AlgoOrder(Base):
         Integer, nullable=False, default=0, server_default="0",
     )
     initial_price: Mapped[float] = mapped_column(Float, nullable=True)
+    # Audit fix (M-6) — the chase loop's cancel-and-replace updates
+    # the broker's limit price every iteration, but pre-fix the only
+    # record was the `detail` text ("chase #2 limit=₹181"). The
+    # ChaseCard rendered `initial_price` (the FIRST attempt's price)
+    # which read as misleadingly stale after 3 iterations. Now the
+    # chase loop writes `current_limit` on every `_sync_algo_order_id`
+    # so the UI can show the live re-quoted price. NULL when the
+    # chase has never re-quoted (still at initial_price).
+    current_limit: Mapped[float] = mapped_column(Float, nullable=True)
     fill_price: Mapped[float]    = mapped_column(Float, nullable=True)
     attempts: Mapped[int]        = mapped_column(Integer, nullable=False, default=0)
     slippage: Mapped[float]      = mapped_column(Float, nullable=True)

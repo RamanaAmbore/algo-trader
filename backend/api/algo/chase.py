@@ -510,12 +510,20 @@ async def _run(fn, *args):
 
 
 async def _sync_algo_order_id(algo_order_id: int | None,
-                              new_broker_order_id: str) -> None:
+                              new_broker_order_id: str,
+                              current_limit: float | None = None) -> None:
     """Update AlgoOrder.broker_order_id to the latest one the chase
     just placed. Best-effort — never raises. Phase 0.5 — without this
     every chase cancel-and-replace orphaned the row from its broker
     id, so the terminal lookup in _emit_chase_terminal (and the
     postback handler) couldn't match the row by broker_order_id.
+
+    Audit fix (M-6) — also writes `current_limit` so the chase panel
+    shows the LIVE re-quoted limit price instead of the FIRST
+    attempt's initial_price. Pre-fix the UI rendered initial_price
+    on every chase row regardless of how many cancel-and-replaces
+    had moved the broker order's limit; after 3+ iterations the
+    operator saw a stale entry price.
     """
     if algo_order_id is None or not new_broker_order_id:
         return
@@ -527,9 +535,17 @@ async def _sync_algo_order_id(algo_order_id: int | None,
             row = (await _s.execute(
                 _sel(_AO).where(_AO.id == int(algo_order_id))
             )).scalar_one_or_none()
-            if row is not None and row.broker_order_id != str(new_broker_order_id):
-                row.broker_order_id = str(new_broker_order_id)
-                await _s.commit()
+            if row is not None:
+                _dirty = False
+                if row.broker_order_id != str(new_broker_order_id):
+                    row.broker_order_id = str(new_broker_order_id)
+                    _dirty = True
+                if current_limit is not None and float(current_limit) > 0:
+                    if row.current_limit != float(current_limit):
+                        row.current_limit = float(current_limit)
+                        _dirty = True
+                if _dirty:
+                    await _s.commit()
     except Exception as _e:
         logger.debug(f"_sync_algo_order_id failed: {_e}")
 
@@ -709,7 +725,8 @@ async def chase_order(
             # lockstep with the chase loop's current order so the
             # terminal handler + postback handler + chase panel all
             # see the LATEST broker id, not the FIRST one.
-            await _sync_algo_order_id(algo_order_id, current_order_id)
+            await _sync_algo_order_id(algo_order_id, current_order_id,
+                                       current_limit=price)
 
             # Audit fix (C-2) — operator-kill race protection. The kill
             # path calls `mark_killed(broker_order_id)` synchronously,

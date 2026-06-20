@@ -259,6 +259,11 @@ async def init_db() -> None:
             # operator's per-submit TP%/SL%/Wing override tweaks so the
             # postback handler can re-apply them when the parent fills.
             "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS template_overrides_json TEXT",
+            # Audit fix (M-6) — current re-quoted limit. Chase loop
+            # writes this on every cancel-and-replace so the chase
+            # panel can show the LIVE limit price instead of the FIRST
+            # attempt's price (which read stale after 3+ iterations).
+            "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS current_limit DOUBLE PRECISION",
             # Phase 3C #2 — parent_product on AlgoOrder. Pre-fix the
             # postback handler hardcoded NRML on every exit leg; MIS
             # day-trades got rejected or left as overnight carry.

@@ -253,8 +253,26 @@
         </span>
         <span class="cc-col cc-col-qty">{row.quantity}</span>
         <span class="cc-col cc-col-sym" title={row.symbol}>{formatSymbol(row.symbol)}</span>
-        <span class="cc-col cc-col-limit">
-          {row.initial_price != null ? '₹' + priceFmt(row.initial_price) : '—'}
+        <!-- Audit fix (M-6) — show current_limit (live re-quoted) when
+             the chase has moved off initial_price; otherwise fall back
+             to initial_price for the first iteration. A small "·N"
+             chip after the price indicates the price has moved through
+             N modifies so the operator knows it's not the entry price.
+             Title surfaces both values for context. -->
+        <span class="cc-col cc-col-limit"
+              title={row.current_limit != null && row.initial_price != null
+                     && Number(row.current_limit) !== Number(row.initial_price)
+                ? `Live limit: ₹${priceFmt(row.current_limit)} (initial: ₹${priceFmt(row.initial_price)})`
+                : (row.initial_price != null
+                    ? `Initial limit: ₹${priceFmt(row.initial_price)}`
+                    : 'No limit set')}>
+          {(row.current_limit ?? row.initial_price) != null
+            ? '₹' + priceFmt(row.current_limit ?? row.initial_price)
+            : '—'}
+          {#if row.current_limit != null && row.initial_price != null
+               && Number(row.current_limit) !== Number(row.initial_price)}
+            <span class="cc-limit-moved">·{row.attempts || 0}</span>
+          {/if}
         </span>
         <span class="cc-col cc-col-att">{row.attempts || 0}</span>
         {#if !compact}
@@ -413,6 +431,15 @@
   .cc-col-qty, .cc-col-limit, .cc-col-att, .cc-col-age {
     font-variant-numeric: tabular-nums;
     text-align: right;
+  }
+  /* Audit fix (M-6) — small dimmed chip next to the limit price when
+     the chase has re-quoted the order. Operator sees at a glance
+     "this is leg-iteration N's price, not the entry". */
+  .cc-limit-moved {
+    margin-left: 0.18rem;
+    color: rgba(180, 200, 230, 0.5);
+    font-size: 0.55rem;
+    font-weight: 600;
   }
   .cc-side-buy  { color: #4ade80; font-weight: 700; }
   .cc-side-sell { color: #f87171; font-weight: 700; }
