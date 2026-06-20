@@ -97,6 +97,10 @@
    *   actionsHidden?:  boolean,
    *   triggerSubmit?:  number,
    *   triggerBasket?:  number,
+   *   triggerClearBasket?: number,
+   *   chase?:          boolean,
+   *   chaseAgg?:       'low'|'med'|'high',
+   *   basketCount?:    number,
    *   showChartButton?: boolean,
    *   showCommonActions?: boolean,
    * }} */
@@ -186,6 +190,20 @@
     // screen) pass false so we don't render an affordance that would
     // open a duplicate ChartModal for the same symbol.
     showChartButton = true,
+    // Bindable chase + chase-aggressiveness — surfaced so the /orders
+    // page can render the mode/chase cluster inside its OWN bucket
+    // header (where SymbolPanel's `.oes-header` is suppressed via
+    // headerless). The modal context binds these implicitly via the
+    // internal cluster in `.oes-header`.
+    chase          = $bindable(true),
+    chaseAgg       = $bindable(/** @type {'low'|'med'|'high'} */ ('low')),
+    // Read-only outbound count — /orders reads this to decide whether
+    // to render the basket Clear button in the bucket header.
+    basketCount    = $bindable(0),
+    // Counter trigger — parent bumps this to clear the basket without
+    // needing a direct callback handle. Same pattern as triggerSubmit
+    // / triggerBasket.
+    triggerClearBasket = 0,
   } = $props();
 
   // Local mutable copy of the symbol prop — operator can edit it from
@@ -388,7 +406,10 @@
   // Command and Ticket tabs accumulate here instead of firing immediately.
   const basketMode = $derived(_activeTab === 'chain');
   /** @type {any[]} */
-  let basketLegs   = $state([]);
+  let basketLegs   = $state(/** @type {any[]} */ ([]));
+  // Mirror basketLegs.length out to the bindable basketCount prop so
+  // the /orders bucket header can react (show Clear button on > 0).
+  $effect(() => { const n = basketLegs.length; if (n !== basketCount) basketCount = n; });
   /** @type {string} */ let basketResultMsg = $state('');
   let basketSubmitting = $state(false);
   // Sticky result line — persists in the common-actions row for a
@@ -418,6 +439,16 @@
     if (_stickyResultTimer) { clearTimeout(_stickyResultTimer); _stickyResultTimer = null; }
     _stickyResultMsg = ''; _stickyResultLevel = '';
   }
+  // Parent-driven clear — bumping triggerClearBasket from /orders fires
+  // the same path the in-modal Clear button does. Skip the initial 0
+  // value so mount doesn't auto-clear.
+  let _lastClearTrigger = $state(triggerClearBasket);
+  $effect(() => {
+    if (triggerClearBasket !== _lastClearTrigger) {
+      _lastClearTrigger = triggerClearBasket;
+      if (triggerClearBasket > 0) clearBasket();
+    }
+  });
 
   // ── Per-account basket margin strip ──────────────────────────────────
   // When the basket spans >1 account, show Required / Available / After
@@ -659,8 +690,16 @@
   let _sharedMode = $derived(/** @type {'draft'|'paper'|'live'|'shadow'} */ (
     /** @type {any} */ ($executionMode) || 'paper'
   ));
-  let _sharedChase    = $state(true);
-  let _sharedChaseAgg = $state(/** @type {'low'|'med'|'high'} */ ('low'));
+  // Internal state mirrors the bindable props so the existing tab
+  // codepaths (template attach, basket submit, etc.) can keep using
+  // _sharedChase / _sharedChaseAgg by name. The bindable props are the
+  // operator-facing handles; effects below keep both in sync.
+  let _sharedChase    = $state(chase);
+  let _sharedChaseAgg = $state(chaseAgg);
+  $effect(() => { if (chase !== _sharedChase) _sharedChase = chase; });
+  $effect(() => { if (chaseAgg !== _sharedChaseAgg) _sharedChaseAgg = chaseAgg; });
+  $effect(() => { if (_sharedChase !== chase) chase = _sharedChase; });
+  $effect(() => { if (_sharedChaseAgg !== chaseAgg) chaseAgg = _sharedChaseAgg; });
   // Shared template — applied to every leg in the basket on submit.
   // Operator picks once from the bar; submitBasket threads the id
   // into each BasketLeg's `template_id` so the backend runs the
@@ -1732,6 +1771,48 @@
           {_wlToast.msg}
         </span>
       {/if}
+      <!-- Operator: "mode and chase should be on header after order
+           entry and before expand/contract icon". In the modal context
+           the trailing icon is the close X — cluster sits between the
+           title and the X. Right-aligned via margin-left:auto. -->
+      <span class="oes-header-cluster">
+        <span class="oes-common-mode-chip mode-pill-{$executionMode ?? 'paper'}"
+              title="Execution mode (read-only — change from the navbar dropdown)">
+          {($executionMode ?? 'paper').toUpperCase()}
+        </span>
+        <label class="oes-common-chase-toggle"
+               class:is-disabled={!_chaseEnabled}
+               title={!_chaseEnabled
+                 ? 'Chase unavailable — MARKET / SL-M orders fill at the book; no limit to re-quote'
+                 : _sharedChase
+                   ? 'Chase ON — re-quote the limit each tick until filled'
+                   : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
+          <input type="checkbox" bind:checked={_sharedChase} disabled={!_chaseEnabled} />
+          <span class="oes-common-chase-label" class:on={_sharedChase && _chaseEnabled}>CHASE</span>
+        </label>
+        {#if _sharedChase && _chaseEnabled}
+          <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
+            <button type="button" class="oes-common-chase-agg-pill"
+                    class:on={_sharedChaseAgg === 'low'}
+                    title="Low — patient. Pegs to your own side; fills only if the market lifts it."
+                    onclick={() => _sharedChaseAgg = 'low'}>L</button>
+            <button type="button" class="oes-common-chase-agg-pill"
+                    class:on={_sharedChaseAgg === 'med'}
+                    title="Medium — peg to midpoint of bid+ask."
+                    onclick={() => _sharedChaseAgg = 'med'}>M</button>
+            <button type="button" class="oes-common-chase-agg-pill"
+                    class:on={_sharedChaseAgg === 'high'}
+                    title="High — urgent. Crosses the spread to take liquidity on the next tick."
+                    onclick={() => _sharedChaseAgg = 'high'}>H</button>
+          </div>
+        {/if}
+        {#if basketLegs.length > 0}
+          <button type="button" class="oes-common-clear oes-common-clear-inline"
+            title="Clear all basket legs"
+            disabled={basketSubmitting}
+            onclick={clearBasket}>Clear</button>
+        {/if}
+      </span>
       {#if !inline}
         <button type="button" class="oes-close" title="Close" aria-label="Close"
                 onclick={(e) => { e.stopPropagation(); onClose(); }}>×</button>
@@ -1787,53 +1868,9 @@
         {/if}
       </div>
 
-      <!-- Heading-row cluster — operator: "move live and chase and show
-           it after order entry in order modal and page". Sits as a thin
-           standalone strip immediately under the "Order entry" title
-           (modal) or the "ORDER ENTRY" bucket header (/orders page).
-           Renders in BOTH contexts (regardless of headerless) so the
-           cluster is always one visual step below the heading text.
-           Contents: mode pill (read-only — set from navbar) · CHASE
-           toggle · L/M/H aggressiveness · Clear (when basket has legs). -->
-      <div class="oes-mode-strip">
-        <span class="oes-common-mode-chip mode-pill-{$executionMode ?? 'paper'}"
-              title="Execution mode (read-only — change from the navbar dropdown)">
-          {($executionMode ?? 'paper').toUpperCase()}
-        </span>
-        <label class="oes-common-chase-toggle"
-               class:is-disabled={!_chaseEnabled}
-               title={!_chaseEnabled
-                 ? 'Chase unavailable — MARKET / SL-M orders fill at the book; no limit to re-quote'
-                 : _sharedChase
-                   ? 'Chase ON — re-quote the limit each tick until filled'
-                   : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
-          <input type="checkbox" bind:checked={_sharedChase} disabled={!_chaseEnabled} />
-          <span class="oes-common-chase-label" class:on={_sharedChase && _chaseEnabled}>CHASE</span>
-        </label>
-        {#if _sharedChase && _chaseEnabled}
-          <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
-            <button type="button" class="oes-common-chase-agg-pill"
-                    class:on={_sharedChaseAgg === 'low'}
-                    title="Low — patient. Pegs to your own side; fills only if the market lifts it."
-                    onclick={() => _sharedChaseAgg = 'low'}>L</button>
-            <button type="button" class="oes-common-chase-agg-pill"
-                    class:on={_sharedChaseAgg === 'med'}
-                    title="Medium — peg to midpoint of bid+ask."
-                    onclick={() => _sharedChaseAgg = 'med'}>M</button>
-            <button type="button" class="oes-common-chase-agg-pill"
-                    class:on={_sharedChaseAgg === 'high'}
-                    title="High — urgent. Crosses the spread to take liquidity on the next tick."
-                    onclick={() => _sharedChaseAgg = 'high'}>H</button>
-          </div>
-        {/if}
-        {#if basketLegs.length > 0}
-          <span class="oes-mode-strip-spacer"></span>
-          <button type="button" class="oes-common-clear oes-common-clear-inline"
-            title="Clear all basket legs"
-            disabled={basketSubmitting}
-            onclick={clearBasket}>Clear</button>
-        {/if}
-      </div>
+      <!-- Cluster lifted INTO `.oes-header` above (modal) or into the
+           /orders bucket header (page) per operator request. Standalone
+           strip removed. -->
 
     <!-- Tab strip — suppressed when the host page renders its own
          (tabsExternal). Operator clicks still flow back via the
@@ -2726,21 +2763,16 @@
     flex-shrink: 0;
     min-width: 0;
   }
-  /* Heading-row strip — sits immediately under the modal title or the
-     /orders bucket header. Carries the mode pill + CHASE + L/M/H +
-     Clear. Density matches the picker row (same gap + padding) so the
-     whole title-to-pickers stack reads as one continuous strip. */
-  .oes-mode-strip {
-    display: flex;
+  /* Cluster inside `.oes-header` — sits between the title chip and the
+     close X. Right-aligned via margin-left:auto so the title hugs the
+     left and the cluster hugs the right edge, with the X following. */
+  .oes-header-cluster {
+    margin-left: auto;
+    display: inline-flex;
     align-items: center;
     gap: 0.35rem;
-    padding: 0.3rem 0.4rem;
-    border-bottom: 1px solid rgba(251, 191, 36, 0.10);
-    flex-wrap: wrap;
     flex-shrink: 0;
-    min-width: 0;
   }
-  .oes-mode-strip-spacer { flex: 1 1 0; min-width: 0.5rem; }
   /* Type filter — narrowed so it fits in the same row as Account +
      Symbol. The "EQ · FUT · OPT" label gets ellipsised when not the
      active selection; the active value renders fully (Equity /

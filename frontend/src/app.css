@@ -1655,3 +1655,72 @@
 .algo-tab[aria-selected="true"] .algo-tab-badge-c-rose {
   background: rgba(251,113,133,0.18); border-color: rgba(251,113,133,0.45); color: #fb7185;
 }
+
+/* ─────────────────────────────────────────────────────────────────
+   Order-entry cluster classes — mode pill + CHASE toggle + L/M/H
+   aggressiveness + Clear button. Used by both SymbolPanel's
+   `.oes-header-cluster` (modal context) and the /orders page bucket
+   header's `.oc-header-cluster` (page context). Global because the
+   /orders page renders the cluster outside SymbolPanel's scope.
+   ───────────────────────────────────────────────────────────────── */
+.oes-common-mode-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.18rem 0.5rem;
+  border: 1px solid currentColor;
+  border-radius: 9999px;
+  font-family: ui-monospace, monospace;
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+.oes-common-chase-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  cursor: pointer;
+  user-select: none;
+}
+.oes-common-chase-toggle input { margin: 0; }
+.oes-common-chase-toggle.is-disabled { cursor: not-allowed; opacity: 0.45; }
+.oes-common-chase-toggle.is-disabled input { cursor: not-allowed; }
+.oes-common-chase-label {
+  color: rgba(200,216,240,0.55);
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.oes-common-chase-label.on { color: #fbbf24; }
+.oes-common-chase-agg {
+  display: inline-flex;
+  border: 1px solid rgba(251,191,36,0.32);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.oes-common-chase-agg-pill {
+  padding: 0.14rem 0.4rem;
+  background: transparent;
+  color: rgba(200,216,240,0.65);
+  border: 0;
+  border-right: 1px solid rgba(251,191,36,0.20);
+  font-family: ui-monospace, monospace;
+  font-size: 0.55rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.oes-common-chase-agg-pill:last-child { border-right: 0; }
+.oes-common-chase-agg-pill:hover { color: #fbbf24; background: rgba(251,191,36,0.08); }
+.oes-common-chase-agg-pill.on { color: #0c1830; background: #fbbf24; }
+.oes-common-clear-inline {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.55rem;
+  border-radius: 3px;
+  border: 1px solid rgba(248, 113, 113, 0.40);
+  background: transparent;
+  color: rgba(248, 113, 113, 0.85);
+  cursor: pointer;
+  font-family: monospace;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.oes-common-clear-inline:hover { background: rgba(248, 113, 113, 0.10); }

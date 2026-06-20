@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy, getContext } from 'svelte';
-  import { nowStamp, logTimeIst, formatDualTz } from '$lib/stores';
+  import { nowStamp, logTimeIst, formatDualTz, executionMode } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import CollapseButton from '$lib/CollapseButton.svelte';
@@ -63,6 +63,19 @@
   // shared toolbar (_sharedMode, _modalSide) drives both.
   let _triggerSubmit = $state(0);
   let _triggerBasket = $state(0);
+
+  // Mode/chase cluster state — lifted up so the bucket-header strip
+  // and the SymbolPanel inside the card render the same values.
+  // SymbolPanel exposes these as bindable props (commit 1b94d34f's
+  // follow-up); incrementing _triggerClearBasket fires clearBasket
+  // inside SymbolPanel without a callback handle.
+  let _pageChase       = $state(true);
+  let _pageChaseAgg    = $state(/** @type {'low'|'med'|'high'} */ ('low'));
+  let _pageBasketCount = $state(0);
+  let _triggerClear    = $state(0);
+  // Mirror the navbar mode store so the bucket-header pill colour +
+  // label stays in sync with the global selection.
+  const _execMode = $derived($executionMode ?? 'paper');
 
   // Per-card collapse + fullscreen state. No persistence (no cardId
   // on CollapseButton) so every page load opens both cards expanded
@@ -258,6 +271,45 @@
       </svg>
       ORDER ENTRY
     </span>
+    <!-- Operator: "the mode and chase should be on header after order
+         entry and before expand/contract icon". Cluster mirrors the
+         modal's `.oes-header-cluster` shape. State is two-way bound to
+         the SymbolPanel below so flipping CHASE / L M H here is the
+         same as flipping it inside the card. -->
+    <span class="oc-header-cluster">
+      <span class="oes-common-mode-chip mode-pill-{_execMode}"
+            title="Execution mode (read-only — change from the navbar dropdown)">
+        {_execMode.toUpperCase()}
+      </span>
+      <label class="oes-common-chase-toggle"
+             title={_pageChase
+               ? 'Chase ON — re-quote the limit each tick until filled'
+               : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
+        <input type="checkbox" bind:checked={_pageChase} />
+        <span class="oes-common-chase-label" class:on={_pageChase}>CHASE</span>
+      </label>
+      {#if _pageChase}
+        <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
+          <button type="button" class="oes-common-chase-agg-pill"
+                  class:on={_pageChaseAgg === 'low'}
+                  title="Low — patient. Pegs to your own side; fills only if the market lifts it."
+                  onclick={() => _pageChaseAgg = 'low'}>L</button>
+          <button type="button" class="oes-common-chase-agg-pill"
+                  class:on={_pageChaseAgg === 'med'}
+                  title="Medium — peg to midpoint of bid+ask."
+                  onclick={() => _pageChaseAgg = 'med'}>M</button>
+          <button type="button" class="oes-common-chase-agg-pill"
+                  class:on={_pageChaseAgg === 'high'}
+                  title="High — urgent. Crosses the spread to take liquidity on the next tick."
+                  onclick={() => _pageChaseAgg = 'high'}>H</button>
+        </div>
+      {/if}
+      {#if _pageBasketCount > 0}
+        <button type="button" class="oes-common-clear oes-common-clear-inline"
+          title="Clear all basket legs"
+          onclick={() => _triggerClear++}>Clear</button>
+      {/if}
+    </span>
     <span class="oc-spacer"></span>
     {#if _fsEntry}
       <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
@@ -279,6 +331,10 @@
       showCommonActions
       triggerSubmit={_triggerSubmit}
       triggerBasket={_triggerBasket}
+      triggerClearBasket={_triggerClear}
+      bind:chase={_pageChase}
+      bind:chaseAgg={_pageChaseAgg}
+      bind:basketCount={_pageBasketCount}
       bind:activeTab={_entryActiveTab}
       defaultTab="chain"
       symbol={_entrySymbol}
@@ -598,6 +654,17 @@
     flex-shrink: 0;
   }
   .oc-entry-icon { color: currentColor; flex-shrink: 0; width: 11px; height: 11px; }
+  /* Mode + CHASE + L/M/H + Clear cluster inside the bucket header.
+     Sits between the "ORDER ENTRY" label and the .oc-spacer that
+     pushes the icon trio to the right. Inline-flex so all children
+     line up on the row's baseline; matches the modal's
+     `.oes-header-cluster` cadence. */
+  .oc-header-cluster {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-shrink: 0;
+  }
   /* Header — plain row matching every other bucket-card on the page.
      Small inset padding so the label + collapse/fullscreen trio
      don't slam against the bucket-card frame (since
