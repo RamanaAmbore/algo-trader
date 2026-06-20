@@ -183,11 +183,21 @@ def _load_dhan_instruments() -> None:
                 continue
             lot_size = 0
             tick_size = 0.0
-            if "SM_LOT_SIZE" in col and len(parts) > col["SM_LOT_SIZE"]:
-                try:
-                    lot_size = int(float(parts[col["SM_LOT_SIZE"]].strip() or 0))
-                except (ValueError, TypeError):
-                    pass
+            # Audit fix (L-6) — Dhan's instruments CSV historically used
+            # SM_LOT_SIZE; some forks / future schema revs use the
+            # SEM_-prefixed name to match the other SEM_* columns
+            # (SEM_SMST_SECURITY_ID, SEM_TRADING_SYMBOL, …). Try both so
+            # a schema rev that flips the prefix doesn't silently zero
+            # every lot_size — that would push every MCX qty mismatch
+            # bug back into existence (Sprint D unit-mismatch class).
+            for _lot_col in ("SM_LOT_SIZE", "SEM_LOT_SIZE", "LOT_SIZE"):
+                if _lot_col in col and len(parts) > col[_lot_col]:
+                    try:
+                        lot_size = int(float(parts[col[_lot_col]].strip() or 0))
+                        if lot_size > 0:
+                            break
+                    except (ValueError, TypeError):
+                        pass
             if "SEM_TICK_SIZE" in col and len(parts) > col["SEM_TICK_SIZE"]:
                 try:
                     tick_size = float(parts[col["SEM_TICK_SIZE"]].strip() or 0)

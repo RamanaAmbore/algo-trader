@@ -178,7 +178,17 @@
        and the Activity-modal Orders tab. -->
   <div class="flex flex-wrap items-center gap-y-1">
     {#if order.exchange}<span class="log-chip"><span class="log-chip-key">ex:</span>{order.exchange}</span>{/if}
-    <span class="log-chip"><span class="log-chip-key">qty:</span>{qtyFmt(_qtyFilled)}/{qtyFmt(order.quantity)}</span>
+    <!-- Audit fix (L-2) — pre-fix `0/50` read like an error state for
+         freshly placed OPEN orders (operator parses the leading zero
+         as "broken"). When nothing has filled AND status is non-
+         terminal, show `qty:50` (clean) instead of `qty:0/50`.
+         Terminal states + partial fills keep the filled/total form
+         so the operator sees progress through partials clearly. -->
+    <span class="log-chip">
+      <span class="log-chip-key">qty:</span>{_qtyFilled > 0 || ['COMPLETE','FILLED','REJECTED','CANCELLED','UNFILLED','CANCEL_FAILED'].includes((order.status || '').toUpperCase())
+        ? `${qtyFmt(_qtyFilled)}/${qtyFmt(order.quantity)}`
+        : qtyFmt(order.quantity)}
+    </span>
     {#if order.order_type}<span class="log-chip"><span class="log-chip-key">type:</span>{order.order_type}</span>{/if}
     <span class="log-chip"><span class="log-chip-key">price:</span>{_filled != null ? priceFmt(_filled) : _limit != null ? priceFmt(_limit) : '—'}</span>
     {#if _slip != null}<span class="log-chip log-chip-slip" class:slip-up={_slip > 0} class:slip-down={_slip < 0}><span class="log-chip-key">slip:</span>{_slip > 0 ? '+' : ''}{priceFmt(_slip)}</span>{/if}

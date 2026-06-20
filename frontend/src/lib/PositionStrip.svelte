@@ -194,14 +194,19 @@
       </span>
     </span>
   {/if}
-  <span class="ps-agg" title="Cash — live cash + premium tied up in long options (= cash you'd have if every long option were closed at its entry premium)">
-    <span class="ps-agg-k">C</span>
+  <!-- Audit fix (L-5) — single-letter `C` and `Cl` were indistinguishable
+       without hover (no tooltip access on mobile). Renamed to `C+`
+       (cash including option-tied premium, i.e. "augmented" cash) and
+       `Cash` (just live cash). The `+` is a visual cue that this is
+       the augmented value; the parent's tooltip explains the math. -->
+  <span class="ps-agg" title="Cash+ — live cash + premium tied up in long options (= cash you'd have if every long option were closed at its entry premium). The + indicates the augmented value.">
+    <span class="ps-agg-k">C+</span>
     <span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(cashTotal)}
     </span>
   </span>
-  <span class="ps-agg" title="Live cash — current cash balance after option premium debits (sum across accounts)">
-    <span class="ps-agg-k">Cl</span>
+  <span class="ps-agg" title="Cash — current live cash balance after option premium debits (sum across accounts)">
+    <span class="ps-agg-k">Cash</span>
     <span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(liveCashTotal)}
     </span>

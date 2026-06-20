@@ -27,7 +27,7 @@
   // symbol-keyed panel, tabs for the different actions on that
   // symbol, no hidden context menus.
 
-  import { onMount, onDestroy, untrack } from 'svelte';
+  import { onMount, onDestroy, untrack, getContext } from 'svelte';
   import { get as _storeGet } from 'svelte/store';
   import { portal } from '$lib/portal';
   import { ORDER_TABS } from '$lib/order/tabs.js';
@@ -663,6 +663,15 @@
   // to the 'none' (no-attach) row once the catalog loads so the
   // first basket doesn't surprise the operator with an unexpected
   // GTT. Operator: "template should be applicable to option chain too".
+  // Audit fix (L-3) — demo session gate. Anonymous prod visitors can
+  // see the algo surface but every LIVE/PAPER submit is blocked at
+  // the API layer. Pre-fix the Template Default/None pill toggle,
+  // override inputs, cap warning chip, and on-fill preview chip all
+  // rendered + computed for demo visitors — wasted compute + visual
+  // clutter that suggested capabilities they don't actually have.
+  // Replaced with a single muted "Sign in to use templates" note.
+  const _algoStatus = getContext('algoStatus');
+  const _isDemo = $derived(_algoStatus?.isDemo ?? false);
   let _sharedTemplateId = $state(/** @type {number|null} */ (null));
   let _templates = $state(/** @type {any[]} */ ([]));
   const _selectedTemplate = $derived(
@@ -1950,7 +1959,18 @@
          and the focused-leg's symbol (last-leg by default) for the
          CE/PE regex via _appliesToFor — falling back through
          _localSymbol when no legs are staged. -->
-    {#if _templates.length > 0 && action === 'open'
+    {#if _isDemo && action === 'open'
+         && ((_localSymbol || '').trim() || basketLegs.length > 0)}
+      <!-- Audit fix (L-3) — demo session sees a single muted note
+           where the Template Default/None toggle would render for
+           authenticated sessions. Anonymous LIVE/PAPER submits are
+           blocked at the API layer; surfacing the full picker would
+           promise capabilities the visitor doesn't have. -->
+      <div class="oes-basket-tpl-row oes-basket-tpl-row-shell oes-basket-tpl-row-demo">
+        <span class="oes-basket-tpl-label">Template</span>
+        <span class="oes-basket-tpl-demo-note">Sign in to attach exit rules (TP / SL / Wing) on fill.</span>
+      </div>
+    {:else if _templates.length > 0 && action === 'open'
          && ((_localSymbol || '').trim() || basketLegs.length > 0)}
       <div class="oes-basket-tpl-row oes-basket-tpl-row-shell"
            title={!_shellUsingNone && _selectedTemplate
@@ -2506,20 +2526,21 @@
             </span>
           {/if}
           <span class="oes-common-spacer"></span>
-          <!-- +Basket — operator: "what happened to +basket button
-               which is supposed to be present in order modal and
-               order page". Always rendered so the affordance is
-               consistent across tabs. On Chain the per-row +CE / +PE
-               buttons are the primary path; the common +Basket
-               grays out so the operator sees the control without
-               clicking-into-silence. -->
-          <button type="button" class="oes-common-basket"
-            class:is-disabled={!_basketEnabled}
-            disabled={!_basketEnabled}
-            title={_basketEnabled
-              ? 'Add the current order to the basket'
-              : 'Switch to Ticket tab — Chain uses per-row +CE / +PE buttons'}
-            onclick={_modalFireBasket}>+ Basket</button>
+          <!-- Audit fix (L-4) — +Basket is hidden entirely on the
+               Chain tab. Pre-fix it rendered grayed-out with a
+               tooltip explaining the Chain primary path. But it
+               still occupied horizontal space + read as an
+               affordance the operator could mistakenly click into
+               silence. Chain's +CE / +PE row buttons are the
+               primary path; the outer affordance only makes sense
+               on Ticket. -->
+          {#if _activeTab === 'ticket'}
+            <button type="button" class="oes-common-basket"
+              class:is-disabled={!_basketEnabled}
+              disabled={!_basketEnabled}
+              title="Add the current order to the basket"
+              onclick={_modalFireBasket}>+ Basket</button>
+          {/if}
           <button type="button" class="oes-common-submit"
             class:oes-common-submit-buy={_submitFlavor === 'buy'}
             class:oes-common-submit-sell={_submitFlavor === 'sell'}
@@ -2989,6 +3010,22 @@
     border-bottom: 1px solid rgba(251, 191, 36, 0.42);
     box-shadow: inset 0 1px 0 rgba(251, 191, 36, 0.10);
     box-sizing: border-box;
+  }
+  /* Demo-mode variant — muted slate accent instead of amber so the
+     row reads as "not active" without competing for attention. */
+  .oes-basket-tpl-row-demo {
+    background: rgba(13, 22, 38, 0.45);
+    border-color: rgba(148, 163, 184, 0.30);
+    box-shadow: none;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  .oes-basket-tpl-demo-note {
+    font-family: ui-monospace, monospace;
+    font-size: 0.58rem;
+    color: rgba(180, 200, 230, 0.65);
+    font-style: italic;
   }
   /* Parameter override row — sits inline with the Select. Each
      param is a tight label+input pair. The input is bare-monospace
