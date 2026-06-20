@@ -1877,10 +1877,11 @@ The cookbook is intentionally prescriptive. You do not need to read the full doc
 
 3. **Update msgspec schema** in `backend/api/schemas.py` if the column should be returned over the wire:
    ```python
-   class AlgoOrderInfo(msgspec.Struct):
+   class AlgoOrderInfo(msgspec.Struct, kw_only=True):
        ...
        last_chase_quote: str | None = None
    ```
+   `kw_only=True` is non-negotiable — the struct interleaves required + optional fields, and Python 3.13's stricter msgspec refuses that without it. Don't strip the modifier when copy-pasting.
 
 4. **Populate it.** Decide which code path writes to it. For our example, `chase.py::chase_order` writes after each depth quote fetch.
 
@@ -2049,11 +2050,12 @@ The cookbook is intentionally prescriptive. You do not need to read the full doc
    ```
    Note the discipline: real fields don't get defaults (audit B-5 lesson). Every broker constant must set every field.
 
-2. **Set per-broker explicitly** in the three constants:
+2. **Set per-broker explicitly** in **all four** constants — KITE/DHAN/GROWW plus the `UNKNOWN_CAPS` fallback at the bottom of `capabilities.py`. Missing UNKNOWN_CAPS will crash the unknown-broker code path at runtime:
    ```python
-   KITE_CAPS = BrokerCapabilities(..., iceberg_order=True)
-   DHAN_CAPS = BrokerCapabilities(..., iceberg_order=False)
-   GROWW_CAPS = BrokerCapabilities(..., iceberg_order=False)
+   KITE_CAPS    = BrokerCapabilities(..., iceberg_order=True)
+   DHAN_CAPS    = BrokerCapabilities(..., iceberg_order=False)
+   GROWW_CAPS   = BrokerCapabilities(..., iceberg_order=False)
+   UNKNOWN_CAPS = BrokerCapabilities(..., iceberg_order=False)  # conservative default
    ```
 
 3. **Capability registry** in `capabilities.py::CAPS_BY_BROKER_ID` already routes by `broker_id` — no change needed.

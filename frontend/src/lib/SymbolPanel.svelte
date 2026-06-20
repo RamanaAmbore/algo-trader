@@ -1716,7 +1716,7 @@
           <rect x="3.2" y="2" width="9.6" height="12" rx="1.2" />
           <path d="M5.5 6h5M5.5 8.5h5M5.5 11h3" stroke-width="1.4" />
         </svg>
-        Orders
+        Order entry
       </span>
       {#if _wlToast}
         <span class="oes-wl-toast" class:ok={_wlToast.ok} class:err={!_wlToast.ok}>
@@ -1776,6 +1776,51 @@
         {#if exchange || _pickedExchange}
           <span class="oes-exch">{exchange || _pickedExchange}</span>
         {/if}
+        <!-- Heading-row cluster — mode pill + chase toggle + aggressiveness
+             pills + basket-clear button. Lifted into the picker row from a
+             dedicated mode/chase row below to reclaim vertical space.
+             "Mode" label + "change" link removed (operator: "remove text
+             mode completely"); the pill itself + its hover tooltip are
+             enough. Mode pill stays read-only (set from the navbar
+             dropdown). Right-aligned via `margin-left: auto`. -->
+        <span class="oes-picker-cluster">
+          <span class="oes-common-mode-chip mode-pill-{$executionMode ?? 'paper'}"
+                title="Execution mode (read-only — change from the navbar dropdown)">
+            {($executionMode ?? 'paper').toUpperCase()}
+          </span>
+          <label class="oes-common-chase-toggle"
+                 class:is-disabled={!_chaseEnabled}
+                 title={!_chaseEnabled
+                   ? 'Chase unavailable — MARKET / SL-M orders fill at the book; no limit to re-quote'
+                   : _sharedChase
+                     ? 'Chase ON — re-quote the limit each tick until filled'
+                     : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
+            <input type="checkbox" bind:checked={_sharedChase} disabled={!_chaseEnabled} />
+            <span class="oes-common-chase-label" class:on={_sharedChase && _chaseEnabled}>CHASE</span>
+          </label>
+          {#if _sharedChase && _chaseEnabled}
+            <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
+              <button type="button" class="oes-common-chase-agg-pill"
+                      class:on={_sharedChaseAgg === 'low'}
+                      title="Low — patient. Pegs to your own side; fills only if the market lifts it."
+                      onclick={() => _sharedChaseAgg = 'low'}>L</button>
+              <button type="button" class="oes-common-chase-agg-pill"
+                      class:on={_sharedChaseAgg === 'med'}
+                      title="Medium — peg to midpoint of bid+ask."
+                      onclick={() => _sharedChaseAgg = 'med'}>M</button>
+              <button type="button" class="oes-common-chase-agg-pill"
+                      class:on={_sharedChaseAgg === 'high'}
+                      title="High — urgent. Crosses the spread to take liquidity on the next tick."
+                      onclick={() => _sharedChaseAgg = 'high'}>H</button>
+            </div>
+          {/if}
+          {#if basketLegs.length > 0}
+            <button type="button" class="oes-common-clear oes-common-clear-inline"
+              title="Clear all basket legs"
+              disabled={basketSubmitting}
+              onclick={clearBasket}>Clear</button>
+          {/if}
+        </span>
       </div>
 
     <!-- Tab strip — suppressed when the host page renders its own
@@ -2391,77 +2436,12 @@
          works when there's pending content. -->
     {#if showCommonActions && !actionsHidden}
       <div class="oes-common-actions">
-        <!-- Shared mode + chase toolkit — operator: "mode, chase,
-             margin, common for chase and order ticket". Sits ABOVE
-             the margin / submit row so both Chain and Ticket tabs
-             read from the same controls. Mode pills now iterate
-             `availableModes` so /orders (paper/live/shadow/sim/
-             replay) and the modal (paper/live) share the same
-             markup. State bound from `_sharedMode / _sharedChase /
-             _sharedChaseAgg`; OrderTicket suppresses its own row
-             via `modeChaseHidden=true` and reads the lifted values
-             through its bindable props. -->
-        <div class="oes-common-mode-row">
-          <span class="oes-common-mode-label">Mode</span>
-          <!-- Phase B: mode is now read-only — set from the navbar mode dropdown.
-               Chip reuses the LogPanel mode-pill-* palette (sky=paper, red=live,
-               orange=shadow, amber=sim, green=replay). "change" link navigates
-               to /admin/execution so operator can flip modes without hunting. -->
-          <span class="oes-common-mode-chip mode-pill-{$executionMode ?? 'paper'}"
-                title="Current execution mode (set from the navbar dropdown)">
-            {($executionMode ?? 'paper').toUpperCase()}
-          </span>
-          <a href="/admin/execution?mode={$executionMode ?? 'paper'}"
-             class="oes-common-mode-change"
-             title="Change mode (opens the execution settings page)">
-            change
-          </a>
-          <!-- Chase is only meaningful for LIMIT and SL orders (those
-               carry a limit price the engine can re-quote each tick).
-               MARKET and SL-M fill at the book's price — no limit to
-               re-quote. Operator: "make chase grayed out when market
-               is selected for order type". Render the toggle + agg
-               pills unconditionally so the affordance is always
-               visible; flip them disabled + tinted when the active
-               order type can't use chase. Chain tab always uses
-               LIMIT so chase is always enabled there. -->
-          <label class="oes-common-chase-toggle"
-                 class:is-disabled={!_chaseEnabled}
-                 title={!_chaseEnabled
-                   ? 'Chase unavailable — MARKET / SL-M orders fill at the book; no limit to re-quote'
-                   : _sharedChase
-                     ? 'Chase ON — re-quote the limit each tick until filled'
-                     : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
-            <input type="checkbox" bind:checked={_sharedChase} disabled={!_chaseEnabled} />
-            <span class="oes-common-chase-label" class:on={_sharedChase && _chaseEnabled}>CHASE</span>
-          </label>
-          {#if _sharedChase && _chaseEnabled}
-            <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
-              <button type="button" class="oes-common-chase-agg-pill"
-                      class:on={_sharedChaseAgg === 'low'}
-                      title="Low — patient. Pegs to your own side; fills only if the market lifts it."
-                      onclick={() => _sharedChaseAgg = 'low'}>L</button>
-              <button type="button" class="oes-common-chase-agg-pill"
-                      class:on={_sharedChaseAgg === 'med'}
-                      title="Medium — peg to midpoint of bid+ask."
-                      onclick={() => _sharedChaseAgg = 'med'}>M</button>
-              <button type="button" class="oes-common-chase-agg-pill"
-                      class:on={_sharedChaseAgg === 'high'}
-                      title="High — urgent. Crosses the spread to take liquidity on the next tick."
-                      onclick={() => _sharedChaseAgg = 'high'}>H</button>
-            </div>
-          {/if}
-          <!-- Clear basket lifted to the mode/chase row per operator
-               request — frees space in the submit row so the Submit
-               button isn't cramped. -->
-          {#if basketLegs.length > 0}
-            <span class="oes-common-spacer"></span>
-            <button type="button" class="oes-common-clear oes-common-clear-inline"
-              title="Clear all basket legs"
-              disabled={basketSubmitting}
-              onclick={clearBasket}>Clear</button>
-          {/if}
-        </div>
+        <!-- Mode pill + chase controls + Clear lifted to the picker row
+             (heading row) above. The dedicated mode/chase row that used
+             to sit here was removed per operator request — its space
+             merged with the picker row so the modal/page footprint is
+             tighter. -->
+
         <!-- Single action row, three-priority left slot:
                1. Notice (market closed / broker disconnected / preview
                   error) — wins over everything.
@@ -2733,6 +2713,25 @@
     flex-wrap: nowrap;
     flex-shrink: 0;
     min-width: 0;
+  }
+  /* Right-aligned cluster — mode pill + chase + L/M/H + Clear. Pushed
+     to the trailing edge of the picker row via margin-left:auto so
+     account/type/symbol stay anchored to the left and the cluster
+     hugs the right. Inherits the inline-flex layout from .oes-picker
+     so all chips sit on the picker baseline. */
+  .oes-picker-cluster {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-shrink: 0;
+  }
+  /* On very narrow viewports, allow the picker to wrap so the
+     cluster moves to its own line instead of pushing the symbol
+     picker off-screen. */
+  @media (max-width: 720px) {
+    .oes-picker { flex-wrap: wrap; }
+    .oes-picker-cluster { margin-left: 0; }
   }
   /* Type filter — narrowed so it fits in the same row as Account +
      Symbol. The "EQ · FUT · OPT" label gets ellipsised when not the
@@ -3996,28 +3995,9 @@
      mirror the OrderTicket styling so flipping between the two
      modal modes (modal vs standalone OrderTicket) the operator sees
      the same affordance shape. */
-  .oes-common-mode-row {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    color: var(--algo-slate);
-  }
-  .oes-common-mode-label {
-    color: #fbbf24;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    font-weight: 700;
-    font-size: 0.55rem;
-  }
-  .oes-common-mode-pills {
-    display: inline-flex;
-    border: 1px solid rgba(125,211,252,0.32);
-    border-radius: 3px;
-    overflow: hidden;
-  }
-  /* Phase B: static mode chip (read-only — set from navbar). */
+  /* Static mode pill — read-only (set from the navbar dropdown). The
+     row that used to wrap it was deleted; this class is still used by
+     the picker-row cluster. */
   .oes-common-mode-chip {
     display: inline-flex;
     align-items: center;
@@ -4029,14 +4009,6 @@
     font-weight: 800;
     letter-spacing: 0.08em;
   }
-  .oes-common-mode-change {
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
-    color: var(--algo-muted);
-    text-decoration: none;
-    padding: 0 0.25rem;
-  }
-  .oes-common-mode-change:hover { color: var(--algo-slate); text-decoration: underline; }
 
   .oes-common-chase-toggle {
     display: inline-flex;

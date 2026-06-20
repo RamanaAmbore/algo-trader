@@ -174,7 +174,7 @@
 <div class="flex flex-col oc-page-wrap">
 <div class="page-header">
   <span class="algo-title-group">
-    <h1 class="page-title-chip">Orders</h1>
+    <h1 class="page-title-chip">Order entry</h1>
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>

@@ -951,12 +951,20 @@
           {#if basketPlacing}Placing… ({basketProgress}/{chainBasket.length}){:else}Place {chainBasket.length} leg{chainBasket.length === 1 ? '' : 's'}{/if}
         </button>
       </div>
-      {#if basketError}
-        <div class="chain-basket-err">{basketError}</div>
-      {/if}
     </div>
   {:else if basketJustDone}
     <div class="chain-basket-toast">✓ basket placed</div>
+  {/if}
+  <!-- Audit fix — basketError used to live INSIDE the
+       `chainBasket.length && !_externalBasket` block, so in external-
+       basket mode (the SymbolPanel shell mounts the tab) the operator's
+       +CE / +PE / +Fut clicks silently no-op'd when `_account=''` (a
+       race against the async `loadAccounts` populating the account
+       prop). The basket bar never appeared and there was no feedback.
+       Hoisted out so the error always renders when set; clears on the
+       next successful add. -->
+  {#if basketError}
+    <div class="chain-basket-err" role="alert">{basketError}</div>
   {/if}
 </div>
 
