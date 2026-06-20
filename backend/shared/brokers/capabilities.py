@@ -183,6 +183,7 @@ UNKNOWN_CAPS = BrokerCapabilities(
     gtt_modify=False,
     gtt_cap_per_account=0,
     gtt_validity_days=0,
+    gtt_supports_mcx=False,     # Conservative; explicit since the field default was removed
     bracket_order=False,
     cover_order=False,
     atomic_basket=False,
