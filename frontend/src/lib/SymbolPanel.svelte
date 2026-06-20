@@ -2637,54 +2637,69 @@
               {/if}
             </span>
           {/if}
-          <!-- Operator: "message chip width should be expanded based
-               on available space". Spacer removed; the left chip now
-               grows via flex on `.oes-common-row > :first-child`
-               (see CSS), and the right cluster hugs the edge. -->
-          <!-- Ticket-only Basket on/off toggle. Operator: "for basket
-               toggle, keep an icon with no text. the icon should be
-               same height as button". Icon-only basket glyph; sky-blue
-               accent when ON. Same height as the Submit button via
-               .oes-common-basket-toggle-icon { height: 1.7rem }. -->
-          {#if _activeTab === 'ticket'}
+          <!-- Operator's model: "chain orders are always basket orders.
+               ticket orders can be basket or individual orders."
+               Basket icon renders on BOTH tabs. Chain → always ON, no
+               click effect (read-only badge). Ticket → checkbox-style
+               toggle controls whether Submit fires immediately or adds
+               to basket. Either way the icon stays at button height
+               so the cluster reads as a uniform row.
+               Icon redrawn — operator said the prior one looked like a
+               trash can; this is a shopping-basket silhouette without
+               the inner vertical lines that caused the trash-can read. -->
+          {#if _activeTab === 'chain'}
+            <span class="oes-common-basket-toggle oes-common-basket-toggle-icon on is-static"
+                  title="Chain orders are always basket orders — the basket builds from each +CE / +PE / +Fut click."
+                  aria-label="Basket mode (always on for Chain)">
+              <svg width="16" height="16" viewBox="0 0 20 20"
+                   fill="none" stroke="currentColor" stroke-width="1.7"
+                   stroke-linecap="round" stroke-linejoin="round"
+                   aria-hidden="true">
+                <path d="M2.5 7.5h15" />
+                <path d="M4.5 7.5l1.5 9.2c.12 0.75 0.77 1.3 1.53 1.3h5.94c0.76 0 1.41-0.55 1.53-1.3l1.5-9.2" />
+                <path d="M7 7.5l2-3M13 7.5l-2-3" />
+              </svg>
+            </span>
+          {:else}
             <label class="oes-common-basket-toggle oes-common-basket-toggle-icon"
                    class:on={_toBasket}
                    title={_toBasket
-                     ? 'Basket mode ON — Submit will add the current ticket as a basket leg instead of placing it immediately'
+                     ? 'Basket mode ON — Submit will add the current ticket as a basket leg'
                      : 'Basket mode OFF — Submit will place the order immediately'}>
               <input type="checkbox" bind:checked={_toBasket} class="sr-only" />
-              <!-- Basket glyph (shopping basket — handle + base) -->
               <svg width="16" height="16" viewBox="0 0 20 20"
-                   fill="none" stroke="currentColor" stroke-width="1.6"
+                   fill="none" stroke="currentColor" stroke-width="1.7"
                    stroke-linecap="round" stroke-linejoin="round"
                    aria-hidden="true">
-                <path d="M3 7h14l-1.5 9.5a1.5 1.5 0 0 1-1.5 1.3H6a1.5 1.5 0 0 1-1.5-1.3L3 7z" />
-                <path d="M7 7V4.5a3 3 0 0 1 6 0V7" />
-                <path d="M8 11v3M12 11v3" />
+                <path d="M2.5 7.5h15" />
+                <path d="M4.5 7.5l1.5 9.2c.12 0.75 0.77 1.3 1.53 1.3h5.94c0.76 0 1.41-0.55 1.53-1.3l1.5-9.2" />
+                <path d="M7 7.5l2-3M13 7.5l-2-3" />
               </svg>
             </label>
           {/if}
-          <!-- Ticket-only side buttons. Operator: "there should be one
-               additional button in ticket buy/sell. if add/close is
-               active instead buy/sell in ticket, buy/sell should be
-               prefixed by add/close." -->
+          <!-- Ticket-only side picker. Operator: "buy and sell should
+               be one single button." Single chip cycles on click —
+               cold → BUY → SELL → BUY. Label honors symbol-row context
+               via `_sideBtnLabel` (ADD/CLOSE prefix when currentQty != 0).
+               Chain has no side button — basket leg sides are picked
+               per-row via +CE/+PE/+Fut. -->
           {#if _activeTab === 'ticket' && action !== 'modify'}
-            <span class="oes-footer-side-group" role="group" aria-label="Order side">
-              <button type="button"
-                      class="oes-footer-side-btn oes-footer-side-btn-buy"
-                      class:on={_modalSide === 'BUY'}
-                      title={_modalSide === 'BUY' ? 'Side is BUY' : 'Pick BUY as the order side'}
-                      onclick={() => { _modalSide = 'BUY'; }}>
-                {_sideBtnLabel('BUY')}
-              </button>
-              <button type="button"
-                      class="oes-footer-side-btn oes-footer-side-btn-sell"
-                      class:on={_modalSide === 'SELL'}
-                      title={_modalSide === 'SELL' ? 'Side is SELL' : 'Pick SELL as the order side'}
-                      onclick={() => { _modalSide = 'SELL'; }}>
-                {_sideBtnLabel('SELL')}
-              </button>
-            </span>
+            <button type="button"
+                    class="oes-footer-side-btn-single"
+                    class:on-buy={_modalSide === 'BUY'}
+                    class:on-sell={_modalSide === 'SELL'}
+                    class:on-none={!_modalSide}
+                    title={!_modalSide
+                      ? 'Pick a side — click to set BUY'
+                      : _modalSide === 'BUY'
+                        ? 'Side is BUY — click to flip to SELL'
+                        : 'Side is SELL — click to flip to BUY'}
+                    onclick={() => {
+                      if (!_modalSide || _modalSide === 'SELL') _modalSide = 'BUY';
+                      else _modalSide = 'SELL';
+                    }}>
+              {_modalSide ? _sideBtnLabel(_modalSide) : 'Pick side'}
+            </button>
           {/if}
           <button type="button" class="oes-common-submit"
             class:oes-common-submit-buy={_submitFlavor === 'buy'}
@@ -4211,10 +4226,10 @@
     padding: 0.18rem 0.5rem;
     letter-spacing: 0.02em;
   }
-  /* Basket on/off toggle (icon-only variant) — operator: "for basket
-     toggle, keep an icon with no text. the icon should be same height
-     as button". Square cell, ~1.7rem to match Submit + side buttons.
-     Sky-blue accent when ON. */
+  /* Basket icon — operator: "for basket toggle, keep an icon with no
+     text. the icon should be same height as button. all buttons
+     should be of same height." 1.9rem × 1.7rem cell uniform with the
+     side button + Submit. */
   .oes-common-basket-toggle-icon {
     display: inline-flex;
     align-items: center;
@@ -4237,6 +4252,15 @@
     background: rgba(125, 211, 252, 0.16);
     border-color: rgba(125, 211, 252, 0.70);
   }
+  /* Static (always-on) variant — used on Chain where basket is the
+     only mode. Cursor stays default so the icon reads as a status
+     badge, not an actionable toggle. */
+  .oes-common-basket-toggle-icon.is-static {
+    cursor: default;
+  }
+  .oes-common-basket-toggle-icon.is-static:hover {
+    background: rgba(125, 211, 252, 0.16);
+  }
   .sr-only {
     position: absolute;
     width: 1px; height: 1px;
@@ -4245,21 +4269,17 @@
     clip: rect(0,0,0,0);
     border: 0;
   }
-  /* Footer side selector — operator-visible BUY/SELL (or ADD/CLOSE
-     BUY/SELL) buttons inline with the Submit cluster. Same height as
-     Submit. Green for BUY, red for SELL; inactive state is muted slate
-     so neither pre-selects on cold open. */
-  .oes-footer-side-group {
-    display: inline-flex;
-    gap: 0.25rem;
-    flex-shrink: 0;
-  }
-  .oes-footer-side-btn {
+  /* Single BUY/SELL toggle — operator: "buy and sell should be one
+     single button." Cycles cold → BUY → SELL → BUY on click. Cold
+     state is muted slate with dashed border so it reads as
+     "unpicked"; picked state fills with green or red. Same height
+     as Submit + basket icon. */
+  .oes-footer-side-btn-single {
     height: 1.7rem;
-    padding: 0 0.55rem;
+    min-width: 5.5rem;
+    padding: 0 0.7rem;
     border-radius: 3px;
     border: 1px solid;
-    background: transparent;
     cursor: pointer;
     font-family: ui-monospace, monospace;
     font-size: 0.62rem;
@@ -4267,13 +4287,28 @@
     letter-spacing: 0.04em;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     white-space: nowrap;
+    background: transparent;
+    flex-shrink: 0;
   }
-  .oes-footer-side-btn-buy  { color: rgba(74, 222, 128, 0.55); border-color: rgba(74, 222, 128, 0.32); }
-  .oes-footer-side-btn-sell { color: rgba(248, 113, 113, 0.55); border-color: rgba(248, 113, 113, 0.32); }
-  .oes-footer-side-btn-buy:hover  { color: #4ade80; background: rgba(74, 222, 128, 0.08); }
-  .oes-footer-side-btn-sell:hover { color: #f87171; background: rgba(248, 113, 113, 0.08); }
-  .oes-footer-side-btn-buy.on  { color: #4ade80; background: rgba(74, 222, 128, 0.18); border-color: rgba(74, 222, 128, 0.70); }
-  .oes-footer-side-btn-sell.on { color: #f87171; background: rgba(248, 113, 113, 0.18); border-color: rgba(248, 113, 113, 0.70); }
+  .oes-footer-side-btn-single.on-none {
+    color: rgba(200, 216, 240, 0.55);
+    border-color: rgba(200, 216, 240, 0.32);
+    border-style: dashed;
+  }
+  .oes-footer-side-btn-single.on-none:hover {
+    color: #cbd5e1;
+    background: rgba(255,255,255,0.04);
+  }
+  .oes-footer-side-btn-single.on-buy {
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.18);
+    border-color: rgba(74, 222, 128, 0.70);
+  }
+  .oes-footer-side-btn-single.on-sell {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.18);
+    border-color: rgba(248, 113, 113, 0.70);
+  }
 
   /* Shared mode + chase toolkit — sits ABOVE the margin/action row
      so both Chain and Ticket tabs read from the same controls.
@@ -4527,9 +4562,10 @@
   .oes-common-basket,
   .oes-common-side,
   .oes-common-submit {
-    /* Bumped vertical padding so button height matches the new
-       two-row .oes-margin-pill-stack. */
-    padding: 0.55rem 0.75rem;
+    /* Operator: "all buttons should be of same height." Submit + side
+       single button + basket icon all 1.7rem tall. */
+    height: 1.7rem;
+    padding: 0 0.85rem;
     border-radius: 4px;
     font-family: monospace;
     font-size: 0.66rem;
