@@ -50,7 +50,12 @@ class BrokerCapabilities:
     # Pre-fix the absence of this field meant a Dhan account with an MCX
     # option + template silently failed at attach time post-fill — too
     # late. Now read by the cap-warning chip at submit time.
-    gtt_supports_mcx: bool = False
+    # Hotfix 2026-06-20 — removed the `= False` default. Python 3.13
+    # dataclasses enforce no-default-followed-by-required strictly; the
+    # default here blocked import of bracket_order / cover_order / etc.
+    # Every broker constant (KITE/DHAN/GROWW) already sets this
+    # explicitly, so removing the default is behaviorally a no-op.
+    gtt_supports_mcx: bool
 
     # ── Bracket / Cover ──────────────────────────────────────────────
     bracket_order: bool         # Entry + SL + Target as one ticket (Dhan only today)
