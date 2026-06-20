@@ -670,7 +670,16 @@
   // both the pill state and the rendered template params.
   const _sideAwareDefault = $derived.by(() => {
     if (_templates.length === 0) return null;
-    const scope = _appliesToFor(_modalSide, _localSymbol);
+    // Symbol used for the CE/PE regex check. Prefer _localSymbol (the
+    // header / Ticket form), but fall back to the focused (or last)
+    // basket leg's symbol when the operator built the basket from the
+    // Chain tab without typing a header symbol. Falling through to
+    // _modalSide for the side itself, which is shell-global.
+    const symForScope = (_localSymbol || '').trim()
+      || (_focusedLeg?.sym || '')
+      || (basketLegs.length > 0 ? basketLegs[basketLegs.length - 1].sym : '');
+    const sideForScope = _focusedLeg?.side || _modalSide;
+    const scope = _appliesToFor(sideForScope, symForScope);
     const sideMatch = _templates.find(t =>
       t.is_default && (t.applies_to || '').toLowerCase() === scope
     );
@@ -788,7 +797,15 @@
   $effect(() => {
     if (action !== 'open') return;
     if (_templates.length === 0) return;
-    const scope = _appliesToFor(_modalSide, _localSymbol);
+    // Mirror the symbol-fallback rule in `_sideAwareDefault` so the
+    // auto-swap on side-flip also picks the right scope when the
+    // operator is on Chain with staged basket legs and no header
+    // symbol typed.
+    const symForScope = (_localSymbol || '').trim()
+      || (_focusedLeg?.sym || '')
+      || (basketLegs.length > 0 ? basketLegs[basketLegs.length - 1].sym : '');
+    const sideForScope = _focusedLeg?.side || _modalSide;
+    const scope = _appliesToFor(sideForScope, symForScope);
     if (scope === _lastSideScope) return;
     untrack(() => {
       _lastSideScope = scope;
@@ -1844,8 +1861,20 @@
          "when no order type selected, template should not be displayed.
          when symbol and buy or sell selected, then template container
          should be displayed". Side is always set (default BUY), so
-         symbol presence is the meaningful gate. -->
-    {#if _templates.length > 0 && action === 'open' && (_localSymbol || '').trim()}
+         symbol presence is the meaningful gate.
+         Operator (turn N+1): "in chain, the pill is hidden when
+         template is default in chain. in order ticket it shows."
+         On Chain tab the operator can drop legs via +CE / +PE without
+         typing a header symbol — _localSymbol stays empty in that
+         flow, hiding the Template row even though basket legs are
+         staged. Treat basket-leg presence as equivalent "symbol
+         context" so the Template row stays visible. The shell's
+         side-aware default resolver uses _modalSide for direction
+         and the focused-leg's symbol (last-leg by default) for the
+         CE/PE regex via _appliesToFor — falling back through
+         _localSymbol when no legs are staged. -->
+    {#if _templates.length > 0 && action === 'open'
+         && ((_localSymbol || '').trim() || basketLegs.length > 0)}
       <div class="oes-basket-tpl-row oes-basket-tpl-row-shell"
            title={!_shellUsingNone && _selectedTemplate
              ? `${_selectedTemplate.name || _selectedTemplate.slug}${_selectedTemplate.description ? ' — ' + _selectedTemplate.description : ''}`
