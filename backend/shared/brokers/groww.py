@@ -246,6 +246,31 @@ class GrowwBroker(Broker):
         resp = self.groww.get_order_list()
         return _normalise_orders(resp)
 
+    @_retry_groww_auth
+    def order_status(self, order_id: str) -> dict:
+        """Audit fix (M-1) — per-id status endpoint. Pre-fix this fell
+        back to the ABC default (filter `orders()`) which fetched the
+        entire day book on every chase tick.
+
+        Uses Groww SDK's `get_order_detail` / `get_order_status_by_id`
+        (whichever the installed SDK version exposes). Falls back to
+        the ABC default when neither method exists. Returns Kite-shape
+        via `_normalise_orders` so the chase loop downstream parses
+        the result the same way regardless of SDK version."""
+        sdk = self.groww
+        single_fn = (getattr(sdk, "get_order_detail", None)
+                     or getattr(sdk, "get_order_status_by_id", None)
+                     or getattr(sdk, "get_order_by_id", None))
+        if single_fn is None:
+            return super().order_status(order_id)
+        try:
+            resp = single_fn(str(order_id))
+        except Exception as e:
+            logger.debug(f"GrowwBroker.order_status({order_id}) failed: {e}")
+            return {}
+        rows = _normalise_orders(resp)
+        return rows[0] if rows else {}
+
     def trades(self) -> list[dict]:
         """Groww exposes per-order trade lookup (`get_trade_list_for_order`)
         but no day-wide trade book endpoint. Stub returns [] so callers
@@ -519,6 +544,16 @@ class GrowwBroker(Broker):
 
     @_retry_groww_auth
     def place_order(self, **kwargs: Any) -> str:
+        # Audit fix (M-3) — `variety` is Kite-semantic. AMO needs
+        # explicit Groww-side handling that isn't wired today; raise
+        # so the operator knows the request isn't honored instead of
+        # silently landing AMO orders as regular-hours.
+        _variety = str(kwargs.pop("variety", "regular") or "regular").lower()
+        if _variety in ("amo", "after_market", "after-market"):
+            raise NotImplementedError(
+                "Groww adapter does not yet route AMO orders. Submit during "
+                "market hours or route via the Kite-mirrored account."
+            )
         ex, seg = _groww_exchange_and_segment(kwargs.get("exchange", ""))
         resp = self.groww.place_order(
             validity=kwargs.get("validity", "DAY"),
@@ -845,40 +880,43 @@ class GrowwBroker(Broker):
                         f"Groww cancel_gtt: both legs failed (leg0={err0}, leg1={e})"
                     )
             return gtt_id
-        # cancel_smart_order needs segment + smart_order_type. When the
-        # caller passes `exchange`, derive the segment directly; otherwise
-        # fall back to the blind iteration (legacy callers that don't
-        # carry the segment).
-        if exchange:
-            try:
-                _, seg = _groww_exchange_and_segment(exchange)
-                resp = self.groww.cancel_smart_order(
-                    segment=seg,
-                    smart_order_type="GTT",
-                    smart_order_id=gtt_id,
-                )
-                if isinstance(resp, dict) and resp.get("status", "").upper() == "ERROR":
-                    raise RuntimeError(f"Groww cancel_gtt rejected: {resp}")
-                return gtt_id
-            except Exception as e:
-                logger.warning(
-                    f"GrowwBroker.cancel_gtt direct-segment failed "
-                    f"({exchange} → {seg}): {e} — falling back to blind iteration"
-                )
-        for seg in ("CASH", "FNO", "COMMODITY", "CURRENCY"):
-            try:
-                resp = self.groww.cancel_smart_order(
-                    segment=seg,
-                    smart_order_type="GTT",
-                    smart_order_id=gtt_id,
-                )
-                if isinstance(resp, dict) and resp.get("status", "").upper() == "ERROR":
-                    continue
-                return gtt_id
-            except Exception:
-                continue
-        raise RuntimeError(f"Groww cancel_gtt: could not cancel {gtt_id!r} "
-                           f"across any segment (CASH/FNO/COMMODITY/CURRENCY)")
+        # cancel_smart_order needs segment + smart_order_type.
+        # Audit fix (M-4) — REQUIRE the `exchange` kwarg. Pre-fix
+        # legacy callers that didn't carry the segment triggered a
+        # blind CASH → FNO → COMMODITY → CURRENCY iteration. If two
+        # Groww GTTs from different segments shared a numeric id
+        # (possible across order types in Groww's SDK), the fallback
+        # would cancel the WRONG one silently. Every internal caller
+        # in the codebase (template_attach, _task_oco_pair_watcher)
+        # already passes `exchange`; raising here surfaces any future
+        # caller that forgets at code-review time rather than at
+        # operator-debug time.
+        if not exchange:
+            raise ValueError(
+                f"Groww cancel_gtt requires `exchange` kwarg to resolve "
+                f"the Groww segment (CASH / FNO / COMMODITY / CURRENCY). "
+                f"Pre-fix this fell through to a blind 4-segment retry "
+                f"which could cancel the wrong GTT on numeric-id "
+                f"collisions across segments. Pass the originating "
+                f"exchange (e.g. 'NFO', 'MCX', 'NSE') so the segment "
+                f"resolves deterministically. gtt_id={gtt_id!r}"
+            )
+        try:
+            _, seg = _groww_exchange_and_segment(exchange)
+            resp = self.groww.cancel_smart_order(
+                segment=seg,
+                smart_order_type="GTT",
+                smart_order_id=gtt_id,
+            )
+            if isinstance(resp, dict) and resp.get("status", "").upper() == "ERROR":
+                raise RuntimeError(f"Groww cancel_gtt rejected: {resp}")
+            return gtt_id
+        except Exception as e:
+            logger.warning(
+                f"GrowwBroker.cancel_gtt {gtt_id!r} on {exchange} "
+                f"(seg={seg}) failed: {e}"
+            )
+            raise
 
     @_retry_groww_auth
     def get_gtts(self) -> list[dict]:

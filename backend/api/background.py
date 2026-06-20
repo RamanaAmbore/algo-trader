@@ -1294,6 +1294,45 @@ async def _task_trail_stop() -> None:
                         changed = True
                         continue
                     except Exception as e:
+                        # Audit fix (M-2) — detect Dhan asymmetric GTT
+                        # state. When modify_gtt's two-leg dispatch hit
+                        # a TARGET_LEG rejection after ENTRY_LEG already
+                        # succeeded, the broker's GTT is now half-modified.
+                        # Pre-fix this was logged at DEBUG and the
+                        # operator never knew. Now persist
+                        # `partial_modify_error` in the entry +
+                        # WARNING-level log + Telegram alert so the
+                        # operator can cancel + recreate or knowingly
+                        # accept the asymmetric state. Stop ratcheting
+                        # on subsequent polls — re-modify would keep
+                        # bumping ENTRY while TARGET drifts.
+                        if getattr(e, "dhan_partial_modify", False):
+                            entry["partial_modify_error"] = (
+                                f"ENTRY_LEG updated, TARGET_LEG rejected "
+                                f"({str(e)[:120]})"
+                            )
+                            entry.pop("sl_trail_pct", None)
+                            changed = True
+                            logger.warning(
+                                f"[TRAIL] #{row.id} Dhan asymmetric GTT — "
+                                f"entry trigger ratcheted to {proposed:.2f} "
+                                f"but target trigger stale. Operator "
+                                f"intervention required."
+                            )
+                            try:
+                                from backend.shared.helpers.utils import is_enabled
+                                if is_enabled('telegram'):
+                                    from backend.shared.helpers.alert_utils import _send_telegram
+                                    _send_telegram(
+                                        f"⚠ Dhan GTT asymmetric: "
+                                        f"{parent_symbol} on {row.account} — "
+                                        f"trail ratcheted entry but target "
+                                        f"leg rejected. Cancel + recreate "
+                                        f"or verify at broker."
+                                    )
+                            except Exception:
+                                pass
+                            continue
                         logger.debug(
                             f"[TRAIL] modify_gtt failed for #{row.id} "
                             f"gtt={gtt_id}: {e}"

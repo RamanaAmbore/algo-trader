@@ -501,6 +501,43 @@ class DhanBroker(Broker):
         resp = self._safe_call(lambda d: d.get_order_list())
         return _normalise_orders(resp)
 
+    def order_status(self, order_id: str) -> dict:
+        """Audit fix (M-1) — per-id status endpoint. Pre-fix this fell
+        back to the ABC default (filter `orders()`) which fetched the
+        entire day book on every chase tick. With 10 open Dhan orders
+        the 20-s poll cycle generated 10 full-book fetches → wasted
+        bandwidth + risked hitting Dhan's 20 orders/sec rate limit.
+
+        Uses Dhan SDK's `get_order_by_id` (the targeted single-order
+        endpoint) when available. Falls back to the ABC default only
+        if the SDK doesn't expose it (older versions) so the chase
+        loop keeps working through SDK drift.
+
+        Returns the matched order dict in Kite-shape via the existing
+        `_normalise_orders` envelope, or {} on miss (matches ABC
+        contract)."""
+        sdk = self.dhan
+        # Prefer the most-specific Dhan SDK method when present.
+        # `get_order_by_id` is the canonical name in v2; some forks use
+        # `get_order_status`. Both return the same Dhan envelope.
+        single_fn = (getattr(sdk, "get_order_by_id", None)
+                     or getattr(sdk, "get_order_status", None))
+        if single_fn is None:
+            # SDK version doesn't expose a per-id endpoint — fall back
+            # to the ABC default (full-book filter) so behaviour stays
+            # correct even if accuracy drops.
+            return super().order_status(order_id)
+        try:
+            resp = self._safe_call(lambda d: single_fn(str(order_id)))
+        except Exception as e:
+            logger.debug(f"DhanBroker.order_status({order_id}) failed: {e}")
+            return {}
+        # The single-order endpoint wraps a single row, not a list. The
+        # existing _normalise_orders helper handles both shapes via
+        # _unwrap (single dict → list of one).
+        rows = _normalise_orders(resp)
+        return rows[0] if rows else {}
+
     def trades(self) -> list[dict]:
         resp = self._safe_call(lambda d: d.get_trade_book())
         return _normalise_trades(resp)
@@ -685,6 +722,21 @@ class DhanBroker(Broker):
         day). If the symbol is unknown, raises RuntimeError with a clear
         message pointing at the cache — operator should check whether the
         Dhan instruments CSV has loaded successfully."""
+        # Audit fix (M-3) — `variety` is Kite-semantic
+        # ("regular" / "amo" / "bo" / "co"). Pre-fix the value flowed
+        # through **kwargs and was silently dropped at the Dhan SDK
+        # boundary — AMO orders submitted with `variety="amo"` landed
+        # as regular-hours, with no error. Now: AMO needs an explicit
+        # productType on the Dhan side; raise a clear error so the
+        # caller knows the request isn't honored. Other varieties are
+        # absorbed silently (regular is the default; bo/co aren't
+        # supported by the platform's order pipeline today).
+        _variety = str(kwargs.pop("variety", "regular") or "regular").lower()
+        if _variety in ("amo", "after_market", "after-market"):
+            raise NotImplementedError(
+                "Dhan adapter does not yet route AMO orders. Submit during "
+                "market hours or route via the Kite-mirrored account."
+            )
         exchange      = kwargs.get("exchange", "")
         tradingsymbol = kwargs.get("tradingsymbol", "")
 
@@ -924,7 +976,36 @@ class DhanBroker(Broker):
                 validity="DAY",
             ))
             if not isinstance(resp1, dict) or resp1.get("status") != "success":
-                raise RuntimeError(f"Dhan modify_gtt rejected (target leg): {resp1}")
+                # Audit fix (M-2) — asymmetric GTT state. The ENTRY_LEG
+                # modify already succeeded; the GTT now has the NEW
+                # entry trigger paired with the OLD target trigger.
+                # Pre-fix the caller saw a generic RuntimeError + DEBUG
+                # log and the operator's trail-stop poller kept calling
+                # us with stale state, oblivious to the half-modified
+                # GTT. Now: log at WARNING + raise with an explicit
+                # `dhan_partial_modify=True` flag so the trail-stop
+                # task can persist a `partial_modify_error` slot in
+                # attached_gtts_json and the OrderCard tooltip can
+                # surface "⚠ GTT asymmetric — entry updated, target
+                # stale".
+                logger.warning(
+                    f"Dhan modify_gtt {gtt_id}: ENTRY_LEG succeeded but "
+                    f"TARGET_LEG rejected ({resp1}). GTT is now "
+                    f"ASYMMETRIC — entry trigger updated, target stale. "
+                    f"Operator should cancel + recreate or accept the "
+                    f"half-modified state."
+                )
+                _err = RuntimeError(
+                    f"Dhan modify_gtt rejected (target leg, ENTRY already "
+                    f"modified — GTT is asymmetric): {resp1}"
+                )
+                # Sentinel attribute the trail-stop task checks via
+                # `getattr(err, "dhan_partial_modify", False)`. Sticks
+                # to the exception so the caller can branch without
+                # parsing the error message string.
+                _err.dhan_partial_modify = True   # type: ignore[attr-defined]
+                _err.dhan_modified_leg = "ENTRY_LEG"   # type: ignore[attr-defined]
+                raise _err
         return gtt_id
 
     def cancel_gtt(self, gtt_id: str) -> str:
