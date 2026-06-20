@@ -493,7 +493,10 @@
     void _sharedWingStrikeOffsetOverride;
 
     if (_lastLegTimer) { clearTimeout(_lastLegTimer); _lastLegTimer = null; }
-    const leg = legs.length > 0 ? legs[legs.length - 1] : null;
+    // Use the operator-focused leg (click any basket pill to focus it);
+    // falls back to the last leg added when nothing is explicitly
+    // focused.
+    const leg = _focusedLeg;
     if (!leg || !leg.sym || !leg.lots || !(Number(leg.limit) > 0)) {
       _lastLegPlan = null;
       _lastLegError = '';
@@ -976,6 +979,37 @@
   let _lastLegPlan    = $state(/** @type {any} */ (null));
   let _lastLegLoading = $state(false);
   let _lastLegError   = $state('');
+  // The basket-leg key the preview chip is locked to. Click any basket
+  // pill on the Chain tab to focus that leg's preview; null = follow
+  // the LAST leg added (the default). Cleared when the focused leg is
+  // removed so the chip falls back to last-leg behaviour without
+  // sticking on a stale key. Operator: "click a basket pill to swap
+  // preview to that leg."
+  let _focusedLegKey = $state(/** @type {string|null} */ (null));
+  // Resolved focused leg — explicit pick when _focusedLegKey matches a
+  // current leg, otherwise the last leg. Used by both the preview
+  // effect and the pill's `is-focused` visual cue.
+  const _focusedLeg = $derived.by(() => {
+    if (basketLegs.length === 0) return null;
+    if (_focusedLegKey) {
+      const m = basketLegs.find(l => l.key === _focusedLegKey);
+      if (m) return m;
+    }
+    return basketLegs[basketLegs.length - 1];
+  });
+  // Position of the focused leg in the basket (1-based) for the badge.
+  const _focusedLegIndex = $derived.by(() => {
+    if (!_focusedLeg) return 0;
+    const i = basketLegs.findIndex(l => l.key === _focusedLeg.key);
+    return i >= 0 ? i + 1 : basketLegs.length;
+  });
+  // Drop a stale `_focusedLegKey` once its leg leaves the basket so the
+  // preview cleanly falls back to last-leg.
+  $effect(() => {
+    if (_focusedLegKey && !basketLegs.find(l => l.key === _focusedLegKey)) {
+      untrack(() => { _focusedLegKey = null; });
+    }
+  });
   // Which preview drives the displayed chip — last-leg on Chain when
   // basket has legs, Ticket form everywhere else. Single derivation
   // so the chip swap is atomic + the label rendering doesn't have to
@@ -1880,8 +1914,10 @@
               <span class="oes-tpl-preview-label">on fill →</span>
               {#if _previewFromLeg}
                 <span class="oes-tpl-preview-leg-badge"
-                      title="Preview reflects the last leg added to the basket (the operator's current focus). Switch to the Ticket tab to see the Ticket form's preview instead.">
-                  leg {basketLegs.length}/{basketLegs.length}
+                      title={_focusedLegKey
+                        ? `Preview locked to leg ${_focusedLegIndex} of ${basketLegs.length}. Click another basket pill to swap, or × the pill to release.`
+                        : `Preview tracks the last leg added (${_focusedLegIndex} of ${basketLegs.length}). Click any basket pill to lock to that leg instead.`}>
+                  leg {_focusedLegIndex}/{basketLegs.length}{_focusedLegKey ? ' ●' : ''}
                 </span>
               {/if}
               {#each _activePreviewPlan.gtts || [] as g}
@@ -1941,10 +1977,23 @@
         <div class="oes-basket-pills" role="list">
           {#each basketLegs as leg, i (leg.key)}
             {@const _legAcct = leg.account || _sharedAccount || ''}
+            {@const _isFocused = !!(_focusedLeg && _focusedLeg.key === leg.key)}
             <span class="oes-basket-pill oes-basket-pill-{leg.side === 'BUY' ? 'buy' : 'sell'} oes-basket-pill-type-{/CE$/.test(leg.sym) ? 'ce' : /PE$/.test(leg.sym) ? 'pe' : /FUT$/.test(leg.sym) ? 'fut' : 'eq'}"
                   class:is-disabled={basketSubmitting}
+                  class:is-focused={_isFocused}
                   role="listitem"
-                  title="Click × to remove from basket">
+                  title={_isFocused
+                    ? 'On-fill preview is focused on this leg. Click another pill to swap.'
+                    : 'Click to focus the on-fill preview on this leg. Click × to remove.'}
+                  onclick={(e) => {
+                    // Don't focus when the click bubbled from a child
+                    // interactive element (×, stepper, account select,
+                    // template editor, limit input). The target check
+                    // covers all of them — buttons + inputs + selects.
+                    const tgt = /** @type {HTMLElement} */ (e.target);
+                    if (tgt?.closest('button, input, select, label')) return;
+                    _focusedLegKey = leg.key;
+                  }}>
               <span class="oes-basket-pill-side">{leg.side === 'BUY' ? 'B' : 'S'}</span>
               <span class="oes-basket-pill-sym"><LegLabel sym={leg.sym} compact={true} /></span>
               <button type="button" class="oes-basket-pill-step"
@@ -3381,6 +3430,21 @@
   }
   .oes-leg-editor-close { margin-left: auto; }
   .oes-basket-pill.is-disabled { opacity: 0.55; }
+  /* Focused pill — the basket leg the on-fill preview is locked to.
+     Slate-blue outer ring (matches the .oes-tpl-preview-leg-badge
+     palette) so the operator can see at a glance "this pill is
+     driving the chip". The whole pill is clickable to set focus;
+     hovering shows the affordance via cursor: pointer + a faint
+     ring. The badge in the preview chip displays the focused leg's
+     index, so eye travels from chip → badge → pill in one motion. */
+  .oes-basket-pill { cursor: pointer; transition: box-shadow 0.12s; }
+  .oes-basket-pill:hover:not(.is-focused) {
+    box-shadow: inset 0 0 0 1px rgba(165, 180, 252, 0.32);
+  }
+  .oes-basket-pill.is-focused {
+    box-shadow: 0 0 0 2px rgba(165, 180, 252, 0.65),
+                inset 0 0 0 1px rgba(165, 180, 252, 0.45);
+  }
   .oes-basket-pill-limit-wrap {
     display: inline-flex;
     align-items: center;

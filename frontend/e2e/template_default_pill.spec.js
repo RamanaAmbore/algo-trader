@@ -126,9 +126,17 @@ async function switchToTicketTab(page) {
 }
 
 /**
- * Click the BUY or SELL toggle inside the Ticket tab.
- * The side toggle is `.ot-side-buy` / `.ot-side-sell` inside OrderTicket.
- * Must be called AFTER switchToTicketTab() so the buttons are visible.
+ * Click the BUY or SELL toggle inside the Ticket tab, then click the
+ * Default pill in the template row to trigger the side-aware default
+ * resolution.
+ *
+ * Background: SymbolPanel has a $effect that auto-updates the template
+ * when _modalSide changes (commit 108ce3a5 removed the per-side $effect
+ * from OrderTicket and moved it to SymbolPanel shell). In practice the
+ * $effect may not fire on a rapid programmatic click; explicitly clicking
+ * the Default pill is the guaranteed path per the OrderTicket comment:
+ * "To restore a side-aware default after a side flip, click the Default
+ * pill in the template row."
  */
 async function setSide(page, side) {
   // First make sure the Ticket tab is active so the side buttons are visible.
@@ -143,6 +151,16 @@ async function setSide(page, side) {
   if (!alreadyOn) {
     await btn.click();
     await page.waitForTimeout(300);
+  }
+
+  // Click the Default pill in the template row to refresh the side-aware default.
+  // _sideAwareDefault is a $derived that reads _modalSide; clicking Default
+  // immediately applies the current derived value to _sharedTemplateId.
+  const tplRow = page.locator('.oes-basket-tpl-row-shell').first();
+  const defaultPillInRow = tplRow.locator('.oes-tpl-btn').first();
+  if (await defaultPillInRow.count() > 0) {
+    await defaultPillInRow.click();
+    await page.waitForTimeout(200);
   }
 }
 
