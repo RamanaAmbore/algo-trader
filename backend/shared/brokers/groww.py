@@ -1120,16 +1120,47 @@ def _normalise_margins(resp: Any, segment: str | None) -> dict:
     }
 
 
+# Audit fix (B-1) — translate Groww terminal status strings to Kite
+# canonical values. Pre-fix _normalise_orders passed verbatim strings
+# like "EXECUTED" / "TRADED" / "PARTIALLY_FILLED" through, and the
+# chase loop (which checks `status == "COMPLETE"`) never detected
+# Groww fills. Every Groww-placed order silently orphaned by the
+# platform's lifecycle tracking — no template attach, no exit GTTs.
+# Mirrors the _DHAN_STATUS_TO_KITE pattern. Covers documented Groww
+# status strings + common variants observed across SDK versions.
+_GROWW_STATUS_TO_KITE = {
+    "EXECUTED":          "COMPLETE",
+    "COMPLETED":         "COMPLETE",
+    "TRADED":            "COMPLETE",
+    "FILLED":            "COMPLETE",
+    "PARTIALLY_FILLED":  "OPEN",
+    "PARTIAL_FILL":      "OPEN",
+    "PARTIAL":           "OPEN",
+    "OPEN":              "OPEN",
+    "NEW":               "OPEN",
+    "PENDING":           "OPEN",
+    "ACKNOWLEDGED":      "OPEN",
+    "MODIFIED":          "OPEN",
+    "CANCELLED":         "CANCELLED",
+    "CANCELED":          "CANCELLED",
+    "REJECTED":          "REJECTED",
+    "FAILED":            "REJECTED",
+    "EXPIRED":           "EXPIRED",
+}
+
+
 def _normalise_orders(resp: Any) -> list[dict]:
     payload = _unwrap(resp)
     rows = _iter_rows(payload, "order_list", "orders")
     out: list[dict] = []
     for o in rows:
+        _raw_status = (o.get("order_status") or o.get("status") or "").upper()
+        _status = _GROWW_STATUS_TO_KITE.get(_raw_status, _raw_status)
         out.append({
             "order_id":         str(o.get("groww_order_id") or o.get("order_id") or ""),
             "tradingsymbol":    o.get("trading_symbol") or o.get("tradingsymbol") or "",
             "exchange":         o.get("exchange") or "",
-            "status":           (o.get("order_status") or o.get("status") or "").upper(),
+            "status":           _status,
             "transaction_type": o.get("transaction_type") or "BUY",
             "order_type":       o.get("order_type") or "MARKET",
             "product":          o.get("product") or "NRML",

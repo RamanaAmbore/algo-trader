@@ -508,15 +508,91 @@ class DhanBroker(Broker):
     # ── Market data ───────────────────────────────────────────────────
 
     def ltp(self, symbols: list[str]) -> dict:
-        """Not wired yet — returns empty dict so PriceBroker walks to
-        the next adapter. Earlier this raised NotImplementedError on
-        every iteration, generating WARNING-level log spam. Wiring
-        needs tradingsymbol → Dhan security_id mapping via the
-        instruments cache."""
-        return {}
+        """Audit fix (B-2) — was returning {} by design which silently
+        broke `_task_trail_stop` for every Dhan trailing position (the
+        poller reads ltp <= 0 and skips). Now resolves each quote key
+        through the instruments cache and batches per Dhan exchange
+        segment via `dhan.ohlc_data()`. Returns Kite-shape map keyed
+        by the original quote string: {"NSE:RELIANCE": {"last_price":
+        2500.0}, ...}. Symbols that can't be resolved are silently
+        dropped (Kite behaviour) so the trail-stop loop's
+        `ltp_map.get(key, 0)` fallback works."""
+        if not symbols:
+            return {}
+        # Parse "EXCHANGE:TRADINGSYMBOL" keys + resolve security_ids.
+        # Dhan's quote APIs accept {seg: [sid, sid, ...]} so we batch.
+        # Index-name forms ("NSE:NIFTY 50") need NSE_INDEX segment in
+        # Dhan; the instruments cache already encodes that mapping
+        # for indexes the operator's templates actually quote against.
+        try:
+            _ensure_dhan_instruments()
+        except Exception:
+            # Network failure on first hit — fall back to empty so
+            # PriceBroker walks the chain. Same conservative bias as
+            # the historical_data and instruments paths.
+            return {}
+        seg_to_sids: dict[str, list[str]] = {}
+        # Reverse map: (seg, sid) → original quote key so the response
+        # round-trips into the Kite-style dict the caller expects.
+        sid_to_key: dict[tuple[str, str], str] = {}
+        for key in symbols:
+            if ":" not in str(key):
+                continue
+            ex_kite, ts = str(key).split(":", 1)
+            ts = ts.strip().upper()
+            ex_kite = ex_kite.strip().upper()
+            sid = _resolve_security_id(ts, ex_kite)
+            if not sid:
+                continue
+            seg = _EXCHANGE_TO_DHAN.get(ex_kite)
+            if not seg:
+                continue
+            seg_to_sids.setdefault(seg, []).append(sid)
+            sid_to_key[(seg, sid)] = key
+        if not seg_to_sids:
+            return {}
+        # Single SDK call covers every segment in one batch. Dhan's
+        # response shape: {"data": {"NSE_EQ": {"<sid>": {"last_price":
+        # 2500.0, ...}}, ...}}. The SDK normalizes the wrapper but the
+        # per-row dict is what we need.
+        try:
+            resp = self._safe_call(lambda d: d.ohlc_data(securities=seg_to_sids))
+        except Exception as e:
+            logger.debug(f"DhanBroker.ltp ohlc_data failed: {e}")
+            return {}
+        out: dict = {}
+        # Unwrap the outer envelope (status / data / remarks).
+        data = resp.get("data") if isinstance(resp, dict) else None
+        if not isinstance(data, dict):
+            return {}
+        for seg, by_sid in data.items():
+            if not isinstance(by_sid, dict):
+                continue
+            for sid, row in by_sid.items():
+                key = sid_to_key.get((str(seg), str(sid)))
+                if not key:
+                    continue
+                # Dhan returns last_price for OHLC rows. Fall back to
+                # ohlc.close → close → 0 to be defensive against SDK
+                # version drift.
+                lp = 0.0
+                if isinstance(row, dict):
+                    lp = float(row.get("last_price")
+                               or (row.get("ohlc") or {}).get("close")
+                               or row.get("close")
+                               or 0)
+                if lp > 0:
+                    out[key] = {"last_price": lp, "instrument_token": sid}
+        return out
 
     def quote(self, symbols: list[str]) -> dict:
-        """Empty dict for the same reason as ltp() above."""
+        """Empty dict — `quote()` is a richer shape than `ltp()`
+        (depth + OI + day-change + OHLC), and Dhan's batch quote API
+        is more rate-limited than the OHLC one used by `ltp()`. The
+        platform's PriceBroker walks to the next adapter (Kite) on
+        empty, which is the right behaviour for the operator-facing
+        chart + depth surfaces. Wire later if Dhan-only deployments
+        emerge."""
         return {}
 
     def instruments(self, exchange: str | None = None) -> list[dict]:
