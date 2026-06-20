@@ -152,7 +152,9 @@
     if (fromProp.length) return fromProp;
     return _selfAccounts.filter(_isRealAcct);
   });
-  let _account = $state(_isRealAcct(account) ? account : '');
+  // intentional: seeds from account prop once; $effects below re-sync on prop changes
+  // svelte-ignore state_referenced_locally
+  let _account = $state(_isRealAcct(account) ? $state.snapshot(account) : '');
   $effect(() => {
     if (_account) return;
     if (_isRealAcct(account)) { _account = account; return; }

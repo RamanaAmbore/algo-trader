@@ -33,7 +33,9 @@
     popup = false,
   } = $props();
 
-  let open = $state(defaultOpen);
+  // intentional: defaultOpen is a one-time seed; operator toggles thereafter
+  // svelte-ignore state_referenced_locally
+  let open = $state($state.snapshot(defaultOpen));
   let hovered = $state(false);
   /** @type {HTMLSpanElement | undefined} */
   let wrap;

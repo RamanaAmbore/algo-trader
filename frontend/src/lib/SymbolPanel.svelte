@@ -211,7 +211,9 @@
   // Command) re-renders against the new symbol. Synced from the prop
   // via $effect so an external pick (chain row + CE click, dashboard
   // row click, MarketPulse symbol pick) still updates the shell.
-  let _localSymbol = $state(String(symbol || '').toUpperCase());
+  // intentional: seeds from symbol prop once; $effect below re-syncs on external prop changes
+  // svelte-ignore state_referenced_locally
+  let _localSymbol = $state(String($state.snapshot(symbol) || '').toUpperCase());
   // Sync FROM prop only. Reading _localSymbol via untrack() so the
   // operator's own picks (which set _localSymbol from inside the modal)
   // don't re-trigger this effect — without untrack the comparison
@@ -442,7 +444,9 @@
   // Parent-driven clear — bumping triggerClearBasket from /orders fires
   // the same path the in-modal Clear button does. Skip the initial 0
   // value so mount doesn't auto-clear.
-  let _lastClearTrigger = $state(triggerClearBasket);
+  // intentional: captures initial trigger value to detect subsequent bumps
+  // svelte-ignore state_referenced_locally
+  let _lastClearTrigger = $state($state.snapshot(triggerClearBasket));
   $effect(() => {
     if (triggerClearBasket !== _lastClearTrigger) {
       _lastClearTrigger = triggerClearBasket;
@@ -675,7 +679,9 @@
   // the Chain-tab basket was staged for another. Lifted here as $state
   // initialised from the `account` prop; each tab receives it as
   // `account` and calls `onAccountChange` when its picker changes.
-  let _sharedAccount = $state(account || '');
+  // intentional: seeds shared account from prop once; caller can push updates via effects
+  // svelte-ignore state_referenced_locally
+  let _sharedAccount = $state($state.snapshot(account) || '');
 
   // Shared mode / chase / chaseAgg state — operator: "should mode,
   // chase, margin, common for chase and order ticket". Lifted out of
@@ -958,7 +964,9 @@
   // The header's Account Select reads from this so the operator can
   // pick from the same set even when the modal is opened via the
   // page-header trio (which passes accounts={[]}).
-  let _modalAccounts = $state(/** @type {string[]} */ (Array.isArray(accounts) ? accounts : []));
+  // intentional: seeds from accounts prop once; $effect below re-syncs when prop updates
+  // svelte-ignore state_referenced_locally
+  let _modalAccounts = $state(/** @type {string[]} */ (Array.isArray(accounts) ? $state.snapshot(accounts) : []));
   $effect(() => {
     if (Array.isArray(accounts) && accounts.length) {
       untrack(() => { _modalAccounts = accounts; });
@@ -1061,7 +1069,9 @@
   // When opened via a symbol pick (PageHeaderActions with a contextSymbol,
   // row-symbol click, etc.), the caller passes `side="BUY"` so the
   // existing flow is unchanged.
-  let _modalSide          = $state(/** @type {'BUY'|'SELL'|null} */ (side));
+  // intentional: seeds modal side from prop once; operator changes it directly thereafter
+  // svelte-ignore state_referenced_locally
+  let _modalSide          = $state(/** @type {'BUY'|'SELL'|null} */ ($state.snapshot(side)));
   // Submit button label adapts to:
   //   currentQty=0  → "Buy" / "Sell" (plain new order)
   //   currentQty>0  → "Add to position" / "Close position"  (long)
@@ -1388,7 +1398,9 @@
   // waiting for a side+margin round-trip. (Previously _chaseEnabled
   // relied on `_chipMeta.orderType` which only landed after the
   // margin preflight ran.)
-  let _ticketOrderType = $state(/** @type {'MARKET'|'LIMIT'|'SL'|'SL-M'} */ (orderType));
+  // intentional: seeds from orderType prop once; $effect below re-syncs on prop/ticketProps changes
+  // svelte-ignore state_referenced_locally
+  let _ticketOrderType = $state(/** @type {'MARKET'|'LIMIT'|'SL'|'SL-M'} */ ($state.snapshot(orderType)));
   // Sync from caller props on modify/repeat — the shell repopulates
   // _ticketProps when LogPanel dispatches lp:modify-order or similar.
   $effect(() => {
@@ -3964,9 +3976,10 @@
     padding: 0.1rem 0.25rem;
     text-align: right;
     -moz-appearance: textfield;
+    appearance: textfield;
   }
   .oes-basket-pill-limit::-webkit-inner-spin-button,
-  .oes-basket-pill-limit::-webkit-outer-spin-button { -webkit-appearance: none; }
+  .oes-basket-pill-limit::-webkit-outer-spin-button { -webkit-appearance: none; appearance: none; }
   .oes-basket-pill-limit:focus {
     outline: none;
     border-color: rgba(125,211,252,0.7);

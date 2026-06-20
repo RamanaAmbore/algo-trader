@@ -58,7 +58,9 @@
     statusFilter = /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */ ('all'),
   } = $props();
 
-  let logTab = $state(defaultTab);
+  // intentional: defaultTab seeds the active tab; $effect below re-syncs on prop changes
+  // svelte-ignore state_referenced_locally
+  let logTab = $state($state.snapshot(defaultTab));
   // Re-sync logTab whenever the parent updates defaultTab (e.g. /automation
   // calling runInSim flips defaultTab to 'simulator'). Read logTab via
   // untrack() so the operator's own tab clicks (setTab → logTab = id)

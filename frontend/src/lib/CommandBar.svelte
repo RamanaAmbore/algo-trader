@@ -34,7 +34,9 @@
 
   let symbolPreview = $state('');
 
-  let value     = $state(initialValue);
+  // intentional: initialValue seeds the textarea once; operator owns it thereafter
+  // svelte-ignore state_referenced_locally
+  let value     = $state($state.snapshot(initialValue));
   let cursor    = $state(0);
   let suggOpen  = $state(false);
   let suggIdx   = $state(0);

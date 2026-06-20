@@ -409,7 +409,9 @@
   });
 
   // Local form state — start from prop defaults, then operator edits.
-  let _side    = $state(side);
+  // intentional: seeds from side prop once; $effect below re-syncs on prop changes
+  // svelte-ignore state_referenced_locally
+  let _side    = $state($state.snapshot(side));
   // Re-sync the internal side state when the parent updates the
   // `side` prop. Without this, the modal's "BUY / SELL" footer
   // buttons can change _modalSide → propagate via the side prop, but
@@ -422,7 +424,9 @@
 
   // Resolved lot size — starts from the prop; may be updated on mount
   // via the instruments cache when the caller didn't supply one.
-  let _lotSize = $state(lotSize);
+  // intentional: seeds from lotSize prop once; instruments cache may update it later
+  // svelte-ignore state_referenced_locally
+  let _lotSize = $state($state.snapshot(lotSize));
 
   // Qty path:
   //   - _lotSize > 0  → operator edits in LOTS via [−] [N] [+], the
@@ -433,12 +437,15 @@
   // Initial _lots comes from the caller-supplied qty (rounded to the
   // nearest whole lot, floored at 1). When qty is also 0 we start at
   // 1 lot so the ticket opens ready-to-submit.
+  // intentional: _lots and _qty seed from props/local state at init; effects below keep in sync
+  // svelte-ignore state_referenced_locally
   let _lots = $state(
     _lotSize > 0
-      ? Math.max(1, Math.round((Number(qty) || _lotSize) / _lotSize))
+      ? Math.max(1, Math.round((Number($state.snapshot(qty)) || _lotSize) / _lotSize))
       : 1
   );
-  let _qty     = $state(qty || _lotSize || (isEquity ? 1 : 0));
+  // svelte-ignore state_referenced_locally
+  let _qty     = $state($state.snapshot(qty) || _lotSize || ($state.snapshot(isEquity) ? 1 : 0));
   // Track whether the operator has touched _lots manually. If they
   // haven't, late-resolving _lotSize (instrument cache warming after
   // ticket mount) should recompute _lots from the original `qty` prop
@@ -448,7 +455,9 @@
   // When _lotSize transitions from 0 → positive (instrument cache
   // resolved after mount), recompute _lots from the caller's original
   // qty prop. Skipped once the operator has manually adjusted.
-  let _prevLotSize = _lotSize;
+  // intentional: snapshot of _lotSize at mount to detect the 0→positive transition
+  // svelte-ignore state_referenced_locally
+  let _prevLotSize = $state.snapshot(_lotSize);
   $effect(() => {
     if (_prevLotSize === 0 && _lotSize > 0 && !_lotsTouched) {
       _lots = Math.max(1, Math.round((Number(qty) || _lotSize) / _lotSize));
@@ -512,7 +521,9 @@
   // When the operator flips side, reset to 1 lot (ADD direction) or
   // restore the held qty (CLOSE direction). "ADD" = same direction as
   // the existing position; "CLOSE" = opposite.
-  let _prevSide = _side;
+  // intentional: snapshot of _side at mount to detect side-flip transitions
+  // svelte-ignore state_referenced_locally
+  let _prevSide = $state.snapshot(_side);
   $effect(() => {
     if (!currentQty || currentQty === 0 || _lotSize <= 0) return;
     const cur = _side;
@@ -569,7 +580,9 @@
   // waiting for a side+margin round-trip.
   $effect(() => { if (_type !== orderType) orderType = _type; });
   $effect(() => { if (orderType !== untrack(() => _type)) _type = orderType; });
-  let _variety = $state(variety);
+  // intentional: seeds from variety prop once; clearForm() resets it to the prop snapshot
+  // svelte-ignore state_referenced_locally
+  let _variety = $state($state.snapshot(variety));
   // Validity (Time-in-Force): DAY by default. IOC (Immediate-Or-Cancel)
   // for fast-trading scenarios where partial fills are acceptable but
   // unfilled remainder should drop instead of resting. Kite supports
@@ -577,8 +590,11 @@
   // exposed here. Industry analogue: every order book (IB TWS, ToS,
   // Kite Web) surfaces DAY/IOC as inline pills.
   let _validity = $state('DAY');
-  let _price   = $state(price ?? '');
-  let _trigger = $state(trigger ?? '');
+  // intentional: price and trigger seed from props; operator edits thereafter
+  // svelte-ignore state_referenced_locally
+  let _price   = $state($state.snapshot(price) ?? '');
+  // svelte-ignore state_referenced_locally
+  let _trigger = $state($state.snapshot(trigger) ?? '');
 
   // Legacy `_targetMode / _targetPct / _targetAbs` state + the matching
   // `_targetPctVal / _targetAbsVal` derived fields removed in audit
@@ -735,12 +751,16 @@
     const none = _templates.find(t => t.slug === 'none');
     if (none) { templateId = none.id; return; }
   }
-  let _product = $state(productVal);
+  // intentional: seeds from productVal once; $effect below re-syncs on symbol kind change
+  // svelte-ignore state_referenced_locally
+  let _product = $state($state.snapshot(productVal));
   // Local exchange state — seeded from the resolved exchange. Operator
   // can override via the Exchange Select (essential for dual-listed
   // equities like IFCI where the instruments cache only indexes one
   // of NSE / BSE per symbol; Dhan rejects BSE+NRML for equity).
-  let _exchange = $state(_resolvedExchange || exchange || 'NSE');
+  // intentional: seeds from resolved exchange at mount; $effect below re-syncs on symbol change
+  // svelte-ignore state_referenced_locally
+  let _exchange = $state($state.snapshot(_resolvedExchange) || $state.snapshot(exchange) || 'NSE');
   // Re-sync the picker when the symbol changes (so the operator
   // doesn't carry NSE over to an MCX commodity by accident). Reads
   // the freshly-resolved exchange; only overrides if the current
@@ -2425,10 +2445,12 @@
     text-align: center;
     padding: 0 0.25rem;
     -moz-appearance: textfield;
+    appearance: textfield;
   }
   .ot-lots-input::-webkit-outer-spin-button,
   .ot-lots-input::-webkit-inner-spin-button {
     -webkit-appearance: none;
+    appearance: none;
     margin: 0;
   }
   .ot-lots-step {
