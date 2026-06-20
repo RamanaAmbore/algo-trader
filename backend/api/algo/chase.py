@@ -535,15 +535,26 @@ async def _sync_algo_order_id(algo_order_id: int | None,
 
 
 async def _record_partial_fill(algo_order_id: int | None,
-                                filled_qty: int,
-                                fill_price: float,
+                                cumulative_filled: int,
+                                avg_price: float,
                                 total_qty: int) -> None:
     """Sprint B (#4) — persist partial-fill state on the AlgoOrder row.
 
-    Accumulates `filled_quantity` across partials and rolls a fill-
-    qty-weighted `fill_price`. The terminal handler later overwrites
-    `fill_price` with the broker's final average — this interim value
-    keeps the row truthful between partials so:
+    Audit fix (C-1): the `cumulative_filled` argument is the BROKER'S
+    cumulative `filled_quantity` from its status poll — NOT a per-call
+    delta. Kite reports cumulative (so does Dhan + Groww post-status-
+    map). Pre-fix this function added the cumulative value to the
+    prior DB value every call, so a chase recovered from DB after a
+    restart would inflate `filled_quantity` past `total_qty` (prior
+    30 + cumulative 30 = 60 even though only 30 actually traded). The
+    template-attach path then sized exit GTTs against the inflated
+    value, over-hedging.
+
+    `avg_price` is the broker's running cumulative average fill price
+    (most SDKs return cumulative average, not delta-weighted average).
+    We store it directly — the broker's number is authoritative.
+
+    Accumulates `filled_quantity` across partials so:
       - the order log shows live `filled/total` progress instead of
         appearing stuck at 0,
       - the UNFILLED give-up path reports the actual unfilled remainder
@@ -555,7 +566,7 @@ async def _record_partial_fill(algo_order_id: int | None,
     informational, the chase loop continues whether the write
     succeeds or not.
     """
-    if algo_order_id is None or filled_qty <= 0:
+    if algo_order_id is None or cumulative_filled <= 0:
         return
     try:
         from sqlalchemy import select as _sel
@@ -567,23 +578,29 @@ async def _record_partial_fill(algo_order_id: int | None,
             )).scalar_one_or_none()
             if row is None:
                 return
+            # `cumulative_filled` is monotonic — it can only grow as
+            # the broker fills more. Take MAX against the prior DB
+            # value so a late status poll that for any reason returns
+            # a lower cumulative (rare, but seen on Kite during book
+            # transitions) doesn't roll the row backwards.
             prior_filled = int(row.filled_quantity or 0)
-            prior_avg    = float(row.fill_price or 0)
-            new_filled   = prior_filled + int(filled_qty)
-            # Weighted-average fill price across partials. Drops back
-            # to current fill_price when no prior partials exist.
-            if prior_filled > 0 and prior_avg > 0 and fill_price > 0:
-                new_avg = (
-                    (prior_avg * prior_filled) + (float(fill_price) * filled_qty)
-                ) / new_filled
-            else:
-                new_avg = float(fill_price or 0)
+            new_filled = max(prior_filled, int(cumulative_filled))
+            if new_filled > int(total_qty):
+                # Defensive clamp — should never happen but better to
+                # cap at the order's total qty than write an inflated
+                # value that template attach would then over-size GTTs
+                # against.
+                new_filled = int(total_qty)
             row.filled_quantity = new_filled
-            if new_avg > 0:
-                row.fill_price = new_avg
+            # Broker's cumulative average fill_price is authoritative.
+            # Only overwrite when the broker reports a positive value
+            # (zero would clobber a prior valid average).
+            if avg_price and float(avg_price) > 0:
+                row.fill_price = float(avg_price)
+            new_avg_display = float(row.fill_price or 0)
             row.detail = (
-                f"PARTIAL {new_filled}/{total_qty} @ ₹{new_avg:,.2f} "
-                f"(chasing residual {total_qty - new_filled})"
+                f"PARTIAL {new_filled}/{total_qty} @ ₹{new_avg_display:,.2f} "
+                f"(chasing residual {int(total_qty) - new_filled})"
             )[:240]
             await _s.commit()
     except Exception as _e:
@@ -694,6 +711,44 @@ async def chase_order(
             # see the LATEST broker id, not the FIRST one.
             await _sync_algo_order_id(algo_order_id, current_order_id)
 
+            # Audit fix (C-2) — operator-kill race protection. The kill
+            # path calls `mark_killed(broker_order_id)` synchronously,
+            # but the chase loop's cancel-and-replace creates a NEW
+            # broker_order_id between the old (which the operator's
+            # kill recorded against) and the next iteration. Without
+            # this check, an operator clicking Kill in the window
+            # between (cancel-old) and (place-new) would have their
+            # kill recorded against the now-vanished old id; the new
+            # order would never see is_killed=True for ITS id and the
+            # chase would silently run to completion. We re-check the
+            # NEW id immediately after placement so the kill takes
+            # effect on the very next iteration.
+            if is_killed(current_order_id):
+                logger.info(
+                    f"Chase {symbol}: operator-kill detected for new "
+                    f"broker_order_id={current_order_id} immediately "
+                    f"after replace. Cancelling + terminating."
+                )
+                try:
+                    await _run(_cancel_order, account, current_order_id, cfg.variety)
+                except Exception as _ke:
+                    logger.warning(f"Chase {symbol}: post-replace kill cancel failed: {_ke}")
+                result.status = ChaseStatus.CANCELLED
+                result.detail = "Killed by operator (post-replace race)"
+                emit("order_cancelled", {
+                    "order_id": current_order_id, "attempt": attempt,
+                    "reason": "operator-kill-post-replace",
+                })
+                import asyncio as _asyncio
+                _asyncio.create_task(_emit_chase_terminal(
+                    current_order_id, "chase_cancelled",
+                    symbol, transaction_type, quantity,
+                    attempts=attempt,
+                    algo_order_id=algo_order_id,
+                    error="Killed by operator",
+                ))
+                return result
+
             # Wait for fill
             await asyncio.sleep(cfg.interval_seconds)
 
@@ -739,9 +794,20 @@ async def chase_order(
                 ))
                 return result
 
-            if filled_qty > 0 and filled_qty < remaining_qty:
-                # Partial fill — chase the residual.
-                remaining_qty -= filled_qty
+            # Audit fix (C-1): `filled_qty` is BROKER-CUMULATIVE (not
+            # per-poll delta). Compute the delta vs the in-memory
+            # `quantity - remaining_qty` so we only react to NEW fills.
+            # Pre-fix the partial branch only fired ONCE (the first
+            # poll where filled_qty > 0); subsequent partials were
+            # silently dropped because `filled_qty < remaining_qty`
+            # failed after the first decrement. _record_partial_fill
+            # is now idempotent + cumulative-aware so we can call it
+            # every poll cycle.
+            _already_filled = quantity - remaining_qty
+            _new_delta = filled_qty - _already_filled
+            if filled_qty > 0 and _new_delta > 0 and filled_qty < quantity:
+                # New partial since the last poll — chase the residual.
+                remaining_qty = max(0, quantity - filled_qty)
                 # Sprint E (audit) — flip the in-memory status to
                 # PARTIAL so the ChaseResult returned to callers
                 # reflects partial-fill state. Pre-fix the enum value
@@ -752,22 +818,18 @@ async def chase_order(
                 # still uses OPEN / FILLED / UNFILLED — PARTIAL is an
                 # in-process classifier, not a DB-status.
                 result.status = ChaseStatus.PARTIAL
-                logger.info(f"Chase {symbol}: partial fill {filled_qty}, remaining {remaining_qty}")
-                emit("partial_fill", {"filled": filled_qty, "remaining": remaining_qty})
-                # Sprint B (audit #4) — persist the partial state on the
-                # AlgoOrder row so downstream readers see the truth:
-                #   • `filled_quantity` accumulates across partials so the
-                #     order log + reconcile path know how much actually
-                #     traded.
-                #   • `fill_price` rolls the avg-of-fills weighting so a
-                #     subsequent terminal-fill (or UNFILLED give-up) row
-                #     surfaces the right blended average.
-                # Pre-fix `remaining_qty -= filled_qty` was in-memory only;
-                # if the chase eventually hit max_attempts the UNFILLED
-                # row showed the ORIGINAL quantity as unfilled (over-
-                # stated). Worse, the template-attach path read
-                # `_filled.quantity` to size the exit GTT and would
-                # over-size by the already-traded portion.
+                logger.info(
+                    f"Chase {symbol}: partial fill +{_new_delta} "
+                    f"(total {filled_qty}/{quantity}, remaining {remaining_qty})"
+                )
+                emit("partial_fill", {
+                    "filled": filled_qty,
+                    "delta": _new_delta,
+                    "remaining": remaining_qty,
+                })
+                # _record_partial_fill MAX-clamps against the prior DB
+                # value, so out-of-order polls or restarts can't roll
+                # the row backwards or inflate it past `quantity`.
                 await _record_partial_fill(
                     algo_order_id, filled_qty, avg_price, quantity
                 )
