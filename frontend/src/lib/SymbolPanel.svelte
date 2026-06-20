@@ -1122,17 +1122,28 @@
   function _modalFireBasket() { if (_activeTab === 'ticket') _modalTriggerBasket++; }
   function _modalFireSubmit() { if (_activeTab === 'ticket') _modalTriggerSubmit++; }
   function _modalFlipSide()   { _modalSide = _modalSide === 'BUY' ? 'SELL' : 'BUY'; }
-  // Stable handler reference for the single BUY/SELL footer button.
-  // Extracted from an inline arrow inside the `{#if _activeTab ===
-  // 'ticket'}` block because the audit found that Svelte 5's reactive
-  // re-render of `.oes-common-actions` when `_type` flips MARKET could
-  // leave an inline-arrow click handler transiently unbound during the
-  // microtask flush, so the operator's click on the side button after
-  // picking MARKET silently no-op'd. A named function reference
-  // survives every re-render so the click always lands. */
+  // Stable handler reference for the single side footer button.
+  // Operator: "based on short or long existing position it should
+  // derive buy or sell." First click in a symbol-row context (where
+  // currentQty != 0) defaults to ADD direction — long → BUY, short →
+  // SELL. Subsequent clicks toggle. Cold context (currentQty == 0)
+  // defaults to BUY on first click, then toggles.
   function _cycleSide() {
-    if (!_modalSide || _modalSide === 'SELL') _modalSide = 'BUY';
-    else _modalSide = 'SELL';
+    const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
+    if (!_modalSide) {
+      _modalSide = cq < 0 ? 'SELL' : 'BUY';
+      return;
+    }
+    _modalSide = _modalSide === 'BUY' ? 'SELL' : 'BUY';
+  }
+  // Derive ADD / CLOSE verb from a side + current position direction.
+  // Used by the two-line side button label so the operator sees the
+  // intent (ADD/CLOSE) above the broker-side (BUY/SELL).
+  function _addCloseVerb(/** @type {'BUY'|'SELL'} */ side) {
+    const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
+    if (cq === 0) return '';
+    if (cq > 0) return side === 'BUY' ? 'ADD' : 'CLOSE';
+    return side === 'BUY' ? 'CLOSE' : 'ADD';
   }
 
   // Margin preview lifted out of OrderTicket so the operator sees the
@@ -2649,65 +2660,41 @@
               {/if}
             </span>
           {/if}
-          <!-- Operator's model: "chain orders are always basket orders.
-               ticket orders can be basket or individual orders."
-               Basket icon renders on BOTH tabs. Chain → always ON, no
-               click effect (read-only badge). Ticket → checkbox-style
-               toggle controls whether Submit fires immediately or adds
-               to basket. Either way the icon stays at button height
-               so the cluster reads as a uniform row.
-               Icon redrawn — operator said the prior one looked like a
-               trash can; this is a shopping-basket silhouette without
-               the inner vertical lines that caused the trash-can read. -->
-          {#if _activeTab === 'chain'}
-            <span class="oes-common-basket-toggle oes-common-basket-toggle-icon on is-static"
-                  title="Chain orders are always basket orders — the basket builds from each +CE / +PE / +Fut click."
-                  aria-label="Basket mode (always on for Chain)">
-              <svg width="16" height="16" viewBox="0 0 20 20"
-                   fill="none" stroke="currentColor" stroke-width="1.7"
-                   stroke-linecap="round" stroke-linejoin="round"
-                   aria-hidden="true">
-                <path d="M2.5 7.5h15" />
-                <path d="M4.5 7.5l1.5 9.2c.12 0.75 0.77 1.3 1.53 1.3h5.94c0.76 0 1.41-0.55 1.53-1.3l1.5-9.2" />
-                <path d="M7 7.5l2-3M13 7.5l-2-3" />
-              </svg>
-            </span>
-          {:else}
-            <label class="oes-common-basket-toggle oes-common-basket-toggle-icon"
-                   class:on={_toBasket}
-                   title={_toBasket
-                     ? 'Basket mode ON — Submit will add the current ticket as a basket leg'
-                     : 'Basket mode OFF — Submit will place the order immediately'}>
-              <input type="checkbox" bind:checked={_toBasket} class="sr-only" />
-              <svg width="16" height="16" viewBox="0 0 20 20"
-                   fill="none" stroke="currentColor" stroke-width="1.7"
-                   stroke-linecap="round" stroke-linejoin="round"
-                   aria-hidden="true">
-                <path d="M2.5 7.5h15" />
-                <path d="M4.5 7.5l1.5 9.2c.12 0.75 0.77 1.3 1.53 1.3h5.94c0.76 0 1.41-0.55 1.53-1.3l1.5-9.2" />
-                <path d="M7 7.5l2-3M13 7.5l-2-3" />
-              </svg>
-            </label>
-          {/if}
           <!-- Ticket-only side picker. Operator: "buy and sell should
-               be one single button." Single chip cycles on click —
-               cold → BUY → SELL → BUY. Label honors symbol-row context
-               via `_sideBtnLabel` (ADD/CLOSE prefix when currentQty != 0).
-               Chain has no side button — basket leg sides are picked
-               per-row via +CE/+PE/+Fut. -->
+               be one single button. when add/close active it should
+               prefix add/close. based on short or long existing
+               position it should derive buy or sell. id button has
+               more show in two rows in the button without changing
+               button height." Two-line layout when in symbol-row
+               context: line 1 = ADD/CLOSE verb, line 2 = derived
+               broker side. Cold context: single-line BUY/SELL or
+               "Pick side". -->
           {#if _activeTab === 'ticket' && action !== 'modify'}
+            {@const _cq = Number(_ticketProps?.currentQty ?? currentQty) || 0}
             <button type="button"
                     class="oes-footer-side-btn-single"
                     class:on-buy={_modalSide === 'BUY'}
                     class:on-sell={_modalSide === 'SELL'}
                     class:on-none={!_modalSide}
+                    class:is-stacked={!!_modalSide && _cq !== 0}
                     title={!_modalSide
-                      ? 'Pick a side — click to set BUY'
-                      : _modalSide === 'BUY'
-                        ? 'Side is BUY — click to flip to SELL'
-                        : 'Side is SELL — click to flip to BUY'}
+                      ? (_cq === 0
+                          ? 'Pick a side — click to set BUY'
+                          : 'Pick — click to ADD to the existing position')
+                      : (_cq === 0
+                          ? (_modalSide === 'BUY'
+                              ? 'Side is BUY — click to flip to SELL'
+                              : 'Side is SELL — click to flip to BUY')
+                          : `${_addCloseVerb(_modalSide)} via ${_modalSide} — click to flip`)}
                     onclick={_cycleSide}>
-              {_modalSide ? _sideBtnLabel(_modalSide) : 'Pick side'}
+              {#if !_modalSide}
+                <span>Pick side</span>
+              {:else if _cq !== 0}
+                <span class="oes-side-line oes-side-line1">{_addCloseVerb(_modalSide)}</span>
+                <span class="oes-side-line oes-side-line2">{_modalSide}</span>
+              {:else}
+                <span>{_modalSide}</span>
+              {/if}
             </button>
           {/if}
           <button type="button" class="oes-common-submit"
@@ -2739,6 +2726,44 @@
                     : (_activeTab === 'ticket' && _toBasket)
                         ? 'Submit to basket'
                         : _submitLabel)}</button>
+          <!-- Operator: "move basket to the end of the row". Basket
+               icon sits at the trailing edge, after Submit. Chain →
+               always-on static badge ("Chain orders are always basket
+               orders"). Ticket → checkbox-style toggle that controls
+               whether Submit fires immediately or adds to the basket.
+               Icon redrawn — no inner vertical bars (those mimicked
+               trash-can ribs); crossed handle straps over a slanted
+               basket body reads unambiguously as a shopping basket. -->
+          {#if _activeTab === 'chain'}
+            <span class="oes-common-basket-toggle oes-common-basket-toggle-icon on is-static"
+                  title="Chain orders are always basket orders — the basket builds from each +CE / +PE / +Fut click."
+                  aria-label="Basket mode (always on for Chain)">
+              <svg width="16" height="16" viewBox="0 0 20 20"
+                   fill="none" stroke="currentColor" stroke-width="1.7"
+                   stroke-linecap="round" stroke-linejoin="round"
+                   aria-hidden="true">
+                <path d="M2.5 7.5h15" />
+                <path d="M4.5 7.5l1.5 9.2c.12 0.75 0.77 1.3 1.53 1.3h5.94c0.76 0 1.41-0.55 1.53-1.3l1.5-9.2" />
+                <path d="M7 7.5l2-3M13 7.5l-2-3" />
+              </svg>
+            </span>
+          {:else}
+            <label class="oes-common-basket-toggle oes-common-basket-toggle-icon"
+                   class:on={_toBasket}
+                   title={_toBasket
+                     ? 'Basket mode ON — Submit will add the current ticket as a basket leg'
+                     : 'Basket mode OFF — Submit will place the order immediately'}>
+              <input type="checkbox" bind:checked={_toBasket} class="sr-only" />
+              <svg width="16" height="16" viewBox="0 0 20 20"
+                   fill="none" stroke="currentColor" stroke-width="1.7"
+                   stroke-linecap="round" stroke-linejoin="round"
+                   aria-hidden="true">
+                <path d="M2.5 7.5h15" />
+                <path d="M4.5 7.5l1.5 9.2c.12 0.75 0.77 1.3 1.53 1.3h5.94c0.76 0 1.41-0.55 1.53-1.3l1.5-9.2" />
+                <path d="M7 7.5l2-3M13 7.5l-2-3" />
+              </svg>
+            </label>
+          {/if}
         </div>
       </div>
     {/if}
@@ -4207,15 +4232,16 @@
     gap: 0.45rem;
   }
   .oes-common-spacer { flex: 1 1 0; }
-  /* Operator: "message chip width should be expanded based on
-     available space". The info-slot chip (sticky result / notice /
-     cold prompt / margin pill) gets flex-grow so it fills the
-     available width before the action cluster on the right.
-     Audit fix — selector previously used `> *:first-child` which
-     accidentally matched the basket-icon toggle on an empty info
-     slot (e.g. MARKET picked with no preflight margin), causing the
-     icon to expand to ~300px and intercept clicks on Submit +
-     BUY/SELL. The named selector below targets ONLY the info-slot
+  /* Operator naming convention: the left-slot chip is the "margin
+     chip" (regardless of whether it's showing margin / cash / notice /
+     sticky / cold prompt). All four variants share these layout rules:
+       · flex-grow to fill available width (button widths stay fixed)
+       · height pinned to 1.7rem so the chip and every action button
+         in the row read as a single horizontal stripe
+     Audit fix history — selector previously used `> *:first-child`
+     which accidentally matched the basket icon on an empty info slot
+     and let it expand to ~300px, intercepting clicks on Submit +
+     BUY/SELL. Named-class selector below targets ONLY the info-slot
      elements so the action cluster keeps its natural sizing. */
   .oes-common-row > .oes-sticky-result,
   .oes-common-row > .oes-notice,
@@ -4223,6 +4249,10 @@
   .oes-common-row > .oes-margin-pill {
     flex: 1 1 auto;
     min-width: 0;
+    min-height: 1.7rem;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
   }
   /* Cold-start prompt — fills the left slot when there's no
      notice / margin / sticky to show, so the row is never visually
@@ -4278,11 +4308,11 @@
     clip: rect(0,0,0,0);
     border: 0;
   }
-  /* Single BUY/SELL toggle — operator: "buy and sell should be one
-     single button." Cycles cold → BUY → SELL → BUY on click. Cold
-     state is muted slate with dashed border so it reads as
-     "unpicked"; picked state fills with green or red. Same height
-     as Submit + basket icon. */
+  /* Single side toggle — operator: "buy and sell should be one single
+     button. id button has more show in two rows in the button without
+     changing button height." Cycles cold → BUY → SELL → BUY on click.
+     In a symbol-row context the verb (ADD/CLOSE) stacks above the
+     derived broker side (BUY/SELL) inside the same 1.7rem button. */
   .oes-footer-side-btn-single {
     height: 1.7rem;
     min-width: 5.5rem;
@@ -4298,6 +4328,33 @@
     white-space: nowrap;
     background: transparent;
     flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    line-height: 1;
+  }
+  /* Two-line stacking when in symbol-row context. Same total height
+     (1.7rem) — labels just shrink to ~0.5rem so two fit. */
+  .oes-footer-side-btn-single.is-stacked {
+    flex-direction: column;
+    line-height: 1.05;
+    padding: 0 0.5rem;
+  }
+  .oes-footer-side-btn-single.is-stacked .oes-side-line {
+    display: block;
+    text-align: center;
+  }
+  .oes-footer-side-btn-single.is-stacked .oes-side-line1 {
+    font-size: 0.52rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    opacity: 0.85;
+  }
+  .oes-footer-side-btn-single.is-stacked .oes-side-line2 {
+    font-size: 0.62rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
   }
   .oes-footer-side-btn-single.on-none {
     color: rgba(200, 216, 240, 0.55);
