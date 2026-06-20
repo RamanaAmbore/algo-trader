@@ -73,6 +73,7 @@
    *   onSideChange?: ((side: 'BUY'|'SELL') => void) | null,
    *   hostManagesEsc?: boolean,
    *   onMarginUpdate?: ((preview:any, loading:boolean, meta?: {isCashMode:boolean, cash:number|null, availMargin:number|null, usedMargin:number|null, fundsAccount:string, kind:string, side:string}) => void) | null,
+   *   onPreviewPlanUpdate?: ((plan:any, loading:boolean, error:string, capWarning:string) => void) | null,
    *   fundsHidden?: boolean,
    *   symbolHidden?: boolean,
    *   symType?: 'ALL' | 'EQ' | 'FUT' | 'OPT',
@@ -163,6 +164,11 @@
     // inside its common action footer so the operator sees the verdict
     // regardless of which tab is active.
     onMarginUpdate = /** @type {((preview:any, loading:boolean, meta?:{isCashMode:boolean,cash:number|null,availMargin:number|null,usedMargin:number|null,fundsAccount:string,kind:string,side:string}) => void) | null} */ (null),
+    // Pipes the on-fill preview chip (_previewPlan / _previewLoading /
+    // _previewError + cap warning) up to the host so SymbolPanel can
+    // render it inside the Template container — visible on BOTH tabs
+    // instead of only on Ticket. Mirrors the onMarginUpdate plumbing.
+    onPreviewPlanUpdate = /** @type {((plan:any, loading:boolean, error:string, capWarning:string) => void) | null} */ (null),
     // When true, the in-ticket per-account funds line is suppressed.
     // The order modal sets this so the funds row only renders once in
     // the common action footer (visible on every tab).
@@ -1156,6 +1162,21 @@
     onMarginUpdate?.(_marginPreview, _marginLoading, _chipMeta);
   });
 
+  // Fire onPreviewPlanUpdate whenever the per-leg preview state changes.
+  // Same dedup pattern as onMarginUpdate but cheaper since the dict is
+  // already a stable reference. The shell renders the chip inside the
+  // Template container so it's visible on BOTH Ticket and Chain tabs.
+  let _lastPreviewKey = '';
+  $effect(() => {
+    if (!onPreviewPlanUpdate) return;
+    const key = JSON.stringify({
+      p: _previewPlan, l: _previewLoading, e: _previewError, c: _templateCapWarning,
+    });
+    if (key === _lastPreviewKey) return;
+    _lastPreviewKey = key;
+    onPreviewPlanUpdate(_previewPlan, _previewLoading, _previewError, _templateCapWarning);
+  });
+
   $effect(() => {
     // Track everything that materially affects the basket_margin number.
     // (Svelte 5 picks up reads inside this function automatically.)
@@ -1938,47 +1959,17 @@
          capability vs the resolved leg, fill-time TP/SL/Wing trigger
          prices computed against the entered limit) that the Chain
          tab's multi-leg basket can't surface directly. -->
-    {#if action === 'open' && _selectedTemplate && _selectedTemplate.slug !== 'none'}
-      <div class="ot-row ot-template-row">
-        <div class="ot-label-block" style="flex: 1 1 0; min-width: 0">
-          <div class="ot-template-block">
-            {#if _templateCapWarning}
-              <div class="ot-tpl-cap-warn" title={_templateCapWarning}>
-                ⚠ {_templateCapWarning}
-              </div>
-            {/if}
-            <!-- Pre-submit preview chip — shows the artefacts that
-                 will be placed. Updates ~200ms after any field change. -->
-            {#if _previewError}
-              <div class="ot-tpl-preview-err">⚠ preview: {_previewError}</div>
-            {:else if _previewLoading}
-              <div class="ot-tpl-preview-loading">resolving plan…</div>
-            {:else if _previewPlan && (_previewPlan.gtts?.length > 0 || _previewPlan.wing)}
-              <div class="ot-tpl-preview">
-                <span class="ot-tpl-preview-label">on fill →</span>
-                {#each _previewPlan.gtts || [] as g}
-                  <span class="ot-tpl-preview-chip" class:tp={g.label === 'TP'} class:sl={g.label === 'SL'} class:both={g.label === 'TP+SL'}>
-                    {g.label} {g.trigger_values?.map(v => '₹' + Number(v).toLocaleString('en-IN')).join(' / ')}
-                  </span>
-                {/each}
-                {#if _previewPlan.wing}
-                  <span class="ot-tpl-preview-chip wing"
-                        title={`Protective BUY leg auto-attached to your SELL on fill. Reduces SPAN margin and caps tail risk. ${_previewPlan.wing.order_type || 'MARKET'} order, qty matches parent.`}>
-                    + Wing BUY {_previewPlan.wing.quantity}× <LegLabel sym={_previewPlan.wing.tradingsymbol} compact={true} />
-                    {#if _previewPlan.wing.estimated_price != null && _previewPlan.wing.estimated_price > 0}
-                      <span class="ot-tpl-preview-chip-px">@ ~₹{Number(_previewPlan.wing.estimated_price).toFixed(2)}</span>
-                    {/if}
-                  </span>
-                {/if}
-                {#each _previewPlan.notes || [] as n}
-                  <span class="ot-tpl-preview-note">· {n}</span>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        </div>
-      </div>
-    {/if}
+    <!-- On-fill preview chip + cap warning lifted to the shell-level
+         Template container in SymbolPanel — visible on BOTH Ticket and
+         Chain tabs now. Operator: "on fill chip text can be shown in
+         chain also, as it clearly tells what is going to happen. when
+         changing these values chip should get updated. it can be part
+         of template container for both chain and order ticket." The
+         `onPreviewPlanUpdate` callback above fires whenever
+         _previewPlan / _previewLoading / _previewError /
+         _templateCapWarning change, so the shell stays in lockstep
+         with the Ticket form's reactive state. -->
+
 
     <!-- Depth — also bubbles its quote tick up via `onQuote` so the
          ticket can keep the limit price aligned with the marketable

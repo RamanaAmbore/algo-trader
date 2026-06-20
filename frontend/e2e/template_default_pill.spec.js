@@ -104,43 +104,45 @@ async function getTemplateRow(page) {
 }
 
 /**
- * Click the BUY or SELL toggle inside the SymbolPanel.
- * The side toggle renders as buttons with text "BUY"/"SELL" (or
- * contextual labels like "Buy"/"Sell"/"Add to position"/etc.).
- * We look for the pill-group inside .oes-side-row or .oes-modal.
+ * Ensure the Order Ticket tab is active inside the inline SymbolPanel so
+ * the side toggle (.ot-side-buy / .ot-side-sell) is visible. The /orders
+ * page defaults to the Chain tab; the side toggle only renders in the
+ * Ticket tab body. Clicking the Ticket tab also registers `onSideChange`
+ * with `_modalSide` so the shell-level template row reacts to side flips.
+ */
+async function switchToTicketTab(page) {
+  const ticketTab = page.locator('.oes-tabs button[role="tab"]')
+    .filter({ hasText: /order ticket/i })
+    .first();
+  if (await ticketTab.count() === 0) return; // tab not present
+  const isActive = await ticketTab.evaluate(
+    (el) => el.getAttribute('aria-selected') === 'true' ||
+             el.classList.contains('active') || el.classList.contains('on')
+  ).catch(() => false);
+  if (!isActive) {
+    await ticketTab.click();
+    await page.waitForTimeout(400);
+  }
+}
+
+/**
+ * Click the BUY or SELL toggle inside the Ticket tab.
+ * The side toggle is `.ot-side-buy` / `.ot-side-sell` inside OrderTicket.
+ * Must be called AFTER switchToTicketTab() so the buttons are visible.
  */
 async function setSide(page, side) {
-  // Look for the side toggle pill — buttons with BUY or SELL text.
-  // The outer class can vary; match by button text inside the modal area.
-  const btn = page.locator('.oes-modal, .oes-modal-inline')
-    .first()
-    .locator('button.oes-side-btn, button.oes-side-pill, button[class*="side"]')
-    .filter({ hasText: new RegExp(`^${side}$`, 'i') })
-    .first();
+  // First make sure the Ticket tab is active so the side buttons are visible.
+  await switchToTicketTab(page);
 
-  if (await btn.count() > 0 && await btn.isVisible()) {
-    const alreadyOn = await btn.evaluate(
-      (el) => el.classList.contains('on') || el.classList.contains('active')
-    ).catch(() => false);
-    if (!alreadyOn) await btn.click();
+  const clsMap = { BUY: '.ot-side-buy', SELL: '.ot-side-sell' };
+  const btn = page.locator(clsMap[side]).first();
+  await expect(btn).toBeVisible({ timeout: 8_000 });
+  const alreadyOn = await btn.evaluate(
+    (el) => el.classList.contains('on')
+  ).catch(() => false);
+  if (!alreadyOn) {
+    await btn.click();
     await page.waitForTimeout(300);
-    return;
-  }
-
-  // Fallback: any visible button whose full text is the side word.
-  const allBtns = page.locator('.oes-modal, .oes-modal-inline').first().locator('button');
-  const count = await allBtns.count();
-  for (let i = 0; i < count; i++) {
-    const el = allBtns.nth(i);
-    const txt = (await el.textContent().catch(() => '')).trim().toUpperCase();
-    if (txt === side) {
-      const alreadyOn = await el.evaluate(
-        (e) => e.classList.contains('on') || e.classList.contains('active')
-      ).catch(() => false);
-      if (!alreadyOn) await el.click();
-      await page.waitForTimeout(300);
-      return;
-    }
   }
 }
 
@@ -159,21 +161,26 @@ test.describe('Template Default pill — side-aware 4-scope matrix', () => {
 
     await loginOnce(page);
 
-    // ── Pre-check: commit 567c24a1 must be deployed on dev ────────────────
-    // The 4-default matrix was seeded by that commit. Verify via API.
+    // ── Fetch template catalog from API — used for deploy guard + expected values ──
+    // The 4-default matrix was seeded by commit 567c24a1. We read the
+    // actual DB values as ground truth so the test doesn't hardcode values
+    // that the seeder's conservative _MUTABLE_FIELDS might not have refreshed.
     const tplResp = await page.request.get(`${API_HOST}/api/admin/templates`, {
       headers: { Authorization: `Bearer ${_cachedToken}` },
       timeout: 15_000,
     }).catch(() => null);
+
+    /** @type {Record<string, any>} */
+    const tplBySlug = {};
 
     if (!tplResp || !tplResp.ok()) {
       log.steps.push('WARN: /api/admin/templates unreachable — skipping deploy guard');
     } else {
       const tpls = await tplResp.json().catch(() => []);
       const rows = Array.isArray(tpls) ? tpls : (tpls.rows || tpls.items || []);
-      const slugs = rows.filter(t => t.is_active !== false).map(t => t.slug || '');
+      for (const r of rows) { if (r.slug) tplBySlug[r.slug] = r; }
       const required = ['default-bull', 'default-long-option', 'default-bear', 'default-short-vol'];
-      const missing  = required.filter(s => !slugs.includes(s));
+      const missing  = required.filter(s => !tplBySlug[s] || tplBySlug[s].is_active === false);
       if (missing.length > 0) {
         log.steps.push(`DEPLOY_GUARD: missing ${missing.join(', ')} — commit 567c24a1 not deployed yet`);
         console.log(JSON.stringify(log, null, 2));
@@ -181,7 +188,57 @@ test.describe('Template Default pill — side-aware 4-scope matrix', () => {
         return;
       }
       log.steps.push(`deploy guard OK: found ${required.join(', ')}`);
+      log.steps.push(`template values: ${JSON.stringify(
+        Object.fromEntries(required.map(s => [s, {
+          tp_pct: tplBySlug[s].tp_pct, sl_pct: tplBySlug[s].sl_pct,
+          wing_premium_pct: tplBySlug[s].wing_premium_pct,
+          wing_strike_offset: tplBySlug[s].wing_strike_offset,
+        }]))
+      )}`);
     }
+
+    // Helper: format a numeric value as a placeholder string.
+    // The UI renders `String(val)` if non-null, else '—'.
+    function expectedPh(val) {
+      if (val == null) return '—';
+      // Remove trailing .0 for whole numbers (String(30.0) → "30.0" in Python
+      // but the Svelte template does String(val) which renders as "30" for JS
+      // numbers since JSON parses 30.0 as 30).
+      const n = Number(val);
+      return Number.isInteger(n) ? String(n) : String(n);
+    }
+
+    // Read template field expectations from API (fall back to commit-spec values).
+    const longOption = tplBySlug['default-long-option'] ?? {};
+    const shortVol   = tplBySlug['default-short-vol']   ?? {};
+    const bull       = tplBySlug['default-bull']         ?? {};
+    const bear       = tplBySlug['default-bear']         ?? {};
+
+    const e = {
+      longOption: {
+        tpPh: expectedPh(longOption.tp_pct ?? 80),
+        slPh: expectedPh(longOption.sl_pct ?? null),
+        hasWing: longOption.wing_premium_pct != null || longOption.wing_strike_offset != null,
+        wingPremPh: expectedPh(longOption.wing_premium_pct ?? null),
+      },
+      shortVol: {
+        tpPh: expectedPh(shortVol.tp_pct ?? 50),
+        slPh: expectedPh(shortVol.sl_pct ?? null),
+        hasWing: shortVol.wing_premium_pct != null || shortVol.wing_strike_offset != null,
+        wingPremPh: expectedPh(shortVol.wing_premium_pct ?? null),
+      },
+      bull: {
+        tpPh: expectedPh(bull.tp_pct ?? 30),
+        slPh: expectedPh(bull.sl_pct ?? 20),
+        hasWing: bull.wing_premium_pct != null || bull.wing_strike_offset != null,
+      },
+      bear: {
+        tpPh: expectedPh(bear.tp_pct ?? 30),
+        slPh: expectedPh(bear.sl_pct ?? 20),
+        hasWing: bear.wing_premium_pct != null || bear.wing_strike_offset != null,
+      },
+    };
+    log.steps.push(`expected values: ${JSON.stringify(e)}`);
 
     // ── Fetch a real CE tradingsymbol from dev instruments ────────────────
     // Use the instruments API to get a real NFO CE contract. We look for

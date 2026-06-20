@@ -874,6 +874,15 @@
   // render in the common action footer.
   let _modalMargin        = $state(/** @type {any} */ (null));
   let _modalMarginLoading = $state(false);
+  // On-fill preview chip piped up from OrderTicket via
+  // onPreviewPlanUpdate. Rendered inside the Template container so
+  // it shows on BOTH tabs (operator: "on fill chip text can be shown
+  // in chain also"). Updates whenever the Ticket form's _previewPlan
+  // re-derives — TP%/SL%/Wing override edits flow visibly into the chip.
+  let _modalPreviewPlan    = $state(/** @type {any} */ (null));
+  let _modalPreviewLoading = $state(false);
+  let _modalPreviewError   = $state('');
+  let _modalCapWarning     = $state('');
   // Chip-meta from OrderTicket: { isCashMode, cash, kind, side }.
   // Drives the footer chip label swap between "Cost · Cash" (cash-mode
   // orders: equity buy/sell + long option premium) and "Req · Avail"
@@ -1586,6 +1595,12 @@
             bind:wingPremPctOverride={_sharedWingPremPctOverride}
             modeChaseHidden={true}
             onMarginUpdate={showCommonActions ? _onMarginUpdate : null}
+            onPreviewPlanUpdate={(plan, loading, err, capW) => {
+              _modalPreviewPlan    = plan;
+              _modalPreviewLoading = loading;
+              _modalPreviewError   = err;
+              _modalCapWarning     = capW;
+            }}
             {onSubmit}
             {onClose} />
       </div>
@@ -1719,6 +1734,54 @@
               </label>
             {/if}
           </div>
+        {/if}
+        <!-- On-fill preview chip + cap warning. Piped up from OrderTicket
+             via onPreviewPlanUpdate (mirrors onMarginUpdate). Visible on
+             BOTH tabs because it lives in the shell-level Template
+             container. The chip's ₹ values re-compute reactively whenever
+             the operator edits TP% / SL% / Wing inputs above.
+             - cap warning surfaces broker-capability gaps (Groww OCO,
+               Dhan trail, MCX) BEFORE submit so the operator catches
+               them at compose time.
+             - preview chips render the EXACT triggers Kite GTT / Dhan
+               Forever / Groww OCO will set on fill — "TP ₹250 / SL ₹180
+               + Wing BUY 22000PE @ ~₹85" — the most useful piece of
+               context the operator has at submit time. -->
+        {#if !_shellUsingNone}
+          {#if _modalCapWarning}
+            <div class="oes-tpl-cap-warn" title={_modalCapWarning}>
+              ⚠ {_modalCapWarning}
+            </div>
+          {/if}
+          {#if _modalPreviewError}
+            <div class="oes-tpl-preview-err">⚠ preview: {_modalPreviewError}</div>
+          {:else if _modalPreviewLoading}
+            <div class="oes-tpl-preview-loading">resolving plan…</div>
+          {:else if _modalPreviewPlan && (_modalPreviewPlan.gtts?.length > 0 || _modalPreviewPlan.wing)}
+            <div class="oes-tpl-preview">
+              <span class="oes-tpl-preview-label">on fill →</span>
+              {#each _modalPreviewPlan.gtts || [] as g}
+                <span class="oes-tpl-preview-chip"
+                      class:tp={g.label === 'TP'}
+                      class:sl={g.label === 'SL'}
+                      class:both={g.label === 'TP+SL'}>
+                  {g.label} {g.trigger_values?.map(v => '₹' + Number(v).toLocaleString('en-IN')).join(' / ')}
+                </span>
+              {/each}
+              {#if _modalPreviewPlan.wing}
+                <span class="oes-tpl-preview-chip oes-tpl-preview-wing"
+                      title={`Protective BUY leg auto-attached on fill. Reduces SPAN margin and caps tail risk. ${_modalPreviewPlan.wing.order_type || 'MARKET'} order, qty matches parent.`}>
+                  + Wing BUY {_modalPreviewPlan.wing.quantity}× <LegLabel sym={_modalPreviewPlan.wing.tradingsymbol} compact={true} />
+                  {#if _modalPreviewPlan.wing.estimated_price != null && _modalPreviewPlan.wing.estimated_price > 0}
+                    <span class="oes-tpl-preview-chip-px">@ ~₹{Number(_modalPreviewPlan.wing.estimated_price).toFixed(2)}</span>
+                  {/if}
+                </span>
+              {/if}
+              {#each _modalPreviewPlan.notes || [] as n}
+                <span class="oes-tpl-preview-note">· {n}</span>
+              {/each}
+            </div>
+          {/if}
         {/if}
       </div>
     {/if}
@@ -2744,6 +2807,97 @@
     padding: 0.12rem 0.42rem;
     border-radius: 3px;
     letter-spacing: 0.02em;
+  }
+  /* Cap warning + on-fill preview chips — lifted from OrderTicket so
+     they're visible on both Ticket and Chain tabs. Same palette family
+     as the OrderTicket version so the visual identity is preserved:
+     cyan tinted background, TP green, SL red, Both amber, Wing violet. */
+  .oes-tpl-cap-warn {
+    flex-basis: 100%;
+    margin-top: 0.2rem;
+    padding: 0.18rem 0.42rem;
+    border-radius: 3px;
+    font-size: 0.6rem;
+    line-height: 1.25;
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.10);
+    border: 1px solid rgba(251, 191, 36, 0.40);
+  }
+  .oes-tpl-preview {
+    flex-basis: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    align-items: center;
+    margin-top: 0.25rem;
+    padding: 0.3rem 0.45rem;
+    background: rgba(34, 211, 238, 0.06);
+    border: 1px solid rgba(34, 211, 238, 0.22);
+    border-radius: 3px;
+    font-size: 0.6rem;
+    line-height: 1.35;
+  }
+  .oes-tpl-preview-label {
+    color: rgba(180, 200, 230, 0.85);
+    font-weight: 600;
+    margin-right: 0.15rem;
+    font-family: ui-monospace, monospace;
+  }
+  .oes-tpl-preview-chip {
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    font-family: ui-monospace, monospace;
+    font-weight: 600;
+    color: rgba(220, 230, 245, 0.92);
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(180, 200, 230, 0.20);
+  }
+  .oes-tpl-preview-chip.tp {
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.10);
+    border-color: rgba(74, 222, 128, 0.40);
+  }
+  .oes-tpl-preview-chip.sl {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.10);
+    border-color: rgba(248, 113, 113, 0.40);
+  }
+  .oes-tpl-preview-chip.both {
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.10);
+    border-color: rgba(251, 191, 36, 0.40);
+  }
+  .oes-tpl-preview-chip.oes-tpl-preview-wing {
+    color: #c084fc;
+    background: rgba(192, 132, 252, 0.10);
+    border-color: rgba(192, 132, 252, 0.40);
+  }
+  .oes-tpl-preview-chip-px {
+    margin-left: 0.3rem;
+    color: rgba(192, 132, 252, 0.78);
+    font-weight: 500;
+  }
+  .oes-tpl-preview-note {
+    color: rgba(180, 200, 230, 0.6);
+    font-style: italic;
+  }
+  .oes-tpl-preview-loading {
+    flex-basis: 100%;
+    font-size: 0.6rem;
+    color: rgba(180, 200, 230, 0.55);
+    font-family: ui-monospace, monospace;
+    padding-left: 0.45rem;
+    margin-top: 0.25rem;
+  }
+  .oes-tpl-preview-err {
+    flex-basis: 100%;
+    font-size: 0.6rem;
+    color: #fca5a5;
+    padding: 0.25rem 0.4rem;
+    margin-top: 0.25rem;
+    background: rgba(248, 113, 113, 0.08);
+    border: 1px solid rgba(248, 113, 113, 0.30);
+    border-radius: 3px;
   }
   .oes-basket-tpl-note {
     display: inline-flex;
