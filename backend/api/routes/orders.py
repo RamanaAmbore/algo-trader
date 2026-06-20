@@ -379,10 +379,17 @@ class AlgoOrderEventInfo(msgspec.Struct):
     payload_json: str | None
 
 
-class AlgoOrderInfo(msgspec.Struct):
+class AlgoOrderInfo(msgspec.Struct, kw_only=True):
     """Shape exposed to the frontend Order-log tab. Thin wrapper over the
     AlgoOrder row — adds a display-ready price string would be nice but
-    the frontend formats it for locale anyway."""
+    the frontend formats it for locale anyway.
+
+    Hotfix 2026-06-20 — `kw_only=True` because the field order interleaves
+    required fields (`attempts`, `status`, `engine`, `mode`, `detail`,
+    `created_at`) after optional ones (`current_limit`, `fill_price`).
+    msgspec ≥ a recent version refuses to load this without kw_only. Every
+    construction site passes by keyword anyway, so kw_only is the lowest-
+    risk fix — no reordering needed."""
     id: int
     account: str
     symbol: str
