@@ -1382,6 +1382,13 @@
   // of the panel — operator: "what happened to +basket button which
   // is supposed to be present in order modal and order page".
   const _basketEnabled = $derived(_activeTab === 'ticket');
+  // Operator: "ticket should have basket which can be on or off."
+  // Sticky pill state — when ON the Ticket's Submit routes to
+  // _modalFireBasket (add to basket) instead of _modalFireSubmit
+  // (immediate place). Chain ignores this — its Submit always submits
+  // the basket. Defaults OFF so Ticket's primary action stays "place
+  // the order now"; operator opts into basket-build mode explicitly.
+  let _toBasket = $state(false);
 
   // Single-pass leg update — used by chain merge (sym+side dedupe) and
   // +/- steppers. Maps in place so rapid clicks accumulate cleanly
@@ -2555,6 +2562,17 @@
                   title={_modalNotice.detail || _modalNotice.text}>
               {_modalNotice.text}
             </span>
+          {:else if !_modalSide && _activeTab === 'ticket'}
+            <!-- Operator: "during cold start, the empty space can have
+                 the message place the order". When no side has been
+                 picked there's no margin chip to show and the left slot
+                 used to render as dead space pushing the action buttons
+                 to the right. Surface a faint prompt so the operator
+                 reads what they need to do next. -->
+            <span class="oes-cold-prompt"
+                  title="Pick a side (BUY / SELL) in the form above to enable Submit">
+              Place an order — pick BUY or SELL above
+            </span>
           {:else if _marginInfo && !(_activeTab === 'chain' && _basketMarginRows.length > 0)}
             <!-- Margin pill is shared between Chain and Ticket so
                  the operator reads the same Required / Avail values
@@ -2605,41 +2623,51 @@
             </span>
           {/if}
           <span class="oes-common-spacer"></span>
-          <!-- Audit fix (L-4) — +Basket is hidden entirely on the
-               Chain tab. Pre-fix it rendered grayed-out with a
-               tooltip explaining the Chain primary path. But it
-               still occupied horizontal space + read as an
-               affordance the operator could mistakenly click into
-               silence. Chain's +CE / +PE row buttons are the
-               primary path; the outer affordance only makes sense
-               on Ticket. -->
+          <!-- Ticket-only Basket on/off toggle. Sticky setting (vs the
+               prior one-shot +Basket button). When ON, Submit routes
+               to _modalFireBasket → adds the current ticket as a leg
+               to the basket and clears the form. When OFF, Submit
+               fires _modalFireSubmit → places the order immediately.
+               Chain ignores this — its Submit is always
+               submit-the-basket. -->
           {#if _activeTab === 'ticket'}
-            <button type="button" class="oes-common-basket"
-              class:is-disabled={!_basketEnabled}
-              disabled={!_basketEnabled}
-              title="Add the current order to the basket"
-              onclick={_modalFireBasket}>+ Basket</button>
+            <label class="oes-common-basket-toggle"
+                   title={_toBasket
+                     ? 'Basket mode ON — Submit will add the current ticket as a basket leg instead of placing it immediately'
+                     : 'Basket mode OFF — Submit will place the order immediately'}>
+              <input type="checkbox" bind:checked={_toBasket} />
+              <span class="oes-common-basket-toggle-label" class:on={_toBasket}>BASKET</span>
+            </label>
           {/if}
           <button type="button" class="oes-common-submit"
             class:oes-common-submit-buy={_submitFlavor === 'buy'}
             class:oes-common-submit-sell={_submitFlavor === 'sell'}
-            class:oes-common-submit-basket={_submitFlavor === 'basket'}
+            class:oes-common-submit-basket={_submitFlavor === 'basket' || (_activeTab === 'ticket' && _toBasket)}
             class:oes-common-submit-narrow={basketLegs.length > 0}
-            title={basketLegs.length > 0
+            title={basketLegs.length > 0 && _activeTab === 'chain'
               ? `Submit all ${basketLegs.length} basket legs`
               : (_activeTab === 'chain'
                   ? 'Add legs via +CE / +PE on the chain rows first'
-                  : 'Place the order via the active tab')}
+                  : _toBasket
+                    ? 'Add this ticket as a basket leg'
+                    : 'Place the order')}
             disabled={basketSubmitting
                       || (basketLegs.length === 0 && _activeTab === 'chain')}
             onclick={() => {
-              if (basketLegs.length > 0) submitBasket();
-              else _modalFireSubmit();
+              if (_activeTab === 'chain') {
+                if (basketLegs.length > 0) submitBasket();
+              } else if (_toBasket) {
+                _modalFireBasket();
+              } else {
+                _modalFireSubmit();
+              }
             }}>{basketSubmitting
                 ? 'Placing…'
-                : (basketLegs.length > 0
+                : (_activeTab === 'chain' && basketLegs.length > 0
                     ? `Submit (${basketLegs.length})`
-                    : _submitLabel)}</button>
+                    : (_activeTab === 'ticket' && _toBasket)
+                        ? 'Submit to basket'
+                        : _submitLabel)}</button>
         </div>
       </div>
     {/if}
@@ -4108,6 +4136,40 @@
     gap: 0.45rem;
   }
   .oes-common-spacer { flex: 1 1 0; }
+  /* Cold-start prompt — fills the left slot when there's no
+     notice / margin / sticky to show, so the row is never visually
+     empty. Faint slate so it reads as a hint, not a real notice. */
+  .oes-cold-prompt {
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    color: rgba(180, 200, 230, 0.50);
+    font-style: italic;
+    padding: 0.18rem 0.5rem;
+    letter-spacing: 0.02em;
+  }
+  /* Basket on/off toggle — sticky setting on Ticket footer. Same
+     cadence as the CHASE toggle in the header cluster so the
+     operator reads them as the same affordance family. */
+  .oes-common-basket-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    cursor: pointer;
+    user-select: none;
+    padding: 0.18rem 0.45rem;
+    border: 1px solid rgba(125, 211, 252, 0.40);
+    border-radius: 3px;
+    background: transparent;
+  }
+  .oes-common-basket-toggle input { margin: 0; }
+  .oes-common-basket-toggle-label {
+    color: rgba(200, 216, 240, 0.55);
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+  .oes-common-basket-toggle-label.on { color: #7dd3fc; }
 
   /* Shared mode + chase toolkit — sits ABOVE the margin/action row
      so both Chain and Ticket tabs read from the same controls.
