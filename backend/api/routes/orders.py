@@ -1499,17 +1499,13 @@ class OrdersController(Controller):
             )
             if result is None:
                 return {"ok": False, "reason": "apply_template_to_order returned no result (template missing or empty plan)"}
-            # Audit fix (H-7) — persist attached_gtts_json on the row.
-            # `apply_template_to_order(apply_path="live")` places the
-            # GTTs at the broker but does NOT write the row's
-            # attached_gtts_json column itself — only the
-            # `_fire_template_attach_on_fill` wrapper does that. Pre-
-            # fix retry_template would land GTTs at the broker, report
-            # `attached: false` to the operator, and operator's next
-            # retry click would double-place them at the broker
-            # because the idempotency guard
-            # (`if _row.attached_gtts_json`) wasn't tripped.
-            # Same shape as the wrapper in _fire_template_attach_on_fill.
+            # Audit fix (H-7) + redo-audit (Sc.5a / 5b / 5c) — persist
+            # attached_gtts_json on the row mirroring the EXACT shape
+            # `_fire_template_attach_on_fill` writes. Pre-fix retry_template
+            # (a) landed GTTs but reported `attached: false` so the next
+            # retry doubled at broker, and (b) omitted `current_trigger`
+            # + `sl_trail_pct` entries so the trail-stop poller silently
+            # refused to ratchet retry-attached SLs forever.
             import json as _json_retry
             _attached_payload = []
             if result.plan and result.gtt_ids:
@@ -1521,14 +1517,33 @@ class OrdersController(Controller):
                         "trigger_values": list(_spec.trigger_values or []),
                         "trigger_type":  str(_spec.trigger_type),
                     }
-                    # Two-leg OCO needs the TP trigger preserved so the
-                    # trail-stop poller ratchets the SL only — matches
-                    # the on-fill wrapper's shape.
-                    if str(_spec.trigger_type) == "two-leg" \
+                    # Sc.5a / 5b — trail-stop scaffolding. The trail
+                    # poller reads `sl_trail_pct` to decide whether to
+                    # ratchet + `current_trigger` to know what to beat.
+                    # For two-leg OCO the SL trigger sits at
+                    # trigger_values[-1] (orders[1] index), single-SL is
+                    # the only trigger ([0]). Mirrors lines 826-857 in
+                    # the on-fill wrapper exactly.
+                    if _spec.sl_trail_pct is not None and _spec.trigger_values:
+                        _entry["sl_trail_pct"]    = float(_spec.sl_trail_pct)
+                        _last_trig = float(_spec.trigger_values[-1])
+                        _entry["current_trigger"] = _last_trig
+                        if str(_spec.trigger_type) == "two-leg" \
+                                and len(_spec.trigger_values) >= 2:
+                            _entry["tp_trigger"]  = float(_spec.trigger_values[0])
+                        _entry["highest_ltp"]     = float(result.plan.parent_fill_price)
+                        _entry["lowest_ltp"]      = float(result.plan.parent_fill_price)
+                    elif str(_spec.trigger_type) == "two-leg" \
                             and len(_spec.trigger_values) >= 2:
-                        _entry["tp_trigger"] = float(_spec.trigger_values[0])
-                    _entry["highest_ltp"]     = float(result.plan.parent_fill_price)
-                    _entry["lowest_ltp"]      = float(result.plan.parent_fill_price)
+                        # Non-trail two-leg still wants tp_trigger for
+                        # any modify_gtt round-trip the operator might
+                        # trigger later (e.g. cancel + recreate flow).
+                        _entry["tp_trigger"]      = float(_spec.trigger_values[0])
+                    # Parent metadata — needed by both trail-stop poller
+                    # (rebuild orders_payload) and OCO pair-watcher
+                    # (sibling cancel routing). Always populated so the
+                    # downstream consumers don't need to look up the
+                    # parent row again.
                     _entry["parent_side"]     = str(result.plan.parent_side)
                     _entry["parent_symbol"]   = str(result.plan.parent_symbol)
                     _entry["parent_exchange"] = str(result.plan.parent_exchange)
@@ -1551,13 +1566,29 @@ class OrdersController(Controller):
                 await s.commit()
                 await s.refresh(row)
 
+        # Sc.5c — distinguish full success from silent no-op. When the
+        # plan resolved but produced no GTTs and no wing (all branches
+        # rejected by overrides or chain-scan), the response previously
+        # claimed `ok: true, attached: false` which read like a success.
+        # Treat the empty-payload case as a failure with a clear reason.
+        _attached_now = row.attached_gtts_json is not None
+        if not _attached_now and not (result.errors or []):
+            return {
+                "ok":            False,
+                "reason":        "Template produced no GTTs and no wing — nothing to attach (check overrides + chain-scan filters)",
+                "wing_order_id": result.wing_order_id,
+                "gtt_ids":       result.gtt_ids,
+                "notes":         result.plan.notes if result.plan else [],
+                "errors":        result.errors,
+                "attached":      False,
+            }
         return {
             "ok": True,
             "wing_order_id": result.wing_order_id,
             "gtt_ids":       result.gtt_ids,
             "notes":         result.plan.notes if result.plan else [],
             "errors":        result.errors,
-            "attached":      row.attached_gtts_json is not None,
+            "attached":      _attached_now,
         }
 
     @post("/algo/reconcile")
