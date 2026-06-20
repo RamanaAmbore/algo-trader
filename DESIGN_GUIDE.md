@@ -285,7 +285,7 @@ flowchart TD
     subgraph dblayer [Data layer]
         INIT --> META[Base.metadata.create_all]
         INIT --> ALT[ALTER TABLE ... IF NOT EXISTS<br/>idempotent migrations]
-        INIT --> SEED[seed_settings · seed_system_templates<br/>seed_grammar · seed_hedge_proxies · seed_agents]
+        INIT --> SEED[seed_grammar_tokens · seed_agent_templates<br/>seed_agents · seed_settings · seed_templates<br/>seed_global_pinned · seed_hedge_proxies]
     end
 
     subgraph runtime [Runtime — every request]
@@ -319,32 +319,30 @@ flowchart TD
 
 ```python
 # backend/api/database.py
-_engine = create_async_engine(
-    f"postgresql+asyncpg://{user}:{password}@localhost:5432/{_db_name()}",
-    pool_size=20,            # max connections in the pool
-    max_overflow=10,         # extra one-off connections when pool exhausted
-    pool_pre_ping=True,      # checks connection validity before checkout
+engine = create_async_engine(
+    DATABASE_URL,            # postgresql+asyncpg://...
     echo=False,
+    pool_size=5,             # max connections kept warm in the pool
+    max_overflow=10,         # extra one-off connections when pool exhausted
 )
 
 async_session = async_sessionmaker(
-    _engine,
+    engine,
     expire_on_commit=False,  # load-bearing — see 4.5.5
     class_=AsyncSession,
 )
 
 async def init_db() -> None:
     """Idempotent: safe to run on every startup."""
-    async with _engine.begin() as conn:
+    async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         # ALTER TABLE ... IF NOT EXISTS for every column added after
         # the table's initial creation. We don't use Alembic.
-        await conn.exec_driver_sql("ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS filled_quantity INTEGER")
-        # ... ~50 more such ALTERs ...
-    # Seeders run in a separate session (idempotent + non-DDL)
-    await seed_settings()
-    await seed_system_templates()
-    ...
+        await conn.execute(text(
+            "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS filled_quantity INTEGER"
+        ))
+        # ... many more such ALTERs ...
+    # Seeders run after the DDL block — see §4.5.7
 ```
 
 ⚙ **TECH — Why `expire_on_commit=False`** — `WHY` After `commit()`, SQLAlchemy's default is to expire all ORM attributes on the committed rows, so the next attribute access triggers a fresh SELECT. That's catastrophic in our codebase because several handler paths commit then immediately read attributes (chase reconcile attach queue, retry_template, postback fallback match). With expire-on-commit we'd issue redundant SELECTs per commit. `WHAT` Setting this to `False` keeps the in-Python row state intact after commit. `HOW` Set globally on the `async_sessionmaker`. Never override per-session — consistency matters. `WHERE` `backend/api/database.py::async_session`.
@@ -425,10 +423,14 @@ We don't use Alembic. Every schema change is an `ALTER TABLE ... IF NOT EXISTS` 
 
 ```python
 async def init_db():
-    async with _engine.begin() as conn:
+    async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        await conn.exec_driver_sql("ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS filled_quantity INTEGER")
-        await conn.exec_driver_sql("ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS sl_trail_pct NUMERIC(8, 4)")
+        await conn.execute(text(
+            "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS filled_quantity INTEGER"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS sl_trail_pct NUMERIC(8, 4)"
+        ))
         # ... dozens more ...
 ```
 
@@ -443,15 +445,17 @@ The pattern is suitable for small-team prod with infrequent destructive changes.
 
 ### 4.5.7 The seeders — bootstrapping defaults
 
-Five seeders run on every startup (after `create_all + ALTER`):
+Seven seeders run at startup. Six fire from inside `init_db()` (in `backend/api/database.py`); `seed_hedge_proxies` is registered as its own `on_startup` coroutine in `app.py` so it runs after the DDL block:
 
-| Seeder | What it seeds | Operator-overridable? |
-|---|---|---|
-| `seed_settings()` in `settings.py` | Settings rows (`alerts.cooldown_minutes`, `chase.max_consecutive_errors`, etc.) | Yes — operator edits via `/admin/settings`; seeder preserves `value` and only refreshes metadata |
-| `seed_system_templates()` in `templates_seed.py` | 4-default templates (`default-long-option`, `default-bull`, `default-short-vol`, `default-bear`) | Partial — system templates are overwritten on every restart, but operator's saved copies (different `user_id`) survive |
-| `seed_grammar()` in `grammar.py` | Grammar tokens (metric/scope/op/channel/format/template/action_type) | Toggleable `is_active`; cannot delete system tokens |
-| `seed_hedge_proxies()` in `routes/hedge_proxies.py` | Six default pairs (GOLDBEES → GOLD/GOLDM, etc.) | Editable via `/admin/settings → Hedge proxies` |
-| `seed_agents()` in `algo/agent_engine.py` | 17 built-in agents (loss-*, expiry-*, summary agents) | Editable, but seeder force-resets `schedule` + system summary agents on every boot |
+| Seeder | Where it lives | What it seeds | Operator-overridable? |
+|---|---|---|---|
+| `seed_grammar_tokens` | `backend/api/algo/grammar.py` | Grammar tokens (metric/scope/op/channel/format/template/action_type) | Toggleable `is_active`; cannot delete system tokens |
+| `seed_agent_templates` | `backend/api/algo/template_registry.py` | Reusable agent templates referenced by built-in agents | Toggleable; refresh on boot |
+| `seed_agents` | `backend/api/algo/agent_engine.py` | 10 built-in agents (6 loss-*, 3 expiry-*, 1 manual) | Editable; seeder force-resets `schedule` field + force-inactives built-in summary agents on every boot |
+| `seed_settings` | `backend/shared/helpers/settings.py` | Settings rows (`alerts.cooldown_minutes`, `chase.max_consecutive_errors`, etc.) | Yes — operator edits via `/admin/settings`; seeder preserves `value` and only refreshes metadata |
+| `seed_templates` | `backend/api/algo/templates_seed.py` | 4-default order templates (`default-bull`, `default-long-option`, `default-bear`, `default-short-vol`) | Partial — system templates are overwritten on every restart, but operator's saved copies (different `user_id`) survive |
+| `seed_global_pinned` | `backend/api/routes/watchlist.py` | Pinned global watchlists (Markets, Default) | Editable per-user; global rows refresh |
+| `seed_hedge_proxies` | `backend/api/routes/hedge_proxies.py` (runs from `app.on_startup`, not `init_db`) | Six default pairs (GOLDBEES → GOLD/GOLDM, etc.) | Editable via `/admin/settings → Hedge proxies` |
 
 The recurring tension in seeders: **how much to overwrite on every boot vs preserve operator changes?** The pattern:
 - **Description / schema / metadata** — always refreshed (code is the source of truth)
@@ -522,7 +526,7 @@ When adding code that reads a setting, **always go through `get_*` helpers**. Ne
 ### 4.5.10 Pool sizing + connection accounting
 
 Defaults:
-- `pool_size=20` connections kept warm
+- `pool_size=5` connections kept warm
 - `max_overflow=10` extra one-off connections under burst
 - `pool_pre_ping=True` checks the connection is alive before checkout
 
@@ -1022,72 +1026,77 @@ flowchart TD
 
 ### 14.5.3 The Broker ABC contract
 
-`base.py` declares ~20 abstract methods. Every adapter MUST implement every one — no partial mode. The contract:
+`base.py` declares **17 `@abstractmethod` methods plus several concrete-default methods**. A subclass MUST override every `@abstractmethod`. The concrete-default methods (`capabilities`, `order_status`, `cancel_gtt`, `get_gtts`, `translate_qty`, `normalise_qty`) can be inherited as-is for simple cases — but watch for the GTT methods, which most adapters override to add broker-specific logic. The actual signatures:
 
 ```python
-# backend/shared/brokers/base.py
+# backend/shared/brokers/base.py  (signatures abbreviated; arg names verbatim)
 class Broker(ABC):
-    # Identity
+    # Identity (abstract)
     @property
     @abstractmethod
-    def broker_id(self) -> str: ...           # "kite" / "dhan" / "groww"
+    def account(self) -> str: ...              # "ZG0790"
     @property
     @abstractmethod
-    def account(self) -> str: ...             # "ZG0790"
-    @property
-    @abstractmethod
-    def caps(self) -> BrokerCapabilities: ...
+    def broker_id(self) -> str: ...            # "zerodha_kite" / "dhan" / "groww"
 
-    # Identity / health
-    @abstractmethod
-    def profile(self) -> dict: ...            # raises on auth failure
+    # Concrete default — adapters override if they want a richer capability set
+    @property
+    def capabilities(self) -> BrokerCapabilities: ...
 
-    # Read-side
+    # Identity / health (abstract)
     @abstractmethod
-    def orders(self) -> list[dict]: ...       # Kite-shape: status, average_price, filled_quantity, ...
-    @abstractmethod
-    def positions(self) -> dict: ...          # Kite-shape: {"net": [...], "day": [...]}
+    def profile(self) -> dict: ...             # raises on auth failure
+
+    # Read-side (abstract)
     @abstractmethod
     def holdings(self) -> list[dict]: ...
     @abstractmethod
-    def margins(self) -> dict: ...
+    def positions(self) -> dict: ...           # Kite-shape: {"net": [...], "day": [...]}
     @abstractmethod
-    def ltp(self, keys: list[str]) -> dict: ...
+    def margins(self, segment: str | None = None) -> dict: ...
     @abstractmethod
-    def quote(self, keys: list[str]) -> dict: ...
+    def orders(self) -> list[dict]: ...        # Kite-shape: status, average_price, filled_quantity, ...
+    # Concrete default — adapters override for per-order lookup vs scanning orders()
+    def order_status(self, order_id: str) -> dict: ...
     @abstractmethod
-    def historical_data(self, instrument_token: int, from_dt, to_dt, interval: str) -> list[dict]: ...
+    def trades(self) -> list[dict]: ...
+    @abstractmethod
+    def ltp(self, symbols: list[str]) -> dict: ...
+    @abstractmethod
+    def quote(self, symbols: list[str]) -> dict: ...
     @abstractmethod
     def instruments(self, exchange: str | None = None) -> list[dict]: ...
     @abstractmethod
-    def holidays(self, exchange: str) -> set[date]: ...
+    def historical_data(self, instrument_token: int, from_dt, to_dt, interval: str) -> list[dict]: ...
+    @abstractmethod
+    def holidays(self, exchange: str) -> set[str]: ...
+    @abstractmethod
+    def basket_order_margins(self, orders: list[dict]) -> list[dict]: ...
 
-    # Write-side — orders
+    # Write-side — orders (abstract; **kwargs by design so callers pass Kite-shape kwargs)
     @abstractmethod
-    def place_order(self, variety, exchange, tradingsymbol, transaction_type,
-                    quantity, product, order_type, **kwargs) -> str: ...   # returns order_id
+    def place_order(self, **kwargs: Any) -> str: ...
     @abstractmethod
-    def modify_order(self, variety, order_id, **kwargs) -> str: ...
+    def modify_order(self, order_id: str, **kwargs: Any) -> str: ...
     @abstractmethod
-    def cancel_order(self, variety, order_id) -> str: ...
-    @abstractmethod
-    def order_status(self, order_id) -> dict: ...    # Kite-shape
+    def cancel_order(self, order_id: str, **kwargs: Any) -> str: ...
 
-    # Write-side — GTTs
+    # Write-side — GTTs (abstract: place / modify; concrete-default: cancel / get)
     @abstractmethod
-    def place_gtt(self, trigger_type, tradingsymbol, exchange, trigger_values,
-                  last_price, orders) -> str: ...   # returns gtt_id
+    def place_gtt(self, *, trigger_type, tradingsymbol, exchange,
+                  trigger_values, last_price, orders) -> str: ...
     @abstractmethod
-    def modify_gtt(self, gtt_id, trigger_values, last_price, orders, **kwargs) -> str: ...
-    @abstractmethod
-    def cancel_gtt(self, gtt_id, **kwargs) -> str: ...
-    @abstractmethod
+    def modify_gtt(self, gtt_id: str, *, trigger_values,
+                   last_price, orders, **kwargs) -> str: ...
+    def cancel_gtt(self, gtt_id: str, *, exchange: str | None = None) -> str: ...
     def get_gtts(self) -> list[dict]: ...
 
-    # Optional auxiliaries (concrete adapters may override)
-    def trades(self, order_id: str | None = None) -> list[dict]: return []
-    def basket_order_margins(self, orders: list[dict]) -> dict: ...
+    # Unit translation (concrete defaults; override only when vendor uses lots vs contracts)
+    def translate_qty(self, exchange: str, raw_qty: int, ...) -> int: ...
+    def normalise_qty(self, exchange: str, raw_qty: int, ...) -> int: ...
 ```
+
+The `place_order` / `modify_order` / `cancel_order` signatures are intentionally `**kwargs`. Callers feed Kite-shape kwargs (e.g. `exchange="NSE"`, `tradingsymbol="...", transaction_type="BUY"`, `quantity=50`, `product="MIS"`, `order_type="LIMIT"`, `variety="regular"`, `price=180.0`, optional `tag=...`); each adapter translates those Kite-shape kwargs to its vendor SDK's expected fields inside the method body.
 
 **The Kite-shape rule.** Every return value MUST shape to what Kite Connect returns. Frontend renders, chase loop, template attach — they all expect Kite shape. Dhan and Groww adapters have `_normalise_*` helpers that translate vendor responses to Kite shape:
 
@@ -1251,53 +1260,71 @@ The cache file is atomic-written (`tmp + rename`) to avoid partial-write corrupt
 
 ### 14.5.8 Capability matrix
 
-`BrokerCapabilities` is a frozen dataclass — capabilities are immutable per broker. The discipline: **every field explicit per broker**, never rely on defaults:
+`BrokerCapabilities` is a frozen dataclass — capabilities are immutable per broker. The discipline: **every field explicit per broker**, never rely on defaults (the audit B-5 lesson). Actual shape from `backend/shared/brokers/capabilities.py`:
 
 ```python
-# backend/shared/brokers/capabilities.py
 @dataclass(frozen=True)
 class BrokerCapabilities:
+    # Identity
+    broker_id: str            # "zerodha_kite" / "dhan" / "groww"
+    display_name: str
+
     # GTT shape
-    gtt_single: bool = False         # Can place a single-trigger GTT?
-    gtt_oco: bool = False            # Can place a 2-leg OCO GTT atomically?
-    gtt_emulated_oco: bool = False   # OCO emulation via two single GTTs + pair-watcher?
-    gtt_modify_atomic: bool = False  # modify_gtt updates both legs atomically?
-    gtt_supports_mcx: bool = False   # GTTs work on MCX commodity?
+    gtt_single: bool          # Place a single-trigger GTT (TP-only or SL-only)
+    gtt_oco: bool             # Native 2-leg OCO bundled at the broker
+    gtt_modify: bool          # Modify in place vs cancel + replace
+    gtt_cap_per_account: int  # Max active GTTs per account; 0 = unknown
+    gtt_validity_days: int    # Default GTT validity in days
+    gtt_supports_mcx: bool    # GTT covers MCX commodity?
 
-    # Postback / fill detection
-    postback_order: str = "poll_only"   # "webhook" | "poll_only"
-    postback_gtt: str = "poll_only"     # "webhook" | "poll_only" | "partial"
+    # Order shapes
+    bracket_order: bool       # Entry + SL + Target as one ticket
+    cover_order: bool         # Entry + mandatory SL (margin-efficient intraday)
+    atomic_basket: bool       # API batches multi-leg in one call
+    order_tag: bool           # Broker has a `tag` / `correlation_id` field
+    margin_preview: bool      # Pre-submit margin endpoint available
 
-    # Advanced order shapes
-    supports_iceberg: bool = False
-    supports_amo: bool = False
-    supports_cover_order: bool = False
+    # GTT-fire postback / detection
+    postback_gtt: str         # "reliable" | "poll_only"
 
-    # Market data
-    historical_data: bool = False
-    ltp_supports_mcx: bool = True
-    quote_returns_depth: bool = True
+    # Rate
+    rate_limit_orders_sec: int
 
-# Explicit per broker (audit B-5 lesson: never rely on defaults)
+# Per-broker constants (every field explicit — never rely on defaults)
 KITE_CAPS = BrokerCapabilities(
-    gtt_single=True, gtt_oco=True, gtt_modify_atomic=True, gtt_supports_mcx=True,
-    postback_order="webhook", postback_gtt="webhook",
-    supports_iceberg=True, supports_amo=True,
-    historical_data=True,
+    broker_id="zerodha_kite", display_name="Zerodha Kite",
+    gtt_single=True, gtt_oco=True, gtt_modify=True,
+    gtt_cap_per_account=100, gtt_validity_days=365, gtt_supports_mcx=True,
+    bracket_order=False,   # Deprecated by Zerodha in 2020
+    cover_order=True, atomic_basket=False, order_tag=True, margin_preview=True,
+    postback_gtt="reliable", rate_limit_orders_sec=10,
 )
 DHAN_CAPS = BrokerCapabilities(
-    gtt_single=True, gtt_oco=True, gtt_modify_atomic=True, gtt_supports_mcx=False,
-    postback_order="poll_only", postback_gtt="poll_only",
-    supports_iceberg=False, supports_amo=False,
-    historical_data=True,
+    broker_id="dhan", display_name="Dhan",
+    gtt_single=True, gtt_oco=True, gtt_modify=True,
+    gtt_cap_per_account=50, gtt_validity_days=365, gtt_supports_mcx=False,
+    bracket_order=True, cover_order=True, atomic_basket=True,
+    order_tag=True, margin_preview=True,
+    # Audit fix — no Dhan WebSocket / GTT-fire postback handler is wired
+    # in the codebase today; detection is the poll-based _task_oco_pair_watcher
+    postback_gtt="poll_only",
+    rate_limit_orders_sec=20,
 )
 GROWW_CAPS = BrokerCapabilities(
-    gtt_single=True, gtt_oco=False, gtt_emulated_oco=True, gtt_modify_atomic=False,
-    postback_order="poll_only", postback_gtt="poll_only",
-    supports_iceberg=False, supports_amo=False,
-    historical_data=False,
+    broker_id="groww", display_name="Groww",
+    gtt_single=True, gtt_oco=False, gtt_modify=True,
+    gtt_cap_per_account=25, gtt_validity_days=90, gtt_supports_mcx=False,
+    bracket_order=False, cover_order=False, atomic_basket=False,
+    order_tag=False,        # No native tag; broker_order_link sidecar covers it
+    margin_preview=False,
+    postback_gtt="poll_only",
+    rate_limit_orders_sec=5,
 )
 ```
+
+OCO emulation for Groww (no `gtt_oco`) is implemented in `groww.py::place_gtt` via two single-trigger GTTs + the `_task_oco_pair_watcher` background task that cancels the surviving sibling when one fires. There's no `gtt_emulated_oco` flag; emulation is an implementation detail behind the adapter.
+
+`CAPS_BY_BROKER_ID` maps both the canonical `"zerodha_kite"` and the legacy `"kite"` alias to `KITE_CAPS`, so older YAML-seeded rows keep resolving without a column rewrite.
 
 Frontend reads via `GET /api/admin/brokers/{account}/capabilities` (in-memory, no broker call). UI helper `brokerCapWarnings.js` consults the matrix to warn the operator at submit time when a template requests a feature the broker can't provide natively.
 
@@ -1307,9 +1334,9 @@ These are documented inline in code, but listed here for orientation:
 
 | Broker | Quirk | Where it's handled |
 |---|---|---|
-| **Kite** | `tag` is 20-char max | `_truncate_tag` in `chase.py` |
+| **Kite** | `tag` is 20-char max | `_truncate_tag` in `backend/shared/brokers/kite.py` |
 | **Kite** | Postback HMAC validation | `order_postback` route checksum check |
-| **Kite** | 3 req/sec historical_data quota | `_RATE_LIMIT_COOLOFF` 30s window in registry |
+| **Kite** | Rate-limited historical_data quota (low per-second budget) | `_RATE_LIMIT_COOLOFF` 30s window in registry — `_RATE_LIMIT_COOLOFF_SECONDS = 30` |
 | **Kite** | One-IP-per-app rule | `_IPv6SourceAdapter` mount |
 | **Dhan** | Token dashboard validity defaults to 5min | Operator must extend to 24h in Dhan dashboard |
 | **Dhan** | `ltp()` returns `{}` for MCX commodity by design | PriceBroker fallback + B-2 fix logs the empty response |
@@ -1842,9 +1869,9 @@ The cookbook is intentionally prescriptive. You do not need to read the full doc
 
 2. **Add an idempotent ALTER** to `backend/api/database.py::init_db`:
    ```python
-   await conn.exec_driver_sql(
+   await conn.execute(text(
        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS last_chase_quote TEXT"
-   )
+   ))
    ```
    The `IF NOT EXISTS` is non-negotiable — `init_db` runs on every startup, idempotency required.
 
@@ -1964,9 +1991,9 @@ The cookbook is intentionally prescriptive. You do not need to read the full doc
 
 2. **Idempotent ALTER** in `backend/api/database.py::init_db`:
    ```python
-   await conn.exec_driver_sql(
+   await conn.execute(text(
        "ALTER TABLE order_templates ADD COLUMN IF NOT EXISTS tp_breakeven_lock BOOLEAN"
-   )
+   ))
    ```
 
 3. **Schemas** in `backend/api/schemas.py`:
@@ -2009,32 +2036,32 @@ The cookbook is intentionally prescriptive. You do not need to read the full doc
 
 ## 36. Recipe: add a new broker capability flag
 
-**Scenario:** you discovered Dhan supports `place_co` (cover order) but Groww doesn't.
+**Scenario:** you want to track whether each broker supports iceberg orders (currently not in the matrix).
 
 ### Steps
 
-1. **Add the flag** to `backend/shared/brokers/capabilities.py`:
+1. **Add the field** to `backend/shared/brokers/capabilities.py::BrokerCapabilities`:
    ```python
    @dataclass(frozen=True)
    class BrokerCapabilities:
-       ...
-       supports_cover_order: bool = False
+       ...                        # existing fields
+       iceberg_order: bool        # No default — force explicit setting per broker
    ```
-   Default `False` — opt-in.
+   Note the discipline: real fields don't get defaults (audit B-5 lesson). Every broker constant must set every field.
 
-2. **Set per-broker explicitly** (don't rely on default):
+2. **Set per-broker explicitly** in the three constants:
    ```python
-   KITE_CAPS = BrokerCapabilities(..., supports_cover_order=True)
-   DHAN_CAPS = BrokerCapabilities(..., supports_cover_order=True)
-   GROWW_CAPS = BrokerCapabilities(..., supports_cover_order=False)
+   KITE_CAPS = BrokerCapabilities(..., iceberg_order=True)
+   DHAN_CAPS = BrokerCapabilities(..., iceberg_order=False)
+   GROWW_CAPS = BrokerCapabilities(..., iceberg_order=False)
    ```
 
-3. **Capability registry** in `backend/shared/brokers/registry.py::CAPS_BY_BROKER_ID` already routes by broker_id — no change needed.
+3. **Capability registry** in `capabilities.py::CAPS_BY_BROKER_ID` already routes by `broker_id` — no change needed.
 
 4. **Frontend warning helper** in `frontend/src/lib/data/brokerCapWarnings.js`:
-   - Update `capWarningFor(template, caps, exchange)` to surface a warning when a template asks for a cover order but `!caps.supports_cover_order`.
+   - Update the warning-aggregation logic to surface a warning when a template asks for an iceberg leg against a broker where `!caps.iceberg_order`.
 
-5. **Consumer code** queries via `get_broker(account).caps.supports_cover_order` or the HTTP endpoint `/api/admin/brokers/{account}/capabilities`.
+5. **Consumer code** queries via `get_broker(account).capabilities.iceberg_order` or the HTTP endpoint `/api/admin/brokers/{account}/capabilities`.
 
 6. **Verify.** Inspect `/admin/brokers` page; the new cap should surface in the row.
 
@@ -2110,7 +2137,7 @@ The cookbook is intentionally prescriptive. You do not need to read the full doc
    }
    ```
 
-2. **Re-seeder behavior.** On startup, `seed_system_templates` rebuilds system templates by `name` — operator's edits to custom templates are preserved, but system templates are overwritten. **The operator's pulls of `default-long-option` will get the new SL on next deploy.**
+2. **Re-seeder behavior.** On startup, `seed_templates` (in `templates_seed.py`) rebuilds system templates by `name` — operator's edits to custom templates are preserved, but system templates are overwritten. **The operator's pulls of `default-long-option` will get the new SL on next deploy.**
 
 3. **If operator has saved-instance edits** (i.e. clicked Edit on a system template and saved), those land in a separate row keyed by user_id. They survive system re-seed. To force-refresh, the operator deletes their saved copy.
 
