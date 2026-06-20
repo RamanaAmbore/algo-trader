@@ -1089,6 +1089,11 @@
   //                               (verb derived from side vs position direction)
   const _submitLabel = $derived.by(() => {
     if (basketLegs.length > 0) return `Submit (${basketLegs.length})`;
+    // Operator: "when chase is active the button should say submit."
+    // Chase fires re-quotes off the form's side anyway; the label just
+    // needs to say what action the operator is committing to (a chase),
+    // not parrot the side that's already visible on the BUY/SELL toggle.
+    if (_sharedChase && _chaseEnabled) return 'Submit';
     if (!_modalSide) return 'Submit';
     const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
     if (cq === 0) return `Submit · ${_modalSide}`;
@@ -2352,15 +2357,12 @@
               {:else if _legAcct}
                 <span class="oes-basket-pill-acct-static" title="Routing account (single broker loaded)">{_legAcct}</span>
               {/if}
-              {#if _sharedWingPlanned && leg.side === 'SELL' && /(CE|PE)$/.test(leg.sym)}
-                {@const _wingSym = _wingSymbolFor(leg.sym)}
-                <span class="oes-basket-pill-wing"
-                      title={_wingSym
-                        ? `Wing BUY ${_wingSym} will attach on fill (qty matches leg).`
-                        : 'Protective wing BUY will be picked from the option chain at fill time (premium-scan).'}>
-                  + wing{_wingSym ? ` ${_wingSym}` : ''}
-                </span>
-              {/if}
+              <!-- Inline wing tag dropped — the wing now renders as a
+                   separate basket pill AFTER the parent pill closes
+                   (see `{#if _legHasWing(leg)}` below) so the operator
+                   sees the auto-attached BUY as a distinct order chip
+                   per operator request. -->
+
               {#if action === 'open' && _templates.length > 0}
                 {@const _eff = _legEffectiveTpl(leg)}
                 {@const _has = _legHasOverride(leg)}
@@ -2380,6 +2382,30 @@
                       disabled={basketSubmitting}
                       onclick={() => removeBasketLeg(i)}>×</button>
             </span>
+            <!-- Wing as a SEPARATE pill — operator: "when the wing
+                 order to be placed, the wing order also should be
+                 shown as an additional order as a chip". Sits
+                 immediately after the parent leg so the operator
+                 reads the pair "SELL CE + WING BUY PE" as two
+                 distinct orders. Read-only — qty + symbol come from
+                 the parent leg + template wing-scan. -->
+            {#if _sharedWingPlanned && leg.side === 'SELL' && /(CE|PE)$/.test(leg.sym)}
+              {@const _wingSym = _wingSymbolFor(leg.sym)}
+              <span class="oes-basket-pill oes-basket-pill-buy oes-basket-pill-wing-leg"
+                    role="listitem"
+                    title={_wingSym
+                      ? `Auto-attached wing — BUY ${_wingSym} on parent fill (qty matches the SELL).`
+                      : `Auto-attached wing — protective BUY picked from the chain by premium scan at fill time.`}>
+                <span class="oes-basket-pill-wing-tag">WING</span>
+                <span class="oes-basket-pill-side">B</span>
+                <span class="oes-basket-pill-sym"><LegLabel sym={_wingSym || `${leg.sym.replace(/(CE|PE)$/i, m => m.toUpperCase() === 'CE' ? 'PE' : 'CE')}`} compact={true} /></span>
+                <span class="oes-basket-pill-lots">{leg.lots || 1}</span>
+                {#if leg.lotSize > 1}
+                  <span class="oes-basket-pill-qty">× {leg.lotSize} = {(leg.lots || 1) * leg.lotSize}</span>
+                {/if}
+                <span class="oes-basket-pill-wing-note">auto on fill</span>
+              </span>
+            {/if}
             {#if _legEditorsOpen.has(leg.key) && action === 'open' && _templates.length > 0}
               <!-- Per-leg override editor — surfaces below the pill in
                    the same flex container so it wraps to a new line.
@@ -3574,6 +3600,39 @@
     font-weight: 600;
     letter-spacing: 0.02em;
     font-variant-numeric: tabular-nums;
+  }
+  /* Wing AS a basket pill — operator: "the wing order also should be
+     shown as an additional order as a chip". Same shape as the parent
+     buy pill so it reads as an order; violet WING tag at the front so
+     the operator can tell at a glance "this is an auto-attached
+     wing, not a leg I added myself". Dashed border + slightly muted
+     bg distinguishes it from operator-added legs. */
+  .oes-basket-pill-wing-leg {
+    cursor: default !important;
+    border-style: dashed !important;
+    opacity: 0.92;
+  }
+  .oes-basket-pill-wing-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 0.32rem;
+    margin-right: 0.3rem;
+    height: 1.05rem;
+    background: rgba(192, 132, 252, 0.18);
+    border: 1px solid rgba(192, 132, 252, 0.55);
+    border-radius: 2px;
+    color: #c084fc;
+    font-size: 0.5rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+  }
+  .oes-basket-pill-wing-note {
+    margin-left: 0.35rem;
+    color: rgba(192, 132, 252, 0.75);
+    font-size: 0.52rem;
+    font-style: italic;
+    font-weight: 500;
+    letter-spacing: 0.02em;
   }
   /* Per-leg template chip — click to open the override editor.
      Subtle slate-grey when inheriting shell; cyan-tinted when the
