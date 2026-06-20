@@ -390,7 +390,13 @@ class AlgoOrderInfo(msgspec.Struct):
     transaction_type: str
     quantity: int
     initial_price: float | None
-    fill_price: float | None
+    # Audit fix (M-6) — current re-quoted limit; the chase loop
+    # updates this on every cancel-and-replace via _sync_algo_order_id.
+    # The chase panel renders this in place of initial_price when set,
+    # so the limit column reflects the LIVE broker limit instead of
+    # the first attempt's price.
+    current_limit: float | None = None
+    fill_price: float | None = None
     # How many times the chase engine re-quoted this order before a
     # terminal state. Bumped live on every `modify` event so the
     # Order tab can show "chase #3" as it's happening, not just
@@ -600,34 +606,54 @@ async def _attach_basket_leg_template(
 # in-process locking is sufficient; the meta-lock guards the registry
 # write itself.
 #
-# Sprint B (audit #11): use weakref.WeakValueDictionary so locks
-# self-evict once every caller drops their strong reference. Pre-fix
-# the registry grew unbounded — one entry per filled parent forever.
-# The pattern is safe because:
-#   1. The meta-lock serialises get-or-create so two concurrent calls
-#      for the same parent_row_id can't both mint fresh locks.
-#   2. The caller stores the returned lock in a local strong ref
-#      (`_row_lock` inside `_fire_template_attach_on_fill`) — that
-#      ref keeps the WeakValueDictionary entry alive across the
-#      `async with` block.
-#   3. After the function returns AND any other concurrent waiter
-#      also releases, no strong refs remain → the entry is GC'd at
-#      the next pass and the dict shrinks naturally.
-import weakref as _weakref
-_TEMPLATE_ATTACH_LOCKS: "_weakref.WeakValueDictionary[int, asyncio.Lock]" = _weakref.WeakValueDictionary()
+# Audit fix (M-5) — strong dict with TTL replaces the prior
+# WeakValueDictionary. The weakref pattern was "safe in current
+# deployment" (single-worker asyncio + the caller's local strong ref
+# keeps the entry alive across `async with`) but fragile to future
+# call-signature changes: any refactor that introduced an extra
+# `await` between the lock-mint and the `async with` acquisition
+# could let the GC reclaim the lock mid-handoff, allowing two waiters
+# to acquire DIFFERENT lock objects for the same parent_row_id and
+# double-place the GTT. Switching to a strong dict eliminates that
+# class of bug; the TTL sweep keeps memory bounded by retiring entries
+# that haven't been touched in `_TPL_LOCK_TTL_S` seconds (default 1 h
+# — well beyond the worst-case fill-to-attach latency including a
+# slow reconcile sweep).
+import time as _time
+_TEMPLATE_ATTACH_LOCKS: dict[int, tuple[asyncio.Lock, float]] = {}
 _TEMPLATE_ATTACH_META_LOCK = asyncio.Lock()
+_TPL_LOCK_TTL_S = 3600  # 1 hour — sweep happens at every get-or-create
 
 
 async def _get_template_attach_lock(parent_row_id: int) -> "asyncio.Lock":
     """Lazily mint one asyncio.Lock per parent_row_id. The meta-lock
     only protects the registry's get-or-create; the per-row lock then
-    serialises the read–decide–write triplet inside the fire fn."""
+    serialises the read–decide–write triplet inside the fire fn.
+
+    Lazy TTL sweep: every get-or-create scans the registry for entries
+    older than _TPL_LOCK_TTL_S and drops them. Operator-facing fill
+    flows complete well within the TTL (chase + postback + reconcile
+    all measure in seconds to minutes), so eviction never races a
+    live waiter — by the time an entry's age exceeds the TTL its
+    attach has long since committed `attached_gtts_json`."""
     async with _TEMPLATE_ATTACH_META_LOCK:
-        lk = _TEMPLATE_ATTACH_LOCKS.get(parent_row_id)
-        if lk is None:
+        now = _time.monotonic()
+        # Lazy sweep — drop stale entries. Inline rather than a
+        # background task so the registry stays bounded without an
+        # extra sweep coroutine.
+        _stale = [k for k, (_, ts) in _TEMPLATE_ATTACH_LOCKS.items()
+                  if now - ts > _TPL_LOCK_TTL_S]
+        for k in _stale:
+            _TEMPLATE_ATTACH_LOCKS.pop(k, None)
+        entry = _TEMPLATE_ATTACH_LOCKS.get(parent_row_id)
+        if entry is None:
             lk = asyncio.Lock()
-            _TEMPLATE_ATTACH_LOCKS[parent_row_id] = lk
-        return lk
+            _TEMPLATE_ATTACH_LOCKS[parent_row_id] = (lk, now)
+            return lk
+        # Bump the timestamp on every access — entries don't expire
+        # while a row is being actively reconciled.
+        _TEMPLATE_ATTACH_LOCKS[parent_row_id] = (entry[0], now)
+        return entry[0]
 
 
 def _maybe_fire_template_attach_for_reconcile(row) -> None:
@@ -1091,6 +1117,7 @@ class OrdersController(Controller):
                 id=r.id, account=masked_acct(r.account), symbol=r.symbol, exchange=r.exchange,
                 transaction_type=r.transaction_type, quantity=r.quantity,
                 initial_price=(float(r.initial_price) if r.initial_price is not None else None),
+                current_limit=(float(r.current_limit) if r.current_limit is not None else None),
                 fill_price=(float(r.fill_price) if r.fill_price is not None else None),
                 attempts=int(r.attempts or 0),
                 status=r.status, engine=r.engine, mode=r.mode,
@@ -1250,6 +1277,7 @@ class OrdersController(Controller):
                 exchange=r.exchange,
                 transaction_type=r.transaction_type, quantity=r.quantity,
                 initial_price=(float(r.initial_price) if r.initial_price is not None else None),
+                current_limit=(float(r.current_limit) if r.current_limit is not None else None),
                 fill_price=(float(r.fill_price) if r.fill_price is not None else None),
                 attempts=int(r.attempts or 0),
                 status=r.status, engine=r.engine, mode=r.mode,
