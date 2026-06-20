@@ -205,7 +205,17 @@ test.describe('Template Default pill — side-aware 4-scope matrix', () => {
         test.skip(true, `Deploy not landed — missing templates: ${missing.join(', ')}`);
         return;
       }
-      log.steps.push(`deploy guard OK: found ${required.join(', ')}`);
+      // All 4 must be is_default=true so the Default pill is enabled for each scope.
+      // If is_default=false the pill is disabled (title="No side-default template
+      // configured for this scope") and the scenario cannot be exercised.
+      const notDefault = required.filter(s => !tplBySlug[s]?.is_default);
+      if (notDefault.length > 0) {
+        log.steps.push(`DEPLOY_GUARD: is_default=false for ${notDefault.join(', ')} — seeder migration not applied`);
+        console.log(JSON.stringify(log, null, 2));
+        test.skip(true, `Seeder migration not applied — is_default=false: ${notDefault.join(', ')}`);
+        return;
+      }
+      log.steps.push(`deploy guard OK: found ${required.join(', ')}, all is_default=true`);
       log.steps.push(`template values: ${JSON.stringify(
         Object.fromEntries(required.map(s => [s, {
           tp_pct: tplBySlug[s].tp_pct, sl_pct: tplBySlug[s].sl_pct,

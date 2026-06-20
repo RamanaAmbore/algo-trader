@@ -233,6 +233,40 @@ async def seed_templates() -> None:
                     "now the side-default for buy_any (BUY EQ/FUT)."
                 )
 
+        # - `default-bear` is the sell_any side-default. Promote when unclaimed.
+        bear = by_slug.get("default-bear")
+        if bear is not None and not bear.is_default:
+            others = await s.execute(
+                select(OrderTemplate).where(
+                    OrderTemplate.applies_to == "sell_any",
+                    OrderTemplate.is_default == True,  # noqa: E712
+                    OrderTemplate.slug != "default-bear",
+                )
+            )
+            if not others.scalars().first():
+                bear.is_default = True
+                logger.info(
+                    "Order template 'default-bear' promoted to is_default — "
+                    "now the side-default for sell_any (SELL EQ/FUT)."
+                )
+
+        # - `default-short-vol` is the sell_option side-default. Promote when unclaimed.
+        short_vol = by_slug.get("default-short-vol")
+        if short_vol is not None and not short_vol.is_default:
+            others = await s.execute(
+                select(OrderTemplate).where(
+                    OrderTemplate.applies_to == "sell_option",
+                    OrderTemplate.is_default == True,  # noqa: E712
+                    OrderTemplate.slug != "default-short-vol",
+                )
+            )
+            if not others.scalars().first():
+                short_vol.is_default = True
+                logger.info(
+                    "Order template 'default-short-vol' promoted to is_default — "
+                    "now the side-default for sell_option (SELL CE/PE)."
+                )
+
         await s.commit()
         logger.info(
             f"Order templates seeded — inserted={inserted} updated={updated}"
