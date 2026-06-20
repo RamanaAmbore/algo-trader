@@ -1465,10 +1465,57 @@ class OrdersController(Controller):
             )
             if result is None:
                 return {"ok": False, "reason": "apply_template_to_order returned no result (template missing or empty plan)"}
-            # apply_path != preview writes attached_gtts_json back to the
-            # row via the engine. Refresh from DB so the response sees the
-            # updated state.
-            await s.refresh(row)
+            # Audit fix (H-7) — persist attached_gtts_json on the row.
+            # `apply_template_to_order(apply_path="live")` places the
+            # GTTs at the broker but does NOT write the row's
+            # attached_gtts_json column itself — only the
+            # `_fire_template_attach_on_fill` wrapper does that. Pre-
+            # fix retry_template would land GTTs at the broker, report
+            # `attached: false` to the operator, and operator's next
+            # retry click would double-place them at the broker
+            # because the idempotency guard
+            # (`if _row.attached_gtts_json`) wasn't tripped.
+            # Same shape as the wrapper in _fire_template_attach_on_fill.
+            import json as _json_retry
+            _attached_payload = []
+            if result.plan and result.gtt_ids:
+                for _spec, _gid in zip(result.plan.gtts, result.gtt_ids):
+                    _entry = {
+                        "kind":          "gtt",
+                        "label":         _spec.label,
+                        "id":            _gid,
+                        "trigger_values": list(_spec.trigger_values or []),
+                        "trigger_type":  str(_spec.trigger_type),
+                    }
+                    # Two-leg OCO needs the TP trigger preserved so the
+                    # trail-stop poller ratchets the SL only — matches
+                    # the on-fill wrapper's shape.
+                    if str(_spec.trigger_type) == "two-leg" \
+                            and len(_spec.trigger_values) >= 2:
+                        _entry["tp_trigger"] = float(_spec.trigger_values[0])
+                    _entry["highest_ltp"]     = float(result.plan.parent_fill_price)
+                    _entry["lowest_ltp"]      = float(result.plan.parent_fill_price)
+                    _entry["parent_side"]     = str(result.plan.parent_side)
+                    _entry["parent_symbol"]   = str(result.plan.parent_symbol)
+                    _entry["parent_exchange"] = str(result.plan.parent_exchange)
+                    _entry["parent_account"]  = str(result.plan.parent_account)
+                    _entry["parent_qty"]      = int(result.plan.parent_qty)
+                    _entry["parent_product"]  = str(row.product or "NRML")
+                    _attached_payload.append(_entry)
+            if result.wing_order_id:
+                _attached_payload.append({
+                    "kind":  "wing",
+                    "label": "Wing",
+                    "id":    result.wing_order_id,
+                })
+            if _attached_payload:
+                row.attached_gtts_json = _json_retry.dumps(_attached_payload)
+                if result.errors:
+                    row.detail = ((row.detail or "")[:200]
+                                  + " · retry attach: "
+                                  + "; ".join(result.errors[:2]))[:240]
+                await s.commit()
+                await s.refresh(row)
 
         return {
             "ok": True,
