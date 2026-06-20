@@ -32,7 +32,7 @@
   import { portal } from '$lib/portal';
   import { ORDER_TABS } from '$lib/order/tabs.js';
   import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';
-  import { placeTicketOrder, placeBasket, fetchBasketMargin, fetchLiveStatus, fetchOrders, fetchAlgoOrdersRecent } from '$lib/api';
+  import { placeTicketOrder, placeBasket, fetchBasketMargin, fetchLiveStatus, fetchOrders, fetchAlgoOrdersRecent, previewTicketTemplate } from '$lib/api';
   import ChartModal from '$lib/ChartModal.svelte';
   import { logTime, executionMode } from '$lib/stores';
   import { priceFmt, aggFmt as aggFmtMargin } from '$lib/format';
@@ -475,6 +475,89 @@
     };
   });
 
+  // Last-basket-leg on-fill preview — computed shell-side so the chip
+  // can swap to it when the operator is on the Chain tab. Mirrors
+  // OrderTicket's preview effect: same API, same 200ms debounce, same
+  // sequence guard for out-of-order responses. Effective overrides
+  // follow the same per-leg-vs-shell rule submitBasket uses (leg's
+  // explicit template_id → leg overrides only; shell template →
+  // shell overrides via `??`).
+  $effect(() => {
+    // Track every input that affects the last leg's plan.
+    const legs = basketLegs;
+    void legs;
+    void _sharedTemplateId;
+    void _sharedTpOverride;
+    void _sharedSlOverride;
+    void _sharedWingPremPctOverride;
+    void _sharedWingStrikeOffsetOverride;
+
+    if (_lastLegTimer) { clearTimeout(_lastLegTimer); _lastLegTimer = null; }
+    const leg = legs.length > 0 ? legs[legs.length - 1] : null;
+    if (!leg || !leg.sym || !leg.lots || !(Number(leg.limit) > 0)) {
+      _lastLegPlan = null;
+      _lastLegError = '';
+      return;
+    }
+    const legAcct = legAccountOf(leg);
+    if (!legAcct) {
+      _lastLegPlan = null;
+      _lastLegError = '';
+      return;
+    }
+    _lastLegSeq++;
+    const seq = _lastLegSeq;
+    _lastLegTimer = setTimeout(async () => {
+      _lastLegLoading = true; _lastLegError = '';
+      const _hasLegTpl = leg.template_id != null && leg.template_id !== _sharedTemplateId;
+      // Per-leg legs use the leg's own overrides only — shell overrides
+      // belong to a DIFFERENT template and would silently contaminate
+      // (matches the submitBasket per-leg isolation fix).
+      const tpO = leg.tp_pct_override
+        ?? (_hasLegTpl ? null
+            : (_sharedTpOverride !== '' ? Number(_sharedTpOverride) : null));
+      const slO = leg.sl_pct_override
+        ?? (_hasLegTpl ? null
+            : (_sharedSlOverride !== '' ? Number(_sharedSlOverride) : null));
+      const wpO = leg.wing_premium_pct_override
+        ?? (_hasLegTpl ? null
+            : (_sharedWingPremPctOverride !== '' ? Number(_sharedWingPremPctOverride) : null));
+      const wsO = leg.wing_strike_offset_override
+        ?? (_hasLegTpl ? null
+            : (_sharedWingStrikeOffsetOverride !== '' ? Number(_sharedWingStrikeOffsetOverride) : null));
+      const dispatchedTplId = leg.template_id ?? _sharedTemplateId;
+      try {
+        const res = await previewTicketTemplate({
+          mode:             _sharedMode === 'draft' ? 'paper' : _sharedMode,
+          side:             leg.side,
+          tradingsymbol:    leg.sym,
+          quantity:         (leg.lots || 1) * (leg.lotSize || 1),
+          exchange:         leg.exchange || 'NFO',
+          product:          leg.product || 'NRML',
+          account:          legAcct,
+          reference_price:  Number(leg.limit) || 0,
+          template_id:                  dispatchedTplId,
+          tp_pct_override:              tpO,
+          sl_pct_override:              slO,
+          wing_premium_pct_override:    wpO,
+          wing_strike_offset_override:  wsO,
+        });
+        if (seq !== _lastLegSeq) return;
+        _lastLegPlan = res?.plan || null;
+      } catch (e) {
+        if (seq !== _lastLegSeq) return;
+        _lastLegError = /** @type {any} */ (e)?.message || 'preview failed';
+        _lastLegPlan = null;
+      } finally {
+        if (seq === _lastLegSeq) _lastLegLoading = false;
+      }
+    }, 200);
+
+    return () => {
+      if (_lastLegTimer) { clearTimeout(_lastLegTimer); _lastLegTimer = null; }
+    };
+  });
+
   // ── Shared account state ─────────────────────────────────────────
   // Single source of truth for the routable account across all three
   // tabs (command / ticket / chain). Earlier each tab maintained its
@@ -883,6 +966,41 @@
   let _modalPreviewLoading = $state(false);
   let _modalPreviewError   = $state('');
   let _modalCapWarning     = $state('');
+  // Last-basket-leg preview — separate from the Ticket-form preview
+  // above. When the operator is on the Chain tab AND basket has legs,
+  // the displayed chip swaps to this so they see "on fill → TP/SL/Wing
+  // for the leg I just added" instead of the (potentially stale)
+  // Ticket form's preview. Computed shell-side with its own debounce +
+  // sequence guard so it doesn't interfere with the OrderTicket's
+  // identical mechanism. Operator: "swap to last basket leg on chain tab."
+  let _lastLegPlan    = $state(/** @type {any} */ (null));
+  let _lastLegLoading = $state(false);
+  let _lastLegError   = $state('');
+  // Which preview drives the displayed chip — last-leg on Chain when
+  // basket has legs, Ticket form everywhere else. Single derivation
+  // so the chip swap is atomic + the label rendering doesn't have to
+  // branch internally.
+  const _activePreviewPlan    = $derived(
+    _activeTab === 'chain' && basketLegs.length > 0
+      ? _lastLegPlan : _modalPreviewPlan
+  );
+  const _activePreviewLoading = $derived(
+    _activeTab === 'chain' && basketLegs.length > 0
+      ? _lastLegLoading : _modalPreviewLoading
+  );
+  const _activePreviewError   = $derived(
+    _activeTab === 'chain' && basketLegs.length > 0
+      ? _lastLegError : _modalPreviewError
+  );
+  // True when the chip is showing the basket-leg preview instead of
+  // the Ticket form's. Used for a small "leg N of M" badge so the
+  // operator knows which context the chip reflects.
+  const _previewFromLeg = $derived(
+    _activeTab === 'chain' && basketLegs.length > 0
+  );
+  /** @type {ReturnType<typeof setTimeout>|null} */
+  let _lastLegTimer = null;
+  let _lastLegSeq = 0;
   // Chip-meta from OrderTicket: { isCashMode, cash, kind, side }.
   // Drives the footer chip label swap between "Cost · Cash" (cash-mode
   // orders: equity buy/sell + long option premium) and "Req · Avail"
@@ -1753,14 +1871,20 @@
               ⚠ {_modalCapWarning}
             </div>
           {/if}
-          {#if _modalPreviewError}
-            <div class="oes-tpl-preview-err">⚠ preview: {_modalPreviewError}</div>
-          {:else if _modalPreviewLoading}
+          {#if _activePreviewError}
+            <div class="oes-tpl-preview-err">⚠ preview: {_activePreviewError}</div>
+          {:else if _activePreviewLoading}
             <div class="oes-tpl-preview-loading">resolving plan…</div>
-          {:else if _modalPreviewPlan && (_modalPreviewPlan.gtts?.length > 0 || _modalPreviewPlan.wing)}
+          {:else if _activePreviewPlan && (_activePreviewPlan.gtts?.length > 0 || _activePreviewPlan.wing)}
             <div class="oes-tpl-preview">
               <span class="oes-tpl-preview-label">on fill →</span>
-              {#each _modalPreviewPlan.gtts || [] as g}
+              {#if _previewFromLeg}
+                <span class="oes-tpl-preview-leg-badge"
+                      title="Preview reflects the last leg added to the basket (the operator's current focus). Switch to the Ticket tab to see the Ticket form's preview instead.">
+                  leg {basketLegs.length}/{basketLegs.length}
+                </span>
+              {/if}
+              {#each _activePreviewPlan.gtts || [] as g}
                 <span class="oes-tpl-preview-chip"
                       class:tp={g.label === 'TP'}
                       class:sl={g.label === 'SL'}
@@ -1768,16 +1892,16 @@
                   {g.label} {g.trigger_values?.map(v => '₹' + Number(v).toLocaleString('en-IN')).join(' / ')}
                 </span>
               {/each}
-              {#if _modalPreviewPlan.wing}
+              {#if _activePreviewPlan.wing}
                 <span class="oes-tpl-preview-chip oes-tpl-preview-wing"
-                      title={`Protective BUY leg auto-attached on fill. Reduces SPAN margin and caps tail risk. ${_modalPreviewPlan.wing.order_type || 'MARKET'} order, qty matches parent.`}>
-                  + Wing BUY {_modalPreviewPlan.wing.quantity}× <LegLabel sym={_modalPreviewPlan.wing.tradingsymbol} compact={true} />
-                  {#if _modalPreviewPlan.wing.estimated_price != null && _modalPreviewPlan.wing.estimated_price > 0}
-                    <span class="oes-tpl-preview-chip-px">@ ~₹{Number(_modalPreviewPlan.wing.estimated_price).toFixed(2)}</span>
+                      title={`Protective BUY leg auto-attached on fill. Reduces SPAN margin and caps tail risk. ${_activePreviewPlan.wing.order_type || 'MARKET'} order, qty matches parent.`}>
+                  + Wing BUY {_activePreviewPlan.wing.quantity}× <LegLabel sym={_activePreviewPlan.wing.tradingsymbol} compact={true} />
+                  {#if _activePreviewPlan.wing.estimated_price != null && _activePreviewPlan.wing.estimated_price > 0}
+                    <span class="oes-tpl-preview-chip-px">@ ~₹{Number(_activePreviewPlan.wing.estimated_price).toFixed(2)}</span>
                   {/if}
                 </span>
               {/if}
-              {#each _modalPreviewPlan.notes || [] as n}
+              {#each _activePreviewPlan.notes || [] as n}
                 <span class="oes-tpl-preview-note">· {n}</span>
               {/each}
             </div>
@@ -2876,6 +3000,23 @@
     margin-left: 0.3rem;
     color: rgba(192, 132, 252, 0.78);
     font-weight: 500;
+  }
+  /* Leg badge — small pill that labels the chip as reflecting a
+     specific basket leg's preview (Chain tab when basket has legs).
+     Slate-blue family so it reads as a context tag, not a direction
+     indicator. */
+  .oes-tpl-preview-leg-badge {
+    padding: 0.05rem 0.38rem;
+    border-radius: 3px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #a5b4fc;
+    background: rgba(165, 180, 252, 0.10);
+    border: 1px solid rgba(165, 180, 252, 0.35);
+    margin-right: 0.1rem;
   }
   .oes-tpl-preview-note {
     color: rgba(180, 200, 230, 0.6);

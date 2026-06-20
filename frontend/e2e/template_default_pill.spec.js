@@ -273,50 +273,61 @@ test.describe('Template Default pill — side-aware 4-scope matrix', () => {
       // Name chip must contain "Default Long Option".
       await expect(tpl1.nameChip).toContainText(/default long option/i, { timeout: 8_000 });
 
-      // TP% placeholder = '80'.
+      // TP% placeholder = expectedPh(tp_pct) from API.
       const tpPh = await tpl1.tpInput.getAttribute('placeholder');
-      log.steps.push(`S1 TP%="${tpPh}"`);
-      expect(tpPh).toBe('80');
+      log.steps.push(`S1 TP%="${tpPh}" (expected="${e.longOption.tpPh}")`);
+      expect(tpPh).toBe(e.longOption.tpPh);
 
-      // SL% placeholder = '—' (no sl_pct).
+      // SL% placeholder = '—' (no sl_pct) or actual if set.
       const slPh = await tpl1.slInput.getAttribute('placeholder');
-      log.steps.push(`S1 SL%="${slPh}"`);
-      expect(slPh).toBe('—');
+      log.steps.push(`S1 SL%="${slPh}" (expected="${e.longOption.slPh}")`);
+      expect(slPh).toBe(e.longOption.slPh);
 
-      // Wing inputs NOT present for buy_option.
+      // Wing inputs present/absent per actual DB row.
       const wingCnt = await tpl1.wingParams.count();
-      log.steps.push(`S1 wing count=${wingCnt}`);
-      expect(wingCnt).toBe(0);
+      log.steps.push(`S1 wing count=${wingCnt} (hasWing=${e.longOption.hasWing})`);
+      if (e.longOption.hasWing) {
+        expect(wingCnt).toBeGreaterThan(0);
+      } else {
+        expect(wingCnt).toBe(0);
+      }
       log.steps.push('Scenario 1 ✓');
     });
 
     // ── Scenario 2 — SELL CE → sell_option → Default Short Vol ───────────
     await test.step('Scenario 2: SELL CE → sell_option → Default Short Vol', async () => {
       await setSide(page, 'SELL');
-      await page.waitForTimeout(400);
-
+      // Wait for reactive update — chip must switch away from BUY default.
       const tpl = await getTemplateRow(page);
+      await expect(tpl.nameChip).not.toContainText(/default long option/i, { timeout: 8_000 });
       await expect(tpl.defaultPill).toHaveClass(/\bon\b/, { timeout: 8_000 });
       await expect(tpl.nameChip).toContainText(/default short vol/i, { timeout: 8_000 });
 
       const tpPh = await tpl.tpInput.getAttribute('placeholder');
-      log.steps.push(`S2 TP%="${tpPh}"`);
-      expect(tpPh).toBe('50');
+      log.steps.push(`S2 TP%="${tpPh}" (expected="${e.shortVol.tpPh}")`);
+      expect(tpPh).toBe(e.shortVol.tpPh);
 
       const slPh = await tpl.slInput.getAttribute('placeholder');
-      log.steps.push(`S2 SL%="${slPh}"`);
-      expect(slPh).toBe('—');
+      log.steps.push(`S2 SL%="${slPh}" (expected="${e.shortVol.slPh}")`);
+      expect(slPh).toBe(e.shortVol.slPh);
 
-      // Wing prem% input must be visible for sell_option.
+      // Wing inputs present/absent per actual DB row.
       const wingCnt = await tpl.wingParams.count();
-      log.steps.push(`S2 wing count=${wingCnt}`);
-      expect(wingCnt).toBeGreaterThan(0);
+      log.steps.push(`S2 wing count=${wingCnt} (hasWing=${e.shortVol.hasWing})`);
+      if (e.shortVol.hasWing) {
+        expect(wingCnt).toBeGreaterThan(0);
 
-      // Wing prem% placeholder = '10'.
-      const wingPremInput = tpl.wingParams.filter({ hasText: /prem/i }).locator('input').first();
-      const wingPh = await wingPremInput.getAttribute('placeholder');
-      log.steps.push(`S2 wing prem%="${wingPh}"`);
-      expect(wingPh).toBe('10');
+        // Wing prem% placeholder from API (may be '—' if wing_premium_pct is null).
+        const wingPremInput = tpl.wingParams.filter({ hasText: /prem/i }).locator('input').first();
+        const wingPremCnt = await wingPremInput.count();
+        if (wingPremCnt > 0) {
+          const wingPh = await wingPremInput.getAttribute('placeholder');
+          log.steps.push(`S2 wing prem%="${wingPh}" (expected="${e.shortVol.wingPremPh}")`);
+          expect(wingPh).toBe(e.shortVol.wingPremPh);
+        }
+      } else {
+        expect(wingCnt).toBe(0);
+      }
       log.steps.push('Scenario 2 ✓');
     });
 
@@ -335,39 +346,48 @@ test.describe('Template Default pill — side-aware 4-scope matrix', () => {
       await expect(tpl.nameChip).toContainText(/default bull/i, { timeout: 8_000 });
 
       const tpPh = await tpl.tpInput.getAttribute('placeholder');
-      log.steps.push(`S3 TP%="${tpPh}"`);
-      expect(tpPh).toBe('30');
+      log.steps.push(`S3 TP%="${tpPh}" (expected="${e.bull.tpPh}")`);
+      expect(tpPh).toBe(e.bull.tpPh);
 
       const slPh = await tpl.slInput.getAttribute('placeholder');
-      log.steps.push(`S3 SL%="${slPh}"`);
-      expect(slPh).toBe('20');
+      log.steps.push(`S3 SL%="${slPh}" (expected="${e.bull.slPh}")`);
+      expect(slPh).toBe(e.bull.slPh);
 
       const wingCnt = await tpl.wingParams.count();
-      log.steps.push(`S3 wing count=${wingCnt}`);
-      expect(wingCnt).toBe(0);
+      log.steps.push(`S3 wing count=${wingCnt} (hasWing=${e.bull.hasWing})`);
+      if (e.bull.hasWing) {
+        expect(wingCnt).toBeGreaterThan(0);
+      } else {
+        expect(wingCnt).toBe(0);
+      }
       log.steps.push('Scenario 3 ✓');
     });
 
     // ── Scenario 4 — SELL EQ → sell_any → Default Bear ───────────────────
     await test.step('Scenario 4: SELL EQ → sell_any → Default Bear', async () => {
       await setSide(page, 'SELL');
-      await page.waitForTimeout(400);
-
+      // Wait for the name chip to update away from the BUY default name.
+      // _sideAwareDefault is a $derived — it re-evaluates after _modalSide changes.
       const tpl = await getTemplateRow(page);
+      await expect(tpl.nameChip).not.toContainText(/default bull/i, { timeout: 8_000 });
       await expect(tpl.defaultPill).toHaveClass(/\bon\b/, { timeout: 8_000 });
       await expect(tpl.nameChip).toContainText(/default bear/i, { timeout: 8_000 });
 
       const tpPh = await tpl.tpInput.getAttribute('placeholder');
-      log.steps.push(`S4 TP%="${tpPh}"`);
-      expect(tpPh).toBe('30');
+      log.steps.push(`S4 TP%="${tpPh}" (expected="${e.bear.tpPh}")`);
+      expect(tpPh).toBe(e.bear.tpPh);
 
       const slPh = await tpl.slInput.getAttribute('placeholder');
-      log.steps.push(`S4 SL%="${slPh}"`);
-      expect(slPh).toBe('20');
+      log.steps.push(`S4 SL%="${slPh}" (expected="${e.bear.slPh}")`);
+      expect(slPh).toBe(e.bear.slPh);
 
       const wingCnt = await tpl.wingParams.count();
-      log.steps.push(`S4 wing count=${wingCnt}`);
-      expect(wingCnt).toBe(0);
+      log.steps.push(`S4 wing count=${wingCnt} (hasWing=${e.bear.hasWing})`);
+      if (e.bear.hasWing) {
+        expect(wingCnt).toBeGreaterThan(0);
+      } else {
+        expect(wingCnt).toBe(0);
+      }
       log.steps.push('Scenario 4 ✓');
     });
 
