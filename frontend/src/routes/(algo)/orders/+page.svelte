@@ -286,7 +286,6 @@
       account={_entryAccount}
       accounts={_entryAccounts}
       action="open"
-      side="BUY"
       onSymbolChange={(sym) => { _entrySymbol = sym; }}
       onSubmit={(payload) => {
         if (payload?.mode === 'draft') return;

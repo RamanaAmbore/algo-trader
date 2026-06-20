@@ -105,7 +105,7 @@
     symbol         = '',
     exchange       = '',
     instrument     = /** @type {{kind?:string,exchange?:string}} */ ({}),
-    side           = /** @type {'BUY'|'SELL'} */ ('BUY'),
+    side           = /** @type {'BUY'|'SELL'|null} */ (null),
     action         = /** @type {'open'|'close'|'modify'|'repeat'|'cancel'} */ ('open'),
     qty            = 0,
     product        = /** @type {'CNC'|'MIS'|'NRML'|undefined} */ (undefined),
@@ -1013,7 +1013,16 @@
   // click bumps an internal counter; OrderTicket's $effect on
   // triggerSubmit/triggerBasket reacts to the cumulative value. Side
   // toggle flips the Submit button label between BUY and SELL.
-  let _modalSide          = $state(/** @type {'BUY'|'SELL'} */ (side));
+  // Operator: "when order modal is clicked without using symbol, don't
+  // show buy or sell as active. user needs to choose. this will not
+  // apply when order modal is triggered by clicking symbol or using
+  // symbol menu." When the modal opens cold (no symbol context),
+  // _modalSide stays null and neither BUY nor SELL is pre-active;
+  // margin preflight short-circuits until the operator picks a side.
+  // When opened via a symbol pick (PageHeaderActions with a contextSymbol,
+  // row-symbol click, etc.), the caller passes `side="BUY"` so the
+  // existing flow is unchanged.
+  let _modalSide          = $state(/** @type {'BUY'|'SELL'|null} */ (side));
   // Submit button label adapts to:
   //   currentQty=0  → "Buy" / "Sell" (plain new order)
   //   currentQty>0  → "Add to position" / "Close position"  (long)
@@ -1776,51 +1785,54 @@
         {#if exchange || _pickedExchange}
           <span class="oes-exch">{exchange || _pickedExchange}</span>
         {/if}
-        <!-- Heading-row cluster — mode pill + chase toggle + aggressiveness
-             pills + basket-clear button. Lifted into the picker row from a
-             dedicated mode/chase row below to reclaim vertical space.
-             "Mode" label + "change" link removed (operator: "remove text
-             mode completely"); the pill itself + its hover tooltip are
-             enough. Mode pill stays read-only (set from the navbar
-             dropdown). Right-aligned via `margin-left: auto`. -->
-        <span class="oes-picker-cluster">
-          <span class="oes-common-mode-chip mode-pill-{$executionMode ?? 'paper'}"
-                title="Execution mode (read-only — change from the navbar dropdown)">
-            {($executionMode ?? 'paper').toUpperCase()}
-          </span>
-          <label class="oes-common-chase-toggle"
-                 class:is-disabled={!_chaseEnabled}
-                 title={!_chaseEnabled
-                   ? 'Chase unavailable — MARKET / SL-M orders fill at the book; no limit to re-quote'
-                   : _sharedChase
-                     ? 'Chase ON — re-quote the limit each tick until filled'
-                     : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
-            <input type="checkbox" bind:checked={_sharedChase} disabled={!_chaseEnabled} />
-            <span class="oes-common-chase-label" class:on={_sharedChase && _chaseEnabled}>CHASE</span>
-          </label>
-          {#if _sharedChase && _chaseEnabled}
-            <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
-              <button type="button" class="oes-common-chase-agg-pill"
-                      class:on={_sharedChaseAgg === 'low'}
-                      title="Low — patient. Pegs to your own side; fills only if the market lifts it."
-                      onclick={() => _sharedChaseAgg = 'low'}>L</button>
-              <button type="button" class="oes-common-chase-agg-pill"
-                      class:on={_sharedChaseAgg === 'med'}
-                      title="Medium — peg to midpoint of bid+ask."
-                      onclick={() => _sharedChaseAgg = 'med'}>M</button>
-              <button type="button" class="oes-common-chase-agg-pill"
-                      class:on={_sharedChaseAgg === 'high'}
-                      title="High — urgent. Crosses the spread to take liquidity on the next tick."
-                      onclick={() => _sharedChaseAgg = 'high'}>H</button>
-            </div>
-          {/if}
-          {#if basketLegs.length > 0}
-            <button type="button" class="oes-common-clear oes-common-clear-inline"
-              title="Clear all basket legs"
-              disabled={basketSubmitting}
-              onclick={clearBasket}>Clear</button>
-          {/if}
+      </div>
+
+      <!-- Heading-row cluster — operator: "move live and chase and show
+           it after order entry in order modal and page". Sits as a thin
+           standalone strip immediately under the "Order entry" title
+           (modal) or the "ORDER ENTRY" bucket header (/orders page).
+           Renders in BOTH contexts (regardless of headerless) so the
+           cluster is always one visual step below the heading text.
+           Contents: mode pill (read-only — set from navbar) · CHASE
+           toggle · L/M/H aggressiveness · Clear (when basket has legs). -->
+      <div class="oes-mode-strip">
+        <span class="oes-common-mode-chip mode-pill-{$executionMode ?? 'paper'}"
+              title="Execution mode (read-only — change from the navbar dropdown)">
+          {($executionMode ?? 'paper').toUpperCase()}
         </span>
+        <label class="oes-common-chase-toggle"
+               class:is-disabled={!_chaseEnabled}
+               title={!_chaseEnabled
+                 ? 'Chase unavailable — MARKET / SL-M orders fill at the book; no limit to re-quote'
+                 : _sharedChase
+                   ? 'Chase ON — re-quote the limit each tick until filled'
+                   : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
+          <input type="checkbox" bind:checked={_sharedChase} disabled={!_chaseEnabled} />
+          <span class="oes-common-chase-label" class:on={_sharedChase && _chaseEnabled}>CHASE</span>
+        </label>
+        {#if _sharedChase && _chaseEnabled}
+          <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
+            <button type="button" class="oes-common-chase-agg-pill"
+                    class:on={_sharedChaseAgg === 'low'}
+                    title="Low — patient. Pegs to your own side; fills only if the market lifts it."
+                    onclick={() => _sharedChaseAgg = 'low'}>L</button>
+            <button type="button" class="oes-common-chase-agg-pill"
+                    class:on={_sharedChaseAgg === 'med'}
+                    title="Medium — peg to midpoint of bid+ask."
+                    onclick={() => _sharedChaseAgg = 'med'}>M</button>
+            <button type="button" class="oes-common-chase-agg-pill"
+                    class:on={_sharedChaseAgg === 'high'}
+                    title="High — urgent. Crosses the spread to take liquidity on the next tick."
+                    onclick={() => _sharedChaseAgg = 'high'}>H</button>
+          </div>
+        {/if}
+        {#if basketLegs.length > 0}
+          <span class="oes-mode-strip-spacer"></span>
+          <button type="button" class="oes-common-clear oes-common-clear-inline"
+            title="Clear all basket legs"
+            disabled={basketSubmitting}
+            onclick={clearBasket}>Clear</button>
+        {/if}
       </div>
 
     <!-- Tab strip — suppressed when the host page renders its own
@@ -2714,25 +2726,21 @@
     flex-shrink: 0;
     min-width: 0;
   }
-  /* Right-aligned cluster — mode pill + chase + L/M/H + Clear. Pushed
-     to the trailing edge of the picker row via margin-left:auto so
-     account/type/symbol stay anchored to the left and the cluster
-     hugs the right. Inherits the inline-flex layout from .oes-picker
-     so all chips sit on the picker baseline. */
-  .oes-picker-cluster {
-    margin-left: auto;
-    display: inline-flex;
+  /* Heading-row strip — sits immediately under the modal title or the
+     /orders bucket header. Carries the mode pill + CHASE + L/M/H +
+     Clear. Density matches the picker row (same gap + padding) so the
+     whole title-to-pickers stack reads as one continuous strip. */
+  .oes-mode-strip {
+    display: flex;
     align-items: center;
     gap: 0.35rem;
+    padding: 0.3rem 0.4rem;
+    border-bottom: 1px solid rgba(251, 191, 36, 0.10);
+    flex-wrap: wrap;
     flex-shrink: 0;
+    min-width: 0;
   }
-  /* On very narrow viewports, allow the picker to wrap so the
-     cluster moves to its own line instead of pushing the symbol
-     picker off-screen. */
-  @media (max-width: 720px) {
-    .oes-picker { flex-wrap: wrap; }
-    .oes-picker-cluster { margin-left: 0; }
-  }
+  .oes-mode-strip-spacer { flex: 1 1 0; min-width: 0.5rem; }
   /* Type filter — narrowed so it fits in the same row as Account +
      Symbol. The "EQ · FUT · OPT" label gets ellipsised when not the
      active selection; the active value renders fully (Equity /

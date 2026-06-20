@@ -184,9 +184,18 @@
        bottom"). The × close stays at the top-right of SymbolPanel's
        own header; chart icon hidden since every page already has one
        in its own header. -->
+  <!-- Operator: "when order modal is clicked without using symbol, don't
+       show buy or sell as active … this will not apply when order modal
+       is triggered by clicking symbol or using symbol menu". Pass
+       `side="BUY"` only when there's a contextSymbol (modal opened from
+       a symbol pick — operator expressed intent). When opened cold from
+       a page that has no contextSymbol, leave `side` at the SymbolPanel
+       null default so neither BUY nor SELL is pre-active and the
+       operator has to pick one. -->
   <SymbolPanel
     symbol={_effectiveSymbol}
     exchange={_effectiveExchange}
+    side={_effectiveSymbol ? 'BUY' : null}
     defaultTab="chain"
     accounts={[]}
     account=""

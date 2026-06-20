@@ -93,7 +93,7 @@
   let {
     symbol,
     exchange  = '',
-    side      = /** @type {'BUY' | 'SELL'} */ ('BUY'),
+    side      = /** @type {'BUY' | 'SELL' | null} */ (null),
     action    = /** @type {'open' | 'close' | 'modify' | 'repeat' | 'cancel'} */ ('open'),
     qty       = 0,
     product   = /** @type {'CNC' | 'MIS' | 'NRML' | undefined} */ (undefined),
@@ -1191,7 +1191,11 @@
     if (suspended) {
       return;
     }
-    if (_isDemo || !_account || !symbol || Number(_qty) <= 0 || _mode === 'draft') {
+    // Operator: "user needs to choose [a side]. because of that margin
+    // chip will not be displayed in the beginning." Gate the preflight
+    // on _side being non-null so the chip stays empty until the
+    // operator clicks BUY or SELL.
+    if (_isDemo || !_account || !symbol || !_side || Number(_qty) <= 0 || _mode === 'draft') {
       _marginPreview = null;
       _marginLoading = false;
       // `_chipMeta` is read via untrack so it doesn't add itself to the

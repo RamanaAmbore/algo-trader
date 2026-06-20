@@ -504,7 +504,16 @@
     const inst = findOption(chainUnderlying.toUpperCase(), optType, strike, chainExpiry);
     if (!inst) { basketError = 'Symbol not in instruments cache.'; return; }
     const sideTag = /** @type {'BUY'|'SELL'} */ (side === 'long' ? 'BUY' : 'SELL');
-    if (!_account) { basketError = 'Pick a routable account before adding legs.'; return; }
+    // Audit fix — eliminate the _account='' race. The $effect at line
+    // 166 auto-picks the single account but only after the first paint;
+    // a fast click on +CE in that window used to silently no-op (basket
+    // never appears, operator confused). Re-derive synchronously here:
+    // single account → pick it; multiple → ask the operator to choose.
+    if (!_account) {
+      if (_allAccounts.length === 1) { _account = _allAccounts[0]; }
+      else if (_allAccounts.length === 0) { basketError = 'No broker accounts loaded — wait or sign in.'; return; }
+      else { basketError = 'Pick a routable account before adding legs.'; return; }
+    }
     // Pin the active row visual marker — survives the 900 ms toast.
     _markActive(strike, optType);
     // Place-mode short-circuit: route directly to the Ticket tab
@@ -540,7 +549,12 @@
   function addFuturesToBasket(/** @type {string} */ sym, /** @type {number} */ lotSize, /** @type {'long'|'short'} */ side) {
     const inst = getInstrument(String(sym || '').toUpperCase());
     const sideTag = /** @type {'BUY'|'SELL'} */ (side === 'long' ? 'BUY' : 'SELL');
-    if (!_account) { basketError = 'Pick a routable account before adding legs.'; return; }
+    // Same _account race fallback as addOptionToBasket above.
+    if (!_account) {
+      if (_allAccounts.length === 1) { _account = _allAccounts[0]; }
+      else if (_allAccounts.length === 0) { basketError = 'No broker accounts loaded — wait or sign in.'; return; }
+      else { basketError = 'Pick a routable account before adding legs.'; return; }
+    }
     if (_placeMode && onPlaceLeg) {
       // Hand-off to Ticket tab as LIMIT (default for the platform) —
       // operator enters the limit price in Ticket and submits. The
