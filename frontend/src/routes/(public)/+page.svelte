@@ -262,9 +262,9 @@
     margin-bottom: 0.4rem;
   }
   .fork-tag {
-    font-size: 0.6rem;
+    font-size: 0.7rem;
     font-weight: 700;
-    color: #b27908;
+    color: #8b5d00;
     text-transform: uppercase;
     letter-spacing: 0.1em;
     background: rgba(212,146,12,0.08);
@@ -413,7 +413,7 @@
   .closer-line a:hover { text-decoration: underline; }
   .closer-disclaimer {
     font-size: 0.62rem;
-    color: #8a98b0;
+    color: #6b7894;
     margin: 0;
     font-style: italic;
   }

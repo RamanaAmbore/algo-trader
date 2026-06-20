@@ -1,14 +1,19 @@
 <script>
-  import { goto } from '$app/navigation';
+  import { goto, invalidateAll } from '$app/navigation';
   import { onMount } from 'svelte';
   import { nowStamp } from '$lib/stores';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
 
-  // Refresh on a narrative tour page just reloads the route so the
+  // Refresh on a narrative tour page just re-runs load functions so the
   // hero + section cards re-flow with fresh layout. No data is
   // fetched, so this is effectively a UI reset.
-  function _refresh() { if (typeof window !== 'undefined') window.location.reload(); }
+  let _refreshing = $state(false);
+  async function _refresh() {
+    _refreshing = true;
+    await invalidateAll();
+    _refreshing = false;
+  }
 
   // Recruiter-facing narrative page. Single scrollable tour that
   // explains the platform's novel pieces (5-mode execution ladder,
@@ -235,7 +240,7 @@
     <span class="algo-ts">{$nowStamp}</span>
     <span class="ml-auto"></span>
     <span class="page-header-actions">
-      <RefreshButton onClick={_refresh} loading={false} label="tour" />
+      <RefreshButton onClick={_refresh} loading={_refreshing} label="tour" />
       <PageHeaderActions />
     </span>
   </div>

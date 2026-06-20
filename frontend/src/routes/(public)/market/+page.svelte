@@ -147,14 +147,22 @@
      the /performance page treatment. Champagne BOTTOM border on the
      active tab; the panel below carries only the content. -->
 <div class="market-tabs-row">
-  <div class="market-tabs">
+  <div class="market-tabs" role="tablist" aria-label="Market views">
     <button type="button"
+            role="tab"
+            id="summary-tab"
+            aria-selected={tab === 'summary'}
+            aria-controls="summary-panel"
             class="market-tab"
             class:market-tab-active={tab === 'summary'}
             onclick={() => tab = 'summary'}>
       Daily Market Report
     </button>
     <button type="button"
+            role="tab"
+            id="news-tab"
+            aria-selected={tab === 'news'}
+            aria-controls="news-panel"
             class="market-tab"
             class:market-tab-active={tab === 'news'}
             onclick={() => tab = 'news'}>
@@ -186,8 +194,9 @@
   {/if}
 
   {#if tab === 'summary'}
+    <div role="tabpanel" id="summary-panel" aria-labelledby="summary-tab">
     {#if error}
-      <div class="pub-banner-error p-3 rounded text-sm mb-4">{error}</div>
+      <div class="pub-banner-error p-3 rounded text-sm mb-4" role="alert" aria-live="assertive">{error}</div>
     {/if}
     {#if !content && loading}
       <div class="text-center text-text/40 text-sm animate-pulse py-8">
@@ -213,9 +222,11 @@
     {:else if !loading}
       <p class="text-text/40 text-sm">No market update available.</p>
     {/if}
+    </div>
   {:else}
+    <div role="tabpanel" id="news-panel" aria-labelledby="news-tab">
     {#if newsError}
-      <div class="pub-banner-error p-2 rounded text-xs mb-2">
+      <div class="pub-banner-error p-2 rounded text-xs mb-2" role="alert" aria-live="assertive">
         {newsError}
       </div>
     {/if}
@@ -236,6 +247,7 @@
     {:else if !newsLoading}
       <p class="text-text/40 text-sm">No headlines available right now.</p>
     {/if}
+    </div>
   {/if}
 </div>
 

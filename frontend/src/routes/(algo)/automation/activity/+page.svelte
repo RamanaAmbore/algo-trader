@@ -16,8 +16,15 @@
 
   // Match the dashboard's default — fires only, with an opt-in to
   // surface action successes / errors.
-  let showActions = $state(false);
-  let _bump       = $state(0);
+  let showActions  = $state(false);
+  let _bump        = $state(0);
+  let _refreshing  = $state(false);
+
+  function _onRefresh() {
+    _refreshing = true;
+    _bump++;
+    setTimeout(() => { _refreshing = false; }, 400);
+  }
   const kinds = $derived(
     showActions
       ? ['agent_fire', 'agent_action_success', 'agent_action_error']
@@ -36,7 +43,7 @@
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
-    <RefreshButton onClick={() => _bump++} label="activity" />
+    <RefreshButton onClick={_onRefresh} loading={_refreshing} label="activity" />
     <PageHeaderActions />
   </span>
 </div>

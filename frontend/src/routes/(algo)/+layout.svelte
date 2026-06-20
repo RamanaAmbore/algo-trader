@@ -879,7 +879,7 @@
     cursor: pointer;
     padding: 0;
     margin-right: 0.75rem;
-    outline: none !important;
+    outline: none;
     height: 100%;
   }
   .algo-brand-name {
@@ -969,7 +969,7 @@
     font-family: ui-monospace, monospace;
     transition: background-color 0.06s, color 0.06s, border-left-color 0.06s;
     white-space: nowrap;
-    outline: none !important;
+    outline: none;
     -webkit-tap-highlight-color: transparent;
   }
   :global(.algo-nav-btn:hover) {
@@ -1048,7 +1048,7 @@
     font-family: ui-monospace, monospace;
     letter-spacing: 0.02em;
     transition: color 0.08s, border-color 0.08s, background-color 0.08s;
-    outline: none !important;
+    outline: none;
     margin-left: 0.5rem;
     white-space: nowrap;
   }
@@ -1141,7 +1141,7 @@
     letter-spacing: 0.03em;
     text-align: left;
     white-space: nowrap;
-    outline: none !important;
+    outline: none;
     transition: background-color 0.06s, color 0.06s;
   }
   .algo-group-item:hover {
@@ -1165,7 +1165,7 @@
     display: flex;
     align-items: center;
     transition: background-color 0.06s;
-    outline: none !important;
+    outline: none;
   }
   .algo-hamburger:hover { background: rgba(251,191,36,0.12); }
 
@@ -1205,7 +1205,7 @@
     cursor: pointer;
     font-family: ui-monospace, monospace;
     transition: background-color 0.05s;
-    outline: none !important;
+    outline: none;
   }
   .algo-mobile-item:last-child { border-bottom: none; }
   .algo-mobile-item:hover { background: rgba(251,191,36,0.1); color: #fbbf24; }
@@ -1578,7 +1578,8 @@
   .mode-trigger-caret  { flex-shrink: 0; opacity: 0.7; pointer-events: none; }
   /* Per-mode colour override via data-mode attribute so the trigger
      matches the colour scheme previously applied via inline style. */
-  .algo-mode-badge[data-mode='paper']  { color:#38bdf8; background:rgba(56,189,248,0.10);  border-color:#38bdf8; }
+  .algo-mode-badge[data-mode='idle']   { color:#94a3b8; background:rgba(148,163,184,0.10);  border-color:rgba(148,163,184,0.45); }
+  .algo-mode-badge[data-mode='paper']  { color:#7dd3fc; background:rgba(125,211,252,0.10);  border-color:#7dd3fc; }
   /* LIVE: red palette — see MODE_COLOR comment. Heavier fill alpha
      than the safer modes so the pill reads as ALARMED on a glance. */
   .algo-mode-badge[data-mode='live']   { color:#f87171; background:rgba(248,113,113,0.22); border-color:#f87171; }

@@ -451,10 +451,10 @@
    *  vs which only log silently. Keep glyphs ascii-light so the row
    *  height doesn't jump. */
   const CHANNEL_ICON = {
-    telegram:  '📨',
-    email:     '✉',
-    websocket: '🌐',
-    log:       '📝',
+    telegram:  `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>`,
+    email:     `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="2,4 12,13 22,4"/></svg>`,
+    websocket: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>`,
+    log:       `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`,
   };
   function enabledChannels(/** @type {any[]} */ events) {
     if (!Array.isArray(events)) return [];
@@ -572,13 +572,13 @@
 <ConfirmModal bind:this={_liveAgentConfirmRef} />
 
 <svelte:head>
-  <title>Agents | RamboQuant Analytics</title>
+  <title>Automation | RamboQuant Analytics</title>
 </svelte:head>
 
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">
-      Agents
+      Automation
       {#if simActive}
         <span class="ml-2 align-middle text-[0.6rem] px-1.5 py-0.5 rounded bg-[#fb7185]/20 text-[#fb7185] border border-[#fb7185]/40 font-mono">
           SIMULATOR EVENTS
@@ -590,7 +590,7 @@
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={loadAll} loading={loading} label="agents" />
-    <a href="/admin/alerts" class="history-pill" title="View fire history (Alerts)">
+    <a href="/automation/activity" class="history-pill" title="View agent fire history">
       🔔 History
     </a>
     <button class="ai-pill" onclick={() => aiOpen = !aiOpen}>
@@ -693,10 +693,10 @@
     {group.name}
     <span class="opacity-60 font-normal ml-1">({group.agents.length})</span>
   </h2>
-  <div class="space-y-1 mb-3 lg:columns-2 lg:gap-2 lg:space-y-0">
+  <div class="agent-group-grid mb-3">
     {#each group.agents as agent}
       {@const isOpen = expandedSlug === agent.slug}
-      <div class="algo-status-card break-inside-avoid lg:mb-1 {agent.status === 'triggered' ? 'animate-pulse' : ''}"
+      <div class="algo-status-card {agent.status === 'triggered' ? 'animate-pulse' : ''}"
            data-status={agent.status}
            style="padding: 0">
         <!-- Compact row (always visible). Div + role="button" so the inner
@@ -724,7 +724,7 @@
                the full channel list for accessibility. -->
           <span class="agent-row-icons" title={'Notify: ' + (enabledChannels(agent.events).join(', ') || 'none')}>
             {#each enabledChannels(agent.events) as ch (ch)}
-              <span class="agent-notify-ico" aria-label={ch}>{CHANNEL_ICON[ch] || '•'}</span>
+              <span class="agent-notify-ico" aria-label={ch}>{@html CHANNEL_ICON[ch] || '•'}</span>
             {/each}
           </span>
           <button type="button"
@@ -1194,6 +1194,19 @@
 {/each}
 
 <style>
+  /* ── Agent group grid — 2-col on ≥720px, 1-col on mobile ────────── */
+  .agent-group-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.25rem;
+  }
+  @media (min-width: 720px) {
+    .agent-group-grid {
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0.5rem;
+    }
+  }
+
   /* ── Ask-AI form ─────────────────────────────────────────────────── */
   .ai-pill {
     font-family: ui-monospace, monospace;

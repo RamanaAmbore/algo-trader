@@ -196,7 +196,7 @@
 
 <div class="page-header">
   <span class="algo-title-group">
-    <h1 class="page-title-chip">Agent Tokens</h1>
+    <h1 class="page-title-chip">Tokens</h1>
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>

@@ -58,6 +58,14 @@
     loadPanel(tab);  // kick off the active panel's bundle fetch
   });
 
+  let _refreshing = $state(false);
+  function _onRefresh() {
+    _refreshing = true;
+    lastRefreshAt.set(Date.now());
+    loadPanel(tab);
+    setTimeout(() => { _refreshing = false; }, 400);
+  }
+
   function pickTab(/** @type {'sim'|'replay'} */ t) {
     tab = t;
     loadPanel(t);
@@ -81,7 +89,7 @@
          panel (SimulatorPanel / ReplayPanel) reloads its own /api/sim/*
          status on its internal cadence; the page-level refresh bumps
          lastRefreshAt so the tooltip + connection badge stay in sync. -->
-    <RefreshButton onClick={() => { lastRefreshAt.set(Date.now()); loadPanel(tab); }} loading={false} label="lab" />
+    <RefreshButton onClick={_onRefresh} loading={_refreshing} label="lab" />
     <PageHeaderActions />
   </span>
 </div>

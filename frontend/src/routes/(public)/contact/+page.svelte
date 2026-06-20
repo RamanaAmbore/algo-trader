@@ -51,20 +51,23 @@
   <div class="pub-card rounded-lg shadow-sm p-5 pt-4">
   <h1 class="page-heading">Contact</h1>
   {#if success}
-    <div class="pub-banner-success mb-4 p-3 rounded text-sm">{success}</div>
+    <div class="pub-banner-success mb-4 p-3 rounded text-sm" role="status" aria-live="polite">{success}</div>
   {/if}
   {#if error}
-    <div class="pub-banner-error mb-4 p-3 rounded text-sm">{error}</div>
+    <div class="pub-banner-error mb-4 p-3 rounded text-sm" role="alert" aria-live="assertive">{error}</div>
   {/if}
 
+  <form onsubmit={(e) => { e.preventDefault(); submit(); }}>
   <div class="space-y-4">
     <div>
       <label class="field-label" for="c-name">Name</label>
-      <input id="c-name" bind:value={form.name} class="field-input" placeholder="Your name" />
+      <input id="c-name" bind:value={form.name} class="field-input" placeholder="Your name"
+        required aria-required="true" />
     </div>
     <div>
       <label class="field-label" for="c-email">Email</label>
-      <input id="c-email" type="email" bind:value={form.email} class="field-input" placeholder="you@example.com" />
+      <input id="c-email" type="email" bind:value={form.email} class="field-input" placeholder="you@example.com"
+        required aria-required="true" />
     </div>
     <div>
       <label class="field-label" for="c-msg">Message</label>
@@ -73,16 +76,19 @@
         bind:value={form.message}
         class="field-input min-h-[120px] resize-y"
         placeholder="How can we help you?"
+        required
+        aria-required="true"
       ></textarea>
     </div>
     <button
-      onclick={submit}
+      type="submit"
       disabled={submitting || !form.name || !form.email || !form.message}
       class="contact-send-btn w-full disabled:opacity-50 disabled:cursor-not-allowed"
     >
       {submitting ? 'Sending…' : 'Send Message'}
     </button>
   </div>
+  </form>
   </div>
 </div>
 

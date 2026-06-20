@@ -148,10 +148,10 @@
       </div>
 
       {#if error}
-        <div class="pub-banner-error mb-3 p-2 rounded text-xs">{error}</div>
+        <div class="pub-banner-error mb-3 p-2 rounded text-xs" role="alert" aria-live="assertive">{error}</div>
       {/if}
       {#if info}
-        <div class="pub-banner-info mb-3 p-2 rounded text-xs">{info}</div>
+        <div class="pub-banner-info mb-3 p-2 rounded text-xs" role="status" aria-live="polite">{info}</div>
       {/if}
 
       {#if tab === 'signin'}

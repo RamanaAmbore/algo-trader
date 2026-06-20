@@ -48,7 +48,7 @@
     <!-- Desktop navbar -->
     <header class="pub-navbar">
       <div class="pub-nav-inner hidden md:flex items-center gap-1 h-14">
-        <a href="/about" class="pub-brand shrink-0 mr-5" tabindex="-1">
+        <a href="/" class="pub-brand shrink-0 mr-5">
           <img src={bullSrc} alt="" style="height:2.6rem;width:auto;display:block;flex-shrink:0;pointer-events:none;filter:drop-shadow(0 0 3px rgba(200,168,75,0.75)) drop-shadow(0 0 6px rgba(200,168,75,0.45));" />
           <div class="pub-brand-text">
             <span class="pub-brand-name">RAMBO QUANT</span>
@@ -60,10 +60,10 @@
 
         <nav class="flex items-center gap-3 flex-1 justify-center">
           {#each navLinks() as link}
-            <button
-              onclick={() => goto(link.href)}
+            <a
+              href={link.href}
               class="pub-nav-btn {isActive(link.href) ? 'pub-nav-btn-active' : ''}"
-            >{link.label}</button>
+            >{link.label}</a>
           {/each}
         </nav>
 
@@ -98,7 +98,7 @@
 
       <!-- Mobile bar -->
       <div class="pub-nav-inner md:hidden flex items-center justify-between h-16 py-2">
-        <a href="/about" class="pub-brand pub-brand-mobile" tabindex="-1">
+        <a href="/" class="pub-brand pub-brand-mobile">
           <img src={bullSrc} alt="" style="height:2.2rem;width:auto;display:block;flex-shrink:0;pointer-events:none;filter:drop-shadow(0 0 3px rgba(200,168,75,0.75)) drop-shadow(0 0 6px rgba(200,168,75,0.45));" />
           <div class="pub-brand-text">
             <span class="pub-brand-name">RAMBO QUANT</span>
@@ -141,10 +141,11 @@
       {#if menuOpen}
         <nav class="pub-mobile-dropdown">
           {#each navLinks() as link}
-            <button
-              onclick={() => { goto(link.href); closeMenu(); }}
+            <a
+              href={link.href}
+              onclick={closeMenu}
               class="pub-mobile-item {isActive(link.href) ? 'pub-mobile-active' : ''}"
-            >{link.label}</button>
+            >{link.label}</a>
           {/each}
           <button
             onclick={() => { goto('/pulse'); closeMenu(); }}
@@ -335,17 +336,17 @@
     margin: 0.12rem 0 0.08rem;
   }
   .pub-brand-tagline {
-    font-size: 0.4rem;
+    font-size: 0.65rem;
     font-weight: 500;
     color: rgba(255,255,255,0.82);
-    letter-spacing: 0.03em;
+    letter-spacing: 0.02em;
     display: block;
     padding-top: 0;
     margin-top: 0.12rem;
   }
   .pub-brand-mobile .pub-brand-name    { font-size: 0.66rem; }
   .pub-brand-mobile .pub-brand-sub     { font-size: 0.5rem; }
-  .pub-brand-mobile .pub-brand-tagline { font-size: 0.4rem; }
+  .pub-brand-mobile .pub-brand-tagline { font-size: 0.6rem; }
 
   /* Nav buttons — laptop / desktop. About / Market / Performance / FAQ /
      Contact get the prominent treatment; the right-side context-switch
@@ -369,9 +370,16 @@
     letter-spacing: 0.02em;
     transition: background-color 0.08s, color 0.08s, border-bottom-color 0.08s;
     white-space: nowrap;
-    outline: none !important;
+    outline: none;
     -webkit-tap-highlight-color: transparent;
     text-shadow: 0 1px 3px rgba(0,0,0,0.55);
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+  }
+  :global(.pub-nav-btn:focus-visible) {
+    outline: 2px solid #c8a84b;
+    outline-offset: 2px;
   }
   :global(.pub-nav-btn:hover) {
     background: rgba(255,255,255,0.09);
@@ -466,6 +474,8 @@
     justify-content: center;
     transition: background-color 0.08s;
     outline: none !important;
+    min-width: 2.75rem;
+    min-height: 2.75rem;
   }
   .pub-hamburger:hover { background: rgba(255,255,255,0.10); }
 
@@ -499,6 +509,7 @@
     transition: background-color 0.06s, color 0.06s, border-left-color 0.06s;
     border-left: 3px solid transparent;
     outline: none !important;
+    text-decoration: none;
   }
   .pub-mobile-item:last-child { border-bottom: none; }
   .pub-mobile-item:hover { background: rgba(200,168,75,0.09); color: #f0d070; border-left-color: rgba(240,208,112,0.5); }

@@ -83,15 +83,29 @@
   onMount(async () => {
     /** @type {any} */
     const win = window;
-    // Dynamically load mermaid — no npm package needed, CDN via script tag
+    // Dynamically load mermaid — no npm package needed, CDN via script tag.
+    // TODO: add integrity="sha384-..." SRI hash for mermaid@11 once the
+    // exact build hash is confirmed from the jsDelivr release manifest.
+    // crossorigin="anonymous" is required for SRI enforcement.
     if (!win.mermaid) {
-      await new Promise((resolve, reject) => {
+      const loaded = await new Promise((resolve) => {
         const s = document.createElement('script');
         s.src = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
-        s.onload = resolve;
-        s.onerror = reject;
+        s.crossOrigin = 'anonymous';
+        // TODO: s.integrity = 'sha384-...';
+        const timer = setTimeout(() => { s.onerror?.('timeout'); }, 8000);
+        s.onload  = () => { clearTimeout(timer); resolve(true); };
+        s.onerror = () => { clearTimeout(timer); resolve(false); };
         document.head.appendChild(s);
       });
+      if (!loaded) {
+        // CDN load failed — show fallback in every diagram container
+        for (const d of diagrams) {
+          const el = document.getElementById(`mermaid-${d.id}`);
+          if (el) el.innerHTML = '<p class="text-xs text-muted py-6 text-center">Diagrams unavailable — try again later.</p>';
+        }
+        return;
+      }
     }
     win.mermaid.initialize({
       startOnLoad: false,
@@ -168,17 +182,21 @@
       <button
         class="faq-question"
         onclick={() => open = open === i ? -1 : i}
+        aria-expanded={open === i}
+        aria-controls={`faq-answer-${i}`}
+        id={`faq-btn-${i}`}
       >
         <span>{faq.q}</span>
         <svg
           class="faq-chevron {open === i ? 'rotate-180' : ''}"
           fill="none" stroke="currentColor" viewBox="0 0 24 24"
+          aria-hidden="true"
         >
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
         </svg>
       </button>
       {#if open === i}
-        <div class="faq-answer">
+        <div class="faq-answer" id={`faq-answer-${i}`} role="region" aria-labelledby={`faq-btn-${i}`}>
           {faq.a}
         </div>
       {/if}

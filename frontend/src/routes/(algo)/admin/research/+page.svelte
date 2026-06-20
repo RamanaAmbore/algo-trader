@@ -27,7 +27,6 @@
   import InfoHint from '$lib/InfoHint.svelte';
   import Select from '$lib/Select.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
-  import AutomationTabs from '$lib/AutomationTabs.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
 
   /** @type {any[]} */
@@ -395,11 +394,11 @@
   ];
 </script>
 
-<svelte:head><title>Research | RamboQuant Analytics</title></svelte:head>
+<svelte:head><title>Lab | RamboQuant Analytics</title></svelte:head>
 
 <div class="page-header">
   <span class="algo-title-group">
-    <h1 class="page-title-chip">Research</h1>
+    <h1 class="page-title-chip">Lab</h1>
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
@@ -408,8 +407,6 @@
     <PageHeaderActions symbol={selected?.symbol ?? ''} />
   </span>
 </div>
-
-<AutomationTabs />
 
 {#if error}
   <div class="err-banner">{error}</div>

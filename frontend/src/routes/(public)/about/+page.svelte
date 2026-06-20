@@ -22,7 +22,7 @@
 </svelte:head>
 
 <div class="about-card">
-  <h1 class="sr-only">About RamboQuant Analytics LLP</h1>
+  <h1 class="about-heading">About RamboQuant Analytics LLP</h1>
   <!-- Stat strip — four cells matching the home page trust strip so
        the trust signal (XIRR / years / creds / LLP) reads identically
        across both public entry points. -->
@@ -71,6 +71,18 @@
 </div>
 
 <style>
+  /* ── Page heading ──────────────────────────────────────────────────────── */
+  .about-heading {
+    font-size: clamp(1.3rem, 4vw, 1.75rem);
+    font-weight: 900;
+    color: #0c1830;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+    text-align: center;
+    padding: 1.25rem 1.5rem 0.75rem;
+    margin: 0;
+  }
+
   /* ── Card shell — public palette tokens ────────────────────────────────── */
   .about-card {
     background: #fffdf8;
@@ -152,6 +164,9 @@
     color: #1e3050;
     line-height: 1.75;
     margin-bottom: 1.1rem;
+    max-width: 65ch;
+    margin-left: auto;
+    margin-right: auto;
   }
   /* ── CTA row ───────────────────────────────────────────────────────────── */
   .cta-row {

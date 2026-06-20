@@ -256,6 +256,8 @@
   });
 </script>
 
+<svelte:head><title>Order Templates | RamboQuant Analytics</title></svelte:head>
+
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Templates</h1>
