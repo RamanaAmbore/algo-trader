@@ -24,9 +24,15 @@ export function capWarningFor(t, c, exchange) {
   if (!t || !c) return '';
   const wantsOco   = (t.tp_pct != null && t.sl_pct != null);
   const wantsTrail = t.sl_trail_pct != null;
-  const wantsGtt   = wantsOco || wantsTrail
-                     || t.tp_pct != null || t.sl_pct != null
-                     || !!t.tp_scales_json;
+  // wantsGttComplex: needs OCO, trail, or scale-ladder — features that go
+  // beyond a single native trigger. Used to decide whether the poll-lag
+  // warning is meaningful: a TP-only template on a broker with gtt_single
+  // support is working as designed and the poll lag is expected behaviour,
+  // not a gap the operator needs to act on.
+  const wantsGttComplex = wantsOco || wantsTrail || !!t.tp_scales_json;
+  // wantsGtt: any GTT-type exit at all (including TP-only or SL-only).
+  const wantsGtt   = wantsGttComplex
+                     || t.tp_pct != null || t.sl_pct != null;
   const isMcx = ['MCX', 'NCO'].includes(String(exchange || '').toUpperCase());
   const display = c.display_name || 'broker';
   const parts = [];
@@ -42,7 +48,11 @@ export function capWarningFor(t, c, exchange) {
   if (isMcx && c.gtt_supports_mcx === false) {
     parts.push(`${display} GTT can't run on MCX — template won't attach`);
   }
-  if (wantsGtt && c.postback_gtt === 'poll_only') {
+  // Poll-lag warning: only raise it when the template needs a complex GTT
+  // (OCO, trail, or scale-ladder) OR when the broker has no native single-
+  // GTT support. A TP-only template on a broker with gtt_single=true uses
+  // that feature as intended; the poll lag is expected, not a gap.
+  if (c.postback_gtt === 'poll_only' && (wantsGttComplex || !c.gtt_single) && wantsGtt) {
     parts.push(`${display} GTT fires via poll — up to ~15s detection lag`);
   }
   return parts.join(' · ');

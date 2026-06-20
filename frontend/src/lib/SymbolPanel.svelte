@@ -408,6 +408,11 @@
   }
   function clearBasket() {
     basketLegs = []; basketResultMsg = ''; _basketMarginRows = [];
+    // Reset per-account caps cache so stale data from a previous basket
+    // session does not carry over when the operator builds a new basket
+    // (possibly with different accounts). Cache will re-populate lazily
+    // from the effect below as new legs are added.
+    _basketCapsCache = {};
     // Audit fix (H-6) — also clear the persistent partial-fail
     // sticky banner so it doesn't outlive the basket it described.
     if (_stickyResultTimer) { clearTimeout(_stickyResultTimer); _stickyResultTimer = null; }

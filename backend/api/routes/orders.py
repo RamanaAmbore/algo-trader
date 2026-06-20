@@ -420,6 +420,10 @@ class AlgoOrderInfo(msgspec.Struct):
     # rows that picked the 'none' template.
     template_id: int | None = None
     attached_gtts_json: str | None = None
+    # Sprint B — broker's running cumulative filled quantity. Lets the
+    # frontend show partial-fill progress on OPEN/CANCELLED rows without
+    # relying on the detail string for parsing.
+    filled_quantity: int | None = None
     # Reverse linkage — every AlgoOrder row that points to THIS row via
     # parent_order_id. Lets the OrderCard render a "wing: #N" chip on
     # the parent so the operator sees the auto-attached protective leg
@@ -622,7 +626,10 @@ async def _attach_basket_leg_template(
 import time as _time
 _TEMPLATE_ATTACH_LOCKS: dict[int, tuple[asyncio.Lock, float]] = {}
 _TEMPLATE_ATTACH_META_LOCK = asyncio.Lock()
-_TPL_LOCK_TTL_S = 3600  # 1 hour — sweep happens at every get-or-create
+# 1 h — longest realistic live-chase window is ~30 min (max_attempts ×
+# interval); 1 h is 2× headroom so a slow reconcile sweep after market
+# close still finds the lock before it expires.
+_TPL_LOCK_TTL_S = 3600
 
 
 async def _get_template_attach_lock(parent_row_id: int) -> "asyncio.Lock":
@@ -1129,6 +1136,7 @@ class OrdersController(Controller):
                 basket_tag=r.basket_tag,
                 template_id=r.template_id,
                 attached_gtts_json=r.attached_gtts_json,
+                filled_quantity=(int(r.filled_quantity) if r.filled_quantity is not None else None),
                 child_order_ids=child_map.get(r.id, []),
             )
             for r in rows
@@ -1289,6 +1297,7 @@ class OrdersController(Controller):
                 basket_tag=r.basket_tag,
                 template_id=r.template_id,
                 attached_gtts_json=r.attached_gtts_json,
+                filled_quantity=(int(r.filled_quantity) if r.filled_quantity is not None else None),
                 child_order_ids=child_map.get(r.id, []),
             )
             for r in kept
@@ -2903,6 +2912,9 @@ class OrdersController(Controller):
                             # broker_order_id onto the wrong row.
                             if not _rows:
                                 from datetime import datetime, timezone, timedelta
+                                # 60s: long enough for the slowest IOC fill + DB
+                                # commit race; short enough to avoid cross-pollinating
+                                # broker_order_id with a newer unrelated order.
                                 _cutoff = datetime.now(timezone.utc) - timedelta(seconds=60)
                                 _fallback_where = [
                                     _AlgoOrder.broker_order_id.is_(None),

@@ -192,6 +192,17 @@
     {#if order.order_type}<span class="log-chip"><span class="log-chip-key">type:</span>{order.order_type}</span>{/if}
     <span class="log-chip"><span class="log-chip-key">price:</span>{_filled != null ? priceFmt(_filled) : _limit != null ? priceFmt(_limit) : '—'}</span>
     {#if _slip != null}<span class="log-chip log-chip-slip" class:slip-up={_slip > 0} class:slip-down={_slip < 0}><span class="log-chip-key">slip:</span>{_slip > 0 ? '+' : ''}{priceFmt(_slip)}</span>{/if}
+    <!-- Partial-fill indicator: renders when AlgoOrderInfo.filled_quantity
+         (B5 backend field) is present, positive, and less than total qty.
+         Fires on CANCEL_FAILED rows where the broker partially filled before
+         the kill: operator sees "partial: 30 of 50" as a distinct danger
+         signal rather than having to decode the qty:X/Y chip. -->
+    {#if order.filled_quantity != null && order.filled_quantity > 0 && order.filled_quantity < order.quantity}
+      <span class="log-chip log-chip-partial-fill"
+            title="Order partially filled — {qtyFmt(order.filled_quantity)} of {qtyFmt(order.quantity)} contracts filled. Reconcile the remaining {qtyFmt(order.quantity - order.filled_quantity)} open with the broker.">
+        <span class="log-chip-key">partial:</span>{qtyFmt(order.filled_quantity)} of {qtyFmt(order.quantity)}
+      </span>
+    {/if}
     {#if order.attempts != null && order.attempts > 0}<span class="log-chip"><span class="log-chip-key">chase:</span>#{order.attempts}</span>{/if}
     {#if order.trigger_price}<span class="log-chip"><span class="log-chip-key">trigger:</span>{priceFmt(order.trigger_price)}</span>{/if}
     {#if order.validity}<span class="log-chip"><span class="log-chip-key">validity:</span>{order.validity}</span>{/if}
@@ -223,10 +234,28 @@
       {@const _chipBadge = !_atJson
         ? (order.status === 'FILLED' ? ' ⟳' : '…')
         : (_missingId ? ' ✓⚠' : (_hasWing ? ' ✓+w' : (_gttCount > 0 ? ' ✓' : ' ✓∅')))}
+      {@const _atSummary = (() => {
+        // Build a human-readable summary of the attached GTT specs instead
+        // of dumping raw JSON into the title attribute. Each entry has
+        // `kind` ('gtt'|'wing'), `label` ('TP'/'SL'/'TP+SL'), and `id`.
+        if (!_at || !_at.length) return '';
+        const lines = [];
+        for (const e of _at) {
+          if (e?.kind === 'gtt') {
+            const idStr = e.id ? `#${String(e.id).slice(-8)}` : 'no id';
+            const trail = e.sl_trail_pct != null ? ` trail ${e.sl_trail_pct}%` : '';
+            lines.push(`${e.label || 'GTT'}${trail} · ${idStr}`);
+          } else if (e?.kind === 'wing') {
+            const idStr = e.id ? `#${String(e.id).slice(-8)}` : 'no id';
+            lines.push(`Wing BUY · ${idStr}`);
+          }
+        }
+        return lines.join(' | ');
+      })()}
       <span class="log-chip log-chip-template"
             class:log-chip-template-partial={_missingId}
             title={_atJson
-              ? `Template attached on fill — ${_gttCount} GTT spec(s)${_hasWing ? ', wing attached' : ''}${_missingId ? '. ⚠ At least one spec is missing its broker id — partial attach.' : '.'} Full JSON: ${_atJson}`
+              ? `Template attached on fill — ${_gttCount} GTT spec(s)${_hasWing ? ', wing attached' : ''}${_missingId ? '. ⚠ At least one spec is missing its broker id — partial attach.' : '.'} ${_atSummary}`
               : (order.status === 'FILLED'
                   ? 'Template was selected but attach did not run — click Re-attach to retry.'
                   : 'Template selected — will attach on fill')}>
@@ -312,5 +341,14 @@
     color: #a3b9d0;
     background: rgba(126, 151, 184, 0.10);
     font-style: italic;
+  }
+  /* Partial-fill chip — cyan palette (info/attention, not error).
+     Shown when filled_quantity > 0 and < quantity on a non-terminal row.
+     Matches the CANCEL_FAILED orange pill to signal "this row needs
+     operator attention" without competing visually with the status pill. */
+  :global(.log-chip-partial-fill) {
+    color: #7dd3fc;
+    background: rgba(125, 211, 252, 0.12);
+    border: 1px solid rgba(125, 211, 252, 0.40);
   }
 </style>

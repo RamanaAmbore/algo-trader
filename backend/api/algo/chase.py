@@ -15,9 +15,16 @@ import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Callable, Optional
 
+from sqlalchemy import select as _sql_select
+
+from backend.api.cache import _store as _cache_store
+from backend.api.database import async_session as _async_session
+from backend.api.models import AlgoOrder as _AlgoOrder
+from backend.shared.brokers.registry import get_broker as _get_broker_registry
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -49,11 +56,7 @@ async def _emit_chase_terminal(
     the LATEST one.
     """
     try:
-        from sqlalchemy import select as _sel
-        from datetime import datetime, timezone
-        from backend.api.database import async_session as _async_session
-        from backend.api.models import AlgoOrder as _AlgoOrder
-        from backend.api.algo.agent_engine import record_chase_terminal
+        from backend.api.algo.agent_engine import record_chase_terminal  # circular: lazy OK
 
         # Map chase outcome → AlgoOrder.status.
         _OUTCOME_TO_STATUS = {
@@ -76,11 +79,11 @@ async def _emit_chase_terminal(
             row = None
             if algo_order_id is not None:
                 row = (await _s.execute(
-                    _sel(_AlgoOrder).where(_AlgoOrder.id == int(algo_order_id))
+                    _sql_select(_AlgoOrder).where(_AlgoOrder.id == int(algo_order_id))
                 )).scalar_one_or_none()
             if row is None:
                 row = (await _s.execute(
-                    _sel(_AlgoOrder).where(
+                    _sql_select(_AlgoOrder).where(
                         _AlgoOrder.broker_order_id == broker_order_id
                     )
                 )).scalar_one_or_none()
@@ -209,6 +212,9 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="chase")
 # Maximum consecutive broker errors before a chase loop is aborted and an
 # alert is fired.  Distinct from `max_attempts` (the unfilled cap): this
 # counts Kite SDK exceptions, not quote-crossing retries.
+# 3 consecutive broker errors abort the chase before Kite's rate-limit
+# cool-off (30s per _RATE_LIMIT_COOLOFF_SECONDS in registry.py) would
+# extend the retry window indefinitely against a broken session.
 _MAX_CHASE_ERRORS = 3
 
 
@@ -232,6 +238,10 @@ _MAX_CHASE_ERRORS = 3
 # entry past its expiry — so the dict stays bounded without a
 # dedicated background task.
 import time as _time
+# 1 h — operator session length cap; a killed order that "comes back"
+# after 60 min was almost certainly a fresh placement on a new session,
+# not a resurrection of the killed one. Prevents stale kill flags from
+# surviving across trading days.
 _KILLED_TTL_SECONDS = 3600
 _KILLED_ORDER_IDS: dict[str, float] = {}
 _KILLED_LOCK = __import__("threading").Lock()
@@ -309,8 +319,7 @@ def _get_broker(account: str):
     registry so the chase engine doesn't know or care whether the
     backing broker is Kite, Groww, Dhan, or anything we add later —
     every method called below is on the `Broker` ABC."""
-    from backend.shared.brokers.registry import get_broker
-    return get_broker(account)
+    return _get_broker_registry(account)
 
 
 def _get_depth(account: str, exchange: str, symbol: str) -> dict:
@@ -410,8 +419,7 @@ def _instrument_specs(exchange: str, symbol: str) -> tuple[int, float]:
     through to (1, 0.05) — the NSE default — on any miss (cache cold,
     symbol not in instruments dump, etc.)."""
     try:
-        from backend.api.cache import _store
-        entry = _store.get("instruments")
+        entry = _cache_store.get("instruments")
         if entry is None:
             return (1, 0.05)
         _expires, resp = entry
@@ -528,12 +536,9 @@ async def _sync_algo_order_id(algo_order_id: int | None,
     if algo_order_id is None or not new_broker_order_id:
         return
     try:
-        from sqlalchemy import select as _sel
-        from backend.api.database import async_session as _as
-        from backend.api.models import AlgoOrder as _AO
-        async with _as() as _s:
+        async with _async_session() as _s:
             row = (await _s.execute(
-                _sel(_AO).where(_AO.id == int(algo_order_id))
+                _sql_select(_AlgoOrder).where(_AlgoOrder.id == int(algo_order_id))
             )).scalar_one_or_none()
             if row is not None:
                 _dirty = False
@@ -585,12 +590,9 @@ async def _record_partial_fill(algo_order_id: int | None,
     if algo_order_id is None or cumulative_filled <= 0:
         return
     try:
-        from sqlalchemy import select as _sel
-        from backend.api.database import async_session as _as
-        from backend.api.models import AlgoOrder as _AO
-        async with _as() as _s:
+        async with _async_session() as _s:
             row = (await _s.execute(
-                _sel(_AO).where(_AO.id == int(algo_order_id))
+                _sql_select(_AlgoOrder).where(_AlgoOrder.id == int(algo_order_id))
             )).scalar_one_or_none()
             if row is None:
                 return
@@ -607,12 +609,20 @@ async def _record_partial_fill(algo_order_id: int | None,
                 # value that template attach would then over-size GTTs
                 # against.
                 new_filled = int(total_qty)
+            # No-op guard: skip the write when the cumulative value and
+            # avg_price haven't changed — consecutive polls that return
+            # the same broker state produce a redundant commit otherwise.
+            new_avg_price = float(avg_price) if avg_price and float(avg_price) > 0 else None
+            prior_fill_price = float(row.fill_price or 0)
+            price_unchanged = (new_avg_price is None or abs(new_avg_price - prior_fill_price) < 0.001)
+            if new_filled == prior_filled and price_unchanged:
+                return
             row.filled_quantity = new_filled
             # Broker's cumulative average fill_price is authoritative.
             # Only overwrite when the broker reports a positive value
             # (zero would clobber a prior valid average).
-            if avg_price and float(avg_price) > 0:
-                row.fill_price = float(avg_price)
+            if new_avg_price is not None:
+                row.fill_price = new_avg_price
             new_avg_display = float(row.fill_price or 0)
             row.detail = (
                 f"PARTIAL {new_filled}/{total_qty} @ ₹{new_avg_display:,.2f} "

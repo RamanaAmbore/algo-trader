@@ -1389,6 +1389,11 @@ async def _task_oco_pair_watcher() -> None:
 
     while True:
         try:
+            # 15s default: faster than trail-stop (30s) because the OCO
+            # race window is shorter — a fired-but-not-cancelled sibling
+            # can produce a second fill within seconds of the first.
+            # Matches the poll_only GTT detection lag documented in
+            # BrokerCapabilities.oco_pair_poll_seconds.
             interval = max(5, get_int("templates.oco_pair_poll_seconds", 15))
         except Exception:
             interval = 15

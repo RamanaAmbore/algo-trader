@@ -573,10 +573,14 @@ class DhanBroker(Broker):
         # for indexes the operator's templates actually quote against.
         try:
             _ensure_dhan_instruments()
-        except Exception:
+        except Exception as _inst_err:
             # Network failure on first hit — fall back to empty so
             # PriceBroker walks the chain. Same conservative bias as
             # the historical_data and instruments paths.
+            logger.warning(
+                f"DhanBroker.ltp: instruments cache unavailable — "
+                f"returning {{}} for {len(symbols)} symbol(s): {_inst_err}"
+            )
             return {}
         seg_to_sids: dict[str, list[str]] = {}
         # Reverse map: (seg, sid) → original quote key so the response
@@ -611,6 +615,10 @@ class DhanBroker(Broker):
         # Unwrap the outer envelope (status / data / remarks).
         data = resp.get("data") if isinstance(resp, dict) else None
         if not isinstance(data, dict):
+            logger.warning(
+                f"DhanBroker.ltp: ohlc_data returned unexpected shape "
+                f"(got {type(data).__name__}) for {len(symbols)} symbol(s) — returning {{}}"
+            )
             return {}
         for seg, by_sid in data.items():
             if not isinstance(by_sid, dict):
