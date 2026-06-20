@@ -89,6 +89,9 @@
    *   slOverride?: number | '',
    *   wingStrikeOffsetOverride?: number | '',
    *   wingPremPctOverride?: number | '',
+   *   standalone?: boolean,
+   *   defaultChase?: boolean,
+   *   defaultChaseAgg?: 'low' | 'med' | 'high',
    * }} */
   let {
     symbol,
@@ -221,6 +224,15 @@
     slOverride                = $bindable(/** @type {number|''} */ ('')),
     wingStrikeOffsetOverride  = $bindable(/** @type {number|''} */ ('')),
     wingPremPctOverride       = $bindable(/** @type {number|''} */ ('')),
+    // When false, OrderTicket is embedded inside another dialog (e.g.
+    // SymbolPanel) and must not re-declare role="dialog" (ARIA prohibits
+    // nested dialog roles). The overlay backdrop is also suppressed.
+    standalone                = true,
+    // Default values for chase / chaseAgg when clearForm() runs.
+    // SymbolPanel passes its shared state here so a form reset keeps the
+    // operator's chase preference instead of snapping back to true/'low'.
+    defaultChase              = true,
+    defaultChaseAgg           = /** @type {'low'|'med'|'high'} */ ('low'),
   } = $props();
 
   // Derived label map for the side toggle. Keeps the actual _side
@@ -541,8 +553,8 @@
     _variety = variety;
     _validity = 'DAY';
     _product = productVal;
-    _setChase(true);
-    _setChaseAgg('low');
+    _setChase(defaultChase);
+    _setChaseAgg(defaultChaseAgg);
     submitErr = '';
     submitOk = '';
     // _shownErr is a $derived from `_submitTried && validationErr`; flip
@@ -1611,9 +1623,16 @@
   });
 </script>
 
-<div class="ot-overlay" role="dialog" aria-modal="true" aria-label="Place order"
-     onclick={onClose}>
-  <div class="ot-modal" role="document" onclick={(e) => e.stopPropagation()}>
+<!-- When standalone=false (embedded in SymbolPanel), the overlay backdrop
+     is hidden via .ot-overlay-embedded and role="dialog" is omitted to
+     avoid nested dialog ARIA roles. The inner ot-modal remains the visual
+     container; SymbolPanel's own dialog role already covers it. -->
+<div class="ot-overlay" class:ot-overlay-embedded={!standalone}
+     onclick={standalone ? onClose : undefined}>
+  <div class="ot-modal" role={standalone ? 'dialog' : 'document'}
+       aria-modal={standalone ? 'true' : undefined}
+       aria-label={standalone ? 'Place order' : undefined}
+       onclick={(e) => e.stopPropagation()}>
     <div class="ot-header">
       <div class="ot-symbol">
         <span class="ot-symbol-text"><LegLabel sym={symbol} /></span>
@@ -2145,6 +2164,17 @@
        on top. */
     z-index: 300;
     padding: 1rem;
+  }
+  /* When embedded inside another dialog (standalone=false, e.g.
+     SymbolPanel), suppress the backdrop overlay entirely — the host
+     modal already provides it. The inner ot-modal remains the visual
+     container but the overlay div becomes transparent + non-blocking. */
+  .ot-overlay-embedded {
+    position: static;
+    background: none;
+    z-index: auto;
+    padding: 0;
+    display: contents;
   }
   .ot-modal {
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);

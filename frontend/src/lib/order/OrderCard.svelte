@@ -191,7 +191,13 @@
     </span>
     {#if order.order_type}<span class="log-chip"><span class="log-chip-key">type:</span>{order.order_type}</span>{/if}
     <span class="log-chip"><span class="log-chip-key">price:</span>{_filled != null ? priceFmt(_filled) : _limit != null ? priceFmt(_limit) : '—'}</span>
-    {#if _slip != null}<span class="log-chip log-chip-slip" class:slip-up={_slip > 0} class:slip-down={_slip < 0}><span class="log-chip-key">slip:</span>{_slip > 0 ? '+' : ''}{priceFmt(_slip)}</span>{/if}
+    {#if _slip != null}
+      <!-- Slippage direction: ↑ fill > limit, ↓ fill < limit.
+           Favorability is side-dependent (SELL: ↑ is good, BUY: ↓ is good)
+           so we show a neutral directional arrow in slate rather than
+           green/red which would be misleading for one side. -->
+      <span class="log-chip log-chip-slip"><span class="log-chip-key">slip:</span>{_slip > 0 ? '↑' : _slip < 0 ? '↓' : ''}{priceFmt(Math.abs(_slip))}</span>
+    {/if}
     <!-- Partial-fill indicator: renders when AlgoOrderInfo.filled_quantity
          (B5 backend field) is present, positive, and less than total qty.
          Fires on CANCEL_FAILED rows where the broker partially filled before
@@ -304,10 +310,10 @@
 </div>
 
 <style>
-  /* Slippage chip colouring — positive slip (paid more) = red,
-     negative (received more) = green. */
-  :global(.log-chip-slip.slip-up)   { color: #fca5a5; }
-  :global(.log-chip-slip.slip-down) { color: #86efac; }
+  /* Slippage chip — neutral slate arrow glyph (↑/↓). Side-relative
+     coloring was dropped: ↑ is good for SELL, bad for BUY, so
+     green/red was misleading for one side. Arrow alone reads correctly. */
+  :global(.log-chip-slip) { color: #94a3b8; }
 
   /* Tag colour-coding — manual ticket = sky-blue, agent-fired = amber. */
   :global(.tag-manual)       { color: #67e8f9; background: rgba(34, 211, 238, 0.10); }

@@ -32,6 +32,7 @@
    *   onTabChange?: (tab: string) => void,
    *   mode?: string | null,
    *   gateByMode?: boolean,
+   *   statusFilter?: 'all'|'open'|'complete'|'rejected'|'cancelled',
    * }} */
   let {
     heightClass = 'flex-1 min-h-0',
@@ -50,6 +51,11 @@
     // executionMode from the global store. Set to false on surfaces that
     // deliberately want a cross-mode view (e.g. dashboard UnifiedLog).
     gateByMode  = true,
+    // Optional status filter from the /orders page counter cards.
+    // 'all' (default) shows every row; any other value narrows to rows
+    // whose status matches (case-insensitive). 'open' also matches
+    // 'TRIGGER PENDING'.
+    statusFilter = /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */ ('all'),
   } = $props();
 
   let logTab = $state(defaultTab);
@@ -454,6 +460,17 @@
     if (orderAccountFilter.length > 0) {
       const want = new Set(orderAccountFilter);
       rows = rows.filter(o => want.has(String(o?.account || '')));
+    }
+    // Status filter wired from the /orders page counter cards.
+    if (statusFilter && statusFilter !== 'all') {
+      rows = rows.filter(o => {
+        const st = (o?.status || '').toUpperCase();
+        if (statusFilter === 'open')      return st === 'OPEN' || st === 'TRIGGER PENDING';
+        if (statusFilter === 'complete')  return st === 'COMPLETE';
+        if (statusFilter === 'rejected')  return st === 'REJECTED';
+        if (statusFilter === 'cancelled') return st === 'CANCELLED';
+        return true;
+      });
     }
     return rows;
   });

@@ -111,6 +111,8 @@ export const KITE_INDEX_QUOTE_KEY_TO_ROOT = {
   'NIFTY FIN SERVICE':  'FINNIFTY',
   'NIFTY MID SELECT':   'MIDCPNIFTY',
   'NIFTY NEXT 50':      'NIFTYNXT50',
+  'SENSEX':             'SENSEX',
+  'BANKEX':             'BANKEX',
 };
 
 /**

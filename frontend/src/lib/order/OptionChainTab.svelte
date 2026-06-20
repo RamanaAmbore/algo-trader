@@ -25,6 +25,7 @@
     listFutures, getInstrument,
   } from '$lib/data/instruments';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
+  import { KITE_INDEX_QUOTE_KEY_TO_ROOT as _KITE_IDX_TO_ROOT } from '$lib/data/resolveUnderlying.js';
   import { priceFmt } from '$lib/format';
   // Order-template catalog — same source the OrderTicket uses.
   // Operator: "template should be applicable to option chain too".
@@ -104,19 +105,8 @@
   // lands past index 1000 in the Kite instruments dump).
   const _COMMON_INDICES_AND_COMMODITIES = POPULAR_UNDERLYINGS;
 
-  // Kite spot-index quote-key → F&O underlying root. Same map as
-  // resolveUnderlying.js KITE_INDEX_QUOTE_KEY_TO_ROOT — duplicated here
-  // so OptionChainTab has no circular dependency on resolveUnderlying.
-  // Kept in sync with that file; update both if new indices are added.
-  const _KITE_IDX_TO_ROOT = /** @type {Record<string,string>} */ ({
-    'NIFTY 50':           'NIFTY',
-    'NIFTY BANK':         'BANKNIFTY',
-    'NIFTY FIN SERVICE':  'FINNIFTY',
-    'NIFTY MID SELECT':   'MIDCPNIFTY',
-    'NIFTY NEXT 50':      'NIFTYNXT50',
-    'SENSEX':             'SENSEX',
-    'BANKEX':             'BANKEX',
-  });
+  // _KITE_IDX_TO_ROOT imported from $lib/data/resolveUnderlying.js
+  // (KITE_INDEX_QUOTE_KEY_TO_ROOT) — single source of truth.
 
   // Derive the seed underlying from the symbol prop. Handles:
   //   - Kite index quote-key forms (e.g. "NIFTY 50" → "NIFTY")

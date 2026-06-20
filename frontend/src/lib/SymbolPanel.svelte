@@ -2052,6 +2052,9 @@
             bind:slOverride={_sharedSlOverride}
             bind:wingStrikeOffsetOverride={_sharedWingStrikeOffsetOverride}
             bind:wingPremPctOverride={_sharedWingPremPctOverride}
+            standalone={false}
+            defaultChase={_sharedChase}
+            defaultChaseAgg={_sharedChaseAgg}
             modeChaseHidden={true}
             onMarginUpdate={showCommonActions ? _onMarginUpdate : null}
             onPreviewPlanUpdate={(plan, loading, err, capW) => {
@@ -2242,7 +2245,7 @@
           {@const _activeCapWarning = basketLegs.length > 0
             ? _basketCapWarning
             : _modalCapWarning}
-          {#if _activeCapWarning}
+          {#if _activeCapWarning && _sharedTemplateId !== null && !_shellUsingNone}
             <div class="oes-tpl-cap-warn" title={_activeCapWarning}>
               ⚠ {_activeCapWarning}
             </div>
@@ -2483,21 +2486,18 @@
                        the `??` no longer overrides it. The none row
                        is excluded from the each-loop below so it's
                        not duplicated. -->
-                  <select disabled={basketSubmitting}
-                          value={leg.template_id ?? ''}
-                          onchange={(e) => {
-                            const raw = /** @type {HTMLSelectElement} */ (e.currentTarget).value;
-                            const v = raw === '' ? null : Number(raw);
-                            updateLegByKey(leg.key, b => ({ ...b, template_id: v }));
-                          }}>
-                    <option value="">(shell default)</option>
-                    {#if _noneTpl}
-                      <option value={_noneTpl.id}>(no template — entry only)</option>
-                    {/if}
-                    {#each _nonNoneTemplates as t (t.id)}
-                      <option value={t.id}>{t.name || t.slug || `#${t.id}`}</option>
-                    {/each}
-                  </select>
+                  <Select
+                    disabled={basketSubmitting}
+                    value={leg.template_id ?? ''}
+                    options={[
+                      { value: '', label: '(shell default)' },
+                      ...(_noneTpl ? [{ value: _noneTpl.id, label: '(no template — entry only)' }] : []),
+                      ..._nonNoneTemplates.map(t => ({ value: t.id, label: t.name || t.slug || `#${t.id}` })),
+                    ]}
+                    onValueChange={(v) => {
+                      const id = v === '' ? null : Number(v);
+                      updateLegByKey(leg.key, b => ({ ...b, template_id: id }));
+                    }} />
                 </label>
                 <label class="oes-leg-editor-field" title="TP% for this leg. Empty = inherit shell / template default.">
                   <span>TP%</span>

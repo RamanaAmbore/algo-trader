@@ -200,7 +200,7 @@
     accounts={[]}
     account=""
     onClose={() => { _orderOpen = false; }}
-    onSubmit={() => { _orderOpen = false; }}
+    onSubmit={() => { setTimeout(() => { _orderOpen = false; }, 1500); }}
   />
 {/if}
 

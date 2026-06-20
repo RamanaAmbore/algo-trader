@@ -13,7 +13,7 @@
   import ChaseCard from '$lib/order/ChaseCard.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
-  import { loadInstruments } from '$lib/data/instruments';
+  import { loadInstruments, getInstrument } from '$lib/data/instruments';
   import {
     loadAccounts,
     resolveSymbol, resolveAccount,
@@ -103,6 +103,8 @@
   let _fsEntry     = $state(false);
   let _colActivity = $state(false);
   let _fsActivity  = $state(false);
+  /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */
+  let _statusFilter = $state('all');
 
   // Activity-card tab state. Order Book (card grid) is the default —
   // matches the LogPanel Orders tab format shown in every other
@@ -153,7 +155,7 @@
       action:    'modify',
       orderId:   String(o.order_id || ''),
       qty:       Number(o.quantity) || 0,
-      lotSize:   1,
+      lotSize:   getInstrument(String(o.tradingsymbol || '').toUpperCase())?.ls ?? 1,
       orderType: o.order_type || 'LIMIT',
       price:     o.price > 0 ? o.price : undefined,
       trigger:   o.trigger_price > 0 ? o.trigger_price : undefined,
@@ -234,8 +236,9 @@
     { id: 'cancelled', label: 'Cancelled', count: orders.filter(o => o.status === 'CANCELLED').length, accent: 'cancelled' },
   ] as f}
     <button type="button"
-      onclick={() => { _colActivity = false; }}
+      onclick={() => { _colActivity = false; _statusFilter = /** @type {any} */ (f.id); }}
       class="oc-filter-card"
+      class:is-active={_statusFilter === f.id}
       data-status={f.accent}>
       <span class="oc-filter-count">{f.count}</span>
       <span class="oc-filter-label">{f.label}</span>
@@ -422,7 +425,7 @@
     <FullscreenButton bind:isFullscreen={_fsActivity} label="Activity" />
   </div>
   <div class="card-body oc-act-body" hidden={_colActivity}>
-    <LogPanel defaultTab="order" pollMs={3000} />
+    <LogPanel defaultTab="order" pollMs={3000} statusFilter={_statusFilter} />
   </div>
 </section>
 
@@ -731,6 +734,12 @@
   .oc-filter-card:hover {
     border-color: rgba(255, 255, 255, 0.30);
     transform: translateY(-1px);
+  }
+  .oc-filter-card.is-active {
+    box-shadow:
+      0 0 0 2px rgba(251, 191, 36, 0.55) inset,
+      0 1px 0 rgba(255, 255, 255, 0.06) inset,
+      0 2px 4px rgba(0, 0, 0, 0.25);
   }
 
   /* Status-tinted backgrounds + borders. Two-stop gradient (status
