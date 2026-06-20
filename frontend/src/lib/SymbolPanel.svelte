@@ -2600,16 +2600,24 @@
                   title={_modalNotice.detail || _modalNotice.text}>
               {_modalNotice.text}
             </span>
-          {:else if !_modalSide && _activeTab === 'ticket'}
-            <!-- Operator: "during cold start, the empty space can have
-                 the message place the order". When no side has been
-                 picked there's no margin chip to show and the left slot
-                 used to render as dead space pushing the action buttons
-                 to the right. Surface a faint prompt so the operator
-                 reads what they need to do next. -->
+          {:else if (_activeTab === 'ticket' && !_modalSide) || (_activeTab === 'chain' && basketLegs.length === 0)}
+            <!-- Operator: "the message Place an order — pick BUY or SELL
+                 above should also be displayed after cold start in chain
+                 to keep it in sync with ticket. the message should be
+                 displayed like a chip both the tabs. and should get
+                 updates later for margin, cash related info."
+                 Both tabs render a chip-styled cold prompt during their
+                 own idle state — Ticket = no side picked, Chain = no
+                 basket legs staged. The same slot later gets the
+                 margin/cash chip the moment the operator picks a side
+                 (Ticket) or stages a leg (Chain). -->
             <span class="oes-cold-prompt"
-                  title="Pick a side (BUY / SELL) in the form above to enable Submit">
-              Place an order — pick BUY or SELL above
+                  title={_activeTab === 'chain'
+                    ? 'Click +CE / +PE on a strike row to stage a basket leg'
+                    : 'Pick a side (BUY / SELL) in the form above to enable Submit'}>
+              {_activeTab === 'chain'
+                ? 'Place an order — pick a strike from the chain'
+                : 'Place an order — pick BUY or SELL above'}
             </span>
           {:else if _marginInfo && !(_activeTab === 'chain' && _basketMarginRows.length > 0)}
             <!-- Margin pill is shared between Chain and Ticket so
@@ -4254,16 +4262,29 @@
     display: inline-flex;
     align-items: center;
   }
-  /* Cold-start prompt — fills the left slot when there's no
-     notice / margin / sticky to show, so the row is never visually
-     empty. Faint slate so it reads as a hint, not a real notice. */
+  /* Cold-start prompt — same chip styling as the margin pill so both
+     tabs read consistently during cold start. Operator: "the message
+     should be displayed like a chip both the tabs." Faint slate fill
+     + subtle border so it reads as a hint, not a real notice. The
+     same slot later carries the margin/cash chip the moment the
+     operator picks a side (Ticket) or stages a basket leg (Chain). */
   .oes-cold-prompt {
+    display: inline-flex;
+    align-items: center;
+    height: 1.7rem;
+    padding: 0 0.7rem;
+    border-radius: 3px;
+    border: 1px solid rgba(180, 200, 230, 0.22);
+    background: rgba(15, 25, 45, 0.45);
     font-family: ui-monospace, monospace;
     font-size: 0.62rem;
-    color: rgba(180, 200, 230, 0.50);
+    color: rgba(180, 200, 230, 0.65);
     font-style: italic;
-    padding: 0.18rem 0.5rem;
     letter-spacing: 0.02em;
+    box-sizing: border-box;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   /* Basket icon — operator: "for basket toggle, keep an icon with no
      text. the icon should be same height as button. all buttons
