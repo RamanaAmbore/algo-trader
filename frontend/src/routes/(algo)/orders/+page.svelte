@@ -1,6 +1,6 @@
 <script>
   import { onMount, onDestroy, getContext } from 'svelte';
-  import { nowStamp, logTimeIst, formatDualTz, executionMode } from '$lib/stores';
+  import { nowStamp, logTimeIst, formatDualTz } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import CollapseButton from '$lib/CollapseButton.svelte';
@@ -88,9 +88,6 @@
     orders.filter(o => o.status === 'OPEN' || o.status === 'TRIGGER PENDING').length
   );
   const _showChases = $derived(_openOrderCount > 0 || _activeChases > 0);
-  // Mirror the navbar mode store so the bucket-header pill colour +
-  // label stays in sync with the global selection.
-  const _execMode = $derived($executionMode ?? 'paper');
 
   // Per-card collapse + fullscreen state. No persistence (no cardId
   // on CollapseButton) so every page load opens both cards expanded
@@ -294,10 +291,8 @@
          to the SymbolPanel below so a flip in either surface updates
          the other. -->
     <span class="oc-header-cluster">
-      <span class="oes-common-mode-chip mode-pill-{_execMode}"
-            title="Execution mode (read-only — change from the navbar dropdown)">
-        {_execMode.toUpperCase()}
-      </span>
+      <!-- Operator: "remove live chip from order modal and page. navbar
+           live is enough." The mode chip used to sit here. -->
       <!-- Operator: "chase should L M H like before. not drop down." -->
       <label class="oes-common-chase-toggle"
              title={_pageChase

@@ -1390,6 +1390,23 @@
   // the order now"; operator opts into basket-build mode explicitly.
   let _toBasket = $state(false);
 
+  // Footer-side button label helper — operator: "there should be one
+  // additional button in ticket buy/sell. if add/close is active
+  // instead buy/sell in ticket, buy/sell should be prefixed by
+  // add/close." Cold (currentQty=0): "BUY" / "SELL". Symbol-row
+  // (currentQty != 0): "ADD BUY" or "CLOSE BUY" / "ADD SELL" or
+  // "CLOSE SELL" depending on whether the side adds to or closes the
+  // existing direction.
+  function _sideBtnLabel(/** @type {'BUY'|'SELL'} */ side) {
+    const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
+    if (cq === 0) return side;
+    // long: BUY adds, SELL closes
+    // short: BUY closes, SELL adds
+    const verb = (cq > 0 ? (side === 'BUY' ? 'ADD' : 'CLOSE')
+                         : (side === 'BUY' ? 'CLOSE' : 'ADD'));
+    return `${verb} ${side}`;
+  }
+
   // Single-pass leg update — used by chain merge (sym+side dedupe) and
   // +/- steppers. Maps in place so rapid clicks accumulate cleanly
   // instead of relying on the remove+re-add pattern which can drop
@@ -1805,10 +1822,8 @@
            title chip with no margin-left:auto (left-aligned). The close
            X gets the auto margin so it stays anchored to the right. -->
       <span class="oes-header-cluster">
-        <span class="oes-common-mode-chip mode-pill-{$executionMode ?? 'paper'}"
-              title="Execution mode (read-only — change from the navbar dropdown)">
-          {($executionMode ?? 'paper').toUpperCase()}
-        </span>
+        <!-- Operator: "remove live chip from order modal and page.
+             navbar live is enough." The mode chip used to sit here. -->
         <!-- Operator: "chase should L M H like before. not drop down."
              Revert to CHASE checkbox + L/M/H pills. -->
         <label class="oes-common-chase-toggle"
@@ -2622,22 +2637,54 @@
               {/if}
             </span>
           {/if}
-          <span class="oes-common-spacer"></span>
-          <!-- Ticket-only Basket on/off toggle. Sticky setting (vs the
-               prior one-shot +Basket button). When ON, Submit routes
-               to _modalFireBasket → adds the current ticket as a leg
-               to the basket and clears the form. When OFF, Submit
-               fires _modalFireSubmit → places the order immediately.
-               Chain ignores this — its Submit is always
-               submit-the-basket. -->
+          <!-- Operator: "message chip width should be expanded based
+               on available space". Spacer removed; the left chip now
+               grows via flex on `.oes-common-row > :first-child`
+               (see CSS), and the right cluster hugs the edge. -->
+          <!-- Ticket-only Basket on/off toggle. Operator: "for basket
+               toggle, keep an icon with no text. the icon should be
+               same height as button". Icon-only basket glyph; sky-blue
+               accent when ON. Same height as the Submit button via
+               .oes-common-basket-toggle-icon { height: 1.7rem }. -->
           {#if _activeTab === 'ticket'}
-            <label class="oes-common-basket-toggle"
+            <label class="oes-common-basket-toggle oes-common-basket-toggle-icon"
+                   class:on={_toBasket}
                    title={_toBasket
                      ? 'Basket mode ON — Submit will add the current ticket as a basket leg instead of placing it immediately'
                      : 'Basket mode OFF — Submit will place the order immediately'}>
-              <input type="checkbox" bind:checked={_toBasket} />
-              <span class="oes-common-basket-toggle-label" class:on={_toBasket}>BASKET</span>
+              <input type="checkbox" bind:checked={_toBasket} class="sr-only" />
+              <!-- Basket glyph (shopping basket — handle + base) -->
+              <svg width="16" height="16" viewBox="0 0 20 20"
+                   fill="none" stroke="currentColor" stroke-width="1.6"
+                   stroke-linecap="round" stroke-linejoin="round"
+                   aria-hidden="true">
+                <path d="M3 7h14l-1.5 9.5a1.5 1.5 0 0 1-1.5 1.3H6a1.5 1.5 0 0 1-1.5-1.3L3 7z" />
+                <path d="M7 7V4.5a3 3 0 0 1 6 0V7" />
+                <path d="M8 11v3M12 11v3" />
+              </svg>
             </label>
+          {/if}
+          <!-- Ticket-only side buttons. Operator: "there should be one
+               additional button in ticket buy/sell. if add/close is
+               active instead buy/sell in ticket, buy/sell should be
+               prefixed by add/close." -->
+          {#if _activeTab === 'ticket' && action !== 'modify'}
+            <span class="oes-footer-side-group" role="group" aria-label="Order side">
+              <button type="button"
+                      class="oes-footer-side-btn oes-footer-side-btn-buy"
+                      class:on={_modalSide === 'BUY'}
+                      title={_modalSide === 'BUY' ? 'Side is BUY' : 'Pick BUY as the order side'}
+                      onclick={() => { _modalSide = 'BUY'; }}>
+                {_sideBtnLabel('BUY')}
+              </button>
+              <button type="button"
+                      class="oes-footer-side-btn oes-footer-side-btn-sell"
+                      class:on={_modalSide === 'SELL'}
+                      title={_modalSide === 'SELL' ? 'Side is SELL' : 'Pick SELL as the order side'}
+                      onclick={() => { _modalSide = 'SELL'; }}>
+                {_sideBtnLabel('SELL')}
+              </button>
+            </span>
           {/if}
           <button type="button" class="oes-common-submit"
             class:oes-common-submit-buy={_submitFlavor === 'buy'}
@@ -4136,6 +4183,15 @@
     gap: 0.45rem;
   }
   .oes-common-spacer { flex: 1 1 0; }
+  /* Operator: "message chip width should be expanded based on
+     available space". The first child of `.oes-common-row` (notice /
+     margin pill / sticky / cold-prompt) gets flex-grow so it fills
+     the available width. Anything except the action cluster on the
+     right is grow-eligible. */
+  .oes-common-row > *:first-child {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
   /* Cold-start prompt — fills the left slot when there's no
      notice / margin / sticky to show, so the row is never visually
      empty. Faint slate so it reads as a hint, not a real notice. */
@@ -4147,29 +4203,69 @@
     padding: 0.18rem 0.5rem;
     letter-spacing: 0.02em;
   }
-  /* Basket on/off toggle — sticky setting on Ticket footer. Same
-     cadence as the CHASE toggle in the header cluster so the
-     operator reads them as the same affordance family. */
-  .oes-common-basket-toggle {
+  /* Basket on/off toggle (icon-only variant) — operator: "for basket
+     toggle, keep an icon with no text. the icon should be same height
+     as button". Square cell, ~1.7rem to match Submit + side buttons.
+     Sky-blue accent when ON. */
+  .oes-common-basket-toggle-icon {
     display: inline-flex;
     align-items: center;
-    gap: 0.25rem;
+    justify-content: center;
+    width: 1.9rem;
+    height: 1.7rem;
+    padding: 0;
     cursor: pointer;
     user-select: none;
-    padding: 0.18rem 0.45rem;
     border: 1px solid rgba(125, 211, 252, 0.40);
     border-radius: 3px;
     background: transparent;
-  }
-  .oes-common-basket-toggle input { margin: 0; }
-  .oes-common-basket-toggle-label {
     color: rgba(200, 216, 240, 0.55);
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+    flex-shrink: 0;
   }
-  .oes-common-basket-toggle-label.on { color: #7dd3fc; }
+  .oes-common-basket-toggle-icon:hover { color: #7dd3fc; background: rgba(125, 211, 252, 0.08); }
+  .oes-common-basket-toggle-icon.on {
+    color: #7dd3fc;
+    background: rgba(125, 211, 252, 0.16);
+    border-color: rgba(125, 211, 252, 0.70);
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px; height: 1px;
+    margin: -1px; padding: 0;
+    overflow: hidden;
+    clip: rect(0,0,0,0);
+    border: 0;
+  }
+  /* Footer side selector — operator-visible BUY/SELL (or ADD/CLOSE
+     BUY/SELL) buttons inline with the Submit cluster. Same height as
+     Submit. Green for BUY, red for SELL; inactive state is muted slate
+     so neither pre-selects on cold open. */
+  .oes-footer-side-group {
+    display: inline-flex;
+    gap: 0.25rem;
+    flex-shrink: 0;
+  }
+  .oes-footer-side-btn {
+    height: 1.7rem;
+    padding: 0 0.55rem;
+    border-radius: 3px;
+    border: 1px solid;
+    background: transparent;
+    cursor: pointer;
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+    white-space: nowrap;
+  }
+  .oes-footer-side-btn-buy  { color: rgba(74, 222, 128, 0.55); border-color: rgba(74, 222, 128, 0.32); }
+  .oes-footer-side-btn-sell { color: rgba(248, 113, 113, 0.55); border-color: rgba(248, 113, 113, 0.32); }
+  .oes-footer-side-btn-buy:hover  { color: #4ade80; background: rgba(74, 222, 128, 0.08); }
+  .oes-footer-side-btn-sell:hover { color: #f87171; background: rgba(248, 113, 113, 0.08); }
+  .oes-footer-side-btn-buy.on  { color: #4ade80; background: rgba(74, 222, 128, 0.18); border-color: rgba(74, 222, 128, 0.70); }
+  .oes-footer-side-btn-sell.on { color: #f87171; background: rgba(248, 113, 113, 0.18); border-color: rgba(248, 113, 113, 0.70); }
 
   /* Shared mode + chase toolkit — sits ABOVE the margin/action row
      so both Chain and Ticket tabs read from the same controls.
