@@ -4184,11 +4184,19 @@
   }
   .oes-common-spacer { flex: 1 1 0; }
   /* Operator: "message chip width should be expanded based on
-     available space". The first child of `.oes-common-row` (notice /
-     margin pill / sticky / cold-prompt) gets flex-grow so it fills
-     the available width. Anything except the action cluster on the
-     right is grow-eligible. */
-  .oes-common-row > *:first-child {
+     available space". The info-slot chip (sticky result / notice /
+     cold prompt / margin pill) gets flex-grow so it fills the
+     available width before the action cluster on the right.
+     Audit fix — selector previously used `> *:first-child` which
+     accidentally matched the basket-icon toggle on an empty info
+     slot (e.g. MARKET picked with no preflight margin), causing the
+     icon to expand to ~300px and intercept clicks on Submit +
+     BUY/SELL. The named selector below targets ONLY the info-slot
+     elements so the action cluster keeps its natural sizing. */
+  .oes-common-row > .oes-sticky-result,
+  .oes-common-row > .oes-notice,
+  .oes-common-row > .oes-cold-prompt,
+  .oes-common-row > .oes-margin-pill {
     flex: 1 1 auto;
     min-width: 0;
   }
