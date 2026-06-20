@@ -1797,32 +1797,34 @@
               title="Execution mode (read-only — change from the navbar dropdown)">
           {($executionMode ?? 'paper').toUpperCase()}
         </span>
-        <!-- Chase + aggressiveness collapsed into one Select. Values:
-             off → chase disabled · low/med/high → enabled at that
-             aggressiveness. Matches the operator's "selectable" intent
-             (single dropdown beats the prior checkbox + 3-pill row). -->
-        <div class="oes-header-chase-pick"
-             title={!_chaseEnabled
-               ? 'Chase unavailable — MARKET / SL-M orders fill at the book'
-               : 'Chase off / low (patient) / medium (midpoint) / high (cross spread)'}>
-          <Select
-            value={_chaseEnabled ? (_sharedChase ? _sharedChaseAgg : 'off') : 'off'}
-            options={[
-              { value: 'off',  label: 'Chase off' },
-              { value: 'low',  label: 'Chase low',  hint: 'patient — pegs own side' },
-              { value: 'med',  label: 'Chase med',  hint: 'midpoint of bid/ask' },
-              { value: 'high', label: 'Chase high', hint: 'cross spread to take' },
-            ]}
-            disabled={!_chaseEnabled}
-            ariaLabel="Chase mode + aggressiveness"
-            onValueChange={(v) => {
-              const s = String(v);
-              if (s === 'off') { _sharedChase = false; return; }
-              _sharedChase = true;
-              if (s === 'low' || s === 'med' || s === 'high') _sharedChaseAgg = s;
-            }}
-          />
-        </div>
+        <!-- Operator: "chase should L M H like before. not drop down."
+             Revert to CHASE checkbox + L/M/H pills. -->
+        <label class="oes-common-chase-toggle"
+               class:is-disabled={!_chaseEnabled}
+               title={!_chaseEnabled
+                 ? 'Chase unavailable — MARKET / SL-M orders fill at the book; no limit to re-quote'
+                 : _sharedChase
+                   ? 'Chase ON — re-quote the limit each tick until filled'
+                   : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
+          <input type="checkbox" bind:checked={_sharedChase} disabled={!_chaseEnabled} />
+          <span class="oes-common-chase-label" class:on={_sharedChase && _chaseEnabled}>CHASE</span>
+        </label>
+        {#if _sharedChase && _chaseEnabled}
+          <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
+            <button type="button" class="oes-common-chase-agg-pill"
+                    class:on={_sharedChaseAgg === 'low'}
+                    title="Low — patient. Pegs to your own side; fills only if the market lifts it."
+                    onclick={() => _sharedChaseAgg = 'low'}>L</button>
+            <button type="button" class="oes-common-chase-agg-pill"
+                    class:on={_sharedChaseAgg === 'med'}
+                    title="Medium — peg to midpoint of bid+ask."
+                    onclick={() => _sharedChaseAgg = 'med'}>M</button>
+            <button type="button" class="oes-common-chase-agg-pill"
+                    class:on={_sharedChaseAgg === 'high'}
+                    title="High — urgent. Crosses the spread to take liquidity on the next tick."
+                    onclick={() => _sharedChaseAgg = 'high'}>H</button>
+          </div>
+        {/if}
         {#if basketLegs.length > 0}
           <button type="button" class="oes-common-clear oes-common-clear-inline"
             title="Clear all basket legs"
@@ -2790,18 +2792,6 @@
     flex-shrink: 0;
     margin-left: 0.4rem;
   }
-  /* Tight wrapper around the Chase Select — narrows the picker so it
-     doesn't dominate the header. Width clamp keeps the dropdown
-     trigger compact while still showing the full "Chase med" label. */
-  .oes-header-cluster .oes-header-chase-pick {
-    width: 6.2rem;
-    flex-shrink: 0;
-  }
-  .oes-header-cluster .oes-header-chase-pick :global(.rbq-select-trigger) {
-    width: 100%;
-    padding: 0.18rem 0.5rem;
-    font-size: 0.6rem;
-  }
   /* Type filter — narrowed so it fits in the same row as Account +
      Symbol. The "EQ · FUT · OPT" label gets ellipsised when not the
      active selection; the active value renders fully (Equity /
@@ -3072,16 +3062,18 @@
      the row reads as the algo primary action band. Amber matches the
      platform's "this is the algo primary accent" everywhere else
      (template chip, agent rules, GTT pills). */
+  /* Operator: "keep template container background a little different.
+     it is dominating everything". Toned down — amber gradient dropped
+     in favour of a faint slate tint that sits a half-step above the
+     surrounding navy. Borders use a low-alpha slate so the row reads
+     as "distinct band" without competing with the picker row or the
+     chase strip. */
   .oes-basket-tpl-row-shell {
     padding: 0.45rem 0.7rem;
-    background:
-      linear-gradient(90deg,
-        rgba(251, 191, 36, 0.10) 0%,
-        rgba(251, 191, 36, 0.04) 100%),
-      rgba(13, 22, 38, 0.55);
-    border-top: 1px solid rgba(251, 191, 36, 0.42);
-    border-bottom: 1px solid rgba(251, 191, 36, 0.42);
-    box-shadow: inset 0 1px 0 rgba(251, 191, 36, 0.10);
+    background: rgba(15, 25, 45, 0.55);
+    border-top: 1px solid rgba(125, 211, 252, 0.16);
+    border-bottom: 1px solid rgba(125, 211, 252, 0.16);
+    box-shadow: none;
     box-sizing: border-box;
   }
   /* Demo-mode variant — muted slate accent instead of amber so the

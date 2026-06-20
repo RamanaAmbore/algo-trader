@@ -21,7 +21,6 @@
   } from '$lib/data/accounts';
   import { createPerformanceSocket } from '$lib/ws';
   import ChartModal from '$lib/ChartModal.svelte';
-  import Select from '$lib/Select.svelte';
 
   let orders        = $state([]);
   let loading       = $state(true);
@@ -299,25 +298,30 @@
             title="Execution mode (read-only — change from the navbar dropdown)">
         {_execMode.toUpperCase()}
       </span>
-      <div class="oes-header-chase-pick"
-           title="Chase off / low (patient) / medium (midpoint) / high (cross spread)">
-        <Select
-          value={_pageChase ? _pageChaseAgg : 'off'}
-          options={[
-            { value: 'off',  label: 'Chase off' },
-            { value: 'low',  label: 'Chase low',  hint: 'patient — pegs own side' },
-            { value: 'med',  label: 'Chase med',  hint: 'midpoint of bid/ask' },
-            { value: 'high', label: 'Chase high', hint: 'cross spread to take' },
-          ]}
-          ariaLabel="Chase mode + aggressiveness"
-          onValueChange={(v) => {
-            const s = String(v);
-            if (s === 'off') { _pageChase = false; return; }
-            _pageChase = true;
-            if (s === 'low' || s === 'med' || s === 'high') _pageChaseAgg = s;
-          }}
-        />
-      </div>
+      <!-- Operator: "chase should L M H like before. not drop down." -->
+      <label class="oes-common-chase-toggle"
+             title={_pageChase
+               ? 'Chase ON — re-quote the limit each tick until filled'
+               : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
+        <input type="checkbox" bind:checked={_pageChase} />
+        <span class="oes-common-chase-label" class:on={_pageChase}>CHASE</span>
+      </label>
+      {#if _pageChase}
+        <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
+          <button type="button" class="oes-common-chase-agg-pill"
+                  class:on={_pageChaseAgg === 'low'}
+                  title="Low — patient. Pegs to your own side; fills only if the market lifts it."
+                  onclick={() => _pageChaseAgg = 'low'}>L</button>
+          <button type="button" class="oes-common-chase-agg-pill"
+                  class:on={_pageChaseAgg === 'med'}
+                  title="Medium — peg to midpoint of bid+ask."
+                  onclick={() => _pageChaseAgg = 'med'}>M</button>
+          <button type="button" class="oes-common-chase-agg-pill"
+                  class:on={_pageChaseAgg === 'high'}
+                  title="High — urgent. Crosses the spread to take liquidity on the next tick."
+                  onclick={() => _pageChaseAgg = 'high'}>H</button>
+        </div>
+      {/if}
       {#if _pageBasketCount > 0}
         <button type="button" class="oes-common-clear oes-common-clear-inline"
           title="Clear all basket legs"
@@ -687,15 +691,6 @@
     align-items: center;
     gap: 0.35rem;
     flex-shrink: 0;
-  }
-  .oc-header-cluster .oes-header-chase-pick {
-    width: 6.2rem;
-    flex-shrink: 0;
-  }
-  .oc-header-cluster .oes-header-chase-pick :global(.rbq-select-trigger) {
-    width: 100%;
-    padding: 0.18rem 0.5rem;
-    font-size: 0.6rem;
   }
   /* Header — plain row matching every other bucket-card on the page.
      Small inset padding so the label + collapse/fullscreen trio
