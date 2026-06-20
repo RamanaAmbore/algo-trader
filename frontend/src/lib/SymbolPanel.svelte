@@ -1122,6 +1122,18 @@
   function _modalFireBasket() { if (_activeTab === 'ticket') _modalTriggerBasket++; }
   function _modalFireSubmit() { if (_activeTab === 'ticket') _modalTriggerSubmit++; }
   function _modalFlipSide()   { _modalSide = _modalSide === 'BUY' ? 'SELL' : 'BUY'; }
+  // Stable handler reference for the single BUY/SELL footer button.
+  // Extracted from an inline arrow inside the `{#if _activeTab ===
+  // 'ticket'}` block because the audit found that Svelte 5's reactive
+  // re-render of `.oes-common-actions` when `_type` flips MARKET could
+  // leave an inline-arrow click handler transiently unbound during the
+  // microtask flush, so the operator's click on the side button after
+  // picking MARKET silently no-op'd. A named function reference
+  // survives every re-render so the click always lands. */
+  function _cycleSide() {
+    if (!_modalSide || _modalSide === 'SELL') _modalSide = 'BUY';
+    else _modalSide = 'SELL';
+  }
 
   // Margin preview lifted out of OrderTicket so the operator sees the
   // same MARGIN / Avail / After / Short row regardless of which tab is
@@ -2694,10 +2706,7 @@
                       : _modalSide === 'BUY'
                         ? 'Side is BUY — click to flip to SELL'
                         : 'Side is SELL — click to flip to BUY'}
-                    onclick={() => {
-                      if (!_modalSide || _modalSide === 'SELL') _modalSide = 'BUY';
-                      else _modalSide = 'SELL';
-                    }}>
+                    onclick={_cycleSide}>
               {_modalSide ? _sideBtnLabel(_modalSide) : 'Pick side'}
             </button>
           {/if}
