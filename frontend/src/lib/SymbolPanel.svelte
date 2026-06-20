@@ -1383,19 +1383,28 @@
   // chip mid-update. Surfaced via a derived so the template can
   // grey out (rather than hide) the chase affordance when the
   // active order type can't use it.
+  // Live ticket order type — bound from OrderTicket so chase can
+  // disable + deselect the MOMENT the operator picks MARKET, without
+  // waiting for a side+margin round-trip. (Previously _chaseEnabled
+  // relied on `_chipMeta.orderType` which only landed after the
+  // margin preflight ran.)
+  let _ticketOrderType = $state(/** @type {'MARKET'|'LIMIT'|'SL'|'SL-M'} */ (orderType));
+  // Sync from caller props on modify/repeat — the shell repopulates
+  // _ticketProps when LogPanel dispatches lp:modify-order or similar.
+  $effect(() => {
+    const ot = _ticketProps?.orderType ?? orderType;
+    if (ot && ot !== untrack(() => _ticketOrderType)) _ticketOrderType = ot;
+  });
   const _chaseEnabled = $derived(
     _activeTab === 'chain'
       || _isDerivative
-      || !_chipMeta?.orderType
-      || _chipMeta?.orderType === 'LIMIT'
-      || _chipMeta?.orderType === 'SL'
+      || _ticketOrderType === 'LIMIT'
+      || _ticketOrderType === 'SL'
   );
   // Auto-uncheck chase when the active order type can't use it
-  // (MARKET / SL-M). Operator: "for market and sl m, the chase
-  // should be deselected while graying it out". The toggle is
-  // also visually `disabled` via _chaseEnabled — flipping the
-  // backing state to false ensures the order is actually placed
-  // without chase if the operator submits straight from the form.
+  // (MARKET / SL-M). Operator: "for market order disable chase and
+  // deselect the option". The toggle is also visually `disabled` via
+  // _chaseEnabled.
   $effect(() => {
     if (!_chaseEnabled && _sharedChase) _sharedChase = false;
   });
@@ -2013,7 +2022,7 @@
             action={_ticketProps.action ?? action}
             qty={_ticketProps.qty ?? qty}
             product={_ticketProps.product ?? product}
-            orderType={_ticketProps.orderType ?? orderType}
+            bind:orderType={_ticketOrderType}
             variety={_ticketProps.variety ?? variety}
             price={_ticketProps.price ?? price}
             trigger={_ticketProps.trigger ?? trigger}

@@ -97,7 +97,7 @@
     action    = /** @type {'open' | 'close' | 'modify' | 'repeat' | 'cancel'} */ ('open'),
     qty       = 0,
     product   = /** @type {'CNC' | 'MIS' | 'NRML' | undefined} */ (undefined),
-    orderType = /** @type {'MARKET' | 'LIMIT' | 'SL' | 'SL-M'} */ ('LIMIT'),
+    orderType = $bindable(/** @type {'MARKET' | 'LIMIT' | 'SL' | 'SL-M'} */ ('LIMIT')),
     variety   = /** @type {'regular' | 'co' | 'bo' | 'amo' | 'iceberg'} */ ('regular'),
     price     = /** @type {number | undefined} */ (undefined),
     trigger   = /** @type {number | undefined} */ (undefined),
@@ -551,6 +551,12 @@
     _submitTried = false;
   }
   let _type    = $state(orderType);
+  // Mirror local order-type changes BACK to the bindable prop so the
+  // shell (SymbolPanel) can react immediately — operator wants chase
+  // to disable + deselect the moment MARKET is picked, without
+  // waiting for a side+margin round-trip.
+  $effect(() => { if (_type !== orderType) orderType = _type; });
+  $effect(() => { if (orderType !== untrack(() => _type)) _type = orderType; });
   let _variety = $state(variety);
   // Validity (Time-in-Force): DAY by default. IOC (Immediate-Or-Cancel)
   // for fast-trading scenarios where partial fills are acceptable but
