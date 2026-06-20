@@ -13,6 +13,7 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 2. [Tech stack — at a glance](#2-tech-stack--at-a-glance)
 3. [Core architectural principles](#3-core-architectural-principles)
 4. [Concurrency model](#4-concurrency-model)
+4.5. [Data layer — implementation detail](#45-data-layer--implementation-detail)
 
 ### Part II — Order lifecycle
 5. [Order placement — single ticket (Ticket tab)](#5-order-placement--single-ticket-ticket-tab)
@@ -29,6 +30,7 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 
 ### Part IV — Brokers
 14. [Broker abstraction](#14-broker-abstraction)
+14.5. [Broker abstraction — implementation detail](#145-broker-abstraction--implementation-detail)
 15. [How to add a new broker](#15-how-to-add-a-new-broker)
 16. [Broker gotchas](#16-broker-gotchas)
 
@@ -264,6 +266,300 @@ async def _task_X():
 ```
 
 The `try/except` around the loop body is non-negotiable. We've burned hours debugging "why did the trail stop go silent" only to discover an unhandled `KeyError` ate the task three days earlier.
+
+---
+
+## 4.5. Data layer — implementation detail
+
+This section is the "if you're modifying the data layer, here's the actual shape" reference. The data layer = SQLAlchemy 2.x async ORM + PostgreSQL + asyncpg driver. Read this end-to-end before changing any table.
+
+### 4.5.1 Topology
+
+```mermaid
+flowchart TD
+    subgraph appstart [App startup]
+        START[backend/api/app.py on_startup]
+        START --> INIT[init_db]
+    end
+
+    subgraph dblayer [Data layer]
+        INIT --> META[Base.metadata.create_all]
+        INIT --> ALT[ALTER TABLE ... IF NOT EXISTS<br/>idempotent migrations]
+        INIT --> SEED[seed_settings · seed_system_templates<br/>seed_grammar · seed_hedge_proxies · seed_agents]
+    end
+
+    subgraph runtime [Runtime — every request]
+        REQ[Route handler] -->|async with| AS[async_session]
+        AS -->|asyncpg pool| PG[(PostgreSQL 17)]
+        AS -->|expire_on_commit=False| RD[ORM rows readable post-commit]
+    end
+
+    INIT -.startup-only.-> META
+    META -.then.-> ALT
+    ALT -.then.-> SEED
+    SEED --> READY[App ready]
+    READY --> REQ
+```
+
+### 4.5.2 File map
+
+| File | Purpose |
+|---|---|
+| `backend/api/database.py` | Engine + session factory + `init_db` (the only place we touch DDL) |
+| `backend/api/models.py` | Every SQLAlchemy declarative model. One file by convention so the data shape is one grep away. |
+| `backend/api/schemas.py` | msgspec.Struct wire types. Mirror of models for HTTP responses. |
+| `backend/shared/helpers/settings.py` | `SEEDS` list + cached settings reader (`get_int / get_float / get_bool / get_string`) |
+| `backend/api/algo/templates_seed.py` | `SYSTEM_TEMPLATES` + the seeder |
+| `backend/api/algo/grammar.py` | `_SYSTEM_TOKENS` + grammar registry seeder |
+| `backend/api/cache.py` | In-memory TTL cache with per-key locking (NOT a substitute for the DB; cache invalidates on PATCH) |
+
+### 4.5.3 Engine + session factory
+
+`database.py` is small and worth reading in full. Key shape:
+
+```python
+# backend/api/database.py
+_engine = create_async_engine(
+    f"postgresql+asyncpg://{user}:{password}@localhost:5432/{_db_name()}",
+    pool_size=20,            # max connections in the pool
+    max_overflow=10,         # extra one-off connections when pool exhausted
+    pool_pre_ping=True,      # checks connection validity before checkout
+    echo=False,
+)
+
+async_session = async_sessionmaker(
+    _engine,
+    expire_on_commit=False,  # load-bearing — see 4.5.5
+    class_=AsyncSession,
+)
+
+async def init_db() -> None:
+    """Idempotent: safe to run on every startup."""
+    async with _engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        # ALTER TABLE ... IF NOT EXISTS for every column added after
+        # the table's initial creation. We don't use Alembic.
+        await conn.exec_driver_sql("ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS filled_quantity INTEGER")
+        # ... ~50 more such ALTERs ...
+    # Seeders run in a separate session (idempotent + non-DDL)
+    await seed_settings()
+    await seed_system_templates()
+    ...
+```
+
+⚙ **TECH — Why `expire_on_commit=False`** — `WHY` After `commit()`, SQLAlchemy's default is to expire all ORM attributes on the committed rows, so the next attribute access triggers a fresh SELECT. That's catastrophic in our codebase because several handler paths commit then immediately read attributes (chase reconcile attach queue, retry_template, postback fallback match). With expire-on-commit we'd issue redundant SELECTs per commit. `WHAT` Setting this to `False` keeps the in-Python row state intact after commit. `HOW` Set globally on the `async_sessionmaker`. Never override per-session — consistency matters. `WHERE` `backend/api/database.py::async_session`.
+
+### 4.5.4 Models — how to add / modify
+
+`backend/api/models.py` is the canonical schema. Every table is a `Mapped[]`-typed class:
+
+```python
+# backend/api/models.py
+class AlgoOrder(Base):
+    __tablename__ = "algo_orders"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    broker_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    account: Mapped[str] = mapped_column(String(16), index=True)
+    symbol: Mapped[str] = mapped_column(String(64), index=True)
+    quantity: Mapped[int] = mapped_column(Integer)
+    filled_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="OPEN", index=True)
+    mode: Mapped[str] = mapped_column(String(16), default="live", index=True)
+    template_id: Mapped[int | None] = mapped_column(
+        ForeignKey("order_templates.id", ondelete="SET NULL"), nullable=True
+    )
+    attached_gtts_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    # ... ~30 more fields, see actual file ...
+
+    __table_args__ = (
+        Index("ix_algo_orders_mode_status", "mode", "status"),  # composite, Sprint E
+    )
+```
+
+**Rules when adding a column:**
+1. Add the `Mapped[]` declaration to the model class.
+2. Add an idempotent `ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS ...` to `init_db`. **Never write an Alembic migration** — our pattern is idempotent ALTERs at startup.
+3. New column should be `nullable=True` with sensible default unless you're guaranteed to backfill all rows.
+4. Composite indexes go in `__table_args__` and need an `ALTER` to ensure existence on rebuild. The convention: `Index("ix_<table>_<cols>", "col1", "col2")`.
+
+**Rules when adding a table:**
+1. Subclass `Base`, set `__tablename__`.
+2. Declarative create happens automatically via `Base.metadata.create_all`.
+3. Add seeded rows via a new seeder function called from `init_db`.
+4. Add the corresponding msgspec.Struct in `schemas.py` if the table is operator-visible.
+
+### 4.5.5 Session lifecycle in handlers
+
+The canonical handler pattern:
+
+```python
+@get("/example", guards=[auth_or_demo_guard])
+async def example(self, request: Request) -> ExampleResponse:
+    async with async_session() as s:
+        # Reads + writes happen here
+        rows = (await s.execute(
+            select(AlgoOrder).where(AlgoOrder.status == "OPEN")
+        )).scalars().all()
+        # Mutate
+        for r in rows:
+            r.last_seen = datetime.now(timezone.utc)
+        # Single commit at the end of a logical group
+        await s.commit()
+    return ExampleResponse(rows=[_to_info(r) for r in rows])
+```
+
+**Anti-patterns to avoid:**
+
+- ❌ Holding a session across `await` to a broker SDK call. The broker call could take 5 seconds; the session holds a connection from the pool the whole time. Wrap the broker call in `asyncio.to_thread` OR exit the `async with` block first and re-open after.
+- ❌ Committing inside a loop without batching. Each commit is a round-trip — if you have 100 rows to update, batch into one commit at the end.
+- ❌ `select(AlgoOrder)` without a WHERE clause and no LIMIT. Full-table scans land in production logs eventually; always paginate operator-visible queries.
+- ❌ Mutating an ORM row from one session and reading from another within the same request. Use one session per logical unit of work.
+
+### 4.5.6 Idempotent migrations pattern
+
+We don't use Alembic. Every schema change is an `ALTER TABLE ... IF NOT EXISTS` in `init_db`:
+
+```python
+async def init_db():
+    async with _engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        await conn.exec_driver_sql("ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS filled_quantity INTEGER")
+        await conn.exec_driver_sql("ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS sl_trail_pct NUMERIC(8, 4)")
+        # ... dozens more ...
+```
+
+This pattern was chosen because:
+- ✅ Zero ops overhead — no migrations folder, no version cursor, no rollback worry.
+- ✅ Deploy is just `git pull + restart`. The new column appears the moment the restart finishes.
+- ✅ Branch-switching works — if dev is ahead of main, switching back to main doesn't break (the column exists; the code that uses it is gone).
+- ❌ No DOWN migrations. We don't drop columns; if we want to remove a field, we stop reading from it but leave the column in place.
+- ❌ Cannot rename columns easily. The workaround: add a new column, dual-write for one deploy, switch reads, then stop writing the old.
+
+The pattern is suitable for small-team prod with infrequent destructive changes. If we ever need ten-engineer concurrent migrations, this stops scaling and we'd move to Alembic.
+
+### 4.5.7 The seeders — bootstrapping defaults
+
+Five seeders run on every startup (after `create_all + ALTER`):
+
+| Seeder | What it seeds | Operator-overridable? |
+|---|---|---|
+| `seed_settings()` in `settings.py` | Settings rows (`alerts.cooldown_minutes`, `chase.max_consecutive_errors`, etc.) | Yes — operator edits via `/admin/settings`; seeder preserves `value` and only refreshes metadata |
+| `seed_system_templates()` in `templates_seed.py` | 4-default templates (`default-long-option`, `default-bull`, `default-short-vol`, `default-bear`) | Partial — system templates are overwritten on every restart, but operator's saved copies (different `user_id`) survive |
+| `seed_grammar()` in `grammar.py` | Grammar tokens (metric/scope/op/channel/format/template/action_type) | Toggleable `is_active`; cannot delete system tokens |
+| `seed_hedge_proxies()` in `routes/hedge_proxies.py` | Six default pairs (GOLDBEES → GOLD/GOLDM, etc.) | Editable via `/admin/settings → Hedge proxies` |
+| `seed_agents()` in `algo/agent_engine.py` | 17 built-in agents (loss-*, expiry-*, summary agents) | Editable, but seeder force-resets `schedule` + system summary agents on every boot |
+
+The recurring tension in seeders: **how much to overwrite on every boot vs preserve operator changes?** The pattern:
+- **Description / schema / metadata** — always refreshed (code is the source of truth)
+- **`value` / `conditions` / `actions` / `events`** — preserved on existing rows (operator's overrides)
+- **`status`** — preserved EXCEPT for built-in summary agents which force-reset to `inactive` (see `seed_agents`)
+- **New rows added** with whatever default the SEEDS const ships
+
+If you're adding a new seeder, follow this pattern. The audit-friendly path is `INSERT ... ON CONFLICT DO UPDATE SET <metadata only>` so existing values can't be clobbered.
+
+### 4.5.8 Settings cache layer
+
+`backend/shared/helpers/settings.py` exposes `get_int`, `get_float`, `get_bool`, `get_string` readers backed by an in-process dict cache:
+
+```python
+_SETTINGS_CACHE: dict[str, Any] = {}
+_CACHE_GENERATION = 0
+
+def get_int(key: str, default: int) -> int:
+    val = _SETTINGS_CACHE.get(key)
+    if val is None:
+        return default
+    return int(val)
+```
+
+The cache loads on first read + invalidates on every PATCH (the route handler bumps `_CACHE_GENERATION` and clears `_SETTINGS_CACHE`). This means:
+- ✅ Hot-path reads are O(1) dict lookup — settings are checked thousands of times per minute on background tasks.
+- ✅ Operator edits take effect on the next read, no service restart.
+- ❌ Multi-worker would need per-worker invalidation (we're single-worker — see §4.1 — so this isn't an issue).
+
+When adding code that reads a setting, **always go through `get_*` helpers**. Never `SELECT ... FROM settings WHERE key = ...` in a hot path.
+
+### 4.5.9 `attached_gtts_json` — the small-state JSON blob pattern
+
+`AlgoOrder.attached_gtts_json` deserves its own subsection because it's the load-bearing column for template attach (§9):
+
+```python
+# Persisted shape (string-encoded JSON)
+[
+    {
+        "kind": "gtt",
+        "label": "TP",
+        "id": "abc123",                   # broker GTT id
+        "current_trigger": 250.0,
+        "sl_trail_pct": null,
+        "tp_trigger": 250.0,
+        "highest_ltp": 200.0,             # set if sl_trail_pct is non-null
+        "lowest_ltp": 200.0,
+        "sibling_id": null                # set for Groww emulated OCO pairs
+    },
+    {
+        "kind": "wing",
+        "label": "Wing BUY",
+        "id": "def456",                   # broker order id (not GTT — wings are real positions)
+        "qty": 50,
+        "symbol": "NIFTY24APR21500PE"
+    },
+    ...
+]
+```
+
+**Why a blob and not a child table?** Three reasons:
+- Atomic write per parent — readers never see "half-attached" state.
+- Easy to refactor the spec shape (just version the JSON inside, no migration).
+- GTT inspection is rare — we don't JOIN against it. When we read it, we read the whole bracket anyway.
+
+**Idempotency rule:** the `_fire_template_attach_on_fill` function checks `attached_gtts_json IS NULL` before writing. Once populated, it's never re-attached (see §9 for the full guard chain). To force a re-attach, the operator hits `POST /orders/algo/<id>/retry-template`.
+
+### 4.5.10 Pool sizing + connection accounting
+
+Defaults:
+- `pool_size=20` connections kept warm
+- `max_overflow=10` extra one-off connections under burst
+- `pool_pre_ping=True` checks the connection is alive before checkout
+
+We've never seen pool exhaustion in prod because:
+- Single worker (§4.1) caps concurrent request handlers at the asyncio scheduler's natural limit.
+- Background tasks use SHORT sessions (`async with` inside the loop body, not around the loop).
+
+Symptoms of pool exhaustion (if you ever see them):
+- Slow request handlers despite low DB CPU.
+- `TimeoutError: QueuePool limit of size 20 overflow 10 reached` in logs.
+
+Fix path: investigate which handler is holding sessions across `await` to a slow external call. **Don't bump `pool_size` first** — it's almost always a code-shape problem, not a sizing one.
+
+### 4.5.11 Demo masking — at the data layer boundary
+
+Read paths for demo sessions mask account values via `mask_column` (§22). The masking happens **at the route layer**, not at the data layer:
+
+```python
+# Wrong — masking inside the ORM
+class AlgoOrder(Base):
+    account: Mapped[str] = mapped_column(String(16))
+    @property
+    def account_display(self):
+        return mask_column(self.account)
+
+# Right — masking at the route handler
+@get("/orders")
+async def list_orders(self, request: Request) -> list[OrderInfo]:
+    rows = await self._fetch()
+    is_demo = request.state.is_demo
+    return [
+        OrderInfo(account=mask_column(r.account) if is_demo else r.account, ...)
+        for r in rows
+    ]
+```
+
+This keeps the data layer free of presentation concerns and avoids subtle bugs (e.g. ORM expressions seeing masked values during a JOIN).
 
 ---
 
@@ -661,6 +957,379 @@ flowchart TD
 - `frontend/src/lib/SymbolPanel.svelte::aggregateCapWarnings` — cross-account (H-5)
 
 ⚙ **TECH — PriceBroker fallback chain** — `WHY` Some brokers can answer quote/ltp/historical (Kite), some can't (Dhan returns `{}` by design for `quote`). Walking the chain lets the operator's chart still render even when their primary account is throttled. `WHAT` `PriceBroker._try(method_name, *args)` iterates eligible brokers, calls method, checks predicates (`_quote_has_data` / `_ltp_has_data` / `_historical_has_data`), returns first successful response. `HOW` Add a new method by name in the predicate map. Rate-limit cool-off (`_RATE_LIMIT_COOLOFF`) excludes throttled accounts for 30s. `WHERE` `backend/shared/brokers/registry.py::PriceBroker`.
+
+---
+
+## 14.5. Broker abstraction — implementation detail
+
+This section is the "if you're modifying the broker layer, here's the actual shape" reference. Read this before changing anything in `backend/shared/brokers/`.
+
+### 14.5.1 Topology
+
+```mermaid
+flowchart TD
+    subgraph callers [Callers]
+        ROUTE[Route handlers]
+        AGENT[Agent actions]
+        BG[Background tasks]
+        CHASE[Chase loop]
+        TPL[Template attach]
+    end
+
+    callers --> REG[registry.py<br/>get_broker · get_price_broker<br/>get_historical_brokers · get_sparkline_broker]
+
+    REG -->|by account| ADAPT[Adapters dict<br/>_ADAPTERS]
+    ADAPT -->|kite| KB[KiteBroker]
+    ADAPT -->|dhan| DB[DhanBroker]
+    ADAPT -->|groww| GB[GrowwBroker]
+
+    REG --> PB[PriceBroker<br/>fallback chain]
+    PB -->|tries each| KB
+    PB -->|tries each| DB
+    PB -->|tries each| GB
+
+    KB & DB & GB -.implements.-> ABC[Broker ABC<br/>base.py]
+
+    KB --> KSDK[kiteconnect SDK]
+    DB --> DSDK[dhanhq SDK]
+    GB --> GSDK[growwapi SDK]
+
+    KB --> KTOK[(.log/kite_tokens.json)]
+    DB --> DTOK[(.log/dhan_tokens.json)]
+    GB --> GTOK[(.log/groww_tokens.json)]
+
+    subgraph caps [Capability matrix]
+        CAPMOD[capabilities.py<br/>BrokerCapabilities dataclass]
+        CAPMOD -->|caps property| KB
+        CAPMOD -->|caps property| DB
+        CAPMOD -->|caps property| GB
+    end
+```
+
+### 14.5.2 File map
+
+| File | Purpose |
+|---|---|
+| `backend/shared/brokers/base.py` | `Broker` abstract base class (~20 method signatures). Single source of truth for the contract. |
+| `backend/shared/brokers/capabilities.py` | `BrokerCapabilities` dataclass + `KITE_CAPS / DHAN_CAPS / GROWW_CAPS` constants |
+| `backend/shared/brokers/kite.py` | KiteBroker — the reference impl (most complete; other adapters shape to its return values) |
+| `backend/shared/brokers/dhan.py` | DhanBroker — including the IPv6 source-binding mount on `DhanContext.dhan_http.session` |
+| `backend/shared/brokers/groww.py` | GrowwBroker — including the ContextVar-based source-IP routing for the module-level `requests` calls |
+| `backend/shared/brokers/registry.py` | `get_broker`, `get_price_broker`, `get_historical_brokers`, `get_sparkline_broker` factories + PriceBroker fallback + rate-limit cool-off |
+| `backend/shared/helpers/connections.py` | `Connections` singleton — KiteConnect instances, login state, source-IP adapters |
+| `backend/shared/helpers/broker_creds.py` | Fernet encrypt/decrypt for the DB-stored credentials (via `cookie_secret` HKDF derivation) |
+| `backend/shared/helpers/kite_ticker.py` | TickerManager — KiteTicker WebSocket bridge (Twisted reactor ↔ asyncio) |
+
+### 14.5.3 The Broker ABC contract
+
+`base.py` declares ~20 abstract methods. Every adapter MUST implement every one — no partial mode. The contract:
+
+```python
+# backend/shared/brokers/base.py
+class Broker(ABC):
+    # Identity
+    @property
+    @abstractmethod
+    def broker_id(self) -> str: ...           # "kite" / "dhan" / "groww"
+    @property
+    @abstractmethod
+    def account(self) -> str: ...             # "ZG0790"
+    @property
+    @abstractmethod
+    def caps(self) -> BrokerCapabilities: ...
+
+    # Identity / health
+    @abstractmethod
+    def profile(self) -> dict: ...            # raises on auth failure
+
+    # Read-side
+    @abstractmethod
+    def orders(self) -> list[dict]: ...       # Kite-shape: status, average_price, filled_quantity, ...
+    @abstractmethod
+    def positions(self) -> dict: ...          # Kite-shape: {"net": [...], "day": [...]}
+    @abstractmethod
+    def holdings(self) -> list[dict]: ...
+    @abstractmethod
+    def margins(self) -> dict: ...
+    @abstractmethod
+    def ltp(self, keys: list[str]) -> dict: ...
+    @abstractmethod
+    def quote(self, keys: list[str]) -> dict: ...
+    @abstractmethod
+    def historical_data(self, instrument_token: int, from_dt, to_dt, interval: str) -> list[dict]: ...
+    @abstractmethod
+    def instruments(self, exchange: str | None = None) -> list[dict]: ...
+    @abstractmethod
+    def holidays(self, exchange: str) -> set[date]: ...
+
+    # Write-side — orders
+    @abstractmethod
+    def place_order(self, variety, exchange, tradingsymbol, transaction_type,
+                    quantity, product, order_type, **kwargs) -> str: ...   # returns order_id
+    @abstractmethod
+    def modify_order(self, variety, order_id, **kwargs) -> str: ...
+    @abstractmethod
+    def cancel_order(self, variety, order_id) -> str: ...
+    @abstractmethod
+    def order_status(self, order_id) -> dict: ...    # Kite-shape
+
+    # Write-side — GTTs
+    @abstractmethod
+    def place_gtt(self, trigger_type, tradingsymbol, exchange, trigger_values,
+                  last_price, orders) -> str: ...   # returns gtt_id
+    @abstractmethod
+    def modify_gtt(self, gtt_id, trigger_values, last_price, orders, **kwargs) -> str: ...
+    @abstractmethod
+    def cancel_gtt(self, gtt_id, **kwargs) -> str: ...
+    @abstractmethod
+    def get_gtts(self) -> list[dict]: ...
+
+    # Optional auxiliaries (concrete adapters may override)
+    def trades(self, order_id: str | None = None) -> list[dict]: return []
+    def basket_order_margins(self, orders: list[dict]) -> dict: ...
+```
+
+**The Kite-shape rule.** Every return value MUST shape to what Kite Connect returns. Frontend renders, chase loop, template attach — they all expect Kite shape. Dhan and Groww adapters have `_normalise_*` helpers that translate vendor responses to Kite shape:
+
+```python
+# backend/shared/brokers/dhan.py (simplified)
+def orders(self) -> list[dict]:
+    raw = self._dhan.get_order_list()
+    return [self._normalise_order(o) for o in (raw.get("data") or [])]
+
+def _normalise_order(self, o: dict) -> dict:
+    return {
+        "order_id":         str(o.get("orderId") or ""),
+        "exchange":         o.get("exchangeSegment", "").replace("_INTRADAY", "").replace("_DELIVERY", ""),
+        "tradingsymbol":    o.get("tradingSymbol", ""),
+        "transaction_type": o.get("transactionType", ""),
+        "quantity":         int(o.get("quantity") or 0),
+        "filled_quantity":  int(o.get("filledQty") or 0),
+        "status":           _DHAN_STATUS_TO_KITE.get(o.get("orderStatus", ""), "OPEN"),
+        "average_price":    float(o.get("averageTradedPrice") or 0),
+        # ... ~15 more fields ...
+    }
+```
+
+The `_DHAN_STATUS_TO_KITE` map is THE most important single piece of any adapter — a missing entry silently breaks fill detection (audit B-1 fix). When adding a new broker, this map is the first thing to get right.
+
+### 14.5.4 Lifecycle — adapter instantiation
+
+Adapters aren't constructed per-request — they live as long as the process via the `Connections` singleton. The flow:
+
+```mermaid
+sequenceDiagram
+    participant START as app.on_startup
+    participant INIT as init_db
+    participant REBUILD as Connections.rebuild_from_db
+    participant DB as broker_accounts table
+    participant CREDS as broker_creds.decrypt
+    participant ADAPT as DhanBroker/KiteBroker
+
+    START->>INIT: run schema setup
+    INIT->>REBUILD: post-DB hook
+    REBUILD->>DB: SELECT * WHERE is_active
+    DB-->>REBUILD: rows
+    loop per row
+        REBUILD->>CREDS: decrypt api_secret_enc + password_enc + totp_token_enc
+        CREDS-->>REBUILD: plaintext
+        REBUILD->>ADAPT: instantiate (api_key, secret, ip, ...)
+        ADAPT->>ADAPT: mount _IPv6SourceAdapter on requests session
+        ADAPT->>ADAPT: load .log/<broker>_tokens.json
+        alt token valid
+            ADAPT->>ADAPT: skip login
+        else token stale
+            ADAPT->>ADAPT: full login flow
+            ADAPT->>ADAPT: persist tokens
+        end
+    end
+    REBUILD->>REBUILD: build self.conn map
+```
+
+Then every call site does:
+
+```python
+from backend.shared.brokers.registry import get_broker
+
+broker = get_broker(account)        # O(1) dict lookup
+broker.place_order(...)             # sync call into the adapter
+```
+
+⚙ **TECH — Why singleton-per-process** — `WHY` Each Kite session takes 10-15 seconds to mint via 2FA + TOTP. Re-doing that per request is unworkable. Holding it process-scoped lets us amortize login cost across the operator's session. `WHAT` `Connections` is a SingletonBase subclass with `_instances` dict keyed by class. `HOW` Adapters live on `Connections().conn[account]`. Re-login happens after `conn_reset_hours` (23h default). `WHERE` `backend/shared/helpers/connections.py`.
+
+### 14.5.5 Source-IP binding (multi-account per server)
+
+Each broker enforces per-IP rules differently:
+- **Kite** — one whitelisted IP per app. Each Kite account = its own Kite app = different whitelist.
+- **Dhan** — one active token per partner app per source IP. Second Dhan account on the same IP invalidates the first.
+- **Groww** — no per-IP rule observed.
+
+Solution: each account binds to a unique IPv6 from the server's `/48` subnet via `_IPv6SourceAdapter`:
+
+```python
+# backend/shared/helpers/connections.py
+class _IPv6SourceAdapter(requests.adapters.HTTPAdapter):
+    def __init__(self, source_ip: str, *args, **kw):
+        self._source_ip = source_ip
+        super().__init__(*args, **kw)
+
+    def init_poolmanager(self, *args, **kw):
+        kw["source_address"] = (self._source_ip, 0)   # 0 = any source port
+        super().init_poolmanager(*args, **kw)
+```
+
+Mount points per broker:
+- **Kite** — `KiteConnect.reqsession.mount("https://", _IPv6SourceAdapter(ip))` — single point.
+- **Dhan** — both `DhanContext.dhan_http.session` (runtime) and `_login_session()` (login bypass for `dhanhq.auth.DhanLogin`).
+- **Groww** — module-level `requests` monkey-patched via ContextVar + per-thread pool (because the Groww SDK uses module-level `requests` calls with no session hook).
+
+The Groww case is the messiest:
+
+```python
+# Simplified — see backend/shared/brokers/groww.py
+_GROWW_SOURCE_IP_OVERRIDE: ContextVar[str | None] = ContextVar("groww_source_ip", default=None)
+_GROWW_SESSION_POOL: dict[str, requests.Session] = {}
+
+def _install_groww_source_binding():
+    """Replace the SDK's `requests` reference with a proxy that reads our ContextVar."""
+    import growwapi.groww.client as groww_client
+    real_requests = groww_client.requests
+    class _ReqProxy:
+        def __getattr__(self, name):
+            ip = _GROWW_SOURCE_IP_OVERRIDE.get()
+            if ip is None:
+                return getattr(real_requests, name)
+            sess = _GROWW_SESSION_POOL.get(ip) or _build_session(ip)
+            return getattr(sess, name)
+    groww_client.requests = _ReqProxy()
+```
+
+Every Groww adapter method sets the ContextVar at entry (`token = _GROWW_SOURCE_IP_OVERRIDE.set(self._source_ip)`) and resets at exit. The proxy reads it inside the SDK's `requests.post(...)` call so the outbound packet uses the right source.
+
+### 14.5.6 Token caching
+
+Each broker persists tokens to `.log/<broker>_tokens.json` (gitignored, per-environment):
+
+```json
+// .log/kite_tokens.json
+{
+    "ZG0790": {
+        "access_token": "abc...",
+        "expires_at": "2026-06-20T05:00:00+05:30"
+    },
+    "ZJ6294": {
+        "access_token": "def...",
+        "expires_at": "2026-06-20T05:00:00+05:30"
+    }
+}
+```
+
+On startup, the adapter loads the file + checks expiry. Skips full login if a fresh token exists. The full login flow only fires on:
+- Cache miss (`.log/<broker>_tokens.json` doesn't exist or doesn't include the account)
+- Token expiry (24h for Kite, 24h for Dhan if operator extended in dashboard else 5min — see Dhan gotcha)
+- Manual cache delete (operator runs `rm .log/kite_tokens.json` after changing source_ip)
+
+The cache file is atomic-written (`tmp + rename`) to avoid partial-write corruption on crash.
+
+### 14.5.7 Registry factories
+
+`registry.py` exposes four factories. Pick the right one:
+
+| Factory | Use for | Returns |
+|---|---|---|
+| `get_broker(account)` | Operator-targeted action (place order, fetch THIS account's positions) | One `Broker` for the named account |
+| `get_price_broker()` | Shared market-data fetch (sparkline warm, derivative analytics) | `PriceBroker` wrapping the preferred eligible account |
+| `get_historical_brokers()` | Historical OHLCV calls (charts page, regression jobs) | List of eligible brokers, sorted by priority, excluding rate-limited ones |
+| `get_sparkline_broker()` | KiteTicker WebSocket | One Kite account NOT pinned to `connections.price_account` (so chart-historical and ticker don't share the same Kite session) |
+
+**Preference order** (used by `get_price_broker` and `get_historical_brokers`):
+1. Pinned via `connections.price_account` setting (operator's chosen account)
+2. Lowest `priority` value in `broker_accounts` table
+3. Account code sort (deterministic tiebreaker)
+
+⚙ **TECH — PriceBroker semantics** — `WHY` Some broker calls succeed but return empty data (Dhan returns `{}` for MCX quotes by design). Walking the chain on "soft failure" lets the operator's chart still render even when their primary account can't service it. `WHAT` `PriceBroker._try(method_name, *args)` iterates eligible brokers; each call's response goes through a `*_has_data` predicate; first response that passes the predicate is returned. `HOW` Add a new method type via the predicate map at the top of `registry.py`. Rate-limit cool-off (`_RATE_LIMIT_COOLOFF: dict[str, datetime]`) excludes throttled accounts for 30 seconds; map is module-level + lock-guarded. `WHERE` `backend/shared/brokers/registry.py::PriceBroker`.
+
+### 14.5.8 Capability matrix
+
+`BrokerCapabilities` is a frozen dataclass — capabilities are immutable per broker. The discipline: **every field explicit per broker**, never rely on defaults:
+
+```python
+# backend/shared/brokers/capabilities.py
+@dataclass(frozen=True)
+class BrokerCapabilities:
+    # GTT shape
+    gtt_single: bool = False         # Can place a single-trigger GTT?
+    gtt_oco: bool = False            # Can place a 2-leg OCO GTT atomically?
+    gtt_emulated_oco: bool = False   # OCO emulation via two single GTTs + pair-watcher?
+    gtt_modify_atomic: bool = False  # modify_gtt updates both legs atomically?
+    gtt_supports_mcx: bool = False   # GTTs work on MCX commodity?
+
+    # Postback / fill detection
+    postback_order: str = "poll_only"   # "webhook" | "poll_only"
+    postback_gtt: str = "poll_only"     # "webhook" | "poll_only" | "partial"
+
+    # Advanced order shapes
+    supports_iceberg: bool = False
+    supports_amo: bool = False
+    supports_cover_order: bool = False
+
+    # Market data
+    historical_data: bool = False
+    ltp_supports_mcx: bool = True
+    quote_returns_depth: bool = True
+
+# Explicit per broker (audit B-5 lesson: never rely on defaults)
+KITE_CAPS = BrokerCapabilities(
+    gtt_single=True, gtt_oco=True, gtt_modify_atomic=True, gtt_supports_mcx=True,
+    postback_order="webhook", postback_gtt="webhook",
+    supports_iceberg=True, supports_amo=True,
+    historical_data=True,
+)
+DHAN_CAPS = BrokerCapabilities(
+    gtt_single=True, gtt_oco=True, gtt_modify_atomic=True, gtt_supports_mcx=False,
+    postback_order="poll_only", postback_gtt="poll_only",
+    supports_iceberg=False, supports_amo=False,
+    historical_data=True,
+)
+GROWW_CAPS = BrokerCapabilities(
+    gtt_single=True, gtt_oco=False, gtt_emulated_oco=True, gtt_modify_atomic=False,
+    postback_order="poll_only", postback_gtt="poll_only",
+    supports_iceberg=False, supports_amo=False,
+    historical_data=False,
+)
+```
+
+Frontend reads via `GET /api/admin/brokers/{account}/capabilities` (in-memory, no broker call). UI helper `brokerCapWarnings.js` consults the matrix to warn the operator at submit time when a template requests a feature the broker can't provide natively.
+
+### 14.5.9 Per-broker quirks worth knowing
+
+These are documented inline in code, but listed here for orientation:
+
+| Broker | Quirk | Where it's handled |
+|---|---|---|
+| **Kite** | `tag` is 20-char max | `_truncate_tag` in `chase.py` |
+| **Kite** | Postback HMAC validation | `order_postback` route checksum check |
+| **Kite** | 3 req/sec historical_data quota | `_RATE_LIMIT_COOLOFF` 30s window in registry |
+| **Kite** | One-IP-per-app rule | `_IPv6SourceAdapter` mount |
+| **Dhan** | Token dashboard validity defaults to 5min | Operator must extend to 24h in Dhan dashboard |
+| **Dhan** | `ltp()` returns `{}` for MCX commodity by design | PriceBroker fallback + B-2 fix logs the empty response |
+| **Dhan** | `modify_gtt` needs TWO calls (ENTRY_LEG + TARGET_LEG) | Sprint C dispatch in `dhan.py::modify_gtt` |
+| **Dhan** | One-active-token-per-app-per-IP rule | `_IPv6SourceAdapter` + multi-account stabilizer in `Connections` |
+| **Groww** | Module-level `requests` calls with no session hook | ContextVar monkey-patch (see §14.5.5) |
+| **Groww** | No native OCO | Emulated via two single GTTs + `_task_oco_pair_watcher` cancellation of survivor |
+| **Groww** | `cancel_gtt` needs exchange (numeric id collision risk) | M-4 fix raises if exchange missing |
+| **Groww** | No `historical_data` support | `historical_data=False` cap; sparkline + chart endpoints fall over to Kite |
+
+### 14.5.10 Modifying the broker layer — guard rails
+
+If you're touching anything in `backend/shared/brokers/`:
+
+- **Never branch in callers by `broker_id`.** The whole point of the abstraction is that callers don't know which vendor they're talking to. If you find yourself writing `if isinstance(broker, KiteBroker)` in a route, the right fix is a new capability flag.
+- **Always re-shape vendor responses to Kite shape.** Frontend + chase + template all expect Kite shape. Skipping the normalize step silently breaks things downstream.
+- **Status maps are non-negotiable.** Every vendor status must map to a Kite-canonical status (`COMPLETE`, `OPEN`, `CANCELLED`, `REJECTED`, `EXPIRED`, `TRIGGER PENDING`). A missing entry breaks chase fill detection.
+- **Wrap sync SDK calls in `asyncio.to_thread`.** Adapters are sync internally; callers MUST go through `asyncio.to_thread(broker.method, ...)` in async handlers to avoid blocking the event loop.
+- **Log silent failures.** B-4 audit fix: when a broker SDK returns empty data instead of raising, log `WARNING` with method + symbol + account so the failure surfaces in `api_log_file`.
+- **Update `capabilities.py` first.** If you discover a vendor supports something we'd marked `False`, update the matrix BEFORE writing code that uses the feature. Operator-visible warnings flow from the matrix.
 
 ---
 
