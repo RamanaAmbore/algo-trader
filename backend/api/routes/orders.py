@@ -1701,6 +1701,7 @@ class OrdersController(Controller):
         kite_status = str(bo.get("status") or "").upper() if bo else None
         target = _KITE_TO_ALGO.get(kite_status) if kite_status else None
 
+        _attach_after_commit = False
         async with async_session() as s:
             r = (await s.execute(
                 _sql_select(AlgoOrder).where(
@@ -1732,10 +1733,17 @@ class OrdersController(Controller):
                             r.filled_at = datetime.now(timezone.utc)
                         except Exception:
                             pass
-                        # Sprint A — see reconcile_algo_orders for the
-                        # rationale. Templated rows recovered via
-                        # reconcile must still get their bracket attach.
-                        _maybe_fire_template_attach_for_reconcile(r)
+                        # Audit fix (C-4) — defer template attach to
+                        # AFTER commit. Pre-fix the attach pipeline
+                        # opened its own session and read the row by id
+                        # WHILE the outer session still held the row at
+                        # status=OPEN in committed state. GTT sizes were
+                        # computed from pre-commit in-memory mutation;
+                        # if the outer commit failed after GTTs landed
+                        # at broker, no cleanup. reconcile_algo_orders
+                        # was already fixed via _attach_queue (commit
+                        # 257c1ed1); this single-order path was missed.
+                        _attach_after_commit = True
                     r.detail = (r.detail or "") + f" [reconciled → {target}]"
                     updated = True
                     note = f"broker status={kite_status} → {target}"
@@ -1747,6 +1755,10 @@ class OrdersController(Controller):
             if updated:
                 await s.commit()
                 invalidate("orders")
+            # Fire template attach AFTER commit so the attach pipeline's
+            # new session reads the committed FILLED state.
+            if updated and r is not None and _attach_after_commit:
+                _maybe_fire_template_attach_for_reconcile(r)
 
         return {
             "broker_order_id": str(broker_order_id),
@@ -2838,6 +2850,19 @@ class OrdersController(Controller):
                                 _pb_account = str(account or "").strip() if account else ""
                                 if _pb_account:
                                     _fallback_where.append(_AlgoOrder.account == _pb_account)
+                                # Audit fix (C-3) — also scope by quantity. Pre-fix
+                                # two LIVE orders for the same symbol+side+account
+                                # within 60s (e.g. operator places BUY 50 then BUY 25
+                                # on the same option) could cross-pollinate
+                                # broker_order_id onto the wrong row — the latest by
+                                # id.desc() would win regardless of which postback
+                                # actually arrived first.
+                                try:
+                                    _pb_qty = int(qty or 0)
+                                except (TypeError, ValueError):
+                                    _pb_qty = 0
+                                if _pb_qty > 0:
+                                    _fallback_where.append(_AlgoOrder.quantity == _pb_qty)
                                 _fallback = (await _s.execute(
                                     _sql_select(_AlgoOrder).where(*_fallback_where)
                                     .order_by(_AlgoOrder.id.desc()).limit(1)

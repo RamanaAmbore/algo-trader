@@ -1448,6 +1448,41 @@ async def _task_oco_pair_watcher() -> None:
                             if not my_active and not sib_active:
                                 # Both legs settled — clear sibling
                                 # pointer so we stop polling this row.
+                                # Audit fix (H-8) — when BOTH legs of
+                                # an emulated OCO settle within one
+                                # 15s poll window, the operator may
+                                # have double-closed the position (TP
+                                # fired AND SL fired before the pair
+                                # watcher could cancel the sibling).
+                                # Pre-fix this branch was silent. Now
+                                # log at WARNING level + fire a
+                                # Telegram alert so the operator can
+                                # verify and manually close any over-
+                                # exit. is_enabled('telegram') gates
+                                # the alert per the platform's notify
+                                # config.
+                                logger.warning(
+                                    f"[OCO-WATCH] row={row.id} both legs settled "
+                                    f"within one poll window (my={my_id} sib={sib_id}). "
+                                    f"Symbol={entry.get('parent_symbol', '?')} — "
+                                    f"verify no double-close at the broker."
+                                )
+                                try:
+                                    from backend.shared.helpers.utils import is_enabled
+                                    if is_enabled('telegram'):
+                                        from backend.shared.helpers.alert_utils import _send_telegram
+                                        _send_telegram(
+                                            f"⚠ OCO double-fire (emulated): "
+                                            f"{entry.get('parent_symbol', '?')} on "
+                                            f"{entry.get('parent_account', '?')} — "
+                                            f"both legs settled in one 15s poll "
+                                            f"window. Verify broker position; "
+                                            f"manual close may be needed."
+                                        )
+                                except Exception as _alert_err:
+                                    logger.debug(
+                                        f"[OCO-WATCH] double-fire alert failed: {_alert_err}"
+                                    )
                                 entry.pop("sibling_id", None)
                                 changed = True
                             continue

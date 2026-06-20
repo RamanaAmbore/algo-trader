@@ -565,6 +565,24 @@ def resolve_template_plan(
                 label="SL",
                 sl_trail_pct=sl_trail_pct,
             ))
+            # Audit fix (C-5) — explicit operator warning. When the SL
+            # fires AFTER any scale-TP has already executed, the SL
+            # order's full-parent-qty leg can over-sell the residual
+            # position (e.g. scale-0 closed 30% → operator holds 70%;
+            # SL fires for 100% of original → 30% oversell on a SELL
+            # parent that flips long, or vice versa). Most brokers
+            # silently size the GTT execution to available qty for
+            # NRML (Kite does), so the over-sell is rare but real
+            # under fast moves through TP+SL within one tick.
+            plan.notes.append(
+                "⚠ SL is sized for full parent qty. If a scale TP "
+                "fires before SL, the SL may try to close more than "
+                "the residual position — broker's NRML quantity "
+                "behavior typically caps at available, but verify "
+                "on the broker's side. Recommend not pairing scale-"
+                "out with SL unless the broker's GTT supports residual "
+                "sizing."
+            )
         plan.notes.append(
             f"Scale-out: {len(tp_scales)} TP step(s) — "
             + " / ".join(f"+{s['at_pct']:g}% × {s['close_pct']:g}% qty"
