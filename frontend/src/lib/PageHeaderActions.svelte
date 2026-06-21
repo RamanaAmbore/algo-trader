@@ -24,6 +24,8 @@
     loadAccounts,
     accountsReadyStore,
     recentSymbolStore,
+    resolveAccount,
+    getAccountsSync,
   } from '$lib/data/accounts';
   import BellIcon from '$lib/icons/BellIcon.svelte';
 
@@ -76,6 +78,22 @@
   // resolver layer. Operator picks what they want to trade; that's
   // what the modal opens against.
   const _effectiveSymbol = $derived(_anchorSymbol);
+  // Account resolution chain mirrors the symbol chain:
+  //   1. recent-account store (operator's last pick)
+  //   2. orders.default_account setting
+  //   3. first loaded broker account
+  // Operator: "order entry in modal and page don't have account drop
+  // to default from context" — the modal was passing `account=""`
+  // forcing SymbolPanel to fall through to settings/sole-account only.
+  // Now the modal carries the recent context just like /orders does.
+  const _accountsList = $derived(
+    ($accountsReadyStore
+      ? getAccountsSync().map(a => String(a?.account_id || a?.account || a || '')).filter(Boolean)
+      : []),
+  );
+  const _effectiveAccount = $derived(
+    resolveAccount(_accountsList[0] || ''),
+  );
 
   // ── Internal modal state ──────────────────────────────────────────────
   let _orderOpen = $state(false);
@@ -197,8 +215,8 @@
     exchange={_effectiveExchange}
     side={null}
     defaultTab="ticket"
-    accounts={[]}
-    account=""
+    accounts={_accountsList}
+    account={_effectiveAccount}
     onClose={() => { _orderOpen = false; }}
     onSubmit={() => { setTimeout(() => { _orderOpen = false; }, 1500); }}
   />

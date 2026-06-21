@@ -1926,17 +1926,27 @@
     <!-- Audit cleanup: dropped a `{#if true}` wrapper that did nothing
          but trigger svelte-check warnings. The picker always renders. -->
       <div class="oes-picker">
-        {#if _modalAccounts.length > 1}
+        <!-- Operator: "order entry in modal and page don't have account
+             drop to default from context or select while placing order."
+             Render the account Select whenever the loaded list has at
+             least 1 entry (previously hidden for single-account
+             operators). The Select still lets a multi-account operator
+             switch broker; for single-account it shows the resolved
+             code as a read-but-clickable affordance so the context is
+             always visible.
+             Fall back to a static label when the prop carries an
+             account but the list is still loading. -->
+        {#if _modalAccounts.length >= 1}
           <div class="oes-account-pick">
             <Select
               options={_modalAccounts.map(a => ({ value: a, label: a }))}
-              value={_sharedAccount}
+              value={_sharedAccount || _modalAccounts[0] || ''}
               onValueChange={(v) => _onAccountChange(String(v))}
               placeholder="Account"
               ariaLabel="Trading account" />
           </div>
-        {:else if _modalAccounts.length === 1 && _sharedAccount}
-          <span class="oes-account-single" title="Single broker account">{_sharedAccount}</span>
+        {:else if _sharedAccount}
+          <span class="oes-account-single" title="Trading account (list loading)">{_sharedAccount}</span>
         {/if}
         <div class="oes-type-wrap">
           <Select
