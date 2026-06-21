@@ -36,6 +36,7 @@
     findNearestFuture,
   } from '$lib/data/instruments';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
+  import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
   import { acctColor } from '$lib/account';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
@@ -808,6 +809,33 @@
       if (r?.quoteKey) out.push({ root: g.underlying, quoteKey: r.quoteKey });
     }
     return out;
+  });
+
+  // Tick-flash instance — one helper covers every directional cell in
+  // the Snapshot grid. Threshold 0 (any change triggers) because the
+  // 30 s polling cadence already filters out sub-second jitter, and
+  // 350 ms decay so the operator sees the pulse without it competing
+  // with the next poll cycle. Keyed as `<root>:<field>` so each cell
+  // has its own timer (Spot moves but Day % may not on the same tick).
+  const flash = createTickFlash({ threshold: 0, durationMs: 350 });
+
+  // Drive the flash off the polled data. Two effects — one for the
+  // F&O rollup (Day / P&L / Day Net / P&L Net) and one for the live
+  // quote map (Spot / Day %). Prev Close skipped: doesn't change
+  // intraday, so a flash would be a false signal of "fresh data".
+  $effect(() => {
+    for (const g of _byUnderlyingTotals) {
+      flash.update(`${g.underlying}:day_w`,  g.day_without);
+      flash.update(`${g.underlying}:pnl_w`,  g.pnl_without);
+      flash.update(`${g.underlying}:day_h`,  g.day_with);
+      flash.update(`${g.underlying}:pnl_h`,  g.pnl_with);
+    }
+  });
+  $effect(() => {
+    for (const [root, q] of Object.entries(_underlyingQuotes)) {
+      flash.update(`${root}:ltp`, q?.ltp);
+      flash.update(`${root}:pct`, q?.day_pct);
+    }
   });
 
   async function loadUnderlyingQuotes() {
@@ -3431,7 +3459,7 @@
       loadPositions();
     });
   });
-  onDestroy(() => { teardown?.(); posTeardown?.(); simTeardown?.(); wsTeardown?.(); quotesTeardown?.(); });
+  onDestroy(() => { teardown?.(); posTeardown?.(); simTeardown?.(); wsTeardown?.(); quotesTeardown?.(); flash.dispose(); });
 
   // Refresh underlying quotes whenever the Snapshot universe changes
   // (a new underlying lands in the book, an old one drops out, the
@@ -4295,13 +4323,13 @@
           {@const _pct  = _q && _q.day_pct != null ? Number(_q.day_pct) : null}
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
-            <span class="num {g.day_without > 0 ? 'cell-pos' : g.day_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.day_without)}</span>
-            <span class="num {g.pnl_without > 0 ? 'cell-pos' : g.pnl_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.pnl_without)}</span>
-            <span class="num">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
-            <span class="num {_pct != null && _pct > 0 ? 'cell-pos' : _pct != null && _pct < 0 ? 'cell-neg' : 'cell-flat'}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
+            <span class="num {g.day_without > 0 ? 'cell-pos' : g.day_without < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_w`)}">{aggCompact(g.day_without)}</span>
+            <span class="num {g.pnl_without > 0 ? 'cell-pos' : g.pnl_without < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pnl_w`)}">{aggCompact(g.pnl_without)}</span>
+            <span class="num {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
+            <span class="num {_pct != null && _pct > 0 ? 'cell-pos' : _pct != null && _pct < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pct`)}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
-            <span class="num {g.day_with > 0 ? 'cell-pos' : g.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.day_with)}</span>
-            <span class="num {g.pnl_with > 0 ? 'cell-pos' : g.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.pnl_with)}</span>
+            <span class="num {g.day_with > 0 ? 'cell-pos' : g.day_with < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_h`)}">{aggCompact(g.day_with)}</span>
+            <span class="num {g.pnl_with > 0 ? 'cell-pos' : g.pnl_with < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pnl_h`)}">{aggCompact(g.pnl_with)}</span>
             <span class="num cell-muted">{g.legs_with}{g.legs_with !== g.legs_without ? `/${g.legs_without}` : ''}</span>
             <span class="num cell-muted">{g.qty_fno || '—'}</span>
             <span class="num cell-muted">{g.qty_eq || '—'}</span>
@@ -5112,6 +5140,38 @@
   .byund-row > .cell-neg { color: #f87171; }
   .byund-row > .cell-flat { color: #7e97b8; }
   .byund-row > .cell-muted { color: rgba(200,216,240,0.65); }
+
+  /* Tick-flash animation — transient background pulse when a tracked
+     numeric cell changes. Subtle alpha so the flash reads as ambient
+     liveness, not an alert; 350ms decay keeps it out of the way of
+     the next poll cycle. cell-pos / cell-neg COLOR rules above still
+     apply — flash paints background only, text color stays signed.
+     In fullscreen mode the alpha doubles so the operator sees the
+     pulse from across the room. */
+  @keyframes tf-pulse-up {
+    0%   { background-color: rgba(74, 222, 128, 0.22); }
+    100% { background-color: transparent; }
+  }
+  @keyframes tf-pulse-down {
+    0%   { background-color: rgba(248, 113, 113, 0.22); }
+    100% { background-color: transparent; }
+  }
+  .byund-row > .tf-up   { animation: tf-pulse-up   350ms ease-out; }
+  .byund-row > .tf-down { animation: tf-pulse-down 350ms ease-out; }
+  :global(.fs-card-on) .byund-row > .tf-up {
+    animation: tf-pulse-up-fs 500ms ease-out;
+  }
+  :global(.fs-card-on) .byund-row > .tf-down {
+    animation: tf-pulse-down-fs 500ms ease-out;
+  }
+  @keyframes tf-pulse-up-fs {
+    0%   { background-color: rgba(74, 222, 128, 0.42); }
+    100% { background-color: transparent; }
+  }
+  @keyframes tf-pulse-down-fs {
+    0%   { background-color: rgba(248, 113, 113, 0.42); }
+    100% { background-color: transparent; }
+  }
   /* Scope chip — small slate-grey tag inline with the Snapshot title
      that names the active account filter. Empty filter reads "all
      accounts" so the operator can confirm the snapshot is unscoped
