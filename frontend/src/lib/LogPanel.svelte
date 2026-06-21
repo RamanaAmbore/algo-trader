@@ -907,9 +907,14 @@
        so the account filter is visible at panel level. -->
   {#if _availableAccounts.length > 1}
     <span class="lp-tabrow-acct">
+      <!-- Operator: "the text is spilling to the right. change it to
+           all acc. to reduce text width." Tab row is tighter than the
+           order strip; use the short placeholder so the empty state
+           doesn't push the dropdown trigger past its container. -->
       <AccountMultiSelect
         bind:value={orderAccountFilter}
-        options={_availableAccounts.map(a => ({ value: a, label: a }))} />
+        options={_availableAccounts.map(a => ({ value: a, label: a }))}
+        placeholder="All acc." />
     </span>
   {/if}
 </div>
