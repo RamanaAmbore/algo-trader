@@ -701,12 +701,17 @@
   // _sharedChase / _sharedChaseAgg by name. The bindable props are the
   // operator-facing handles; effects below keep both in sync.
   // Operator: "on cold start show chase with L as active." Default
-  // 'low' so L renders highlighted on first paint. Picking M or H
-  // moves the highlight. CHASE label always shows when cluster is
-  // visible (since one pill is always selected).
-  let _sharedChaseAgg = $state(/** @type {'low'|'med'|'high'} */ (chaseAgg));
-  $effect(() => { if (chaseAgg !== _sharedChaseAgg) _sharedChaseAgg = chaseAgg; });
-  $effect(() => { if (_sharedChaseAgg !== chaseAgg) chaseAgg = _sharedChaseAgg; });
+  // 'low' so L renders highlighted on first paint.
+  // The dual two-way `$effect` sync between the bindable prop and an
+  // internal `_sharedChaseAgg` state was causing reactivity drift
+  // when the operator clicked M or H — the effect ping-pong settled
+  // on the prior value before the markup re-rendered. Single source
+  // of truth: the `chaseAgg` $bindable prop. Reads + writes go
+  // through `_sharedChaseAgg` which is a $derived alias so the rest
+  // of the file's references stay valid. Writes go through the
+  // setter which assigns directly to the prop.
+  const _sharedChaseAgg = $derived(chaseAgg);
+  function _setSharedChaseAgg(/** @type {'low'|'med'|'high'} */ v) { chaseAgg = v; }
   // Shared template — applied to every leg in the basket on submit.
   // Operator picks once from the bar; submitBasket threads the id
   // into each BasketLeg's `template_id` so the backend runs the
@@ -1885,15 +1890,15 @@
             <button type="button" class="oes-common-chase-agg-pill"
                     class:on={_sharedChaseAgg === 'low'}
                     title="Low — patient. Pegs to your own side; fills only if the market lifts it."
-                    onclick={() => _sharedChaseAgg = 'low'}>L</button>
+                    onclick={() => _setSharedChaseAgg('low')}>L</button>
             <button type="button" class="oes-common-chase-agg-pill"
                     class:on={_sharedChaseAgg === 'med'}
                     title="Medium — peg to midpoint of bid+ask."
-                    onclick={() => _sharedChaseAgg = 'med'}>M</button>
+                    onclick={() => _setSharedChaseAgg('med')}>M</button>
             <button type="button" class="oes-common-chase-agg-pill"
                     class:on={_sharedChaseAgg === 'high'}
                     title="High — urgent. Crosses the spread to take liquidity on the next tick."
-                    onclick={() => _sharedChaseAgg = 'high'}>H</button>
+                    onclick={() => _setSharedChaseAgg('high')}>H</button>
           </div>
         {/if}
         {#if basketLegs.length > 0}
@@ -2058,7 +2063,7 @@
             hostManagesEsc={true}
             mode={_sharedMode}
             bind:chase={_sharedChase}
-            bind:chaseAgg={_sharedChaseAgg}
+            bind:chaseAgg={chaseAgg}
             bind:templateId={_sharedTemplateId}
             bind:tpOverride={_sharedTpOverride}
             bind:slOverride={_sharedSlOverride}
