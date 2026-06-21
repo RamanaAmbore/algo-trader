@@ -242,22 +242,26 @@
 </div>
 
 {#if _zoomedDiagram}
-  <!-- Operator: "the x label does not make sense for zooming mermaid
-       flow diagrams. i should be able zoomable on mobile using pinch."
-       × button removed. Tap-outside (overlay click) closes the
-       lightbox. On mobile the SVG honors native pinch-zoom via
-       `touch-action: pinch-zoom` + unconstrained inner sizing; the
-       panel scrolls if the diagram grows past viewport. -->
+  <!-- Operator (initial): "the x label does not make sense for zooming
+       mermaid flow diagrams. i should be able zoomable on mobile using
+       pinch." × button removed.
+       Operator (follow-up): "single click on enlarged flow diagram
+       should reverse it back to old state. the scroll to see the left
+       most box is not working." Click anywhere (overlay OR panel OR
+       SVG) closes the lightbox; pinch-zoom still works because it's a
+       multi-touch gesture, not a click. Panel switched from
+       flex-centered to natural block layout so leftmost overflow can
+       be scrolled to via the native scrollbar. -->
   <!-- svelte-ignore a11y_interactive_supports_focus a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div class="faq-zoom-overlay"
        role="dialog"
        aria-modal="true"
-       aria-label="Diagram zoom — pinch to enlarge, tap outside to close"
+       aria-label="Diagram zoom — tap to close, pinch to enlarge"
        tabindex="-1"
        onclick={_closeZoom}
        onkeydown={(e) => { if (e.key === 'Escape') _closeZoom(); }}>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="faq-zoom-panel" role="document" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
+    <div class="faq-zoom-panel" role="document">
       <div class="faq-zoom-svg">{@html _zoomedDiagram}</div>
     </div>
   </div>
@@ -358,8 +362,8 @@
   }
   /* Panel sized to the viewport; scrolls in both axes once the SVG
      grows past it (pinch-zoom enlargement). `touch-action: pan-x
-     pan-y pinch-zoom` keeps native pinch-zoom on iOS Safari + Android
-     Chrome live inside the panel. */
+     pan-y pinch-zoom` keeps native pinch-zoom on iOS Safari +
+     Android Chrome live inside the panel. */
   .faq-zoom-panel {
     position: relative;
     width: 95vw;
@@ -368,19 +372,20 @@
     border-radius: 8px;
     padding: 0.5rem;
     overflow: auto;
-    cursor: default;
+    cursor: zoom-out;
     touch-action: pan-x pan-y pinch-zoom;
     -webkit-overflow-scrolling: touch;
   }
-  /* SVG fills the panel by default; pinch-zoom grows it past
-     viewport, and `overflow: auto` on the panel makes the rest
-     scrollable. Removing `max-height` so the SVG can scale up
-     without being clipped. */
+  /* No flex-centering on this wrapper — flex with `justify-content:
+     center` pushes overflow off-screen and breaks horizontal scroll
+     to reach the leftmost content. `width: max-content` lets the
+     wrapper grow with the SVG; `margin: 0 auto` centers when smaller
+     than panel and harmlessly clamps to 0 when wider (so scroll
+     origin starts at content-left). */
   .faq-zoom-svg {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 100%;
+    width: max-content;
+    min-width: 100%;
+    margin: 0 auto;
     touch-action: pan-x pan-y pinch-zoom;
   }
   .faq-zoom-svg :global(svg) {
@@ -388,7 +393,6 @@
     height: auto !important;
     max-width: none;
     display: block;
-    margin: 0 auto;
     touch-action: pan-x pan-y pinch-zoom;
   }
 </style>
