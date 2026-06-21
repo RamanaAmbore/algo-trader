@@ -40,7 +40,10 @@ const ITEMS_KEY = 'items';
 // OR when the backend instruments payload semantics change (e.g. MCX lot
 // size overrides at v4 — Kite's instruments dump reports lot_size=1 for
 // every MCX commodity, so the backend now applies hardcoded multipliers).
-const INDEX_SCHEMA_VERSION = 4;
+// v5: added _exchangesBySymbol multi-listing index — force a clean refetch
+// so every browser rebuilds the index from a known-good items list rather
+// than trusting partial state from a prior session's cache.
+const INDEX_SCHEMA_VERSION = 5;
 
 // Module-level runtime caches (rebuilt on each page load)
 let _items            = null;  // full list
