@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { authStore, nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
@@ -325,6 +325,10 @@
     if (!$authStore.user || (r !== 'admin' && r !== 'designated')) { goto('/signin'); return; }
     load();
     loadEmailEvents();
+  });
+
+  onDestroy(() => {
+    if (emailResultTimer) clearTimeout(emailResultTimer);
   });
 </script>
 

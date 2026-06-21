@@ -6,7 +6,7 @@
   import InfoHint from '$lib/InfoHint.svelte';
   import StaleBanner from '$lib/StaleBanner.svelte';
   import {
-    fetchAgents, activateAgent, deactivateAgent, updateAgent,
+    fetchAgents, activateAgent, deactivateAgent, updateAgent, createAgent,
     fetchRecentAgentEvents, fetchSimTicks, fetchSimEvents, fetchSimStatus,
     startSimForAgent, aiDraftAgent,
   } from '$lib/api';
@@ -56,7 +56,6 @@
     try {
       const slug = (aiSlug.trim()) || (aiDraft.name || 'ai-agent')
         .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-      const { createAgent } = await import('$lib/api');
       await createAgent({
         slug,
         name: aiDraft.name || 'AI agent',
@@ -702,6 +701,7 @@
         <!-- Compact row (always visible). Div + role="button" so the inner
              ON/OFF can stay a real <button> — nested buttons aren't valid. -->
         <div role="button" tabindex="0"
+          aria-expanded={isOpen}
           onclick={() => expandedSlug = isOpen ? null : agent.slug}
           onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); expandedSlug = isOpen ? null : agent.slug; } }}
           class="w-full flex items-center gap-2 px-2 py-1 text-left cursor-pointer select-none">
@@ -1662,10 +1662,10 @@
     white-space: nowrap;
     transition: background-color 0.08s, border-color 0.08s;
   }
-  .action-add-close  { background: rgba(251,113,133,0.12); color: #fb7185; border-color: rgba(251,113,133,0.4); }
-  .action-add-close:hover  { background: rgba(251,113,133,0.25); border-color: #fb7185; }
-  .action-add-place  { background: rgba(16,185,129,0.12);  color: #6ee7b7; border-color: rgba(16,185,129,0.4); }
-  .action-add-place:hover  { background: rgba(16,185,129,0.25); border-color: #10b981; }
+  .action-add-close  { background: rgba(248,113,113,0.12); color: #f87171; border-color: rgba(248,113,113,0.4); }
+  .action-add-close:hover  { background: rgba(248,113,113,0.25); border-color: #f87171; }
+  .action-add-place  { background: rgba(74,222,128,0.12);  color: #4ade80; border-color: rgba(74,222,128,0.4); }
+  .action-add-place:hover  { background: rgba(74,222,128,0.25); border-color: #4ade80; }
   /* `.action-add-place-tpl` removed in audit pass 6 — the
      +place_order pill now ships with template_slug="default-bull" in
      the skeleton so a separate "templated" variant was redundant. */

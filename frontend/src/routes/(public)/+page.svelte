@@ -199,6 +199,7 @@
     color: #1a2744;
     line-height: 1;
     letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
   }
   .trust-plus {
     font-size: 0.95rem;
@@ -356,7 +357,7 @@
   .terms-link {
     font-size: 0.72rem;
     font-weight: 600;
-    color: #b27908;
+    color: #8f6000;
     text-decoration: none;
   }
   .terms-link:hover { text-decoration: underline; }

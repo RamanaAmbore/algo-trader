@@ -239,8 +239,9 @@
     border: none;
     cursor: pointer;
     gap: 1rem;
-    outline: none !important;
+    outline: none;
   }
+  .faq-question:focus-visible { outline: 2px solid #d4920c; outline-offset: 2px; }
   .faq-question:hover { color: #d4920c; }
   .faq-open .faq-question { color: #d4920c; }
   .faq-chevron {

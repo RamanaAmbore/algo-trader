@@ -1,14 +1,13 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { fetchMarket, fetchNews } from '$lib/api';
-  import { createPerformanceSocket } from '$lib/ws';
   import { dataCache } from '$lib/stores';
 
   let content     = $state('');
   let lastRefresh = $state('');
   let loading     = $state(false);
   let error       = $state('');
-  let unsub;
+  let summaryTimer;
 
   // Tabbed surface for the two cards on this page — Market Summary
   // (AI-generated) and Market News (Indian-news feed). Only one panel
@@ -104,11 +103,7 @@
   // socket is live within one event-loop tick.
   function _onVisibilityChange() {
     if (document.visibilityState === 'visible') {
-      // Force a fresh socket by tearing down the old one (which the
-      // browser may have silently closed) and creating a new one.
-      unsub?.();
-      unsub = createPerformanceSocket(() => load());
-      // Also reload content — the page may have been backgrounded for
+      // Reload content — the page may have been backgrounded for
       // minutes; stale market report is unhelpful.
       load();
     }
@@ -121,8 +116,10 @@
       lastRefresh = dataCache.market.refreshed_at ?? '';
     }
     await load();
-    unsub = createPerformanceSocket(() => load());
     document.addEventListener('visibilitychange', _onVisibilityChange);
+    // Market summary refreshes every 30 min — content updates once daily
+    // so the broker WS cadence (every 5 min) was wasteful.
+    summaryTimer = setInterval(load, 30 * 60 * 1000);
     // News refreshes independently — server caps the upstream feed at
     // ~10 min so polling faster wastes calls. First load is immediate;
     // subsequent reloads on a 10-min cadence keep the section live.
@@ -132,7 +129,7 @@
 
   onDestroy(() => {
     document.removeEventListener('visibilitychange', _onVisibilityChange);
-    unsub?.();
+    if (summaryTimer) clearInterval(summaryTimer);
     if (newsTimer) clearInterval(newsTimer);
   });
 </script>
@@ -254,7 +251,7 @@
         {#each news as n}
           <li class="news-row">
             <span class="news-time">{newsTime(n.timestamp)}</span>
-            <a class="news-title" href={n.link} target="_blank" rel="noopener">
+            <a class="news-title" href={n.link} target="_blank" rel="noopener noreferrer">
               {n.title}
             </a>
             {#if n.source}
@@ -392,7 +389,7 @@
   .news-src {
     font-size: 0.7rem;
     font-family: ui-monospace, monospace;
-    color: #6b7894;
+    color: #4a5f7a;
     background: #f4ead4;
     border: 1px solid #ead7a6;
     padding: 1px 6px;

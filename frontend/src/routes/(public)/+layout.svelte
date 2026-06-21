@@ -23,10 +23,6 @@
     { href: '/contact',     label: 'Contact'     },
   ];
 
-  function navLinks() {
-    return baseLinks;
-  }
-
   let menuOpen = $state(false);
   const closeMenu = () => { menuOpen = false; };
 
@@ -49,7 +45,7 @@
     <header class="pub-navbar">
       <div class="pub-nav-inner hidden md:flex items-center gap-1 h-14">
         <a href="/" class="pub-brand shrink-0 mr-5">
-          <img src={bullSrc} alt="" style="height:2.6rem;width:auto;display:block;flex-shrink:0;pointer-events:none;filter:drop-shadow(0 0 3px rgba(200,168,75,0.75)) drop-shadow(0 0 6px rgba(200,168,75,0.45));" />
+          <img src={bullSrc} alt="" width="42" height="38" loading="eager" style="height:2.6rem;width:auto;display:block;flex-shrink:0;pointer-events:none;filter:drop-shadow(0 0 3px rgba(200,168,75,0.75)) drop-shadow(0 0 6px rgba(200,168,75,0.45));" />
           <div class="pub-brand-text">
             <span class="pub-brand-name">RAMBO QUANT</span>
             <span class="pub-brand-sub">ANALYTICS LLP</span>
@@ -58,8 +54,8 @@
           </div>
         </a>
 
-        <nav class="flex items-center gap-3 flex-1 justify-center">
-          {#each navLinks() as link}
+        <nav class="flex items-center gap-3 flex-1 justify-center" aria-label="Main navigation">
+          {#each baseLinks as link}
             <a
               href={link.href}
               class="pub-nav-btn {isActive(link.href) ? 'pub-nav-btn-active' : ''}"
@@ -77,9 +73,9 @@
               - anonymous on prod → demo mode (real broker data, masked
                 accounts, paper-only writes)
               - anonymous on dev → /signin via algo layout's auth guard. -->
-        <button onclick={() => goto('/pulse')} class="pub-nav-algo-btn">
+        <a href="/pulse" class="pub-nav-algo-btn">
           Rambo Terminal ↗
-        </button>
+        </a>
 
         {#if $authStore.user}
           <span class="pub-user-pill">
@@ -99,7 +95,7 @@
       <!-- Mobile bar -->
       <div class="pub-nav-inner md:hidden flex items-center justify-between h-16 py-2">
         <a href="/" class="pub-brand pub-brand-mobile">
-          <img src={bullSrc} alt="" style="height:2.2rem;width:auto;display:block;flex-shrink:0;pointer-events:none;filter:drop-shadow(0 0 3px rgba(200,168,75,0.75)) drop-shadow(0 0 6px rgba(200,168,75,0.45));" />
+          <img src={bullSrc} alt="" width="42" height="38" loading="eager" style="height:2.2rem;width:auto;display:block;flex-shrink:0;pointer-events:none;filter:drop-shadow(0 0 3px rgba(200,168,75,0.75)) drop-shadow(0 0 6px rgba(200,168,75,0.45));" />
           <div class="pub-brand-text">
             <span class="pub-brand-name">RAMBO QUANT</span>
             <span class="pub-brand-sub">ANALYTICS LLP</span>
@@ -139,18 +135,19 @@
 
       <!-- Mobile dropdown -->
       {#if menuOpen}
-        <nav class="pub-mobile-dropdown">
-          {#each navLinks() as link}
+        <nav class="pub-mobile-dropdown" aria-label="Mobile navigation">
+          {#each baseLinks as link}
             <a
               href={link.href}
               onclick={closeMenu}
               class="pub-mobile-item {isActive(link.href) ? 'pub-mobile-active' : ''}"
             >{link.label}</a>
           {/each}
-          <button
-            onclick={() => { goto('/pulse'); closeMenu(); }}
+          <a
+            href="/pulse"
+            onclick={closeMenu}
             class="pub-mobile-item pub-mobile-algo"
-          >Rambo Terminal ↗</button>
+          >Rambo Terminal ↗</a>
           {#if $authStore.user}
             <button onclick={() => { signOut(); closeMenu(); }} class="pub-mobile-item">Sign Out</button>
           {:else}

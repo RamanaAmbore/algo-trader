@@ -81,9 +81,10 @@
     font-family: ui-monospace, monospace;
     letter-spacing: 0.04em;
     transition: color 0.06s, border-bottom-color 0.06s, background-color 0.06s;
-    outline: none !important;
+    outline: none;
     margin-bottom: -1px; /* stitch the tab's bottom border flush with the strip's. */
   }
+  .aw-tab:focus-visible { outline: 2px solid #fbbf24; outline-offset: 2px; }
   .aw-tab:hover {
     color: #fbbf24;
     background: rgba(251,191,36,0.06);

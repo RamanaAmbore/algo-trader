@@ -116,6 +116,7 @@
     color: #1a2744;
     line-height: 1;
     letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
   }
   .stat-plus {
     font-size: 1.5rem;

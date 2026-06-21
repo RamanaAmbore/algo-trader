@@ -42,6 +42,7 @@
   const _pulseSymFmtCache = new Map();
   function _pulseFmtSym(/** @type {string} */ s) {
     if (!s) return '';
+    if (_pulseSymFmtCache.size > 600) _pulseSymFmtCache.clear();
     let v = _pulseSymFmtCache.get(s);
     if (v === undefined) {
       v = formatSymbol(s);
