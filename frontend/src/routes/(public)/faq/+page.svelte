@@ -347,7 +347,17 @@
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
   }
-  :global(.mermaid-container svg) { max-width: 100%; height: auto; }
+  /* Operator: "reduce the size of mermaid elements by 15 per cent
+     only in the panel. keep full screen visibility as it is."
+     `zoom: 0.85` rescales both visual size AND layout box so the
+     inline diagram takes ~15% less space in the FAQ panel. The
+     lightbox (`.faq-zoom-svg`) is unaffected — its SVG selector is
+     a different scope so the fullscreen view still renders at 100%. */
+  :global(.mermaid-container svg) {
+    max-width: 100%;
+    height: auto;
+    zoom: 0.85;
+  }
   :global(.mermaid-container svg .node rect) { rx: 8px; ry: 8px; }
   :global(.mermaid-container svg .node polygon) { rx: 6px; ry: 6px; }
   @media (max-width: 600px) {
