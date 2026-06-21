@@ -33,10 +33,17 @@ export function createTickFlash({ threshold = 0, durationMs = 350 } = {}) {
     if (last == null) return;
     if (Math.abs(v - last) < threshold) return;
     const dir = v > last ? 'up' : 'down';
-    classes = { ...classes, [key]: dir };
+    // Mutate the $state proxy in place. The earlier `classes = { ...
+    // classes, [key]: dir }` form READ `classes` inside the same call-
+    // stack the consumer's $effect triggered — Svelte 5 then picked
+    // up `classes` as a dep, the write rescheduled the effect, and
+    // the page hung with effect_update_depth_exceeded. Direct prop
+    // assignment on the $state proxy is a pure write, no implicit
+    // read of the parent object.
+    classes[key] = dir;
     if (timers[key]) clearTimeout(timers[key]);
     timers[key] = setTimeout(() => {
-      classes = { ...classes, [key]: '' };
+      classes[key] = '';
       delete timers[key];
     }, durationMs);
   }

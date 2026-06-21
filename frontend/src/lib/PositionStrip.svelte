@@ -9,6 +9,7 @@
   import { fetchPositions, fetchHoldings, fetchFunds } from '$lib/api';
   import { aggCompact } from '$lib/format';
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
+  import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
 
   let positions = $state(/** @type {any[]} */ ([]));
   let holdings  = $state(/** @type {any[]} */ ([]));
@@ -48,6 +49,15 @@
     } catch (_) { /* silent — strip stays at last-good values */ }
   }
 
+  // Tick-flash — directional pulse when any of the strip's nine
+  // pills changes value on the 30s poll. Subtle enough to read as
+  // ambient liveness; loud enough that the operator sees a refresh
+  // happened without staring at a digit. Threshold 0 because the
+  // sums round to ₹1 anyway — every meaningful poll-to-poll delta
+  // fires; the first-sample-no-flash gate in the helper prevents
+  // a mount paint from flashing every cell.
+  const flash = createTickFlash({ threshold: 0, durationMs: 350 });
+
   onMount(() => {
     // Instruments cache feeds the long-options premium derivation
     // (we read lot_size off each option to compute lots × lot_size
@@ -57,7 +67,7 @@
     loadOnce();
     teardown = marketAwareInterval(loadOnce, 30000);
   });
-  onDestroy(() => { teardown?.(); });
+  onDestroy(() => { teardown?.(); flash.dispose(); });
 
   // P    = positions P&L lifetime (open + closed intraday).
   // M    = available margin summed across accounts.
@@ -170,26 +180,43 @@
     if (!isFinite(v)) return '0';
     return aggCompact(v);
   }
+
+  // Drive the flash helper off every derived strip aggregate. One
+  // $effect covers all 9 cells — Svelte tracks each derived as a
+  // dep and re-runs the block when any of them changes. flash.update
+  // is a no-op on unchanged values so spurious reruns don't cost
+  // anything.
+  $effect(() => {
+    flash.update('P',    positionsPnl);
+    flash.update('M',    marginTotal);
+    flash.update('U',    utilPct);
+    flash.update('Cp',   cashTotal);
+    flash.update('Cash', liveCashTotal);
+    flash.update('Pd',   positionsToday);
+    flash.update('HDd',  holdingsToday);
+    flash.update('Hd',   holdingsTotal);
+    flash.update('H',    holdingsValue);
+  });
 </script>
 
 <a class="ps-strip" href="/dashboard"
    aria-label="Open the dashboard — full positions, holdings, and funds grids">
   <span class="ps-agg" title="Positions P/L — open + closed intraday">
     <span class="ps-agg-k">P</span>
-    <span class={'ps-agg-v ' + (positionsPnl > 0 ? 'ps-pos' : positionsPnl < 0 ? 'ps-neg' : 'ps-flat')}>
+    <span class={'ps-agg-v ' + (positionsPnl > 0 ? 'ps-pos' : positionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}>
       {fmtMoney(positionsPnl)}
     </span>
   </span>
   <span class="ps-agg" title="Available margin — summed across accounts">
     <span class="ps-agg-k">M</span>
-    <span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-cash' : marginTotal < 0 ? 'ps-neg' : 'ps-flat')}>
+    <span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-cash' : marginTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('M')}>
       {fmtMoney(marginTotal)}
     </span>
   </span>
   {#if utilPct != null}
     <span class="ps-agg" title="Margin utilisation — used / (used + avail). >70% reads as crowded; <30% means most of the pool is free to deploy.">
       <span class="ps-agg-k">U</span>
-      <span class={'ps-agg-v ' + (utilPct > 70 ? 'ps-neg' : utilPct > 30 ? 'ps-flat' : 'ps-cash')}>
+      <span class={'ps-agg-v ' + (utilPct > 70 ? 'ps-neg' : utilPct > 30 ? 'ps-flat' : 'ps-cash') + ' ' + flash.classOf('U')}>
         {utilPct.toFixed(1)}%
       </span>
     </span>
@@ -201,37 +228,37 @@
        the augmented value; the parent's tooltip explains the math. -->
   <span class="ps-agg" title="Cash+ — live cash + premium tied up in long options (= cash you'd have if every long option were closed at its entry premium). The + indicates the augmented value.">
     <span class="ps-agg-k">C+</span>
-    <span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat')}>
+    <span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cp')}>
       {fmtMoney(cashTotal)}
     </span>
   </span>
   <span class="ps-agg" title="Cash — current live cash balance after option premium debits (sum across accounts)">
     <span class="ps-agg-k">Cash</span>
-    <span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat')}>
+    <span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cash')}>
       {fmtMoney(liveCashTotal)}
     </span>
   </span>
   <span class="ps-agg" title="Positions Day delta — today's mark-to-market move on positions (day_change_val)">
     <span class="ps-agg-k ps-delta">P∆</span>
-    <span class={'ps-agg-v ' + (positionsToday > 0 ? 'ps-pos' : positionsToday < 0 ? 'ps-neg' : 'ps-flat')}>
+    <span class={'ps-agg-v ' + (positionsToday > 0 ? 'ps-pos' : positionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}>
       {fmtMoney(positionsToday)}
     </span>
   </span>
   <span class="ps-agg" title="Holdings Day delta — today's mark-to-market move on holdings (day_change_val)">
     <span class="ps-agg-k ps-delta">HD∆</span>
-    <span class={'ps-agg-v ' + (holdingsToday > 0 ? 'ps-pos' : holdingsToday < 0 ? 'ps-neg' : 'ps-flat')}>
+    <span class={'ps-agg-v ' + (holdingsToday > 0 ? 'ps-pos' : holdingsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('HDd')}>
       {fmtMoney(holdingsToday)}
     </span>
   </span>
   <span class="ps-agg" title="Holdings — total unrealised P/L from entry">
     <span class="ps-agg-k ps-delta">H∆</span>
-    <span class={'ps-agg-v ' + (holdingsTotal > 0 ? 'ps-pos' : holdingsTotal < 0 ? 'ps-neg' : 'ps-flat')}>
+    <span class={'ps-agg-v ' + (holdingsTotal > 0 ? 'ps-pos' : holdingsTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Hd')}>
       {fmtMoney(holdingsTotal)}
     </span>
   </span>
   <span class="ps-agg" title="Current holding value — sum of cur_val across holdings">
     <span class="ps-agg-k">H</span>
-    <span class="ps-agg-v ps-cash">{fmtMoney(holdingsValue)}</span>
+    <span class={'ps-agg-v ps-cash ' + flash.classOf('H')}>{fmtMoney(holdingsValue)}</span>
   </span>
 </a>
 
