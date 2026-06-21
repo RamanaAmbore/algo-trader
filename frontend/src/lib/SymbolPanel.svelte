@@ -195,8 +195,8 @@
     // header (where SymbolPanel's `.oes-header` is suppressed via
     // headerless). The modal context binds these implicitly via the
     // internal cluster in `.oes-header`.
-    chase          = $bindable(true),
-    chaseAgg       = $bindable(/** @type {'low'|'med'|'high'} */ ('low')),
+    chase          = $bindable(false),
+    chaseAgg       = $bindable(/** @type {'low'|'med'|'high'|null} */ (null)),
     // Read-only outbound count — /orders reads this to decide whether
     // to render the basket Clear button in the bucket header.
     basketCount    = $bindable(0),
@@ -700,10 +700,11 @@
   // codepaths (template attach, basket submit, etc.) can keep using
   // _sharedChase / _sharedChaseAgg by name. The bindable props are the
   // operator-facing handles; effects below keep both in sync.
-  // _sharedChase is now implicitly true whenever the L/M/H cluster is
-  // visible — no explicit toggle. Updated via $effect once _chaseEnabled
-  // is declared further below.
-  let _sharedChaseAgg = $state(chaseAgg);
+  // Operator: "user should be able to select L, M or H. the selected
+  // option should have highlighted decoration." Cold state: null
+  // (no pill highlighted). Picking any of L/M/H sets the value and
+  // also flips _sharedChase ON (`chase: !!_sharedChaseAgg`).
+  let _sharedChaseAgg = $state(/** @type {'low'|'med'|'high'|null} */ (chaseAgg));
   $effect(() => { if (chaseAgg !== _sharedChaseAgg) _sharedChaseAgg = chaseAgg; });
   $effect(() => { if (_sharedChaseAgg !== chaseAgg) chaseAgg = _sharedChaseAgg; });
   // Shared template — applied to every leg in the basket on submit.
@@ -1416,14 +1417,12 @@
       || _ticketOrderType === 'LIMIT'
       || _ticketOrderType === 'SL'
   );
-  // _sharedChase mirrors _chaseEnabled — chase is implicitly ON whenever
-  // the L/M/H cluster is visible. $state so OrderTicket can still bind
-  // to it; $effect keeps it in sync with the derived value.
-  // Also syncs back to the bindable `chase` prop so callers see the
-  // current state (e.g. /orders page bind:chase).
+  // Operator: chase is opt-in via L/M/H selection. _sharedChase is true
+  // when the cluster is visible AND a pill is selected. Cold visible
+  // state → no pill selected → chase OFF until operator picks one.
   let _sharedChase = $state(chase);
   $effect(() => {
-    const v = _chaseEnabled;
+    const v = _chaseEnabled && !!_sharedChaseAgg;
     if (_sharedChase !== v) _sharedChase = v;
     if (chase !== v) chase = v;
   });
@@ -1875,9 +1874,15 @@
       <span class="oes-header-cluster">
         <!-- Operator: "remove live chip from order modal and page.
              navbar live is enough." The mode chip used to sit here. -->
-        <!-- Chase is always active when visible. L/M/H is the only
-             control — no checkbox. Hidden entirely for MARKET / SL-M. -->
+        <!-- L/M/H selector. Operator: "only active selection have that
+             decoration. it should have chase label when l, m, or h are
+             active." Cold state: no pill highlighted, no CHASE label.
+             Click L/M/H → that pill amber-highlights + CHASE label
+             appears next to it. Hidden entirely for MARKET / SL-M. -->
         {#if _chaseEnabled}
+          {#if _sharedChaseAgg}
+            <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
+          {/if}
           <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
             <button type="button" class="oes-common-chase-agg-pill"
                     class:on={_sharedChaseAgg === 'low'}

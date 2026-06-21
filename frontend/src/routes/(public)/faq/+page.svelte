@@ -242,18 +242,22 @@
 </div>
 
 {#if _zoomedDiagram}
+  <!-- Operator: "the x label does not make sense for zooming mermaid
+       flow diagrams. i should be able zoomable on mobile using pinch."
+       × button removed. Tap-outside (overlay click) closes the
+       lightbox. On mobile the SVG honors native pinch-zoom via
+       `touch-action: pinch-zoom` + unconstrained inner sizing; the
+       panel scrolls if the diagram grows past viewport. -->
   <!-- svelte-ignore a11y_interactive_supports_focus a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div class="faq-zoom-overlay"
        role="dialog"
        aria-modal="true"
-       aria-label="Diagram zoom"
+       aria-label="Diagram zoom — pinch to enlarge, tap outside to close"
        tabindex="-1"
        onclick={_closeZoom}
        onkeydown={(e) => { if (e.key === 'Escape') _closeZoom(); }}>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div class="faq-zoom-panel" role="document" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
-      <button type="button" class="faq-zoom-close"
-              aria-label="Close zoom" onclick={_closeZoom}>×</button>
       <div class="faq-zoom-svg">{@html _zoomedDiagram}</div>
     </div>
   </div>
@@ -344,40 +348,47 @@
     pointer-events: none;
   }
 
-  /* Lightbox overlay */
+  /* Lightbox overlay — tap outside to close (no × button per operator). */
   .faq-zoom-overlay {
     position: fixed; inset: 0; z-index: 1000;
     background: rgba(0,0,0,0.85);
     display: flex; align-items: center; justify-content: center;
-    padding: 1rem;
+    padding: 0.5rem;
     cursor: zoom-out;
   }
+  /* Panel sized to the viewport; scrolls in both axes once the SVG
+     grows past it (pinch-zoom enlargement). `touch-action: pan-x
+     pan-y pinch-zoom` keeps native pinch-zoom on iOS Safari + Android
+     Chrome live inside the panel. */
   .faq-zoom-panel {
     position: relative;
-    max-width: 95vw;
-    max-height: 95vh;
+    width: 95vw;
+    height: 95vh;
     background: #fdfcf7;
     border-radius: 8px;
-    padding: 1.5rem;
+    padding: 0.5rem;
     overflow: auto;
     cursor: default;
+    touch-action: pan-x pan-y pinch-zoom;
+    -webkit-overflow-scrolling: touch;
   }
-  .faq-zoom-close {
-    position: absolute; top: 0.4rem; right: 0.4rem;
-    background: none; border: 0;
-    font-size: 1.5rem; cursor: pointer;
-    color: #4b5563;
-    width: 2.5rem; height: 2.5rem;
-    display: flex; align-items: center; justify-content: center;
-    line-height: 1;
+  /* SVG fills the panel by default; pinch-zoom grows it past
+     viewport, and `overflow: auto` on the panel makes the rest
+     scrollable. Removing `max-height` so the SVG can scale up
+     without being clipped. */
+  .faq-zoom-svg {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100%;
+    touch-action: pan-x pan-y pinch-zoom;
   }
-  .faq-zoom-close:hover { color: #1f2937; }
   .faq-zoom-svg :global(svg) {
     width: auto !important;
     height: auto !important;
-    max-width: 100%;
-    max-height: 85vh;
+    max-width: none;
     display: block;
     margin: 0 auto;
+    touch-action: pan-x pan-y pinch-zoom;
   }
 </style>

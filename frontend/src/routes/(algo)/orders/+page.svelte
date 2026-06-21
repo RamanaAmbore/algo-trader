@@ -72,7 +72,7 @@
   // follow-up); incrementing _triggerClearBasket fires clearBasket
   // inside SymbolPanel without a callback handle.
   let _pageChase       = $state(true);
-  let _pageChaseAgg    = $state(/** @type {'low'|'med'|'high'} */ ('low'));
+  let _pageChaseAgg    = $state(/** @type {'low'|'med'|'high'|null} */ (null));
   let _pageBasketCount = $state(0);
   let _triggerClear    = $state(0);
   // Operator: "when orders are open or chase is active, chase activity
@@ -294,9 +294,12 @@
          to the SymbolPanel below so a flip in either surface updates
          the other. -->
     <span class="oc-header-cluster">
-      <!-- Chase is always active when visible. L/M/H is the only
-           control — no checkbox. Visibility is governed by SymbolPanel's
-           _chaseEnabled (LIMIT/SL on Ticket, always on Chain). -->
+      <!-- L/M/H selector. Cold state: no pill highlighted, no CHASE
+           label. Click a pill → that one amber-highlights + CHASE
+           label appears next to it. -->
+      {#if _pageChaseAgg}
+        <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
+      {/if}
       <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
         <button type="button" class="oes-common-chase-agg-pill"
                 class:on={_pageChaseAgg === 'low'}
