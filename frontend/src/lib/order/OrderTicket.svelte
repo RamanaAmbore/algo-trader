@@ -414,11 +414,22 @@
     const fallback = _kindExchangeFallback;
     const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
     if (!sym) return fallback;
+    // Equity carve-out — for cash-market stocks the kind-fallback
+    // (['NSE','BSE']) IS authoritative: virtually every NSE-listed
+    // stock has a BSE listing and vice versa, and a partial instruments
+    // cache (one of the two Kite exchange-calls failed at warm time)
+    // would otherwise wrongly lock the operator out of the missing
+    // exchange. Trust the kind list; let Kite reject at order-time if
+    // the operator picks a truly missing listing.
+    if (isEquity) return fallback;
+    // Derivatives — strict intersection. RELIANCE26JUNFUT only lives
+    // on NFO; CRUDEOIL26JUNFUT only on MCX. The instruments cache IS
+    // ground truth for contract listings; locking prevents the
+    // operator from picking a non-existent broker-route.
     const actual = listExchangesForSymbol(sym);
     if (actual.length === 0) return fallback;
-    // Order by the static fallback so NSE precedes BSE / NFO precedes
-    // BFO (the operator's mental scan order — primary national exchange
-    // first). Only keep listings the symbol actually trades on.
+    // Order by the static fallback so NFO precedes BFO / etc. (the
+    // operator's mental scan order — primary national exchange first).
     const filtered = fallback.filter(e => actual.includes(e));
     return filtered.length > 0 ? filtered : actual;
   });
