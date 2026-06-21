@@ -16,6 +16,7 @@
     fetchAccounts, fetchOptionsSpot, fetchChainQuotes,
     placeTicketOrder, fetchLiveStatus,
     fetchWatchlists, addWatchlistItem,
+    batchQuote,
   } from '$lib/api';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -32,7 +33,9 @@
     loadInstruments, suggestUnderlyings,
     listExpiries, listStrikes, findOption,
     listFutures, getInstrument, getOptionUnderlyingLot,
+    findNearestFuture,
   } from '$lib/data/instruments';
+  import { resolveUnderlying } from '$lib/data/resolveUnderlying';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
   import { acctColor } from '$lib/account';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
@@ -79,6 +82,7 @@
   let posTeardown;
   let simTeardown;
   let wsTeardown;
+  let quotesTeardown;
 
   // Sim status — when true, the candidates panel shows sim positions
   // instead of live. Polled every few seconds.
@@ -784,6 +788,51 @@
       (a, b) => Math.abs(b.pnl_with) - Math.abs(a.pnl_with)
     );
   });
+
+  /** Per-underlying live quote map — { ROOT: { ltp, day_pct, prev_close } }.
+   *  Populated by loadUnderlyingQuotes() (one batchQuote per Snapshot
+   *  poll). Drives the Spot / Day % / Prev Close columns. Missing roots
+   *  render as "—". */
+  /** @type {Record<string, { ltp: number, day_pct: number | null, prev_close: number }>} */
+  let _underlyingQuotes = $state({});
+
+  /** Map every Snapshot underlying → { root, quoteKey } via
+   *  resolveUnderlying. Indices land on the spot tradingsymbol
+   *  (NSE:NIFTY 50), MCX commodities land on the nearest future,
+   *  everything else lands on NSE:<root>. */
+  const _underlyingQuoteKeys = $derived.by(() => {
+    /** @type {Array<{ root: string, quoteKey: string }>} */
+    const out = [];
+    for (const g of _byUnderlyingTotals) {
+      const r = resolveUnderlying(g.underlying, findNearestFuture);
+      if (r?.quoteKey) out.push({ root: g.underlying, quoteKey: r.quoteKey });
+    }
+    return out;
+  });
+
+  async function loadUnderlyingQuotes() {
+    const pairs = untrack(() => _underlyingQuoteKeys);
+    if (pairs.length === 0) return;
+    const keys = pairs.map(p => p.quoteKey);
+    try {
+      const res = await batchQuote(keys);
+      const quotes = res?.quotes ?? res ?? {};
+      /** @type {Record<string, { ltp: number, day_pct: number | null, prev_close: number }>} */
+      const next = {};
+      for (const { root, quoteKey } of pairs) {
+        const q = quotes?.[quoteKey];
+        if (!q) continue;
+        const ltp   = Number(q.last_price  ?? q.ltp ?? 0);
+        const close = Number(q.ohlc?.close ?? q.close ?? 0);
+        let pct = null;
+        if (q.change_percent != null)      pct = Number(q.change_percent);
+        else if (q.change_pct != null)     pct = Number(q.change_pct);
+        else if (close > 0 && ltp > 0)     pct = ((ltp - close) / close) * 100;
+        next[root] = { ltp, day_pct: pct, prev_close: close };
+      }
+      _underlyingQuotes = next;
+    } catch (_) { /* leave previous values up — chip stays */ }
+  }
 
   /** TOTAL row — sums across EVERY filtered position + holding so the
    *  rollup reconciles to the navbar PositionStrip's P / P∆ chips
@@ -3354,6 +3403,12 @@
     // status here picks up on the next mount or manual refresh.
     teardown    = marketAwareInterval(loadStrategy,  5000);
     posTeardown = marketAwareInterval(loadPositions, 30000);
+    // Per-underlying spot / day-% / prev-close for the Snapshot grid.
+    // Same 30 s cadence as positions — broker LTPs change every tick
+    // but the Snapshot rolls up money quantities that already update
+    // off positions; refreshing at the positions cadence keeps the
+    // two columns in temporal sync.
+    quotesTeardown = marketAwareInterval(loadUnderlyingQuotes, 30000);
     // Sim status polled at 30 s here (down from 5 s) — the layout-level
     // _adaptiveInterval already polls it every 4 s when a sim is
     // actually active and every 30 s when idle, so 5 s here was double-
@@ -3376,7 +3431,21 @@
       loadPositions();
     });
   });
-  onDestroy(() => { teardown?.(); posTeardown?.(); simTeardown?.(); wsTeardown?.(); });
+  onDestroy(() => { teardown?.(); posTeardown?.(); simTeardown?.(); wsTeardown?.(); quotesTeardown?.(); });
+
+  // Refresh underlying quotes whenever the Snapshot universe changes
+  // (a new underlying lands in the book, an old one drops out, the
+  // operator's account filter shrinks/grows the set). The signature
+  // is just the sorted root list — a quoteKey change without root
+  // changes (front-month roll on an MCX commodity) catches the same
+  // poll cycle below.
+  let _lastQuoteSig = '';
+  $effect(() => {
+    const sig = _underlyingQuoteKeys.map(p => p.root).sort().join('|');
+    if (sig === _lastQuoteSig) return;
+    _lastQuoteSig = sig;
+    if (sig) loadUnderlyingQuotes();
+  });
 
   // ── Helpers ──────────────────────────────────────────────────────
   // Number formatters delegate to format.js — no ₹ prefix and no leading
@@ -4199,6 +4268,9 @@
           <span>Underlying</span>
           <span class="num" title="Today's P&L change from F&O legs only.">Day</span>
           <span class="num" title="Total P&L from F&O legs only — what the derivative book alone is doing.">P&amp;L</span>
+          <span class="num" title="Live underlying LTP. Indices use the spot price; MCX commodities use the nearest-future LTP (no tradeable spot).">Spot</span>
+          <span class="num" title="Underlying day-change %, signed (+/-). Computed from broker `change_percent`, else (LTP - prev_close) / prev_close.">Day %</span>
+          <span class="num" title="Underlying previous-session close (broker `ohlc.close`).">Prev Close</span>
           <span class="num" title="Today's P&L change including any equity holding leg (net of the full book — F&O + equity layer).">Day Net</span>
           <span class="num" title="Total P&L including any equity holding leg's contribution (net of the full book — F&O + equity layer).">P&amp;L Net</span>
           <span class="num">Legs</span>
@@ -4217,10 +4289,17 @@
           </div>
         {/if}
         {#each _byUnderlyingTotals as g (g.underlying)}
+          {@const _q = _underlyingQuotes[g.underlying]}
+          {@const _ltp  = _q ? Number(_q.ltp) : null}
+          {@const _close = _q ? Number(_q.prev_close) : null}
+          {@const _pct  = _q && _q.day_pct != null ? Number(_q.day_pct) : null}
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
             <span class="num {g.day_without > 0 ? 'cell-pos' : g.day_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.day_without)}</span>
             <span class="num {g.pnl_without > 0 ? 'cell-pos' : g.pnl_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.pnl_without)}</span>
+            <span class="num">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
+            <span class="num {_pct != null && _pct > 0 ? 'cell-pos' : _pct != null && _pct < 0 ? 'cell-neg' : 'cell-flat'}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
+            <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
             <span class="num {g.day_with > 0 ? 'cell-pos' : g.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.day_with)}</span>
             <span class="num {g.pnl_with > 0 ? 'cell-pos' : g.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(g.pnl_with)}</span>
             <span class="num cell-muted">{g.legs_with}{g.legs_with !== g.legs_without ? `/${g.legs_without}` : ''}</span>
@@ -4233,6 +4312,9 @@
             <span class="byund-und">TOTAL</span>
             <span class="num {_byUnderlyingTotal.day_without > 0 ? 'cell-pos' : _byUnderlyingTotal.day_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_without)}</span>
             <span class="num {_byUnderlyingTotal.pnl_without > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_without)}</span>
+            <span class="num">—</span>
+            <span class="num">—</span>
+            <span class="num">—</span>
             <span class="num {_byUnderlyingTotal.day_with > 0 ? 'cell-pos' : _byUnderlyingTotal.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_with)}</span>
             <span class="num {_byUnderlyingTotal.pnl_with > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_with)}</span>
             <span class="num">{_byUnderlyingTotal.legs_with}{_byUnderlyingTotal.legs_with !== _byUnderlyingTotal.legs_without ? `/${_byUnderlyingTotal.legs_without}` : ''}</span>
@@ -4964,12 +5046,15 @@
       minmax(3.5rem, 0.55fr) /* underlying */
       minmax(3.8rem, 0.6fr)  /* Day */
       minmax(3.8rem, 0.6fr)  /* P&L */
+      minmax(4rem,   0.65fr) /* Spot */
+      minmax(3.5rem, 0.5fr)  /* Day % */
+      minmax(4rem,   0.65fr) /* Prev Close */
       minmax(3.8rem, 0.6fr)  /* Day Net */
       minmax(3.8rem, 0.6fr)  /* P&L Net */
-      minmax(3rem, 0.55fr)   /* Legs */
-      minmax(4rem, 0.6fr)    /* F&O qty */
-      minmax(4rem, 0.6fr);   /* Eq qty */
-    min-width: 500px;
+      minmax(3rem,   0.55fr) /* Legs */
+      minmax(4rem,   0.6fr)  /* F&O qty */
+      minmax(4rem,   0.6fr); /* Eq qty */
+    min-width: 680px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.62rem;        /* match Pulse Positions ~0.625rem */
   }
