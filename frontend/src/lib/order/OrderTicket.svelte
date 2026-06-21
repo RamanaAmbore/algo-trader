@@ -903,23 +903,64 @@
   /** @type {{ bid: number|null, ask: number|null, ltp: number|null } | null} */
   let _lastQuote = $state(null);
 
-  // Tick size for NSE F&O / equity is ₹0.05; commodities are
-  // typically ₹0.05 or coarser (CRUDEOIL ₹1.00, GOLDM ₹1.00). Kite
-  // rejects orders whose price isn't an exact tick multiple — the
-  // bid/ask from depth ARE tick-aligned, but JS floating-point can
-  // turn 590.80 into 590.7999999999999 which Kite then refuses.
-  // Snap to the nearest 0.05 + round to 2 decimals to scrub away
-  // both float artifacts and any operator-typed extra decimals.
+  // Per-instrument tick size + decimals. Kite ships tick_size on
+  // every instrument row (CRUDEOIL ₹1.00, GOLDM ₹1.00, NSE equity
+  // & F&O ₹0.05, USDINR ₹0.0025, …). Reading from the cache means
+  // the operator can't type a ₹100.07 stock order that Kite would
+  // reject with "price not as per tick size" — the input snaps to
+  // the nearest valid multiple as soon as it loses focus.
+  //
+  // _tickSize falls back to 0.05 when the cache hasn't resolved a
+  // tick for the symbol (instruments not loaded yet, or hypothetical
+  // symbol typed into a draft ticket). 0.05 covers NSE equity / F&O
+  // which is the majority case.
+  const _tickSize = $derived.by(() => {
+    const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
+    if (!sym) return 0.05;
+    const inst = getInstrument(sym);
+    const ts = Number(inst?.ts);
+    return Number.isFinite(ts) && ts > 0 ? ts : 0.05;
+  });
+  // Decimals derived from the tick — 0.05 → 2dp, 1.00 → 0dp, 0.0025
+  // → 4dp. Capped at 4 so a freak rounding ts like 0.00001 doesn't
+  // blow up the input. The label chip + formatter both read this.
+  const _tickDecimals = $derived.by(() => {
+    const s = String(_tickSize);
+    const dot = s.indexOf('.');
+    return dot < 0 ? 0 : Math.min(4, s.length - dot - 1);
+  });
+  // Kite rejects orders whose price isn't an exact tick multiple —
+  // the bid/ask from depth ARE tick-aligned, but JS floating-point
+  // can turn 590.80 into 590.7999999999999 which Kite then refuses.
+  // Default tick = `_tickSize` (the symbol's actual tick); callers
+  // can override only for hypothetical paths where the symbol isn't
+  // known yet.
   function _roundToTick(/** @type {number|string} */ px,
-                        /** @type {number} */ tick = 0.05) {
+                        /** @type {number} */ tick = _tickSize) {
     const n = Number(px);
     if (!Number.isFinite(n) || n <= 0) return n;
-    return Math.round((n / tick) + Number.EPSILON) * tick;
+    const t = tick > 0 ? tick : 0.05;
+    return Math.round((n / t) + Number.EPSILON) * t;
   }
   function _formatTick(/** @type {number} */ n) {
-    // Always render with 2 decimals for paise-aligned ticks. Doesn't
-    // round (caller did that already); just stringifies cleanly.
-    return Number.isFinite(n) ? Number(n.toFixed(2)) : n;
+    // Render with the tick's natural decimals. CRUDEOIL ₹1.00 reads
+    // as "8200" not "8200.00"; NSE ₹0.05 reads as "590.80" not "590.8".
+    if (!Number.isFinite(n)) return n;
+    return Number(n.toFixed(_tickDecimals));
+  }
+  // Snap operator-typed price / trigger to the nearest tick on blur.
+  // Without this the operator could type 100.07 into an NSE stock
+  // (₹0.05 tick) and the order would round-trip to Kite → reject.
+  // Skips empty / zero values so blur with nothing typed doesn't
+  // populate the field with "0".
+  function _snapPriceField(/** @type {'price'|'trigger'} */ which) {
+    const raw = which === 'price' ? _price : _trigger;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return;
+    const snapped = _formatTick(_roundToTick(n));
+    const next = String(snapped);
+    if (which === 'price') _price = next;
+    else                   _trigger = next;
   }
   function _autoFillFromQuote() {
     if (_priceTouched) return;
@@ -1094,6 +1135,23 @@
     if (showTrigger && !Number(_trigger)) return 'Trigger price required';
     if (Number(_price) < 0)   return 'Price must be ≥ 0';
     if (Number(_trigger) < 0) return 'Trigger must be ≥ 0';
+    // Tick-alignment check — blur snap should catch operator-typed
+    // input, but a draft loaded from an older session may carry a
+    // stale non-aligned price. Tolerance is one-tenth of a tick so
+    // floating-point noise (590.7999999999999) doesn't trip the gate.
+    if (_tickSize > 0) {
+      const tol = _tickSize / 10;
+      const checkAligned = (/** @type {number} */ n) => {
+        const rem = Math.abs(n - Math.round(n / _tickSize) * _tickSize);
+        return rem < tol;
+      };
+      if (showLimit && !checkAligned(Number(_price))) {
+        return `Price must be a multiple of ₹${_tickSize.toFixed(_tickDecimals)}`;
+      }
+      if (showTrigger && !checkAligned(Number(_trigger))) {
+        return `Trigger must be a multiple of ₹${_tickSize.toFixed(_tickDecimals)}`;
+      }
+    }
     if ((_mode === 'paper' || _mode === 'live') && !_account) {
       return 'Pick an account';
     }
@@ -1988,6 +2046,7 @@
         <div class="ot-label-block ot-price-cell">
           <label class="ot-label" for="ot-price">
             Limit price
+            <span class="ot-tick-chip" title="Kite rejects prices not aligned to this tick. The field snaps on blur.">tick ₹{_tickSize.toFixed(_tickDecimals)}</span>
             {#if _priceTouched && _lastQuote}
               <button type="button" class="ot-price-reset"
                       title="Re-arm auto-fill — restore {_side === 'BUY' ? 'top ask' : 'top bid'}"
@@ -1996,16 +2055,21 @@
             {/if}
           </label>
           <input id="ot-price" type="number" class="ot-input ot-num"
-                 step="0.05"
+                 step={_tickSize}
                  bind:value={_price}
-                 oninput={() => { _priceTouched = true; }} />
+                 oninput={() => { _priceTouched = true; }}
+                 onblur={() => _snapPriceField('price')} />
         </div>
       {:else if showTrigger}
         <div class="ot-label-block ot-price-cell">
-          <label class="ot-label" for="ot-trigger">Trigger</label>
+          <label class="ot-label" for="ot-trigger">
+            Trigger
+            <span class="ot-tick-chip" title="Kite rejects prices not aligned to this tick. The field snaps on blur.">tick ₹{_tickSize.toFixed(_tickDecimals)}</span>
+          </label>
           <input id="ot-trigger" type="number" class="ot-input ot-num"
-                 step="0.05"
-                 bind:value={_trigger} />
+                 step={_tickSize}
+                 bind:value={_trigger}
+                 onblur={() => _snapPriceField('trigger')} />
         </div>
       {/if}
     </div>
@@ -2014,10 +2078,14 @@
     {#if showLimit && showTrigger}
       <div class="ot-row">
         <div class="ot-label-block">
-          <label class="ot-label" for="ot-trigger">Trigger</label>
+          <label class="ot-label" for="ot-trigger">
+            Trigger
+            <span class="ot-tick-chip" title="Kite rejects prices not aligned to this tick. The field snaps on blur.">tick ₹{_tickSize.toFixed(_tickDecimals)}</span>
+          </label>
           <input id="ot-trigger" type="number" class="ot-input ot-num"
-                 step="0.05"
-                 bind:value={_trigger} />
+                 step={_tickSize}
+                 bind:value={_trigger}
+                 onblur={() => _snapPriceField('trigger')} />
         </div>
       </div>
     {/if}
@@ -2633,6 +2701,24 @@
     min-width: 5rem;
   }
   .ot-knob-side { flex: 1.4 1 7rem; min-width: 7rem; }
+  /* Tick-size chip on the Limit / Trigger labels — informs the
+     operator of the symbol's minimum price increment. Reading the
+     chip at a glance is cheaper than learning by Kite rejection
+     after Submit. */
+  .ot-tick-chip {
+    margin-left: 0.35rem;
+    padding: 0.05rem 0.32rem;
+    border-radius: 3px;
+    background: rgba(34, 211, 238, 0.10);
+    border: 1px solid rgba(34, 211, 238, 0.32);
+    color: #67e8f9;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.5rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: none;
+    user-select: none;
+  }
   /* Read-only exchange chip — rendered when the symbol trades on a
      single exchange. Height-matches the Select chip next to it (1.55rem)
      so the row stays aligned; muted bg + slightly faded text reads as
