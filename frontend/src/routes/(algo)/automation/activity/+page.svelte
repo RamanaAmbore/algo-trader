@@ -13,12 +13,17 @@
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
   import ActionEventsToggle from '$lib/ActionEventsToggle.svelte';
+  import CollapseButton from '$lib/CollapseButton.svelte';
+  import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
+  import FullscreenButton from '$lib/FullscreenButton.svelte';
 
   // Match the dashboard's default — fires only, with an opt-in to
   // surface action successes / errors.
   let showActions  = $state(false);
   let _bump        = $state(0);
   let _refreshing  = $state(false);
+  let _colActivity = $state(false);
+  let _fsActivity  = $state(false);
 
   function _onRefresh() {
     _refreshing = true;
@@ -50,16 +55,26 @@
 
 <AutomationTabs />
 
-<section class="bucket-card bucket-card-activity">
+<section class="bucket-card bucket-card-activity"
+  class:fs-card-on={_fsActivity}
+  class:is-collapsed={_colActivity}>
   <div class="bucket-header">
     <span class="mp-section-label">Agent Activity</span>
     <ActionEventsToggle bind:value={showActions} />
+    {#if _fsActivity}
+      <RefreshButton onClick={_onRefresh} loading={_refreshing} label="activity" />
+    {/if}
+    <CollapseButton bind:isCollapsed={_colActivity} cardId="automation-activity" label="Activity" />
+    <DefaultSizeButton bind:isFullscreen={_fsActivity} bind:isCollapsed={_colActivity} label="Activity" />
+    <FullscreenButton bind:isFullscreen={_fsActivity} label="Activity" />
   </div>
-  <UnifiedLog
-    filter={{ kinds }}
-    excludeSim={true}
-    maxRows={100}
-    bump={_bump}
-    emptyMessage="No agent fires yet today." />
+  <div class="card-body" hidden={_colActivity}>
+    <UnifiedLog
+      filter={{ kinds }}
+      excludeSim={true}
+      maxRows={100}
+      bump={_bump}
+      emptyMessage="No agent fires yet today." />
+  </div>
 </section>
 

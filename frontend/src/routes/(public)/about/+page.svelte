@@ -19,6 +19,24 @@
   <meta name="twitter:description" content="Learn about RamboQuant Analytics LLP — our investment philosophy, team, and partnership structure for accredited investors." />
   <meta name="twitter:image" content="https://ramboq.com/og-image-thumb.png?v=2" />
   <meta name="twitter:image:alt" content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
+
+  <!-- JSON-LD structured data -->
+  {@html `<script type="application/ld+json">${JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    "name": "RamboQuant Analytics LLP",
+    "url": "https://ramboq.com/about",
+    "logo": "https://ramboq.com/og-image-thumb.png",
+    "description": "Quantitative investment analytics — long-term stock portfolio with algo-executed options overlay. 25+ years active investing, 22%+ XIRR.",
+    "founder": {
+      "@type": "Person",
+      "name": "Ramana Ambore",
+      "hasCredential": ["FRM", "CFA Level II", "PGCBM XLRI"]
+    },
+    "identifier": "ACU-5195",
+    "foundingDate": "1998",
+    "areaServed": "IN"
+  })}<\/script>`}
 </svelte:head>
 
 <div class="about-card">

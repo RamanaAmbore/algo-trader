@@ -22,7 +22,12 @@
   // header Refresh icon rotates the badge + asks LogPanel to re-poll
   // immediately rather than waiting for its next tick.
   let _refreshKey = $state(0);
-  function _refresh() { _refreshKey++; }
+  let _refreshing = $state(false);
+  function _refresh() {
+    _refreshing = true;
+    _refreshKey++;
+    setTimeout(() => { _refreshing = false; }, 400);
+  }
 
   // SymbolPanel-as-modal state — opened when CommandLineTab fires a
   // parsed order. Operator confirms / edits / submits from the modal.
@@ -35,7 +40,7 @@
 
 <svelte:head><title>Console | RamboQuant Analytics</title></svelte:head>
 
-<div class="flex flex-col h-[calc(100vh-8rem)]">
+<div class="flex flex-col h-[calc(100vh-11rem)]">
   <div class="page-header">
     <span class="algo-title-group">
       <h1 class="page-title-chip">Console</h1>
@@ -43,7 +48,7 @@
     <span class="algo-ts">{$nowStamp}</span>
     <span class="ml-auto"></span>
     <span class="page-header-actions">
-      <RefreshButton onClick={_refresh} loading={false} label="console" />
+      <RefreshButton onClick={_refresh} loading={_refreshing} label="console" />
       <PageHeaderActions />
     </span>
   </div>

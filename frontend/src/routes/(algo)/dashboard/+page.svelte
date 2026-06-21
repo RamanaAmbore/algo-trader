@@ -1274,7 +1274,7 @@
           valueFormatter: _agNumFmt },
         { field: 'pct', headerName: 'Day %', minWidth: 64, flex: 0.9,
           type: 'numericColumn', headerClass: _numericHdr,
-          cellClass: () => `ag-right-aligned-cell ${kind === 'win' ? 'pnl-gain' : 'pnl-loss'}`,
+          cellClass: (p) => `ag-right-aligned-cell ${(p.value ?? 0) > 0 ? 'pnl-gain' : (p.value ?? 0) < 0 ? 'pnl-loss' : ''}`,
           valueFormatter: ({ value }) =>
             value == null ? '—'
             : (value > 0 ? '+' : '') + pctFmt(value) + '%',
@@ -1731,6 +1731,7 @@
           <span class="eq-stat-v {_pnlClass}">
             {#if _todayPnl == null}—{:else}{_todayPnl >= 0 ? '+' : ''}₹{priceFmt(_todayPnl)}{/if}
           </span>
+          <span class="eq-stat-scope">{_eqAccounts.length === 0 ? 'All accounts' : _eqAccounts.join(', ')}</span>
         </div>
         <div class="eq-stat">
           <span class="eq-stat-k">TODAY %</span>
@@ -2136,6 +2137,16 @@
   .eq-stat-v.hero-pnl-up   { color: #4ade80; }
   .eq-stat-v.hero-pnl-down { color: #f87171; }
   .eq-stat-v.hero-pnl-neutral { color: rgba(200, 216, 240, 0.6); }
+  .eq-stat-scope {
+    font-size: 0.45rem;
+    color: rgba(200,216,240,0.45);
+    margin-top: 0.12rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 5rem;
+  }
   /* Card body is the overlay's positioning context — make it relative
      so .eq-stats anchors inside the chart panel. */
   .row1-col-chart .card-body { position: relative; }

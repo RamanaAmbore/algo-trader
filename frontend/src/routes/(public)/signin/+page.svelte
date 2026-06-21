@@ -134,13 +134,21 @@
     </div>
     <div class="signin-body">
       <!-- Tab selector — cream divider matches the public-card border. -->
-      <div class="flex pub-divider border-b mb-4">
+      <div class="flex pub-divider border-b mb-4" role="tablist" aria-label="Auth options">
         <button
+          role="tab"
+          aria-selected={tab === 'signin'}
+          id="tab-signin"
+          aria-controls="panel-signin"
           onclick={() => { tab = 'signin'; error = ''; info = ''; }}
           class="flex-1 py-2 text-xs font-semibold border-b-2 transition-colors
                  {tab === 'signin' ? 'border-primary text-primary' : 'border-transparent text-muted hover:text-text'}"
         >Sign In</button>
         <button
+          role="tab"
+          aria-selected={tab === 'register'}
+          id="tab-register"
+          aria-controls="panel-register"
           onclick={() => { tab = 'register'; error = ''; info = ''; }}
           class="flex-1 py-2 text-xs font-semibold border-b-2 transition-colors
                  {tab === 'register' ? 'border-primary text-primary' : 'border-transparent text-muted hover:text-text'}"
@@ -155,7 +163,7 @@
       {/if}
 
       {#if tab === 'signin'}
-        <div class="space-y-3">
+        <div class="space-y-3" role="tabpanel" id="panel-signin" aria-labelledby="tab-signin">
           <div>
             <label class="field-label" for="s-user">Username</label>
             <input id="s-user" bind:value={signinForm.username} class="field-input" placeholder="Username"
@@ -204,24 +212,29 @@
           >{loading ? 'Sending…' : 'Send reset link'}</button>
           <div class="flex justify-start">
             <button type="button" class="text-[0.65rem] text-primary hover:underline"
+              style="min-height: 2.75rem; padding: 0.5rem; display: inline-flex; align-items: center;"
               onclick={() => { tab = 'signin'; error = ''; info = ''; }}>← Back to sign in</button>
           </div>
         </div>
 
       {:else}
-        <div class="space-y-3">
+        <div role="tabpanel" id="panel-register" aria-labelledby="tab-register">
+        <form onsubmit={(e) => { e.preventDefault(); register(); }} class="space-y-3">
           <div>
             <label class="field-label" for="r-user">Username</label>
             <input id="r-user" bind:value={regForm.username} class="field-input" placeholder="Choose a username"
-              autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="username" />
+              autocapitalize="off" autocorrect="off" spellcheck="false" autocomplete="username"
+              required aria-required="true" />
           </div>
           <div>
             <label class="field-label" for="r-name">Full Name</label>
-            <input id="r-name" bind:value={regForm.display_name} class="field-input" placeholder="Full name" />
+            <input id="r-name" bind:value={regForm.display_name} class="field-input" placeholder="Full name"
+              required aria-required="true" />
           </div>
           <div>
             <label class="field-label" for="r-email">Email</label>
-            <input id="r-email" type="email" bind:value={regForm.email} class="field-input" placeholder="email@example.com" />
+            <input id="r-email" type="email" bind:value={regForm.email} class="field-input" placeholder="email@example.com"
+              required aria-required="true" />
           </div>
           <div>
             <label class="field-label" for="r-phone">Phone</label>
@@ -232,7 +245,7 @@
             <div class="pw-wrap">
               <input id="r-pass" type={showRegPw ? 'text' : 'password'} bind:value={regForm.password}
                 class="field-input pw-input" placeholder="Min 8 chars, mixed case + digit + symbol"
-                autocomplete="new-password" />
+                autocomplete="new-password" required aria-required="true" />
               <button type="button" class="pw-toggle" tabindex="-1"
                 onclick={() => showRegPw = !showRegPw}>{showRegPw ? 'Hide' : 'Show'}</button>
             </div>
@@ -241,7 +254,8 @@
             <label class="field-label" for="r-confirm">Confirm Password</label>
             <div class="pw-wrap">
               <input id="r-confirm" type={showRegConfirm ? 'text' : 'password'} bind:value={regForm.confirm}
-                class="field-input pw-input" placeholder="Repeat password" autocomplete="new-password" />
+                class="field-input pw-input" placeholder="Repeat password" autocomplete="new-password"
+                required aria-required="true" />
               <button type="button" class="pw-toggle" tabindex="-1"
                 onclick={() => showRegConfirm = !showRegConfirm}>{showRegConfirm ? 'Hide' : 'Show'}</button>
             </div>
@@ -252,10 +266,11 @@
           </p>
 
           <button
-            onclick={register}
+            type="submit"
             disabled={loading || !regForm.username || !regForm.password || !regForm.confirm || !regForm.display_name || !regForm.email}
             class="btn-primary w-full disabled:opacity-50 mt-1"
           >{loading ? 'Creating account…' : 'Register'}</button>
+        </form>
         </div>
       {/if}
     </div>

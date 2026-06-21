@@ -21,6 +21,7 @@
   import { authStore, nowStamp, lastRefreshAt } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
+  import AlgoTabs from '$lib/AlgoTabs.svelte';
 
   // Active tab — 'sim' or 'replay'. Seeded from ?tab= or the legacy
   // ?mode= (backward-compat for old SIM/REPLAY dropdown deep-links).
@@ -59,6 +60,8 @@
   });
 
   let _refreshing = $state(false);
+  // TODO: when SimulatorPanel / ReplayPanel expose a reload() handle,
+  // await it here inside a try/finally and remove the setTimeout fallback.
   function _onRefresh() {
     _refreshing = true;
     lastRefreshAt.set(Date.now());
@@ -94,17 +97,20 @@
   </span>
 </div>
 
-<div class="exec-tabs" role="tablist" aria-label="Lab workspace">
-  <button class="exec-tab" class:exec-tab-active={tab === 'sim'}
-          role="tab" aria-selected={tab === 'sim'} onclick={() => pickTab('sim')}>
-    Scenario
+<AlgoTabs
+  tabs={[
+    { id: 'sim',    label: 'Scenario' },
+    { id: 'replay', label: 'Backtest' },
+  ]}
+  bind:value={tab}
+  onChange={pickTab}
+/>
+<div class="exec-tab-subtitle-row">
+  {#if tab === 'sim'}
     <span class="exec-tab-subtitle">fabricated moves</span>
-  </button>
-  <button class="exec-tab" class:exec-tab-active={tab === 'replay'}
-          role="tab" aria-selected={tab === 'replay'} onclick={() => pickTab('replay')}>
-    Backtest
+  {:else if tab === 'replay'}
     <span class="exec-tab-subtitle">historical data</span>
-  </button>
+  {/if}
 </div>
 
 {#if tab === 'sim'}
@@ -124,47 +130,21 @@
 {/if}
 
 <style>
-  /* Tab strip — [Scenario] [Backtest]. Active tab carries an amber
-     bottom border so the visual reads as a section header for the
-     workspace below. */
-  .exec-tabs {
-    display: flex;
-    gap: 0;
-    margin-bottom: 0.75rem;
-    border-bottom: 1px solid rgba(251, 191, 36, 0.18);
-  }
-  .exec-tab {
-    appearance: none;
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    padding: 0.5rem 1rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    color: var(--algo-muted);
-    cursor: pointer;
-    text-transform: uppercase;
-    transition: color 0.1s, border-color 0.1s;
-    display: inline-flex;
-    align-items: baseline;
-    gap: 0.45rem;
-    margin-bottom: -1px;
-  }
-  .exec-tab:hover { color: var(--algo-slate); }
-  .exec-tab-active {
-    color: #fbbf24;
-    border-bottom-color: #fbbf24;
+  /* Subtitle row shown below the AlgoTabs strip; describes the active
+     tab's data source so operators know what "Scenario" vs "Backtest"
+     means without hovering. */
+  .exec-tab-subtitle-row {
+    min-height: 1.1rem;
+    margin-bottom: 0.55rem;
+    padding-left: 0.15rem;
   }
   .exec-tab-subtitle {
     font-size: 0.55rem;
     font-weight: 500;
     color: var(--algo-muted);
-    text-transform: none;
+    font-family: ui-monospace, monospace;
     letter-spacing: 0.02em;
   }
-  .exec-tab-active .exec-tab-subtitle { color: #fde68a; }
   /* Loading state shown for the brief moment between tab click and
      the lazy-imported panel bundle resolving. Subtle so it doesn't
      read as a real "loading spinner" — it's typically gone in 100ms. */

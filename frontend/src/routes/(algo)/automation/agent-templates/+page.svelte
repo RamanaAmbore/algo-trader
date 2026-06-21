@@ -32,11 +32,16 @@
   import DisclosureChevron  from '$lib/DisclosureChevron.svelte';
   import ConfirmModal       from '$lib/ConfirmModal.svelte';
   import Select             from '$lib/Select.svelte';
+  import CollapseButton     from '$lib/CollapseButton.svelte';
+  import DefaultSizeButton  from '$lib/DefaultSizeButton.svelte';
+  import FullscreenButton   from '$lib/FullscreenButton.svelte';
 
   let fragments = $state(/** @type {any[]} */ ([]));
   let filterKind = $state(/** @type {'all'|'notify'|'condition'} */ ('all'));
   let loading = $state(true);
   let error = $state('');
+  let _colTemplates = $state(false);
+  let _fsTemplates  = $state(false);
 
   // ── Expanded row state ────────────────────────────────────────────
   let expandedId = $state(/** @type {number | null} */ (null));
@@ -195,65 +200,78 @@
 
 <AutomationTabs />
 
-<section class="algo-status-card p-3 mb-3">
-  <div class="filter-row">
-    <span class="filter-label">Show:</span>
-    {#each ['all', 'notify', 'condition'] as k}
-      <button
-        class="filter-btn"
-        class:filter-btn-on={filterKind === k}
-        onclick={() => filterKind = /** @type {any} */ (k)}
-        type="button">{k}</button>
-    {/each}
-    <span class="filter-hint ml-auto">
-      {fragments.length} total · {visible.length} shown
-    </span>
+<section class="bucket-card bucket-card-data p-3 mb-3"
+  class:fs-card-on={_fsTemplates}
+  class:is-collapsed={_colTemplates}>
+  <div class="bucket-header">
+    <div class="filter-row">
+      <span class="filter-label">Show:</span>
+      {#each ['all', 'notify', 'condition'] as k}
+        <button
+          class="filter-btn"
+          class:filter-btn-on={filterKind === k}
+          onclick={() => filterKind = /** @type {any} */ (k)}
+          type="button">{k}</button>
+      {/each}
+      <span class="filter-hint">
+        {fragments.length} total · {visible.length} shown
+      </span>
+    </div>
+    {#if _fsTemplates}
+      <RefreshButton onClick={doReload} loading={busy} label="templates" />
+    {/if}
+    <CollapseButton bind:isCollapsed={_colTemplates} cardId="automation-agent-templates" label="Agent Templates" />
+    <DefaultSizeButton bind:isFullscreen={_fsTemplates} bind:isCollapsed={_colTemplates} label="Agent Templates" />
+    <FullscreenButton bind:isFullscreen={_fsTemplates} label="Agent Templates" />
+  </div>
+
+  <div class="card-body" hidden={_colTemplates}>
+
+    {#if loading}
+      <div class="muted">Loading templates…</div>
+    {:else if error}
+      <div class="err">{error}</div>
+    {:else}
+      {@const g = grouped()}
+      {#each ['notify', 'condition'] as kind}
+        {#if g[kind] && g[kind].length > 0}
+          <h2 class="grp-title">{kind.toUpperCase()}</h2>
+          <ul class="frag-list">
+            {#each g[kind] as f}
+              <li class="frag-row" class:frag-row-open={expandedId === f.id}
+                  class:frag-row-system={f.is_system}
+                  class:frag-row-inactive={!f.is_active}>
+                <button class="frag-head" onclick={() => expandedId = expandedId === f.id ? null : f.id}>
+                  <span class="frag-name">{f.name}</span>
+                  {#if f.is_system}<span class="frag-pill frag-pill-system">SYSTEM</span>{/if}
+                  {#if !f.is_active}<span class="frag-pill frag-pill-off">OFF</span>{/if}
+                  <span class="frag-desc">{f.description || '—'}</span>
+                  <DisclosureChevron open={expandedId === f.id} ariaLabel={expandedId === f.id ? 'Collapse template' : 'Expand template'} />
+                </button>
+                {#if expandedId === f.id}
+                  <div class="frag-body">
+                    <pre class="frag-body-pre"><code>{JSON.stringify(f.body, null, 2)}</code></pre>
+                    <div class="frag-actions">
+                      <button class="action-btn" onclick={() => toggleActive(f)} disabled={busy}>
+                        {f.is_active ? 'Deactivate' : 'Activate'}
+                      </button>
+                      {#if !f.is_system}
+                        <button class="action-btn" onclick={() => startEdit(f)} disabled={busy}>Edit</button>
+                        <button class="action-btn action-btn-danger" onclick={() => removeFragment(f)} disabled={busy}>Delete</button>
+                      {:else}
+                        <span class="muted">system rows are toggle-only</span>
+                      {/if}
+                    </div>
+                  </div>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {/each}
+    {/if}
   </div>
 </section>
-
-{#if loading}
-  <div class="muted">Loading templates…</div>
-{:else if error}
-  <div class="err">{error}</div>
-{:else}
-  {@const g = grouped()}
-  {#each ['notify', 'condition'] as kind}
-    {#if g[kind] && g[kind].length > 0}
-      <h2 class="grp-title">{kind.toUpperCase()}</h2>
-      <ul class="frag-list">
-        {#each g[kind] as f}
-          <li class="frag-row" class:frag-row-open={expandedId === f.id}
-              class:frag-row-system={f.is_system}
-              class:frag-row-inactive={!f.is_active}>
-            <button class="frag-head" onclick={() => expandedId = expandedId === f.id ? null : f.id}>
-              <span class="frag-name">{f.name}</span>
-              {#if f.is_system}<span class="frag-pill frag-pill-system">SYSTEM</span>{/if}
-              {#if !f.is_active}<span class="frag-pill frag-pill-off">OFF</span>{/if}
-              <span class="frag-desc">{f.description || '—'}</span>
-              <DisclosureChevron open={expandedId === f.id} ariaLabel={expandedId === f.id ? 'Collapse template' : 'Expand template'} />
-            </button>
-            {#if expandedId === f.id}
-              <div class="frag-body">
-                <pre class="frag-body-pre"><code>{JSON.stringify(f.body, null, 2)}</code></pre>
-                <div class="frag-actions">
-                  <button class="action-btn" onclick={() => toggleActive(f)} disabled={busy}>
-                    {f.is_active ? 'Deactivate' : 'Activate'}
-                  </button>
-                  {#if !f.is_system}
-                    <button class="action-btn" onclick={() => startEdit(f)} disabled={busy}>Edit</button>
-                    <button class="action-btn action-btn-danger" onclick={() => removeFragment(f)} disabled={busy}>Delete</button>
-                  {:else}
-                    <span class="muted">system rows are toggle-only</span>
-                  {/if}
-                </div>
-              </div>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    {/if}
-  {/each}
-{/if}
 
 {#if !isDemo}
   <section id="frag-form" class="algo-status-card p-3 mt-4 form-card">
@@ -311,6 +329,8 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
+    flex: 1;
+    min-width: 0;
   }
   .filter-label {
     font-size: 0.65rem;

@@ -28,6 +28,7 @@
   import Select from '$lib/Select.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
+  import AutomationTabs from '$lib/AutomationTabs.svelte';
 
   /** @type {any[]} */
   let threads     = $state([]);
@@ -260,8 +261,8 @@
   let mintedToken = $state(null);    // {token, expires_in, purpose, ...}
   let mintError   = $state('');
   let mintSecondsLeft = $state(0);
-  /** @type {ReturnType<typeof setInterval> | undefined} */
-  let mintTicker;
+  /** @type {(() => void) | null} */
+  let mintTicker = null;
   async function mint() {
     mintError = '';
     try {
@@ -300,11 +301,11 @@
       const res = await mintConfirmToken(payload);
       mintedToken = res;
       mintSecondsLeft = res.expires_in;
-      clearInterval(mintTicker);
-      mintTicker = setInterval(() => {
+      if (mintTicker) mintTicker();
+      mintTicker = visibleInterval(() => {
         mintSecondsLeft = Math.max(0, mintSecondsLeft - 1);
         if (mintSecondsLeft === 0) {
-          clearInterval(mintTicker);
+          if (mintTicker) { mintTicker(); mintTicker = null; }
         }
       }, 1000);
     } catch (e) {
@@ -312,7 +313,7 @@
       mintedToken = null;
     }
   }
-  onDestroy(() => clearInterval(mintTicker));
+  onDestroy(() => { if (mintTicker) mintTicker(); });
 
   // Option arrays for the custom Select dropdowns (replaces native
   // <select> so the dropdowns inherit the algo terminal's navy + amber
@@ -403,7 +404,7 @@
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
-    <RefreshButton onClick={() => { loadThreads(); loadDrafts(); }} loading={loading} label="research" />
+    <RefreshButton onClick={() => { loadThreads(); loadDrafts(); if (activeTab === 'audit') loadAudit(); }} loading={loading} label="research" />
     <PageHeaderActions symbol={selected?.symbol ?? ''} />
   </span>
 </div>
@@ -411,6 +412,8 @@
 {#if error}
   <div class="err-banner">{error}</div>
 {/if}
+
+<AutomationTabs />
 
 <div class="lab-tabs-wrap">
   <AlgoTabs

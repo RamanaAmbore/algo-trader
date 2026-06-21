@@ -34,6 +34,20 @@
   <meta name="twitter:description" content="Systematic, transparent portfolios for partner-investors. 25-year track record, 22%+ XIRR. Open algo trading platform showcase." />
   <meta name="twitter:image" content="https://ramboq.com/og-image-home.png?v=2" />
   <meta name="twitter:image:alt" content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
+
+  <!-- JSON-LD structured data -->
+  {@html `<script type="application/ld+json">${JSON.stringify({
+    "@context": "https://schema.org",
+    "@type": "FinancialService",
+    "name": "RamboQuant Analytics LLP",
+    "url": "https://ramboq.com",
+    "logo": "https://ramboq.com/og-image-home.png",
+    "description": "Long-term stock investments paired with algo-executed options strategies — covered calls, cash-secured puts, spreads, and more. 25-year track record, 22%+ XIRR, LLP registered.",
+    "founder": { "@type": "Person", "name": "Ramana Ambore" },
+    "identifier": "ACU-5195",
+    "areaServed": "IN",
+    "knowsAbout": ["algorithmic trading", "options strategies", "portfolio management"]
+  })}<\/script>`}
 </svelte:head>
 
 <div class="home">

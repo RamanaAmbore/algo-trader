@@ -5067,6 +5067,10 @@
     text-align: center;
   }
 
+  :global(.fs-card-on) .cand-scroll {
+    max-height: calc(100vh - 28rem) !important;
+  }
+
   .cand-scroll {
     overflow-x: auto;
     overflow-y: auto;

@@ -1218,7 +1218,7 @@
     border-radius: 4px;
     border: 1px solid rgba(167,139,250,0.45);
     background: rgba(167,139,250,0.10);
-    color: #a78bfa;
+    color: var(--algo-ai);
     cursor: pointer;
     transition: background 0.1s;
   }
@@ -1267,7 +1267,7 @@
     font-family: ui-monospace, monospace;
     font-size: 0.6rem;
     font-weight: 700;
-    color: #a78bfa;
+    color: var(--algo-ai);
     text-transform: uppercase;
     letter-spacing: 0.06em;
   }
@@ -1295,7 +1295,7 @@
     border-radius: 3px;
     border: 1px solid rgba(167,139,250,0.45);
     background: rgba(167,139,250,0.12);
-    color: #a78bfa;
+    color: var(--algo-ai);
     cursor: pointer;
   }
   .ai-btn:hover:not(:disabled) { background: rgba(167,139,250,0.22); }
@@ -1371,7 +1371,7 @@
   .ai-meta-pill {
     border: 1px solid rgba(167,139,250,0.45);
     background: rgba(167,139,250,0.10);
-    color: #a78bfa;
+    color: var(--algo-ai);
     padding: 0.08rem 0.4rem;
     border-radius: 3px;
     font-weight: 700;

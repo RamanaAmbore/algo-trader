@@ -212,19 +212,19 @@
     </span>
   </span>
   <span class="ps-agg" title="Positions Day delta — today's mark-to-market move on positions (day_change_val)">
-    <span class="ps-agg-k">P∆</span>
+    <span class="ps-agg-k ps-delta">P∆</span>
     <span class={'ps-agg-v ' + (positionsToday > 0 ? 'ps-pos' : positionsToday < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(positionsToday)}
     </span>
   </span>
   <span class="ps-agg" title="Holdings Day delta — today's mark-to-market move on holdings (day_change_val)">
-    <span class="ps-agg-k">HD∆</span>
+    <span class="ps-agg-k ps-delta">HD∆</span>
     <span class={'ps-agg-v ' + (holdingsToday > 0 ? 'ps-pos' : holdingsToday < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(holdingsToday)}
     </span>
   </span>
   <span class="ps-agg" title="Holdings — total unrealised P/L from entry">
-    <span class="ps-agg-k">H∆</span>
+    <span class="ps-agg-k ps-delta">H∆</span>
     <span class={'ps-agg-v ' + (holdingsTotal > 0 ? 'ps-pos' : holdingsTotal < 0 ? 'ps-neg' : 'ps-flat')}>
       {fmtMoney(holdingsTotal)}
     </span>
@@ -289,6 +289,12 @@
   .ps-flat { color: var(--algo-slate); }
   /* Negative cash (margin debt) flips to red via .ps-neg. */
   .ps-cash { color: #7dd3fc; }
+  /* Day-delta key labels (P∆ / HD∆ / H∆) — slightly muted + italic so
+     they read as "change since open" vs the plain "P" (lifetime P&L). */
+  .ps-delta {
+    color: rgba(200,216,240,0.7);
+    font-style: italic;
+  }
 
   @media (max-width: 640px) {
     /* Eight pills (P · M · C · Cl · P∆ · HD∆ · H∆ · H) must fit on a

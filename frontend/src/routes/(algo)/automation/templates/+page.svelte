@@ -27,6 +27,9 @@
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import Select from '$lib/Select.svelte';
+  import CollapseButton from '$lib/CollapseButton.svelte';
+  import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
+  import FullscreenButton from '$lib/FullscreenButton.svelte';
   import {
     createOrderTemplate,
     patchOrderTemplate,
@@ -53,6 +56,11 @@
   let formWingStrikeOffset = $state('');
   let formTpOrderType = $state(/** @type {'LIMIT'|'MARKET'} */ ('LIMIT'));
   let formTpScalesJson = $state('');
+  const _scalesParseErr = $derived.by(() => {
+    if (!formTpScalesJson?.trim()) return '';
+    try { JSON.parse(formTpScalesJson); return ''; }
+    catch (e) { return e.message; }
+  });
   let formSlTrailPct = $state('');
   let formIsDefault = $state(false);
   let formIsActive = $state(true);
@@ -61,6 +69,8 @@
 
   // Create-new toggle
   let creatingNew = $state(false);
+  let _colTemplates = $state(false);
+  let _fsTemplates  = $state(false);
 
   /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
   let _confirmRef = $state(null);
@@ -315,9 +325,11 @@
 </section>
 
 <!-- Filter strip + create button -->
-<section class="bucket-card bucket-card-data p-3 mb-3">
-  <div class="flex items-center justify-between gap-2 flex-wrap">
-    <div class="flex items-center gap-1 flex-wrap">
+<section class="bucket-card bucket-card-data p-3 mb-3"
+  class:fs-card-on={_fsTemplates}
+  class:is-collapsed={_colTemplates}>
+  <div class="bucket-header">
+    <div class="flex items-center gap-1 flex-wrap" style="flex:1;min-width:0">
       <span class="mp-section-label">Filter:</span>
       <button class="tpl-chip {filterScope === 'all' ? 'tpl-chip-on' : ''}"
               onclick={() => { filterScope = 'all'; }} type="button">All</button>
@@ -331,30 +343,35 @@
       <button class="tpl-chip {filterScope === 'both' ? 'tpl-chip-on' : ''}"
               onclick={() => { filterScope = 'both'; }} type="button"
               title="Custom templates that target every direction">Both</button>
+      {#if !isDemo}
+        <button class="tpl-create-btn" onclick={startCreate} type="button">
+          + Create custom template
+        </button>
+      {/if}
     </div>
-
-    {#if !isDemo}
-      <button class="tpl-create-btn" onclick={startCreate} type="button">
-        + Create custom template
-      </button>
+    {#if _fsTemplates}
+      <RefreshButton onClick={load} loading={loading} label="Templates" />
     {/if}
+    <CollapseButton bind:isCollapsed={_colTemplates} cardId="automation-templates" label="Templates" />
+    <DefaultSizeButton bind:isFullscreen={_fsTemplates} bind:isCollapsed={_colTemplates} label="Templates" />
+    <FullscreenButton bind:isFullscreen={_fsTemplates} label="Templates" />
   </div>
-</section>
+  <div class="card-body" hidden={_colTemplates}>
 
-{#if error}
-  <div class="algo-status-card bg-red-900/30 border-red-700/50 p-3 mb-3">
-    <p class="text-xs text-red-300">{error}</p>
-  </div>
-{/if}
+    {#if error}
+      <div class="algo-status-card bg-red-900/30 border-red-700/50 p-3 mb-3">
+        <p class="text-xs text-red-300">{error}</p>
+      </div>
+    {/if}
 
-{#if loading}
-  <div class="algo-status-card p-3 text-xs text-slate-400">Loading…</div>
-{:else if sorted.length === 0}
-  <div class="algo-status-card p-3 text-xs text-slate-400">
-    No templates match the current filter.
-  </div>
-{:else}
-  <section class="tpl-list">
+    {#if loading}
+      <div class="p-3 text-xs text-slate-400">Loading…</div>
+    {:else if sorted.length === 0}
+      <div class="p-3 text-xs text-slate-400">
+        No templates match the current filter.
+      </div>
+    {:else}
+      <section class="tpl-list">
     {#each sorted as t (t.id)}
       <div class="tpl-row {t.is_default ? 'tpl-row-default' : ''}">
         <button
@@ -465,6 +482,9 @@
                             rows="3"
                             class="tpl-input tpl-input-mono"
                             placeholder={'[{"at_pct": 30, "close_pct": 50}]'}></textarea>
+                  {#if _scalesParseErr}
+                    <span class="tpl-json-err">{_scalesParseErr}</span>
+                  {/if}
                 </label>
                 <label class="tpl-field">
                   <span>Trailing stop % (blank = none)
@@ -489,7 +509,7 @@
 
                 <div class="tpl-form-actions">
                   <button class="tpl-btn tpl-btn-primary"
-                          disabled={busy}
+                          disabled={busy || !!_scalesParseErr}
                           onclick={() => saveEdit(t)}
                           type="button">
                     {busy ? 'Saving…' : 'Save'}
@@ -518,8 +538,10 @@
         {/if}
       </div>
     {/each}
-  </section>
-{/if}
+      </section>
+    {/if}
+  </div>
+</section>
 
 <!-- Create-new form (separate from edit so they don't fight over state) -->
 {#if creatingNew}
@@ -575,7 +597,7 @@
 
       <div class="tpl-form-actions">
         <button class="tpl-btn tpl-btn-primary"
-                disabled={busy}
+                disabled={busy || !!_scalesParseErr}
                 onclick={saveCreate} type="button">
           {busy ? 'Creating…' : 'Create template'}
         </button>
@@ -875,6 +897,13 @@
     grid-column: 1 / -1;
     color: #fca5a5;
     font-size: 0.7rem;
+    font-family: ui-monospace, monospace;
+  }
+  .tpl-json-err {
+    display: block;
+    margin-top: 0.2rem;
+    color: #f87171;
+    font-size: 0.6rem;
     font-family: ui-monospace, monospace;
   }
   .tpl-form-actions {

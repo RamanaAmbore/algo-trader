@@ -202,7 +202,7 @@
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     {#if !isDemo}
-      <RefreshButton onClick={doReload} loading={reloading} label="registry" />
+      <RefreshButton onClick={doReload} loading={reloading} label="grammar registry (rebuilds live token catalog)" />
       <button onclick={openCreate}
         class="text-[0.65rem] py-1 px-3 rounded border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 font-semibold">
         + New token

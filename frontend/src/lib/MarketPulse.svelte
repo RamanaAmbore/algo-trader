@@ -1810,6 +1810,8 @@
   let _lastPaintedSnap = /** @type {Record<string, number>} */ ({});
   let _ltpPaintTimer   = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
   const _LTP_PAINT_MS  = 250; // 4 Hz
+  // B1 — symbols whose LTP just changed; cleared after animation window.
+  let _ltpFlashSet = $state(/** @type {Set<string>} */ (new Set()));
 
   $effect(() => {
     const snap = _liveLtpSnap; // reactive subscribe — re-runs on every update
@@ -1832,6 +1834,17 @@
     if (_ltpPaintTimer) return;
     _ltpPaintTimer = setTimeout(() => {
       _ltpPaintTimer = null;
+      // B1 — collect symbols whose value changed so the LTP cell can flash.
+      const prev = _lastPaintedSnap;
+      const cur  = _liveLtpSnap;
+      const flashed = new Set(/** @type {string[]} */ ([]));
+      for (const k of Object.keys(cur)) {
+        if (prev[k] !== undefined && prev[k] !== cur[k]) flashed.add(k);
+      }
+      if (flashed.size > 0) {
+        _ltpFlashSet = flashed;
+        setTimeout(() => { _ltpFlashSet = new Set(); }, 650);
+      }
       // Capture the current snapshot at paint time (may have advanced
       // further than when the timer was scheduled).
       _lastPaintedSnap = { ..._liveLtpSnap };
@@ -3428,7 +3441,14 @@
       ? `<span class="sym-move" data-dir="-1" title="Move group up">▲</span>` +
         `<span class="sym-move" data-dir="1"  title="Move group down">▼</span>`
       : '';
-    return `<span class="sym-main ${optClass}">${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}`;
+    // B2 — screen-reader direction label for pos-long / pos-short rows.
+    let dirLabel = '';
+    if (row.src?.p) {
+      const q = Number(row.qty_pos) || 0;
+      if (q > 0) dirLabel = '<span class="sr-only">Long position</span>';
+      else if (q < 0) dirLabel = '<span class="sr-only">Short position</span>';
+    }
+    return `<span class="sym-main ${optClass}">${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}`;
   }
 
   /**
@@ -3646,6 +3666,8 @@
                    : (p.data.qty_hold && p.data.avg_hold) ? p.data.avg_hold
                    : null;
         const cls = [RA];
+        // B1 — flash amber when this symbol's LTP just changed.
+        if (_ltpFlashSet.has(sym)) cls.push('ltp-flash');
         if (typeof ltp === 'number' && typeof avg === 'number' && avg > 0) {
           cls.push(ltp > avg ? 'ltp-vs-avg-up' : ltp < avg ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat');
         }
@@ -5857,5 +5879,27 @@
     font-size: 0.6rem;
     color: var(--algo-muted);
     line-height: 1.4;
+  }
+
+  /* B1 — LTP flash animation */
+  :global(.ltp-flash) {
+    animation: ltp-flash 600ms ease-out;
+  }
+  @keyframes ltp-flash {
+    0%   { background-color: rgba(251, 191, 36, 0.45); }
+    100% { background-color: transparent; }
+  }
+
+  /* B2 — visually-hidden a11y helper */
+  :global(.sr-only) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
   }
 </style>

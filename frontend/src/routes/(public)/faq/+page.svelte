@@ -84,15 +84,14 @@
     /** @type {any} */
     const win = window;
     // Dynamically load mermaid — no npm package needed, CDN via script tag.
-    // TODO: add integrity="sha384-..." SRI hash for mermaid@11 once the
-    // exact build hash is confirmed from the jsDelivr release manifest.
+    // SRI hash computed from mermaid@11.15.0 (jsDelivr canonical build).
     // crossorigin="anonymous" is required for SRI enforcement.
     if (!win.mermaid) {
       const loaded = await new Promise((resolve) => {
         const s = document.createElement('script');
         s.src = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
         s.crossOrigin = 'anonymous';
-        // TODO: s.integrity = 'sha384-...';
+        s.integrity = 'sha384-yQ4mmBBT+vhTAwjFH0toJXNYJ6O4usWnt6EPIdWwrRvx2V/n5lXuDZQwQFeSFydF';
         const timer = setTimeout(() => { s.onerror?.('timeout'); }, 8000);
         s.onload  = () => { clearTimeout(timer); resolve(true); };
         s.onerror = () => { clearTimeout(timer); resolve(false); };
