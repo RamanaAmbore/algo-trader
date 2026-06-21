@@ -30,30 +30,19 @@ Read every agent as a sentence: *"When **condition** is true, **notify** me thro
 Whenever an agent fires an action that wants to hit your broker, the platform has to decide: is this real, fake, or in-between? It has five modes; you'll use one at a time:
 
 ### Simulator (testing)
-
-Fabricated price moves driven by a script you choose ("NIFTY drops 3% over three minutes"). Your real broker is never contacted. Useful for: *"if my book actually saw this move, would my agent fire? Would the auto-close trade make sense?"*
-
-You'll spend most of your time here when adding a new agent or strategy. On dev branches it's always available; on prod you access it via the mode dropdown in the navbar (SIM · PAPER · LIVE · SHADOW · REPLAY).
+Fabricated price moves ("NIFTY drops 3%"). Broker never touched. Good for: *"if my book saw this, would my agent fire?"*
 
 ### Paper trade
+Real Kite quotes + fake order book. Agents see real prices, orders go to paper ledger only. Kite's `basket_margin` validates order (but doesn't execute).
 
-Real Kite quotes feeding a fake order book. Your agents see real prices, real bid/ask. When they fire a "place order" action, the order goes into a paper ledger — Kite's `basket_margin` API confirms the order *would* be valid, but no real order ever leaves the platform. You see what would have happened.
-
-Use this when you're soak-testing a new agent against the real market before letting it touch the broker. On dev branches every action is forced to paper regardless of which mode is selected.
-
-### Live (production trading, the default)
-
-A real broker order. This is the seeded default on a fresh prod install — the navbar lands on LIVE out of the box. You can flip to PAPER from the navbar at any time for soak-testing, then flip back. On dev branches the toggle is ignored — live trading only works on the prod (`main`) branch.
-
-When LIVE is selected, every broker-hitting agent fire or manual order routes through the live Kite API.
+### Live (production trading)
+Real broker orders. Seeded default on fresh install. Flip to PAPER from navbar to soak-test. Dev branches ignore this setting — live only on prod.
 
 ### Shadow (audit mode)
-
-Logs exactly what a live order *would* be (the Kite API payload + margin validation) without executing. Useful for final sanity-checking before you trust live mode. Not typically needed in day-to-day ops.
+Logs exact Kite payload + margin validation without executing. Final sanity check before trusting live.
 
 ### Replay (historical analysis)
-
-Pre-loaded historical price candles instead of live Kite data. Useful for backtesting strategies against past market moves. Dev and prod both support it.
+Backtest against pre-loaded historical candles (past market moves).
 
 ---
 

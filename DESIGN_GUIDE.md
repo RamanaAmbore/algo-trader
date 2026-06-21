@@ -104,84 +104,19 @@ flowchart LR
 
 ## 2. Tech stack — at a glance
 
-The choices below were made deliberately, not by inertia. Each call-out explains the **why · what · how · where**.
+Each choice has a **why/what/how/where** callout inline where relevant (marked by ⚙). Key stacks:
 
-### ⚙ Litestar (API framework)
+| Layer | Tech | Why |
+|---|---|---|
+| API | Litestar 2.x + msgspec | ~10× faster JSON encode/decode than pydantic on big payloads |
+| DB | PostgreSQL 17 + SQLAlchemy 2.x async + asyncpg | Fast, reliable, static typing, JSONB for attached_gtts_json blob |
+| Frontend | SvelteKit + Svelte 5 runes + ag-Grid | Smaller bundle, native reactivity, row virtualization for 1000+ ticks/sec |
+| Charts | Hand-rolled SVG (no Chart.js) | 150KB saved, tighter control, palette integration |
+| Concurrency | asyncio + single uvicorn worker | Kite token affinity, in-process locks, background task state |
+| Notifications | Telegram (Bot API), SMTP (Hostinger) | Free, reliable, works everywhere |
+| WebSocket | KiteTicker (Twisted reactor → SSE bridge) | Sub-second LTP updates without burning rate limit |
 
-- **WHY** — Faster than FastAPI for msgspec workloads (~10× JSON encode/decode on big response payloads like 2000-row positions tables). First-class async lifecycle hooks (`on_startup` / `on_shutdown`) make background-task setup natural. Built-in OpenAPI without runtime cost.
-- **WHAT** — Routes are defined as methods on controller classes, each one returning a msgspec `Struct`. Decorators (`@get`, `@post`, `@put`, `@delete`) handle routing + schema; guards (`@guard` decorator) handle auth.
-- **HOW** — Register controllers in `backend/api/app.py`. Use `state.is_demo` from the auth guard for runtime gating. Never call sync broker SDKs directly from a route — wrap in `asyncio.to_thread`.
-- **WHERE** — `backend/api/app.py` for setup; `backend/api/routes/*.py` for routes; `backend/api/schemas.py` for msgspec types.
-
-### ⚙ msgspec.Struct (schemas)
-
-- **WHY** — Tightest serialization + validation on hot paths (positions snapshots, ticker fan-out, AlgoOrderInfo lists hit thousands of times per session). Pydantic was ~10× slower in benchmarks for read-heavy responses.
-- **WHAT** — Plain Python classes inheriting `msgspec.Struct`. Field types enforce validation; missing fields raise `msgspec.ValidationError`. Optional fields use `field | None = None`.
-- **HOW** — Define once in `backend/api/schemas.py`. Litestar autowires the encode/decode. For request bodies the route handler signature `data: MySchema` triggers validation automatically.
-- **WHERE** — `backend/api/schemas.py` (all types in one file by convention so the API contract is one grep away).
-
-### ⚙ SQLAlchemy 2.x async + asyncpg
-
-- **WHY** — asyncpg is the fastest Postgres driver in Python. SQLAlchemy 2.x's new typing + Mapped[] columns give us static-checkable ORM without runtime overhead. Async sessions integrate with Litestar's event loop cleanly.
-- **WHAT** — Declarative models in `backend/api/models.py`. Sessions via `async_session()` context manager. `expire_on_commit=False` (DB config) means ORM rows stay readable post-commit — load-bearing for several audit-fix paths (reconcile attach queue, retry_template).
-- **HOW** — Use `async with async_session() as s:` inside route handlers. Avoid keeping sessions across `await` points to other I/O. For bulk writes, prefer one commit at the end of a logical group.
-- **WHERE** — `backend/api/database.py` (init + session factory); `backend/api/models.py` (table defs); idempotent migrations via `init_db`'s `ALTER TABLE ... IF NOT EXISTS` statements.
-
-### ⚙ PostgreSQL 17
-
-- **WHY** — Reliable, well-known, free. We don't need NoSQL flexibility; the schema is stable. Postgres's JSONB columns handle the `attached_gtts_json` blob without a separate table.
-- **WHAT** — Two DBs: `ramboq` (prod, served from `main` branch) and `ramboq_dev` (dev, any non-main branch). Tables auto-created at startup via `init_db`.
-- **HOW** — Per-environment selection in `database.py::_db_name` based on `deploy_branch`. Connection string from `secrets.yaml::db_user / db_password`. Run `psql -d ramboq_dev` to inspect dev directly.
-- **WHERE** — Server-side on the Hostinger VPS port 5432, peer authentication for the `postgres` UNIX user.
-
-### ⚙ SvelteKit + Svelte 5 runes
-
-- **WHY** — Smaller bundle than React, simpler mental model than Vue. Svelte 5 runes (`$state`, `$derived`, `$effect`, `$props`) give us reactivity without the runtime cost. SvelteKit's file-based routing matches our page-per-feature layout. Static-built output deploys with the API as one process.
-- **WHAT** — Pages under `frontend/src/routes/` (route segments by URL). Components in `frontend/src/lib/`. Bindable props (`= $bindable()`) replace the legacy `bind:` parent-child sync.
-- **HOW** — `$state` for mutable component-local state. `$derived` for pure computed values. `$effect` for side effects (timers, DOM, network). Two-way sync between parent and child via `bind:value={parentState}`.
-- **WHERE** — `frontend/src/routes/` for pages; `frontend/src/lib/` for reusable components. Build via `npm run build`; deploy as static via the SvelteKit static adapter.
-
-### ⚙ ag-Grid
-
-- **WHY** — The performance bar for tables with >500 rows + frequent updates (Pulse symbol grid hits 1000+ ticks/sec at peak). Hand-rolled HTML tables choked at ~200 rows; ag-Grid's row virtualization makes it linear.
-- **WHAT** — Grid components in `frontend/src/lib/`. Column defs declarative; cell renderers can be Svelte components or HTML strings.
-- **HOW** — Always set `getRowId` for in-place updates (we use `data.id` everywhere). Use `setGridOption('rowData', newRows)` for full-refresh; row-by-row mutations via `applyTransaction({ update: [...] })`.
-- **WHERE** — `frontend/src/lib/MarketPulse.svelte`, `frontend/src/lib/PerformancePage.svelte`, `frontend/src/lib/OrderCard.svelte` rendered in lists.
-
-### ⚙ Hand-rolled SVG charts
-
-- **WHY** — No chart-library dependency (saves ~150KB on every page load). Tighter control over interactions (zoom-pan, click-to-cycle preview chip, custom hover crosshairs). Charts integrate seamlessly with our amber/cyan/red palette.
-- **WHAT** — `PriceChart.svelte`, `OptionsPayoff.svelte`, `ChartWorkspace.svelte` each draw paths + axes + grid lines directly into SVG. No D3 — pure path math.
-- **HOW** — Compute scale functions per-redraw (`xOf(t)`, `yOf(price)`). Use `$derived` for `pathD` strings so re-renders only happen on data change. Mouse handlers translate clientX→data via reverse-scale.
-- **WHERE** — `frontend/src/lib/PriceChart.svelte`, `frontend/src/lib/OptionsPayoff.svelte`, `frontend/src/lib/ChartWorkspace.svelte`.
-
-### ⚙ Mermaid in markdown
-
-- **WHY** — Renders inline in GitHub + most preview tools. No build step required. Diagrams stay in version control so they evolve with code.
-- **WHAT** — Sequence diagrams for flows, state diagrams for state machines, flowcharts for topology, gantt for time-based topology.
-- **HOW** — Fenced code blocks with `mermaid` language tag. Test render in GitHub before committing.
-- **WHERE** — This document; `frontend/src/lib/` rarely uses inline Mermaid in component docstrings.
-
-### ⚙ asyncio + uvicorn (single worker)
-
-- **WHY** — Single worker eliminates Kite token-collision issues + simplifies in-process locking (see §4.1). asyncio is the only viable Python concurrency story for I/O-bound workloads of this size.
-- **WHAT** — `uvicorn backend.api.app:app --workers 1` in systemd. Background tasks are coroutines spawned at `on_startup` via `asyncio.create_task`.
-- **HOW** — Every long-running task wraps its body in `try/except` (see §4.3). Broker SDK calls use `asyncio.to_thread` to avoid blocking the event loop. No `time.sleep` — always `await asyncio.sleep`.
-- **WHERE** — `backend/api/background.py` for tasks; `backend/api/app.py` for startup spawn list.
-
-### ⚙ KiteTicker (Twisted WebSocket)
-
-- **WHY** — Only way to get sub-second LTP updates from Kite without burning the 3-req/sec historical_data quota. WebSocket means we pay for one persistent connection instead of polling.
-- **WHAT** — `KiteTicker` runs Twisted internally; callbacks fire on a Twisted reactor thread, not the asyncio loop. `TickerManager` bridges via a `threading.Lock` + dict.
-- **HOW** — `TickerManager.start(api_key, access_token)` is idempotent. `subscribe(tokens)` adds tokens to the watch list. `get_ltp(token)` is the async read; returns None if not subscribed.
-- **WHERE** — `backend/shared/helpers/kite_ticker.py` for the manager; `backend/api/routes/quote.py::sparkline_stream` for the SSE pipe.
-
-### ⚙ Telegram (Bot API via plain requests)
-
-- **WHY** — Reliable mobile notifications without a dedicated app. Free, well-rate-limited (30 msgs/sec into a group), works on every phone.
-- **WHAT** — `_send_telegram(message)` posts to `https://api.telegram.org/bot<TOKEN>/sendMessage` with the group's `chat_id`.
-- **HOW** — Gate every call with `is_enabled('telegram')` so dev branches don't spam the group. Use the platform-wide `alert_utils._dispatch` for anything that should also email.
-- **WHERE** — `backend/shared/helpers/alert_utils.py` for the helper; `secrets.yaml` for bot token + chat_id.
+Full rationale for each technology appears as **⚙ TECH** callouts throughout this doc (e.g. §3.1 broker abstraction, §4.2 KiteTicker threading, §4.3 background task lifecycle).
 
 ---
 
@@ -575,97 +510,58 @@ This keeps the data layer free of presentation concerns and avoids subtle bugs (
 sequenceDiagram
     actor OP as Operator
     participant OT as OrderTicket.svelte
-    participant SP as SymbolPanel.svelte
     participant API as /api/orders/ticket
     participant DB as algo_orders
-    participant BR as Broker (Kite/Dhan/Groww)
     participant CH as chase_order (background)
-    participant PB as /api/orders/postback (Kite)
+    participant BR as Broker
+    participant PB as postback (Kite only)
 
-    OP->>OT: Fill side + qty + price; click Submit
-    OT->>OT: Resolve mode from $executionMode
-    OT->>API: POST /ticket (mode, side, sym, qty, price, template_id, overrides)
-    API->>API: Demo guard / preflight margin
+    OP->>OT: Fill form + Submit
+    OT->>API: POST /ticket (mode, side, sym, qty, price, template_id)
     API->>DB: INSERT AlgoOrder (status=OPEN, broker_order_id=NULL)
-    API->>DB: COMMIT
-    alt chase_eligible (LIMIT + price > 0)
-        API->>CH: _start_live_chase (async)
-        CH->>BR: broker.place_order
-        CH-->>API: order_id
-    else single-shot (MARKET / SL-M)
-        API->>BR: broker.place_order
-        BR-->>API: order_id
-    end
-    API->>DB: UPDATE broker_order_id = order_id
-    API->>DB: COMMIT
-    API-->>OT: {order_id, status, mode}
-    note right of PB: Kite only — postback HMAC verified
-    BR-->>PB: order state change webhook
-    PB->>DB: UPDATE status + fill_price + filled_at
-    PB->>PB: _fire_template_attach_on_fill (async)
+    API->>CH: place_order → chase_order (async)
+    CH->>BR: place_order
+    BR-->>CH: order_id
+    API->>DB: UPDATE broker_order_id
+    API-->>OT: success
+    BR-->>PB: postback (Kite only)
+    PB->>DB: UPDATE status + fill_price
+    PB->>PB: _fire_template_attach_on_fill
 ```
 
-**Key files (lines verified against current code):**
-- `frontend/src/lib/order/OrderTicket.svelte` — submit handler (search `async function _submit`)
-- `backend/api/routes/orders.py::ticket_order` (~line 2117 — search the `async def ticket_order` definition; line drift across the file is expected as features land)
-- `backend/api/algo/chase.py::chase_order` — main loop (~line 640)
-- `backend/api/routes/orders.py` — postback HMAC + state update (search `async def order_postback`)
-- `backend/api/routes/orders.py::_fire_template_attach_on_fill` (~line 701)
+**Files:** `frontend/src/lib/order/OrderTicket.svelte` (submit) → `backend/api/routes/orders.py::ticket_order` → `backend/api/algo/chase.py::chase_order` → postback (Kite) or polling.
 
-> The above grep targets are stable across refactors; the line numbers may drift. Always grep for the function name rather than navigating by line.
-
-**Race-window note:** the AlgoOrder row commits with `broker_order_id=NULL` first; the second commit seeds it after `place_order` returns. A fast IOC fill landing in this window is caught by the **postback fallback** which matches by `(account, symbol, side, qty, status=OPEN, mode=live, created_at >= cutoff)`.
+**Race-window guard:** AlgoOrder commits with `broker_order_id=NULL` first. Fast IOC fill in this window is caught by postback-fallback matching `(account, symbol, side, qty, status=OPEN)` within 60s.
 
 ---
 
 ## 6. Order placement — basket (Chain tab)
 
+Multi-leg submission grouped per-account, dispatched in parallel via `asyncio.gather`:
+
 ```mermaid
 sequenceDiagram
-    actor OP as Operator
-    participant OCT as OptionChainTab.svelte
     participant SP as SymbolPanel.svelte
     participant API as /api/orders/basket
-    participant DG as _dispatch_group (per-account)
-    participant BR as Broker (per-account)
+    participant BR1 as Account A broker
+    participant BR2 as Account B broker
     participant DB as algo_orders
 
-    OP->>OCT: +CE / +PE / +Fut on strike rows
-    OCT->>SP: onAddLeg → basketLegs[] mutation
-    OP->>SP: Click Submit on basket bar
-    SP->>SP: submitBasket — group legs by account
-    SP->>API: POST /basket (groups: [{account, legs[]}])
-    API->>API: Resolve mode + check demo
-    par per-account dispatch (parallel)
-        API->>DG: dispatch group A
-        DG->>BR: broker.place_order (leg 0)
-        DG->>BR: broker.place_order (leg 1)
-        DG->>DB: INSERT AlgoOrder per leg
-        DG-->>API: leg_results[]
-    and
-        API->>DG: dispatch group B
-        DG-->>API: leg_results[]
+    SP->>SP: Group basketLegs by account
+    SP->>API: POST /basket (groups with legs)
+    par dispatch A
+        API->>BR1: place_order per leg
+        BR1-->>DB: INSERT AlgoOrder per leg
+    and dispatch B
+        API->>BR2: place_order per leg
+        BR2-->>DB: INSERT AlgoOrder per leg
     end
-    API-->>SP: groups: [{account, results[]}]
-    SP->>SP: Compute ok / fail counts
-    alt all succeeded
-        SP->>SP: clear basket + green sticky banner (3s)
-    else partial
-        SP->>SP: keep failed legs + amber sticky banner (persistent)
-    else all failed
-        SP->>SP: red sticky banner (8s)
-    end
+    API-->>SP: results (ok/fail counts)
 ```
 
-**Key files:**
-- `frontend/src/lib/order/OptionChainTab.svelte` — `placeBasket` / `onAddLeg`
-- `frontend/src/lib/SymbolPanel.svelte::submitBasket` — per-account groups
-- `backend/api/routes/orders.py::place_basket` route + `_dispatch_group` (~line 3176)
-- `frontend/src/lib/SymbolPanel.svelte` — partial-failure sticky banner (search `_stickyResultMsg`)
+**Files:** `frontend/src/lib/SymbolPanel.svelte::submitBasket` (grouping) → `backend/api/routes/orders.py::place_basket` (parallel dispatch).
 
-⚙ **TECH — asyncio.gather for parallel per-account dispatch** — `WHY` Each broker call hits a different vendor; serializing them per-account would multiply submit latency by N. `WHAT` `_dispatch_group` is called per-account; the route wraps them in `asyncio.gather(*tasks, return_exceptions=True)`. `HOW` Each group has its own try/except so one group's failure can't poison another. Results return as `{account, results[]}`. `WHERE` `backend/api/routes/orders.py::place_basket`.
-
-**Per-leg vs shell template:** `leg.template_id ?? _sharedTemplateId` resolves to either explicit per-leg pick or shell default. **Per-leg legs with explicit `template_id` IGNORE shell overrides** — see `SymbolPanel.svelte::submitBasket` for the isolation rule.
+**Template isolation:** legs with explicit `template_id` ignore shell overrides. Legs with no `template_id` inherit shell defaults.
 
 ---
 
@@ -966,337 +862,19 @@ flowchart TD
 
 ## 14.5. Broker abstraction — implementation detail
 
-This section is the "if you're modifying the broker layer, here's the actual shape" reference. Read this before changing anything in `backend/shared/brokers/`.
+**Full broker layer architecture** — file map, singleton lifecycle, token caching, source-IP binding, and capability matrix — **lives in [CLAUDE.md §14.5](CLAUDE.md#145-broker-abstraction--implementation-detail) for brevity**. This section is a quick read list only.
 
-### 14.5.1 Topology
+**Files** — `backend/shared/brokers/{base.py, kite.py, dhan.py, groww.py, capabilities.py, registry.py}` + `backend/shared/helpers/{connections.py, broker_creds.py, kite_ticker.py}`.
 
-```mermaid
-flowchart TD
-    subgraph callers [Callers]
-        ROUTE[Route handlers]
-        AGENT[Agent actions]
-        BG[Background tasks]
-        CHASE[Chase loop]
-        TPL[Template attach]
-    end
+**Key rules:**
+1. **Kite-shape contract** — every return value must match Kite Connect shape. Dhan/Groww adapters have `_normalise_*` helpers. The `_DHAN_STATUS_TO_KITE` status map is critical (audit B-1).
+2. **Singleton per process** — adapters live via `Connections()` singleton. Each Kite login takes 10-15s; re-doing per-request is unworkable.
+3. **IPv6 source-binding** — Kite + Dhan enforce one-session-per-IP rules. Each account binds to a unique IPv6 via `_IPv6SourceAdapter` (Kite/Dhan) or ContextVar proxy (Groww).
+4. **Token cache** — each broker persists tokens to `.log/<broker>_tokens.json`. On startup, skips login if fresh token cached; fires full login only on miss/expiry/manual delete.
+5. **Registry factories** — use `get_broker(account)` for operator actions, `get_price_broker()` for shared market data, `get_historical_brokers()` for OHLCV + regression, `get_sparkline_broker()` for KiteTicker.
+6. **Capabilities immutable** — frozen dataclass with every field explicit per broker (no defaults). Used to render warning chips on OrderTicket when template asks for unsupported GTT shape.
 
-    callers --> REG[registry.py<br/>get_broker · get_price_broker<br/>get_historical_brokers · get_sparkline_broker]
-
-    REG -->|by account| ADAPT[Adapters dict<br/>_ADAPTERS]
-    ADAPT -->|kite| KB[KiteBroker]
-    ADAPT -->|dhan| DB[DhanBroker]
-    ADAPT -->|groww| GB[GrowwBroker]
-
-    REG --> PB[PriceBroker<br/>fallback chain]
-    PB -->|tries each| KB
-    PB -->|tries each| DB
-    PB -->|tries each| GB
-
-    KB & DB & GB -.implements.-> ABC[Broker ABC<br/>base.py]
-
-    KB --> KSDK[kiteconnect SDK]
-    DB --> DSDK[dhanhq SDK]
-    GB --> GSDK[growwapi SDK]
-
-    KB --> KTOK[(.log/kite_tokens.json)]
-    DB --> DTOK[(.log/dhan_tokens.json)]
-    GB --> GTOK[(.log/groww_tokens.json)]
-
-    subgraph caps [Capability matrix]
-        CAPMOD[capabilities.py<br/>BrokerCapabilities dataclass]
-        CAPMOD -->|caps property| KB
-        CAPMOD -->|caps property| DB
-        CAPMOD -->|caps property| GB
-    end
-```
-
-### 14.5.2 File map
-
-| File | Purpose |
-|---|---|
-| `backend/shared/brokers/base.py` | `Broker` abstract base class (~20 method signatures). Single source of truth for the contract. |
-| `backend/shared/brokers/capabilities.py` | `BrokerCapabilities` dataclass + `KITE_CAPS / DHAN_CAPS / GROWW_CAPS` constants |
-| `backend/shared/brokers/kite.py` | KiteBroker — the reference impl (most complete; other adapters shape to its return values) |
-| `backend/shared/brokers/dhan.py` | DhanBroker — including the IPv6 source-binding mount on `DhanContext.dhan_http.session` |
-| `backend/shared/brokers/groww.py` | GrowwBroker — including the ContextVar-based source-IP routing for the module-level `requests` calls |
-| `backend/shared/brokers/registry.py` | `get_broker`, `get_price_broker`, `get_historical_brokers`, `get_sparkline_broker` factories + PriceBroker fallback + rate-limit cool-off |
-| `backend/shared/helpers/connections.py` | `Connections` singleton — KiteConnect instances, login state, source-IP adapters |
-| `backend/shared/helpers/broker_creds.py` | Fernet encrypt/decrypt for the DB-stored credentials (via `cookie_secret` HKDF derivation) |
-| `backend/shared/helpers/kite_ticker.py` | TickerManager — KiteTicker WebSocket bridge (Twisted reactor ↔ asyncio) |
-
-### 14.5.3 The Broker ABC contract
-
-`base.py` declares **17 `@abstractmethod` methods plus several concrete-default methods**. A subclass MUST override every `@abstractmethod`. The concrete-default methods (`capabilities`, `order_status`, `cancel_gtt`, `get_gtts`, `translate_qty`, `normalise_qty`) can be inherited as-is for simple cases — but watch for the GTT methods, which most adapters override to add broker-specific logic. The actual signatures:
-
-```python
-# backend/shared/brokers/base.py  (signatures abbreviated; arg names verbatim)
-class Broker(ABC):
-    # Identity (abstract)
-    @property
-    @abstractmethod
-    def account(self) -> str: ...              # "ZG0790"
-    @property
-    @abstractmethod
-    def broker_id(self) -> str: ...            # "zerodha_kite" / "dhan" / "groww"
-
-    # Concrete default — adapters override if they want a richer capability set
-    @property
-    def capabilities(self) -> BrokerCapabilities: ...
-
-    # Identity / health (abstract)
-    @abstractmethod
-    def profile(self) -> dict: ...             # raises on auth failure
-
-    # Read-side (abstract)
-    @abstractmethod
-    def holdings(self) -> list[dict]: ...
-    @abstractmethod
-    def positions(self) -> dict: ...           # Kite-shape: {"net": [...], "day": [...]}
-    @abstractmethod
-    def margins(self, segment: str | None = None) -> dict: ...
-    @abstractmethod
-    def orders(self) -> list[dict]: ...        # Kite-shape: status, average_price, filled_quantity, ...
-    # Concrete default — adapters override for per-order lookup vs scanning orders()
-    def order_status(self, order_id: str) -> dict: ...
-    @abstractmethod
-    def trades(self) -> list[dict]: ...
-    @abstractmethod
-    def ltp(self, symbols: list[str]) -> dict: ...
-    @abstractmethod
-    def quote(self, symbols: list[str]) -> dict: ...
-    @abstractmethod
-    def instruments(self, exchange: str | None = None) -> list[dict]: ...
-    @abstractmethod
-    def historical_data(self, instrument_token: int, from_dt, to_dt, interval: str) -> list[dict]: ...
-    @abstractmethod
-    def holidays(self, exchange: str) -> set[str]: ...
-    @abstractmethod
-    def basket_order_margins(self, orders: list[dict]) -> list[dict]: ...
-
-    # Write-side — orders (abstract; **kwargs by design so callers pass Kite-shape kwargs)
-    @abstractmethod
-    def place_order(self, **kwargs: Any) -> str: ...
-    @abstractmethod
-    def modify_order(self, order_id: str, **kwargs: Any) -> str: ...
-    @abstractmethod
-    def cancel_order(self, order_id: str, **kwargs: Any) -> str: ...
-
-    # Write-side — GTTs (abstract: place / modify; concrete-default: cancel / get)
-    @abstractmethod
-    def place_gtt(self, *, trigger_type, tradingsymbol, exchange,
-                  trigger_values, last_price, orders) -> str: ...
-    @abstractmethod
-    def modify_gtt(self, gtt_id: str, *, trigger_values,
-                   last_price, orders, **kwargs) -> str: ...
-    def cancel_gtt(self, gtt_id: str, *, exchange: str | None = None) -> str: ...
-    def get_gtts(self) -> list[dict]: ...
-
-    # Unit translation (concrete defaults; override only when vendor uses lots vs contracts)
-    def translate_qty(self, exchange: str, raw_qty: int, ...) -> int: ...
-    def normalise_qty(self, exchange: str, raw_qty: int, ...) -> int: ...
-```
-
-The `place_order` / `modify_order` / `cancel_order` signatures are intentionally `**kwargs`. Callers feed Kite-shape kwargs (e.g. `exchange="NSE"`, `tradingsymbol="...", transaction_type="BUY"`, `quantity=50`, `product="MIS"`, `order_type="LIMIT"`, `variety="regular"`, `price=180.0`, optional `tag=...`); each adapter translates those Kite-shape kwargs to its vendor SDK's expected fields inside the method body.
-
-**The Kite-shape rule.** Every return value MUST shape to what Kite Connect returns. Frontend renders, chase loop, template attach — they all expect Kite shape. Dhan and Groww adapters have `_normalise_*` helpers that translate vendor responses to Kite shape:
-
-```python
-# backend/shared/brokers/dhan.py (simplified)
-def orders(self) -> list[dict]:
-    raw = self._dhan.get_order_list()
-    return [self._normalise_order(o) for o in (raw.get("data") or [])]
-
-def _normalise_order(self, o: dict) -> dict:
-    return {
-        "order_id":         str(o.get("orderId") or ""),
-        "exchange":         o.get("exchangeSegment", "").replace("_INTRADAY", "").replace("_DELIVERY", ""),
-        "tradingsymbol":    o.get("tradingSymbol", ""),
-        "transaction_type": o.get("transactionType", ""),
-        "quantity":         int(o.get("quantity") or 0),
-        "filled_quantity":  int(o.get("filledQty") or 0),
-        "status":           _DHAN_STATUS_TO_KITE.get(o.get("orderStatus", ""), "OPEN"),
-        "average_price":    float(o.get("averageTradedPrice") or 0),
-        # ... ~15 more fields ...
-    }
-```
-
-The `_DHAN_STATUS_TO_KITE` map is THE most important single piece of any adapter — a missing entry silently breaks fill detection (audit B-1 fix). When adding a new broker, this map is the first thing to get right.
-
-### 14.5.4 Lifecycle — adapter instantiation
-
-Adapters aren't constructed per-request — they live as long as the process via the `Connections` singleton. The flow:
-
-```mermaid
-sequenceDiagram
-    participant START as app.on_startup
-    participant INIT as init_db
-    participant REBUILD as Connections.rebuild_from_db
-    participant DB as broker_accounts table
-    participant CREDS as broker_creds.decrypt
-    participant ADAPT as DhanBroker/KiteBroker
-
-    START->>INIT: run schema setup
-    INIT->>REBUILD: post-DB hook
-    REBUILD->>DB: SELECT * WHERE is_active
-    DB-->>REBUILD: rows
-    loop per row
-        REBUILD->>CREDS: decrypt api_secret_enc + password_enc + totp_token_enc
-        CREDS-->>REBUILD: plaintext
-        REBUILD->>ADAPT: instantiate (api_key, secret, ip, ...)
-        ADAPT->>ADAPT: mount _IPv6SourceAdapter on requests session
-        ADAPT->>ADAPT: load .log/<broker>_tokens.json
-        alt token valid
-            ADAPT->>ADAPT: skip login
-        else token stale
-            ADAPT->>ADAPT: full login flow
-            ADAPT->>ADAPT: persist tokens
-        end
-    end
-    REBUILD->>REBUILD: build self.conn map
-```
-
-Then every call site does:
-
-```python
-from backend.shared.brokers.registry import get_broker
-
-broker = get_broker(account)        # O(1) dict lookup
-broker.place_order(...)             # sync call into the adapter
-```
-
-⚙ **TECH — Why singleton-per-process** — `WHY` Each Kite session takes 10-15 seconds to mint via 2FA + TOTP. Re-doing that per request is unworkable. Holding it process-scoped lets us amortize login cost across the operator's session. `WHAT` `Connections` is a SingletonBase subclass with `_instances` dict keyed by class. `HOW` Adapters live on `Connections().conn[account]`. Re-login happens after `conn_reset_hours` (23h default). `WHERE` `backend/shared/helpers/connections.py`.
-
-### 14.5.5 Source-IP binding (multi-account per server)
-
-Each broker enforces per-IP rules differently:
-- **Kite** — one whitelisted IP per app. Each Kite account = its own Kite app = different whitelist.
-- **Dhan** — one active token per partner app per source IP. Second Dhan account on the same IP invalidates the first.
-- **Groww** — no per-IP rule observed.
-
-Solution: each account binds to a unique IPv6 from the server's `/48` subnet via `_IPv6SourceAdapter`:
-
-```python
-# backend/shared/helpers/connections.py
-class _IPv6SourceAdapter(requests.adapters.HTTPAdapter):
-    def __init__(self, source_ip: str, *args, **kw):
-        self._source_ip = source_ip
-        super().__init__(*args, **kw)
-
-    def init_poolmanager(self, *args, **kw):
-        kw["source_address"] = (self._source_ip, 0)   # 0 = any source port
-        super().init_poolmanager(*args, **kw)
-```
-
-Mount points per broker:
-- **Kite** — `KiteConnect.reqsession.mount("https://", _IPv6SourceAdapter(ip))` — single point.
-- **Dhan** — both `DhanContext.dhan_http.session` (runtime) and `_login_session()` (login bypass for `dhanhq.auth.DhanLogin`).
-- **Groww** — module-level `requests` monkey-patched via ContextVar + per-thread pool (because the Groww SDK uses module-level `requests` calls with no session hook).
-
-The Groww case is the messiest:
-
-```python
-# Simplified — see backend/shared/brokers/groww.py
-_GROWW_SOURCE_IP_OVERRIDE: ContextVar[str | None] = ContextVar("groww_source_ip", default=None)
-_GROWW_SESSION_POOL: dict[str, requests.Session] = {}
-
-def _install_groww_source_binding():
-    """Replace the SDK's `requests` reference with a proxy that reads our ContextVar."""
-    import growwapi.groww.client as groww_client
-    real_requests = groww_client.requests
-    class _ReqProxy:
-        def __getattr__(self, name):
-            ip = _GROWW_SOURCE_IP_OVERRIDE.get()
-            if ip is None:
-                return getattr(real_requests, name)
-            sess = _GROWW_SESSION_POOL.get(ip) or _build_session(ip)
-            return getattr(sess, name)
-    groww_client.requests = _ReqProxy()
-```
-
-Every Groww adapter method sets the ContextVar at entry (`token = _GROWW_SOURCE_IP_OVERRIDE.set(self._source_ip)`) and resets at exit. The proxy reads it inside the SDK's `requests.post(...)` call so the outbound packet uses the right source.
-
-### 14.5.6 Token caching
-
-Each broker persists tokens to `.log/<broker>_tokens.json` (gitignored, per-environment):
-
-```json
-// .log/kite_tokens.json
-{
-    "ZG0790": {
-        "access_token": "abc...",
-        "expires_at": "2026-06-20T05:00:00+05:30"
-    },
-    "ZJ6294": {
-        "access_token": "def...",
-        "expires_at": "2026-06-20T05:00:00+05:30"
-    }
-}
-```
-
-On startup, the adapter loads the file + checks expiry. Skips full login if a fresh token exists. The full login flow only fires on:
-- Cache miss (`.log/<broker>_tokens.json` doesn't exist or doesn't include the account)
-- Token expiry (24h for Kite, 24h for Dhan if operator extended in dashboard else 5min — see Dhan gotcha)
-- Manual cache delete (operator runs `rm .log/kite_tokens.json` after changing source_ip)
-
-The cache file is atomic-written (`tmp + rename`) to avoid partial-write corruption on crash.
-
-### 14.5.7 Registry factories
-
-`registry.py` exposes four factories. Pick the right one:
-
-| Factory | Use for | Returns |
-|---|---|---|
-| `get_broker(account)` | Operator-targeted action (place order, fetch THIS account's positions) | One `Broker` for the named account |
-| `get_price_broker()` | Shared market-data fetch (sparkline warm, derivative analytics) | `PriceBroker` wrapping the preferred eligible account |
-| `get_historical_brokers()` | Historical OHLCV calls (charts page, regression jobs) | List of eligible brokers, sorted by priority, excluding rate-limited ones |
-| `get_sparkline_broker()` | KiteTicker WebSocket | One Kite account NOT pinned to `connections.price_account` (so chart-historical and ticker don't share the same Kite session) |
-
-**Preference order** (used by `get_price_broker` and `get_historical_brokers`):
-1. Pinned via `connections.price_account` setting (operator's chosen account)
-2. Lowest `priority` value in `broker_accounts` table
-3. Account code sort (deterministic tiebreaker)
-
-⚙ **TECH — PriceBroker semantics** — `WHY` Some broker calls succeed but return empty data (Dhan returns `{}` for MCX quotes by design). Walking the chain on "soft failure" lets the operator's chart still render even when their primary account can't service it. `WHAT` `PriceBroker._try(method_name, *args)` iterates eligible brokers; each call's response goes through a `*_has_data` predicate; first response that passes the predicate is returned. `HOW` Add a new method type via the predicate map at the top of `registry.py`. Rate-limit cool-off (`_RATE_LIMIT_COOLOFF: dict[str, datetime]`) excludes throttled accounts for 30 seconds; map is module-level + lock-guarded. `WHERE` `backend/shared/brokers/registry.py::PriceBroker`.
-
-### 14.5.8 Capability matrix
-
-`BrokerCapabilities` is a frozen dataclass — capabilities are immutable per broker. The discipline: **every field explicit per broker**, never rely on defaults (the audit B-5 lesson). Actual shape from `backend/shared/brokers/capabilities.py`:
-
-```python
-@dataclass(frozen=True)
-class BrokerCapabilities:
-    # Identity
-    broker_id: str            # "zerodha_kite" / "dhan" / "groww"
-    display_name: str
-
-    # GTT shape
-    gtt_single: bool          # Place a single-trigger GTT (TP-only or SL-only)
-    gtt_oco: bool             # Native 2-leg OCO bundled at the broker
-    gtt_modify: bool          # Modify in place vs cancel + replace
-    gtt_cap_per_account: int  # Max active GTTs per account; 0 = unknown
-    gtt_validity_days: int    # Default GTT validity in days
-    gtt_supports_mcx: bool    # GTT covers MCX commodity?
-
-    # Order shapes
-    bracket_order: bool       # Entry + SL + Target as one ticket
-    cover_order: bool         # Entry + mandatory SL (margin-efficient intraday)
-    atomic_basket: bool       # API batches multi-leg in one call
-    order_tag: bool           # Broker has a `tag` / `correlation_id` field
-    margin_preview: bool      # Pre-submit margin endpoint available
-
-    # GTT-fire postback / detection
-    postback_gtt: str         # "reliable" | "poll_only"
-
-    # Rate
-    rate_limit_orders_sec: int
-
-# Per-broker constants (every field explicit — never rely on defaults)
-KITE_CAPS = BrokerCapabilities(
-    broker_id="zerodha_kite", display_name="Zerodha Kite",
-    gtt_single=True, gtt_oco=True, gtt_modify=True,
-    gtt_cap_per_account=100, gtt_validity_days=365, gtt_supports_mcx=True,
-    bracket_order=False,   # Deprecated by Zerodha in 2020
-    cover_order=True, atomic_basket=False, order_tag=True, margin_preview=True,
+**PriceBroker fallback chain** — when a broker returns empty data (Dhan returns `{}` for MCX quotes by design), walk to the next broker. Rate-limit cool-off excludes throttled accounts for 30s.
     postback_gtt="reliable", rate_limit_orders_sec=10,
 )
 DHAN_CAPS = BrokerCapabilities(
@@ -1707,37 +1285,15 @@ GitHub push → webhook.ramboq.com → /etc/webhook/dispatch.sh
 
 ## 27. Sprint history + audit fixes
 
-These previous fixes are documented in code via comment headers. Knowing them saves you from re-introducing the bug:
+Previous fixes are documented in-code via comments. Key milestones:
 
-| Sprint | What it fixed | Lookup |
+| Phase/Sprint | Key fixes | Lookup |
 |---|---|---|
-| Sprint A | Reconcile + paper-engine fire template attach paths | grep `Sprint A` |
-| Sprint B | Partial-fill DB persistence + lock TTL | grep `Sprint B` |
-| Sprint C | Dhan two-leg `modify_gtt` (ENTRY_LEG + TARGET_LEG) + Groww emulated OCO | grep `Sprint C` |
-| Sprint D | OrderCard CANCELLED chip + PROXY chip stale-β + MCX unit-mismatch fix | grep `Sprint D` |
-| Sprint E | Composite `(mode, status)` index + ChaseStatus.PARTIAL + rate-limit sweep | grep `Sprint E` |
-| Sprint F | USER_GUIDE + ADMIN_GUIDE updates for Sprint A-E | grep `Sprint F` |
-| Phase 0–3 | Templates → on-fill GTT pipeline (the whole template_attach stack) | grep `Phase \d` |
-| Gap closure | 3-audit synthesis → 28 commits across B/C/H/M/L tiers | grep `audit fix` `-i` |
+| Phase 0–3 | Template attach pipeline (resolve → plan → GTT place) | grep `Phase \d` |
+| Sprint A–E | Reconcile paths, partial fills, Dhan/Groww OCO, rate limits | grep `Sprint [A-E]` |
+| Gap closure (B–L) | 28 audit fixes across categories | `git log --grep="audit fix" -i` |
 
-### Gap closure audit lineage
-
-```mermaid
-flowchart LR
-    A([3-audit report<br/>parallel agents]) --> S([Synthesis: 28 findings])
-    S --> B1[Top-5 batch<br/>5 commits]
-    B1 --> B2[Backend safety<br/>C-3 C-4 C-5 H-8]
-    B2 --> B3[Frontend visibility<br/>H-1 H-2 H-3 H-4 H-6]
-    B3 --> B4[Cap warnings<br/>H-4 H-8]
-    B4 --> B5[H-5 cross-account]
-    B5 --> B6[M items<br/>M-1 to M-6]
-    B6 --> B7[L items<br/>L-2 to L-6]
-    B7 --> C[All tiers ✅]
-    C --> R[Redo audit found Sc.5<br/>retry_template regression]
-    R --> RF[Sc.5 fixed in 10cf52e6]
-```
-
-**Closed gaps reference:** see commit history `git log --oneline --grep="audit fix" --regexp-ignore-case` for inline traceback. Each commit's body cites the specific gap ID.
+See commit bodies for specific gap IDs (e.g. B-1 = Dhan status map, C-3 = postback fallback window, H-5 = cap warnings). These are documented in code as defensive comments.
 
 ---
 

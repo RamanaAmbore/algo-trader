@@ -76,48 +76,44 @@ Multi-broker order placement is the next major capability. Current state:
 - `webhook.ramboq.com` and `dev.ramboq.com` must be **grey cloud (DNS only)** in Cloudflare
 
 ### Branch Strategy
-Both branches (`main`, `dev`) are kept in sync — every feature is developed on `dev`, then merged to `main`. After merging:
-- `dev` is fast-forwarded to match `main` so both branches stay at the same commit
-- Branches are **never deleted** from GitHub — both are permanent
-- Webhook deploys each branch to its own environment automatically on push
+Both branches stay in sync (feature on `dev` → merge to `main` → fast-forward `dev`). Both permanent; webhook deploys each auto on push.
 
 ---
 
 ## Key File Map
 
 ### Helpers (`backend/shared/helpers/`)
-- **`broker_apis.py`** — `fetch_holdings()`, `fetch_positions()`, `fetch_margins()` — each decorated with `@for_all_accounts`; returns a list (one DataFrame per account). Each per-account fetch sets `df.attrs['fetch_failed']` on exception; routes raise 503 only when EVERY account failed, not on first error. Empty success returns `rows=[]` cleanly without treating it as a broker outage (commit 515c0770). `fetch_holidays(exchange)` — calls `kite.holidays(exchange)`, returns set of holiday dates for the current year; used by background refresh for NSE and MCX calendars.
-- **`connections.py`** — `Connections` singleton (extends `SingletonBase`) holds one `KiteConnection` per account; handles Kite 2FA login, TOTP, and access token refresh. Re-authenticates after 23 hours (`conn_reset_hours` in `backend_config.yaml`). Supports per-account `source_ip` binding (IPv6) to work around Kite's one-IP-per-app restriction — see Multi-Account IP Binding section below.
-- **`decorators.py`** — `@for_all_accounts` iterates all accounts or a single one; `@retry_kite_conn()` retries with `test_conn=True` from attempt 2; `@track_it()` logs execution time; `@lock_it_for_update` / `@update_lock` for thread safety
-- **`singleton_base.py`** — Thread-safe singleton via double-checked locking; `_instances` dict keyed by class
-- **`utils.py`** — YAML loaders (run at module import), `get_image_bin_file()`, `get_path()`, `get_nearest_time()`, `add_comma_to_df_numbers()`, validators (email, phone, password, PIN, captcha), `CustomDict`
-- **`genai_api.py`** — Gemini 2.5 Flash via `google-genai` with Google Search grounding; falls back to `frontend_config['market']` static content when `genai: False` in `backend_config.yaml` or when Gemini returns empty/None response (rate limiting)
-- **`mail_utils.py`** — SMTP via Hostinger; respects `cap_in_dev` and `mail` flags in `backend_config.yaml` before sending. `send_email(name, email_id, subject, html_body)`
-- **`date_time_utils.py`** — Indian/EST timezone utilities using `zoneinfo`. `is_market_open(now, holiday_set, market_start, market_end)` — returns True if not in holiday_set, not a weekend, and within time window. Weekends (Sat/Sun) are rejected. Special trading sessions (Muhurat etc.) need an explicit override when reintroduced.
-- **`ramboq_logger.py`** — Rotating file handlers (5MB), line-limited handlers (50 lines), queue-based async logging
-- **`summarise.py`** — Summary/alert helper functions extracted for use by the API background tasks (open/close summary + loss alert check).
-- **`alert_utils.py`** — Market-summary notifier + delivery helpers shared with the agent engine. Public: `send_summary(sum_holdings, sum_positions, ist_display, msg_type, label, df_margins)` — sends open/close summary (Holdings / Positions / Funds tables) via Telegram + SMTP. Internal (imported by the v2 agent engine): `_tg_alert_body`, `_email_alert_body`, `_dispatch`. Message prefixes: Telegram `Open|Agent|Close`, email subject `RamboQuant Open:|RamboQuant Agent:|RamboQuant Close:`. Non-main branches show `[branch]` tag + ⚠ banner. The former `check_and_alert` loss engine has been retired; all loss / fund-negative rules are now v2 agents (see Agent Framework section).
+- **`broker_apis.py`** — `fetch_holdings()`, `fetch_positions()`, `fetch_margins()` decorated with `@for_all_accounts` (returns list of DataFrames, one per account). 503 raised only when ALL accounts fail. `fetch_holidays(exchange)` caches per `(exchange, today's date)` to avoid hammering nseindia.com.
+- **`connections.py`** — `Connections` singleton holds `KiteConnection` per account; 2FA / TOTP / token refresh. Re-authenticates every 23h (`conn_reset_hours`). Supports per-account IPv6 binding to work around Kite's one-IP-per-app rule.
+- **`decorators.py`** — `@for_all_accounts`, `@retry_kite_conn()`, `@track_it()`, `@lock_it_for_update`
+- **`singleton_base.py`** — Thread-safe singleton via double-checked locking
+- **`utils.py`** — YAML loaders, `get_path()`, `get_nearest_time()`, validators (email, phone, password, PIN, captcha)
+- **`genai_api.py`** — Gemini 2.5 Flash (gated by `cap_in_dev.genai` / `genai: False`); falls back to static content on rate-limit
+- **`mail_utils.py`** — SMTP via Hostinger (gated by `cap_in_dev.mail` flag)
+- **`date_time_utils.py`** — `is_market_open(now, holiday_set, market_start, market_end)` using `zoneinfo`. Weekends hardcoded closed; Muhurat overrides need explicit list.
+- **`ramboq_logger.py`** — Rotating file handlers (5MB × 5), queue-based async
+- **`summarise.py`** — `send_summary()` for open/close alerts
+- **`alert_utils.py`** — Telegram + email dispatch (prefixes: `Open|Agent|Close`). Non-main branches tagged `[branch]` + ⚠.
 
 ### Webhook / Deployment (`webhook/`)
-- **`deploy.sh`** — Unified deploy script. Called as `deploy.sh <ENV> <REF>` where ENV is `prod|dev`. Common section handles git update, config merge, writing `deploy_branch` into `backend_config.yaml`, service restart, and `notify_deploy.py`. Env-specific sections: nginx sync (prod only), `pip install` + `npm run build` (prod/dev).
-- **`notify_deploy.py`** — Standalone deploy notification script; sends Telegram immediately after each deploy without importing app modules (avoids log file permission conflict with running service). Reads `backend_config.yaml` and `secrets.yaml` directly. Gated by `cap_in_dev` and `notify_on_deploy` flags. Email path was retired in May 2026 — restore from git history if email deploy pings are wanted back.
-- **`initial_deploy.sh`** — One-time setup script; run once on a fresh server before first push. Accepts `--env prod|dev|both`, `--ssh-key-prod`, `--ssh-key-dev`, `--branch-dev`. Automates everything except secrets, certbot, Cloudflare DNS, and GitHub webhook
-- **`hooks.json`** — Single `ramboq-deploy` hook; validates push event, repo name, and HMAC-SHA256 signature; passes `ref` to `dispatch.sh`. **Deployed to `/etc/webhook/hooks.json`** (independent of all deployment directories). Copy manually after changes: `sudo cp /opt/ramboq/webhook/hooks.json /etc/webhook/hooks.json && sudo systemctl restart ramboq_hook.service`
-- **`dispatch.sh`** — Thin router at `/etc/webhook/dispatch.sh`; reads branch from `ref`, calls `deploy.sh` with the right ENV arg (`prod` for `main`, `dev` for everything else). Copy after changes: `sudo cp /opt/ramboq/webhook/dispatch.sh /etc/webhook/dispatch.sh`
-- **`ramboq_hook.service`** — Webhook listener, port 9001; shared service handles all branches; all output (stdout+stderr) goes to `hook.log`
-- **`log-request.sh`** — Logs raw incoming webhook requests
+- **`deploy.sh`** — `deploy.sh <ENV> <REF>` (ENV=prod|dev). Git update + config merge + `deploy_branch` to `backend_config.yaml` + `notify_deploy.py` call.
+- **`notify_deploy.py`** — Telegram-only deploy notification; reads config directly (no imports).
+- **`initial_deploy.sh`** — One-time server setup; automates everything except secrets/certbot/DNS/webhook.
+- **`hooks.json`** — HMAC-SHA256 validation + pass to `dispatch.sh`. **Copy manually to `/etc/webhook/hooks.json`** after edits.
+- **`dispatch.sh`** — Routes to `deploy.sh` based on branch. **Copy manually to `/etc/webhook/dispatch.sh`** after edits.
+- **`ramboq_hook.service`** — Listener port 9001; all branches routed via `dispatch.sh`.
 
 ---
 
 ## Config Files (`backend/config/`)
 
-| File | Tracked | Contents |
+| File | Tracked | Purpose |
 |---|---|---|
-| `backend_config.yaml` | **Yes — tracked** | `retry_count`, `conn_reset_hours`, relative log paths, log levels, `enforce_password_standard`/`cap_in_dev`/`genai`/`mail`/`telegram`/`notify_on_startup` flags, alert thresholds, market segment definitions; deploy scripts merge new repo config with server's preserved flags |
-| `frontend_config.yaml` | Yes | All page content, nav labels, Gemini prompts/params, Mermaid diagrams, fallback market report |
-| `constants.yaml` | Yes | 250+ ISD country codes, profile section keys |
-| `secrets.yaml` | **No — gitignored** | SMTP creds, Kite API keys/TOTP per account, `cookie_secret`, `kite_login_url`, `kite_twofa_url`, `gemini_api_key`, `telegram_bot_token`, `telegram_chat_id`, `alert_emails` |
-| `grammars/orders.yaml` | Yes — tracked | Language-agnostic command grammar for order entry (tokens declared by role/kind/values/parse/required-when). Source of truth for both frontend console autocomplete and future backend agent-builder/admin-shell. Python and JS each plug in their own suggester functions keyed by `kind`. |
+| `backend_config.yaml` | Yes | `retry_count`, `conn_reset_hours`, log levels, `cap_in_dev` dict, alert thresholds, market segments |
+| `frontend_config.yaml` | Yes | Page content, nav labels, Gemini prompts, Mermaid diagrams |
+| `constants.yaml` | Yes | Country codes, profile keys |
+| `secrets.yaml` | No | SMTP, Kite API keys/TOTP, `cookie_secret`, Gemini key, Telegram token |
+| `grammars/orders.yaml` | Yes | Order-entry grammar (tokens + parse rules) for frontend autocomplete + backend agent-builder |
 
 ### Reusable Command Grammars (`backend/config/grammars/`)
 - **`orders.yaml`** — declarative token grammar for order-entry commands; loadable from Python for backend agent/admin-shell use
@@ -589,12 +585,12 @@ In-process TTL cache in `backend/api/cache.py` with per-key locking. `get_neares
 
 ## Things to Avoid
 
-- **Do not mock broker API calls in tests** — the `@for_all_accounts` decorator and `Connections` singleton behaviour differs significantly from mocks
-- **Do not commit `secrets.yaml`** — it is gitignored; contains API keys, SMTP credentials, cookie secrets, Telegram token. Changes must be applied via SSH `sed` on both server paths (`/opt/ramboq`, `/opt/ramboq_dev`) individually
-- **Do not add branch filter rules to hooks.json** — branch routing is handled in `dispatch.sh`, not in `hooks.json`; `hooks.json` only validates the event, repo, and HMAC
-- **Do not use `2>>&1` in systemd ExecStart** — use `2>&1`; the `>>` append variant causes bash syntax errors in service files
-- **Always `chown www-data` after manual server operations** — any file created or modified on the server via SSH (git commands, scp, manual edits) must be owned by `www-data` or deploy scripts will fail silently. After any manual work run: `sudo chown -R www-data:www-data /opt/ramboq/.git /opt/ramboq/.log /opt/ramboq_dev/.git /opt/ramboq_dev/.log`
-- **Weekends are hardcoded as closed** in `is_market_open()` and `_task_close()` — all alert/summary paths skip Sat/Sun. Special Saturday trading sessions need an explicit override
+- **Do not mock broker API calls** — `@for_all_accounts` and `Connections` singleton behave differently
+- **Do not commit `secrets.yaml`** — gitignored; SSH-edit both `/opt/ramboq*` on server
+- **Do not add branch filters to `hooks.json`** — routing handled in `dispatch.sh`
+- **Do not use `2>>&1` in systemd** — use `2>&1`; `>>` causes bash syntax errors
+- **Always `chown www-data` after server ops** — `sudo chown -R www-data:www-data /opt/ramboq*/.git /opt/ramboq*/.log`
+- **Weekends hardcoded closed** in `is_market_open()` + `_task_close()` — special Muhurat sessions need explicit override
 
 ---
 
@@ -1007,248 +1003,17 @@ Ramboq's risk + automation engine is built around four words:
 
 ### Order Templates
 
-Order templates are per-position exit rules that attach to filled orders via broker-native GTT (Good-Till-Triggered) orders. Operator picks a template from the OrderTicket dropdown; template resolves to a bundle of exit orders (TP/SL/wing hedge/scaled close/trailing stop) at fill time. Each mechanism is independent — operator can activate TP without SL, or vice versa.
+Per-position exit rules (TP/SL/wing/scale/trail) attach via GTT at fill. Operator picks template from OrderTicket Default/None toggle. 
 
-#### Data model
+**Data model**: `order_templates` table ([backend/api/models.py](backend/api/models.py)) — `tp_type` (LIMIT|MARKET), `sl_type` (LIMIT), `sl_trail_pct`, `tp_scales_json` (NinjaTrader style), `wing_strike_offset`, `wing_premium_pct`. Seeded: `default-long-option` (TP +80% MARKET), `default-short-vol` (TP +10% LIMIT, SL -20%, wing -1 strike). One `is_default` per user.
 
-`order_templates` table ([`backend/api/models.py::OrderTemplate`](backend/api/models.py)):
+**Execution**: Mode validation → eligibility check (LIVE+PAPER only) → wing pre-scan + underlying spot resolve → parent place → on fill: `apply_template_to_order()` populates `attached_gtts_json` (idempotent), places GTTs per exit rule.
 
-| Column | Type | Notes |
-|---|---|---|
-| `id` | PK | |
-| `name`, `description` | str | "Default bull call", "Short volatility (sell 2x vol, buy 1x)", etc. |
-| `is_default` | bool | One per user. OrderTicket pre-fills with this. |
-| `tp_type` | enum | LIMIT / MARKET (MARKET TP fills fast in volatile moves; LIMIT caps slip) |
-| `tp_pct`, `tp_abs` | numeric | TP target: qty × fill × (1 + tp_pct) or qty × fill + tp_abs |
-| `sl_type` | enum | LIMIT (standard stop-loss) — SL MARKET not yet supported |
-| `sl_pct`, `sl_abs` | numeric | SL trigger: same semantics as TP |
-| `sl_trail_pct` | numeric(8,4) | (0, 100) — trailing-stop %age; null = no trail |
-| `wing_strike_offset` | int | Null = no wing. N strikes away from parent (e.g. −2 for short 2 OTM puts); chain-scan picks closest by premium |
-| `wing_premium_pct` | numeric | Pct of parent LTP to spend on wing buy. Used to filter chain candidates. |
-| `tp_scales_json` | text | JSON list of `{at_pct, close_pct}` — multi-target TP ladder. NinjaTrader style. |
-| `created_at`, `updated_at` | timestamp | |
+**Exit mechanics**: TP/SL auto-side-flip (short parent → SELL TP lower). Trail: `_task_trail_stop` (every 30s) polls LTP, ratchets trigger via `broker.modify_gtt()`. Wing: opposite type same strike ATM ±N (1:1 qty). Scale: multi-trigger GTT ladder per `tp_scales_json`.
 
-Seeded system defaults:
-- `default-long-option` (CE buy) — TP +80% MARKET, no SL, no wing, no scale
-- `default-short-vol` — TP +10% LIMIT, SL −20% LIMIT, wing −1 strike premium-capped, no scale, no trail
-- One `is_default=True` row per user, auto-maintained by seeder (no more than one default)
+**Brokers**: Kite=full (native OCO). Dhan=Forever Order (MCX blocked). Groww=emulated OCO+pair-watcher (15s race window). Capability surface: `GET /api/admin/brokers/{account}/capabilities` + OrderTicket warning chip. Postback + chase both fire attach (idempotent via `attached_gtts_json` check).
 
-#### Unified entry pipeline
-
-Operator selects template in OrderTicket via Default/None 2-pill toggle (matches Side pill UX). At order submit:
-
-1. **Validate mode** — `_resolve_mode()` determines execution (sim / paper / live / shadow)
-2. **Check template eligibility** — templates live on LIVE + PAPER; skipped in SIM / SHADOW / REPLAY
-3. **Resolve template plan** — all async pre-resolves (wing chain scan, underlying spot for trailing stop context) happen before placing the parent
-4. **Place parent order** — broker.place_order() for the root position
-5. **Apply plan on fill** — when parent fills (via postback or chase_terminal hook), invoke `apply_template_to_order(apply_path='live')` which:
-   - `attached_gtts_json` column population (idempotent via `NOT (attached_gtts_json IS NOT NULL)`)
-   - For each exit rule: call `broker.place_gtt()` with the resolved parameters
-   - Track attempt state (failures logged; no retry loop — operator edits `/orders` row to re-trigger)
-
-#### Broker integration
-
-**Kite (full support)** — `place_gtt` accepts `trigger_price`, `execution_type` (MARKET / LIMIT), `quantity`, `price` (for LIMIT legs). Template resolves to N GTT specifications, one per exit rule.
-
-**Dhan + Groww (partial)** — GTT / conditional-order equivalents exist but differ in triggering semantics:
-- Dhan `place_gtt` is order-conditional (place new order on a parent-fill condition) — templates can adapt but SL mechanics differ
-- Groww OCO (one-cancels-other) exists but is per-pair (one TP, one SL; scaling / wings / trails not supported)
-- Current Phase 3B: errors raised when attempting template attach on non-Kite brokers; operator falls back to manual SL/TP
-
-#### Exit rule mechanics
-
-**Take-Profit (TP)**
-
-When parent_qty fills at fill_price:
-
-```
-LIMIT: trigger on LTP >= fill_price × (1 + tp_pct)
-       execute at exactly: fill_price × (1 + tp_pct)
-
-MARKET: trigger on LTP >= fill_price × (1 + tp_pct)
-        execute at market (best available bid/ask)
-        — MARKET TP chosen when tp_pct is large or underlying is volatile
-```
-
-- Single trigger — as soon as the threshold is touched, the exit fires
-- Qty equals parent qty (full exit)
-- Works on long + short (side-flipped automatically; short parent → SELL TP at lower price)
-
-**Stop-Loss (SL)**
-
-When parent_qty fills at fill_price:
-
-```
-LIMIT: trigger on LTP <= fill_price × (1 - sl_pct)
-       execute at exactly: fill_price × (1 - sl_pct)
-       — always LIMIT (MARKET SL can slip badly in gaps)
-```
-
-- Qty equals parent qty
-- Works on long + short
-
-**Trailing Stop (SL with trail_pct)** — Phase 3B
-
-When parent fills:
-
-```
-initial_trigger = fill_price × (1 - sl_pct)  # static SL baseline
-highest_ltp_seen = fill_price                  # for longs
-lowest_ltp_seen = fill_price                   # for shorts
-```
-
-Background task `_task_trail_stop` (every `templates.trail_poll_interval_seconds`, default 30s) polls LTP and advances the trigger:
-
-```
-for long:  highest_ltp_seen = max(highest_ltp_seen, current_ltp)
-           current_trigger = highest_ltp_seen × (1 - sl_trail_pct)
-           if current_trigger > initial_trigger:
-             broker.modify_gtt(trigger=current_trigger, price=current_trigger)
-
-for short: lowest_ltp_seen = min(lowest_ltp_seen, current_ltp)
-           current_trigger = lowest_ltp_seen × (1 + sl_trail_pct)
-           if current_trigger < initial_trigger:
-             broker.modify_gtt(trigger=current_trigger, price=current_trigger)
-```
-
-- Context persisted in `attached_gtts_json` → `{parent_id, parent_qty, parent_fill_price, parent_side, parent_metadata, highest_ltp_seen, lowest_ltp_seen, initial_trigger, current_trigger, trail_context}`
-- On postback reload or service restart: `_task_trail_stop` picks up where it left off (context read from `attached_gtts_json`)
-- Dhan / Groww: `NotImplementedError` raised; operator's `sl_trail_pct` is dropped so re-triggering stops (same as other unsupported features)
-
-**Wing Hedge** — Phase 1B
-
-When placing parent option (e.g. SELL 1 NIFTY25APR22000CE):
-
-```
-scope = same underlying + same expiry + opposite type
-        (parent CE → scope PE candidates; parent PE → scope CE candidates)
-        
-scan:   broker.quote([PE 21950, 21900, 22050, 22100, ...])
-        
-score:  per candidate: |ltp − wing_premium_pct × parent_ltp| + spread_penalty
-        
-filter: OI < wing_min_oi (default 1000) → dropped
-        spread% > wing_max_spread_pct (default 10%) → dropped
-        
-pick:   closest-scored candidate (greedy)
-```
-
-When parent fills → auto-place a BUY of the wing at wing strike (hedges gamma / vega for short strats).
-
-- Wing qty = parent qty (1:1 pair)
-- Wing TP = None (wing lives for duration, dies at expiry)
-- Same underlying / expiry, opposite type (pure gamma hedge)
-- Settings: `templates.wing_min_oi`, `templates.wing_max_spread_pct`, `templates.wing_chain_radius` (default ±20 strikes)
-
-**Scaled Close (TP scale ladder)** — Phase 3A
-
-`tp_scales_json` format:
-
-```json
-[
-  {"at_pct": 50, "close_pct": 30},
-  {"at_pct": 100, "close_pct": 40},
-  {"at_pct": 150, "close_pct": 30}
-]
-```
-
-When parent_qty fills: create N partial-close GTTs, each triggered at a spot level, each exiting a portion of the position:
-
-```
-scale 0: trigger at fill × (1 + 0.50) → close 30% of qty at that level
-scale 1: trigger at fill × (1 + 1.00) → close 40% of qty at that level
-scale 2: trigger at fill × (1 + 1.50) → close 30% of qty at that level
-```
-
-- Qty allocation: floors per leg, then fixes any remainder to the last leg (ensures ∑close_pct × qty = parent_qty)
-- Each leg is independent GTT (fires when its trigger is crossed, stays live even if others don't fire)
-- Example: 100 qty, scales [30%, 40%, 30%] → [30 qty, 40 qty, 30 qty] GTTs at [+50%, +100%, +150%] respectively
-- Useful for: taking partial profits at psychological levels, de-risking early winners, locking in incremental gains
-
-#### Settings
-
-`/admin/settings` → `templates.*` bucket:
-
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `templates.wing_min_oi` | int | 1000 | Minimum OI on wing candidate (filter noise) |
-| `templates.wing_max_spread_pct` | numeric | 10 | Max bid-ask spread as % of LTP (filter illiquid strikes) |
-| `templates.wing_chain_radius` | int | 20 | Chain scan ±N strikes around parent strike |
-| `templates.trail_poll_interval_seconds` | int | 30 | How often `_task_trail_stop` samples LTP |
-
-#### Attachment row state
-
-`AlgoOrder` gained:
-
-| Column | Type | Notes |
-|---|---|---|
-| `template_id` | FK | null if no template attached |
-| `attached_gtts_json` | TEXT | Persisted bundle of GTT specs at fill time. Null → not yet attached. Non-null → idempotent; refire is no-op. |
-
-OrderCard (LogPanel Order grid) renders:
-- Row chip `tmpl:#N ✓` once `attached_gtts_json` is populated post-fill
-- Row chip `tmpl:#N …` while OPEN (pending fill)
-- No chip if `template_id IS NULL`
-
-#### Postback + Chase integration
-
-**Kite LIVE postback wiring** (Phase 0) — when broker postback arrives (via webhook or polling), hook `_fire_template_attach_on_fill` invokes `apply_template_to_order(apply_path='live')` with the fill price from the postback. Gated by `not (attached_gtts_json IS NOT NULL)` so duplicate postbacks are safe.
-
-**Chase terminal hook** (Phase 0.5) — when a chased LIMIT order fills via the paper engine's `_emit_chase_terminal`, same `apply_template_to_order(apply_path='live')` is called (doesn't wait for postback). AlgoOrder lookup via `algo_order_id` → `broker_order_id` — chase swaps the ID on every cancel-and-replace via `_sync_algo_order_id`, so template attach finds the row even on retry.
-
-**Redundancy** — both postback + chase terminal trigger attach; the `attached_gtts_json` idempotency guard handles race. If both fire in quick succession (postback arrives while chase is mid-process), second invocation sees `attached_gtts_json IS NOT NULL` and exits cleanly.
-
-#### Per-broker capability matrix
-
-| Broker | TP | SL | Trail | Wing | Scale | Status |
-|---|---|---|---|---|---|---|
-| **Kite** | ✅ | ✅ | ✅ | ✅ | ✅ | Full support (Phases 0–3B) |
-| **Dhan** | ❌ | ❌ | ❌ | ❌ | ❌ | NotImplementedError; no GTT wiring yet |
-| **Groww** | ❌ | ❌ | ❌ | ❌ | ❌ | NotImplementedError; OCO support future |
-
-As of Sprint C templates work on **all three brokers** with broker-specific shapes:
-
-- **Kite** — native two-leg OCO via `kite.place_gtt(trigger_type="two-leg")`. Single broker id per GTT. Modify atomically updates both legs.
-- **Dhan** — native two-leg OCO via Forever Order (`order_flag="OCO"`). Modify needs TWO `modify_forever` calls (`leg_name="ENTRY_LEG"` then `"TARGET_LEG"`); the pre-Sprint-A shape hardcoded ENTRY_LEG so the TP slot never updated and the trail silently missed. MCX/NCO blocked at `place_gtt` with a clear runtime error since Dhan Forever doesn't cover commodity.
-- **Groww** — emulated OCO via two single-trigger Smart Orders; returns compound `"oco:{a}+{b}"` id parseable by modify_gtt + cancel_gtt. `_place_oco_emulated` rolls back leg 0 if leg 1 fails so the book never holds a naked half. The background `_task_oco_pair_watcher` polls `broker.get_gtts()` every `templates.oco_pair_poll_seconds` (default 15s) and cancels the surviving sibling when one leg fires.
-
-**Persistence shape**: `attached_gtts_json` carries an optional `sibling_id` pointer per emulated-OCO entry plus `parent_account` + `parent_exchange` so the pair-watcher knows which broker to query without re-resolving from `AlgoOrder`. Native OCO entries keep the legacy shape (single broker id, two-leg trigger_type).
-
-**Operator-facing capability surface**: `GET /api/admin/brokers/{account}/capabilities` returns the `BrokerCapabilities` dataclass (pure read, no broker call). OrderTicket fetches it on account-change (cached in-memory per page lifetime) and renders an amber warning chip below the template summary when the selected template asks for a feature the broker can't provide natively: "Groww OCO emulated — ~15s race window", "Dhan can't trail — SL stays fixed", etc. Operator sees the gap at SUBMIT time, not at fill time.
-
-#### Test matrix (from shipped phases)
-
-| Phase | Commit | Feature |
-|---|---|---|
-| 0 | `ad89fb7c` | LIVE postback wiring. AlgoOrder.template_id + attached_gtts_json. OrderTicket Default/None toggle. |
-| 1A | `6f4f49f7` | `tp_order_type` LIMIT/MARKET. `default-long-option` seeded template. Seeder enforces one-default per user. |
-| 1B | `efc80651` | Wing-by-premium chain scan. Async `_pick_wing_by_premium()`. `default-short-vol` seeded template. |
-| 0.5 | `68621c50` | Chase ↔ template integration. `_sync_algo_order_id` on cancel-and-replace. Chase terminal fires `apply_template_to_order` directly. |
-| 2 | `4e19598a` | Audit + visibility chip. No agent overlap detected. AlgoOrderInfo.template_id + attached_gtts_json. OrderCard `tmpl:#N ✓` chip. |
-| 3A | `3968c28d` | Scale-out targets. `tp_scales_json` TEXT column. Multi-trigger GTT ladder. |
-| 3B | `fd756146` | Trailing stop. `sl_trail_pct` NUMERIC(8,4). `_task_trail_stop` background task (every 30s). Kite-only; Dhan/Groww raise NotImplementedError. |
-| Sprint A | `24cced42`, `d2c12c4c` | Reconcile + paper-engine paths fire template attach. Postback HMAC skips non-Kite. `parent_product` no longer hardcoded NRML. Basket apply_path="preview". Two-leg OCO trail persists `tp_trigger` so the SL ratchets while TP rides through. `default-bear` moved to `sell_any` scope. PATCH templates enforces one-default-per-scope. `recover_from_db` re-hydrates `template_id` / `product` / `mode`. |
-| Sprint B | `1cfaabe7` | `_KILLED_ORDER_IDS` switched to dict with 60-min TTL + lazy sweep. `_TEMPLATE_ATTACH_LOCKS` switched to `WeakValueDictionary`. New `AlgoOrder.filled_quantity` column + `_record_partial_fill` helper accumulates partials across chase iterations. Template attach plumbing reads `filled_quantity` when > 0 so exit GTT sizing matches actual filled portion. |
-| Sprint C | `903559ff` | Dhan `modify_gtt` leg dispatch fix (ENTRY_LEG + TARGET_LEG). Dhan MCX guard. Groww emulated OCO via compound id + atomic rollback. New `_task_oco_pair_watcher` background task. Sibling-id persistence in `attached_gtts_json`. `GET /api/admin/brokers/{account}/capabilities` endpoint + OrderTicket warning chip. |
-| Sprint D | `b89eb590` | OrderCard CANCELLED chip distinct slate-grey. `_summariseTemplate` surfaces TP scales + SL trail + unit-tagged Wing. PROXY chip stale-β tag (amber 2-7d, red >7d). Settings hedge-proxy table renders ⚠ on `regression_error`. EV/POP recomputed client-side over the merged curve when proxy/eq legs are layered. New `HedgeProxy.regression_error` column. New `from_kite_qty` reverse-translate fixes MCX chase unit-mismatch (partial-fill branch fired every poll). |
-| Sprint E | `eb0ce825` | Composite `(mode, status)` index on `algo_orders`. ChaseStatus.PARTIAL wired up. `has_any_override` includes `tp_scales_json` + `sl_trail_pct`. `_mark_rate_limited` sweeps expired entries. `|β| > 5` rejected with log. `datetime.now(timezone.utc)` consistency. `_resolve_token` caches `broker.instruments(exchange)` for 1h. `correlation` dropped from HedgeProxy admin create form. |
-
-Bonus fixes shipped (pre-Sprint-A):
-- `02fcd6b8` — priceFmt always 2 decimals (fixed ≥100 rounding artifact)
-- `2cba914e` — `template_attach` tolerates `overrides=None` (basket leg fix)
-- `4c1e1354` — Preflight SEGMENT_INACTIVE skipped for non-Kite brokers (Dhan profile fix)
-- `499a4bd7` — Positions P∆: `_override_stale_close_from_snapshot` reads `daily_book.ltp` as authoritative prior-close. Pre-fix Kite's `positions.close_price` lagged the actual previous-session close during the MCX overnight window and produced phantom +₹1.33L day_pnl readings.
-
-#### File map
-
-| Path | Purpose |
-|---|---|
-| `backend/api/models.py::OrderTemplate` | SQLAlchemy row |
-| `backend/api/routes/orders.py` | `/api/orders/ticket` handler, template resolution, postback hook |
-| `backend/api/algo/templates.py` | `resolve_template_plan`, `apply_template_to_order`, wing chain scan |
-| `backend/api/background.py::_task_trail_stop` | Trailing-stop modifier loop |
-| `frontend/src/lib/order/OrderTicket.svelte` | Template dropdown (Default/None toggle) |
-| `frontend/src/lib/OrderCard.svelte` | Row chip rendering (`tmpl:#N ✓`) |
+**File map**: [models](backend/api/models.py) | [routes](backend/api/routes/orders.py) | [templates.py](backend/api/algo/templates.py) | [OrderTicket.svelte](frontend/src/lib/order/OrderTicket.svelte).
 
 ### End-to-end flow on a real tick
 
@@ -2088,15 +1853,7 @@ To make the bars symbol-only, [`PerformancePage.svelte`](frontend/src/lib/Perfor
 
 ## InfoHint popup variant
 
-[`InfoHint.svelte`](frontend/src/lib/InfoHint.svelte) gained a `popup` prop. When `popup=true` the popout is absolutely-positioned (z-index 50) instead of the default inline expansion — best for compact stats where pushing siblings down would feel disruptive. Click toggles "pinned" mode (allows text selection); hover shows a soft preview that disappears on mouse-leave. Click-outside closes the pinned popup.
-
-**Subtle styling.** Earlier iterations used a navy-gradient background with an amber-left-accent border that competed with the helper text it framed. Toned down to a flat slate-blue surface (`rgba(15,25,45,0.95)`), faint sky-blue border, no left accent, smaller drop shadow. Bold spans (`<b>` / `<strong>`) inside still render in amber so the information hierarchy is preserved.
-
-**Responsive width.** `min-width: min(13rem, 88vw)` and `max-width: min(32rem, 92vw)` — viewport-clamped so the popup never overflows on a narrow phone (88 vw cap) and never gets unreadably wide on a desktop (32 rem cap). `align="right"` on the wrapper flips the popup to anchor on the right edge of its trigger when a left-anchored popup would clip off-screen.
-
-**Content delivery — `text` prop preferred over children snippet.** The component supports two ways of supplying the popout body: `text="…"` (string, may include HTML — rendered via `{@html}`) and a children snippet (`<InfoHint popup>…</InfoHint>`). The `text` prop wins when both are present. **Always prefer `text`** — children snippets occasionally lose their content during the SSR → CSR handoff in this codebase, leaving the chip clickable but the popout empty. Every InfoHint on `/admin/derivatives` (and the simulator / paper / settings / brokers admin pages) was migrated to the `text` form for that reason.
-
-Used liberally on `/admin/derivatives` to gloss every Greek (Δ Γ Θ V ρ) and every risk/EV metric (max profit, max loss, R:R, breakeven, POP, EV, EV/cost) — operators new to options analytics get the explanation one click away without giving up screen real estate to verbose helper text. The same `(i)` chip + amber-accent palette as the inline variant, so the affordance is consistent.
+[`InfoHint.svelte`](frontend/src/lib/InfoHint.svelte): `popup` prop makes popout absolutely-positioned (z-index 50, no sibling push). Click pins it (text-selectable); hover preview disappears on mouse-leave. Styling: flat slate-blue bg, sky-blue border, bold spans amber. Viewport-clamped width: `min(13rem, 88vw)` to `min(32rem, 92vw)`. **Always use `text` prop, not children snippet** (SSR→CSR handoff can lose content in this codebase). Used on `/admin/derivatives` for Greeks + risk metrics — one-click inline help.
 
 ---
 
@@ -2255,24 +2012,14 @@ Industry analogue: PagerDuty / Opsgenie / Sentry expose every alert-rule column 
 
 ---
 
-## Templates vs Agents — non-overlapping responsibilities
+## Templates vs Agents — non-overlapping layers
 
-Operators occasionally ask whether `OrderTemplate` could replace the loss-* agent grammar. The answer is no — they live on different layers and both are needed.
-
-| Layer | Trigger source | Scope | Action latency | Examples |
+| Layer | Trigger | Scope | When | Example |
 |---|---|---|---|---|
-| **OrderTemplate** | Parent order fills (broker postback / chase terminal) | One position | Sub-second (broker-native GTT) | `default-long-option`: TP at +80 % MARKET on this BUY; `default-short-vol`: wing leg picked by premium %; OCO with TP/SL |
-| **Agent (loss-*)** | Periodic poll (every 5 s in market hours) | Per-account or book-wide aggregate | Up to 5 s + agent cooldown | `loss-positions-total`: book P&L ≤ −₹50k → notify; `loss-funds-negative`: cash < 0 → critical alert; `loss-pos-total-auto-close`: book P&L ≤ −₹50k → chase-close ALL |
+| **OrderTemplate** | Order fills | Per-position | Sub-second | TP +80%, SL -20%, OCO |
+| **Agent** | 5s poll | Book-wide | Up to 5s + cooldown | Book P&L ≤ -₹50k close all |
 
-**Templates** are the primitive for "this fresh BUY will exit if it gains 80 % or stops out at −20 %". They ride at the broker (Kite GTT, Dhan Forever Order, Groww smart order with pair-watcher emulation) so they fire even if our API is offline.
-
-**Agents** are the primitive for "if the book-wide P&L crosses −₹50k, send me a critical alert". This needs central state across every account + position, can't sit at the broker, and is naturally polled.
-
-**They cohabit**: a `default-long-option` template attaches a per-position TP at fill; `loss-positions-total` watches the whole book in parallel. Both run, no overlap.
-
-**Legacy back-compat shim** ([`backend/api/routes/orders.py::_arm_take_profit`](backend/api/routes/orders.py)) — the v1 fractional `target_pct` / `target_abs` columns on `AlgoOrder` are still wired for Lab MCP scripts that pre-date templates. Both shim + template attach fire on the same FILL event; each is idempotent against double-fire (templates via `attached_gtts_json`; legacy via existing-child-row check). New code paths should write `template_id` and leave `target_pct` null.
-
-**Frontend visibility**: rows that picked up a template render a violet `tmpl:#42 ✓` chip in [`OrderCard.svelte`](frontend/src/lib/order/OrderCard.svelte) — `✓` once `_fire_template_attach_on_fill` has populated `attached_gtts_json`, `…` while the parent is still OPEN.
+Templates ride at the broker (GTT / Forever Order) so they fire offline. Agents need central state across all accounts. Both cohabit: template TP on fill + agent watches the book. Legacy shim ([`_arm_take_profit`](backend/api/routes/orders.py)) wires v1 `target_pct/abs` for pre-template scripts; idempotent vs template attach. UI: `tmpl:#42 ✓` chip in [`OrderCard.svelte`](frontend/src/lib/order/OrderCard.svelte).
 
 ---
 
@@ -2319,262 +2066,47 @@ A single Svelte component handles every order op the platform needs (open / clos
 
 ---
 
-## Demo mode — anonymous-on-prod = guest session
+## Demo mode — anonymous-on-prod guest session
 
-`ramboq.com` algo pages are accessible to anonymous visitors on the prod (`main`) branch. They land in **demo mode**: synthetic data, paper-only orders, no broker hit, ops surface hidden. Recruiters / investors see the actual product without the security risk of exposing the real book.
+Prod (`main`) algo pages open to anonymous visitors (real book, masked accounts via `mask_column()`, no broker writes). Gate helper ([`is_demo_request()`](backend/api/auth_guard.py)): sets `connection.state.is_demo = True`. Write endpoints 403 or downgrade (e.g. `POST /orders/ticket mode=live` → `paper`). Admin routes 401. No synthetic data — same code path as public `/performance`.
 
-**The chokepoint pattern**: rather than scattering `if not is_admin` checks across every endpoint, demo session safety funnels through a small set of helpers:
+**Frontend** ([`(algo)/+layout.svelte`](frontend/src/routes/(algo)/+layout.svelte)): predicates gate demo on (`main` + anon). Settings/Brokers/Users nav drop. "Sign In" replaces user pill.
 
-```python
-# backend/api/auth_guard.py
-is_demo_request(connection) -> bool   # prod + no admin JWT
-auth_or_demo_guard(connection, …)     # admits demo, tags state.is_demo
-NotAllowedInDemo                      # sentinel for chokepoints
-```
-
-The guard sets `connection.state.is_demo = True` for anonymous prod requests. Every write endpoint that could touch a real broker checks the flag and either 403s or downgrades the operation:
-
-| Endpoint | Demo behaviour |
-|---|---|
-| `POST /api/orders/place` | 403 |
-| `PUT /api/orders/{id}` (modify) | 403 |
-| `DELETE /api/orders/{id}` (cancel) | 403 |
-| `POST /api/orders/ticket` mode=`live` | silently downgraded to `paper` (visitor's Submit still works) |
-| `GET /api/charts/paper-status` | open_order_details accounts masked for demo |
-| `GET /api/options/analytics?mode=live` | 403 Demo: read-only |
-| `POST /api/agents/`, `PUT /api/agents/{slug}`, `DELETE /api/agents/{slug}` | `admin_guard` override → 401 |
-| `/api/admin/brokers/*`, `/api/admin/settings/*`, `/api/admin/grammar/*`, `/api/admin/users/*` | `admin_guard` (controller-level) → 401 |
-
-**Read-path data**: demo sessions see **real broker data with accounts masked** — the same path the public `/performance` page uses. `mask_column()` turns `ZG0790` into `ZG####`. No synthetic fixtures, no parallel data plane: demo is "prod paper-trade UI minus broker writes minus ops surface". This is dramatically simpler than the synthetic-data path it replaces.
-
-`/api/positions`, `/api/holdings`, `/api/funds`, `/api/orders/`, `/api/orders/algo/recent` all share one branch: if `not is_admin_request()`, mask the `account` field on every row. Demo + public anonymous flows hit the exact same code path.
-
-**Frontend** ([`(algo)/+layout.svelte`](frontend/src/routes/(algo)/+layout.svelte)):
-- Anonymous visitor on prod no longer redirects to `/signin`. The `paperStatus.branch === 'main' && !$authStore.user` predicate gates demo mode on. On non-`main` branches, anonymous visitors still redirect to signin (devs are expected to authenticate).
-- Settings / Brokers / Users nav links flag `adminOnly: true` and drop out of the navbar in demo mode.
-- "Sign In" button replaces the user pill in demo so visitors have a one-click upgrade path.
-
-**Mode badges**: navbar pills surface activity at a glance, branch-aware:
-
-| Branch | State | Badge |
-|---|---|---|
-| `main` | anonymous | **DEMO** (purple) |
-| `main` | paper engine has open orders | **PAPER** (blue) |
-| `main` | logged in, idle | (none) |
-| non-`main` | sim active | **SIM** (red) |
-| non-`main` | any state | (none — paper engine disabled) |
-| any | both | both stack |
-
-Outlined-pill style: subtle tinted background + bright text + matching colour border + a small leading dot that pulses (2 s). Earlier solid-fill DEMO/SIM/PAPER badges with whole-pill opacity-pulse animation read as too loud — the dot-only animation reads as a calmer "alive indicator" without the throb. Existing full-width banners under the nav still surface scenario / chase detail.
-
-**Navbar breakpoint**: hamburger menu shows for everything below the Tailwind `lg:` breakpoint (1024px), not `md:` (768px). The earlier `md:` cutoff left landscape phones (~640-900px) trying to render the full desktop nav, causing overflow and garbling. `lg:` is the cleaner cutoff: real tablets in landscape and desktops get the full nav, every phone (portrait + landscape) gets the hamburger.
-
-**Branch labels in the UI**: every user-visible mention of the branch surfaces as `prod` (when raw value is `main`) or the literal name (any other branch). Implemented as the [`branchLabel(name)`](frontend/src/lib/stores.js) helper — operators think in "prod / dev" terms, not "main / non-main", so the page banners and tooltips speak that vocabulary. Internal predicates (`paperStatus.branch === 'main'`, the `cap_in_<branch>` config dict, the database name selection in [`database.py`](backend/api/database.py)) keep using the raw git branch name — `branchLabel` is presentation-only and never feeds back into program logic.
-
-**No fixture maintenance**: there's no synthetic data file to keep in sync. Whatever positions / holdings / orders / agent fires the operator's prod book has, the demo session sees — masked. If demo looks empty, it's because prod is idle.
+**Badge logic**: DEMO (purple anon), PAPER (paper orders open), SIM (sim active). Navbar breakpoint: `lg:` (1024px), not `md:`. **Branch labels**: show `prod` (raw `main`) or literal name via [`branchLabel()`](frontend/src/lib/stores.js).
 
 ---
 
 ## Frontend API layer — friendly errors, masked logs
 
-[`frontend/src/lib/api.js`](frontend/src/lib/api.js) is the single chokepoint every page goes through to talk to the API. The legacy shape was 14 hand-rolled `fetch + 401 + throw` blocks each producing raw HTTP messages like `"GET /api/foo failed: 500 Internal Server Error"` directly into `{error}` text on the page. That's been replaced with a single `_request(method, path, opts)` wrapper that runs every call through three transforms:
-
-1. **Friendly UI message — kept short** — [`_friendlyError(status, detail)`](frontend/src/lib/api.js) translates the HTTP outcome into a one-line banner string. Pages render the message verbatim in a small red strip (`text-[0.65rem]`); long sentences wrap and shove the layout around, so every default is ~25-35 chars: 5xx → `"Server busy — retry."`, network → `"No connection."`, 401 anon → `"Sign in required."`, 403 anon → `"Demo: read-only."`, 404 → `"Not available."`, 429 → `"Too many requests."`. 401/403 prefer the backend's `detail` when present (so chokepoint strings like `"Demo: use OrderTicket → PAPER."` flow through unchanged), but every detail is run through [`_trimDetail`](frontend/src/lib/api.js) which strips HTTP-method boilerplate and clamps to 60 chars. Backend chokepoint messages should also be short — see [`backend/api/routes/orders.py`](backend/api/routes/orders.py) for the canonical pattern (`"Demo: cannot modify orders."`). The full detail still lives in the console via `_logApiError`; operators open devtools for the long form.
-2. **Masked console log** — [`_logApiError(path, status, raw)`](frontend/src/lib/api.js) prints the raw error to `console.warn` (not `.error` — transient 5xx during a poll shouldn't paint every page red in devtools). Anonymous (demo) sessions run the raw value through [`_maskForDemoLog`](frontend/src/lib/api.js) first: `Z[A-Z]\d{4,8}` → `Z#####`, long uppercase tokens → `<key>`, `bearer …` → `bearer <token>`, `…@…` → `<email>`. Defence-in-depth: backend `mask_column()` already redacts row data, but error detail strings can still carry raw values from internal exceptions, and a recruiter opening devtools on demo shouldn't see real account IDs.
-3. **One throw path** — `throw new Error(_friendlyError(status, detail))`. Pages do `catch(e) { error = e.message }` and render the prose. No page edits were required; the migration was a refactor of api.js only.
-
-Method shortcuts (`_get / _post / _put / _patch / _del`) wrap `_request` for ergonomics; every endpoint export now collapses to a single line.
-
-`_handle401()` still clears the token + redirects to `/signin` — but only when a token actually existed (the `hadToken` guard), so anonymous demo visitors who hit a 401 don't get bounced. Stale-session logout still works as before.
+[`frontend/src/lib/api.js`](frontend/src/lib/api.js): single `_request()` wrapper for all endpoints. Transforms: (1) friendly UI message (25-35 char, 5xx → "Server busy", anon 401 → "Sign in required"); (2) masked console log (`Z####, <key>, bearer <token>, <email>` via [`_maskForDemoLog()`](frontend/src/lib/api.js)); (3) one throw path (`error = e.message`). Method shortcuts: `_get / _post / _put / _patch / _del`. 401 only redirects if token existed (guards demo from bounce).
 
 ---
 
 ## Lab page — chat-driven research via Claude Code + MCP
 
-`/admin/research` is the LLM-facing workspace. The actual chat happens IN Claude Code (the operator's terminal); the page is the persistence + audit + token-mint surface. No paid GenAI is in the loop — operator's Claude Code subscription is the only LLM. Helper calls (auto-title, news sentiment) use the free tier of Gemini 2.5 Flash. **Total incremental cost: ₹0.**
+`/admin/research` persists threads, audit, and token-mint UI for operator-driven LLM workflows. Chat happens in Claude Code (operator's terminal); no paid GenAI beyond Gemini 2.5 Flash for helpers. Full operator runbook: [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md).
 
-The full operator runbook is in [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md). This section is the architecture / "what's where" reference for future Claude sessions.
+**Pages:** Research (threads + transcript) · Drafts (inactive agents from threads) · Audit (mutation forensics, filterable) · Settings (token mint + JWT bootstrap + MCP server inventory).
 
-### Layout — 4 tabs
+**MCP server** ([backend/mcp/kite_server.py](backend/mcp/kite_server.py)): FastMCP subprocess. 16 read tools (positions, holdings, quote, ohlcv, news, chain snapshot, macro, agents, threads, audit, server_info) + 2 persist (save_research_thread, save_agent_draft) + 6 gated writes (place/cancel/modify/activate/deactivate/update_agent).
 
-1. **Research** — list of saved threads (left rail) + full transcript viewer (right pane). Threads are created by the MCP `save_research_thread` tool.
-2. **Drafts** — joined view of threads that have been promoted to an inactive Agent. Activating an agent naturally graduates it off this list.
-3. **Audit** — forensic trail of every MCP-initiated mutation. Filterable by Since (1h / today / 7d / all) + Tool + Status (ok / denied / error).
-4. **Settings** — Mint widget (per-call confirm tokens) + JWT bootstrap (1-click for session token, or curl for cron) + `.mcp.json` snippet + Tools inventory + Safety notes.
+**Confirm-token gate** (60s TTL, single-use, purpose-hash bound): `place | cancel | modify | activate | deactivate | update`. Purpose hash prevents bait-and-switch between mint and redeem. In-process dict; restart clears all.
 
-### MCP server — `backend/mcp/kite_server.py`
+**Audit table** ([McpAudit](backend/api/models.py)): tool, user_id, args_redacted, result_status, result_summary, request_id, created_at. Daily cleanup via `_task_mcp_audit_cleanup` (default 90-day retention). Telegram ping after success (mode tag + order_id + account + clickable request_id).
 
-stdio FastMCP subprocess launched by Claude Code via `.mcp.json` at the repo root. Talks to the running RamboQuant API over HTTPS using `$RAMBOQ_TOKEN` (the operator's JWT). 24 tools today:
+**Key gotcha**: Litestar's `@get/@post` decorators replace methods with route-handler objects. Call via `.fn(ctrl, ...)` not directly (learned in Phase 12).
 
-**Read (16):**
-- Market data: `get_positions`, `get_holdings`, `get_quote`, `get_ohlcv`, `get_recent_news` (with optional Gemini-Flash bull/bear/neutral sentiment), `get_option_analytics`, `get_options_chain_snapshot` (one-call ATM ± N strikes with full Greeks)
-- Macro / book: `get_economic_snapshot` (repo / CPI / IIP / GDP / USD-INR with freshness flags), `get_funds_summary`, `get_watchlist`, `get_pnl_attribution`
-- Agents: `list_agents`
-- Research persistence: `list_research_threads`, `get_research_thread`
-- Forensics: `get_audit_recent` (LLM self-check after writes)
-- Diagnostic: `get_server_info`
-
-**Persist (2):**
-- `save_research_thread(symbol, thesis_text, confidence, transcript, title?)` — auto-titles via Gemini Flash free tier when title is blank
-- `save_agent_draft(thread_id, name, conditions, ...)` — promotes a thread to an INACTIVE Agent linked back to the thread (status + trade_mode are hardcoded server-side; the MCP cannot create an active or live agent)
-
-**Gated write (6):**
-- `place_order(confirm_token, account, symbol, side, qty, mode, ...)`
-- `cancel_order(confirm_token, account, order_id, mode)` — both live (broker) and paper (engine) paths
-- `modify_order(confirm_token, account, order_id, mode, ...)` — same dual-mode dispatch
-- `activate_agent(confirm_token, agent_slug)` — inactive → active. Highest-stakes write.
-- `deactivate_agent(confirm_token, agent_slug)` — active → inactive
-- `update_agent(confirm_token, agent_slug, proposed_changes)` — edit conditions / cooldown / events / scope / schedule / actions / fire_at_time / description on an existing agent. Whitelist-only — status / trade_mode / lifespan_* are silently dropped. Purpose hash binds canonical-JSON of the full payload so the LLM cannot tweak any field after operator approval. (Phase 14)
-
-### Per-call confirm-token gate
-
-Every gated write requires an operator-minted token. Tokens are:
-- 16-byte hex (32 chars), generated by `_secrets.token_hex(16)`
-- Single-use (atomic consume in `_consume_token`)
-- 60-second TTL
-- Bound to the operator's `user_id` at mint time — only the same user can redeem
-- Bound to a **purpose hash** of the exact action fields, so the LLM cannot bait-and-switch between mint and redemption
-- In-process dict only; restart invalidates everything (conservative by design — operator just re-mints)
-
-**Purpose hash binds:**
-
-| Kind | Hash includes |
-|---|---|
-| `place` | account + symbol + side + qty + order_type + mode + price + trigger |
-| `cancel` | account + order_id + mode |
-| `modify` | account + order_id + mode + new qty + new order_type + new price + new trigger |
-| `activate` | action verb + agent_slug |
-| `deactivate` | action verb + agent_slug |
-| `update` | agent_slug + sha256 of canonical-JSON of whitelisted proposed_changes |
-
-The action verb is part of the hash for activate/deactivate so a deactivate token cannot be redeemed to activate the same agent (and vice versa).
-
-### Calling decorated controller methods from research routes
-
-Litestar's `@get` / `@post` / `@put` / `@delete` decorators replace the wrapped method with a route-handler object. Calling `OrdersController(owner=None).ticket_order(...)` directly throws `TypeError: object post can't be used in 'await' expression`. The original coroutine lives on `.fn`, so use `OrdersController.ticket_order.fn(ctrl, ...)`. Same pattern for `.cancel_order.fn` / `.modify_order.fn`. Activate/deactivate inline the 3-line agent flip directly (cleaner than indirecting through `AgentController`).
-
-This bug went undetected through Phase 4 because Phase 4's verify spec stopped at the token gate; Phase 12's activate test was the first one to soft-assert `res.ok()` on the underlying handler return.
-
-### Mode resolution (unchanged from the existing pipeline)
-
-`_resolve_mode()` in `backend/api/algo/actions.py` is the single source of truth. The MCP write tools route through the same logic:
-
-- **dev branch** forces paper regardless of the token's `mode` field
-- **prod + `execution.paper_trading_mode=True`** forces paper
-- **prod + `execution.paper_trading_mode=False` + `mode='live'`** → real Kite order
-
-No new branching. The MCP layer adds a gate (per-call confirm) on top, never bypasses an existing one.
-
-### `mcp_audit` table — forensic trail
-
-Every gated-write call writes one row, success or failure. Token material is NEVER persisted — args go through redaction first. Columns:
-
-| Column | Notes |
-|---|---|
-| `tool` | `place_order` / `cancel_order` / `modify_order` / `activate_agent` / `deactivate_agent` |
-| `user_id` | FK to users.id (ON DELETE SET NULL) |
-| `args_redacted` | JSONB. `had_token: true/false` instead of the token itself |
-| `result_status` | `ok` / `denied` / `error` |
-| `result_summary` | One-line — e.g. "order_id=251115... mode=paper status=OPEN" |
-| `request_id` | 12-char random — same id surfaces in the Telegram ping for forensic linkage |
-| `created_at` | tz-aware, indexed |
-
-**Daily cleanup**: `_task_mcp_audit_cleanup` in `backend/api/background.py` purges rows older than `mcp.audit_retention_days` (default 90, tunable from `/admin/settings`). Runs at 03:15 IST. Set to 0 to disable.
-
-### Telegram ping on every write
-
-Successful gated-write calls fire a single `_send_telegram(...)` after the audit row lands. Gated by `is_enabled('telegram')` — silent no-op when off. Ping carries the mode tag (`[PAPER]` / `[LIVE]`), order_id / agent_slug, account, and a clickable `request_id` (Phase 18) — `<a href>` to `/admin/research?audit_request=<id>` so the operator on their phone gets one-tap drill-down to the exact audit row. The link host comes from `_public_base_url()` which derives from `deploy_branch` (main → ramboq.com, else → dev.ramboq.com) with optional `backend_config.yaml::public_base_url` override.
-
-### File map (where to look)
-
-| Need to read | Path |
-|---|---|
-| MCP server entry point | [backend/mcp/kite_server.py](backend/mcp/kite_server.py) |
-| Per-tool implementation | same file — one `@app.tool()` function per tool |
-| Confirm-token logic | [backend/api/routes/research.py](backend/api/routes/research.py) — `_purpose_hash_*` / `_mint_token` / `_consume_token` |
-| Audit + retention | `McpAudit` in [backend/api/models.py](backend/api/models.py); `_task_mcp_audit_cleanup` in [backend/api/background.py](backend/api/background.py) |
-| Lab page UI | [frontend/src/routes/(algo)/admin/research/+page.svelte](frontend/src/routes/(algo)/admin/research/+page.svelte) |
-| Operator runbook | [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md) |
-| Test specs | `frontend/e2e/research_*.spec.js` (9 specs, 43 tests) |
-| Gemini Flash helpers | [backend/shared/helpers/genai_helpers.py](backend/shared/helpers/genai_helpers.py) — `auto_title`, `sentiment_scores`; deterministic stubs when `is_enabled('genai')` is False |
-
-### Phase log (chronological)
-
-| Phase | Commit | Scope |
-|---|---|---|
-| 1 | `726e69a` | MCP server skeleton + Lab page + ResearchThread model |
-| 2a / 2b / 2c | `71196a2` / `bc51933` / `5d84f71` | Draft pipeline · Gemini Flash helpers · Macros |
-| 3 | `99c2057` | place_order with confirm token + mcp_audit table |
-| 3b+3c+4 | `9a5686c` | Audit tab + Telegram pings + cancel/modify |
-| 5 | `1ec801c` | Paper-aware cancel + modify |
-| 6+7 | `baf8aeb` | Audit retention + get_audit_recent |
-| 8 | `f6690ad` | Bulk chain snapshot |
-| 9+10+11 | `51770d4` | Watchlist + P&L + funds |
-| 12 + hotfix | `70dd25d3` / `ddff6ae9` / `d8efe7b1` | Activate/deactivate + `.fn(ctrl,...)` wrapper fix |
-| Select swap | `5ee35b5f` / `eab410d9` | Native dropdowns → custom Select |
-| 15 | `40b93b0f` | Audit since-window filter |
-| Docs | `3fc6e988` | LAB_MCP_GUIDE operator runbook |
-| 16 | `c1f547bf` | JWT bootstrap shortcut |
-| 13 + 14 | `ae84c484` | Stale-token cleanup + update_agent (#24 MCP tool) |
-| 17 + 18 | `7552c54f` | Empty-state CTAs + Telegram→Audit deep-link |
+**File map**: MCP=[backend/mcp/kite_server.py](backend/mcp/kite_server.py), tokens=[backend/api/routes/research.py](backend/api/routes/research.py), UI=[frontend/src/routes/(algo)/admin/research/+page.svelte](frontend/src/routes/(algo)/admin/research/+page.svelte).
 
 ---
 
 ## Refactoring Notes
 
-### Canonical day P&L formula (SUZLON verified)
+**Day P&L formula** (commits b95ccd79–ba9cf39c): Decomposed intraday (not naive `(LTP−close)×qty`). Positions: `overnight_qty × (LTP − prev_close) + day_buy/sell legs`. Holdings: `broker.pnl − (close − cost) × opening_qty`. **MCX guard**: apply lot_size multiplier to intraday qty too (pre-fix: ₹61k phantom GOLDM due to unit mismatch). **Always verify qty units in P&L edits.**
 
-Both `fetch_positions` and `fetch_holdings` ([`backend/shared/helpers/broker_apis.py`](backend/shared/helpers/broker_apis.py)) now use a decomposed intraday formula instead of naive `(LTP − close) × qty` MTM.
+Regex validators: pre-compile to module-level (currently per-call). Broker calls: concurrent via `ThreadPoolExecutor`. Async offload: paper + sim use `run_in_executor` to keep sync HTTP off event loop.
 
-**Positions** (intraday-added qty + overnight mix):
-```
-day_pnl = overnight_qty × (LTP − prev_close)
-        + (day_buy_qty × LTP − day_buy_value)
-        + (day_sell_value − day_sell_qty × LTP)
-```
-Verified against broker reports — pre-fix SUZLON overstated by ₹2,617 because the new lot's baseline was prev_close instead of today's actual entry. Closed-today rows FREEZE naturally — once `current_qty=0` the LTP coefficient drops out and the residual `−overnight×close + sv − bv` is static.
-
-**Holdings** (sold-today CNC):
-```
-day_change_val = broker.pnl − (close_price − cost) × opening_qty
-```
-Collapses to `(LTP − close) × opening_qty` when still held (same as the old formula). Correctly frozen at `(sale − close) × sold_qty + (LTP − close) × held_qty` when partially or fully sold. Pre-fix IFCI drifted from −₹77.3k → −₹150k as LTP fell after the sale; now stays at −₹77.3k. See commits b95ccd79 / 49b75cb4 / b47d851b / e5e836b8 / ba9cf39c.
-
-**MCX multiplier guard** (memory: `feedback_option_math_qty_vs_lots`) — Kite ships MCX `quantity` in lots; we multiply by `multiplier` (lot_size, ×10 for GOLDM, ×100 for CRUDEOIL) to convert to contracts before the formula runs. CRITICAL: the same multiplier is now applied to `overnight_quantity` / `day_buy_quantity` / `day_sell_quantity` because they land alongside per-contract `last_price` and `close_price` in the decomposition. Pre-fix the unit mismatch produced a ₹61k phantom on GOLDM146000CE alone, pushing the strip's P∆ to ₹1.11L on a ~₹50k day. **Always double-check unit consistency when touching qty math** — class of bug repeats easily.
-
-| Area | Note |
-|---|---|
-| Regex validators | `validate_email()`, `validate_phone()` etc. in `utils.py` recompile regex on every call. Worth precompiling to module-level constants if form submissions become a bottleneck |
-| Parallel broker calls | `fetch_holdings`, `fetch_positions`, `fetch_margins` broker calls run concurrently via `ThreadPoolExecutor` in the API background tasks |
-| Async event-loop offload (Wave A) | Paper engine `tick_loop`, `_basket_margin_validate`, and sim driver `seed_live` use `run_in_executor` to keep sync broker HTTP off the asyncio event loop |
-
----
-
-## Log Files (on server)
-
-Prod and dev logs are fully separated. The webhook listener is a shared service so its logs stay under prod.
-
-**Prod `/opt/ramboq/.log/`**
-
-| File | Source | Notes |
-|---|---|---|
-| `hook_debug.log` | `deploy.sh prod` | Prod deploy output (main branch) |
-| `hook.log` | `ramboq_hook.service` | All webhook listener output (stdout+stderr combined) |
-| `incoming_requests.log` | `log-request.sh` | Raw webhook requests |
-| `api_error_file` | `ramboq_api.service` tee | All API stdout+stderr |
-| `api_log_file` | `ramboq_logger.py` | Full API app log (5MB rotating × 5) |
-
-The earlier `api_short_*` tail files were retired — the handler rewrote them in full on every single record, which burned 50+ sync I/O ops per minute during alert bursts. `/api/admin/logs` tails `api_log_file` directly now.
-
-**Dev `/opt/ramboq_dev/.log/`**
-
-| File | Source | Notes |
-|---|---|---|
-| `hook_debug.log` | `deploy.sh dev` | Dev deploy output (non-main branches) |
-| `api_error_file` | `ramboq_dev_api.service` tee | All API stdout+stderr |
-| `api_log_file` | `ramboq_logger.py` | Full API app log (5MB rotating × 5) |
-
-> Both environments use the same relative `.log/` paths — no per-environment config changes needed. `notify_on_startup` differs per environment (`True` on dev, `False` on prod) and is preserved across deploys.
+**Log files** (both envs relative `.log/`): `hook_debug.log` (deploy), `api_log_file` (5MB × 5), `api_error_file` (stderr). `notify_on_startup` differs per env (preserved on deploy).
 
 ---
 

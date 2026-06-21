@@ -120,30 +120,16 @@ The Lab page's **Settings** tab walks you through this with
 copy-buttons. Open `/admin/research` → **Settings** while reading
 the notes below.
 
-### 3.1 Mint a JWT
+### 3.1 Mint a JWT (24h TTL)
 
-The MCP server (a subprocess of Claude Code) talks back to the
-RamboQuant API the same way every browser session does — over JWT
-auth.
+**Quick path**: Sign into `/admin/research` → Settings → Copy the `export RAMBOQ_TOKEN='…'` line → paste into your shell.
 
-**Fastest path** (Phase 16 shortcut):
-- You're already signed in on the Lab page. The Settings tab's
-  "1. Bootstrap your JWT" card shows your live session token as an
-  `export RAMBOQ_TOKEN='<the-jwt>'` line.
-- Click **Copy export line**. Paste into the shell where you'll
-  launch Claude Code. Done.
-- Re-copy after 24 hours when the JWT rolls over.
-
-**For automation** (cron jobs, no browser open):
-
+**For automation** (cron):
 ```bash
-export RAMBOQ_TOKEN=$(curl -s -X POST https://dev.ramboq.com/api/auth/login \
+export RAMBOQ_TOKEN=$(curl -s -X POST https://ramboq.com/api/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"username":"<your-username>","password":"<your-password>"}' \
-  | jq -r .access_token)
+  -d '{"username":"<you>","password":"<pass>"}' | jq -r .access_token)
 ```
-
-24 h TTL either way.
 
 ### 3.2 Register the MCP server
 
@@ -320,46 +306,18 @@ Same gate, same audit, same Telegram ping.
 
 ---
 
-## 5. The 26 MCP tools
+## 5. The 24 MCP tools
 
-### Read (16) — no token required
+24 tools split three ways: 16 read (no token), 2 persist (drafts always inactive), 6 gated write (require per-call confirm token).
 
-| Tool | What it returns |
-|---|---|
-| `get_positions(account?)` | Intraday positions across loaded broker accounts |
-| `get_holdings(account?)` | Long-term holdings |
-| `get_quote(symbols)` | Live LTP + OHLC + change% (up to 300 symbols) |
-| `get_ohlcv(symbol, days, exchange)` | Historical daily candles |
-| `get_recent_news(symbol?, sentiment?)` | Indian-market headlines with bull/bear/neutral tags |
-| `get_option_analytics(symbol, qty?)` | Greeks + payoff + risk for ONE leg |
-| `get_options_chain_snapshot(underlying, expiry, atm_window)` | LTP + Greeks for every strike ATM ± N (Phase 8) |
-| `get_economic_snapshot()` | Repo / CPI / IIP / GDP / USD-INR with freshness flags |
-| `get_funds_summary(account?)` | Cash + available/used margin per account |
-| `get_watchlist(name)` | Symbols in a curated watchlist |
-| `get_pnl_attribution(period, mode)` | P&L grouped by agent |
-| `list_agents(status?)` | Existing agents with their status |
-| `list_research_threads(symbol?)` | Past saved threads (summaries) |
-| `get_research_thread(thread_id)` | Full transcript + thesis for one thread |
-| `get_audit_recent(tool?, status?)` | Reverse-chrono MCP-action trail (Phase 7 — LLM self-check) |
-| `get_server_info()` | Base URL + token presence (diagnostic) |
+### Read (16)
+Market: `get_quote`, `get_ohlcv`, `get_recent_news` (with sentiment). Analytics: `get_option_analytics`, `get_options_chain_snapshot`. Book: `get_positions`, `get_holdings`, `get_funds_summary`, `get_watchlist`. Macro: `get_economic_snapshot`. Agents: `list_agents`. Research: `list_research_threads`, `get_research_thread`. Audit: `get_audit_recent` (LLM self-check). Diagnostic: `get_server_info`. P&L: `get_pnl_attribution`.
 
-### Persist (2) — no token required (drafts always land inactive)
+### Persist (2)
+`save_research_thread(symbol, thesis, confidence, transcript, title?)` — auto-titles via Gemini Flash or stub. `save_agent_draft(thread_id, ...)` — lands inactive + paper-mode only.
 
-| Tool | What it does |
-|---|---|
-| `save_research_thread(symbol, thesis_text, confidence, transcript, title?)` | Persist a chat session to the Lab page |
-| `save_agent_draft(thread_id, name, conditions, ...)` | Promote thread → inactive draft Agent in paper mode |
-
-### Gated write (6) — operator-minted confirm token required
-
-| Tool | Token kind | What it does |
-|---|---|---|
-| `place_order(...)` | `place` | Submit a new order (paper or live) |
-| `cancel_order(...)` | `cancel` | Cancel a working order (live broker OR paper engine) |
-| `modify_order(...)` | `modify` | Modify a working order (live OR paper) |
-| `activate_agent(...)` | `activate` | Flip an agent inactive → active |
-| `deactivate_agent(...)` | `deactivate` | Flip an agent active → inactive |
-| `update_agent(...)` | `update` | Edit conditions / cooldown / events / etc. on an existing agent (Phase 14) |
+### Gated write (6)
+`place_order(...)`, `cancel_order(...)`, `modify_order(...)` — all dual-mode (paper or live). `activate_agent(...)`, `deactivate_agent(...)`, `update_agent(...)` — agent state flips. Each requires a per-call operator-minted confirm token.
 
 ---
 
@@ -756,26 +714,19 @@ Edit `loss-positions-total-default` once → every consumer updates.
 
 ---
 
-## 11. Phase history
+## 11. Phase history (shipped)
 
-| Phase | Commit | Scope |
-|---|---|---|
-| 1 | `726e69a` | MCP foundation + Lab page + ResearchThread model |
-| 2a / 2b / 2c | `71196a2` / `bc51933` / `5d84f71` | Draft pipeline · Gemini Flash helpers · Macros |
-| 3 | `99c2057` | place_order with confirm token + mcp_audit table |
-| 3b+3c+4 | `9a5686c` | Audit tab + Telegram pings + cancel/modify |
-| 5 | `1ec801c` | Paper-aware cancel + modify |
-| 6+7 | `baf8aeb` | Audit retention + get_audit_recent |
-| 8 | `f6690ad` | Bulk option-chain snapshot |
-| 9+10+11 | `51770d4` | Watchlist + P&L + funds tools |
-| 12 + hotfix | `70dd25d3` / `ddff6ae9` / `d8efe7b1` | Activate/deactivate + `.fn(ctrl,…)` wrapper fix |
-| Select swap | `5ee35b5f` / `eab410d9` | Native dropdowns → custom Select |
-| 15 | `40b93b0f` | Audit since-window filter |
-| Docs | `3fc6e988` | Initial operator runbook |
-| 16 | `c1f547bf` | JWT bootstrap shortcut |
-| CLAUDE.md | `8202840c` | Architecture section for future Claude sessions |
-| 13 + 14 | `ae84c484` | Stale-token cleanup + update_agent |
-| 17 + 18 | `7552c54f` | Empty-state polish + Telegram→Audit deep-link |
+18 phases, 24 tools, 46 tests. Zero incremental cost.
 
-**Total cost across 18 phases: ₹0.** 24 MCP tools, 46 Playwright
-tests, 6 gated writes, end-to-end documented.
+| Phase | Headline |
+|---|---|
+| 1 | MCP + Lab page + threading model |
+| 2 | Drafts + Gemini Flash helpers |
+| 3 | place_order + confirm token gate |
+| 4 | Audit + cancel/modify |
+| 5 | Paper-aware cancel |
+| 6-7 | Retention + get_audit_recent |
+| 8 | Bulk option-chain snapshot |
+| 9-11 | Watchlist / P&L / funds tools |
+| 12-14 | Activate/deactivate + update_agent |
+| 15-18 | Polish + Telegram deep-link

@@ -77,73 +77,53 @@ Operator path: click **Load live book** in the Run controls card, then pick `Liv
 
 ---
 
-## Move primitives — what scenarios can do to prices
+## Move primitives
 
-Each scenario tick contains one or more `moves`. The driver supports six primitives:
+Six primitives per scenario tick:
 
 | Primitive | Effect |
 |---|---|
-| `pct {scope, value}` | LTP × (1 + value). `value: -0.03` = -3% drop |
-| `abs {scope, value}` | LTP + value (₹). Per-share. |
-| `random_walk {scope, drift, vol}` | `LTP ← LTP × (1 + drift + vol·N(0,1))`. Seed-deterministic when `scenario.seed:` is set |
-| `target_pnl {scope, value}` | Solves `ΔLTP × Σqty = target − currentPnl` to drive the scope to a target P&L |
-| `set_margin {scope, fields}` | Price-decoupled — set specific margin columns. Doesn't touch LTP |
-| `underlying_pct / underlying_abs / underlying_target {scope, value}` | Move an UNDERLYING's spot. Every derivative on that underlying then re-prices coherently via Black-Scholes (Phase 24+) |
+| `pct` | `LTP × (1 + value)` |
+| `abs` | `LTP + value` (₹/share) |
+| `random_walk` | GBM step, seed-deterministic |
+| `target_pnl` | Solve for ΔLTP to hit target P&L |
+| `set_margin` | Direct margin mutation (price-independent) |
+| `underlying_*` | Move spot; derivatives re-price via Black-Scholes |
 
-### Scope glob
-
-`section.account.tradingsymbol` with `*` (single-segment) and `**` (any-remaining):
-
-```yaml
-positions.**                    # every position row
-positions.ZG*.*                 # any ZG account, any symbol
-positions.*.NIFTY*              # any account, NIFTY-prefixed symbol
-positions.ZG####.NIFTY25APRFUT  # exact symbol in masked account
-underlying.NIFTY                # NIFTY spot
-underlying.*                    # every underlying
-margins.ZG####                  # masked-account margins row
-```
-
-`holdings.*` globs are silently ignored — sim is positions-only by design.
+**Scope glob** — `section.account.tradingsymbol` with `*` / `**`:
+- `positions.**` — all positions
+- `positions.ZG*.*` — any ZG account
+- `underlying.NIFTY` — NIFTY spot
+- `holdings.*` — silently skipped (sim positions-only)
 
 ---
 
 ## Shipped scenarios
 
-Five canned scenarios live in `backend/api/algo/sim/scenarios.yaml`:
+Seven canned scenarios in `backend/api/algo/sim/scenarios.yaml`. Pick any for stress-test — all work with `seed_mode: live` (recommended).
 
-| Slug | Effect | Notes |
-|---|---|---|
-| `generic-crash` | -3% LTP over 3 ticks | Default book-wide stress |
-| `generic-euphoria` | +3% LTP over 3 ticks | Profit-bleed-through tests |
-| `extreme-crash` | -19% LTP over 3 ticks | Black-swan |
-| `extreme-euphoria` | +19% LTP over 3 ticks | Mirror |
-| `random-walk` | Seeded GBM | Tests stdev / max_drawdown rolling metrics |
-| `nifty-down-3pct` | -3% on NIFTY underlying over 3 ticks | Coherent F&O re-pricing |
-| `nifty-up-3pct` | +3% on NIFTY underlying over 3 ticks | |
-
-All work against any seeded book (`seed_mode: live` recommended for the underlying-move scenarios).
+| Slug | Effect |
+|---|---|
+| `generic-crash` | -3% LTP / 3 ticks |
+| `generic-euphoria` | +3% LTP / 3 ticks |
+| `extreme-crash` | -19% LTP / 3 ticks |
+| `extreme-euphoria` | +19% LTP / 3 ticks |
+| `random-walk` | Seeded GBM for stdev/drawdown testing |
+| `nifty-down-3pct` / `nifty-up-3pct` | ±3% on NIFTY underlying (F&O re-pricing) |
 
 ---
 
-## Market-state presets — making the engine think time is different
+## Market-state presets
 
-Time-aware agents (rate metrics with baseline gates, `minutes_until_close`, expiry rules) need a simulated clock — at 03:00 AM IST wall-clock, every market segment is closed. Each scenario + each Start request can declare a `market_state` block:
+Time-aware agents need a simulated clock. Use presets: `pre_open`, `at_open`, `mid_session` (default), `pre_close`, `at_close`, `post_close`, `expiry_day`.
 
 ```yaml
-market_state: {preset: pre_close}                      # NSE closes in 30 min
+market_state: {preset: pre_close}           # NSE closes in 30 min
 market_state: {preset: expiry_day, is_expiry_day: true}
-market_state:                                          # explicit overrides
+market_state:                               # or explicit overrides
   nse_open: true
-  mcx_open: false
   minutes_since_nse_open: 360
 ```
-
-Seven presets shipped in `MARKET_STATE_PRESETS` (driver.py):
-
-`pre_open` · `at_open` · `mid_session` (default) · `pre_close` · `at_close` · `post_close` · `expiry_day`.
-
-`run_cycle` merges overrides on top of live values. Real path passes None and behaviour is unchanged.
 
 ---
 
@@ -174,33 +154,29 @@ Synthesiser support matrix:
 
 ## Custom positions — ad-hoc seeding
 
-The Run controls card has a **Custom positions** sub-section. Fill rows inline:
+Fill rows in the **Custom positions** card (Account / Symbol / Qty / LTP). Driver auto-uppers symbols, infers exchange (NFO for F&O, NSE otherwise), and appends to the seed. Rows land BEFORE derivatives re-pricing — synthetic options inherit spot + IV calibration.
 
 | Column | Notes |
 |---|---|
-| Account | Masked code (ZG####) — case-insensitive |
-| Symbol | Tradingsymbol (NIFTY25APR22000CE, RELIANCE, CRUDEOIL26JUNFUT…). Auto-uppercases |
-| Qty | Positive = long, negative = short. Lots, not contracts |
-| LTP | Starting last-price. Average price defaults to LTP if unset |
-
-`POST /api/simulator/start` accepts `custom_positions: list[dict]`. Driver normalises (uppercases symbols, infers exchange — NFO for parseable F&O, NSE otherwise), then appends to whatever scripted/live seed produced.
-
-Rows land BEFORE `_seed_derivatives` runs — so synthetic NIFTY/BANKNIFTY/etc. options pick up underlying spots + IV calibration the same way real positions do.
+| Account | Masked ZG#### |
+| Symbol | NIFTY25APR22000CE etc. |
+| Qty | +long, -short. Lots (not contracts). |
+| LTP | Starting price. Avg defaults to LTP. |
 
 ---
 
-## Iteration mode — multi-iteration sweeps
+## Iteration mode — sweeps (multi-run batches)
 
-The collapsed **Iteration mode** card hides an N-iteration sweep with cross-scenario / cross-regime variation:
+The **Iteration mode** card (collapsed by default) runs N iterations across M scenario slugs.
 
 | Field | Purpose |
 |---|---|
-| Iterations | How many times to run (N) |
-| Regimes | List of scenario slugs to round-robin (or one if you want every iteration identical) |
-| Seed | Deterministic re-runs — same seed = same fills, same draws |
-| Correlation table | Pair of (source, target, beta) tuples — when scenario fires `underlying_pct` on source, target also moves at `β × primary_delta`. Single-hop only |
+| Iterations | How many times (N) |
+| Regimes | Scenario slugs to round-robin |
+| Seed | Deterministic re-runs |
+| Correlation | (source, target, beta) — when source moves, target also moves at β × delta. Single-hop only. |
 
-Each iteration writes a `SimIteration` row visible on `/admin/simulator/iterations`. Click any row to replay with the same seed + parameters — perfect for "show me what happened when ATR_5_drop kicked in across 100 NIFTY paths".
+Each iteration writes a `SimIteration` row at `/admin/simulator/iterations`. Replay any row to re-run with identical seed + parameters.
 
 ---
 

@@ -1,54 +1,36 @@
 # RamboQuant Admin Guide
 
-> **First time here?** Read [USER_GUIDE.md](USER_GUIDE.md) first — it explains the *concepts* (what an agent is, why we have a simulator, what the chase engine does) in plain English. This file is the *operations reference*: exact button labels, JSON shapes, API endpoints, config keys. Read USER_GUIDE first; then come back here when you need step-by-step instructions on a specific task.
+> Read [USER_GUIDE.md](USER_GUIDE.md) first for concepts; this file is the operations reference.
 
-A walkthrough of the four things an admin cares about on this site:
-
-1. **Agents** — rules that watch the portfolio and fire when something worth knowing happens.
-2. **Tokens** — the vocabulary agents are written in.
-3. **The Simulator** — lets you safely test what an agent would do under a hypothetical market.
-4. **Settings** — runtime-editable thresholds and toggles you tune from the UI.
-
-No code reading required. If you can use a dropdown and a form, you can use all of this.
-
-> **TL;DR for the impatient:** want to see a loss-threshold rule auto-close your positions safely before you turn it on?
-> 1. `/agents` → find `loss-pos-total-auto-close` → expand it. Condition is `pnl ≤ −₹50k on positions.total`; action is `chase_close_positions`; ships **inactive**.
-> 2. Click **Run in Simulator** on that row. The sim synthesises a scenario that trips exactly this condition, auto-loads your live book, and dry-fires the agent.
-> 3. Watch the bottom **Log** panel. The **Simulator** tab streams per-symbol price ticks; the **Order** tab shows the paper-traded `SELL N <symbol> @₹price · acct=…` lines for each position the action would have closed, one per position, all tagged `SIM`.
-> 4. When you're confident the thresholds and actions match your risk tolerance, flip the agent **ON** from the row — it will do the real thing next time conditions fire.
+**Quick start — test an auto-close rule before activating**:
+1. `/agents` → `loss-pos-total-auto-close` → **Run in Simulator**
+2. Watch the **Simulator** tab at the bottom — one `SELL` line per position
+3. Flip **ON** when confident
 
 ---
 
-## The four words
+## Core concepts
 
-Everything on the admin site revolves around four ideas:
-
-| Word | Plain English |
+| Term | Meaning |
 |---|---|
-| **Agent** | A rule — "if X happens, tell me (and maybe do something)". Lives as a row on the **Agents** page. |
-| **Alert** | The moment an agent's rule became true. Sent through Telegram, email, and the live log. |
-| **Notify** | *How* an alert reaches you — telegram / email / browser / log. |
-| **Action** | *What* the system does in response — e.g. place an order, close a position, deactivate a flag. |
+| **Agent** | A rule row: "if X, notify me and maybe do Y" |
+| **Alert** | Runtime event when rule triggers |
+| **Notify** | Delivery channel (Telegram / email / log) |
+| **Action** | Side-effect (place order, close position, …) |
 
-Think of an agent as a sentence: **"When _condition_ is true, _notify_ me through these channels and _do_ these actions."**
+Agent as a sentence: **"When _condition_, _notify_ and _do_ these actions."**
 
-### When agents re-fire (latching semantic)
+### Firing rules (prevent spam)
 
-To avoid spamming you when a drawdown persists, agents follow a two-tier rule:
-
-- **Static agents** (absolute ₹ floor or % floor — e.g. "pnl ≤ −₹30k", "day loss ≥ 3%") fire **once** the first time the threshold is crossed, then **latch silent** as long as the condition keeps matching. They re-arm automatically when the value recovers above the threshold. This means a loss that sits flat at −₹40k won't fire the static agent every tick — you get one notification at the crossing, not a stream.
-- **Rate-of-change agents** ("pnl bleeding ≥ ₹3k/min") keep re-firing while the bleed is accelerating, gated by cooldown (default 30 min) and a material-change threshold (default ₹15k move between fires). The whole point of these agents is to wake you up when the situation is getting materially worse.
-- **Session rollover** (new trading day, detected automatically) clears every latch.
-
-Put together: the first alert when things go bad is the static agent. After that, it's rate agents telling you if it's getting worse faster. When things recover, everything re-arms silently.
+- **Static agents** — fire once at threshold crossing, latch silent while condition holds, re-arm on recovery
+- **Rate agents** — re-fire when bleeding accelerates (gated by cooldown + material-change threshold)
+- **Session rollover** — clears all latch state daily
 
 ---
 
-## Order Templates — per-position exit rules (all brokers)
+## Order Templates — auto-attach TP/SL/trail on position fill
 
-Templates automate the exit workflow: operator picks one at order entry, platform attaches broker-native GTT (Good-Till-Triggered) orders when the position fills. One template per scope is marked default (auto-fills OrderTicket); operator can override per-ticket.
-
-**Multi-broker coverage** (as of Sprint C):
+Pick a template at order entry → platform attaches broker-native GTT when position fills. Multi-broker coverage (Sprint C):
 
 | Broker | TP single | SL single | OCO (TP+SL) | Trail (modify GTT) | MCX / commodity |
 |---|---|---|---|---|---|
@@ -63,76 +45,36 @@ When the operator picks a template whose features exceed the selected broker's n
 
 The chip is sourced from `GET /api/admin/brokers/{account}/capabilities` — a pure read of the `BrokerCapabilities` dataclass; no broker round-trip.
 
-### Page: `/admin/templates` (admin-guarded)
+### `/admin/templates` page
 
-| Section | Feature |
-|---|---|
-| **List** | All templates (system-seeded + custom). Columns: Name | Type | TP | SL | Wing | Scale | Trail | Active | Default (radio) | Edit / Delete |
-| **Edit form** | name / description / tp_type (LIMIT / MARKET) / tp_pct / tp_abs / sl_pct / sl_abs / sl_trail_pct / wing_strike_offset / wing_premium_pct / tp_scales_json (JSON array) |
-| **Action** | "Save as Default" button (sets `is_default=True`, auto-demotes prior default) |
+Columns: Name | TP | SL | Trail | Wing | Scale | Active | Default (radio). Edit form fields: name / description / tp_type / tp_pct / tp_abs / sl_pct / sl_abs / sl_trail_pct / wing_strike_offset / wing_premium_pct / tp_scales_json.
 
-Template rows show inline chips:
-- `TP` (gold) — tp_type + tp_pct/tp_abs
-- `SL` (red) — sl_pct/sl_abs
-- `SL X% trail Y%` (red) — when sl_trail_pct is set
-- `WING ±N` (teal) — wing_strike_offset
-- `Scale ×M` (violet) — when tp_scales_json has M entries
-- `MKT` (orange) — when tp_type is MARKET (LIMIT is default, unmarked)
+Row chips: `TP` (tp_pct/tp_abs) · `SL` (sl_pct/sl_abs) · `SL X% trail` · `WING ±N` · `Scale ×M` · `MKT` (if MARKET, else LIMIT default)
 
 ### OrderTicket integration
 
-Two-pill toggle in the entry card header:
+Two-pill toggle: `[Default ✓]` (uses marked default) or `[None]` (no exits). Shows inline summary: `"TP +50%, SL −1%, Scale ×3"`.
 
-```
-[Default ✓] [None]
-```
+### OrderCard exit-rule chip
 
-- **Default ✓** — uses the operator's marked-default template (or first seeded if no default chosen yet)
-- **None** — no template; order places without auto exits
+After fill: `tmpl:#1 ✓` (all GTTs placed) or `tmpl:#1 …` (placing, ~1 sec) or none. Tooltip: template name + summary.
 
-When Default is selected, the card shows inline summary below the toggle: `"TP +50%, SL −1%, Scale ×3"` or similar.
+### Settings (`/admin/settings → templates.*`)
 
-### Exit rule row chips
-
-After the order fills, OrderCard (in LogPanel Order tab) renders:
-
-| State | Chip | Meaning |
+| Key | Default | Purpose |
 |---|---|---|
-| Template attached, GTTs live | `tmpl:#1 ✓` | All exits are placed. `#1` is the template ID. |
-| Template attached, placing | `tmpl:#1 …` | GTTs still being placed; brief (~1 sec) state during postback processing. |
-| No template | (none) | Order placed without templates. |
-
-Hover tooltip on chip shows template name + exit summary.
-
-### Settings
-
-`/admin/settings` → `templates.*` (all preserved across deploys):
-
-| Key | Type | Default | Effect |
-|---|---|---|---|
-| `wing_min_oi` | int | 1000 | Wing chain scan filters out strikes with OI < this. Reduces noise on illiquid strikes. |
-| `wing_max_spread_pct` | numeric | 10 | Wing filter: skip if bid-ask spread > this % of LTP. |
-| `wing_chain_radius` | int | 20 | Wing scan scope: ±N strikes around parent strike. Reduces API calls. |
-| `trail_poll_interval_seconds` | int | 30 | How often `_task_trail_stop` checks LTP and advances trailing stops. Lower = tighter trail, more `broker.modify_gtt` round-trips. Two-leg OCO trails ratchet the SL slot while the TP slot rides through unchanged (Sprint A persists `tp_trigger` in `attached_gtts_json` so the poller has both values). |
-| `oco_pair_poll_seconds` | int | 15 | How often `_task_oco_pair_watcher` checks broker GTT state to cancel the surviving sibling after one leg of an emulated OCO fires. Only used by brokers without native OCO (Groww today). Tighter than the trail poller because the race window matters more — a fired-but-not-cancelled sibling can produce a second unwanted fill. |
+| `wing_min_oi` | 1000 | Filter illiquid strikes |
+| `wing_max_spread_pct` | 10 | Max bid-ask spread % |
+| `wing_chain_radius` | 20 | ±N strikes around parent |
+| `trail_poll_interval_seconds` | 30 | LTP check frequency for trailing stop |
+| `oco_pair_poll_seconds` | 15 | Sibling-cancel check for emulated OCO (Groww) |
 
 ### Seeded system templates
 
-Both auto-inserted on first boot; users can edit / delete them (not "system-locked" — templates can be freely customized).
-
-**default-long-option** — designed for BUY calls / BUY puts
-- TP: +80% MARKET (takes big moves fast)
-- SL: none
-- Wing: none
-- Scale: none
-- Trail: none
-
-**default-short-vol** — designed for SELL puts / SELL calls
-- TP: +10% LIMIT (tight profit lock)
-- SL: −20% LIMIT (realistic stop for short)
-- Wing: −1 strike (hedges gamma; wing_premium_pct auto-picks based on nearby premium)
-- Scale: none
-- Trail: none
+| Template | TP | SL | Wing | Scale | Trail |
+|---|---|---|---|---|---|
+| `default-long-option` | +80% MARKET | none | none | none | none |
+| `default-short-vol` | +10% LIMIT | −20% LIMIT | −1 strike | none | none |
 
 ### API routes (admin-guarded)
 
@@ -222,31 +164,16 @@ For shorts, invert (lowest_ltp_seen, subtraction becomes addition). Context (`hi
 
 ---
 
-## How agents work — end to end
+## Agent execution — every 5 min during market hours
 
-Here's what happens every 5 minutes during market hours:
+Broker data → summarise → `run_cycle()` for each ACTIVE agent:
+1. Market open?
+2. Cooldown finished?
+3. Condition matches?
+4. Material change since last alert?
+5. Fire: Telegram + email + log + actions
 
-```
-Kite broker  ──►  holdings / positions / margins  ──►  summarise per account + total
-                                                        │
-                                                        ▼
-                         ┌──────────────── run_cycle ────────────────┐
-                         │  for each ACTIVE agent:                    │
-                         │    1. is the market open?                  │
-                         │    2. is the cooldown finished?            │
-                         │    3. does the condition match?            │
-                         │    4. has something material changed since │
-                         │       the last alert?                      │
-                         │    5. if yes: send alerts + run actions    │
-                         └────────────────────┬───────────────────────┘
-                                              ▼
-           Telegram + email + browser live log + agent-events row in the DB
-                                              │
-                                              ▼
-                       (if the agent has actions:  place_order / chase_close / …)
-```
-
-Each of those numbered gates exists to keep noise down. Cooldowns prevent spam. The baseline gate prevents opening-bell panic alerts. The suppression gate prevents re-alerting when the loss hasn't changed much.
+Gates: cooldown (spam), baseline (open-bell), suppression (flat loss)
 
 ---
 
@@ -294,215 +221,133 @@ A composite tree:
 
 ### 2. Notify channels
 
-A list like:
-
 ```json
 [
   { "channel": "telegram", "enabled": true },
-  { "channel": "email",    "enabled": true },
-  { "channel": "log",      "enabled": true }
+  { "channel": "email",    "enabled": true }
 ]
 ```
-
-You can mix and match `telegram` / `email` / `websocket` / `log`. Disable one by flipping `enabled` to `false`.
+Mix and match: `telegram` / `email` / `websocket` / `log`.
 
 ### 3. Actions
 
-Empty list `[]` means "alert only — don't do anything." Otherwise the list describes what to *do* when the alert fires:
-
+`[]` = alert only. Otherwise:
 ```json
-[
-  { "type": "chase_close_positions",
-    "params": { "account": "ZG0790", "exchange": "NFO" } }
-]
+[{"type": "chase_close_positions", "params": {"account": "ZG0790", "exchange": "NFO"}}]
 ```
 
-The action shapes (place order, modify, cancel, close, log, deactivate, etc.) all come from the **Tokens** page — more on that next.
+See **Tokens** page for all action types.
 
 ### 4. Metadata
 
-- **Scope** — `total` or `per_account` (display grouping)
-- **Schedule** — `market_hours` (default) or `always`
-- **Cooldown (minutes)** — minimum time between two fires of this agent. Default 30.
-- **Status** — `active` / `inactive` / `cooldown`. Toggle with the ON/OFF button on the agent row.
+- **Scope**: `total` or `per_account`
+- **Schedule**: `market_hours` or `always`
+- **Cooldown**: default 30 min
+- **Status**: `active` / `inactive`
 
 ---
 
-## Tokens — the vocabulary agents are written in
+## Tokens — vocabulary for agent conditions
 
-You can't invent words out of thin air when writing a condition. Every `metric`, `scope`, `op`, `channel`, and `action type` must be a **registered token**. The Tokens page (`/admin/tokens`) is where those words live.
+Every `metric`, `scope`, `op`, `channel`, `action_type` must be registered at `/admin/tokens`.
 
-### Three categories
+**Three categories:**
+- **Condition**: `metric`, `scope`, `operator` — what agents can check?
+- **Notify**: `channel`, `format`, `template` — how to alert?
+- **Action**: `action_type` — what to do?
 
-The Tokens page has three tabs — three *kinds* of tokens, each playing a different role:
+**System vs custom**: System (ship with app, toggle-only) vs Custom (full CRUD)
 
-| Category | Tokens inside | Answers the question… |
-|---|---|---|
-| **Condition** | `metric`, `scope`, `operator` | *What can agents check?* |
-| **Notify**    | `channel`, `format`, `template` | *How can agents alert?* |
-| **Action**    | `action_type` | *What can agents do?* |
+### Token row fields
 
-### System tokens vs custom tokens
-
-- **System** tokens ship with the application. They have the orange "system" badge. You can **enable/disable** them (is_active toggle) but you cannot rename or delete them. Built-in metrics like `pnl`, `day_pct`, `cash`, built-in scopes like `holdings.any_acct`, `positions.total`, and built-in action types like `place_order`, `chase_close_positions` all live here.
-- **Custom** tokens are ones you create on this page. Full CRUD — you can edit, delete, and change anything about them.
-
-### What one token row looks like
-
-Each row carries more than just a name. The fields you'll see when editing:
-
-| Field | Meaning |
+| Field | Purpose |
 |---|---|
-| **Category** | `condition`, `notify`, or `action` |
-| **Token kind** | Sub-type. For condition: `metric` / `scope` / `operator`. For notify: `channel` / `format` / `template`. For action: `action_type`. |
-| **Token** | The word itself — what authors type into an agent (e.g. `pnl`, `<=`, `telegram`). Must be unique within its (category, kind). |
-| **Value type** | What kind of value this token produces or accepts — `number`, `string`, `boolean`, `enum`, `array`, `object`, `void`. |
-| **Units** | Human-readable label for numeric metrics: `₹`, `%`, `₹/min`, `%/min`, `min`. |
-| **Description** | One line explaining what it means. Shows in the Agents-page editor as tooltip-like help. |
-| **Resolver** | Python dotted path to the function that implements the token. Required for system-integrated tokens; omit for simple enum/string tokens that the engine doesn't need to call into. |
-| **Params schema** | For action tokens — what arguments the action expects (account, symbol, quantity, side, …). JSON schema. |
-| **Enum values** | For enum value types — the allowed strings. |
-| **Template body** | For notify template tokens — the message body with `${placeholder}` syntax. |
+| **Token** | The word (e.g. `pnl`, `<=`, `telegram`) |
+| **Category** | `condition` / `notify` / `action` |
+| **Token kind** | `metric` / `scope` / `operator` / `channel` / `action_type` |
+| **Value type** | `number`, `string`, `boolean`, `enum`, `array`, `object`, `void` |
+| **Units** | For metrics: `₹`, `%`, `₹/min`, `%/min`, `min` |
+| **Description** | Tooltip in Agents editor |
+| **Resolver** | Python dotted path (required for system tokens) |
+| **Params schema** | For action tokens — JSON schema of arguments |
+| **Enum values** | Allowed strings for enum types |
+| **Template body** | Message body with `${placeholder}` syntax |
 
 ### Creating a token
 
-1. Go to `/admin/tokens` → click **+ New token** (emerald button, top right).
-2. Pick a **Category** (condition / notify / action).
-3. Pick a **Token kind** — the form adapts. A condition `metric` needs a `resolver` (Python function that returns a number for a given row); a `scope` needs a resolver that returns a list of rows; an `operator` is usually a built-in comparator.
-4. Fill in the token string, description, value type, optional units.
-5. For action tokens, define the `params_schema` (JSON) — this is what the Agents page uses to render the action's sub-form.
-6. Save → the row appears in the list.
-7. **Click "Reload registry"** (yellow button, top right). Tokens are loaded into an in-memory dispatch table at startup; the reload button rebuilds that table so your new token is usable *without* restarting the server.
+1. `/admin/tokens` → **+ New token**
+2. Pick Category and Token kind
+3. Fill Token, Description, Value type, Units
+4. For actions: define `params_schema` (JSON)
+5. Save → **Reload registry** (yellow button, top right)
 
-That's it. The new token is now a word agents can use.
+New token usable immediately without server restart.
 
-### How tokens help agent creation
+### Integration with Agents editor
 
-Every dropdown in the Agents editor is populated from the Tokens table:
+- Dropdowns auto-populate from Tokens table
+- **Validate** button checks tokens against registry (catches typos)
+- **Actions editor** renders form from action token's `params_schema`
 
-- The condition editor autocompletes metric/scope/operator names from whatever's in the catalog.
-- The "validate" button (on the Agents editor) checks every token referenced in your condition against the live registry — typos fail here, not at runtime.
-- The actions editor renders its form using the action token's `params_schema`, so you only see fields relevant to the action you picked.
-
-In short: **the Tokens page is the one place you extend the system.** Adding a new kind of check or a new kind of action is "one token row + one Python function," no deploy, no code change in the engine.
+Tokens page is the single extension point: new check = 1 token row + 1 Python function, no engine code change.
 
 ---
 
-## Creating an agent — step by step
+## Creating an agent
 
-Open `/agents`. Agents are grouped by category (Loss & Risk, Summaries, Automation, Other) so existing ones are easy to find.
+1. `/agents` → expand a row → **Edit**
+2. Fill: Name / Description / Scope / Schedule / Cooldown / Conditions (JSON) / Events / Actions
+3. **Validate** → **Save**
+4. Flip OFF pill to ON when ready
 
-To create or edit:
-
-1. Click a row to expand it and read the current condition tree in plain English.
-2. Click **Edit** on the row. The inline form appears:
-   - **Name** / **Description** — human-readable
-   - **Scope** — `total` / `per_account`
-   - **Schedule** — `market_hours` / `always`
-   - **Cooldown (minutes)** — 30 is a reasonable default
-   - **Conditions (JSON)** — the condition tree (see above)
-   - **Events (JSON)** — notify channels list
-   - **Actions (JSON)** — action list, or `[]` for alert-only
-3. **Click Validate** (cyan button). The server dry-checks your condition tree against the live token registry and returns any unknown tokens. You'll get a green banner or an error list.
-4. Click **Save** once validation passes.
-
-A freshly-saved agent is `inactive` by default. Click the OFF pill to flip it to ON. It will start evaluating on the next tick.
-
-### Copy-an-existing pattern (recommended)
-
-The easiest way to build your first custom agent is to click into any `loss-*` row, look at its condition tree, and clone-edit a new agent with slightly different thresholds. The 14 seeded loss agents cover static `%`, static `₹`, rate `₹/min`, and rate `%/min` variants at both per-account and total scope — between them they exercise almost every condition-grammar feature.
+**Tip**: Copy a seeded `loss-*` agent and edit thresholds — fastest way to learn.
 
 ---
 
-## The Simulator — try it before you trust it
+## The Simulator — test agents safely
 
-The Simulator (`/admin/execution?mode=sim`) answers the question:
+`/admin/execution?mode=sim` feeds fabricated data through the real agent engine. All alerts tagged `SIMULATOR`.
 
-> "If the market did X, what would my agents do?"
+**Page surface:**
+- Status bar: `RUNNING` / `idle`, scenario, tick count
+- Controls: scenario dropdown · seed mode · rate · Load live book · Start/Stop/Step · Run cycle · Clear sim
+- Recent SIMULATOR agent events table
+- Recent SIMULATOR orders table
+- LogPanel **Simulator** tab: per-tick price diffs in real time
 
-It feeds fabricated holdings / positions / margins into the **same** agent engine the real pipeline uses. Alerts, Telegram messages, email sends, paper-traded orders — all of them fire, but every one is tagged `SIMULATOR` so nobody confuses them with real alerts.
+### Market-state presets
 
-### What you see on the page
-
-- **Status bar** — `RUNNING` / `idle`, active scenario, seed mode, tick number.
-- **Controls row** — scenario dropdown, seed mode, rate, plus buttons:
-  - **Load live book** — snapshots your real Kite positions into the sim.
-  - **Start / Stop / Step** — run continuously, halt, or apply one tick manually.
-  - **Run cycle** — run the agent engine against the current sim state right now.
-  - **Clear sim** — delete every past SIMULATOR event and order row from the DB.
-- **Recent SIMULATOR agent events** — table of fires since the last Clear.
-- **Recent SIMULATOR orders** — paper-traded orders from sim actions.
-- **Log panel** (shared across the admin pages) — the **Simulator** tab streams one line per tick with per-symbol price diffs in real time.
-
-### Simulated market clock
-
-Time-aware agents (rate rules with a baseline gate, anything that checks `minutes_until_close`, expiry-day auto-close rules) need a realistic clock. The simulator provides one via **market-state presets**:
-
-| Preset | What it simulates |
+| Preset | Simulates |
 |---|---|
-| `pre_open`     | Before the session (no segment flags open) |
-| `at_open`      | Market just opened (1 min into session) |
-| `mid_session`  | Default — 3 hours into the session |
-| `pre_close`    | 6 hours in, close not yet passed |
-| `at_close`     | Just after equity close, MCX still running |
-| `post_close`   | Both segments done |
-| `expiry_day`   | Mid-session on an expiry day — flips `is_expiry_day=true` so expiry agents engage |
+| `pre_open`, `at_open`, `mid_session` (default), `pre_close`, `at_close`, `post_close`, `expiry_day` | Realistic market clock for time-aware agents |
 
-Three places to set it (most specific wins): **Market dropdown** on the Simulator page → **scenario YAML** (`market_state: {preset: pre_close}`) → default `mid_session`. The Run-in-Simulator button on the Agents page picks a sensible preset from the agent's metric (`expiry_day` for expiry-slug agents, `mid_session` otherwise) so per-agent tests just work.
+Set via: Simulator page dropdown (most specific) → scenario YAML → default. Run-in-Simulator button auto-picks sensible preset.
 
-The running sim's status bar shows `market: <preset>` next to the tick counter.
+### Tick cadence
 
-### Tick cadence — positions only
+Simulator is **positions-only** (holdings aren't simulated). Holdings agents get a clear error. Positions refresh every tick by default (cadence = 1). Override via: Pos / N input (most specific) → scenario YAML → `/admin/settings`. Margin patches (`set_margin`) fire on scheduled ticks independent of cadence.
 
-The simulator is **positions-only**. Holdings aren't simulated at all because intraday risk lives in F&O positions + fund negatives; holdings-based agents (`day_pct`, `day_rate_abs`, `day_rate_pct`) validate against live production data only. If you press **Run in Simulator** on a holdings agent, you'll get a clear error telling you so.
+### Seeding modes
 
-Positions refresh every tick by default (cadence = 1). Three places to override, most specific wins:
-
-1. **Pos / N** input on the Simulator page — blank = use scenario / DB default.
-2. **Scenario YAML** — top-level `positions_every_n_ticks: <N>`.
-3. **DB setting** — `simulator.positions_every_n_ticks` on `/admin/settings`.
-
-Margin patches via `set_margin` are cadence-independent — they fire on whatever tick the scenario schedules them on. Tick 0 always refreshes (matches how a live session feels at market open).
-
-### Three seeding modes
-
-Scenarios decide what moves; seeding decides what moves them.
-
-| Mode | Starting state | Use it when… |
+| Mode | Starting state | Use |
 |---|---|---|
-| **Scripted** | The scenario's built-in `initial` block (fake accounts + symbols) | Deterministic regression test — same inputs every run |
-| **Live** | Snapshot of your real Kite positions | You want to see what your *actual* book would look like after a hypothetical move |
-| **Live + scenario** | Live snapshot, then the scenario's scripted extras layered on top | You want a real-book stress test (e.g. `generic-crash` scenario with your real positions) |
+| **Scripted** | Scenario's `initial` block | Deterministic regression test |
+| **Live** | Real Kite positions snapshot | Stress your actual book |
+| **Live + scenario** | Real snapshot + scenario extras | Real book + hypothetical moves |
 
-For Live / Live+scenario: you can press **Load live book** to snapshot now, or just pick Live / Live+scenario and hit **Start** — the driver auto-snapshots if you haven't already. Load live book manually when you want a *fresh* snapshot right before starting (e.g. after placing real orders).
+Manual **Load live book** for a fresh snapshot before starting.
 
-### Running it
+### Running a simulation
 
-1. Go to `/admin/execution?mode=sim`.
-2. Pick a scenario. All five (`generic-crash`, `generic-euphoria`, `extreme-crash`, `extreme-euphoria`, `random-walk`) are positions-only and work with Live or Live+scenario. Start with a generic one; move to extreme variants when you want to trip every threshold at once.
-3. Pick seed mode and (optionally) press **Load live book** — the driver auto-snapshots if you pick Live / Live+scenario and haven't already.
-4. Set **Rate (ms)** — how fast to advance ticks. 2000 ms = 1 tick every 2 seconds is fine.
-5. Press **Start**.
-6. Switch to the **Simulator** tab at the bottom. Every tick shows up with per-symbol price moves:
+1. `/admin/execution?mode=sim` → pick scenario (start with `generic-crash`)
+2. Pick seed mode → **Load live book** if using Live / Live+scenario
+3. Set **Rate** (2000 ms = 1 tick/2 sec) → **Start**
+4. Watch **Simulator** tab at bottom for per-symbol price diffs
+5. Auto-stops at 30 min; click red **Stop** to exit early
 
-   ```
-   [12:34:56] SIMULATOR tick 3 · generic-crash
-     holdings.ZG####.RELIANCE:  4822.03→4725.59 (Δ -96.44)
-     holdings.ZG####.ACMESOLAR: 298.90→292.92   (Δ -5.98)
-     ...
-   ```
+### Testing one agent
 
-7. Sim auto-stops at 30 minutes. Stop early with the red **Stop** button.
-
-### Testing one specific agent
-
-On the `/agents` page, every row has a **Run in Simulator** button. Click it:
-
-- Navigates to `/admin/simulator?agent_id=<id>`
-- Pre-arms the page to run *only that agent*, bypassing schedule / cooldown / baseline gates
-- Pick a scenario and Start → the chosen agent fires as often as its condition is true, without affecting any real state
-
-This is the safest way to test a new agent before activating it.
+On `/agents` page, every row has **Run in Simulator** button. Pre-arms the page to run only that agent, bypassing schedule / cooldown / baseline gates. Safest way to test before activating.
 
 ### Underlying-driven F&O scenarios
 
@@ -549,150 +394,46 @@ This is the right move for "what-if" testing before you take a real trade — yo
 
 ---
 
-## Mode switching — single navbar dropdown
+## Execution mode — navbar dropdown only
 
-**Execution mode is now set exclusively from the navbar dropdown** (top-right corner of every page). Every page shows a pill:
-
-| Mode | Navbar label | Colour | When to use |
-|---|---|---|---|
-| Simulator | SIM | rose | Fabricated price moves, full agent testing |
-| Paper | PAPER | sky-blue | Real quotes + paper engine, Kite margin validation |
-| Live | LIVE | red | Real broker orders (default on prod) |
-| Shadow | SHADOW | orange | Logs payload + margin validation, no execution |
-| Replay | REPLAY | green | Historical candles, backtesting |
-
-**Branch gate**: `main` (prod) allows any mode. Non-`main` (dev) forces PAPER regardless of dropdown selection.
-
-**Per-order mode toggle removed**: The OrderTicket `/orders` form no longer has a per-ticket mode selector. The navbar dropdown is the sole source of truth.
-
-**Confirm modal**: Switching from LIVE → PAPER or LIVE → SHADOW on prod fires a one-time confirm per session so the operator can't accidentally flip modes mid-trading.
-
-**Telegram tag**:
-- (no tag) = LIVE mode
-- `[PAPER]` = PAPER mode
+Five modes: SIM (rose) · PAPER (sky-blue) · LIVE (red) · SHADOW (orange) · REPLAY (green). Branch gate: `main` allows any; non-`main` forces PAPER. Confirm modal before LIVE → PAPER/SHADOW. Telegram tag: empty = LIVE, `[PAPER]` = PAPER mode.
 
 ---
 
-## Paper trading dashboard (`/admin/execution?mode=paper`)
+## Paper mode dashboard (`/admin/execution?mode=paper`)
 
-`/admin/execution?mode=paper` is the visual surface for what's actually happening in **mode 2** on prod — real Kite quotes feeding the paper trade engine. Same layout as the simulator page, but reading from the live engine instead of a sim driver.
-
-You'll see:
-
-- **Status banner** at the top:
-  - Green/sky **`CHASING`** when paper orders are in flight on main.
-  - Amber **`IDLE`** when the engine is enabled but no chase is running.
-  - Grey **`DEV`** when you're on a non-main branch (engine exists but no background tick — paper trading is prod-only by design).
-- **Chase pills** — one per in-flight paper order, showing side / qty / symbol / current limit / attempt count. Same shape as the simulator page so it reads as a sibling surface.
-- **Chart grid** — one mini chart per symbol with captured ticks. Underlyings come first (sky-blue `SPOT` tag), derivatives below grouped by underlying with the spot overlaid as a dashed line.
-- **LogPanel** at the bottom — canonical 6-tab strip (Orders · Agents · Terminal · Ticks · System · News) inherited from LogPanel's default. The Orders tab shows recent `mode='paper'` `AlgoOrder` rows; charts render inline in the page above (the standalone Chart tab inside LogPanel was retired since the page already mounts the chart grid).
-
-**When the page is most useful**: during the soak phase, after you've toggled into PAPER mode from the navbar and want to watch the chase against the live market without any order touching the broker. Every paper fire shows up here, and you can compare it to what the agent's `[PAPER]` Telegram alert said would happen. The seeded default on a fresh install is LIVE — flip to PAPER from the navbar (or `/admin/execution`) when you want to soak-test, then flip back to LIVE when you're ready for the real broker to take orders.
+Real Kite quotes + paper engine. Status: `CHASING` (orders in flight) · `IDLE` (enabled, no orders) · `DEV` (non-main). Chase pills (side / qty / symbol / limit / attempts) + chart grid + LogPanel Orders tab. Watch the live chase without broker touches; compare to `[PAPER]` Telegram alerts.
 
 ---
 
-## Multi-account basket orders — `/api/orders/basket`
+## Basket orders — multi-leg, multi-account
 
-The **Orders** > **Ticket** tab now builds baskets where each leg can trade on a different account.
-
-### Workflow
-
-1. **Ticket tab** → fill Symbol / Qty / Side / Price / Type.
-2. **+ Basket** button → pills appear below, defaulting to all accounts.
-3. Per-pill, click the **Account dropdown** → pick which Kite account this leg uses.
-4. (Optional) **+ Add symbol** to add more legs.
-5. **Submit** → routes to `POST /api/orders/basket` (PAPER) or `POST /api/orders/basket/place` (LIVE).
-
-### Margin calculation
-
-**Margin strip** above the pills shows per-account:
-- **Required** — Kite's `basket_order_margins` verdict for all legs on this account
-- **Avail** — current available margin
-- **After** — available margin post-trade
-
-Computed per-account via `GET /api/orders/basket/margin` (PAPER + LIVE).
-
-### Backend routes
-
-| Route | Purpose |
-|---|---|
-| `GET /api/orders/basket/margin` | Validate margin for all legs across accounts; return per-account Required / Avail / After |
-| `POST /api/orders/basket` | PAPER mode: register each leg with PaperTradeEngine, return pill state |
-| `POST /api/orders/basket/place` | LIVE mode: place one `basket_order` per account via Kite |
-
-All legs inherit the navbar's `execution.paper_trading_mode` — they all go paper or live together.
+Orders > Ticket tab: **+ Basket** button → add legs, pick account per pill. Margin strip shows Required / Avail / After per account. Routes: `GET /api/orders/basket/margin`, `POST /api/orders/basket` (PAPER), `POST /api/orders/basket/place` (LIVE).
 
 ---
 
-## Auto profit target on every order
+## Auto profit target
 
-The OrderTicket Entry form now carries a **Target** row with qty + price + side (automatically SET for auto-TP).
-
-### Defaults
-
-- **Default target %**: `algo.default_target_pct` in `/admin/settings` (ships at +30%)
-- **Override per-order**: operator can edit inline (% ↔ rupees toggle)
-
-### Backend wiring
-
-When an entry fill is confirmed:
-1. Backend calculates target price from entry fill + operator-specified `target_pct` / `target_rupees`
-2. Auto-places a LIMIT order (SELL for long, BUY for short) at the target price
-3. Both orders appear in Order Activity — entry is FILLED, target is OPEN
-
-The `algo.default_target_pct` setting applies only to new orders. Operator overrides on the ticket take precedence.
+OrderTicket carries Target row. Default `algo.default_target_pct` (ships +30%), override per-ticket (% ↔ ₹ toggle). On fill: auto-places LIMIT TP order (SELL for long, BUY for short) at fill × (1 + target_pct).
 
 ---
 
-## Derivatives page redesign — `/admin/derivatives`
+## Derivatives page — `/admin/derivatives`
 
-Renamed from `/admin/options`. The **Close** tab now shows three sections with distinct visual treatment:
+Three visual sections:
+- **ITM ON EXPIRY** (amber) — NSE ITM = spot > CE strike or < PE strike; action required before close
+- **NETTED** (slate, MCX only) — CE/PE pairs netting to zero auto-settle; informational
+- **OUT OF THE MONEY** (muted) — expire worthless; informational
 
-### Section 1: ITM ON EXPIRY (amber pill)
+### Picker & settings
 
-Positions that breach ITM threshold before expiry. NSE ITM = spot > call strike OR spot < put strike. MCX ITM = same rules but also considers NETTING (see below).
-
-**Rows** list account / symbol / qty / current P&L / spot vs strike. **Action**: broker delivers or operator closes manually before 15:30 IST (equity) / 23:30 IST (MCX).
-
-### Section 2: NETTED (slate pill, MCX only)
-
-**MCX commodity positions only.** When a CE/PE pair on the same underlying + expiry sums to zero qty, the broker auto-nets at settlement. These rows are informational — no operator action needed.
-
-**Visual grouping**: paired rows carry shared tint + numbered labels (N1, N2, etc.) so the operator can see "row A and row B form a pair."
-
-NSE equity options skip this section (no auto-netting rule at NSE).
-
-### Section 3: OUT OF THE MONEY (muted pill)
-
-Contracts that expire worthless. Informational; let them expire.
-
-### Candidates picker
-
-The **Underlying** dropdown now filters by the ones in your book. Picking an underlying loads every option + future on it as checkboxes. Add drafts with the `+` button (option-chain picker).
-
-### Pricing account setting
-
-`/admin/settings` → `connections.price_account` pins which Kite account the Greeks + margin + historical lookups use. Blank = auto-pick the first account.
-
-### Settings keys
-
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `algo.default_target_pct` | float | 30.0 | Default profit-target percentage on new orders |
-| `connections.price_account` | string | blank | Kite account to use for shared market data; blank = first available |
+Underlying dropdown filters by book. Pick underlying → load every option + future as checkboxes. Add drafts via `+` (option-chain picker). Settings: `connections.price_account` (Kite account for Greeks/margin/historical; blank = first available) · `algo.default_target_pct` (default +30%).
 
 ---
 
-## Symbol identity — commodity root vs contract month
+## Symbol identity
 
-Charts, Options/Derivatives pages, Watchlist, Positions, Orders all now display the **commodity root** (CRUDEOIL, GOLDM) as the primary identifier, with a small chip below showing the resolved **contract** (CRUDEOIL26JUNFUT).
-
-When ≤3 days until expiry, the contract chip flips **amber** so expiry dates are scannable at a glance.
-
-**Underlying anchor resolution** (auto-applied in Chart modals, Order modals):
-- `NIFTY 50` → `NIFTY26JUNFUT` (NSE)
-- `CRUDEOIL` → `CRUDEOILM26JUNFUT` (MCX)
-- equity symbol → `NSE:<SYMBOL>` for spot
+Charts, Derivatives, Positions display: root (CRUDEOIL, GOLDM) + contract chip (CRUDEOIL26JUNFUT). Contract chip amber when ≤3 days to expiry. Auto-resolve: `NIFTY 50` → `NIFTY26JUNFUT` · `CRUDEOIL` → `CRUDEOILM26JUNFUT` · equity → `NSE:<SYM>` spot.
 
 ## Options analytics (`/admin/derivatives`)
 
@@ -838,64 +579,17 @@ So real alerts and simulated alerts are never in the same bucket.
 
 ---
 
-## Proxy hedges — when you hold GOLDBEES against GOLD options
+## Proxy hedges — GOLDBEES ↔ GOLD options
 
-> **Major capability.** This is operator-grade beta hedging analytics — the kind of feature Bloomberg PRM, IBKR Portfolio Margin and OptionVue ship for institutional desks. No Indian retail platform offers it today. The plumbing is fully automated: add a `(proxy, target)` row in `/admin/settings → hedge_proxies`, optionally hit **Compute β**, and the derivatives page does the rest.
+Automatically converts ETF holdings to option-hedging equivalents. Pick GOLDM → GOLDBEES auto-surfaces in Legs with gram-equiv + lot count. All-live math: `market_val = qty × LTP`, `effective_qty = β × market_val ÷ spot`, `lots = effective_qty ÷ lot_size`. No factor table.
 
-The `/admin/derivatives` Underlying picker treats your **ETF holdings** and **individual stocks** as PROXY hedges for the option underlyings they don't directly correspond to. Pick GOLDM → GOLDBEES shows up in Legs with auto-converted gram-equivalent and GOLDM lot count. Pick NIFTY → any held stock with a β regression on file shows up beta-scaled. Nothing to type or maintain.
+Seeded defaults: GOLDBEES/SILVERBEES ↔ GOLD/GOLDM; NIFTYBEES ↔ NIFTY; BANKBEES ↔ BANKNIFTY. For retail books, GOLDM/SILVERM more practical than full-size GOLD/SILVER lots.
 
-### The default pairs (seeded on first boot)
+### Adding pairs & computing β
 
-| Held | Hedges |
-|---|---|
-| GOLDBEES   | GOLD, GOLDM |
-| SILVERBEES | SILVER, SILVERM |
-| NIFTYBEES  | NIFTY |
-| BANKBEES   | BANKNIFTY |
+`/admin/settings → Hedge proxies → + Add`. ETF pairs work immediately (β=1.0 implicit). For stock-vs-index: **Compute β** button runs 60-day regression (~5s). Auto-recompute daily at 02:30 IST for rows older than `hedge_proxies.regression_max_age_days` (default 7).
 
-### How the conversion is derived
-
-Every value comes from live broker LTPs — there's no factor table, no hardcoded ratio:
-
-```
-market value     = held qty × proxy LTP            (live)
-effective qty    = β × market value ÷ target spot  (live; β=1.0 when no regression)
-target lots      = effective qty ÷ target lot size (from instruments cache)
-```
-
-For 1500 GOLDBEES @ ₹95 with GOLD futures at ₹95,000 (per 10g):
-- market value = ₹142,500
-- effective qty = 1.5 × 10g = **15g gold-equivalent**
-- **GOLD lots** = 0.015 (≈ 1.5% of a 1 kg lot — barely registers)
-- **GOLDM lots** = 0.15 (≈ 15% of a 100g lot — meaningful hedge)
-
-**For retail-scale ETF holdings, GOLDM and SILVERM are the practical hedge targets.** The full-size GOLD (1 kg per lot) and SILVER (30 kg per lot) lots are too large for typical GOLDBEES/SILVERBEES positions to meaningfully cover. The chip + Lots column auto-show the right number once you pick the target, so it's obvious which contract size to write options against.
-
-The Lots column in Legs shows the target-specific lot count directly; tooltip carries the full chain.
-
-### Adding your own pairs
-
-`/admin/settings → Hedge proxies → + Add`. Fill `proxy_symbol` + `target_root` + an optional note. ETF tracking pairs (something → its underlying) work immediately with β=1.0 implicit.
-
-For **stock-vs-index** hedges (RELIANCE → NIFTY etc.) hit **Compute β** on the row. The server fetches 60 days of daily closes for both legs, runs a returns regression, writes β + R² back. Takes ~5s. Now picking NIFTY surfaces your RELIANCE holding as a β-scaled NIFTY-equivalent hedge.
-
-### Auto-recompute schedule
-
-A background task runs daily at **02:30 IST**. For each active row whose last regression is older than `hedge_proxies.regression_max_age_days` (default 7), it runs the same regression. Failed pairs (broken symbol etc.) get stamped so they don't retry every day — fix or delete the row.
-
-Knobs in `/admin/settings → Hedge proxy`:
-- `regression_enabled` (True) — kill-switch
-- `regression_window_days` (60) — candles in the regression
-- `regression_max_age_days` (7) — recompute cadence
-
-### What you see on the row
-
-| Field | Meaning |
-|---|---|
-| **β** | regression slope, blank for ETF tracking pairs |
-| **R²** | confidence: 1.0 = perfect, 0.0 = random |
-| **Run** | date of last regression, `—` if never. ⚠ next to the date when the last run errored — hover for the failure reason. |
-| **Compute β** | run the regression on demand (independent of the daily task) |
+Settings: `regression_enabled` · `regression_window_days` (60) · `regression_max_age_days` (7). Row shows: β | R² | date of last run | **Compute β** button.
 
 ### Failed regression — `regression_error` column
 
@@ -1006,196 +700,87 @@ You don't have to memorise this — the **(i)** info chip on each row tells you 
 
 ---
 
-## Recipes
+## Common tasks
 
-**A) "Add a custom loss rule for one specific account"**
-1. Go to `/agents` → Copy the condition from `loss-pos-acct-static-abs`.
-2. Edit a new agent slug like `loss-zg0790-positions`.
-3. In the condition, replace `"scope": "positions.any_acct"` with a scope that matches only the account you care about (e.g. a new custom scope token you create on the Tokens page).
-4. Validate → Save → **Run in Simulator** on the agent row → confirm it fires (the synthesizer builds a scenario targeting this specific agent's condition; no need to pick one manually).
-5. Flip it to ON.
+**Add custom loss rule** → `/agents` → copy `loss-pos-acct-static-abs` → replace scope with custom account matcher → Validate → Run in Simulator → ON
 
-**B) "Add a new metric the engine doesn't have yet"**
-1. Write a Python function somewhere under `backend/api/algo/` that takes `(ctx, row)` and returns a number.
-2. Go to `/admin/tokens` → **+ New token** → Category `condition`, kind `metric`, resolver set to the dotted path of your function.
-3. Save → Reload registry.
-4. Your metric is now usable in any agent's condition leaf.
+**Add new metric** → Write Python `(ctx, row) → number` → `/admin/tokens` → + New token → Category condition, kind metric, resolver → Reload registry
 
-**C) "Find out what would happen if the market drops 6% right now"**
-1. `/admin/execution?mode=sim` → Scenario `generic-crash` → Load live book → Seed `Live + scenario` → Start.
-2. Watch the Simulator log tab for price moves; watch the events table for which agents would fire.
-3. Stop when you've seen enough. Hit **Clear sim** to wipe the test rows.
+**Market drops 6%?** → `/admin/execution?mode=sim` → `generic-crash` → Load live book → Start → watch Simulator tab
 
-**D) "Auto-close on severe loss — but safely"**
-1. `/agents` → `loss-pos-total-auto-close`. Ships inactive with a `chase_close_positions` action on `pnl ≤ −₹50k`.
-2. Open the row → "Actions" section shows the action type + params (scope=total, timeout 10 min, adjust_pct 0.1).
-3. Click **Run in Simulator** — the synthesizer targets this agent's condition; the sim seeds your live book automatically.
-4. Flip the bottom panel to the **Order** tab. You'll see one `SIM ◆ SELL N <symbol> @₹price · acct=…` line per open position the chase engine would try to close.
-5. Flip to **Simulator** tab — the same lines appear interleaved with price ticks, so you can see the sequence: price move → threshold cross → orders placed.
-6. When the output matches your risk tolerance, flip the agent **ON**. Next time conditions fire for real, the chase engine runs against the broker.
+**Auto-close safely** → `/agents` → `loss-pos-total-auto-close` → Run in Simulator → check Order tab output → ON
 
-**E) "Add a close-position action to an existing loss agent"**
-1. `/agents` → pick a loss agent → **Edit**.
-2. Next to the **Actions (JSON)** textarea, click the `+ close_position` pill — a skeleton action lands in the textarea.
-3. Tune the params: set `account`, `symbol`, `quantity`. (For scope-level auto-close on any matching position, use `+ chase_close` instead — it doesn't need a specific symbol.)
-4. **Validate** → **Save** → **Run in Simulator** to confirm → flip **ON**.
+**Tune threshold live** → `/admin/settings` → edit value → Save (takes effect next agent tick, ≤5 min)
 
-**F) "Tune a threshold without redeploying"**
-1. `/admin/settings` → type the keyword in the filter box (e.g. `cooldown`, `rate`, `baseline`).
-2. Click the **(i)** chip on the row to read what the setting does, its default, and its valid range.
-3. Edit the value → **Save**. The next agent tick (within 5 min) picks up the new value.
-4. If you change your mind, click **Reset** to restore the code default.
-
-**G) "Flip the pipeline from paper to live"**
-1. Soak in PAPER first — pick PAPER from the navbar dropdown and watch the chase loop on `/admin/execution?mode=paper`. Every fire writes a `mode='paper'` `AlgoOrder` row with Kite's `basket_margin` verdict in `.detail`.
-2. When the fires look right, pick LIVE from the navbar dropdown. The page banner flips from green to red.
-3. The next agent fire hits the real broker. Telegram alerts drop their `[PAPER]` tag, signaling the action went live.
-4. Inspect `/orders` for the new `mode='live'` `AlgoOrder` row.
-5. If something looks wrong, flip the navbar dropdown back to PAPER. The next tick reverts every action to paper.
+**Flip paper → live** → Navbar dropdown PAPER → watch `/admin/execution?mode=paper` → Navbar dropdown LIVE → next fire hits broker → inspect `/orders` for `mode='live'` row
 
 ---
 
-## Safety checklist before flipping a new agent to ON
+## Pre-activation checklist
 
-- [ ] Description explains what it does and why.
-- [ ] Condition tree passes **Validate** on the Agents editor.
-- [ ] Cooldown is at least a few minutes (prevents spam).
-- [ ] Schedule is `market_hours` unless you actually want it firing overnight.
-- [ ] Ran in the Simulator with a representative scenario and got the expected fires.
-- [ ] If the agent has **actions** (not just alerts): the action's params are correct and the action is safe to run against your book.
-
----
-
-## Brokers — managing accounts from the UI (`/admin/brokers`)
-
-The broker accounts (Kite or future-other-vendor) are managed from `/admin/brokers` — no SSH, no editing `secrets.yaml`, no service restart.
-
-### What's on the page
-
-- **Account table** — one row per account with code / broker / API key / source IP / status pill / notes / Test / Edit / Delete.
-  - **Status pill**:
-    - **LOADED** (green) — the account is in the live `Connections` map and ready to take broker calls
-    - **PENDING** (amber) — the row exists in the DB but `Connections` hasn't picked it up yet (most common right after a save; the next 15 s poll will refresh)
-    - **DISABLED** (grey) — `is_active = false`; the row exists but the engine ignores it
-- **+ New account** button — opens the form below in Create mode.
-- **Edit / Delete** per row — Edit puts the form in update mode (secret fields default to blank, meaning "leave unchanged"); Delete is irreversible after a confirm.
-- **Test** per row — hits `broker.profile()` to verify the credential chain authenticates. ✓ next to the button on success (hover for the authenticated user name); ✗ on failure (hover for the broker's error).
-
-### Adding a new account
-
-1. Click **+ New account** → fill in:
-   - **Account code** — your internal identifier (e.g. `ZG0790`). Must be unique.
-   - **Broker** — defaults to `kite`; future vendors plug in here.
-   - **API key** — Kite app's API key. Plaintext (not credential-grade alone).
-   - **API secret / Password / TOTP seed** — the three secrets. Encrypted at rest.
-   - **Source IP** (optional) — IPv6 address to bind outgoing Kite traffic to. Only needed for multi-account setups (Kite enforces one IP per app).
-   - **Notes** (optional) — anything you want to remember about this account.
-2. Click **Create**. The Connections singleton reloads immediately. Click **Test** on the row — you should see ✓ within a couple of seconds.
-
-### Editing
-
-- Click **Edit** → form populates with current metadata. The secret fields are deliberately blank with a `(blank = unchanged)` hint.
-- Type a new value into any field you want to rotate; leave the rest blank.
-- Click **Save changes** → reload + Test as above.
-
-### Where the encryption lives
-
-Secrets are Fernet-encrypted at rest with a key derived from `cookie_secret` (the JWT signing secret) via HKDF. Practical implications:
-
-- The API never returns decrypted secrets. The page never reads them back.
-- If you rotate `cookie_secret` on the server, every existing `broker_accounts` row will fail to decrypt — you'll have to re-add the accounts. (Don't rotate cookie_secret without a plan.)
-- The `secrets.yaml::kite_accounts` block stays as a recovery backup. On first deploy of this feature with an empty DB, the YAML rows are auto-seeded into the table once. After that, the table is the source of truth and the YAML is just there as a fallback if you ever need to reset.
-
-### When the table is empty
-
-On a fresh server with no DB rows AND no `secrets.yaml::kite_accounts`, every broker call will fail until you add at least one account. The page surfaces this clearly: empty list + "Use **+ New account** to add one" prompt.
-
-### Capabilities endpoint
-
-`GET /api/admin/brokers/{account}/capabilities` returns the `BrokerCapabilities` dataclass for one account — pure in-process read, no broker round-trip. Fields include `display_name`, `gtt_single`, `gtt_oco`, `gtt_modify`, `gtt_cap_per_account`, `gtt_validity_days`, `bracket_order`, `cover_order`, `atomic_basket`, `order_tag`, `margin_preview`, `postback_gtt`, `rate_limit_orders_sec`.
-
-OrderTicket consumes this on account-change to render the inline template-capability warning chip (see Order Templates section). Useful for any future surface that needs to gate features by broker — e.g. a basket-builder that shows "atomic basket: yes (Dhan)" vs "fan-out in parallel (Kite/Groww)".
+- [ ] Description explains what and why
+- [ ] Condition tree passes **Validate**
+- [ ] Cooldown ≥ few minutes
+- [ ] Schedule = `market_hours` (unless overnight OK)
+- [ ] Tested in Simulator with representative scenario
+- [ ] Actions (if any) params correct and safe
 
 ---
 
-## Reusable order ticket
+## Brokers — `/admin/brokers`
 
-The `<OrderTicket>` modal in [`frontend/src/lib/order/`](frontend/src/lib/order/) is the single place every order op (open / close / modify / repeat / cancel) goes through, across every instrument (EQ / FUT / OPT). The ticket auto-detects the instrument kind from the symbol and only shows fields that apply (e.g. CNC/MIS for cash equities, NRML/MIS for F&O; trigger field only for SL / SL-M).
+Manage accounts via UI, no SSH/YAML/restart. Page: account table (code | broker | API key | source IP | status pill | notes | Test/Edit/Delete) + **+ New account** button.
 
-**Side toggle** — two-pill format (ADD/CLOSE when you have an open position, BUY/SELL when you don't). Switches automatically based on the current qty in your holdings. Makes the intent clearer: you're either **closing** what you hold or **opening** a new position. Swapping symbols resets the qty to 1 lot (unless you have the position open — then it stays at current qty so a close-position flow doesn't accidentally change your close size).
+**Add account**: code (unique) · broker (kite) · API key/secret/password/TOTP (encrypted at rest) · source IP (IPv6 for multi-account Kite binding) · notes. Click **Test** to verify.
 
-Three submit modes:
+**Edit**: click Edit → secret fields blank by default (blank = unchanged) → edit + Save.
 
-- **DRAFT** — appends to the caller's local drafts array. No API hit. Used today by `/admin/derivatives` chain `+CE` / `+PE` clicks.
-- **PAPER** — `POST /api/orders/ticket` with `mode=paper`. Creates an `AlgoOrder` row + registers with the prod paper engine; the chase loop fills it from real bid/ask via `LiveQuoteSource`. Same lifecycle agent fires use.
-- **LIVE** — same endpoint with `mode=live`. Two backend gates:
-  1. Branch must be `main` (non-prod returns 403).
-  2. `execution.paper_trading_mode` must be `False` (set from the navbar mode dropdown).
-  Then `kite.place_order()` with the operator's payload, tagged `ramboq-ticket`. UI fires a `window.confirm()` with the exact order line before any broker call.
-
-Today the ticket opens from `/admin/derivatives` chain clicks and from the **page-header Order icon** (amber `+` glyph) present on every algo page — alongside the **Chart icon** (cyan line glyph) and **Activity icon** (violet 3-line glyph). The three icons open canonical modals at a consistent viewport position (.canonical-modal-overlay/-panel) so muscle memory carries across pages. Symbol anchors are auto-resolved to the tradeable contract before the modals open — `NIFTY 50` → `NIFTY26JUNFUT`, `CRUDEOIL` → `CRUDEOILM26JUNFUT`. Future migration of click-targets: `/orders` row Edit / Cancel / Repeat, `/agents` fire-confirm, `/performance` row "Square off" / "Sell", `/console` `place …` command.
+**Capabilities endpoint** (`GET /api/admin/brokers/{account}/capabilities`): returns `BrokerCapabilities` dataclass (gtt_single / gtt_oco / gtt_modify / etc.) for in-page feature gating (OrderTicket warning chips).
 
 ---
 
-## Demo mode — public algo console for visitors
+## OrderTicket modal
 
-Anonymous visitors on the prod (`ramboq.com`) site can browse the algo pages without a login. The demo session sees the operator's **real broker data with accounts masked** (`ZG####` / `ZJ####`), can place paper orders that go through the real chase loop (against real bid/ask), but never touches a broker. Zero fixture maintenance — no synthetic fixture file, no nightly cron, no data drift.
-
-**How a visitor reaches it**: the public navbar's "Algo Site" cross-link is now visible to everyone (renamed to "Algo Demo" when not logged in). Clicking lands on `/dashboard` → demo mode kicks in.
-
-**Backend chokepoint** ([`backend/api/auth_guard.py`](backend/api/auth_guard.py)):
-
-- `is_demo_request(connection)` returns true when on `main` branch + no admin JWT.
-- `auth_or_demo_guard` admits anonymous requests on prod, sets `connection.state.is_demo = True`. On dev, falls through to strict `jwt_guard` (devs are expected to log in).
-- Every order-write endpoint checks the flag: `place` / `modify` / `cancel` return 403; `/api/orders/ticket` silently downgrades `mode=live → paper` for demo so the click-Submit flow keeps working.
-
-**Read-path data**: demo sees **real broker data with accounts masked** (same masking the public `/performance` page applies). `mask_column()` turns `ZG0790` into `ZG####`. The shared rule across `/api/positions`, `/api/holdings`, `/api/funds`, `/api/orders/`, `/api/orders/algo/recent`: any non-admin caller gets masked accounts.
-
-**Frontend** ([`(algo)/+layout.svelte`](frontend/src/routes/(algo)/+layout.svelte)):
-
-- Anonymous visitor on prod no longer redirects to `/signin`. The layout polls `/api/charts/paper-status` for the `branch` flag and treats `branch=main` + `!user` as demo.
-- Settings / Brokers / Users nav links flag `adminOnly: true` and drop out of the navbar in demo mode.
-- "Sign In" button replaces the user pill so the operator has a one-click upgrade.
-
-**Mode badges** in the navbar: `DEMO` (purple, anonymous prod), `PAPER` (blue, paper engine has open orders), `SIM` (red, dev only).
-
-**Maintenance**: zero. Demo shares the operator's real broker book — there's no fixture file to refresh, no data drift, no nightly cron. If the operator is busy trading, demo looks busy too. If the operator is idle, demo is idle. The only thing isolating them is the account mask + the write gates.
+Single entry point for all order ops (open/close/modify/repeat/cancel) across all instruments. Auto-detects instrument kind from symbol (CNC/MIS for EQ, NRML/MIS for F&O). Side toggle: ADD/CLOSE (if position open) or BUY/SELL (if closed). Three submit modes: DRAFT (append to caller's array, `/admin/derivatives` chain clicks) · PAPER (`mode=paper`, real bid/ask via chase) · LIVE (branch=main + paper_trading_mode=False). Opens from: `/admin/derivatives` chain · every page-header Order icon (amber `+`)  · Chart icon (cyan line) · Activity icon (violet 3-line). Symbol anchors auto-resolve to contract (`NIFTY 50` → `NIFTY26JUNFUT`).
 
 ---
 
-## Where to learn more — deep dives
+## Demo mode — public algo console
 
-The day-to-day operator finds it here. For extended walkthroughs:
+Anonymous prod visitors see real broker data with accounts masked (`ZG####`), can place paper orders (real chase loop, no broker touch). Zero maintenance — no fixture file.
 
-- **[AGENTS_GUIDE.md](AGENTS_GUIDE.md)** — agent authoring + the four-stage validation ladder (validate → dry-run → simulator → activate). Every metric / scope / op, fragments, lifespan, troubleshooting.
-- **[SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md)** — Lab page workflow. Scenarios, Run-in-Simulator, custom positions, iteration mode, market-state presets.
-- **[LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md)** — Claude Code MCP integration. The 24 tools, confirm-token gate, audit trail.
+Backend: `is_demo_request()` = main + no JWT. `auth_or_demo_guard` admits + sets `is_demo=True`. Write endpoints: `place`/`modify`/`cancel` 403; `/api/orders/ticket` downgrades `live → paper`. Read data masked via `mask_column()`.
+
+Frontend: `branch=main + !user` = demo. Settings/Brokers/Users nav links hide. Navbar badges: `DEMO` (purple) / `PAPER` (blue) / `SIM` (red).
 
 ---
 
-## Where to go when something looks wrong
+## Deep dives
 
-| Problem | Look here |
+- [AGENTS_GUIDE.md](AGENTS_GUIDE.md) — agent authoring + validation ladder
+- [SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md) — scenarios, Run-in-Simulator, market-state presets
+- [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md) — Claude Code MCP, 24 tools, audit trail
+
+## Troubleshooting
+
+| Problem | Fix |
 |---|---|
-| Agent didn't fire when it should have | `/agents` → Last fire timestamp + Count on the row; also the Simulator tab in the log panel |
-| Sim shows ticks but no price changes | You probably picked a scenario with no scripted initial in Scripted mode — switch to Live+scenario and Load live book first |
-| Custom token won't appear in the Agents editor | Did you press **Reload registry** after saving? Is the token's `is_active` on? |
-| Alerts not reaching Telegram/email | Check `cap_in_<branch>.telegram` and `cap_in_<branch>.mail` in `backend_config.yaml`; dev may have these off by default |
-| Settings change didn't take effect | Most apply on the next agent tick (≤ 5 min). `logging.*` apply at Save. If you flipped an `execution.live.*` flag on dev, note that the branch gate forces every action back to paper regardless. |
-| Live agent fired but no real broker order | Check `/admin/settings` → **execution** section. If the relevant `execution.live.<action>` is `false`, the action wrote a paper `AlgoOrder` row instead. Telegram subject would have shown `[PAPER]`. |
-| Day P&L on positions looks wrong | Check against broker reports. Intraday P&L now uses decomposed formula: overnight_qty × (LTP − prev_close) + day_buy_qty × LTP − day_buy_value + day_sell_value − day_sell_qty × LTP. Verify each term separately. MCX: ensure multiplier is applied to all intraday qty fields. See CLAUDE.md "Canonical day P&L formula". |
-| Closed position's day P&L drifts after market close | **Fixed** in commit b47d851b. Holdings using `broker.pnl − (close−cost) × opening_qty` now freeze once sold. If still drifting, check deploy timestamp. |
-| Chase row reappeared after I clicked Kill | **Fixed** in commit 41133e16. Kill now routes through broker registry `get_broker(account)` instead of the stale `KiteConnection` singleton path. Auto-reconciliation on list poll also cleans up terminated orders. |
-| OrderTicket won't reset qty when I pick a new symbol | **Fixed** in commit 88e3a5f5. Symbol change now resets `_lots=1` + clears the "touched" flag. Exception: if you're in a close-position flow (`currentQty` set), qty stays at current so you don't accidentally close the wrong amount. |
-| "Invalid username or password" on sign-in | Ask the server admin to reset your password — there's no forgot-password flow yet |
+| Agent didn't fire | `/agents` last fire timestamp; also Simulator tab in log |
+| Sim shows no price changes | Scripted mode needs `initial` block; try Live+scenario |
+| Custom token invisible | Did you press **Reload registry**? Token `is_active=True`? |
+| Alerts not reaching Telegram/email | Check `cap_in_<branch>.telegram` and `.mail` in `backend_config.yaml` |
+| Settings change didn't take effect | Next agent tick ≤5 min; `logging.*` at Save. Dev branch forces paper anyway. |
+| Fired but no broker order | Check `/admin/settings` execution flags; might be `execution.live.<action>=false` |
+| Day P&L looks wrong | Verify against broker. Uses decomposed formula (see CLAUDE.md). MCX: ensure multiplier applied. |
+| "Invalid username or password" | Admin resets password (no forgot-password flow yet) |
 
 ---
 
 ## Glossary
 
-- **Branch**: `main` = production (`ramboq.com`), everything else = dev (`dev.ramboq.com`). Agents, tokens, and sims on dev don't affect production.
-- **Capability flag**: `cap_in_dev.<feature>` / `cap_in_prod.<feature>` in `backend_config.yaml`. Toggles whether a capability (simulator, telegram, mail, genai, market_feed) is live on that branch.
-- **Dispatch registry**: The in-memory index that maps each token name to its implementation. Rebuilt from the Tokens table at startup and on **Reload registry**.
+- **Branch**: `main` = prod, other = dev. Agents/tokens/sims on dev don't affect prod.
+- **Capability flag**: `cap_in_<branch>.<feature>` in `backend_config.yaml` (simulator/telegram/mail/genai/market_feed).
+- **Dispatch registry**: In-memory token → impl map, rebuilt at startup + **Reload registry**.
 - **Execution mode**: Sim / paper / live, decided per agent fire. Sim = fabricated quotes + paper trade engine (dev only). Paper = real quotes + paper trade engine, validated by Kite's `basket_margin`. Live = real broker order. Per-action flags in **Settings** decide paper-vs-live on prod.
 - **Masked account**: Accounts are rendered as `ZG####` / `ZJ####` in the UI and in alerts to avoid leaking numeric IDs. Internally the real IDs (`ZG0790`, `ZJ6294`) are used.
 - **Tick**: One step of the simulator. Each tick applies a set of price moves and then invokes the agent engine once.

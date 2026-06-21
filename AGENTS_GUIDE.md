@@ -177,96 +177,37 @@ Edit a fragment once → every consumer agent updates. Cycle detection prevents 
 
 ---
 
-## Testing your agent — the validation ladder
+## Testing your agent — the four-stage ladder
 
-The platform ships **four** test surfaces, ordered by realism + risk:
-
-| Stage | Where | What it does | Risk |
+| Stage | Location | What it does | Risk |
 |---|---|---|---|
-| 1 — Validate | `/agents` editor → **Validate** button | Static check: every token + ref resolves; tree shape is well-formed | none |
-| 2 — Dry-run | `/agents/<slug>/dry-run` API or `Dry-run` button | Evaluates the condition tree against CURRENT live market state, but does NOT fire | none |
-| 3 — Simulator | `/admin/execution?mode=sim` or the **Run in Simulator** button on each agent row | Fabricated price moves; condition evaluator + dispatcher + actions all run with `sim_mode=True`. Telegram / email pings are prefixed `SIMULATOR` so you don't confuse them with real fires | low — paper orders only |
-| 4 — Activate | `/agents` → flip **Status: inactive → active** | Real ticks, real broker, real money (in LIVE mode) or paper engine (in PAPER mode) | full |
+| 1 — Validate | `/agents` → **Validate** | Static: tokens + shape well-formed | none |
+| 2 — Dry-run | `/agents/<slug>/dry-run` or button | Evaluate against live data (no fire) | none |
+| 3 — Simulator | `/agents` → **Run in Simulator** | Synthetic ticks, `sim_mode=True`, no real broker | low |
+| 4 — Activate | `/agents` → flip Status to active | Real ticks, real money (LIVE) or paper | full |
 
-### Stage 1 — Validate (instant feedback)
+**Validate:** `/agents` editor → click **Validate**. Reports token typos + shape errors.
 
-Open the agent in `/agents`, click **Edit**, paste a condition tree, click **Validate**. Errors list:
+**Dry-run:** Returns matches + `would_fire` bool against current market WITHOUT firing. Check `blocked_by` field if you expect true but see false.
 
-- `unknown metric token 'pnl_typo'`
-- `unknown condition fragment 'frag-name'`
-- `cycle — 'frag-a' is already in the resolution chain`
+**Run in Simulator:** Synthesises a scenario to trip THIS agent's first leaf. Bypasses gates (cooldown / baseline / schedule) so the agent fires immediately on the first tick. Telegram / email pings carry `SIMULATOR` prefix. See [SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md).
 
-Validate uses the same `agent_evaluator.validate()` the engine uses, so a passing validate means the tree's well-formed against the live grammar registry.
-
-### Stage 2 — Dry-run
-
-Returns the result of evaluating the agent's condition tree against right-now live market data, without actually firing.
-
-```bash
-curl -s -H "Authorization: Bearer $TOK" \
-  https://ramboq.com/api/agents/loss-positions-total/dry-run | jq
-```
-
-Response:
-
-```jsonc
-{
-  "agent_slug":   "loss-positions-total",
-  "matches":      [/* one entry per leaf that matched */],
-  "match_count":  3,
-  "would_fire":   true,
-  "blocked_by":   null,             // or "schedule" | "cooldown" | "fire_at_time" | "blackout" | "debounce" | "eval_error"
-  "evaluated_at": "2026-05-27T08:35:51+00:00"
-}
-```
-
-Use cases:
-- **Sanity-check a new agent against current market state** before activating
-- **Verify a known-loss scenario** triggers as expected
-- **Debug `blocked_by`** when the agent isn't firing on real ticks
-
-### Stage 3 — Run in Simulator (recommended for every new agent)
-
-This is the most powerful test. Each `/agents` row has a **Run in Simulator** button that:
-
-1. Synthesises a scenario that will trip THIS agent's first leaf (no `scenarios.yaml` entry needed)
-2. Drops you on `/admin/execution?mode=sim&agent_id=<id>` with the agent armed
-3. Bypasses cooldown / baseline / schedule gates so the agent fires immediately
-4. Mutates SIM positions only — no real broker contact
-
-What you see:
-- **Telegram / email**: pings arrive with `SIMULATOR` prefix + red `⚠ SIMULATOR RUN` banner
-- **`/agents/activity`** automatically scopes to sim events when a sim is running
-- **`AlgoOrder` rows** for any actions land with `mode='sim'` + `SIM` pill in the order log
-
-See [SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md) for the full simulator workflow — scenarios, custom positions, iteration mode.
-
-### Stage 4 — Activate
-
-Once stages 1-3 pass, flip the agent's **Status** from `inactive` to `active` on `/agents`. The engine picks it up on the next tick.
-
-Watch the agent on:
-- `/agents/activity` — first real fire shows up here
-- Telegram alert channel — first fire pings you within ~30 s of the tick
-- The agent row's **Events** panel — full firing history
+**Activate:** Flip `status: inactive → active`. Engine picks it up next tick. Watch `/agents/activity`, Telegram, or agent row's Events panel.
 
 ---
 
 ## Operational gates — why your agent isn't firing
 
-Six gates run between "tick happens" and "alert dispatches". Dry-run's `blocked_by` field names the one that stopped you.
+Eight gates between tick and dispatch. Dry-run's `blocked_by` names the culprit.
 
-1. **schedule** — `schedule: market_hours` agents skip outside session hours (NSE 09:15-15:30 IST equity, MCX 09:00-23:30 IST commodity). Match the agent's exchange.
-2. **cooldown** — after a fire, the agent is in `status: cooldown` for `cooldown_minutes` (default 30). Subsequent matches are suppressed.
-3. **baseline** — rate-of-change metrics (`*_rate_*`) silently return None for the first `alerts.baseline_offset_min` (default 15) minutes of the session, so they don't fire on cold-start when there's no history.
-4. **fire_at_time** — when set, the agent only evaluates inside a 30-min window centred on the chosen IST time.
-5. **blackout** — `blackout_windows` like `[{start: "12:00", end: "13:00"}]` block firing during the listed IST ranges. Midnight-crossing windows work (`{start: "23:00", end: "01:00"}`).
-6. **debounce** — when `debounce_minutes > 0`, the condition must hold continuously for that many minutes. The first true tick arms a latch; the agent fires only when the latch survives the debounce window. Single-tick spikes don't trip it.
-7. **suppression** — after a fire, re-fire requires the cooldown AND `|Δpnl| ≥ alerts.suppress_delta_abs` OR `|Δpct| ≥ alerts.suppress_delta_pct`. Flat losses go silent for the rest of the session.
-
-Plus one final gate that ONLY affects actions (not notifications):
-
-8. **exchange-open gate** (Phase 23) — `place_order` / `modify_order` / `close_position` actions are blocked when the order's target exchange's market is closed. Bypassed by sim and replay modes.
+1. **schedule** — `market_hours` skips outside NSE 09:15-15:30 / MCX 09:00-23:30 IST
+2. **cooldown** — default 30 min; suppresses re-fires
+3. **baseline** — rate metrics silent for first 15 min (no history)
+4. **fire_at_time** — when set, fires only in ±15 min window around HH:MM IST
+5. **blackout** — `[{start: "12:00", end: "13:00"}]` blocks windows (midnight-crossing OK)
+6. **debounce** — condition must hold for N min continuously
+7. **suppression** — re-fire requires cooldown + `|ΔP&L| ≥ threshold` (flat loss → silent)
+8. **exchange-open** — actions blocked when target exchange closed (sim/replay exempt)
 
 ---
 
@@ -313,88 +254,56 @@ Built-in agents are **force-reseeded on every boot** — your changes to their `
 
 ---
 
-## Action handlers — what gets called when an agent fires
+## Action handlers
 
-| Token | Real-mode handler | Sim-mode handler |
+| Token | Real | Sim |
 |---|---|---|
-| `place_order` | `broker.place_order(...)` | Writes an `AlgoOrder(mode='sim')` row with `initial_price = sim bid/ask` |
-| `chase_close_positions` | `ExpiryEngine.close_positions(...)` adaptive chase | Per-position rows in SimDriver's chase queue, fills via the spread-aware simulator chase loop |
-| `close_position` | One-shot LIMIT at current LTP | Paper `AlgoOrder` row at sim LTP |
-| `cancel_order` / `modify_order` | Real broker calls | Updates the sim's open-order book |
-| `monitor_order` | Polls broker every N seconds for status | Polls sim driver state |
-| `deactivate_agent` | DB update — sets agent.status='inactive' | Same — sim doesn't isolate this from real |
-| `set_flag` | Writes to `alert_state` flag dict | Same |
-| `emit_log` | Writes `agent_events` row with kind='log' | Same — sim_mode tag flows through |
+| `place_order` | Broker call | `AlgoOrder(mode='sim')` at sim LTP |
+| `chase_close_positions` | Adaptive chase via ExpiryEngine | SimDriver chase queue, fills via spread |
+| `close_position` | LIMIT at LTP | Paper row at sim LTP |
+| `cancel_order` / `modify_order` | Real broker | Sim order book |
+| `monitor_order` | Poll broker every N sec | Poll sim driver |
+| `deactivate_agent` | DB flip to inactive | Same (shared state) |
+| `set_flag` / `emit_log` | Write state | Same (sim_mode tag flows) |
 
-`engine='sim'` + `mode='sim'` on the AlgoOrder row distinguish sim fills from real broker fills. The order-log Mode pill (SIM / PAPER / LIVE / SHADOW) makes it visual.
+The Order log Mode pill (SIM / PAPER / LIVE / SHADOW) visualises the difference.
 
-### Profit target (TP) auto-attach
-
-When an agent fires `place_order`, the order's fill automatically attaches a profit-target order on the flip side. SELL order fills → auto-SELL TP at `fill_price × (1 + target_pct)`. Ratio set by `algo.default_target_pct` (default 0.30 = 30% above entry). Idempotent via `parent_order_id` guard — fill triggers once, TP attaches once, no retrigger on tick bump. Works in paper, live, and sim modes. OrderTicket Target row (% / ₹ toggle) seeds from the default at order-entry time.
+**TP auto-attach:** When `place_order` fills, an automatic TP order fires on the flip side at `fill_price × (1 + algo.default_target_pct)` (default 0.30). Idempotent via `parent_order_id` guard. Works in paper, live, and sim.
 
 ---
 
-## Common patterns — copy-paste starting points
+## Common patterns (copy-paste templates)
 
-### "Alert me when this account's positions cross -5%"
-
+**Per-account loss -5%:**
 ```jsonc
 {
-  "slug": "my-acct-loss-5pct",
-  "name": "Specific account loss > 5%",
-  "conditions": {
-    "metric": "pnl_pct",
-    "scope":  "positions.any_acct",
-    "op":     "<=", "value": -5.0
-  },
-  "events": [ {"$ref": "notify-critical-trio"} ],
-  "cooldown_minutes": 30
-}
-```
-
-### "Wake me only if loss persists for 10 min"
-
-```jsonc
-{
-  "slug": "my-persistent-loss",
-  "name": "Persistent loss (10 min hold)",
-  "debounce_minutes": 10,
-  "conditions": {
-    "metric": "pnl", "scope": "positions.total",
-    "op": "<=", "value": -25000
-  },
-  "events": [ {"$ref": "notify-telegram-only"} ]
-}
-```
-
-### "Fire at exactly 14:30 IST, check the close-time guard fragment"
-
-```jsonc
-{
-  "slug": "my-near-close-check",
-  "name": "Near-close drawdown check",
-  "fire_at_time": "14:30",
-  "conditions": { "all": [
-    {"$ref": "loss-positions-total-default"},
-    {"$ref": "near-market-close-30m"}
-  ]},
+  "slug": "my-acct-5pct", "name": "Account loss > 5%",
+  "conditions": { "metric": "pnl_pct", "scope": "positions.any_acct", "op": "<=", "value": -5.0 },
   "events": [ {"$ref": "notify-critical-trio"} ]
 }
 ```
 
-### "One-shot: alert me once if BANKNIFTY drops 2% today"
-
+**Persistent loss (10 min debounce):**
 ```jsonc
 {
-  "slug": "bn-down-2pct-today",
-  "name": "BankNifty -2% one-shot",
-  "lifespan_type": "one_shot",
-  "conditions": {
-    "metric": "day_pct",
-    "scope":  "holdings.any_acct",
-    "op":     "<=", "value": -2.0
-  },
-  "tags": ["one-shot", "banknifty"]
+  "slug": "my-persistent", "debounce_minutes": 10,
+  "conditions": { "metric": "pnl", "scope": "positions.total", "op": "<=", "value": -25000 }
+}
+```
+
+**Fire at 14:30 IST only:**
+```jsonc
+{
+  "slug": "near-close-check", "fire_at_time": "14:30",
+  "conditions": { "all": [{"$ref": "loss-positions-total-default"}, {"$ref": "near-market-close-30m"}] }
+}
+```
+
+**One-shot: BANKNIFTY -2% today:**
+```jsonc
+{
+  "slug": "bn-2pct-once", "lifespan_type": "one_shot",
+  "conditions": { "metric": "day_pct", "scope": "holdings.any_acct", "op": "<=", "value": -2.0 }
 }
 ```
 
