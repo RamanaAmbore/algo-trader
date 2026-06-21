@@ -39,6 +39,7 @@
   import {
     getInstrument, listExpiries, listStrikes,
     findOption, findNearestFuture, listFutures,
+    listExchangesForSymbol,
   } from '$lib/data/instruments';
 
   // Demo-mode detection — used to suppress margin preflight (403) and
@@ -397,15 +398,29 @@
     : ['NRML', 'MIS']);
 
   // Exchange choices — every Indian instrument lives on one of these
-  // six segments. For dual-listed equities (e.g. IFCI on NSE + BSE),
-  // the operator overrides whichever the instruments cache happened
-  // to index last. Cash market exchanges only show for equity; F&O
-  // exchanges only show for options/futures.
-  const exchangeOptions = $derived.by(() => {
+  // six segments. The static fallback per kind keeps the picker
+  // useful before the instruments cache loads; once the cache is
+  // warm, intersect with the symbol's ACTUAL listings so single-
+  // exchange symbols lock to that one (RELIANCE futures live only
+  // on NFO; CRUDEOIL only on MCX) and dual-listed equities offer
+  // both (RELIANCE / IFCI on NSE + BSE).
+  const _kindExchangeFallback = $derived.by(() => {
     if (isEquity) return ['NSE', 'BSE'];
     if (kind === 'CE' || kind === 'PE') return ['NFO', 'BFO'];
     if (kind === 'FUT') return ['NFO', 'BFO', 'MCX', 'CDS'];
     return ['NSE', 'BSE', 'NFO', 'BFO', 'MCX', 'CDS'];
+  });
+  const exchangeOptions = $derived.by(() => {
+    const fallback = _kindExchangeFallback;
+    const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
+    if (!sym) return fallback;
+    const actual = listExchangesForSymbol(sym);
+    if (actual.length === 0) return fallback;
+    // Order by the static fallback so NSE precedes BSE / NFO precedes
+    // BFO (the operator's mental scan order — primary national exchange
+    // first). Only keep listings the symbol actually trades on.
+    const filtered = fallback.filter(e => actual.includes(e));
+    return filtered.length > 0 ? filtered : actual;
   });
 
   // Local form state — start from prop defaults, then operator edits.
@@ -761,11 +776,15 @@
   // intentional: seeds from resolved exchange at mount; $effect below re-syncs on symbol change
   // svelte-ignore state_referenced_locally
   let _exchange = $state($state.snapshot(_resolvedExchange) || $state.snapshot(exchange) || 'NSE');
+  // Tracks whether the operator picked the exchange manually for THIS
+  // symbol. Reset on symbol change so a stale BSE pick doesn't carry
+  // over to a new RELIANCE → INFY swap. Without it the auto-snap to
+  // `exchangeOptions[0]` would constantly fight the operator's choice.
+  let _exchangeTouched = $state(false);
   // Re-sync the picker when the symbol changes (so the operator
-  // doesn't carry NSE over to an MCX commodity by accident). Reads
-  // the freshly-resolved exchange; only overrides if the current
-  // pick isn't in the new options list. Operator's manual pick on
-  // the SAME symbol persists.
+  // doesn't carry NSE over to an MCX commodity by accident). Default
+  // policy: first listing in `exchangeOptions` (NSE before BSE / NFO
+  // before BFO). Operator override on the SAME symbol wins.
   // Single combined re-sync — exchange + product MUST update atomically
   // when the symbol kind flips. Pre-audit, these lived in two separate
   // $effects: when the operator switched from an option (NFO+NRML) to
@@ -776,10 +795,23 @@
   // landed in a broker error. Merging the writes into one effect body
   // closes the race — Svelte 5 flushes both reactivity writes within a
   // single tick.
+  let _lastExchangeSym = '';
   $effect(() => {
     void _resolvedExchange; void exchangeOptions; void productOptions;
+    const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
     untrack(() => {
-      if (_resolvedExchange && !exchangeOptions.includes(_exchange)) {
+      // Symbol changed → reset touched + auto-snap to the first
+      // available exchange so the operator never lands on a stale
+      // BSE pick after switching to a single-listed instrument.
+      if (sym !== _lastExchangeSym) {
+        _lastExchangeSym = sym;
+        _exchangeTouched = false;
+      }
+      const valid = exchangeOptions.includes(_exchange);
+      if (!_exchangeTouched && exchangeOptions.length > 0) {
+        const want = exchangeOptions[0];
+        if (_exchange !== want) _exchange = want;
+      } else if (!valid && _resolvedExchange) {
         _exchange = _resolvedExchange;
       }
       if (!productOptions.includes(_product)) {
@@ -1864,17 +1896,27 @@
                 ariaLabel="Product"
                 options={productOptions.map(p => ({ value: p, label: p }))} />
       </div>
-      <!-- Exchange — operator override for dual-listed symbols
-           (IFCI on NSE+BSE, RELIANCE futures on NFO+BFO, etc.).
-           Defaults from the instruments cache; the cache only stores
-           one listing per symbol so the override is required to route
-           orders to the listing the operator actually wants. -->
+      <!-- Exchange — operator picks for dual-listed symbols (IFCI on
+           NSE+BSE, RELIANCE futures on NFO+BFO, etc.). Read-only chip
+           for single-listing instruments (RELIANCE futures on NFO only,
+           CRUDEOIL on MCX only) so the operator can't pick an exchange
+           the symbol doesn't trade on. Dropdown only when there are
+           ≥2 actual listings; defaults to the first (NSE / NFO) until
+           the operator picks otherwise. -->
       <div class="ot-knob">
         <label class="ot-label" for="ot-exchange-sel">Exchange</label>
-        <Select id="ot-exchange-sel"
-                bind:value={_exchange}
-                ariaLabel="Exchange"
-                options={exchangeOptions.map(e => ({ value: e, label: e }))} />
+        {#if exchangeOptions.length > 1}
+          <Select id="ot-exchange-sel"
+                  value={_exchange}
+                  ariaLabel="Exchange"
+                  onValueChange={(v) => { _exchange = String(v); _exchangeTouched = true; }}
+                  options={exchangeOptions.map(e => ({ value: e, label: e }))} />
+        {:else}
+          <div class="ot-exchange-locked" id="ot-exchange-sel"
+               title="This symbol trades on only one exchange — no override available.">
+            {exchangeOptions[0] || _exchange || '—'}
+          </div>
+        {/if}
       </div>
       <div class="ot-knob">
         <label class="ot-label" for="ot-variety-sel">Variety</label>
@@ -2591,6 +2633,30 @@
     min-width: 5rem;
   }
   .ot-knob-side { flex: 1.4 1 7rem; min-width: 7rem; }
+  /* Read-only exchange chip — rendered when the symbol trades on a
+     single exchange. Height-matches the Select chip next to it (1.55rem)
+     so the row stays aligned; muted bg + slightly faded text reads as
+     "informational, not editable" without the operator confusing it
+     for a broken / disabled dropdown. */
+  .ot-exchange-locked {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 1.55rem;
+    padding: 0 0.6rem;
+    box-sizing: border-box;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    color: rgba(200, 216, 240, 0.80);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    cursor: default;
+    user-select: none;
+  }
   .ot-side-toggle-compact {
     display: inline-flex;
     width: 100%;

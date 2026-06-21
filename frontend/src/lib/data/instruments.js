@@ -45,6 +45,7 @@ const INDEX_SCHEMA_VERSION = 4;
 // Module-level runtime caches (rebuilt on each page load)
 let _items            = null;  // full list
 let _byTradingsymbol  = null;  // Map<string, Instrument>
+let _exchangesBySymbol = null; // Map<string, string[]> — multi-listing index for dual-listed equities (RELIANCE on NSE+BSE, etc.)
 let _underlyings      = null;  // Set<string>
 let _underlyingsSorted = null; // sorted array for prefix scan
 let _byUnderlyingType = null;  // Map<`${u}|${t}`, Instrument[]>
@@ -102,11 +103,27 @@ function _derivedUnderlying(it) {
 function _buildIndexes(items) {
   _items = items;
   _byTradingsymbol = new Map();
+  _exchangesBySymbol = new Map();
   _underlyings = new Set();
   _byUnderlyingType = new Map();
 
   for (const it of items) {
     _byTradingsymbol.set(it.s, it);
+    // Multi-listing index — Kite's instruments dump has one row per
+    // (tradingsymbol, exchange) pair, so dual-listed equities (IFCI,
+    // RELIANCE, etc.) appear twice. The primary `_byTradingsymbol`
+    // map is last-write-wins for backward compatibility; this side-
+    // index preserves every exchange a symbol trades on so the order
+    // ticket can let the operator pick NSE vs BSE for dual-listed
+    // equities while locking it for single-exchange instruments.
+    if (it.e) {
+      const list = _exchangesBySymbol.get(it.s);
+      if (list) {
+        if (!list.includes(it.e)) list.push(it.e);
+      } else {
+        _exchangesBySymbol.set(it.s, [it.e]);
+      }
+    }
     const underlying = _derivedUnderlying(it);
     if (underlying) {
       _underlyings.add(underlying);
@@ -237,6 +254,16 @@ export function listUnderlyingsByType(type, prefix = '', limit = 20) {
 export function getInstrument(tradingsymbol) {
   if (!_byTradingsymbol) return null;
   return _byTradingsymbol.get(tradingsymbol.toUpperCase()) || null;
+}
+
+/** Every exchange a tradingsymbol trades on. Most symbols return
+ *  one entry; dual-listed equities (RELIANCE / IFCI / etc.) return
+ *  ['NSE', 'BSE']. Empty array on cache miss (instruments cache
+ *  not loaded yet) so the OrderTicket can fall back to the static
+ *  kind-appropriate list. */
+export function listExchangesForSymbol(tradingsymbol) {
+  if (!_exchangesBySymbol) return [];
+  return _exchangesBySymbol.get(String(tradingsymbol || '').toUpperCase()) || [];
 }
 
 /**
