@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
 
   const faqs = [
     {
@@ -78,7 +78,19 @@
     },
   ];
 
-  let open = -1;
+  let open = $state(-1);
+  let _zoomedDiagram = $state(/** @type {string | null} */ (null));
+
+  function _openZoom(svgHtml) {
+    _zoomedDiagram = svgHtml;
+    document.body.style.overflow = 'hidden';
+  }
+  function _closeZoom() {
+    _zoomedDiagram = null;
+    document.body.style.overflow = '';
+  }
+
+  onDestroy(() => { document.body.style.overflow = ''; });
 
   onMount(async () => {
     /** @type {any} */
@@ -172,6 +184,8 @@
 </svelte:head>
 
 
+<svelte:window onkeydown={(e) => { if (_zoomedDiagram && e.key === 'Escape') _closeZoom(); }} />
+
 <div class="pub-card rounded-lg shadow-sm p-5 pt-4">
 <h1 class="page-heading">Frequently Asked Questions</h1>
 
@@ -211,14 +225,39 @@
         <h3 class="flow-card-title">{d.title}</h3>
       </div>
       <div class="p-4 overflow-x-auto">
-        <div id="mermaid-{d.id}" class="mermaid-container flex justify-center">
+        <div id="mermaid-{d.id}" class="mermaid-container flex justify-center"
+             role="button"
+             tabindex="0"
+             aria-label="Click to enlarge diagram"
+             style="cursor: zoom-in"
+             onclick={(e) => { if (e.currentTarget.querySelector('svg')) _openZoom(e.currentTarget.innerHTML); }}
+             onkeydown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && e.currentTarget.querySelector('svg')) _openZoom(e.currentTarget.innerHTML); }}>
           <div class="text-xs text-muted animate-pulse py-8">Loading diagram…</div>
         </div>
+        <p class="faq-zoom-hint">Tap to enlarge</p>
       </div>
     </div>
   {/each}
 </div>
 </div>
+
+{#if _zoomedDiagram}
+  <!-- svelte-ignore a11y_interactive_supports_focus a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div class="faq-zoom-overlay"
+       role="dialog"
+       aria-modal="true"
+       aria-label="Diagram zoom"
+       tabindex="-1"
+       onclick={_closeZoom}
+       onkeydown={(e) => { if (e.key === 'Escape') _closeZoom(); }}>
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div class="faq-zoom-panel" role="document" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
+      <button type="button" class="faq-zoom-close"
+              aria-label="Close zoom" onclick={_closeZoom}>×</button>
+      <div class="faq-zoom-svg">{@html _zoomedDiagram}</div>
+    </div>
+  </div>
+{/if}
 
 <style>
   /* FAQ list */
@@ -294,5 +333,51 @@
       max-width: none;
       min-width: 620px;
     }
+  }
+
+  /* Zoom hint below each diagram */
+  .faq-zoom-hint {
+    text-align: center;
+    font-size: 0.68rem;
+    color: #8a9ab0;
+    margin-top: 0.35rem;
+    pointer-events: none;
+  }
+
+  /* Lightbox overlay */
+  .faq-zoom-overlay {
+    position: fixed; inset: 0; z-index: 1000;
+    background: rgba(0,0,0,0.85);
+    display: flex; align-items: center; justify-content: center;
+    padding: 1rem;
+    cursor: zoom-out;
+  }
+  .faq-zoom-panel {
+    position: relative;
+    max-width: 95vw;
+    max-height: 95vh;
+    background: #fdfcf7;
+    border-radius: 8px;
+    padding: 1.5rem;
+    overflow: auto;
+    cursor: default;
+  }
+  .faq-zoom-close {
+    position: absolute; top: 0.4rem; right: 0.4rem;
+    background: none; border: 0;
+    font-size: 1.5rem; cursor: pointer;
+    color: #4b5563;
+    width: 2.5rem; height: 2.5rem;
+    display: flex; align-items: center; justify-content: center;
+    line-height: 1;
+  }
+  .faq-zoom-close:hover { color: #1f2937; }
+  .faq-zoom-svg :global(svg) {
+    width: auto !important;
+    height: auto !important;
+    max-width: 100%;
+    max-height: 85vh;
+    display: block;
+    margin: 0 auto;
   }
 </style>

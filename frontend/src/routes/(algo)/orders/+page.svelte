@@ -294,32 +294,23 @@
          to the SymbolPanel below so a flip in either surface updates
          the other. -->
     <span class="oc-header-cluster">
-      <!-- Operator: "remove live chip from order modal and page. navbar
-           live is enough." The mode chip used to sit here. -->
-      <!-- Operator: "chase should L M H like before. not drop down." -->
-      <label class="oes-common-chase-toggle"
-             title={_pageChase
-               ? 'Chase ON — re-quote the limit each tick until filled'
-               : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
-        <input type="checkbox" bind:checked={_pageChase} />
-        <span class="oes-common-chase-label" class:on={_pageChase}>CHASE</span>
-      </label>
-      {#if _pageChase}
-        <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
-          <button type="button" class="oes-common-chase-agg-pill"
-                  class:on={_pageChaseAgg === 'low'}
-                  title="Low — patient. Pegs to your own side; fills only if the market lifts it."
-                  onclick={() => _pageChaseAgg = 'low'}>L</button>
-          <button type="button" class="oes-common-chase-agg-pill"
-                  class:on={_pageChaseAgg === 'med'}
-                  title="Medium — peg to midpoint of bid+ask."
-                  onclick={() => _pageChaseAgg = 'med'}>M</button>
-          <button type="button" class="oes-common-chase-agg-pill"
-                  class:on={_pageChaseAgg === 'high'}
-                  title="High — urgent. Crosses the spread to take liquidity on the next tick."
-                  onclick={() => _pageChaseAgg = 'high'}>H</button>
-        </div>
-      {/if}
+      <!-- Chase is always active when visible. L/M/H is the only
+           control — no checkbox. Visibility is governed by SymbolPanel's
+           _chaseEnabled (LIMIT/SL on Ticket, always on Chain). -->
+      <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
+        <button type="button" class="oes-common-chase-agg-pill"
+                class:on={_pageChaseAgg === 'low'}
+                title="Low — patient. Pegs to your own side; fills only if the market lifts it."
+                onclick={() => _pageChaseAgg = 'low'}>L</button>
+        <button type="button" class="oes-common-chase-agg-pill"
+                class:on={_pageChaseAgg === 'med'}
+                title="Medium — peg to midpoint of bid+ask."
+                onclick={() => _pageChaseAgg = 'med'}>M</button>
+        <button type="button" class="oes-common-chase-agg-pill"
+                class:on={_pageChaseAgg === 'high'}
+                title="High — urgent. Crosses the spread to take liquidity on the next tick."
+                onclick={() => _pageChaseAgg = 'high'}>H</button>
+      </div>
       {#if _pageBasketCount > 0}
         <button type="button" class="oes-common-clear oes-common-clear-inline"
           title="Clear all basket legs"

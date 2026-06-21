@@ -700,11 +700,11 @@
   // codepaths (template attach, basket submit, etc.) can keep using
   // _sharedChase / _sharedChaseAgg by name. The bindable props are the
   // operator-facing handles; effects below keep both in sync.
-  let _sharedChase    = $state(chase);
+  // _sharedChase is now implicitly true whenever the L/M/H cluster is
+  // visible — no explicit toggle. Updated via $effect once _chaseEnabled
+  // is declared further below.
   let _sharedChaseAgg = $state(chaseAgg);
-  $effect(() => { if (chase !== _sharedChase) _sharedChase = chase; });
   $effect(() => { if (chaseAgg !== _sharedChaseAgg) _sharedChaseAgg = chaseAgg; });
-  $effect(() => { if (_sharedChase !== chase) chase = _sharedChase; });
   $effect(() => { if (_sharedChaseAgg !== chaseAgg) chaseAgg = _sharedChaseAgg; });
   // Shared template — applied to every leg in the basket on submit.
   // Operator picks once from the bar; submitBasket threads the id
@@ -1103,7 +1103,7 @@
     // Chase fires re-quotes off the form's side anyway; the label just
     // needs to say what action the operator is committing to (a chase),
     // not parrot the side that's already visible on the BUY/SELL toggle.
-    if (_sharedChase && _chaseEnabled) return 'Submit';
+    if (_chaseEnabled) return 'Submit';
     if (!_modalSide) return 'Submit';
     const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
     if (cq === 0) return `Submit · ${_modalSide}`;
@@ -1407,18 +1407,25 @@
     const ot = _ticketProps?.orderType ?? orderType;
     if (ot && ot !== untrack(() => _ticketOrderType)) _ticketOrderType = ot;
   });
+  // Chase is always active for Chain (all Chain orders are LIMIT).
+  // On Ticket: show only for LIMIT / SL (both carry a limit price the
+  // chase engine can re-quote). MARKET / SL-M fill at the book —
+  // no limit to re-quote, so hide entirely.
   const _chaseEnabled = $derived(
     _activeTab === 'chain'
-      || _isDerivative
       || _ticketOrderType === 'LIMIT'
       || _ticketOrderType === 'SL'
   );
-  // Auto-uncheck chase when the active order type can't use it
-  // (MARKET / SL-M). Operator: "for market order disable chase and
-  // deselect the option". The toggle is also visually `disabled` via
-  // _chaseEnabled.
+  // _sharedChase mirrors _chaseEnabled — chase is implicitly ON whenever
+  // the L/M/H cluster is visible. $state so OrderTicket can still bind
+  // to it; $effect keeps it in sync with the derived value.
+  // Also syncs back to the bindable `chase` prop so callers see the
+  // current state (e.g. /orders page bind:chase).
+  let _sharedChase = $state(chase);
   $effect(() => {
-    if (!_chaseEnabled && _sharedChase) _sharedChase = false;
+    const v = _chaseEnabled;
+    if (_sharedChase !== v) _sharedChase = v;
+    if (chase !== v) chase = v;
   });
   // +Basket is the Ticket-tab add-to-basket affordance. Chain has
   // per-row +CE / +PE buttons; on Chain the +Basket button stays
@@ -1868,19 +1875,9 @@
       <span class="oes-header-cluster">
         <!-- Operator: "remove live chip from order modal and page.
              navbar live is enough." The mode chip used to sit here. -->
-        <!-- Operator: "chase should L M H like before. not drop down."
-             Revert to CHASE checkbox + L/M/H pills. -->
-        <label class="oes-common-chase-toggle"
-               class:is-disabled={!_chaseEnabled}
-               title={!_chaseEnabled
-                 ? 'Chase unavailable — MARKET / SL-M orders fill at the book; no limit to re-quote'
-                 : _sharedChase
-                   ? 'Chase ON — re-quote the limit each tick until filled'
-                   : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
-          <input type="checkbox" bind:checked={_sharedChase} disabled={!_chaseEnabled} />
-          <span class="oes-common-chase-label" class:on={_sharedChase && _chaseEnabled}>CHASE</span>
-        </label>
-        {#if _sharedChase && _chaseEnabled}
+        <!-- Chase is always active when visible. L/M/H is the only
+             control — no checkbox. Hidden entirely for MARKET / SL-M. -->
+        {#if _chaseEnabled}
           <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
             <button type="button" class="oes-common-chase-agg-pill"
                     class:on={_sharedChaseAgg === 'low'}
@@ -4461,15 +4458,8 @@
     cursor: pointer;
     user-select: none;
   }
-  .oes-common-chase-toggle input { margin: 0; }
-  /* Grayed-out state for MARKET / SL-M order types — chase is not
-     applicable (no limit price to re-quote). Operator: "make chase
-     grayed out when market is selected for order type". */
-  .oes-common-chase-toggle.is-disabled {
-    cursor: not-allowed;
-    opacity: 0.45;
-  }
-  .oes-common-chase-toggle.is-disabled input { cursor: not-allowed; }
+  /* .oes-common-chase-toggle input and .is-disabled input removed —
+     checkbox is gone; visibility is now controlled by {#if _chaseEnabled}. */
   .oes-common-chase-label {
     color: rgba(200,216,240,0.55);
     font-size: 0.55rem;

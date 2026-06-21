@@ -298,6 +298,13 @@
     return (st === 'OPEN' || st === 'TRIGGER PENDING') && !o?.mode;
   }
 
+  /** Returns true when the order is in-flight and reconciling is meaningful. */
+  function _isInFlight(/** @type {any} */ o) {
+    const st = (o?.status || '').toUpperCase();
+    return st === 'OPEN' || st === 'TRIGGER PENDING'
+        || st === 'CANCEL_FAILED' || st === 'PARTIAL';
+  }
+
   async function _cancelRow(/** @type {any} */ o) {
     const key = String(o.order_id || o.id || '');
     if (_cancelling.has(key)) return;
@@ -977,8 +984,11 @@
                   </button>
                 {/if}
                 <!-- Reconcile — sync this single row against the broker book.
-                     Visible for every status: stuck rows can be OPEN, REJECTED
-                     -but-still-OPEN, or terminal-but-stale. Sky-blue trio. -->
+                     Only shown for in-flight statuses (OPEN, TRIGGER PENDING,
+                     CANCEL_FAILED, PARTIAL) where a sync can change the row
+                     state. Terminal rows (COMPLETE, REJECTED, CANCELLED,
+                     UNFILLED) are already settled — reconcile is a no-op. -->
+                {#if _isInFlight(ord)}
                 <button type="button" class="lp-oc-btn lp-oc-reconcile"
                   title="Reconcile with broker"
                   aria-label="Reconcile"
@@ -992,6 +1002,7 @@
                       stroke-linecap="round" stroke-linejoin="round" />
                   </svg>
                 </button>
+                {/if}
               </div>
             {/snippet}
           </OrderCard>
