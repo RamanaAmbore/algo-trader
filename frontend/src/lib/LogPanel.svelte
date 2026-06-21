@@ -901,11 +901,15 @@
     onChange={onTabChange}
     compact={true}
   />
-  {#if gateByMode && _gatingMode}
-    <span class="lp-mode-chip mode-pill mode-pill-{_gatingMode}"
-          title="Activity filtered to current execution mode"
-          style="margin-left:auto;align-self:center;">
-      {_gatingMode.toUpperCase()}
+  <!-- Operator: "in log panel remove live and move all accounts dropdown
+       in its place". Mode chip dropped (navbar already shows mode);
+       AccountMultiSelect lifted from the order-strip into the tab row
+       so the account filter is visible at panel level. -->
+  {#if _availableAccounts.length > 1}
+    <span class="lp-tabrow-acct">
+      <AccountMultiSelect
+        bind:value={orderAccountFilter}
+        options={_availableAccounts.map(a => ({ value: a, label: a }))} />
     </span>
   {/if}
 </div>
@@ -940,13 +944,7 @@
         </button>
       {/each}
     {/if}
-    {#if _availableAccounts.length > 1}
-      <span class="om-acct-wrap">
-        <AccountMultiSelect
-          bind:value={orderAccountFilter}
-          options={_availableAccounts.map(a => ({ value: a, label: a }))} />
-      </span>
-    {/if}
+    <!-- Account filter moved to the tab row above per operator. -->
   </div>
   <div class="lp-order-scroll {heightClass}">
     {#if filteredOrderRows.length}
@@ -1109,15 +1107,16 @@
      scaled proportionally. Still no inter-tab gap so mobile fit holds. */
   .log-tab-row { gap: 0; }
 
-  /* Mode gate chip — right-aligned in the tab row, shows which execution
-     mode is currently scoping all activity tabs. Reuses .mode-pill base;
-     extra horizontal padding so it reads as a header label, not an inline
-     order pill. Tooltip explains the filtering behaviour. */
-  .lp-mode-chip {
-    padding: 0.1rem 0.55rem !important;
-    font-size: 0.52rem !important;
-    letter-spacing: 0.07em;
-    cursor: help;
+  /* Account multi-select lifted into the tab row (replaces the
+     mode chip per operator). Right-aligned via `margin-left: auto`;
+     width clamped so it doesn't dominate the tab row but is wide
+     enough to show 2-3 selected account codes. */
+  .lp-tabrow-acct {
+    margin-left: auto;
+    align-self: center;
+    display: inline-flex;
+    min-width: 8rem;
+    max-width: 16rem;
   }
 
   /* Unified row layout for Agents · Terminal · Ticks · System tabs.
@@ -1326,7 +1325,6 @@
      row. The chip group keeps its segmented look via inline-flex
      on the wrapping span. */
   .om-bar > .om-chip ~ .om-chip { margin-left: 0; }
-  .om-acct-wrap { display: inline-flex; min-width: 8rem; max-width: 16rem; }
   .om-chip {
     background: transparent;
     border: 1px solid rgba(255,255,255,0.10);
