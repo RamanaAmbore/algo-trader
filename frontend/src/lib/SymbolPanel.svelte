@@ -2775,27 +2775,35 @@
                 : (_activeTab === 'chain' && basketLegs.length > 0
                     ? `Submit (${basketLegs.length})`
                     : (_activeTab === 'ticket' && _toBasket)
-                        ? 'Submit to basket'
+                        /* Operator: "change submit to basket to just
+                           submit in ticket with bracket count of orders
+                           like chain." Show count AFTER click — clicking
+                           adds this ticket as a new leg, so basket goes
+                           from N to N+1. */
+                        ? `Submit (${basketLegs.length + 1})`
                         : _submitLabel)}</button>
-          <!-- Operator: "move basket to the end of the row". Basket
-               icon sits at the trailing edge, after Submit. Chain →
-               always-on static badge ("Chain orders are always basket
-               orders"). Ticket → checkbox-style toggle that controls
-               whether Submit fires immediately or adds to the basket.
-               Icon redrawn — no inner vertical bars (those mimicked
-               trash-can ribs); crossed handle straps over a slanted
-               basket body reads unambiguously as a shopping basket. -->
+          <!-- Basket icon at the trailing edge. Operator:
+               · "in chain tab, basket icon enabled by default" →
+                 Chain renders the icon in the `.on` state but as a
+                 read-only span (Chain is always basket-mode).
+               · "active basket icon should have a different background
+                 color" → `.on` state now uses a stronger sky accent +
+                 amber border to read distinctly from the resting state.
+               · "if you have a better icon for basket use it" →
+                 swapped the previous slanted basket for Lucide's
+                 shopping-cart silhouette (wheels + handle), which is
+                 the canonical e-commerce icon. -->
           {#if _activeTab === 'chain'}
             <span class="oes-common-basket-toggle oes-common-basket-toggle-icon on is-static"
                   title="Chain orders are always basket orders — the basket builds from each +CE / +PE / +Fut click."
                   aria-label="Basket mode (always on for Chain)">
-              <svg width="16" height="16" viewBox="0 0 20 20"
-                   fill="none" stroke="currentColor" stroke-width="1.7"
+              <svg width="16" height="16" viewBox="0 0 24 24"
+                   fill="none" stroke="currentColor" stroke-width="2"
                    stroke-linecap="round" stroke-linejoin="round"
                    aria-hidden="true">
-                <path d="M2.5 7.5h15" />
-                <path d="M4.5 7.5l1.5 9.2c.12 0.75 0.77 1.3 1.53 1.3h5.94c0.76 0 1.41-0.55 1.53-1.3l1.5-9.2" />
-                <path d="M7 7.5l2-3M13 7.5l-2-3" />
+                <circle cx="8" cy="21" r="1" />
+                <circle cx="19" cy="21" r="1" />
+                <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12" />
               </svg>
             </span>
           {:else}
@@ -2805,13 +2813,13 @@
                      ? 'Basket mode ON — Submit will add the current ticket as a basket leg'
                      : 'Basket mode OFF — Submit will place the order immediately'}>
               <input type="checkbox" bind:checked={_toBasket} class="sr-only" />
-              <svg width="16" height="16" viewBox="0 0 20 20"
-                   fill="none" stroke="currentColor" stroke-width="1.7"
+              <svg width="16" height="16" viewBox="0 0 24 24"
+                   fill="none" stroke="currentColor" stroke-width="2"
                    stroke-linecap="round" stroke-linejoin="round"
                    aria-hidden="true">
-                <path d="M2.5 7.5h15" />
-                <path d="M4.5 7.5l1.5 9.2c.12 0.75 0.77 1.3 1.53 1.3h5.94c0.76 0 1.41-0.55 1.53-1.3l1.5-9.2" />
-                <path d="M7 7.5l2-3M13 7.5l-2-3" />
+                <circle cx="8" cy="21" r="1" />
+                <circle cx="19" cy="21" r="1" />
+                <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12" />
               </svg>
             </label>
           {/if}
@@ -4327,15 +4335,15 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  /* Basket icon — operator: "for basket toggle, keep an icon with no
-     text. the icon should be same height as button. all buttons
-     should be of same height." 1.9rem × 1.7rem cell uniform with the
-     side button + Submit. */
+  /* Basket icon — operator: "make all the buttons including basket
+     icon button same height as chip." 1.7rem square so it matches
+     Submit, Side, and the margin chip exactly. box-sizing ensures
+     border doesn't shift effective height. */
   .oes-common-basket-toggle-icon {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 1.9rem;
+    width: 1.7rem;
     height: 1.7rem;
     padding: 0;
     cursor: pointer;
@@ -4346,12 +4354,17 @@
     color: rgba(200, 216, 240, 0.55);
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;
+    box-sizing: border-box;
   }
-  .oes-common-basket-toggle-icon:hover { color: #7dd3fc; background: rgba(125, 211, 252, 0.08); }
+  .oes-common-basket-toggle-icon:hover { color: #7dd3fc; background: rgba(125, 211, 252, 0.10); }
+  /* Operator: "active basket icon should have a different background
+     color." Active state now uses a stronger amber accent so it pops
+     against the resting/hover sky tones — distinct from the muted
+     sky-blue inactive treatment. */
   .oes-common-basket-toggle-icon.on {
-    color: #7dd3fc;
-    background: rgba(125, 211, 252, 0.16);
-    border-color: rgba(125, 211, 252, 0.70);
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.20);
+    border-color: rgba(251, 191, 36, 0.65);
   }
   /* Static (always-on) variant — used on Chain where basket is the
      only mode. Cursor stays default so the icon reads as a status
@@ -4360,7 +4373,8 @@
     cursor: default;
   }
   .oes-common-basket-toggle-icon.is-static:hover {
-    background: rgba(125, 211, 252, 0.16);
+    background: rgba(251, 191, 36, 0.20);
+    border-color: rgba(251, 191, 36, 0.65);
   }
   .sr-only {
     position: absolute;
