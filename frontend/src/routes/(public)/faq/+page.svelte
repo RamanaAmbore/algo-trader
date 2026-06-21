@@ -80,14 +80,29 @@
 
   let open = $state(-1);
   let _zoomedDiagram = $state(/** @type {string | null} */ (null));
-  // Zoom level — 1.0 = natural, 0.25 = quarter, 4.0 = 4x. Operator
-  // can zoom out to see the whole flow OR zoom in to read labels.
+  // Zoom level — 1.0 = natural, 0.25 = quarter, 4.0 = 4x.
   let _zoomLevel = $state(1);
+  // SVG's natural (un-zoomed) dimensions, read from getBoundingClientRect
+  // after the @html mount. Drive the wrapper's explicit width/height so
+  // the panel's `overflow: auto` knows the scaled extent — `transform:
+  // scale` alone left the layout box at 1× and clipped scroll. Defaults
+  // are placeholders until the read completes.
+  let _svgW = $state(600);
+  let _svgH = $state(400);
 
   function _openZoom(svgHtml) {
     _zoomedDiagram = svgHtml;
     _zoomLevel = 1;
     document.body.style.overflow = 'hidden';
+    // Read SVG natural dimensions on the next frame (after @html mounts).
+    requestAnimationFrame(() => {
+      const svg = document.querySelector('.faq-zoom-svg-inner svg');
+      if (svg) {
+        const rect = svg.getBoundingClientRect();
+        _svgW = Math.max(200, Math.round(rect.width));
+        _svgH = Math.max(150, Math.round(rect.height));
+      }
+    });
   }
   function _closeZoom() {
     _zoomedDiagram = null;
@@ -286,12 +301,23 @@
       <button type="button" class="faq-zoom-btn faq-zoom-x" aria-label="Close" title="Close"
               onclick={(e) => { e.stopPropagation(); _closeZoom(); }}>×</button>
     </div>
-    <!-- Panel is the scroll container. `zoom` on the inner SVG box
-         scales BOTH visual size AND layout box so the panel's
-         `overflow: auto` knows about the full extents. -->
+    <!-- Panel is the scroll container. Outer wrapper carries the
+         SCALED dimensions so the panel's `overflow: auto` knows the
+         full extent in both axes. Inner wrapper applies the visual
+         `transform: scale` with `transform-origin: 0 0` so scaling
+         anchors top-left, matching scroll origin. The inner stops
+         click propagation so scrolling/drag don't close the lightbox. -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div class="faq-zoom-panel" role="document">
-      <div class="faq-zoom-svg" style="zoom: {_zoomLevel};">{@html _zoomedDiagram}</div>
+    <div class="faq-zoom-panel" role="document"
+         onclick={(e) => e.stopPropagation()}
+         onkeydown={(e) => e.stopPropagation()}>
+      <div class="faq-zoom-svg"
+           style="width: {_svgW * _zoomLevel}px; height: {_svgH * _zoomLevel}px;">
+        <div class="faq-zoom-svg-inner"
+             style="width: {_svgW}px; height: {_svgH}px; transform: scale({_zoomLevel});">
+          {@html _zoomedDiagram}
+        </div>
+      </div>
     </div>
   </div>
 {/if}
@@ -444,16 +470,32 @@
   .faq-zoom-btn:hover { background: rgba(31, 41, 55, 0.06); border-color: rgba(31, 41, 55, 0.45); }
   .faq-zoom-fit { font-size: 0.7rem; min-width: 3rem; }
   .faq-zoom-x { font-size: 1.1rem; color: #dc2626; }
-  /* SVG wrapper — natural block flow at top-left so horizontal scroll
-     origin is content-left. CSS `zoom` (set via inline style) scales
-     BOTH visual size AND layout box, so the panel's `overflow: auto`
-     scroll region naturally extends to cover the zoomed content. */
+  /* Outer wrapper carries explicit (_svgW × _zoomLevel) dimensions so
+     the panel's `overflow: auto` reads the scaled extent in both
+     axes. `position: relative` anchors the inner transform. */
   .faq-zoom-svg {
-    display: inline-block;
+    position: relative;
+    flex-shrink: 0;
     touch-action: pan-x pan-y pinch-zoom;
   }
-  .faq-zoom-svg :global(svg) {
+  /* Inner wrapper holds the @html SVG at natural size and applies the
+     visual `transform: scale()`. `transform-origin: 0 0` so growth is
+     toward bottom-right, matching scroll origin. */
+  .faq-zoom-svg-inner {
+    position: absolute;
+    top: 0;
+    left: 0;
+    transform-origin: 0 0;
+    touch-action: pan-x pan-y pinch-zoom;
+  }
+  /* SVG fills its inner-wrapper box (which is set to natural size).
+     Override Mermaid's inline `max-width: …px` + any width="100%"
+     attribute so the SVG renders at the operator-relevant size. */
+  .faq-zoom-svg-inner :global(svg) {
+    width: 100% !important;
+    height: 100% !important;
     max-width: none !important;
+    max-height: none !important;
     display: block;
     touch-action: pan-x pan-y pinch-zoom;
   }
