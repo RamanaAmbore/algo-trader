@@ -288,7 +288,14 @@
                 title="Zoom in"
                 onclick={(e) => { e.stopPropagation(); _zoomIn(); }}>+</button>
       </div>
-      <div class="faq-zoom-svg" style="transform: scale({_zoomLevel});">{@html _zoomedDiagram}</div>
+      <!-- `zoom` (not `transform: scale`) because zoom rescales the
+           element's LAYOUT box, including the scroll-area size.
+           `transform: scale` was visually enlarging but leaving the
+           scrollable region at 1x, so the right-edge boxes (e.g.
+           "Distribute Threshold Return First") couldn't be reached
+           via horizontal scroll. `zoom` is supported by every
+           Chromium browser, Safari, and Firefox 126+. -->
+      <div class="faq-zoom-svg" style="zoom: {_zoomLevel};">{@html _zoomedDiagram}</div>
     </div>
   </div>
 {/if}
@@ -430,16 +437,13 @@
   .faq-zoom-btn:hover { background: #fff; border-color: rgba(31, 41, 55, 0.5); }
   .faq-zoom-fit { font-size: 0.65rem; }
   /* SVG wrapper — natural block flow at top-left so horizontal scroll
-     origin is content-left (no flex/margin auto centering that
-     traps the leftmost overflow off-screen). `transform-origin: 0 0`
-     so zoom anchors to top-left, matching scroll origin. The wrapper
-     grows with `transform: scale()` via inline style.
-     `width: max-content` makes the wrapper as wide as the diagram
-     so scroll picks up the full width. */
+     origin is content-left. CSS `zoom` (set via inline style) scales
+     BOTH visual size AND layout box, so the panel's `overflow: auto`
+     scroll region naturally extends to cover the zoomed content. No
+     `transform-origin` because no transform is used. */
   .faq-zoom-svg {
     display: block;
     width: max-content;
-    transform-origin: 0 0;
     touch-action: pan-x pan-y pinch-zoom;
   }
   .faq-zoom-svg :global(svg) {
