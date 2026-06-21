@@ -252,20 +252,31 @@
        multi-touch gesture, not a click. Panel switched from
        flex-centered to natural block layout so leftmost overflow can
        be scrolled to via the native scrollbar. -->
-  <!-- Operator: revert the zoom toolbar + JS-measured layout. Simple
-       lightbox: SVG at natural size in a scrollable panel. Click
-       anywhere closes; mobile pinch-zoom is supported natively. -->
+  <!-- Operator: "align diagram center horizontally and vertically.
+       have x button to close full screen." Wrap centers via flex when
+       SVG fits the panel; when SVG overflows, the wrap grows to
+       SVG-size (via `min-width/height: 100%`) so panel scroll origin
+       still starts at content-left and the leftmost box stays
+       reachable. -->
   <!-- svelte-ignore a11y_interactive_supports_focus a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div class="faq-zoom-overlay"
        role="dialog"
        aria-modal="true"
-       aria-label="Diagram — tap to close, pinch to zoom"
+       aria-label="Diagram — pinch to zoom, click × or anywhere to close"
        tabindex="-1"
        onclick={_closeZoom}
        onkeydown={(e) => { if (e.key === 'Escape') _closeZoom(); }}>
+    <!-- × close button — fixed-positioned over the panel so it stays
+         visible regardless of scroll. Stops propagation so it
+         doesn't double-fire with the overlay close. -->
+    <button type="button" class="faq-zoom-x" aria-label="Close diagram"
+            title="Close"
+            onclick={(e) => { e.stopPropagation(); _closeZoom(); }}>×</button>
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div class="faq-zoom-panel" role="document">
-      <div class="faq-zoom-svg">{@html _zoomedDiagram}</div>
+      <div class="faq-zoom-wrap">
+        <div class="faq-zoom-svg">{@html _zoomedDiagram}</div>
+      </div>
     </div>
   </div>
 {/if}
@@ -365,36 +376,72 @@
   }
   /* Panel — the scroll container at viewport size. `overflow: auto`
      gives native scrollbars on both axes when the SVG exceeds it.
-     `touch-action: pan-x pan-y pinch-zoom` keeps native pinch-zoom
-     live on touch devices. Cursor zoom-out signals tap-to-close. */
+     `position: relative` is the anchor for the × button (the button
+     itself is `fixed` to stay visible above content scroll). */
   .faq-zoom-panel {
+    position: relative;
     width: 95vw;
     height: 95vh;
     background: #fdfcf7;
     border-radius: 8px;
-    padding: 0.75rem;
     overflow: auto;
     cursor: zoom-out;
     touch-action: pan-x pan-y pinch-zoom;
     -webkit-overflow-scrolling: touch;
     box-sizing: border-box;
   }
-  /* Inline-block sizes to content; SVG sits at top-left of the panel
-     so horizontal scroll origin is content-left (the leftmost box
-     is at scroll position 0). No flex / margin auto / text-align
-     centering that would offset the scroll origin and trap the
-     leftmost content off-screen. */
+  /* Wrap = the actual flex centering container. `min-width:
+     100%; min-height: 100%` means it fills the panel WHEN SVG is
+     smaller (centering kicks in), and grows to SVG dimensions WHEN
+     SVG is larger (flex children push parent up to natural size).
+     Either way the wrap's left edge is the panel's left edge — so
+     scroll origin starts at content-left and the leftmost box is
+     reachable. */
+  .faq-zoom-wrap {
+    min-width: 100%;
+    min-height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    box-sizing: border-box;
+  }
+  /* SVG container — no constraints; just the natural-size SVG inside. */
   .faq-zoom-svg {
     display: inline-block;
     touch-action: pan-x pan-y pinch-zoom;
   }
-  /* Override Mermaid's inline `style="max-width: …px"` cap so the
-     SVG renders at its intrinsic dimensions (which the panel then
-     scrolls). */
   .faq-zoom-svg :global(svg) {
     max-width: none !important;
     max-height: none !important;
     display: block;
     touch-action: pan-x pan-y pinch-zoom;
+  }
+  /* × close button — fixed-positioned over the lightbox so it stays
+     visible regardless of panel scroll. Top-right with comfortable
+     touch target (44 × 44 px). */
+  .faq-zoom-x {
+    position: fixed;
+    top: 1.5rem;
+    right: 1.5rem;
+    z-index: 1001;
+    width: 2.75rem;
+    height: 2.75rem;
+    padding: 0;
+    background: rgba(253, 252, 247, 0.95);
+    border: 1px solid rgba(31, 41, 55, 0.25);
+    border-radius: 50%;
+    color: #1f2937;
+    font-family: ui-monospace, monospace;
+    font-size: 1.4rem;
+    font-weight: 700;
+    cursor: pointer;
+    line-height: 1;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  }
+  .faq-zoom-x:hover {
+    background: #fff;
+    border-color: #dc2626;
+    color: #dc2626;
   }
 </style>
