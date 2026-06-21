@@ -382,12 +382,24 @@ async def _task_performance(state: dict) -> None:
         # sessions on equity holidays (NSE's COM segment lists those
         # as closed but MCX is actually trading) and Muhurat days
         # the calendar doesn't list.
-        open_segments = [
-            seg for seg in segments
-            if is_market_open(now, holiday_cache.get(seg['holiday_exchange'], set()),
-                              seg['hours_start'], seg['hours_end'],
-                              exchange=seg['holiday_exchange'])
-        ]
+        #
+        # Perf: offload to a thread because is_market_open → probe_market_active
+        # → kite.quote() is a blocking HTTP call (requests/urllib3) inside the
+        # asyncio main thread. py-spy caught a sample blocked in ssl.send.
+        # Cache (60s TTL) usually short-circuits this, but on a cache miss the
+        # loop stalls for ~100-200ms (longer on a Kite outage).
+        def _probe_open(seg):
+            return is_market_open(
+                now, holiday_cache.get(seg['holiday_exchange'], set()),
+                seg['hours_start'], seg['hours_end'],
+                exchange=seg['holiday_exchange'],
+            )
+        # asyncio.gather of to_thread calls so each segment's probe runs in
+        # parallel and the event loop stays responsive throughout.
+        open_results = await asyncio.gather(*(
+            asyncio.to_thread(_probe_open, seg) for seg in segments
+        ))
+        open_segments = [seg for seg, ok in zip(segments, open_results) if ok]
 
         if not open_segments:
             continue
@@ -1387,6 +1399,20 @@ async def _task_oco_pair_watcher() -> None:
     from sqlalchemy import select as _sel
     import json as _json
 
+    # Perf: lift the polled query to module scope so SQLAlchemy doesn't
+    # rebuild the `where()` clause + recompute the cache key on every
+    # cycle. py-spy showed `_compile_w_cache` + `_boolean_compare`
+    # firing per-tick — small but pure savings.
+    _stmt = (
+        _sel(AlgoOrder)
+        .where(
+            AlgoOrder.mode == "live",
+            AlgoOrder.status == "FILLED",
+            AlgoOrder.attached_gtts_json.is_not(None),
+        )
+        .limit(500)
+    )
+
     while True:
         try:
             # 15s default: faster than trail-stop (30s) because the OCO
@@ -1400,13 +1426,7 @@ async def _task_oco_pair_watcher() -> None:
         await asyncio.sleep(interval)
         try:
             async with async_session() as s:
-                rows = (await s.execute(
-                    _sel(AlgoOrder).where(
-                        AlgoOrder.mode == "live",
-                        AlgoOrder.status == "FILLED",
-                        AlgoOrder.attached_gtts_json.is_not(None),
-                    ).limit(500)
-                )).scalars().all()
+                rows = (await s.execute(_stmt)).scalars().all()
             # Group by account so we hit broker.get_gtts() once per
             # account, not once per OCO entry.
             rows_by_account: dict[str, list] = {}
@@ -2074,10 +2094,16 @@ async def _task_visitor_log_daily() -> None:
 
     async def _run_once() -> None:
         try:
-            # Offload the synchronous file parsing + MaxMind lookups to
-            # the thread executor so the asyncio loop stays responsive.
-            from backend.scripts.visitor_report import run_daily, _summary_block
-            report_path = await _run(run_daily)
+            # Use `arun_daily` (the async variant) directly so the
+            # call runs on this task's event loop — asyncpg's pool is
+            # bound to this loop. The prior path `await _run(run_daily)`
+            # offloaded to a worker thread which then created its own
+            # loop via asyncio.run; the resulting connection was on a
+            # different loop than the upsert futures expected, producing
+            # the chronic "Future attached to a different loop" errors
+            # py-spy + log review caught.
+            from backend.scripts.visitor_report import arun_daily, _summary_block
+            report_path = await arun_daily()
             logger.info(f"Background: visitor log report → {report_path}")
 
             branch = config.get("deploy_branch", "main")

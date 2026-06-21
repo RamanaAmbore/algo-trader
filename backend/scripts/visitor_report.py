@@ -548,11 +548,15 @@ def _render_report(
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def run_daily(
+async def arun_daily(
     target_date: Optional[date] = None,
     report_dir: str = "/opt/ramboq/.log",
 ) -> Path:
-    """Parse nginx logs for `target_date` (default: today IST — the
+    """Async version of run_daily. Use this from inside async code
+    (the background task) so asyncpg's connection pool stays bound
+    to the caller's running event loop.
+
+    Parse nginx logs for `target_date` (default: today IST — the
     IST trading day that's just closed at MCX, 23:30 IST). Upserts
     visitor_log, writes markdown report, purges rows older than 30 days.
     Returns the report Path."""
@@ -562,25 +566,12 @@ def run_daily(
     if target_date is None:
         target_date = today_ist
 
-    # Single shared event loop for this run — used for settings cache
-    # hydration AND the later DB upsert/purge. Using separate loops
-    # produces 'Future attached to a different loop' errors because
-    # asyncpg ties the connection pool to the loop that opened it.
-    try:
-        loop = _asyncio.get_event_loop()
-        if loop.is_closed():
-            raise RuntimeError("loop closed")
-    except RuntimeError:
-        loop = _asyncio.new_event_loop()
-        _asyncio.set_event_loop(loop)
-
     # Hydrate the in-process settings cache from DB. The cache is normally
-    # populated at app startup; this script runs outside the app lifecycle,
-    # so without this every get_string call sees an empty dict and returns
-    # the default (= empty filter).
+    # populated at app startup; in async invocation we're already on the
+    # right loop so a plain await suffices.
     try:
         from backend.shared.helpers.settings import reload_cache
-        loop.run_until_complete(reload_cache())
+        await reload_cache()
     except Exception as e:
         logger.warning(f"visitor_report: settings cache reload failed: {e}")
 
@@ -589,10 +580,15 @@ def run_daily(
     # the ramboq_visitor format. Reading this file directly avoids having to
     # disambiguate the prod box's other sites (marathakalyanam, ramanaambore,
     # webhook etc) from the visitor-traffic stream.
+    # Log file reading is sync (gzip + line parse); push to thread so
+    # the event loop stays responsive while large logs are processed.
     log_dir = Path("/var/log/nginx")
-    all_lines: list[str] = []
-    for fname in ("ramboq-access.log", "ramboq-access.log.1", "ramboq-access.log.1.gz"):
-        all_lines.extend(_read_log_file(log_dir / fname))
+    def _read_all() -> list[str]:
+        lines: list[str] = []
+        for fname in ("ramboq-access.log", "ramboq-access.log.1", "ramboq-access.log.1.gz"):
+            lines.extend(_read_log_file(log_dir / fname))
+        return lines
+    all_lines: list[str] = await _asyncio.to_thread(_read_all)
 
     logger.info(
         f"visitor_report: {len(all_lines)} raw lines for {target_date}"
@@ -681,10 +677,10 @@ def run_daily(
         retention_days = 30
 
     try:
-        loop.run_until_complete(_upsert_records(records, target_date, geo_map))
+        await _upsert_records(records, target_date, geo_map)
         today_utc = datetime.now(timezone.utc).date()
         if retention_days > 0:
-            deleted = loop.run_until_complete(_purge_old_rows(today_utc, retention_days=retention_days))
+            deleted = await _purge_old_rows(today_utc, retention_days=retention_days)
             if deleted:
                 logger.info(f"visitor_report: purged {deleted} rows older than {retention_days} days")
         else:
@@ -703,6 +699,20 @@ def run_daily(
         logger.error(f"visitor_report: could not write report: {e}")
 
     return report_path
+
+
+def run_daily(
+    target_date: Optional[date] = None,
+    report_dir: str = "/opt/ramboq/.log",
+) -> Path:
+    """Sync shim around `arun_daily` for CLI use (no event loop
+    already running). Background-task callers should `await
+    arun_daily(...)` directly instead — that avoids `asyncio.run`
+    creating a fresh loop in the worker thread, which is what
+    caused the prior 'Future attached to a different loop' errors
+    (asyncpg's pool stays bound to the loop that first opened it)."""
+    import asyncio as _asyncio
+    return _asyncio.run(arun_daily(target_date=target_date, report_dir=report_dir))
 
 
 def _parse_summary(report_path: Path) -> dict:
