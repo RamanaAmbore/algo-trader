@@ -263,38 +263,34 @@
   <div class="faq-zoom-overlay"
        role="dialog"
        aria-modal="true"
-       aria-label="Diagram zoom — tap to close, use zoom buttons or pinch"
+       aria-label="Diagram zoom — tap to close, use buttons or pinch"
        tabindex="-1"
        onclick={_closeZoom}
        onkeydown={(e) => { if (e.key === 'Escape') _closeZoom(); }}>
+    <!-- Toolbar floats over the panel via fixed positioning, outside
+         the panel's layout flow so it doesn't push the SVG content
+         around. stopPropagation on every button keeps the close
+         handler from firing when zoom is adjusted. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+    <div class="faq-zoom-toolbar" role="toolbar" aria-label="Zoom controls"
+         onclick={(e) => e.stopPropagation()}
+         onkeydown={(e) => e.stopPropagation()}>
+      <button type="button" class="faq-zoom-btn" aria-label="Zoom out" title="Zoom out"
+              onclick={(e) => { e.stopPropagation(); _zoomOut(); }}>−</button>
+      <button type="button" class="faq-zoom-btn faq-zoom-fit" aria-label="Reset zoom" title="Reset to 100%"
+              onclick={(e) => { e.stopPropagation(); _zoomFit(); }}>
+        {Math.round(_zoomLevel * 100)}%
+      </button>
+      <button type="button" class="faq-zoom-btn" aria-label="Zoom in" title="Zoom in"
+              onclick={(e) => { e.stopPropagation(); _zoomIn(); }}>+</button>
+      <button type="button" class="faq-zoom-btn faq-zoom-x" aria-label="Close" title="Close"
+              onclick={(e) => { e.stopPropagation(); _closeZoom(); }}>×</button>
+    </div>
+    <!-- Panel is the scroll container. `zoom` on the inner SVG box
+         scales BOTH visual size AND layout box so the panel's
+         `overflow: auto` knows about the full extents. -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div class="faq-zoom-panel" role="document">
-      <!-- Zoom toolbar — operator: "zoom in and out is not available
-           to make the complete process flow visible within the
-           container." Three buttons: −, fit (1:1), +. Buttons
-           stopPropagation so they don't bubble to the overlay-close
-           handler. Pinned to top-right via `position: sticky` so they
-           stay visible as the operator scrolls a zoomed diagram. -->
-      <div class="faq-zoom-toolbar">
-        <button type="button" class="faq-zoom-btn" aria-label="Zoom out"
-                title="Zoom out"
-                onclick={(e) => { e.stopPropagation(); _zoomOut(); }}>−</button>
-        <button type="button" class="faq-zoom-btn faq-zoom-fit"
-                aria-label="Reset zoom" title="Reset zoom"
-                onclick={(e) => { e.stopPropagation(); _zoomFit(); }}>
-          {Math.round(_zoomLevel * 100)}%
-        </button>
-        <button type="button" class="faq-zoom-btn" aria-label="Zoom in"
-                title="Zoom in"
-                onclick={(e) => { e.stopPropagation(); _zoomIn(); }}>+</button>
-      </div>
-      <!-- `zoom` (not `transform: scale`) because zoom rescales the
-           element's LAYOUT box, including the scroll-area size.
-           `transform: scale` was visually enlarging but leaving the
-           scrollable region at 1x, so the right-edge boxes (e.g.
-           "Distribute Threshold Return First") couldn't be reached
-           via horizontal scroll. `zoom` is supported by every
-           Chromium browser, Safari, and Firefox 126+. -->
       <div class="faq-zoom-svg" style="zoom: {_zoomLevel};">{@html _zoomedDiagram}</div>
     </div>
   </div>
@@ -393,63 +389,71 @@
     padding: 0.5rem;
     cursor: zoom-out;
   }
-  /* Panel sized to the viewport; scrolls in both axes once the SVG
-     grows past it via zoom. `touch-action: pan-x pan-y pinch-zoom`
-     keeps native pinch-zoom on touch devices live inside the panel. */
+  /* Panel — the scroll container. Sized to the viewport with native
+     scroll on both axes once the SVG box grows past via zoom.
+     `touch-action: pan-x pan-y pinch-zoom` keeps native pinch-zoom
+     live on touch devices. */
   .faq-zoom-panel {
     position: relative;
     width: 95vw;
     height: 95vh;
     background: #fdfcf7;
     border-radius: 8px;
-    padding: 0.5rem;
+    padding: 0.75rem;
     overflow: auto;
     cursor: zoom-out;
     touch-action: pan-x pan-y pinch-zoom;
     -webkit-overflow-scrolling: touch;
+    box-sizing: border-box;
   }
-  /* Toolbar sticky in the top-right corner. Stays visible while the
-     panel scrolls. Z-index above the SVG so clicks land on buttons. */
+  /* Toolbar lives OUTSIDE the panel's layout flow via fixed
+     positioning, so it doesn't push the SVG around or compete with
+     the natural top-left origin of the scroll area. Pinned to the
+     top-right of the viewport. z-index above the panel so clicks
+     land on buttons. */
   .faq-zoom-toolbar {
-    position: sticky;
-    top: 0;
-    margin-left: auto;
-    z-index: 10;
+    position: fixed;
+    top: 1.5rem;
+    right: 1.5rem;
+    z-index: 1001;
     display: inline-flex;
-    gap: 0.25rem;
-    padding: 0.25rem;
-    float: right;
+    gap: 0.3rem;
+    padding: 0.3rem;
+    background: rgba(253, 252, 247, 0.95);
+    border: 1px solid rgba(31, 41, 55, 0.18);
+    border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
   }
   .faq-zoom-btn {
-    min-width: 2rem;
+    min-width: 2.2rem;
     height: 2rem;
     padding: 0 0.5rem;
-    background: rgba(253, 252, 247, 0.92);
-    border: 1px solid rgba(31, 41, 55, 0.25);
+    background: transparent;
+    border: 1px solid rgba(31, 41, 55, 0.2);
     border-radius: 4px;
     color: #1f2937;
     font-family: ui-monospace, monospace;
-    font-size: 0.85rem;
+    font-size: 1rem;
     font-weight: 700;
     cursor: pointer;
     line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
-  .faq-zoom-btn:hover { background: #fff; border-color: rgba(31, 41, 55, 0.5); }
-  .faq-zoom-fit { font-size: 0.65rem; }
+  .faq-zoom-btn:hover { background: rgba(31, 41, 55, 0.06); border-color: rgba(31, 41, 55, 0.45); }
+  .faq-zoom-fit { font-size: 0.7rem; min-width: 3rem; }
+  .faq-zoom-x { font-size: 1.1rem; color: #dc2626; }
   /* SVG wrapper — natural block flow at top-left so horizontal scroll
      origin is content-left. CSS `zoom` (set via inline style) scales
      BOTH visual size AND layout box, so the panel's `overflow: auto`
-     scroll region naturally extends to cover the zoomed content. No
-     `transform-origin` because no transform is used. */
+     scroll region naturally extends to cover the zoomed content. */
   .faq-zoom-svg {
-    display: block;
-    width: max-content;
+    display: inline-block;
     touch-action: pan-x pan-y pinch-zoom;
   }
   .faq-zoom-svg :global(svg) {
-    width: auto !important;
-    height: auto !important;
-    max-width: none;
+    max-width: none !important;
     display: block;
     touch-action: pan-x pan-y pinch-zoom;
   }
