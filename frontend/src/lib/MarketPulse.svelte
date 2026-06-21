@@ -484,6 +484,7 @@
   // exposes the two directions as separate toggles so the operator
   // can hide one side without losing the other.
   let movers     = $state(/** @type {any[]} */ ([]));
+  let _moversWarnLast = 0;          // rate-limit movers-fetch warn to once per 60 s
   let showMovers = $state(true);  // legacy umbrella — true iff EITHER direction is on
   let showWinners = $state(true);
   let showLosers  = $state(true);
@@ -1318,7 +1319,11 @@
       }
       movers = rows;
     } catch (e) {
-      console.warn('[MarketPulse] movers fetch failed:', e?.message || e);
+      const _now = Date.now();
+      if (_now - _moversWarnLast > 60_000) {
+        _moversWarnLast = _now;
+        console.warn('[MarketPulse] movers fetch failed:', e?.message || e);
+      }
     }
   }
 

@@ -836,8 +836,10 @@
       : true
   );
 
-  const _eqLineColor  = $derived(_eqPositive ? '#4ade80' : '#f87171');
-  const _eqFillColor  = $derived(_eqPositive ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)');
+  // Palette mirrors .eq-svg CSS vars --eq-line-up / --eq-line-down.
+  // Only used in SVG attrs; null when multi-series (area fill hidden, dot falls back to sky).
+  const _eqLineColor  = $derived(_eqDominantField ? (_eqPositive ? '#4ade80' : '#f87171') : null);
+  const _eqFillColor  = $derived(_eqDominantField ? (_eqPositive ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)') : null);
 
   // Y-axis labels for equity chart (5 ticks)
   const _eqYLabels = $derived.by(() => {
@@ -1286,6 +1288,7 @@
       // overflow:auto on the container had ag-Grid mis-measuring
       // and rendering invisible headers on the W/L cards.
       domLayout: 'normal',
+      getRowStyle: () => ({ cursor: 'pointer' }),
       onRowClicked: (ev) => _openSymbol(ev.data?.symbol),
       overlayNoRowsTemplate:
         `<span style="font-size:0.65rem;color:#7e97b8">No ${kind === 'win' ? 'winners' : 'losers'} in this bucket</span>`,
@@ -1783,7 +1786,7 @@
         <!-- Filled area — only when a single series is enabled. Multi-
              series mode skips the fill so the lines stay readable. -->
         {#if _eqAreaPath}
-          <path d={_eqAreaPath} fill={_eqFillColor} />
+          <path d={_eqAreaPath} fill={_eqFillColor ?? 'none'} />
         {/if}
 
         <!-- Lines — one polyline per active series. Order in the SVG
@@ -1821,7 +1824,7 @@
             stroke="rgba(200,216,240,0.55)" stroke-width="1"
             stroke-dasharray="3 2" />
           <circle cx={_hoverX} cy={_hoverY} r="3"
-            fill={_eqLineColor} stroke="#0a1428" stroke-width="1.5" />
+            fill={_eqLineColor ?? '#7dd3fc'} stroke="#0a1428" stroke-width="1.5" />
           <!-- Tooltip box -->
           {@const _tipX = _hoverX > INNER_W * 0.65 ? _hoverX - 108 : _hoverX + 8}
           {@const _tipY = Math.max(PAD_T, Math.min(_hoverY - 28, PAD_T + INNER_H - 58))}
@@ -2071,6 +2074,8 @@
   }
 
   .eq-svg {
+    --eq-line-up: #4ade80;
+    --eq-line-down: #f87171;
     display: block;
     width: 100%;
     height: 220px;

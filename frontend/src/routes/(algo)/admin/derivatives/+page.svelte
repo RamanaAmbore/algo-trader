@@ -6345,6 +6345,14 @@
     pointer-events: none;
     max-width: 22rem;
   }
+  @media (max-width: 720px) {
+    .order-toast-stack {
+      top: 4rem;
+      right: 0.5rem;
+      left: 0.5rem;
+      max-width: none;
+    }
+  }
   .order-toast {
     pointer-events: auto;
     background: rgba(13,21,38,0.96);
