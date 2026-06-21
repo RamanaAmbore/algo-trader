@@ -18,7 +18,7 @@
 
   const { children } = $props();
 
-  const bullSrc = "/bull.png";
+  const bullSrc = "/bull.webp";
 
   // ── Activity polling state ─────────────────────────────────────────
   // Declared early so the demo derivation + nav filter below can

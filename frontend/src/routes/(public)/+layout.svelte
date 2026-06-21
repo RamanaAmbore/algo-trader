@@ -26,7 +26,7 @@
   let menuOpen = $state(false);
   const closeMenu = () => { menuOpen = false; };
 
-  const bullSrc = "/bull.png";
+  const bullSrc = "/bull.webp";
 </script>
 
 <svelte:head>
@@ -272,7 +272,7 @@
     background-color: #0c1830;
     background-image:
       linear-gradient(rgba(8,14,30,0.78), rgba(8,14,30,0.78)),
-      url('/nav_image.png');
+      url('/nav_image.webp');
     background-size: cover;
     background-position: center;
     background-repeat: no-repeat;
@@ -539,7 +539,7 @@
     background-color: #0c1830;
     background-image:
       linear-gradient(rgba(8,14,30,0.78), rgba(8,14,30,0.78)),
-      url('/nav_image.png');
+      url('/nav_image.webp');
     background-size: cover;
     background-position: center;
     background-repeat: no-repeat;

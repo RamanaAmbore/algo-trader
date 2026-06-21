@@ -5083,6 +5083,11 @@
 {/if}
 
 <style>
+  /* Mobile touch-target — WCAG 2.5.8 minimum 24px; aim for 36px on phones. */
+  @media (max-width: 720px) {
+    :global(.ag-theme-algo .ag-row) { min-height: 36px !important; }
+  }
+
   /* Symbol cell — main + alias. */
   :global(.sym-main)  { color: #e2e8f0; font-weight: 600; }
   /* CE = green (right to BUY = bullish), PE = red (right to SELL =
