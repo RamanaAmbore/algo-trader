@@ -352,6 +352,9 @@ export const fetchStrategyLots    = (id, { includeClosed = true, limit = 500 } =
   return _get(`/strategies/${id}/lots${q.toString() ? '?' + q.toString() : ''}`,
               { auth: _hasToken() });
 };
+export const fetchStrategySnapshots = (id, { days = 90 } = {}) =>
+  _get(`/strategies/${id}/snapshots?days=${Number(days) || 90}`,
+       { auth: _hasToken() });
 
 /** GET /api/admin/audit — paginated audit log with filters. Gated
  *  by the `view_audit` cap server-side (admin / risk / ops). */

@@ -2199,6 +2199,31 @@ class OrdersController(Controller):
             raise HTTPException(status_code=403,
                 detail="Demo mode — orders cannot be placed. Sign in to trade.")
 
+        # Slice 7e — trader scoping enforcement on strategy_id.
+        # When a trader places an order with strategy_id set, the
+        # strategy MUST be in their `assigned_strategies` list.
+        # Admin / risk / ops / observer / demo are firm-wide and
+        # pass through. Empty assigned_strategies for a trader is
+        # the fail-safe initial state (slice 5) — they can't trade
+        # anything until admin grants explicit strategies.
+        if data.strategy_id:
+            from backend.api.rbac import (
+                normalise_role, resolve_role_from_connection,
+                user_scope_for_connection,
+            )
+            role = normalise_role(resolve_role_from_connection(request))
+            if role == "trader":
+                _, allowed_strategies = await user_scope_for_connection(request)
+                if int(data.strategy_id) not in (allowed_strategies or []):
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            f"Strategy {data.strategy_id} not in your "
+                            f"assigned_strategies list. Ask an admin to "
+                            f"grant access, or pick a strategy you own."
+                        ),
+                    )
+
         # Server-side enum validation — same set the regular /place
         # endpoint uses. Kite errors on invalid values look cryptic
         # ("Invalid input — 400"); reject early with a clear reason.

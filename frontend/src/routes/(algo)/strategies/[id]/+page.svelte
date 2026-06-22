@@ -19,7 +19,7 @@
   import { page } from '$app/state';
   import { nowStamp, marketAwareInterval } from '$lib/stores';
   import {
-    fetchStrategy, fetchStrategyLots, updateStrategy,
+    fetchStrategy, fetchStrategyLots, fetchStrategySnapshots, updateStrategy,
   } from '$lib/api';
   import { userRole, userCaps, hasCap } from '$lib/rbac';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -41,18 +41,24 @@
   let error = $state('');
   let showClosed = $state(true);
 
+  /** @type {Array<{as_of_date: string, realised_pnl: number, unrealised_pnl: number, total_pnl: number, open_lots_count: number, open_notional: number}>} */
+  let snapshots = $state([]);
+  let snapDays = $state(90);
+
   async function load() {
     if (!Number.isFinite(sid)) return;
     loading = true; error = '';
     try {
-      const [s, l] = await Promise.all([
+      const [s, l, snap] = await Promise.all([
         fetchStrategy(sid),
         fetchStrategyLots(sid, { includeClosed: showClosed }),
+        fetchStrategySnapshots(sid, { days: snapDays }),
       ]);
       strat = s;
       lots = Array.isArray(l?.rows) ? l.rows : [];
       totalOpen   = Number(l?.total_open   ?? 0);
       totalClosed = Number(l?.total_closed ?? 0);
+      snapshots = Array.isArray(snap?.rows) ? snap.rows : [];
     } catch (e) { error = e?.message || 'Load failed'; }
     finally { loading = false; }
   }
@@ -239,15 +245,105 @@
     </div>
   </section>
 
-  <!-- Snapshot curve placeholder (slice 7c future). The daily 15:45
-       IST background task lands the data; this card will plot
-       cumulative P&L once strategy_snapshots populates. -->
+  <!-- P&L curve — hand-rolled SVG. Sourced from strategy_snapshots
+       (written nightly at 15:45 IST). Three series stacked:
+         - total P&L (realised + unrealised) — amber, solid
+         - realised — emerald, dashed
+         - unrealised — slate, dotted (when meaningful) -->
   <section class="strat-detail-snapshot">
-    <h2 class="strat-section-heading">P&amp;L curve <span class="strat-coming-soon">— populates after daily 15:45 IST snapshot</span></h2>
-    <div class="strat-curve-placeholder">
-      Daily roll-up not yet available for this strategy. Comes online
-      after the next scheduled 15:45 IST capture.
+    <div class="strat-section-head">
+      <h2 class="strat-section-heading">P&amp;L curve</h2>
+      <span class="strat-curve-meta">
+        {#if snapshots.length > 0}
+          {snapshots.length} day{snapshots.length === 1 ? '' : 's'}
+        {/if}
+      </span>
     </div>
+    {#if snapshots.length === 0}
+      <div class="strat-curve-placeholder">
+        No daily snapshots yet for this strategy. The first roll-up
+        lands at 15:45 IST tonight.
+      </div>
+    {:else}
+      {@const _pad = { l: 50, r: 12, t: 12, b: 24 }}
+      {@const W = 720}
+      {@const H = 220}
+      {@const innerW = W - _pad.l - _pad.r}
+      {@const innerH = H - _pad.t - _pad.b}
+      {@const totals = snapshots.map(p => p.total_pnl)}
+      {@const realised = snapshots.map(p => p.realised_pnl)}
+      {@const allVals = [...totals, ...realised, 0]}
+      {@const _min = Math.min(...allVals)}
+      {@const _max = Math.max(...allVals)}
+      {@const _range = (_max - _min) || 1}
+      {@const yOf = (v) => _pad.t + innerH - ((v - _min) / _range) * innerH}
+      {@const xOf = (i) => _pad.l + (snapshots.length === 1 ? innerW / 2 : (i * innerW) / (snapshots.length - 1))}
+      {@const totalPath = snapshots.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(i)} ${yOf(p.total_pnl)}`).join(' ')}
+      {@const realisedPath = snapshots.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(i)} ${yOf(p.realised_pnl)}`).join(' ')}
+      {@const zeroY = yOf(0)}
+      <svg class="strat-curve-svg" viewBox="0 0 720 220" preserveAspectRatio="none"
+           aria-label="Per-strategy P&L curve">
+
+        <!-- Grid lines (5 horizontal). -->
+        {#each [0.0, 0.25, 0.5, 0.75, 1.0] as t}
+          {@const y = _pad.t + innerH * t}
+          {@const v = _max - _range * t}
+          <line x1={_pad.l} y1={y} x2={_pad.l + innerW} y2={y}
+                stroke="rgba(126,151,184,0.10)" stroke-width="1" />
+          <text x={_pad.l - 8} y={y + 3} text-anchor="end"
+                fill="rgba(155,176,208,0.55)" font-size="10"
+                font-family="ui-monospace, monospace">
+            {Math.abs(v) >= 100000 ? `₹${(v/100000).toFixed(1)}L`
+              : Math.abs(v) >= 1000 ? `₹${(v/1000).toFixed(1)}k`
+              : `₹${Math.round(v)}`}
+          </text>
+        {/each}
+
+        <!-- Zero baseline (slightly stronger). -->
+        {#if _min < 0 && _max > 0}
+          <line x1={_pad.l} y1={zeroY} x2={_pad.l + innerW} y2={zeroY}
+                stroke="rgba(126,151,184,0.45)" stroke-width="1"
+                stroke-dasharray="3,3" />
+        {/if}
+
+        <!-- Realised series (dashed emerald). -->
+        <path d={realisedPath} fill="none"
+              stroke="#4ade80" stroke-width="1.5"
+              stroke-dasharray="4,3" opacity="0.85" />
+
+        <!-- Total series (solid amber, primary). -->
+        <path d={totalPath} fill="none"
+              stroke="#fbbf24" stroke-width="2" />
+
+        <!-- Endpoint dot — visual anchor on the most recent day. -->
+        <circle cx={xOf(snapshots.length - 1)} cy={yOf(totals[totals.length - 1])}
+                r="3" fill="#fbbf24" stroke="#0a1020" stroke-width="1" />
+
+        <!-- X-axis date labels — first + middle + last only (compact). -->
+        {#if snapshots.length >= 1}
+          <text x={xOf(0)} y={H - 6} text-anchor="start"
+                fill="rgba(155,176,208,0.55)" font-size="10"
+                font-family="ui-monospace, monospace">{snapshots[0].as_of_date}</text>
+        {/if}
+        {#if snapshots.length >= 3}
+          {@const mid = Math.floor(snapshots.length / 2)}
+          <text x={xOf(mid)} y={H - 6} text-anchor="middle"
+                fill="rgba(155,176,208,0.55)" font-size="10"
+                font-family="ui-monospace, monospace">{snapshots[mid].as_of_date}</text>
+        {/if}
+        {#if snapshots.length >= 2}
+          <text x={xOf(snapshots.length - 1)} y={H - 6} text-anchor="end"
+                fill="rgba(155,176,208,0.55)" font-size="10"
+                font-family="ui-monospace, monospace">{snapshots[snapshots.length - 1].as_of_date}</text>
+        {/if}
+      </svg>
+
+      <!-- Legend strip. -->
+      <div class="strat-curve-legend">
+        <span class="leg leg-total">━ Total P&amp;L</span>
+        <span class="leg leg-realised">┄ Realised</span>
+      </div>
+    {/if}
   </section>
 {/if}
 
@@ -314,10 +410,6 @@
     font-size: 0.65rem; font-weight: 800; letter-spacing: 0.06em;
     text-transform: uppercase; color: #a3b9d0;
     font-family: ui-monospace, monospace;
-  }
-  .strat-coming-soon {
-    color: rgba(126, 151, 184, 0.7); font-weight: 500;
-    text-transform: none; letter-spacing: 0.02em;
   }
   .show-closed {
     font-size: 0.65rem; color: #a3b9d0;
@@ -406,4 +498,25 @@
     font-style: italic;
     font-size: 0.75rem;
   }
+  .strat-curve-meta {
+    font-size: 0.6rem;
+    color: rgba(155,176,208,0.65);
+    font-family: ui-monospace, monospace;
+  }
+  .strat-curve-svg {
+    width: 100%;
+    height: 240px;
+    background: rgba(15, 23, 42, 0.30);
+    border: 1px solid rgba(126, 151, 184, 0.18);
+    border-radius: 6px;
+    margin-top: 0.4rem;
+  }
+  .strat-curve-legend {
+    display: flex; gap: 1.2rem; justify-content: flex-end;
+    margin-top: 0.4rem;
+    font-size: 0.6rem;
+    font-family: ui-monospace, monospace;
+  }
+  .leg-total    { color: #fbbf24; }
+  .leg-realised { color: #4ade80; }
 </style>

@@ -20,12 +20,12 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import msgspec
-from litestar import Controller, get, post, patch, delete
+from litestar import Controller, Request, get, post, patch, delete
 from litestar.exceptions import HTTPException
 from sqlalchemy import select, func
 
 from backend.api.database import async_session
-from backend.api.models import Strategy, StrategyLot, AlgoOrder, User
+from backend.api.models import Strategy, StrategyLot, StrategySnapshot, AlgoOrder, User
 from backend.api.rbac import cap_guard, resolve_role_from_connection
 from backend.shared.helpers.ramboq_logger import get_logger
 
@@ -84,6 +84,22 @@ class LotsResponse(msgspec.Struct):
     rows: list[LotInfo]
     total_open: int
     total_closed: int
+
+
+class SnapshotPoint(msgspec.Struct):
+    """One day of the per-strategy P&L curve. Sourced from
+    strategy_snapshots written nightly at 15:45 IST."""
+    as_of_date:       str         # ISO date 'YYYY-MM-DD'
+    open_lots_count:  int
+    open_notional:    float
+    realised_pnl:     float
+    unrealised_pnl:   float
+    total_pnl:        float       # realised + unrealised
+
+
+class SnapshotsResponse(msgspec.Struct):
+    rows: list[SnapshotPoint]
+    days: int
 
 
 class StrategyCreate(msgspec.Struct):
@@ -291,13 +307,45 @@ class StrategiesController(Controller):
             return await _enrich_with_pnl(s, row, owner)
 
     @patch("/{strategy_id:int}", guards=[cap_guard("manage_own_strategies")])
-    async def update_strategy(self, strategy_id: int,
+    async def update_strategy(self, strategy_id: int, request: Request,
                               data: StrategyUpdate) -> StrategyInfo:
         async with async_session() as s:
             row = await s.get(Strategy, strategy_id)
             if not row:
                 raise HTTPException(status_code=404,
                                     detail=f"Strategy {strategy_id} not found")
+            # Slice 7e — trader can only mutate strategies they own.
+            # Admin (reassign_strategies cap) can touch any. Owner
+            # match is by user_id; resolve from the actor's JWT.
+            from backend.api.rbac import (
+                normalise_role, resolve_role_from_connection, has_cap,
+            )
+            role = normalise_role(resolve_role_from_connection(request))
+            if role == "trader" and row.owner_user_id is not None:
+                payload = getattr(request.state, "token_payload", {}) or {}
+                actor_username = str(payload.get("sub") or "")
+                # Look up actor's user_id to compare with row.owner_user_id.
+                actor_id = None
+                if actor_username:
+                    actor_row = (await s.execute(
+                        select(User.id).where(User.username == actor_username)
+                    )).scalar_one_or_none()
+                    actor_id = actor_row
+                if actor_id != row.owner_user_id:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            "You can only edit strategies you own. "
+                            "Ask an admin to reassign ownership or "
+                            "use a strategy you own."
+                        ),
+                    )
+            # owner_user_id reassignment is admin-only (reassign_strategies cap).
+            if data.owner_user_id is not None and not has_cap(role, "reassign_strategies"):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Reassigning a strategy's owner requires admin role.",
+                )
             if data.slug is not None:
                 row.slug = _validate_slug(data.slug)
             if data.name is not None:
@@ -376,6 +424,41 @@ class StrategiesController(Controller):
             ))
         return LotsResponse(rows=out, total_open=int(total_open),
                             total_closed=int(total_closed))
+
+    @get("/{strategy_id:int}/snapshots",
+         guards=[cap_guard("view_strategies")])
+    async def list_snapshots(self, strategy_id: int,
+                             days: int = 90) -> SnapshotsResponse:
+        """Daily P&L snapshot points for the strategy's curve chart.
+
+        Returns up to `days` of historical snapshots (default 90,
+        capped 365). Sorted ASC by date so the chart plots oldest →
+        newest left-to-right. Empty array when the strategy is new
+        / the daily task hasn't fired yet — UI shows the placeholder.
+        """
+        from datetime import timedelta, datetime, timezone
+        days = max(1, min(int(days or 90), 365))
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+        async with async_session() as s:
+            rows = (await s.execute(
+                select(StrategySnapshot)
+                  .where(StrategySnapshot.strategy_id == strategy_id,
+                         StrategySnapshot.as_of_date >= cutoff)
+                  .order_by(StrategySnapshot.as_of_date.asc())
+            )).scalars().all()
+        out = []
+        for r in rows:
+            r_pnl = float(r.realised_pnl or 0.0)
+            u_pnl = float(r.unrealised_pnl or 0.0)
+            out.append(SnapshotPoint(
+                as_of_date=r.as_of_date.isoformat() if r.as_of_date else "",
+                open_lots_count=int(r.open_lots_count or 0),
+                open_notional=float(r.open_notional or 0.0),
+                realised_pnl=r_pnl,
+                unrealised_pnl=u_pnl,
+                total_pnl=r_pnl + u_pnl,
+            ))
+        return SnapshotsResponse(rows=out, days=days)
 
     @delete("/{strategy_id:int}", status_code=204,
             guards=[cap_guard("manage_own_strategies")])
