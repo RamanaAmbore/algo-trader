@@ -238,6 +238,19 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     if not pairs:
         return
 
+    # Filter to snapshots captured BEFORE today's market open (00:00 IST
+    # today). Without this filter, a mid-session deploy's startup
+    # snapshot would land in daily_book labelled as "most recent" and
+    # the close-override would patch close_price to TODAY's mid-session
+    # LTP — collapsing day_change_val to zero. Observed on 2026-06-22
+    # ~09:38 IST: today's 09:38 IST snapshot returned LTP=264.5 for
+    # CRUDEOIL26JUL6900PE, but yesterday's 23:59 IST snapshot (the true
+    # MCX EOD) had LTP=220.
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+    today_ist_midnight = timestamp_indian().replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+
     snapshot_map: dict[tuple[str, str], float] = {}
     try:
         async with async_session() as session:
@@ -245,8 +258,9 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
                 SELECT DISTINCT ON (account, symbol) account, symbol, ltp
                 FROM daily_book
                 WHERE kind = 'positions' AND ltp IS NOT NULL AND ltp > 0
+                  AND captured_at < :today_open
                 ORDER BY account, symbol, captured_at DESC
-            """))
+            """), {"today_open": today_ist_midnight})
             for account, symbol, ltp in result.all():
                 snapshot_map[(str(account), str(symbol))] = float(ltp)
     except Exception as e:

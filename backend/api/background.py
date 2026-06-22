@@ -769,19 +769,45 @@ async def _task_daily_snapshot() -> None:
     has today's data) and then every day at 15:35 IST (5 min after equity close).
     """
     from backend.api.algo.daily_snapshot import snapshot_daily_book
+    from backend.shared.helpers.date_time_utils import (
+        timestamp_indian, is_market_open,
+    )
 
     # Fire one snapshot immediately at startup so the table is populated
-    # without waiting until 15:35.
-    try:
-        result = await snapshot_daily_book()
+    # without waiting until 15:35 — but ONLY when both NSE and MCX are
+    # closed. A mid-session deploy that captures live LTPs as "today's
+    # snapshot" pollutes daily_book — the close-override in positions.py
+    # reads the most recent row as the prior-session EOD, which then
+    # collapses day_change_val to zero (observed on 2026-06-22 ~09:38
+    # IST after a mid-session deploy: CRUDEOIL options' true EOD of
+    # 220 got overridden to 264.5, the deploy-moment mid-session LTP,
+    # making Day P&L read zero across every MCX position).
+    #
+    # Skipping the startup snapshot during market hours is safe: the
+    # 15:35 IST scheduled run still fires, and any operator who needs
+    # a fresh snapshot mid-session can trigger it via /admin/exec.
+    from datetime import time as _dt_time
+    _now_ist = timestamp_indian()
+    _nse_open = is_market_open(_now_ist, set(),
+                               _dt_time(9, 15), _dt_time(15, 30))
+    _mcx_open = is_market_open(_now_ist, set(),
+                               _dt_time(9, 0), _dt_time(23, 30))
+    if _nse_open or _mcx_open:
         logger.info(
-            f"Background: startup daily snapshot — "
-            f"accounts={result['accounts']} "
-            f"h={result['holdings_rows']} p={result['positions_rows']} t={result['trades_rows']} "
-            f"errors={result['errors']}"
+            f"Background: skipping startup daily snapshot — markets open "
+            f"(NSE={_nse_open}, MCX={_mcx_open}). Scheduled 15:35 IST run still fires."
         )
-    except Exception as e:
-        logger.error(f"Background: startup daily snapshot failed: {e}")
+    else:
+        try:
+            result = await snapshot_daily_book()
+            logger.info(
+                f"Background: startup daily snapshot — "
+                f"accounts={result['accounts']} "
+                f"h={result['holdings_rows']} p={result['positions_rows']} t={result['trades_rows']} "
+                f"errors={result['errors']}"
+            )
+        except Exception as e:
+            logger.error(f"Background: startup daily snapshot failed: {e}")
 
     while True:
         now = timestamp_indian()
