@@ -19,6 +19,7 @@
   import ChaseCard from '$lib/order/ChaseCard.svelte';
   import BellIcon from '$lib/icons/BellIcon.svelte';
   import { portal } from '$lib/portal';
+  import { selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
 
   let {
     /** @type {() => void} */
@@ -104,6 +105,7 @@
       <LogPanel
         heightClass="flex-1 min-h-0"
         defaultTab="order"
+        symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
       />
     </div>
   </div>

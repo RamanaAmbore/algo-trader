@@ -11,7 +11,8 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
-  import { clientTimestamp, nowStamp, visibleInterval, lastRefreshAt, connStatus } from '$lib/stores';
+  import { clientTimestamp, nowStamp, visibleInterval, lastRefreshAt, connStatus, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
+  import StrategyPicker from '$lib/StrategyPicker.svelte';
   import NewsList from '$lib/NewsList.svelte';
   import ActionEventsToggle from '$lib/ActionEventsToggle.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
@@ -124,10 +125,26 @@
 
   // ── Raw positions + holdings (reused for winners/losers and
   //     the new Equity-card tabs) ─────────────────────────────────
+  // Slice 7h — the raw arrays live in `_positionsRaw` / `_holdingsRaw`;
+  // every downstream consumer reads the `_positions` / `_holdings`
+  // derivations below, which apply the global strategy filter. With
+  // `selectedStrategyId == null` the derivations are identity (every
+  // row passes), so behaviour with no strategy picked is unchanged.
   /** @type {any[]} */
-  let _positions = $state([]);
+  let _positionsRaw = $state([]);
   /** @type {any[]} */
-  let _holdings  = $state([]);
+  let _holdingsRaw  = $state([]);
+  const _matchStrategySym = (/** @type {string} */ sym) => {
+    if ($selectedStrategyId == null) return true;
+    if ($strategyOpenSymbols.size === 0) return false;
+    return $strategyOpenSymbols.has(String(sym || '').toUpperCase());
+  };
+  const _positions = $derived(
+    _positionsRaw.filter(r => _matchStrategySym(r?.tradingsymbol || r?.symbol))
+  );
+  const _holdings = $derived(
+    _holdingsRaw.filter(r => _matchStrategySym(r?.tradingsymbol || r?.symbol))
+  );
   // Full funds rows (for the Capital-card Funds table). Kept
   // separate from _margins (which is the cleaned-down gauge
   // input) so the table can show cash + collateral + net etc.
@@ -997,8 +1014,8 @@
       // the state when the actual {rows} object came back, which is
       // why Positions and Holdings showed 0 in the Equity card even
       // when the broker had open trades.
-      _positions = Array.isArray(positions) ? positions : (positions?.rows ?? []);
-      _holdings  = Array.isArray(holdings)  ? holdings  : (holdings?.rows  ?? []);
+      _positionsRaw = Array.isArray(positions) ? positions : (positions?.rows ?? []);
+      _holdingsRaw  = Array.isArray(holdings)  ? holdings  : (holdings?.rows  ?? []);
 
       // _todayPnl + _startingNav are reactive derivations now (see
       // top of file). They scope to the same `_accountFilter(...
@@ -1494,6 +1511,12 @@
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
+    <!-- Slice 7h — strategy filter chip. Same shared store as Pulse,
+         /orders, /admin/derivatives. Active strategy narrows the
+         dashboard's positions / holdings rows (via the _positions /
+         _holdings derivations that override the raw arrays). Hidden
+         when no strategies exist. -->
+    <StrategyPicker label="Strategy" />
     <RefreshButton onClick={_refreshAll} loading={_refreshing} label="dashboard" />
     <PageHeaderActions />
   </span>
