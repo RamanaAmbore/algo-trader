@@ -1013,6 +1013,54 @@ async def apply_template_to_order(
             and not has_any_override(overrides)):
         return None
 
+    # ── applies_to guard (incident 2026-06-22) ────────────────────────
+    # `default-bull` (applies_to='buy_any', BUY-side template) got
+    # attached to a SELL on a PE option fill, placed a TP+SL OCO that
+    # used buy-side price math, and one leg fired → unintended BUY 20
+    # at ₹1447.5 closed part of the operator's short position.
+    #
+    # Enforce applies_to here so the template can never attach to a
+    # leg shape it wasn't built for. Mismatch → log + return None
+    # (skip the attach; the parent order itself already filled, we
+    # just don't add exits). Safer than raising — refusing to attach
+    # is a non-destructive failure mode.
+    applies_to = (template.get("applies_to") or "both").strip().lower()
+    if applies_to not in ("both", "none"):
+        parent_side_u = (parent_side or "").upper().strip()
+        is_option = bool(_OPT_SYM_RE.match((parent_symbol or "").upper()))
+        # buy_any:    BUY anything
+        # sell_any:   SELL anything
+        # buy_option: BUY of CE/PE only
+        # sell_option:SELL of CE/PE only
+        wants_buy   = applies_to in ("buy_any", "buy_option")
+        wants_sell  = applies_to in ("sell_any", "sell_option")
+        wants_option_only = applies_to in ("buy_option", "sell_option")
+        if wants_buy and parent_side_u != "BUY":
+            logger.warning(
+                f"template_attach.applies_to_guard: refusing to attach "
+                f"template slug={template.get('slug')!r} (applies_to={applies_to}) "
+                f"to {parent_side_u} parent order on {parent_symbol!r} — "
+                f"side mismatch. Skipping attach to avoid wrong-direction "
+                f"OCO/wing legs (2026-06-22 incident pattern)."
+            )
+            return None
+        if wants_sell and parent_side_u != "SELL":
+            logger.warning(
+                f"template_attach.applies_to_guard: refusing to attach "
+                f"template slug={template.get('slug')!r} (applies_to={applies_to}) "
+                f"to {parent_side_u} parent order on {parent_symbol!r} — "
+                f"side mismatch. Skipping attach."
+            )
+            return None
+        if wants_option_only and not is_option:
+            logger.warning(
+                f"template_attach.applies_to_guard: refusing to attach "
+                f"template slug={template.get('slug')!r} (applies_to={applies_to}) "
+                f"to non-option parent {parent_symbol!r} — kind mismatch. "
+                f"Skipping attach."
+            )
+            return None
+
     # Capability lookup — only needed for live path's OCO-vs-singles
     # decision. Sim path uses two-leg unconditionally (SimGttBook
     # supports both natively).

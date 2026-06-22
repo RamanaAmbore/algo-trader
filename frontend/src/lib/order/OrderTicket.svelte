@@ -777,6 +777,42 @@
     const none = _templates.find(t => t.slug === 'none');
     if (none) { templateId = none.id; return; }
   }
+
+  // Side+symbol → template re-validation. The _autoSelectTemplate
+  // above only runs ONCE on first paint; if the operator flips side
+  // (BUY → SELL pill) or changes the symbol kind (equity → option)
+  // after the initial pick, a stale templateId carries over and may
+  // no longer match the new applies_to scope. Concrete incident:
+  // 2026-06-22 — modal opened BUY (default scope: buy_any → picked
+  // `default-bull`), operator clicked SELL pill on a PE option, submit
+  // shipped template_id=1 (buy_any) for a SELL option. Backend then
+  // attached a TP+SL OCO with BUY-side price math; one leg fired and
+  // closed 20 contracts of the operator's short at ₹1447.5.
+  //
+  // The backend now has a hard `applies_to` guard (refuses to attach
+  // a buy template to a SELL leg, etc.) so even a stale templateId
+  // is non-destructive — but resetting the picker on side/scope flip
+  // is the cleaner UX, and avoids the "I picked Default and got nothing"
+  // confusion after the guard kicks in.
+  $effect(() => {
+    // Track _side + _resolvedSymbol (covers symbol prop + bare-
+    // underlying + option-chain picks). _selectedTemplate is reactive
+    // off templateId + _templates, so we don't need to depend on it
+    // here — re-validate purely against the current leg shape.
+    const newScope = _appliesToFor(_side, _resolvedSymbol || symbol);
+    untrack(() => {
+      const current = _templates.find(t => t.id === templateId);
+      if (!current) return;             // no templateId or templates not loaded
+      const ap = (current.applies_to || 'both').toLowerCase();
+      // 'both' and 'none' (the explicit opt-out) match any scope.
+      if (ap === 'both' || current.slug === 'none') return;
+      if (ap === newScope) return;      // still valid for the new scope
+      // Mismatch: reset to null so _autoSelectTemplate picks the
+      // correct side-aware default on the next derived re-eval.
+      templateId = null;
+      _autoSelectTemplate();
+    });
+  });
   // intentional: seeds from productVal once; $effect below re-syncs on symbol kind change
   // svelte-ignore state_referenced_locally
   let _product = $state($state.snapshot(productVal));
