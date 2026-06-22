@@ -359,6 +359,14 @@ export const fetchStrategyMetrics = (id, { days = 90 } = {}) =>
   _get(`/strategies/${id}/metrics?days=${Number(days) || 90}`,
        { auth: _hasToken() });
 
+/** Firm NAV (slice 7j) — daily aggregate. */
+export const fetchNavHistory = ({ days = 90 } = {}) =>
+  _get(`/nav/?days=${Number(days) || 90}`, { auth: _hasToken() });
+export const fetchNavLatest  = () =>
+  _get('/nav/latest', { auth: _hasToken() });
+export const triggerNavCompute = () =>
+  _post('/nav/compute', {}, { auth: true });
+
 /** GET /api/admin/audit — paginated audit log with filters. Gated
  *  by the `view_audit` cap server-side (admin / risk / ops). */
 export const fetchAuditLog = (params = {}) => {

@@ -89,6 +89,8 @@ const FALLBACK_CAPS = /** @type {Record<string, ReadonlyArray<string>>} */ ({
   manage_lab_threads:       ['admin', 'trader'],
   mint_mcp_token:           ['admin'],
   export_reports:           ['admin', 'trader', 'risk', 'ops', 'observer'],
+  view_nav:                 ['admin', 'trader', 'risk', 'ops', 'observer', 'demo'],
+  trigger_nav_compute:      ['admin', 'ops'],
   use_mcp_tools:            ['admin', 'trader'],
 });
 

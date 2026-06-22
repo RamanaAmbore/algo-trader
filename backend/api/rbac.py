@@ -147,6 +147,8 @@ CAPS: dict[str, frozenset[str]] = {
 
     # ── Reports / export ──────────────────────────────────────────────
     "export_reports":           frozenset({"admin", "trader", "risk", "ops", "observer"}),
+    "view_nav":                 frozenset({"admin", "trader", "risk", "ops", "observer", "demo"}),
+    "trigger_nav_compute":      frozenset({"admin", "ops"}),
 
     # ── Lab / MCP ────────────────────────────────────────────────────
     "use_mcp_tools":            frozenset({"admin", "trader"}),

@@ -763,6 +763,46 @@ async def _task_expiry_check() -> None:
             logger.error(f"Background: expiry check failed: {e}")
 
 
+async def _task_nav_compute() -> None:
+    """
+    Firm-level NAV snapshot daily at 16:00 IST (15 min after the
+    per-strategy snapshot task; 30 min after NSE equity close so the
+    day's MTM is settled). Writes one row per day into `nav_daily`
+    via the idempotent upsert in `nav.write_nav_snapshot()`.
+
+    On boot, if today's NAV row is missing AND it's already past
+    16:00 IST AND markets are closed, fire one immediately so the
+    /nav page doesn't show a stale curve. Otherwise sleep to the
+    next 16:00 IST and tick from there.
+
+    Per-day failures log + drop; the next day's run picks up the
+    cadence on its own.
+    """
+    from backend.api.algo.nav import write_nav_snapshot
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+    import asyncio as _asyncio
+
+    while True:
+        now_ist = timestamp_indian()
+        target = now_ist.replace(hour=16, minute=0, second=0, microsecond=0)
+        if now_ist >= target:
+            target = target + timedelta(days=1)
+        sleep_s = max(0, (target - now_ist).total_seconds())
+        logger.info(
+            f"_task_nav_compute: sleeping {sleep_s/3600:.2f}h "
+            f"until {target.isoformat()}"
+        )
+        await _asyncio.sleep(sleep_s)
+        try:
+            snap = await write_nav_snapshot()
+            logger.info(
+                f"_task_nav_compute: wrote NAV ₹{snap['nav']:,.0f} for "
+                f"{timestamp_indian().date().isoformat()}"
+            )
+        except Exception as exc:
+            logger.warning(f"_task_nav_compute: cycle failed: {exc}")
+
+
 async def _task_strategy_snapshot() -> None:
     """
     Slice 7c — daily per-strategy roll-up at 15:45 IST (10 min after
@@ -2360,6 +2400,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_trail_stop(),          name="bg-trail-stop"),
         asyncio.create_task(_task_oco_pair_watcher(),    name="bg-oco-pair-watcher"),
         asyncio.create_task(_task_strategy_snapshot(),   name="bg-strategy-snapshot"),
+        asyncio.create_task(_task_nav_compute(),         name="bg-nav-compute"),
     ]
     # Mode 2 (real-data paper) runs only on main. The PaperTradeEngine
     # singleton processes its open-order book against real Kite quotes

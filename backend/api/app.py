@@ -32,6 +32,7 @@ from backend.api.routes.admin import AdminController
 from backend.api.routes.agents import AgentController
 from backend.api.routes.audit import AuditController
 from backend.api.routes.strategies import StrategiesController
+from backend.api.routes.nav import NavController
 from backend.api.routes.algo import algo_ws_handler
 from backend.api.routes.auth import AuthController
 from backend.api.routes.config import ConfigController
@@ -179,6 +180,7 @@ _route_handlers = [
     AgentController,
     AuditController,
     StrategiesController,
+    NavController,
     HoldingsController,
     PositionsController,
     FundsController,

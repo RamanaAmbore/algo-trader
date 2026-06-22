@@ -371,6 +371,55 @@ class StrategyLot(Base):
     )
 
 
+class NavDaily(Base):
+    """Daily firm-level NAV snapshot. Written by `_task_nav_compute`
+    at 16:00 IST (15 min after the per-strategy snapshot task) so the
+    day's broker positions + funds are settled.
+
+    NAV calculation (v1, firm-aggregate):
+
+        cash_total      = Σ available_margin + cash across all accounts
+        positions_mtm   = Σ quantity × last_price for every open position
+                          (long > 0, short < 0 → naturally signed)
+        holdings_mtm    = Σ quantity × last_price for every equity holding
+        nav             = cash_total + positions_mtm + holdings_mtm
+
+    Stored in ₹ (no normalisation — Cat-III AIF reporting is INR-
+    denominated). Unique on `as_of_date` so manual re-runs (operator
+    triggers via /admin/exec or background task restart) upsert cleanly.
+
+    Per-investor slicing is a separate slice — this table holds the
+    firm-aggregate number; the slice helper combines it with the
+    User table's `share_pct` to compute each LP's portion of NAV.
+
+    SEBI Cat-III audit horizon is 8 years — keep this table forever;
+    cleanup is unnecessary (~365 rows per year, ~3000 rows lifetime).
+    """
+    __tablename__ = "nav_daily"
+
+    id: Mapped[int]              = mapped_column(primary_key=True, autoincrement=True)
+    as_of_date: Mapped[datetime] = mapped_column(Date, nullable=False, unique=True, index=True)
+    nav: Mapped[float]           = mapped_column(Numeric(18, 2), nullable=False)
+    cash_total: Mapped[float]    = mapped_column(Numeric(18, 2), nullable=False, default=0.0)
+    positions_mtm: Mapped[float] = mapped_column(Numeric(18, 2), nullable=False, default=0.0)
+    holdings_mtm: Mapped[float]  = mapped_column(Numeric(18, 2), nullable=False, default=0.0)
+    # Snapshot of which accounts contributed — JSON list of broker
+    # account codes that the daily aggregate covered. Forensic: if
+    # an account was offline when the snapshot ran, it's noted here
+    # so the row's NAV is interpretable.
+    accounts_snapshot: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]",
+    )
+    # Free-form note (e.g. "broker outage 14:30-15:45 — DH3747 excluded").
+    # Operator-editable via /admin/exec → "Manual NAV adjustment" surface
+    # (slice 7k).
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
 class StrategySnapshot(Base):
     """Daily roll-up per strategy. One row per (strategy_id, as_of_date).
     Written by the 15:45 IST background task — captures the day's
