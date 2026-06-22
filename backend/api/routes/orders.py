@@ -2395,6 +2395,7 @@ class OrdersController(Controller):
                                            if data.price is not None else None),
                             status="REJECTED", engine="live", mode="live",
                             agent_id=_live_manual_aid,
+                            strategy_id=data.strategy_id,
                             detail=f"preflight blocked: "
                                    f"{', '.join(b.get('code','?') for b in _pf['blocked'])}",
                         )
@@ -2456,6 +2457,7 @@ class OrdersController(Controller):
                                            if data.price is not None else None),
                             status="OPEN", engine="live", mode="live",
                             agent_id=_live_manual_aid,
+                            strategy_id=data.strategy_id,
                             broker_order_id=None,
                             target_pct=(_eff_target_pct
                                         if _eff_target_pct > 0 else None),
@@ -2668,6 +2670,7 @@ class OrdersController(Controller):
                     initial_price=(float(data.price) if data.price is not None else None),
                     status="OPEN", engine="paper", mode="paper",
                     agent_id=_manual_aid,
+                    strategy_id=data.strategy_id,
                     target_pct=(_eff_target_pct if _eff_target_pct > 0 else None),
                     template_id=data.template_id,
                     template_overrides_json=_build_overrides_json(data),

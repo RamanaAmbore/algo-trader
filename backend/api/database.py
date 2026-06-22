@@ -92,6 +92,15 @@ async def init_db() -> None:
             "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS agent_id INTEGER "
             "REFERENCES agents(id)"
         ))
+        # Slice 6 — strategy_id back-reference for attribution. Optional
+        # (nullable + ON DELETE SET NULL) so legacy rows pre-dating
+        # this column keep validating. The order-place path captures
+        # the operator's strategy choice when present; the chase +
+        # agent-fire paths inherit from the parent agent's strategy.
+        await conn.execute(text(
+            "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS strategy_id INTEGER "
+            "REFERENCES strategies(id) ON DELETE SET NULL"
+        ))
         for stmt in (
             "CREATE INDEX IF NOT EXISTS ix_algo_orders_agent_id ON algo_orders (agent_id)",
             "CREATE INDEX IF NOT EXISTS ix_algo_orders_mode ON algo_orders (mode)",
@@ -101,6 +110,11 @@ async def init_db() -> None:
             # all look up an AlgoOrder by broker_order_id. Pre-release audit
             # caught this as the worst missing index on the order-hot-path.
             "CREATE INDEX IF NOT EXISTS ix_algo_orders_broker_order_id ON algo_orders (broker_order_id)",
+            # Slice 6 — strategy_id index for per-strategy P&L
+            # queries. Hot path: dashboard's strategy-level rollup
+            # groups by strategy_id; without the index a full scan
+            # over algo_orders runs on every dashboard refresh.
+            "CREATE INDEX IF NOT EXISTS ix_algo_orders_strategy_id ON algo_orders (strategy_id)",
             # algo_order_events — index on order_id for per-order timeline queries.
             # Base.metadata.create_all will create the table; the index is added
             # idempotently here so existing deployments pick it up too.

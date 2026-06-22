@@ -283,6 +283,65 @@ class WatchlistItem(Base):
 # ---------------------------------------------------------------------------
 # Algo — chase orders and events
 # ---------------------------------------------------------------------------
+# Strategy — the unit of attribution. Every AlgoOrder + every internal
+# lot ledger entry ties back here, so per-strategy P&L can be computed
+# without re-deriving the bucket every time. v1 model is intentionally
+# thin (id, slug, name, owner, capacity_cap, target_vol, active).
+# Subsequent slices add `parent_strategy_id` for sub-strategies and a
+# `risk_budget_inr` for the risk officer's allocation view.
+# ---------------------------------------------------------------------------
+
+class Strategy(Base):
+    """A named bucket for attribution. One trader can own multiple
+    strategies; orders + lots tie back via `strategy_id`.
+
+    Slug is the operator-facing stable identifier (used in URLs +
+    backend audit log filters). Name is the human label that shows
+    on dropdowns + P&L surfaces. `owner_user_id` controls who can
+    edit the strategy via the cap matrix's `manage_own_strategies`
+    cap; the trader user must also have this strategy in their
+    `assigned_strategies` list for execution / write privileges.
+
+    Slug uniqueness is firm-wide — a fund has at most one strategy
+    called `nifty-mean-reversion`, regardless of owner. Indexed
+    lookups by slug from the UI's strategy picker + by owner_user_id
+    from the per-user strategy list.
+    """
+    __tablename__ = "strategies"
+
+    id: Mapped[int]              = mapped_column(primary_key=True, autoincrement=True)
+    slug: Mapped[str]            = mapped_column(String(40), unique=True, nullable=False, index=True)
+    name: Mapped[str]            = mapped_column(String(120), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Owning user — drives the manage_own_strategies cap check. NULL
+    # for firm-managed strategies (admin-only) — every other case
+    # carries the trader's user_id.
+    owner_user_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    # Notional cap — operator-defined ceiling on open position
+    # notional for this strategy. Risk officers use it to enforce
+    # per-strategy budgets without touching account-level margin.
+    # NULL = no cap.
+    capacity_cap_inr: Mapped[Optional[float]] = mapped_column(Numeric(18, 2), nullable=True)
+    # Target volatility (annualised, decimal fraction — 0.15 = 15%).
+    # Informational for the per-strategy NAV view; used in slice 7's
+    # vol-targeting sizing helper. NULL = no target.
+    target_volatility: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    is_active: Mapped[bool]      = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
+# ---------------------------------------------------------------------------
 
 class AlgoOrder(Base):
     __tablename__ = "algo_orders"
@@ -389,6 +448,19 @@ class AlgoOrder(Base):
         index=True,
     )
     filled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Slice 6 — attribution v1. Optional foreign key to strategies.id.
+    # Nullable so existing rows (created before the slice 6 deploy)
+    # keep validating without a backfill, and so the order-place path
+    # can omit it during operator-driven manual entry while the picker
+    # UI rolls out. The chase + agent-fire paths populate it from the
+    # parent agent's strategy_id (when set) so attribution flows
+    # automatically through automated orders. Tightening to NOT NULL
+    # happens after slice 7 ships the lot ledger.
+    strategy_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("strategies.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
 
     # Sprint E (audit #7) — composite (mode, status) index. The trail-
     # stop poller, OCO pair-watcher, and paper recovery all hit

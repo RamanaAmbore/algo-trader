@@ -334,6 +334,18 @@ export const previewTicketTemplate = (payload) =>
 // proxy-eq leg math. Stage 2 lifted out of the frontend static const.
 export const fetchHedgeProxies   = () => _get('/admin/hedge-proxies/', { auth: true });
 
+/** Strategies (slice 6) — list / detail / mutate. Demo can READ. */
+export const fetchStrategies      = ({ activeOnly = false } = {}) =>
+  _get(`/strategies/${activeOnly ? '?active_only=1' : ''}`, { auth: _hasToken() });
+export const fetchStrategy        = (id) =>
+  _get(`/strategies/${id}`, { auth: _hasToken() });
+export const createStrategy       = (payload) =>
+  _post('/strategies/', payload, { auth: true });
+export const updateStrategy       = (id, payload) =>
+  _patch(`/strategies/${id}`, payload, { auth: true });
+export const deleteStrategy       = (id) =>
+  _del(`/strategies/${id}`, { auth: true });
+
 /** GET /api/admin/audit — paginated audit log with filters. Gated
  *  by the `view_audit` cap server-side (admin / risk / ops). */
 export const fetchAuditLog = (params = {}) => {

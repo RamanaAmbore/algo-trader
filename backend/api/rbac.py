@@ -114,6 +114,7 @@ CAPS: dict[str, frozenset[str]] = {
     "cancel_order":             frozenset({"admin", "trader"}),
 
     # ── Strategies ────────────────────────────────────────────────────
+    "view_strategies":          frozenset({"admin", "trader", "risk", "ops", "observer", "demo"}),
     "manage_own_strategies":    frozenset({"admin", "trader"}),
     "reassign_strategies":      frozenset({"admin"}),
 

@@ -66,6 +66,7 @@ const FALLBACK_CAPS = /** @type {Record<string, ReadonlyArray<string>>} */ ({
   modify_order:             ['admin', 'trader'],
   cancel_order:             ['admin', 'trader'],
   // strategies + agents
+  view_strategies:          ['admin', 'trader', 'risk', 'ops', 'observer', 'demo'],
   manage_own_strategies:    ['admin', 'trader'],
   reassign_strategies:      ['admin'],
   manage_own_agents:        ['admin', 'trader'],

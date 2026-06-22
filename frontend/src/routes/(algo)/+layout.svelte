@@ -108,6 +108,7 @@
     // more often than Agents config, so the chain entry sits one
     // click earlier in the navbar.
     { href: '/admin/derivatives', label: 'Derivatives', group: 'monitor' },
+    { href: '/strategies',       label: 'Strategies',   group: 'monitor' },
     { href: '/orders',           label: 'Orders',    group: 'monitor' },
     { href: '/charts',           label: 'Charts',    group: 'monitor' },
     { href: '/automation',       label: 'Automation', group: 'monitor' },

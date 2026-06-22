@@ -423,6 +423,13 @@ class TicketOrderRequest(msgspec.Struct):
     # so existing callers need no change; chain/command tabs can pass
     # "chain" or "command" to distinguish in agent_events.
     source: str = "ticket"
+    # Attribution (slice 6). Optional foreign key to strategies.id —
+    # captured on the AlgoOrder row so per-strategy P&L flows from
+    # this order. None / 0 = unattributed (legacy / operator chose
+    # "no strategy"). Will tighten to required after slice 7 lands
+    # the lot ledger; for now nullable to keep the existing operator
+    # workflow untouched.
+    strategy_id: Optional[int] = None
     # ── Legacy single-TP path ─────────────────────────────────────────
     # `target_pct` is the v1 take-profit field — fractional (0.30 =
     # +30%). DEPRECATED in v2.1 — prefer `template_id` (rich) or
