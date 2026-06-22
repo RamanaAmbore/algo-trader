@@ -68,6 +68,17 @@ async def _fetch() -> PositionsResponse:
     # recomputed inside the helper.
     broker_apis.backfill_market_data(raw)
 
+    # Refresh stale last_price from the live KiteTicker tick_map.
+    # Kite's /positions REST endpoint sometimes lags behind the WS
+    # feed by minutes — observed on 2026-06-22 around 09:30 IST where
+    # CRUDEOIL options showed last_price === close_price (stuck on
+    # yesterday's EOD) even though MCX had been open 30 min. With
+    # last_price = close_price the day_change_val formula collapses
+    # to 0, so the Snapshot grid Day column stayed at zero all
+    # session. Override using the streamed tick BEFORE close-override
+    # so the day_change_val recompute below sees the fresh LTP.
+    _override_stale_ltp_from_ticker(raw)
+
     # Override stale close_price with yesterday's daily_book snapshot.
     # Why: Kite's positions.close_price (and quote.ohlc.close) lag the
     # actual previous-session close — observed on 2026-06-19 at 00:30
@@ -131,6 +142,74 @@ async def _fetch() -> PositionsResponse:
         for r in summary_df.to_dicts()
     ]
     return PositionsResponse(rows=rows, summary=summary, refreshed_at=timestamp_display())
+
+
+def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
+    """Patch `last_price` from the live KiteTicker tick_map for any
+    row whose tradingsymbol the ticker is currently subscribed to.
+    Kite's /positions REST API can lag the WS feed by minutes after
+    market open for less-liquid contracts (observed on 2026-06-22 at
+    09:30 IST, CRUDEOIL options stuck on yesterday's EOD ~30 min
+    after MCX open). Without this override day_change_val collapses
+    to 0 because (stale_LTP - close_price) === 0.
+
+    Idempotent — only writes when the ticker LTP differs from the
+    current row value by > 0.005. After patching, recomputes
+    `day_change_val` + `day_change` on the affected rows using the
+    same decomposed formula `broker_apis` uses so the value stays in
+    sync with the new LTP.
+    """
+    if raw.empty or 'tradingsymbol' not in raw.columns:
+        return
+    try:
+        from backend.shared.helpers.kite_ticker import _ticker
+    except Exception:
+        return
+    patched_idx: list = []
+    for idx in raw.index:
+        sym = raw.at[idx, 'tradingsymbol']
+        if not sym:
+            continue
+        tick_ltp = _ticker.get_ltp_by_sym(str(sym))
+        if tick_ltp is None or tick_ltp <= 0:
+            continue
+        try:
+            current = float(raw.at[idx, 'last_price']) if pd.notna(raw.at[idx, 'last_price']) else 0.0
+        except (TypeError, ValueError):
+            current = 0.0
+        if abs(tick_ltp - current) <= 0.005:
+            continue
+        raw.at[idx, 'last_price'] = float(tick_ltp)
+        patched_idx.append(idx)
+
+    if not patched_idx:
+        return
+    # Recompute day_change_val on patched rows — same decomposed
+    # formula `broker_apis._patch_day_change_val` uses. Without this
+    # the row's day_change_val would still hold Kite's stale value
+    # (computed against the pre-patch LTP === close_price, i.e. zero).
+    _intraday_fields = {'overnight_quantity', 'day_buy_quantity',
+                        'day_sell_quantity', 'day_buy_value', 'day_sell_value'}
+    _sel = pd.Index(patched_idx)
+    _ltp = pd.to_numeric(raw.loc[_sel, 'last_price'], errors='coerce').fillna(0)
+    _cls = pd.to_numeric(raw.loc[_sel, 'close_price'], errors='coerce').fillna(0)
+    _qty = pd.to_numeric(raw.loc[_sel, 'quantity'], errors='coerce').fillna(0)
+    if _intraday_fields.issubset(raw.columns):
+        _oq = pd.to_numeric(raw.loc[_sel, 'overnight_quantity'], errors='coerce').fillna(0)
+        _bq = pd.to_numeric(raw.loc[_sel, 'day_buy_quantity'], errors='coerce').fillna(0)
+        _sq = pd.to_numeric(raw.loc[_sel, 'day_sell_quantity'], errors='coerce').fillna(0)
+        _bv = pd.to_numeric(raw.loc[_sel, 'day_buy_value'], errors='coerce').fillna(0)
+        _sv = pd.to_numeric(raw.loc[_sel, 'day_sell_value'], errors='coerce').fillna(0)
+        _dcv_calc = (
+            _oq * (_ltp - _cls)
+            + (_bq * _ltp - _bv)
+            + (_sv - _sq * _ltp)
+        )
+    else:
+        _dcv_calc = (_ltp - _cls) * _qty
+    raw.loc[_sel, 'day_change_val'] = _dcv_calc.where(_ltp > 0, raw.loc[_sel, 'day_change_val'])
+    raw.loc[_sel, 'day_change'] = _ltp - _cls
+    logger.info(f"positions: ltp-override patched {len(patched_idx)}/{len(raw)} rows from KiteTicker")
 
 
 async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:

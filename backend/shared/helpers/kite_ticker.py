@@ -288,6 +288,20 @@ class TickerManager:
         with self._lock:
             return self._tick_map.get(int(token))
 
+    def get_ltp_by_sym(self, sym: str) -> float | None:
+        """
+        Return the latest streamed last_price for one tradingsymbol via
+        the reverse `_sym_to_token` map. None when the sym hasn't been
+        subscribed yet, hasn't ticked since open, or the ticker is down.
+        Lets callers override stale Kite-REST last_price values without
+        having to track instrument tokens themselves.
+        """
+        with self._lock:
+            tok = self._sym_to_token.get(str(sym or '').upper())
+            if tok is None:
+                return None
+            return self._tick_map.get(int(tok))
+
     def get_ltp_batch(self, tokens: Iterable[int]) -> dict[int, float]:
         """
         Return {token: ltp} for each token that has a live tick.
