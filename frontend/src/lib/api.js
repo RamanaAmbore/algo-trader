@@ -345,6 +345,13 @@ export const updateStrategy       = (id, payload) =>
   _patch(`/strategies/${id}`, payload, { auth: true });
 export const deleteStrategy       = (id) =>
   _del(`/strategies/${id}`, { auth: true });
+export const fetchStrategyLots    = (id, { includeClosed = true, limit = 500 } = {}) => {
+  const q = new URLSearchParams();
+  if (!includeClosed) q.set('include_closed', '0');
+  if (limit) q.set('limit', String(limit));
+  return _get(`/strategies/${id}/lots${q.toString() ? '?' + q.toString() : ''}`,
+              { auth: _hasToken() });
+};
 
 /** GET /api/admin/audit — paginated audit log with filters. Gated
  *  by the `view_audit` cap server-side (admin / risk / ops). */

@@ -187,6 +187,125 @@ async def close_lot_fifo(
     return (float(total_pnl), closed_qty)
 
 
+async def detect_close_intent(
+    session,
+    *,
+    strategy_id: int,
+    account: str,
+    symbol: str,
+    side_kite: str,   # 'BUY' | 'SELL' — direction of the FILL
+) -> bool:
+    """Heuristic: is this fill closing an existing lot or opening a new one?
+
+    Rule: a SELL fill closes a long lot ('B'); a BUY fill closes a short
+    lot ('S'). If any open lot of the matching opposite side exists for
+    (strategy, account, symbol), the fill is treated as a CLOSE.
+    Otherwise it's an OPEN.
+
+    This is the right semantics for the common case (operator opens long
+    via BUY, closes via SELL; opens short via SELL, closes via BUY). The
+    only edge case it misses is "pyramiding" (BUY on top of an existing
+    long), where the next BUY actually OPENS a second lot — but the
+    detector would correctly say OPEN because there's no SHORT lot to
+    close. Symmetric for shorts.
+
+    Used by the live postback handler + sim engine where the engine
+    didn't preserve operator's open-vs-close intent on the order dict.
+    Paper engine reads `is_close_intent` directly from the order dict
+    (chase-close action sets it explicitly).
+    """
+    from backend.api.models import StrategyLot
+    closer = side_kite.upper()
+    target_side = "B" if closer == "SELL" else "S"
+    from sqlalchemy import func
+    open_count = (await session.execute(
+        select(func.count(StrategyLot.id))
+        .where(StrategyLot.strategy_id == int(strategy_id),
+               StrategyLot.account == account.strip().upper(),
+               StrategyLot.symbol  == symbol.strip().upper(),
+               StrategyLot.side    == target_side,
+               StrategyLot.remaining_qty > 0)
+    )).scalar_one() or 0
+    return open_count > 0
+
+
+async def record_fill(
+    session,
+    *,
+    strategy_id: Optional[int],
+    algo_order_id: Optional[int],
+    account: str,
+    symbol: str,
+    exchange: str,
+    side_kite: str,
+    qty: int,
+    fill_price: float,
+    is_close_intent: Optional[bool] = None,
+) -> dict:
+    """One-call wrapper for fill paths. Auto-detects open-vs-close
+    intent when not provided. Returns:
+        {action: 'open'|'close'|'skip', pnl: float, qty_closed: int}
+
+    Used by:
+      - paper engine's _schedule_ledger_write (passes explicit
+        is_close_intent set by the chase-close action).
+      - live postback fill handler (omits is_close_intent → detector
+        runs).
+      - sim engine fill path (same).
+
+    No-op when strategy_id is falsy.
+    """
+    if not strategy_id or qty <= 0:
+        return {"action": "skip", "pnl": 0.0, "qty_closed": 0}
+
+    if is_close_intent is None:
+        is_close_intent = await detect_close_intent(
+            session,
+            strategy_id=strategy_id,
+            account=account, symbol=symbol,
+            side_kite=side_kite,
+        )
+
+    if is_close_intent:
+        pnl, closed = await close_lot_fifo(
+            session,
+            strategy_id=strategy_id,
+            algo_order_id=algo_order_id,
+            account=account, symbol=symbol,
+            side_kite=side_kite, qty=qty,
+            close_price=fill_price,
+        )
+        return {"action": "close", "pnl": pnl, "qty_closed": closed}
+    else:
+        new_lot_id = await open_lot(
+            session,
+            strategy_id=strategy_id,
+            algo_order_id=algo_order_id,
+            account=account, symbol=symbol,
+            exchange=exchange,
+            side_kite=side_kite, qty=qty,
+            open_price=fill_price,
+        )
+        return {"action": "open", "pnl": 0.0, "qty_closed": 0,
+                "lot_id": new_lot_id}
+
+
+async def list_lots_for_strategy(
+    session, strategy_id: int, *, include_closed: bool = True, limit: int = 500,
+) -> list:
+    """Return raw StrategyLot rows for the /strategies/{id}/lots
+    endpoint + the detail page's ledger viewer. Newest opens first;
+    closed lots interleaved naturally.
+    """
+    from sqlalchemy import desc
+    from backend.api.models import StrategyLot
+    q = select(StrategyLot).where(StrategyLot.strategy_id == int(strategy_id))
+    if not include_closed:
+        q = q.where(StrategyLot.remaining_qty > 0)
+    q = q.order_by(desc(StrategyLot.opened_at)).limit(max(1, min(2000, limit)))
+    return (await session.execute(q)).scalars().all()
+
+
 async def compute_strategy_pnl(session, strategy_id: int) -> dict:
     """Aggregate per-strategy P&L numbers off the lot ledger.
 

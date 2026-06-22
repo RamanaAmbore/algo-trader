@@ -763,6 +763,112 @@ async def _task_expiry_check() -> None:
             logger.error(f"Background: expiry check failed: {e}")
 
 
+async def _task_strategy_snapshot() -> None:
+    """
+    Slice 7c — daily per-strategy roll-up at 15:45 IST (10 min after
+    NSE equity close, so the day's intraday closes are settled).
+    Writes one row per active strategy into `strategy_snapshots` with:
+      open_lots_count, open_notional, realised_pnl, unrealised_pnl.
+
+    Idempotent — `UNIQUE(strategy_id, as_of_date)` on the table; an
+    INSERT … ON CONFLICT DO UPDATE keeps re-runs (manual operator
+    triggers, restart-while-running) safe.
+
+    Powers the per-strategy P&L curve on /strategies/{id}. Until this
+    task fires for the first time the detail page shows the "no
+    snapshot yet" placeholder; after that the curve renders.
+
+    Failure of one strategy's roll-up doesn't break the others —
+    each is in its own try/except.
+    """
+    import asyncio as _asyncio
+    from datetime import date
+    from backend.api.database import async_session
+    from backend.api.models import Strategy, StrategyLot, StrategySnapshot, AlgoOrder
+    from backend.api.algo.lot_ledger import compute_strategy_pnl
+    from sqlalchemy import select as _select, func as _func
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+
+    async def _do_snapshot() -> int:
+        async with async_session() as s:
+            strategies = (await s.execute(
+                _select(Strategy).where(Strategy.is_active.is_(True))
+            )).scalars().all()
+            today_ist = timestamp_indian().date()
+            written = 0
+            _open_states = ("OPEN", "CHASING", "PENDING")
+            for strat in strategies:
+                try:
+                    pnl = await compute_strategy_pnl(s, strat.id)
+                    # Open notional — sum (remaining_qty × open_price)
+                    # across open lots. Approximate (not LTP-marked)
+                    # until the LTP pass lands.
+                    notional = (await s.execute(
+                        _select(_func.coalesce(
+                            _func.sum(StrategyLot.remaining_qty * StrategyLot.open_price),
+                            0.0,
+                        )).where(StrategyLot.strategy_id == strat.id,
+                                 StrategyLot.remaining_qty > 0)
+                    )).scalar_one() or 0.0
+                    # Unrealised — AlgoOrder.pnl SUM on still-open
+                    # rows. Same proxy the strategies API uses
+                    # (slice 7b). LTP-based replacement comes next.
+                    unrealised = (await s.execute(
+                        _select(_func.coalesce(_func.sum(AlgoOrder.pnl), 0.0))
+                        .where(AlgoOrder.strategy_id == strat.id,
+                               AlgoOrder.status.in_(_open_states))
+                    )).scalar_one() or 0.0
+                    stmt = pg_insert(StrategySnapshot).values(
+                        strategy_id=strat.id,
+                        as_of_date=today_ist,
+                        open_lots_count=pnl["open_lots_count"],
+                        open_notional=float(notional or 0.0),
+                        realised_pnl=pnl["realised_pnl"],
+                        unrealised_pnl=float(unrealised or 0.0),
+                    ).on_conflict_do_update(
+                        index_elements=["strategy_id", "as_of_date"],
+                        set_=dict(
+                            open_lots_count=pnl["open_lots_count"],
+                            open_notional=float(notional or 0.0),
+                            realised_pnl=pnl["realised_pnl"],
+                            unrealised_pnl=float(unrealised or 0.0),
+                        ),
+                    )
+                    await s.execute(stmt)
+                    written += 1
+                except Exception as exc:
+                    logger.warning(
+                        f"strategy_snapshot: failed for strategy "
+                        f"{strat.slug!r} (id={strat.id}): {exc}"
+                    )
+            await s.commit()
+            return written
+
+    while True:
+        # Schedule at 15:45 IST every day. Sleep until then; on
+        # boot if it's already past 15:45 the loop wakes
+        # immediately, fires once, then sleeps to the next day.
+        now_ist = timestamp_indian()
+        target = now_ist.replace(hour=15, minute=45, second=0, microsecond=0)
+        if now_ist >= target:
+            target = target.replace(day=now_ist.day) + timedelta(days=1)
+        sleep_s = max(0, (target - now_ist).total_seconds())
+        logger.info(
+            f"_task_strategy_snapshot: sleeping {sleep_s/3600:.2f}h "
+            f"until {target.isoformat()}"
+        )
+        await _asyncio.sleep(sleep_s)
+        try:
+            written = await _do_snapshot()
+            logger.info(
+                f"_task_strategy_snapshot: wrote {written} per-strategy "
+                f"snapshot rows for {timestamp_indian().date().isoformat()}"
+            )
+        except Exception as exc:
+            logger.warning(f"_task_strategy_snapshot: cycle failed: {exc}")
+
+
 async def _task_daily_snapshot() -> None:
     """
     Capture a daily book snapshot once at startup (so a fresh deploy immediately
@@ -2239,6 +2345,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_hedge_proxy_regression(), name="bg-hedge-proxy-regression"),
         asyncio.create_task(_task_trail_stop(),          name="bg-trail-stop"),
         asyncio.create_task(_task_oco_pair_watcher(),    name="bg-oco-pair-watcher"),
+        asyncio.create_task(_task_strategy_snapshot(),   name="bg-strategy-snapshot"),
     ]
     # Mode 2 (real-data paper) runs only on main. The PaperTradeEngine
     # singleton processes its open-order book against real Kite quotes

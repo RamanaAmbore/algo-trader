@@ -624,29 +624,24 @@ class PaperTradeEngine:
         async def _do_write():
             try:
                 from backend.api.database import async_session
-                from backend.api.algo.lot_ledger import (
-                    open_lot, close_lot_fifo,
-                )
+                from backend.api.algo.lot_ledger import record_fill
                 async with async_session() as sess:
-                    if is_close:
-                        await close_lot_fifo(
-                            sess,
-                            strategy_id=strategy_id,
-                            algo_order_id=algo_order_id,
-                            account=account, symbol=symbol,
-                            side_kite=side, qty=qty,
-                            close_price=fill_price,
-                        )
-                    else:
-                        await open_lot(
-                            sess,
-                            strategy_id=strategy_id,
-                            algo_order_id=algo_order_id,
-                            account=account, symbol=symbol,
-                            exchange=exchange,
-                            side_kite=side, qty=qty,
-                            open_price=fill_price,
-                        )
+                    # Pass explicit `is_close_intent` when the action
+                    # set the chase-close flag; otherwise let the
+                    # detector heuristic decide (BUY into open SHORT
+                    # = close; SELL into open LONG = close; else
+                    # OPEN). Same semantics either way for the common
+                    # paper-trading case.
+                    explicit_intent = True if is_close else None
+                    await record_fill(
+                        sess,
+                        strategy_id=strategy_id,
+                        algo_order_id=algo_order_id,
+                        account=account, symbol=symbol, exchange=exchange,
+                        side_kite=side, qty=qty,
+                        fill_price=fill_price,
+                        is_close_intent=explicit_intent,
+                    )
                     await sess.commit()
             except Exception as exc:
                 logger.warning(

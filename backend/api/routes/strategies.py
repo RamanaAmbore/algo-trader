@@ -25,7 +25,7 @@ from litestar.exceptions import HTTPException
 from sqlalchemy import select, func
 
 from backend.api.database import async_session
-from backend.api.models import Strategy, AlgoOrder, User
+from backend.api.models import Strategy, StrategyLot, AlgoOrder, User
 from backend.api.rbac import cap_guard, resolve_role_from_connection
 from backend.shared.helpers.ramboq_logger import get_logger
 
@@ -58,6 +58,32 @@ class StrategyInfo(msgspec.Struct):
 
 class StrategiesResponse(msgspec.Struct):
     rows: list[StrategyInfo]
+
+
+class LotInfo(msgspec.Struct):
+    """One row in the lot ledger viewer on /strategies/{id}. Mirrors
+    the StrategyLot SQLAlchemy model with the float coercions done
+    server-side so the UI just renders + formats."""
+    id: int
+    strategy_id: int
+    open_order_id: Optional[int]
+    account: str
+    symbol: str
+    exchange: str
+    side: str                 # 'B' / 'S'
+    qty: int
+    remaining_qty: int
+    open_price: float
+    close_price: Optional[float]
+    realized_pnl: float
+    opened_at: str
+    closed_at: Optional[str]
+
+
+class LotsResponse(msgspec.Struct):
+    rows: list[LotInfo]
+    total_open: int
+    total_closed: int
 
 
 class StrategyCreate(msgspec.Struct):
@@ -284,6 +310,52 @@ class StrategiesController(Controller):
                     select(User.username).where(User.id == row.owner_user_id)
                 )).scalar_one_or_none()
             return await _enrich_with_pnl(s, row, owner)
+
+    @get("/{strategy_id:int}/lots", guards=[cap_guard("view_strategies")])
+    async def list_lots(self, strategy_id: int,
+                        include_closed: bool = True,
+                        limit: int = 500) -> LotsResponse:
+        """Per-strategy lot ledger viewer. Newest opens first; closed
+        lots interleaved. Used by /strategies/{id} detail page's
+        ledger table."""
+        from backend.api.algo.lot_ledger import list_lots_for_strategy
+        async with async_session() as s:
+            rows = await list_lots_for_strategy(
+                s, strategy_id,
+                include_closed=include_closed, limit=limit,
+            )
+            # Counts (cheap aggregates separate from the page slice).
+            from sqlalchemy import func
+            total_open = (await s.execute(
+                select(func.count(StrategyLot.id))
+                .where(StrategyLot.strategy_id == strategy_id,
+                       StrategyLot.remaining_qty > 0)
+            )).scalar_one() or 0
+            total_closed = (await s.execute(
+                select(func.count(StrategyLot.id))
+                .where(StrategyLot.strategy_id == strategy_id,
+                       StrategyLot.remaining_qty == 0)
+            )).scalar_one() or 0
+        out = []
+        for r in rows:
+            out.append(LotInfo(
+                id=r.id,
+                strategy_id=r.strategy_id,
+                open_order_id=r.open_order_id,
+                account=r.account,
+                symbol=r.symbol,
+                exchange=r.exchange,
+                side=r.side,
+                qty=int(r.qty),
+                remaining_qty=int(r.remaining_qty),
+                open_price=float(r.open_price),
+                close_price=float(r.close_price) if r.close_price is not None else None,
+                realized_pnl=float(r.realized_pnl or 0.0),
+                opened_at=r.opened_at.isoformat() if r.opened_at else "",
+                closed_at=r.closed_at.isoformat() if r.closed_at else None,
+            ))
+        return LotsResponse(rows=out, total_open=int(total_open),
+                            total_closed=int(total_closed))
 
     @delete("/{strategy_id:int}", status_code=204,
             guards=[cap_guard("manage_own_strategies")])

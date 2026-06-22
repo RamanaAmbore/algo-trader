@@ -2980,6 +2980,38 @@ class OrdersController(Controller):
                                             _r.filled_at = datetime.now(timezone.utc)
                                         _filled_rows.append(_r)
                             await _s.commit()
+                            # Slice 7c — live postback fill hook. Write
+                            # the per-strategy lot ledger entry for any
+                            # row that just flipped to FILLED with a
+                            # strategy_id. Auto-detects OPEN-vs-CLOSE
+                            # intent via the existing-lots heuristic in
+                            # lot_ledger.record_fill (SELL with an open
+                            # long lot = close; BUY with an open short
+                            # = close; otherwise open). Failure logs +
+                            # drops — the row already carries broker
+                            # pnl so the per-strategy rollup falls back
+                            # to AlgoOrder.pnl SUM for un-ledgered fills.
+                            from backend.api.algo.lot_ledger import record_fill as _record_ledger_fill
+                            for _r in _filled_rows:
+                                if _r.strategy_id and _r.fill_price and _r.quantity > 0:
+                                    try:
+                                        await _record_ledger_fill(
+                                            _s,
+                                            strategy_id=_r.strategy_id,
+                                            algo_order_id=_r.id,
+                                            account=str(_r.account or ""),
+                                            symbol=str(_r.symbol or ""),
+                                            exchange=str(_r.exchange or "NFO"),
+                                            side_kite=str(_r.transaction_type or "BUY"),
+                                            qty=int(_r.quantity or 0),
+                                            fill_price=float(_r.fill_price or 0),
+                                        )
+                                    except Exception as _le:
+                                        logger.warning(
+                                            f"postback lot_ledger write failed for "
+                                            f"order_id={_r.id} strategy={_r.strategy_id}: {_le}"
+                                        )
+                            await _s.commit()
                         for _r in _rows:
                             await _write_event(
                                 _r.id, "postback",

@@ -230,7 +230,9 @@
           </tr>
         {:else}
           <tr class:strat-row-inactive={!r.is_active}>
-            <td class="td-slug">{r.slug}</td>
+            <td class="td-slug">
+              <a class="strat-link" href={`/strategies/${r.id}`}>{r.slug}</a>
+            </td>
             <td>{r.name}</td>
             <td>{r.owner_username ?? '—'}</td>
             <td class="td-num">{r.open_order_count}</td>
@@ -329,6 +331,8 @@
   .strat-table td.td-slug {
     color: #fbbf24; font-weight: 700; font-family: ui-monospace, monospace;
   }
+  .strat-link { color: #fbbf24; text-decoration: none; }
+  .strat-link:hover { text-decoration: underline; color: #fcd34d; }
   .strat-table tbody tr:hover td { background: rgba(34, 211, 238, 0.05); }
   .strat-row-inactive td { opacity: 0.5; }
   .strat-row-editing td { background: rgba(251, 191, 36, 0.06); }
