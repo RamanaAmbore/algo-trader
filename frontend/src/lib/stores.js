@@ -382,6 +382,52 @@ if (browser) {
     } catch { /* private mode / quota — ignore */ }
   });
 }
+
+// ── Strategy open-symbol set ──────────────────────────────────────────
+//
+// Reactive `Set<string>` of UPPER tradingsymbols with `remaining_qty > 0`
+// in the currently-selected strategy's lot ledger. Refreshed
+// automatically whenever `selectedStrategyId` changes.
+//
+// Empty Set when no strategy is selected. Consumer pages filter their
+// position/holding rows via `set.has(sym.toUpperCase())`.
+//
+// Single source — all filter-chip surfaces (Pulse, Dashboard,
+// /admin/derivatives, /orders for the symbol-based read path) read
+// off this one store so a strategy pick on any of them updates
+// every subscriber on the same tick. The fetch hits
+// /api/strategies/{id}/lots?include_closed=0 once per pick (not per
+// page mount) so cross-page navigation is free.
+export const strategyOpenSymbols = writable(/** @type {Set<string>} */ (new Set()));
+
+let _lastResolvedStratSid = /** @type {number|null} */ (null);
+if (browser) {
+  selectedStrategyId.subscribe(async (sid) => {
+    if (sid === _lastResolvedStratSid) return;
+    _lastResolvedStratSid = sid;
+    if (sid == null) {
+      strategyOpenSymbols.set(new Set());
+      return;
+    }
+    try {
+      const { fetchStrategyLots } = await import('$lib/api');
+      const r = await fetchStrategyLots(sid, { includeClosed: false, limit: 500 });
+      const set = new Set();
+      for (const lot of (r?.rows || [])) {
+        if (lot.symbol) set.add(String(lot.symbol).toUpperCase());
+      }
+      // Defensive — selectedStrategyId could have changed mid-fetch.
+      // Only write the result if the in-flight sid still matches.
+      if (_lastResolvedStratSid === sid) {
+        strategyOpenSymbols.set(set);
+      }
+    } catch {
+      if (_lastResolvedStratSid === sid) {
+        strategyOpenSymbols.set(new Set());
+      }
+    }
+  });
+}
 if (browser) {
   setInterval(() => nowStamp.set(clientTimestamp()), 60_000);
 }

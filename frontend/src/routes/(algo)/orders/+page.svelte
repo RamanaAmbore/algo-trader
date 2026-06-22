@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy, getContext } from 'svelte';
-  import { nowStamp, logTimeIst, formatDualTz } from '$lib/stores';
+  import { nowStamp, logTimeIst, formatDualTz, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
+  import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import CollapseButton from '$lib/CollapseButton.svelte';
@@ -132,6 +133,21 @@
     finally { loading = false; }
   }
 
+  // Slice 7g — strategy-scoped orders. Drives the status-chip counts
+  // ABOVE the activity card (LogPanel does its own filtering for the
+  // grid below via the symbolFilter prop). Null selectedStrategyId
+  // = no filter (every order counted). Active strategy = only
+  // orders whose tradingsymbol is in the strategy's open-lot set;
+  // empty set when the strategy has no open lots → zero counts.
+  const _scopedOrders = $derived.by(() => {
+    if ($selectedStrategyId == null) return orders;
+    const set = $strategyOpenSymbols;
+    if (set.size === 0) return [];
+    return orders.filter(o => set.has(
+      String(o?.tradingsymbol || o?.symbol || '').toUpperCase()
+    ));
+  });
+
   // Svelte action — attaches the `lp:modify-order` listener LogPanel
   // dispatches when the operator clicks the pencil on any order row.
   // Custom event names with colons can't ride on Svelte 5 `on:` props;
@@ -206,6 +222,11 @@
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
+    <!-- Slice 7g — strategy filter chip. When an active strategy is
+         picked, the orders grid narrows to rows whose symbol matches
+         the strategy's open-lot universe. Hidden when no strategies
+         exist. -->
+    <StrategyPicker label="Strategy" />
     <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
     <PageHeaderActions symbol={_entrySymbol} hideOrder={true} />
   </span>
@@ -229,11 +250,11 @@
      quick "expand activity" affordance, not a filter selector. -->
 <div class="grid grid-cols-5 gap-2 mt-1 mb-2">
   {#each [
-    { id: 'all',       label: 'All',       count: orders.length, accent: 'inactive' },
-    { id: 'open',      label: 'Open',      count: orders.filter(o => o.status === 'OPEN' || o.status === 'TRIGGER PENDING').length, accent: 'running' },
-    { id: 'complete',  label: 'Filled',    count: orders.filter(o => o.status === 'COMPLETE').length,  accent: 'active' },
-    { id: 'rejected',  label: 'Rejected',  count: orders.filter(o => o.status === 'REJECTED').length,  accent: 'error' },
-    { id: 'cancelled', label: 'Cancelled', count: orders.filter(o => o.status === 'CANCELLED').length, accent: 'cancelled' },
+    { id: 'all',       label: 'All',       count: _scopedOrders.length, accent: 'inactive' },
+    { id: 'open',      label: 'Open',      count: _scopedOrders.filter(o => o.status === 'OPEN' || o.status === 'TRIGGER PENDING').length, accent: 'running' },
+    { id: 'complete',  label: 'Filled',    count: _scopedOrders.filter(o => o.status === 'COMPLETE').length,  accent: 'active' },
+    { id: 'rejected',  label: 'Rejected',  count: _scopedOrders.filter(o => o.status === 'REJECTED').length,  accent: 'error' },
+    { id: 'cancelled', label: 'Cancelled', count: _scopedOrders.filter(o => o.status === 'CANCELLED').length, accent: 'cancelled' },
   ] as f}
     <button type="button"
       onclick={() => { _colActivity = false; _statusFilter = /** @type {any} */ (f.id); }}
@@ -416,7 +437,9 @@
     <FullscreenButton bind:isFullscreen={_fsActivity} label="Activity" />
   </div>
   <div class="card-body oc-act-body" hidden={_colActivity}>
-    <LogPanel defaultTab="order" pollMs={3000} statusFilter={_statusFilter} />
+    <LogPanel defaultTab="order" pollMs={3000}
+              statusFilter={_statusFilter}
+              symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols} />
   </div>
 </section>
 

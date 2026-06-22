@@ -29,7 +29,8 @@
     FO_QUOTE_KEYS, MIDCAP_QUOTE_KEYS, SMLCAP_QUOTE_KEYS,
     INDICES_QUOTE_KEYS, LARGECAP_QUOTE_KEYS, symbolFromQuoteKey,
   } from '$lib/data/indexConstituents';
-  import { visibleInterval, connStatus, authStore } from '$lib/stores';
+  import { visibleInterval, connStatus, authStore, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
+  import StrategyPicker from '$lib/StrategyPicker.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
 
@@ -2486,15 +2487,32 @@
   // Otherwise filter the corresponding source to that card's chosen
   // set — watchlist items and option underlyings are not account-
   // scoped so they remain visible regardless.
+  // Slice 7g — strategy filter narrows the positions + holdings
+  // input to symbols with open lots in the picked strategy.
+  // `selectedStrategyId == null` → no filter (every row contributes).
+  // Filter happens AFTER account scoping so the operator's account
+  // pick + strategy pick compose (AND). Holdings filter is the same
+  // — even though equity holdings aren't strictly per-strategy, the
+  // operator's intent when picking a strategy is "show me ONLY this
+  // strategy's universe" — including any equity legs that strategy
+  // holds.
+  const _matchStrategySym = (/** @type {string} */ sym) => {
+    if ($selectedStrategyId == null) return true;
+    if ($strategyOpenSymbols.size === 0) return false;
+    return $strategyOpenSymbols.has(String(sym || '').toUpperCase());
+  };
+
   const scopedPositions = $derived(
-    positionsAccounts.length === 0
+    (positionsAccounts.length === 0
       ? positions
       : positions.filter(r => _includesPosAcct(r.account))
+    ).filter(r => _matchStrategySym(r.tradingsymbol || r.symbol || ''))
   );
   const scopedHoldings = $derived(
-    holdingsAccounts.length === 0
+    (holdingsAccounts.length === 0
       ? holdings
       : holdings.filter(r => _includesHoldAcct(r.account))
+    ).filter(r => _matchStrategySym(r.tradingsymbol || r.symbol || ''))
   );
 
   // buildUnified reads groupOrder + detachedSymbols from module scope.
@@ -4496,8 +4514,22 @@
   {/if}
 
   {#if showSymbolsGrid}
+    <!-- Slice 7g — strategy filter chip lives above the grids,
+         next to the Symbols section label. Hides itself when no
+         strategies exist. Active pick narrows Positions + Holdings
+         grids on the right to symbols with open lots in that
+         strategy. Other grids (Pinned / Watchlist / Movers) are
+         intentionally unaffected — they're book-wide market scan
+         surfaces, not per-strategy. -->
     {#if showSummary || showFunds}
-      <div class="mp-section-label">Symbols</div>
+      <div class="mp-section-label mp-section-with-picker">
+        <span>Symbols</span>
+        <StrategyPicker label="Strategy" />
+      </div>
+    {:else}
+      <div class="mp-section-with-picker mp-picker-standalone">
+        <StrategyPicker label="Strategy" />
+      </div>
     {/if}
     <!--
       Desktop ≥lg: two side-by-side grids inside a flex row.
@@ -5696,6 +5728,20 @@
   }
 
   /* .mp-section-label is defined globally in app.css. */
+
+  /* Slice 7g — strategy picker mounts next to the Symbols section
+     label. Flex row so the picker sits on the right of the label
+     without pushing the grids below it. */
+  .mp-section-with-picker {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .mp-picker-standalone {
+    margin-bottom: 0.4rem;
+  }
 
   /* Per-source subtotals strip retired — the block was commented
      out in the template; CSS family (.subtotals-strip, .st-group,

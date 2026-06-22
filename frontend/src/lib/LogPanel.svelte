@@ -33,6 +33,7 @@
    *   mode?: string | null,
    *   gateByMode?: boolean,
    *   statusFilter?: 'all'|'open'|'complete'|'rejected'|'cancelled',
+   *   symbolFilter?: Set<string> | null,
    * }} */
   let {
     heightClass = 'flex-1 min-h-0',
@@ -56,6 +57,12 @@
     // whose status matches (case-insensitive). 'open' also matches
     // 'TRIGGER PENDING'.
     statusFilter = /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */ ('all'),
+    // Slice 7g — optional symbol scope. When non-null, the Order tab
+    // narrows rows to those whose tradingsymbol is in the Set
+    // (UPPER). Null = no symbol filter (every row passes). Used by
+    // /orders + ActivityLogModal callers to thread the global
+    // strategy filter into the order grid.
+    symbolFilter = /** @type {Set<string> | null} */ (null),
   } = $props();
 
   // intentional: defaultTab seeds the active tab; $effect below re-syncs on prop changes
@@ -480,6 +487,19 @@
         if (statusFilter === 'cancelled') return st === 'CANCELLED';
         return true;
       });
+    }
+    // Slice 7g — symbol filter (strategy scope). When set, narrow to
+    // rows whose tradingsymbol is in the allowed Set. Used by
+    // /orders to thread the global strategy filter through.
+    if (symbolFilter && symbolFilter.size > 0) {
+      rows = rows.filter(o => {
+        const sym = String(o?.tradingsymbol || o?.symbol || '').toUpperCase();
+        return symbolFilter.has(sym);
+      });
+    } else if (symbolFilter && symbolFilter.size === 0) {
+      // Empty Set with non-null instance signals "strategy picked
+      // but it has no open lots" — show no rows rather than all.
+      rows = [];
     }
     return rows;
   });
