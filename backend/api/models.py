@@ -1287,6 +1287,14 @@ class HedgeProxy(Base):
     regression_error: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True,
     )
+    # Annualised volatility (σ × √252) of the daily-return series used
+    # for the regression. NULL until the regression has run successfully.
+    # `target_sigma` is the one the operator typically reads (it tells
+    # them how volatile the hedged underlying is); `proxy_sigma` is the
+    # ETF / stock proxy's own vol, useful for sanity-checking
+    # leveraged-ETF cases where β should be ~2-3 × the target's vol.
+    target_sigma: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    proxy_sigma:  Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),

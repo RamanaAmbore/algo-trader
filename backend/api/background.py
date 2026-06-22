@@ -1008,7 +1008,7 @@ async def _task_hedge_proxy_regression() -> None:
                 skipped += 1
                 continue
             try:
-                beta, r2, n = await asyncio.to_thread(
+                beta, r2, n, sigma_t, sigma_p = await asyncio.to_thread(
                     _compute_regression, broker, row.proxy_symbol, row.target_root, window,
                 )
             except Exception as exc:
@@ -1048,13 +1048,16 @@ async def _task_hedge_proxy_regression() -> None:
                     if db_row:
                         db_row.beta = float(beta)
                         db_row.correlation = float(r2 if r2 is not None else 1.0)
+                        db_row.target_sigma = float(sigma_t) if sigma_t is not None else None
+                        db_row.proxy_sigma  = float(sigma_p) if sigma_p is not None else None
                         db_row.regression_at = datetime.now(timezone.utc)
                         # Successful run — clear any stale failure marker
                         db_row.regression_error = None
                         await s.commit()
+                _st = f"{sigma_t:.3f}" if sigma_t is not None else "—"
                 logger.info(
                     f"hedge-proxy regression: {row.proxy_symbol}→{row.target_root} "
-                    f"β={beta:.4f} R²={r2:.3f} n={n}"
+                    f"β={beta:.4f} R²={r2:.3f} σ_t={_st} n={n}"
                 )
                 ran += 1
             except Exception as exc:

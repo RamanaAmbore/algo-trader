@@ -78,7 +78,8 @@
   /** @type {Array<{id:number,proxy_symbol:string,target_root:string,
    *                is_active:boolean,note:string|null,correlation:number,
    *                beta:number|null,regression_at:string|null,
-   *                regression_error:string|null}>} */
+   *                regression_error:string|null,
+   *                target_sigma:number|null,proxy_sigma:number|null}>} */
   let proxies = $state([]);
   let proxiesErr = $state('');
   let proxyForm = $state({ proxy_symbol: '', target_root: '', note: '', is_active: true });
@@ -389,8 +390,18 @@
       <br />
       <strong>Stock-vs-index hedges</strong> (Stage 3 — RELIANCE → NIFTY
       etc.): click <em>Compute β</em> to run a 60-day daily-returns
-      regression. The server fetches historical bars, computes the
-      slope and R², writes them back to the row.
+      regression on log returns. The server resolves both symbols
+      against the instruments cache, fetches daily closes, and computes:
+      <br />
+      <code>β = Cov(r_target, r_proxy) / Var(r_target)</code>
+      &nbsp;·&nbsp;
+      <code>R² = corr(r_target, r_proxy)²</code>
+      &nbsp;·&nbsp;
+      <code>σ = stdev(r) × √252</code> (annualised vol)
+      <br />
+      σ is the underlying's typical annual swing — same units as the
+      IV chip on the derivatives page. Read alongside R² to gauge
+      hedge fit: high R² + low σ = tight hedge; low R² = noisy.
     </p>
     {#if proxiesErr}
       <div class="text-[0.65rem] text-red-300 mb-1">{proxiesErr}</div>
@@ -402,8 +413,10 @@
             <tr><th class="text-left p-1">Proxy</th>
                 <th class="text-left p-1">Target</th>
                 <th class="text-left p-1">Note</th>
-                <th class="text-left p-1" title="Regression slope (proxy returns vs target returns). Blank → ETF case (β=1.0 implicit).">β</th>
-                <th class="text-left p-1" title="R² from the regression — operator-visible confidence indicator.">R²</th>
+                <th class="text-left p-1" title="Regression slope (proxy log-returns vs target log-returns). Blank → ETF case (β=1.0 implicit).">β</th>
+                <th class="text-left p-1" title="R² = Pearson correlation², clamped to [0..1]. >0.7 = tight hedge, <0.4 = noisy.">R²</th>
+                <th class="text-left p-1" title="Target's annualised volatility (daily σ × √252). Same units as Black-Scholes IV — reads as 'this underlying typically swings ±X% over a year'.">σ_t</th>
+                <th class="text-left p-1" title="Proxy's own annualised vol. Useful for sanity-checking leveraged ETFs (β should ≈ σ_p / σ_t).">σ_p</th>
                 <th class="text-left p-1" title="Date β was last computed">Run</th>
                 <th class="text-left p-1">Active</th>
                 <th></th></tr>
@@ -416,6 +429,8 @@
                 <td class="p-1"><input bind:value={p.note} class="field-input w-44" /></td>
                 <td class="p-1 font-mono opacity-80">{p.beta != null ? Number(p.beta).toFixed(3) : '—'}</td>
                 <td class="p-1 font-mono opacity-80">{Number(p.correlation ?? 1).toFixed(2)}</td>
+                <td class="p-1 font-mono opacity-80">{p.target_sigma != null ? (Number(p.target_sigma) * 100).toFixed(1) + '%' : '—'}</td>
+                <td class="p-1 font-mono opacity-80">{p.proxy_sigma  != null ? (Number(p.proxy_sigma)  * 100).toFixed(1) + '%' : '—'}</td>
                 <td class="p-1 opacity-70" title={p.regression_error || ''}
                     class:text-red-400={!!p.regression_error}>
                   {_shortDate(p.regression_at)}{p.regression_error ? ' ⚠' : ''}

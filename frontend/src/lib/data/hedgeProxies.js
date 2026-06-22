@@ -21,7 +21,8 @@ import { fetchHedgeProxies } from '$lib/api';
  *              is_active:boolean, note:string|null,
  *              beta:number|null, correlation:number,
  *              regression_at:string|null,
- *              regression_error:string|null }} HedgeProxyRow */
+ *              regression_error:string|null,
+ *              target_sigma:number|null, proxy_sigma:number|null }} HedgeProxyRow */
 
 /** @type {HedgeProxyRow[]} */
 let _rows = [];

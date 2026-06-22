@@ -130,14 +130,19 @@ def _resolve_token(broker, symbol: str, exchange_hint: str) -> Optional[int]:
 
 
 def _compute_regression(broker, proxy_symbol: str, target_root: str,
-                        days: int = 60) -> tuple[Optional[float], Optional[float], int]:
+                        days: int = 60) -> tuple[Optional[float], Optional[float], int,
+                                                  Optional[float], Optional[float]]:
     """Run a daily-returns regression of proxy vs target. Returns
-    (beta, r_squared, sample_size) — beta/r2 are None when either side
+    (beta, r_squared, sample_size, target_sigma_annualised,
+    proxy_sigma_annualised). beta/r2/sigmas are None when either side
     can't be resolved or there aren't enough overlapping bars.
 
-    Math: `proxy_return = α + β × target_return + ε`
-          β = Cov(target, proxy) / Var(target)
-          R² = correlation²
+    Math:
+        proxy_return = α + β × target_return + ε
+        β  = Cov(target, proxy) / Var(target)
+        R² = correlation²                       (Pearson, squared, [0..1])
+        σ_t = stdev(target_daily_returns) × √252  (annualised vol)
+        σ_p = stdev(proxy_daily_returns)  × √252
     """
     # numpy is a runtime dep used elsewhere (sim driver, performance
     # task) — safe to import inline so import_pyc doesn't pull it for
@@ -149,11 +154,11 @@ def _compute_regression(broker, proxy_symbol: str, target_root: str,
         # Stock proxies live on NSE-equity; commodity proxies (GOLDBEES
         # etc.) are tracked ETFs that DO list on NSE so the default is
         # correct for both classes.
-        return None, None, 0
+        return None, None, 0, None, None
     hint_exchange, hint_symbol = _TARGET_HINTS.get(target_root.upper(), ("NSE", target_root))
     t_token = _resolve_token(broker, hint_symbol, hint_exchange)
     if not t_token:
-        return None, None, 0
+        return None, None, 0, None, None
 
     # MCX commodity targets: the front-month FUT we just resolved was
     # listed at most ~60 days ago (typical contract life is 2-5 months
@@ -182,7 +187,7 @@ def _compute_regression(broker, proxy_symbol: str, target_root: str,
         t_bars = broker.historical_data(t_token, from_d, to_d, "day") or []
     except Exception as e:
         logger.warning(f"hedge-proxy regression: historical_data failed: {e}")
-        return None, None, 0
+        return None, None, 0, None, None
 
     # Align by date string. Daily candles are unambiguous on calendar.
     def _by_date(bars):
@@ -202,17 +207,25 @@ def _compute_regression(broker, proxy_symbol: str, target_root: str,
     t_map = _by_date(t_bars)
     common = sorted(set(p_map.keys()) & set(t_map.keys()))[-(days + 1):]
     if len(common) < min_overlap:
-        return None, None, len(common)
+        return None, None, len(common), None, None
     p_closes = [p_map[d] for d in common]
     t_closes = [t_map[d] for d in common]
     # Daily returns.
     p_ret = np.diff(np.log(p_closes))
     t_ret = np.diff(np.log(t_closes))
     if len(p_ret) < min_returns or float(np.var(t_ret)) <= 0:
-        return None, None, len(p_ret)
+        return None, None, len(p_ret), None, None
     cov = float(np.cov(p_ret, t_ret, ddof=1)[0][1])
     var_t = float(np.var(t_ret, ddof=1))
     beta = cov / var_t if var_t > 0 else None
+    # Annualised vol — daily σ × √252 (252 trading days/yr is the
+    # convention every options platform uses; matches Bloomberg PRM /
+    # Sensibull / Black-Scholes σ inputs). The operator reads this as
+    # "this underlying typically swings ±X% over a year" — same units
+    # as the IV chip on the derivatives page.
+    sqrt252 = float(np.sqrt(252.0))
+    sigma_t = float(np.std(t_ret, ddof=1)) * sqrt252
+    sigma_p = float(np.std(p_ret, ddof=1)) * sqrt252
     # Sprint E (audit) — reject pathological β values. |β| > 5 means
     # one of the bar series has a near-singular outlier (split day, bad
     # tick, fat-finger trade) that's driving the regression off the
@@ -228,10 +241,10 @@ def _compute_regression(broker, proxy_symbol: str, target_root: str,
             f"{proxy_symbol}→{target_root} (n={len(p_ret)}). Likely a bad "
             f"bar in the input series."
         )
-        return None, None, len(p_ret)
+        return None, None, len(p_ret), None, None
     r = float(np.corrcoef(p_ret, t_ret)[0][1]) if np.std(p_ret) > 0 and np.std(t_ret) > 0 else 0.0
     r2 = max(0.0, min(1.0, r * r))
-    return beta, r2, len(p_ret)
+    return beta, r2, len(p_ret), sigma_t, sigma_p
 
 
 # ── Schemas ───────────────────────────────────────────────────────────
@@ -255,6 +268,11 @@ class HedgeProxyInfo(msgspec.Struct):
     # recent attempt succeeded (or no attempt has run yet). UI uses
     # this to render a warning chip + flag pairs stuck on stale β.
     regression_error:  Optional[str]   = None
+    # Annualised vol (daily σ × √252) of the daily-return series the
+    # regression ran on. NULL until a successful regression. UI displays
+    # `target_sigma` next to β; `proxy_sigma` carried for sanity checks.
+    target_sigma:      Optional[float] = None
+    proxy_sigma:       Optional[float] = None
     created_at:        str             = ""
     updated_at:        str             = ""
 
@@ -354,6 +372,16 @@ async def seed_hedge_proxies() -> int:
                     "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
                     "regression_error VARCHAR(255)"
                 ))
+            if "target_sigma" not in cols:
+                logger.info("hedge_proxies: adding target_sigma + proxy_sigma columns")
+                await conn.execute(text(
+                    "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
+                    "target_sigma DOUBLE PRECISION"
+                ))
+                await conn.execute(text(
+                    "ALTER TABLE hedge_proxies ADD COLUMN IF NOT EXISTS "
+                    "proxy_sigma DOUBLE PRECISION"
+                ))
     # init_db has already created the new shape if the table is gone —
     # if migration just dropped it, SQLAlchemy's metadata.create_all
     # (run from init_db) needs to re-fire. Easiest path: re-run it here
@@ -394,6 +422,8 @@ def _to_info(row: HedgeProxy) -> HedgeProxyInfo:
         correlation=float(row.correlation if row.correlation is not None else 1.0),
         regression_at=row.regression_at.isoformat() if row.regression_at else None,
         regression_error=row.regression_error,
+        target_sigma=float(row.target_sigma) if row.target_sigma is not None else None,
+        proxy_sigma=float(row.proxy_sigma)   if row.proxy_sigma  is not None else None,
         created_at=row.created_at.isoformat() if row.created_at else "",
         updated_at=row.updated_at.isoformat() if row.updated_at else "",
     )
@@ -484,7 +514,7 @@ class HedgeProxiesController(Controller):
                 broker = get_price_broker()
             except Exception as exc:
                 raise HTTPException(status_code=503, detail=f"No broker available: {exc}") from exc
-            beta, r2, n = await asyncio.to_thread(
+            beta, r2, n, sigma_t, sigma_p = await asyncio.to_thread(
                 _compute_regression, broker, row.proxy_symbol, row.target_root, 60,
             )
             if beta is None:
@@ -503,13 +533,15 @@ class HedgeProxiesController(Controller):
                            "Verify both symbols exist on the broker.")
             row.beta = float(beta)
             row.correlation = float(r2 if r2 is not None else 1.0)
+            row.target_sigma = float(sigma_t) if sigma_t is not None else None
+            row.proxy_sigma  = float(sigma_p) if sigma_p is not None else None
             row.regression_at = datetime.now(timezone.utc)
             row.regression_error = None     # success — clear stale failure marker
             await sess.commit()
             await sess.refresh(row)
             logger.info(
                 f"hedge-proxy regression: {row.proxy_symbol}→{row.target_root} "
-                f"β={beta:.4f} R²={r2:.3f} n={n}")
+                f"β={beta:.4f} R²={r2:.3f} σ_t={sigma_t:.3f} σ_p={sigma_p:.3f} n={n}")
             return _to_info(row)
 
     @delete("/{proxy_id:int}", status_code=204)
