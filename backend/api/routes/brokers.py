@@ -28,7 +28,7 @@ from litestar import Controller, delete, get, patch, post
 from litestar.exceptions import HTTPException
 from sqlalchemy import select
 
-from backend.api.auth_guard import admin_guard
+from backend.api.rbac import cap_guard
 from backend.api.database import async_session
 from backend.api.models import BrokerAccount
 from backend.shared.helpers.broker_creds import encrypt
@@ -160,12 +160,19 @@ def _loaded_accounts() -> set[str]:
 # ── Controller ────────────────────────────────────────────────────────
 
 class BrokersController(Controller):
-    path   = "/api/admin/brokers"
-    guards = [admin_guard]
+    path = "/api/admin/brokers"
+    # No controller-level guard — each route declares its own
+    # capability via `cap_guard`. Read routes (list / detail / caps
+    # query) are gated by `view_brokers` which includes ops + risk +
+    # demo (masked secrets). Mutating routes (create / patch / delete
+    # / test) are gated by `manage_brokers` / `test_broker_connection`
+    # which restrict to admin + ops. This is the first controller
+    # migrated off the binary admin_guard pattern; further controllers
+    # follow the same split.
 
-    # ── List + read ───────────────────────────────────────────────────
+    # ── List + read (view_brokers cap — admin / ops / risk / demo) ────
 
-    @get("/")
+    @get("/", guards=[cap_guard("view_brokers")])
     async def list_accounts(self) -> list[BrokerAccountInfo]:
         async with async_session() as s:
             rows = (await s.execute(
@@ -174,7 +181,7 @@ class BrokersController(Controller):
         loaded = _loaded_accounts()
         return [_to_info(r, loaded=(r.account in loaded)) for r in rows]
 
-    @get("/{account:str}")
+    @get("/{account:str}", guards=[cap_guard("view_brokers")])
     async def get_account(self, account: str) -> BrokerAccountInfo:
         async with async_session() as s:
             row = (await s.execute(
@@ -185,7 +192,7 @@ class BrokersController(Controller):
                                 detail=f"Broker account {account!r} not found")
         return _to_info(row, loaded=(account in _loaded_accounts()))
 
-    @get("/{account:str}/capabilities")
+    @get("/{account:str}/capabilities", guards=[cap_guard("view_brokers")])
     async def get_capabilities(self, account: str) -> dict:
         """Sprint C — return the broker capability matrix for one
         account so OrderTicket can surface inline warnings ("Groww
@@ -197,9 +204,9 @@ class BrokersController(Controller):
         caps = capabilities_for(account)
         return asdict(caps)
 
-    # ── Create ────────────────────────────────────────────────────────
+    # ── Create (manage_brokers — admin / ops only) ────────────────────
 
-    @post("/")
+    @post("/", guards=[cap_guard("manage_brokers")])
     async def create_account(self, data: BrokerAccountCreate) -> BrokerAccountInfo:
         if not data.account:
             raise HTTPException(status_code=400, detail="account is required")
@@ -234,9 +241,9 @@ class BrokersController(Controller):
         logger.warning(f"broker_accounts: created {data.account!r} via /admin/brokers")
         return _to_info(row, loaded=(data.account in _loaded_accounts()))
 
-    # ── Update ────────────────────────────────────────────────────────
+    # ── Update (manage_brokers) ───────────────────────────────────────
 
-    @patch("/{account:str}")
+    @patch("/{account:str}", guards=[cap_guard("manage_brokers")])
     async def update_account(self, account: str,
                              data: BrokerAccountUpdate) -> BrokerAccountInfo:
         async with async_session() as s:
@@ -275,9 +282,9 @@ class BrokersController(Controller):
         logger.warning(f"broker_accounts: updated {account!r} via /admin/brokers")
         return _to_info(row, loaded=(account in _loaded_accounts()))
 
-    # ── Delete ────────────────────────────────────────────────────────
+    # ── Delete (manage_brokers) ───────────────────────────────────────
 
-    @delete("/{account:str}", status_code=200)
+    @delete("/{account:str}", status_code=200, guards=[cap_guard("manage_brokers")])
     async def delete_account(self, account: str) -> dict:
         async with async_session() as s:
             row = (await s.execute(
@@ -292,9 +299,9 @@ class BrokersController(Controller):
         logger.warning(f"broker_accounts: deleted {account!r} via /admin/brokers")
         return {"ok": True, "account": account}
 
-    # ── Test connection ───────────────────────────────────────────────
+    # ── Test connection (test_broker_connection cap — admin / ops) ───
 
-    @post("/{account:str}/test")
+    @post("/{account:str}/test", guards=[cap_guard("test_broker_connection")])
     async def test_account(self, account: str) -> TestResult:
         """Try a cheap broker call (profile()) to confirm the credentials
         actually authenticate. Doesn't mutate state — just exercises the

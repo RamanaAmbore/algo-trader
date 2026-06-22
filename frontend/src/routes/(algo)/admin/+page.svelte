@@ -370,19 +370,24 @@
         <div><span class="field-label">Email</span><input type="email" bind:value={createForm.email} class="field-input" /></div>
         <div><span class="field-label">Phone</span><input bind:value={createForm.phone} class="field-input" /></div>
         <!-- Role picker — admin can only create partners. Designated
-             can create any role (partner / admin / designated).
-             Backend (admin.py::create_user) coerces non-designated
-             attempts to 'partner' anyway, but the UI hides the
-             elevated choices to match the mental model.
-             {@const} is invalid here (not a direct block child) so
-             the designated check is inlined in both branches. -->
+             can create any role from the full 8-option list (5 new
+             roles from the RBAC migration + 3 legacy aliases kept for
+             back-compat). Backend (admin.py::create_user) coerces
+             non-designated attempts to 'partner' anyway, but the UI
+             hides the elevated choices to match the mental model.
+             New roles: trader, risk, ops, observer.
+             Legacy: partner (≡ observer), admin, designated. -->
         <div><span class="field-label">Role</span>
           {#if $authStore.user?.role === 'designated'}
             <Select ariaLabel="Role" bind:value={createForm.role}
               options={[
-                { value: 'partner',    label: 'Partner'    },
-                { value: 'admin',      label: 'Admin'      },
-                { value: 'designated', label: 'Designated' },
+                { value: 'admin',      label: 'Admin — full access'           },
+                { value: 'trader',     label: 'Trader — PM who self-executes' },
+                { value: 'risk',       label: 'Risk — read + kill-switch'     },
+                { value: 'ops',        label: 'Ops — broker / user admin'     },
+                { value: 'observer',   label: 'Observer — read-only LP / audit' },
+                { value: 'partner',    label: 'Partner — legacy alias for observer' },
+                { value: 'designated', label: 'Designated — super-admin'      },
               ]} />
           {:else}
             <div class="field-input field-input-readonly">Partner</div>

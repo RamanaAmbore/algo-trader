@@ -338,7 +338,25 @@ class AdminController(Controller):
         # forward-compat for old client builds that still send share_pct.
         actor_role = (getattr(request.state, "token_payload", None) or {}).get("role", "")
         is_designated = (actor_role == "designated")
-        eff_role         = data.role if is_designated else ("partner" if data.role in ("admin", "designated") else data.role)
+        # Validate the requested role against the RBAC catalog. Designated
+        # actors can assign any non-demo role (full RBAC catalog: 5 new
+        # roles + 3 legacy aliases). Non-designated actors fall through
+        # to 'partner' for any privileged choice (admin / designated /
+        # trader / risk / ops) and pass observer/partner verbatim.
+        from backend.api.rbac import VALID_ROLES
+        requested = (data.role or "partner").strip().lower()
+        if requested not in VALID_ROLES or requested == 'demo':
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "role must be one of: "
+                    + ', '.join(r for r in VALID_ROLES if r != 'demo')
+                ),
+            )
+        _PRIVILEGED = ("admin", "designated", "trader", "risk", "ops")
+        eff_role         = requested if is_designated else (
+            "partner" if requested in _PRIVILEGED else requested
+        )
         eff_contribution = data.contribution if is_designated else 0.0
         eff_share_pct    = data.share_pct    if is_designated else 0.0
         async with async_session() as session:
@@ -444,13 +462,22 @@ class AdminController(Controller):
                 if val is None:
                     continue
                 if field == 'role':
-                    # Privilege-changing field — designated only.
+                    # Privilege-changing field — designated only. Accepts
+                    # the full RBAC role set: 5 new (admin/trader/risk/
+                    # ops/observer) + 3 legacy aliases (partner ≡ observer,
+                    # designated = super-admin). Backend's rbac.normalise_role
+                    # collapses legacy on read, so the DB row reflects
+                    # whatever the operator chose verbatim.
                     if not allowed_role_change:
                         continue
-                    if val not in ("partner", "admin", "designated"):
+                    from backend.api.rbac import VALID_ROLES
+                    if val not in VALID_ROLES or val == 'demo':
                         raise HTTPException(
                             status_code=422,
-                            detail="role must be 'partner', 'admin', or 'designated'",
+                            detail=(
+                                f"role must be one of: "
+                                + ', '.join(r for r in VALID_ROLES if r != 'demo')
+                            ),
                         )
                 if field == 'email_verified':
                     # Manually flipping email_verified bypasses the
