@@ -21,7 +21,7 @@ from litestar import Controller, delete, get, post, put
 from litestar.exceptions import HTTPException
 from sqlalchemy import select
 
-from backend.api.auth_guard import admin_guard, auth_or_demo_guard
+from backend.api.rbac import cap_guard
 from backend.api.database import async_session
 from backend.api.models import Agent, AgentEvent
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -430,13 +430,15 @@ def _agent_to_info(a: Agent) -> AgentInfo:
 # ---------------------------------------------------------------------------
 
 class AgentController(Controller):
-    # Controller-level guard allows anonymous demo on prod; the
-    # write endpoints (POST/PUT/DELETE) override with admin_guard
-    # so demo visitors get 401 on any mutation. Reads (GET) flow
-    # through auth_or_demo_guard so the /agents page populates for
-    # an anonymous visitor.
+    # Controller-level guard sets the BASE access: anonymous demo
+    # can READ everything on this controller (every route inherits
+    # `view_agents_catalog`). Per-route overrides tighten to
+    # `manage_own_agents` for mutating endpoints (POST / PUT /
+    # DELETE), which demo + observer don't hold. cap_guard() chains
+    # through auth_or_demo_guard internally for demo-eligible caps,
+    # so the legacy demo-state plumbing still works.
     path = "/api/agents"
-    guards = [auth_or_demo_guard]
+    guards = [cap_guard("view_agents_catalog")]
 
     @get("/")
     async def list_agents(self) -> list[AgentInfo]:
@@ -445,7 +447,7 @@ class AgentController(Controller):
             agents = result.scalars().all()
         return [_agent_to_info(a) for a in agents]
 
-    @post("/ai-draft", guards=[admin_guard])
+    @post("/ai-draft", guards=[cap_guard("manage_own_agents")])
     async def ai_draft(self, data: AIDraftRequest) -> AIDraftResponse:
         """
         Convert a natural-language prompt into an agent JSON draft.
@@ -468,7 +470,7 @@ class AgentController(Controller):
             prompt=d.prompt,
         )
 
-    @post("/validate-condition", guards=[admin_guard])
+    @post("/validate-condition", guards=[cap_guard("manage_own_agents")])
     async def validate_condition(self, data: dict) -> dict:
         """
         Dry-check a condition tree against the live Grammar Registry.
@@ -502,7 +504,7 @@ class AgentController(Controller):
             raise HTTPException(status_code=404, detail=f"Agent '{slug}' not found")
         return _agent_to_info(agent)
 
-    @post("/", guards=[admin_guard])
+    @post("/", guards=[cap_guard("manage_own_agents")])
     async def create_agent(self, data: AgentCreateRequest) -> dict:
         async with async_session() as session:
             existing = await session.execute(select(Agent).where(Agent.slug == data.slug))
@@ -544,7 +546,7 @@ class AgentController(Controller):
         logger.info(f"Agent created: {data.slug} [lifespan={lifespan_type}]")
         return {"detail": f"Agent '{data.slug}' created"}
 
-    @put("/{slug:str}", guards=[admin_guard])
+    @put("/{slug:str}", guards=[cap_guard("manage_own_agents")])
     async def update_agent(self, slug: str, data: AgentUpdateRequest) -> dict:
         async with async_session() as session:
             result = await session.execute(select(Agent).where(Agent.slug == slug))
@@ -594,7 +596,7 @@ class AgentController(Controller):
         logger.info(f"Agent updated: {slug}")
         return {"detail": f"Agent '{slug}' updated"}
 
-    @put("/{slug:str}/activate", status_code=200, guards=[admin_guard])
+    @put("/{slug:str}/activate", status_code=200, guards=[cap_guard("manage_own_agents")])
     async def activate_agent(self, slug: str) -> dict:
         async with async_session() as session:
             result = await session.execute(select(Agent).where(Agent.slug == slug))
@@ -605,7 +607,7 @@ class AgentController(Controller):
             await session.commit()
         return {"detail": f"Agent '{slug}' activated"}
 
-    @put("/{slug:str}/deactivate", status_code=200, guards=[admin_guard])
+    @put("/{slug:str}/deactivate", status_code=200, guards=[cap_guard("manage_own_agents")])
     async def deactivate_agent(self, slug: str) -> dict:
         async with async_session() as session:
             result = await session.execute(select(Agent).where(Agent.slug == slug))
@@ -616,7 +618,7 @@ class AgentController(Controller):
             await session.commit()
         return {"detail": f"Agent '{slug}' deactivated"}
 
-    @delete("/{slug:str}", status_code=200, guards=[admin_guard])
+    @delete("/{slug:str}", status_code=200, guards=[cap_guard("manage_own_agents")])
     async def delete_agent(self, slug: str) -> dict:
         async with async_session() as session:
             result = await session.execute(select(Agent).where(Agent.slug == slug))
@@ -629,7 +631,7 @@ class AgentController(Controller):
             await session.commit()
         return {"detail": f"Agent '{slug}' deleted"}
 
-    @get("/{slug:str}/dry-run", guards=[admin_guard])
+    @get("/{slug:str}/dry-run", guards=[cap_guard("manage_own_agents")])
     async def dry_run(self, slug: str) -> dict:
         """Phase 22 — evaluate this agent's condition tree against the
         CURRENT live market state. Returns what would fire WITHOUT

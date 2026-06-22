@@ -31,7 +31,7 @@ from litestar import Controller, get, post, patch, delete
 from litestar.exceptions import HTTPException
 from sqlalchemy import select
 
-from backend.api.auth_guard import admin_guard
+from backend.api.rbac import cap_guard
 from backend.api.database import async_session
 from backend.api.models import AgentTemplate
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -113,7 +113,7 @@ async def _reload_registry() -> None:
 class AgentTemplateController(Controller):
     path = "/api/admin/fragments"
 
-    @get("/", guards=[admin_guard])
+    @get("/", guards=[cap_guard("view_agents_catalog")])
     async def list_fragments(self, kind: str | None = None) -> list[FragmentOut]:
         async with async_session() as s:
             q = select(AgentTemplate).order_by(
@@ -126,7 +126,7 @@ class AgentTemplateController(Controller):
             rows = (await s.execute(q)).scalars().all()
         return [_to_out(r) for r in rows]
 
-    @get("/{frag_id:int}", guards=[admin_guard])
+    @get("/{frag_id:int}", guards=[cap_guard("view_agents_catalog")])
     async def get_fragment(self, frag_id: int) -> FragmentOut:
         async with async_session() as s:
             row = (await s.execute(
@@ -137,7 +137,7 @@ class AgentTemplateController(Controller):
                 detail=f"Fragment {frag_id} not found")
         return _to_out(row)
 
-    @post("/", guards=[admin_guard])
+    @post("/", guards=[cap_guard("manage_own_agents")])
     async def create_fragment(self, data: FragmentCreate) -> FragmentOut:
         if data.kind not in _VALID_KINDS:
             raise HTTPException(status_code=400,
@@ -169,7 +169,7 @@ class AgentTemplateController(Controller):
         await _reload_registry()
         return _to_out(row)
 
-    @patch("/{frag_id:int}", guards=[admin_guard])
+    @patch("/{frag_id:int}", guards=[cap_guard("manage_own_agents")])
     async def update_fragment(self, frag_id: int, data: FragmentPatch) -> FragmentOut:
         async with async_session() as s:
             row = (await s.execute(
@@ -197,7 +197,7 @@ class AgentTemplateController(Controller):
         await _reload_registry()
         return _to_out(row)
 
-    @delete("/{frag_id:int}", guards=[admin_guard], status_code=200)
+    @delete("/{frag_id:int}", guards=[cap_guard("manage_own_agents")], status_code=200)
     async def delete_fragment(self, frag_id: int) -> dict:
         async with async_session() as s:
             row = (await s.execute(
@@ -215,7 +215,7 @@ class AgentTemplateController(Controller):
         await _reload_registry()
         return {"detail": f"Fragment {frag_id} deleted"}
 
-    @post("/reload", guards=[admin_guard], status_code=200)
+    @post("/reload", guards=[cap_guard("manage_own_agents")], status_code=200)
     async def reload_fragments(self) -> dict:
         await _reload_registry()
         return {"detail": "Fragment registry reloaded"}

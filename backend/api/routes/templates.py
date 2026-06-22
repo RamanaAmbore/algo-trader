@@ -23,7 +23,7 @@ from litestar import Controller, get, post, patch, delete
 from litestar.exceptions import HTTPException, NotFoundException
 from sqlalchemy import select
 
-from backend.api.auth_guard import admin_guard, auth_or_demo_guard
+from backend.api.rbac import cap_guard
 from backend.api.database import async_session
 from backend.api.models import OrderTemplate
 from backend.api.schemas import (
@@ -179,7 +179,7 @@ class OrderTemplateController(Controller):
     path = "/api/admin/templates"
 
     # ── List ───────────────────────────────────────────────────────────
-    @get("/", guards=[auth_or_demo_guard])
+    @get("/", guards=[cap_guard("view_settings_readonly")])
     async def list_templates(self) -> list[OrderTemplateOut]:
         """List every template (system + custom). Sorted system-first
         so the canonical defaults appear at the top of the page."""
@@ -196,7 +196,7 @@ class OrderTemplateController(Controller):
         return [_to_out(r) for r in rows]
 
     # ── Read one ───────────────────────────────────────────────────────
-    @get("/{template_id:int}", guards=[auth_or_demo_guard])
+    @get("/{template_id:int}", guards=[cap_guard("view_settings_readonly")])
     async def get_template(self, template_id: int) -> OrderTemplateOut:
         async with async_session() as s:
             row = await s.get(OrderTemplate, template_id)
@@ -205,7 +205,7 @@ class OrderTemplateController(Controller):
         return _to_out(row)
 
     # ── Create (custom only) ───────────────────────────────────────────
-    @post("/", guards=[admin_guard])
+    @post("/", guards=[cap_guard("manage_settings")])
     async def create_template(self, data: OrderTemplateCreate) -> OrderTemplateOut:
         _validate_applies_to(data.applies_to)
         async with async_session() as s:
@@ -243,7 +243,7 @@ class OrderTemplateController(Controller):
         return _to_out(row)
 
     # ── Update ─────────────────────────────────────────────────────────
-    @patch("/{template_id:int}", guards=[admin_guard])
+    @patch("/{template_id:int}", guards=[cap_guard("manage_settings")])
     async def patch_template(
         self,
         template_id: int,
@@ -291,7 +291,7 @@ class OrderTemplateController(Controller):
         return _to_out(row)
 
     # ── Delete (custom only) ───────────────────────────────────────────
-    @delete("/{template_id:int}", guards=[admin_guard], status_code=200)
+    @delete("/{template_id:int}", guards=[cap_guard("manage_settings")], status_code=200)
     async def delete_template(self, template_id: int) -> dict:
         async with async_session() as s:
             row = await s.get(OrderTemplate, template_id)

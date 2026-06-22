@@ -20,7 +20,7 @@ from litestar import Controller, get, post, patch, delete
 from litestar.exceptions import HTTPException, NotFoundException
 from sqlalchemy import select
 
-from backend.api.auth_guard import admin_guard, auth_or_demo_guard
+from backend.api.rbac import cap_guard
 from backend.api.database import async_session
 from backend.api.models import GrammarToken
 from backend.api.schemas import GrammarTokenOut, GrammarTokenCreate, GrammarTokenPatch
@@ -55,14 +55,14 @@ class GrammarTokenController(Controller):
     # controller guards with handler guards (additive), so a per-handler
     # auth_or_demo_guard CANNOT relax a controller-level admin_guard —
     # both still run. Instead, each write handler below carries an
-    # explicit `guards=[admin_guard]`, and each read handler carries
-    # `guards=[auth_or_demo_guard]`. The two reads are demo-readable so
+    # explicit `guards=[cap_guard("manage_grammar_tokens")]`, and each read handler carries
+    # `guards=[cap_guard("view_agents_catalog")]`. The two reads are demo-readable so
     # the Tokens page works for anonymous visitors walking the showcase;
     # the catalog rows carry no secrets (grammar_kind / token_kind /
     # token / resolver-path / params_schema / template_body).
 
     # ── List ───────────────────────────────────────────────────────────────
-    @get("/tokens", guards=[auth_or_demo_guard])
+    @get("/tokens", guards=[cap_guard("view_agents_catalog")])
     async def list_tokens(self, grammar: str | None = None) -> list[GrammarTokenOut]:
         """
         Return every token, optionally filtered by grammar_kind
@@ -82,7 +82,7 @@ class GrammarTokenController(Controller):
         return [_to_out(r) for r in rows]
 
     # ── Read one ───────────────────────────────────────────────────────────
-    @get("/tokens/{token_id:int}", guards=[auth_or_demo_guard])
+    @get("/tokens/{token_id:int}", guards=[cap_guard("view_agents_catalog")])
     async def get_token(self, token_id: int) -> GrammarTokenOut:
         async with async_session() as s:
             row = await s.get(GrammarToken, token_id)
@@ -91,7 +91,7 @@ class GrammarTokenController(Controller):
         return _to_out(row)
 
     # ── Create ─────────────────────────────────────────────────────────────
-    @post("/tokens", guards=[admin_guard])
+    @post("/tokens", guards=[cap_guard("manage_grammar_tokens")])
     async def create_token(self, data: GrammarTokenCreate) -> GrammarTokenOut:
         """
         Create a non-system token. The (grammar_kind, token_kind, token)
@@ -127,7 +127,7 @@ class GrammarTokenController(Controller):
         return _to_out(row)
 
     # ── Update ─────────────────────────────────────────────────────────────
-    @patch("/tokens/{token_id:int}", guards=[admin_guard])
+    @patch("/tokens/{token_id:int}", guards=[cap_guard("manage_grammar_tokens")])
     async def patch_token(self, token_id: int, data: GrammarTokenPatch) -> GrammarTokenOut:
         """
         Update an existing token.
@@ -163,7 +163,7 @@ class GrammarTokenController(Controller):
         return _to_out(row)
 
     # ── Delete ─────────────────────────────────────────────────────────────
-    @delete("/tokens/{token_id:int}", guards=[admin_guard])
+    @delete("/tokens/{token_id:int}", guards=[cap_guard("manage_grammar_tokens")])
     async def delete_token(self, token_id: int) -> None:
         async with async_session() as s:
             row = await s.get(GrammarToken, token_id)
@@ -179,7 +179,7 @@ class GrammarTokenController(Controller):
         await _reload_registry()
 
     # ── Reload ─────────────────────────────────────────────────────────────
-    @post("/reload", guards=[admin_guard])
+    @post("/reload", guards=[cap_guard("manage_grammar_tokens")])
     async def reload(self) -> dict:
         """Hot-rebuild the Grammar Registry dispatch table."""
         from backend.api.algo.grammar_registry import REGISTRY

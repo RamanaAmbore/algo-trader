@@ -26,7 +26,7 @@ from litestar import Controller, Request, delete, get, patch, post
 from litestar.exceptions import HTTPException
 from sqlalchemy import select, delete as sa_delete
 
-from backend.api.auth_guard import admin_guard
+from backend.api.rbac import cap_guard
 from backend.api.database import async_session
 from backend.api.models import Agent, McpAudit, ResearchThread
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -576,10 +576,17 @@ def _user_id(connection) -> int | None:
 # ── Controller ────────────────────────────────────────────────────────
 
 class ResearchController(Controller):
-    path   = "/api/research"
-    guards = [admin_guard]
+    path = "/api/research"
+    # Per-route caps. Reads (threads + drafts) use `view_lab` which
+    # includes demo so the showcase tour's Lab step can populate a
+    # real page (threads + drafts list, which carry operator research
+    # notes — not sensitive orders). The audit-tab endpoint
+    # tightens to `view_audit` (admin/risk/ops only; demo excluded).
+    # Mutations use `manage_lab_threads` (admin/trader). MCP write
+    # actions tighten to `use_mcp_tools` (admin/trader) — already
+    # gated by confirm-token besides the cap check.
 
-    @get("/threads")
+    @get("/threads", guards=[cap_guard("view_lab")])
     async def list_threads(self, symbol: str | None = None, limit: int = 100) -> list[ThreadSummary]:
         async with async_session() as s:
             q = select(ResearchThread).order_by(ResearchThread.updated_at.desc())
@@ -589,7 +596,7 @@ class ResearchController(Controller):
             rows = (await s.execute(q)).scalars().all()
         return [_to_summary(r) for r in rows]
 
-    @get("/threads/{thread_id:int}")
+    @get("/threads/{thread_id:int}", guards=[cap_guard("view_lab")])
     async def get_thread(self, thread_id: int) -> ThreadInfo:
         async with async_session() as s:
             row = (await s.execute(
@@ -599,7 +606,7 @@ class ResearchController(Controller):
             raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
         return _to_info(row)
 
-    @post("/threads")
+    @post("/threads", guards=[cap_guard("manage_lab_threads")])
     async def create_thread(self, data: ThreadCreate, request: Request) -> ThreadInfo:
         sym = (data.symbol or "").upper().strip()
         if not sym:
@@ -634,7 +641,7 @@ class ResearchController(Controller):
         logger.info(f"research thread created: id={row.id} sym={sym}")
         return _to_info(row)
 
-    @patch("/threads/{thread_id:int}")
+    @patch("/threads/{thread_id:int}", guards=[cap_guard("manage_lab_threads")])
     async def update_thread(self, thread_id: int, data: ThreadUpdate) -> ThreadInfo:
         async with async_session() as s:
             row = (await s.execute(
@@ -660,7 +667,7 @@ class ResearchController(Controller):
             await s.refresh(row)
         return _to_info(row)
 
-    @delete("/threads/{thread_id:int}", status_code=204)
+    @delete("/threads/{thread_id:int}", status_code=204, guards=[cap_guard("manage_lab_threads")])
     async def delete_thread(self, thread_id: int) -> None:
         async with async_session() as s:
             result = await s.execute(
@@ -670,7 +677,7 @@ class ResearchController(Controller):
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
 
-    @post("/threads/{thread_id:int}/promote")
+    @post("/threads/{thread_id:int}/promote", guards=[cap_guard("manage_lab_threads")])
     async def promote_thread(self, thread_id: int, data: PromoteRequest) -> DraftInfo:
         """Promote a research thread into an inactive draft Agent.
 
@@ -796,7 +803,7 @@ class ResearchController(Controller):
             updated_at=thread.updated_at.isoformat() if thread.updated_at else "",
         )
 
-    @get("/drafts")
+    @get("/drafts", guards=[cap_guard("view_lab")])
     async def list_drafts(self, limit: int = 200) -> list[DraftInfo]:
         """Threads with a linked draft Agent that's still inactive.
 
@@ -827,7 +834,7 @@ class ResearchController(Controller):
             for (t, a) in rows
         ]
 
-    @get("/audit")
+    @get("/audit", guards=[cap_guard("view_audit")])
     async def list_audit(
         self,
         tool:       str | None = None,
@@ -880,7 +887,7 @@ class ResearchController(Controller):
 
     # ── Phase 3 — confirm-token mint + gated place_order ──────────────
 
-    @post("/confirm-token")
+    @post("/confirm-token", guards=[cap_guard("manage_lab_threads")])
     async def mint_confirm_token(self, data: MintTokenRequest, request: Request) -> MintTokenResponse:
         """Operator-only — mint a single-use 60s token that authorises
         ONE specific MCP place_order call. The LLM cannot call this
@@ -987,7 +994,7 @@ class ResearchController(Controller):
             purpose_hash=ph,
         )
 
-    @post("/place-order")
+    @post("/place-order", guards=[cap_guard("use_mcp_tools")])
     async def place_order(self, data: PlaceOrderRequest, request: Request) -> PlaceOrderResponse:
         """Gated order placement — requires a valid confirm token minted
         from /confirm-token. The MCP place_order tool calls this. Every
@@ -1111,7 +1118,7 @@ class ResearchController(Controller):
 
     # ── Phase 4 — gated cancel + modify (same token-gate pattern) ─────
 
-    @post("/cancel-order")
+    @post("/cancel-order", guards=[cap_guard("use_mcp_tools")])
     async def cancel_order(self, data: CancelOrderRequest, request: Request) -> SimpleOrderResponse:
         """LLM-initiated cancel. Requires a confirm token minted with
         kind='cancel' for THIS (account, order_id, mode). Token cannot
@@ -1229,7 +1236,7 @@ class ResearchController(Controller):
 
         return SimpleOrderResponse(order_id=res.order_id, detail="cancelled (live)")
 
-    @post("/modify-order")
+    @post("/modify-order", guards=[cap_guard("use_mcp_tools")])
     async def modify_order(self, data: ModifyOrderRequest, request: Request) -> SimpleOrderResponse:
         """LLM-initiated modify. Token binds (account, order_id, mode)
         PLUS the new values the LLM plans to push — bait-and-switch on
@@ -1460,7 +1467,7 @@ class ResearchController(Controller):
             detail=f"agent {slug!r} {action}d",
         )
 
-    @post("/activate-agent")
+    @post("/activate-agent", guards=[cap_guard("use_mcp_tools")])
     async def activate_agent(self, data: AgentStatusRequest, request: Request) -> AgentStatusResponse:
         """LLM-initiated agent activation. Requires a confirm token
         minted with kind='activate' for THIS specific agent_slug. The
@@ -1474,7 +1481,7 @@ class ResearchController(Controller):
         an agent on without explicit per-call operator approval."""
         return await self._agent_status_change(data, request, action="activate")
 
-    @post("/deactivate-agent")
+    @post("/deactivate-agent", guards=[cap_guard("use_mcp_tools")])
     async def deactivate_agent(self, data: AgentStatusRequest, request: Request) -> AgentStatusResponse:
         """LLM-initiated agent deactivation. Same gate as activate.
         Lower-stakes (turns off automatic firing) but still requires
@@ -1482,7 +1489,7 @@ class ResearchController(Controller):
         to activate, and vice versa."""
         return await self._agent_status_change(data, request, action="deactivate")
 
-    @post("/update-agent")
+    @post("/update-agent", guards=[cap_guard("use_mcp_tools")])
     async def update_agent(self, data: AgentUpdateRequest, request: Request) -> AgentStatusResponse:
         """LLM-initiated agent edit. Requires a confirm token minted
         with kind='update' for THIS agent_slug + THIS exact

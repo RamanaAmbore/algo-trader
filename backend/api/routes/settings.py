@@ -18,7 +18,7 @@ from litestar import Controller, get, patch, post
 from litestar.exceptions import HTTPException
 from sqlalchemy import select
 
-from backend.api.auth_guard import admin_guard
+from backend.api.rbac import cap_guard
 from backend.api.database import async_session
 from backend.api.models import Setting
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -152,9 +152,12 @@ def _to_info(r: Setting) -> SettingInfo:
 
 class SettingsController(Controller):
     path = "/api/admin/settings"
-    guards = [admin_guard]
+    # Per-route caps. Reads gated by `view_settings_readonly` (admin /
+    # risk / ops / demo — demo gets read-only browse so the showcase
+    # tour shows the operator-tunable knobs). Mutations + reset gated
+    # by `manage_settings` (admin only).
 
-    @get("/")
+    @get("/", guards=[cap_guard("view_settings_readonly")])
     async def list_all(self) -> list[SettingInfo]:
         async with async_session() as s:
             rows = (await s.execute(
@@ -162,7 +165,7 @@ class SettingsController(Controller):
             )).scalars().all()
         return [_to_info(r) for r in rows]
 
-    @get("/{key:str}")
+    @get("/{key:str}", guards=[cap_guard("view_settings_readonly")])
     async def read_one(self, key: str) -> SettingInfo:
         async with async_session() as s:
             row = (await s.execute(
@@ -172,7 +175,7 @@ class SettingsController(Controller):
             raise HTTPException(status_code=404, detail=f"Setting {key!r} not found")
         return _to_info(row)
 
-    @patch("/{key:str}")
+    @patch("/{key:str}", guards=[cap_guard("manage_settings")])
     async def update(self, key: str, data: SettingPatch) -> SettingInfo:
         async with async_session() as s:
             row = (await s.execute(
@@ -188,7 +191,7 @@ class SettingsController(Controller):
         logger.info(f"Settings: {key} updated to {row.value!r}")
         return _to_info(row)
 
-    @post("/{key:str}/reset")
+    @post("/{key:str}/reset", guards=[cap_guard("manage_settings")])
     async def reset(self, key: str) -> SettingInfo:
         async with async_session() as s:
             row = (await s.execute(
