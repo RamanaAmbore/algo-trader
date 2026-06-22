@@ -4,6 +4,11 @@
   import { nowStamp } from '$lib/stores';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
+  import TourModal from '$lib/TourModal.svelte';
+
+  // Tour open-state. Triggered by the "Take the tour" CTA in the hero.
+  // TourModal handles its own teardown (escape, overlay click, finish).
+  let _tourOpen = $state(false);
 
   // Refresh on a narrative tour page just re-runs load functions so the
   // hero + section cards re-flow with fresh layout. No data is
@@ -249,6 +254,12 @@
   <header class="show-hero">
     <h1 class="show-title">Rambo Terminal — Tour</h1>
     <p class="show-tag">A production quant trading terminal that runs a real strategy: hold high-conviction stocks long, then use them (and cash) as margin for a toolkit of derivative strategies — covered calls, cash-secured puts, vertical / calendar spreads, collars, wheels, futures, hedges — letting the algo pick the right tool for the market and handle execution + risk. Built end-to-end by one engineer for the RamboQuant LLP partnership — you're looking at the live system, accounts masked.</p>
+    <div class="show-cta-row">
+      <button type="button" class="show-cta-tour" onclick={() => _tourOpen = true}>
+        ▶ Take the 60-second tour
+      </button>
+      <span class="show-cta-hint">5 surfaces · auto-advance · keyboard shortcuts: ←/→ Space Esc</span>
+    </div>
     <div class="show-facts">
       {#each facts as f}
         <div class="show-fact">
@@ -300,6 +311,10 @@
   </footer>
 </div>
 
+{#if _tourOpen}
+  <TourModal onClose={() => _tourOpen = false} />
+{/if}
+
 <style>
   .show {
     max-width: 1180px;
@@ -346,6 +361,50 @@
     line-height: 1.6;
     max-width: 42rem;
     margin: 0 auto 1.4rem;
+  }
+
+  /* Take-the-tour CTA — bridges hero copy and the section grid. Amber
+     button next to a small hint about keyboard shortcuts so the
+     recruiter knows what they're getting before they click. */
+  .show-cta-row {
+    display: flex; align-items: center; justify-content: center;
+    flex-wrap: wrap; gap: 0.7rem;
+    margin: 0 auto 1.6rem;
+    max-width: 42rem;
+  }
+  .show-cta-tour {
+    padding: 0.55rem 1.1rem;
+    background: rgba(251, 191, 36, 0.20);
+    border: 1px solid rgba(251, 191, 36, 0.65);
+    border-radius: 5px;
+    color: #fbbf24;
+    font-size: 0.85rem;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s, color 0.12s, transform 0.08s;
+    font-family: inherit;
+    animation: cta-pulse 3.6s ease-in-out infinite;
+  }
+  .show-cta-tour:hover {
+    background: rgba(251, 191, 36, 0.35);
+    border-color: rgba(251, 191, 36, 0.90);
+    color: #fcd34d;
+    animation: none;
+    transform: translateY(-1px);
+  }
+  @keyframes cta-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+    50%      { box-shadow: 0 0 0 6px rgba(251, 191, 36, 0.10); }
+  }
+  .show-cta-hint {
+    font-size: 0.62rem;
+    color: rgba(155, 176, 208, 0.75);
+    font-family: ui-monospace, monospace;
+    letter-spacing: 0.04em;
+  }
+  @media (max-width: 540px) {
+    .show-cta-hint { display: none; }
   }
   .show-facts {
     display: flex;

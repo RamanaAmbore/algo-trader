@@ -1221,6 +1221,10 @@
   }
 
   let submitting = $state(false);
+  // Demo-mode submit modal — opens when an anonymous prod visitor
+  // clicks Submit. Replaces the silent-disable UX with a friendly
+  // explanation of demo mode + sign-in CTA + Hire Me CTA.
+  let _demoSubmitOpen = $state(false);
   // Suppress the validation error banner until the operator actually
   // tries to submit / add to basket. Prevents "Limit price required"
   // (or any other "this field is empty" message) flashing on a fresh
@@ -1407,6 +1411,15 @@
 
   async function submit() {
     _submitTried = true;
+    // Demo session — short-circuit before any validation or broker
+    // call. Open the friendly "Demo mode" modal instead of silently
+    // disabling Submit; recruiter sees the affordance + understands
+    // why it doesn't fire. Real placement requires a signed-in
+    // trader role per the RBAC matrix.
+    if (_isDemo) {
+      _demoSubmitOpen = true;
+      return;
+    }
     // Engine-idle guard — when the navbar mode is IDLE (dev only), the
     // backend's set_mode hasn't activated dev_active=True yet, so submit
     // would land but no broker calls would fire (background tasks all
@@ -2264,10 +2277,11 @@
             <button type="button" class="ot-submit"
                     class:ot-submit-buy={_side === 'BUY'}
                     class:ot-submit-sell={_side === 'SELL'}
-                    disabled={!!validationErr || submitting || $executionMode === 'idle'}
-                    title={$executionMode === 'idle' ? 'Engine is idle — pick PAPER / SIM / REPLAY from the navbar to enable order placement' : ''}
+                    class:ot-submit-demo={_isDemo}
+                    disabled={_isDemo ? false : (!!validationErr || submitting || $executionMode === 'idle')}
+                    title={_isDemo ? 'Demo mode — click to learn how to enable real orders' : ($executionMode === 'idle' ? 'Engine is idle — pick PAPER / SIM / REPLAY from the navbar to enable order placement' : '')}
                     onclick={submit}>
-              {#if submitting}…{:else if $executionMode === 'idle'}Idle — pick a mode{:else if action === 'modify'}Modify{orderId ? ' · #' + orderId : ''}{:else if _mode === 'draft'}Save draft{:else if sideLabels[_side] === 'CLOSE'}Close · {_side.toLowerCase()}{:else if sideLabels[_side] === 'ADD'}Add · {_side.toLowerCase()}{:else}Place {_side.toLowerCase()}{/if}
+              {#if _isDemo}Submit (Demo){:else if submitting}…{:else if $executionMode === 'idle'}Idle — pick a mode{:else if action === 'modify'}Modify{orderId ? ' · #' + orderId : ''}{:else if _mode === 'draft'}Save draft{:else if sideLabels[_side] === 'CLOSE'}Close · {_side.toLowerCase()}{:else if sideLabels[_side] === 'ADD'}Add · {_side.toLowerCase()}{:else}Place {_side.toLowerCase()}{/if}
             </button>
           {/if}
         {/if}
@@ -2289,6 +2303,39 @@
     </div>
   </div>
 </div>
+
+{#if _demoSubmitOpen}
+  <!-- Demo-mode submit modal — explains why this Submit doesn't fire
+       a real order, offers the recruiter two clear next actions. -->
+  <div class="ot-demo-overlay" onclick={() => _demoSubmitOpen = false}
+       onkeydown={(e) => { if (e.key === 'Escape') _demoSubmitOpen = false; }}
+       role="presentation">
+    <div class="ot-demo-modal" role="dialog" aria-modal="true" aria-labelledby="ot-demo-title" tabindex="-1"
+         onclick={(e) => e.stopPropagation()}
+         onkeydown={(e) => e.stopPropagation()}>
+      <button type="button" class="ot-demo-close" aria-label="Close"
+              onclick={() => _demoSubmitOpen = false}>×</button>
+      <h3 id="ot-demo-title" class="ot-demo-title">Demo mode</h3>
+      <p class="ot-demo-body">
+        You're viewing the live RamboQuant terminal as an anonymous
+        visitor. Order placement is intentionally disabled so you can
+        explore every surface — the UI, derivatives analytics,
+        simulator, agents — without touching real broker accounts.
+      </p>
+      <p class="ot-demo-body">
+        The Submit affordance stays visible so the trading workflow is
+        complete to read. To place real orders you'd need a signed-in
+        <code>trader</code> or <code>admin</code> role with assigned
+        broker accounts.
+      </p>
+      <div class="ot-demo-cta">
+        <a href="/signin" class="ot-demo-btn ot-demo-btn-secondary">Sign in</a>
+        <button type="button" class="ot-demo-btn ot-demo-btn-primary"
+                onclick={() => _demoSubmitOpen = false}>Got it</button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   .ot-overlay {
@@ -3059,6 +3106,20 @@
   }
   .ot-submit-buy  { background: #4ade80; }
   .ot-submit-sell { background: #f87171; }
+  /* Demo variant — amber to match the Hire Me / Tour CTAs. Reads as
+     "this is informational, not a money-mover". Tooltip + click → modal
+     fires regardless of which side the operator picked, so we override
+     the green/red side variants for demo. */
+  .ot-submit.ot-submit-demo {
+    background: rgba(251, 191, 36, 0.20);
+    border: 1px solid rgba(251, 191, 36, 0.65);
+    color: #fbbf24;
+  }
+  .ot-submit.ot-submit-demo:hover {
+    background: rgba(251, 191, 36, 0.35);
+    border-color: rgba(251, 191, 36, 0.90);
+    color: #fcd34d;
+  }
   /* Basket-mode primary action — amber outlined, distinct from the
      green/red fill so the operator reads "stage, don't fire yet". */
   .ot-submit-basket-mode {
@@ -3187,5 +3248,96 @@
     background: rgba(248,113,113,0.08);
     border: 1px solid rgba(248,113,113,0.30);
     border-radius: 3px;
+  }
+
+  /* Demo-mode "you can't submit" modal — fires when an anonymous demo
+     visitor clicks the (amber) Submit button. Modal sits ABOVE the
+     OrderTicket (z=110 vs ticket z~50). Same visual language as
+     HireMeModal / TourModal so the three modal types feel like one
+     family. */
+  .ot-demo-overlay {
+    position: fixed; inset: 0;
+    background: rgba(8, 12, 20, 0.80);
+    backdrop-filter: blur(3px);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 120;
+    padding: 1rem;
+  }
+  .ot-demo-modal {
+    position: relative;
+    max-width: 26rem;
+    width: 100%;
+    background: linear-gradient(180deg, #0f172a 0%, #131c33 100%);
+    border: 1px solid rgba(251, 191, 36, 0.50);
+    border-radius: 6px;
+    padding: 1.2rem 1.3rem 1rem;
+    color: #c8d8f0;
+    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  }
+  .ot-demo-close {
+    position: absolute; top: 0.55rem; right: 0.7rem;
+    width: 1.5rem; height: 1.5rem;
+    border: none; background: transparent;
+    color: #94a3b8; font-size: 1.2rem; cursor: pointer; line-height: 1;
+    border-radius: 3px;
+  }
+  .ot-demo-close:hover { background: rgba(255,255,255,0.10); color: #fbbf24; }
+  .ot-demo-title {
+    margin: 0 0 0.55rem;
+    font-size: 0.95rem;
+    font-weight: 800;
+    color: #fbbf24;
+  }
+  .ot-demo-body {
+    margin: 0 0 0.7rem;
+    font-size: 0.7rem;
+    line-height: 1.5;
+    color: #c8d8f0;
+  }
+  .ot-demo-body code {
+    background: rgba(34, 211, 238, 0.10);
+    border: 1px solid rgba(34, 211, 238, 0.30);
+    border-radius: 3px;
+    padding: 0 0.25rem;
+    color: #67e8f9;
+    font-size: 0.65rem;
+  }
+  .ot-demo-cta {
+    display: flex; gap: 0.5rem; justify-content: flex-end;
+    margin-top: 0.85rem;
+    padding-top: 0.7rem;
+    border-top: 1px solid rgba(126, 151, 184, 0.18);
+  }
+  .ot-demo-btn {
+    padding: 0.38rem 0.85rem;
+    border-radius: 4px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    text-decoration: none;
+    font-family: inherit;
+    transition: background 0.1s, color 0.1s, border-color 0.1s;
+  }
+  .ot-demo-btn-secondary {
+    background: rgba(34, 211, 238, 0.10);
+    border: 1px solid rgba(34, 211, 238, 0.45);
+    color: #67e8f9;
+    display: inline-flex; align-items: center;
+  }
+  .ot-demo-btn-secondary:hover {
+    background: rgba(34, 211, 238, 0.22);
+    border-color: rgba(34, 211, 238, 0.75);
+    color: #a5f3fc;
+  }
+  .ot-demo-btn-primary {
+    background: rgba(251, 191, 36, 0.20);
+    border: 1px solid rgba(251, 191, 36, 0.65);
+    color: #fbbf24;
+  }
+  .ot-demo-btn-primary:hover {
+    background: rgba(251, 191, 36, 0.35);
+    border-color: rgba(251, 191, 36, 0.90);
+    color: #fcd34d;
   }
 </style>
