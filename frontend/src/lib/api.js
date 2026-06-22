@@ -227,6 +227,10 @@ export const changePassword = (password) =>
 /** GET /api/auth/me/nav — operator's NAV slice (share_pct × firm NAV). */
 export const fetchMyNav = () => _get('/auth/me/nav', { auth: true });
 
+/** GET /api/auth/whoami — role + capability bootstrap. No auth required;
+ *  anonymous demo sessions get back `{ role: 'demo', caps: [...] }`. */
+export const fetchWhoami = () => _get('/auth/whoami', { auth: false });
+
 /** GET /api/auth/firm-nav — public unauthenticated firm-aggregate NAV.
  *  Used by NavCard on /performance for anonymous visitors so they see
  *  the live firm NAV without signing in. Backend caches at 30 s. */

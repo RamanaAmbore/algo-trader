@@ -15,8 +15,15 @@
   import ImpersonationBanner from '$lib/ImpersonationBanner.svelte';
   import AgentToast from '$lib/AgentToast.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
+  import HireMeModal from '$lib/HireMeModal.svelte';
+  import { bootstrapRBAC } from '$lib/rbac';
 
   const { children } = $props();
+
+  // Demo "Hire Me" modal open-state. Triggered by the navbar button
+  // (visible only when isDemo). Closes via overlay click, × button,
+  // or Escape (HireMeModal handles its own teardown).
+  let _hireOpen = $state(false);
 
   const bullSrc = "/bull.webp";
 
@@ -440,6 +447,12 @@
     };
   }
   onMount(() => {
+    // RBAC bootstrap — populates `userRole` + `userCaps` stores from
+    // /api/auth/whoami. Idempotent across remounts (the bootstrap
+    // function itself short-circuits on second call). Fires before
+    // any of the data-poll work below since pollers + nav gating
+    // both read off the role/caps state.
+    bootstrapRBAC();
     // Fire once, then schedule adaptive polls.
     pollSim();
     pollPaper();
@@ -630,6 +643,10 @@
           </span>
           <button onclick={signOut} class="algo-nav-btn">Sign Out</button>
         {:else if isDemo}
+          <button onclick={() => _hireOpen = true} class="algo-nav-btn algo-hire-btn"
+                  title="Built by Ramana Ambore — click to see the engineering pitch + contact channels">
+            Hire Me
+          </button>
           <button onclick={() => goto('/signin')} class="algo-nav-btn">Sign In</button>
         {/if}
         <button onclick={() => goto('/about')} class="algo-pub-link">↙ Investor site</button>
@@ -746,11 +763,17 @@
           {#if $authStore.user}
             <button onclick={() => { signOut(); closeMenu(); }} class="algo-mobile-item">Sign Out</button>
           {:else}
+            <button onclick={() => { _hireOpen = true; closeMenu(); }}
+                    class="algo-mobile-item algo-hire-btn">Hire Me</button>
             <button onclick={() => { goto('/signin'); closeMenu(); }} class="algo-mobile-item">Sign In</button>
           {/if}
         </nav>
       {/if}
     </header>
+
+{#if _hireOpen}
+  <HireMeModal onClose={() => _hireOpen = false} />
+{/if}
 
     <!-- Mode banners removed entirely. The colored navbar mode pill
          (PAPER sky · LIVE red · SHADOW orange · SIM rose · REPLAY
@@ -976,6 +999,32 @@
     background: rgba(251,191,36,0.1);
     color: #fbbf24;
     border-left-color: #fbbf24;
+  }
+  /* "Hire Me" button — demo-only nav CTA. Amber-on-amber so it reads
+     as a primary affordance without competing with the active-nav
+     amber underline pattern. Subtle pulse animation on the border so
+     a recruiter who lands cold sees there's a contact channel here.
+     Don't go bigger / brighter — operator's request was "showcase",
+     not "billboard". */
+  :global(.algo-nav-btn.algo-hire-btn) {
+    background: rgba(251, 191, 36, 0.16);
+    color: #fbbf24;
+    border-left-color: #fbbf24;
+    font-weight: 700;
+    animation: algo-hire-glow 3.6s ease-in-out infinite;
+  }
+  :global(.algo-nav-btn.algo-hire-btn:hover) {
+    background: rgba(251, 191, 36, 0.30);
+    color: #fcd34d;
+    animation: none;
+  }
+  @keyframes algo-hire-glow {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.0); }
+    50%      { box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.28); }
+  }
+  :global(.algo-mobile-item.algo-hire-btn) {
+    color: #fbbf24;
+    font-weight: 700;
   }
   :global(.algo-nav-btn-active) {
     background: rgba(251,191,36,0.15);

@@ -287,6 +287,12 @@ class UserProfile(msgspec.Struct):
     role: str
     display_name: str
     contribution: float
+    # Capability list — what this role can do, per the rbac matrix.
+    # Mirrored to the frontend at /me so UI gates (hide nav items,
+    # disable buttons, branch flow) don't need to re-implement the
+    # role→cap mapping client-side. Always present even for legacy
+    # tokens; empty list is a safe default (treated as observer).
+    caps: list[str] = []
 
 
 class LogoutResponse(msgspec.Struct):
@@ -570,12 +576,53 @@ class AuthController(Controller):
 
     @get("/me", guards=[jwt_guard])
     async def me(self, request: Request) -> UserProfile:
+        from backend.api.rbac import caps_for_role
         payload = request.state.token_payload
+        role = payload.get("role", "partner")
         return UserProfile(
             username=payload.get("sub", ""),
-            role=payload.get("role", "partner"),
+            role=role,
             display_name=payload.get("display_name", ""),
             contribution=payload.get("contribution", 0),
+            caps=caps_for_role(role),
+        )
+
+    @get("/whoami")
+    async def whoami(self, request: Request) -> UserProfile:
+        """Public role + caps endpoint. Unlike /me, requires no JWT —
+        anonymous demo sessions get back `role='demo'` with the demo
+        capability set. Lets the frontend bootstrap nav / button gates
+        without first calling a guarded endpoint and 401'ing. Identity
+        fields (username, display_name) are blanked for demo."""
+        from backend.api.rbac import (
+            caps_for_role, normalise_role,
+            resolve_role_from_connection,
+        )
+        from backend.api.auth_guard import is_authenticated_request
+        # Hydrate token_payload only when a real JWT is present —
+        # `auth_or_demo_guard` would do this, but /whoami isn't behind
+        # any guard so we inline the small check.
+        if is_authenticated_request(request):
+            from backend.api.routes.auth import verify_token
+            token = request.headers.get("Authorization", "") \
+                .removeprefix("Bearer ").strip()
+            payload = verify_token(token) or {}
+            role = normalise_role(payload.get("role"))
+            return UserProfile(
+                username=payload.get("sub", ""),
+                role=role,
+                display_name=payload.get("display_name", ""),
+                contribution=payload.get("contribution", 0),
+                caps=caps_for_role(role),
+            )
+        # Anonymous — surface as 'demo' (on prod) or 'observer' (dev/no
+        # auth at all). On non-prod we don't have a demo mode; return
+        # observer caps so dev UIs that build off /whoami don't crash.
+        from backend.shared.helpers.utils import is_prod_branch
+        role = "demo" if is_prod_branch() else "observer"
+        return UserProfile(
+            username="", role=role, display_name="", contribution=0,
+            caps=caps_for_role(role),
         )
 
     @post("/logout")
