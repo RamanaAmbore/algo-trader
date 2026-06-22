@@ -24,6 +24,8 @@ import hashlib
 import hmac
 import json
 
+from typing import Optional
+
 import msgspec
 import pandas as pd
 from litestar import Controller, Request, delete, get, post, put
@@ -196,6 +198,141 @@ async def _align_price_to_tick(exchange: str, symbol: str,
     if aligned != price:
         logger.info(f"[TICK] aligned {symbol} price {price} → {aligned} (tick={tick})")
     return aligned
+
+
+async def _enforce_capacity_guard(
+    *,
+    strategy_id: int,
+    account: str,
+    tradingsymbol: str,
+    side_kite: str,
+    quantity: int,
+    price_hint: Optional[float],
+) -> None:
+    """Pre-trade capacity guard for the strategy attached to this order.
+
+    Raises 403 when (current_open_notional + new_notional) would
+    exceed `Strategy.capacity_cap_inr`. Returns silently otherwise.
+
+    Skip semantics:
+      - Strategy not found → silent skip. Order placement isn't the
+        right surface to surface a stale strategy_id; the operator
+        will see the bad attribution on /strategies.
+      - capacity_cap_inr is NULL → silent skip (no cap configured).
+      - Close intent detected → silent skip (reduces exposure; the
+        FIFO match consumes existing lots).
+
+    Pricing for new notional:
+      1. price_hint (operator-typed limit / SL price) — preferred,
+         matches Kite's accept-validation pricing.
+      2. KiteTicker tick_map LTP for the symbol — covers MARKET orders
+         when the operator's book has the symbol subscribed.
+      3. broker.ltp() one-shot — last-resort batched call (rare, only
+         for unsubscribed MARKET orders).
+      4. Hard-fail with 503 if no price can be resolved — capacity
+         math can't run without a price; refusing here is safer than
+         letting an unbounded order through.
+
+    The new-notional formula is intentionally OVER-CONSERVATIVE for
+    pyramiding scenarios where part of the order would consume an
+    existing lot — qty × price treats every contract as new exposure.
+    Trade-off: false positives ("near the cap") in marginal cases,
+    no false negatives. Operator can always raise the cap or split
+    the order.
+    """
+    if quantity <= 0:
+        return
+    from backend.api.database import async_session
+    from backend.api.models import Strategy, StrategyLot
+    from backend.api.algo.lot_ledger import detect_close_intent
+    from sqlalchemy import select as _select, func as _func
+
+    async with async_session() as s:
+        strat = await s.get(Strategy, int(strategy_id))
+        if strat is None or strat.capacity_cap_inr is None:
+            return
+        cap = float(strat.capacity_cap_inr)
+        if cap <= 0:
+            return
+        # Close-intent → skip. The FIFO matcher will consume existing
+        # lots; net exposure goes DOWN, never up.
+        is_close = await detect_close_intent(
+            s,
+            strategy_id=int(strategy_id),
+            account=account,
+            symbol=tradingsymbol,
+            side_kite=side_kite,
+        )
+        if is_close:
+            return
+        # Current open notional = Σ remaining_qty × open_price across
+        # open lots for THIS strategy (book-wide; cap is per-strategy,
+        # not per-account).
+        open_notional = (await s.execute(
+            _select(_func.coalesce(
+                _func.sum(StrategyLot.remaining_qty * StrategyLot.open_price),
+                0.0,
+            )).where(
+                StrategyLot.strategy_id == int(strategy_id),
+                StrategyLot.remaining_qty > 0,
+            )
+        )).scalar_one() or 0.0
+        open_notional = float(open_notional)
+
+    # Resolve new-notional price.
+    px: Optional[float] = (float(price_hint) if price_hint and price_hint > 0
+                           else None)
+    if px is None:
+        # Ticker first (zero broker quota).
+        try:
+            from backend.shared.helpers.kite_ticker import _ticker
+            t = _ticker.get_ltp_by_sym(tradingsymbol.upper())
+            if t is not None and t > 0:
+                px = float(t)
+        except Exception:
+            pass
+    if px is None:
+        # Broker fallback. Single batched call; failure → 503 (we
+        # cannot risk-check the order without a price).
+        try:
+            import asyncio as _asyncio
+            from backend.shared.brokers.registry import get_price_broker
+            broker = get_price_broker()
+            # Exchange resolution: use NFO as the safe default for F&O
+            # symbols; broker.ltp accepts EXCH:SYM keys.
+            key = f"NFO:{tradingsymbol.upper()}"
+            quote = await _asyncio.to_thread(broker.ltp, [key])
+            v = (quote or {}).get(key)
+            if isinstance(v, dict):
+                lp = float(v.get("last_price") or 0.0)
+                if lp > 0:
+                    px = lp
+        except Exception:
+            px = None
+    if px is None or px <= 0:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Capacity guard cannot resolve price for "
+                f"{tradingsymbol} — pass an explicit limit price or "
+                "retry once the ticker has the symbol subscribed."
+            ),
+        )
+
+    new_notional = float(quantity) * px
+    projected = open_notional + new_notional
+    if projected > cap:
+        breach = projected - cap
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Capacity cap breach — strategy cap ₹{cap:,.0f}, "
+                f"current open ₹{open_notional:,.0f}, "
+                f"this order ₹{new_notional:,.0f}. "
+                f"Would exceed by ₹{breach:,.0f}. "
+                f"Reduce qty or raise the cap on /strategies."
+            ),
+        )
 
 
 def _broker_for(account: str):
@@ -2267,6 +2404,27 @@ class OrdersController(Controller):
             raise HTTPException(status_code=400, detail="Account is required.")
         if account not in conns.conn:
             raise HTTPException(status_code=400, detail=f"Unknown account: {account}.")
+
+        # Slice 7i — capacity guardrail. When the strategy has a
+        # capacity_cap_inr ceiling set, refuse the order if it would
+        # push the strategy's open notional over the cap. Skips when:
+        #   - no strategy attached (data.strategy_id falsy)
+        #   - strategy has no cap (capacity_cap_inr is NULL)
+        #   - order is a CLOSE intent (existing opposite-side open
+        #     lot exists for this strategy + sym → consumes it →
+        #     reduces exposure → won't trip cap)
+        # On breach: 403 with a clear breach amount so operator knows
+        # exactly how much to trim qty or how much to raise the cap.
+        if data.strategy_id:
+            await _enforce_capacity_guard(
+                strategy_id=int(data.strategy_id),
+                account=account,
+                tradingsymbol=sym,
+                side_kite=side,
+                quantity=qty,
+                price_hint=(float(data.price)
+                            if data.price is not None else None),
+            )
 
         # Phase 23 — per-order exchange-open gate.
         # Block submission when the target exchange's market segment
