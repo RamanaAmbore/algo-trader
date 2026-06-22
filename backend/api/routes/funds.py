@@ -6,6 +6,9 @@ from litestar import Controller, Request, get
 from litestar.exceptions import HTTPException
 
 from backend.api.auth_guard import is_admin_request, is_authenticated_request
+from backend.api.rbac import (
+    resolve_role_from_connection, user_scope_for_connection, normalise_role,
+)
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.schemas import FundsResponse, FundsRow
 from backend.shared.helpers import broker_apis
@@ -79,6 +82,21 @@ class FundsController(Controller):
             if fresh:
                 invalidate("funds")
             resp = await get_or_fetch("funds", _fetch, ttl_seconds=_TTL)
+            # Horizontal scoping (slice 5) — trader sees only their
+            # assigned_accounts. Firm-wide roles untouched. TOTAL row
+            # is always preserved so the page-level rollup remains
+            # meaningful even after a scoped filter.
+            role = normalise_role(resolve_role_from_connection(request))
+            if role == "trader":
+                allowed, _ = await user_scope_for_connection(request)
+                allowed_set = {str(a).upper() for a in (allowed or [])}
+                import msgspec
+                resp = msgspec.structs.replace(
+                    resp,
+                    rows=[r for r in resp.rows
+                          if str(getattr(r, "account", "")).upper() in allowed_set
+                          or str(getattr(r, "account", "")).upper() == "TOTAL"],
+                )
             # Account-ID masking — admin/designated only see raw codes.
             # Copy-not-mutate so the shared cache doesn't end up holding
             # masked codes (was the demo→signin lag bug).

@@ -187,6 +187,13 @@ class UserInfo(msgspec.Struct):
     terminated_at: str | None = None
     join_date: str | None = None
     notes: str | None = None
+    # RBAC scoping (slice 5). Surfaced so /admin/users can render +
+    # edit the multi-selects. Empty lists are the safe default —
+    # admin/risk/ops/observer/demo ignore them anyway, trader treats
+    # empty as "no accounts assigned yet".
+    assigned_accounts:   list[str] = []
+    assigned_strategies: list[int] = []
+    compliance_designated: bool = False
 
 
 class UsersResponse(msgspec.Struct):
@@ -232,6 +239,16 @@ class UpdateUserRequest(msgspec.Struct):
     nominee_phone: str | None = None
     join_date: str | None = None
     notes: str | None = None
+    # RBAC scoping (slice 5). Designated-only via the allowlist in
+    # update_user. List shape: assigned_accounts = broker-account
+    # codes (["ZG0790", "DH3747"]), assigned_strategies = strategy
+    # row ids ([42, 51]). Empty list = no explicit scope; role's
+    # default policy decides whether that means ALL or NONE
+    # (trader → none, all others → all).
+    assigned_accounts:   list[str] | None = None
+    assigned_strategies: list[int] | None = None
+    # Compliance officer designation (orthogonal to role).
+    compliance_designated: bool | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +333,9 @@ class AdminController(Controller):
                 suspended_at=u.suspended_at.isoformat() if getattr(u, 'suspended_at', None) else None,
                 terminated_at=u.terminated_at.isoformat() if getattr(u, 'terminated_at', None) else None,
                 join_date=str(u.join_date) if u.join_date else None, notes=u.notes,
+                assigned_accounts=list(getattr(u, 'assigned_accounts', None) or []),
+                assigned_strategies=list(getattr(u, 'assigned_strategies', None) or []),
+                compliance_designated=bool(getattr(u, 'compliance_designated', False)),
             )
         return UsersResponse(users=[_to_info(u) for u in users])
 
@@ -457,6 +477,10 @@ class AdminController(Controller):
                 'share_pct', 'bank_name', 'bank_account', 'bank_ifsc',
                 'nominee_name', 'nominee_relation', 'nominee_phone',
                 'join_date', 'notes',
+                # Slice 5 — RBAC horizontal scope. Designated-only fields
+                # (they control PRIVILEGE distribution).
+                'assigned_accounts', 'assigned_strategies',
+                'compliance_designated',
             ):
                 val = getattr(data, field, None)
                 if val is None:
@@ -496,6 +520,29 @@ class AdminController(Controller):
                     # non-designated actors (UI hides the inputs too).
                     if not allowed_role_change:
                         continue
+                if field in ('assigned_accounts', 'assigned_strategies',
+                             'compliance_designated'):
+                    # Slice 5 RBAC horizontal scope — designated-only.
+                    # Granting accounts / strategies / compliance
+                    # designation is a privilege-allocation decision,
+                    # same gate as the role field itself. Admin can
+                    # READ these via /users but cannot WRITE.
+                    if not allowed_role_change:
+                        continue
+                    if field == 'assigned_accounts':
+                        if not isinstance(val, list) or not all(isinstance(a, str) for a in val):
+                            raise HTTPException(
+                                status_code=422,
+                                detail="assigned_accounts must be a list of broker-account strings",
+                            )
+                        val = [a.strip().upper() for a in val if a and a.strip()]
+                    elif field == 'assigned_strategies':
+                        if not isinstance(val, list):
+                            raise HTTPException(
+                                status_code=422,
+                                detail="assigned_strategies must be a list of strategy ids",
+                            )
+                        val = [int(s) for s in val if s is not None]
                 if field == 'pan':
                     val = val.upper()
                 if field in ('date_of_birth', 'join_date', 'contribution_date'):

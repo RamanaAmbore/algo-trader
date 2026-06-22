@@ -6,6 +6,10 @@ from litestar import Controller, Request, get
 from litestar.exceptions import HTTPException
 
 from backend.api.auth_guard import is_admin_request, is_authenticated_request
+from backend.api.rbac import (
+    resolve_role_from_connection, user_scope_for_connection,
+    normalise_role,
+)
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.schemas import PositionsResponse, PositionRow, PositionsSummaryRow
 from backend.shared.helpers import broker_apis
@@ -418,6 +422,28 @@ class PositionsController(Controller):
             if fresh:
                 invalidate("positions")
             resp = await get_or_fetch("positions", _fetch, ttl_seconds=_TTL)
+            # Horizontal scoping (slice 5). Trader-role callers see
+            # only positions on their `assigned_accounts`; firm-wide
+            # roles (admin / risk / ops / observer / demo) see every
+            # account. Empty assigned-list for a trader = empty
+            # result (fail-safe — a freshly-onboarded trader sees
+            # nothing until admin grants accounts).
+            #
+            # MUST run BEFORE masking — once accounts get masked to
+            # `ZG####` the trader's assigned-account match can't run.
+            role = normalise_role(resolve_role_from_connection(request))
+            if role == "trader":
+                allowed, _ = await user_scope_for_connection(request)
+                allowed_set = {str(a).upper() for a in (allowed or [])}
+                import msgspec
+                resp = msgspec.structs.replace(
+                    resp,
+                    rows=[r for r in resp.rows
+                          if str(getattr(r, "account", "")).upper() in allowed_set],
+                    summary=[s for s in resp.summary
+                             if str(getattr(s, "account", "")).upper() in allowed_set
+                             or str(getattr(s, "account", "")).upper() == "TOTAL"],
+                )
             # Mask account IDs for everyone who is NOT admin/designated.
             # CRITICAL — copy resp.rows / resp.summary BEFORE mutating;
             # the cache returns the same object reference across every

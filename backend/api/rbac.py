@@ -184,6 +184,85 @@ def resolve_role_from_connection(connection) -> str:
     return normalise_role(payload.get("role"))
 
 
+# ── Horizontal scoping (slice 5) ─────────────────────────────────────────
+#
+# The capability matrix above is VERTICAL — it answers "can role X do
+# action Y?". Horizontal scoping answers "on which accounts / strategies
+# can role X act?". The two compose: cap_guard rejects before the route
+# runs; account_scope_filter narrows the result set.
+#
+# Default policy per role (slice 5):
+#   admin / risk / ops / observer / demo   → ALL (firm-wide visibility)
+#   trader                                  → only User.assigned_accounts
+#                                             (empty = NONE — fail-safe)
+#
+# A trader with an empty assigned_accounts list sees zero positions /
+# holdings / funds. That's the intended initial state for a newly-
+# onboarded trader; admin grants accounts explicitly via /admin/users.
+
+#: Roles whose horizontal scope is firm-wide regardless of assigned
+#: list contents. Trader is the only role that respects assigned_*;
+#: all others see everything (subject to the cap matrix's vertical
+#: gates).
+_FIRM_WIDE_ROLES = frozenset({"admin", "risk", "ops", "observer", "demo"})
+
+
+def accounts_in_scope(role: str | None, assigned: list[str] | None,
+                       all_accounts: list[str]) -> list[str]:
+    """Effective broker-account scope for the current user.
+
+    - Firm-wide roles → `all_accounts` (the live broker registry).
+    - Trader → `assigned` (the per-user list). Empty list = empty
+      result (the trader explicitly has no accounts assigned).
+    - Unknown role → empty list (fail-closed).
+
+    Callers pass `all_accounts` because it depends on the live
+    Connections registry which is request-scope-irrelevant — let the
+    caller fetch it once.
+    """
+    r = normalise_role(role)
+    if r in _FIRM_WIDE_ROLES:
+        return list(all_accounts)
+    if r == "trader":
+        return [a for a in (assigned or []) if a in all_accounts]
+    return []
+
+
+async def user_scope_for_connection(connection) -> tuple[list[str], list[int]]:
+    """Resolve `(accounts, strategies)` scope for the request's actor.
+
+    Reads the JWT-stamped username off `connection.state.token_payload`,
+    looks up the user row, returns the assigned lists. Returns empty
+    tuples for anonymous demo / observer / etc. — the firm-wide
+    helpers don't read these.
+
+    Wrapped in try/except: an audit row write failure must never
+    break the user's request, so a scope lookup hiccup falls back to
+    empty scope (the safest default — trader sees nothing, firm-wide
+    roles ignore the list anyway).
+    """
+    payload = getattr(connection.state, "token_payload", None) or {}
+    username = str(payload.get("sub") or "").strip()
+    if not username:
+        return ([], [])
+    try:
+        from sqlalchemy import select
+        from backend.api.database import async_session
+        from backend.api.models import User
+        async with async_session() as session:
+            row = (await session.execute(
+                select(User.assigned_accounts, User.assigned_strategies)
+                  .where(User.username == username)
+            )).first()
+            if not row:
+                return ([], [])
+            accts = list(row[0] or [])
+            strats = list(row[1] or [])
+            return (accts, strats)
+    except Exception:
+        return ([], [])
+
+
 # ── Guard factory ────────────────────────────────────────────────────────
 
 

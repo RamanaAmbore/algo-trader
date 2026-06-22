@@ -8,6 +8,9 @@ from litestar.exceptions import HTTPException
 from litestar import Request
 
 from backend.api.auth_guard import is_admin_request, is_authenticated_request
+from backend.api.rbac import (
+    resolve_role_from_connection, user_scope_for_connection, normalise_role,
+)
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.schemas import HoldingsResponse, HoldingRow, HoldingsSummaryRow
 from backend.shared.helpers import broker_apis
@@ -112,6 +115,23 @@ class HoldingsController(Controller):
             if fresh:
                 invalidate("holdings")
             resp = await get_or_fetch("holdings", _fetch, ttl_seconds=_TTL)
+            # Horizontal scoping (slice 5) — trader sees only their
+            # assigned_accounts. Firm-wide roles untouched. Filter
+            # BEFORE masking so the trader's assigned-list match
+            # works against unmasked codes.
+            role = normalise_role(resolve_role_from_connection(request))
+            if role == "trader":
+                allowed, _ = await user_scope_for_connection(request)
+                allowed_set = {str(a).upper() for a in (allowed or [])}
+                import msgspec
+                resp = msgspec.structs.replace(
+                    resp,
+                    rows=[r for r in resp.rows
+                          if str(getattr(r, "account", "")).upper() in allowed_set],
+                    summary=[s for s in resp.summary
+                             if str(getattr(s, "account", "")).upper() in allowed_set
+                             or str(getattr(s, "account", "")).upper() == "TOTAL"],
+                )
             # Account-ID masking — admin/designated only see raw codes.
             # Copy-not-mutate so the shared cache doesn't end up holding
             # masked codes (was the demo→signin lag bug).

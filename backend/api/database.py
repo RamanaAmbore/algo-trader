@@ -222,6 +222,21 @@ async def init_db() -> None:
             "NOT NULL DEFAULT FALSE",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS must_change_password BOOLEAN "
             "NOT NULL DEFAULT FALSE",
+            # Slice 5 — per-user horizontal scoping. JSONB lists keyed
+            # by broker-account code (assigned_accounts) and strategy
+            # id (assigned_strategies). Empty list = no explicit scope;
+            # the role's scope policy decides whether that means ALL or
+            # NONE (admin/risk/ops/observer/demo → all, trader → none).
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_accounts JSONB "
+            "NOT NULL DEFAULT '[]'::jsonb",
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_strategies JSONB "
+            "NOT NULL DEFAULT '[]'::jsonb",
+            # Compliance officer designation — orthogonal to role. SEBI
+            # Cat-III requires a designated compliance officer; the
+            # in-app flag tracks the legal title without bloating the
+            # role enum.
+            "ALTER TABLE users ADD COLUMN IF NOT EXISTS compliance_designated BOOLEAN "
+            "NOT NULL DEFAULT FALSE",
         ):
             await conn.execute(text(stmt))
         # Collapse `is_super` into role='designated' and drop the column.

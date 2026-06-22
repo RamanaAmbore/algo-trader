@@ -200,6 +200,13 @@
       nominee_phone:   user.nominee_phone ?? '',
       join_date:       user.join_date ?? '',
       notes:           user.notes ?? '',
+      // Slice 5 — RBAC horizontal scope. Designated-only fields; the
+      // backend silently drops them for non-designated actors so it's
+      // OK to seed the form unconditionally — the role-aware UI hides
+      // the inputs for non-designated.
+      assigned_accounts:   [...(user.assigned_accounts || [])],
+      assigned_strategies: [...(user.assigned_strategies || [])],
+      compliance_designated: !!user.compliance_designated,
     };
   }
 
@@ -574,8 +581,56 @@
                              class="mt-1" />
                     </div>
                   {/if}
+                  <!-- Compliance officer designation — orthogonal to
+                       role. SEBI Cat-III requires a designated
+                       compliance officer; the in-app flag tracks the
+                       legal title without bloating the role enum.
+                       Designated only. -->
+                  <div class="flex items-end gap-2">
+                    <span class="field-label" title="SEBI Cat-III compliance officer designation. Orthogonal to role — usually flipped on a risk or admin user.">Compliance Officer</span>
+                    <input type="checkbox"
+                           bind:checked={editForm.compliance_designated}
+                           disabled={!iAmDesignated}
+                           class="mt-1" />
+                  </div>
                 </div>
               </div>
+
+              <!-- RBAC horizontal scope (slice 5). Designated-only;
+                   admin/risk/ops/observer/demo ignore the assigned
+                   list and see all accounts firm-wide. Trader uses
+                   the list to limit which broker accounts they can
+                   see + place orders against. Empty = no accounts
+                   assigned (fail-safe for new trader users). -->
+              {#if iAmDesignated}
+                <div>
+                  <h3 class="section-heading mb-2"
+                      title="Horizontal scope — only applied to trader role; firm-wide roles see all accounts regardless.">
+                    RBAC Scope
+                    {#if user.role !== 'trader'}<span class="text-[0.55rem] opacity-60 font-normal">(advisory for non-trader)</span>{/if}
+                  </h3>
+                  <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <span class="field-label" title="Broker-account codes (one per line) this user can trade through. Trader-only.">Assigned Accounts</span>
+                      <textarea class="field-input font-mono text-[0.7rem]"
+                                rows="3"
+                                placeholder="ZG0790&#10;DH3747"
+                                value={(editForm.assigned_accounts || []).join('\n')}
+                                oninput={(e) => editForm.assigned_accounts = e.currentTarget.value
+                                  .split(/\s+/).map(s => s.trim().toUpperCase()).filter(Boolean)}></textarea>
+                    </div>
+                    <div>
+                      <span class="field-label" title="Strategy ids this user manages (slice 6 — strategies don't exist yet). Trader-only.">Assigned Strategies</span>
+                      <textarea class="field-input font-mono text-[0.7rem]"
+                                rows="3"
+                                placeholder="(strategy IDs, comma or newline separated)"
+                                value={(editForm.assigned_strategies || []).join(', ')}
+                                oninput={(e) => editForm.assigned_strategies = e.currentTarget.value
+                                  .split(/[\s,]+/).map(s => parseInt(s, 10)).filter(n => Number.isFinite(n))}></textarea>
+                    </div>
+                  </div>
+                </div>
+              {/if}
               <div>
                 <h3 class="section-heading mb-2">Address</h3>
                 <div class="grid grid-cols-2 md:grid-cols-3 gap-3">

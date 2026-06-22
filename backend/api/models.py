@@ -100,6 +100,36 @@ class User(Base):
     join_date: Mapped[Optional[datetime]] = mapped_column(Date, nullable=True)
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # admin notes
 
+    # ── RBAC scoping (slice 5) ────────────────────────────────────────────────
+    # Per-user horizontal scope. Sits ON TOP of the capability matrix:
+    # the cap decides "can role X do action Y?", these decide "on which
+    # accounts / strategies?". Empty list means "no explicit scope" —
+    # admin / risk / ops / observer / demo treat empty as ALL (those
+    # roles are firm-wide by design); trader treats empty as NONE
+    # (fail-safe — a freshly-assigned trader sees nothing until an
+    # admin grants accounts explicitly).
+    #
+    # Stored as JSONB rather than ARRAY for two reasons:
+    #   1) avoids an Alembic-style migration in a non-Alembic codebase
+    #      (the rest of this app uses JSONB exclusively for list-shaped
+    #      data; matches existing convention).
+    #   2) trivially extends to richer per-account metadata later
+    #      (limits, can_trade_options, etc.) without another column.
+    assigned_accounts: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]",
+    )
+    assigned_strategies: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]",
+    )
+    # SEBI Cat-III compliance flag. Orthogonal to `role` — the legal
+    # designation of compliance officer is a real-world title that can
+    # overlap with any role (often risk or ops, sometimes admin). The
+    # flag surfaces in the audit UI + future operator-attestation forms
+    # without complicating the role enum. NULL = not designated.
+    compliance_designated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
+
     # ── Timestamps ────────────────────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
