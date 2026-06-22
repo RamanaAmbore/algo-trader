@@ -475,8 +475,17 @@ def get_historical_brokers() -> list[Broker]:
     # burned a network round-trip + marked the account rate-limited on
     # error, then fell through to the next broker — delayed + noisy.
     # Mirror the existing `get_sparkline_broker()` Kite-only filter.
+    #
+    # Accept BOTH the canonical "zerodha_kite" id and the legacy "kite"
+    # alias — the DB seeder writes "kite" for accounts migrated from
+    # secrets.yaml, while newer rows use "zerodha_kite". `_ADAPTERS`
+    # already routes both to `KiteBroker`; without the dual match here,
+    # legacy rows fall through the eligibility filter and the historical
+    # endpoint silently returns empty bars ("data not available" on
+    # /charts + ChartModal).
+    _KITE_IDS = {"zerodha_kite", "kite"}
     def _is_kite_account(a: str) -> bool:
-        return _broker_id_for(a) == "zerodha_kite"
+        return _broker_id_for(a) in _KITE_IDS
 
     # Pinned account first (if it exists, is eligible, Kite, and not rate-limited).
     if pinned and pinned in accounts and _is_hist_enabled(pinned) and _is_kite_account(pinned):
@@ -522,7 +531,7 @@ def get_sparkline_broker() -> Broker:
     if not accounts:
         raise KeyError("No broker accounts configured.")
 
-    kite_accounts = [a for a in accounts if _broker_id_for(a) == "zerodha_kite"
+    kite_accounts = [a for a in accounts if _broker_id_for(a) in {"zerodha_kite", "kite"}
                                        and _is_hist_enabled(a)]
     chart_pinned = (get_string("connections.price_account", "") or "").strip()
     spark_pinned = (get_string("connections.sparkline_account", "") or "").strip()

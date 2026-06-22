@@ -728,14 +728,27 @@
       const g = ensure(root);
       const qty = Number(p.quantity ?? p.qty) || 0;
       const pnl = Number(p.pnl) || 0;
-      // Day P&L fallback — when day_change_val is 0/missing AND the
-      // position has no overnight carry, the entire P&L IS today's
-      // P&L (operator opened the position today). Without this
-      // fallback the "Day" column stayed stuck at 0 for fresh option
-      // buys whose backend day_change_val didn't get populated.
+      // Day P&L for NEW positions — when the position has NO overnight
+      // carry (operator opened today), Day must reference COST PRICE
+      // (avg_price), not yesterday's close_price. The full position
+      // P&L IS today's day P&L — the position didn't exist yesterday,
+      // so there's no "intraday move from yesterday's close" to
+      // measure. Backend's decomposed formula already gives the right
+      // value when day_buy/sell are populated, BUT some backends
+      // report (day_change_val=0, overnight_quantity=0, pnl != 0) for
+      // freshly-opened positions whose decomposition didn't land —
+      // fall through to `pnl` in that case. Operator: "for new
+      // positions added it is showing incorrect data. it should
+      // consider cost price, not yesterday's price for new positions."
       const _overnightQty = Number(p.overnight_quantity ?? 0);
       let day = Number(p.day_change_val) || 0;
-      if (day === 0 && _overnightQty === 0 && pnl !== 0) {
+      if (_overnightQty === 0 && pnl !== 0) {
+        // No overnight carry → Day === total position P&L. This is the
+        // mathematical identity (cost basis is the only reference;
+        // close_price is meaningless for a position that didn't exist
+        // yesterday). Overrides backend's day_change_val too — it
+        // computes against close_price + buy/sell legs and may diverge
+        // from `pnl` when broker hasn't refreshed all intraday fields.
         day = pnl;
       }
       g.qty_fno += qty;

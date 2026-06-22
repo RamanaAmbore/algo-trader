@@ -1608,9 +1608,9 @@
   const _MOVER_TOP_N = 10;
   const MOVER_TAB_LABEL = /** @type {Record<MoverTab,string>} */ ({
     underlying: 'Underlying',
-    large_cap:  'Large Cap',
-    midcap:     'Midcap',
-    smallcap:   'Smallcap',
+    large_cap:  'L.Cap',
+    midcap:     'M.Cap',
+    smallcap:   'S.Cap',
   });
   let winTab  = $state(/** @type {MoverTab} */ ('underlying'));
   let loseTab = $state(/** @type {MoverTab} */ ('underlying'));
