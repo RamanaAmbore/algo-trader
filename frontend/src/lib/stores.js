@@ -346,6 +346,42 @@ export function clientTimestamp() {
 // Earlier callsites used `{clientTimestamp()}` which captured the string at
 // first render and stayed frozen until the page was navigated away from.
 export const nowStamp = writable(browser ? clientTimestamp() : '');
+
+// ── Strategy filter (slice 7f) ─────────────────────────────────────────
+//
+// Cross-page filter — operator picks a strategy on /admin/derivatives
+// (or any other page that mounts a StrategyPicker), every consumer
+// page that scopes off `selectedStrategyId` narrows in sync.
+//
+// `null` means "all strategies" (no filter). Plain integer = one
+// strategy. Persisted to sessionStorage so flipping pages keeps the
+// active scope; clears on tab close (per-session, not per-user).
+//
+// Why a single id, not a list? The operator's expressed mental model
+// is "show me one strategy at a time". When a multi-strategy view is
+// needed later (cross-strategy P&L compare), the store can shift to
+// list shape without breaking callers — null is the "no filter"
+// sentinel either way.
+
+const _STRAT_FILTER_KEY = 'ramboq.strategyFilter.v1';
+function _readStratFilter() {
+  if (!browser) return null;
+  try {
+    const v = sessionStorage.getItem(_STRAT_FILTER_KEY);
+    if (v === null || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch { return null; }
+}
+export const selectedStrategyId = writable(/** @type {number|null} */ (_readStratFilter()));
+if (browser) {
+  selectedStrategyId.subscribe((v) => {
+    try {
+      if (v == null) sessionStorage.removeItem(_STRAT_FILTER_KEY);
+      else sessionStorage.setItem(_STRAT_FILTER_KEY, String(v));
+    } catch { /* private mode / quota — ignore */ }
+  });
+}
 if (browser) {
   setInterval(() => nowStamp.set(clientTimestamp()), 60_000);
 }

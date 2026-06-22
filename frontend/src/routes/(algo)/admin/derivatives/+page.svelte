@@ -7,7 +7,8 @@
 
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
-  import { authStore, nowStamp, marketAwareInterval, visibleInterval } from '$lib/stores';
+  import { authStore, nowStamp, marketAwareInterval, visibleInterval, selectedStrategyId } from '$lib/stores';
+  import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import { isMarketOpen } from '$lib/marketHours';
   import { createPerformanceSocket } from '$lib/ws';
@@ -681,6 +682,34 @@
    *  "with Hold" (eq layer included) and "without Hold" (F&O only)
    *  so the operator sees the covered-call / hedge contribution at
    *  a glance. */
+  // Slice 7f — open-lot symbol set for the currently-selected strategy.
+  // Drives the Snapshot's symbol-based strategy filter. Refreshed
+  // whenever the operator picks a different strategy via the picker.
+  // Empty set when no strategy is selected (or the strategy has no
+  // open lots). Caller uses this via the `matchStrategy(sym)`
+  // closure inside `_byUnderlyingTotals` below.
+  let _strategyOpenSymbols = $state(/** @type {Set<string>} */ (new Set()));
+  $effect(() => {
+    const sid = $selectedStrategyId;
+    if (sid == null) {
+      _strategyOpenSymbols = new Set();
+      return;
+    }
+    (async () => {
+      try {
+        const { fetchStrategyLots } = await import('$lib/api');
+        const r = await fetchStrategyLots(sid, { includeClosed: false, limit: 500 });
+        const set = new Set();
+        for (const lot of (r?.rows || [])) {
+          if (lot.symbol) set.add(String(lot.symbol).toUpperCase());
+        }
+        _strategyOpenSymbols = set;
+      } catch {
+        _strategyOpenSymbols = new Set();
+      }
+    })();
+  });
+
   const _byUnderlyingTotals = $derived.by(() => {
     const wantedSource = simActive ? 'sim' : 'live';
     // Account filter — when the operator picks one or more accounts in
@@ -696,6 +725,18 @@
     const matchAccount = (acct) => {
       if (_wantedAccts.size === 0) return true;
       return _wantedAccts.has(String(acct || '').trim().toUpperCase());
+    };
+    // Slice 7f — strategy filter. Broker positions don't carry
+    // strategy_id directly (broker reports NET positions per
+    // account), so the filter matches on SYMBOL against the
+    // strategy's open-lot universe (`_strategyOpenSymbols`, a Set
+    // refreshed alongside the strategy id below). null filter =
+    // every position contributes. With a strategy active, a row's
+    // symbol must be in the open-lot set or it's dropped.
+    const matchStrategy = (sym) => {
+      if ($selectedStrategyId == null) return true;
+      if (_strategyOpenSymbols.size === 0) return false;
+      return _strategyOpenSymbols.has(String(sym || '').toUpperCase());
     };
     const groups = new Map();
     const ensure = (root) => {
@@ -718,6 +759,7 @@
       const p = /** @type {any} */ (_p);
       if (p.source !== wantedSource) continue;
       if (!matchAccount(p.account)) continue;
+      if (!matchStrategy(p.symbol || p.tradingsymbol)) continue;
       const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
       const isFut = /FUT$/i.test(sym);
@@ -4299,6 +4341,12 @@
           {selectedAccounts.join(' · ')}
         {/if}
       </span>
+      <!-- Slice 7f — strategy filter chip. When the operator picks a
+           strategy, the snapshot's _byUnderlyingTotals derivation
+           below narrows `positions` to rows whose strategy_id matches.
+           Mounted here (not in the card-control trio) so it lives
+           with the OTHER scope chip (account list). -->
+      <StrategyPicker label="Strategy" />
     </span>
     <span class="payoff-card-controls">
       {#if _fsByund}
