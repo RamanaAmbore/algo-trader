@@ -102,6 +102,37 @@ class SnapshotsResponse(msgspec.Struct):
     days: int
 
 
+class StrategyMetrics(msgspec.Struct):
+    """Risk-adjusted return metrics for /strategies/{id}, derived
+    from the strategy_snapshots time series.
+
+    All ratios computed off DAILY P&L deltas (not annualised return %
+    — strategy P&L doesn't normalise cleanly across position sizes
+    without a capital base, and capacity_cap_inr is optional). Sharpe
+    and Sortino multiply by √252 to put the ratio on the conventional
+    annualised scale; operator can read the numbers the same way they
+    read Bloomberg PRTU / Sensibull strategy stats.
+
+    Risk-free rate is intentionally omitted (assumed 0). For a true
+    risk-adjusted Sharpe, the operator subtracts a daily-equivalent
+    short-rate; in practice for trading strategies that math washes
+    out at the 2-3 digit precision the UI renders.
+
+    NULL fields when n_samples < 2 (need at least one delta).
+    """
+    n_samples:        int                            # number of daily deltas (snapshots - 1)
+    days:             int                            # snapshot lookback (param)
+    mean_daily_pnl:   Optional[float]                # ₹/day average
+    daily_vol:        Optional[float]                # ₹ stdev of daily deltas
+    downside_vol:     Optional[float]                # ₹ stdev of NEGATIVE deltas only
+    sharpe:           Optional[float]                # (mean / stdev) × √252
+    sortino:          Optional[float]                # (mean / downside_stdev) × √252
+    max_drawdown:     Optional[float]                # peak-to-trough drop in ₹
+    max_drawdown_pct: Optional[float]                # same as % of running peak (when peak > 0)
+    win_rate:         Optional[float]                # fraction of days with positive delta
+    cumulative_pnl:   Optional[float]                # last snapshot's total_pnl
+
+
 class StrategyCreate(msgspec.Struct):
     slug: str
     name: str
@@ -424,6 +455,98 @@ class StrategiesController(Controller):
             ))
         return LotsResponse(rows=out, total_open=int(total_open),
                             total_closed=int(total_closed))
+
+    @get("/{strategy_id:int}/metrics",
+         guards=[cap_guard("view_strategies")])
+    async def get_metrics(self, strategy_id: int,
+                          days: int = 90) -> StrategyMetrics:
+        """Compute Sharpe / Sortino / max-DD / win rate off the
+        snapshot time series. ₹-based (no return-percentage
+        normalisation) so the numbers compare apples-to-apples across
+        strategies of any size — same convention Bloomberg PRTU + most
+        retail platforms use. Empty result (n=0) when the snapshot
+        task hasn't fired enough days for this strategy."""
+        from datetime import timedelta, datetime, timezone
+        import math
+        days = max(2, min(int(days or 90), 365))
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
+        async with async_session() as s:
+            rows = (await s.execute(
+                select(StrategySnapshot)
+                  .where(StrategySnapshot.strategy_id == strategy_id,
+                         StrategySnapshot.as_of_date >= cutoff)
+                  .order_by(StrategySnapshot.as_of_date.asc())
+            )).scalars().all()
+        # Cumulative P&L series — sum realised + unrealised at each
+        # snapshot point. Daily delta drives every ratio below.
+        cum = [float((r.realised_pnl or 0.0)) + float((r.unrealised_pnl or 0.0))
+               for r in rows]
+        n_snap = len(cum)
+        if n_snap < 2:
+            return StrategyMetrics(
+                n_samples=0, days=days,
+                mean_daily_pnl=None, daily_vol=None, downside_vol=None,
+                sharpe=None, sortino=None,
+                max_drawdown=None, max_drawdown_pct=None,
+                win_rate=None,
+                cumulative_pnl=(cum[-1] if cum else None),
+            )
+        deltas = [cum[i] - cum[i - 1] for i in range(1, n_snap)]
+        n = len(deltas)
+        mean = sum(deltas) / n
+        # Sample standard deviation (n-1 denominator) — standard for
+        # any small-sample estimator. Avoids zero-divide when all
+        # deltas identical (every snapshot value equal) by short-
+        # circuiting the ratios.
+        if n > 1:
+            var = sum((d - mean) ** 2 for d in deltas) / (n - 1)
+            stdev = math.sqrt(var)
+        else:
+            stdev = 0.0
+        # Downside deviation — same formula but only on negative
+        # deltas. Operator's mental model: "the volatility of bad days".
+        # Numerator counts ALL samples (n-1) per Sortino's convention,
+        # not just the negative ones — divisor stability matters more
+        # than purity of the sample.
+        neg = [d for d in deltas if d < 0]
+        if len(neg) > 1:
+            d_mean = sum(neg) / len(neg)
+            d_var  = sum((d - d_mean) ** 2 for d in neg) / (len(neg) - 1)
+            d_stdev = math.sqrt(d_var)
+        elif len(neg) == 1:
+            d_stdev = abs(neg[0])         # single-sample heuristic
+        else:
+            d_stdev = 0.0
+        sqrt252 = math.sqrt(252.0)
+        sharpe  = (mean / stdev)  * sqrt252 if stdev  > 0 else None
+        sortino = (mean / d_stdev) * sqrt252 if d_stdev > 0 else None
+        # Max drawdown — peak-to-trough on the cumulative P&L. Walk
+        # the series tracking running maximum; DD at each point is
+        # peak - current (positive number = drop).
+        peak = cum[0]
+        max_dd = 0.0
+        max_dd_pct: Optional[float] = None
+        for v in cum:
+            if v > peak:
+                peak = v
+            dd = peak - v
+            if dd > max_dd:
+                max_dd = dd
+                if peak > 0:
+                    max_dd_pct = dd / peak
+        win_rate = sum(1 for d in deltas if d > 0) / n
+        return StrategyMetrics(
+            n_samples=n, days=days,
+            mean_daily_pnl=float(mean),
+            daily_vol=float(stdev) if stdev > 0 else None,
+            downside_vol=float(d_stdev) if d_stdev > 0 else None,
+            sharpe=sharpe,
+            sortino=sortino,
+            max_drawdown=float(max_dd) if max_dd > 0 else 0.0,
+            max_drawdown_pct=max_dd_pct,
+            win_rate=float(win_rate),
+            cumulative_pnl=float(cum[-1]),
+        )
 
     @get("/{strategy_id:int}/snapshots",
          guards=[cap_guard("view_strategies")])

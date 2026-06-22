@@ -19,7 +19,8 @@
   import { page } from '$app/state';
   import { nowStamp, marketAwareInterval } from '$lib/stores';
   import {
-    fetchStrategy, fetchStrategyLots, fetchStrategySnapshots, updateStrategy,
+    fetchStrategy, fetchStrategyLots, fetchStrategySnapshots,
+    fetchStrategyMetrics, updateStrategy,
   } from '$lib/api';
   import { userRole, userCaps, hasCap } from '$lib/rbac';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -44,21 +45,25 @@
   /** @type {Array<{as_of_date: string, realised_pnl: number, unrealised_pnl: number, total_pnl: number, open_lots_count: number, open_notional: number}>} */
   let snapshots = $state([]);
   let snapDays = $state(90);
+  /** @type {{n_samples: number, days: number, mean_daily_pnl: number|null, daily_vol: number|null, downside_vol: number|null, sharpe: number|null, sortino: number|null, max_drawdown: number|null, max_drawdown_pct: number|null, win_rate: number|null, cumulative_pnl: number|null} | null} */
+  let metrics = $state(null);
 
   async function load() {
     if (!Number.isFinite(sid)) return;
     loading = true; error = '';
     try {
-      const [s, l, snap] = await Promise.all([
+      const [s, l, snap, met] = await Promise.all([
         fetchStrategy(sid),
         fetchStrategyLots(sid, { includeClosed: showClosed }),
         fetchStrategySnapshots(sid, { days: snapDays }),
+        fetchStrategyMetrics(sid, { days: snapDays }),
       ]);
       strat = s;
       lots = Array.isArray(l?.rows) ? l.rows : [];
       totalOpen   = Number(l?.total_open   ?? 0);
       totalClosed = Number(l?.total_closed ?? 0);
       snapshots = Array.isArray(snap?.rows) ? snap.rows : [];
+      metrics = met ?? null;
     } catch (e) { error = e?.message || 'Load failed'; }
     finally { loading = false; }
   }
@@ -243,6 +248,75 @@
         </tbody>
       </table>
     </div>
+  </section>
+
+  <!-- Risk-adjusted metrics strip — Sharpe, Sortino, max drawdown,
+       win rate. Computed from strategy_snapshots; populates after
+       at least 2 snapshot days. Until then shows the "needs N days"
+       hint instead of placeholder numbers. -->
+  <section class="strat-detail-metrics">
+    <div class="strat-section-head">
+      <h2 class="strat-section-heading">Risk-adjusted metrics</h2>
+      {#if metrics && metrics.n_samples > 0}
+        <span class="strat-metrics-meta">
+          {metrics.n_samples} daily delta{metrics.n_samples === 1 ? '' : 's'} · last {metrics.days}d
+        </span>
+      {/if}
+    </div>
+    {#if !metrics || metrics.n_samples < 1}
+      <div class="strat-metrics-empty">
+        Needs at least 2 daily snapshots. First one lands at 15:45 IST tonight.
+      </div>
+    {:else}
+      <div class="strat-metrics-grid">
+        <div class="metric">
+          <div class="metric-lbl" title="Annualised Sharpe ratio. (mean daily P&L / stdev daily P&L) × √252. Bloomberg + Sensibull convention. Risk-free rate assumed 0.">Sharpe</div>
+          <div class="metric-val {(metrics.sharpe ?? 0) > 1 ? 'pnl-pos' : (metrics.sharpe ?? 0) < 0 ? 'pnl-neg' : ''}">
+            {metrics.sharpe == null ? '—' : Number(metrics.sharpe).toFixed(2)}
+          </div>
+        </div>
+        <div class="metric">
+          <div class="metric-lbl" title="Sortino ratio — Sharpe variant using only DOWNSIDE volatility (stdev of negative daily deltas). Penalises losing days only.">Sortino</div>
+          <div class="metric-val {(metrics.sortino ?? 0) > 1 ? 'pnl-pos' : (metrics.sortino ?? 0) < 0 ? 'pnl-neg' : ''}">
+            {metrics.sortino == null ? '—' : Number(metrics.sortino).toFixed(2)}
+          </div>
+        </div>
+        <div class="metric">
+          <div class="metric-lbl" title="Max drawdown — largest peak-to-trough drop on cumulative P&L over the window. Lower (closer to 0) is better.">Max DD</div>
+          <div class="metric-val pnl-neg">
+            {metrics.max_drawdown == null ? '—' : _fmtInr(-Math.abs(metrics.max_drawdown))}
+          </div>
+        </div>
+        <div class="metric">
+          <div class="metric-lbl" title="Max drawdown as % of the running peak at that moment. NULL when peak was 0/negative.">Max DD %</div>
+          <div class="metric-val pnl-neg">
+            {metrics.max_drawdown_pct == null ? '—' : `${(Number(metrics.max_drawdown_pct) * 100).toFixed(1)}%`}
+          </div>
+        </div>
+        <div class="metric">
+          <div class="metric-lbl" title="Fraction of days with positive P&L change.">Win rate</div>
+          <div class="metric-val">
+            {metrics.win_rate == null ? '—' : `${(Number(metrics.win_rate) * 100).toFixed(0)}%`}
+          </div>
+        </div>
+        <div class="metric">
+          <div class="metric-lbl" title="Mean P&L change per day, ₹.">Daily avg</div>
+          <div class="metric-val {(metrics.mean_daily_pnl ?? 0) > 0 ? 'pnl-pos' : (metrics.mean_daily_pnl ?? 0) < 0 ? 'pnl-neg' : ''}">
+            {_fmtInr(metrics.mean_daily_pnl)}
+          </div>
+        </div>
+        <div class="metric">
+          <div class="metric-lbl" title="Standard deviation of daily P&L change, ₹. The 'risk' denominator in Sharpe.">Daily vol</div>
+          <div class="metric-val">{_fmtInr(metrics.daily_vol)}</div>
+        </div>
+        <div class="metric">
+          <div class="metric-lbl" title="Cumulative P&L (realised + unrealised) as of the most recent snapshot.">Cumulative</div>
+          <div class="metric-val {(metrics.cumulative_pnl ?? 0) > 0 ? 'pnl-pos' : (metrics.cumulative_pnl ?? 0) < 0 ? 'pnl-neg' : ''}">
+            {_fmtInr(metrics.cumulative_pnl)}
+          </div>
+        </div>
+      </div>
+    {/if}
   </section>
 
   <!-- P&L curve — hand-rolled SVG. Sourced from strategy_snapshots
@@ -486,6 +560,52 @@
                    text-transform: uppercase; font-family: ui-monospace, monospace; }
 
   .btn-sm { font-size: 0.6rem; padding: 0.2rem 0.55rem; }
+
+  .strat-detail-metrics { margin-top: 0.9rem; }
+  .strat-metrics-meta {
+    font-size: 0.6rem;
+    color: rgba(155,176,208,0.65);
+    font-family: ui-monospace, monospace;
+  }
+  .strat-metrics-empty {
+    padding: 1.1rem;
+    text-align: center;
+    background: rgba(15, 23, 42, 0.30);
+    border: 1px dashed rgba(126, 151, 184, 0.30);
+    border-radius: 6px;
+    color: #7e97b8;
+    font-style: italic;
+    font-size: 0.7rem;
+  }
+  .strat-metrics-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(7rem, 1fr));
+    gap: 0.5rem;
+    margin-top: 0.4rem;
+  }
+  .metric {
+    padding: 0.45rem 0.6rem;
+    background: rgba(34, 47, 75, 0.50);
+    border: 1px solid rgba(126, 151, 184, 0.18);
+    border-radius: 4px;
+  }
+  .metric-lbl {
+    font-size: 0.5rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    font-weight: 700;
+    cursor: help;
+  }
+  .metric-val {
+    margin-top: 0.2rem;
+    font-size: 0.9rem;
+    font-weight: 800;
+    color: #c8d8f0;
+    font-family: ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+  }
 
   .strat-detail-snapshot { margin-top: 0.9rem; }
   .strat-curve-placeholder {

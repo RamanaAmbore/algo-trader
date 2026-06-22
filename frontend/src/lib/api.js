@@ -355,6 +355,9 @@ export const fetchStrategyLots    = (id, { includeClosed = true, limit = 500 } =
 export const fetchStrategySnapshots = (id, { days = 90 } = {}) =>
   _get(`/strategies/${id}/snapshots?days=${Number(days) || 90}`,
        { auth: _hasToken() });
+export const fetchStrategyMetrics = (id, { days = 90 } = {}) =>
+  _get(`/strategies/${id}/metrics?days=${Number(days) || 90}`,
+       { auth: _hasToken() });
 
 /** GET /api/admin/audit — paginated audit log with filters. Gated
  *  by the `view_audit` cap server-side (admin / risk / ops). */
