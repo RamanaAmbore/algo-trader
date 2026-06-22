@@ -136,6 +136,143 @@ _OPT_SYM_RE = re.compile(
 )
 
 
+def _fire_guard_alert(*, template_slug: str, applies_to: str,
+                       parent_side: str, parent_symbol: str,
+                       parent_account: str, parent_qty: int,
+                       parent_fill_price: float,
+                       parent_order_id: Optional[int],
+                       reason: str) -> None:
+    """Fire a Telegram + email alert when the applies_to guard
+    refuses an attach. Out-of-band via asyncio.create_task so the
+    fill-path latency stays untouched. Every failure mode logs +
+    drops; never blocks the fill pipeline.
+
+    Operator visibility goals:
+    - Telegram ping ≤ 30 s after the guard fire (operator sees it
+      on their phone immediately).
+    - Email lands in the alert inbox (durable record for end-of-day
+      review).
+    - Both messages name the parent order id + symbol + side + qty
+      + fill price so the operator can find the position and decide
+      whether to arm exits manually.
+    """
+    import asyncio as _asyncio
+    from datetime import datetime, timezone, timedelta
+
+    # Format IST timestamp inline (no dependency on the heavier
+    # alert_utils.timestamp_display).
+    now_utc = datetime.now(timezone.utc)
+    ist = now_utc + timedelta(hours=5, minutes=30)
+    ist_label = ist.strftime("%a, %b %d %Y, %H:%M IST")
+
+    summary = (
+        f"Refused to attach template '{template_slug}' "
+        f"(applies_to={applies_to}) to parent order "
+        f"#{parent_order_id} — {parent_side} {parent_qty} "
+        f"{parent_symbol} @ ₹{parent_fill_price:.2f} on {parent_account}. "
+        f"Reason: {reason}. Parent order is filled; EXITS NOT ATTACHED."
+    )
+
+    def _do_telegram() -> None:
+        try:
+            from backend.shared.helpers.alert_utils import _send_telegram
+            msg = (
+                f"<b>⚠ Template guard fired — {ist_label}</b>\n\n"
+                f"<code>"
+                f"order #{parent_order_id}\n"
+                f"{parent_side} {parent_qty} {parent_symbol}\n"
+                f"@ ₹{parent_fill_price:.2f}  ({parent_account})\n\n"
+                f"template:    {template_slug}\n"
+                f"applies_to:  {applies_to}\n"
+                f"reason:      {reason}\n\n"
+                f"Parent order FILLED. Exits NOT attached.\n"
+                f"Arm exits manually if needed.</code>"
+            )
+            _send_telegram(msg)
+        except Exception as e:
+            logger.warning(f"guard alert: Telegram failed: {e}")
+
+    def _do_email() -> None:
+        try:
+            from backend.shared.helpers.alert_utils import get_alert_recipients
+            from backend.shared.helpers.mail_utils import send_email
+            recipients = get_alert_recipients()
+            if not recipients:
+                logger.info("guard alert: no email recipients configured; skipping")
+                return
+            subject = (
+                f"RamboQuant: Template guard fired — "
+                f"#{parent_order_id} {parent_side} {parent_qty} {parent_symbol}"
+            )
+            html = f"""
+<html><body style='font-family:sans-serif;background:#0a1020;color:#c8d8f0;margin:0;padding:18px'>
+  <div style='max-width:620px;margin:0 auto'>
+    <div style='background:#7c2d12;color:#fff;padding:10px 14px;border-radius:4px;
+                margin-bottom:14px;font-weight:700'>
+      ⚠ Template guard fired
+    </div>
+    <p style='font-size:14px;color:#fbbf24;margin:0 0 12px 0'>
+      <b>{ist_label}</b>
+    </p>
+    <p style='font-size:13px;line-height:1.5;color:#c8d8f0'>
+      A template attach was refused because the leg's side or kind
+      did not match the template's <code>applies_to</code> scope.
+      The parent order filled normally; <b>exit legs were NOT
+      attached</b>. Review the position and arm exits manually if
+      needed.
+    </p>
+    <table style='border-collapse:collapse;font-family:ui-monospace,monospace;
+                  font-size:13px;color:#c8d8f0;margin-top:12px'>
+      <tr><td style='padding:4px 12px 4px 0;color:#94a3b8'>Order</td>
+          <td style='padding:4px 0'>#{parent_order_id}</td></tr>
+      <tr><td style='padding:4px 12px 4px 0;color:#94a3b8'>Side / Qty</td>
+          <td style='padding:4px 0'>{parent_side} {parent_qty}</td></tr>
+      <tr><td style='padding:4px 12px 4px 0;color:#94a3b8'>Symbol</td>
+          <td style='padding:4px 0'>{parent_symbol}</td></tr>
+      <tr><td style='padding:4px 12px 4px 0;color:#94a3b8'>Account</td>
+          <td style='padding:4px 0'>{parent_account}</td></tr>
+      <tr><td style='padding:4px 12px 4px 0;color:#94a3b8'>Fill price</td>
+          <td style='padding:4px 0'>₹{parent_fill_price:.2f}</td></tr>
+      <tr><td style='padding:4px 12px 4px 0;color:#94a3b8'>Template</td>
+          <td style='padding:4px 0'><code>{template_slug}</code> (applies_to={applies_to})</td></tr>
+      <tr><td style='padding:4px 12px 4px 0;color:#94a3b8'>Reason</td>
+          <td style='padding:4px 0'>{reason}</td></tr>
+    </table>
+    <p style='font-size:11px;color:#7e97b8;margin-top:18px'>
+      Sent automatically by RamboQuant's template_attach guard
+      (2026-06-22 incident pattern). To suppress these alerts,
+      either fix the template's <code>applies_to</code> scope or
+      stop selecting a mismatched default in the OrderTicket.
+    </p>
+  </div>
+</body></html>
+"""
+            for r in recipients:
+                try:
+                    send_email(r, r, subject, html)
+                except Exception as e:
+                    logger.warning(f"guard alert: email to {r} failed: {e}")
+        except Exception as e:
+            logger.warning(f"guard alert: email path failed: {e}")
+
+    async def _both():
+        # Run both synchronously inside one task so they share the
+        # same wall-clock budget and the email never blocks Telegram.
+        # Each helper is sync-on-the-network so they don't await.
+        _do_telegram()
+        _do_email()
+
+    try:
+        _asyncio.get_running_loop().create_task(_both())
+    except RuntimeError:
+        # Not in an asyncio context (test harness / sync caller).
+        # Run the sync helpers directly so the alert still goes out.
+        _do_telegram()
+        _do_email()
+
+    logger.info(f"guard alert dispatched: {summary}")
+
+
 def _is_sell_option(side: str, symbol: str) -> bool:
     """SELL + parseable option symbol. Drives wing attach."""
     return side == "SELL" and bool(_OPT_SYM_RE.match(symbol.upper()))
@@ -1020,10 +1157,9 @@ async def apply_template_to_order(
     # at ₹1447.5 closed part of the operator's short position.
     #
     # Enforce applies_to here so the template can never attach to a
-    # leg shape it wasn't built for. Mismatch → log + return None
-    # (skip the attach; the parent order itself already filled, we
-    # just don't add exits). Safer than raising — refusing to attach
-    # is a non-destructive failure mode.
+    # leg shape it wasn't built for. Mismatch → log + alert (Telegram
+    # + email) + return None. The PARENT order itself already filled;
+    # we just don't add exits. Non-destructive failure mode.
     applies_to = (template.get("applies_to") or "both").strip().lower()
     if applies_to not in ("both", "none"):
         parent_side_u = (parent_side or "").upper().strip()
@@ -1035,29 +1171,42 @@ async def apply_template_to_order(
         wants_buy   = applies_to in ("buy_any", "buy_option")
         wants_sell  = applies_to in ("sell_any", "sell_option")
         wants_option_only = applies_to in ("buy_option", "sell_option")
+        mismatch_reason: Optional[str] = None
         if wants_buy and parent_side_u != "BUY":
-            logger.warning(
-                f"template_attach.applies_to_guard: refusing to attach "
-                f"template slug={template.get('slug')!r} (applies_to={applies_to}) "
-                f"to {parent_side_u} parent order on {parent_symbol!r} — "
-                f"side mismatch. Skipping attach to avoid wrong-direction "
-                f"OCO/wing legs (2026-06-22 incident pattern)."
+            mismatch_reason = (
+                f"side mismatch — template requires BUY parent but got {parent_side_u}"
             )
-            return None
-        if wants_sell and parent_side_u != "SELL":
-            logger.warning(
-                f"template_attach.applies_to_guard: refusing to attach "
-                f"template slug={template.get('slug')!r} (applies_to={applies_to}) "
-                f"to {parent_side_u} parent order on {parent_symbol!r} — "
-                f"side mismatch. Skipping attach."
+        elif wants_sell and parent_side_u != "SELL":
+            mismatch_reason = (
+                f"side mismatch — template requires SELL parent but got {parent_side_u}"
             )
-            return None
-        if wants_option_only and not is_option:
+        elif wants_option_only and not is_option:
+            mismatch_reason = (
+                f"kind mismatch — template is option-only but {parent_symbol!r} is not an option"
+            )
+        if mismatch_reason:
+            slug = template.get("slug", "?")
             logger.warning(
                 f"template_attach.applies_to_guard: refusing to attach "
-                f"template slug={template.get('slug')!r} (applies_to={applies_to}) "
-                f"to non-option parent {parent_symbol!r} — kind mismatch. "
-                f"Skipping attach."
+                f"template slug={slug!r} (applies_to={applies_to}) to "
+                f"{parent_side_u} {parent_symbol!r} parent_order={parent_order_id} — "
+                f"{mismatch_reason}. 2026-06-22 incident pattern; non-destructive skip."
+            )
+            # Fire-and-forget alert so the operator gets immediate
+            # Telegram + email visibility on every guard fire. The
+            # PARENT order already filled successfully; this alert
+            # tells the operator "your exit plan didn't attach —
+            # check + manually arm if needed".
+            _fire_guard_alert(
+                template_slug=slug,
+                applies_to=applies_to,
+                parent_side=parent_side_u,
+                parent_symbol=parent_symbol,
+                parent_account=parent_account,
+                parent_qty=parent_qty,
+                parent_fill_price=parent_fill_price,
+                parent_order_id=parent_order_id,
+                reason=mismatch_reason,
             )
             return None
 
