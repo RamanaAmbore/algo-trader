@@ -785,7 +785,9 @@ async def _task_strategy_snapshot() -> None:
     from datetime import date
     from backend.api.database import async_session
     from backend.api.models import Strategy, StrategyLot, StrategySnapshot, AlgoOrder
-    from backend.api.algo.lot_ledger import compute_strategy_pnl
+    from backend.api.algo.lot_ledger import (
+        compute_strategy_pnl, compute_unrealised_marked_to_ltp,
+    )
     from sqlalchemy import select as _select, func as _func
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     from backend.shared.helpers.date_time_utils import timestamp_indian
@@ -811,14 +813,26 @@ async def _task_strategy_snapshot() -> None:
                         )).where(StrategyLot.strategy_id == strat.id,
                                  StrategyLot.remaining_qty > 0)
                     )).scalar_one() or 0.0
-                    # Unrealised — AlgoOrder.pnl SUM on still-open
-                    # rows. Same proxy the strategies API uses
-                    # (slice 7b). LTP-based replacement comes next.
-                    unrealised = (await s.execute(
-                        _select(_func.coalesce(_func.sum(AlgoOrder.pnl), 0.0))
-                        .where(AlgoOrder.strategy_id == strat.id,
-                               AlgoOrder.status.in_(_open_states))
-                    )).scalar_one() or 0.0
+                    # Unrealised — LTP-marked when the ledger has
+                    # open lots (slice 7d); falls back to AlgoOrder.
+                    # pnl SUM for strategies with no ledger entries
+                    # OR when the LTP feed is unavailable.
+                    if pnl["open_lots_count"] > 0:
+                        mtm = await compute_unrealised_marked_to_ltp(s, strat.id)
+                        if mtm is not None:
+                            unrealised = mtm
+                        else:
+                            unrealised = (await s.execute(
+                                _select(_func.coalesce(_func.sum(AlgoOrder.pnl), 0.0))
+                                .where(AlgoOrder.strategy_id == strat.id,
+                                       AlgoOrder.status.in_(_open_states))
+                            )).scalar_one() or 0.0
+                    else:
+                        unrealised = (await s.execute(
+                            _select(_func.coalesce(_func.sum(AlgoOrder.pnl), 0.0))
+                            .where(AlgoOrder.strategy_id == strat.id,
+                                   AlgoOrder.status.in_(_open_states))
+                        )).scalar_one() or 0.0
                     stmt = pg_insert(StrategySnapshot).values(
                         strategy_id=strat.id,
                         as_of_date=today_ist,

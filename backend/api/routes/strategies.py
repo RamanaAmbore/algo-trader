@@ -145,9 +145,13 @@ async def _enrich_with_pnl(session, row: Strategy,
     # Realized — try the lot ledger first (slice 7a). When the strategy
     # has no ledger entries (legacy / un-attributed history), fall back
     # to AlgoOrder.pnl SUM so the rollup never reads zero on real data.
-    from backend.api.algo.lot_ledger import compute_strategy_pnl
+    from backend.api.algo.lot_ledger import (
+        compute_strategy_pnl, compute_unrealised_marked_to_ltp,
+    )
     ledger_view = await compute_strategy_pnl(session, row.id)
-    if ledger_view["open_lots_count"] > 0 or ledger_view["realised_pnl"] != 0.0:
+    has_ledger = (ledger_view["open_lots_count"] > 0
+                  or ledger_view["realised_pnl"] != 0.0)
+    if has_ledger:
         realised = ledger_view["realised_pnl"]
     else:
         realised = (await session.execute(
@@ -156,14 +160,30 @@ async def _enrich_with_pnl(session, row: Strategy,
                    AlgoOrder.status.notin_(_open_states))
         )).scalar_one() or 0.0
 
-    # Unrealised — stays on AlgoOrder.pnl for open orders (broker
-    # MTM). Slice 7b's snapshot task will fold open lots' MTM in
-    # once the LTP pass is wired.
-    unrealised = (await session.execute(
-        select(func.coalesce(func.sum(AlgoOrder.pnl), 0.0))
-        .where(AlgoOrder.strategy_id == row.id,
-               AlgoOrder.status.in_(_open_states))
-    )).scalar_one() or 0.0
+    # Unrealised — slice 7d wires the LTP-marked path. When open lots
+    # exist in the ledger, compute (LTP - open_price) × remaining_qty
+    # per lot. Falls back to AlgoOrder.pnl SUM proxy when:
+    #   - LTP path returns None (no LTP feed available right now), OR
+    #   - ledger has no open lots for this strategy (legacy /
+    #     unattributed orders still hold open exposure tracked only
+    #     via the broker's MTM number).
+    unrealised: float
+    if ledger_view["open_lots_count"] > 0:
+        mtm = await compute_unrealised_marked_to_ltp(session, row.id)
+        if mtm is not None:
+            unrealised = mtm
+        else:
+            unrealised = (await session.execute(
+                select(func.coalesce(func.sum(AlgoOrder.pnl), 0.0))
+                .where(AlgoOrder.strategy_id == row.id,
+                       AlgoOrder.status.in_(_open_states))
+            )).scalar_one() or 0.0
+    else:
+        unrealised = (await session.execute(
+            select(func.coalesce(func.sum(AlgoOrder.pnl), 0.0))
+            .where(AlgoOrder.strategy_id == row.id,
+                   AlgoOrder.status.in_(_open_states))
+        )).scalar_one() or 0.0
 
     return StrategyInfo(
         id=row.id,

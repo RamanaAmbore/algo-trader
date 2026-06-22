@@ -306,6 +306,103 @@ async def list_lots_for_strategy(
     return (await session.execute(q)).scalars().all()
 
 
+async def compute_unrealised_marked_to_ltp(
+    session, strategy_id: int,
+) -> Optional[float]:
+    """Mark-to-market unrealised P&L on open lots using current LTP.
+
+    Returns the unrealised P&L (float), or None when:
+      - no open lots exist (caller treats as 0.0 unrealised)
+      - LTP feed unavailable (caller falls back to AlgoOrder.pnl
+        SUM, the slice-7a/7c proxy)
+
+    Sources LTP from KiteTicker._tick_map FIRST (zero broker quota),
+    then from PriceBroker.ltp() batched across the unique symbol set
+    (3 req/sec budget). The tick_map covers anything the operator's
+    book + watchlists currently subscribe to — which is the universe
+    most strategies live in. Symbols outside the ticker (e.g. fresh
+    options the operator hasn't traded yet) need the broker call.
+
+    Math, per lot:
+      long  ('B'):  unr = (LTP   - open_price) × remaining_qty
+      short ('S'):  unr = (open_price - LTP)  × remaining_qty
+    Total = Σ across all open lots.
+    """
+    from backend.api.models import StrategyLot
+    open_lots = (await session.execute(
+        select(StrategyLot).where(
+            StrategyLot.strategy_id == int(strategy_id),
+            StrategyLot.remaining_qty > 0,
+        )
+    )).scalars().all()
+    if not open_lots:
+        return 0.0
+
+    # Build the unique symbol → exchange map. Most strategies hold a
+    # handful of symbols; this is O(open lots).
+    symbol_exchange: dict[str, str] = {}
+    for lot in open_lots:
+        sym = (lot.symbol or "").upper()
+        if not sym:
+            continue
+        if sym not in symbol_exchange:
+            symbol_exchange[sym] = (lot.exchange or "NFO").upper()
+
+    if not symbol_exchange:
+        return 0.0
+
+    # Try the KiteTicker first — zero broker quota for any symbol
+    # the watchdog has subscribed (positions, holdings, watchlist).
+    ltp_map: dict[str, float] = {}
+    try:
+        from backend.shared.helpers.kite_ticker import _ticker
+        for sym in symbol_exchange:
+            t = _ticker.get_ltp_by_sym(sym)
+            if t is not None and t > 0:
+                ltp_map[sym] = float(t)
+    except Exception:
+        pass
+
+    # Fill the gaps via broker.ltp() — one batched call. Failure
+    # logs at debug + leaves the LTP slot empty; the lot's
+    # contribution to unrealised falls back to (open_price -
+    # open_price) = 0.0, which is the safest under-estimate.
+    missing = [s for s in symbol_exchange if s not in ltp_map]
+    if missing:
+        try:
+            from backend.shared.brokers.registry import get_price_broker
+            import asyncio as _asyncio
+            broker = get_price_broker()
+            keys = [f"{symbol_exchange[s]}:{s}" for s in missing]
+            quote = await _asyncio.to_thread(broker.ltp, keys)
+            for k, v in (quote or {}).items():
+                # Kite returns "EXCH:SYM" keys; extract SYM.
+                sym = k.split(":", 1)[1].upper() if ":" in k else k.upper()
+                lp = float(v.get("last_price") or 0.0) if isinstance(v, dict) else 0.0
+                if lp > 0:
+                    ltp_map[sym] = lp
+        except Exception as exc:
+            logger.debug(
+                f"compute_unrealised_marked_to_ltp: broker.ltp() failed "
+                f"for strategy={strategy_id}: {exc}"
+            )
+
+    # Sum the per-lot mark-to-market.
+    total = 0.0
+    for lot in open_lots:
+        sym = (lot.symbol or "").upper()
+        ltp = ltp_map.get(sym)
+        if ltp is None or ltp <= 0:
+            continue
+        open_px = float(lot.open_price or 0.0)
+        qty = int(lot.remaining_qty or 0)
+        if lot.side == "B":
+            total += (ltp - open_px) * qty
+        else:                                # 'S' — short
+            total += (open_px - ltp) * qty
+    return total
+
+
 async def compute_strategy_pnl(session, strategy_id: int) -> dict:
     """Aggregate per-strategy P&L numbers off the lot ledger.
 

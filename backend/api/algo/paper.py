@@ -609,7 +609,19 @@ class PaperTradeEngine:
         drops — the AlgoOrder row already carries broker pnl so the
         per-strategy view falls back to AlgoOrder.pnl SUM for
         un-ledgered fills.
+
+        SIM SUPPRESSION (slice 7d). Sim runs are ephemeral — operator
+        runs a scenario, the engine fires fills, the simulator clears
+        state on the next /clear call. Writing those fills to the
+        live lot ledger would pollute real per-strategy attribution
+        (a sim "filled" a 100-lot NIFTY SHORT against the operator's
+        actual strategy's open lots). Skip ledger writes when this
+        engine instance is the simulator. Paper + live engines
+        (whose fills DO mean real positions on the broker, even if
+        paper is broker-side mark-to-market) still write through.
         """
+        if self._label == "sim":
+            return
         strategy_id = order.get("strategy_id")
         if not strategy_id:
             return
