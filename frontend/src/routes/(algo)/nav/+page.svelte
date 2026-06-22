@@ -17,7 +17,9 @@
   import { nowStamp, marketAwareInterval } from '$lib/stores';
   import {
     fetchNavHistory, fetchNavLatest, triggerNavCompute,
+    fetchMyNavSlice,
   } from '$lib/api';
+  import { authStore } from '$lib/stores';
   import { userRole, userCaps, hasCap } from '$lib/rbac';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
@@ -41,6 +43,17 @@
   let error = $state('');
   let lookback = $state(90);
 
+  /** @typedef {{
+   *   username: string, share_pct: number, contribution: number,
+   *   firm_nav: number, nav_share: number, pnl: number,
+   *   pnl_pct: number|null,
+   *   day_delta_share: number|null, day_delta_share_pct: number|null,
+   *   as_of_date: string|null
+   * }} InvestorSlice */
+  /** @type {InvestorSlice|null} */
+  let mySlice = $state(null);
+  const _signedIn = $derived(!!$authStore?.user);
+
   const canTrigger = $derived(hasCap('trigger_nav_compute', $userCaps, $userRole));
 
   async function load() {
@@ -55,6 +68,17 @@
       prior   = lat?.prior ?? null;
       dayDelta    = lat?.day_delta ?? null;
       dayDeltaPct = lat?.day_delta_pct ?? null;
+      // Investor slice — fetched alongside but tolerated to fail (demo
+      // / anon hits 401, no contribution returns zeros). When the
+      // user has share_pct == 0 the card hides itself in the markup
+      // below.
+      if (_signedIn) {
+        try {
+          mySlice = await fetchMyNavSlice();
+        } catch { mySlice = null; }
+      } else {
+        mySlice = null;
+      }
     } catch (e) { error = e?.message || 'NAV fetch failed'; }
     finally { loading = false; }
   }
@@ -169,6 +193,46 @@
     </div>
   {/if}
 </section>
+
+<!-- Per-investor NAV slice (slice 7k). Only shown when the operator
+     is signed in AND has a non-zero share_pct — the demo + observer
+     case (anonymous or LP without a contribution row) doesn't see
+     the card. -->
+{#if mySlice && mySlice.share_pct > 0}
+  <section class="nav-myslice">
+    <div class="nav-myslice-row">
+      <div class="nav-myslice-main">
+        <div class="nav-myslice-lbl">Your slice
+          <span class="nav-myslice-pct">{mySlice.share_pct.toFixed(2)}%</span>
+        </div>
+        <div class="nav-myslice-val">{_fmtInr(mySlice.nav_share)}</div>
+        <div class="nav-myslice-asof">as of {_fmtTs(mySlice.as_of_date)}</div>
+      </div>
+      <div class="nav-myslice-block" class:pnl-pos={(mySlice.pnl ?? 0) > 0} class:pnl-neg={(mySlice.pnl ?? 0) < 0}>
+        <div class="nav-myslice-lbl">P&amp;L</div>
+        <div class="nav-myslice-val">
+          {mySlice.pnl >= 0 ? '+' : ''}{_fmtInr(mySlice.pnl)}
+        </div>
+        <div class="nav-myslice-asof">
+          {mySlice.pnl_pct == null ? '—' : (mySlice.pnl_pct >= 0 ? '+' : '') + (mySlice.pnl_pct * 100).toFixed(2) + '%'}
+        </div>
+      </div>
+      <div class="nav-myslice-block" class:pnl-pos={(mySlice.day_delta_share ?? 0) > 0} class:pnl-neg={(mySlice.day_delta_share ?? 0) < 0}>
+        <div class="nav-myslice-lbl">Day Δ</div>
+        <div class="nav-myslice-val">
+          {mySlice.day_delta_share == null ? '—' : (mySlice.day_delta_share >= 0 ? '+' : '') + _fmtInr(mySlice.day_delta_share)}
+        </div>
+        <div class="nav-myslice-asof">
+          {mySlice.day_delta_share_pct == null ? '—' : (mySlice.day_delta_share_pct >= 0 ? '+' : '') + (mySlice.day_delta_share_pct * 100).toFixed(2) + '%'}
+        </div>
+      </div>
+      <div class="nav-myslice-block">
+        <div class="nav-myslice-lbl">Contributed</div>
+        <div class="nav-myslice-val">{_fmtInr(mySlice.contribution)}</div>
+      </div>
+    </div>
+  </section>
+{/if}
 
 <!-- NAV curve — single solid amber line. -->
 {#if history.length >= 2}
@@ -335,6 +399,54 @@
     color: #7e97b8;
     font-style: italic;
     font-size: 0.78rem;
+  }
+
+  /* Per-investor slice (slice 7k) — smaller, denser card than the
+     firm-NAV head. Sits between firm head + curve. */
+  .nav-myslice {
+    background: linear-gradient(180deg, rgba(34, 211, 238, 0.06),
+                                       rgba(15, 23, 42, 0.45));
+    border: 1px solid rgba(34, 211, 238, 0.32);
+    border-radius: 6px;
+    padding: 0.7rem 1rem;
+    margin-bottom: 0.9rem;
+  }
+  .nav-myslice-row {
+    display: flex; gap: 1.5rem; flex-wrap: wrap;
+    align-items: baseline;
+  }
+  .nav-myslice-main { flex: 0 0 auto; }
+  .nav-myslice-block { flex: 0 0 auto; }
+  .nav-myslice-lbl {
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+  }
+  .nav-myslice-pct {
+    margin-left: 0.4rem;
+    font-size: 0.55rem;
+    color: #67e8f9;
+    font-weight: 800;
+  }
+  .nav-myslice-val {
+    font-size: 1.1rem;
+    font-weight: 800;
+    color: #c8d8f0;
+    font-family: ui-monospace, monospace;
+    line-height: 1;
+    margin-top: 0.15rem;
+  }
+  .nav-myslice-main .nav-myslice-val { color: #67e8f9; }
+  .nav-myslice-block.pnl-pos .nav-myslice-val { color: #4ade80; }
+  .nav-myslice-block.pnl-neg .nav-myslice-val { color: #f87171; }
+  .nav-myslice-asof {
+    font-size: 0.55rem;
+    color: rgba(155, 176, 208, 0.65);
+    font-family: ui-monospace, monospace;
+    margin-top: 0.2rem;
   }
 
   .nav-chart { margin-bottom: 0.9rem; }

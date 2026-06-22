@@ -366,6 +366,11 @@ export const fetchNavLatest  = () =>
   _get('/nav/latest', { auth: _hasToken() });
 export const triggerNavCompute = () =>
   _post('/nav/compute', {}, { auth: true });
+/** Per-investor NAV slice (slice 7k). Requires authenticated user. */
+export const fetchMyNavSlice    = () =>
+  _get('/nav/me',         { auth: true });
+export const fetchMyNavHistory  = ({ days = 90 } = {}) =>
+  _get(`/nav/me/history?days=${Number(days) || 90}`, { auth: true });
 
 /** GET /api/admin/audit — paginated audit log with filters. Gated
  *  by the `view_audit` cap server-side (admin / risk / ops). */
