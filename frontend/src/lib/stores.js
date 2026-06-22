@@ -569,6 +569,21 @@ export function startConnStatusPoller() {
   if (!browser || _connPollerStarted) return;
   _connPollerStarted = true;
   const poll = async () => {
+    // Anonymous demo session — /api/admin/brokers is admin-guarded
+    // and would 401, then the catch block below would flip
+    // backendOk=false and paint the misleading grey `?` badge on
+    // every page. Operator: "on TV the refresh icon is showing ?
+    // instead of 5." The TV browser has no JWT, so we short-circuit:
+    // reset to the "no badge" state (`total=0, backendOk=true`) and
+    // skip the fetch entirely. The badge stays hidden — same UX as
+    // a fresh install with no broker config.
+    if (!authStore.getToken()) {
+      connStatus.set({
+        loaded: 0, total: 0, backendOk: true,
+        failingAccounts: [], accounts: [],
+      });
+      return;
+    }
     try {
       const { fetchBrokerAccounts } = await import('$lib/api');
       const accounts = await fetchBrokerAccounts();
