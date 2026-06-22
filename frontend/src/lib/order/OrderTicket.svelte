@@ -30,7 +30,7 @@
   import Select from '$lib/Select.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
-  import { placeTicketOrder, previewOrderMargin, fetchAccounts, fetchFunds, modifyOrder, previewTicketTemplate } from '$lib/api';
+  import { placeTicketOrder, previewOrderMargin, fetchAccounts, fetchFunds, modifyOrder, previewTicketTemplate, fetchStrategies } from '$lib/api';
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import { capWarningFor } from '$lib/data/brokerCapWarnings';
   import { getDefaultAccount } from '$lib/data/accounts';
@@ -1073,6 +1073,35 @@
   // ZG#### is unroutable so we never seed it as a default.
   let _account = $state('');
 
+  // Slice 7b — strategy picker. Loaded once on mount, refreshed
+  // on `bump` (parent's manual refresh). Sourced from active
+  // strategies only. Demo / observer / read-only roles still see
+  // the picker but it carries an "(unattributed)" default since
+  // they can't actually place an order.
+  /** @type {{id: number, slug: string, name: string}[]} */
+  let _strategies = $state([]);
+  let _strategyId = $state(/** @type {number|null} */ (null));
+  let _strategiesLoaded = $state(false);
+  async function _loadStrategies() {
+    try {
+      const r = await fetchStrategies({ activeOnly: true });
+      _strategies = Array.isArray(r?.rows)
+        ? r.rows.map(s => ({ id: s.id, slug: s.slug, name: s.name }))
+        : [];
+    } catch (_) {
+      // Demo / unauth: server still 200s for view_strategies; this
+      // catch is for total network failure. Keep _strategies empty.
+      _strategies = [];
+    } finally {
+      _strategiesLoaded = true;
+    }
+  }
+  $effect(() => {
+    if (!_strategiesLoaded) {
+      _loadStrategies();
+    }
+  });
+
   // Reactive seed:
   //   1. Caller-supplied `account` prop wins when it's a real value.
   //   2. Otherwise, single real account in the picker → pre-pick it.
@@ -1525,6 +1554,10 @@
           sl_pct_override:              slOverride !== '' ? Number(slOverride) : null,
           wing_premium_pct_override:    wingPremPctOverride !== '' ? Number(wingPremPctOverride) : null,
           wing_strike_offset_override:  wingStrikeOffsetOverride !== '' ? Number(wingStrikeOffsetOverride) : null,
+          // Slice 7b — attribution. Null when operator didn't pick
+          // a strategy; backend writes NULL strategy_id on the
+          // AlgoOrder row, lot ledger skip on fill.
+          strategy_id:                  _strategyId,
         });
         // Show inline confirmation so the operator sees the order
         // landed; modal stays open until the operator clicks Exit.
@@ -2021,6 +2054,26 @@
                   { value: 'IOC', label: 'IOC' },
                 ]} />
       </div>
+      <!-- Strategy attribution (slice 7b). Optional in v1 — None /
+           "—" means "no strategy" and the AlgoOrder.strategy_id is
+           saved as NULL. Picker reads active strategies from
+           /api/strategies; if the operator hasn't created any yet
+           the picker stays at "—" and the order saves un-attributed.
+           Tightens to required once the operator workflow settles
+           and a default strategy is mandated per role. -->
+      {#if _strategies.length > 0}
+        <div class="ot-knob ot-knob-strategy">
+          <label class="ot-label" for="ot-strategy-sel">Strategy</label>
+          <Select id="ot-strategy-sel"
+                  value={_strategyId == null ? '' : String(_strategyId)}
+                  ariaLabel="Strategy"
+                  onValueChange={(v) => { _strategyId = v ? Number(v) : null; }}
+                  options={[
+                    { value: '', label: '—' },
+                    ..._strategies.map(s => ({ value: String(s.id), label: s.slug })),
+                  ]} />
+        </div>
+      {/if}
     </div>
 
     <!-- Lots/Qty + Limit price (or Trigger when no limit) — single
