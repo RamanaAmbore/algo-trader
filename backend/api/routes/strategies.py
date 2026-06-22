@@ -88,11 +88,19 @@ async def _enrich_with_pnl(session, row: Strategy,
                            owner_username: Optional[str]) -> StrategyInfo:
     """Build a StrategyInfo with the live order-count + P&L rollup.
 
-    v1 aggregates the AlgoOrder.pnl field — broker-reported P&L,
-    accurate for closed positions and a mark-to-market approximation
-    for open ones. Slice 7's lot ledger replaces this with strategy-
-    scoped FIFO accounting once partial closes need precise per-
-    strategy attribution.
+    Realised P&L comes from the lot ledger (slice 7a) — FIFO-accurate
+    even across partial closes. Unrealised P&L stays on AlgoOrder.pnl
+    SUM for open orders: the ledger doesn't track LTP, so a true
+    mark-to-market on open lots needs the quote feed which lives at
+    the route layer, not the model layer. Slice 7b adds an LTP
+    snapshot pass that re-derives unrealised from the open lots'
+    remaining_qty × LTP — until then the broker's MTM number is the
+    operational truth for open-position P&L.
+
+    For strategies with NO lot-ledger entries (pre-7a orders or
+    legacy un-attributed history), realised falls back to
+    AlgoOrder.pnl SUM. Same path as the slice 6 v1 implementation
+    so behaviour for legacy data doesn't regress.
     """
     # Order counts split by status — OPEN / CHASING are "open"; FILLED
     # / UNFILLED / CANCELLED are "closed" from the strategy's view.
@@ -108,14 +116,23 @@ async def _enrich_with_pnl(session, row: Strategy,
                AlgoOrder.status.notin_(_open_states))
     )).scalar_one() or 0
 
-    # Realized = sum of pnl on closed orders. Unrealised = sum of pnl
-    # on still-open orders (broker's MTM number). Approximate v1;
-    # slice 7 wires the lot ledger for precise FIFO accounting.
-    realised = (await session.execute(
-        select(func.coalesce(func.sum(AlgoOrder.pnl), 0.0))
-        .where(AlgoOrder.strategy_id == row.id,
-               AlgoOrder.status.notin_(_open_states))
-    )).scalar_one() or 0.0
+    # Realized — try the lot ledger first (slice 7a). When the strategy
+    # has no ledger entries (legacy / un-attributed history), fall back
+    # to AlgoOrder.pnl SUM so the rollup never reads zero on real data.
+    from backend.api.algo.lot_ledger import compute_strategy_pnl
+    ledger_view = await compute_strategy_pnl(session, row.id)
+    if ledger_view["open_lots_count"] > 0 or ledger_view["realised_pnl"] != 0.0:
+        realised = ledger_view["realised_pnl"]
+    else:
+        realised = (await session.execute(
+            select(func.coalesce(func.sum(AlgoOrder.pnl), 0.0))
+            .where(AlgoOrder.strategy_id == row.id,
+                   AlgoOrder.status.notin_(_open_states))
+        )).scalar_one() or 0.0
+
+    # Unrealised — stays on AlgoOrder.pnl for open orders (broker
+    # MTM). Slice 7b's snapshot task will fold open lots' MTM in
+    # once the LTP pass is wired.
     unrealised = (await session.execute(
         select(func.coalesce(func.sum(AlgoOrder.pnl), 0.0))
         .where(AlgoOrder.strategy_id == row.id,

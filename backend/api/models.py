@@ -291,6 +291,128 @@ class WatchlistItem(Base):
 # `risk_budget_inr` for the risk officer's allocation view.
 # ---------------------------------------------------------------------------
 
+class StrategyLot(Base):
+    """One entry in the per-strategy FIFO lot ledger. Opens on a
+    BUY fill (long lot) or a SELL fill (short lot) attributed to a
+    strategy; closes when a counter-direction fill consumes it via
+    `close_lot_fifo()`.
+
+    Why this exists — broker reports NET positions per account, but
+    the strategy attribution layer needs the LOT-LEVEL trail so a
+    partial close of "100 long + 100 long" cleanly debits the older
+    100 in P&L terms. Without the ledger, two strategies sharing the
+    same symbol on the same account would have their fills aggregated
+    by the broker and the realised-pnl-by-strategy view would be
+    mathematically wrong.
+
+    The ledger is the source of truth for per-strategy P&L; the
+    Strategy.realised_pnl rollup queries SUM(realized_pnl) here, not
+    AlgoOrder.pnl.
+
+    Lifecycle:
+      OPEN  — created on fill; remaining_qty == qty.
+      PARTIAL — close_lot_fifo consumed some qty; remaining_qty > 0.
+      CLOSED — remaining_qty == 0; closed_at + realized_pnl populated.
+
+    Industry analogue: Interactive Brokers' Trader Workstation
+    "Tax Lot" ledger; Bloomberg PRM's allocation buckets.
+    """
+    __tablename__ = "strategy_lots"
+
+    id: Mapped[int]              = mapped_column(primary_key=True, autoincrement=True)
+    strategy_id: Mapped[int]     = mapped_column(
+        Integer, ForeignKey("strategies.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    # The AlgoOrder that opened this lot. ON DELETE SET NULL so the
+    # operator can delete an order row (rare; audit reasons) without
+    # corrupting the ledger.
+    open_order_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("algo_orders.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    # Account + symbol denormalised so the FIFO match query doesn't
+    # have to join algo_orders. Indexed for the `(account, symbol)`
+    # lookup that `close_lot_fifo()` runs on every closing fill.
+    account: Mapped[str]         = mapped_column(String(32), nullable=False)
+    symbol: Mapped[str]          = mapped_column(String(64), nullable=False)
+    exchange: Mapped[str]        = mapped_column(String(8),  nullable=False)
+    # Direction of the lot: 'B' = long (opened via BUY), 'S' = short
+    # (opened via SELL). The closing-side direction is implicit (an
+    # opposite-side fill closes the lot).
+    side: Mapped[str]            = mapped_column(String(1), nullable=False)
+    qty: Mapped[int]             = mapped_column(Integer, nullable=False)
+    remaining_qty: Mapped[int]   = mapped_column(Integer, nullable=False)
+    open_price: Mapped[float]    = mapped_column(Numeric(12, 4), nullable=False)
+    # Average closing price across every partial that consumed this
+    # lot. NULL while OPEN; weighted-average once any qty closes.
+    close_price: Mapped[Optional[float]] = mapped_column(Numeric(12, 4), nullable=True)
+    # Cumulative realised pnl across every close against this lot.
+    # Stays at 0 while OPEN; sums up the per-partial pnl ((close -
+    # open) × qty_closed × sign) as closes happen.
+    realized_pnl: Mapped[float]  = mapped_column(
+        Numeric(14, 2), nullable=False, default=0.0, server_default="0.0",
+    )
+    opened_at: Mapped[datetime]  = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    closed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
+    __table_args__ = (
+        # FIFO match query — find the oldest open lot for this
+        # (strategy, account, symbol, side). Indexed composite makes
+        # this O(log n) instead of O(rows in strategy_lots).
+        Index("ix_strategy_lots_open",
+              "strategy_id", "account", "symbol", "side", "remaining_qty",
+              "opened_at"),
+    )
+
+
+class StrategySnapshot(Base):
+    """Daily roll-up per strategy. One row per (strategy_id, as_of_date).
+    Written by the 15:45 IST background task — captures the day's
+    realised + unrealised P&L + open notional so the per-strategy P&L
+    chart on /strategies/{slug} can plot a time series without
+    re-aggregating the full lot ledger on every page load.
+
+    The snapshot daemon runs at 15:45 IST (5 min after NSE equity
+    close) so the day's closes are settled. MCX positions still have
+    unrealised exposure overnight; that's captured in the next day's
+    snapshot at 15:45 the following day. Acceptable lag for a chart
+    that's labelled "EOD" anyway.
+
+    Slice 7a ships the table; slice 7b wires the background task +
+    chart UI.
+    """
+    __tablename__ = "strategy_snapshots"
+
+    id: Mapped[int]              = mapped_column(primary_key=True, autoincrement=True)
+    strategy_id: Mapped[int]     = mapped_column(
+        Integer, ForeignKey("strategies.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    as_of_date: Mapped[datetime] = mapped_column(
+        Date, nullable=False, index=True,
+    )
+    open_lots_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    open_notional:   Mapped[float] = mapped_column(Numeric(18, 2), nullable=False, default=0.0)
+    realised_pnl:    Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0.0)
+    unrealised_pnl:  Mapped[float] = mapped_column(Numeric(14, 2), nullable=False, default=0.0)
+    margin_allocated: Mapped[Optional[float]] = mapped_column(Numeric(14, 2), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("strategy_id", "as_of_date", name="uq_strategy_snap_pair"),
+        Index("ix_strategy_snapshots_date", "as_of_date"),
+    )
+
+
 class Strategy(Base):
     """A named bucket for attribution. One trader can own multiple
     strategies; orders + lots tie back via `strategy_id`.

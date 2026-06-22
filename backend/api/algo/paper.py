@@ -199,6 +199,14 @@ class PaperTradeEngine:
                 # Hand off to the quote source — sim removes the
                 # filled position from its book; live is a no-op.
                 self._quote.on_fill(order)
+                # Slice 7a — write to the per-strategy FIFO lot
+                # ledger. open_lot for a fresh entry, close_lot_fifo
+                # for an exit. Determined by the order's
+                # `is_close_intent` flag (set by the chase-close
+                # action) — when present + true, the fill closes
+                # rather than opens. Best-effort; legacy orders
+                # without strategy_id skip.
+                self._schedule_ledger_write(order, fill_price)
                 continue
 
             # Not fillable — chase by re-quoting. The new limit
@@ -586,6 +594,73 @@ class PaperTradeEngine:
     def _default_max_attempts() -> int:
         from backend.shared.helpers.settings import get_int
         return get_int("simulator.chase_max_attempts", 5)
+
+    def _schedule_ledger_write(self, order: dict, fill_price: float) -> None:
+        """Schedule a lot-ledger write for this fill, out-of-band.
+
+        Open-vs-close intent: chase-close actions set
+        `order["is_close_intent"] = True` at register-open time. A
+        manual ticket / fresh agent-fire BUY or SELL leaves it false
+        — those open new lots. When unset, default to OPEN (the
+        common case).
+
+        Writes happen via asyncio.create_task so the chase tick loop
+        doesn't block on a DB round-trip. A write failure logs and
+        drops — the AlgoOrder row already carries broker pnl so the
+        per-strategy view falls back to AlgoOrder.pnl SUM for
+        un-ledgered fills.
+        """
+        strategy_id = order.get("strategy_id")
+        if not strategy_id:
+            return
+        algo_order_id = order.get("algo_order_id")
+        account = str(order.get("account") or "").strip().upper()
+        symbol  = str(order.get("symbol")  or "").strip().upper()
+        exchange = str(order.get("exchange") or "NFO").strip().upper()
+        side    = str(order.get("side") or "BUY").upper()
+        qty     = int(order.get("qty") or 0)
+        is_close = bool(order.get("is_close_intent"))
+
+        async def _do_write():
+            try:
+                from backend.api.database import async_session
+                from backend.api.algo.lot_ledger import (
+                    open_lot, close_lot_fifo,
+                )
+                async with async_session() as sess:
+                    if is_close:
+                        await close_lot_fifo(
+                            sess,
+                            strategy_id=strategy_id,
+                            algo_order_id=algo_order_id,
+                            account=account, symbol=symbol,
+                            side_kite=side, qty=qty,
+                            close_price=fill_price,
+                        )
+                    else:
+                        await open_lot(
+                            sess,
+                            strategy_id=strategy_id,
+                            algo_order_id=algo_order_id,
+                            account=account, symbol=symbol,
+                            exchange=exchange,
+                            side_kite=side, qty=qty,
+                            open_price=fill_price,
+                        )
+                    await sess.commit()
+            except Exception as exc:
+                logger.warning(
+                    f"PaperTradeEngine[{self._label}]: lot_ledger write failed "
+                    f"for order_id={algo_order_id}: {exc}"
+                )
+
+        try:
+            asyncio.get_running_loop().create_task(_do_write())
+        except RuntimeError:
+            # Not in an asyncio context (e.g. test harness). Skip
+            # silently — the test's own setUp can call the helper
+            # directly with its own session if it cares.
+            pass
 
     def _record_event(self, order: dict, *, kind: str, note: str) -> None:
         """

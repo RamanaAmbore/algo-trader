@@ -2712,6 +2712,12 @@ class OrdersController(Controller):
                     "agent_slug":    "manual-ticket",
                     "action_type":   "place_order",
                     "chase_agg":     agg,
+                    # Slice 7a — pass strategy_id through so the
+                    # paper engine's fill hook can write the per-
+                    # strategy lot ledger entry. None / 0 = no
+                    # attribution; ledger write skips.
+                    "strategy_id":      data.strategy_id,
+                    "is_close_intent":  False,  # ticket = open intent
                 })
             except Exception as e:
                 logger.warning(f"[PAPER-TICKET] engine register failed: {e}")
