@@ -74,6 +74,8 @@ const FALLBACK_CAPS = /** @type {Record<string, ReadonlyArray<string>>} */ ({
   // risk / settings / brokers / users
   adjust_risk_floors:       ['admin', 'risk'],
   manage_settings:          ['admin'],
+  view_hedge_proxies:       ['admin', 'trader', 'risk', 'demo'],
+  manage_hedge_proxies:     ['admin', 'trader'],
   manage_brokers:           ['admin', 'ops'],
   test_broker_connection:   ['admin', 'ops'],
   manage_users:             ['admin'],

@@ -125,6 +125,8 @@ CAPS: dict[str, frozenset[str]] = {
     # ── Risk / settings ───────────────────────────────────────────────
     "adjust_risk_floors":       frozenset({"admin", "risk"}),
     "manage_settings":          frozenset({"admin"}),
+    "view_hedge_proxies":       frozenset({"admin", "trader", "risk", "demo"}),
+    "manage_hedge_proxies":     frozenset({"admin", "trader"}),
 
     # ── Brokers ───────────────────────────────────────────────────────
     "manage_brokers":           frozenset({"admin", "ops"}),

@@ -23,7 +23,7 @@ from litestar import Controller, delete, get, patch, post
 from litestar.exceptions import HTTPException
 from sqlalchemy import select, text
 
-from backend.api.auth_guard import admin_guard
+from backend.api.rbac import cap_guard
 from backend.api.database import async_session, engine
 from backend.api.models import HedgeProxy
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -434,9 +434,11 @@ def _to_info(row: HedgeProxy) -> HedgeProxyInfo:
 
 class HedgeProxiesController(Controller):
     path = "/api/admin/hedge-proxies"
-    guards = [admin_guard]
+    # Per-route caps (no controller-level guard) — reads gated by
+    # `view_hedge_proxies` (admin/trader/risk/demo), mutations by
+    # `manage_hedge_proxies` (admin/trader only).
 
-    @get("/")
+    @get("/", guards=[cap_guard("view_hedge_proxies")])
     async def list_proxies(self) -> HedgeProxyResponse:
         async with async_session() as sess:
             rows = (await sess.execute(
@@ -444,7 +446,7 @@ class HedgeProxiesController(Controller):
             )).scalars().all()
         return HedgeProxyResponse(rows=[_to_info(r) for r in rows])
 
-    @get("/{proxy_id:int}")
+    @get("/{proxy_id:int}", guards=[cap_guard("view_hedge_proxies")])
     async def get_proxy(self, proxy_id: int) -> HedgeProxyInfo:
         async with async_session() as sess:
             row = await sess.get(HedgeProxy, proxy_id)
@@ -452,7 +454,7 @@ class HedgeProxiesController(Controller):
                 raise HTTPException(status_code=404, detail="Not found.")
             return _to_info(row)
 
-    @post("/")
+    @post("/", guards=[cap_guard("manage_hedge_proxies")])
     async def create_proxy(self, data: HedgeProxyCreate) -> HedgeProxyInfo:
         proxy_sym = data.proxy_symbol.strip().upper()
         target = data.target_root.strip().upper()
@@ -475,7 +477,7 @@ class HedgeProxiesController(Controller):
             await sess.refresh(row)
             return _to_info(row)
 
-    @patch("/{proxy_id:int}")
+    @patch("/{proxy_id:int}", guards=[cap_guard("manage_hedge_proxies")])
     async def update_proxy(self, proxy_id: int, data: HedgeProxyUpdate) -> HedgeProxyInfo:
         async with async_session() as sess:
             row = await sess.get(HedgeProxy, proxy_id)
@@ -499,7 +501,7 @@ class HedgeProxiesController(Controller):
             await sess.refresh(row)
             return _to_info(row)
 
-    @post("/{proxy_id:int}/compute")
+    @post("/{proxy_id:int}/compute", guards=[cap_guard("manage_hedge_proxies")])
     async def compute_regression(self, proxy_id: int) -> HedgeProxyInfo:
         """Run a 60-day daily-returns regression for this pair and
         write the resulting β + R² back to the row. Operator-triggered
@@ -544,7 +546,7 @@ class HedgeProxiesController(Controller):
                 f"β={beta:.4f} R²={r2:.3f} σ_t={sigma_t:.3f} σ_p={sigma_p:.3f} n={n}")
             return _to_info(row)
 
-    @delete("/{proxy_id:int}", status_code=204)
+    @delete("/{proxy_id:int}", status_code=204, guards=[cap_guard("manage_hedge_proxies")])
     async def delete_proxy(self, proxy_id: int) -> None:
         async with async_session() as sess:
             row = await sess.get(HedgeProxy, proxy_id)

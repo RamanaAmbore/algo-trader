@@ -30,6 +30,7 @@ from backend.api.background import on_startup as bg_startup, on_shutdown as bg_s
 from backend.api.database import init_db
 from backend.api.routes.admin import AdminController
 from backend.api.routes.agents import AgentController
+from backend.api.routes.audit import AuditController
 from backend.api.routes.algo import algo_ws_handler
 from backend.api.routes.auth import AuthController
 from backend.api.routes.config import ConfigController
@@ -175,6 +176,7 @@ _route_handlers = [
     AuthController,
     AdminController,
     AgentController,
+    AuditController,
     HoldingsController,
     PositionsController,
     FundsController,
@@ -539,6 +541,8 @@ async def _stop_kite_ticker(app) -> None:  # noqa: ARG001
         pass
 
 
+from backend.api.audit import AuditMiddleware
+
 app = Litestar(
     route_handlers=_route_handlers,
     cors_config=cors_config,
@@ -546,4 +550,8 @@ app = Litestar(
     on_startup=[init_db, _rebuild_broker_connections, seed_hedge_proxies, _start_kite_ticker, bg_startup],
     on_shutdown=[bg_shutdown, _stop_kite_ticker],
     before_request=_log_visitor,
+    # Audit middleware — writes one audit_log row per mutating
+    # request after the response leaves the server. Reads + suppressed
+    # paths (health, /auth/whoami, etc.) short-circuit at zero cost.
+    middleware=[AuditMiddleware()],
 )

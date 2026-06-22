@@ -333,6 +333,17 @@ export const previewTicketTemplate = (payload) =>
 // the /admin/derivatives Underlying picker's proxy-aware Tier 4 + the
 // proxy-eq leg math. Stage 2 lifted out of the frontend static const.
 export const fetchHedgeProxies   = () => _get('/admin/hedge-proxies/', { auth: true });
+
+/** GET /api/admin/audit — paginated audit log with filters. Gated
+ *  by the `view_audit` cap server-side (admin / risk / ops). */
+export const fetchAuditLog = (params = {}) => {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+  }
+  const qs = q.toString();
+  return _get(`/admin/audit/${qs ? '?' + qs : ''}`, { auth: true });
+};
 export const createHedgeProxy    = (payload) =>
   _post('/admin/hedge-proxies/', payload, { auth: true });
 export const updateHedgeProxy    = (id, payload) =>
