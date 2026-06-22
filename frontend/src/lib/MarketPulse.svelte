@@ -3174,12 +3174,22 @@
         const w = await createWatchlist(name);
         newListName = '';
         targetListId = w.id;
+        // CRITICAL ORDER — loadLists() FIRST, then push the wl: token
+        // to selectedShow. The prune $effect (lines ~447) filters
+        // selectedShow against `lists`, removing any wl: token whose
+        // id isn't in the current lists set. If we push the new token
+        // before loadLists() resolves, the $effect sees the old lists,
+        // doesn't recognise the new id, and strips the token — the
+        // operator's just-created watchlist disappears from the grid.
+        // Operator: "when I create a new watchlist and select the
+        // stock the panel disappears in pulse." Race fix: refresh
+        // lists first so allowedWl already includes the new id.
+        await loadLists();
         const newToken = `wl:${w.id}`;
         if (!selectedShow.includes(newToken)) {
           selectedShow = [...selectedShow, newToken];
         }
         focusedListId = w.id;
-        await loadLists();
         return w.id;
       } catch (e) { error = e.message; return null; }
     }
@@ -3259,15 +3269,17 @@
     try {
       const w = await createWatchlist(newListName.trim());
       newListName = '';
-      // Add the new list's token to the unified Show multiselect — this
-      // is what causes its rows to appear in the grid (selectedShow is
-      // now the source of truth; activeIds is derived from it).
+      // Race fix (mirrors `_resolveTargetListId`) — loadLists() FIRST
+      // so the prune $effect's allowedWl set already contains the new
+      // id by the time we push the token onto selectedShow. Otherwise
+      // the effect strips the just-added wl: token and the new
+      // watchlist's grid panel never appears.
+      await loadLists();
       const newToken = `wl:${w.id}`;
       if (!selectedShow.includes(newToken)) {
         selectedShow = [...selectedShow, newToken];
       }
       focusedListId = w.id;
-      await loadLists();
       await loadActive();
     } catch (e) { error = e.message; }
   }
