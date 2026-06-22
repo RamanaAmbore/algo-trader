@@ -844,17 +844,26 @@
     const keys = pairs.map(p => p.quoteKey);
     try {
       const res = await batchQuote(keys);
-      const quotes = res?.quotes ?? res ?? {};
+      // /api/quote/batch returns `{refreshed_at, items: [...]}` where
+      // each item is `{exchange, tradingsymbol, ltp, change_pct, close,
+      // bid, ask, ...}`. Build an exchange:symbol → item map so we
+      // can look up by the same quote-key we sent.
+      /** @type {Record<string, any>} */
+      const byKey = {};
+      for (const it of (res?.items ?? [])) {
+        if (!it?.exchange || !it?.tradingsymbol) continue;
+        byKey[`${it.exchange}:${it.tradingsymbol}`] = it;
+      }
       /** @type {Record<string, { ltp: number, day_pct: number | null, prev_close: number }>} */
       const next = {};
       for (const { root, quoteKey } of pairs) {
-        const q = quotes?.[quoteKey];
+        const q = byKey[quoteKey];
         if (!q) continue;
-        const ltp   = Number(q.last_price  ?? q.ltp ?? 0);
-        const close = Number(q.ohlc?.close ?? q.close ?? 0);
+        const ltp   = Number(q.ltp   ?? q.last_price ?? 0);
+        const close = Number(q.close ?? q.ohlc?.close ?? 0);
         let pct = null;
-        if (q.change_percent != null)      pct = Number(q.change_percent);
-        else if (q.change_pct != null)     pct = Number(q.change_pct);
+        if (q.change_pct != null)          pct = Number(q.change_pct);
+        else if (q.change_percent != null) pct = Number(q.change_percent);
         else if (close > 0 && ltp > 0)     pct = ((ltp - close) / close) * 100;
         next[root] = { ltp, day_pct: pct, prev_close: close };
       }
