@@ -3,7 +3,7 @@
 > Read [USER_GUIDE.md](USER_GUIDE.md) first for concepts; this file is the operations reference.
 
 **Quick start — test an auto-close rule before activating**:
-1. `/agents` → `loss-pos-total-auto-close` → **Run in Simulator**
+1. `/automation` → `loss-pos-total-auto-close` → **Run in Simulator**
 2. Watch the **Simulator** tab at the bottom — one `SELL` line per position
 3. Flip **ON** when confident
 
@@ -179,7 +179,7 @@ Gates: cooldown (spam), baseline (open-bell), suppression (flat loss)
 
 ## Anatomy of an agent
 
-Every row on the **Agents** page (`/agents`) has four moving parts:
+Every row on the **Agents** page (`/automation`) has four moving parts:
 
 ### 1. Conditions — the rule itself
 
@@ -295,7 +295,7 @@ Tokens page is the single extension point: new check = 1 token row + 1 Python fu
 
 ## Creating an agent
 
-1. `/agents` → expand a row → **Edit**
+1. `/automation` → expand a row → **Edit**
 2. Fill: Name / Description / Scope / Schedule / Cooldown / Conditions (JSON) / Events / Actions
 3. **Validate** → **Save**
 4. Flip OFF pill to ON when ready
@@ -347,7 +347,7 @@ Manual **Load live book** for a fresh snapshot before starting.
 
 ### Testing one agent
 
-On `/agents` page, every row has **Run in Simulator** button. Pre-arms the page to run only that agent, bypassing schedule / cooldown / baseline gates. Safest way to test before activating.
+On `/automation` page, every row has **Run in Simulator** button. Pre-arms the page to run only that agent, bypassing schedule / cooldown / baseline gates. Safest way to test before activating.
 
 ### Underlying-driven F&O scenarios
 
@@ -574,7 +574,7 @@ So real alerts and simulated alerts are never in the same bucket.
 ### While the sim runs
 
 - The red **SIMULATOR ACTIVE** banner pins to the top of every admin page.
-- The `/agents` page's event table auto-switches to showing only sim events.
+- The `/automation` page's event table auto-switches to showing only sim events.
 - The `/performance` page keeps showing **real** data — the live Kite refresh continues even during a sim, only the live agent engine is paused.
 
 ---
@@ -702,13 +702,13 @@ You don't have to memorise this — the **(i)** info chip on each row tells you 
 
 ## Common tasks
 
-**Add custom loss rule** → `/agents` → copy `loss-pos-acct-static-abs` → replace scope with custom account matcher → Validate → Run in Simulator → ON
+**Add custom loss rule** → `/automation` → copy `loss-pos-acct-static-abs` → replace scope with custom account matcher → Validate → Run in Simulator → ON
 
 **Add new metric** → Write Python `(ctx, row) → number` → `/admin/tokens` → + New token → Category condition, kind metric, resolver → Reload registry
 
 **Market drops 6%?** → `/admin/execution?mode=sim` → `generic-crash` → Load live book → Start → watch Simulator tab
 
-**Auto-close safely** → `/agents` → `loss-pos-total-auto-close` → Run in Simulator → check Order tab output → ON
+**Auto-close safely** → `/automation` → `loss-pos-total-auto-close` → Run in Simulator → check Order tab output → ON
 
 **Tune threshold live** → `/admin/settings` → edit value → Save (takes effect next agent tick, ≤5 min)
 
@@ -742,7 +742,7 @@ Manage accounts via UI, no SSH/YAML/restart. Page: account table (code | broker 
 `probe_market_active(exchange)` (the gate every `market_hours`-scheduled agent + the daily snapshot pipeline uses) resolves in this order:
 
 1. **Broker market-status API** — iterate `all_brokers()`, call `broker.market_status(exchange)`. First definitive `True`/`False` wins + caches 60s. Adapters that don't implement the method return `None`; the loop continues to the next broker.
-2. **Bellwether-quote probe** — fallback for brokers (Kite) without a market-status endpoint. Calls `kite.quote()` on configured bellwether symbols (`NSE:NIFTY 50`, `BSE:SENSEX`, MCX crude futures) and checks `last_trade_time` freshness.
+2. **Bellwether-quote probe** — fallback for brokers (Kite) without a market-status endpoint. Calls `kite.quote()` on configured bellwether symbols and checks `last_trade_time` freshness. Defaults: `NSE:NIFTY 50` + `NSE:NIFTY BANK` for NSE/NFO, `BSE:SENSEX` for BSE/BFO, `NSE:NIFTY 50` for CDS. MCX uses **dynamic instrument discovery** — `_discover_mcx_bellwethers` pulls the live instruments dump and picks the nearest unexpired futures contract for the most-liquid commodities (CRUDEOIL → NATURALGAS → GOLD priority); contract months roll automatically as expiries pass.
 3. **Calendar verdict** — if neither path yields, the platform falls back to its weekday + holiday-set logic.
 
 Adapter coverage today:
@@ -1116,7 +1116,7 @@ Single forensic surface for every mutating event the platform produces. Cap-gate
 
 | Problem | Fix |
 |---|---|
-| Agent didn't fire | `/agents` last fire timestamp; also Simulator tab in log |
+| Agent didn't fire | `/automation` last fire timestamp; also Simulator tab in log |
 | Sim shows no price changes | Scripted mode needs `initial` block; try Live+scenario |
 | Custom token invisible | Did you press **Reload registry**? Token `is_active=True`? |
 | Alerts not reaching Telegram/email | Check `cap_in_<branch>.telegram` and `.mail` in `backend_config.yaml` |

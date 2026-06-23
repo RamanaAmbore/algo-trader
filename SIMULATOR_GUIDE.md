@@ -1,6 +1,6 @@
 # Simulator — Operator Test Guide
 
-Hands-on walkthrough of every Lab / Simulator path. Pair with [AGENTS_GUIDE.md](AGENTS_GUIDE.md) for the agent-authoring side, [ADMIN_GUIDE.md](ADMIN_GUIDE.md) for routine ops.
+Hands-on walkthrough of every Sandbox / Simulator path. Pair with [AGENTS_GUIDE.md](AGENTS_GUIDE.md) for the agent-authoring side, [ADMIN_GUIDE.md](ADMIN_GUIDE.md) for routine ops.
 
 ---
 
@@ -43,9 +43,9 @@ Use cases:
 
 ---
 
-## The Lab page anatomy
+## The Sandbox page anatomy
 
-After the Phase post-24 redesign, the page flows top-to-bottom:
+The execution surface (formerly "Lab") was renamed Sandbox in the navbar audit. Page URL: `/admin/execution?mode=sim`. Flows top-to-bottom:
 
 ```
 [ Iteration mode card ]      ← collapsible, hidden when collapsed
@@ -188,7 +188,7 @@ When an agent fires during a sim, paper-trade actions land as `AlgoOrder` rows t
 - **Modifies** the limit at the current opposite side, bumping `attempts`. Capped at `simulator.chase_max_attempts` (default 5)
 - **Auto-stops** the sim when `_positions_rows` is empty + no orders remain OPEN
 
-The status snapshot carries `positions[]` (current book) + `open_order_details[]` (in-flight chases). The Lab panel renders both as pill strips so you watch the book shrink and the chase re-quote live.
+The status snapshot carries `positions[]` (current book) + `open_order_details[]` (in-flight chases). The Sandbox panel renders both as pill strips so you watch the book shrink and the chase re-quote live.
 
 ---
 
@@ -288,7 +288,7 @@ For each of these, the test path is:
 
 - **Auto-stop** — after `simulator.auto_stop_minutes` (default 30), the driver stops itself. Prevents a forgotten sim from bleeding through.
 - **Clear** — POST `/api/simulator/clear` deletes every `sim_mode=True` agent_events row + every `mode='sim'` algo_orders row. Use before a fresh test session if you want a clean event log.
-- **Past simulations** card on the Lab page lists the last 5 + a link to `/admin/simulator/iterations` for the full history.
+- **Past simulations** card on the Sandbox page lists the last 5 + a link to `/admin/simulator/iterations` for the full history.
 
 ---
 

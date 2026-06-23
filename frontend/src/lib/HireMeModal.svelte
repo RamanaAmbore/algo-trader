@@ -44,7 +44,7 @@
         { label: 'Full DSL guide',    href: 'https://github.com/RamanaAmbore/algo-trader/blob/main/AGENTS_GUIDE.md' },
       ],
     },
-    { tag: 'AI workflow',    text: 'MCP server bridges Claude Code to live broker data + research storage. 26 tools, confirm-token gate on every mutating write, full audit trail in McpAudit.' },
+    { tag: 'AI workflow',    text: 'MCP server bridges Claude Code to live broker data + research storage. 25 tools, confirm-token gate on every mutating write, full audit trail in McpAudit.' },
     { tag: 'Production',     text: 'PostgreSQL 17 async via SQLAlchemy 2 + asyncpg · Litestar API with msgspec.Struct · SvelteKit 5 frontend · single VPS, single uvicorn worker, KiteTicker IPv6 source binding for multi-account Kite auth.' },
   ];
 

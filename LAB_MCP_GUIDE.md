@@ -44,7 +44,7 @@ Three actors:
 | **RamboQuant API** | The book of record. Live broker access, agent engine, simulator, audit trail, paper engine. | `dev.ramboq.com` / `ramboq.com`. |
 | **MCP server** | A thin bridge — stdio subprocess Claude Code spawns. Forwards tool calls from the LLM to the API. | `backend/mcp/kite_server.py`, lives in your repo, runs locally during your Claude session. |
 
-The MCP server has **24 tools** (16 read, 2 persist, 6 gated write).
+The MCP server has **25 tools** (17 read, 2 persist, 6 gated write).
 Every write needs an operator-minted, single-use, 60-second,
 purpose-bound confirm token. No LLM-initiated trade or activation
 moves a rupee without that token.
@@ -306,12 +306,12 @@ Same gate, same audit, same Telegram ping.
 
 ---
 
-## 5. The 24 MCP tools
+## 5. The 25 MCP tools
 
-24 tools split three ways: 16 read (no token), 2 persist (drafts always inactive), 6 gated write (require per-call confirm token).
+25 tools split three ways: 17 read (no token), 2 persist (drafts always inactive), 6 gated write (require per-call confirm token).
 
-### Read (16)
-Market: `get_quote`, `get_ohlcv`, `get_recent_news` (with sentiment). Analytics: `get_option_analytics`, `get_options_chain_snapshot`. Book: `get_positions`, `get_holdings`, `get_funds_summary`, `get_watchlist`. Macro: `get_economic_snapshot`. Agents: `list_agents`. Research: `list_research_threads`, `get_research_thread`. Audit: `get_audit_recent` (LLM self-check). Diagnostic: `get_server_info`. P&L: `get_pnl_attribution`.
+### Read (17)
+Market: `get_quote`, `get_ohlcv`, `get_recent_news` (with sentiment). Analytics: `get_option_analytics`, `get_options_chain_snapshot`. Book: `get_positions`, `get_holdings`, `get_funds_summary`, `get_watchlist`. Macro: `get_economic_snapshot`. Agents: `list_agents`, `dry_run_agent`. Research: `list_research_threads`, `get_research_thread`. Audit: `get_audit_recent` (LLM self-check). Diagnostic: `get_server_info`. P&L: `get_pnl_attribution`.
 
 ### Persist (2)
 `save_research_thread(symbol, thesis, confidence, transcript, title?)` — auto-titles via Gemini Flash or stub. `save_agent_draft(thread_id, ...)` — lands inactive + paper-mode only.
@@ -716,7 +716,7 @@ Edit `loss-positions-total-default` once → every consumer updates.
 
 ## 11. Phase history (shipped)
 
-18 phases, 24 tools, 46 tests. Zero incremental cost.
+18 phases, 25 tools, 46 tests. Zero incremental cost.
 
 | Phase | Headline |
 |---|---|

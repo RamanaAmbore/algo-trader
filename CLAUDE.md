@@ -859,12 +859,14 @@ The surfaces operators visit when thinking about agents — rules, fires, tokens
 
 | Tab | Route |
 |---|---|
-| Agents | `/agents` |
-| Activity | `/agents/activity` |
+| Agents | `/automation` |
+| Order Templates | `/automation/templates` |
+| Agent Templates | `/automation/agent-templates` |
+| Activity | `/automation/activity` |
 | Tokens | `/admin/tokens` |
 | Lab | `/admin/research` |
 
-URLs are unchanged — this is visual unification only. Operator gets a single mental model ("Agent Workspace") and one-click navigation between the four surfaces without leaving the workspace. Moving the URLs physically under `/agents` is a follow-up if wanted; the tab component is already structured so it's a small delta.
+`/agents`, `/agents/activity`, `/agents/fragments` still 308-redirect to their `/automation` equivalents for any pre-rename bookmarks; new docs + UI link the canonical URLs directly so the shim can retire in a future cleanup. Operator gets a single mental model ("Agent Workspace") and one-click navigation between the six surfaces without leaving the workspace.
 
 Industry analogue: Splunk Detections workspace with tabs.
 
@@ -1158,7 +1160,7 @@ The `agent_fragments` table holds reusable sub-trees an agent can reference inli
 - Notify: other channels in the list still fire; the broken ref is logged.
 - Condition: the ref node returns `[]` matches (acts as a false leaf); other branches of the tree evaluate normally.
 
-This matches the rest of the grammar pipeline — operator typos in `/agents/fragments` don't crash the engine.
+This matches the rest of the grammar pipeline — operator typos in `/automation/fragments` don't crash the engine.
 
 **Seeded system fragments** (force-reseeded on every boot from `SYSTEM_FRAGMENTS`):
 - `notify-critical-trio` — telegram + email + log (the default for every loss / expiry agent)
@@ -1808,7 +1810,7 @@ The grid colors are deliberately low-saturation cool-blue rather than amber — 
 The Pulse symbols grid ([`frontend/src/lib/MarketPulse.svelte`](frontend/src/lib/MarketPulse.svelte)) intentionally **diverges** from the codebase-wide cluster rule (which is `LTP → Prev → Avg → Day P&L → Day % → P&L → P&L%`). Pulse-specific default-visible cluster:
 
 ```
-Symbol · 5d · LTP · Avg · Prev Close · Qty · Day P&L · Day % · P&L % · P&L
+Symbol · 5d · LTP · Avg · Close · Qty · Day P&L · Day % · P&L % · P&L
 ```
 
 The deviations are deliberate:
@@ -1936,7 +1938,7 @@ Tab labels: `Daily Market Report` (was "Summary" → "Daily market summary" → 
 | [ADMIN_GUIDE.md](ADMIN_GUIDE.md) | Day-to-day operator | **Operations reference.** Exact button labels, condition-tree JSON, API endpoints, config keys, troubleshooting tables. |
 | [AGENTS_GUIDE.md](AGENTS_GUIDE.md) | Operator authoring + testing agents | **Extensive testing walkthrough.** Anatomy of an agent · the grammar · fragments · four-stage validation ladder (validate → dry-run → simulator → activate) · lifespan · troubleshooting · copy-paste patterns. |
 | [SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md) | Operator running sim scenarios | **Hands-on simulator workflow.** Lab page anatomy · seeding modes · move primitives · scenarios · market-state presets · Run-in-Simulator · iteration mode · custom positions · troubleshooting. |
-| [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md) | Operator using Claude Code MCP | **LLM-driven agent authoring runbook.** MCP server setup · `.mcp.json` · JWT bootstrap · the 26 tools · confirm-token gate · audit trail. |
+| [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md) | Operator using Claude Code MCP | **LLM-driven agent authoring runbook.** MCP server setup · `.mcp.json` · JWT bootstrap · the 25 tools · confirm-token gate · audit trail. |
 | [CLAUDE.md](CLAUDE.md) (this file) | Engineers + AI assistants | **Architecture + design notes.** Code structure, data flow, design rationale, refactoring history. |
 
 Cross-link aggressively — every page on the platform should be findable via at least one of these (USER_GUIDE for the concept, ADMIN_GUIDE for the keystrokes, AGENTS_GUIDE / SIMULATOR_GUIDE for the deep "how to test it" walkthroughs).
