@@ -19,6 +19,7 @@ import time as _time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, time as dtime, timezone
+from typing import Optional
 
 import pandas as pd
 
@@ -801,6 +802,277 @@ async def _task_nav_compute() -> None:
             )
         except Exception as exc:
             logger.warning(f"_task_nav_compute: cycle failed: {exc}")
+
+
+async def _task_monthly_statement() -> None:
+    """
+    Auto-email LP monthly statements. Wakes daily at 02:00 IST and
+    processes any (LP, prior-month) pair that doesn't yet have a
+    `monthly_statements` row.
+
+    Cadence rationale:
+    - 02:00 IST is well outside the broker-quota window and gives
+      `_task_nav_compute` (16:00 IST the prior day) ten hours to
+      settle the period's closing NAV.
+    - "Prior month" is derived from today's IST date, so the first
+      wake on or after the 1st of any month fires. If the server is
+      down on the 1st, the 2nd's wake catches up — same row, same
+      unique-key, same idempotency guarantee.
+    - The DB unique constraint on (user, year, month) is the actual
+      lock; if two wakes race (operator manually triggers + cron
+      fires), the second INSERT 23505s and we skip cleanly.
+
+    Failures (PDF render, SMTP) land in `monthly_statements.error`
+    so admin can inspect; manually deleting the row queues a retry
+    on the next wake.
+
+    Gated by `is_enabled('mail')` so dev branches don't blast LPs
+    with statements.
+    """
+    import asyncio as _asyncio
+    from datetime import date as _date
+    from sqlalchemy import select as _select
+    from backend.api.database import async_session
+    from backend.api.models import MonthlyStatement, User
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+    from backend.shared.helpers.utils import is_enabled
+
+    while True:
+        now_ist = timestamp_indian()
+        target = now_ist.replace(hour=2, minute=0, second=0, microsecond=0)
+        if now_ist >= target:
+            target = target + timedelta(days=1)
+        sleep_s = max(0, (target - now_ist).total_seconds())
+        logger.info(
+            f"_task_monthly_statement: sleeping {sleep_s/3600:.2f}h "
+            f"until {target.isoformat()}"
+        )
+        await _asyncio.sleep(sleep_s)
+
+        # Two gates: branch-level mail capability (dev/prod) +
+        # operator-opt-in setting. The setting defaults to False so
+        # deploying this code doesn't auto-fire to every LP at the
+        # next 02:00 IST — operator must flip it on from /admin/
+        # settings after validating PDFs via the admin Preview
+        # button.
+        if not is_enabled("mail"):
+            logger.info("_task_monthly_statement: mail capability off, skipping")
+            continue
+        from backend.shared.helpers.settings import get_bool as _get_bool
+        if not _get_bool("notifications.monthly_statement_email", False):
+            logger.info("_task_monthly_statement: setting opt-in off, skipping")
+            continue
+
+        # Prior-month period = (year, month) before today's IST.
+        today = timestamp_indian().date()
+        first_of_this_month = _date(today.year, today.month, 1)
+        prior_period_end = first_of_this_month - timedelta(days=1)
+        period_year  = prior_period_end.year
+        period_month = prior_period_end.month
+
+        try:
+            async with async_session() as s:
+                eligible = (await s.execute(
+                    _select(User).where(
+                        User.is_active.is_(True),
+                        User.share_pct > 0,
+                        User.email.is_not(None),
+                        User.email != "",
+                    )
+                )).scalars().all()
+                # IDs of users already sent this period — single query
+                # to avoid one round-trip per LP. With <10 LPs this is
+                # negligible either way, but keeps the pattern clean.
+                already_sent = (await s.execute(
+                    _select(MonthlyStatement.user_id).where(
+                        MonthlyStatement.period_year  == period_year,
+                        MonthlyStatement.period_month == period_month,
+                    )
+                )).scalars().all()
+            sent_ids = set(already_sent)
+            pending = [u for u in eligible if u.id not in sent_ids]
+            if not pending:
+                logger.info(
+                    f"_task_monthly_statement: nothing to send for "
+                    f"{period_year}-{period_month:02d} (eligible={len(eligible)})"
+                )
+                continue
+
+            logger.info(
+                f"_task_monthly_statement: processing {len(pending)} LPs "
+                f"for period {period_year}-{period_month:02d}"
+            )
+            sent_ok = 0
+            for user in pending:
+                await _send_one_monthly_statement(user, period_year, period_month)
+                sent_ok += 1
+                # Gentle pacing so a burst of SMTP doesn't get
+                # rate-limited by Hostinger. Even 10 LPs only costs
+                # 10s total.
+                await _asyncio.sleep(1)
+
+            logger.info(
+                f"_task_monthly_statement: done "
+                f"({sent_ok}/{len(pending)} sent)"
+            )
+
+        except Exception as exc:
+            logger.warning(f"_task_monthly_statement: cycle failed: {exc}")
+
+
+async def _send_one_monthly_statement(user, period_year: int, period_month: int) -> None:
+    """Helper: compute → render → email → audit for one LP. Each
+    failure surface inserts a `monthly_statements` row with `error`
+    set so the operator can see what went wrong; deleting the row
+    requeues the LP for the next bg wake."""
+    import asyncio as _asyncio
+    from datetime import datetime as _datetime, timezone as _tz
+    from sqlalchemy.exc import IntegrityError as _IntegrityError
+    from backend.api.algo.investor_statement import (
+        compute_statement, render_statement_pdf,
+    )
+    from backend.api.database import async_session
+    from backend.api.models import MonthlyStatement
+    from backend.shared.helpers.mail_utils import send_email
+
+    error: Optional[str] = None
+    pdf_bytes: bytes = b""
+    recipients: list[str] = []
+
+    try:
+        data = await compute_statement(user.id, period_year, period_month)
+        if data is None:
+            error = "No NAV data for this period"
+        else:
+            pdf_bytes = await _asyncio.to_thread(render_statement_pdf, data)
+            recipients = [user.email]
+            subject = (
+                f"RamboQuant statement — {data.period_start.strftime('%B %Y')}"
+            )
+            html_body = _monthly_statement_html(user, data)
+            ok, msg = send_email(
+                user.display_name or user.username,
+                user.email,
+                subject,
+                html_body,
+                attachments=[(
+                    pdf_bytes,
+                    f"ramboquant_{period_year:04d}_{period_month:02d}.pdf",
+                    "application/pdf",
+                )],
+            )
+            if not ok:
+                error = f"SMTP: {msg}"
+    except Exception as exc:
+        error = f"render/send: {exc}"
+
+    try:
+        async with async_session() as s:
+            row = MonthlyStatement(
+                user_id=user.id,
+                period_year=period_year,
+                period_month=period_month,
+                sent_at=(_datetime.now(_tz.utc) if not error else None),
+                recipients_json=recipients,
+                pdf_size_bytes=len(pdf_bytes) or None,
+                error=error,
+            )
+            s.add(row)
+            await s.commit()
+    except _IntegrityError:
+        # Concurrent run inserted first — fine. We've already sent
+        # the email; the prior row is the source of truth.
+        logger.info(
+            f"_send_one_monthly_statement: dup row for u={user.id} "
+            f"{period_year}-{period_month:02d} (race / catch-up)"
+        )
+    except Exception as exc:
+        # Row insert failed but email may have gone out. Log loudly
+        # — next day's run will re-fire (no row = LP gets a second
+        # copy). Operator should manually delete + re-trigger
+        # corrective action.
+        logger.error(
+            f"_send_one_monthly_statement: audit row insert failed for "
+            f"u={user.id} {period_year}-{period_month:02d}: {exc}"
+        )
+
+    if error:
+        logger.warning(
+            f"_send_one_monthly_statement: u={user.id} "
+            f"{period_year}-{period_month:02d}: {error}"
+        )
+    else:
+        logger.info(
+            f"_send_one_monthly_statement: u={user.id} "
+            f"{period_year}-{period_month:02d}: sent ({len(pdf_bytes)} bytes)"
+        )
+
+
+def _monthly_statement_html(user, data) -> str:
+    """Cream/champagne HTML body matching the LP portal palette.
+    Plain inline-styled HTML so it renders consistently across
+    Gmail / Outlook / Apple Mail without CSS class support."""
+    period_label = data.period_start.strftime("%B %Y")
+    fmt_inr = lambda v: _html_inr(v)
+    fmt_pct = lambda v: "—" if v is None else f"{'+' if v >= 0 else ''}{v * 100:.2f}%"
+    pnl_colour = lambda v: "#14653a" if (v or 0) > 0 else ("#962d2d" if (v or 0) < 0 else "#2a2418")
+
+    return f"""\
+<!DOCTYPE html>
+<html><body style="margin:0; padding:0; background:#fdfaf2; color:#2a2418; font-family:-apple-system,BlinkMacSystemFont,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#fdfaf2; padding:20px 0;">
+  <tr><td align="center">
+    <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px; background:#ffffff; border:1px solid #e7e0cf; border-radius:8px;">
+      <tr><td style="background:#d4920c; padding:14px 22px;">
+        <div style="color:#ffffff; font-weight:800; font-size:16px; letter-spacing:0.06em;">RAMBOQUANT ANALYTICS LLP</div>
+        <div style="color:#fffaee; font-size:11px; margin-top:2px;">Statement of Account · {period_label}</div>
+      </td></tr>
+      <tr><td style="padding:22px 24px;">
+        <p style="margin:0 0 14px; font-size:14px;">Hello {user.display_name or user.username},</p>
+        <p style="margin:0 0 18px; font-size:13px; line-height:1.55;">
+          Your RamboQuant statement for <strong>{period_label}</strong> is attached. A quick summary:
+        </p>
+        <table width="100%" cellpadding="0" cellspacing="0" style="font-size:13px; margin-bottom:18px;">
+          <tr><td style="padding:4px 0; color:#8b7340;">Closing slice</td>
+              <td align="right" style="padding:4px 0; font-weight:700; color:#d4920c;">{fmt_inr(data.closing_share)}</td></tr>
+          <tr><td style="padding:4px 0; color:#8b7340;">Period P&L</td>
+              <td align="right" style="padding:4px 0; font-weight:700; color:{pnl_colour(data.share_period_delta)};">
+                {fmt_inr(data.share_period_delta)} ({fmt_pct(data.share_period_pct)})
+              </td></tr>
+          <tr><td style="padding:4px 0; color:#8b7340;">Since-inception P&L</td>
+              <td align="right" style="padding:4px 0; font-weight:700; color:{pnl_colour(data.cumulative_pnl)};">
+                {fmt_inr(data.cumulative_pnl)} ({fmt_pct(data.cumulative_pnl_pct)})
+              </td></tr>
+          <tr><td style="padding:4px 0; color:#8b7340;">Your share of fund</td>
+              <td align="right" style="padding:4px 0; font-weight:700;">{data.share_pct:.2f}%</td></tr>
+        </table>
+        <p style="margin:0 0 14px; font-size:12px; color:#8b7340; line-height:1.55;">
+          The attached PDF carries the full breakdown — daily NAV, opening / closing
+          slice, and the firm's NAV movement for the period.
+        </p>
+        <p style="margin:0; font-size:12px; color:#8b7340; line-height:1.55;">
+          For questions or to update your contact details, reply to this email.
+        </p>
+      </td></tr>
+      <tr><td style="padding:16px 24px; border-top:1px solid #e7e0cf; font-size:11px; color:#8b7340;">
+        RamboQuant Analytics LLP · <a href="https://ramboq.com" style="color:#d4920c; text-decoration:none;">ramboq.com</a>
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body></html>"""
+
+
+def _html_inr(v: Optional[float]) -> str:
+    if v is None:
+        return "—"
+    abs_v = abs(v)
+    sign = "-" if v < 0 else ""
+    if abs_v >= 1e7:
+        return f"{sign}₹{abs_v / 1e7:,.2f} Cr"
+    if abs_v >= 1e5:
+        return f"{sign}₹{abs_v / 1e5:,.2f} L"
+    return f"{sign}₹{int(round(abs_v)):,}"
 
 
 async def _task_strategy_snapshot() -> None:
@@ -2400,6 +2672,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_trail_stop(),          name="bg-trail-stop"),
         asyncio.create_task(_task_oco_pair_watcher(),    name="bg-oco-pair-watcher"),
         asyncio.create_task(_task_strategy_snapshot(),   name="bg-strategy-snapshot"),
+        asyncio.create_task(_task_monthly_statement(),   name="bg-monthly-statement"),
         asyncio.create_task(_task_nav_compute(),         name="bg-nav-compute"),
     ]
     # Mode 2 (real-data paper) runs only on main. The PaperTradeEngine

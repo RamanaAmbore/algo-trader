@@ -290,6 +290,10 @@ SEEDS: list[tuple] = [
      "Send alerts via SMTP email (overrides cap_in_<branch>.mail).", None, None),
     ("notifications", "notifications.notify_on_deploy",    "bool",  True,
      "Send a Telegram/email ping on every deploy.", None, None),
+    ("notifications", "notifications.monthly_statement_email", "bool", False,
+     "Auto-email monthly investor statements at 02:00 IST. Off by "
+     "default — operator must opt in after validating the first "
+     "month's PDF preview from the admin Portal modal.", None, None),
 
     # ── Connections / broker ─────────────────────────────────────────────
     ("connections", "connections.retry_count",      "int", 3,

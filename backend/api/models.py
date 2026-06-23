@@ -182,6 +182,48 @@ class ImpersonationEvent(Base):
 # Auth — short-lived tokens for email verification + password reset
 # ---------------------------------------------------------------------------
 
+class MonthlyStatement(Base):
+    """
+    Audit row for the monthly auto-emailed LP statement. One row per
+    (user, period_year, period_month). The unique constraint is the
+    idempotency guarantee — the daily background task only generates
+    + sends when no row exists, then INSERTs on success. A duplicate
+    INSERT (from a race or a redundant trigger) blocks at the DB
+    level so an LP never receives two copies of the same statement.
+
+    `sent_at IS NULL AND error IS NOT NULL` indicates a failed send
+    (SMTP error, PDF render failure, etc.); admin can inspect from
+    /admin and trigger a retry — failed rows can be deleted so the
+    daily task picks up the period again on the next wake.
+
+    `recipients_json` is the list of email addresses we actually
+    delivered to (snapshot at send time so if the LP later changes
+    their email, the audit log still shows where we sent the
+    statement). PDF bytes are NOT stored — the renderer is stateless
+    and we can recompute any historical statement on demand.
+    """
+    __tablename__ = "monthly_statements"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "period_year", "period_month",
+            name="uq_monthly_statements_user_period",
+        ),
+    )
+
+    id:              Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id:         Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    period_year:     Mapped[int] = mapped_column(Integer, nullable=False)
+    period_month:    Mapped[int] = mapped_column(Integer, nullable=False)
+    generated_at:    Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    sent_at:         Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    recipients_json: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    pdf_size_bytes:  Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    error:           Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
 class InvestorToken(Base):
     """
     Long-lived, revocable, public URL token for LP-facing investor

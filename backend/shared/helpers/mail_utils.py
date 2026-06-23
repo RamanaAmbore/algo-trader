@@ -1,6 +1,8 @@
 import socket
 import smtplib
 from datetime import date
+from email import encoders
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
@@ -32,10 +34,14 @@ DEFAULT_MAIL_FROM = "rambo@ramboq.com"
 DEFAULT_MAIL_FROM_NAME = "RamboQuant Analytics"
 
 
-def send_email(name, email_id, subject, html_body):
+def send_email(name, email_id, subject, html_body, attachments=None):
     """
     Email a single recipient, CC to the brand sender (mail_from).
     - to_email: str (single email address)
+    - attachments: optional list of (data: bytes, filename: str,
+      mime_type: str) tuples. Used today by the monthly investor
+      statement task to attach the rendered PDF. Each becomes a
+      MIMEBase part on the multipart envelope.
 
     The displayed "From" is `secrets.mail_from` (defaults to
     rambo@ramboq.com) — the operator-facing brand address. SMTP still
@@ -75,6 +81,17 @@ def send_email(name, email_id, subject, html_body):
     msg["Subject"] = subject
 
     msg.attach(MIMEText(html_body, "html"))
+
+    for blob, filename, mime_type in (attachments or []):
+        # mime_type expected as "application/pdf" → maintype/subtype
+        main, _, sub = mime_type.partition("/")
+        part = MIMEBase(main or "application", sub or "octet-stream")
+        part.set_payload(blob)
+        encoders.encode_base64(part)
+        part.add_header(
+            "Content-Disposition", f'attachment; filename="{filename}"',
+        )
+        msg.attach(part)
 
     # Final recipient list for SMTP
     recipients = email_id
