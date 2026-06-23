@@ -2414,6 +2414,14 @@ All three use `guards=[]` and `_process_broker_postback` (or inline equivalent f
 
 **Roles surface** (slice-B documentation alignment): canonical 5 = `admin / trader / risk / ops / observer` + legacy `designated` (super-admin) + synthetic `demo` for anonymous on prod. `designated` is intentionally preserved — three code paths still branch on the literal value (`designated_guard` on terminate/promote, `alert_utils.get_alert_recipients`, `/admin` UI gating). `normalise_role` collapses `designated`→`admin` for the cap matrix so any cap-gated check works.
 
+**Slice E — Market-status: broker API beats bellwether-quote probe** (shipped Jun 2026):
+- New `Broker.market_status(exchange) -> bool | None` ABC method (optional, default returns None).
+- Dhan + Groww adapters implement via SDK-method probe (`get_market_status` / `market_status` / `get_exchange_status` across SDK version drift). Map our exchange vocabulary (NSE/BSE/NFO/BFO/CDS/MCX) to broker segment codes; return True if ANY mapped segment reports active.
+- `probe_market_active(exchange)` resolution order: (1) iterate `all_brokers()`, first definitive True/False wins; (2) fall back to Kite bellwether-quote probe (unchanged path) when no broker returns a verdict; (3) `None` if neither works → caller falls back to calendar verdict.
+- Per-exchange 60s cache absorbs per-tick gate evaluation.
+- Kite adapter inherits the ABC default (None) — always falls through to bellwether path. This is intentional + documented: Kite has no market-status endpoint, so its accounts use the bellwether quote on `NSE:NIFTY 50` / `NSE:NIFTY BANK` / `BSE:SENSEX` / MCX crude futures with a 15-min `last_trade_time` freshness window.
+- **The bellwether-quote path is the back-up.** When Dhan + Groww are loaded but their SDKs don't expose market_status (older builds), the probe falls through to Kite bellwether quote automatically. Operator doesn't configure anything; the resolution chain is `Dhan → Groww → Kite bellwether → calendar`.
+
 **Slice D — UX consistency + palette consolidation + 2 defects** (shipped Jun 2026):
 - `/admin/history` bespoke tab strip → `<AlgoTabs>` canonical component (badge logic preserved); `/admin/statements` native `<select>` + `.ms-select` CSS block → `<Select>` canonical.
 - Cyan bg alpha `0.10` → `0.14` (canonical `--algo-cyan-bg`) across CommandBar, HireMeModal, OrderCard, OrderTicket, SymbolPanel; PageHeaderActions amber + cyan hover bg `0.12` → `0.14`.

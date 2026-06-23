@@ -566,6 +566,16 @@ What you actually get from a Dhan backfill: one row per (date, account, segment)
 
 ---
 
+## How the platform knows the market is open
+
+You don't have to think about this — the agent engine and the daily snapshot loops gate themselves on whether the market is currently trading. But the *how* used to be a workaround: ask the broker for a quote on a bellwether index (NIFTY 50, SENSEX, MCX crude futures), check when that symbol last traded, and infer "if the last trade was in the last 15 minutes, the exchange is open." That worked but it spent Kite's quote budget on a question Kite couldn't answer directly.
+
+Dhan and Groww both expose a market-status endpoint — a direct "is this exchange open right now" call. The platform now asks the broker first; only when no broker exposes the data does it fall back to the bellwether-quote probe. So on a multi-broker setup (any account with Dhan or Groww loaded), market-hours gating burns zero Kite quote and gives an authoritative answer instead of a "last traded 4 minutes ago" inference.
+
+There's nothing for you to configure — if a broker exposes `market_status` and you have an account with that broker loaded, it just runs. Kite-only deployments keep working via the bellwether path.
+
+---
+
 ## Audit log — what's recorded
 
 Every action that changes state in RamboQuant — placing an order, a broker filling that order, an agent firing, you tweaking a setting, a monthly statement going out to an LP, the daily NAV cron writing a snapshot — lands as one row in an audit log. The log is the platform's memory of "who did what, when, and with what outcome." A SEBI Cat-III audit visit doesn't need a fancy UI; it needs the trail. RamboQuant gives them both.

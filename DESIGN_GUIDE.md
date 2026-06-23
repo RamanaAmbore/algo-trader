@@ -52,6 +52,7 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 22.11. [Navbar audit — rename + resequence](#2211-navbar-audit--rename--resequence)
 22.12. [#audit workflow + Dhan / Groww postback scaffold](#2212-audit-workflow--dhan--groww-postback-scaffold)
 22.13. [Audit slice D — UX consistency + palette consolidation + 2 defects](#2213-audit-slice-d--ux-consistency--palette-consolidation--2-defects)
+22.14. [Market-status — broker API beats bellwether-quote probe](#2214-market-status--broker-api-beats-bellwether-quote-probe)
 
 ### Part VII — Operations
 23. [How to add a new template field](#23-how-to-add-a-new-template-field)
@@ -1830,6 +1831,78 @@ Net effect: a chip background on one page now visually matches the same conceptu
 - `frontend/src/lib/{CommandBar,HireMeModal,SymbolPanel}.svelte` + `order/{OrderCard,OrderTicket}.svelte` — cyan 0.10→0.14
 - `backend/api/algo/paper.py::reset` — `self._lock` acquisition
 - `backend/api/routes/history.py::backfill_funds` — docstring correction
+
+---
+
+## 22.14. Market-status — broker API beats bellwether-quote probe
+
+The agent engine's `market_hours` schedule gate and the daily snapshot pipeline both consult `probe_market_active(exchange)` to decide whether the market is currently trading. Pre-slice-E the probe used a workaround: call `kite.quote()` on bellwether index symbols (NIFTY 50, SENSEX, MCX crude futures), check `last_trade_time` freshness within a 15-minute window. Worked, but spent Kite's quote budget on a question Kite's API can't answer directly.
+
+⚙ **TECH — Authoritative broker API vs inferred bellwether probe** — `WHY` Kite Connect has no market-status endpoint; the only signal Kite exposes is a quote with `last_trade_time`. Dhan and Groww both ship a direct market-status API (`get_market_status` and variants). When an authoritative answer is one round-trip away, prefer it over an inferred one — bellwether probes have edge cases (illiquid contracts, weekend Muhurat sessions, MCX evening sessions) where the inference disagrees with the broker. `WHAT` Extend the `Broker` ABC with an optional `market_status(exchange) -> bool | None` method. Adapters that have the API override and return True/False. The probe layer iterates brokers, takes the first definitive answer, falls back to the bellwether path when no broker answers. `HOW` SDK-method discovery probes (`getattr(sdk, 'get_market_status', None)` etc.) handle adapter version drift. Per-exchange 60s cache absorbs the per-tick gate evaluation. `WHERE` `backend/shared/brokers/base.py::market_status`, `backend/shared/brokers/dhan.py::market_status`, `backend/shared/brokers/groww.py::market_status`, `backend/shared/helpers/market_probe.py::probe_market_active`.
+
+### Resolution order
+
+```
+probe_market_active(exchange):
+  if cache hit and fresh (60s TTL): return cached
+  for broker in all_brokers():
+    verdict = broker.market_status(exchange)   # ← step 1
+    if isinstance(verdict, bool):
+      cache[exchange] = verdict
+      return verdict
+  # step 2: fall back to bellwether-quote probe (unchanged path)
+  kite = resolve_kite_handle()
+  if kite is None: return None
+  bellwethers = _candidates(exchange, broker)
+  q = kite.quote(bellwethers)
+  active = any(row.last_trade_time >= now - 15min for row in q)
+  cache[exchange] = active
+  return active
+```
+
+### Adapter contract
+
+```python
+class Broker(ABC):
+    def market_status(self, exchange: str) -> bool | None:
+        """True / False if broker exposes a market-status endpoint
+        for `exchange`; None when adapter doesn't implement one or
+        the call fails. Optional method, not abstract."""
+        return None
+```
+
+Both Dhan and Groww implementations probe known SDK method names (`get_market_status` / `market_status` / `get_exchange_status`) across SDK version drift; iterate the response rows (whatever shape the SDK returns); map our exchange vocabulary (NSE / BSE / NFO / BFO / CDS / MCX) to the broker's segment codes (Dhan: `NSE_EQ` / `BSE_EQ` / `NSE_FNO` / `BSE_FNO` / `NSE_CURRENCY` / `MCX_COMM`; Groww: similar with variants); return `True` if ANY mapped segment reports active.
+
+### Side effects on quote budget
+
+A typical Kite-only deployment hits the bellwether path on every cache miss → 4 symbols × 1 quote call ≈ 4 instruments off the 10-req/sec quote budget per probe. A Dhan-loaded deployment skips that entirely for any exchange Dhan covers; only the rare cache-miss-with-Dhan-down case falls through.
+
+### Adding the API to a new adapter
+
+```python
+def market_status(self, exchange: str) -> bool | None:
+    sdk = self.client
+    status_fn = (getattr(sdk, "get_market_status", None)
+                 or getattr(sdk, "market_status", None))
+    if status_fn is None:
+        return None
+    try:
+        resp = self._safe_call(lambda c: status_fn())
+    except Exception as e:
+        logger.debug(f"{self.broker_id}.market_status failed: {e}")
+        return None
+    # map your broker's segment codes → our vocabulary
+    # return True if any mapped segment reports active
+    # return False if all closed
+    # return None if no mapping matched (fall through to next broker)
+```
+
+### Source files
+
+- `backend/shared/brokers/base.py::market_status` — ABC default
+- `backend/shared/brokers/dhan.py::market_status` — Dhan implementation
+- `backend/shared/brokers/groww.py::market_status` — Groww implementation
+- `backend/shared/helpers/market_probe.py::probe_market_active` — resolution chain + cache
 
 ---
 

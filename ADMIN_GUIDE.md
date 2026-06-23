@@ -737,6 +737,26 @@ Manage accounts via UI, no SSH/YAML/restart. Page: account table (code | broker 
 
 **Capabilities endpoint** (`GET /api/admin/brokers/{account}/capabilities`): returns `BrokerCapabilities` dataclass (gtt_single / gtt_oco / gtt_modify / etc.) for in-page feature gating (OrderTicket warning chips).
 
+### Market-status resolution
+
+`probe_market_active(exchange)` (the gate every `market_hours`-scheduled agent + the daily snapshot pipeline uses) resolves in this order:
+
+1. **Broker market-status API** — iterate `all_brokers()`, call `broker.market_status(exchange)`. First definitive `True`/`False` wins + caches 60s. Adapters that don't implement the method return `None`; the loop continues to the next broker.
+2. **Bellwether-quote probe** — fallback for brokers (Kite) without a market-status endpoint. Calls `kite.quote()` on configured bellwether symbols (`NSE:NIFTY 50`, `BSE:SENSEX`, MCX crude futures) and checks `last_trade_time` freshness.
+3. **Calendar verdict** — if neither path yields, the platform falls back to its weekday + holiday-set logic.
+
+Adapter coverage today:
+
+| Broker | `market_status()` | Falls through to bellwether? |
+|---|---|---|
+| Kite (zerodha_kite) | Returns `None` (no SDK endpoint) | Yes |
+| Dhan | Probes `get_market_status` / `market_status` / `get_exchange_status` across SDK versions. Maps NSE/BSE/NFO/BFO/CDS/MCX → NSE_EQ/BSE_EQ/NSE_FNO/BSE_FNO/NSE_CURRENCY/MCX_COMM. | Only if SDK miss / call failure |
+| Groww | Same SDK-method probe + segment mapping. Wraps in `_retry_groww_auth` so token rotation is transparent. | Only if SDK miss / call failure |
+
+**Cache**: 60s per exchange in `_PROBE_CACHE`. Clear via `market_probe.invalidate_cache(exchange=None)` from a Python shell if you need an immediate re-evaluation.
+
+**Operator override**: bellwether symbols are configurable via the `market.bellwether_symbols` setting (CSV of `EXCHANGE:SYMBOL` entries). Only matters if the broker market-status path returns `None` for all loaded accounts.
+
 ### Broker postback webhooks
 
 | Broker | Webhook URL | Status |
