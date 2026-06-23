@@ -406,8 +406,14 @@ class HistoryController(Controller):
     @post("/funds/backfill", guards=[cap_guard("view_audit")])
     async def backfill_funds(self, data: FundsBackfillRequest) -> FundsBackfillResponse:
         """Pull historical funds ledger from the broker and seed
-        daily_book[kind='funds'] for the date range. Idempotent —
-        existing rows are not overwritten (ON CONFLICT DO NOTHING).
+        daily_book[kind='funds'] for the date range. Idempotent on
+        the unique key (date, account, kind, symbol) — re-running
+        with a wider range OVERWRITES existing rows with the
+        canonical broker-ledger numbers (intentional — the voucher-
+        aggregated backfill data is more accurate than a single
+        broker.margins() snapshot taken at 15:35 IST). Operator
+        edits to a backfilled row will be clobbered on the next
+        backfill; treat the table as read-only for funds rows.
 
         Broker support matrix:
         - Kite (zerodha_kite): NO programmatic ledger. Console

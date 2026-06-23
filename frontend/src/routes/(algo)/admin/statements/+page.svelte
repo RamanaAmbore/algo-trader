@@ -20,6 +20,7 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
+  import Select from '$lib/Select.svelte';
 
   /** @type {{
    *   ask: (opts: any) => Promise<boolean>,
@@ -198,11 +199,12 @@
 <section class="ms-controls">
   <label class="ms-field">
     <span class="ms-field-lbl">Period</span>
-    <select class="ms-select" bind:value={selectedPeriod}>
-      {#each _months as m}
-        <option value={m.value}>{m.label}</option>
-      {/each}
-    </select>
+    <Select
+      bind:value={selectedPeriod}
+      options={_months}
+      ariaLabel="Statement period"
+      placeholder="Pick a period"
+    />
   </label>
 
   <div class="ms-filter-pills">
@@ -310,17 +312,6 @@
     text-transform: uppercase; font-weight: 700;
     font-family: ui-monospace, monospace;
   }
-  .ms-select {
-    padding: 0.35rem 0.6rem;
-    background: rgba(15, 23, 42, 0.65);
-    border: 1px solid rgba(126, 151, 184, 0.30);
-    border-radius: 4px;
-    color: #c8d8f0;
-    font-family: ui-monospace, monospace;
-    font-size: 0.72rem;
-    min-width: 11rem;
-  }
-
   .ms-filter-pills {
     display: flex; gap: 0.4rem; flex-wrap: wrap;
   }

@@ -316,7 +316,7 @@
   :global(.log-chip-slip) { color: #94a3b8; }
 
   /* Tag colour-coding — manual ticket = sky-blue, agent-fired = amber. */
-  :global(.tag-manual)       { color: #67e8f9; background: rgba(34, 211, 238, 0.10); }
+  :global(.tag-manual)       { color: #67e8f9; background: rgba(34, 211, 238, 0.14); }
   :global(.tag-agent)        { color: #fbbf24; background: rgba(251, 191, 36, 0.10); }
   /* TP / parent / basket linkage chips */
   :global(.log-chip-tp)      { color: #4ade80; background: var(--algo-green-bg); }
@@ -331,7 +331,7 @@
      template chip). Disabled while in-flight. */
   :global(.log-chip-retry-attach) {
     color: #22d3ee;
-    background: rgba(34, 211, 238, 0.10);
+    background: rgba(34, 211, 238, 0.14);
     border: 1px solid rgba(34, 211, 238, 0.45);
     cursor: pointer;
   }

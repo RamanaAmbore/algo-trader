@@ -477,7 +477,7 @@
     font-size: 0.6rem;
     font-weight: 600;
     color: #22d3ee;
-    background: rgba(34,211,238,0.1);
+    background: rgba(34,211,238,0.14);
     padding: 0.1rem 0.4rem;
     border-radius: 0.25rem;
   }

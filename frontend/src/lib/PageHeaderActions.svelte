@@ -283,7 +283,7 @@
     color: #fbbf24;
   }
   .pha-order:hover:not(:disabled) {
-    background: rgba(251, 191, 36, 0.12);
+    background: rgba(251, 191, 36, 0.14);
     border-color: rgba(252, 211, 77, 0.65);
     color: #fcd34d;
   }
@@ -294,7 +294,7 @@
     color: #22d3ee;
   }
   .pha-chart:hover:not(:disabled) {
-    background: rgba(34, 211, 238, 0.12);
+    background: rgba(34, 211, 238, 0.14);
     border-color: rgba(103, 232, 249, 0.65);
     color: #67e8f9;
   }

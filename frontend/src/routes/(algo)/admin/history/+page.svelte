@@ -21,6 +21,7 @@
   } from '$lib/api';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
+  import AlgoTabs from '$lib/AlgoTabs.svelte';
 
   /** @typedef {{
    *   id:number, created_at:string, account:string, symbol:string,
@@ -235,17 +236,15 @@
   </div>
 {:else}
 
-<div class="hist-tabs">
-  <button class="hist-tab" class:active={tab === 'orders'} onclick={() => setTab('orders')}>
-    Orders <span class="hist-tab-n">{tab === 'orders' ? total : ''}</span>
-  </button>
-  <button class="hist-tab" class:active={tab === 'trades'} onclick={() => setTab('trades')}>
-    Trades <span class="hist-tab-n">{tab === 'trades' ? total : ''}</span>
-  </button>
-  <button class="hist-tab" class:active={tab === 'funds'} onclick={() => setTab('funds')}>
-    Funds <span class="hist-tab-n">{tab === 'funds' ? total : ''}</span>
-  </button>
-</div>
+<AlgoTabs
+  value={tab}
+  onChange={setTab}
+  tabs={[
+    { id: 'orders', label: 'Orders', badge: tab === 'orders' ? total : undefined },
+    { id: 'trades', label: 'Trades', badge: tab === 'trades' ? total : undefined },
+    { id: 'funds',  label: 'Funds',  badge: tab === 'funds'  ? total : undefined },
+  ]}
+/>
 
 <div class="hist-filters">
   <label class="hist-flbl">From
@@ -477,34 +476,6 @@
   .hist-empty h2 {
     color: #c8d8f0; font-size: 0.85rem; font-weight: 800;
     margin: 0 0 0.3rem;
-  }
-
-  .hist-tabs {
-    display: flex; gap: 0.3rem;
-    border-bottom: 1px solid rgba(126, 151, 184, 0.18);
-    margin-bottom: 0.8rem;
-  }
-  .hist-tab {
-    padding: 0.45rem 1rem;
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    color: #7e97b8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.68rem; font-weight: 700;
-    letter-spacing: 0.06em; text-transform: uppercase;
-    cursor: pointer;
-    margin-bottom: -1px;
-  }
-  .hist-tab:hover { color: #c8d8f0; }
-  .hist-tab.active {
-    color: #67e8f9;
-    border-bottom-color: #22d3ee;
-  }
-  .hist-tab-n {
-    margin-left: 0.4rem;
-    opacity: 0.75;
-    font-weight: 800;
   }
 
   .hist-filters {

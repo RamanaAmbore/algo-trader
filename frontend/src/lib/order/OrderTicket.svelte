@@ -2856,7 +2856,7 @@
     margin-left: 0.35rem;
     padding: 0.05rem 0.32rem;
     border-radius: 3px;
-    background: rgba(34, 211, 238, 0.10);
+    background: rgba(34, 211, 238, 0.14);
     border: 1px solid rgba(34, 211, 238, 0.32);
     color: #67e8f9;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -3384,7 +3384,7 @@
     color: #c8d8f0;
   }
   .ot-demo-body code {
-    background: rgba(34, 211, 238, 0.10);
+    background: rgba(34, 211, 238, 0.14);
     border: 1px solid rgba(34, 211, 238, 0.30);
     border-radius: 3px;
     padding: 0 0.25rem;
@@ -3409,7 +3409,7 @@
     transition: background 0.1s, color 0.1s, border-color 0.1s;
   }
   .ot-demo-btn-secondary {
-    background: rgba(34, 211, 238, 0.10);
+    background: rgba(34, 211, 238, 0.14);
     border: 1px solid rgba(34, 211, 238, 0.45);
     color: #67e8f9;
     display: inline-flex; align-items: center;

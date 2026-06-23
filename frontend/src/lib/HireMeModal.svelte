@@ -259,7 +259,7 @@
   .hm-btn {
     display: inline-flex; align-items: center; gap: 0.35rem;
     padding: 0.4rem 0.8rem;
-    background: rgba(34, 211, 238, 0.10);
+    background: rgba(34, 211, 238, 0.14);
     border: 1px solid rgba(34, 211, 238, 0.45);
     border-radius: 4px;
     color: #67e8f9;

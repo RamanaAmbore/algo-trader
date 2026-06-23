@@ -3171,7 +3171,7 @@
     justify-content: center;
     width: 1.4rem;
     height: 1.4rem;
-    background: rgba(34, 211, 238, 0.10);
+    background: rgba(34, 211, 238, 0.14);
     border: 1px solid rgba(34, 211, 238, 0.40);
     border-radius: 3px;
     color: #22d3ee;
@@ -3504,7 +3504,7 @@
     cursor: pointer;
   }
   .oes-tpl-preview-clickable:hover {
-    background: rgba(34, 211, 238, 0.10);
+    background: rgba(34, 211, 238, 0.14);
     border-color: rgba(34, 211, 238, 0.45);
   }
   .oes-tpl-preview-clickable:focus-visible {

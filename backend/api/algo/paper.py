@@ -287,10 +287,23 @@ class PaperTradeEngine:
         ]
 
     def reset(self) -> None:
-        """Wipe the open-order book — used by SimDriver.start()."""
-        self._open_orders = []
-        self._price_history = {}
-        self._underlying_history = {}
+        """Wipe the open-order book — used by SimDriver.start().
+
+        Acquires `self._lock` so a concurrent `step()` snapshot or a
+        `_capture_price_history` write doesn't race the dict-replace.
+        Pre-fix `reset()` flipped the three references unlocked; if a
+        new sim started while step() held a list snapshot of the old
+        _open_orders, the snapshot's iteration was fine (the OLD list
+        ref is still valid), but a concurrent `_capture_price_history`
+        could write into the OLD dict reference while the NEW sim was
+        already querying via `price_history_symbols()` on the empty
+        replacement. Net effect: chart data for the first tick of a
+        new sim was silently lost.
+        """
+        with self._lock:
+            self._open_orders = []
+            self._price_history = {}
+            self._underlying_history = {}
 
     # ── Operator-initiated lifecycle (Phase 5: MCP cancel/modify) ────
 
