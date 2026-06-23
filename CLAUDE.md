@@ -2339,6 +2339,57 @@ Broker matrix:
 
 ---
 
+## Order placement latency — preflight + tick cache + PAPER skip
+
+Three perf fixes shipped Jun 2026 to close the operator-reported "order placement deteriorated" complaint. Combined ticket-path savings: **~600ms LIVE, ~1500ms PAPER**.
+
+**1. Preflight runs in parallel** ([`run_preflight`](backend/api/algo/actions.py)):
+- Pre-fix: 4 sequential `await loop.run_in_executor` calls (`broker.profile`, `broker.instruments`, `broker.basket_order_margins`, `broker.margins`) → ~800-1200ms total on Kite.
+- Now: 4 helper coroutines (`_fetch_profile` / `_fetch_instruments` / `_fetch_basket_margin` / `_fetch_account_margins`) fired via `asyncio.gather`. Wall-time = `max(individual)` ≈ 300ms.
+- Each helper handles its own exception → returns None / `(seg_dict, err_str)` tuple. `_fetch_basket_margin` returns the Exception object on failure so the downstream MARGIN_SHORTFALL handler can re-raise into its existing try/except — minimal change to the consumer.
+
+**2. `_TICK_INDEX` dict for O(1) tick lookup** ([`_align_price_to_tick`](backend/api/routes/orders.py)):
+- Pre-fix: linear scan through 10-50k instrument rows; ticket route called twice per order (price + trigger) ≈ 100k iterations.
+- Now: module-level `_TICK_INDEX: dict[(exchange,symbol)→tick_size]`, built lazily from the instruments cache. `_TICK_INDEX_STAMP` holds the cached response object; identity flip (`resp is not _TICK_INDEX_STAMP`) triggers rebuild on cache refresh.
+
+**3. PAPER skips route-level preflight** ([`ticket_order`](backend/api/routes/orders.py)):
+- `PaperTradeEngine.register_open_order` already runs basket_margin internally (REJECTED-vs-OPEN gate, writes broker's error string to `AlgoOrder.detail`). The route-level call was duplicate work.
+- PAPER branch of `ticket_order` no longer calls `run_preflight()`.
+- LIVE preflight stays — only chance to block before `kite.place_order` fires.
+
+**Don't add new broker calls to `run_preflight` without parallelizing.** Adding a fifth sequential call resurrects the slowdown. Pattern: wrap any new broker fetch in a `_fetch_xxx()` helper coroutine + add it to the `asyncio.gather` tuple + handle its result inline.
+
+---
+
+## Navbar audit — Sandbox + Explore group + Monitor resequence
+
+Operator-requested cleanup Jun 2026.
+
+**Renames:**
+- Group `modes` → **`explore`** (old name was vestigial from the sim/paper/live/shadow/replay terminology; mode toggles now live in the navbar dropdown).
+- Label `Lab` → **`Sandbox`** (industry-standard term across QuantConnect / Streak / Sensibull; faster recognition for first-time visitors).
+- URL `/admin/execution` unchanged — bookmarks + deep links preserved.
+
+**Monitor group resequenced** by daily-trader workflow frequency:
+
+```
+new order: Tour · Pulse · Dashboard · Orders · Derivatives · Charts · Automation · Strategies · NAV
+```
+
+Orders moved ahead of the analysis surfaces (Derivatives + Charts) since active trading is the primary entry point. Strategies + NAV (attribution / LP / fund views) move to the end — weekly cadence, not minute-by-minute.
+
+**Wiring** ([`(algo)/+layout.svelte`](frontend/src/routes/(algo)/+layout.svelte)):
+```js
+const GROUP_LABELS = { monitor: 'Monitor', analyze: 'Analyze', explore: 'Explore', build: 'Build', config: 'Config' };
+const INLINE_GROUPS = new Set(['monitor', 'analyze', 'explore']);
+```
+
+`INLINE_GROUPS` controls which groups render inline in desktop nav; the rest collapse to dropdown triggers. Mobile drawer shows every group with a `GROUP_LABELS` caption.
+
+**Adding a new nav entry**: append a `{href, label, group}` row to `_algoLinksAll`. Group must be one of `monitor / analyze / explore / build / config`. Optional `adminOnly: true` hides from demo. Optional `branches: ['main' | 'dev']` restricts to one deploy branch.
+
+---
+
 ## Refactoring Notes
 
 **Day P&L formula** (commits b95ccd79–ba9cf39c): Decomposed intraday (not naive `(LTP−close)×qty`). Positions: `overnight_qty × (LTP − prev_close) + day_buy/sell legs`. Holdings: `broker.pnl − (close − cost) × opening_qty`. **MCX guard**: apply lot_size multiplier to intraday qty too (pre-fix: ₹61k phantom GOLDM due to unit mismatch). **Always verify qty units in P&L edits.**

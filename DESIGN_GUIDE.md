@@ -48,6 +48,8 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 22.7. [Audit log — forensic trail](#227-audit-log--forensic-trail)
 22.8. [Postback fan-out — book_changed bus](#228-postback-fan-out--book_changed-bus)
 22.9. [History — multi-day orders / trades / funds](#229-history--multi-day-orders--trades--funds)
+22.10. [Order placement latency — preflight + tick cache + paper-skip](#2210-order-placement-latency--preflight--tick-cache--paper-skip)
+22.11. [Navbar audit — rename + resequence](#2211-navbar-audit--rename--resequence)
 
 ### Part VII — Operations
 23. [How to add a new template field](#23-how-to-add-a-new-template-field)
@@ -1620,6 +1622,116 @@ Per-row try/except + single bulk commit at the end: a single bad voucher entry d
 - `backend/api/models.py::DailyBook` — table (unchanged; just a new `kind` value)
 - `frontend/src/routes/(algo)/admin/history/+page.svelte` — viewer
 - `frontend/src/lib/api.js` — `fetchHistoryOrders/Trades/Funds` wrappers
+
+---
+
+## 22.10. Order placement latency — preflight + tick cache + paper-skip
+
+Closes the order-placement deterioration the operator flagged ("placement feels slow now"). Three orthogonal fixes ship together because they target the same hot path:
+
+⚙ **TECH — Sequential awaits vs asyncio.gather** — `WHY` `await` on a `run_in_executor` blocks the route until the broker SDK returns; four sequential awaits = ~800-1200ms on Kite's typical 200-300ms round-trip. Even though each call is itself async-scheduled, the await chain serializes them. `WHAT` Wrap each independent broker call in its own helper coroutine with self-contained exception handling, then fire all four with `asyncio.gather`. Total wall-time becomes `max(individual call)` instead of `sum(individual calls)`. `HOW` Each helper returns a plain Python value on success or a sentinel (None / tuple-with-error) on failure, so the consumer can branch on result type rather than handle exceptions across the gather boundary. `WHERE` `backend/api/algo/actions.py::run_preflight` — fan-out helpers `_fetch_profile / _fetch_instruments / _fetch_basket_margin / _fetch_account_margins`.
+
+### Fix 1 — preflight parallelization
+
+`run_preflight` previously ran four broker calls in strict sequence:
+
+```python
+profile = await loop.run_in_executor(None, broker.profile)         # ~300ms
+instruments = await loop.run_in_executor(None, broker.instruments, exchange)  # ~250ms
+bm_result = await loop.run_in_executor(None, broker.basket_order_margins, …)  # ~300ms
+m = await loop.run_in_executor(None, broker.margins)               # ~300ms
+# Total: ~1150ms sequential
+```
+
+The new structure:
+
+```python
+# Stage 1 (synchronous) — build basket_orders (uses cached get_lot_size).
+# Stage 2 (parallel) — gather the 4 independent broker calls:
+profile_res, instruments_res, bm_res, margins_res = await asyncio.gather(
+    _fetch_profile(),         # None for non-Kite brokers
+    _fetch_instruments(),     # None when exchange not in F&O / qty<=0
+    _fetch_basket_margin(),   # Exception on failure (handled below)
+    _fetch_account_margins(), # (seg_dict, error_str) tuple
+)
+# Total: ~max(300ms) parallel
+```
+
+Each helper handles its own exceptions so a single broker failure surfaces as a logged warning + None result rather than tearing down the gather. `_fetch_basket_margin` returns the exception object (not raising) so the consumer can re-raise into the existing MARGIN_SHORTFALL block's try/except — minimal change to the downstream handler.
+
+### Fix 2 — tick-size index
+
+`_align_price_to_tick` looked up the contract's tick_size via a linear scan:
+
+```python
+for inst in items:               # items = 10-50k rows
+    if inst.s == sym_u and inst.e == ex_u:
+        tick = float(inst.ts or 0)
+        break
+```
+
+Ticket route called this twice per order (price + trigger), so a single ticket paid ~100k linear iterations.
+
+Now a module-level `_TICK_INDEX: dict[tuple[str,str], float]` is built lazily from the instruments cache. `_TICK_INDEX_STAMP` holds the cached `InstrumentsResponse` object; identity comparison (`resp is not _TICK_INDEX_STAMP`) detects cache refresh and triggers a rebuild. Subsequent ticket calls are O(1) dict lookups.
+
+Trade-off: the rebuild itself is still O(N) — one scan per cache refresh (typical TTL ~10 minutes). Hot-path savings dominate; ~50ms per ticket recovered.
+
+### Fix 3 — PAPER skips route-level preflight
+
+`PaperTradeEngine.register_open_order` already runs `basket_order_margins` internally — it's the gate that decides REJECTED vs OPEN on an open order, and writes the broker's exact error string into `AlgoOrder.detail` when the basket margin check fails. The route-level preflight before that was running the SAME basket_margin call (plus three others) for the SAME order, costing ~800ms with zero additional correctness.
+
+The PAPER branch of `ticket_order` no longer calls `run_preflight()`. LIVE preflight stays — it's the only chance to block before `kite.place_order` actually fires.
+
+### Combined ticket-path savings
+
+| Path | Before | After |
+|---|---|---|
+| LIVE ticket | ~1200ms preflight + ~150ms route + ~300ms place_order ≈ 1.65s | ~300ms preflight + ~150ms route + ~300ms place_order ≈ 0.75s |
+| PAPER ticket | ~1200ms preflight + ~150ms route + ~50ms engine register ≈ 1.40s | ~150ms route + ~50ms engine register ≈ 0.20s |
+
+PAPER is the bigger win because the entire preflight goes away; LIVE saves roughly half the latency.
+
+### Source files
+
+- `backend/api/algo/actions.py::run_preflight` — parallel gather
+- `backend/api/routes/orders.py::_align_price_to_tick` + `_TICK_INDEX` — O(1) tick lookup
+- `backend/api/routes/orders.py::ticket_order` — PAPER preflight skip block
+
+---
+
+## 22.11. Navbar audit — rename + resequence
+
+Operator-requested audit of the algo navbar.
+
+**Renames:**
+
+- `modes` group → `explore`. The old name was vestigial from the sim/paper/live/shadow/replay terminology before the mode toggles moved to the navbar dropdown (Wave C). Group now contains just `Sandbox`; can grow when Replay gets its own dedicated entry.
+- `Lab` label → `Sandbox`. Industry-standard term across QuantConnect / Streak / Sensibull; reads faster to first-time visitors than the prior internal jargon. URL `/admin/execution` unchanged — bookmarks + deep links preserved.
+
+**Monitor resequence** (rationale = daily-trader workflow frequency):
+
+```
+old: Tour Pulse Dashboard Derivatives Strategies NAV Orders Charts Automation
+new: Tour Pulse Dashboard Orders        Derivatives Charts Automation Strategies NAV
+```
+
+Orders moved ahead of analysis surfaces (Derivatives / Charts) since active trading is the trader's primary entry point. Strategies + NAV move to the end — attribution + LP-facing views are weekly, not minute-by-minute.
+
+**Implementation:**
+
+```js
+// frontend/src/routes/(algo)/+layout.svelte
+const GROUP_LABELS = {
+  monitor: 'Monitor',
+  analyze: 'Analyze',
+  explore: 'Explore',
+  build:   'Build',
+  config:  'Config',
+};
+const INLINE_GROUPS = new Set(['monitor', 'analyze', 'explore']);
+```
+
+`INLINE_GROUPS` controls which groups render inline in the desktop nav; the rest collapse to dropdown triggers. Mobile drawer shows every group with a `GROUP_LABELS` caption for scan-by-intent navigation.
 
 ---
 

@@ -477,6 +477,35 @@ The next NAV snapshot (16:00 IST, or the operator's manual recompute) will refle
 
 ---
 
+## The navbar — how pages are grouped
+
+The algo navbar reads left-to-right by daily-operator frequency, not alphabetic. Three inline groups + two dropdowns:
+
+- **Monitor** (always visible): Tour · Pulse · Dashboard · **Orders** · Derivatives · Charts · Automation · Strategies · NAV. Sequence tracks the trader's workflow — Pulse + Dashboard for the always-open watch surfaces, then Orders for active trading, then the analysis tier (Derivatives + Charts), then operator-frequency-lower surfaces (Automation rule review, Strategies attribution, NAV for LP / fund views).
+- **Explore** (always visible): Sandbox — scenario + replay surface for trying ideas without touching real money. The page itself is `/admin/execution` (the URL didn't change — only the navbar label is "Sandbox" now; older bookmarks still work).
+- **Build** (dropdown): Console · Research · Tokens. Surfaces you reach to extend the platform (custom commands, LLM threads, the agent DSL grammar editor).
+- **Config** (dropdown): Brokers · Settings · Users · Statements · History · Audit · Health. Admin-side surfaces ordered by edit frequency — Brokers most-touched, Health glance-only.
+
+If a page feels missing — first check the dropdowns (Build and Config collapse). Mobile drawer shows every group with a caption header so you can scan by intent rather than scroll a flat list.
+
+Older builds called the Sandbox page "Lab" and the group "Modes." The labels were renamed to match what every other quant platform (QuantConnect / Streak / Sensibull) calls these surfaces — clearer for first-time visitors. The URL `/admin/execution` is unchanged.
+
+---
+
+## Why placing an order feels snappier now
+
+If you used the platform before July 2026 you might have noticed an order placement taking ~1 second to register. That was preflight overhead — every ticket fired 4 sequential broker calls (account profile, instruments lookup, basket margin, fund balance) to catch obvious blockers (segment not enabled, qty exceeds freeze, margin shortfall) before sending the real order. Each broker call cost ~200-300ms, so 4 sequential calls = ~800-1200ms of waiting per ticket.
+
+What changed:
+
+- **Preflight runs in parallel.** All four broker calls fire at once via async gather; total wall-time is now max(individual call) ≈ 300ms.
+- **Tick-size lookups are now O(1).** Pre-fix the platform scanned the 10-50k-row instruments list twice per order (once for the limit price, once for the trigger price). Now it builds a dict once and reads it as a key lookup — saves ~50ms per ticket.
+- **Paper orders skip preflight entirely.** The paper engine already runs basket-margin internally as part of its REJECTED-vs-OPEN gate, so the route-level preflight was duplicate work. Paper placements are ~800ms faster as a result; same correctness — rejections still surface in the order row's detail field within a tick.
+
+Net effect: a LIVE placement is roughly half the latency it used to be; PAPER is even faster. The "snappier feeling" is the difference between a button-click and the order showing up on the Orders page being closer to instant.
+
+---
+
 ## Why every screen updates at the same time after a fill
 
 When you place an order and the broker fills it, you want the whole platform to catch up at once — the order book showing the new status, the positions grid showing the new qty, the snapshot grid recomputing its per-underlying totals, the payoff curve and Greeks recomputing for the new leg, the dashboard hero card refreshing P&L, the performance page reconciling holdings and positions. Pre-July 2026 this was an embarrassing **two-step refresh**: the qty cell would patch immediately, but the aggregations downstream waited for the next 5–15 second poll cycle. Net effect: a basket-order fill produced a flickery, "settling" UI that looked like it had a bug.

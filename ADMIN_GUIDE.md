@@ -838,6 +838,48 @@ Frontend: `branch=main + !user` = demo. Settings/Brokers/Users nav links hide. N
 
 ---
 
+## Navbar surface
+
+Pages grouped + ordered by daily-operator frequency. Two inline + two dropdown groups + one "Tour" entry:
+
+| Group | Items | Visibility |
+|---|---|---|
+| `monitor` (inline) | Tour · Pulse · Dashboard · Orders · Derivatives · Charts · Automation · Strategies · NAV | Always visible |
+| `explore` (inline) | Sandbox (URL `/admin/execution`) | Always visible |
+| `build` (dropdown) | Console · Research · Tokens | Click trigger to expand |
+| `config` (dropdown, admin) | Brokers · Settings · Users · Statements · History · Audit · Health | `adminOnly: true` |
+
+Renames (Jun 2026):
+- **`modes` group → `explore`** — the old name was vestigial from the sim/paper/live/shadow/replay terminology before the mode toggles moved to the navbar dropdown.
+- **`Lab` label → `Sandbox`** — matches industry-standard naming (QuantConnect / Streak / Sensibull all use "Sandbox" for this surface). The URL `/admin/execution` is unchanged so deep links + bookmarks keep working.
+- **Monitor resequenced** — Orders moved ahead of analysis surfaces (Derivatives / Charts); Strategies + NAV moved to the end of the group (lower daily frequency for a working trader).
+
+Group rendering: `INLINE_GROUPS` in `(algo)/+layout.svelte` (`monitor`, `analyze`, `explore`) controls which groups render inline; the rest collapse to dropdown triggers. Mobile drawer shows EVERY group with a `GROUP_LABELS` caption.
+
+---
+
+## Order placement latency — preflight + tick + paper-skip
+
+Three perf fixes shipped Jun 2026 to address the ticket-path slowdown that accumulated across recent slices:
+
+**1. Parallel preflight** ([backend/api/algo/actions.py::run_preflight](backend/api/algo/actions.py)):
+- Pre-fix: 4 sequential `broker.{profile, instruments, basket_order_margins, margins}` calls — ~800-1200ms total on Kite.
+- Now: one helper coroutine per call (`_fetch_profile` / `_fetch_instruments` / `_fetch_basket_margin` / `_fetch_account_margins`), all four fired via `asyncio.gather`. Wall-time drops to `max(individual call)` ≈ 300ms.
+- Each helper preserves its own exception handling so a broker-side failure on one doesn't sink the others.
+
+**2. Tick-size index** ([backend/api/routes/orders.py::_align_price_to_tick](backend/api/routes/orders.py)):
+- Pre-fix: linear scan through ~10-50k instrument rows on every call. Ticket route calls twice (price + trigger), so a single order paid ~100k linear iterations.
+- Now: `_TICK_INDEX` dict keyed by `(exchange, symbol)` → tick_size, built lazily from the instruments cache. `_TICK_INDEX_STAMP` tracks the cached response instance; identity flip → rebuild. Subsequent lookups are O(1).
+
+**3. PAPER skips route-level preflight**:
+- Pre-fix: `ticket_order` called `run_preflight()` for BOTH LIVE and PAPER. The paper engine itself already runs basket_margin internally (`PaperTradeEngine.register_open_order`'s REJECTED-vs-OPEN gate), so the route-level check was duplicate work.
+- Now: PAPER branch skips the preflight call entirely. Same QTY_FREEZE / SEGMENT_INACTIVE / MARGIN_SHORTFALL conditions still surface in the AlgoOrder row's `.detail` field within one engine tick.
+- LIVE preflight stays — only chance to block before `kite.place_order` fires.
+
+**Combined savings**: ~600ms LIVE, ~1500ms PAPER per ticket.
+
+---
+
 ## Postback fan-out — book_changed bus
 
 On every terminal order status from a broker postback (COMPLETE / CANCELLED / REJECTED / EXPIRED), the backend invalidates the orders + positions + holdings caches and broadcasts a `book_changed` WebSocket event. Every algo page subscribes to a shared debounced bus and refetches its primary loader in lockstep — single-iteration UI settle, replaces the prior "wait for the next 5–15 s poll" path.
