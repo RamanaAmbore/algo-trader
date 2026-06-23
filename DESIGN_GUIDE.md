@@ -1555,11 +1555,34 @@ Column mapping (re-using the generic `daily_book` schema to avoid a new table):
 
 The mapping is intentionally pragmatic — `daily_book` is denormalised by design, and adding a separate `funds_book` table would duplicate the schema without adding value. The semantics are clear from `kind='funds'`.
 
-### Known limits + planned next slices
+### Drill, delta, backfill — closed limits
 
-- **Funds backfill** — Kite Connect has no programmatic ledger; Dhan exposes `get_funds_ledger`. A follow-up could pull a one-shot historical seed from Dhan and `INSERT ... ON CONFLICT DO NOTHING` into `daily_book`. Kite accounts will only ever have data from the deploy date forward.
-- **Cashbook running balance** — reconstructing daily SOD balance + trade-leg deltas requires recon between funds snapshots and trades. Doable as a derived view in a 4th tab; not in scope of this slice.
-- **Per-row drill** — Orders rows don't yet link to the audit log via the `request_id` carried by `audit_log`. A future slice adds an action column with "view audit" → `/admin/audit?action=POST%20/api/orders/ticket&since_hours=…` pre-filtered.
+**Per-row audit drill** — closed. `algo_orders.request_id` (nullable VARCHAR(36), indexed) captured on `POST /api/orders/ticket` from `request.scope.state.request_id` stamped by `AuditMiddleware`. `GET /api/admin/audit` accepts a `request_id` filter param; the audit page reads `?request_id=…` URL param on mount + widens `since_hours` to 90 days. History Orders tab grows an `Audit ↗` column per row that opens `/admin/audit?request_id=<uuid>` pre-filtered.
+
+**Cashbook Δ on Funds tab** — closed. `FundsRow.cash_delta` computed server-side: `HistoryController.list_funds` walks rows in O(N), groups by `(account, segment)`, sorts ASC by date, sets `prior_cash` to the previous row's `cash_available` each step. Response keeps DESC order (newest first) for the UI; per-row delta carries the move within the (account, segment) series. UI tints positive green / negative red / em-dash for the first row in a series.
+
+**Funds backfill scaffold** — endpoint shipped, broker adapter wiring pending:
+
+```python
+@post("/funds/backfill", guards=[cap_guard("view_audit")])
+async def backfill_funds(self, data: FundsBackfillRequest) -> FundsBackfillResponse:
+    ...
+    broker = get_broker(account)
+    if not hasattr(broker, "funds_ledger"):
+        raise HTTPException(status_code=501, detail=...)
+    # implementation slot for the SDK call + INSERT ... ON CONFLICT DO NOTHING
+```
+
+Broker support matrix at ship time:
+- **Kite (zerodha_kite)**: no programmatic ledger — Zerodha Console download only. Always 501.
+- **Dhan**: `/v2/statement/ledger` REST endpoint exists; adapter method is a 1-file follow-up. Add `funds_ledger(from_date, to_date)` to `backend/shared/brokers/dhan.py::DhanBroker` returning `[{date, segment, cash_available, opening_balance, debits, realised_m2m, net, payload}, ...]`.
+- **Groww**: unclear SDK support; same follow-up.
+
+UI exposes the Backfill button universally; the 501 message surfaces inline so the operator sees which brokers are wired without reading docs.
+
+### Remaining limit
+
+- **Cashbook view as a separate tab** — running-balance walk that reconciles trade-leg deltas against funds snapshots row by row. The Δ column gives the daily move; a dedicated tab could enumerate the trade contributions that produced it. Not in scope for this slice; a follow-up SQL view + 4th tab.
 
 ### Source files
 

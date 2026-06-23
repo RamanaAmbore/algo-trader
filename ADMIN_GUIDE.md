@@ -916,11 +916,31 @@ Multi-day forensic surface for the three "book of record" datasets — Orders (e
   - `total_pnl`     → `net`                        (segment net worth)
 - Special sentinel: `symbol='__seg__'` (the table's unique constraint requires a symbol; funds rows are per-segment, not per-symbol).
 
-**Known limits / next slices:**
+**Audit drill on Orders rows:**
 
-- Funds **backfill** doesn't exist. Kite Connect has no programmatic ledger; Dhan has `get_funds_ledger` (could pull a one-shot historical seed). Until backfill lands, the Funds tab grows from today forward.
-- **Cashbook view** (running balance reconstruction) — not yet. Reconstructing requires SOD balance + trade deltas + funds snapshot recon; a follow-up slice can layer that on as a 4th tab.
-- **Per-row drill** — Orders rows don't yet link to the audit log via `request_id`; manual cross-reference via `/admin/audit` for now.
+- Every Orders row carries an **Audit ↗** column linking to `/admin/audit?request_id=<uuid>`.
+- The `request_id` column was added Jun 2026 + auto-populated by `POST /api/orders/ticket` from the middleware's `scope.state.request_id`. Rows placed before this column existed land NULL and the column renders em-dash.
+- `/admin/audit` reads `?request_id=…` URL param on mount + widens `since_hours` to 90 days so older rows surface. Manual filter input also available in the audit page's Filter row ("Request id").
+
+**Cashbook Δ on Funds:**
+
+- Funds tab carries a **Δ vs prior** column — day-over-day change in `cash_available` within each `(account, segment)` series.
+- Computed server-side (`HistoryController.list_funds` does one O(N) walk; groups by `(account, segment)`, sorts ASC by date, sets `prior_cash = current cash` each step).
+- Sign-tinted (green positive / red negative); first row in a series renders em-dash (no prior to compare).
+
+**Backfill scaffold (Funds tab):**
+
+- New `POST /api/admin/history/funds/backfill` endpoint accepting `{account, from_date, to_date}`. Cap-gated by `view_audit`.
+- Looks up the broker via the registry; if the adapter doesn't expose `funds_ledger(from_date, to_date)`, returns **501** with operator-facing guidance.
+- Broker support today:
+  - **Kite (zerodha_kite)** — no programmatic ledger ever (Console download only). Will always 501.
+  - **Dhan** — has `/v2/statement/ledger` REST endpoint; adapter method is a 1-file follow-up slice.
+  - **Groww** — unclear SDK support; same follow-up.
+- UI exposes a Backfill row on Funds tab (account input + "Pull ledger ↓" button) that surfaces the 501 message inline. The endpoint + UI are in place so the next slice flips on a single broker by adding `funds_ledger()` to its adapter.
+
+**Remaining limit:**
+
+- **Cashbook view** as a separate tab (running balance walk that reconciles trade-leg deltas against funds snapshots) — not yet. The Δ column above gives the daily move on cash but doesn't surface the trade-by-trade contribution; a 4th tab could layer that on.
 
 ---
 

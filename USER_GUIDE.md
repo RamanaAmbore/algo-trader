@@ -503,6 +503,12 @@ All three live behind one page at `/admin/history` (admin / risk / ops roles). T
 
 The page is read-only. If you need to take action on something you see (re-place a cancelled order, investigate a rejection), use the Audit log to find the request_id and trace what happened.
 
+**Audit drill on Orders rows** — each Orders row carries an **Audit ↗** link in the last column. Click it and `/admin/audit` opens pre-filtered to that order's request_id, with the since-hours window widened to 90 days so you can find rows older than the default 72h window. You see every audit event tied to the same HTTP request (placement, downstream cache writes, postback fills if they correlate). Older orders placed before this column existed show an em-dash instead — they don't have a request_id stamped at insert time.
+
+**Cashbook Δ on Funds** — the Funds tab now carries a **Δ vs prior** column showing the day-over-day change in your cash available, computed within each (account, segment) series. Green = cash went up, red = cash went down, em-dash = first row in the series (no prior to compare against). The running balance you're tracking IS the Cash avail column; the Δ column makes each day's move explicit.
+
+**Backfill button** — at the top of the Funds tab there's a Backfill row where you can type an account code and hit "Pull ledger ↓". This fires a request that asks the broker for historical ledger entries to seed days before tracking started. Right now the broker adapters don't implement the ledger call (Kite Connect has no programmatic ledger — Zerodha Console download only; Dhan + Groww adapter wiring is a follow-up slice), so you'll see a 501 message saying so. The endpoint + UI are in place; when the adapter lands you get historical backfill without a redeploy.
+
 ---
 
 ## Audit log — what's recorded

@@ -2312,10 +2312,19 @@ Idempotent via existing `(date, account, kind, symbol)` unique constraint.
 
 **Navbar:** `History` entry in Config group between Statements and Audit.
 
-**Known limits + future slices:**
-- Funds backfill: Kite has no programmatic ledger; Dhan has `get_funds_ledger` (one-shot historical seed possible). Today: data accumulates from deploy forward only.
-- Cashbook running balance reconstruction: not yet — needs trade-leg + funds-snapshot recon, doable as a 4th tab.
-- Per-row drill: Orders rows don't yet cross-link to `/admin/audit` via `request_id`. Add an action column linking to a pre-filtered audit view.
+**Per-row audit drill** ✓ — `algo_orders.request_id` (nullable VARCHAR(36), indexed) captured by `POST /api/orders/ticket` from `request.scope.state.request_id`. `GET /api/admin/audit` accepts `request_id` filter; audit page reads `?request_id=…` URL param on mount + widens since-hours to 90 days. Orders tab on `/admin/history` has an **Audit ↗** column per row → opens `/admin/audit?request_id=<uuid>` pre-filtered. Legacy rows pre-Jun 2026 render em-dash.
+
+**Cashbook Δ on Funds** ✓ — `FundsRow.cash_delta` computed server-side: `HistoryController.list_funds` walks rows O(N), groups by `(account, segment)`, sorts ASC by date, tracks `prior_cash`. UI sign-tints positive green / negative red / em-dash for first row in series.
+
+**Funds backfill scaffold** (broker adapter wiring pending) — `POST /api/admin/history/funds/backfill` endpoint accepts `{account, from_date, to_date}`. Adapter contract: `Broker.funds_ledger(from_date, to_date) -> list[dict]`. If not implemented, returns 501 with broker-specific message. Broker matrix:
+- **Kite**: no programmatic ledger ever (Console download only) — always 501.
+- **Dhan**: `/v2/statement/ledger` REST endpoint exists; 1-file adapter follow-up.
+- **Groww**: unclear SDK support; same follow-up.
+
+UI exposes Backfill row on Funds tab (account + "Pull ledger ↓" button); 501 message surfaces inline.
+
+**Remaining limit:**
+- Cashbook running-balance tab (separate from the Δ column) — trade-leg attribution to daily cash moves. Would be a 4th tab walking trades + funds snapshots row-by-row.
 
 **Adding a new history surface** (recipe):
 1. Pick the source table — extend `daily_book` with a new `kind` value, or add a dedicated table.
