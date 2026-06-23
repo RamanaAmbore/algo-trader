@@ -737,6 +737,21 @@ Manage accounts via UI, no SSH/YAML/restart. Page: account table (code | broker 
 
 **Capabilities endpoint** (`GET /api/admin/brokers/{account}/capabilities`): returns `BrokerCapabilities` dataclass (gtt_single / gtt_oco / gtt_modify / etc.) for in-page feature gating (OrderTicket warning chips).
 
+### Broker postback webhooks
+
+| Broker | Webhook URL | Status |
+|---|---|---|
+| Kite (Zerodha) | `https://ramboq.com/api/orders/postback` | Wired with HMAC-SHA256 validation (`order_id + order_timestamp + api_secret`). Configure in Kite developer console per app. |
+| Dhan | `https://ramboq.com/api/orders/dhan_postback` | Scaffold route — best-effort parse + log raw payload. Configure in Dhan partner dashboard per account. First real fill writes the payload to `api_log_file` so the parser can be tuned. |
+| Groww | `https://ramboq.com/api/orders/groww_postback` | Scaffold route — same shape as Dhan. Groww postback support is uncertain per the broker-API audit. |
+
+All three routes:
+- `guards=[]` (broker webhooks deliver unauthenticated; integrity ensured by signature where supported)
+- Best-effort: never 5xx (broker retries on non-2xx)
+- Same fan-out as Kite: AlgoOrder row sync by `broker_order_id`, audit log entry tagged `order.fill|cancel|reject`, cache invalidation (orders / positions / holdings on terminal), WS broadcasts (order_update + position_filled on COMPLETE + book_changed on terminal)
+
+Without postback configuration, the chase loop's 20-second poll catches the fill — operator-visible lag of up to 20s. With postback configured, fills land in roughly a second.
+
 ---
 
 ## Investor portal — mint URL for an LP
@@ -835,6 +850,46 @@ Anonymous prod visitors see real broker data with accounts masked (`ZG####`), ca
 Backend: `is_demo_request()` = main + no JWT. `auth_or_demo_guard` admits + sets `is_demo=True`. Write endpoints: `place`/`modify`/`cancel` 403; `/api/orders/ticket` downgrades `live → paper`. Read data masked via `mask_column()`.
 
 Frontend: `branch=main + !user` = demo. Settings/Brokers/Users nav links hide. Navbar badges: `DEMO` (purple) / `PAPER` (blue) / `SIM` (red).
+
+---
+
+## Roles — the canonical 5 + the designated escape hatch
+
+The platform's RBAC surface is **5 canonical roles** + 1 legacy preserved role + a synthetic role for anonymous visitors:
+
+| Role | Caps | Notes |
+|---|---|---|
+| `admin` | Everything per the matrix in `backend/api/rbac.py::CAPS` | Default for trusted operators |
+| `trader` | place / modify / cancel orders + view book; horizontal scope via `assigned_accounts` + `assigned_strategies` | PM tier |
+| `risk` | view everything + kill-switch + adjust risk floors | Compliance + on-call monitoring |
+| `ops` | manage brokers + manage users + view audit | Operations admin |
+| `observer` | view-only aggregate; no trading, no settings | LP-style read access |
+| `demo` | view-only on prod (anonymous visitor) | Public surface, no auth |
+| `designated` | Same caps as admin via `normalise_role` collapse, BUT three super-admin code paths still branch on the literal value | Legacy super-admin tier; intentionally preserved |
+
+**Where `designated` still matters at the code level:**
+- `designated_guard` on `/admin/users/{username}/terminate` and `/admin/users/{username}/toggle-designated` endpoints (can't terminate other admins or promote/demote between admin↔designated unless you're designated)
+- `alert_utils.get_alert_recipients()` always includes designated emails regardless of `receive_alerts` toggle
+- `/admin` UI hides terminate / promote / view-as buttons unless the actor is designated
+
+A user with role='designated' has all admin caps PLUS those three super-admin gates. Going forward new users should land on one of the 5 canonical roles; the auto-bootstrap migration (init_db) flips role='partner' → 'observer' on existing rows. Operator can promote an admin → designated via `/admin` → user row → Promote button.
+
+### Audit workflow — the #audit tag
+
+The operator runs a periodic comprehensive audit by writing `#audit` (literal hashtag) in chat. The platform's coding agent dispatches parallel audit subagents across 8 dimensions and synthesizes findings:
+
+| Dimension | Scope |
+|---|---|
+| Performance | Hot-path latencies, sequential awaits, missing caches, polling cadences |
+| Defects | Race conditions, broken error paths, type confusion, off-by-one |
+| Stale code | Dead branches, unused imports / functions, deprecated comments |
+| UX consistency | Duplicate components, mismatched card chrome, inconsistent button placement |
+| Color palette | Off-palette hex codes, CSS custom-prop vs hardcoded rgba |
+| Broker API parity | Per-adapter (Kite/Dhan/Groww) implementation gaps, Kite-shape compliance |
+| Data layer | Schema drift, missing indexes, unused columns, FK ON DELETE behavior |
+| Docs | Every .md guide + .pdf assets — drift, gaps, inconsistency |
+
+Reports are summarized into a punch list with severity (HIGH / MED / LOW) and proposed remediation slices. Audit findings shipped to date are tracked in commits with the `audit slice` prefix (`audit slice A`, `audit slice B`, etc.).
 
 ---
 

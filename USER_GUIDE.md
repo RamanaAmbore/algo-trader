@@ -492,6 +492,24 @@ Older builds called the Sandbox page "Lab" and the group "Modes." The labels wer
 
 ---
 
+## Why every signed-in role can reach the algo surfaces now
+
+Earlier the platform redirected any signed-in user who wasn't an admin or "designated" tier back to the sign-in page the moment they hit an algo URL. That was holdover behavior from the old two-tier model — admin (operator) and partner (LP) — before the platform grew the five-role surface (admin / trader / risk / ops / observer). Today a trader or risk officer signing in can navigate every algo page; specific surfaces still check the user's role before showing data (a trader doesn't see audit logs, a risk officer doesn't see broker credentials), but the navigation itself doesn't bounce.
+
+This fix also unblocked the **Tour** — clicking any showcase link as a logged-in non-admin used to drop the visitor back at /signin. It just opens the surface now.
+
+Same fix on the **History page**: the page used to briefly render "Access denied" until the role-bootstrap completed, then never actually load even after the role was resolved. The data loads as soon as the role check passes.
+
+## Snappier broker postbacks for Dhan accounts
+
+If you trade through a Dhan account, fills used to take up to 20 seconds to appear in the platform — the chase loop polled Dhan's order book on a 20-second cadence and detected the fill on the next tick. Kite has had a near-instant postback hook for years; Dhan only recently exposed an equivalent webhook URL.
+
+A scaffold route is live at `https://ramboq.com/api/orders/dhan_postback`. Configure that URL in your Dhan partner dashboard's webhook settings for each Dhan account. The first fill after configuration writes the raw payload to `api_log_file` (so the parser can be tuned to Dhan's actual field names), and from then on Dhan fills appear in the platform within roughly a second instead of waiting for the next chase poll.
+
+Same setup will work for Groww when their webhook support is confirmed — route already lives at `/api/orders/groww_postback`.
+
+---
+
 ## Why placing an order feels snappier now
 
 If you used the platform before July 2026 you might have noticed an order placement taking ~1 second to register. That was preflight overhead — every ticket fired 4 sequential broker calls (account profile, instruments lookup, basket margin, fund balance) to catch obvious blockers (segment not enabled, qty exceeds freeze, margin shortfall) before sending the real order. Each broker call cost ~200-300ms, so 4 sequential calls = ~800-1200ms of waiting per ticket.

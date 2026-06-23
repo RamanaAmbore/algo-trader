@@ -50,6 +50,7 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 22.9. [History — multi-day orders / trades / funds](#229-history--multi-day-orders--trades--funds)
 22.10. [Order placement latency — preflight + tick cache + paper-skip](#2210-order-placement-latency--preflight--tick-cache--paper-skip)
 22.11. [Navbar audit — rename + resequence](#2211-navbar-audit--rename--resequence)
+22.12. [#audit workflow + Dhan / Groww postback scaffold](#2212-audit-workflow--dhan--groww-postback-scaffold)
 
 ### Part VII — Operations
 23. [How to add a new template field](#23-how-to-add-a-new-template-field)
@@ -1732,6 +1733,63 @@ const INLINE_GROUPS = new Set(['monitor', 'analyze', 'explore']);
 ```
 
 `INLINE_GROUPS` controls which groups render inline in the desktop nav; the rest collapse to dropdown triggers. Mobile drawer shows every group with a `GROUP_LABELS` caption for scan-by-intent navigation.
+
+---
+
+## 22.12. #audit workflow + Dhan / Groww postback scaffold
+
+The operator runs periodic comprehensive audits by writing the literal hashtag `#audit` in chat. The coding agent dispatches 8 parallel `audit` subagents (one per dimension: performance / defects / stale code / UX consistency / palette / broker-API parity / data layer / docs) and synthesizes findings into a severity-tagged punch list. Audit findings ship as `audit slice <letter>` commits.
+
+⚙ **TECH — Parallel audit subagents vs single deep review** — `WHY` A single agent asked to cover 8 dimensions produces shallow work on each. Eight focused subagents each get a tight scope brief, run concurrently, and report independently. `WHAT` 8 Agent tool-calls in one message with `subagent_type=audit` (read-only), each prompt cites the canonical patterns to check against. `HOW` Each subagent returns a focused punch list with severity tags (HIGH / MED / LOW); the coordinator synthesizes into a remediation plan rather than firing fixes unilaterally. `WHERE` Memory file `~/.claude/projects/-Users-ramanambore-projects-ramboq/memory/feedback_audit_tag.md` documents the workflow.
+
+### Audit slices A, B, C (shipped Jun 2026)
+
+**Slice A — quick wins**: doc drift in CLAUDE.md + README.md (navbar renames `modes`→`explore`, `Lab`→`Sandbox`, monitor sequence); stale code purges (`OrderDetail.svelte`, `margin_optimizer.py`, `shadow.py` + `ShadowController`, 4 api.js shadow stubs, `fetchPnlRange` — all confirmed unreferenced); palette fixes (LogPanel border `#10b981`→`#4ade80`; RefreshButton badges 600-level→400-level).
+
+**Slice B — perf + data layer**:
+- `_task_performance` ticker subscribe loop, `_task_trail_stop`, `_task_oco_pair_watcher`: sequential per-account awaits → `asyncio.gather`. Each saves ~200-300ms × N accounts.
+- `get_lot_size` O(N) → O(1) via `_LOT_INDEX` dict (same identity-stamp invalidation pattern as `routes/orders.py::_TICK_INDEX`).
+- 3 DB indexes added in `init_db` migration block (idempotent `CREATE INDEX IF NOT EXISTS`):
+  - `ix_algo_orders_trail_stop` — partial on (mode, status) WHERE attached_gtts_json IS NOT NULL
+  - `ix_news_headlines_published_at` — DESC
+  - `ix_strategy_lots_open` — composite missing from create_all on pre-existing tables
+- Operator-visible interrupt fixes batched in:
+  - `/admin/history` + `/admin/audit`: $effect-gated load (was `onMount` checking `_canView` once at false; load never fired)
+  - Algo layout: removed blanket "non-admin → /signin" redirect (vestigial from old admin/partner tier; broke tour for trader/risk/ops/observer)
+  - "Prev Close" → "Close" rename across PerformancePage, MarketPulse, /admin/derivatives
+
+**Slice C — defects + Dhan/Groww postback scaffold**:
+- `list_active_chases` template-attach gap: live-reconcile path flipped FILLED but never called `_maybe_fire_template_attach_for_reconcile`. Now captures `_reconciled_filled` rows + fires after commit.
+- `chase.py:806` partial-fill slippage formula: `quantity` → `filled_qty or quantity` (the old formula overstated slippage when partials happened).
+- New routes `POST /api/orders/{dhan,groww}_postback` with shared `_process_broker_postback` helper that mirrors the Kite path's fan-out (AlgoOrder sync + audit log + cache invalidate + WS broadcasts). Best-effort; logs raw payload on first hit so parser can be tuned.
+
+### `_process_broker_postback` shared helper
+
+[`backend/api/routes/orders.py::_process_broker_postback`](backend/api/routes/orders.py) — extracted from the Kite postback inline logic so Dhan + Groww routes call the same fan-out:
+
+```python
+async def _process_broker_postback(
+    *, broker_id, order_id, status, account, symbol, txn, qty, price,
+    exchange="", status_message="",
+):
+    # 1. AlgoOrder row sync by broker_order_id (status, fill_price, filled_at)
+    # 2. order_events row (broker_postback kind)
+    # 3. audit_log entry tagged order.fill|cancel|reject
+    # 4. invalidate orders / positions / holdings on terminal
+    # 5. broadcast order_update + position_filled + book_changed
+```
+
+Status normalization uses `_DHAN_STATUS_TO_KITE` and `_GROWW_STATUS_TO_KITE` tables already in the broker adapters. Best-effort throughout; never 5xx so the broker doesn't retry.
+
+### Source files
+
+- `backend/api/algo/actions.py::run_preflight` — parallel gather (slice 22.10)
+- `backend/api/background.py::_task_{performance,trail_stop,oco_pair_watcher}` — slice B parallel gathers
+- `backend/shared/brokers/kite.py::get_lot_size` + `_LOT_INDEX` — slice B O(1) lookup
+- `backend/api/database.py::init_db` — slice B index migrations
+- `backend/api/routes/orders.py::list_active_chases` — slice C template-attach fix
+- `backend/api/algo/chase.py:806` — slice C slippage formula
+- `backend/api/routes/orders.py::order_postback_{dhan,groww}` + `_process_broker_postback` — slice C postback scaffolds
 
 ---
 

@@ -2390,6 +2390,32 @@ const INLINE_GROUPS = new Set(['monitor', 'analyze', 'explore']);
 
 ---
 
+## #audit workflow + Dhan / Groww postback scaffold
+
+The operator runs comprehensive audits by writing the literal hashtag `#audit` in chat. The coding agent dispatches 8 parallel `audit` subagents across these dimensions: **performance / defects / stale code / UX consistency / palette / broker-API parity / data layer / docs**. Each agent gets a focused scope brief; the coordinator synthesizes findings into a severity-tagged punch list and proposes remediation slices rather than firing fixes unilaterally. Memory note at `~/.claude/projects/-Users-ramanambore-projects-ramboq/memory/feedback_audit_tag.md` documents the workflow + the 8 dimensions.
+
+**Shipped audit slices (Jun 2026):**
+
+- **A — quick wins**: doc drift (CLAUDE.md + README.md); deleted `OrderDetail.svelte`, `margin_optimizer.py`, `shadow.py` + `ShadowController`, 4 api.js shadow stubs, `fetchPnlRange`; palette fixes (LogPanel border, RefreshButton badges to canonical 400-level).
+- **B — perf + data + interrupt fixes**: 3 sequential awaits → `asyncio.gather` (`_task_performance` ticker subscribe, `_task_trail_stop`, `_task_oco_pair_watcher`); `get_lot_size` O(N)→O(1) via `_LOT_INDEX` dict; 3 DB indexes added in `init_db`; `/admin/history` + `/admin/audit` $effect-gated load (was stuck on "Access denied" before whoami resolved); algo layout blanket "non-admin → /signin" redirect removed (broke tour for trader/risk/ops); "Prev Close" → "Close" rename.
+- **C — defects + Dhan/Groww postback scaffolds**: `list_active_chases` template-attach gap closed; `chase.py:806` partial-fill slippage formula fixed; new routes `POST /api/orders/{dhan,groww}_postback` with shared `_process_broker_postback` helper mirroring Kite path's fan-out.
+
+**Postback webhook surface:**
+
+| Broker | URL | Validation | Status |
+|---|---|---|---|
+| Kite | `/api/orders/postback` | HMAC-SHA256 over `order_id + order_timestamp + api_secret` | Production |
+| Dhan | `/api/orders/dhan_postback` | None yet (broker doesn't surface signature scheme) | Scaffold — logs raw payload on first hit so parser can be tuned |
+| Groww | `/api/orders/groww_postback` | None yet | Scaffold |
+
+All three use `guards=[]` and `_process_broker_postback` (or inline equivalent for Kite). Best-effort; never 5xx so the broker doesn't retry. Operator configures the URL in the broker's partner / developer dashboard per account.
+
+**`_process_broker_postback` ([orders.py](backend/api/routes/orders.py))**: shared helper extracted from the Kite inline logic. Mirrors the same fan-out: AlgoOrder row sync by `broker_order_id` → audit log entry tagged `order.fill|cancel|reject` → cache invalidate on terminal (orders / positions / holdings) → WS broadcasts (`order_update` + `position_filled` on COMPLETE + `book_changed` on terminal). Status normalisation via `_DHAN_STATUS_TO_KITE` and `_GROWW_STATUS_TO_KITE` tables in the adapters.
+
+**Roles surface** (slice-B documentation alignment): canonical 5 = `admin / trader / risk / ops / observer` + legacy `designated` (super-admin) + synthetic `demo` for anonymous on prod. `designated` is intentionally preserved — three code paths still branch on the literal value (`designated_guard` on terminate/promote, `alert_utils.get_alert_recipients`, `/admin` UI gating). `normalise_role` collapses `designated`→`admin` for the cap matrix so any cap-gated check works.
+
+---
+
 ## Refactoring Notes
 
 **Day P&L formula** (commits b95ccd79–ba9cf39c): Decomposed intraday (not naive `(LTP−close)×qty`). Positions: `overnight_qty × (LTP − prev_close) + day_buy/sell legs`. Holdings: `broker.pnl − (close − cost) × opening_qty`. **MCX guard**: apply lot_size multiplier to intraday qty too (pre-fix: ₹61k phantom GOLDM due to unit mismatch). **Always verify qty units in P&L edits.**
