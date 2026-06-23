@@ -44,6 +44,7 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 21. [Data refresh — PositionStrip + Dashboard](#21-data-refresh--positionstrip--dashboard)
 22. [Demo mode](#22-demo-mode)
 22.5. [Investor portal — token-as-credential](#225-investor-portal--token-as-credential)
+22.6. [Investor portal — units-based NAV math](#226-investor-portal--units-based-nav-math)
 
 ### Part VII — Operations
 23. [How to add a new template field](#23-how-to-add-a-new-template-field)
@@ -1259,6 +1260,98 @@ Idempotent: revoking an already-revoked row is a no-op (the original `revoked_at
 - `frontend/src/routes/investor/[token]/+page.svelte` — LP-facing page
 - `frontend/src/routes/(algo)/admin/+page.svelte` — `openPortal()` modal + mint flow
 - `frontend/src/lib/api.js::{fetchInvestorTokens, mintInvestorToken, revokeInvestorToken}`
+
+---
+
+## 22.6. Investor portal — units-based NAV math
+
+The v1 model (`slice = share_pct × firm_nav`) is **retired**. Every LP slice / cost-basis / P&L computation now flows through the standard fund-accounting units model:
+
+```
+units_held(user, t)   = Σ units_delta for user's events <= t
+total_units(t)        = Σ units_held across every LP
+nav_per_unit(t)       = firm_nav(t) / total_units(t)
+slice(user, t)        = units_held × nav_per_unit
+cost_basis(user, t)   = Σ amount (sub+bootstrap) − Σ amount (redemption)
+pnl(user, t)          = slice − cost_basis
+```
+
+⚙ **TECH — Units vs static share_pct** — `WHY` static share_pct breaks when an LP joins mid-period (their cost basis is the day they bought in, not "since fund inception") or partially redeems (the remaining slice's basis must shrink in proportion). `WHAT` Each LP holds a count of partnership units; the fund publishes a per-unit value daily; slices are products. `HOW` Subscription buys units at the day's nav_per_unit, redemption sells at the day's nav_per_unit, gains accrue automatically through firm_nav growth. `WHERE` `backend/api/algo/investor_units.py` is the single math source; four callsites consume it.
+
+### Single source of math
+
+[`backend/api/algo/investor_units.py`](backend/api/algo/investor_units.py) exposes:
+
+- `ensure_user_bootstrap(s, user)` — idempotent synthetic-event seed for v1 → units migration
+- `ensure_all_bootstrapped(s)` — covers every eligible LP; called at the start of every units compute
+- `units_held(events, as_of)` / `cost_basis(events, as_of)` — pure-function primitives
+- `slice_value(user_events, all_events, firm_nav, as_of)` — returns `(slice, nav_per_unit)`
+- `compute_slice(s, user, firm_nav, as_of)` — DB-aware wrapper
+- `compute_slice_history(user_events, all_events, firm_curve)` — pre-fetched, walks dates in pure Python
+
+Switched callsites (all four):
+
+| Surface | Old | New |
+|---|---|---|
+| `/api/nav/me` (authenticated LP) | `share_pct × firm_nav / 100` | `compute_slice()` |
+| `/api/nav/me/history` | scaled curve | `compute_slice_history()` |
+| `/api/investor/{token}/slice` + `/history` (public portal) | scaled curve | `compute_slice` / `compute_slice_history` |
+| `compute_statement()` (monthly PDF) | period-anchored scale | event-walked slice |
+
+### Auto-bootstrap rule
+
+On every units compute, `ensure_all_bootstrapped(s)` scans every eligible LP (`is_active=True AND share_pct > 0`) and inserts a synthetic event for any without one. The bootstrap row encodes the v1 state:
+
+```python
+InvestorEvent(
+    event_type   = "bootstrap",
+    units_delta  = user.share_pct,
+    amount       = user.contribution,
+    nav_per_unit = contribution / share_pct  # 1.0 fallback when contribution=0
+    event_date   = contribution_date or created_at.date() or today,
+)
+```
+
+This guarantees that **the first request after this code lands reproduces v1 numbers identically** when share_pcts sum to 100 across all eligible LPs. When the sum != 100 (operator-residual case with implicit ownership), the units model redistributes proportionally and slices sum to `firm_nav` by construction — slightly different numbers, but internally consistent + correct going forward.
+
+### Day-delta semantics under units
+
+`day_delta_share` on `/api/nav/me` is computed as `slice(today) − slice(prior)`, both via the SAME event set. This means:
+
+- A pure market gain shows up as positive day-delta ✓
+- A subscription between the two snapshots inflates `slice(today)` but ALSO appears in cost_basis, so it doesn't read as P&L on the LP's portal
+- A redemption deflates `slice(today)` symmetrically
+
+The portal UI labels this as "Day Δ" but the operator should read it as "change in your slice's market value since yesterday's snapshot."
+
+### Smoke-test invariants
+
+Math is verified end-to-end against a fixture (see commit `322f0c22`):
+
+| Scenario | Invariant | Verified |
+|---|---|---|
+| All LPs at bootstrap, share_pcts sum to 100 | slices match v1 exactly | ✓ |
+| Fund grows N% | each LP's slice grows N% on their basis | ✓ |
+| LP_A subscribes mid-period at higher nav_per_unit | extra subscription doesn't double-count as P&L | ✓ |
+| Any state | Σ slices == firm_nav (modulo rounding) | ✓ |
+
+### Bootstrap edit / correction path
+
+Operator wants to fix a bootstrap row (wrong contribution, wrong share_pct in `users` row, missing LP):
+
+1. Edit `User.contribution` / `share_pct` in `/admin` (existing flow)
+2. Delete the bootstrap event in `/admin` → Portal → Events tab
+3. Next compute auto-bootstraps with the corrected User columns
+
+The delete-then-recompute cycle preserves history (bootstrap event has the old timestamp) without manual reconciliation.
+
+### Source files
+
+- `backend/api/algo/investor_units.py` — math + bootstrap
+- `backend/api/algo/investor_statement.py::compute_statement` — PDF math via units
+- `backend/api/routes/nav.py::my_slice` + `my_history` — authenticated LP endpoints
+- `backend/api/routes/investor.py::slice` + `history` — public portal endpoints
+- `backend/api/models.py::InvestorEvent` — events journal table
 
 ---
 

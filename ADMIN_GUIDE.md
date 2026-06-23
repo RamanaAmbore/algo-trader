@@ -772,7 +772,51 @@ LP-facing read-only page at `/investor/<token>` showing the LP's NAV slice + 180
 
 **Cap**: `manage_investor_tokens` is admin-only. Trader / risk / ops cannot mint — LP onboarding is a designated activity.
 
-**Math**: `nav_share = share_pct × firm_nav / 100` — same formula as `/api/nav/me` (slice 7k). Static-share v1; subscription / redemption events not modelled. LP sees their slice as a static % of firm NAV at every NAV snapshot.
+**Math** (units model — slice 7N+):
+
+```
+units_held(user, t)   = Σ units_delta for events <= t
+total_units(t)        = Σ units_held across every LP
+nav_per_unit(t)       = firm_nav(t) / total_units(t)
+slice(user, t)        = units_held × nav_per_unit
+cost_basis(user, t)   = Σ amount (sub+bootstrap) − Σ amount (redemption)
+pnl(user, t)          = slice − cost_basis
+```
+
+All four surfaces — `/api/nav/me`, `/api/nav/me/history`, `/api/investor/{token}/slice` + `/history`, and the monthly PDF — use the same `investor_units.compute_slice()` helper.
+
+**Auto-bootstrap** runs on first compute. For every eligible LP (active + share_pct > 0) without events, inserts one synthetic event:
+
+| Field | Value |
+|---|---|
+| `event_type` | `bootstrap` |
+| `units_delta` | `User.share_pct` |
+| `amount` | `User.contribution` |
+| `nav_per_unit` | `contribution / share_pct` (or `1.0` when contribution=0) |
+| `event_date` | `contribution_date` → `created_at` → today (fallback chain) |
+| `note` | `auto-bootstrap from v1 share_pct` |
+
+When share_pcts sum to 100 across all eligible LPs, this reproduces v1 numbers exactly. When sum != 100 (operator residual implied via low share_pct), units math redistributes proportionally and slices sum to `firm_nav` by construction.
+
+**Verifying bootstrap after deploy:**
+
+1. Hit `/nav` once (as the operator, or any authenticated LP) → triggers auto-bootstrap
+2. Open `/admin` → pick an eligible LP → Portal → Events tab → confirm one `Bootstrap` pill row exists with the right `units_delta` + `amount`
+3. Spot-check `slice = units_held × nav_per_unit` against the headline value the LP sees
+
+**Logging real subscription / redemption events:**
+
+In `/admin` → user row → Portal → Events tab → Add event:
+
+| Field | What to enter |
+|---|---|
+| Type | Subscription (capital in) / Redemption (capital out) / Bootstrap (correction) |
+| Date | `YYYY-MM-DD` of the bank transfer / wire |
+| Amount | Positive rupees, regardless of direction |
+| NAV/unit | Per-unit value on that date (compute from firm_nav ÷ total_units, or trust the operator's reconciliation) |
+| Note | Optional — e.g. "Wire ref 12345" |
+
+The backend computes signed `units_delta = ±amount/nav_per_unit` automatically.
 
 **Security model:** The URL IS the credential, same shape as Carta / SS&C investor magic-links. Don't email it to a shared inbox. If you suspect leakage, revoke + re-mint.
 

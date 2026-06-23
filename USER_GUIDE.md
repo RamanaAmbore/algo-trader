@@ -442,6 +442,41 @@ The portal is read-only by definition — there's no submit-an-order surface, no
 
 ---
 
+## How each LP's slice is calculated — the units model
+
+If a single LP put in ₹10L and the fund is now worth ₹11L, you don't need much math to figure out their slice is ₹11L (assuming they own 100%). It gets interesting when:
+
+- **A second LP joins partway through.** Should they get the same percentage as the original LP? No — they put in at a higher per-unit value because the fund had already gained.
+- **An LP takes some money out mid-year.** What price do they redeem at? Whatever the fund's per-unit value is on the day they exit.
+- **The fund posts a year of returns and you want to credit each LP their share.** The earlier LP gets credit for the full year; the late joiner only gets credit for their tenure.
+
+The standard solution every real fund admin uses (Carta, CAMSonline, SS&C/GP-Link, every Cat-III AIF) is **units**:
+
+1. **Each LP holds a number of "units."** Think of these like partnership shares — an abstract count, not rupees.
+2. **The fund publishes a NAV per unit each day.** It's just `fund value ÷ total units outstanding`.
+3. **An LP's slice = their units × today's NAV per unit.** That's it.
+4. **A new subscription buys units at the day's NAV per unit.** ₹5L when NAV/unit is ₹1.1L gets them 4.55 units.
+5. **A redemption sells units at the day's NAV per unit.** Same arithmetic, in reverse.
+6. **An LP's P&L = current slice − total capital they put in (less anything they took out).** Capital movements never count as "gains."
+
+This is what RamboQuant runs under the hood. The portal still shows a single ₹ number to each LP, but the engine computing it is doing proper fund-accounting math, not a flat `share_pct × firm_nav`.
+
+**What you'll see when you first deploy this:**
+
+The first time anyone hits the NAV page after the units-math switch, RamboQuant looks at every LP with a non-zero `share_pct` and auto-creates one **bootstrap** event per LP. This converts the old static-share state into the units model. You'll see these events appear in `/admin` → Portal → Events tab with the label "auto-bootstrap from v1 share_pct."
+
+You don't have to do anything for this conversion. The bootstrap math is designed so that if your LP shares already sum to 100% (e.g. you and two LPs split 70/15/15), the numbers come out identical to the old model on day one. Subsequent gains and capital movements then flow through the units machinery correctly.
+
+**When to log a real event:**
+
+- An LP adds capital → click `/admin` → user row → Portal → Events tab → Add: type=Subscription, amount, NAV/unit at that date, optional note.
+- An LP takes capital out → same form, type=Redemption.
+- The bootstrap was wrong (e.g. you typed contribution=0 by mistake when the LP actually put in ₹5L) → delete the bootstrap row + manually add a fresh bootstrap with the correct numbers, OR add a corrective subscription event.
+
+The next NAV snapshot (16:00 IST, or the operator's manual recompute) will reflect the new units.
+
+---
+
 ## Glossary
 
 - **Agent** — a rule row on `/agents`.

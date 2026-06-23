@@ -2132,7 +2132,32 @@ LP-facing read-only surface at `/investor/<token>`. Token IS the credential — 
 
 **Admin modal** ([`(algo)/admin/+page.svelte::openPortal`](frontend/src/routes/(algo)/admin/+page.svelte)): expires_in_days + optional note form → mint → freshly-minted URL appears in green panel with Copy-to-clipboard button → token list with per-row Active/Revoked/Expired pill + last-visit + visit-count + Revoke button. Revoke runs through `ConfirmModal.ask()`; same pattern as every other destructive admin action.
 
-**Math (v1 static-share)**: `nav_share = (share_pct / 100) × firm_nav`. Subscription / redemption events NOT modelled. Works for the single-LP-per-class boutique model; mid-period contribution changes need pro-rata accounting (units model) when a second LP joins.
+**Math (units model — slice 7N+, replaces v1 static-share)**:
+
+```
+units_held(user, t)   = Σ units_delta for events <= t
+total_units(t)        = Σ units_held across every LP
+nav_per_unit(t)       = firm_nav(t) / total_units(t)
+slice(user, t)        = units_held × nav_per_unit
+cost_basis(user, t)   = Σ amount (sub+bootstrap) − Σ amount (redemption)
+pnl(user, t)          = slice − cost_basis
+```
+
+All 4 surfaces (`/api/nav/me`, `/api/nav/me/history`, `/api/investor/{token}/slice` + `/history`, `compute_statement` inside the monthly PDF) route through [`investor_units.py`](backend/api/algo/investor_units.py). The v1 static-share path is gone — DO NOT add `share_pct × firm_nav / 100` math anywhere; use `compute_slice(s, user, firm_nav)` instead.
+
+**Auto-bootstrap** runs at the start of every units compute via `ensure_all_bootstrapped(s)`. For every eligible LP (`is_active=True AND share_pct > 0`) without events, inserts a synthetic `bootstrap` event:
+- `units_delta = User.share_pct`
+- `amount = User.contribution`
+- `nav_per_unit = contribution / share_pct` (or `1.0` when contribution=0 — operator-residual case)
+- `event_date = contribution_date → created_at.date() → today` (fallback chain)
+
+When share_pcts sum to 100 across eligible LPs, bootstrap reproduces v1 numbers exactly on day one. When sum != 100 (operator residual implied via low share_pct), units math redistributes proportionally and slices sum to `firm_nav` by construction.
+
+**Day-delta semantics** ([`/api/nav/me`](backend/api/routes/nav.py)): computed as `slice(today) − slice(prior)`, both via the same event set. Subscriptions between snapshots inflate `slice(today)` AND `cost_basis`, so they don't read as P&L on the LP's portal — only true market moves show up as Day Δ.
+
+**Smoke-test invariants** (commit `322f0c22`): bootstrap matches v1 when shares sum to 100 ✓; proportional gain works ✓; mid-period subscription doesn't double-count as P&L ✓; Σ slices == firm_nav by construction ✓.
+
+**Bootstrap correction path**: operator edits `User.contribution` / `share_pct` → deletes the bootstrap event in `/admin` → Portal → Events tab → next compute auto-rebootstraps with corrected columns.
 
 **Security model**: URL is a long-lived API key with the LP as bearer. If leakage suspected, admin revokes + re-mints. Cloudflare in front handles rate limiting / abuse; no per-endpoint limits in code.
 
