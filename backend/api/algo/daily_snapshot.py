@@ -70,7 +70,9 @@ def _fetch_account_data(broker, account: str, target_date: date) -> dict:
     today_ist = timestamp_indian().date()
     is_today = (target_date == today_ist)
 
-    out: dict[str, list[dict]] = {"holdings": [], "positions": [], "trades": []}
+    out: dict[str, list[dict]] = {
+        "holdings": [], "positions": [], "trades": [], "funds": [],
+    }
 
     try:
         out["holdings"] = broker.holdings() or []
@@ -88,6 +90,28 @@ def _fetch_account_data(broker, account: str, target_date: date) -> dict:
             out["trades"] = broker.trades() or []
         except Exception as e:
             logger.warning(f"Snapshot [{account}] trades fetch failed: {e}")
+        # Funds snapshot — capture today's per-segment margin
+        # balances so the History → Funds tab can show a per-
+        # account ledger over time. Stored as one row per segment
+        # (equity / commodity); past dates are skipped because the
+        # broker's margins() endpoint only returns CURRENT state.
+        try:
+            m = broker.margins() or {}
+            if isinstance(m, dict):
+                # Kite-shape: { equity: {available: {...}, utilised: {...}, net: X},
+                #               commodity: {...} }. Dhan / Groww broker
+                # adapters synthesise the same envelope.
+                for seg_key in ("equity", "commodity"):
+                    seg = m.get(seg_key)
+                    if isinstance(seg, dict):
+                        out["funds"].append({
+                            "segment_label": seg_key,
+                            "available":     (seg.get("available") or {}),
+                            "utilised":      (seg.get("utilised")  or {}),
+                            "net":           seg.get("net", 0),
+                        })
+        except Exception as e:
+            logger.warning(f"Snapshot [{account}] margins fetch failed: {e}")
     else:
         logger.debug(f"Snapshot [{account}] skipping trades for past date {target_date}")
 
@@ -180,6 +204,45 @@ def _trades_rows(account: str, target_date: date, raw: list[dict]) -> list[dict]
     return rows
 
 
+def _funds_rows(account: str, target_date: date, raw: list[dict]) -> list[dict]:
+    """Per-segment funds snapshot rows. One row per (account, segment).
+    Goes into daily_book with kind='funds', symbol='__seg__' (sentinel
+    since the table's unique constraint requires a symbol), exchange =
+    segment_label uppercased.
+
+    The amount columns map to:
+        qty       — utilised.debits (total cash spent today; integer ₹)
+        avg_cost  — available.cash  (free cash, withdrawable)
+        ltp       — available.opening_balance  (start-of-day cash)
+        day_pnl   — utilised.realised_m2m  (today's realised P&L)
+        total_pnl — net  (segment net worth)
+    """
+    rows = []
+    for r in raw:
+        seg_label = (r.get("segment_label") or "equity").lower()
+        avail = r.get("available") or {}
+        util  = r.get("utilised")  or {}
+        rows.append({
+            "date":         target_date,
+            "account":      account,
+            "segment":      seg_label,
+            "kind":         "funds",
+            "symbol":       "__seg__",
+            "exchange":     seg_label.upper(),
+            "qty":          int(float(util.get("debits") or 0)),
+            "avg_cost":     (float(avail.get("cash"))
+                             if avail.get("cash") is not None else None),
+            "ltp":          (float(avail.get("opening_balance"))
+                             if avail.get("opening_balance") is not None else None),
+            "day_pnl":      (float(util.get("realised_m2m"))
+                             if util.get("realised_m2m") is not None else None),
+            "total_pnl":    (float(r["net"])
+                             if r.get("net") is not None else None),
+            "payload_json": json.dumps(r, default=str),
+        })
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Upsert helper
 # ---------------------------------------------------------------------------
@@ -256,7 +319,8 @@ async def snapshot_daily_book(target_date: Optional[date] = None) -> dict:
                 "trades_rows": 0, "errors": ["No loaded broker accounts"]}
 
     loop = asyncio.get_running_loop()
-    totals = {"holdings_rows": 0, "positions_rows": 0, "trades_rows": 0}
+    totals = {"holdings_rows": 0, "positions_rows": 0, "trades_rows": 0,
+              "funds_rows": 0}
     errors: list[str] = []
     processed: list[str] = []
 
@@ -271,15 +335,18 @@ async def snapshot_daily_book(target_date: Optional[date] = None) -> dict:
             h_rows = _holdings_rows(account,  target_date, raw["holdings"])
             p_rows = _positions_rows(account, target_date, raw["positions"])
             t_rows = _trades_rows(account,    target_date, raw["trades"])
+            f_rows = _funds_rows(account,     target_date, raw["funds"])
 
             totals["holdings_rows"]  += await _upsert_rows(h_rows)
             totals["positions_rows"] += await _upsert_rows(p_rows)
             totals["trades_rows"]    += await _upsert_rows(t_rows)
+            totals["funds_rows"]     += await _upsert_rows(f_rows)
             processed.append(account)
 
             logger.info(
                 f"Snapshot [{account}] date={target_date} "
-                f"holdings={len(h_rows)} positions={len(p_rows)} trades={len(t_rows)}"
+                f"holdings={len(h_rows)} positions={len(p_rows)} "
+                f"trades={len(t_rows)} funds={len(f_rows)}"
             )
         except Exception as e:
             msg = f"Snapshot [{account}] failed: {e}"
@@ -287,9 +354,10 @@ async def snapshot_daily_book(target_date: Optional[date] = None) -> dict:
             errors.append(msg)
 
     return {
-        "accounts":      processed,
-        "holdings_rows": totals["holdings_rows"],
+        "accounts":       processed,
+        "holdings_rows":  totals["holdings_rows"],
         "positions_rows": totals["positions_rows"],
-        "trades_rows":   totals["trades_rows"],
-        "errors":        errors,
+        "trades_rows":    totals["trades_rows"],
+        "funds_rows":     totals["funds_rows"],
+        "errors":         errors,
     }

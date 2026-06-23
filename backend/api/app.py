@@ -37,6 +37,7 @@ from backend.api.routes.investor import (
     InvestorAdminController, InvestorPortalController,
     InvestorStatementsController,
 )
+from backend.api.routes.history import HistoryController
 from backend.api.routes.algo import algo_ws_handler
 from backend.api.routes.auth import AuthController
 from backend.api.routes.config import ConfigController
@@ -188,6 +189,7 @@ _route_handlers = [
     InvestorAdminController,
     InvestorPortalController,
     InvestorStatementsController,
+    HistoryController,
     HoldingsController,
     PositionsController,
     FundsController,

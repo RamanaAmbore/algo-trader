@@ -407,6 +407,23 @@ export const createInvestorEvent = (/** @type {number} */ userId,
 export const deleteInvestorEvent = (/** @type {number} */ userId, /** @type {number} */ eventId) =>
   _del(`/admin/users/${userId}/investor-events/${eventId}`, { auth: true });
 
+/** History — multi-day forensic surface (orders / trades / funds).
+ *  Gated by view_audit cap (admin / risk / ops). */
+const _toQs = (params) => {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+  }
+  const qs = q.toString();
+  return qs ? '?' + qs : '';
+};
+export const fetchHistoryOrders = (params = {}) =>
+  _get(`/admin/history/orders${_toQs(params)}`, { auth: true });
+export const fetchHistoryTrades = (params = {}) =>
+  _get(`/admin/history/trades${_toQs(params)}`, { auth: true });
+export const fetchHistoryFunds  = (params = {}) =>
+  _get(`/admin/history/funds${_toQs(params)}`,  { auth: true });
+
 /** GET /api/admin/audit — paginated audit log with filters. Gated
  *  by the `view_audit` cap server-side (admin / risk / ops). */
 export const fetchAuditLog = (params = {}) => {
