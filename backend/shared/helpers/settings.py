@@ -438,6 +438,13 @@ SEEDS: list[tuple] = [
      "Auto-stop a replay after this many wall-clock minutes.",
      "min", {"min": 1, "max": 120, "step": 1}),
 
+    # ── Audit ────────────────────────────────────────────────────────────
+    ("audit", "audit.log_failed_mutations", "bool", False,
+     "Also write an audit_log row for 4xx/5xx mutating requests. "
+     "Useful for defect tracking + post-mortem ('operator clicked "
+     "SUBMIT and got 422; what blocked?'). Off by default so the "
+     "audit log doesn't balloon with validation noise.", None, None),
+
     # ── Logging ──────────────────────────────────────────────────────────
     # Values must be a Python logging level name (DEBUG, INFO, WARNING,
     # ERROR, CRITICAL) or an integer. Applied live via _apply_log_level

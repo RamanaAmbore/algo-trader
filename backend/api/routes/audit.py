@@ -27,6 +27,7 @@ class AuditRow(msgspec.Struct):
     actor_username: str
     actor_role: str
     action: str
+    category: Optional[str]
     method: str
     path: str
     target_type: Optional[str]
@@ -57,6 +58,7 @@ class AuditController(Controller):
         self,
         actor:        Optional[str] = None,
         action:       Optional[str] = None,
+        category:     Optional[str] = None,
         target_type:  Optional[str] = None,
         target_id:    Optional[str] = None,
         since_hours:  Optional[int] = None,
@@ -85,6 +87,13 @@ class AuditController(Controller):
             conditions.append(AuditLog.actor_username.ilike(actor.strip()))
         if action:
             conditions.append(AuditLog.action.ilike(f"%{action.strip()}%"))
+        if category:
+            # Category supports comma-separated OR (e.g. 'order.fill,order.place')
+            # so a "show all order events" pill in the UI can pass multiple
+            # categories in one call.
+            cats = [c.strip() for c in category.split(",") if c.strip()]
+            if cats:
+                conditions.append(AuditLog.category.in_(cats))
         if target_type:
             conditions.append(AuditLog.target_type == target_type.strip())
         if target_id:
@@ -123,6 +132,7 @@ class AuditController(Controller):
                     actor_username=r.actor_username,
                     actor_role=r.actor_role,
                     action=r.action,
+                    category=r.category,
                     method=r.method,
                     path=r.path,
                     target_type=r.target_type,

@@ -104,6 +104,10 @@ async def _write_audit(
     request_id: str,
     client_ip: Optional[str],
     user_agent: Optional[str],
+    category: Optional[str] = None,
+    target_type: Optional[str] = None,
+    target_id: Optional[str] = None,
+    action_override: Optional[str] = None,
 ) -> None:
     """One-shot insert. Wrapped in try/except — an audit-write failure
     must never break the user's request response (the request already
@@ -112,14 +116,20 @@ async def _write_audit(
     from backend.api.database import async_session
     from backend.api.models import AuditLog
 
-    target_type, target_id = _resolve_target_from_path(path)
+    # Path-based target resolution as fallback. Caller can override by
+    # passing explicit target_type / target_id (background-task path
+    # has no URL to peel from).
+    if target_type is None and target_id is None:
+        target_type, target_id = _resolve_target_from_path(path)
     try:
         async with async_session() as session:
             row = AuditLog(
                 actor_user_id=actor_user_id,
                 actor_username=actor_username,
                 actor_role=actor_role,
-                action=_action_label(method, path),
+                action=(action_override[:120] if action_override
+                        else _action_label(method, path)),
+                category=(category[:32] if category else "http"),
                 method=method,
                 path=path[:255],
                 target_type=target_type[:40] if target_type else None,
@@ -137,6 +147,72 @@ async def _write_audit(
             f"audit_log write failed (actor={actor_username!r} "
             f"action={method} {path} status={status_code}): {exc}"
         )
+
+
+def write_audit_event(
+    *,
+    category: str,
+    action: str,
+    actor_user_id: Optional[int] = None,
+    actor_username: str = "system",
+    actor_role: str = "system",
+    target_type: Optional[str] = None,
+    target_id: Optional[str] = None,
+    summary: Optional[str] = None,
+    status_code: int = 200,
+    request_id: Optional[str] = None,
+) -> None:
+    """Public helper for non-HTTP code paths (background tasks, broker
+    postbacks, agent engine, chase loop) to append to audit_log.
+
+    Fire-and-forget — schedules `_write_audit` on the running event
+    loop via `asyncio.create_task` so the caller's hot path pays no
+    DB latency. Same out-of-band contract as the middleware.
+
+    For system events (no JWT actor), pass `actor_username='system'`.
+    For agent-initiated events, pass the agent's slug as
+    `actor_username` so the audit row reads "agent:loss-pos-total
+    placed order ..." in the UI.
+
+    `category` is REQUIRED for this helper — the whole point of the
+    helper vs the middleware is to tag the row with a semantic
+    bucket the audit UI can filter on (order.fill / agent.action /
+    system.nav / ...).
+
+    Never raises — a missing event loop or a DB write failure logs
+    a warning and drops the row. The system MUST stay correct even
+    when audit writes are dropped.
+    """
+    import uuid as _uuid
+    rid = request_id or str(_uuid.uuid4())
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Called from a sync context with no event loop — log + drop.
+        logger.warning(
+            f"write_audit_event called outside event loop: "
+            f"category={category!r} action={action!r}; row dropped"
+        )
+        return
+    # Synthesize an action label that reads cleanly in the audit UI.
+    # The middleware writes "POST /api/orders/ticket"; non-HTTP rows
+    # use the operator-supplied action verbatim ("BROKER_FILL", etc).
+    loop.create_task(_write_audit(
+        actor_user_id=actor_user_id,
+        actor_username=actor_username,
+        actor_role=actor_role,
+        method="EVENT",
+        path=f"event://{category}",
+        status_code=status_code,
+        summary=summary,
+        request_id=rid,
+        client_ip=None,
+        user_agent=None,
+        category=category,
+        target_type=target_type,
+        target_id=target_id,
+        action_override=action,
+    ))
 
 
 class AuditMiddleware(ASGIMiddleware):
@@ -200,11 +276,21 @@ class AuditMiddleware(ASGIMiddleware):
         await next_app(scope, receive, _send_wrapper)
 
         status = captured["status"]
-        if status < 200 or status >= 400:
-            # Failed requests (4xx / 5xx) are out of scope for v1 audit.
-            # A future slice can add a parallel `failed_actions` log if
-            # SEBI requires it (cap-III generally doesn't audit 4xx).
+        if status < 200:
             return
+        if status >= 400:
+            # Failed mutations (4xx / 5xx). Opt-in via the
+            # `audit.log_failed_mutations` setting — useful for
+            # defect tracking + post-mortem ("the operator clicked
+            # SUBMIT and got 422; what happened?"). Off by default
+            # so the audit log doesn't balloon with rate-limited /
+            # validation-error noise.
+            try:
+                from backend.shared.helpers.settings import get_bool as _get_bool
+                if not _get_bool("audit.log_failed_mutations", False):
+                    return
+            except Exception:
+                return
 
         # Resolve actor from the token payload stamped by jwt_guard /
         # auth_or_demo_guard. State scope is set by the guard during
@@ -257,6 +343,12 @@ class AuditMiddleware(ASGIMiddleware):
                 # row is glanceable.
                 summary = body_bytes.decode("utf-8", errors="replace").splitlines()[0][:200]
 
+        # Path → category tag so the audit UI can filter HTTP rows by
+        # business surface alongside the explicit category set on
+        # background-task / postback rows. Best-effort prefix match;
+        # unknown paths fall through to the default 'http' label.
+        category = _derive_category_from_path(method, path)
+
         # Schedule the write out-of-band. Don't await — the response
         # has already started leaving the server.
         try:
@@ -271,7 +363,46 @@ class AuditMiddleware(ASGIMiddleware):
                 request_id=request_id,
                 client_ip=client_ip or None,
                 user_agent=user_agent or None,
+                category=category,
             ))
         except RuntimeError:
             # No running loop (sync test harness) — skip silently.
             pass
+
+
+_PATH_CATEGORY_RULES: tuple[tuple[str, str], ...] = (
+    ("/api/orders/ticket",                   "order.place"),
+    ("/api/orders/postback",                 "order.fill"),
+    ("/api/orders/basket",                   "order.place"),
+    ("/api/orders/",                         "order"),
+    ("/api/admin/users/",                    "user"),
+    ("/api/admin/settings",                  "config"),
+    ("/api/admin/brokers",                   "config.broker"),
+    ("/api/admin/grammar/",                  "config.grammar"),
+    ("/api/admin/fragments",                 "config.fragment"),
+    ("/api/admin/hedge-proxies",             "config.hedge"),
+    ("/api/admin/statements",                "system.statement"),
+    ("/api/nav/compute",                     "system.nav"),
+    ("/api/agents/",                         "agent"),
+    ("/api/strategies/",                     "strategy"),
+)
+
+
+def _derive_category_from_path(method: str, path: str) -> str:
+    """Map a request path to a coarse category tag. The audit UI's
+    filter pills query on this column so the operator can scope to
+    'orders' / 'users' / 'config' / etc. without crafting LIKE
+    patterns on the action string."""
+    p = path.lower()
+    # Methods on /{id}/{verb} surface as the closest prefix. Specific
+    # rules listed first; broad prefixes catch the rest.
+    for prefix, cat in _PATH_CATEGORY_RULES:
+        if p.startswith(prefix):
+            # PUT/DELETE on /orders/{id} are modify / cancel; the
+            # generic 'order' bucket above would lose that signal.
+            if cat == "order" and method in ("PUT", "PATCH"):
+                return "order.modify"
+            if cat == "order" and method == "DELETE":
+                return "order.cancel"
+            return cat
+    return "http"

@@ -800,8 +800,37 @@ async def _task_nav_compute() -> None:
                 f"_task_nav_compute: wrote NAV ₹{snap['nav']:,.0f} for "
                 f"{timestamp_indian().date().isoformat()}"
             )
+            try:
+                from backend.api.audit import write_audit_event
+                write_audit_event(
+                    category="system.nav",
+                    action="NAV_SNAPSHOT",
+                    actor_username="system",
+                    actor_role="system",
+                    target_type="nav_daily",
+                    target_id=timestamp_indian().date().isoformat(),
+                    summary=(f"₹{snap['nav']:,.0f} · cash=₹{snap.get('cash_total',0):,.0f}"
+                             f" · pos=₹{snap.get('positions_mtm',0):,.0f}"
+                             f" · hold=₹{snap.get('holdings_mtm',0):,.0f}")[:1000],
+                )
+            except Exception:
+                pass
         except Exception as exc:
             logger.warning(f"_task_nav_compute: cycle failed: {exc}")
+            try:
+                from backend.api.audit import write_audit_event
+                write_audit_event(
+                    category="system.nav",
+                    action="NAV_SNAPSHOT_FAILED",
+                    actor_username="system",
+                    actor_role="system",
+                    target_type="nav_daily",
+                    target_id=timestamp_indian().date().isoformat(),
+                    summary=f"compute failed: {exc}"[:1000],
+                    status_code=500,
+                )
+            except Exception:
+                pass
 
 
 async def _task_monthly_statement() -> None:
@@ -1006,6 +1035,26 @@ async def _send_one_monthly_statement(user, period_year: int, period_month: int)
             f"_send_one_monthly_statement: u={user.id} "
             f"{period_year}-{period_month:02d}: sent ({len(pdf_bytes)} bytes)"
         )
+    # Audit trail — both success and failure write a row so the
+    # operator can verify "did LP X get their May statement?"
+    # without leaving /admin/audit.
+    try:
+        from backend.api.audit import write_audit_event
+        write_audit_event(
+            category="system.statement",
+            action=("STATEMENT_SENT" if not error else "STATEMENT_FAILED"),
+            actor_username="system",
+            actor_role="system",
+            target_type="user",
+            target_id=str(user.id),
+            summary=(f"{period_year}-{period_month:02d} → "
+                     f"{', '.join(recipients) or '?'}"
+                     + (f" · ERROR: {error}" if error else
+                        f" · {len(pdf_bytes)} bytes"))[:1000],
+            status_code=(200 if not error else 500),
+        )
+    except Exception as _aud_e:
+        logger.debug(f"statement audit skipped: {_aud_e}")
 
 
 def _monthly_statement_html(user, data) -> str:

@@ -258,6 +258,27 @@ async def execute(agent, actions: list, context: dict):
             from backend.api.algo.events import log_event
             await log_event(agent, "action_success", f"{tag}Action: {action_type}",
                             params, sim_mode=sim_mode)
+            # Audit trail for every agent-triggered action that
+            # mutates state. Skipped when sim — sim_mode actions are
+            # already isolated in their own logs + don't touch real
+            # broker / DB state beyond agent_events.
+            if not sim_mode:
+                try:
+                    from backend.api.audit import write_audit_event
+                    _sym = (params.get("symbol") or params.get("tradingsymbol") or "")
+                    _acct = (params.get("account") or "")
+                    write_audit_event(
+                        category="agent.action",
+                        action=f"AGENT_{action_type.upper()}",
+                        actor_username=f"agent:{agent.slug}",
+                        actor_role="system",
+                        target_type="agent",
+                        target_id=str(agent.id) if getattr(agent, "id", None) else None,
+                        summary=(f"{tag}{action_type} {_sym} acct={_acct}".strip())[:1000],
+                        status_code=200,
+                    )
+                except Exception as _aud_e:
+                    logger.debug(f"agent action audit skipped: {_aud_e}")
 
         except Exception as e:
             logger.error(f"{tag}Agent [{agent.slug}]: action '{action_type}' failed: {e}")
@@ -265,6 +286,21 @@ async def execute(agent, actions: list, context: dict):
             await log_event(agent, "action_failed",
                             f"{tag}Action: {action_type} — {e}",
                             params, sim_mode=sim_mode)
+            if not sim_mode:
+                try:
+                    from backend.api.audit import write_audit_event
+                    write_audit_event(
+                        category="agent.action",
+                        action=f"AGENT_{action_type.upper()}_FAILED",
+                        actor_username=f"agent:{agent.slug}",
+                        actor_role="system",
+                        target_type="agent",
+                        target_id=str(agent.id) if getattr(agent, "id", None) else None,
+                        summary=f"{tag}{action_type} failed: {e}"[:1000],
+                        status_code=500,
+                    )
+                except Exception:
+                    pass
 
 
 def _sim_prices_for(account: str, symbol: str) -> tuple[float | None, float | None, float | None, int | None]:

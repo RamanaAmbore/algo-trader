@@ -3057,6 +3057,32 @@ class OrdersController(Controller):
             logger.info(f"Postback: {order_id} [{masked}] {status} {txn} {qty} "
                         f"{tradingsymbol} price={price} msg={status_msg}")
 
+            # Audit trail — every broker fill / cancellation / rejection
+            # lands in audit_log so /admin/audit shows the complete
+            # order-lifecycle timeline alongside operator-initiated
+            # actions. Fire-and-forget; zero latency impact on the
+            # postback acknowledgement.
+            try:
+                from backend.api.audit import write_audit_event
+                _status_u = str(status or "").upper()
+                _cat = ("order.fill"     if _status_u == "COMPLETE"
+                        else "order.cancel" if _status_u == "CANCELLED"
+                        else "order.reject" if _status_u == "REJECTED"
+                        else "order.fill")
+                write_audit_event(
+                    category=_cat,
+                    action=f"BROKER_{_status_u or 'EVENT'}",
+                    actor_username="broker",
+                    actor_role="system",
+                    target_type="broker_order",
+                    target_id=str(order_id) if order_id else None,
+                    summary=(f"{_status_u} {txn} {qty} {tradingsymbol} "
+                             f"@₹{price} acct={masked}"
+                             + (f" msg={status_msg}" if status_msg else ""))[:1000],
+                )
+            except Exception as _exc:
+                logger.debug(f"postback audit write skipped: {_exc}")
+
             # Timeline: write postback event to any matching AlgoOrder rows.
             # We match on broker_order_id (Kite's order_id string).  Best-effort —
             # never raises; the postback acknowledgement must still return quickly.

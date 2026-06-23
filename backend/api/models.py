@@ -1601,6 +1601,19 @@ class AuditLog(Base):
     actor_role:     Mapped[str]   = mapped_column(String(16), nullable=False, default="")
     # Action descriptor — derived from method + path. e.g. "POST /api/orders/ticket".
     action: Mapped[str]           = mapped_column(String(120), nullable=False, index=True)
+    # Coarse category tag for filtering. Examples:
+    #   'http'             — generic mutating HTTP request (middleware default)
+    #   'order.place'      — order placement
+    #   'order.fill'       — broker postback fill detail
+    #   'order.modify'     — order modification
+    #   'order.cancel'     — order cancellation
+    #   'agent.action'     — agent engine fired an action
+    #   'system.nav'       — NAV compute (background task)
+    #   'system.statement' — monthly statement send (background task)
+    #   'system.bootstrap' — auto-bootstrap synthetic event
+    # Nullable for back-compat with rows written before the column
+    # existed. Code paths writing new rows MUST set a category.
+    category: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
     method: Mapped[str]           = mapped_column(String(8),   nullable=False)
     path:   Mapped[str]           = mapped_column(String(255), nullable=False, index=True)
     # Optional structured target — captured when the path includes a

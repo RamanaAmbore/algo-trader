@@ -282,6 +282,17 @@ async def init_db() -> None:
                OR role IS NULL
                OR role = '';
         """))
+        # audit_log.category — coarse tag for filtering (order.fill /
+        # agent.action / system.* etc). Added Jun 2026; existing rows
+        # land with NULL which the UI surfaces as 'http' (the
+        # middleware default).
+        await conn.execute(text(
+            "ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS category VARCHAR(32)"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_audit_log_category "
+            "ON audit_log (category)"
+        ))
         # Feature: basket orders + auto profit-target (June 2026).
         # Four new columns on algo_orders; all nullable / defaulted so
         # existing rows remain valid without any data migration.

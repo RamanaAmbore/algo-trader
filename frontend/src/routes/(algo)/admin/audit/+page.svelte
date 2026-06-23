@@ -22,12 +22,28 @@
 
   /** @typedef {{
    *   id: number, actor_user_id: number|null, actor_username: string,
-   *   actor_role: string, action: string, method: string, path: string,
+   *   actor_role: string, action: string, category: string|null,
+   *   method: string, path: string,
    *   target_type: string|null, target_id: string|null,
    *   status_code: number, summary: string|null,
    *   request_id: string, client_ip: string|null,
    *   user_agent: string|null, created_at: string
    * }} AuditRow */
+
+  /** Filter pills — categories the operator scopes the view to. The
+   *  underlying audit row carries a single category string; pill
+   *  groups (e.g. "Orders" = order.place + order.fill + order.modify
+   *  + order.cancel + order.reject) pass a comma-separated list to
+   *  the backend. */
+  const CATEGORY_PILLS = /** @type {const} */ ([
+    { key: 'all',     label: 'All',         cats: '' },
+    { key: 'orders',  label: 'Orders',      cats: 'order.place,order.modify,order.cancel,order.fill,order.reject,order' },
+    { key: 'agents',  label: 'Agents',      cats: 'agent.action' },
+    { key: 'users',   label: 'Users',       cats: 'user' },
+    { key: 'config',  label: 'Config',      cats: 'config,config.broker,config.grammar,config.fragment,config.hedge' },
+    { key: 'system',  label: 'System',      cats: 'system.nav,system.statement,system.bootstrap' },
+  ]);
+  let categoryPill = $state(/** @type {string} */ ('all'));
 
   /** @type {AuditRow[]} */
   let rows = $state([]);
@@ -49,11 +65,13 @@
   async function load() {
     loading = true; error = '';
     try {
+      const _pill = CATEGORY_PILLS.find(p => p.key === categoryPill);
       const params = {
         limit: LIMIT,
         offset,
         actor: fActor.trim() || undefined,
         action: fAction.trim() || undefined,
+        category: _pill?.cats || undefined,
         target_type: fTargetType.trim() || undefined,
         target_id: fTargetId.trim() || undefined,
         status_code: fStatus.trim() ? Number(fStatus.trim()) : undefined,
@@ -76,6 +94,13 @@
     fTargetId = '';
     fStatus = '';
     fSinceHours = 72;
+    categoryPill = 'all';
+    offset = 0;
+    load();
+  }
+  function setCategory(/** @type {string} */ key) {
+    if (key === categoryPill) return;
+    categoryPill = key;
     offset = 0;
     load();
   }
@@ -151,6 +176,15 @@
   </div>
 {:else}
 
+<div class="audit-pills">
+  {#each CATEGORY_PILLS as p}
+    <button
+      class="audit-pill"
+      class:active={categoryPill === p.key}
+      onclick={() => setCategory(p.key)}>{p.label}</button>
+  {/each}
+</div>
+
 <div class="audit-filters">
   <label class="audit-flbl">Actor
     <input bind:value={fActor} placeholder="username" class="field-input audit-finput" />
@@ -187,6 +221,7 @@
         <th>Time (IST)</th>
         <th>Actor</th>
         <th>Role</th>
+        <th>Category</th>
         <th>Action</th>
         <th>Target</th>
         <th class="audit-th-narrow">Status</th>
@@ -197,13 +232,14 @@
     </thead>
     <tbody>
       {#if rows.length === 0 && !loading}
-        <tr><td colspan="9" class="audit-empty-row">No audit entries match the current filters.</td></tr>
+        <tr><td colspan="10" class="audit-empty-row">No audit entries match the current filters.</td></tr>
       {/if}
       {#each rows as r (r.id)}
         <tr>
           <td class="audit-ts">{_fmtTs(r.created_at)}</td>
           <td class="audit-actor">{r.actor_username || '—'}</td>
           <td><span class="audit-role audit-role-{r.actor_role || 'unknown'}">{r.actor_role || '—'}</span></td>
+          <td><span class="audit-cat audit-cat-{(r.category || 'http').split('.')[0]}">{r.category || 'http'}</span></td>
           <td class="audit-action" title={r.action}>{_shortAction(r.action)}</td>
           <td class="audit-target">
             {#if r.target_type || r.target_id}
@@ -367,6 +403,53 @@
   .audit-role-risk       { background: rgba(251, 191, 36, 0.18); border-color: rgba(251, 191, 36, 0.45); color: #fbbf24; }
   .audit-role-ops        { background: rgba(34, 211, 238, 0.16); border-color: rgba(34, 211, 238, 0.45); color: #67e8f9; }
   .audit-role-demo       { background: rgba(168, 85, 247, 0.18); border-color: rgba(168, 85, 247, 0.45); color: #c084fc; }
+  .audit-role-system     { background: rgba(196, 192, 168, 0.18); border-color: rgba(196, 192, 168, 0.45); color: #d4d0a8; }
+
+  /* Filter pills above the column filters. Scope the table to a
+     business bucket (orders / agents / users / config / system). */
+  .audit-pills {
+    display: flex; gap: 0.35rem; flex-wrap: wrap;
+    margin-bottom: 0.55rem;
+  }
+  .audit-pill {
+    padding: 0.28rem 0.7rem;
+    background: rgba(15, 23, 42, 0.55);
+    border: 1px solid rgba(126, 151, 184, 0.30);
+    border-radius: 999px;
+    color: #c8d8f0;
+    font-size: 0.62rem; font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    font-family: ui-monospace, monospace;
+  }
+  .audit-pill:hover { background: rgba(34, 211, 238, 0.10); }
+  .audit-pill.active {
+    background: rgba(34, 211, 238, 0.16);
+    border-color: rgba(34, 211, 238, 0.65);
+    color: #67e8f9;
+  }
+
+  /* Category badge in the table row — single source of truth for
+     which bucket the row belongs to. Common bucket prefixes get
+     their own tint so a glance distinguishes orders / agents /
+     system rows without reading the text. */
+  .audit-cat {
+    display: inline-block;
+    padding: 0.05rem 0.35rem;
+    border-radius: 3px;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: #c8d8f0;
+    background: rgba(126, 151, 184, 0.18);
+    border: 1px solid rgba(126, 151, 184, 0.32);
+    font-family: ui-monospace, monospace;
+  }
+  .audit-cat-order   { background: rgba(74, 222, 128, 0.18); border-color: rgba(74, 222, 128, 0.45); color: #4ade80; }
+  .audit-cat-agent   { background: rgba(34, 211, 238, 0.16); border-color: rgba(34, 211, 238, 0.45); color: #67e8f9; }
+  .audit-cat-user    { background: rgba(251, 191, 36, 0.18); border-color: rgba(251, 191, 36, 0.45); color: #fbbf24; }
+  .audit-cat-config  { background: rgba(168, 85, 247, 0.18); border-color: rgba(168, 85, 247, 0.45); color: #c084fc; }
+  .audit-cat-system  { background: rgba(196, 192, 168, 0.18); border-color: rgba(196, 192, 168, 0.45); color: #d4d0a8; }
 
   .audit-pager {
     display: flex; align-items: center; gap: 0.6rem;
