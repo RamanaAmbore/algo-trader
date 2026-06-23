@@ -20,7 +20,9 @@
     fetchPositions, fetchHoldings, fetchRecentAgentEvents,
     fetchFunds, fetchIntradayEquity,
     batchQuote,
+    fetchNavLatest,
   } from '$lib/api';
+  import { userCaps, userRole, hasCap } from '$lib/rbac';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import {
@@ -994,10 +996,37 @@
         loadHero(),
         _fetchEquity(),
         _fetchMargins(),
+        _fetchNav(),
       ]);
     } finally {
       _refreshing = false;
     }
+  }
+
+  // NAV header chip — last computed firm NAV + day delta. Gated by
+  // view_nav so demo / observer see the chip too; recompute is a
+  // separate cap and lives on /nav. Failing fetch leaves _nav at the
+  // last-good or null; chip self-hides when null.
+  /** @type {{nav:number, as_of_date:string}|null} */
+  let _navLatest = $state(null);
+  let _navDelta     = $state(/** @type {number|null} */ (null));
+  let _navDeltaPct  = $state(/** @type {number|null} */ (null));
+  const _canViewNav = $derived(hasCap('view_nav', $userCaps, $userRole));
+  async function _fetchNav() {
+    if (!_canViewNav) return;
+    try {
+      const r = await fetchNavLatest();
+      _navLatest   = r?.latest ?? null;
+      _navDelta    = r?.day_delta ?? null;
+      _navDeltaPct = r?.day_delta_pct ?? null;
+    } catch (_) { /* leave at last-good */ }
+  }
+  function _fmtNavInr(/** @type {number|null|undefined} */ v) {
+    if (v == null || !isFinite(v)) return '—';
+    if (Math.abs(v) >= 10000000) return `₹${(v/10000000).toFixed(2)}Cr`;
+    if (Math.abs(v) >= 100000)   return `₹${(v/100000).toFixed(2)}L`;
+    if (Math.abs(v) >= 1000)     return `₹${(v/1000).toFixed(1)}k`;
+    return `₹${Math.round(Number(v))}`;
   }
 
   async function loadHero() {
@@ -1141,6 +1170,10 @@
     // it within one frame of arrival.
     _fetchEquity();
     _equityPollStop = visibleInterval(_fetchEquity, 15000);
+    // NAV chip — single fetch on mount, no polling. NAV moves on the
+    // 16:00 IST snapshot + operator recompute; nothing changes minute-
+    // to-minute on the dashboard's cadence.
+    _fetchNav();
     // loadMarketMovers retired — the Top Winners / Top Losers cards
     // moved to /pulse (where MarketPulse owns its own movers fetch).
     // Removing the dashboard poll stops the 60s batchQuote round-trip
@@ -1509,6 +1542,23 @@
     <h1 class="page-title-chip">Dashboard</h1>
   </span>
   <span class="algo-ts">{$nowStamp}</span>
+  {#if _canViewNav && _navLatest}
+    <!-- Firm NAV chip — clickable link to /nav for full curve +
+         composition. Day Δ colour-coded. Shows the operator the
+         book's net liq at a glance without leaving the dashboard. -->
+    <a class="nav-chip" href="/nav"
+       class:nav-chip-pos={(_navDelta ?? 0) > 0}
+       class:nav-chip-neg={(_navDelta ?? 0) < 0}
+       title={`NAV ${_fmtNavInr(_navLatest.nav)} as of ${_navLatest.as_of_date}`}>
+      <span class="nav-chip-lbl">NAV</span>
+      <span class="nav-chip-val">{_fmtNavInr(_navLatest.nav)}</span>
+      {#if _navDeltaPct != null}
+        <span class="nav-chip-delta">
+          {_navDeltaPct >= 0 ? '+' : ''}{(_navDeltaPct * 100).toFixed(2)}%
+        </span>
+      {/if}
+    </a>
+  {/if}
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <!-- Slice 7h — strategy filter chip. Same shared store as Pulse,
@@ -1968,6 +2018,58 @@
 </section>
 
 <style>
+  /* Page-header NAV chip — slice 7k continuation. Sits between the
+     timestamp and the ml-auto spacer so it reads as part of the
+     dashboard's identity strip rather than the actions cluster.
+     Cyan-tinted at rest, green/red day-delta tint when known. */
+  .nav-chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    padding: 0.18rem 0.55rem;
+    margin-left: 0.5rem;
+    background: rgba(34, 211, 238, 0.10);
+    border: 1px solid rgba(34, 211, 238, 0.35);
+    border-radius: 4px;
+    text-decoration: none;
+    font-family: ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    transition: background 120ms, border-color 120ms;
+  }
+  .nav-chip:hover {
+    background: rgba(34, 211, 238, 0.18);
+    border-color: rgba(34, 211, 238, 0.60);
+  }
+  .nav-chip-lbl {
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #7e97b8;
+  }
+  .nav-chip-val {
+    font-size: 0.78rem;
+    font-weight: 800;
+    color: #67e8f9;
+  }
+  .nav-chip-delta {
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: #c8d8f0;
+  }
+  .nav-chip.nav-chip-pos {
+    background: rgba(74, 222, 128, 0.10);
+    border-color: rgba(74, 222, 128, 0.40);
+  }
+  .nav-chip.nav-chip-pos .nav-chip-val,
+  .nav-chip.nav-chip-pos .nav-chip-delta { color: #4ade80; }
+  .nav-chip.nav-chip-neg {
+    background: rgba(248, 113, 113, 0.10);
+    border-color: rgba(248, 113, 113, 0.40);
+  }
+  .nav-chip.nav-chip-neg .nav-chip-val,
+  .nav-chip.nav-chip-neg .nav-chip-delta { color: #f87171; }
+
   /* .mp-section-label is defined globally in app.css.
      Dashboard uses the --bar modifier for the amber left-edge accent. */
 
