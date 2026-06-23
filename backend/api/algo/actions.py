@@ -883,67 +883,10 @@ async def run_preflight(
     order_type = str(order.get("order_type", "LIMIT"))
     variety   = str(order.get("variety", "regular"))
 
-    # ── 2. SEGMENT_INACTIVE ───────────────────────────────────────────────
-    # Kite's profile() returns a canonical list of `exchanges` the account
-    # is enabled for — we use it to short-circuit a Kite order before
-    # the broker round-trip rejects it with a cryptic message. Dhan and
-    # Groww profile() synthesise a Kite-shape dict (just user_id /
-    # user_name / broker tags) WITHOUT an exchanges list because their
-    # auth-check endpoints don't expose per-segment activation. For those
-    # brokers we'd be checking `exchange not in set()` and ALWAYS landing
-    # in the blocked path. Operator: "for Dhan, I am getting the message
-    # MCX is not activated in order modal. I was able to place orders in
-    # Dhan portal." Skip the check for non-Kite — the broker's own
-    # place_order is then the source of truth for segment activation.
-    if broker.broker_id == "zerodha_kite":
-        try:
-            profile = await loop.run_in_executor(None, broker.profile)
-            enabled_exchanges = set(profile.get("exchanges") or [])
-            if enabled_exchanges and exchange not in enabled_exchanges:
-                blocked.append({
-                    "code":   "SEGMENT_INACTIVE",
-                    "reason": f"{exchange} segment not activated on this account",
-                    "fix":    (f"Activate the {exchange} segment in the Kite developer "
-                               "console for this account, then re-test"),
-                    "data":   {"enabled_exchanges": sorted(enabled_exchanges)},
-                })
-        except Exception as e:
-            logger.debug(f"[PREFLIGHT] profile fetch failed for {account}: {e}")
-
-    # ── 3. QTY_FREEZE ─────────────────────────────────────────────────────
-    if exchange in ("NFO", "BFO", "MCX", "CDS") and qty > 0:
-        try:
-            raw_instruments = await loop.run_in_executor(
-                None, broker.instruments, exchange
-            )
-            freeze_qty: int | None = None
-            lot_size: int = 1
-            for inst in raw_instruments:
-                if inst.get("tradingsymbol") == symbol:
-                    freeze_qty = inst.get("freeze_qty") or None
-                    lot_size   = int(inst.get("lot_size") or 1)
-                    break
-            if freeze_qty is not None and qty > int(freeze_qty):
-                # How many lots fit in the freeze limit?
-                max_qty = int(freeze_qty)
-                max_lots = max(1, max_qty // lot_size) if lot_size > 0 else max_qty
-                blocked.append({
-                    "code":   "QTY_FREEZE",
-                    "reason": (f"Quantity {qty} exceeds {symbol} freeze qty "
-                               f"{freeze_qty}"),
-                    "fix":    (f"Reduce qty to {max_qty:,} "
-                               f"({max_lots:,} lot{'s' if max_lots != 1 else ''}) "
-                               "or split into multiple orders"),
-                    "data":   {
-                        "freeze_qty": int(freeze_qty),
-                        "lot_size":   lot_size,
-                        "requested":  qty,
-                    },
-                })
-        except Exception as e:
-            logger.debug(f"[PREFLIGHT] instruments fetch failed for {account}/{exchange}: {e}")
-
-    # ── 4. MARGIN_SHORTFALL ───────────────────────────────────────────────
+    # ── Stage 1: build inputs (cheap, synchronous) ────────────────────────
+    # Done before the broker-call fan-out so basket_orders is ready when
+    # the parallel gather fires. get_lot_size + normalise_qty are
+    # cache-hits; no broker network.
     from backend.shared.brokers.kite import get_lot_size
     _lot_size = await get_lot_size(exchange, symbol)
     _broker_qty = broker.normalise_qty(exchange, qty, _lot_size)
@@ -986,10 +929,118 @@ async def run_preflight(
             })
         except Exception as _e:
             logger.debug(f"[PREFLIGHT] paired leg skipped: {_e}")
+
+    # ── Stage 2: fan out 4 independent broker calls in parallel ──────────
+    # All four are orthogonal — no data dependency between them. Pre-fix
+    # this section ran sequentially via four `await run_in_executor`
+    # calls, costing ~800-1200ms on Kite (each round-trip ~200-300ms).
+    # Now they're gathered; total time = max(individual call), typically
+    # ~300ms. Operator's reported "order placement deteriorated" pain
+    # tracks back to this section accumulating across recent slices.
+    segment = "commodity" if exchange in ("MCX", "NCO") else "equity"
+
+    async def _fetch_profile():
+        if broker.broker_id != "zerodha_kite":
+            return None
+        try:
+            return await loop.run_in_executor(None, broker.profile)
+        except Exception as e:
+            logger.debug(f"[PREFLIGHT] profile fetch failed for {account}: {e}")
+            return None
+
+    async def _fetch_instruments():
+        if exchange not in ("NFO", "BFO", "MCX", "CDS") or qty <= 0:
+            return None
+        try:
+            return await loop.run_in_executor(None, broker.instruments, exchange)
+        except Exception as e:
+            logger.debug(f"[PREFLIGHT] instruments fetch failed for {account}/{exchange}: {e}")
+            return None
+
+    async def _fetch_basket_margin():
+        # Surface the exception so the existing MARGIN_SHORTFALL
+        # handler downstream can produce its diagnostic. We return
+        # the exception object on failure (the caller branches on
+        # isinstance(result, Exception)).
+        try:
+            return await loop.run_in_executor(
+                None, broker.basket_order_margins, basket_orders
+            )
+        except Exception as e:
+            return e
+
+    async def _fetch_account_margins():
+        try:
+            # Un-segmented call first (returns both wallets; some
+            # accounts report enabled=True there but False on the
+            # segmented call due to a Kite scope quirk).
+            try:
+                m_all = await loop.run_in_executor(None, broker.margins)
+                return (m_all or {}).get(segment, {}), None
+            except TypeError:
+                return await loop.run_in_executor(
+                    None, broker.margins, segment), None
+        except Exception as e:
+            return None, str(e)
+
+    profile_res, instruments_res, bm_res, margins_res = await asyncio.gather(
+        _fetch_profile(),
+        _fetch_instruments(),
+        _fetch_basket_margin(),
+        _fetch_account_margins(),
+    )
+
+    # ── Apply segment-inactive gate from profile result ──────────────────
+    if profile_res is not None:
+        enabled_exchanges = set(profile_res.get("exchanges") or [])
+        if enabled_exchanges and exchange not in enabled_exchanges:
+            blocked.append({
+                "code":   "SEGMENT_INACTIVE",
+                "reason": f"{exchange} segment not activated on this account",
+                "fix":    (f"Activate the {exchange} segment in the Kite developer "
+                           "console for this account, then re-test"),
+                "data":   {"enabled_exchanges": sorted(enabled_exchanges)},
+            })
+
+    # ── Apply qty-freeze gate from instruments result ────────────────────
+    if instruments_res is not None:
+        freeze_qty: int | None = None
+        lot_size: int = 1
+        for inst in instruments_res:
+            if inst.get("tradingsymbol") == symbol:
+                freeze_qty = inst.get("freeze_qty") or None
+                lot_size   = int(inst.get("lot_size") or 1)
+                break
+        if freeze_qty is not None and qty > int(freeze_qty):
+            max_qty = int(freeze_qty)
+            max_lots = max(1, max_qty // lot_size) if lot_size > 0 else max_qty
+            blocked.append({
+                "code":   "QTY_FREEZE",
+                "reason": (f"Quantity {qty} exceeds {symbol} freeze qty "
+                           f"{freeze_qty}"),
+                "fix":    (f"Reduce qty to {max_qty:,} "
+                           f"({max_lots:,} lot{'s' if max_lots != 1 else ''}) "
+                           "or split into multiple orders"),
+                "data":   {
+                    "freeze_qty": int(freeze_qty),
+                    "lot_size":   lot_size,
+                    "requested":  qty,
+                },
+            })
+
+    # ── Margin-shortfall gate (basket_order_margins + account margins) ───
+    if isinstance(bm_res, Exception):
+        # Existing fallback below the try-block handles broker
+        # unreachable / SDK error — preserve that path by raising
+        # through the original except branch.
+        bm_exception = bm_res
+    else:
+        bm_exception = None
+        bm_result = bm_res
+
     try:
-        bm_result = await loop.run_in_executor(
-            None, broker.basket_order_margins, basket_orders
-        )
+        if bm_exception is not None:
+            raise bm_exception
         # Kite's /margins/basket returns one entry per input leg. Each
         # has BOTH `initial.total` (bare margin for this leg in
         # isolation) AND `final.total` (per-leg margin after the basket
@@ -1023,37 +1074,22 @@ async def run_preflight(
         else:
             required = _leg_required(bm_result if isinstance(bm_result, dict) else {})
 
-        # Available margin is NOT in the basket_order_margins response —
-        # that endpoint only returns the REQUIRED margin breakdown
-        # (span, exposure, premium, total). Available lives in a separate
-        # call: kite.margins(segment).
-        #
+        # Available margin came from `_fetch_account_margins` in the
+        # earlier gather. `margins_res` is `(seg_dict, err_str_or_None)`.
         # Segment routing: MCX/NCO → commodity wallet, everything else
         # (NSE/BSE/NFO/BFO/CDS/BCD) → equity wallet. Zerodha keeps the
-        # two wallets separate; an equity-only operator hitting a MCX
-        # order legitimately can't see commodity margin.
-        segment = "commodity" if exchange in ("MCX", "NCO") else "equity"
+        # two wallets separate.
+        m, _m_err = (margins_res or (None, None))
+        m = m or {}
         available = None
         m_enabled = None
-        try:
-            # Use the un-segmented broker.margins() call which returns both
-            # equity + commodity. Counter-intuitively, calling with the
-            # segment arg can return enabled=False for accounts the
-            # un-segmented call reports as enabled=True (Kite API quirk:
-            # the segment arg requires a separate API scope). Fall back to
-            # segmented if the un-segmented call throws.
-            try:
-                m_all = await loop.run_in_executor(None, broker.margins)
-                m = (m_all or {}).get(segment, {})
-            except TypeError:
-                # Some adapters / SDK versions don't accept zero args.
-                m = await loop.run_in_executor(None, broker.margins, segment)
+        if _m_err:
+            logger.warning(f"[PREFLIGHT] margins({segment}) failed for {account}: {_m_err}")
+        else:
             m_enabled = bool(m.get("enabled"))
             net = m.get("net")
             if isinstance(net, (int, float)) and not math.isnan(float(net)):
                 available = float(net)
-        except Exception as e:
-            logger.warning(f"[PREFLIGHT] margins({segment}) failed for {account}: {e}")
 
         diagnostics["basket_margin_used"] = required
         diagnostics["available_margin"]   = available

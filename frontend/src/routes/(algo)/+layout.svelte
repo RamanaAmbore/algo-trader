@@ -101,33 +101,33 @@
     // the public-side "Platform Demo" link and walks the architecture
     // before clicking into the live surfaces.
     { href: '/showcase',         label: 'Tour',      group: 'monitor' },
-    // ── Monitor ──
+    // ── Monitor ── ordered by daily-trader workflow frequency:
+    //   Pulse → Dashboard (the two always-open watch surfaces)
+    //   Orders (active trading entry point)
+    //   Derivatives → Charts (analysis surfaces, reached from Orders)
+    //   Automation (rule review, lower frequency than active trading)
+    //   Strategies → NAV (attribution + LP / fund views, weekly)
     { href: '/pulse',            label: 'Pulse',     group: 'monitor' },
     { href: '/dashboard',        label: 'Dashboard', group: 'monitor' },
-    // Derivatives lives in the monitor cluster between Dashboard and
-    // Agents — operators reach for the option payoff / Greeks far
-    // more often than Agents config, so the chain entry sits one
-    // click earlier in the navbar.
-    { href: '/admin/derivatives', label: 'Derivatives', group: 'monitor' },
-    { href: '/strategies',       label: 'Strategies',   group: 'monitor' },
-    { href: '/nav',              label: 'NAV',          group: 'monitor' },
     { href: '/orders',           label: 'Orders',    group: 'monitor' },
+    { href: '/admin/derivatives', label: 'Derivatives', group: 'monitor' },
     { href: '/charts',           label: 'Charts',    group: 'monitor' },
     { href: '/automation',       label: 'Automation', group: 'monitor' },
+    { href: '/strategies',       label: 'Strategies', group: 'monitor' },
+    { href: '/nav',              label: 'NAV',       group: 'monitor' },
     // /admin/alerts is reachable from the 🔔 History link in the
     // /automation page header. Dropped from the top nav to slim the
     // monitor cluster — alert history naturally lives inside the
     // Automation workspace (Agents = rules, Activity = fires).
-    // ── Analyze ──
-    // P&L lives as a tab inside /dashboard — no standalone nav entry.
-    // ── Lab ──
-    // "Lab" workspace hosts the two non-execution research surfaces:
-    // Scenario (fabricated price moves) and Backtest (historical
-    // candles). Renamed from "Execution" because the page no longer
-    // carries the live/paper/shadow master toggles (those live in
-    // the navbar dropdown). URL kept at /admin/execution for
-    // backward-compat with deep links + bookmarks.
-    { href: '/admin/execution',  label: 'Lab',                           group: 'modes' },
+    // ── Explore ── scenario + replay sandbox. Renamed Jun 2026:
+    // group was "modes" (vestigial — the sim/paper/live/shadow/replay
+    // mode toggles now live in the navbar dropdown, so this is just
+    // the research entry point, not a mode selector). Label was
+    // "Lab" — every quant platform (QuantConnect, Streak, Sensibull)
+    // uses "Sandbox" for this surface, so the new label reads
+    // faster to a first-time visitor. URL kept at /admin/execution
+    // for backward-compat with deep links + bookmarks.
+    { href: '/admin/execution',  label: 'Sandbox',                       group: 'explore' },
     // ── Build / extend ──
     // /console keeps the URL but the navbar label aligns with the URL
     // ('Console') now that 'Terminal' is the brand name of the whole
@@ -198,7 +198,7 @@
   const GROUP_LABELS = {
     monitor: 'Monitor',
     analyze: 'Analyze',
-    modes:   'Modes',
+    explore: 'Explore',
     build:   'Build',
     config:  'Config',
   };
@@ -206,7 +206,7 @@
   // trigger after the inline section. Operator-frequency-ordered.
   const DROPDOWN_GROUPS = ['build', 'config'];
   // Render these groups inline (never collapse).
-  const INLINE_GROUPS = new Set(['monitor', 'analyze', 'modes']);
+  const INLINE_GROUPS = new Set(['monitor', 'analyze', 'explore']);
 
   let openGroup = $state(/** @type {string | null} */ (null));
 

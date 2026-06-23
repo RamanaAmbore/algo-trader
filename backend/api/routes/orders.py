@@ -146,6 +146,29 @@ def _maybe_send_breaker_alert(key: str, account: str, symbol: str,
         logger.warning(f"[BREAKER] alert dispatch failed for {key}: {e}")
 
 
+# Tick-size index — built on first lookup from the instruments cache,
+# rebuilt only when the cache version stamp changes. Pre-fix the
+# lookup did a linear scan through ~10-50k instrument rows on EVERY
+# `_align_price_to_tick` call; the ticket route calls it twice per
+# placement (price + trigger_price), so a single order paid ~100k
+# linear iterations. Indexed by (exchange, symbol) tuple → O(1).
+_TICK_INDEX: dict[tuple[str, str], float] = {}
+_TICK_INDEX_STAMP: object | None = None
+
+
+def _rebuild_tick_index(items) -> None:
+    """Rebuild the (exchange, symbol) → tick_size dict from the
+    instruments cache. Called once per cache refresh; subsequent
+    `_align_price_to_tick` calls hit the dict directly."""
+    global _TICK_INDEX
+    new_index: dict[tuple[str, str], float] = {}
+    for inst in items:
+        ts = float(inst.ts or 0)
+        if ts > 0:
+            new_index[(inst.e.upper(), inst.s.upper())] = ts
+    _TICK_INDEX = new_index
+
+
 async def _align_price_to_tick(exchange: str, symbol: str,
                                 price: float | None) -> float | None:
     """Snap *price* to the nearest valid tick for the instrument.
@@ -156,8 +179,9 @@ async def _align_price_to_tick(exchange: str, symbol: str,
     enter ₹9961.50 for a MCX commodity that ticks at ₹1 (whole
     rupees); we round to the nearest valid tick before sending.
 
-    Reads tick_size from the in-process instruments cache (no broker
-    round-trip). Returns the input unchanged when:
+    Reads tick_size from the in-process `_TICK_INDEX` (O(1) dict
+    lookup, built lazily from the instruments cache). Returns the
+    input unchanged when:
       - price is None or 0
       - the instrument isn't in the cache (let Kite reject explicitly)
       - tick_size resolves to a non-positive value (defensive)
@@ -166,6 +190,7 @@ async def _align_price_to_tick(exchange: str, symbol: str,
     same tick grid. For options with tick=0.05, 12.37 → 12.35;
     for commodities with tick=1, 9961.50 → 9962.
     """
+    global _TICK_INDEX_STAMP
     if price is None or price == 0:
         return price
     try:
@@ -173,16 +198,16 @@ async def _align_price_to_tick(exchange: str, symbol: str,
         from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
         resp = await get_or_fetch("instruments", _fetch_instruments,
                                   ttl_seconds=_TTL_SECONDS)
-        items = resp.items if resp else []
+        # `resp` is the cached InstrumentsResponse object. Identity
+        # comparison is enough — get_or_fetch returns the SAME instance
+        # while the cache entry is valid, then a new instance on refresh.
+        # When the identity flips we rebuild the index.
+        if resp is not _TICK_INDEX_STAMP or not _TICK_INDEX:
+            _rebuild_tick_index(resp.items if resp else [])
+            _TICK_INDEX_STAMP = resp
     except Exception:
         return price
-    sym_u = (symbol or "").upper()
-    ex_u  = (exchange or "").upper()
-    tick = None
-    for inst in items:
-        if inst.s == sym_u and inst.e == ex_u:
-            tick = float(inst.ts or 0)
-            break
+    tick = _TICK_INDEX.get(((exchange or "").upper(), (symbol or "").upper()))
     if not tick or tick <= 0:
         return price
     # Round half-up to the nearest tick. Using integer division on a
@@ -2812,27 +2837,20 @@ class OrdersController(Controller):
                     detail=f"{kite_msg} ({diag})"[:400],
                 )
 
-        # ── Paper preflight gate ──────────────────────────────────
-        # Catch obvious blockers (qty freeze, segment inactive)
-        # before the engine churns on an order that would never fill.
-        from backend.api.algo.actions import run_preflight as _run_pf_paper
-        _pfp = await _run_pf_paper(account, {
-            "exchange":         (data.exchange or "NFO"),
-            "tradingsymbol":    sym,
-            "quantity":         qty,
-            "order_type":       (data.order_type or "LIMIT"),
-            "product":          (data.product or "NRML"),
-            "variety":          (data.variety or "regular"),
-            "transaction_type": side,
-            "price":            data.price or 0,
-            "trigger_price":    data.trigger_price or 0,
-        })
-        if not _pfp["ok"]:
-            raise HTTPException(
-                status_code=422,
-                detail={"blocked": _pfp["blocked"],
-                        "diagnostics": _pfp.get("diagnostics", {})},
-            )
+        # Paper preflight gate — retired Jun 2026. Pre-fix this fired
+        # the full run_preflight() chain (4 broker calls, ~800ms) on
+        # every paper ticket; the paper engine itself already runs
+        # basket_margin internally via its REJECTED-vs-OPEN gate
+        # (see PaperTradeEngine.register_open_order), so the route-
+        # level preflight was duplicate work that added ~800ms of
+        # latency to every paper placement for zero additional
+        # correctness. The paper engine's own margin check still
+        # catches the same QTY_FREEZE / SEGMENT_INACTIVE /
+        # MARGIN_SHORTFALL conditions; rejections surface in the
+        # AlgoOrder row's .detail field within one tick.
+        #
+        # LIVE preflight (above) stays — it's the only chance to
+        # block a real broker order before kite.place_order fires.
 
         # Persist AlgoOrder row first so the engine has an id to
         # reference back into.
