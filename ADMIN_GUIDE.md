@@ -884,6 +884,46 @@ postback received
 
 ---
 
+## History — `/admin/history`
+
+Multi-day forensic surface for the three "book of record" datasets — Orders (every order the platform placed), Trades (broker-confirmed fills), Funds (per-account margins ledger). Cap-gated by `view_audit` (admin / risk / ops). Read-only; pairs with `/admin/audit` (event-level log) — this is the row-level book view.
+
+**Endpoints** ([backend/api/routes/history.py](backend/api/routes/history.py)):
+
+| Route | Source | Defaults | Pagination |
+|---|---|---|---|
+| `GET /api/admin/history/orders` | `algo_orders` table | last 30 days | 50/page, cap 500 |
+| `GET /api/admin/history/trades` | `daily_book.kind='trades'` | last 30 days | 50/page, cap 500 |
+| `GET /api/admin/history/funds`  | `daily_book.kind='funds'`  | last 90 days | unpaged (low cardinality) |
+
+**Common filter params:** `from_date=YYYY-MM-DD`, `to_date=YYYY-MM-DD`, `accounts=ZG0790,DH3747` (comma-list), `symbols=NIFTY,GOLDM` (comma-list — Funds tab ignores this).
+
+**Orders-specific filters:** `status=FILLED|OPEN|REJECTED|CANCELLED|UNFILLED`, `mode=live|paper|sim|shadow|replay`. Response includes a `counts` histogram so the UI's summary chip row can show "20 FILLED · 3 REJECTED · 1 OPEN" without paginating.
+
+**Trades response** includes `summary.total_notional` (Σ qty × avg_cost across the full filtered set, computed in SQL so pagination doesn't degrade accuracy).
+
+**Funds response** includes `earliest_date` — the first day funds capture wrote a row. The UI surfaces this as "Tracking started 23 Jun 2026" so the operator knows how far back the data goes.
+
+**Funds capture** ([backend/api/algo/daily_snapshot.py::_funds_rows](backend/api/algo/daily_snapshot.py)):
+
+- Runs inside the existing 15:35 IST `_task_daily_snapshot`.
+- Per account, per segment (equity / commodity), one row per day. Idempotent via the existing `(date, account, kind, symbol)` unique constraint — re-running the same day's snapshot updates the row.
+- Column mapping into `daily_book`:
+  - `qty`           → `utilised.debits`            (₹ debited today)
+  - `avg_cost`      → `available.cash`             (free cash)
+  - `ltp`           → `available.opening_balance`  (SOD cash)
+  - `day_pnl`       → `utilised.realised_m2m`      (today's realised P&L)
+  - `total_pnl`     → `net`                        (segment net worth)
+- Special sentinel: `symbol='__seg__'` (the table's unique constraint requires a symbol; funds rows are per-segment, not per-symbol).
+
+**Known limits / next slices:**
+
+- Funds **backfill** doesn't exist. Kite Connect has no programmatic ledger; Dhan has `get_funds_ledger` (could pull a one-shot historical seed). Until backfill lands, the Funds tab grows from today forward.
+- **Cashbook view** (running balance reconstruction) — not yet. Reconstructing requires SOD balance + trade deltas + funds snapshot recon; a follow-up slice can layer that on as a 4th tab.
+- **Per-row drill** — Orders rows don't yet link to the audit log via `request_id`; manual cross-reference via `/admin/audit` for now.
+
+---
+
 ## Audit log — `/admin/audit`
 
 Single forensic surface for every mutating event the platform produces. Cap-gated (`view_audit` — admin / risk / ops); writes happen via [`AuditMiddleware`](backend/api/audit.py) (HTTP) + `write_audit_event()` (non-HTTP). All writes are out-of-band via `asyncio.create_task` so **zero latency cost** on the caller's hot path.

@@ -2275,6 +2275,57 @@ The counter guard prevents re-entry; upstream debounce handles burst coalescing.
 
 ---
 
+## History — multi-day orders / trades / funds surface
+
+`/admin/history` is the row-level book-of-record companion to `/admin/audit`'s event log. Three tabs over `algo_orders` + `daily_book`. Cap-gated by `view_audit`.
+
+**Endpoints** ([history.py](backend/api/routes/history.py)):
+
+| Route | Source | Default range | Pagination |
+|---|---|---|---|
+| `GET /api/admin/history/orders` | `algo_orders` | 30 days | 50/page, cap 500 |
+| `GET /api/admin/history/trades` | `daily_book[kind='trades']` | 30 days | 50/page, cap 500 |
+| `GET /api/admin/history/funds`  | `daily_book[kind='funds']`  | 90 days | unpaged |
+
+Shared params: `from_date`, `to_date`, `accounts`, `symbols` (comma-separated). Orders adds `status` + `mode`. Funds drops `symbols`.
+
+**Response highlights:**
+- Orders: `counts` field is a SQL `GROUP BY status` histogram (no pagination cost).
+- Trades: `summary.total_notional` is `Σ qty × avg_cost` across the FILTERED set via `_func.sum()`.
+- Funds: `earliest_date` is `MIN(date) WHERE kind='funds'` for the "tracking started X" chip.
+
+**Funds capture** ([_funds_rows](backend/api/algo/daily_snapshot.py)) — new addition to `_task_daily_snapshot` (15:35 IST). Per account, per segment (equity / commodity), one row per day. Re-uses `daily_book` schema to avoid a new table. Column mapping:
+
+| `daily_book` column | Funds semantic |
+|---|---|
+| `qty`        | `utilised.debits` |
+| `avg_cost`   | `available.cash` |
+| `ltp`        | `available.opening_balance` |
+| `day_pnl`    | `utilised.realised_m2m` |
+| `total_pnl`  | `net` |
+| `symbol`     | `'__seg__'` sentinel |
+| `exchange`   | segment label uppercased |
+
+Idempotent via existing `(date, account, kind, symbol)` unique constraint.
+
+**Frontend** (`/admin/history`) — 3-tab strip. Shared filters: from/to date, accounts list, symbols list. Orders adds Status + Mode. Per-tab summary: Orders status histogram chips, Trades total notional chip, Funds "tracking started X" chip. BUY/SELL pills + status pills mirror audit-log palette. Pagination 50/page on Orders + Trades; Funds unpaged (low cardinality).
+
+**Navbar:** `History` entry in Config group between Statements and Audit.
+
+**Known limits + future slices:**
+- Funds backfill: Kite has no programmatic ledger; Dhan has `get_funds_ledger` (one-shot historical seed possible). Today: data accumulates from deploy forward only.
+- Cashbook running balance reconstruction: not yet — needs trade-leg + funds-snapshot recon, doable as a 4th tab.
+- Per-row drill: Orders rows don't yet cross-link to `/admin/audit` via `request_id`. Add an action column linking to a pre-filtered audit view.
+
+**Adding a new history surface** (recipe):
+1. Pick the source table — extend `daily_book` with a new `kind` value, or add a dedicated table.
+2. Add a new endpoint method to `HistoryController` with `cap_guard("view_audit")`.
+3. Add a tab + filter row + table in `/admin/history/+page.svelte`.
+4. Add an `fetchHistoryXxx` wrapper in `frontend/src/lib/api.js`.
+5. If you want WS-driven freshness, wire `bookChanged` into the page's load function.
+
+---
+
 ## Refactoring Notes
 
 **Day P&L formula** (commits b95ccd79–ba9cf39c): Decomposed intraday (not naive `(LTP−close)×qty`). Positions: `overnight_qty × (LTP − prev_close) + day_buy/sell legs`. Holdings: `broker.pnl − (close − cost) × opening_qty`. **MCX guard**: apply lot_size multiplier to intraday qty too (pre-fix: ₹61k phantom GOLDM due to unit mismatch). **Always verify qty units in P&L edits.**

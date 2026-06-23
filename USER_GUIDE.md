@@ -487,6 +487,24 @@ You don't have to do anything to opt into this. As long as the operator's browse
 
 ---
 
+## History — past orders, trades, and ledger
+
+Three things you'll want to look up after a trading day are usually:
+
+- **"What orders did I place last week?"** — broker order books only show today. RamboQuant keeps every order it placed (via the platform, via an agent, via a manual ticket) indefinitely in its own table — so you can query a date range and see every place / modify / cancel / fill row, across every account, in one place.
+- **"What did I actually trade in October?"** — separate from order placement. Trades are the *fills* the broker confirmed. The platform takes a daily snapshot of broker-reported trades at 15:35 IST and writes them to its own history table. As long as the platform was running on that day, the trades are there to scroll through.
+- **"How much cash did the account have on Diwali?"** — broker portals show today's balance only; nothing historical. RamboQuant now captures a per-account, per-segment funds snapshot in the same 15:35 IST job so the ledger builds up over time.
+
+All three live behind one page at `/admin/history` (admin / risk / ops roles). Three tabs:
+
+- **Orders** — every order the platform recorded. Filter by date range, account, symbol, status (FILLED / OPEN / REJECTED / CANCELLED / UNFILLED), and mode (live / paper / sim / shadow / replay). The summary row shows a status histogram so you can see "20 filled, 3 rejected, 1 cancelled" at a glance.
+- **Trades** — the broker-confirmed fills. Filter by date / account / symbol. Summary shows total notional across the filtered set, computed at the database so it stays accurate regardless of pagination.
+- **Funds** — per-account margins ledger. Shows cash available, opening balance, debits today, realised M2M, and net per (date × account × segment). A "tracking started X" chip tells you how far back the data goes — funds capture began June 2026, so historical data builds up over time.
+
+The page is read-only. If you need to take action on something you see (re-place a cancelled order, investigate a rejection), use the Audit log to find the request_id and trace what happened.
+
+---
+
 ## Audit log — what's recorded
 
 Every action that changes state in RamboQuant — placing an order, a broker filling that order, an agent firing, you tweaking a setting, a monthly statement going out to an LP, the daily NAV cron writing a snapshot — lands as one row in an audit log. The log is the platform's memory of "who did what, when, and with what outcome." A SEBI Cat-III audit visit doesn't need a fancy UI; it needs the trail. RamboQuant gives them both.

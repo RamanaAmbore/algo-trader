@@ -47,6 +47,7 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 22.6. [Investor portal — units-based NAV math](#226-investor-portal--units-based-nav-math)
 22.7. [Audit log — forensic trail](#227-audit-log--forensic-trail)
 22.8. [Postback fan-out — book_changed bus](#228-postback-fan-out--book_changed-bus)
+22.9. [History — multi-day orders / trades / funds](#229-history--multi-day-orders--trades--funds)
 
 ### Part VII — Operations
 23. [How to add a new template field](#23-how-to-add-a-new-template-field)
@@ -1509,6 +1510,64 @@ That's it. The counter guard prevents re-entry; the upstream debounce handles bu
 - `frontend/src/lib/data/bookChanged.js` — singleton subscriber + stores
 - `frontend/src/routes/(algo)/+layout.svelte` — `startBookChangedBus()` callsite
 - Wired pages: [admin/derivatives](frontend/src/routes/(algo)/admin/derivatives/+page.svelte), [dashboard](frontend/src/routes/(algo)/dashboard/+page.svelte), [MarketPulse](frontend/src/lib/MarketPulse.svelte), [orders](frontend/src/routes/(algo)/orders/+page.svelte), [PerformancePage](frontend/src/lib/PerformancePage.svelte)
+
+---
+
+## 22.9. History — multi-day orders / trades / funds
+
+`/admin/history` is the row-level forensic surface — three tabs over the platform's append-only datasets: Orders (`algo_orders`), Trades (`daily_book.kind='trades'`), Funds (`daily_book.kind='funds'`). Companion to `/admin/audit` (event-level log); same `view_audit` cap, different storage shape.
+
+⚙ **TECH — Append-only daily_book vs broker SDK** — `WHY` Kite Connect (and most Indian broker SDKs) expose ONLY today's orders + trades; historical data must be scraped from the Console UI. RamboQuant snapshots every loaded account at 15:35 IST into `daily_book` so the platform owns the multi-day record-of-truth without depending on the broker's UI export. `WHAT` One row per (date, account, kind, symbol) with a unique constraint that lets re-runs upsert idempotently. `HOW` `_task_daily_snapshot` background task fires at 15:35 IST + on startup. `WHERE` `backend/api/algo/daily_snapshot.py` + `backend/api/models.py::DailyBook`.
+
+### Endpoint surface
+
+[`backend/api/routes/history.py::HistoryController`](backend/api/routes/history.py) — `view_audit` cap, three reads:
+
+| Endpoint | Source | Default range | Pagination |
+|---|---|---|---|
+| `GET /api/admin/history/orders` | `algo_orders` | 30 days | 50/page, cap 500 |
+| `GET /api/admin/history/trades` | `daily_book[kind='trades']` | 30 days | 50/page, cap 500 |
+| `GET /api/admin/history/funds`  | `daily_book[kind='funds']`  | 90 days | unpaged |
+
+Shared params: `from_date / to_date / accounts / symbols` (comma-separated lists for accounts + symbols). Orders adds `status / mode`. Funds drops `symbols`.
+
+### Response shape highlights
+
+- **Orders**: `counts` field is a SQL-side `GROUP BY status` histogram. UI renders as summary pills without paginating.
+- **Trades**: `summary.total_notional` is `Σ qty × avg_cost` across the FILTERED set, computed via `_func.sum()` so pagination doesn't degrade accuracy.
+- **Funds**: `earliest_date` is `MIN(daily_book.date) WHERE kind='funds'` — the UI's "tracking started X" chip uses it to set expectations while historical backfill catches up.
+
+### Funds capture (new — Jun 2026)
+
+[`_funds_rows`](backend/api/algo/daily_snapshot.py) — runs alongside the existing holdings / positions / trades capture inside `_task_daily_snapshot`. Per account, per segment (equity / commodity), one row per day. Idempotent via the existing `daily_book` ON CONFLICT clause.
+
+Column mapping (re-using the generic `daily_book` schema to avoid a new table):
+
+| `daily_book` column | Funds semantic |
+|---|---|
+| `qty`        | `utilised.debits` (₹ debited today) |
+| `avg_cost`   | `available.cash` |
+| `ltp`        | `available.opening_balance` |
+| `day_pnl`    | `utilised.realised_m2m` |
+| `total_pnl`  | `net` (segment net worth) |
+| `symbol`     | `'__seg__'` sentinel (unique constraint requires non-null) |
+| `exchange`   | segment label uppercased |
+
+The mapping is intentionally pragmatic — `daily_book` is denormalised by design, and adding a separate `funds_book` table would duplicate the schema without adding value. The semantics are clear from `kind='funds'`.
+
+### Known limits + planned next slices
+
+- **Funds backfill** — Kite Connect has no programmatic ledger; Dhan exposes `get_funds_ledger`. A follow-up could pull a one-shot historical seed from Dhan and `INSERT ... ON CONFLICT DO NOTHING` into `daily_book`. Kite accounts will only ever have data from the deploy date forward.
+- **Cashbook running balance** — reconstructing daily SOD balance + trade-leg deltas requires recon between funds snapshots and trades. Doable as a derived view in a 4th tab; not in scope of this slice.
+- **Per-row drill** — Orders rows don't yet link to the audit log via the `request_id` carried by `audit_log`. A future slice adds an action column with "view audit" → `/admin/audit?action=POST%20/api/orders/ticket&since_hours=…` pre-filtered.
+
+### Source files
+
+- `backend/api/routes/history.py` — controller + 3 endpoints
+- `backend/api/algo/daily_snapshot.py` — `_funds_rows` + pipeline wiring
+- `backend/api/models.py::DailyBook` — table (unchanged; just a new `kind` value)
+- `frontend/src/routes/(algo)/admin/history/+page.svelte` — viewer
+- `frontend/src/lib/api.js` — `fetchHistoryOrders/Trades/Funds` wrappers
 
 ---
 
