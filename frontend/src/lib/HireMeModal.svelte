@@ -37,7 +37,7 @@
     { tag: 'Trading infra',  text: 'Multi-broker basket dispatch (Kite + Dhan + Groww) with per-account IP binding, parallel asyncio.gather order placement, and emulated OCO across brokers that lack native support.' },
     { tag: 'Quant math',     text: 'σ-driven derivatives analytics — Black-Scholes Greeks, lognormal POP, multi-leg payoff curves, expected value via trapezoidal integration, proxy-hedge β regression on 60-day daily-returns.' },
     { tag: 'Real-time',      text: 'KiteTicker WebSocket pipeline fans out per-symbol LTPs to SSE clients with auto-failover watchdog. Zero REST calls during market hours for sparklines + Pulse cells.' },
-    { tag: 'Operator DSL',   text: 'Declarative agent grammar — DB-backed tokens (metric/scope/operator/action) editable from /agents/tokens. Rules compile into a condition tree the engine walks every 5s cycle.' },
+    { tag: 'Agent DSL',      text: 'Custom declarative grammar (domain-specific language) for trading rules — DB-backed tokens (metric / scope / operator / action) editable live from /agents/tokens, composable via $ref fragments. Rules compile into a condition tree the engine walks every 5s cycle; no code changes needed to add a new rule or a new metric primitive.' },
     { tag: 'AI workflow',    text: 'MCP server bridges Claude Code to live broker data + research storage. 26 tools, confirm-token gate on every mutating write, full audit trail in McpAudit.' },
     { tag: 'Production',     text: 'PostgreSQL 17 async via SQLAlchemy 2 + asyncpg · Litestar API with msgspec.Struct · SvelteKit 5 frontend · single VPS, single uvicorn worker, KiteTicker IPv6 source binding for multi-account Kite auth.' },
   ];
