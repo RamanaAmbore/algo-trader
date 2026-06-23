@@ -19,6 +19,10 @@
   import { userRole, userCaps, hasCap } from '$lib/rbac';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
+  import ConfirmModal from '$lib/ConfirmModal.svelte';
+
+  /** @type {{ask: (opts:any)=>Promise<boolean>}|null} */
+  let confirmRef = $state(null);
 
   /** @typedef {{
    *   id: number, slug: string, name: string,
@@ -114,7 +118,12 @@
     } catch (e) { error = e?.message || 'Save failed'; }
   }
   async function doDelete(/** @type {StrategyRow} */ row) {
-    if (!confirm(`Delete strategy "${row.slug}"? Historical orders keep their data but lose attribution.`)) return;
+    if (!await confirmRef?.ask({
+      title: `Delete strategy ${row.slug}?`,
+      message: 'Historical orders keep their data but lose attribution.',
+      danger: true,
+      confirmLabel: 'Delete',
+    })) return;
     try {
       await deleteStrategy(row.id);
       await load();
@@ -258,6 +267,8 @@
     </tbody>
   </table>
 </div>
+
+<ConfirmModal bind:this={confirmRef} />
 
 <style>
   .strat-error {

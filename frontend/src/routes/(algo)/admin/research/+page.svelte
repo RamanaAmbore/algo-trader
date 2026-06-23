@@ -822,7 +822,15 @@
   /* Tab buttons rendered by AlgoTabs via global .algo-tab in app.css. */
   .lab-tabs-wrap {
     display: flex;
-    margin: 0.8rem 0 0.4rem;
+    /* Bumped margin-top from 0.8rem → 1.4rem and added a faint top
+       border so the page-internal AlgoTabs strip is visually distinct
+       from the AutomationTabs workspace strip above it. Pre-fix the
+       two strips stacked with zero separator and identical visual
+       weight; operator saw two amber underline bars and couldn't tell
+       which was workspace-nav vs page-internal. */
+    margin: 1.4rem 0 0.4rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid rgba(126, 151, 184, 0.08);
     border-bottom: 1px solid rgba(126, 151, 184, 0.18);
   }
 

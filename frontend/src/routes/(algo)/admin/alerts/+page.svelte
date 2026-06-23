@@ -6,11 +6,12 @@
   // event type, time window, and sim-mode. Polls every 10 s while
   // the page is visible.
 
-  import { onMount, onDestroy } from 'svelte';
-  import { goto } from '$app/navigation';
-  import { authStore, nowStamp, logTime, logTimeIst, logTimeEdt, visibleInterval } from '$lib/stores';
+  import { onDestroy } from 'svelte';
+  import { nowStamp, logTime, logTimeIst, logTimeEdt, visibleInterval } from '$lib/stores';
+  import { userRole, userCaps, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
+  import AutomationTabs from '$lib/AutomationTabs.svelte';
   import { fetchAgents, fetchAlertsHistory } from '$lib/api';
   import StaleBanner from '$lib/StaleBanner.svelte';
   import Select   from '$lib/Select.svelte';
@@ -74,12 +75,24 @@
     }
   }
 
-  onMount(() => {
-    const r = $authStore.user?.role;
-    if (!$authStore.user || (r !== 'admin' && r !== 'designated')) { goto('/signin'); return; }
-    loadAgents();
-    load();
-    teardown = visibleInterval(load, 10000);
+  // Gate by capability — friendly access-denied panel rather than
+  // hard /signin redirect (matches /admin/audit + /admin/history).
+  // view_audit covers admin / risk / ops; alerts are essentially the
+  // agent-action audit trail so the same cap fits.
+  const _canView = $derived(hasCap('view_audit', $userCaps, $userRole));
+
+  // $effect-gated load — fires when _canView flips true on first
+  // /whoami resolution. Pre-fix the page used onMount which ran once
+  // at false (whoami in-flight) and never re-checked, so the operator
+  // saw a hard goto('/signin') redirect before auth hydrated.
+  let _loadedOnce = false;
+  $effect(() => {
+    if (_canView && !_loadedOnce) {
+      _loadedOnce = true;
+      loadAgents();
+      load();
+      teardown = visibleInterval(load, 10000);
+    }
   });
   onDestroy(() => teardown?.());
 
@@ -142,6 +155,18 @@
     <PageHeaderActions />
   </span>
 </div>
+
+<AutomationTabs />
+
+{#if !_canView}
+  <div class="empty-state">
+    <h2>Access denied</h2>
+    <p>Alert history requires the <code>view_audit</code> capability
+       (admin, risk, or ops role). Your current role is
+       <strong>{$userRole}</strong> — contact an admin to request
+       access.</p>
+  </div>
+{:else}
 
 <StaleBanner {error} hasData={rows.length > 0} label="Alert history" />
 
@@ -257,6 +282,8 @@
       </tbody>
     </table>
   </div>
+{/if}
+
 {/if}
 
 <style>

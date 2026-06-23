@@ -11,8 +11,12 @@
   import { authStore, logTime, dualTsHtml, nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
+  import ConfirmModal from '$lib/ConfirmModal.svelte';
   import { fetchSimIteration, replaySimIteration } from '$lib/api';
   import { aggCompact } from '$lib/format';
+
+  /** @type {{ask: (opts:any)=>Promise<boolean>}|null} */
+  let confirmRef = $state(null);
   // aggCompact is used in the summary card below.
 
   /** @type {any} */
@@ -42,7 +46,11 @@
 
   async function onReplay() {
     if (replaying) return;
-    if (!confirm(`Re-run ${slug} with seed ${iteration?.seed ?? '(random)'}?`)) return;
+    if (!await confirmRef?.ask({
+      title: `Re-run ${slug}?`,
+      message: `Seed: ${iteration?.seed ?? '(random)'}. A fresh single-iteration run will start in the simulator.`,
+      confirmLabel: 'Re-run',
+    })) return;
     replaying = true;
     try {
       await replaySimIteration(slug);
@@ -162,6 +170,8 @@
 
   </div>
 {/if}
+
+<ConfirmModal bind:this={confirmRef} />
 
 <style>
   .slug-chip {

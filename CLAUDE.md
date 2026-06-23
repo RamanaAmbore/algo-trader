@@ -2452,6 +2452,13 @@ All three use `guards=[]` and `_process_broker_postback` (or inline equivalent f
 
 **What this means operationally**: deleting an agent / iteration / admin user now works cleanly without manual cleanup. `/admin/history` page loads faster on busy multi-account books. Adding a third global watchlist (Sector / Sandbox / …) no longer silently fails.
 
+**Slice H — UX consistency wave 2** (shipped Jun 2026, from #audit round 2):
+- `/strategies` + `/admin/simulator/iterations/[slug]` — native `confirm()` → `<ConfirmModal>` via `confirmRef.ask({danger:true})`. iOS PWA standalone-mode silently no-ops `confirm()`; pre-fix the operator's "Are you sure?" click was bypassed AND the destructive action ran on Safari pinned-to-home-screen.
+- `/admin/alerts` — three fixes in one pass: (a) replaced the `onMount` auth check with the canonical `$effect`-gated `_canView`/`_loadedOnce` pattern so data loads after `/whoami` resolves (matches `/admin/audit` + `/admin/history`); (b) replaced hard `goto('/signin')` with a friendly access-denied panel (same 401-vs-403 UX symmetry as the audit page); (c) mounted `<AutomationTabs>` so the agent workspace strip is consistent with `/automation`, `/automation/activity`, `/admin/tokens`, `/admin/research`.
+- `/admin/research` — `.lab-tabs-wrap` separator between `AutomationTabs` (workspace nav) and inner `AlgoTabs` (page-internal Research/Drafts/Audit/Settings). Pre-fix the two strips stacked with zero separator + identical visual weight; operator saw two amber underline bars and couldn't tell which was workspace-nav vs page-internal. Now: 1.4rem top margin + faint top border on the inner strip's wrap.
+
+**Recipe for future pages**: whenever a new page fetches data behind a capability check, follow the `_canView` + `_loadedOnce` + `$effect` pattern. Whenever a new destructive action exists, mount `<ConfirmModal>` once + use `await confirmRef.ask({danger:true})` instead of native `confirm()`. Whenever a new agent-adjacent page lands, mount `<AutomationTabs>` so the workspace identity is unbroken.
+
 ---
 
 ## Refactoring Notes
