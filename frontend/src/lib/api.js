@@ -396,6 +396,17 @@ export const sendStatementNow = (/** @type {{user_id:number, year:number, month:
 export const deleteStatementRow = (/** @type {number} */ rowId) =>
   _del(`/admin/statements/${rowId}`, { auth: true });
 
+/** Investor events — subscription / redemption / bootstrap journal
+ *  (slice 7N). Passive log today; the next slice consumes these
+ *  events for units-based NAV math. */
+export const fetchInvestorEvents = (/** @type {number} */ userId) =>
+  _get(`/admin/users/${userId}/investor-events`, { auth: true });
+export const createInvestorEvent = (/** @type {number} */ userId,
+                                    /** @type {{event_type:string, event_date:string, amount:number, nav_per_unit:number, note?:string}} */ body) =>
+  _post(`/admin/users/${userId}/investor-events`, body, { auth: true });
+export const deleteInvestorEvent = (/** @type {number} */ userId, /** @type {number} */ eventId) =>
+  _del(`/admin/users/${userId}/investor-events/${eventId}`, { auth: true });
+
 /** GET /api/admin/audit — paginated audit log with filters. Gated
  *  by the `view_audit` cap server-side (admin / risk / ops). */
 export const fetchAuditLog = (params = {}) => {

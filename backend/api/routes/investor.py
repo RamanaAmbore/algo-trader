@@ -45,7 +45,9 @@ from litestar.exceptions import HTTPException
 from sqlalchemy import desc, select, update
 
 from backend.api.database import async_session
-from backend.api.models import InvestorToken, MonthlyStatement, NavDaily, User
+from backend.api.models import (
+    InvestorEvent, InvestorToken, MonthlyStatement, NavDaily, User,
+)
 from backend.api.rbac import cap_guard
 
 
@@ -75,6 +77,45 @@ class TokenListResponse(msgspec.Struct):
 class MintTokenRequest(msgspec.Struct):
     expires_in_days: int = 90
     note:            Optional[str] = None
+
+
+# ── Investor events (subscription / redemption journal) ────────────
+
+class _EventRow(msgspec.Struct):
+    id:           int
+    event_type:   str
+    event_date:   str           # ISO date
+    amount:       float
+    nav_per_unit: float
+    units_delta:  float
+    note:         Optional[str]
+    created_at:   str
+
+
+class EventListResponse(msgspec.Struct):
+    user_id:        int
+    username:       str
+    rows:           list[_EventRow]
+    total_units:    float       # sum(units_delta) — current LP unit balance
+    total_in:       float       # sum of subscription amounts
+    total_out:      float       # sum of redemption amounts
+
+
+class CreateEventRequest(msgspec.Struct):
+    event_type:   str           # 'subscription' | 'redemption' | 'bootstrap'
+    event_date:   str           # 'YYYY-MM-DD'
+    amount:       float         # positive ₹
+    nav_per_unit: float         # positive
+    note:         Optional[str] = None
+
+
+class CreateEventResponse(msgspec.Struct):
+    id:           int
+    event_type:   str
+    event_date:   str
+    amount:       float
+    nav_per_unit: float
+    units_delta:  float
 
 
 class MintTokenResponse(msgspec.Struct):
@@ -257,6 +298,129 @@ class InvestorAdminController(Controller):
         spot-check what the LP will receive. Useful for QA before
         forwarding a portal URL."""
         return await _generate_statement_response(user_id, year, month)
+
+    @get("/{user_id:int}/investor-events",
+         guards=[cap_guard("manage_investor_tokens")])
+    async def list_events(self, user_id: int) -> EventListResponse:
+        """List every subscription / redemption / bootstrap event
+        for an LP, ascending by event_date. Surfaces totals so the
+        operator can sanity-check capital in/out + the LP's current
+        unit balance.
+
+        Currently a passive log — NAV math still uses the v1
+        static-share model. The next slice flips the NAV
+        computation to consume these events."""
+        async with async_session() as s:
+            user = (await s.execute(
+                select(User).where(User.id == user_id)
+            )).scalar_one_or_none()
+            if user is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            rows = (await s.execute(
+                select(InvestorEvent)
+                  .where(InvestorEvent.user_id == user_id)
+                  .order_by(InvestorEvent.event_date.asc(),
+                            InvestorEvent.id.asc())
+            )).scalars().all()
+        total_units = sum(float(r.units_delta or 0.0) for r in rows)
+        total_in    = sum(float(r.amount or 0.0) for r in rows
+                          if r.event_type in ("subscription", "bootstrap"))
+        total_out   = sum(float(r.amount or 0.0) for r in rows
+                          if r.event_type == "redemption")
+        return EventListResponse(
+            user_id=user.id,
+            username=user.username,
+            rows=[
+                _EventRow(
+                    id=r.id,
+                    event_type=r.event_type,
+                    event_date=r.event_date.isoformat() if r.event_date else "",
+                    amount=float(r.amount or 0.0),
+                    nav_per_unit=float(r.nav_per_unit or 0.0),
+                    units_delta=float(r.units_delta or 0.0),
+                    note=r.note,
+                    created_at=_iso(r.created_at) or "",
+                )
+                for r in rows
+            ],
+            total_units=total_units,
+            total_in=total_in,
+            total_out=total_out,
+        )
+
+    @post("/{user_id:int}/investor-events",
+          guards=[cap_guard("manage_investor_tokens")])
+    async def create_event(self, user_id: int,
+                           data: CreateEventRequest) -> CreateEventResponse:
+        """Record a new subscription / redemption / bootstrap event.
+        Operator supplies amount + nav_per_unit; backend computes
+        signed units_delta. Subscriptions / bootstraps are positive,
+        redemptions negative.
+
+        No idempotency key — legitimate same-day same-amount events
+        are possible (rare but valid). If the operator submits twice
+        by mistake, they can DELETE the duplicate."""
+        from datetime import date as _date
+        et = (data.event_type or "").strip().lower()
+        if et not in ("subscription", "redemption", "bootstrap"):
+            raise HTTPException(status_code=400,
+                                detail="event_type must be subscription | redemption | bootstrap")
+        if data.amount <= 0:
+            raise HTTPException(status_code=400, detail="amount must be > 0")
+        if data.nav_per_unit <= 0:
+            raise HTTPException(status_code=400, detail="nav_per_unit must be > 0")
+        try:
+            edate = _date.fromisoformat(data.event_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="event_date must be YYYY-MM-DD")
+
+        sign = -1.0 if et == "redemption" else 1.0
+        units_delta = sign * data.amount / data.nav_per_unit
+
+        async with async_session() as s:
+            user = (await s.execute(
+                select(User).where(User.id == user_id)
+            )).scalar_one_or_none()
+            if user is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            row = InvestorEvent(
+                user_id=user_id,
+                event_type=et,
+                event_date=edate,
+                amount=float(data.amount),
+                nav_per_unit=float(data.nav_per_unit),
+                units_delta=float(units_delta),
+                note=(data.note or None),
+            )
+            s.add(row)
+            await s.commit()
+            await s.refresh(row)
+        return CreateEventResponse(
+            id=row.id,
+            event_type=row.event_type,
+            event_date=row.event_date.isoformat(),
+            amount=float(row.amount),
+            nav_per_unit=float(row.nav_per_unit),
+            units_delta=float(row.units_delta),
+        )
+
+    @delete("/{user_id:int}/investor-events/{event_id:int}",
+            guards=[cap_guard("manage_investor_tokens")],
+            status_code=204)
+    async def delete_event(self, user_id: int, event_id: int) -> None:
+        """Remove an event. Operator's escape hatch for fat-finger
+        entries. There's no undo — once deleted the row is gone."""
+        async with async_session() as s:
+            row = (await s.execute(
+                select(InvestorEvent).where(
+                    InvestorEvent.id == event_id,
+                    InvestorEvent.user_id == user_id,
+                )
+            )).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Event not found")
+            await s.delete(row)
+            await s.commit()
 
     @delete("/{user_id:int}/investor-tokens/{token_id:int}",
             guards=[cap_guard("manage_investor_tokens")],

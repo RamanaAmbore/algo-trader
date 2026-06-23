@@ -12,6 +12,7 @@
     sendPartnerEmail, fetchEmailEvents,
     impersonateUser,
     fetchInvestorTokens, mintInvestorToken, revokeInvestorToken,
+    fetchInvestorEvents, createInvestorEvent, deleteInvestorEvent,
   } from '$lib/api';
   import MultiSelect from '$lib/MultiSelect.svelte';
   import Select   from '$lib/Select.svelte';
@@ -145,6 +146,91 @@
       stmtBusy = false;
     }
   }
+
+  // Investor events — subscription / redemption / bootstrap log.
+  // Passive today; the next slice flips NAV math to consume events.
+  /** @type {any[]} */
+  let evRows = $state([]);
+  let evTotals = $state({ total_units: 0, total_in: 0, total_out: 0 });
+  let evLoading = $state(false);
+  let evBusy = $state(false);
+  let evForm = $state({
+    event_type: 'subscription',
+    event_date: new Date().toISOString().slice(0, 10),
+    amount: 0,
+    nav_per_unit: 1,
+    note: '',
+  });
+  let portalTab = $state(/** @type {'tokens' | 'statement' | 'events'} */ ('tokens'));
+
+  async function loadEvents() {
+    if (!portalUser) return;
+    evLoading = true; portalError = '';
+    try {
+      const r = await fetchInvestorEvents(portalUser.id);
+      evRows = r.rows ?? [];
+      evTotals = {
+        total_units: r.total_units ?? 0,
+        total_in:    r.total_in    ?? 0,
+        total_out:   r.total_out   ?? 0,
+      };
+    } catch (e) { portalError = e?.message || 'Failed to load events'; }
+    finally { evLoading = false; }
+  }
+
+  async function addEvent() {
+    if (!portalUser || evBusy) return;
+    if (!evForm.amount || evForm.amount <= 0) {
+      portalError = 'Amount must be > 0'; return;
+    }
+    if (!evForm.nav_per_unit || evForm.nav_per_unit <= 0) {
+      portalError = 'NAV per unit must be > 0'; return;
+    }
+    evBusy = true; portalError = '';
+    try {
+      await createInvestorEvent(portalUser.id, {
+        event_type:   evForm.event_type,
+        event_date:   evForm.event_date,
+        amount:       Number(evForm.amount),
+        nav_per_unit: Number(evForm.nav_per_unit),
+        note:         evForm.note || undefined,
+      });
+      evForm = { ...evForm, amount: 0, note: '' };
+      await loadEvents();
+    } catch (e) { portalError = e?.message || 'Failed to add event'; }
+    finally { evBusy = false; }
+  }
+
+  async function removeEvent(/** @type {number} */ id) {
+    if (!portalUser || evBusy) return;
+    if (!await confirmRef.ask({
+      title: 'Delete event?',
+      body: 'This removes the event from the LP\'s journal. No undo — once deleted, the row is gone.',
+      confirmLabel: 'Delete',
+      kind: 'danger',
+    })) return;
+    evBusy = true; portalError = '';
+    try {
+      await deleteInvestorEvent(portalUser.id, id);
+      await loadEvents();
+    } catch (e) { portalError = e?.message || 'Failed to delete event'; }
+    finally { evBusy = false; }
+  }
+
+  // Auto-load events on tab switch (lazy: only first visit per modal
+  // open hits the endpoint).
+  $effect(() => {
+    if (portalUser && portalTab === 'events' && evRows.length === 0 && !evLoading) {
+      loadEvents();
+    }
+  });
+  // Reset tab + rows on new modal open.
+  $effect(() => {
+    if (portalUser) {
+      portalTab = 'tokens'; evRows = [];
+      evTotals = { total_units: 0, total_in: 0, total_out: 0 };
+    }
+  });
 
   async function copyPortalUrl() {
     if (!portalFresh) return;
@@ -975,10 +1061,20 @@
         <button class="ip-modal-x" onclick={closePortal} aria-label="Close">×</button>
       </header>
 
+      <div class="ip-modal-tabs">
+        <button class="ip-modal-tab" class:active={portalTab === 'tokens'}
+                onclick={() => portalTab = 'tokens'}>URL access</button>
+        <button class="ip-modal-tab" class:active={portalTab === 'statement'}
+                onclick={() => portalTab = 'statement'}>Statement preview</button>
+        <button class="ip-modal-tab" class:active={portalTab === 'events'}
+                onclick={() => portalTab = 'events'}>Events</button>
+      </div>
+
       {#if portalError}
         <div class="ip-modal-error">{portalError}</div>
       {/if}
 
+      {#if portalTab === 'tokens'}
       {#if portalFresh}
         <section class="ip-modal-fresh">
           <div class="ip-modal-fresh-lbl">New URL minted — copy now</div>
@@ -1018,27 +1114,6 @@
                   disabled={portalMintBusy}
                   onclick={mintPortal}>
             {portalMintBusy ? 'Minting…' : 'Mint'}
-          </button>
-        </div>
-      </section>
-
-      <section class="ip-modal-mint">
-        <div class="ip-modal-section-head">Preview monthly statement</div>
-        <div class="ip-modal-mint-row">
-          <label class="ip-modal-field">
-            <span class="ip-modal-field-lbl">Year</span>
-            <input type="number" min="2020" max="2100" step="1"
-                   bind:value={stmtYear} class="field-input ip-modal-yr"/>
-          </label>
-          <label class="ip-modal-field">
-            <span class="ip-modal-field-lbl">Month</span>
-            <input type="number" min="1" max="12" step="1"
-                   bind:value={stmtMonth} class="field-input ip-modal-yr"/>
-          </label>
-          <button class="btn-secondary text-[0.7rem] py-1.5 px-3 border-cyan-400/50 text-cyan-300"
-                  disabled={stmtBusy}
-                  onclick={previewStatement}>
-            {stmtBusy ? 'Generating…' : 'Preview PDF'}
           </button>
         </div>
       </section>
@@ -1094,6 +1169,152 @@
           </div>
         {/if}
       </section>
+      {/if}
+
+      {#if portalTab === 'statement'}
+      <section class="ip-modal-mint">
+        <div class="ip-modal-section-head">Preview monthly statement</div>
+        <div class="ip-modal-mint-row">
+          <label class="ip-modal-field">
+            <span class="ip-modal-field-lbl">Year</span>
+            <input type="number" min="2020" max="2100" step="1"
+                   bind:value={stmtYear} class="field-input ip-modal-yr"/>
+          </label>
+          <label class="ip-modal-field">
+            <span class="ip-modal-field-lbl">Month</span>
+            <input type="number" min="1" max="12" step="1"
+                   bind:value={stmtMonth} class="field-input ip-modal-yr"/>
+          </label>
+          <button class="btn-secondary text-[0.7rem] py-1.5 px-3 border-cyan-400/50 text-cyan-300"
+                  disabled={stmtBusy}
+                  onclick={previewStatement}>
+            {stmtBusy ? 'Generating…' : 'Preview PDF'}
+          </button>
+        </div>
+        <div class="ip-modal-fresh-hint">
+          Opens in a new tab. Latest NAV snapshot determines the
+          closing slice; log any pending subscription / redemption
+          events in the Events tab before previewing if the LP
+          joined mid-period.
+        </div>
+      </section>
+      {/if}
+
+      {#if portalTab === 'events'}
+      <section class="ip-modal-mint">
+        <div class="ip-modal-section-head">Add event</div>
+        <div class="ip-modal-mint-row">
+          <label class="ip-modal-field">
+            <span class="ip-modal-field-lbl">Type</span>
+            <select class="field-input" bind:value={evForm.event_type}>
+              <option value="subscription">Subscription</option>
+              <option value="redemption">Redemption</option>
+              <option value="bootstrap">Bootstrap</option>
+            </select>
+          </label>
+          <label class="ip-modal-field">
+            <span class="ip-modal-field-lbl">Date</span>
+            <input type="date" bind:value={evForm.event_date} class="field-input"/>
+          </label>
+          <label class="ip-modal-field">
+            <span class="ip-modal-field-lbl">Amount (₹)</span>
+            <input type="number" min="0" step="any"
+                   bind:value={evForm.amount} class="field-input ip-modal-yr"/>
+          </label>
+          <label class="ip-modal-field">
+            <span class="ip-modal-field-lbl">NAV / unit</span>
+            <input type="number" min="0" step="any"
+                   bind:value={evForm.nav_per_unit} class="field-input ip-modal-yr"/>
+          </label>
+          <label class="ip-modal-field grow">
+            <span class="ip-modal-field-lbl">Note (optional)</span>
+            <input type="text" maxlength="120"
+                   bind:value={evForm.note}
+                   placeholder="e.g. Wire ref 12345"
+                   class="field-input"/>
+          </label>
+          <button class="btn-primary text-[0.7rem] py-1.5 px-3"
+                  disabled={evBusy}
+                  onclick={addEvent}>
+            {evBusy ? 'Adding…' : 'Add'}
+          </button>
+        </div>
+        <div class="ip-modal-fresh-hint">
+          NAV/unit is the per-unit value at the event date.
+          <strong>Subscription:</strong> capital in, units increase.
+          <strong>Redemption:</strong> capital out, units decrease.
+          <strong>Bootstrap:</strong> a one-time seed event to
+          migrate the LP into the units model — set NAV/unit to
+          1.0 if you don't have a per-unit history yet. Events are
+          a passive journal today; the next slice flips NAV math
+          to consume them.
+        </div>
+      </section>
+
+      <section class="ip-modal-list">
+        <div class="ip-modal-section-head">
+          Event log
+          {#if evLoading}<span class="text-[0.6rem] text-[#7e97b8]"> · loading…</span>{/if}
+        </div>
+        <div class="ip-modal-mint-row" style="margin-bottom:0.5rem;">
+          <div class="ip-modal-field">
+            <span class="ip-modal-field-lbl">Units balance</span>
+            <span class="text-[0.78rem] font-mono">{evTotals.total_units.toFixed(4)}</span>
+          </div>
+          <div class="ip-modal-field">
+            <span class="ip-modal-field-lbl">Capital in</span>
+            <span class="text-[0.78rem] font-mono">₹{Math.round(evTotals.total_in).toLocaleString('en-IN')}</span>
+          </div>
+          <div class="ip-modal-field">
+            <span class="ip-modal-field-lbl">Capital out</span>
+            <span class="text-[0.78rem] font-mono">₹{Math.round(evTotals.total_out).toLocaleString('en-IN')}</span>
+          </div>
+        </div>
+        {#if !evLoading && evRows.length === 0}
+          <div class="ip-modal-empty">No events logged yet.</div>
+        {:else}
+          <div class="ip-modal-tbl-wrap">
+            <table class="ip-modal-tbl">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Type</th>
+                  <th class="th-num">Amount</th>
+                  <th class="th-num">NAV/unit</th>
+                  <th class="th-num">Units Δ</th>
+                  <th>Note</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each evRows as e (e.id)}
+                  <tr>
+                    <td class="td-mono">{e.event_date}</td>
+                    <td>
+                      {#if e.event_type === 'subscription'}
+                        <span class="ip-pill ip-pill-active">Subscribe</span>
+                      {:else if e.event_type === 'redemption'}
+                        <span class="ip-pill ip-pill-revoked">Redeem</span>
+                      {:else}
+                        <span class="ip-pill ip-pill-expired">Bootstrap</span>
+                      {/if}
+                    </td>
+                    <td class="td-num td-mono">₹{Math.round(e.amount).toLocaleString('en-IN')}</td>
+                    <td class="td-num td-mono">{e.nav_per_unit.toFixed(4)}</td>
+                    <td class="td-num td-mono">{e.units_delta.toFixed(4)}</td>
+                    <td class="ip-modal-note" title={e.note || ''}>{e.note || '—'}</td>
+                    <td class="td-actions">
+                      <button class="btn-secondary text-[0.6rem] py-0.5 px-1.5 border-red-400/50 text-red-300"
+                              onclick={() => removeEvent(e.id)}>Delete</button>
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+      </section>
+      {/if}
     </div>
   </div>
 {/if}
@@ -1132,6 +1353,29 @@
     font-size: 0.65rem; color: #7e97b8; margin-top: 0.15rem;
     font-family: ui-monospace, monospace;
   }
+  .ip-modal-tabs {
+    display: flex; gap: 0.3rem; margin-bottom: 0.8rem;
+    border-bottom: 1px solid rgba(126, 151, 184, 0.18);
+  }
+  .ip-modal-tab {
+    padding: 0.4rem 0.9rem;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: #7e97b8;
+    font-family: ui-monospace, monospace;
+    font-size: 0.65rem; font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    cursor: pointer;
+    margin-bottom: -1px;
+    transition: color 120ms, border-color 120ms;
+  }
+  .ip-modal-tab:hover { color: #c8d8f0; }
+  .ip-modal-tab.active {
+    color: #67e8f9;
+    border-bottom-color: #22d3ee;
+  }
+
   .ip-modal-x {
     background: transparent; border: 1px solid rgba(126, 151, 184, 0.30);
     color: #c8d8f0; border-radius: 4px;

@@ -224,6 +224,63 @@ class MonthlyStatement(Base):
     error:           Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
+class InvestorEvent(Base):
+    """
+    Subscription / redemption event for an LP. One row per capital
+    movement; the operator logs these as they happen.
+
+    Today this is a passive log — NAV slice math still uses
+    `User.share_pct × firm_nav` (the v1 static-share model). The
+    next slice switches the NAV computation to consume these
+    events via the standard fund-accounting units model:
+
+        units_held(user)   = sum(units_delta for user's events)
+        nav_per_unit(today) = current_firm_nav / sum(units_held across LPs)
+        slice(user, today) = units_held × nav_per_unit
+        pnl(user, today)   = slice - (sum(subscriptions) - sum(redemptions))
+
+    Industry analog: Carta partnership unit register, CAMSonline
+    mutual-fund units, SS&C subscription/redemption journal.
+
+    Units math:
+    - Subscription: `units_delta = amount / nav_per_unit` (positive)
+    - Redemption:   `units_delta = -amount / nav_per_unit` (negative)
+    - Operator supplies amount + nav_per_unit; backend computes the
+      delta + sign. Idempotency relies on the operator NOT re-
+      submitting; no DB-level unique key since legitimate same-day
+      same-amount events are possible (rare but valid).
+    """
+    __tablename__ = "investor_events"
+
+    id:               Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id:          Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    # 'subscription' (capital in) | 'redemption' (capital out) |
+    # 'bootstrap' (synthetic seed event when migrating an existing
+    # LP from the static-share model). Use 'bootstrap' so the
+    # operator can tell which rows are real vs auto-generated.
+    event_type:       Mapped[str] = mapped_column(String(16), nullable=False)
+    event_date:       Mapped[datetime] = mapped_column(Date, nullable=False, index=True)
+    # Cash amount in ₹. Always stored as a positive number; the sign
+    # of units_delta encodes direction (subscription positive,
+    # redemption negative).
+    amount:           Mapped[float] = mapped_column(Float, nullable=False)
+    # NAV per unit at the time of the event. Operator-supplied at
+    # the event date so historical events can be backdated with the
+    # correct per-unit value (read from the NavDaily curve on the
+    # event date).
+    nav_per_unit:     Mapped[float] = mapped_column(Float, nullable=False)
+    # Signed units delta — positive for subscription, negative for
+    # redemption. Computed at insert time as ±amount/nav_per_unit;
+    # stored explicitly so reads don't re-derive on every call.
+    units_delta:      Mapped[float] = mapped_column(Float, nullable=False)
+    note:             Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_by:       Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at:       Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
 class InvestorToken(Base):
     """
     Long-lived, revocable, public URL token for LP-facing investor
