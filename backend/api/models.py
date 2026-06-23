@@ -289,7 +289,10 @@ class InvestorEvent(Base):
     # stored explicitly so reads don't re-derive on every call.
     units_delta:      Mapped[float] = mapped_column(Float, nullable=False)
     note:             Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    created_by:       Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by:       Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
     created_at:       Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),
@@ -334,7 +337,10 @@ class InvestorToken(Base):
     # Audit: which admin minted this token. Nullable so a self-mint
     # via /admin won't break if the originator has been deleted
     # later.
-    created_by:    Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    created_by:    Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
     created_at:    Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),
@@ -679,7 +685,9 @@ class AlgoOrder(Base):
     id: Mapped[int]              = mapped_column(primary_key=True, autoincrement=True)
     account: Mapped[str]         = mapped_column(String(32), nullable=False)
     symbol: Mapped[str]          = mapped_column(String(64), nullable=False)
-    exchange: Mapped[str]        = mapped_column(String(8), nullable=False, default="NFO")
+    exchange: Mapped[str]        = mapped_column(
+        String(8), nullable=False, default="NFO", server_default="NFO",
+    )
     transaction_type: Mapped[str] = mapped_column(String(4), nullable=False)  # BUY/SELL
     quantity: Mapped[int]        = mapped_column(Integer, nullable=False)
     # Sprint B (audit #4) — cumulative filled qty across partials.
@@ -706,7 +714,9 @@ class AlgoOrder(Base):
     attempts: Mapped[int]        = mapped_column(Integer, nullable=False, default=0)
     slippage: Mapped[float]      = mapped_column(Float, nullable=True)
     status: Mapped[str]          = mapped_column(String(16), nullable=False, default="OPEN", index=True)
-    engine: Mapped[str]          = mapped_column(String(16), nullable=False, default="manual")  # sim/paper/live/replay/shadow/expiry/manual
+    engine: Mapped[str]          = mapped_column(
+        String(16), nullable=False, default="manual", server_default="manual",
+    )  # sim/paper/live/replay/shadow/expiry/manual
     mode: Mapped[str]            = mapped_column(String(8), nullable=False, default="live", index=True)  # sim/paper/live/replay/shadow
     # Which agent originated this order. NULL for rows written before this
     # column existed (pre-migration), and for orders whose origin can't be
@@ -816,7 +826,10 @@ class AlgoEvent(Base):
     __tablename__ = "algo_events"
 
     id: Mapped[int]              = mapped_column(primary_key=True, autoincrement=True)
-    algo_order_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("algo_orders.id"), nullable=True)
+    algo_order_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("algo_orders.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
     event_type: Mapped[str]      = mapped_column(String(32), nullable=False)
     detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     timestamp: Mapped[datetime]  = mapped_column(
@@ -1022,7 +1035,8 @@ class AgentEvent(Base):
     # the index every page load was a seq-scan on a growing append-only
     # table.
     agent_id: Mapped[int]        = mapped_column(
-        Integer, ForeignKey("agents.id"), nullable=False, index=True,
+        Integer, ForeignKey("agents.id", ondelete="CASCADE"),
+        nullable=False, index=True,
     )
     event_type: Mapped[str]      = mapped_column(String(32), nullable=False)
     trigger_condition: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -1103,7 +1117,10 @@ class SimIteration(Base):
     id: Mapped[int]                = mapped_column(primary_key=True, autoincrement=True)
     slug: Mapped[str]              = mapped_column(String(64), nullable=False, unique=True, index=True)
     # First iteration of a multi-run; iteration 1 references itself.
-    parent_run_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
+    parent_run_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("sim_iterations.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
     iteration_index: Mapped[int]   = mapped_column(Integer, nullable=False, default=1)
     iterations_total: Mapped[int]  = mapped_column(Integer, nullable=False, default=1)
     regime: Mapped[str]            = mapped_column(String(64), nullable=False)
@@ -1746,7 +1763,8 @@ class ResearchThread(Base):
         Integer, ForeignKey("agents.id", ondelete="SET NULL"), nullable=True, index=True,
     )
     created_by_user_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
+        Integer, ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True, index=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,

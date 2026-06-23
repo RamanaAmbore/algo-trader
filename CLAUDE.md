@@ -2439,6 +2439,19 @@ All three use `guards=[]` and `_process_broker_postback` (or inline equivalent f
 
 **Why these matter operationally**: every item except the bootstrap race is a quiet defect — no exception traces, just wrong behaviour. Groww market_status would silently fall through to bellwether (operator doesn't notice it's inoperative). Dhan PARTIALLY_TRADED would chase to UNFILLED and the operator would assume the order failed. Template-attach gap would only manifest as "the TP/SL GTT I expected isn't at broker". Bootstrap race produces wrong NAV math that compounds across every portal visit until reconciled. Slice F closed all five before any production multi-broker live use.
 
+**Slice G — data-layer hardening** (shipped Jun 2026, from #audit round 2):
+- `agent_events.agent_id` FK → `ON DELETE CASCADE`. Pre-fix default NO ACTION blocked agent deletes at the DB level (or required manual cleanup in `agent_engine.py`'s `_RETIRED_LOSS_SLUGS` loop). CASCADE matches operator intent: deleting an agent retires its history.
+- `uq_watchlist_global_pinned` index — **broken predicate fixed**. Pre-fix `ON watchlists ((1)) WHERE is_global = true` indexed the constant `1` and allowed at most ONE global row in the whole table regardless of name; adding a second global watchlist (Markets, Default, …) silently failed with a unique violation. Corrected to `ON watchlists (name) WHERE is_global = true` so multiple named global rows can coexist.
+- `sim_iterations.parent_run_id` — added self-referential FK with `ON DELETE SET NULL`. Was a plain int with no referential integrity; deleting an iteration silently left children pointing at a dangling id.
+- `algo_events.algo_order_id` — added `index=True` + `ON DELETE SET NULL` FK. Pre-fix FK lookups would seq-scan and algo_orders deletes would block at the DB level (NO ACTION).
+- `daily_book (kind, date)` composite index — backs the `/admin/history` hot-path queries (`WHERE kind=? AND date BETWEEN ?`). Existing `(date)` index forced Postgres to seq-scan-and-filter on `kind` for the trades + funds tabs.
+- `InvestorEvent.created_by`, `InvestorToken.created_by`, `ResearchThread.created_by_user_id` — added `index=True` + `ON DELETE SET NULL` (the last only needed the index). Pre-fix deleting an admin user would block at the DB level on the FK; admin-listing queries seq-scanned.
+- `AlgoOrder.engine` + `.exchange` — added `server_default=` so raw INSERTs that bypass the ORM (e.g. seeders / direct SQL) don't NULL them. Aligns column DB-side default with the existing Python `default=`.
+
+**Migration shape**: each ALTER is paired with `DROP CONSTRAINT IF EXISTS` first so the migration is fully idempotent — re-running `init_db` on an already-migrated DB is a clean no-op. The constraint names follow Postgres + SQLAlchemy default `{tablename}_{column}_fkey`, so the drop is safe regardless of whether the original was named or anonymous.
+
+**What this means operationally**: deleting an agent / iteration / admin user now works cleanly without manual cleanup. `/admin/history` page loads faster on busy multi-account books. Adding a third global watchlist (Sector / Sandbox / …) no longer silently fails.
+
 ---
 
 ## Refactoring Notes

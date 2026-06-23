@@ -344,6 +344,103 @@ async def init_db() -> None:
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_investor_events_user_bootstrap "
             "ON investor_events (user_id) WHERE event_type = 'bootstrap'"
         ))
+        # ── Slice G — data-layer hardening (Jun 2026) ────────────────────
+        # FK ondelete + missing-index fixes flagged by #audit round 2.
+        # All ALTERs are guarded; reruns are idempotent.
+        #
+        # G1 — agent_events.agent_id → ON DELETE CASCADE. Pre-fix the
+        # default NO ACTION blocked agent deletes at the DB level (or
+        # required manual cleanup in agent_engine.py). CASCADE matches
+        # the operator intent: deleting an agent retires its history.
+        for stmt in (
+            "ALTER TABLE agent_events DROP CONSTRAINT IF EXISTS agent_events_agent_id_fkey",
+            "ALTER TABLE agent_events ADD CONSTRAINT agent_events_agent_id_fkey "
+            "FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE",
+        ):
+            await conn.execute(text(stmt))
+        # G2 — replace the broken uq_watchlist_global_pinned index
+        # whose predicate `((1)) WHERE is_global = true` allowed only
+        # ONE global row in the whole table regardless of name. The
+        # correct shape is `(name) WHERE is_global = true` so each
+        # global name can have at most one row but multiple names can
+        # coexist (Markets + Default + a future Sector list).
+        await conn.execute(text(
+            "DROP INDEX IF EXISTS uq_watchlist_global_pinned"
+        ))
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_watchlist_global_pinned "
+            "ON watchlists (name) WHERE is_global = true"
+        ))
+        # G3 — sim_iterations.parent_run_id self-FK. Pre-fix it was a
+        # plain int; deleting an iteration silently left children
+        # pointing at a dangling id. SET NULL: if the parent run is
+        # purged, children become standalone rows.
+        for stmt in (
+            "ALTER TABLE sim_iterations DROP CONSTRAINT IF EXISTS sim_iterations_parent_run_id_fkey",
+            "ALTER TABLE sim_iterations ADD CONSTRAINT sim_iterations_parent_run_id_fkey "
+            "FOREIGN KEY (parent_run_id) REFERENCES sim_iterations(id) ON DELETE SET NULL",
+        ):
+            await conn.execute(text(stmt))
+        # G4 — daily_book (kind, date) composite index. The Orders +
+        # Trades + Funds endpoints in /admin/history all query
+        # `WHERE kind=? AND date BETWEEN ? AND ?`. Existing single-
+        # column (date) index uses date scan + memory filter; this
+        # composite leads with kind so Postgres drops straight to the
+        # right partition.
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_daily_book_kind_date "
+            "ON daily_book (kind, date)"
+        ))
+        # G5 — algo_events.algo_order_id FK + index. Pre-fix the FK
+        # had NO ACTION (would block algo_orders deletes) and the
+        # column lacked an index entirely (FK lookups + future
+        # readers would seq-scan).
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_algo_events_algo_order_id "
+            "ON algo_events (algo_order_id)"
+        ))
+        for stmt in (
+            "ALTER TABLE algo_events DROP CONSTRAINT IF EXISTS algo_events_algo_order_id_fkey",
+            "ALTER TABLE algo_events ADD CONSTRAINT algo_events_algo_order_id_fkey "
+            "FOREIGN KEY (algo_order_id) REFERENCES algo_orders(id) ON DELETE SET NULL",
+        ):
+            await conn.execute(text(stmt))
+        # G6 — InvestorEvent / InvestorToken / ResearchThread
+        # created_by FKs. Pre-fix all three had default NO ACTION +
+        # no index. Deleting an admin user would block any of these
+        # at the DB level; FK lookups + admin-listing queries would
+        # seq-scan.
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_investor_events_created_by "
+            "ON investor_events (created_by)"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_investor_tokens_created_by "
+            "ON investor_tokens (created_by)"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_research_threads_created_by_user_id "
+            "ON research_threads (created_by_user_id)"
+        ))
+        for stmt in (
+            "ALTER TABLE investor_events DROP CONSTRAINT IF EXISTS investor_events_created_by_fkey",
+            "ALTER TABLE investor_events ADD CONSTRAINT investor_events_created_by_fkey "
+            "FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL",
+            "ALTER TABLE investor_tokens DROP CONSTRAINT IF EXISTS investor_tokens_created_by_fkey",
+            "ALTER TABLE investor_tokens ADD CONSTRAINT investor_tokens_created_by_fkey "
+            "FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL",
+        ):
+            await conn.execute(text(stmt))
+        # G7 — AlgoOrder.engine / .exchange server_default. Pre-fix
+        # the columns carried only Python `default=`, so a raw INSERT
+        # bypassing the ORM would NULL them. Aligns the column's
+        # database-side default with the ORM default so any insert
+        # path is safe.
+        for stmt in (
+            "ALTER TABLE algo_orders ALTER COLUMN engine SET DEFAULT 'manual'",
+            "ALTER TABLE algo_orders ALTER COLUMN exchange SET DEFAULT 'NFO'",
+        ):
+            await conn.execute(text(stmt))
         # Feature: basket orders + auto profit-target (June 2026).
         # Four new columns on algo_orders; all nullable / defaulted so
         # existing rows remain valid without any data migration.
