@@ -324,9 +324,9 @@
     flex-shrink: 0;
   }
   .ul-card-sim {
-    color: #c4b5fd;
-    background: rgba(196, 181, 253, 0.10);
-    border: 1px solid rgba(196, 181, 253, 0.45);
+    color: #c084fc;
+    background: rgba(192, 132, 252, 0.10);
+    border: 1px solid rgba(192, 132, 252, 0.55);
     padding: 0 0.3rem;
     border-radius: 2px;
     font-size: 0.5rem;

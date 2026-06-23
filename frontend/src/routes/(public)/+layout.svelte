@@ -165,18 +165,14 @@
 
     <footer class="pub-footer">
       <p class="hidden md:block text-center leading-none pub-footer-text">
-        © RamboQuant Analytics LLP
-        <span class="pub-sep">|</span>
-        ACU-5195
+        © RamboQuant Analytics
         <span class="pub-sep">|</span>
         Disclaimer: Investment in markets is subject to risk. Past performance is not indicative of future results.
         <span class="pub-sep">|</span>
         Built by <a class="pub-footer-link" href="https://ramanaambore.me" target="_blank" rel="noopener">Ramana Ambore</a>
       </p>
       <p class="md:hidden text-center leading-none pub-footer-text">
-        © RamboQuant Analytics LLP
-        <span class="pub-sep">|</span>
-        ACU-5195
+        © RamboQuant Analytics
         <span class="pub-sep">|</span>
         Markets carry risk.
         <span class="pub-sep">|</span>

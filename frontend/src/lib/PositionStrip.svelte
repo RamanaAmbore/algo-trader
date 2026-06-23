@@ -280,7 +280,7 @@
     box-sizing: border-box;
     padding: 0 0.85rem;
     background: linear-gradient(180deg, #0a1020 0%, #131c33 100%);
-    border-bottom: 1px solid rgba(251,191,36,0.18);
+    border-bottom: 1px solid var(--algo-amber-border-soft);
     color: var(--algo-slate);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 0.6rem;

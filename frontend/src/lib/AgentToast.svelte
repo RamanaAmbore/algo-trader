@@ -159,10 +159,10 @@
     font-weight: 800;
     letter-spacing: 0.08em;
   }
-  .atst-tier-critical { color: #f87171; background: rgba(248,113,113,0.18); border-color: rgba(248,113,113,0.55); }
-  .atst-tier-high     { color: #fbbf24; background: rgba(251,191,36,0.18);  border-color: rgba(251,191,36,0.55); }
-  .atst-tier-medium   { color: #7dd3fc; background: rgba(125,211,252,0.18); border-color: rgba(125,211,252,0.55); }
-  .atst-tier-info     { color: #a78bfa; background: rgba(167,139,250,0.18); border-color: rgba(167,139,250,0.55); }
+  .atst-tier-critical { color: #f87171; background: var(--algo-red-bg);   border-color: var(--algo-red-border);   }
+  .atst-tier-high     { color: #fbbf24; background: var(--algo-amber-bg); border-color: var(--algo-amber-border); }
+  .atst-tier-medium   { color: #7dd3fc; background: var(--algo-sky-bg);   border-color: var(--algo-sky-border);   }
+  .atst-tier-info     { color: #a78bfa; background: rgba(167,139,250,0.14); border-color: rgba(167,139,250,0.55); }
   .atst-sim {
     padding: 0 0.32rem;
     border-radius: 3px;

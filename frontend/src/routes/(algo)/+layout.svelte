@@ -819,8 +819,6 @@
     <footer class="algo-footer">
       <span class="algo-footer-text">RamboQuant Analytics</span>
       <span class="algo-footer-sep">·</span>
-      <span class="algo-footer-text">ACU-5195</span>
-      <span class="algo-footer-sep">·</span>
       <span class="algo-footer-text">{pageLabel}</span>
       <span class="algo-footer-sep">·</span>
       <span class="algo-footer-text">
@@ -1143,7 +1141,7 @@
     text-transform: uppercase;
   }
   /* Designated tier — violet, matches the DESIGNATED badge in /admin. */
-  .algo-user-role.algo-user-role-designated { color: #c4b5fd; }
+  .algo-user-role.algo-user-role-designated { color: #c084fc; }
 
   /* ── Desktop disclosure dropdowns (Build / Config groups) ──────── */
   .algo-group-wrap {

@@ -299,7 +299,7 @@
     text-transform: uppercase;
     letter-spacing: 0.07em;
     border-bottom: 1px solid rgba(251,191,36,0.35);
-    border-right: 1px solid rgba(251,191,36,0.18);
+    border-right: 1px solid var(--algo-amber-border-soft);
     text-align: right;
     white-space: nowrap;
     cursor: pointer;

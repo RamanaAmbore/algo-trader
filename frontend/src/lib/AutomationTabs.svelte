@@ -65,7 +65,7 @@
     gap: 0.15rem;
     padding: 0.15rem 0.2rem;
     margin: 0 0 0.6rem 0;
-    border-bottom: 1px solid rgba(251,191,36,0.18);
+    border-bottom: 1px solid var(--algo-amber-border-soft);
     background: linear-gradient(180deg, rgba(15,23,41,0.7) 0%, rgba(10,16,32,0.7) 100%);
     border-radius: 0.25rem 0.25rem 0 0;
   }

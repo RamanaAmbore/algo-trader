@@ -54,14 +54,14 @@
     border: 1px solid;
   }
   .stale-banner-info {
-    background: rgba(251, 191, 36, 0.10);
-    border-color: rgba(251, 191, 36, 0.40);
-    color: #fcd34d;
+    background: var(--algo-amber-bg);
+    border-color: var(--algo-amber-border-soft);
+    color: var(--algo-amber-text);
   }
   .stale-banner-error {
-    background: rgba(239, 68, 68, 0.12);
-    border-color: rgba(239, 68, 68, 0.45);
-    color: #fca5a5;
+    background: var(--algo-red-bg);
+    border-color: var(--algo-red-border-soft);
+    color: var(--algo-red-text);
   }
   .stale-banner-icon {
     font-size: 0.85rem;

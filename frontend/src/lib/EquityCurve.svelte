@@ -252,7 +252,7 @@
 <style>
   .eq-shell {
     background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
-    border: 1px solid rgba(251,191,36,0.18);
+    border: 1px solid var(--algo-amber-border-soft);
     border-left: 3px solid #fbbf24;
     border-radius: 4px;
     padding: 8px 12px;

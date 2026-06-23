@@ -878,13 +878,13 @@
     letter-spacing: 0.05em;
     font-weight: 700;
     cursor: pointer;
-    border-right: 1px solid rgba(251,191,36,0.18);
+    border-right: 1px solid var(--algo-amber-border-soft);
     transition: background 0.1s, color 0.1s;
   }
   .preset-chip:last-child { border-right: none; }
-  .preset-chip:hover { color: var(--algo-slate); background: rgba(251,191,36,0.06); }
+  .preset-chip:hover { color: var(--algo-slate); background: var(--algo-amber-bg-soft); }
   .preset-chip.preset-on {
-    background: rgba(251,191,36,0.18);
+    background: var(--algo-amber-bg);
     color: #fbbf24;
   }
   .filter-spinner {
@@ -952,7 +952,7 @@
 
   .card {
     background: linear-gradient(180deg, #0a1020 0%, #131c33 100%);
-    border: 1px solid rgba(251,191,36,0.18);
+    border: 1px solid var(--algo-amber-border-soft);
     border-radius: 5px;
     padding: 0.5rem 0.75rem;
     margin-bottom: 0.55rem;
@@ -1241,7 +1241,7 @@
     cursor: pointer;
     transition: background 0.12s;
   }
-  .algo-btn:hover:not(:disabled) { background: rgba(251,191,36,0.18); }
+  .algo-btn:hover:not(:disabled) { background: var(--algo-amber-bg); }
   .algo-btn:disabled { opacity: 0.45; cursor: not-allowed; }
   .algo-btn-dim {
     border-color: rgba(200,216,240,0.2);

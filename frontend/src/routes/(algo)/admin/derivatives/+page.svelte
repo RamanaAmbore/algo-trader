@@ -4909,7 +4909,7 @@
      read as a different category from the amber net-cost / max-PnL
      chips. Theta + Vega flip to a red variant when negative (short
      premium / long volatility carry the inverse sign convention). */
-  .tag-greek      { color: #c4b5fd; background: rgba(196,181,253,0.10); }
+  .tag-greek      { color: #c084fc; background: rgba(192,132,252,0.10); }
   .tag-greek-neg  { color: #fda4af; background: rgba(253,164,175,0.10); }
   .opt-section-meta {
     color: #a3b9d0;
@@ -6649,9 +6649,9 @@
     padding: 0.05rem 0.4rem;
     border-radius: 0.2rem;
     font-weight: 700;
-    background: rgba(167,139,250,0.18);
-    color: #c4b5fd;
-    border: 1px solid rgba(167,139,250,0.4);
+    background: rgba(167,139,250,0.14);
+    color: #a78bfa;
+    border: 1px solid rgba(167,139,250,0.55);
   }
   .order-toast-mode-paper { background: rgba(56,189,248,0.18);  color: #7dd3fc; border-color: rgba(56,189,248,0.4); }
   .order-toast-mode-live  { background: rgba(248,113,113,0.18); color: #fca5a5; border-color: rgba(248,113,113,0.5); }

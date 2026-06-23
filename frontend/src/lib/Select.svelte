@@ -286,7 +286,7 @@
   .rbq-select-search {
     position: relative;
     padding: 0.25rem 0.35rem;
-    border-bottom: 1px solid rgba(251,191,36,0.18);
+    border-bottom: 1px solid var(--algo-amber-border-soft);
     flex: 0 0 auto;
   }
   .rbq-select-search-input {

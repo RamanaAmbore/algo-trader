@@ -2459,6 +2459,18 @@ All three use `guards=[]` and `_process_broker_postback` (or inline equivalent f
 
 **Recipe for future pages**: whenever a new page fetches data behind a capability check, follow the `_canView` + `_loadedOnce` + `$effect` pattern. Whenever a new destructive action exists, mount `<ConfirmModal>` once + use `await confirmRef.ask({danger:true})` instead of native `confirm()`. Whenever a new agent-adjacent page lands, mount `<AutomationTabs>` so the workspace identity is unbroken.
 
+**Slice I — palette wave 2 + footer cleanup** (shipped Jun 2026, from #audit round 2):
+- **Violet `#c4b5fd` → `#c084fc` everywhere**. The audit identified `#c4b5fd` as a third violet shade matching neither canonical `#c084fc` (violet-400, non-AI accents) nor `#a78bfa` (canonical `--algo-ai`, AI-generated content). All non-AI usages — `UnifiedLog::ul-card-sim`, `SimulatorPanel::iter-corr-label`, `MarketPulse::badge-u`, `MarketPulse::mover-underlying box-shadow`, app.css `row-und` symbol-cell bg, `algo-user-role-designated`, derivatives `tag-greek` — collapsed onto `#c084fc`. The AI-context badge inside `/admin/derivatives` (Greeks chip wrapped in `rgba(167,139,250,…)`) moved to `#a78bfa` (the canonical AI shade) to keep the AI lane separate.
+- **StaleBanner palette**. Off-palette `#fcd34d` (amber-300) text → `var(--algo-amber-text)` (#fde68a). Red bg `rgba(239,68,68,…)` (red-500) → `var(--algo-red-bg)` (red-400 #f87171). Same banner across every algo + public surface now matches the canonical tokens.
+- **Amber border 0.18 → 0.30 canonical** in 7 callsites: `AutomationTabs`, `PnlPanel`, `PositionStrip`, `Select`, `EquityCurve`, `PnlAnalysis` (3 sites). All routed through `var(--algo-amber-border-soft)` (rgba(251,191,36,0.30)) — single point of palette tuning instead of hard-coded rgba strings.
+- **Tier pill backgrounds + borders** consolidated. `AgentToast` tier pills (critical/high/medium) routed through `--algo-red-bg`/`-amber-bg`/`-sky-bg` + `-border` (canonical 0.10/0.14 bg, 0.55 border). `AgentFireModal` JS-inline TIER_PALETTE rewritten with matching alphas so toast + modal read identically (pre-fix: toast 0.18 bg + 0.55 border, modal 0.15 bg + 0.45 border — visually different for the same tier).
+- **MarketPulse `.badge-*` bg** (P/H/W/U/M-pos/M-neg) routed through canonical color tokens. Pre-fix all six used 0.18 bg; now matches the per-color canonical (green/red 0.10, amber/sky 0.14).
+- **CommandBar amber-500 RGB → amber-400** (canonical). `rgba(245,158,11,*)` was the wrong shade across the board.
+- **AgentFireModal primary button** amber 0.18 → canonical token references.
+- **ImpersonationBanner amber-500 border → amber-400**. The amber-100 light-theme bg stays (deliberate high-visibility ribbon over the algo navbar); only the border shifted to algo canonical `#fbbf24` so the ribbon's brand identity matches the rest of the app.
+
+**Footer cleanup** (operator request, Jun 2026): removed the LLP suffix on the firm name AND the ACU-5195 registration number from the footer on every page. Public footer now reads `© RamboQuant Analytics | Disclaimer: … | Built by Ramana Ambore`; algo footer reads `RamboQuant Analytics · {pageLabel} · Built by Ramana Ambore`. `backend/config/frontend_config.yaml::footer_name` updated to `RamboQuant Analytics`; `footer_text2` blanked (kept the key so any template still reading it gets a clean empty string). SEO meta tags + structured-data JSON-LD on `/` + `/about` still carry the legal entity name — those are for search engines + crawlers, not human-facing footer chrome.
+
 ---
 
 ## Refactoring Notes

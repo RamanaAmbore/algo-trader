@@ -2312,7 +2312,7 @@
     max-width: 36rem;
   }
   .iter-corr-label {
-    color: #c4b5fd;
+    color: #c084fc;
     font-weight: 700;
     letter-spacing: 0.04em;
   }

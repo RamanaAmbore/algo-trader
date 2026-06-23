@@ -497,8 +497,8 @@
   }
   .pair-filled .pair-key { color: #4ade80; }
   .pair-current {
-    background: rgba(245,158,11,0.15);
-    border-color: rgba(245,158,11,0.4);
+    background: var(--algo-amber-bg);
+    border-color: var(--algo-amber-border-soft);
   }
   .pair-current .pair-key { color: #fbbf24; }
   .pair-pending {

@@ -31,11 +31,14 @@
    * }} */
   let { fire, onClose } = $props();
 
+  // Canonical tier palette — bg 0.10 (green/red) / 0.14 (amber/sky/violet),
+  // border 0.55. Matches AgentToast tier pills so the modal + toast read
+  // identically. Pre-fix bg was 0.15 + border 0.45 (off-palette).
   const TIER_PALETTE = {
-    critical: { color: '#f87171', bg: 'rgba(248,113,113,0.15)', border: 'rgba(248,113,113,0.45)' },
-    high:     { color: '#fbbf24', bg: 'rgba(251,191,36,0.15)',  border: 'rgba(251,191,36,0.45)' },
-    medium:   { color: '#7dd3fc', bg: 'rgba(125,211,252,0.15)', border: 'rgba(125,211,252,0.45)' },
-    info:     { color: '#a78bfa', bg: 'rgba(167,139,250,0.15)', border: 'rgba(167,139,250,0.45)' },
+    critical: { color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.55)' },
+    high:     { color: '#fbbf24', bg: 'rgba(251,191,36,0.14)',  border: 'rgba(251,191,36,0.55)' },
+    medium:   { color: '#7dd3fc', bg: 'rgba(125,211,252,0.14)', border: 'rgba(125,211,252,0.55)' },
+    info:     { color: '#a78bfa', bg: 'rgba(167,139,250,0.14)', border: 'rgba(167,139,250,0.55)' },
   };
   const tier = $derived(fire?.tier || 'info');
   const palette = $derived(TIER_PALETTE[/** @type {keyof typeof TIER_PALETTE} */ (tier)] || TIER_PALETTE.info);
@@ -269,12 +272,12 @@
     opacity: 0.5;
   }
   .afm-btn-primary {
-    background: rgba(251,191,36,0.18);
-    border-color: rgba(251,191,36,0.55);
+    background: var(--algo-amber-bg);
+    border-color: var(--algo-amber-border);
     color: #fbbf24;
   }
   .afm-btn-primary:hover {
-    background: rgba(251,191,36,0.28);
+    background: var(--algo-amber-bg-strong);
     border-color: rgba(251,191,36,0.75);
   }
 </style>

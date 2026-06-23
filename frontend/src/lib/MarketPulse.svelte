@@ -5178,12 +5178,12 @@
     border-radius: 2px;
     font-variant-numeric: tabular-nums;
   }
-  :global(.badge-p) { color: #7dd3fc; background: rgba(125,211,252,0.18); }
-  :global(.badge-h) { color: #4ade80; background: rgba(74,222,128,0.18); }
-  :global(.badge-w) { color: #fbbf24; background: rgba(251,191,36,0.18); }
-  :global(.badge-u) { color: #c4b5fd; background: rgba(196,181,253,0.18); }
-  :global(.badge-m-pos) { color: #4ade80; background: rgba(74,222,128,0.18); }
-  :global(.badge-m-neg) { color: #f87171; background: rgba(248,113,113,0.18); }
+  :global(.badge-p) { color: #7dd3fc; background: var(--algo-sky-bg);   }
+  :global(.badge-h) { color: #4ade80; background: var(--algo-green-bg); }
+  :global(.badge-w) { color: #fbbf24; background: var(--algo-amber-bg); }
+  :global(.badge-u) { color: #c084fc; background: rgba(192,132,252,0.14); }
+  :global(.badge-m-pos) { color: #4ade80; background: var(--algo-green-bg); }
+  :global(.badge-m-neg) { color: #f87171; background: var(--algo-red-bg);   }
   /* Covered-call lot-count badge — green pill with the number of whole
      lots the operator holds. Same pill family as the H/P/W/U badges so
      the row's badge strip reads as one consistent set. Bolder
@@ -5330,7 +5330,7 @@
      stay (violet/sky/teal) since this is a per-ROW indicator, not
      a per-section divider. */
   :global(.ag-theme-algo .ag-row.mover-underlying .ag-cell:first-child) {
-    box-shadow: inset 2px 0 0 rgba(196, 181, 253, 0.35);
+    box-shadow: inset 2px 0 0 rgba(192, 132, 252, 0.35);
   }
   :global(.ag-theme-algo .ag-row.mover-midcap .ag-cell:first-child) {
     box-shadow: inset 2px 0 0 rgba(56, 189, 248, 0.35);
