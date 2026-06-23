@@ -581,10 +581,9 @@ def send_order_failure_alert(
     """
     try:
         from backend.shared.helpers.date_time_utils import timestamp_display
-        from backend.shared.helpers.utils import mask_column
-        import pandas as pd
+        from backend.shared.helpers.utils import mask_account
 
-        masked = mask_column(pd.Series([account]))[0]
+        masked = mask_account(account)
         sig    = _error_sig(error)
         key    = (masked, symbol.upper(), side.upper(), sig)
         now    = datetime.utcnow()

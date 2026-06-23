@@ -198,9 +198,9 @@ class HistoryController(Controller):
             conditions.append(AlgoOrder.mode == mode.strip().lower())
 
         async with async_session() as s:
-            count_q = select(_func.count(AlgoOrder.id)).where(and_(*conditions))
-            total = (await s.execute(count_q)).scalar_one() or 0
-
+            # GROUP BY status returns a complete histogram of the filtered
+            # set; total = sum(counts.values()). Saves a separate COUNT(*)
+            # round-trip on every page load.
             counts_q = (
                 select(AlgoOrder.status, _func.count(AlgoOrder.id))
                   .where(and_(*conditions))
@@ -209,6 +209,7 @@ class HistoryController(Controller):
             counts: dict[str, int] = {}
             for st, c in (await s.execute(counts_q)).all():
                 counts[str(st)] = int(c)
+            total = sum(counts.values())
 
             rows = (await s.execute(
                 select(AlgoOrder).where(and_(*conditions))
@@ -277,17 +278,16 @@ class HistoryController(Controller):
             conditions.append(DailyBook.symbol.in_([s.upper() for s in syms]))
 
         async with async_session() as s:
-            total = (await s.execute(
-                select(_func.count(DailyBook.id)).where(and_(*conditions))
-            )).scalar_one() or 0
-
-            # Notional sum across the filtered set. Sums qty * avg_cost
-            # at the DB level so we don't have to page through every
-            # row client-side just to surface a total.
-            notional_q = select(_func.coalesce(
-                _func.sum(DailyBook.qty * DailyBook.avg_cost), 0.0
-            )).where(and_(*conditions))
-            total_notional = float((await s.execute(notional_q)).scalar_one() or 0.0)
+            # Fold COUNT(*) and SUM(qty*avg_cost) into a single round-trip;
+            # the two scalars are computed by the same scan. Saves one
+            # round-trip per request without affecting the result shape.
+            agg_q = select(
+                _func.count(DailyBook.id),
+                _func.coalesce(_func.sum(DailyBook.qty * DailyBook.avg_cost), 0.0),
+            ).where(and_(*conditions))
+            total_int, notional_val = (await s.execute(agg_q)).one()
+            total = int(total_int or 0)
+            total_notional = float(notional_val or 0.0)
 
             rows = (await s.execute(
                 select(DailyBook).where(and_(*conditions))
@@ -435,8 +435,7 @@ class HistoryController(Controller):
         from datetime import date as _d
         from backend.shared.helpers.connections import Connections
         from backend.shared.brokers.registry import get_broker
-        from backend.shared.helpers.utils import mask_column
-        import pandas as pd
+        from backend.shared.helpers.utils import mask_account
 
         account = (data.account or "").strip()
         if not account:
@@ -458,7 +457,7 @@ class HistoryController(Controller):
         conns = Connections()
         if account not in conns.conn:
             raise HTTPException(status_code=404,
-                                detail=f"account {mask_column(pd.Series([account]))[0]} not loaded")
+                                detail=f"account {mask_account(account)} not loaded")
 
         broker = get_broker(account)
         broker_id = getattr(broker, "broker_id", "unknown")

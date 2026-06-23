@@ -837,29 +837,6 @@ _LOSS_AGENTS = [
 ]
 
 
-# Slugs retired in the 15→6 consolidation (2026-05-26). The seeder's
-# orphan-cleanup loop deletes any row matching a retired slug from a
-# previous deploy. Operator-tuned conditions on these slugs are LOST —
-# we log a clear migration notice when each retired slug is pruned so
-# the operator sees it in /admin/logs.
-_RETIRED_LOSS_SLUGS = {
-    "loss-hold-acct-static-pct",
-    "loss-hold-total-static-pct",
-    "loss-pos-acct-static-pct",
-    "loss-pos-total-static-pct",
-    "loss-pos-acct-static-abs",
-    "loss-pos-total-static-abs",
-    "loss-hold-acct-rate-abs",
-    "loss-hold-total-rate-abs",
-    "loss-hold-any-rate-pct",
-    "loss-pos-acct-rate-abs",
-    "loss-pos-total-rate-abs",
-    "loss-pos-any-rate-pct",
-    "loss-funds-cash-negative",
-    "loss-funds-margin-negative",
-}
-
-
 # Enrich each row with the common notify + cooldown shape so BUILTIN_AGENTS
 # keeps its existing keys; the engine's scheduler reads these fields.
 _LOSS_AGENT_DEFAULTS = dict(
@@ -1106,27 +1083,9 @@ async def seed_agents():
         )
         for row in retired.scalars().all():
             if row.slug not in builtin_slugs:
-                # Loss-agents 15→6 consolidation (2026-05-26): emit a
-                # WARNING-level notice for slugs in the retired set so
-                # operators see the migration on /admin/logs. Operator-
-                # tuned conditions are NOT preserved — the new
-                # consolidated agents carry the canonical thresholds.
-                if row.slug in _RETIRED_LOSS_SLUGS:
-                    logger.warning(
-                        f"Agent engine: consolidation 15→6 — pruning "
-                        f"retired loss agent '{row.slug}'. Operator-tuned "
-                        f"conditions on this slug are LOST. See LAB_MCP_GUIDE.md "
-                        f"section 7 for the new consolidated slugs "
-                        f"(loss-positions-acct / loss-positions-total / "
-                        f"loss-holdings-acct / loss-holdings-total / "
-                        f"loss-funds-negative)."
-                    )
-                else:
-                    logger.info(f"Agent engine: pruning retired built-in '{row.slug}'")
-                # agent_events has a FK into agents.id without ON DELETE
-                # CASCADE — clear the child rows first so the parent delete
-                # does not raise ForeignKeyViolationError on startup.
-                await session.execute(delete(AgentEvent).where(AgentEvent.agent_id == row.id))
+                logger.info(f"Agent engine: pruning retired built-in '{row.slug}'")
+                # agent_events.agent_id is ON DELETE CASCADE (slice G), so
+                # the child rows tear down with the parent.
                 await session.execute(delete(Agent).where(Agent.id == row.id))
 
         await session.commit()

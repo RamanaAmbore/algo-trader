@@ -40,7 +40,7 @@
       tag:   'Operator DSL',
       title: 'Declarative agent grammar',
       body:  'Risk + automation rules are condition trees compiled from DB-backed tokens (metric / scope / operator / action). Operators add a new rule from the UI without a code deploy. Engine walks the tree every 5s cycle and dispatches matching agents.',
-      link:  { label: 'Browse agent library', href: '/agents' },
+      link:  { label: 'Browse agent library', href: '/automation' },
     },
     {
       tag:   'Sim infra',

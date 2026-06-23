@@ -15,7 +15,7 @@ from backend.api.schemas import PositionsResponse, PositionRow, PositionsSummary
 from backend.shared.helpers import broker_apis
 from backend.shared.helpers.date_time_utils import timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import mask_column
+from backend.shared.helpers.utils import mask_account, mask_column
 
 logger = get_logger(__name__)
 
@@ -455,7 +455,7 @@ class PositionsController(Controller):
                 import msgspec
                 def _mask(row):
                     return msgspec.structs.replace(
-                        row, account=mask_column(pd.Series([row.account]))[0]
+                        row, account=mask_account(row.account)
                     )
                 return msgspec.structs.replace(
                     resp,

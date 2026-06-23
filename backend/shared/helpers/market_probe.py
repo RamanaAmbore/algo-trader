@@ -75,15 +75,31 @@ _PROBE_LOCK = threading.Lock()
 _CACHE_TTL_SEC = 60.0
 _STALE_THRESHOLD_MIN = 15  # last_trade_time older than this ⇒ stale
 
+# Cache for the parsed `market.bellwether_symbols` setting. _parse_overrides
+# used to hit the DB on every probe_market_active call (per cache-miss
+# exchange, once per 60s per exchange). The setting changes ~never; a 30s
+# TTL absorbs the read traffic without making operator edits feel laggy.
+_OVERRIDES_CACHE: tuple[float, dict[str, list[str]]] | None = None
+_OVERRIDES_TTL_SEC = 30.0
+
 
 def _parse_overrides() -> dict[str, list[str]]:
     """Pull `market.bellwether_symbols` from settings — CSV of
     EXCHANGE:SYMBOL entries — merge into the default map. Operator can
-    keep the MCX contract month current here without code changes."""
+    keep the MCX contract month current here without code changes.
+
+    Cached for 30 s so a probe_market_active call doesn't hit the DB
+    every cache cycle."""
+    global _OVERRIDES_CACHE
+    now_ts = time.monotonic()
+    cached = _OVERRIDES_CACHE
+    if cached and (now_ts - cached[0]) < _OVERRIDES_TTL_SEC:
+        return cached[1]
     try:
         from backend.shared.helpers.settings import get_string
         raw = get_string("market.bellwether_symbols", "") or ""
     except Exception:
+        _OVERRIDES_CACHE = (now_ts, {})
         return {}
     out: dict[str, list[str]] = {}
     for tok in raw.split(","):
@@ -94,6 +110,7 @@ def _parse_overrides() -> dict[str, list[str]]:
         ex = ex.strip().upper()
         sym = f"{ex}:{sym.strip()}"
         out.setdefault(ex, []).append(sym)
+    _OVERRIDES_CACHE = (now_ts, out)
     return out
 
 

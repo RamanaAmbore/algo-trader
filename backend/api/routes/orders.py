@@ -63,7 +63,7 @@ from backend.api.schemas import (
 from backend.shared.helpers.connections import Connections
 from backend.shared.helpers.date_time_utils import timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import mask_column, secrets
+from backend.shared.helpers.utils import mask_account, mask_column, secrets
 
 logger = get_logger(__name__)
 
@@ -390,10 +390,7 @@ async def _process_broker_postback(
     from sqlalchemy import select as _sql_select
     from backend.api.database import async_session as _async_s
     from backend.api.models import AlgoOrder as _AO
-    from backend.shared.helpers.utils import mask_column
-    import pandas as pd
-
-    masked = mask_column(pd.Series([account]))[0] if account else ""
+    masked = mask_account(account)
 
     logger.info(
         f"{broker_id} postback: {order_id} [{masked}] {status} {txn} "
@@ -1409,7 +1406,7 @@ class OrdersController(Controller):
                 return _ms.structs.replace(
                     resp,
                     rows=[_ms.structs.replace(
-                        r, account=mask_column(pd.Series([r.account]))[0]
+                        r, account=mask_account(r.account)
                     ) for r in resp.rows],
                 )
             return resp
@@ -1446,9 +1443,7 @@ class OrdersController(Controller):
         # Partner JWTs see masked codes too (audit fix). Same masking
         # the /performance grids apply — turns ZG0790 into ZG####.
         do_mask = not is_admin_request(request)
-        masked_acct = (
-            (lambda a: mask_column(pd.Series([a]))[0]) if do_mask else (lambda a: a)
-        )
+        masked_acct = mask_account if do_mask else (lambda a: a)
         return [
             AlgoOrderInfo(
                 id=r.id, account=masked_acct(r.account), symbol=r.symbol, exchange=r.exchange,
@@ -1622,9 +1617,7 @@ class OrdersController(Controller):
             child_map = await _fetch_child_order_ids(s, [r.id for r in kept])
 
         do_mask = not is_admin_request(request)
-        masked_acct = (
-            (lambda a: mask_column(pd.Series([a]))[0]) if do_mask else (lambda a: a)
-        )
+        masked_acct = mask_account if do_mask else (lambda a: a)
         return [
             AlgoOrderInfo(
                 id=r.id, account=masked_acct(r.account), symbol=r.symbol,
@@ -2384,7 +2377,7 @@ class OrdersController(Controller):
                 detail="Demo: use OrderTicket → PAPER.")
         _validate_place(data)
         broker = _broker_for(data.account)
-        masked = mask_column(pd.Series([data.account]))[0]
+        masked = mask_account(data.account)
         # Surface a deprecation warning every time this path is used
         # so we can spot any lingering callers in the logs and migrate
         # them to /ticket.
@@ -2923,7 +2916,7 @@ class OrdersController(Controller):
                         )
 
                 invalidate("orders")    # refresh /api/orders cache
-                masked = mask_column(pd.Series([account]))[0]
+                masked = mask_account(account)
                 logger.info(f"Ticket LIVE order: {order_id} [{masked}] "
                             f"{side} {qty} {sym}{chase_tag}")
                 try:
@@ -2958,7 +2951,7 @@ class OrdersController(Controller):
                 # is overloaded — segment scope, account activation, OR margin
                 # shortfall all surface as the same string).
                 from backend.api.algo.actions import diagnose_live_failure
-                masked_acct = mask_column(pd.Series([account]))[0]
+                masked_acct = mask_account(account)
                 kite_msg = str(e)
                 diag_order = {
                     "exchange": data.exchange or "NFO",
@@ -3128,7 +3121,7 @@ class OrdersController(Controller):
             except Exception:
                 pass
 
-        masked = mask_column(pd.Series([account]))[0]
+        masked = mask_account(account)
         logger.info(f"Ticket paper order: {algo_order_id} [{masked}] {side} {qty} {sym}")
         if algo_order_id:
             try:
@@ -3168,7 +3161,7 @@ class OrdersController(Controller):
             raise HTTPException(status_code=403,
                 detail="Admin access required to modify orders.")
         broker = _broker_for(data.account)
-        masked = mask_column(pd.Series([data.account]))[0]
+        masked = mask_account(data.account)
         # Note: MCX qty translation (to_kite_qty) is NOT applied here because
         # ModifyOrderRequest carries no exchange/tradingsymbol — the operator is
         # modifying an existing Kite order and should supply the quantity already
@@ -3209,7 +3202,7 @@ class OrdersController(Controller):
             qty             = body.get("quantity", 0)
             price           = body.get("average_price") or body.get("price", 0)
             status_msg      = body.get("status_message") or ""
-            masked          = mask_column(pd.Series([account]))[0] if account else ""
+            masked          = mask_account(account)
 
             # ── HMAC verification ────────────────────────────────────
             # Kite signs each postback with:
@@ -4071,7 +4064,7 @@ class OrdersController(Controller):
             raise HTTPException(status_code=403,
                 detail="Admin access required to cancel orders.")
         broker = _broker_for(account)
-        masked = mask_column(pd.Series([account]))[0]
+        masked = mask_account(account)
         try:
             broker.cancel_order(order_id, variety=variety)
             invalidate("orders")
@@ -4097,7 +4090,7 @@ class AccountsController(Controller):
         accounts = [
             AccountInfo(
                 account_id=account,
-                display=(mask_column(pd.Series([account]))[0] if do_mask else account),
+                display=(mask_account(account) if do_mask else account),
             )
             for account in conn
         ]

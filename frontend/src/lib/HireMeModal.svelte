@@ -40,7 +40,7 @@
     { tag: 'Agent DSL',
       text: 'Custom declarative grammar (domain-specific language) for trading rules — DB-backed tokens (metric / scope / operator / action), composable via $ref fragments. Rules compile into a condition tree the engine walks every 5s cycle; no code changes needed to add a new rule or a new metric primitive.',
       links: [
-        { label: 'Live token editor', href: '/agents/tokens' },
+        { label: 'Live token editor', href: '/admin/tokens' },
         { label: 'Full DSL guide',    href: 'https://github.com/RamanaAmbore/algo-trader/blob/main/AGENTS_GUIDE.md' },
       ],
     },

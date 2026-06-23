@@ -206,6 +206,20 @@ def mask_column(col):
     return col.astype(str).str.replace(r'\d', '#', regex=True)
 
 
+_MASK_RE = re.compile(r'\d')
+
+
+def mask_account(s: str) -> str:
+    """Scalar account-mask: 'ZG0790' → 'ZG####'. Equivalent to
+    `mask_column(pd.Series([s]))[0]` but avoids the per-call pandas
+    Series allocation. Used in hot paths (per-postback log lines,
+    per-row order serialization) where the pandas variant added a
+    measurable allocation overhead at 10+ postbacks/sec."""
+    if not s:
+        return ""
+    return _MASK_RE.sub('#', s)
+
+
 def add_comma_to_df_numbers(df):
     # Format numeric cols with Indian commas
     num_cols = df.select_dtypes(include=["number"]).columns.tolist()

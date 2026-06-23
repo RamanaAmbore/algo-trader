@@ -855,9 +855,8 @@ async def run_preflight(
     # ── 1. ACCOUNT_UNKNOWN ────────────────────────────────────────────────
     conns = Connections()
     if account not in conns.conn:
-        from backend.shared.helpers.utils import mask_column
-        import pandas as pd
-        masked = mask_column(pd.Series([account]))[0] if account else account
+        from backend.shared.helpers.utils import mask_account
+        masked = mask_account(account) if account else account
         blocked.append({
             "code":   "ACCOUNT_UNKNOWN",
             "reason": f"Account {masked} not loaded in broker connections",
