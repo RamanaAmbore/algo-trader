@@ -838,6 +838,52 @@ Frontend: `branch=main + !user` = demo. Settings/Brokers/Users nav links hide. N
 
 ---
 
+## Postback fan-out — book_changed bus
+
+On every terminal order status from a broker postback (COMPLETE / CANCELLED / REJECTED / EXPIRED), the backend invalidates the orders + positions + holdings caches and broadcasts a `book_changed` WebSocket event. Every algo page subscribes to a shared debounced bus and refetches its primary loader in lockstep — single-iteration UI settle, replaces the prior "wait for the next 5–15 s poll" path.
+
+**Backend chain** ([orders.py::order_postback](backend/api/routes/orders.py)):
+
+```
+postback received
+  → invalidate("orders")               # always
+  → if terminal:
+      invalidate("positions")
+      invalidate("holdings")
+      broadcast({event: "book_changed", account, exchange,
+                 tradingsymbol, reason, ts})
+  → if COMPLETE:
+      broadcast({event: "position_filled", qty: signed_delta, ...})
+```
+
+`position_filled` is preserved — it carries the signed-qty delta for the per-cell optimistic patch on Pulse + Performance. `book_changed` is the new coordinated coverage that ALSO catches cancel / reject paths.
+
+**Frontend subscriber** ([$lib/data/bookChanged.js](frontend/src/lib/data/bookChanged.js)):
+
+- Singleton WebSocket subscriber started from the algo layout's `onMount`. Idempotent — multiple calls share one connection.
+- Listens for `book_changed`, debounces 200ms (coalesces basket-order bursts into one refresh), increments a monotonic `$bookChanged` store + sets `$lastBookEvent` to the latest payload.
+- Pages subscribe with a `$effect` that watches the counter and calls their primary loader once per increment.
+
+**Surfaces wired:**
+
+| Page | Loader called on bookChanged |
+|---|---|
+| `/admin/derivatives` | `loadPositions()` + `loadStrategy()` |
+| `/dashboard` | `loadHero()` |
+| `/pulse` | `loadPulse()` |
+| `/orders` | `_debouncedLoadOrders()` |
+| `/performance` | `loadAll({ fresh: true })` |
+
+**Troubleshooting:**
+
+- **"Page didn't refresh after fill"** — open browser DevTools console; the bus warns when its WS startup fails. Hit page-header Refresh button to manually catch up.
+- **"WebSocket keeps reconnecting"** — Cloudflare in orange-cloud mode blocks raw WS upgrades. `webhook.ramboq.com` MUST be grey cloud (DNS only). Verify in Cloudflare DNS settings.
+- **"Bus fires too often"** — debounce is 200ms. A burst within that window collapses to one refresh; bursts spanning the window produce multiple refreshes (intended — distinct events should each trigger).
+
+**Performance**: zero cost on the placement path. All invalidations + the broadcast run inside the existing `asyncio.create_task` block in the postback handler. The frontend bus pays one extra JSON parse per terminal status.
+
+---
+
 ## Audit log — `/admin/audit`
 
 Single forensic surface for every mutating event the platform produces. Cap-gated (`view_audit` — admin / risk / ops); writes happen via [`AuditMiddleware`](backend/api/audit.py) (HTTP) + `write_audit_event()` (non-HTTP). All writes are out-of-band via `asyncio.create_task` so **zero latency cost** on the caller's hot path.

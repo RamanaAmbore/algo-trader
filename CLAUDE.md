@@ -2215,6 +2215,66 @@ Every mutating event lands in `audit_log` via two paths: HTTP (ASGI middleware) 
 
 ---
 
+## Postback fan-out — book_changed bus
+
+Single coordinated refresh trigger across every position-derived UI surface. Backend fans invalidation + broadcasts on terminal postback; frontend singleton subscriber drives a Svelte store; every algo page subscribes via `$effect` and refetches its primary loader on increment.
+
+**Backend chain** ([`order_postback`](backend/api/routes/orders.py)) — runs inside the postback handler's existing `_asyncio.create_task` block (zero added latency on broker ack):
+
+```python
+invalidate("orders")                       # always
+if status in ("COMPLETE", "CANCELLED", "REJECTED", "EXPIRED"):
+    invalidate("positions")
+    invalidate("holdings")
+    broadcast({"event": "book_changed", "account": masked,
+               "exchange": ..., "tradingsymbol": ...,
+               "reason": status, "ts": int(time()*1000)})
+if status == "COMPLETE":
+    broadcast({"event": "position_filled", "qty": signed_delta, ...})
+```
+
+`position_filled` carries the signed-qty delta for the per-cell optimistic-patch path on Pulse + Performance (preserved). `book_changed` is the broader coordination event that also covers CANCELLED / REJECTED where there's no qty to patch.
+
+**Frontend bus** ([`$lib/data/bookChanged.js`](frontend/src/lib/data/bookChanged.js)):
+- Singleton WS subscriber via `createPerformanceSocket`. Started from `(algo)/+layout.svelte::onMount`. Idempotent.
+- Listens for `book_changed`, debounces 200ms (basket-order bursts coalesce into one refresh), increments `bookChanged` (monotonic counter store) + sets `lastBookEvent` (latest payload).
+- Counter pattern (not payload comparison) — `$effect(() => { const n = $bookChanged; if (n > prev) { prev = n; load(); } })` re-runs trivially on every increment.
+
+**Surfaces wired (every position-derived UI):**
+
+| Page | Loader |
+|---|---|
+| `/admin/derivatives` | `loadPositions()` + `loadStrategy()` — Snapshot + Legs + Payoff settle together |
+| `/dashboard` | `loadHero()` — positions / holdings / events |
+| `/pulse` | `loadPulse()` — alongside the existing `position_filled` qty-delta patch |
+| `/orders` | `_debouncedLoadOrders()` — symmetric with existing `order_update` hook |
+| `/performance` | `loadAll({ fresh: true })` — alongside the existing `position_filled` patch |
+
+**Recipe — wire a new page to the bus** ([copy-paste pattern](frontend/src/routes/(algo)/dashboard/+page.svelte)):
+
+```svelte
+import { bookChanged } from '$lib/data/bookChanged';
+
+let _bookCounter = 0;
+$effect(() => {
+  const n = $bookChanged;
+  if (n <= _bookCounter) return;
+  _bookCounter = n;
+  loadXxx();
+});
+```
+
+The counter guard prevents re-entry; upstream debounce handles burst coalescing.
+
+**Performance**: backend adds one extra JSON broadcast (~150 bytes wire) per terminal status. At 10 fills/sec that's 1.5 KB/sec total across all WS clients. Frontend debounce keeps loader calls to one per 200ms window per page.
+
+**Troubleshooting**:
+- Bus startup logs a `console.warn` if WS init fails — page falls back to its existing pollers (no UX break).
+- Cloudflare orange-cloud blocks raw WS upgrades → `webhook.ramboq.com` MUST be grey cloud (DNS only). Same constraint as the existing `/ws/performance` + `/ws/algo` channels.
+- Page-header Refresh button always available as manual override regardless of bus state.
+
+---
+
 ## Refactoring Notes
 
 **Day P&L formula** (commits b95ccd79–ba9cf39c): Decomposed intraday (not naive `(LTP−close)×qty`). Positions: `overnight_qty × (LTP − prev_close) + day_buy/sell legs`. Holdings: `broker.pnl − (close − cost) × opening_qty`. **MCX guard**: apply lot_size multiplier to intraday qty too (pre-fix: ₹61k phantom GOLDM due to unit mismatch). **Always verify qty units in P&L edits.**

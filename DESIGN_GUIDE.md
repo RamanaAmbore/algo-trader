@@ -46,6 +46,7 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 22.5. [Investor portal — token-as-credential](#225-investor-portal--token-as-credential)
 22.6. [Investor portal — units-based NAV math](#226-investor-portal--units-based-nav-math)
 22.7. [Audit log — forensic trail](#227-audit-log--forensic-trail)
+22.8. [Postback fan-out — book_changed bus](#228-postback-fan-out--book_changed-bus)
 
 ### Part VII — Operations
 23. [How to add a new template field](#23-how-to-add-a-new-template-field)
@@ -1428,6 +1429,86 @@ For `PUT/PATCH /api/orders/{id}` and `DELETE /api/orders/{id}`, the middleware n
 - `backend/api/models.py::AuditLog` — table
 - `backend/api/routes/audit.py` — read surface + filters
 - `frontend/src/routes/(algo)/admin/audit/+page.svelte` — viewer + pills
+
+---
+
+## 22.8. Postback fan-out — book_changed bus
+
+Single coordinated refresh trigger for every position-derived surface after a broker postback. Replaces the prior pattern where each surface polled its own cadence and downstream aggregates (Snapshot grid totals, strategy analytics, payoff curve) lagged the per-cell qty patch by 5–15 s.
+
+⚙ **TECH — Coordinated invalidation vs per-page polling** — `WHY` the postback handler historically invalidated only the `orders` cache. `positions` and `holdings` had their own 30 s TTL, and the strategy endpoint memoised its own analytics — so the Snapshot grid showed patched per-cell qty (via `position_filled` optimistic patch) but stale aggregates until the next per-page poll cycle. Operator's report: "snapshot grid updated two iterations." `WHAT` Terminal postbacks now invalidate every dependent cache atomically + broadcast a single `book_changed` event. A frontend singleton subscriber re-emits via a Svelte store; every position-derived page subscribes once and refetches its primary loader. `HOW` 200 ms upstream debounce coalesces basket-order bursts. Monotonic counter store lets `$effect` re-run on every increment without payload comparison. `WHERE` `backend/api/routes/orders.py::order_postback` + `frontend/src/lib/data/bookChanged.js`.
+
+### Backend chain
+
+[`POST /api/orders/postback`](backend/api/routes/orders.py) on any terminal status (COMPLETE / CANCELLED / REJECTED / EXPIRED):
+
+```python
+invalidate("orders")
+if _terminal:
+    invalidate("positions")
+    invalidate("holdings")
+    broadcast({
+        "event": "book_changed",
+        "account": masked, "exchange": ..., "tradingsymbol": ...,
+        "reason": status, "ts": int(time() * 1000),
+    })
+if status == "COMPLETE":
+    broadcast({"event": "position_filled", "qty": signed_delta, ...})
+```
+
+`position_filled` is preserved alongside the new event — it carries the qty delta the per-cell optimistic-patch path on Pulse + Performance reads. `book_changed` is the broader coordination signal that also covers CANCELLED / REJECTED paths where there's no qty to patch.
+
+### Frontend bus
+
+[`$lib/data/bookChanged.js`](frontend/src/lib/data/bookChanged.js):
+
+- Singleton subscriber via `createPerformanceSocket`. Started from `(algo)/+layout.svelte::onMount` so every algo page sees it. Idempotent — multiple `startBookChangedBus()` calls share one WS.
+- Listens for `book_changed`, debounces 200 ms, increments `bookChanged` (a monotonic counter writable store) + sets `lastBookEvent` (latest payload).
+- Pages subscribe with a `$effect` that watches the counter and calls their primary loader once per increment. Counter pattern (vs payload comparison) lets the effect re-run trivially on every change.
+
+### Subscription map
+
+| Page | Loaders called on increment |
+|---|---|
+| `/admin/derivatives` | `loadPositions()` + `loadStrategy()` |
+| `/dashboard` | `loadHero()` |
+| `/pulse` | `loadPulse()` |
+| `/orders` | `_debouncedLoadOrders()` |
+| `/performance` | `loadAll({ fresh: true })` |
+
+### Recipe — wire a new page to the bus
+
+```svelte
+<script>
+  import { bookChanged } from '$lib/data/bookChanged';
+
+  async function loadXxx() { /* page's primary loader */ }
+
+  let _bookCounter = 0;
+  $effect(() => {
+    const n = $bookChanged;
+    if (n <= _bookCounter) return;
+    _bookCounter = n;
+    loadXxx();
+  });
+</script>
+```
+
+That's it. The counter guard prevents re-entry; the upstream debounce handles burst coalescing.
+
+### Performance contract
+
+- Backend fan-out runs inside the postback handler's existing `_asyncio.create_task` block — zero added latency on the broker ack path.
+- One extra JSON broadcast per terminal status (~150 bytes wire). At 10 fills/sec that's 1.5 KB/sec across all WS clients combined.
+- Frontend debounce keeps loader calls to one per 200 ms window per page.
+- Pages without the wiring fall back to their existing pollers — additive, never breaks the prior path.
+
+### Source files
+
+- `backend/api/routes/orders.py::order_postback` — invalidation chain + broadcasts
+- `frontend/src/lib/data/bookChanged.js` — singleton subscriber + stores
+- `frontend/src/routes/(algo)/+layout.svelte` — `startBookChangedBus()` callsite
+- Wired pages: [admin/derivatives](frontend/src/routes/(algo)/admin/derivatives/+page.svelte), [dashboard](frontend/src/routes/(algo)/dashboard/+page.svelte), [MarketPulse](frontend/src/lib/MarketPulse.svelte), [orders](frontend/src/routes/(algo)/orders/+page.svelte), [PerformancePage](frontend/src/lib/PerformancePage.svelte)
 
 ---
 

@@ -477,6 +477,16 @@ The next NAV snapshot (16:00 IST, or the operator's manual recompute) will refle
 
 ---
 
+## Why every screen updates at the same time after a fill
+
+When you place an order and the broker fills it, you want the whole platform to catch up at once — the order book showing the new status, the positions grid showing the new qty, the snapshot grid recomputing its per-underlying totals, the payoff curve and Greeks recomputing for the new leg, the dashboard hero card refreshing P&L, the performance page reconciling holdings and positions. Pre-July 2026 this was an embarrassing **two-step refresh**: the qty cell would patch immediately, but the aggregations downstream waited for the next 5–15 second poll cycle. Net effect: a basket-order fill produced a flickery, "settling" UI that looked like it had a bug.
+
+The fix is a single coordinated **book_changed** event the backend now fires on every terminal postback (COMPLETE, CANCELLED, REJECTED, EXPIRED). Every algo page that displays position-derived data — Pulse, Dashboard, Derivatives, Orders, Performance — listens for this event and refetches its primary data feed in lockstep. A 200ms debounce coalesces basket-order bursts so 4 leg fills produce one refresh, not four.
+
+You don't have to do anything to opt into this. As long as the operator's browser tab is open to any algo page, the WebSocket connection is live and a fill propagates everywhere within roughly a second. If a page ever feels stale, hit the page-header Refresh button — that fires every loader the page owns regardless of the bus state.
+
+---
+
 ## Audit log — what's recorded
 
 Every action that changes state in RamboQuant — placing an order, a broker filling that order, an agent firing, you tweaking a setting, a monthly statement going out to an LP, the daily NAV cron writing a snapshot — lands as one row in an audit log. The log is the platform's memory of "who did what, when, and with what outcome." A SEBI Cat-III audit visit doesn't need a fancy UI; it needs the trail. RamboQuant gives them both.
