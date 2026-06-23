@@ -47,9 +47,9 @@
   // without touching this component.
   const CONTACT = {
     github:   'https://github.com/RamanaAmbore/algo-trader',
-    linkedin: 'https://www.linkedin.com/in/ramanambore/',
+    linkedin: 'https://www.linkedin.com/in/ramanaambore',
     email:    'mailto:ramboquant@gmail.com?subject=RamboQuant%20-%20Engineering%20Conversation',
-    resume:   '/docs/ramana-ambore-resume.pdf',     // placeholder — drop the PDF at this path
+    resume:   'https://ramanaambore.me/resume',
     portfolio:'https://ramanaambore.me',
   };
 </script>
@@ -68,7 +68,7 @@
     </h2>
     <p class="hm-tagline">
       Production multi-broker algo platform serving live trading on Indian
-      markets. What follows is the part a hiring manager probably cares about.
+      markets.
     </p>
 
     <div class="hm-highlights">
