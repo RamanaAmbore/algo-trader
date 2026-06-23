@@ -38,7 +38,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import msgspec
-from litestar import Controller, get, post, delete
+import asyncio
+
+from litestar import Controller, Response, get, post, delete
 from litestar.exceptions import HTTPException
 from sqlalchemy import desc, select, update
 
@@ -247,6 +249,15 @@ class InvestorAdminController(Controller):
             expires_at=_iso(expires) or "",
         )
 
+    @get("/{user_id:int}/statement/{year:int}/{month:int}",
+         guards=[cap_guard("manage_investor_tokens")])
+    async def admin_statement(self, user_id: int, year: int, month: int) -> Response:
+        """Admin PDF preview — same renderer as the public portal,
+        gated by manage_investor_tokens so the admin can preview /
+        spot-check what the LP will receive. Useful for QA before
+        forwarding a portal URL."""
+        return await _generate_statement_response(user_id, year, month)
+
     @delete("/{user_id:int}/investor-tokens/{token_id:int}",
             guards=[cap_guard("manage_investor_tokens")],
             status_code=204)
@@ -323,6 +334,19 @@ class InvestorPortalController(Controller):
             as_of_date=as_of,
         )
 
+    @get("/{token:str}/statement/{year:int}/{month:int}")
+    async def statement(self, token: str, year: int, month: int) -> Response:
+        """Monthly PDF statement for the LP. Token in URL is the
+        credential; same active-check as /slice + /history. Returns
+        binary PDF with Content-Disposition: attachment so the
+        browser saves with the canonical filename.
+
+        Stateless — re-generated on each request. No `monthly_
+        statements` table yet; auto-email + DB persistence land in
+        the next slice."""
+        _tok, user = await _resolve_token(token)
+        return await _generate_statement_response(user.id, year, month)
+
     @get("/{token:str}/history")
     async def history(self, token: str,
                       days: int = 90) -> InvestorHistoryResponse:
@@ -352,3 +376,34 @@ class InvestorPortalController(Controller):
             rows=out, days=days,
             share_pct=share_pct, contribution=contribution,
         )
+
+
+# ---------------------------------------------------------------------------
+# Shared PDF helper (admin preview + public LP path use the same renderer)
+# ---------------------------------------------------------------------------
+
+async def _generate_statement_response(user_id: int, year: int, month: int) -> Response:
+    """Compute + render the statement and wrap in a Litestar Response
+    with download headers. Heavy CPU work (fpdf2 layout) runs in a
+    thread so we don't block the event loop on a slow render."""
+    if year < 2020 or year > 2100 or month < 1 or month > 12:
+        raise HTTPException(status_code=400, detail="Invalid period")
+    from backend.api.algo.investor_statement import (
+        compute_statement, render_statement_pdf,
+    )
+    data = await compute_statement(user_id, year, month)
+    if data is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No NAV data for this period yet",
+        )
+    pdf_bytes = await asyncio.to_thread(render_statement_pdf, data)
+    filename = f"ramboquant_{year:04d}_{month:02d}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control":       "no-store",
+        },
+    )

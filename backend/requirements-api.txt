@@ -29,3 +29,8 @@ asyncpg~=0.30
 # this as a subprocess from Claude Code); the deployed API never imports
 # it. Pinned floor only — the protocol is still evolving.
 mcp>=1.27
+
+# Monthly investor-portal PDF statements. Pure-Python; no system deps
+# (no libcairo / libpango). Used only by
+# backend/api/algo/investor_statement.py.
+fpdf2~=2.8

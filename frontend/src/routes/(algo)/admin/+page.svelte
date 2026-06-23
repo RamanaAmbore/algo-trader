@@ -111,6 +111,41 @@
     } catch (e) { portalError = e?.message || 'Failed to revoke'; }
   }
 
+  // Statement preview — admin-side check of what the LP will see.
+  // Uses fetch + blob because the admin endpoint is auth-gated; a
+  // plain anchor would 401 (no Bearer header sent on direct nav).
+  let stmtBusy = $state(false);
+  let stmtYear  = $state(/** @type {number} */ (new Date().getFullYear()));
+  let stmtMonth = $state(/** @type {number} */ (
+    new Date().getMonth() === 0 ? 12 : new Date().getMonth()
+  ));
+  async function previewStatement() {
+    if (!portalUser || stmtBusy) return;
+    stmtBusy = true; portalError = '';
+    try {
+      const tok = localStorage.getItem('ramboq.token') || '';
+      const url = `/api/admin/users/${portalUser.id}/statement/${stmtYear}/${stmtMonth}`;
+      const res = await fetch(url, {
+        headers: tok ? { Authorization: `Bearer ${tok}` } : {},
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.detail || `Preview failed (${res.status})`);
+      }
+      const blob = await res.blob();
+      const dlUrl = URL.createObjectURL(blob);
+      // Open in new tab so the admin can quickly scan + close;
+      // download attribute would force save-as which is more friction
+      // for a preview workflow.
+      window.open(dlUrl, '_blank');
+      setTimeout(() => URL.revokeObjectURL(dlUrl), 60_000);
+    } catch (e) {
+      portalError = e?.message || 'Preview failed';
+    } finally {
+      stmtBusy = false;
+    }
+  }
+
   async function copyPortalUrl() {
     if (!portalFresh) return;
     try { await navigator.clipboard.writeText(portalFresh.url); success = 'Portal URL copied to clipboard'; }
@@ -987,6 +1022,27 @@
         </div>
       </section>
 
+      <section class="ip-modal-mint">
+        <div class="ip-modal-section-head">Preview monthly statement</div>
+        <div class="ip-modal-mint-row">
+          <label class="ip-modal-field">
+            <span class="ip-modal-field-lbl">Year</span>
+            <input type="number" min="2020" max="2100" step="1"
+                   bind:value={stmtYear} class="field-input ip-modal-yr"/>
+          </label>
+          <label class="ip-modal-field">
+            <span class="ip-modal-field-lbl">Month</span>
+            <input type="number" min="1" max="12" step="1"
+                   bind:value={stmtMonth} class="field-input ip-modal-yr"/>
+          </label>
+          <button class="btn-secondary text-[0.7rem] py-1.5 px-3 border-cyan-400/50 text-cyan-300"
+                  disabled={stmtBusy}
+                  onclick={previewStatement}>
+            {stmtBusy ? 'Generating…' : 'Preview PDF'}
+          </button>
+        </div>
+      </section>
+
       <section class="ip-modal-list">
         <div class="ip-modal-section-head">
           Existing tokens
@@ -1132,6 +1188,7 @@
   }
   .ip-modal-field { display: flex; flex-direction: column; gap: 0.2rem; }
   .ip-modal-field.grow { flex: 1 1 12rem; }
+  .ip-modal-yr { width: 6rem; }
   .ip-modal-field-lbl {
     font-size: 0.55rem; color: #7e97b8; letter-spacing: 0.04em;
     text-transform: uppercase; font-weight: 700;

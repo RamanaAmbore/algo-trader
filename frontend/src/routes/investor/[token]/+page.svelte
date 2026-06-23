@@ -79,6 +79,38 @@
     if (v == null || !isFinite(v)) return '—';
     return `${v >= 0 ? '+' : ''}${(v * 100).toFixed(2)}%`;
   }
+
+  // Statement download — direct anchor since the URL itself is the
+  // credential (no Bearer header). 12 months of history surfaced
+  // in the dropdown; older periods can be requested by editing the
+  // URL directly.
+  /** Returns the last N months as {year, month, label}. The
+   *  current month is excluded (statement covers a CLOSED month). */
+  function _recentMonths(/** @type {number} */ n) {
+    const out = [];
+    const now = new Date();
+    // Start from the prior month so the latest entry is the most
+    // recently CLOSED period.
+    let y = now.getFullYear();
+    let m = now.getMonth();  // 0-indexed, so this is already "last month"
+    if (m === 0) { m = 12; y -= 1; }
+    for (let i = 0; i < n; i++) {
+      const label = new Date(y, m - 1, 1).toLocaleDateString('en-IN', {
+        month: 'long', year: 'numeric',
+      });
+      out.push({ year: y, month: m, label });
+      m -= 1;
+      if (m < 1) { m = 12; y -= 1; }
+    }
+    return out;
+  }
+  const _months = $derived(_recentMonths(12));
+  let selectedPeriod = $state(/** @type {string} */ (''));
+  function _statementUrl() {
+    if (!selectedPeriod) return '#';
+    const [y, m] = selectedPeriod.split('-').map(Number);
+    return `/api/investor/${token}/statement/${y}/${m}`;
+  }
 </script>
 
 <svelte:head>
@@ -195,6 +227,34 @@
         </svg>
       </section>
     {/if}
+
+    <!-- Monthly PDF statement download. Anchor (no JS fetch) since
+         the URL IS the credential; the browser's "save as" picks up
+         the Content-Disposition filename. -->
+    <section class="ip-statement">
+      <h2 class="ip-section-heading">Monthly statement</h2>
+      <div class="ip-statement-row">
+        <select class="ip-statement-select" bind:value={selectedPeriod}
+                aria-label="Select statement month">
+          <option value="" disabled>Pick a month…</option>
+          {#each _months as m}
+            <option value={`${m.year}-${m.month}`}>{m.label}</option>
+          {/each}
+        </select>
+        <a class="ip-statement-btn"
+           href={_statementUrl()}
+           class:disabled={!selectedPeriod}
+           aria-disabled={!selectedPeriod}
+           download>
+          Download PDF
+        </a>
+      </div>
+      <div class="ip-statement-hint">
+        Statements cover closed months only. If no NAV snapshot was
+        recorded in that month you'll see "no data" — pick a more
+        recent month.
+      </div>
+    </section>
 
     <footer class="ip-footer">
       <div class="ip-footer-disclaimer">
@@ -369,6 +429,47 @@
     background: #fdfaf2;
     border: 1px solid #f0e6cf;
     border-radius: 6px;
+  }
+
+  .ip-statement {
+    background: #ffffff;
+    border: 1px solid #e7e0cf;
+    border-radius: 8px;
+    padding: 1.1rem 1.3rem;
+    margin-bottom: 1.5rem;
+  }
+  .ip-statement-row {
+    display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center;
+    margin-bottom: 0.5rem;
+  }
+  .ip-statement-select {
+    flex: 1 1 14rem;
+    padding: 0.45rem 0.7rem;
+    background: #fdfaf2;
+    border: 1px solid #e7e0cf;
+    border-radius: 4px;
+    color: #2a2418;
+    font-family: inherit;
+    font-size: 0.78rem;
+  }
+  .ip-statement-btn {
+    display: inline-block;
+    padding: 0.45rem 1.1rem;
+    background: #d4920c;
+    color: #ffffff;
+    border-radius: 4px;
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 0.78rem;
+    letter-spacing: 0.02em;
+    transition: background 120ms;
+  }
+  .ip-statement-btn:hover { background: #b87b09; }
+  .ip-statement-btn.disabled {
+    background: #e7e0cf; color: #8b7340; pointer-events: none;
+  }
+  .ip-statement-hint {
+    font-size: 0.65rem; color: #8b7340; line-height: 1.5;
   }
 
   .ip-footer {
