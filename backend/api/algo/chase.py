@@ -803,7 +803,12 @@ async def chase_order(
             if order_status == "COMPLETE":
                 result.status = ChaseStatus.FILLED
                 result.fill_price = avg_price
-                result.slippage = abs(avg_price - result.initial_price) * quantity
+                # Slippage uses the ACTUAL filled qty, not the original
+                # ask. Pre-fix the formula `abs(diff) * quantity` over-
+                # stated slippage on partial fills by quantity/filled_qty
+                # — operator audit trail showed a misleadingly high
+                # number that didn't match what actually traded.
+                result.slippage = abs(avg_price - result.initial_price) * (filled_qty or quantity)
                 result.detail = f"Filled at {avg_price} in {attempt} attempts"
                 emit("order_filled", {
                     "order_id": current_order_id, "fill_price": avg_price,

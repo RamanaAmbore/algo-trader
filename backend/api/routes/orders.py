@@ -23,6 +23,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+from datetime import datetime, timezone
 
 from typing import Optional
 
@@ -358,6 +359,153 @@ async def _enforce_capacity_guard(
                 f"Reduce qty or raise the cap on /strategies."
             ),
         )
+
+
+async def _process_broker_postback(
+    *,
+    broker_id: str,
+    order_id: str,
+    status: str,            # Kite-canonical status string
+    account: str,
+    symbol: str,
+    txn: str,
+    qty,
+    price,
+    exchange: str = "",
+    status_message: str = "",
+) -> None:
+    """Shared post-broker-postback pipeline used by Dhan + Groww
+    handlers (Kite has its own inline logic with HMAC validation).
+
+    Same fan-out as the Kite path:
+      1. AlgoOrder row update by broker_order_id match
+      2. invalidate `orders` / `positions` / `holdings` on terminal
+      3. broadcast `order_update` + `position_filled` (on COMPLETE)
+         + `book_changed` (on terminal) WS events
+      4. audit-log entry tagged `category='order.fill|cancel|reject'`
+
+    Best-effort: never raises. Failures log + drop so the broker's
+    webhook gets a 200 OK and stops retrying.
+    """
+    from sqlalchemy import select as _sql_select
+    from backend.api.database import async_session as _async_s
+    from backend.api.models import AlgoOrder as _AO
+    from backend.shared.helpers.utils import mask_column
+    import pandas as pd
+
+    masked = mask_column(pd.Series([account]))[0] if account else ""
+
+    logger.info(
+        f"{broker_id} postback: {order_id} [{masked}] {status} {txn} "
+        f"{qty} {symbol} price={price} msg={status_message}"
+    )
+
+    _terminal = status in ("COMPLETE", "CANCELLED", "REJECTED", "EXPIRED")
+
+    # Sync AlgoOrder row + record event.
+    try:
+        from backend.api.algo.order_events import write_event as _write_event
+        _KITE_STATUS_MAP = {
+            "COMPLETE":  "FILLED",
+            "CANCELLED": "CANCELLED",
+            "REJECTED":  "REJECTED",
+            "EXPIRED":   "UNFILLED",
+        }
+        _new_status = _KITE_STATUS_MAP.get(status)
+
+        async with _async_s() as _s:
+            _rows = (await _s.execute(
+                _sql_select(_AO).where(_AO.broker_order_id == str(order_id))
+            )).scalars().all()
+            for _r in _rows:
+                if _new_status and _r.status != _new_status:
+                    _r.status = _new_status
+                    if _new_status == "FILLED":
+                        try:
+                            _r.fill_price = float(price) if price else _r.fill_price
+                        except (TypeError, ValueError):
+                            pass
+                        _r.filled_at = datetime.now(timezone.utc)
+                    _r.detail = ((_r.detail or "")[:200]
+                                 + f" · {broker_id} postback {status}"
+                                 + (f": {status_message}" if status_message else ""))
+            await _s.commit()
+            for _r in _rows:
+                try:
+                    await _write_event(
+                        _r.id, "broker_postback",
+                        f"{status}{(' · ' + status_message) if status_message else ''}",
+                        payload={"broker_id": broker_id, "broker_order_id": order_id,
+                                 "status": status, "qty": qty, "price": price},
+                    )
+                except Exception as _we:
+                    logger.debug(f"order_events write skipped: {_we}")
+    except Exception as e:
+        logger.warning(f"{broker_id} postback row sync failed: {e}")
+
+    # Audit trail
+    try:
+        from backend.api.audit import write_audit_event
+        _cat = ("order.fill" if status == "COMPLETE"
+                else "order.cancel" if status == "CANCELLED"
+                else "order.reject" if status == "REJECTED"
+                else "order.fill")
+        write_audit_event(
+            category=_cat,
+            action=f"BROKER_{status}",
+            actor_username=broker_id,
+            actor_role="system",
+            target_type="broker_order",
+            target_id=order_id or None,
+            summary=(f"{status} {txn} {qty} {symbol} @₹{price} acct={masked}"
+                     + (f" msg={status_message}" if status_message else ""))[:1000],
+        )
+    except Exception as _aud:
+        logger.debug(f"{broker_id} postback audit write skipped: {_aud}")
+
+    # Cache invalidation + WS broadcasts (mirrors the Kite path).
+    try:
+        invalidate("orders")
+        if _terminal:
+            for _key in ("positions", "holdings"):
+                try:
+                    invalidate(_key)
+                except Exception:
+                    pass
+
+        broadcast(json.dumps({
+            "event": "order_update",
+            "order_id": order_id, "account": masked, "status": status,
+            "tradingsymbol": symbol, "transaction_type": txn,
+            "quantity": qty, "price": price, "status_message": status_message,
+        }))
+
+        if status == "COMPLETE":
+            try:
+                _qty_int = int(qty or 0)
+                if _qty_int > 0:
+                    _side_sign = 1 if (txn or "").upper() == "BUY" else -1
+                    broadcast(json.dumps({
+                        "event": "position_filled",
+                        "account": masked, "exchange": exchange,
+                        "tradingsymbol": symbol,
+                        "qty": _qty_int * _side_sign,
+                        "fill_price": float(price or 0),
+                        "ts": int(_time.time() * 1000),
+                        "order_id": order_id,
+                    }))
+            except Exception as _pe:
+                logger.debug(f"position_filled broadcast skipped: {_pe}")
+
+        if _terminal:
+            broadcast(json.dumps({
+                "event": "book_changed",
+                "account": masked, "exchange": exchange,
+                "tradingsymbol": symbol, "reason": status,
+                "ts": int(_time.time() * 1000),
+            }))
+    except Exception as _be:
+        logger.warning(f"{broker_id} postback fan-out failed: {_be}")
 
 
 def _broker_for(account: str):
@@ -1395,6 +1543,13 @@ class OrdersController(Controller):
             dropped_paper = 0
             dropped_live = 0
             reconciled_live = 0
+            # Capture rows that flip to FILLED here so we can call
+            # `_maybe_fire_template_attach_for_reconcile` after the
+            # commit — pre-fix the polling reconcile path silently
+            # dropped the template TP/SL attach because the function
+            # was only invoked from `reconcile_algo_orders` /
+            # `reconcile_single_order`, never from this in-line poll.
+            _reconciled_filled: list = []
             for r in rows:
                 mode = (r.mode or "").lower()
                 if mode == "paper" and _paper_open_ids is not None:
@@ -1435,6 +1590,8 @@ class OrdersController(Controller):
                                     except (TypeError, ValueError):
                                         pass
                                 r.filled_at = datetime.now(timezone.utc)
+                                # Queue for template-attach fire after commit.
+                                _reconciled_filled.append(r)
                             r.detail = ((r.detail or "")[:200]
                                         + f" · broker says {_bo['status']}")
                             reconciled_live += 1
@@ -1442,6 +1599,13 @@ class OrdersController(Controller):
                 kept.append(r)
             if dropped_paper or dropped_live or reconciled_live:
                 await s.commit()
+                # After the commit lands, fire template-attach for
+                # every FILLED row that surfaced here. Same hook the
+                # postback handler + chase terminal use; idempotent
+                # via the `attached_gtts_json IS NOT NULL` guard
+                # inside `_fire_template_attach_on_fill`.
+                for _filled_row in _reconciled_filled:
+                    _maybe_fire_template_attach_for_reconcile(_filled_row)
             child_map = await _fetch_child_order_ids(s, [r.id for r in kept])
 
         do_mask = not is_admin_request(request)
@@ -3423,6 +3587,109 @@ class OrdersController(Controller):
         except Exception as e:
             logger.error(f"Postback error: {e}")
             return {"status": "error", "detail": str(e)}
+
+    @post("/dhan_postback", guards=[])
+    async def order_postback_dhan(self, request: Request) -> dict:
+        """Dhan order-status webhook. Same role as the Kite postback
+        but parses Dhan's payload shape. Scaffold ship — caches the
+        full payload to the API log on first hit so the operator can
+        forward Dhan's actual structure; the parser then maps known
+        fields. Operator must configure the webhook URL inside the
+        Dhan partner dashboard for this account.
+
+        Best-effort: never 5xx (Dhan retries on non-2xx and will
+        rapidly back-pressure us). Always returns 200 OK; failures
+        log + drop. No HMAC validation yet — Dhan's signature scheme
+        differs from Kite's and the operator hasn't surfaced their
+        test payload yet.
+        """
+        try:
+            body = await request.json()
+        except Exception as e:
+            logger.warning(f"dhan postback non-JSON body: {e}")
+            return {"status": "ok"}
+        logger.info(f"dhan postback raw payload: {body!r}")
+
+        # Best-effort field extraction. Dhan v2 ships:
+        #   dhanClientId, orderId, exchangeOrderId, orderStatus,
+        #   transactionType, exchangeSegment, tradingSymbol,
+        #   quantity, filledQuantity, price, triggerPrice,
+        #   averageTradedPrice, postOnly, orderType, …
+        order_id = str(body.get("orderId") or body.get("order_id") or "")
+        status   = str(body.get("orderStatus") or body.get("status") or "").upper()
+        symbol   = body.get("tradingSymbol") or body.get("tradingsymbol") or ""
+        txn      = body.get("transactionType") or body.get("transaction_type") or ""
+        qty      = body.get("filledQuantity") or body.get("quantity") or 0
+        price    = body.get("averageTradedPrice") or body.get("price") or 0
+        account  = body.get("dhanClientId") or body.get("account") or ""
+
+        # Map Dhan status → Kite-canonical via the existing
+        # _DHAN_STATUS_TO_KITE table inside the adapter.
+        try:
+            from backend.shared.brokers.dhan import _DHAN_STATUS_TO_KITE
+            kite_status = _DHAN_STATUS_TO_KITE.get(status, status)
+        except Exception:
+            kite_status = status
+
+        await _process_broker_postback(
+            broker_id="dhan",
+            order_id=order_id,
+            status=kite_status,
+            account=str(account),
+            symbol=str(symbol),
+            txn=str(txn),
+            qty=qty,
+            price=price,
+            exchange=str(body.get("exchangeSegment") or ""),
+            status_message=str(body.get("statusMessage") or ""),
+        )
+        return {"status": "ok"}
+
+    @post("/groww_postback", guards=[])
+    async def order_postback_groww(self, request: Request) -> dict:
+        """Groww order-status webhook. Same shape as the Dhan
+        scaffold — log raw payload, best-effort parse known fields,
+        delegate to the shared `_process_broker_postback` so the
+        Kite-canonical mapping + invalidation + book_changed
+        broadcast all reuse the same code path.
+
+        Groww's postback support is uncertain (per the audit
+        broker-API parity matrix). Route exists so we capture
+        whatever Groww sends if/when the webhook is configured.
+        """
+        try:
+            body = await request.json()
+        except Exception as e:
+            logger.warning(f"groww postback non-JSON body: {e}")
+            return {"status": "ok"}
+        logger.info(f"groww postback raw payload: {body!r}")
+
+        order_id = str(body.get("groww_order_id") or body.get("order_id") or "")
+        status   = str(body.get("order_status") or body.get("status") or "").upper()
+        symbol   = body.get("trading_symbol") or body.get("symbol") or ""
+        txn      = body.get("transaction_type") or ""
+        qty      = body.get("filled_quantity") or body.get("quantity") or 0
+        price    = body.get("average_price") or body.get("price") or 0
+
+        try:
+            from backend.shared.brokers.groww import _GROWW_STATUS_TO_KITE
+            kite_status = _GROWW_STATUS_TO_KITE.get(status, status)
+        except Exception:
+            kite_status = status
+
+        await _process_broker_postback(
+            broker_id="groww",
+            order_id=order_id,
+            status=kite_status,
+            account="",
+            symbol=str(symbol),
+            txn=str(txn),
+            qty=qty,
+            price=price,
+            exchange=str(body.get("exchange") or body.get("segment") or ""),
+            status_message=str(body.get("status_message") or ""),
+        )
+        return {"status": "ok"}
 
     @post("/basket/margin")
     async def basket_margin(self, data: BasketOrderRequest, request: Request) -> BasketMarginResponse:
