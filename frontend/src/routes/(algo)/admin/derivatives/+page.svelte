@@ -3737,6 +3737,15 @@
         <span class="opt-section-tag tag-short" title="Max loss (merged curve when an eq holding is layered on the strategy)">
           MAX L {fmtUnbounded(_mergedRisk?.max_loss ?? strategy.risk.max_loss, false)}
         </span>
+        <!-- Expected value chip — probability-weighted average payoff
+             under the lognormal distribution. Positive = positive
+             expectancy; negative = lose money on average. Companion
+             to POP for assessing trade quality (POP alone is
+             misleading on asymmetric clip sizes). -->
+        <span class="opt-section-tag {(_mergedEv ?? 0) >= 0 ? 'tag-long' : 'tag-short'}"
+              title="Expected value — probability-weighted average payoff at expiry. ev_pct = EV / |entry cost|.">
+          EV {fmtUnbounded(_mergedEv, false)}{_mergedEvPct != null ? ` (${pctFmt(_mergedEvPct)})` : ''}
+        </span>
         <!-- Greeks chips — full Δ Γ Θ 𝒱 ρ surfaced inline in the payoff
              header so the operator sees position-level direction /
              convexity / decay / volatility / rate exposure without
@@ -3943,6 +3952,10 @@
             <span class="num">Γ</span>
             <span class="num">Θ</span>
             <span class="num">𝒱</span>
+            <span class="num"
+                  title="Expected value — probability-weighted average payoff. Per-leg EV requires backend support and shows '—' today; the TOTAL footer carries the strategy-level EV.">
+              EV
+            </span>
           </div>
           {#each displayedCandidates as c, _ci (c.source + '|' + c.account + '|' + c.symbol + '|' + (c._splitTag ?? _ci) + '|' + (c._pairId ?? '') + '|' + (c._band ?? '') + '|' + (c.draftId != null ? c.draftId : _ci))}
             <!-- Band section headers — inject a full-width header row
@@ -4220,6 +4233,9 @@
               <span class="num">{lg ? pctFmt(lg.greeks.gamma) : '—'}</span>
               <span class="num {lg && lg.greeks.theta < 0 ? 'kv-neg' : ''}">{lg ? aggCompact(lg.greeks.theta) : '—'}</span>
               <span class="num">{lg ? aggCompact(lg.greeks.vega) : '—'}</span>
+              <!-- Per-leg EV — placeholder; backend ships aggregate
+                   EV only today. The TOTAL row picks up _mergedEv. -->
+              <span class="num cell-muted">—</span>
             </div>
           {/each}
           {#if displayedCandidates.length === 0}
@@ -4274,6 +4290,10 @@
               <span class="num">—</span>
               <span class="num">—</span>
               <span class="num">—</span>
+              <span class="num {(_mergedEv ?? 0) > 0 ? 'cell-pos' : (_mergedEv ?? 0) < 0 ? 'cell-neg' : 'cell-flat'}"
+                    title="Strategy-level EV across every selected leg.">
+                {_mergedEv != null ? aggCompact(_mergedEv) : '—'}
+              </span>
             </div>
           {/if}
         </div>
@@ -4346,6 +4366,10 @@
           <span class="num">Legs</span>
           <span class="num" title="Sum of contract-qty across option + future legs.">F&amp;O qty</span>
           <span class="num" title="Sum of share-qty across equity / proxy holding legs.">Eq qty</span>
+          <span class="num"
+                title="Expected value — probability-weighted average payoff at expiry. Per-underlying EV requires backend support; populates only when the current strategy is scoped to a single underlying. TOTAL carries the merged strategy EV.">
+            EV
+          </span>
         </div>
         {#if _byUnderlyingTotals.length === 0}
           <div class="byund-empty">
@@ -4375,6 +4399,16 @@
             <span class="num cell-muted">{g.legs_with}{g.legs_with !== g.legs_without ? `/${g.legs_without}` : ''}</span>
             <span class="num cell-muted">{g.qty_fno || '—'}</span>
             <span class="num cell-muted">{g.qty_eq || '—'}</span>
+            <!-- Per-underlying EV: surfaces _mergedEv when the
+                 current strategy is scoped to this exact root.
+                 Otherwise '—' (placeholder for backend per-group
+                 EV support). -->
+            <span class="num {selectedUnderlying === g.underlying && (_mergedEv ?? 0) !== 0
+                              ? ((_mergedEv ?? 0) > 0 ? 'cell-pos' : 'cell-neg')
+                              : 'cell-muted'}">
+              {selectedUnderlying === g.underlying && _mergedEv != null
+                ? aggCompact(_mergedEv) : '—'}
+            </span>
           </div>
         {/each}
         {#if _byUnderlyingTotals.length > 0}
@@ -4390,6 +4424,9 @@
             <span class="num">{_byUnderlyingTotal.legs_with}{_byUnderlyingTotal.legs_with !== _byUnderlyingTotal.legs_without ? `/${_byUnderlyingTotal.legs_without}` : ''}</span>
             <span class="num">{_byUnderlyingTotal.qty_fno || '—'}</span>
             <span class="num">{_byUnderlyingTotal.qty_eq || '—'}</span>
+            <span class="num {(_mergedEv ?? 0) > 0 ? 'cell-pos' : (_mergedEv ?? 0) < 0 ? 'cell-neg' : 'cell-flat'}">
+              {_mergedEv != null ? aggCompact(_mergedEv) : '—'}
+            </span>
           </div>
         {/if}
       </div>
@@ -5123,8 +5160,9 @@
       minmax(3.8rem, 0.6fr)  /* P&L Net */
       minmax(3rem,   0.55fr) /* Legs */
       minmax(4rem,   0.6fr)  /* F&O qty */
-      minmax(4rem,   0.6fr); /* Eq qty */
-    min-width: 680px;
+      minmax(4rem,   0.6fr)  /* Eq qty */
+      minmax(4rem,   0.6fr); /* EV */
+    min-width: 740px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.62rem;        /* match Pulse Positions ~0.625rem */
   }
@@ -5631,7 +5669,8 @@
       minmax(56px, max-content)            /* delta */
       minmax(56px, max-content)            /* gamma */
       minmax(62px, max-content)            /* theta */
-      minmax(56px, max-content);           /* vega */
+      minmax(56px, max-content)            /* vega */
+      minmax(62px, max-content);           /* ev */
     column-gap: 0.6rem;
     row-gap: 0.2rem;
     width: max-content;
