@@ -2163,6 +2163,58 @@ When share_pcts sum to 100 across eligible LPs, bootstrap reproduces v1 numbers 
 
 ---
 
+## Audit log — forensic trail with category dimension
+
+Every mutating event lands in `audit_log` via two paths: HTTP (ASGI middleware) + non-HTTP helper (`write_audit_event`). All writes are fire-and-forget via `asyncio.create_task` so callers pay ZERO latency. Read surface `/admin/audit` is cap-gated to `view_audit` (admin / risk / ops).
+
+**Schema** ([`AuditLog`](backend/api/models.py)) — id, actor_user_id (FK users.id, SET NULL), actor_username, actor_role (all SNAPSHOTTED at write time so later demotions don't rewrite history), action, **category** (nullable for back-compat), method, path, target_type, target_id, status_code, summary, request_id (UUID mirrored in `X-Request-ID` header), client_ip, user_agent, created_at. Indexes on actor / target / category / created_at.
+
+**Two write paths:**
+
+1. **AuditMiddleware** ([`audit.py`](backend/api/audit.py)) — every HTTP request. Skips non-mutating + `_SUPPRESS_PREFIXES`. Captures actor from JWT, status from wrapped `send`, body summary from first 1 KB. Path → category via `_derive_category_from_path()` (prefix-match table). Methods `PUT/PATCH` on `/api/orders/{id}` narrow to `order.modify`; `DELETE` narrows to `order.cancel`.
+
+2. **`write_audit_event(category, action, actor_user_id=None, actor_username='system', actor_role='system', target_type=None, target_id=None, summary=None, status_code=200, request_id=None)`** — public helper for non-HTTP paths. Used by:
+   - Broker postback handler (`order.fill` / `order.cancel` / `order.reject`, actor=`broker`)
+   - Agent action dispatcher (`agent.action`, actor=`agent:<slug>`; both success + failure)
+   - Monthly statement send (`system.statement`, actor=`system`)
+   - NAV compute task (`system.nav`, actor=`system`)
+   - Sim-mode actions intentionally NOT audited (isolated in sim event log).
+
+**Failed mutations gate** — `audit.log_failed_mutations` setting (default `False`). When ON, middleware also writes 4xx/5xx rows for defect tracking. Toggle off when not actively debugging.
+
+**Category routing table** (extend `_PATH_CATEGORY_RULES` to register a new business surface):
+
+| Path prefix | Category |
+|---|---|
+| `/api/orders/ticket` | `order.place` |
+| `/api/orders/postback` | `order.fill` |
+| `/api/orders/basket` | `order.place` |
+| `/api/orders/` | `order` (narrows to `order.modify` / `order.cancel` per method) |
+| `/api/admin/users/` | `user` |
+| `/api/admin/settings` | `config` |
+| `/api/admin/brokers` | `config.broker` |
+| `/api/admin/grammar/` | `config.grammar` |
+| `/api/admin/fragments` | `config.fragment` |
+| `/api/admin/hedge-proxies` | `config.hedge` |
+| `/api/admin/statements` | `system.statement` |
+| `/api/nav/compute` | `system.nav` |
+| `/api/agents/` | `agent` |
+| `/api/strategies/` | `strategy` |
+| (everything else) | `http` |
+
+**UI** — `/admin/audit` carries category filter pills (All / Orders / Agents / Users / Config / System) above the existing column filters. Each pill maps to one or more category strings via comma-separated OR. The Category column in the table tints by bucket prefix (green order, cyan agent, amber user, violet config, slate system).
+
+**Cross-referencing**: every row's `request_id` UUID is mirrored in the response's `X-Request-ID` header. To trace a single operator action end-to-end: copy the request_id from the audit row, grep `api_log_file` for it.
+
+**Performance contract**: middleware uses `asyncio.create_task(_write_audit(...))` — no await. Helper does the same. Failed writes log a warning and drop. Hot-path callers (the postback handler, the agent dispatcher) NEVER block on the audit insert.
+
+**Adding a new audit category**:
+1. Add a prefix tuple to `_PATH_CATEGORY_RULES` (HTTP path) OR call `write_audit_event(category='...', ...)` from a non-HTTP path.
+2. (Optional) Add a pill in `CATEGORY_PILLS` in [`/admin/audit/+page.svelte`](frontend/src/routes/(algo)/admin/audit/+page.svelte) so the operator can filter to the new bucket.
+3. (Optional) Add a `.audit-cat-<prefix>` CSS tint so the bucket has a distinct color.
+
+---
+
 ## Refactoring Notes
 
 **Day P&L formula** (commits b95ccd79–ba9cf39c): Decomposed intraday (not naive `(LTP−close)×qty`). Positions: `overnight_qty × (LTP − prev_close) + day_buy/sell legs`. Holdings: `broker.pnl − (close − cost) × opening_qty`. **MCX guard**: apply lot_size multiplier to intraday qty too (pre-fix: ₹61k phantom GOLDM due to unit mismatch). **Always verify qty units in P&L edits.**

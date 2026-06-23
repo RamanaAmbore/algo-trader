@@ -45,6 +45,7 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 22. [Demo mode](#22-demo-mode)
 22.5. [Investor portal — token-as-credential](#225-investor-portal--token-as-credential)
 22.6. [Investor portal — units-based NAV math](#226-investor-portal--units-based-nav-math)
+22.7. [Audit log — forensic trail](#227-audit-log--forensic-trail)
 
 ### Part VII — Operations
 23. [How to add a new template field](#23-how-to-add-a-new-template-field)
@@ -1352,6 +1353,81 @@ The delete-then-recompute cycle preserves history (bootstrap event has the old t
 - `backend/api/routes/nav.py::my_slice` + `my_history` — authenticated LP endpoints
 - `backend/api/routes/investor.py::slice` + `history` — public portal endpoints
 - `backend/api/models.py::InvestorEvent` — events journal table
+
+---
+
+## 22.7. Audit log — forensic trail
+
+Single `audit_log` table catches every mutating event the platform produces — HTTP mutations (via middleware), broker fills (via postback handler), agent-initiated actions (via the action dispatcher), and background-task events (NAV compute, monthly statement send). Read surface at `/admin/audit` is cap-gated to `view_audit` (admin / risk / ops).
+
+⚙ **TECH — ASGI middleware + fire-and-forget writes** — `WHY` SEBI Cat-III's "every mutating event" requirement can't be satisfied with per-route decorators (easy to forget; impossible to enforce). A middleware catches everything by default. `WHAT` `AuditMiddleware` wraps every HTTP response; on a mutating 2xx/3xx it schedules a `_write_audit` coroutine via `asyncio.create_task`. Response leaves the server immediately; the DB write lands shortly after. `HOW` Failed audit writes log a warning and drop — the user's request never blocks on the audit pipeline. `WHERE` `backend/api/audit.py`.
+
+### Schema
+
+```python
+class AuditLog(Base):
+    id, actor_user_id (FK users.id), actor_username, actor_role,
+    action, category, method, path,
+    target_type, target_id,
+    status_code, summary,
+    request_id (UUID, mirrored in X-Request-ID),
+    client_ip, user_agent, created_at
+```
+
+- `actor_*` fields are SNAPSHOTTED — a later role demotion doesn't rewrite history.
+- `category` is a coarse tag (`order.fill`, `agent.action`, `system.nav`, ...) populated by `_derive_category_from_path` for HTTP rows and explicitly by `write_audit_event` callers.
+- `request_id` correlates each audit row with the API log line for the same request.
+
+### Two write paths
+
+**1. HTTP middleware (default)** — `AuditMiddleware.handle` watches every response. Skips non-mutating methods + `_SUPPRESS_PREFIXES`. Captures actor from JWT, status code from the wrapped `send`, body summary from the first 1 KB of response. Path-derived category via `_derive_category_from_path`.
+
+**2. Non-HTTP helper (added Jun 2026)** — `write_audit_event(category, action, ...)` is the public API for any code path that mutates state without going through HTTP:
+
+| Caller | Category | Actor |
+|---|---|---|
+| Broker postback handler ([`orders.py`](backend/api/routes/orders.py)) | `order.fill` / `order.cancel` / `order.reject` | `broker` |
+| Agent action dispatcher ([`actions.py::execute`](backend/api/algo/actions.py)) | `agent.action` | `agent:<slug>` |
+| Monthly statement send ([`background.py`](backend/api/background.py)) | `system.statement` | `system` |
+| NAV compute ([`background.py`](backend/api/background.py)) | `system.nav` | `system` |
+
+The helper is fire-and-forget (`asyncio.get_running_loop().create_task(...)`); failed writes log a warning and drop. Sim-mode actions are intentionally NOT audited — they're already isolated in the sim event log and don't touch real state.
+
+### Failed mutations toggle
+
+`audit.log_failed_mutations` setting (default `False`). When ON, the middleware also writes audit rows for 4xx/5xx mutating responses. Use for defect tracking ("operator hit SUBMIT and saw 422 — what blocked?"); toggle off otherwise to avoid volume spikes from validation errors.
+
+### Category routing
+
+`_PATH_CATEGORY_RULES` in `audit.py` is the prefix-match table. Adding a new business surface is one tuple. Example:
+
+```python
+_PATH_CATEGORY_RULES: tuple[tuple[str, str], ...] = (
+    ("/api/orders/ticket",                   "order.place"),
+    ("/api/orders/postback",                 "order.fill"),
+    ...
+)
+```
+
+For `PUT/PATCH /api/orders/{id}` and `DELETE /api/orders/{id}`, the middleware narrows the generic `order` category to `order.modify` / `order.cancel` based on HTTP method.
+
+### UI — filter pills
+
+`/admin/audit` carries a row of category pills (All / Orders / Agents / Users / Config / System) above the existing column filters. Each pill passes a comma-separated category list to the backend; SQL `IN (...)` does the rest. The Category column in the table carries per-bucket tints (green orders / cyan agents / amber users / violet config / slate system).
+
+### Performance contract
+
+- Every audit write is `asyncio.create_task(_write_audit(...))` — no `await`. The middleware's `handle()` returns immediately after the wrapped response.
+- The DB insert pays no transaction beyond its own session; failures swallow into a logger warning.
+- Helper invocations from background tasks pay the same fire-and-forget cost.
+- Read path is one paginated query with `LIMIT/OFFSET`; the `(category, created_at)` and `(actor_user_id, created_at)` indexes cover the common UI queries.
+
+### Source files
+
+- `backend/api/audit.py` — middleware + `write_audit_event` helper
+- `backend/api/models.py::AuditLog` — table
+- `backend/api/routes/audit.py` — read surface + filters
+- `frontend/src/routes/(algo)/admin/audit/+page.svelte` — viewer + pills
 
 ---
 

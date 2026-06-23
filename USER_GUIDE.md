@@ -477,6 +477,20 @@ The next NAV snapshot (16:00 IST, or the operator's manual recompute) will refle
 
 ---
 
+## Audit log — what's recorded
+
+Every action that changes state in RamboQuant — placing an order, a broker filling that order, an agent firing, you tweaking a setting, a monthly statement going out to an LP, the daily NAV cron writing a snapshot — lands as one row in an audit log. The log is the platform's memory of "who did what, when, and with what outcome." A SEBI Cat-III audit visit doesn't need a fancy UI; it needs the trail. RamboQuant gives them both.
+
+**Who can see it?** Admin, risk, and ops roles. Trader, observer, and demo don't have access — the audit log is forensic data, not operational data.
+
+**Where do I find it?** `/admin/audit`. Pick a category pill at the top (Orders / Agents / Users / Config / System) or use the column filters to scope down.
+
+**Does logging slow things down?** No. Every audit write is fire-and-forget — the platform schedules the row insert as a background task while your request is already heading back to your browser. You won't measure the difference.
+
+**What if I want to see failed actions too?** By default the log captures only successful mutations (2xx/3xx). If you're debugging "I clicked SUBMIT and got an error — what blocked it?", flip `audit.log_failed_mutations` to ON in `/admin/settings`. You'll start seeing 4xx/5xx rows alongside successes. Toggle off when you're done — it can get noisy.
+
+---
+
 ## Glossary
 
 - **Agent** — a rule row on `/agents`.

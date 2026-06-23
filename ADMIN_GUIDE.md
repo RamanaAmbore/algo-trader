@@ -838,6 +838,34 @@ Frontend: `branch=main + !user` = demo. Settings/Brokers/Users nav links hide. N
 
 ---
 
+## Audit log — `/admin/audit`
+
+Single forensic surface for every mutating event the platform produces. Cap-gated (`view_audit` — admin / risk / ops); writes happen via [`AuditMiddleware`](backend/api/audit.py) (HTTP) + `write_audit_event()` (non-HTTP). All writes are out-of-band via `asyncio.create_task` so **zero latency cost** on the caller's hot path.
+
+**What's captured:**
+
+| Category | Source | Actor |
+|---|---|---|
+| `order.place` | `POST /api/orders/ticket` | operator (JWT) |
+| `order.modify` / `order.cancel` | `PUT/DELETE /api/orders/{id}` | operator |
+| `order.fill` / `order.reject` | `POST /api/orders/postback` | `broker` |
+| `agent.action` | every agent fire that triggers an action | `agent:<slug>` |
+| `user` | `/api/admin/users/*` | operator |
+| `config.broker` / `config.grammar` / `config.fragment` / `config.hedge` | `/api/admin/{brokers,grammar,fragments,hedge-proxies}/*` | operator |
+| `system.nav` | NAV compute (daily 16:00 IST + ad-hoc) | `system` |
+| `system.statement` | monthly statement send (1st of month) | `system` |
+| `strategy` / `agent` | `/api/strategies/*`, `/api/agents/*` | operator |
+
+**Filter pills** above the column filters scope the view: **All / Orders / Agents / Users / Config / System**. Each pill maps to one or more categories (comma-separated OR server-side). Combine with column filters (actor / action / target / status / since-hours) for drill-down.
+
+**Capturing 4xx/5xx mutations:** OFF by default. Flip `audit.log_failed_mutations` to ON in `/admin/settings` when you want defect-tracking rows (e.g. "operator clicked SUBMIT and got 422; what blocked?"). Toggle off again afterwards — the audit log balloons with validation noise otherwise.
+
+**Cross-referencing**: every row carries a `request_id` UUID mirrored in the `X-Request-ID` response header. To trace a specific operator action end-to-end: copy the request_id from the audit row, grep `api_log_file` on the server for that ID.
+
+**Retention**: SEBI Cat-III requires 8-year retention. No auto-cleanup task today; the table is append-only and indexed.
+
+---
+
 ## Deep dives
 
 - [AGENTS_GUIDE.md](AGENTS_GUIDE.md) — agent authoring + validation ladder
