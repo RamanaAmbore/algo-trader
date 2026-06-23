@@ -217,17 +217,33 @@
   let enabledSymbols = $state({});
   /** Master toggle — when ON, enabled equity-holding legs contribute to
    *  the payoff curve + Greeks + risk metrics. When OFF, eq legs are
-   *  excluded even if their row checkbox is ticked. Default ON because
-   *  the canonical use case (covered call / collar / hedged-stock view)
-   *  needs the underlying overlaid. Operator: "add toggle button to
-   *  show underlying holdings plus options or only options." */
-  let _includeHoldings = $state(true);
+   *  excluded even if their row checkbox is ticked. Default OFF so the
+   *  page lands on the pure-derivative payoff; operator opts in when
+   *  they want the covered-call / collar / hedged-stock view layered
+   *  on. Persisted to localStorage so subsequent visits remember the
+   *  operator's last choice — the OFF default applies only on the
+   *  very first visit. */
+  function _loadIncludeHoldings() {
+    if (typeof localStorage === 'undefined') return false;
+    try {
+      const raw = localStorage.getItem('opt.includeHoldings');
+      if (raw === '1') return true;
+      if (raw === '0') return false;
+    } catch (_) { /* private mode / quota — fall through */ }
+    return false;  // first-time default
+  }
+  let _includeHoldings = $state(_loadIncludeHoldings());
   // Stable callback reference for OptionsPayoff.onToggleHoldings.
   // Hoisting it out of the JSX prevents the fresh-closure problem —
   // every parent re-render would otherwise pass a new function ref,
   // triggering OptionsPayoff to invalidate downstream $derived caches
   // even when nothing about the chart actually changed.
-  function _flipHoldings() { _includeHoldings = !_includeHoldings; }
+  function _flipHoldings() {
+    _includeHoldings = !_includeHoldings;
+    try {
+      localStorage.setItem('opt.includeHoldings', _includeHoldings ? '1' : '0');
+    } catch (_) { /* ignore */ }
+  }
   // Composite key for the enabledSymbols map. Plain symbol collided
   // across accounts: a NIFTY24DEC25000PE held in both ZG#### and
   // ZJ#### would share one checkbox, and the candidatesActualPnl
