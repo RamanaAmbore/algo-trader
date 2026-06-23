@@ -507,7 +507,13 @@ The page is read-only. If you need to take action on something you see (re-place
 
 **Cashbook Δ on Funds** — the Funds tab now carries a **Δ vs prior** column showing the day-over-day change in your cash available, computed within each (account, segment) series. Green = cash went up, red = cash went down, em-dash = first row in the series (no prior to compare against). The running balance you're tracking IS the Cash avail column; the Δ column makes each day's move explicit.
 
-**Backfill button** — at the top of the Funds tab there's a Backfill row where you can type an account code and hit "Pull ledger ↓". This fires a request that asks the broker for historical ledger entries to seed days before tracking started. Right now the broker adapters don't implement the ledger call (Kite Connect has no programmatic ledger — Zerodha Console download only; Dhan + Groww adapter wiring is a follow-up slice), so you'll see a 501 message saying so. The endpoint + UI are in place; when the adapter lands you get historical backfill without a redeploy.
+**Backfill button** — at the top of the Funds tab there's a Backfill row where you type an account code and hit "Pull ledger ↓". This pulls historical ledger entries from the broker and seeds them into the Funds tab for the date range you picked.
+
+- **Dhan accounts**: live. Click Backfill, wait a second or two, and the Funds tab shows however far back Dhan's ledger reaches (typically several years of statement history). Re-running with a wider range overwrites the same days — no duplicates.
+- **Kite accounts**: always returns a 501 message. Zerodha doesn't expose ledger data through Kite Connect; you have to download the statement from the Zerodha Console and import it manually. Operator workaround: pull the PDF, extract the rows, INSERT them via psql with `kind='funds'`.
+- **Groww accounts**: pending. Same single-file follow-up that just landed for Dhan.
+
+What you actually get from a Dhan backfill: one row per (date, account, segment). Each row's Cash avail comes from Dhan's end-of-day running balance; Δ vs prior is computed off the prior day's row. "Realised M2M" here is best-read as "net daily cash flow" (credits minus debits across all voucher entries that day) — it includes brokerage, STT, DP charges, and actual MTM together. Dhan's ledger doesn't break those apart per row.
 
 ---
 

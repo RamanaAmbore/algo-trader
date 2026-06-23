@@ -928,15 +928,31 @@ Multi-day forensic surface for the three "book of record" datasets — Orders (e
 - Computed server-side (`HistoryController.list_funds` does one O(N) walk; groups by `(account, segment)`, sorts ASC by date, sets `prior_cash = current cash` each step).
 - Sign-tinted (green positive / red negative); first row in a series renders em-dash (no prior to compare).
 
-**Backfill scaffold (Funds tab):**
+**Backfill (Funds tab):**
 
-- New `POST /api/admin/history/funds/backfill` endpoint accepting `{account, from_date, to_date}`. Cap-gated by `view_audit`.
+- `POST /api/admin/history/funds/backfill` endpoint accepting `{account, from_date, to_date}`. Cap-gated by `view_audit`.
 - Looks up the broker via the registry; if the adapter doesn't expose `funds_ledger(from_date, to_date)`, returns **501** with operator-facing guidance.
 - Broker support today:
-  - **Kite (zerodha_kite)** — no programmatic ledger ever (Console download only). Will always 501.
-  - **Dhan** — has `/v2/statement/ledger` REST endpoint; adapter method is a 1-file follow-up slice.
-  - **Groww** — unclear SDK support; same follow-up.
-- UI exposes a Backfill row on Funds tab (account input + "Pull ledger ↓" button) that surfaces the 501 message inline. The endpoint + UI are in place so the next slice flips on a single broker by adding `funds_ledger()` to its adapter.
+  - **Kite (zerodha_kite)** — no programmatic ledger ever (Console download only). Always 501.
+  - **Dhan** — wired. `DhanBroker.funds_ledger` probes the SDK for `get_ledger_report` (v2) / `get_funds_ledger` / `ledger_report` (fork variants) and kwarg → positional fallback on TypeError. Aggregates voucher-level entries per `(voucherdate, segment)`; segment mapping in `_DHAN_SEGMENT_MAP` collapses Dhan exchange codes (NSE_EQ / NSE_FNO / BSE_EQ / BSE_FNO / NSE_CURRENCY / BSE_CURRENCY → `equity`, MCX_COMM → `commodity`).
+  - **Groww** — adapter wiring still pending; same single-file pattern.
+- UI Backfill row (account input + "Pull ledger ↓" button) surfaces success / 501 / error messages inline with sign-tinted status text. Re-running with a wider date range upserts the same dates idempotently.
+
+**Operator workflow** for a Dhan backfill:
+
+1. `/admin/history` → Funds tab
+2. Set the date range filter (e.g. From=2025-01-01 To=today)
+3. In the Backfill row, type the Dhan account code (e.g. `DH3747`)
+4. Click **Pull ledger ↓** → status pill shows `+N rows upserted from dhan ledger`
+5. Hit page Refresh → Funds tab now shows historical rows back to the start of the range
+
+**Notes on the Dhan ledger mapping:**
+
+- `cash_available` = end-of-day `runbal` (Dhan's running balance after the last voucher entry that day).
+- `opening_balance` = derived as `close_runbal - net_daily_move` (sum of credits − debits). When close_runbal is unknown the first entry's runbal acts as a fallback.
+- `debits_today` = Σ debit across all voucher entries that day.
+- `realised_m2m` = `credits − debits` (net daily cash flow). **NOT pure mark-to-market** — Dhan's voucher entries include brokerage, STT, exchange charges, etc. The column reads as net daily cash move; operator should not interpret it as P&L attribution.
+- Empty range or no entries: endpoint returns `{rows_added: 0, ..., detail: "no ledger entries in range"}` rather than 5xx. Operator can scope down or pick a different account.
 
 **Remaining limit:**
 

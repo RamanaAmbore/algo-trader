@@ -2316,12 +2316,16 @@ Idempotent via existing `(date, account, kind, symbol)` unique constraint.
 
 **Cashbook Δ on Funds** ✓ — `FundsRow.cash_delta` computed server-side: `HistoryController.list_funds` walks rows O(N), groups by `(account, segment)`, sorts ASC by date, tracks `prior_cash`. UI sign-tints positive green / negative red / em-dash for first row in series.
 
-**Funds backfill scaffold** (broker adapter wiring pending) — `POST /api/admin/history/funds/backfill` endpoint accepts `{account, from_date, to_date}`. Adapter contract: `Broker.funds_ledger(from_date, to_date) -> list[dict]`. If not implemented, returns 501 with broker-specific message. Broker matrix:
-- **Kite**: no programmatic ledger ever (Console download only) — always 501.
-- **Dhan**: `/v2/statement/ledger` REST endpoint exists; 1-file adapter follow-up.
-- **Groww**: unclear SDK support; same follow-up.
+**Funds backfill** — endpoint + Dhan adapter wired. `POST /api/admin/history/funds/backfill` accepts `{account, from_date, to_date}`. Adapter contract: `Broker.funds_ledger(from_date, to_date) -> list[dict]` returning normalised rows `[{date, segment, cash_available, opening_balance, debits, realised_m2m, net, payload}, ...]`. Endpoint runs SDK call in executor + INSERT…ON CONFLICT DO UPDATE per row into `daily_book`.
 
-UI exposes Backfill row on Funds tab (account + "Pull ledger ↓" button); 501 message surfaces inline.
+Broker matrix:
+- **Kite**: no programmatic ledger — always 501.
+- **Dhan** ✓: `DhanBroker.funds_ledger` ([dhan.py](backend/shared/brokers/dhan.py)). Probes `get_ledger_report` (v2) / `get_funds_ledger` / `ledger_report` (fork variants), kwarg→positional fallback. Aggregates voucher-level entries per `(voucherdate, segment)`; `_DHAN_SEGMENT_MAP` collapses Dhan exchange codes (NSE_EQ / NSE_FNO / BSE_EQ / BSE_FNO / NSE_CURRENCY → equity, MCX_COMM → commodity).
+- **Groww**: adapter wiring pending — same single-file pattern.
+
+**Adapter aggregation note** — Dhan returns voucher-level rows (one per transaction); the adapter buckets per `(voucherdate, segment)`, sums debit+credit, tracks first+last `runbal` as SOD/EOD proxies. `realised_m2m = credits − debits` reads as "net daily cash move" — includes brokerage / STT / charges, NOT pure MTM. Operator UI documents this caveat.
+
+**Idempotency** — backfill uses the same `(date, account, kind, symbol)` unique constraint as live snapshots. Re-running with wider date range upserts existing rows with the canonical voucher-aggregated numbers (intentional preference over the single broker.margins() snapshot from the live capture).
 
 **Remaining limit:**
 - Cashbook running-balance tab (separate from the Δ column) — trade-leg attribution to daily cash moves. Would be a 4th tab walking trades + funds snapshots row-by-row.

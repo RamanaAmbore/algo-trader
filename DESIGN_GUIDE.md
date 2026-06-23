@@ -1561,24 +1561,53 @@ The mapping is intentionally pragmatic — `daily_book` is denormalised by desig
 
 **Cashbook Δ on Funds tab** — closed. `FundsRow.cash_delta` computed server-side: `HistoryController.list_funds` walks rows in O(N), groups by `(account, segment)`, sorts ASC by date, sets `prior_cash` to the previous row's `cash_available` each step. Response keeps DESC order (newest first) for the UI; per-row delta carries the move within the (account, segment) series. UI tints positive green / negative red / em-dash for the first row in a series.
 
-**Funds backfill scaffold** — endpoint shipped, broker adapter wiring pending:
+**Funds backfill** — endpoint + Dhan adapter both wired.
+
+Adapter contract:
+
+```python
+def funds_ledger(self, from_date: str, to_date: str) -> list[dict]:
+    """Return a list of normalised per-(date, segment) rows:
+        [{date, segment, cash_available, opening_balance,
+          debits, realised_m2m, net, payload}, ...]
+    """
+```
+
+Endpoint flow:
 
 ```python
 @post("/funds/backfill", guards=[cap_guard("view_audit")])
-async def backfill_funds(self, data: FundsBackfillRequest) -> FundsBackfillResponse:
-    ...
+async def backfill_funds(...) -> FundsBackfillResponse:
     broker = get_broker(account)
     if not hasattr(broker, "funds_ledger"):
         raise HTTPException(status_code=501, detail=...)
-    # implementation slot for the SDK call + INSERT ... ON CONFLICT DO NOTHING
+    entries = await loop.run_in_executor(
+        None, lambda: broker.funds_ledger(from_iso, to_iso))
+    # INSERT ... ON CONFLICT DO UPDATE per entry — same column
+    # mapping as _funds_rows in the live snapshot path.
 ```
 
-Broker support matrix at ship time:
-- **Kite (zerodha_kite)**: no programmatic ledger — Zerodha Console download only. Always 501.
-- **Dhan**: `/v2/statement/ledger` REST endpoint exists; adapter method is a 1-file follow-up. Add `funds_ledger(from_date, to_date)` to `backend/shared/brokers/dhan.py::DhanBroker` returning `[{date, segment, cash_available, opening_balance, debits, realised_m2m, net, payload}, ...]`.
-- **Groww**: unclear SDK support; same follow-up.
+Broker support matrix:
 
-UI exposes the Backfill button universally; the 501 message surfaces inline so the operator sees which brokers are wired without reading docs.
+- **Kite (zerodha_kite)** — no programmatic ledger. Always 501.
+- **Dhan** — wired ([DhanBroker.funds_ledger](backend/shared/brokers/dhan.py)). SDK method discovery probes `get_ledger_report` (v2) / `get_funds_ledger` / `ledger_report` (fork variants) with kwarg→positional fallback. Aggregates voucher-level entries per `(voucherdate, segment)`; `_DHAN_SEGMENT_MAP` collapses Dhan exchange codes to our 2-segment vocabulary.
+- **Groww** — pending. Same single-file pattern: add `funds_ledger(from, to)` to `GrowwBroker` returning the normalised shape.
+
+### ⚙ TECH — Voucher-level aggregation vs daily snapshot
+
+Dhan's `/v2/statement/ledger` returns voucher-level entries (one per transaction: a trade settlement, a brokerage debit, an MTM credit), not daily summaries. The adapter aggregates because `daily_book[kind='funds']` is intentionally per-day per-segment — re-using the existing snapshot schema instead of adding a `funds_ledger_voucher` table.
+
+Aggregation logic:
+- Group entries by `(voucherdate, segment)`.
+- Sum `debit` + `credit` separately per group.
+- Track first + last `runbal` as SOD / EOD proxies (Dhan returns entries in chronological order within a day).
+- Output `cash_available = close_runbal`, `opening_balance = close_runbal - (credits − debits)`, `realised_m2m = credits − debits` (semantically "net daily cash move", not pure MTM — voucher entries include brokerage / STT / exchange charges that operator should not interpret as P&L).
+
+### Idempotency on backfill
+
+The backfill loop uses `INSERT ... ON CONFLICT (date, account, kind, symbol) DO UPDATE SET ...` — same clause as `_upsert_rows` in the daily snapshot path. Re-running a backfill with a wider date range overwrites existing rows with the canonical Dhan numbers (intentional — if both the live snapshot AND a backfill cover the same day, the backfill's voucher-aggregated numbers are more accurate than a single broker.margins() snapshot taken at 15:35 IST).
+
+Per-row try/except + single bulk commit at the end: a single bad voucher entry doesn't lose a multi-month pull. Failed rows log to debug + increment the `skipped` counter; the response surfaces both counts.
 
 ### Remaining limit
 
