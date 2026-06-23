@@ -61,6 +61,7 @@ class AuditController(Controller):
         category:     Optional[str] = None,
         target_type:  Optional[str] = None,
         target_id:    Optional[str] = None,
+        request_id:   Optional[str] = None,
         since_hours:  Optional[int] = None,
         status_code:  Optional[int] = None,
         limit:        int = 50,
@@ -98,6 +99,8 @@ class AuditController(Controller):
             conditions.append(AuditLog.target_type == target_type.strip())
         if target_id:
             conditions.append(AuditLog.target_id == target_id.strip())
+        if request_id:
+            conditions.append(AuditLog.request_id == request_id.strip())
         if since_hours and since_hours > 0:
             cutoff = datetime.now(timezone.utc) - timedelta(hours=int(since_hours))
             conditions.append(AuditLog.created_at >= cutoff)

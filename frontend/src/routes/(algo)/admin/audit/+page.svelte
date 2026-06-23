@@ -56,6 +56,7 @@
   let fAction      = $state('');
   let fTargetType  = $state('');
   let fTargetId    = $state('');
+  let fRequestId   = $state('');   // Drill-through from /admin/history
   let fStatus      = $state('');
   let fSinceHours  = $state(72);   // default: last 3 days
 
@@ -74,6 +75,7 @@
         category: _pill?.cats || undefined,
         target_type: fTargetType.trim() || undefined,
         target_id: fTargetId.trim() || undefined,
+        request_id: fRequestId.trim() || undefined,
         status_code: fStatus.trim() ? Number(fStatus.trim()) : undefined,
         since_hours: fSinceHours ? Number(fSinceHours) : undefined,
       };
@@ -92,6 +94,7 @@
     fAction = '';
     fTargetType = '';
     fTargetId = '';
+    fRequestId = '';
     fStatus = '';
     fSinceHours = 72;
     categoryPill = 'all';
@@ -119,6 +122,18 @@
 
   onMount(() => {
     if (!_canView) return;
+    // Read drill-through URL params from /admin/history Orders →
+    // /admin/audit?request_id=…. Widen the since-hours window so
+    // the operator finds the row even if it's older than the
+    // default 72h.
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const rid = (sp.get('request_id') || '').trim();
+      if (rid) {
+        fRequestId = rid;
+        fSinceHours = 24 * 90;  // 90 days
+      }
+    } catch {}
     load();
     // 30s refresh during market hours — most mutation activity
     // happens during sessions. Outside hours the poll pauses.
@@ -197,6 +212,9 @@
   </label>
   <label class="audit-flbl">Target id
     <input bind:value={fTargetId} placeholder="ZG0790 / 42 / ..." class="field-input audit-finput" />
+  </label>
+  <label class="audit-flbl">Request id
+    <input bind:value={fRequestId} placeholder="uuid" class="field-input audit-finput" />
   </label>
   <label class="audit-flbl">Status
     <input bind:value={fStatus} placeholder="200" class="field-input audit-finput audit-finput-narrow" />

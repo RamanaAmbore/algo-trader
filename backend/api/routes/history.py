@@ -19,7 +19,8 @@ from datetime import date as _date, datetime, timedelta, timezone
 from typing import Optional
 
 import msgspec
-from litestar import Controller, get
+from litestar import Controller, get, post
+from litestar.exceptions import HTTPException
 from sqlalchemy import select, and_, desc, func as _func
 
 from backend.api.database import async_session
@@ -47,6 +48,7 @@ class _OrderRow(msgspec.Struct):
     mode:             str          # sim / paper / live / shadow / replay
     engine:           str
     broker_order_id:  Optional[str]
+    request_id:       Optional[str]   # /admin/audit drill-through
     detail:           Optional[str]
 
 
@@ -87,12 +89,34 @@ class _FundsRow(msgspec.Struct):
     debits_today:   int
     realised_m2m:   Optional[float]
     net:            Optional[float]
+    # Day-over-day Δ on cash_available within the same (account,
+    # segment) series. None for the first row in the series (no
+    # prior reference) or when prior row's cash is null. The
+    # 'cashbook' lens — running balance is implicit (cash_available
+    # IS the running balance); delta makes the daily move explicit.
+    cash_delta:     Optional[float]
 
 
 class FundsListResponse(msgspec.Struct):
     rows:           list[_FundsRow]
     total:          int
     earliest_date:  Optional[str]  # 'tracking started X days ago' hint
+
+
+class FundsBackfillRequest(msgspec.Struct):
+    account:   str          # broker account code (e.g. 'DH3747')
+    from_date: str          # 'YYYY-MM-DD'
+    to_date:   str          # 'YYYY-MM-DD' (inclusive)
+
+
+class FundsBackfillResponse(msgspec.Struct):
+    account:     str
+    from_date:   str
+    to_date:     str
+    rows_added:  int
+    rows_skipped:int
+    broker_id:   str
+    detail:      str       # short status / error string
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +234,7 @@ class HistoryController(Controller):
                     mode=r.mode,
                     engine=r.engine,
                     broker_order_id=r.broker_order_id,
+                    request_id=r.request_id,
                     detail=r.detail,
                 )
                 for r in rows
@@ -328,6 +353,30 @@ class HistoryController(Controller):
                 )
             )).scalar_one()
 
+        # Cashbook lens — compute day-over-day Δ on cash_available
+        # within each (account, segment) series. Walk rows sorted by
+        # ascending date per series; the response order is reversed
+        # back to DESC at the end so the UI still reads top-down
+        # newest-first. Single pass; O(N) where N = rows in range.
+        from collections import defaultdict
+        _series: dict[tuple, list] = defaultdict(list)
+        for r in rows:
+            _series[(r.account, r.segment)].append(r)
+        # Per-series order from DB query is DESC; flip to ASC for the
+        # delta walk so prior = previous row's cash.
+        delta_by_row_id: dict[int, Optional[float]] = {}
+        for (_acct, _seg), series in _series.items():
+            series_asc = sorted(series, key=lambda x: x.date or _date.min)
+            prior_cash: Optional[float] = None
+            for r in series_asc:
+                cur = (float(r.avg_cost) if r.avg_cost is not None else None)
+                if prior_cash is not None and cur is not None:
+                    delta_by_row_id[r.id] = cur - prior_cash
+                else:
+                    delta_by_row_id[r.id] = None
+                if cur is not None:
+                    prior_cash = cur
+
         return FundsListResponse(
             rows=[
                 _FundsRow(
@@ -343,9 +392,94 @@ class HistoryController(Controller):
                                   if r.day_pnl is not None else None),
                     net=(float(r.total_pnl)
                          if r.total_pnl is not None else None),
+                    cash_delta=delta_by_row_id.get(r.id),
                 )
                 for r in rows
             ],
             total=len(rows),
             earliest_date=(earliest.isoformat() if earliest else None),
+        )
+
+    @post("/funds/backfill", guards=[cap_guard("view_audit")])
+    async def backfill_funds(self, data: FundsBackfillRequest) -> FundsBackfillResponse:
+        """Pull historical funds ledger from the broker and seed
+        daily_book[kind='funds'] for the date range. Idempotent —
+        existing rows are not overwritten (ON CONFLICT DO NOTHING).
+
+        Broker support matrix:
+        - Kite (zerodha_kite): NO programmatic ledger. Console
+          download only. Returns 501 with guidance.
+        - Dhan (dhan): has `/v2/statement/ledger` REST endpoint.
+          Adapter wiring is a follow-up — endpoint structure is in
+          place + returns 501 until the broker adapter implements
+          `funds_ledger(from_date, to_date)`.
+        - Groww: unknown SDK support.
+
+        Operator workflow once the adapter lands:
+        1. /admin/history Funds tab → click Backfill on a Dhan
+           row → date picker → fires this endpoint.
+        2. Endpoint pulls ledger entries from broker, maps each
+           date to a `daily_book` row, INSERT ... ON CONFLICT DO
+           NOTHING.
+        3. Funds tab re-fetches → historical data appears.
+        """
+        from datetime import date as _d
+        from backend.shared.helpers.connections import Connections
+        from backend.shared.brokers.registry import get_broker
+        from backend.shared.helpers.utils import mask_column
+        import pandas as pd
+
+        account = (data.account or "").strip()
+        if not account:
+            raise HTTPException(status_code=400, detail="account is required")
+        try:
+            df = _d.fromisoformat(data.from_date)
+            dt = _d.fromisoformat(data.to_date)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="from_date / to_date must be YYYY-MM-DD",
+            )
+        if df > dt:
+            raise HTTPException(
+                status_code=400,
+                detail="from_date must be <= to_date",
+            )
+
+        conns = Connections()
+        if account not in conns.conn:
+            raise HTTPException(status_code=404,
+                                detail=f"account {mask_column(pd.Series([account]))[0]} not loaded")
+
+        broker = get_broker(account)
+        broker_id = getattr(broker, "broker_id", "unknown")
+
+        # Adapter contract: optional `funds_ledger(from_date, to_date)`
+        # method. Brokers that don't implement it return a 501 here.
+        # Dhan + Kite + Groww all currently 501 — the implementation
+        # is wired adapter-by-adapter in a follow-up. The endpoint
+        # exists so the UI can show a Backfill button + a clear
+        # operator-facing message about which brokers are supported.
+        if not hasattr(broker, "funds_ledger"):
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    f"Funds backfill not yet implemented for broker "
+                    f"'{broker_id}'. Dhan + Groww adapter support is "
+                    f"a follow-up slice. Kite has no programmatic "
+                    f"ledger; download from Zerodha Console manually."
+                ),
+            )
+
+        # Implementation slot — once a broker adapter lands a
+        # `funds_ledger` method returning a list of normalised
+        # entries [{date, segment, cash_available, opening_balance,
+        # debits, realised_m2m, net, payload}, ...], this loop
+        # writes them out idempotently. Keeping the scaffolding so
+        # the follow-up slice is a 1-file change.
+        return FundsBackfillResponse(
+            account=account,
+            from_date=df.isoformat(), to_date=dt.isoformat(),
+            rows_added=0, rows_skipped=0, broker_id=broker_id,
+            detail="adapter wiring pending — endpoint returns 0 rows",
         )

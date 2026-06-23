@@ -2631,6 +2631,9 @@ class OrdersController(Controller):
                     except Exception:
                         pass
                     _eff_target_pct = _resolve_target_pct(data.target_pct)
+                    # Capture the middleware's request_id so /admin/history
+                    # → /admin/audit drill-through works on this row.
+                    _req_id = (request.scope.get("state") or {}).get("request_id")
                     async with async_session() as _s_pre:
                         _live_row = AlgoOrder(
                             account=account, symbol=sym,
@@ -2642,6 +2645,7 @@ class OrdersController(Controller):
                             agent_id=_live_manual_aid,
                             strategy_id=data.strategy_id,
                             broker_order_id=None,
+                            request_id=_req_id,
                             target_pct=(_eff_target_pct
                                         if _eff_target_pct > 0 else None),
                             template_id=data.template_id,
@@ -2845,6 +2849,7 @@ class OrdersController(Controller):
         except Exception:
             pass
         _eff_target_pct = _resolve_target_pct(data.target_pct)
+        _req_id_paper = (request.scope.get("state") or {}).get("request_id")
         try:
             async with async_session() as s:
                 row = AlgoOrder(
@@ -2854,6 +2859,7 @@ class OrdersController(Controller):
                     status="OPEN", engine="paper", mode="paper",
                     agent_id=_manual_aid,
                     strategy_id=data.strategy_id,
+                    request_id=_req_id_paper,
                     target_pct=(_eff_target_pct if _eff_target_pct > 0 else None),
                     template_id=data.template_id,
                     template_overrides_json=_build_overrides_json(data),

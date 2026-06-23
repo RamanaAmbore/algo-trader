@@ -293,6 +293,16 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS ix_audit_log_category "
             "ON audit_log (category)"
         ))
+        # algo_orders.request_id — drill-through to /admin/audit. New
+        # rows from POST /api/orders/ticket get the middleware's
+        # request_id stamped at insert time; existing rows stay NULL.
+        await conn.execute(text(
+            "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS request_id VARCHAR(36)"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_algo_orders_request_id "
+            "ON algo_orders (request_id)"
+        ))
         # Feature: basket orders + auto profit-target (June 2026).
         # Four new columns on algo_orders; all nullable / defaulted so
         # existing rows remain valid without any data migration.

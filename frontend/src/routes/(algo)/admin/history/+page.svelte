@@ -17,6 +17,7 @@
   import { userRole, userCaps, hasCap } from '$lib/rbac';
   import {
     fetchHistoryOrders, fetchHistoryTrades, fetchHistoryFunds,
+    backfillHistoryFunds,
   } from '$lib/api';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
@@ -27,7 +28,7 @@
    *   filled_quantity:number, initial_price:number|null,
    *   fill_price:number|null, slippage:number|null, status:string,
    *   mode:string, engine:string, broker_order_id:string|null,
-   *   detail:string|null
+   *   request_id:string|null, detail:string|null
    * }} OrderRow */
   /** @typedef {{
    *   date:string, account:string, segment:string, symbol:string,
@@ -38,7 +39,7 @@
    *   date:string, account:string, segment:string,
    *   cash_available:number|null, opening_balance:number|null,
    *   debits_today:number, realised_m2m:number|null,
-   *   net:number|null
+   *   net:number|null, cash_delta:number|null
    * }} FundsRow */
 
   // Tab state — 'orders' | 'trades' | 'funds'.
@@ -117,6 +118,44 @@
 
   const _canView = $derived(hasCap('view_audit', $userCaps, $userRole));
   onMount(() => { if (_canView) load(); });
+
+  // Backfill state for the Dhan ledger pull. Endpoint returns 501
+  // until the broker adapter wires `funds_ledger()` — the UI
+  // surfaces that 501 message inline so the operator sees the
+  // status without a generic toast.
+  let bfBusy = $state(false);
+  let bfMsg  = $state(/** @type {{kind:'ok'|'err', text:string}|null} */ (null));
+  let bfAccount = $state('');
+  async function runBackfill() {
+    if (bfBusy) return;
+    if (!bfAccount.trim()) {
+      bfMsg = { kind: 'err', text: 'Pick an account first.' };
+      return;
+    }
+    bfBusy = true; bfMsg = null;
+    try {
+      const r = await backfillHistoryFunds({
+        account:   bfAccount.trim(),
+        from_date: fFromDate,
+        to_date:   fToDate,
+      });
+      bfMsg = {
+        kind: 'ok',
+        text: `Backfill: +${r.rows_added} added, ${r.rows_skipped} skipped (${r.broker_id}) — ${r.detail}`,
+      };
+      if (r.rows_added > 0) await load();
+    } catch (e) {
+      bfMsg = { kind: 'err', text: e?.message || 'Backfill failed' };
+    } finally { bfBusy = false; }
+  }
+
+  /** Build the /admin/audit URL pre-filtered for a row's audit
+   *  trail. Returns null when the row doesn't carry a request_id
+   *  (legacy rows from before the column existed). */
+  function _auditHref(/** @type {OrderRow} */ r) {
+    if (!r.request_id) return null;
+    return `/admin/audit?request_id=${encodeURIComponent(r.request_id)}`;
+  }
 
   function _fmtInr(/** @type {number|null|undefined} */ v) {
     if (v == null || !isFinite(v)) return '—';
@@ -251,11 +290,12 @@
           <th>Status</th>
           <th>Mode</th>
           <th>Broker ID</th>
+          <th></th>
         </tr>
       </thead>
       <tbody>
         {#if orderRows.length === 0 && !loading}
-          <tr><td colspan="12" class="hist-empty-row">No orders match.</td></tr>
+          <tr><td colspan="13" class="hist-empty-row">No orders match.</td></tr>
         {/if}
         {#each orderRows as r (r.id)}
           <tr>
@@ -271,6 +311,17 @@
             <td><span class="hist-pill {_statusClass(r.status)}">{r.status}</span></td>
             <td class="td-mono">{r.mode}</td>
             <td class="td-mono" title={r.broker_order_id ?? ''}>{r.broker_order_id ?? '—'}</td>
+            <td>
+              {#if _auditHref(r)}
+                <a class="hist-audit-link"
+                   href={_auditHref(r)}
+                   title="Open the audit log filtered to this order's request_id">
+                  Audit ↗
+                </a>
+              {:else}
+                <span class="hist-audit-none" title="Legacy row — no request_id was captured at insert">—</span>
+              {/if}
+            </td>
           </tr>
         {/each}
       </tbody>
@@ -316,20 +367,38 @@
     </table>
   </div>
 {:else}
-  {#if fundsEarliest}
-    <div class="hist-summary">
+  <div class="hist-summary">
+    {#if fundsEarliest}
       <span class="hist-pill hist-pill-info">
         Tracking started {_fmtDate(fundsEarliest)}
       </span>
-    </div>
-  {:else}
-    <div class="hist-summary">
+    {:else}
       <span class="hist-pill hist-pill-warn">
         No funds snapshots yet — the daily 15:35 IST capture writes the
         first row tonight.
       </span>
-    </div>
-  {/if}
+    {/if}
+  </div>
+
+  <!-- Backfill — broker-side ledger pull for pre-deploy dates. Kite
+       has no programmatic ledger; Dhan does. UI exposes the button
+       universally + surfaces the broker-by-broker 501 when the
+       adapter isn't wired yet. -->
+  <div class="hist-backfill">
+    <label class="hist-flbl">Backfill account
+      <input bind:value={bfAccount} placeholder="DH3747"
+             class="field-input hist-finput" />
+    </label>
+    <button class="btn-secondary hist-backfill-btn"
+            disabled={bfBusy} onclick={runBackfill}>
+      {bfBusy ? 'Backfilling…' : 'Pull ledger ↓'}
+    </button>
+    {#if bfMsg}
+      <span class="hist-backfill-msg hist-backfill-msg-{bfMsg.kind}">
+        {bfMsg.text}
+      </span>
+    {/if}
+  </div>
   <div class="hist-table-wrap">
     <table class="hist-table">
       <thead>
@@ -338,6 +407,7 @@
           <th>Account</th>
           <th>Segment</th>
           <th class="th-num">Cash avail</th>
+          <th class="th-num" title="Day-over-day Δ on cash_available within this (account, segment) series">Δ vs prior</th>
           <th class="th-num">Opening bal</th>
           <th class="th-num">Debits today</th>
           <th class="th-num">Realised M2M</th>
@@ -346,7 +416,7 @@
       </thead>
       <tbody>
         {#if fundsRows.length === 0 && !loading}
-          <tr><td colspan="8" class="hist-empty-row">No funds rows in this range.</td></tr>
+          <tr><td colspan="9" class="hist-empty-row">No funds rows in this range.</td></tr>
         {/if}
         {#each fundsRows as r, i (`${r.date}|${r.account}|${r.segment}|${i}`)}
           <tr>
@@ -354,6 +424,10 @@
             <td class="td-mono">{r.account}</td>
             <td class="td-mono">{r.segment}</td>
             <td class="td-num">{_fmtInr(r.cash_available)}</td>
+            <td class="td-num {(r.cash_delta ?? 0) > 0 ? 'cell-pos' : (r.cash_delta ?? 0) < 0 ? 'cell-neg' : ''}">
+              {r.cash_delta == null ? '—'
+                : (r.cash_delta > 0 ? '+' : '') + _fmtInr(r.cash_delta)}
+            </td>
             <td class="td-num">{_fmtInr(r.opening_balance)}</td>
             <td class="td-num">{_fmtInr(r.debits_today)}</td>
             <td class="td-num {(r.realised_m2m ?? 0) > 0 ? 'cell-pos' : (r.realised_m2m ?? 0) < 0 ? 'cell-neg' : ''}">{_fmtInr(r.realised_m2m)}</td>
@@ -519,6 +593,51 @@
 
   .cell-pos { color: #4ade80; }
   .cell-neg { color: #fca5a5; }
+
+  /* Per-row Audit link in Orders tab — drill-through to /admin/audit
+     filtered by request_id. */
+  .hist-audit-link {
+    display: inline-block;
+    padding: 0.1rem 0.45rem;
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #67e8f9;
+    background: rgba(34, 211, 238, 0.10);
+    border: 1px solid rgba(34, 211, 238, 0.40);
+    border-radius: 3px;
+    text-decoration: none;
+    font-family: ui-monospace, monospace;
+  }
+  .hist-audit-link:hover {
+    background: rgba(34, 211, 238, 0.22);
+    border-color: rgba(34, 211, 238, 0.75);
+    color: #a5f3fc;
+  }
+  .hist-audit-none {
+    font-size: 0.6rem; color: rgba(126, 151, 184, 0.55);
+    font-family: ui-monospace, monospace;
+  }
+
+  /* Backfill row on Funds tab. */
+  .hist-backfill {
+    display: flex; gap: 0.55rem; align-items: flex-end; flex-wrap: wrap;
+    margin-bottom: 0.55rem;
+    padding: 0.5rem 0.7rem;
+    background: rgba(15, 23, 42, 0.40);
+    border: 1px dashed rgba(126, 151, 184, 0.30);
+    border-radius: 4px;
+  }
+  .hist-backfill-btn {
+    padding: 0.35rem 0.8rem;
+    font-size: 0.7rem; font-weight: 700;
+  }
+  .hist-backfill-msg {
+    font-size: 0.62rem;
+    font-family: ui-monospace, monospace;
+  }
+  .hist-backfill-msg-ok  { color: #4ade80; }
+  .hist-backfill-msg-err { color: #fca5a5; }
 
   .hist-pager {
     display: flex; align-items: center; gap: 0.6rem;

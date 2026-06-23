@@ -706,6 +706,15 @@ class AlgoOrder(Base):
     broker_order_id: Mapped[Optional[str]] = mapped_column(
         String(32), nullable=True, index=True,
     )
+    # Audit cross-reference — the request UUID stamped by AuditMiddleware
+    # for the HTTP request that created this row. Lets /admin/history
+    # link each Orders row directly to /admin/audit?request_id=…
+    # showing the full forensic context (actor, response status, full
+    # path, downstream rows that share the same request). Indexed for
+    # the drill-through filter.
+    request_id: Mapped[Optional[str]] = mapped_column(
+        String(36), nullable=True, index=True,
+    )
     detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     expiry_date: Mapped[Optional[datetime]] = mapped_column(Date, nullable=True)
     # Auto profit-target — set once at order creation; engine arms a child

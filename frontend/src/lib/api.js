@@ -423,6 +423,8 @@ export const fetchHistoryTrades = (params = {}) =>
   _get(`/admin/history/trades${_toQs(params)}`, { auth: true });
 export const fetchHistoryFunds  = (params = {}) =>
   _get(`/admin/history/funds${_toQs(params)}`,  { auth: true });
+export const backfillHistoryFunds = (/** @type {{account:string, from_date:string, to_date:string}} */ body) =>
+  _post('/admin/history/funds/backfill', body, { auth: true });
 
 /** GET /api/admin/audit — paginated audit log with filters. Gated
  *  by the `view_audit` cap server-side (admin / risk / ops). */
