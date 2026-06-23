@@ -413,6 +413,35 @@ A typical session for an active operator:
 
 ---
 
+## Investor portal — what your LPs see
+
+If RamboQuant is running money for limited partners (LPs / friends-and-family / a small fund), they want to see how their money is doing without bothering you for a screenshot every Friday. The **investor portal** is a token-gated URL that gives each LP a personal read-only view of their NAV slice — what their contribution is now worth, today's move, profit/loss against their initial cheque.
+
+**How it works (operator side):**
+
+- Open `/admin`, find the LP, click **Portal** → modal opens.
+- Pick how long the URL stays valid (default 90 days) and add an optional note like "WhatsApp 23 Jun".
+- Click **Mint** → a URL appears in green.
+- Click **Copy** → paste into WhatsApp / email → send to the LP.
+
+That's it. The LP clicks the URL → lands on a clean cream-and-champagne page (no algo console chrome) showing:
+
+- Their portfolio value at the last NAV snapshot
+- Today's move (₹ + %)
+- Net P&L vs their contribution
+- Their share % of the fund
+- A 180-day curve of their value over time
+
+**Why a URL, not a login?** LPs are usually not technical. Asking them to remember a password for a quarterly NAV check is friction. The URL pattern is what Carta and SS&C/GP-Link use for investor portals — same shape, same trade-off.
+
+**If a URL leaks**: same modal lists every minted URL with active / revoked / expired pills. Click **Revoke** on a row → the URL stops working immediately. Mint a new one and re-send.
+
+**Visibility for you**: each row shows the last time the LP visited + total visit count. You can tell at a glance "this LP looks every Friday" vs "this LP hasn't checked in 3 months."
+
+The portal is read-only by definition — there's no submit-an-order surface, no settings, nothing the LP can break. They see one number that matters and a curve telling them whether it's going up or down.
+
+---
+
 ## Glossary
 
 - **Agent** — a rule row on `/agents`.

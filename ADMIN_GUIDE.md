@@ -739,6 +739,45 @@ Manage accounts via UI, no SSH/YAML/restart. Page: account table (code | broker 
 
 ---
 
+## Investor portal — mint URL for an LP
+
+LP-facing read-only page at `/investor/<token>` showing the LP's NAV slice + 180-day curve. **Token is the credential** — no LP login, no password. Operator mints + forwards URL through their own channel (WhatsApp / email).
+
+**Mint a URL:**
+1. `/admin` → find the LP's user row → click **Portal** (cyan button, designated-only)
+2. Modal opens. Set **Expires in** (default 90 days, cap 10y) + optional **Note** (e.g. "WhatsApp to LP 2026-06-23")
+3. Click **Mint** → the full URL appears in a green panel
+4. Click **Copy** → paste into WhatsApp / email → send to LP
+
+**Token is shown ONCE.** After the modal closes the token-list table surfaces only the first-8-char preview. To re-share, mint a new one.
+
+**Revoke a URL:**
+- Same modal lists every minted token (active / revoked / expired pills + last-visit timestamp + visit count)
+- Click **Revoke** on the row → confirm → URL 401s immediately on next visit
+- Idempotent — revoking an already-revoked row is a no-op
+
+**Operator visibility:**
+- `last_visit_at` + `visit_count` on each row so you can see "this LP last looked at statements 3 weeks ago" without leaving the modal
+- Visit counter increments per slice + per history fetch (so a single page load bumps it by 2)
+
+**Endpoints:**
+
+| Route | Cap | Purpose |
+|---|---|---|
+| `GET /api/admin/users/{id}/investor-tokens` | `manage_investor_tokens` | List rows (no full token, just preview) |
+| `POST /api/admin/users/{id}/investor-tokens` | `manage_investor_tokens` | Mint (returns full token + portal URL ONCE) |
+| `DELETE /api/admin/users/{id}/investor-tokens/{tid}` | `manage_investor_tokens` | Revoke |
+| `GET /api/investor/{token}/slice` | none — token in URL | Current NAV slice (public) |
+| `GET /api/investor/{token}/history?days=180` | none — token in URL | NAV curve (public) |
+
+**Cap**: `manage_investor_tokens` is admin-only. Trader / risk / ops cannot mint — LP onboarding is a designated activity.
+
+**Math**: `nav_share = share_pct × firm_nav / 100` — same formula as `/api/nav/me` (slice 7k). Static-share v1; subscription / redemption events not modelled. LP sees their slice as a static % of firm NAV at every NAV snapshot.
+
+**Security model:** The URL IS the credential, same shape as Carta / SS&C investor magic-links. Don't email it to a shared inbox. If you suspect leakage, revoke + re-mint.
+
+---
+
 ## OrderTicket modal
 
 Single entry point for all order ops (open/close/modify/repeat/cancel) across all instruments. Auto-detects instrument kind from symbol (CNC/MIS for EQ, NRML/MIS for F&O). Side toggle: ADD/CLOSE (if position open) or BUY/SELL (if closed). Three submit modes: DRAFT (append to caller's array, `/admin/derivatives` chain clicks) · PAPER (`mode=paper`, real bid/ask via chase) · LIVE (branch=main + paper_trading_mode=False). Opens from: `/admin/derivatives` chain · every page-header Order icon (amber `+`)  · Chart icon (cyan line) · Activity icon (violet 3-line). Symbol anchors auto-resolve to contract (`NIFTY 50` → `NIFTY26JUNFUT`).

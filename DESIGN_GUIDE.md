@@ -43,6 +43,7 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 20. [Background task topology](#20-background-task-topology)
 21. [Data refresh — PositionStrip + Dashboard](#21-data-refresh--positionstrip--dashboard)
 22. [Demo mode](#22-demo-mode)
+22.5. [Investor portal — token-as-credential](#225-investor-portal--token-as-credential)
 
 ### Part VII — Operations
 23. [How to add a new template field](#23-how-to-add-a-new-template-field)
@@ -1193,6 +1194,71 @@ flowchart LR
 - `frontend/src/routes/(algo)/+layout.svelte` — demo nav-link gating
 - `frontend/src/lib/SymbolPanel.svelte` — template row demo gate (L-3)
 - `backend/shared/helpers/broker_apis.py::mask_column` — for demo + public
+
+---
+
+## 22.5. Investor portal — token-as-credential
+
+Public read-only NAV surface for LPs. The URL `/investor/<token>` IS the credential — no login, no password. Operator mints from `/admin` per-user Portal button, copies the URL, forwards through their own channel (WhatsApp / email).
+
+### Why token-as-credential
+
+The boutique fund has 1–5 LPs. Asking each LP to manage a password for a quarterly NAV check is friction nobody wants. Carta, SS&C/GP-Link, and Yieldstreet all converge on the same pattern for LP-facing statements: a long-lived per-LP URL that's revocable on suspicion of leakage. Same threat model as a long-lived API key — if you trust the recipient with the URL, the URL is fine.
+
+⚙ **TECH — Long-lived URL token vs JWT magic-link** — `WHY` JWT magic-links are short-lived (5-15 min); they're great for a one-time "log in to this session" handshake but useless for "bookmark this URL and re-check the value every Friday." The investor portal is a recurring read-only surface, not a session. `WHAT` 32-byte `secrets.token_hex` → 64-char string, 90-day default expiry, revocable. `HOW` Stored raw in `investor_tokens.token` (same convention as `AuthToken` — the token IS the URL slug; hashing adds no security since possession of the URL == access). `WHERE` `backend/api/models.py::InvestorToken`, `backend/api/routes/investor.py`.
+
+### Schema
+
+```python
+class InvestorToken(Base):
+    __tablename__ = "investor_tokens"
+    id, user_id (FK users.id), token (64-char unique),
+    expires_at, revoked_at (nullable),
+    last_visit_at, visit_count (operator visibility),
+    note (admin label), created_by (FK users.id), created_at
+```
+
+`Base.metadata.create_all` picks it up on next deploy — no migration.
+
+### Active check
+
+`_is_active(row, now) := row.revoked_at is None AND row.expires_at > now`. Three terminal states surfaced in the admin UI: ACTIVE (green) / REVOKED (red) / EXPIRED (slate).
+
+### Endpoints
+
+**Admin** (`manage_investor_tokens` cap, admin-only):
+- `GET /api/admin/users/{id}/investor-tokens` — list (preview only, never full token)
+- `POST /api/admin/users/{id}/investor-tokens` — mint (returns full token + portal URL ONCE)
+- `DELETE /api/admin/users/{id}/investor-tokens/{tid}` — revoke
+
+**Public** (no auth — token in URL is the credential):
+- `GET /api/investor/{token}/slice` → `InvestorSliceResponse` (same math as `/api/nav/me`)
+- `GET /api/investor/{token}/history?days=180` → curve
+
+### Visit tracking
+
+`_resolve_token()` bumps `last_visit_at` + `visit_count` on every successful resolve via a best-effort `UPDATE` (try/except, rollback on failure). The operator's admin modal surfaces the timestamp + count so they know "this LP last looked 3 weeks ago" without leaving the page. The counter increments per endpoint hit, so a single page load bumps it by 2 (slice + history).
+
+### Frontend separation
+
+The portal page lives at `frontend/src/routes/investor/[token]/+page.svelte` — sibling of `(public)` and `(algo)` route groups. It inherits only the root `+layout.svelte` (which is empty — just `{@render children()}`), so it gets none of the algo navbar or the public marketing nav. Cream + champagne palette matching the marketing site so LPs land on a "professional statement" page, not a Bloomberg-style trading desk.
+
+Robots `noindex,nofollow` in `<svelte:head>` so leaked URLs don't end up in search engines.
+
+### Revocation model
+
+Revoke is destructive but trivially reversible — admin clicks Revoke (confirms via `ConfirmModal`), `revoked_at` flips to `now()`, next visit 401s. Re-mint creates a new row; the old row stays for the audit trail.
+
+Idempotent: revoking an already-revoked row is a no-op (the original `revoked_at` timestamp is preserved so "when did we revoke this?" remains accurate).
+
+### Source files
+
+- `backend/api/models.py::InvestorToken`
+- `backend/api/routes/investor.py` — both controllers
+- `backend/api/rbac.py::CAPS["manage_investor_tokens"]`
+- `frontend/src/routes/investor/[token]/+page.svelte` — LP-facing page
+- `frontend/src/routes/(algo)/admin/+page.svelte` — `openPortal()` modal + mint flow
+- `frontend/src/lib/api.js::{fetchInvestorTokens, mintInvestorToken, revokeInvestorToken}`
 
 ---
 

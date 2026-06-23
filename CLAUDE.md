@@ -2100,6 +2100,44 @@ Prod (`main`) algo pages open to anonymous visitors (real book, masked accounts 
 
 ---
 
+## Investor portal — token-gated public NAV URL
+
+LP-facing read-only surface at `/investor/<token>`. Token IS the credential — no LP login, no password. Operator mints from `/admin` per-user **Portal** button, copies URL, forwards through their own channel (WhatsApp / email). Industry analog: Carta investor magic-link, SS&C/GP-Link share-class URLs.
+
+**Schema** ([`InvestorToken`](backend/api/models.py)):
+- `token` — 32-byte `secrets.token_hex` (64-char). Raw, not hashed (token IS the URL slug; possession of URL = access).
+- `expires_at` — 90-day default, cap 10y.
+- `revoked_at` — nullable; when set, token is dead immediately.
+- `last_visit_at` + `visit_count` — operator visibility ("LP last looked 3 weeks ago").
+- `note` — admin-supplied label ("WhatsApp to LP 2026-06-23").
+- `created_by` — FK users.id for audit.
+
+**Active check**: `revoked_at IS NULL AND expires_at > now()`. UI surfaces three states: ACTIVE (green) / REVOKED (red) / EXPIRED (slate).
+
+**Endpoints** ([`backend/api/routes/investor.py`](backend/api/routes/investor.py)):
+
+| Route | Cap | Notes |
+|---|---|---|
+| `GET /api/admin/users/{id}/investor-tokens` | `manage_investor_tokens` | List rows — preview only (first 8 chars + `…`), never full token |
+| `POST /api/admin/users/{id}/investor-tokens` | `manage_investor_tokens` | Mint. Returns full token + portal URL ONCE (subsequent list calls hide it). Body: `{expires_in_days?, note?}`. |
+| `DELETE /api/admin/users/{id}/investor-tokens/{tid}` | `manage_investor_tokens` | Revoke (idempotent). Returns 204. |
+| `GET /api/investor/{token}/slice` | none — token in URL | `InvestorSliceResponse` — same math as `/api/nav/me`. |
+| `GET /api/investor/{token}/history?days=180` | none — token in URL | Scaled NAV curve. |
+
+**Cap**: `manage_investor_tokens` is admin-only — LP onboarding is a designated activity, not trader/risk/ops.
+
+**Visit tracking**: `_resolve_token()` bumps `last_visit_at` + `visit_count` via a best-effort UPDATE (try/except rollback) so a single page load increments by 2 (slice + history). Surfaced in the admin modal table.
+
+**Frontend separation**: `/investor/[token]/+page.svelte` is a sibling of `(public)` and `(algo)` route groups — inherits only the empty root layout, so no algo navbar / public marketing nav leaks in. Cream + champagne palette matching the marketing site (LPs aren't operators; they shouldn't land on a trading-desk-looking page). `<meta name="robots" content="noindex,nofollow">` so leaked URLs don't end up in search engines.
+
+**Admin modal** ([`(algo)/admin/+page.svelte::openPortal`](frontend/src/routes/(algo)/admin/+page.svelte)): expires_in_days + optional note form → mint → freshly-minted URL appears in green panel with Copy-to-clipboard button → token list with per-row Active/Revoked/Expired pill + last-visit + visit-count + Revoke button. Revoke runs through `ConfirmModal.ask()`; same pattern as every other destructive admin action.
+
+**Math (v1 static-share)**: `nav_share = (share_pct / 100) × firm_nav`. Subscription / redemption events NOT modelled. Works for the single-LP-per-class boutique model; mid-period contribution changes need pro-rata accounting (units model) when a second LP joins.
+
+**Security model**: URL is a long-lived API key with the LP as bearer. If leakage suspected, admin revokes + re-mints. Cloudflare in front handles rate limiting / abuse; no per-endpoint limits in code.
+
+---
+
 ## Refactoring Notes
 
 **Day P&L formula** (commits b95ccd79–ba9cf39c): Decomposed intraday (not naive `(LTP−close)×qty`). Positions: `overnight_qty × (LTP − prev_close) + day_buy/sell legs`. Holdings: `broker.pnl − (close − cost) × opening_qty`. **MCX guard**: apply lot_size multiplier to intraday qty too (pre-fix: ₹61k phantom GOLDM due to unit mismatch). **Always verify qty units in P&L edits.**
