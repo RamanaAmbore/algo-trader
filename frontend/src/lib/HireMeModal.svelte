@@ -37,7 +37,13 @@
     { tag: 'Trading infra',  text: 'Multi-broker basket dispatch (Kite + Dhan + Groww) with per-account IP binding, parallel asyncio.gather order placement, and emulated OCO across brokers that lack native support.' },
     { tag: 'Quant math',     text: 'σ-driven derivatives analytics — Black-Scholes Greeks, lognormal POP, multi-leg payoff curves, expected value via trapezoidal integration, proxy-hedge β regression on 60-day daily-returns.' },
     { tag: 'Real-time',      text: 'KiteTicker WebSocket pipeline fans out per-symbol LTPs to SSE clients with auto-failover watchdog. Zero REST calls during market hours for sparklines + Pulse cells.' },
-    { tag: 'Agent DSL',      text: 'Custom declarative grammar (domain-specific language) for trading rules — DB-backed tokens (metric / scope / operator / action) editable live from /agents/tokens, composable via $ref fragments. Rules compile into a condition tree the engine walks every 5s cycle; no code changes needed to add a new rule or a new metric primitive.' },
+    { tag: 'Agent DSL',
+      text: 'Custom declarative grammar (domain-specific language) for trading rules — DB-backed tokens (metric / scope / operator / action), composable via $ref fragments. Rules compile into a condition tree the engine walks every 5s cycle; no code changes needed to add a new rule or a new metric primitive.',
+      links: [
+        { label: 'Live token editor', href: '/agents/tokens' },
+        { label: 'Full DSL guide',    href: 'https://github.com/RamanaAmbore/algo-trader/blob/main/AGENTS_GUIDE.md' },
+      ],
+    },
     { tag: 'AI workflow',    text: 'MCP server bridges Claude Code to live broker data + research storage. 26 tools, confirm-token gate on every mutating write, full audit trail in McpAudit.' },
     { tag: 'Production',     text: 'PostgreSQL 17 async via SQLAlchemy 2 + asyncpg · Litestar API with msgspec.Struct · SvelteKit 5 frontend · single VPS, single uvicorn worker, KiteTicker IPv6 source binding for multi-account Kite auth.' },
   ];
@@ -75,7 +81,27 @@
       {#each HIGHLIGHTS as h}
         <div class="hm-row">
           <span class="hm-tag">{h.tag}</span>
-          <span class="hm-text">{h.text}</span>
+          <span class="hm-text">
+            {h.text}
+            {#if h.links?.length}
+              <span class="hm-inline-links">
+                {#each h.links as l, i}
+                  {#if i > 0}<span class="hm-link-sep">·</span>{/if}
+                  <a class="hm-inline-link"
+                     href={l.href}
+                     target={l.href.startsWith('http') ? '_blank' : '_self'}
+                     rel={l.href.startsWith('http') ? 'noopener' : ''}
+                     onclick={(e) => {
+                       // Internal links land on the algo page underneath
+                       // the modal — close the modal first so the
+                       // navigation is visible. External links open in
+                       // a new tab and leave the modal alone.
+                       if (!l.href.startsWith('http')) onClose();
+                     }}>{l.label} ↗</a>
+                {/each}
+              </span>
+            {/if}
+          </span>
         </div>
       {/each}
     </div>
@@ -195,6 +221,34 @@
   .hm-text {
     font-size: 0.7rem; line-height: 1.45;
     color: #c8d8f0;
+  }
+
+  /* Inline reference links — for rows that point at a live editor
+     surface or an external doc (Agent DSL row today, can grow to
+     other rows). Renders on the line below the body text. */
+  .hm-inline-links {
+    display: inline-flex; flex-wrap: wrap; gap: 0.4rem;
+    margin-top: 0.25rem;
+    align-items: baseline;
+  }
+  .hm-inline-link {
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    color: #67e8f9;
+    text-decoration: none;
+    border-bottom: 1px dashed rgba(34, 211, 238, 0.45);
+    padding-bottom: 1px;
+    font-family: ui-monospace, monospace;
+  }
+  .hm-inline-link:hover {
+    color: #a5f3fc;
+    border-bottom-color: rgba(34, 211, 238, 0.80);
+  }
+  .hm-link-sep {
+    color: rgba(126, 151, 184, 0.45);
+    font-family: ui-monospace, monospace;
+    font-size: 0.62rem;
   }
 
   .hm-cta {
