@@ -25,6 +25,7 @@ from sqlalchemy import select, and_, desc, func as _func
 
 from backend.api.database import async_session
 from backend.api.models import AlgoOrder, DailyBook
+from backend.api.auth_guard import admin_guard
 from backend.api.rbac import cap_guard
 from backend.shared.helpers.ramboq_logger import get_logger
 
@@ -403,7 +404,7 @@ class HistoryController(Controller):
             earliest_date=(earliest.isoformat() if earliest else None),
         )
 
-    @post("/funds/backfill", guards=[cap_guard("view_audit")])
+    @post("/funds/backfill", guards=[admin_guard])
     async def backfill_funds(self, data: FundsBackfillRequest) -> FundsBackfillResponse:
         """Pull historical funds ledger from the broker and seed
         daily_book[kind='funds'] for the date range. Idempotent on
@@ -411,7 +412,12 @@ class HistoryController(Controller):
         with a wider range OVERWRITES existing rows with the
         canonical broker-ledger numbers (intentional — the voucher-
         aggregated backfill data is more accurate than a single
-        broker.margins() snapshot taken at 15:35 IST). Operator
+        broker.margins() snapshot taken at 15:35 IST).
+
+        Admin-only (slice L7): this is a WRITE endpoint that
+        clobbers persisted ledger rows. The view_audit cap admits
+        risk/ops which is appropriate for reads but not for
+        overwriting financial history. Operator
         edits to a backfilled row will be clobbered on the next
         backfill; treat the table as read-only for funds rows.
 

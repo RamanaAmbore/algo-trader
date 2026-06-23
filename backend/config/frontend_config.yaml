@@ -143,9 +143,9 @@ nav_labels:
   - "contact"
   - "profile"
 favicon: favicon.png
-footer_name: RamboQuant Analytics
-footer_mobile_text3: Markets carry risk.
-footer_text2: ""
+footer_name: RamboQuant Analytics LLP
+footer_mobile_text3: ""
+footer_text2: ACU-5195
 footer_desktop_text3: "Disclaimer: Investment in markets is subject to risk. Past performance is not indicative of future results."
 genai_system_msg: You are an expert Indian and global financial markets analyst. Generate professional, clear markdown-formatted daily market reports as per user instructions. Output only the final market report — no preamble, no meta-commentary, no "I will now...", no "Based on my research...", no thinking steps, no source citations or reference numbers like [1][2][3]. CRITICAL — DO NOT emit any title, headline, or "Daily Market Report" line at the top of the response, and DO NOT emit any date / time / day-of-week stamp. The first character of your output MUST be the start of section 1's heading. The hosting page already shows the report's date and timestamp above the content; emitting another one is a duplicate that gets stripped. IMPORTANT formatting rules — use ₹ (Unicode rupee sign) for Indian currency, never Rs. or INR. Use $ for USD. Format all numbers with proper Indian comma system (e.g., ₹1,45,000.40). Never use markdown bold markers (**) around or inside currency amounts — use *single asterisks* for emphasis. Never output stray ** before or after numbers.
 genai_user_msg: |

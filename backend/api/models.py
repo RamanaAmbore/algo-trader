@@ -211,7 +211,10 @@ class MonthlyStatement(Base):
     )
 
     id:              Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id:         Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    user_id:         Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
     period_year:     Mapped[int] = mapped_column(Integer, nullable=False)
     period_month:    Mapped[int] = mapped_column(Integer, nullable=False)
     generated_at:    Mapped[datetime] = mapped_column(
@@ -268,7 +271,14 @@ class InvestorEvent(Base):
     )
 
     id:               Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id:          Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    # LP fund-accounting ledger. ondelete=RESTRICT: deleting a user with
+    # capital events must be a deliberate operator action (redeem first,
+    # then delete) — never a silent cascade. The audit trail is the
+    # authoritative record of every rupee the LP put in and pulled out.
+    user_id:          Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False, index=True,
+    )
     # 'subscription' (capital in) | 'redemption' (capital out) |
     # 'bootstrap' (synthetic seed event when migrating an existing
     # LP from the static-share model). Use 'bootstrap' so the
@@ -322,7 +332,12 @@ class InvestorToken(Base):
     __tablename__ = "investor_tokens"
 
     id:            Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id:       Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    # Investor URL tokens are credentials. CASCADE on user delete — the
+    # token no longer has a holder and a stale URL should die with them.
+    user_id:       Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
     # 32-byte secrets.token_hex → 64-char string. Stored raw (same
     # convention as AuthToken) — the token is the URL slug, not a
     # password; hashing would just complicate revoke + lookup
@@ -357,7 +372,12 @@ class AuthToken(Base):
     __tablename__ = "auth_tokens"
 
     id:         Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id:    Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    # One-time verify / reset tokens. Ephemeral by design — CASCADE on
+    # user delete tears the row down with the user (no orphan rows).
+    user_id:    Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
     purpose:    Mapped[str] = mapped_column(String(16), nullable=False)  # 'verify' | 'reset'
     token:      Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -722,7 +742,8 @@ class AlgoOrder(Base):
     # column existed (pre-migration), and for orders whose origin can't be
     # determined (e.g. legacy /place path that predates the manual agent).
     agent_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("agents.id"), nullable=True, index=True,
+        Integer, ForeignKey("agents.id", ondelete="SET NULL"),
+        nullable=True, index=True,
     )
     # Indexed — chase.py terminal events (fill / unfill / chase_failed)
     # query `WHERE broker_order_id = ?` on every real broker fill, and

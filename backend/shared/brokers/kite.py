@@ -301,8 +301,12 @@ class KiteBroker(Broker):
         )
         return str(resp.get("trigger_id", gtt_id) if isinstance(resp, dict) else gtt_id)
 
-    def cancel_gtt(self, gtt_id: str) -> str:
+    def cancel_gtt(self, gtt_id: str, *, exchange: str | None = None) -> str:
         # Kite SDK method is `delete_gtt`, not cancel — wrap for ABC consistency.
+        # `exchange` is accepted for parity with the ABC + Dhan + Groww
+        # signatures (the OCO pair-watcher passes it). Kite uses trigger_id
+        # alone to identify the GTT so we just ignore it.
+        del exchange  # unused on Kite
         resp = self.kite.delete_gtt(trigger_id=int(gtt_id))
         return str(resp.get("trigger_id", gtt_id) if isinstance(resp, dict) else gtt_id)
 

@@ -203,9 +203,23 @@ def _load_dhan_instruments() -> None:
                     tick_size = float(parts[col["SEM_TICK_SIZE"]].strip() or 0)
                 except (ValueError, TypeError):
                     pass
+            # `instrument_token` is the Kite-shape key every downstream
+            # consumer reads (options.py historical-data caller's
+            # token_map, kite.py::get_lot_size's _LOT_INDEX, …). Dhan's
+            # native identifier is the `security_id` string; we expose
+            # BOTH so callers that already speak `security_id` keep
+            # working AND Kite-shape callers don't silently skip Dhan
+            # rows. Cast to int when numeric (Dhan IDs are always
+            # numeric strings) and fall back to 0 when not — same
+            # convention as `_normalise_holdings`.
+            try:
+                inst_tok = int(sid) if sid and str(sid).isdigit() else 0
+            except (TypeError, ValueError):
+                inst_tok = 0
             row = {
                 "tradingsymbol":    ts,
                 "security_id":      sid,
+                "instrument_token": inst_tok,
                 "exchange":         kite_exch,
                 "exchange_segment": seg_raw,
                 "lot_size":         lot_size,
@@ -599,12 +613,18 @@ class DhanBroker(Broker):
         from datetime import date as _date
 
         sdk = self.dhan
-        # Probe both common SDK method names. The v2 SDK uses
-        # get_ledger_report; older builds expose get_funds_ledger.
-        ledger_fn = (getattr(sdk, "get_ledger_report", None)
-                     or getattr(sdk, "get_funds_ledger", None)
-                     or getattr(sdk, "ledger_report", None))
-        if ledger_fn is None:
+        # Probe SDK method NAME (not the bound method) so the retry path
+        # in _safe_call resolves against the FRESH SDK handle. Pre-fix
+        # `ledger_fn = getattr(sdk, ...)` captured the bound method
+        # against the stale handle; on auth-failure retry _safe_call
+        # got a fresh `d` but the lambda still invoked the stale
+        # bound method, defeating the retry.
+        ledger_method_name = next(
+            (n for n in ("get_ledger_report", "get_funds_ledger", "ledger_report")
+             if getattr(sdk, n, None) is not None),
+            None,
+        )
+        if ledger_method_name is None:
             logger.warning(
                 "DhanBroker.funds_ledger: SDK exposes no ledger method "
                 "(tried get_ledger_report / get_funds_ledger / "
@@ -614,13 +634,15 @@ class DhanBroker(Broker):
 
         try:
             resp = self._safe_call(
-                lambda d: ledger_fn(from_date=from_date, to_date=to_date)
+                lambda d: getattr(d, ledger_method_name)(
+                    from_date=from_date, to_date=to_date
+                )
             )
         except TypeError:
             # SDK signature may be positional rather than kwarg.
             try:
                 resp = self._safe_call(
-                    lambda d: ledger_fn(from_date, to_date)
+                    lambda d: getattr(d, ledger_method_name)(from_date, to_date)
                 )
             except Exception as e:
                 logger.warning(f"DhanBroker.funds_ledger SDK call failed: {e}")
@@ -837,13 +859,20 @@ class DhanBroker(Broker):
             MCX_COMM → commodity (MCX)
         """
         sdk = self.dhan
-        status_fn = (getattr(sdk, "get_market_status", None)
-                     or getattr(sdk, "market_status", None)
-                     or getattr(sdk, "get_exchange_status", None))
-        if status_fn is None:
+        # Resolve the SDK method NAME (not the bound method) so
+        # _safe_call's retry path picks up the FRESH SDK handle.
+        # Same stale-handle pattern as funds_ledger above.
+        status_method_name = next(
+            (n for n in ("get_market_status", "market_status", "get_exchange_status")
+             if getattr(sdk, n, None) is not None),
+            None,
+        )
+        if status_method_name is None:
             return None
         try:
-            resp = self._safe_call(lambda d: status_fn())
+            resp = self._safe_call(
+                lambda d: getattr(d, status_method_name)()
+            )
         except Exception as e:
             logger.debug(f"DhanBroker.market_status({exchange}) SDK call failed: {e}")
             return None
@@ -1238,8 +1267,16 @@ class DhanBroker(Broker):
                 raise _err
         return gtt_id
 
-    def cancel_gtt(self, gtt_id: str) -> str:
-        """Cancel a Dhan Forever Order. Returns the cancelled order_id."""
+    def cancel_gtt(self, gtt_id: str, *, exchange: str | None = None) -> str:
+        """Cancel a Dhan Forever Order. Returns the cancelled order_id.
+        `exchange` is accepted for parity with the ABC + Groww signature
+        (the OCO pair-watcher passes it via kwarg). Dhan addresses a
+        Forever Order by gtt_id alone, so we ignore the hint here.
+        Pre-fix this overrode the ABC without the kwarg → TypeError when
+        the OCO rollback path called `broker.cancel_gtt(sib_id,
+        exchange=sib_exchange)`, leaving one leg of an emulated OCO
+        alive on the book."""
+        del exchange  # unused on Dhan
         resp = self._safe_call(lambda d: d.cancel_forever(order_id=gtt_id))
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan cancel_gtt rejected: {resp}")

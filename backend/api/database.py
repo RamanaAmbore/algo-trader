@@ -441,6 +441,48 @@ async def init_db() -> None:
             "ALTER TABLE algo_orders ALTER COLUMN exchange SET DEFAULT 'NFO'",
         ):
             await conn.execute(text(stmt))
+        # ── Slice L — defect cleanup (Jun 2026) ──────────────────────────
+        # L2 — algo_orders.agent_id FK → ON DELETE SET NULL. Slice G
+        # fixed agent_events but missed this one; agent deletes were
+        # blocked at the DB level for accounts that ever held an
+        # agent-originated order. SET NULL preserves the order history
+        # (we don't want to lose the row, just lose the back-reference).
+        for stmt in (
+            "ALTER TABLE algo_orders DROP CONSTRAINT IF EXISTS algo_orders_agent_id_fkey",
+            "ALTER TABLE algo_orders ADD CONSTRAINT algo_orders_agent_id_fkey "
+            "FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE SET NULL",
+        ):
+            await conn.execute(text(stmt))
+        # L3 — user_id FK ondelete chain. Four NOT NULL user_id FKs
+        # had no ondelete and so blocked every user delete at the DB
+        # level. Policies:
+        #   monthly_statements → CASCADE (regeneratable from events)
+        #   investor_events    → RESTRICT (LP capital ledger — explicit
+        #                        operator action required)
+        #   investor_tokens    → CASCADE (URL credentials — die with
+        #                        the user)
+        #   auth_tokens        → CASCADE (ephemeral verify/reset rows)
+        for stmt in (
+            # monthly_statements
+            "ALTER TABLE monthly_statements DROP CONSTRAINT IF EXISTS monthly_statements_user_id_fkey",
+            "ALTER TABLE monthly_statements ADD CONSTRAINT monthly_statements_user_id_fkey "
+            "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+            # investor_events (the actual FK column is `user_id`, not
+            # `created_by` — that one was fixed in slice G6).
+            "ALTER TABLE investor_events DROP CONSTRAINT IF EXISTS investor_events_user_id_fkey",
+            "ALTER TABLE investor_events ADD CONSTRAINT investor_events_user_id_fkey "
+            "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE RESTRICT",
+            # investor_tokens (same — the `user_id` column, not
+            # `created_by`).
+            "ALTER TABLE investor_tokens DROP CONSTRAINT IF EXISTS investor_tokens_user_id_fkey",
+            "ALTER TABLE investor_tokens ADD CONSTRAINT investor_tokens_user_id_fkey "
+            "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+            # auth_tokens
+            "ALTER TABLE auth_tokens DROP CONSTRAINT IF EXISTS auth_tokens_user_id_fkey",
+            "ALTER TABLE auth_tokens ADD CONSTRAINT auth_tokens_user_id_fkey "
+            "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
+        ):
+            await conn.execute(text(stmt))
         # Feature: basket orders + auto profit-target (June 2026).
         # Four new columns on algo_orders; all nullable / defaulted so
         # existing rows remain valid without any data migration.
@@ -532,13 +574,13 @@ async def init_db() -> None:
             "ALTER TABLE watchlist_items ADD COLUMN IF NOT EXISTS alias VARCHAR(64)",
         ):
             await conn.execute(text(stmt))
-        # Partial unique index — at most one global Pinned row exists.
-        # Standard UNIQUE(user_id, name) treats NULL as distinct so
-        # multiple (NULL, 'Pinned') would be allowed without this guard.
-        await conn.execute(text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_watchlist_global_pinned "
-            "ON watchlists ((1)) WHERE is_global = true"
-        ))
+        # `uq_watchlist_global_pinned` is created earlier in this block
+        # with the correct `(name) WHERE is_global = true` predicate
+        # (slice G2). The legacy `((1)) WHERE is_global = true` re-create
+        # that used to live here had the wrong shape (allowed only ONE
+        # global row in the whole table) and was deleted in slice L1.
+        # IF NOT EXISTS made it a silent no-op as long as the G2 block
+        # ran first, but kept a footgun in the migration ordering.
     logger.info("Database: tables verified")
 
     # Seed grammar tokens (condition / notify / action catalog) BEFORE agents
