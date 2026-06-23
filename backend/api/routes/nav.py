@@ -161,9 +161,18 @@ class NavController(Controller):
 
     @get("/me", guards=[jwt_guard])
     async def my_slice(self, request: Request) -> InvestorSlice:
-        """Per-investor NAV slice for the authenticated user. Reads
-        User.share_pct + User.contribution against the most recent
-        NavDaily row. Demo / anonymous → 401 via jwt_guard."""
+        """Per-investor NAV slice for the authenticated user. Uses
+        the units-based fund-accounting model: each LP's slice =
+        units_held × nav_per_unit, cost basis = Σ subscriptions −
+        Σ redemptions. Auto-bootstraps a synthetic event from
+        User.share_pct + User.contribution on first compute so the
+        first request after deploy returns the same numbers as v1.
+
+        Demo / anonymous → 401 via jwt_guard."""
+        from backend.api.algo.investor_units import (
+            compute_slice, ensure_all_bootstrapped,
+            fetch_all_events, slice_value, cost_basis as _cb,
+        )
         payload = getattr(request.state, "token_payload", {}) or {}
         username = str(payload.get("sub") or "")
         if not username:
@@ -174,35 +183,41 @@ class NavController(Controller):
             )).scalar_one_or_none()
             if user is None:
                 raise HTTPException(status_code=404, detail="User not found")
-            # Latest NAV + prior for day-delta.
             rows = (await s.execute(
                 select(NavDaily)
                   .order_by(desc(NavDaily.as_of_date))
                   .limit(2)
             )).scalars().all()
-        share_pct = float(user.share_pct or 0.0)
-        contribution = float(user.contribution or 0.0)
-        firm_nav = float(rows[0].nav) if rows else 0.0
-        nav_share = (share_pct / 100.0) * firm_nav
-        pnl = nav_share - contribution
-        pnl_pct: Optional[float] = (pnl / contribution) if contribution > 0 else None
-        # Day delta on the investor's share.
-        day_delta_share: Optional[float] = None
-        day_delta_share_pct: Optional[float] = None
-        if len(rows) >= 2:
-            firm_delta = float(rows[0].nav) - float(rows[1].nav)
-            day_delta_share = firm_delta * (share_pct / 100.0)
-            prior_share = float(rows[1].nav) * (share_pct / 100.0)
-            day_delta_share_pct = (day_delta_share / prior_share) if prior_share else None
+            firm_nav = float(rows[0].nav) if rows else 0.0
+            slice_now = await compute_slice(s, user, firm_nav)
+            # Day delta on the investor's slice — recompute the
+            # prior day's slice through the same units math and
+            # subtract. Uses the same event set so a subscription /
+            # redemption between the two snapshots is reflected as
+            # a capital movement (not P&L) in the difference.
+            day_delta_share: Optional[float] = None
+            day_delta_share_pct: Optional[float] = None
+            if len(rows) >= 2:
+                all_events = await fetch_all_events(s)
+                user_events = [e for e in all_events if e.user_id == user.id]
+                prior_val, _ = slice_value(
+                    user_events, all_events, float(rows[1].nav),
+                    as_of=rows[1].as_of_date,
+                )
+                day_delta_share = slice_now["nav_share"] - prior_val
+                day_delta_share_pct = (
+                    (day_delta_share / prior_val) if prior_val else None
+                )
+
         as_of = rows[0].as_of_date.isoformat() if rows else None
         return InvestorSlice(
             username=username,
-            share_pct=share_pct,
-            contribution=contribution,
+            share_pct=float(user.share_pct or 0.0),
+            contribution=float(user.contribution or 0.0),
             firm_nav=firm_nav,
-            nav_share=round(nav_share, 2),
-            pnl=round(pnl, 2),
-            pnl_pct=pnl_pct,
+            nav_share=slice_now["nav_share"],
+            pnl=slice_now["pnl"],
+            pnl_pct=slice_now["pnl_pct"],
             day_delta_share=(round(day_delta_share, 2)
                              if day_delta_share is not None else None),
             day_delta_share_pct=day_delta_share_pct,
@@ -212,8 +227,14 @@ class NavController(Controller):
     @get("/me/history", guards=[jwt_guard])
     async def my_history(self, request: Request,
                          days: int = 90) -> InvestorHistoryResponse:
-        """Per-investor NAV curve. Same firm NAV history scaled by
-        share_pct so the LP sees their own slice over time."""
+        """Per-investor NAV curve. Walks the firm NavDaily curve and
+        computes the LP's slice + cost basis + P&L at each date via
+        the units model. Capital movements (subscriptions /
+        redemptions) inside the window show up as step changes in
+        the slice / cost basis."""
+        from backend.api.algo.investor_units import (
+            compute_slice_history, ensure_all_bootstrapped, fetch_all_events,
+        )
         days = max(1, min(int(days or 90), 1825))
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
         payload = getattr(request.state, "token_payload", {}) or {}
@@ -226,6 +247,9 @@ class NavController(Controller):
             )).scalar_one_or_none()
             if user is None:
                 raise HTTPException(status_code=404, detail="User not found")
+            await ensure_all_bootstrapped(s)
+            all_events = await fetch_all_events(s)
+            user_events = [e for e in all_events if e.user_id == user.id]
             rows = (await s.execute(
                 select(NavDaily)
                   .where(NavDaily.as_of_date >= cutoff)
@@ -233,17 +257,16 @@ class NavController(Controller):
             )).scalars().all()
         share_pct = float(user.share_pct or 0.0)
         contribution = float(user.contribution or 0.0)
-        ratio = share_pct / 100.0
-        out: list[InvestorHistoryPoint] = []
-        for r in rows:
-            firm_nav = float(r.nav or 0.0)
-            nav_share = firm_nav * ratio
-            out.append(InvestorHistoryPoint(
-                as_of_date=r.as_of_date.isoformat() if r.as_of_date else "",
-                firm_nav=firm_nav,
-                nav_share=round(nav_share, 2),
-                pnl=round(nav_share - contribution, 2),
-            ))
+        history = compute_slice_history(user_events, all_events, rows)
+        out: list[InvestorHistoryPoint] = [
+            InvestorHistoryPoint(
+                as_of_date=h["as_of_date"],
+                firm_nav=h["firm_nav"],
+                nav_share=h["nav_share"],
+                pnl=h["pnl"],
+            )
+            for h in history
+        ]
         return InvestorHistoryResponse(
             rows=out, days=days,
             share_pct=share_pct, contribution=contribution,

@@ -91,7 +91,17 @@ class StatementData:
 async def compute_statement(user_id: int, year: int, month: int) -> Optional[StatementData]:
     """Build a StatementData for (user, period). Returns None when
     the user doesn't exist or no NavDaily rows fall in the period
-    (i.e. the period predates the fund's first snapshot)."""
+    (i.e. the period predates the fund's first snapshot).
+
+    Uses the units-based fund-accounting model: each LP's slice =
+    units_held × nav_per_unit. Capital movements in the period
+    (subscriptions / redemptions) show up as step changes in the
+    daily slice; the closing P&L is closing_slice − cost_basis
+    (Σ subscriptions − Σ redemptions across the LP's history)."""
+    from backend.api.algo.investor_units import (
+        cost_basis as _cb,
+        ensure_all_bootstrapped, fetch_all_events, slice_value,
+    )
     if month < 1 or month > 12:
         return None
     period_start = date(year, month, 1)
@@ -105,9 +115,10 @@ async def compute_statement(user_id: int, year: int, month: int) -> Optional[Sta
         if user is None:
             return None
 
-        # Opening NAV = last row strictly before period_start. Falls
-        # back to the earliest row in the period when there's no
-        # prior history (fund's first month).
+        await ensure_all_bootstrapped(s)
+        all_events = await fetch_all_events(s)
+        user_events = [e for e in all_events if e.user_id == user.id]
+
         opening = (await s.execute(
             select(NavDaily)
               .where(NavDaily.as_of_date < period_start)
@@ -115,7 +126,6 @@ async def compute_statement(user_id: int, year: int, month: int) -> Optional[Sta
               .limit(1)
         )).scalar_one_or_none()
 
-        # Rows in the period (asc).
         period_rows = (await s.execute(
             select(NavDaily)
               .where(NavDaily.as_of_date >= period_start,
@@ -131,9 +141,6 @@ async def compute_statement(user_id: int, year: int, month: int) -> Optional[Sta
         opening_firm_nav = float(opening.nav or 0.0)
         opening_as_of    = opening.as_of_date
     elif period_rows:
-        # First month of the fund — treat first row of period as the
-        # opening. Period change for that month = first → last delta,
-        # which is "the fund's first observable move."
         opening_firm_nav = float(period_rows[0].nav or 0.0)
         opening_as_of    = period_rows[0].as_of_date
     else:
@@ -144,30 +151,40 @@ async def compute_statement(user_id: int, year: int, month: int) -> Optional[Sta
         closing_firm_nav = float(period_rows[-1].nav or 0.0)
         closing_as_of    = period_rows[-1].as_of_date
     else:
-        # No period rows → no statement for the period.
         return None
 
     firm_delta     = closing_firm_nav - opening_firm_nav
     firm_delta_pct = (firm_delta / opening_firm_nav) if opening_firm_nav else None
 
     share_pct    = float(user.share_pct or 0.0)
-    contribution = float(user.contribution or 0.0)
-    ratio = share_pct / 100.0
+    # Units-model: cost basis comes from the LP's events, NOT the
+    # User.contribution column directly. For an LP with only a
+    # bootstrap event, basis == contribution by construction; for
+    # an LP with real subscription / redemption events, basis
+    # reflects every capital movement to date.
+    contribution = _cb(user_events, as_of=closing_as_of)
 
-    opening_share = opening_firm_nav * ratio
-    closing_share = closing_firm_nav * ratio
+    opening_share, _ = slice_value(
+        user_events, all_events, opening_firm_nav,
+        as_of=opening_as_of,
+    )
+    closing_share, _ = slice_value(
+        user_events, all_events, closing_firm_nav,
+        as_of=closing_as_of,
+    )
     share_delta   = closing_share - opening_share
     share_delta_pct = (share_delta / opening_share) if opening_share else None
 
     cumulative_pnl = closing_share - contribution
     cumulative_pnl_pct = (cumulative_pnl / contribution) if contribution > 0 else None
 
-    # Daily rows in the period — with day-over-day Δ% on the LP slice.
     daily: list[_DailyRow] = []
     prev_share: Optional[float] = opening_share if opening is not None else None
     for r in period_rows:
         firm = float(r.nav or 0.0)
-        slice_v = firm * ratio
+        slice_v, _ = slice_value(
+            user_events, all_events, firm, as_of=r.as_of_date,
+        )
         day_pct: Optional[float] = None
         if prev_share is not None and prev_share != 0:
             day_pct = (slice_v - prev_share) / prev_share

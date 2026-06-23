@@ -688,6 +688,9 @@ class InvestorPortalController(Controller):
 
     @get("/{token:str}/slice")
     async def slice(self, token: str) -> InvestorSliceResponse:
+        from backend.api.algo.investor_units import (
+            compute_slice, fetch_all_events, slice_value,
+        )
         tok_row, user = await _resolve_token(token)
         async with async_session() as s:
             rows = (await s.execute(
@@ -695,28 +698,30 @@ class InvestorPortalController(Controller):
                   .order_by(desc(NavDaily.as_of_date))
                   .limit(2)
             )).scalars().all()
-        share_pct = float(user.share_pct or 0.0)
-        contribution = float(user.contribution or 0.0)
-        firm_nav = float(rows[0].nav) if rows else 0.0
-        nav_share = (share_pct / 100.0) * firm_nav
-        pnl = nav_share - contribution
-        pnl_pct: Optional[float] = (pnl / contribution) if contribution > 0 else None
-        day_delta_share: Optional[float] = None
-        day_delta_share_pct: Optional[float] = None
-        if len(rows) >= 2:
-            firm_delta = float(rows[0].nav) - float(rows[1].nav)
-            day_delta_share = firm_delta * (share_pct / 100.0)
-            prior_share = float(rows[1].nav) * (share_pct / 100.0)
-            day_delta_share_pct = (day_delta_share / prior_share) if prior_share else None
+            firm_nav = float(rows[0].nav) if rows else 0.0
+            slice_now = await compute_slice(s, user, firm_nav)
+            day_delta_share: Optional[float] = None
+            day_delta_share_pct: Optional[float] = None
+            if len(rows) >= 2:
+                all_events = await fetch_all_events(s)
+                user_events = [e for e in all_events if e.user_id == user.id]
+                prior_val, _ = slice_value(
+                    user_events, all_events, float(rows[1].nav),
+                    as_of=rows[1].as_of_date,
+                )
+                day_delta_share = slice_now["nav_share"] - prior_val
+                day_delta_share_pct = (
+                    (day_delta_share / prior_val) if prior_val else None
+                )
         as_of = rows[0].as_of_date.isoformat() if rows else None
         return InvestorSliceResponse(
             display_name=user.display_name or user.username,
-            share_pct=share_pct,
-            contribution=contribution,
+            share_pct=float(user.share_pct or 0.0),
+            contribution=float(user.contribution or 0.0),
             firm_nav=firm_nav,
-            nav_share=round(nav_share, 2),
-            pnl=round(pnl, 2),
-            pnl_pct=pnl_pct,
+            nav_share=slice_now["nav_share"],
+            pnl=slice_now["pnl"],
+            pnl_pct=slice_now["pnl_pct"],
             day_delta_share=(round(day_delta_share, 2)
                              if day_delta_share is not None else None),
             day_delta_share_pct=day_delta_share_pct,
@@ -739,10 +744,16 @@ class InvestorPortalController(Controller):
     @get("/{token:str}/history")
     async def history(self, token: str,
                       days: int = 90) -> InvestorHistoryResponse:
+        from backend.api.algo.investor_units import (
+            compute_slice_history, ensure_all_bootstrapped, fetch_all_events,
+        )
         days = max(1, min(int(days or 90), 1825))
         _tok, user = await _resolve_token(token)
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).date()
         async with async_session() as s:
+            await ensure_all_bootstrapped(s)
+            all_events = await fetch_all_events(s)
+            user_events = [e for e in all_events if e.user_id == user.id]
             rows = (await s.execute(
                 select(NavDaily)
                   .where(NavDaily.as_of_date >= cutoff)
@@ -750,17 +761,16 @@ class InvestorPortalController(Controller):
             )).scalars().all()
         share_pct = float(user.share_pct or 0.0)
         contribution = float(user.contribution or 0.0)
-        ratio = share_pct / 100.0
-        out: list[InvestorHistoryPoint] = []
-        for r in rows:
-            firm_nav = float(r.nav or 0.0)
-            nav_share = firm_nav * ratio
-            out.append(InvestorHistoryPoint(
-                as_of_date=r.as_of_date.isoformat() if r.as_of_date else "",
-                firm_nav=firm_nav,
-                nav_share=round(nav_share, 2),
-                pnl=round(nav_share - contribution, 2),
-            ))
+        history = compute_slice_history(user_events, all_events, rows)
+        out: list[InvestorHistoryPoint] = [
+            InvestorHistoryPoint(
+                as_of_date=h["as_of_date"],
+                firm_nav=h["firm_nav"],
+                nav_share=h["nav_share"],
+                pnl=h["pnl"],
+            )
+            for h in history
+        ]
         return InvestorHistoryResponse(
             rows=out, days=days,
             share_pct=share_pct, contribution=contribution,
