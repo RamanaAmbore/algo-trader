@@ -6,7 +6,7 @@ import secrets as _secrets
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -249,8 +249,23 @@ class InvestorEvent(Base):
       delta + sign. Idempotency relies on the operator NOT re-
       submitting; no DB-level unique key since legitimate same-day
       same-amount events are possible (rare but valid).
+
+    Exception — bootstrap: `ensure_user_bootstrap` is a check-then-
+    insert that two concurrent callers (e.g. two LPs loading their
+    portals at once) could race, ending with two bootstrap rows for
+    the same user. Doubled total_units deflates nav_per_unit fund-
+    wide. The partial unique index below forces the DB to reject
+    the second insert; the application code is best-effort with
+    try/rollback on IntegrityError.
     """
     __tablename__ = "investor_events"
+    __table_args__ = (
+        Index(
+            "uq_investor_events_user_bootstrap",
+            "user_id", unique=True,
+            postgresql_where=text("event_type = 'bootstrap'"),
+        ),
+    )
 
     id:               Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id:          Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)

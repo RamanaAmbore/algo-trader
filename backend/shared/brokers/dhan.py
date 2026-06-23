@@ -875,6 +875,11 @@ class DhanBroker(Broker):
                     rows.append({"exchangeSegment": code, **v})
                 elif isinstance(v, (str, bool)):
                     rows.append({"exchangeSegment": code, "status": v})
+        elif not rows:
+            # SDK returned an unparseable shape (bare list, string,
+            # None, …). Return None so the probe falls through to the
+            # next broker / bellwether path instead of claiming closed.
+            return None
 
         for row in rows:
             seg = str(row.get("exchangeSegment") or row.get("segment") or "").upper()
@@ -1665,15 +1670,19 @@ def _normalise_margins(resp: Any, segment: str | None) -> dict:
 # the chase loop's mid-flight handling treats Dhan TRANSIT the same
 # way it treats Kite OPEN.
 _DHAN_STATUS_TO_KITE = {
-    "TRADED":    "COMPLETE",
-    "EXECUTED":  "COMPLETE",
-    "FILLED":    "COMPLETE",
-    "PENDING":   "OPEN",
-    "TRANSIT":   "OPEN",
-    "OPEN":      "OPEN",
-    "CANCELLED": "CANCELLED",
-    "REJECTED":  "REJECTED",
-    "EXPIRED":   "EXPIRED",
+    "TRADED":            "COMPLETE",
+    "EXECUTED":          "COMPLETE",
+    "FILLED":            "COMPLETE",
+    "PENDING":           "OPEN",
+    "TRANSIT":           "OPEN",
+    "OPEN":              "OPEN",
+    # PARTIALLY_TRADED — mid-fill state. Map to OPEN so the chase loop's
+    # mid-flight handling treats it like a Kite OPEN order; the chase
+    # engine will detect the partial fill via the filled_qty delta.
+    "PARTIALLY_TRADED":  "OPEN",
+    "CANCELLED":         "CANCELLED",
+    "REJECTED":          "REJECTED",
+    "EXPIRED":           "EXPIRED",
 }
 
 

@@ -336,6 +336,14 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS ix_strategy_lots_open "
             "ON strategy_lots (strategy_id, account, symbol, side, remaining_qty, opened_at)"
         ))
+        # 4. investor_events partial unique index — guarantee at
+        #    most one bootstrap event per LP. Closes the
+        #    check-then-insert race in ensure_user_bootstrap that
+        #    would otherwise double-count total_units fund-wide.
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_investor_events_user_bootstrap "
+            "ON investor_events (user_id) WHERE event_type = 'bootstrap'"
+        ))
         # Feature: basket orders + auto profit-target (June 2026).
         # Four new columns on algo_orders; all nullable / defaulted so
         # existing rows remain valid without any data migration.

@@ -413,6 +413,7 @@ async def _process_broker_postback(
         }
         _new_status = _KITE_STATUS_MAP.get(status)
 
+        _filled_rows: list = []
         async with _async_s() as _s:
             _rows = (await _s.execute(
                 _sql_select(_AO).where(_AO.broker_order_id == str(order_id))
@@ -426,6 +427,7 @@ async def _process_broker_postback(
                         except (TypeError, ValueError):
                             pass
                         _r.filled_at = datetime.now(timezone.utc)
+                        _filled_rows.append(_r)
                     _r.detail = ((_r.detail or "")[:200]
                                  + f" · {broker_id} postback {status}"
                                  + (f": {status_message}" if status_message else ""))
@@ -440,6 +442,17 @@ async def _process_broker_postback(
                     )
                 except Exception as _we:
                     logger.debug(f"order_events write skipped: {_we}")
+        # Fire template-attach on FILL — mirrors the Kite postback path
+        # (`_pb_event`). Idempotency lives inside
+        # `_fire_template_attach_on_fill` (attached_gtts_json check) so a
+        # duplicate postback can't double-place TP/SL GTTs.
+        for _r in _filled_rows:
+            try:
+                _maybe_fire_template_attach_for_reconcile(_r)
+            except Exception as _te:
+                logger.warning(
+                    f"{broker_id} postback template-attach failed for #{_r.id}: {_te}"
+                )
     except Exception as e:
         logger.warning(f"{broker_id} postback row sync failed: {e}")
 

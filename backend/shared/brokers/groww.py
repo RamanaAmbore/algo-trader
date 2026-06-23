@@ -507,6 +507,7 @@ class GrowwBroker(Broker):
         PriceBroker falls over to Kite without an exception trace."""
         return set()
 
+    @_retry_groww_auth
     def market_status(self, exchange: str) -> bool | None:
         """Probe Groww's market-status endpoint for `exchange`.
         Returns True / False / None per the Broker ABC contract.
@@ -517,14 +518,14 @@ class GrowwBroker(Broker):
         to Groww's segment vocabulary. Same shape semantics as Dhan:
         ANY mapped segment reporting active means the exchange is
         open."""
-        sdk = self.client
+        sdk = self.groww
         status_fn = (getattr(sdk, "get_market_status", None)
                      or getattr(sdk, "market_status", None)
                      or getattr(sdk, "get_exchange_status", None))
         if status_fn is None:
             return None
         try:
-            resp = _retry_groww_auth(lambda: status_fn())()
+            resp = status_fn()
         except Exception as e:
             logger.debug(f"GrowwBroker.market_status({exchange}) SDK call failed: {e}")
             return None
@@ -553,6 +554,11 @@ class GrowwBroker(Broker):
                         rows.append({"segment": code, **v})
                     elif isinstance(v, (str, bool)):
                         rows.append({"segment": code, "status": v})
+        elif not rows:
+            # SDK returned a shape we can't parse (bare list, string,
+            # None, …). Return None so the probe falls through to the
+            # next broker / bellwether path instead of claiming closed.
+            return None
         for row in rows:
             seg = str(row.get("segment") or row.get("exchange") or "").upper()
             if seg not in target_codes:

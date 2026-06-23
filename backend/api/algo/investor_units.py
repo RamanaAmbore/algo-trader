@@ -32,6 +32,7 @@ from datetime import date as _date, datetime, timezone
 from typing import Iterable, Optional
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.models import InvestorEvent, User
@@ -98,7 +99,15 @@ async def ensure_user_bootstrap(s: AsyncSession, user: User) -> bool:
         note="auto-bootstrap from v1 share_pct",
     )
     s.add(row)
-    await s.commit()
+    try:
+        await s.commit()
+    except IntegrityError:
+        # Concurrent caller won the race; partial unique index
+        # (uq_investor_events_user_bootstrap) rejected the second
+        # insert. Rollback and treat as no-op — the other caller's
+        # bootstrap is the canonical one.
+        await s.rollback()
+        return False
     logger.info(
         f"ensure_user_bootstrap: u={user.id} share_pct={share_pct} "
         f"contribution={contribution} units_delta={share_pct} "
