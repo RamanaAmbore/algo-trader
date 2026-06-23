@@ -828,6 +828,12 @@
       <span class="algo-footer-text">ACU-5195</span>
       <span class="algo-footer-sep">·</span>
       <span class="algo-footer-text">{pageLabel}</span>
+      <span class="algo-footer-sep">·</span>
+      <span class="algo-footer-text">
+        Built by
+        <a class="algo-footer-link"
+           href="https://ramanaambore.me" target="_blank" rel="noopener">Ramana Ambore</a>
+      </span>
     </footer>
   </div>
 </div>
@@ -1358,6 +1364,12 @@
   }
   .algo-footer-text { font-size: 0.6rem; color: rgba(160,185,220,0.7); font-family: ui-monospace, monospace; }
   .algo-footer-sep  { font-size: 0.6rem; color: rgba(251,191,36,0.6); margin: 0 0.4rem; }
+  .algo-footer-link {
+    color: rgba(251,191,36,0.85);
+    text-decoration: none;
+    border-bottom: 1px dotted rgba(251,191,36,0.45);
+  }
+  .algo-footer-link:hover { color: #fbbf24; border-bottom-color: #fbbf24; }
 
   /* Visible scrollbars on algo pages. Default browser scrollbars on
      dark themes are so low-contrast they're easy to miss when content

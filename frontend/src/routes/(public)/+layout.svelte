@@ -170,6 +170,8 @@
         ACU-5195
         <span class="pub-sep">|</span>
         Disclaimer: Investment in markets is subject to risk. Past performance is not indicative of future results.
+        <span class="pub-sep">|</span>
+        Built by <a class="pub-footer-link" href="https://ramanaambore.me" target="_blank" rel="noopener">Ramana Ambore</a>
       </p>
       <p class="md:hidden text-center leading-none pub-footer-text">
         © RamboQuant Analytics LLP
@@ -177,6 +179,8 @@
         ACU-5195
         <span class="pub-sep">|</span>
         Markets carry risk.
+        <span class="pub-sep">|</span>
+        Built by <a class="pub-footer-link" href="https://ramanaambore.me" target="_blank" rel="noopener">Ramana Ambore</a>
       </p>
     </footer>
   </div>
@@ -559,4 +563,10 @@
   .pub-footer p { width: 100%; }
   .pub-footer-text { color: rgba(210,225,255,0.75); font-size: 0.7rem; line-height: 1.3; }
   .pub-sep { color: #c8a84b; font-weight: bold; margin: 0 0.35rem; }
+  .pub-footer-link {
+    color: #c8a84b;
+    text-decoration: none;
+    border-bottom: 1px dotted rgba(200,168,75,0.45);
+  }
+  .pub-footer-link:hover { color: #e9c870; border-bottom-color: #e9c870; }
 </style>
