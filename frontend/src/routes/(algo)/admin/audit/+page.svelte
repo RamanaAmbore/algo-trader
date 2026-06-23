@@ -121,11 +121,9 @@
   let _teardown = null;
 
   onMount(() => {
-    if (!_canView) return;
-    // Read drill-through URL params from /admin/history Orders →
-    // /admin/audit?request_id=…. Widen the since-hours window so
-    // the operator finds the row even if it's older than the
-    // default 72h.
+    // URL param read happens regardless of _canView so the form
+    // pre-fills correctly when the operator drilled here from
+    // /admin/history before /whoami resolved.
     try {
       const sp = new URLSearchParams(window.location.search);
       const rid = (sp.get('request_id') || '').trim();
@@ -134,11 +132,22 @@
         fSinceHours = 24 * 90;  // 90 days
       }
     } catch {}
-    load();
-    // 30s refresh during market hours — most mutation activity
-    // happens during sessions. Outside hours the poll pauses.
-    _teardown = marketAwareInterval(load, 30000);
   });
+
+  // $effect-gated load — fires when _canView flips true (e.g. on
+  // first /whoami resolution after the boot window). Pre-fix the
+  // page used `onMount(() => { if (_canView) load(); })` which
+  // ran once at false and never re-checked, so the operator briefly
+  // saw "Access denied" + the data never loaded.
+  let _loadedOnce = false;
+  $effect(() => {
+    if (_canView && !_loadedOnce) {
+      _loadedOnce = true;
+      load();
+      _teardown = marketAwareInterval(load, 30000);
+    }
+  });
+
   onDestroy(() => { _teardown?.(); });
 
   function _fmtTs(/** @type {string} */ iso) {

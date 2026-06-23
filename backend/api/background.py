@@ -600,13 +600,27 @@ async def _task_performance(state: dict) -> None:
                     if not _ticker.has_sym(sym)
                 ]
                 if _need_resolve:
-                    for _sym, _exch in _need_resolve[:50]:  # cap 50 per cycle
-                        try:
-                            _tok = await _rts(_sym, _exch)
-                            if _tok is not None:
-                                _ticker.subscribe_with_sym([(_tok, _sym)])
-                        except Exception:
-                            pass
+                    # Parallelize the token lookups — each _rts() is a cache
+                    # hit (typically <5ms) but the await chain serializes
+                    # them. With 50 symbols that was 50 coroutine context
+                    # switches in series. asyncio.gather runs them
+                    # concurrently and `subscribe_with_sym` is cheap
+                    # in-memory so we can apply all subscriptions in one
+                    # batch after the gather.
+                    capped = _need_resolve[:50]
+                    try:
+                        toks = await asyncio.gather(
+                            *(_rts(_s, _e) for _s, _e in capped),
+                            return_exceptions=True,
+                        )
+                        _batch = [(_tok, _sym)
+                                  for (_sym, _exch), _tok in zip(capped, toks)
+                                  if _tok is not None
+                                  and not isinstance(_tok, BaseException)]
+                        if _batch:
+                            _ticker.subscribe_with_sym(_batch)
+                    except Exception:
+                        pass
             except Exception as _tke:
                 logger.debug(f"Background: ticker book-subscribe skipped: {_tke}")
 
@@ -1668,18 +1682,30 @@ async def _task_trail_stop() -> None:
                     exch    = str(entry.get("parent_exchange") or "NFO")
                     if account and sym:
                         keys_by_account.setdefault(account, set()).add(f"{exch}:{sym}")
+            # Parallelize broker.ltp across accounts. Pre-fix the for
+            # loop awaited each account's ltp sequentially, costing
+            # ~200ms × N accounts on the trail-stop hot path. Now all
+            # accounts fan out via asyncio.gather; total wall-time =
+            # max(per-account ltp) ≈ 200ms regardless of account count.
             ltp_map: dict[tuple[str, str], float] = {}
-            for account, key_set in keys_by_account.items():
+            _accts = list(keys_by_account.keys())
+            async def _ltp_for(acct: str):
                 try:
-                    broker = get_broker(account)
+                    broker = get_broker(acct)
                 except Exception:
-                    continue
+                    return None
                 try:
-                    resp = await asyncio.to_thread(broker.ltp, list(key_set))
+                    return await asyncio.to_thread(
+                        broker.ltp, list(keys_by_account[acct])
+                    )
                 except Exception as e:
-                    logger.debug(f"[TRAIL] batched ltp failed for {account}: {e}")
+                    logger.debug(f"[TRAIL] batched ltp failed for {acct}: {e}")
+                    return None
+            results = await asyncio.gather(*(_ltp_for(a) for a in _accts))
+            for account, resp in zip(_accts, results):
+                if resp is None:
                     continue
-                for k in key_set:
+                for k in keys_by_account[account]:
                     try:
                         ltp_v = float((resp.get(k) or {}).get("last_price") or 0)
                     except (TypeError, ValueError):
@@ -1968,18 +1994,25 @@ async def _task_oco_pair_watcher() -> None:
                 attached_by_row[row.id] = attached
             if not rows_by_account:
                 continue
-            # One broker.get_gtts() per account — establishes which side
-            # of each pair has fired and which is still active.
+            # One broker.get_gtts() per account, fired in PARALLEL —
+            # pre-fix the for loop awaited each account's GTT fetch
+            # sequentially, costing ~300ms × N accounts on every OCO
+            # watcher tick. Now wall-time = max(per-account get_gtts).
             gtts_by_account: dict[str, dict[str, dict]] = {}
-            for acct in rows_by_account:
+            _accts = list(rows_by_account.keys())
+            async def _gtts_for(acct: str):
                 try:
                     broker = get_broker(acct)
                 except Exception:
-                    continue
+                    return None
                 try:
-                    gtts = await asyncio.to_thread(broker.get_gtts)
+                    return await asyncio.to_thread(broker.get_gtts)
                 except Exception as e:
                     logger.debug(f"[OCO-WATCH] get_gtts failed for {acct}: {e}")
+                    return None
+            results = await asyncio.gather(*(_gtts_for(a) for a in _accts))
+            for acct, gtts in zip(_accts, results):
+                if gtts is None:
                     continue
                 gtts_by_account[acct] = {
                     str(g.get("id") or g.get("gtt_id")): g

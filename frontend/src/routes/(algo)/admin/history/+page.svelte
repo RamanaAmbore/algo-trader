@@ -117,7 +117,20 @@
   function pagePrev() { if (offset > 0) { offset = Math.max(0, offset - LIMIT); load(); } }
 
   const _canView = $derived(hasCap('view_audit', $userCaps, $userRole));
-  onMount(() => { if (_canView) load(); });
+  // Use $effect not onMount — _canView starts false on first paint
+  // (while /whoami resolves, $userCaps is empty so the fallback
+  // matrix returns false for 'demo'). onMount runs once and never
+  // re-checks; the result was the operator briefly seeing "Access
+  // denied" until whoami landed but never actually loading data.
+  // $effect re-runs whenever _canView flips, so first true value
+  // triggers the load.
+  let _loadedOnce = false;
+  $effect(() => {
+    if (_canView && !_loadedOnce) {
+      _loadedOnce = true;
+      load();
+    }
+  });
 
   // Backfill state for the Dhan ledger pull. Endpoint returns 501
   // until the broker adapter wires `funds_ledger()` — the UI

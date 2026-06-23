@@ -3735,7 +3735,7 @@
       valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
     };
     const _prevCol = {
-      field: 'close', headerName: 'Prev Close', width: 68, minWidth: 68, maxWidth: 84,
+      field: 'close', headerName: 'Close', width: 68, minWidth: 68, maxWidth: 84,
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: `${RA} cell-muted`,
       valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),

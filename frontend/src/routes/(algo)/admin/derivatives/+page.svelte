@@ -3971,7 +3971,7 @@
             <span class="num"
                   title="Qty in F&L lot units. Option / futures positions use the contract's own lot; other rows show 0.">Lots</span>
             <span class="num">LTP</span>
-            <span class="num">Prev</span>
+            <span class="num">Close</span>
             <span class="num">Avg</span>
             <span class="num"
                   title="Cumulative P&L on the position (lifetime, broker-reported). Sum across all rows = strip's P chip.">
@@ -4394,7 +4394,7 @@
           <span class="num" title="Total P&L from F&O legs only — what the derivative book alone is doing.">P&amp;L</span>
           <span class="num" title="Live underlying LTP. Indices use the spot price; MCX commodities use the nearest-future LTP (no tradeable spot).">Spot</span>
           <span class="num" title="Underlying day-change %, signed (+/-). Computed from broker `change_percent`, else (LTP - prev_close) / prev_close.">Day %</span>
-          <span class="num" title="Underlying previous-session close (broker `ohlc.close`).">Prev Close</span>
+          <span class="num" title="Underlying previous-session close (broker `ohlc.close`).">Close</span>
           <span class="num" title="Today's P&L change including any equity holding leg (net of the full book — F&O + equity layer).">Day Net</span>
           <span class="num" title="Total P&L including any equity holding leg's contribution (net of the full book — F&O + equity layer).">P&amp;L Net</span>
           <span class="num">Legs</span>

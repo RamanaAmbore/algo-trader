@@ -395,7 +395,7 @@
     { field: 'day_change_percentage', headerName: 'Day %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                   headerName: 'P&L',      width: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl_percentage',        headerName: 'P&L %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'close_price',           headerName: 'Prev Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'close_price',           headerName: 'Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
     { field: 'quantity',              headerName: 'Qty',      width: 52, type: 'numericColumn', headerClass: numericHdr },
     // Lots — qty in F&O lot units. Holdings on F&O underlyings use
     // the underlying lot; option / futures positions use the contract
@@ -504,7 +504,7 @@
     { field: 'day_change_percentage',headerName: 'Day %',     width: 64, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                  headerName: 'P&L',       width: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl_percentage',       headerName: 'P&L %',     width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'close_price',          headerName: 'Prev Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'close_price',          headerName: 'Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
     { field: 'quantity',             headerName: 'Qty',       width: 52, type: 'numericColumn', headerClass: numericHdr, cellClass: qtyCls },
     // Lots — option / futures positions use the contract's own lot;
     // cash equity + other non-derivative positions read 0. Shared

@@ -490,29 +490,23 @@
   });
 
   // ── Demo / signin redirect ─────────────────────────────────────────
-  //   - Logged-in admin       → free pass.
   //   - Anonymous on main     → demo mode (no redirect, isDemo = true).
   //   - Anonymous on non-main → /signin (devs are expected to log in).
-  //   - Logged in non-admin   → /signin.
+  //   - Logged in (any role)  → free pass; per-page cap_guard catches
+  //                             permission denials surface-by-surface.
+  //                             The 5-role RBAC (admin / trader / risk
+  //                             / ops / observer) all have legitimate
+  //                             algo access — the prior blanket
+  //                             "non-admin → /signin" redirect was
+  //                             vestigial from the old admin / partner
+  //                             two-tier model and broke the tour for
+  //                             trader / risk / ops / observer users
+  //                             who clicked any algo link.
   // While the paper-status poll is still pending the branch is
   // unknown — we stay put rather than flicker the user away.
   $effect(() => {
     const branchKnown = paperStatus?.branch !== undefined;
     if (!$authStore.user && branchKnown && paperStatus.branch !== 'main') {
-      goto('/signin');
-      return;
-    }
-    if (
-      $authStore.user
-      && $authStore.user.role !== 'admin'
-      && $authStore.user.role !== 'designated'
-      // Impersonation exception: when an admin / designated is
-      // viewing the platform as a partner (impBy set), let them
-      // stay on the algo surfaces so they can reproduce whatever
-      // the partner is hitting. The session expires after 30 min
-      // server-side; the banner offers an End button to revert.
-      && !$authStore.impBy
-    ) {
       goto('/signin');
     }
   });

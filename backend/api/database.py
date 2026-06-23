@@ -303,6 +303,39 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS ix_algo_orders_request_id "
             "ON algo_orders (request_id)"
         ))
+        # Audit-driven indexes (Jun 2026). All three are CREATE INDEX
+        # IF NOT EXISTS guards so re-running is a no-op.
+        #
+        # 1. algo_orders partial index for the trail-stop + OCO hot
+        #    paths. `_task_trail_stop` (every 30s) and
+        #    `_task_oco_pair_watcher` (every 15s) both query
+        #    `WHERE mode='live' AND status='FILLED'
+        #     AND attached_gtts_json IS NOT NULL`. The existing
+        #    ix_algo_orders_mode_status covers the first two predicates
+        #    but Postgres still filters NULL in-memory over all FILLED
+        #    rows as the table grows.
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_algo_orders_trail_stop "
+            "ON algo_orders (mode, status) "
+            "WHERE attached_gtts_json IS NOT NULL"
+        ))
+        # 2. news_headlines.published_at — GET /api/news fires
+        #    `ORDER BY published_at DESC` on every cache miss. PK is
+        #    `link` (TEXT) so without this index the sort is a seq-
+        #    scan + sort. Descending index matches the query.
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_news_headlines_published_at "
+            "ON news_headlines (published_at DESC)"
+        ))
+        # 3. strategy_lots composite for close_lot_fifo. Index is
+        #    declared in the model's __table_args__ but create_all
+        #    skips index updates on tables that pre-exist a slice
+        #    deploy. Idempotent CREATE here brings dev/prod into
+        #    sync.
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_strategy_lots_open "
+            "ON strategy_lots (strategy_id, account, symbol, side, remaining_qty, opened_at)"
+        ))
         # Feature: basket orders + auto profit-target (June 2026).
         # Four new columns on algo_orders; all nullable / defaulted so
         # existing rows remain valid without any data migration.

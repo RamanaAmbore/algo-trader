@@ -65,26 +65,50 @@ def from_kite_qty(exchange: str, kite_qty: int, lot_size: int) -> int:
     return kite_qty
 
 
-async def get_lot_size(exchange: str, tradingsymbol: str) -> int:
-    """Look up lot_size from the instruments cache.
+# Lot-size index — built lazily from the instruments cache, rebuilt
+# when the cache refreshes. Pre-fix `get_lot_size` did an O(N) linear
+# scan over ~90k instruments on every call; the ticket route +
+# basket-margin path called it 2-3 times per order. Now O(1) dict
+# lookup. Same `_TICK_INDEX` pattern in routes/orders.py.
+_LOT_INDEX: dict[tuple[str, str], int] = {}
+_LOT_INDEX_STAMP: object | None = None
 
-    Returns 1 (safe no-op for to_kite_qty) when the cache is cold or
-    the symbol isn't found — the order goes through as-is and Kite
-    provides the real rejection if the qty is wrong.
+
+def _rebuild_lot_index(items) -> None:
+    """Rebuild the (exchange, tradingsymbol) → lot_size dict from
+    the instruments cache. Called once per cache refresh."""
+    global _LOT_INDEX
+    new_index: dict[tuple[str, str], int] = {}
+    for inst in items:
+        try:
+            ls = int(inst.ls) if inst.ls > 0 else 1
+        except (TypeError, ValueError):
+            ls = 1
+        new_index[(inst.e, inst.s)] = ls
+    _LOT_INDEX = new_index
+
+
+async def get_lot_size(exchange: str, tradingsymbol: str) -> int:
+    """Look up lot_size from the instruments cache via `_LOT_INDEX`
+    (O(1) dict lookup; rebuilt only when the cache version stamp
+    flips). Returns 1 (safe no-op for to_kite_qty) when the cache
+    is cold or the symbol isn't found.
 
     This is intentionally a best-effort read; it must never raise.
     """
+    global _LOT_INDEX_STAMP
     try:
         from backend.api.cache import get_or_fetch
         from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
         resp = await get_or_fetch("instruments", _fetch_instruments,
                                   ttl_seconds=_TTL_SECONDS)
-        for inst in resp.items:
-            if inst.e == exchange and inst.s == tradingsymbol:
-                return int(inst.ls) if inst.ls > 0 else 1
+        if resp is not _LOT_INDEX_STAMP or not _LOT_INDEX:
+            _rebuild_lot_index(resp.items if resp else [])
+            _LOT_INDEX_STAMP = resp
     except Exception as e:
         logger.debug(f"[KITE-QTY] lot_size lookup failed for {exchange}/{tradingsymbol}: {e}")
-    return 1
+        return 1
+    return _LOT_INDEX.get((exchange, tradingsymbol), 1)
 
 
 # Kite rejects orders with `tag` > 20 chars: "invalid tags - maximum
