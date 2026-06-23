@@ -34,7 +34,7 @@
   let editing    = $state(null);
   let editForm   = $state(/** @type {Record<string,any>} */ ({}));
   let showCreate = $state(false);
-  let createForm = $state({ username: '', password: '', display_name: '', email: '', phone: '', role: 'partner', contribution: 0, share_pct: 0, is_approved: true });
+  let createForm = $state({ username: '', password: '', display_name: '', email: '', phone: '', role: 'observer', contribution: 0, share_pct: 0, is_approved: true });
   let creating   = $state(false);
 
   // Investor portal — token mint/list/revoke modal state. Opened
@@ -369,7 +369,7 @@
       await createUser(createForm);
       success = `User ${createForm.username} created. Share the password securely.`;
       showCreate = false;
-      createForm = { username: '', password: '', display_name: '', email: '', phone: '', role: 'partner', contribution: 0, share_pct: 0, is_approved: true };
+      createForm = { username: '', password: '', display_name: '', email: '', phone: '', role: 'observer', contribution: 0, share_pct: 0, is_approved: true };
       await load();
     } catch (e) { error = e.message; }
     finally { creating = false; }
@@ -596,11 +596,10 @@
                 { value: 'risk',       label: 'Risk — read + kill-switch'     },
                 { value: 'ops',        label: 'Ops — broker / user admin'     },
                 { value: 'observer',   label: 'Observer — read-only LP / audit' },
-                { value: 'partner',    label: 'Partner — legacy alias for observer' },
                 { value: 'designated', label: 'Designated — super-admin'      },
               ]} />
           {:else}
-            <div class="field-input field-input-readonly">Partner</div>
+            <div class="field-input field-input-readonly">Observer</div>
           {/if}
         </div>
         <!-- Capital + share % — designated-only. Backend silently

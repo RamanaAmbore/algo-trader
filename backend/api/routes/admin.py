@@ -344,8 +344,8 @@ class AdminController(Controller):
         """Admin creates a user (pre-approved). Share password via other channel.
 
         Capital fields (contribution, share_pct) and admin/designated
-        role assignment are designated-only. Admin can create partner
-        rows with role='partner' + share_pct=0 + contribution=0, but
+        role assignment are designated-only. Admin can create observer
+        rows with role='observer' + share_pct=0 + contribution=0, but
         promoting them or seeding a stake requires designated.
         """
         from backend.api.routes.auth import hash_password

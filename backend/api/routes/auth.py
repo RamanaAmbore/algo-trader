@@ -526,7 +526,10 @@ class AuthController(Controller):
             user = User(
                 username=data.username,
                 password_hash=hash_password(data.password),
-                role="partner",
+                # Self-registered users land as 'observer' — read-only
+                # aggregate view. Admin promotes them to a real role
+                # (trader/risk/ops/admin) after approval.
+                role="observer",
                 display_name=data.display_name or data.username,
                 email=data.email,
                 phone=data.phone or None,

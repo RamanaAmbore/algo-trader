@@ -265,6 +265,23 @@ async def init_db() -> None:
               END IF;
             END$$;
         """))
+        # Align legacy role values with the canonical 5-role surface
+        # (admin / trader / risk / ops / observer). Pre-RBAC-rework
+        # users carried role='partner' as the default LP / read-only
+        # tier; the canonical equivalent is 'observer'. `designated`
+        # is intentionally PRESERVED — separate code paths (terminate
+        # user, toggle-designated, alert routing) still branch on the
+        # literal value and treat it as the super-admin tier above
+        # plain admin. Idempotent: subsequent boots find no rows to
+        # update and no-op. NULL / empty roles also collapse to
+        # 'observer' — same safest-default contract as
+        # `normalise_role()`.
+        await conn.execute(text("""
+            UPDATE users SET role = 'observer'
+            WHERE role = 'partner'
+               OR role IS NULL
+               OR role = '';
+        """))
         # Feature: basket orders + auto profit-target (June 2026).
         # Four new columns on algo_orders; all nullable / defaulted so
         # existing rows remain valid without any data migration.

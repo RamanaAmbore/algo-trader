@@ -27,12 +27,12 @@ class User(Base):
     account_id: Mapped[str]     = mapped_column(String(16), unique=True, nullable=False, default=_gen_account_id, index=True)
     username: Mapped[str]       = mapped_column(String(64), unique=True, nullable=False, index=True)
     password_hash: Mapped[str]  = mapped_column(Text, nullable=False)
-    # Role tiers — single source of truth for privilege:
-    #   'partner'    — basic user, no admin pages.
-    #   'admin'      — can reset partner passwords. Read-only otherwise.
-    #   'designated' — top tier, can do everything (was the legacy
-    #                  `is_super=True` flag, now collapsed into role).
-    role: Mapped[str]           = mapped_column(String(16), nullable=False, default="partner")
+    # Role tiers — single source of truth for privilege. Canonical
+    # set: admin / trader / risk / ops / observer. 'designated' is
+    # the legacy super-admin tier kept for the terminate / promote
+    # path. 'partner' is a legacy alias for 'observer' (init_db
+    # migrates these on startup).
+    role: Mapped[str]           = mapped_column(String(16), nullable=False, default="observer")
     display_name: Mapped[str]   = mapped_column(String(128), nullable=False, default="")
     email: Mapped[Optional[str]]       = mapped_column(String(128), nullable=True)
     phone: Mapped[Optional[str]]       = mapped_column(String(20), nullable=True)
