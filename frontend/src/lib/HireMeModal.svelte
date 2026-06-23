@@ -50,6 +50,7 @@
     linkedin: 'https://www.linkedin.com/in/ramanambore/',
     email:    'mailto:ramboquant@gmail.com?subject=RamboQuant%20-%20Engineering%20Conversation',
     resume:   '/docs/ramana-ambore-resume.pdf',     // placeholder — drop the PDF at this path
+    portfolio:'https://ramanaambore.me',
   };
 </script>
 
@@ -98,6 +99,16 @@
           <path d="M19 0H5C2.24 0 0 2.24 0 5v14c0 2.76 2.24 5 5 5h14c2.76 0 5-2.24 5-5V5c0-2.76-2.24-5-5-5ZM8 19H5V8h3v11ZM6.5 6.73c-.97 0-1.75-.79-1.75-1.76 0-.97.78-1.75 1.75-1.75s1.75.79 1.75 1.75-.78 1.76-1.75 1.76ZM20 19h-3v-5.6c0-3.37-4-3.11-4 0V19h-3V8h3v1.77c1.4-2.58 7-2.77 7 2.46V19Z"/>
         </svg>
         LinkedIn
+      </a>
+      <a class="hm-btn" href={CONTACT.portfolio} target="_blank" rel="noopener">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" aria-hidden="true">
+          <circle cx="12" cy="12" r="10"/>
+          <path d="M2 12h20"/>
+          <path d="M12 2a15 15 0 0 1 0 20"/>
+          <path d="M12 2a15 15 0 0 0 0 20"/>
+        </svg>
+        Portfolio
       </a>
       <a class="hm-btn" href={CONTACT.resume} target="_blank" rel="noopener">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"

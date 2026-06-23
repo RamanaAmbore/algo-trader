@@ -12,6 +12,7 @@
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
   import { clientTimestamp, nowStamp, visibleInterval, lastRefreshAt, connStatus, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
+  import { bookChanged } from '$lib/data/bookChanged';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import NewsList from '$lib/NewsList.svelte';
   import ActionEventsToggle from '$lib/ActionEventsToggle.svelte';
@@ -1193,6 +1194,18 @@
   $effect(() => {
     try { sessionStorage.setItem('dash.losAccounts', JSON.stringify(_losAccounts)); } catch (_) {}
   });
+
+  // book_changed bus — refetch hero (positions / holdings / events) on
+  // every terminal postback. Replaces the prior "wait for next 15s
+  // poll" pattern; the snapshot grid now settles in a single tick.
+  let _lastBookCounter = 0;
+  $effect(() => {
+    const n = $bookChanged;
+    if (n <= _lastBookCounter) return;
+    _lastBookCounter = n;
+    loadHero();
+  });
+
   // ── ag-Grid mounts ────────────────────────────────────────────────
   // Each $effect runs once when the bound element appears in the DOM
   // (bind:this flips from null → HTMLDivElement). Subsequent

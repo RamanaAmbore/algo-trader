@@ -3307,8 +3307,27 @@ class OrdersController(Controller):
             except Exception:
                 pass
 
-            # Invalidate orders cache so next fetch gets fresh data
+            # Invalidate the orders cache on EVERY postback so next
+            # fetch gets fresh data regardless of terminal vs partial.
             invalidate("orders")
+
+            # On a terminal status (COMPLETE / CANCELLED / REJECTED /
+            # EXPIRED) the book itself changes — fan out invalidation
+            # to every dependent cache so the next refetch is
+            # consistent. Without this, /api/positions returns stale
+            # data for up to its TTL (30s), and the snapshot grid
+            # takes a second poll cycle to settle. Operator's report:
+            # "snapshot grid updated two iterations" — root cause was
+            # positions cache lagging by one tick.
+            _terminal = str(status or "").upper() in (
+                "COMPLETE", "CANCELLED", "REJECTED", "EXPIRED",
+            )
+            if _terminal:
+                for _key in ("positions", "holdings"):
+                    try:
+                        invalidate(_key)
+                    except Exception:
+                        pass
 
             # Push real-time update to all connected WebSocket clients
             broadcast(json.dumps({
@@ -3349,6 +3368,30 @@ class OrdersController(Controller):
                     # Never let a malformed delta payload break the
                     # postback ACK — Kite retries on a non-2xx response.
                     logger.debug(f"position_filled broadcast skipped: {_pe}")
+
+            # Single coordinated `book_changed` broadcast for every
+            # terminal status. Frontend pages subscribe once and
+            # refetch their primary loader (positions / holdings /
+            # strategy analytics / payoff curve) in one synchronized
+            # pass — replaces the prior "wait for next poll tick" UX
+            # where the snapshot grid took 2+ iterations to settle.
+            #
+            # Payload carries the changed (account, symbol, exchange)
+            # tuple so a future surface can do scoped refetch
+            # instead of book-wide. v1 frontend ignores the scope
+            # fields and refetches the visible bucket; v2 can target.
+            if _terminal:
+                try:
+                    broadcast(json.dumps({
+                        "event": "book_changed",
+                        "account": masked,
+                        "exchange": body.get("exchange", ""),
+                        "tradingsymbol": tradingsymbol,
+                        "reason": status,
+                        "ts": int(_time.time() * 1000),
+                    }))
+                except Exception as _bce:
+                    logger.debug(f"book_changed broadcast skipped: {_bce}")
 
             return {"status": "ok"}
         except HTTPException:

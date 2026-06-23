@@ -12,6 +12,7 @@
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import { isMarketOpen } from '$lib/marketHours';
   import { createPerformanceSocket } from '$lib/ws';
+  import { bookChanged } from '$lib/data/bookChanged';
   import {
     fetchPositions, fetchHoldings, fetchSimStatus, fetchStrategyAnalytics,
     fetchAccounts, fetchOptionsSpot, fetchChainQuotes,
@@ -3396,6 +3397,23 @@
       positions = [];
       loadPositions();
       loadRealAccounts();
+    });
+  });
+
+  // book_changed bus — postback handler emits this on every terminal
+  // order status. Refetch positions + strategy in lockstep so the
+  // Snapshot grid + Legs + Payoff all settle on the same iteration
+  // (operator's prior pain: "snapshot grid updated two iterations").
+  // Bus is debounced 200ms upstream so a basket-order burst coalesces
+  // into one refresh.
+  let _lastBookCounter = 0;
+  $effect(() => {
+    const n = $bookChanged;
+    if (n <= _lastBookCounter) return;
+    _lastBookCounter = n;
+    untrack(() => {
+      loadPositions();
+      try { loadStrategy(); } catch (_) { /* strategy panel not always mounted */ }
     });
   });
 

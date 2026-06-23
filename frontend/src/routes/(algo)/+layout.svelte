@@ -17,6 +17,7 @@
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import HireMeModal from '$lib/HireMeModal.svelte';
   import { bootstrapRBAC } from '$lib/rbac';
+  import { startBookChangedBus } from '$lib/data/bookChanged';
 
   const { children } = $props();
 
@@ -457,6 +458,12 @@
     // any of the data-poll work below since pollers + nav gating
     // both read off the role/caps state.
     bootstrapRBAC();
+    // Start the singleton book_changed WS subscriber. Pages that
+    // depend on position-derived data subscribe to the bookChanged
+    // store and refetch on increment — replaces the prior "wait for
+    // next poll tick" pattern where a postback took 2+ iterations
+    // to settle the snapshot grid.
+    startBookChangedBus();
     // Fire once, then schedule adaptive polls.
     pollSim();
     pollPaper();
@@ -648,8 +655,8 @@
           <button onclick={signOut} class="algo-nav-btn">Sign Out</button>
         {:else if isDemo}
           <button onclick={() => _hireOpen = true} class="algo-nav-btn algo-hire-btn"
-                  title="Built by Ramana Ambore — click to see the engineering pitch + contact channels">
-            Hire Me
+                  title="Built by Ramana Ambore — engineering highlights + contact channels">
+            About
           </button>
           <button onclick={() => goto('/signin')} class="algo-nav-btn">Sign In</button>
         {/if}
@@ -768,7 +775,7 @@
             <button onclick={() => { signOut(); closeMenu(); }} class="algo-mobile-item">Sign Out</button>
           {:else}
             <button onclick={() => { _hireOpen = true; closeMenu(); }}
-                    class="algo-mobile-item algo-hire-btn">Hire Me</button>
+                    class="algo-mobile-item algo-hire-btn">About</button>
             <button onclick={() => { goto('/signin'); closeMenu(); }} class="algo-mobile-item">Sign In</button>
           {/if}
         </nav>
