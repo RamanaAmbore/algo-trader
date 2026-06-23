@@ -187,16 +187,25 @@ def _ist_now() -> datetime:
 def probe_market_active(exchange: str, kite: Any = None,
                         max_age_min: int = _STALE_THRESHOLD_MIN
                         ) -> Optional[bool]:
-    """Return True if Kite quote for a bellwether on `exchange` shows
-    a `last_trade_time` within the last `max_age_min` minutes.
-    Returns False when probe ran and no candidate had a recent trade.
-    Returns None when probe couldn't run (no Kite handle, no candidate,
-    or any exception) — caller should fall back to the calendar
-    verdict in that case.
+    """Return True if the market for `exchange` is currently trading.
+
+    Resolution order (first definitive answer wins):
+      1. **Broker market-status API** — iterate every loaded `Broker`
+         adapter and call `broker.market_status(exchange)`. Returns
+         True/False when ANY broker reports a definitive verdict.
+         Dhan exposes `get_market_status`; Groww varies by SDK
+         version. Kite Connect has no equivalent and returns None
+         from its adapter (falls through to step 2).
+      2. **Bellwether-quote probe** — call `kite.quote()` on
+         configured bellwether symbols (NIFTY 50, SENSEX, MCX crude
+         futures, …) and check `last_trade_time` freshness.
+
+    Returns None when neither path can answer (no broker handle, no
+    bellwether candidates, or every call raised) — caller should
+    fall back to the calendar verdict in that case.
 
     Cached for `_CACHE_TTL_SEC` per exchange so the agent engine's
-    per-tick gate evaluation doesn't hammer Kite. Cache key is the
-    exchange code; the value persists until TTL or a service restart.
+    per-tick gate evaluation doesn't hammer the brokers.
     """
     exchange = (exchange or "").upper()
     if not exchange:
@@ -209,6 +218,33 @@ def probe_market_active(exchange: str, kite: Any = None,
         if cached and (now_ts - cached[0]) < _CACHE_TTL_SEC:
             return cached[1]
 
+    # ── Step 1: broker market-status API ──────────────────────────────
+    # Iterate brokers, ask each for an authoritative answer. ANY
+    # definitive True/False wins; None means the adapter doesn't
+    # implement the method or the call failed — try the next broker.
+    try:
+        from backend.shared.brokers.registry import all_brokers
+        for broker_adapter in all_brokers():
+            try:
+                verdict = broker_adapter.market_status(exchange)
+            except Exception as e:
+                logger.debug(
+                    f"market_probe: {broker_adapter.broker_id} "
+                    f"market_status({exchange}) raised: {e}"
+                )
+                continue
+            if isinstance(verdict, bool):
+                logger.debug(
+                    f"market_probe: {broker_adapter.broker_id} reports "
+                    f"{exchange}={'open' if verdict else 'closed'}"
+                )
+                with _PROBE_LOCK:
+                    _PROBE_CACHE[exchange] = (now_ts, verdict)
+                return verdict
+    except Exception as e:
+        logger.debug(f"market_probe: broker iteration failed: {e}")
+
+    # ── Step 2: bellwether-quote probe (Kite fallback) ────────────────
     # Lazy-resolve a Kite handle + a Broker adapter from Connections()
     # / the broker registry when the caller didn't pass them. Quote
     # access is shared across the operator's accounts; instruments

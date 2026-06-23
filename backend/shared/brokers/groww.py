@@ -507,6 +507,66 @@ class GrowwBroker(Broker):
         PriceBroker falls over to Kite without an exception trace."""
         return set()
 
+    def market_status(self, exchange: str) -> bool | None:
+        """Probe Groww's market-status endpoint for `exchange`.
+        Returns True / False / None per the Broker ABC contract.
+        SDK support is uncertain across versions — probe known
+        method names and gracefully None on miss.
+
+        Maps our exchange codes (NSE / BSE / NFO / BFO / MCX / CDS)
+        to Groww's segment vocabulary. Same shape semantics as Dhan:
+        ANY mapped segment reporting active means the exchange is
+        open."""
+        sdk = self.client
+        status_fn = (getattr(sdk, "get_market_status", None)
+                     or getattr(sdk, "market_status", None)
+                     or getattr(sdk, "get_exchange_status", None))
+        if status_fn is None:
+            return None
+        try:
+            resp = _retry_groww_auth(lambda: status_fn())()
+        except Exception as e:
+            logger.debug(f"GrowwBroker.market_status({exchange}) SDK call failed: {e}")
+            return None
+
+        _XCHG_TO_GROWW: dict[str, tuple[str, ...]] = {
+            "NSE": ("NSE", "NSE_EQ"),
+            "BSE": ("BSE", "BSE_EQ"),
+            "NFO": ("NFO", "NSE_FO", "NSE_FNO"),
+            "BFO": ("BFO", "BSE_FO", "BSE_FNO"),
+            "CDS": ("CDS", "NSE_CURRENCY"),
+            "MCX": ("MCX", "MCX_COMM"),
+        }
+        target_codes = _XCHG_TO_GROWW.get((exchange or "").upper())
+        if not target_codes:
+            return None
+
+        rows: list[dict] = []
+        if isinstance(resp, dict):
+            data = resp.get("data") or resp.get("payload") or resp
+            if isinstance(data, list):
+                rows = [r for r in data if isinstance(r, dict)]
+            elif isinstance(data, dict):
+                for code in target_codes:
+                    v = data.get(code) or data.get(code.lower())
+                    if isinstance(v, dict):
+                        rows.append({"segment": code, **v})
+                    elif isinstance(v, (str, bool)):
+                        rows.append({"segment": code, "status": v})
+        for row in rows:
+            seg = str(row.get("segment") or row.get("exchange") or "").upper()
+            if seg not in target_codes:
+                continue
+            st = row.get("status") or row.get("trading_status")
+            if isinstance(st, bool):
+                if st:
+                    return True
+                continue
+            if isinstance(st, str):
+                if st.upper() in ("OPEN", "TRADING", "ACTIVE", "Y", "YES", "TRUE"):
+                    return True
+        return False
+
     # ── Order entry ───────────────────────────────────────────────────
 
     @_retry_groww_auth

@@ -141,6 +141,23 @@ class Broker(ABC):
     @abstractmethod
     def holidays(self, exchange: str) -> set[str]: ...
 
+    def market_status(self, exchange: str) -> bool | None:
+        """Return True / False if the broker exposes a market-status
+        endpoint for `exchange`; None when the adapter doesn't
+        implement one or the call fails.
+
+        Optional method — not abstract. Adapters override when the
+        broker's SDK ships a market-status / exchange-hours endpoint
+        (Dhan + Groww have variants). Kite Connect has no such API
+        — the fallback in `shared/helpers/market_probe.py` runs the
+        bellwether-quote check instead.
+
+        Used by `probe_market_active()` to skip the bellwether-quote
+        round-trip when authoritative data is available. Caching
+        happens at the probe layer; adapter doesn't need to memoise.
+        """
+        return None
+
     # ── Order entry ───────────────────────────────────────────────────
 
     @abstractmethod

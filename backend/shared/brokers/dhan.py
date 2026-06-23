@@ -820,6 +820,77 @@ class DhanBroker(Broker):
         PriceBroker falls over to Kite without an exception trace."""
         return set()
 
+    def market_status(self, exchange: str) -> bool | None:
+        """Probe Dhan's market-status / exchange-hours endpoint for
+        `exchange`. Returns True if open, False if closed, None when
+        the SDK doesn't expose the method or the call fails. The
+        market_probe layer caches results, so this adapter call only
+        fires once per cache TTL per exchange.
+
+        Method discovery probes the most common SDK method names
+        across dhanhq versions (`get_market_status`,
+        `market_status`, `get_exchange_status`). Maps Dhan's
+        per-segment status payload to our exchange vocabulary:
+            NSE_EQ / BSE_EQ / NSE_CURRENCY / BSE_CURRENCY → equity
+              (NSE / BSE)
+            NSE_FNO / BSE_FNO → derivatives (NFO / BFO)
+            MCX_COMM → commodity (MCX)
+        """
+        sdk = self.dhan
+        status_fn = (getattr(sdk, "get_market_status", None)
+                     or getattr(sdk, "market_status", None)
+                     or getattr(sdk, "get_exchange_status", None))
+        if status_fn is None:
+            return None
+        try:
+            resp = self._safe_call(lambda d: status_fn())
+        except Exception as e:
+            logger.debug(f"DhanBroker.market_status({exchange}) SDK call failed: {e}")
+            return None
+
+        # Map our exchange vocabulary → Dhan's segment codes. Multiple
+        # Dhan codes per our single code; the exchange is "open" if
+        # ANY mapped segment reports active.
+        _XCHG_TO_DHAN: dict[str, tuple[str, ...]] = {
+            "NSE": ("NSE_EQ",),
+            "BSE": ("BSE_EQ",),
+            "NFO": ("NSE_FNO",),
+            "BFO": ("BSE_FNO",),
+            "CDS": ("NSE_CURRENCY",),
+            "MCX": ("MCX_COMM",),
+        }
+        target_codes = _XCHG_TO_DHAN.get((exchange or "").upper())
+        if not target_codes:
+            return None
+
+        # Dhan response shape varies between SDK builds. Accept the
+        # documented `{status, data: [{exchangeSegment, status, ...}]}`
+        # envelope and a few common alternates.
+        rows = _unwrap(resp)
+        if not rows and isinstance(resp, dict):
+            # Some builds return a flat dict keyed by segment code.
+            for code in target_codes:
+                v = resp.get(code) or resp.get(code.lower())
+                if isinstance(v, dict):
+                    rows.append({"exchangeSegment": code, **v})
+                elif isinstance(v, (str, bool)):
+                    rows.append({"exchangeSegment": code, "status": v})
+
+        for row in rows:
+            seg = str(row.get("exchangeSegment") or row.get("segment") or "").upper()
+            if seg not in target_codes:
+                continue
+            st = row.get("status")
+            if isinstance(st, bool):
+                if st:
+                    return True
+                continue
+            if isinstance(st, str):
+                if st.upper() in ("OPEN", "TRADING", "ACTIVE", "Y", "YES", "TRUE"):
+                    return True
+        # All mapped segments report closed.
+        return False
+
     # ── Order entry ───────────────────────────────────────────────────
 
     def basket_order_margins(self, orders: list[dict]) -> list[dict]:
