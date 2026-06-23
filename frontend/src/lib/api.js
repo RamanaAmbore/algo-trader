@@ -383,6 +383,19 @@ export const mintInvestorToken   = (/** @type {number} */ userId,
 export const revokeInvestorToken = (/** @type {number} */ userId, /** @type {number} */ tokenId) =>
   _del(`/admin/users/${userId}/investor-tokens/${tokenId}`, { auth: true });
 
+/** Monthly statement audit (slice 7M continuation). */
+export const fetchStatementAudit = ({ year = 0, month = 0 } = {}) => {
+  const q = new URLSearchParams();
+  if (year)  q.set('year',  String(year));
+  if (month) q.set('month', String(month));
+  const tail = q.toString() ? `?${q}` : '';
+  return _get(`/admin/statements/${tail}`, { auth: true });
+};
+export const sendStatementNow = (/** @type {{user_id:number, year:number, month:number}} */ body) =>
+  _post('/admin/statements/send', body, { auth: true });
+export const deleteStatementRow = (/** @type {number} */ rowId) =>
+  _del(`/admin/statements/${rowId}`, { auth: true });
+
 /** GET /api/admin/audit — paginated audit log with filters. Gated
  *  by the `view_audit` cap server-side (admin / risk / ops). */
 export const fetchAuditLog = (params = {}) => {

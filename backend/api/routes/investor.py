@@ -45,7 +45,7 @@ from litestar.exceptions import HTTPException
 from sqlalchemy import desc, select, update
 
 from backend.api.database import async_session
-from backend.api.models import InvestorToken, NavDaily, User
+from backend.api.models import InvestorToken, MonthlyStatement, NavDaily, User
 from backend.api.rbac import cap_guard
 
 
@@ -282,6 +282,231 @@ class InvestorAdminController(Controller):
                       .values(revoked_at=now)
                 )
                 await s.commit()
+
+
+# ---------------------------------------------------------------------------
+# Monthly statement audit + manual trigger
+# ---------------------------------------------------------------------------
+
+class _StatementRow(msgspec.Struct):
+    """Row shape for /api/admin/statements list view."""
+    id:              Optional[int]   # null for PENDING rows (no audit row exists yet)
+    user_id:         int
+    username:        str
+    display_name:    str
+    email:           Optional[str]
+    share_pct:       float
+    period_year:     int
+    period_month:    int
+    status:          str             # 'sent' | 'failed' | 'pending'
+    generated_at:    Optional[str]
+    sent_at:         Optional[str]
+    recipients:      list[str]
+    pdf_size_bytes:  Optional[int]
+    error:           Optional[str]
+
+
+class StatementListResponse(msgspec.Struct):
+    period_year:   int
+    period_month:  int
+    rows:          list[_StatementRow]
+    counts:        dict[str, int]    # sent / failed / pending counts
+
+
+class StatementSendRequest(msgspec.Struct):
+    user_id: int
+    year:    int
+    month:   int
+
+
+class StatementSendResponse(msgspec.Struct):
+    user_id:  int
+    year:     int
+    month:    int
+    status:   str       # 'sent' | 'failed'
+    error:    Optional[str]
+
+
+class InvestorStatementsController(Controller):
+    """Cross-LP audit + manual send for the auto-email task."""
+    path = "/api/admin/statements"
+
+    @get("/", guards=[cap_guard("manage_investor_tokens")])
+    async def list_statements(self, year: int = 0,
+                              month: int = 0) -> StatementListResponse:
+        """List the statement audit rows for a (year, month) plus
+        every eligible LP without a row (PENDING). Without year/
+        month, defaults to the prior month.
+
+        Eligible = active + share_pct > 0 + email present, matching
+        the bg task's filter so the operator sees exactly what the
+        next 02:00 IST wake will process."""
+        if not year or not month:
+            from datetime import date as _date
+            today = datetime.now(timezone.utc).date()
+            first_of_this = _date(today.year, today.month, 1)
+            prior_end = first_of_this - timedelta(days=1)
+            year, month = prior_end.year, prior_end.month
+
+        async with async_session() as s:
+            eligible_users = (await s.execute(
+                select(User).where(
+                    User.is_active.is_(True),
+                    User.share_pct > 0,
+                    User.email.is_not(None),
+                    User.email != "",
+                )
+            )).scalars().all()
+            stmt_rows = (await s.execute(
+                select(MonthlyStatement).where(
+                    MonthlyStatement.period_year  == year,
+                    MonthlyStatement.period_month == month,
+                )
+            )).scalars().all()
+
+        rows_by_user = {r.user_id: r for r in stmt_rows}
+        out: list[_StatementRow] = []
+        sent = failed = pending = 0
+        for u in eligible_users:
+            r = rows_by_user.get(u.id)
+            if r is None:
+                pending += 1
+                out.append(_StatementRow(
+                    id=None, user_id=u.id, username=u.username,
+                    display_name=u.display_name or u.username,
+                    email=u.email, share_pct=float(u.share_pct),
+                    period_year=year, period_month=month,
+                    status="pending",
+                    generated_at=None, sent_at=None,
+                    recipients=[], pdf_size_bytes=None, error=None,
+                ))
+            else:
+                status = "sent" if r.sent_at is not None else "failed"
+                if status == "sent": sent += 1
+                else: failed += 1
+                out.append(_StatementRow(
+                    id=r.id, user_id=u.id, username=u.username,
+                    display_name=u.display_name or u.username,
+                    email=u.email, share_pct=float(u.share_pct),
+                    period_year=year, period_month=month,
+                    status=status,
+                    generated_at=_iso(r.generated_at),
+                    sent_at=_iso(r.sent_at),
+                    recipients=list(r.recipients_json or []),
+                    pdf_size_bytes=r.pdf_size_bytes,
+                    error=r.error,
+                ))
+
+        # Audit rows whose user is no longer eligible (changed share_pct
+        # to 0, deactivated, dropped email) — still surface them so the
+        # operator can see "this LP got a statement before; their row
+        # still exists." Tagged with status from the audit row.
+        eligible_ids = {u.id for u in eligible_users}
+        for r in stmt_rows:
+            if r.user_id in eligible_ids:
+                continue
+            async with async_session() as s:
+                u = (await s.execute(
+                    select(User).where(User.id == r.user_id)
+                )).scalar_one_or_none()
+            if u is None:
+                continue
+            status = "sent" if r.sent_at is not None else "failed"
+            if status == "sent": sent += 1
+            else: failed += 1
+            out.append(_StatementRow(
+                id=r.id, user_id=u.id, username=u.username,
+                display_name=u.display_name or u.username,
+                email=u.email, share_pct=float(u.share_pct),
+                period_year=year, period_month=month,
+                status=status,
+                generated_at=_iso(r.generated_at),
+                sent_at=_iso(r.sent_at),
+                recipients=list(r.recipients_json or []),
+                pdf_size_bytes=r.pdf_size_bytes,
+                error=r.error,
+            ))
+
+        # Stable sort: pending first (need attention), then failed,
+        # then sent; within group alphabetical by username.
+        order = {"pending": 0, "failed": 1, "sent": 2}
+        out.sort(key=lambda r: (order.get(r.status, 9), r.username))
+
+        return StatementListResponse(
+            period_year=year, period_month=month, rows=out,
+            counts={"sent": sent, "failed": failed, "pending": pending},
+        )
+
+    @post("/send", guards=[cap_guard("manage_investor_tokens")])
+    async def manual_send(self, data: StatementSendRequest) -> StatementSendResponse:
+        """Manual trigger for a single (user, period). Inserts the
+        audit row directly; the bg task ignores users whose rows
+        already exist, so this is the operator's way to short-circuit
+        the daily 02:00 IST wait or retry a failed send.
+
+        Idempotent failure path: if a row already exists, returns
+        the existing status without re-sending."""
+        async with async_session() as s:
+            user = (await s.execute(
+                select(User).where(User.id == data.user_id)
+            )).scalar_one_or_none()
+            if user is None:
+                raise HTTPException(status_code=404, detail="User not found")
+            existing = (await s.execute(
+                select(MonthlyStatement).where(
+                    MonthlyStatement.user_id == data.user_id,
+                    MonthlyStatement.period_year  == data.year,
+                    MonthlyStatement.period_month == data.month,
+                )
+            )).scalar_one_or_none()
+        if existing is not None:
+            status = "sent" if existing.sent_at is not None else "failed"
+            return StatementSendResponse(
+                user_id=data.user_id, year=data.year, month=data.month,
+                status=status,
+                error=("Already exists. Delete the row to retry."
+                       if status == "failed" else None),
+            )
+
+        # Delegate to the bg helper so the audit-row + email logic
+        # stays in one place. Imported lazily to avoid a hard import
+        # cycle through background.py.
+        from backend.api.background import _send_one_monthly_statement
+        await _send_one_monthly_statement(user, data.year, data.month)
+
+        async with async_session() as s:
+            row = (await s.execute(
+                select(MonthlyStatement).where(
+                    MonthlyStatement.user_id == data.user_id,
+                    MonthlyStatement.period_year  == data.year,
+                    MonthlyStatement.period_month == data.month,
+                )
+            )).scalar_one_or_none()
+        status = "failed"
+        error = "Audit row missing after send"
+        if row is not None:
+            status = "sent" if row.sent_at is not None else "failed"
+            error = row.error
+        return StatementSendResponse(
+            user_id=data.user_id, year=data.year, month=data.month,
+            status=status, error=error,
+        )
+
+    @delete("/{row_id:int}",
+            guards=[cap_guard("manage_investor_tokens")],
+            status_code=204)
+    async def delete_row(self, row_id: int) -> None:
+        """Clear an audit row. The next bg wake (or manual send) will
+        re-process the LP. Use this when a send failed and the error
+        has been resolved (e.g. operator fixed the LP's email)."""
+        async with async_session() as s:
+            row = (await s.execute(
+                select(MonthlyStatement).where(MonthlyStatement.id == row_id)
+            )).scalar_one_or_none()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Row not found")
+            await s.delete(row)
+            await s.commit()
 
 
 # ---------------------------------------------------------------------------

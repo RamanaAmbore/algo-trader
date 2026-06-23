@@ -144,6 +144,7 @@
     { href: '/admin/brokers',    label: 'Brokers',   adminOnly: true, group: 'config' },
     { href: '/admin/settings',   label: 'Settings',  adminOnly: true, group: 'config' },
     { href: '/admin',            label: 'Users',     adminOnly: true, group: 'config' },
+    { href: '/admin/statements', label: 'Statements', adminOnly: true, group: 'config' },
     { href: '/admin/audit',      label: 'Audit',     adminOnly: true, group: 'config' },
     { href: '/admin/health',     label: 'Health',    adminOnly: true, group: 'config' },
   ];
