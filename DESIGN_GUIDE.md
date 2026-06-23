@@ -51,6 +51,7 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 22.10. [Order placement latency — preflight + tick cache + paper-skip](#2210-order-placement-latency--preflight--tick-cache--paper-skip)
 22.11. [Navbar audit — rename + resequence](#2211-navbar-audit--rename--resequence)
 22.12. [#audit workflow + Dhan / Groww postback scaffold](#2212-audit-workflow--dhan--groww-postback-scaffold)
+22.13. [Audit slice D — UX consistency + palette consolidation + 2 defects](#2213-audit-slice-d--ux-consistency--palette-consolidation--2-defects)
 
 ### Part VII — Operations
 23. [How to add a new template field](#23-how-to-add-a-new-template-field)
@@ -1790,6 +1791,45 @@ Status normalization uses `_DHAN_STATUS_TO_KITE` and `_GROWW_STATUS_TO_KITE` tab
 - `backend/api/routes/orders.py::list_active_chases` — slice C template-attach fix
 - `backend/api/algo/chase.py:806` — slice C slippage formula
 - `backend/api/routes/orders.py::order_postback_{dhan,groww}` + `_process_broker_postback` — slice C postback scaffolds
+
+---
+
+## 22.13. Audit slice D — UX consistency + palette consolidation + 2 defects
+
+Closes the remaining MED-severity items from the #audit run. Pattern: converge on canonical components + canonical CSS-custom-prop alphas rather than introducing new code.
+
+### UX consistency — adopting canonical components
+
+Three pages were running their own bespoke implementations of patterns the codebase already had canonical components for. Each replacement deletes the bespoke chrome + the CSS that supported it:
+
+| Page | Bespoke pattern | Canonical replacement |
+|---|---|---|
+| `/admin/history` | `.hist-tabs` + `.hist-tab` (+ active border + count badge) | `<AlgoTabs tabs={[{id, label, badge}, ...]} bind:value={tab} onChange={setTab} />` |
+| `/admin/statements` | native `<select class="ms-select">` + `.ms-select` CSS block | `<Select bind:value={selectedPeriod} options={_months} />` |
+| `PageHeaderActions` amber+cyan hover bg | `rgba(_, 0.12)` (drift) | `rgba(_, 0.14)` matching `--algo-amber-bg` / `--algo-cyan-bg` canonical |
+
+⚙ **TECH — Canonical-component adoption vs maintaining bespoke chrome** — `WHY` Every bespoke tab strip / select / pill the operator can't visually distinguish from the canonical ones is friction on muscle memory. Slice D's audit found 4 parallel pill-strip implementations across audit / statements / templates / agent-templates pages — same job, four different CSS classes. `WHAT` Replace bespoke implementations with the existing canonical component when the contract matches; the canonical component does the styling once and every page inherits. `HOW` `AlgoTabs` already exposes `tabs: [{id, label, badge, color}]` so the History tab badge logic (showing total only on the active tab) maps trivially. `Select` accepts `options: [{value, label}]` so the period dropdown's already-correct data shape is a one-line swap. `WHERE` `frontend/src/lib/AlgoTabs.svelte`, `frontend/src/lib/Select.svelte`.
+
+### Palette alpha consolidation
+
+The cyan-bg alpha `0.10` was drifting across 5 files (8 callsites) while the canonical `--algo-cyan-bg` is `0.14`. CommandBar / HireMeModal / OrderCard / OrderTicket / SymbolPanel all converged. Same fix on PageHeaderActions amber `0.12` → `0.14`.
+
+Net effect: a chip background on one page now visually matches the same conceptual element on another page. Pre-fix the operator's brain had to disambiguate "is this cyan-12 or cyan-14?" — now both reach `var(--algo-cyan-bg)`.
+
+### Defects
+
+**`paper.py::reset()` race** — pre-fix the three dict-replace operations (`_open_orders`, `_price_history`, `_underlying_history`) ran unlocked. If a concurrent `step()` snapshot or `_capture_price_history` write happened during the replace, the price-history chart data for the first tick of a new sim could silently land in the OLD dict reference while the new sim queried the empty replacement. Fix: acquire `self._lock` around the replacements.
+
+**`history.py::backfill_funds` docstring** — was claiming "idempotent — existing rows are not overwritten (ON CONFLICT DO NOTHING)" but the SQL is `DO UPDATE SET ...` (full overwrite). Operator-surprise risk: a hand-edit to a funds row gets clobbered on the next backfill with the same date range. Docstring now accurately documents the overwrite + warns the operator to treat funds rows as read-only.
+
+### Source files
+
+- `frontend/src/routes/(algo)/admin/history/+page.svelte` — `<AlgoTabs>` adoption
+- `frontend/src/routes/(algo)/admin/statements/+page.svelte` — `<Select>` adoption
+- `frontend/src/lib/PageHeaderActions.svelte` — amber/cyan 0.12→0.14
+- `frontend/src/lib/{CommandBar,HireMeModal,SymbolPanel}.svelte` + `order/{OrderCard,OrderTicket}.svelte` — cyan 0.10→0.14
+- `backend/api/algo/paper.py::reset` — `self._lock` acquisition
+- `backend/api/routes/history.py::backfill_funds` — docstring correction
 
 ---
 

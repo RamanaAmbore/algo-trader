@@ -2414,6 +2414,14 @@ All three use `guards=[]` and `_process_broker_postback` (or inline equivalent f
 
 **Roles surface** (slice-B documentation alignment): canonical 5 = `admin / trader / risk / ops / observer` + legacy `designated` (super-admin) + synthetic `demo` for anonymous on prod. `designated` is intentionally preserved — three code paths still branch on the literal value (`designated_guard` on terminate/promote, `alert_utils.get_alert_recipients`, `/admin` UI gating). `normalise_role` collapses `designated`→`admin` for the cap matrix so any cap-gated check works.
 
+**Slice D — UX consistency + palette consolidation + 2 defects** (shipped Jun 2026):
+- `/admin/history` bespoke tab strip → `<AlgoTabs>` canonical component (badge logic preserved); `/admin/statements` native `<select>` + `.ms-select` CSS block → `<Select>` canonical.
+- Cyan bg alpha `0.10` → `0.14` (canonical `--algo-cyan-bg`) across CommandBar, HireMeModal, OrderCard, OrderTicket, SymbolPanel; PageHeaderActions amber + cyan hover bg `0.12` → `0.14`.
+- `paper.py::reset()` — acquire `self._lock` around the three dict-replace operations (chart data was racing-out for the first tick of a new sim).
+- `history.py::backfill_funds` docstring — corrected to document the actual `ON CONFLICT DO UPDATE` overwrite semantics. Operator-side guidance: funds rows are read-only; don't hand-edit because the next backfill clobbers it.
+
+**Rule for new code**: when adding a tab strip, picker, or modal, check the canonical components first (`<AlgoTabs>`, `<Select>`, `<MultiSelect>`, `<ConfirmModal>`, `<InfoHint>`) before writing CSS. When adding a colored chip, read the value from `var(--algo-{cyan,amber,green,red,slate}-{bg,border,fg})` not a hardcoded `rgba(...)`. Bespoke chrome accumulates faster than it gets removed; canonicalize-on-touch is the cheapest way to keep the design system consistent.
+
 ---
 
 ## Refactoring Notes

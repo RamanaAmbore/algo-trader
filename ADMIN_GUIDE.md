@@ -1050,6 +1050,7 @@ Multi-day forensic surface for the three "book of record" datasets — Orders (e
 - `debits_today` = Σ debit across all voucher entries that day.
 - `realised_m2m` = `credits − debits` (net daily cash flow). **NOT pure mark-to-market** — Dhan's voucher entries include brokerage, STT, exchange charges, etc. The column reads as net daily cash move; operator should not interpret it as P&L attribution.
 - Empty range or no entries: endpoint returns `{rows_added: 0, ..., detail: "no ledger entries in range"}` rather than 5xx. Operator can scope down or pick a different account.
+- **Backfill OVERWRITES existing rows** on the unique key `(date, account, kind, symbol)`. Re-running with a wider range clobbers any prior backfill numbers in the overlapping window — by design, since the voucher-aggregated ledger is more accurate than the single broker.margins() snapshot the daily cron captures. Operator-side: treat funds rows as read-only; don't hand-edit. If a row looks wrong, investigate the upstream broker statement, not the row.
 
 **Remaining limit:**
 

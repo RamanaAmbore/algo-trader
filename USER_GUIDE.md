@@ -562,6 +562,8 @@ The page is read-only. If you need to take action on something you see (re-place
 
 What you actually get from a Dhan backfill: one row per (date, account, segment). Each row's Cash avail comes from Dhan's end-of-day running balance; Δ vs prior is computed off the prior day's row. "Realised M2M" here is best-read as "net daily cash flow" (credits minus debits across all voucher entries that day) — it includes brokerage, STT, DP charges, and actual MTM together. Dhan's ledger doesn't break those apart per row.
 
+**Funds rows are read-only in practice.** A re-run of Backfill over the same date range OVERWRITES the existing rows with the canonical broker-ledger numbers. That's intentional — the voucher-aggregated backfill is more accurate than a single broker.margins() snapshot. But it also means: don't hand-edit a funds row expecting your edit to stick. If a row looks wrong, the fix is to investigate the broker ledger source or wait for the next snapshot to overwrite it.
+
 ---
 
 ## Audit log — what's recorded
