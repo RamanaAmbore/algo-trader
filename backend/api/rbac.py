@@ -138,6 +138,10 @@ CAPS: dict[str, frozenset[str]] = {
     "approve_users":            frozenset({"admin"}),
     "manage_admins":            frozenset({"admin"}),  # legacy: was designated-only
     "impersonate":              frozenset({"admin"}),
+    # Mint / revoke / list investor portal access tokens. Admin owns
+    # LP onboarding so this stays admin-only — ops + risk shouldn't
+    # be handing out portal URLs.
+    "manage_investor_tokens":   frozenset({"admin"}),
 
     # ── Sim / replay / lab ────────────────────────────────────────────
     "run_simulator":            frozenset({"admin", "trader", "risk", "demo"}),  # demo session-only

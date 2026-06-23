@@ -372,6 +372,17 @@ export const fetchMyNavSlice    = () =>
 export const fetchMyNavHistory  = ({ days = 90 } = {}) =>
   _get(`/nav/me/history?days=${Number(days) || 90}`, { auth: true });
 
+/** Investor portal admin (slice 7L) — token mint/revoke per LP.
+ *  Returned token from mint is shown ONCE; subsequent list calls
+ *  surface only a preview. Mirrors MCP token mint UX. */
+export const fetchInvestorTokens = (/** @type {number} */ userId) =>
+  _get(`/admin/users/${userId}/investor-tokens`, { auth: true });
+export const mintInvestorToken   = (/** @type {number} */ userId,
+                                    /** @type {{expires_in_days?:number, note?:string}} */ body = {}) =>
+  _post(`/admin/users/${userId}/investor-tokens`, body, { auth: true });
+export const revokeInvestorToken = (/** @type {number} */ userId, /** @type {number} */ tokenId) =>
+  _del(`/admin/users/${userId}/investor-tokens/${tokenId}`, { auth: true });
+
 /** GET /api/admin/audit — paginated audit log with filters. Gated
  *  by the `view_audit` cap server-side (admin / risk / ops). */
 export const fetchAuditLog = (params = {}) => {

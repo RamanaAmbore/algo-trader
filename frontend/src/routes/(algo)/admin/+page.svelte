@@ -11,6 +11,7 @@
     resendVerification, markVerified,
     sendPartnerEmail, fetchEmailEvents,
     impersonateUser,
+    fetchInvestorTokens, mintInvestorToken, revokeInvestorToken,
   } from '$lib/api';
   import MultiSelect from '$lib/MultiSelect.svelte';
   import Select   from '$lib/Select.svelte';
@@ -34,6 +35,87 @@
   let showCreate = $state(false);
   let createForm = $state({ username: '', password: '', display_name: '', email: '', phone: '', role: 'partner', contribution: 0, share_pct: 0, is_approved: true });
   let creating   = $state(false);
+
+  // Investor portal — token mint/list/revoke modal state. Opened
+  // via the per-user "Portal" button; the operator mints a long-
+  // lived URL and forwards it to the LP through their own channel.
+  /** @type {{id:number, username:string}|null} */
+  let portalUser   = $state(null);
+  /** @type {any[]} */
+  let portalTokens = $state([]);
+  let portalLoading = $state(false);
+  let portalMintBusy = $state(false);
+  let portalMintDays = $state(90);
+  let portalMintNote = $state('');
+  /** Freshly-minted token. Surfaces ONCE — closed/replaced on the
+   *  next mint or modal close. Includes the resolved full URL so
+   *  the operator clicks Copy and pastes into WhatsApp/email. */
+  /** @type {{token:string, url:string, expires_at:string}|null} */
+  let portalFresh  = $state(null);
+  let portalError  = $state('');
+
+  async function openPortal(/** @type {any} */ user) {
+    portalUser   = { id: user.id, username: user.username };
+    portalTokens = []; portalFresh = null; portalError = '';
+    portalMintDays = 90; portalMintNote = '';
+    portalLoading = true;
+    try {
+      const r = await fetchInvestorTokens(user.id);
+      portalTokens = r?.rows ?? [];
+    } catch (e) { portalError = e?.message || 'Failed to load tokens'; }
+    finally { portalLoading = false; }
+  }
+
+  function closePortal() {
+    portalUser = null;
+    portalTokens = []; portalFresh = null; portalError = '';
+  }
+
+  async function mintPortal() {
+    if (!portalUser || portalMintBusy) return;
+    portalMintBusy = true; portalError = '';
+    try {
+      const r = await mintInvestorToken(portalUser.id, {
+        expires_in_days: portalMintDays,
+        note: portalMintNote || undefined,
+      });
+      const origin = (typeof window !== 'undefined' && window.location?.origin) || '';
+      portalFresh = {
+        token: r.token,
+        url: origin + r.portal_url,
+        expires_at: r.expires_at,
+      };
+      portalMintNote = '';
+      // Re-list so the new row shows in the table immediately.
+      try {
+        const list = await fetchInvestorTokens(portalUser.id);
+        portalTokens = list?.rows ?? [];
+      } catch (_) {}
+    } catch (e) { portalError = e?.message || 'Failed to mint token'; }
+    finally { portalMintBusy = false; }
+  }
+
+  async function revokePortal(/** @type {number} */ tokenId) {
+    if (!portalUser) return;
+    if (!await confirmRef.ask({
+      title: 'Revoke investor portal token?',
+      body: 'The URL will stop working immediately. The LP will see an "expired" error on their next visit.',
+      confirmLabel: 'Revoke',
+      kind: 'danger',
+    })) return;
+    portalError = '';
+    try {
+      await revokeInvestorToken(portalUser.id, tokenId);
+      const list = await fetchInvestorTokens(portalUser.id);
+      portalTokens = list?.rows ?? [];
+    } catch (e) { portalError = e?.message || 'Failed to revoke'; }
+  }
+
+  async function copyPortalUrl() {
+    if (!portalFresh) return;
+    try { await navigator.clipboard.writeText(portalFresh.url); success = 'Portal URL copied to clipboard'; }
+    catch { /* clipboard API may be unavailable on http:// — operator can still select + copy */ }
+  }
 
   async function load() {
     loading = true; error = ''; success = '';
@@ -508,6 +590,18 @@
               {#if editing !== user.username && !user.terminated_at && (iAmDesignated || isSelf || (iAmAdmin && targetIsPartner))}
                 <button onclick={() => startEdit(user)} class="btn-secondary text-[0.65rem] py-1 px-2">Edit</button>
               {/if}
+              <!-- Investor portal — token mint/revoke for LP read-
+                   only NAV access. Designated only; only meaningful
+                   when the user has a real contribution. We don't
+                   gate on share_pct so the operator can also pre-
+                   mint a link for an LP whose row is queued. -->
+              {#if iAmDesignated && !user.terminated_at && !isSelf}
+                <button
+                  onclick={() => openPortal(user)}
+                  class="btn-secondary text-[0.65rem] py-1 px-2 border-cyan-400/50 text-cyan-300"
+                  title="Mint or revoke this LP's investor-portal URL"
+                >Portal</button>
+              {/if}
               <!-- View as — start a 30-min support session as this
                    user. Designated can view ANY user; admin can only
                    view partners. Never self (no point), never a
@@ -828,3 +922,259 @@
      through confirmRef.ask(). Replaces native confirm() which is
      silently no-op'd in iOS PWA standalone mode. -->
 <ConfirmModal bind:this={confirmRef} />
+
+<!-- Investor portal modal — minted token URL + token list. Opens via
+     the per-user Portal button. The modal is the entirety of the
+     interaction surface; admin closes it when done. -->
+{#if portalUser}
+  <div class="ip-modal-overlay" role="dialog" aria-modal="true" tabindex="-1"
+       onclick={closePortal}
+       onkeydown={(e) => { if (e.key === 'Escape') closePortal(); }}>
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events -->
+    <div class="ip-modal" role="document" onclick={(e) => e.stopPropagation()}>
+      <header class="ip-modal-head">
+        <div>
+          <div class="ip-modal-title">Investor portal</div>
+          <div class="ip-modal-subtitle">{portalUser.username}</div>
+        </div>
+        <button class="ip-modal-x" onclick={closePortal} aria-label="Close">×</button>
+      </header>
+
+      {#if portalError}
+        <div class="ip-modal-error">{portalError}</div>
+      {/if}
+
+      {#if portalFresh}
+        <section class="ip-modal-fresh">
+          <div class="ip-modal-fresh-lbl">New URL minted — copy now</div>
+          <div class="ip-modal-fresh-url-row">
+            <input type="text" class="ip-modal-fresh-url"
+                   readonly value={portalFresh.url}
+                   onclick={(e) => e.currentTarget.select()} />
+            <button class="btn-primary text-[0.65rem] py-1 px-2"
+                    onclick={copyPortalUrl}>Copy</button>
+          </div>
+          <div class="ip-modal-fresh-hint">
+            Expires {portalFresh.expires_at.slice(0, 10)}. This URL is
+            the credential — forward via your trusted channel
+            (WhatsApp / email). Shown only once.
+          </div>
+        </section>
+      {/if}
+
+      <section class="ip-modal-mint">
+        <div class="ip-modal-section-head">Mint a new token</div>
+        <div class="ip-modal-mint-row">
+          <label class="ip-modal-field">
+            <span class="ip-modal-field-lbl">Expires in</span>
+            <input type="number" min="1" max="3650"
+                   bind:value={portalMintDays}
+                   class="field-input"/>
+            <span class="ip-modal-field-suffix">days</span>
+          </label>
+          <label class="ip-modal-field grow">
+            <span class="ip-modal-field-lbl">Note (optional)</span>
+            <input type="text" maxlength="120"
+                   bind:value={portalMintNote}
+                   placeholder="e.g. WhatsApp to LP"
+                   class="field-input"/>
+          </label>
+          <button class="btn-primary text-[0.7rem] py-1.5 px-3"
+                  disabled={portalMintBusy}
+                  onclick={mintPortal}>
+            {portalMintBusy ? 'Minting…' : 'Mint'}
+          </button>
+        </div>
+      </section>
+
+      <section class="ip-modal-list">
+        <div class="ip-modal-section-head">
+          Existing tokens
+          {#if portalLoading}<span class="text-[0.6rem] text-[#7e97b8]"> · loading…</span>{/if}
+        </div>
+        {#if !portalLoading && portalTokens.length === 0}
+          <div class="ip-modal-empty">No tokens minted yet.</div>
+        {:else}
+          <div class="ip-modal-tbl-wrap">
+            <table class="ip-modal-tbl">
+              <thead>
+                <tr>
+                  <th>Token</th>
+                  <th>Status</th>
+                  <th>Expires</th>
+                  <th>Last visit</th>
+                  <th class="th-num">Visits</th>
+                  <th>Note</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {#each portalTokens as t (t.id)}
+                  <tr class:revoked={!t.is_active}>
+                    <td class="td-mono">{t.token_preview}</td>
+                    <td>
+                      {#if t.revoked_at}
+                        <span class="ip-pill ip-pill-revoked">Revoked</span>
+                      {:else if !t.is_active}
+                        <span class="ip-pill ip-pill-expired">Expired</span>
+                      {:else}
+                        <span class="ip-pill ip-pill-active">Active</span>
+                      {/if}
+                    </td>
+                    <td class="td-mono">{t.expires_at?.slice(0, 10) ?? '—'}</td>
+                    <td class="td-mono">{t.last_visit_at?.slice(0, 10) ?? '—'}</td>
+                    <td class="td-num">{t.visit_count}</td>
+                    <td class="ip-modal-note" title={t.note || ''}>{t.note || '—'}</td>
+                    <td class="td-actions">
+                      {#if t.is_active}
+                        <button class="btn-secondary text-[0.6rem] py-0.5 px-1.5 border-red-400/50 text-red-300"
+                                onclick={() => revokePortal(t.id)}>Revoke</button>
+                      {/if}
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          </div>
+        {/if}
+      </section>
+    </div>
+  </div>
+{/if}
+
+<style>
+  .ip-modal-overlay {
+    position: fixed; inset: 0; z-index: 200;
+    background: rgba(8, 13, 26, 0.72);
+    display: flex; align-items: center; justify-content: center;
+    padding: 1.5rem;
+  }
+  .ip-modal {
+    background: #0f172a;
+    border: 1px solid rgba(126, 151, 184, 0.30);
+    border-radius: 8px;
+    width: 100%;
+    max-width: 720px;
+    max-height: 90vh;
+    overflow-y: auto;
+    padding: 1rem 1.2rem 1.3rem;
+    color: #c8d8f0;
+    box-shadow: 0 18px 36px rgba(0,0,0,0.45);
+  }
+  .ip-modal-head {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    margin-bottom: 0.8rem;
+    border-bottom: 1px solid rgba(126, 151, 184, 0.18);
+    padding-bottom: 0.6rem;
+  }
+  .ip-modal-title {
+    font-size: 0.78rem; font-weight: 800; letter-spacing: 0.06em;
+    text-transform: uppercase; color: #67e8f9;
+    font-family: ui-monospace, monospace;
+  }
+  .ip-modal-subtitle {
+    font-size: 0.65rem; color: #7e97b8; margin-top: 0.15rem;
+    font-family: ui-monospace, monospace;
+  }
+  .ip-modal-x {
+    background: transparent; border: 1px solid rgba(126, 151, 184, 0.30);
+    color: #c8d8f0; border-radius: 4px;
+    width: 1.6rem; height: 1.6rem;
+    font-size: 1.1rem; line-height: 1; cursor: pointer;
+  }
+  .ip-modal-x:hover { background: rgba(248, 113, 113, 0.12); color: #fca5a5; }
+
+  .ip-modal-error {
+    padding: 0.5rem 0.7rem;
+    background: rgba(248,113,113,0.12); border: 1px solid rgba(248,113,113,0.4);
+    color: #fca5a5; border-radius: 4px;
+    font-size: 0.7rem; margin-bottom: 0.7rem;
+  }
+  .ip-modal-fresh {
+    background: rgba(74, 222, 128, 0.10);
+    border: 1px solid rgba(74, 222, 128, 0.35);
+    border-radius: 6px;
+    padding: 0.7rem 0.9rem;
+    margin-bottom: 0.9rem;
+  }
+  .ip-modal-fresh-lbl {
+    font-size: 0.55rem; font-weight: 800; letter-spacing: 0.06em;
+    text-transform: uppercase; color: #4ade80;
+    margin-bottom: 0.35rem;
+  }
+  .ip-modal-fresh-url-row {
+    display: flex; gap: 0.4rem; align-items: center;
+  }
+  .ip-modal-fresh-url {
+    flex: 1; min-width: 0;
+    padding: 0.3rem 0.5rem;
+    background: rgba(15, 23, 42, 0.65);
+    border: 1px solid rgba(126, 151, 184, 0.30);
+    border-radius: 4px;
+    color: #c8d8f0;
+    font-family: ui-monospace, monospace;
+    font-size: 0.7rem;
+  }
+  .ip-modal-fresh-hint {
+    margin-top: 0.4rem;
+    font-size: 0.62rem; color: #7e97b8; line-height: 1.5;
+  }
+
+  .ip-modal-section-head {
+    font-size: 0.55rem; font-weight: 800; letter-spacing: 0.06em;
+    text-transform: uppercase; color: #a3b9d0;
+    margin-bottom: 0.4rem;
+    font-family: ui-monospace, monospace;
+  }
+  .ip-modal-mint { margin-bottom: 1rem; }
+  .ip-modal-mint-row {
+    display: flex; gap: 0.5rem; align-items: flex-end; flex-wrap: wrap;
+  }
+  .ip-modal-field { display: flex; flex-direction: column; gap: 0.2rem; }
+  .ip-modal-field.grow { flex: 1 1 12rem; }
+  .ip-modal-field-lbl {
+    font-size: 0.55rem; color: #7e97b8; letter-spacing: 0.04em;
+    text-transform: uppercase; font-weight: 700;
+  }
+  .ip-modal-field-suffix {
+    font-size: 0.6rem; color: #7e97b8;
+  }
+
+  .ip-modal-empty {
+    padding: 1rem; text-align: center; color: #7e97b8;
+    font-size: 0.7rem; font-style: italic;
+  }
+  .ip-modal-tbl-wrap {
+    overflow-x: auto;
+    border: 1px solid rgba(126, 151, 184, 0.18);
+    border-radius: 4px;
+  }
+  .ip-modal-tbl { width: 100%; border-collapse: collapse; font-size: 0.68rem; }
+  .ip-modal-tbl th {
+    text-align: left; padding: 0.3rem 0.5rem;
+    background: rgba(15, 23, 42, 0.65);
+    color: #a3b9d0; font-size: 0.5rem; letter-spacing: 0.06em;
+    text-transform: uppercase; font-weight: 800;
+    border-bottom: 1px solid rgba(126, 151, 184, 0.30);
+  }
+  .ip-modal-tbl th.th-num { text-align: right; }
+  .ip-modal-tbl td {
+    padding: 0.3rem 0.5rem;
+    border-bottom: 1px solid rgba(126, 151, 184, 0.10);
+    color: #c8d8f0;
+  }
+  .ip-modal-tbl td.td-mono { font-family: ui-monospace, monospace; font-size: 0.65rem; }
+  .ip-modal-tbl td.td-num  { text-align: right; font-variant-numeric: tabular-nums; }
+  .ip-modal-tbl td.td-actions { text-align: right; }
+  .ip-modal-tbl tr.revoked td { color: #7e97b8; }
+  .ip-modal-note { max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .ip-pill {
+    display: inline-block; padding: 0.05rem 0.4rem;
+    font-size: 0.5rem; font-weight: 800; letter-spacing: 0.06em;
+    text-transform: uppercase; border-radius: 2px;
+  }
+  .ip-pill-active  { background: rgba(74, 222, 128, 0.15); color: #4ade80; border: 1px solid rgba(74,222,128,0.4); }
+  .ip-pill-revoked { background: rgba(248, 113, 113, 0.12); color: #fca5a5; border: 1px solid rgba(248,113,113,0.35); }
+  .ip-pill-expired { background: rgba(126, 151, 184, 0.12); color: #c8d8f0; border: 1px solid rgba(126,151,184,0.3); }
+</style>

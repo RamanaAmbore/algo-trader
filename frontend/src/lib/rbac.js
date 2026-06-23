@@ -83,6 +83,7 @@ const FALLBACK_CAPS = /** @type {Record<string, ReadonlyArray<string>>} */ ({
   approve_users:            ['admin'],
   manage_admins:            ['admin'],
   impersonate:              ['admin'],
+  manage_investor_tokens:   ['admin'],
   // sim / replay / lab
   run_simulator:            ['admin', 'trader', 'risk', 'demo'],
   run_replay:               ['admin', 'trader', 'risk', 'demo'],

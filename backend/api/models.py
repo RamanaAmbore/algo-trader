@@ -182,6 +182,51 @@ class ImpersonationEvent(Base):
 # Auth — short-lived tokens for email verification + password reset
 # ---------------------------------------------------------------------------
 
+class InvestorToken(Base):
+    """
+    Long-lived, revocable, public URL token for LP-facing investor
+    portal access. The token IS the credential — anyone holding the
+    URL `/investor/<token>` reads the LP's NAV slice + history.
+    Operator mints from `/admin/users/{id}/investor-token`, then
+    forwards the URL to the LP (email / WhatsApp); no LP login.
+
+    Revocation: set `revoked_at`. Once non-null the token is dead;
+    next visit returns 401. Re-issue by minting a new row (the old
+    row stays for the audit trail).
+
+    Expiry: 90-day default. Operator picks at mint time; longer is
+    fine for trusted LPs. Each visit bumps `visit_count` +
+    `last_visit_at` so the operator can see "this LP last looked at
+    statements 3 weeks ago" from the admin UI.
+
+    Industry analog: Carta investor portal magic-link, SS&C / GP-
+    Link share-class URLs, Yieldstreet's LP-specific URL slugs.
+    """
+    __tablename__ = "investor_tokens"
+
+    id:            Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id:       Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    # 32-byte secrets.token_hex → 64-char string. Stored raw (same
+    # convention as AuthToken) — the token is the URL slug, not a
+    # password; hashing would just complicate revoke + lookup
+    # without adding security since possession of the URL == access.
+    token:         Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    expires_at:    Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at:    Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_visit_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    visit_count:   Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Admin-supplied label, e.g. "Mailed to LP via WhatsApp 2026-06-23"
+    note:          Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Audit: which admin minted this token. Nullable so a self-mint
+    # via /admin won't break if the originator has been deleted
+    # later.
+    created_by:    Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at:    Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+
 class AuthToken(Base):
     """
     One-time token for email verification + password reset. Single table
