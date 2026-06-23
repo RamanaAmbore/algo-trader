@@ -54,17 +54,20 @@ async def test_postback_valid_hmac(async_client, stub_connections):
     assert response.status_code == 201, f"Expected 201, got {response.status_code}: {response.text}"
     data = response.json()
     assert data.get("status") == "ok"
-    # The handler now broadcasts both an `order_update` (status change)
-    # AND a `position_filled` (fill confirmation) on a COMPLETE order.
-    # Two distinct events, two calls.
+    # The handler broadcasts three events on a COMPLETE order:
+    # `order_update` (status change), `position_filled` (qty>0 fill
+    # signal), and `book_changed` (terminal-state bus event added in
+    # the postback fan-out work — wakes Pulse/Performance/Derivatives
+    # auto-refresh). qty=1 triggers position_filled.
     import json as _json
-    assert mock_broadcast.call_count == 2
+    assert mock_broadcast.call_count == 3
     call_events = [
         _json.loads(c.args[0]).get("event")
         for c in mock_broadcast.call_args_list
     ]
     assert "order_update" in call_events
     assert "position_filled" in call_events
+    assert "book_changed" in call_events
 
 
 @pytest.mark.asyncio
@@ -131,18 +134,22 @@ async def test_postback_fallback_account_lookup(async_client, reset_singletons):
     Verifies that the fallback-iteration path works when the account
     is in the middle of the candidate list.
     """
-    from backend.shared.helpers.connections import Connections
+    from backend.shared.helpers.connections import Connections, KiteConnection
 
     # Create stubs for multiple accounts.
     # Set both _api_secret (legacy) and api_secret (public property mirror)
     # so the postback HMAC path works regardless of which accessor is used.
-    stub1 = MagicMock()
+    # `spec=KiteConnection` makes isinstance(stub, KiteConnection) True so
+    # the postback handler's `isinstance(c, KiteConnection)` candidate
+    # filter accepts them (Dhan/Groww connections are intentionally
+    # skipped because they don't expose api_secret).
+    stub1 = MagicMock(spec=KiteConnection)
     stub1._api_secret = "secret_acct1"
     stub1.api_secret = "secret_acct1"
-    stub2 = MagicMock()
+    stub2 = MagicMock(spec=KiteConnection)
     stub2._api_secret = "test_secret_123"
     stub2.api_secret = "test_secret_123"
-    stub3 = MagicMock()
+    stub3 = MagicMock(spec=KiteConnection)
     stub3._api_secret = "secret_acct3"
     stub3.api_secret = "secret_acct3"
 
@@ -173,4 +180,13 @@ async def test_postback_fallback_account_lookup(async_client, reset_singletons):
     assert response.status_code == 201
     data = response.json()
     assert data.get("status") == "ok"
-    mock_broadcast.assert_called_once()
+    # Payload omits quantity so position_filled is skipped (qty>0 guard);
+    # COMPLETE still fires order_update + book_changed.
+    import json as _json
+    assert mock_broadcast.call_count == 2
+    call_events = [
+        _json.loads(c.args[0]).get("event")
+        for c in mock_broadcast.call_args_list
+    ]
+    assert "order_update" in call_events
+    assert "book_changed" in call_events

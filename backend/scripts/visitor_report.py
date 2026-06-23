@@ -153,6 +153,37 @@ class _IPRecord:
 
 
 # ---------------------------------------------------------------------------
+# IP masking — GDPR-style anonymisation for visitor reports
+# ---------------------------------------------------------------------------
+
+def _mask_ip(ip: str) -> str:
+    """Mask an IP for GDPR-style anonymisation in reports.
+
+    IPv4 `49.207.222.16` → `49.207.x.###` (first two octets preserved,
+    third masked with `x`, fourth masked with `###`).
+    IPv6 keeps the first three :-separated groups, the rest collapse
+    into `####` so /64 subnet identity stays opaque.
+
+    Was previously in `backend/api/routes/visitors.py`; moved here when
+    the admin route was removed but the visitor pipeline (script +
+    DB + nightly task) was kept. Used by tests + by future report
+    surfaces that want anonymous IPs.
+    """
+    if not ip:
+        return ""
+    if ":" in ip:
+        # IPv6 — keep first three groups, mask the rest with ####.
+        parts = ip.split(":")
+        if len(parts) <= 3:
+            return ip
+        return ":".join(parts[:3]) + "::####"
+    octets = ip.split(".")
+    if len(octets) != 4:
+        return ip
+    return f"{octets[0]}.{octets[1]}.x.###"
+
+
+# ---------------------------------------------------------------------------
 # Log parsing
 # ---------------------------------------------------------------------------
 

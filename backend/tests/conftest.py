@@ -81,8 +81,14 @@ def stub_kite_connection():
     Create a stub KiteConnection-like object with minimal attributes
     needed by the broker code paths. Returns a dict mapping account
     ID to the stub so tests can patch Connections().conn.
+
+    `spec=KiteConnection` makes the mock satisfy `isinstance(c,
+    KiteConnection)` checks — the postback HMAC handler filters
+    candidates to Kite-only connections by class, so a plain MagicMock
+    would be silently skipped (sig_valid stays False → 401).
     """
-    stub = MagicMock()
+    from backend.shared.helpers.connections import KiteConnection
+    stub = MagicMock(spec=KiteConnection)
     stub._api_secret = "test_secret_123"
     stub.api_secret = "test_secret_123"   # mirrors the public property on KiteConnection
     stub.get_kite_conn = MagicMock(return_value=MagicMock())

@@ -18,11 +18,18 @@ from unittest.mock import patch, MagicMock
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _mock_settings(paper_mode: bool = True, shadow_mode: bool = False):
-    """Return a _CACHE dict that makes get_bool work without DB."""
+def _mock_settings(paper_mode: bool = True, shadow_mode: bool = False,
+                   dev_active: bool = True):
+    """Return a _CACHE dict that makes get_bool work without DB.
+
+    `dev_active` toggles the new (Jun 2026) dev kill-switch — when False
+    the dev branch resolves to `idle` instead of `paper`, so tests that
+    want PAPER on dev must keep this True.
+    """
     return {
         "execution.paper_trading_mode": "true" if paper_mode else "false",
         "execution.shadow_mode":        "true" if shadow_mode else "false",
+        "execution.dev_active":         "true" if dev_active else "false",
     }
 
 
@@ -80,20 +87,23 @@ class TestGetMode:
         assert mode == "shadow"
 
     def test_allowed_modes_constants(self):
-        """Picker constants reflect the persistent-mode-only design:
-        sim / replay are non-pickable workspaces, not modes; both lists
-        contain only persistent modes. Dev gets `paper` only; prod adds
-        `live`. Shadow is intentionally excluded from the dropdown
-        (toggle via /admin/settings if needed)."""
+        """Picker constants reflect the post-Jun-2026 navbar design:
+        sim / replay are navbar-pickable workspaces that the controller
+        accepts as POST targets (sets dev_active + stops the opposite
+        driver). Dev: idle / paper / sim / replay (LIVE + SHADOW are
+        excluded because dev forces paper regardless). Prod: paper /
+        live / shadow / sim / replay (all five navbar entries)."""
         from backend.api.routes.execution import _DEV_MODES, _PROD_MODES
 
-        assert _DEV_MODES == ["paper"]
-        assert _PROD_MODES == ["paper", "live"]
-        # sim / replay / shadow are not in EITHER list (they're not
-        # picker-selectable modes any more).
-        for m in ("sim", "replay", "shadow"):
+        assert _DEV_MODES == ["idle", "paper", "sim", "replay"]
+        assert _PROD_MODES == ["paper", "live", "shadow", "sim", "replay"]
+        # `idle` is a dev-only kill-switch — keeps the engine off until
+        # the operator picks PAPER. Prod's master flag is paper_trading_mode.
+        assert "idle" not in _PROD_MODES
+        # LIVE / SHADOW are prod-only — dev forces paper.
+        for m in ("live", "shadow"):
             assert m not in _DEV_MODES
-            assert m not in _PROD_MODES
+            assert m in _PROD_MODES
 
 
 class TestSetMode:
@@ -109,27 +119,25 @@ class TestSetMode:
         assert req.mode == "paper"
 
     @pytest.mark.asyncio
-    async def test_set_sim_rejected_on_prod(self):
-        """POST 'sim' on prod branch → 403; 'sim' is no longer a
-        pickable mode on either branch (it's a workspace, not a
-        persistent mode), so the route rejects it everywhere."""
+    async def test_set_garbage_mode_rejected(self):
+        """POST an unknown mode (e.g. 'garbage') on either branch → 403
+        with `Allowed: …` in the detail. SIM/REPLAY are now legitimate
+        navbar entries on both branches, so the rejected-mode invariant
+        is checked against an obviously-bogus mode instead."""
         from litestar.exceptions import HTTPException
         from backend.api.routes.execution import (
             ExecutionController, ExecutionModeRequest, _PROD_MODES, _DEV_MODES
         )
 
-        # 'sim' must not be in EITHER allowed-modes list — that's the
-        # post-mode-picker-narrowing invariant.
-        assert "sim" not in _PROD_MODES
-        assert "sim" not in _DEV_MODES
+        # Sanity-check: neither list has the bogus value.
+        assert "garbage" not in _PROD_MODES
+        assert "garbage" not in _DEV_MODES
 
         controller = ExecutionController.__new__(ExecutionController)
-        req = ExecutionModeRequest(mode="sim")
+        req = ExecutionModeRequest(mode="garbage")
 
         # is_prod_branch reads from backend.shared.helpers.utils.config;
-        # we patch that dict so the branch check sees "main".
-        # The 403 is raised before async_session is touched, so we
-        # don't need to stub DB helpers.
+        # patch the dict so the branch check sees "main".
         # Call the underlying function directly (Litestar wraps methods into
         # route handler objects; the raw coroutine lives at fn.__func__).
         set_mode_fn = ExecutionController.set_mode.fn
@@ -140,14 +148,13 @@ class TestSetMode:
                 await set_mode_fn(controller, req)
 
         assert exc_info.value.status_code == 403
-        assert "sim" in str(exc_info.value.detail).lower()
+        assert "garbage" in str(exc_info.value.detail).lower()
 
     @pytest.mark.asyncio
     async def test_get_returns_allowed_modes_for_dev(self):
-        """GET on dev → allowed_modes is the persistent-mode subset
-        the picker offers. After the picker narrowing, dev sees
-        [paper] only (sim/replay/shadow live as workspaces, not
-        modes). live is filtered out on non-main branches."""
+        """GET on dev → allowed_modes is the dev-branch navbar subset.
+        Post-Jun-2026 navbar design: idle / paper / sim / replay.
+        LIVE + SHADOW filtered out (dev forces paper)."""
         from backend.api.routes.execution import ExecutionController
 
         controller = ExecutionController.__new__(ExecutionController)
@@ -160,6 +167,7 @@ class TestSetMode:
 
             resp = await get_mode_fn(controller)
 
-        assert resp.allowed_modes == ["paper"]
+        assert resp.allowed_modes == ["idle", "paper", "sim", "replay"]
         assert "live" not in resp.allowed_modes
+        assert "shadow" not in resp.allowed_modes
         assert resp.branch == "dev"

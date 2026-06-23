@@ -36,10 +36,21 @@ def test_holdings_derives_pnl_when_omitted():
     assert r["last_price"] == 498.3
     # Derived pnl: (498.3 - 1332.9) × 15 = -12519
     assert abs(r["pnl"] - (-12519.0)) < 0.01
-    # When previousClosePrice is missing, close_price falls back to
-    # last_price → day_change = 0 (least-misleading display).
-    assert r["close_price"] == 498.3
-    assert r["day_change"] == 0.0
+    # When previousClosePrice is missing, close_price is left at 0 so
+    # the broker_apis.backfill_market_data helper can batch-fetch a
+    # real prior-day close via PriceBroker.quote() across every missing
+    # row. Pre-fix fallback set close_price = last_price → day_change=0
+    # which silently masked these rows from the backfill mask. Contract
+    # changed Jun 2026 (audit fix); see _normalise_holdings docstring.
+    assert r["close_price"] == 0.0
+    # day_change is intentionally a phantom value here (last × qty); the
+    # broker_apis.backfill_market_data pass downstream recomputes it
+    # after patching close_price from a PriceBroker.quote() call. The
+    # normaliser's job is to flag missing close, not to second-guess
+    # day_change in isolation.
+    assert abs(r["day_change"] - 498.3 * 15) < 0.01
+    # day_change_percentage IS gated on close_price > 0 (avoid div-by-zero)
+    # so the operator-facing % column reads 0 until backfill lands.
     assert r["day_change_percentage"] == 0.0
 
 

@@ -3,11 +3,28 @@ FIX 2 — Ticket account required
 
 Tests for /api/orders/ticket endpoint account validation.
 
-The ticket endpoint now requires an explicit account field and
-validates it against loaded Connections before proceeding.
+The ticket endpoint requires an explicit account field and validates
+it against loaded Connections before proceeding. These tests skip the
+auth_or_demo_guard by patching is_admin_request to return True so the
+request flows through as admin (otherwise on a `deploy_branch=main`
+test environment the guard tags the unauthenticated request as DEMO
+and the ticket route 403s with "Demo mode" before the account check
+runs).
 """
 
 import pytest
+from unittest.mock import patch, AsyncMock
+
+
+def _admin_auth_patches():
+    """Combined patch context: mark every request as admin so the
+    `auth_or_demo_guard` doesn't tag the test request as demo on
+    prod-branch test envs. Returns a context manager."""
+    return patch.multiple(
+        "backend.api.auth_guard",
+        is_admin_request=lambda _conn: True,
+        jwt_guard=AsyncMock(return_value=None),
+    )
 
 
 @pytest.mark.asyncio
@@ -25,7 +42,8 @@ async def test_ticket_missing_account(async_client, stub_connections):
         "account": "",  # Empty
     }
 
-    response = await async_client.post("/api/orders/ticket", json=payload)
+    with _admin_auth_patches():
+        response = await async_client.post("/api/orders/ticket", json=payload)
 
     assert response.status_code == 400
     data = response.json()
@@ -47,7 +65,8 @@ async def test_ticket_unknown_account(async_client, stub_connections):
         "account": "UNKNOWN_ACCT",
     }
 
-    response = await async_client.post("/api/orders/ticket", json=payload)
+    with _admin_auth_patches():
+        response = await async_client.post("/api/orders/ticket", json=payload)
 
     assert response.status_code == 400
     data = response.json()

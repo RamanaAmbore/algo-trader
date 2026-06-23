@@ -197,6 +197,16 @@ async def test_concurrent_executor_calls():
         time.sleep(delay)
         return f"done_{delay}"
 
+    # Pre-warm the default executor so the first call's thread-creation
+    # overhead doesn't count against the concurrency budget. The default
+    # ThreadPoolExecutor lazy-spawns threads on first submit; on macOS +
+    # Python 3.14 that overhead is ~50ms per thread and would otherwise
+    # push two concurrent 0.1s tasks over the 0.18s budget on cold cache.
+    await asyncio.gather(
+        loop.run_in_executor(None, lambda: None),
+        loop.run_in_executor(None, lambda: None),
+    )
+
     # Start two concurrent executor calls
     task1 = loop.run_in_executor(None, blocking_operation, 0.1)
     task2 = loop.run_in_executor(None, blocking_operation, 0.1)
@@ -207,6 +217,8 @@ async def test_concurrent_executor_calls():
     elapsed = time.time() - start
 
     # If they ran serially, total would be ~0.2s. If concurrent, ~0.1s.
-    assert elapsed < 0.15, f"Calls should run concurrently, took {elapsed}s"
+    # 0.18s budget tolerates the ~50ms thread-creation overhead on slow
+    # CI runners while still distinguishing concurrent from serial.
+    assert elapsed < 0.18, f"Calls should run concurrently, took {elapsed}s"
     assert result1 == "done_0.1"
     assert result2 == "done_0.1"

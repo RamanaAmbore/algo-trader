@@ -18,6 +18,26 @@ from unittest.mock import MagicMock, patch, AsyncMock
 
 
 # ---------------------------------------------------------------------------
+# Date helpers — keep tests resilient as today's date marches forward.
+# The resolver filters past-expired contracts using `date.today()`, so
+# hardcoded years bit-rot. These helpers always produce future-relative
+# fixtures.
+# ---------------------------------------------------------------------------
+
+def _future_month(months_out: int, day: int = 18):
+    """Return (year_code_2digit, month_token_3char_upper, expiry_iso) for
+    a date `months_out` calendar months past today. Used to construct
+    instrument symbols + expiry dates that stay in the future regardless
+    of when the suite runs."""
+    today = date.today()
+    total = today.month + months_out - 1
+    yr  = today.year + total // 12
+    mo  = total % 12 + 1
+    d   = date(yr, mo, day)
+    return f"{yr % 100:02d}", d.strftime("%b").upper(), d.isoformat()
+
+
+# ---------------------------------------------------------------------------
 # Fake instrument item shape (matches what the instruments cache returns)
 # ---------------------------------------------------------------------------
 
@@ -88,12 +108,16 @@ def _patch_no_sim():
 @pytest.mark.asyncio
 async def test_mcx_uses_front_month_when_no_expiry_hint():
     """Without expiry_hint, MCX commodity always uses the front-month future."""
-    jun_inst = _inst("CRUDEOIL26JUNFUT", "CRUDEOIL", "2026-06-18")
-    sep_inst = _inst("CRUDEOIL26SEPFUT", "CRUDEOIL", "2026-09-18")
-    items = [jun_inst, sep_inst]
+    yy_f, mon_f, exp_f = _future_month(1)   # ~1 month out (front)
+    yy_b, mon_b, exp_b = _future_month(4)   # ~4 months out (back)
+    front_sym = f"CRUDEOIL{yy_f}{mon_f}FUT"
+    back_sym  = f"CRUDEOIL{yy_b}{mon_b}FUT"
+    front_inst = _inst(front_sym, "CRUDEOIL", exp_f)
+    back_inst  = _inst(back_sym,  "CRUDEOIL", exp_b)
+    items = [front_inst, back_inst]
 
-    # Front-month = JUN (earliest non-expired); only JUN responds with LTP
-    ltp_map = {"MCX:CRUDEOIL26JUNFUT": 6800.0}
+    # Front-month = earliest non-expired; only the front responds with LTP
+    ltp_map = {f"MCX:{front_sym}": 6800.0}
 
     from backend.api.routes.options import _resolve_spot
 
@@ -106,7 +130,7 @@ async def test_mcx_uses_front_month_when_no_expiry_hint():
 
     assert src == "futures"
     assert abs(spot - 6800.0) < 0.01
-    assert anchor == "CRUDEOIL26JUNFUT"
+    assert anchor == front_sym
 
 
 @pytest.mark.asyncio
@@ -290,29 +314,34 @@ async def test_option_symbol_with_unlisted_future_falls_through():
 async def test_option_symbol_takes_priority_over_expiry_hint():
     """When both option_symbol and expiry_hint are provided, the month-token
     match from option_symbol wins over the date-based expiry_hint lookup."""
-    jun_inst = _inst("CRUDEOIL25JUNFUT", "CRUDEOIL", "2025-06-19")
-    sep_inst = _inst("CRUDEOIL25SEPFUT", "CRUDEOIL", "2025-09-18")
-    items = [jun_inst, sep_inst]
+    yy_a, mon_a, exp_a = _future_month(2)   # ~2 months out — A (priority)
+    yy_b, mon_b, exp_b = _future_month(5)   # ~5 months out — B (hint)
+    sym_a  = f"CRUDEOIL{yy_a}{mon_a}FUT"
+    sym_b  = f"CRUDEOIL{yy_b}{mon_b}FUT"
+    inst_a = _inst(sym_a, "CRUDEOIL", exp_a)
+    inst_b = _inst(sym_b, "CRUDEOIL", exp_b)
+    items = [inst_a, inst_b]
 
     ltp_map = {
-        "MCX:CRUDEOIL25JUNFUT": 5750.0,
-        "MCX:CRUDEOIL25SEPFUT": 5900.0,
+        f"MCX:{sym_a}": 5750.0,
+        f"MCX:{sym_b}": 5900.0,
     }
 
     from backend.api.routes.options import _resolve_spot
+    opt_symbol = f"CRUDEOIL{yy_a}{mon_a}5800CE"
 
     with _patch_no_sim(), \
          _patch_instruments(items), \
          _patch_broker_quote(ltp_map):
         spot, src, prev_close, anchor = await _resolve_spot(
             "CRUDEOIL", None,
-            expiry_hint=date(2025, 9, 18),        # SEP hint
-            option_symbol="CRUDEOIL25JUN5800CE",   # JUN token — must win
+            expiry_hint=date.fromisoformat(exp_b),   # B hint
+            option_symbol=opt_symbol,                # A token — must win
         )
 
-    # option_symbol month-token (JUN) must take priority over expiry_hint (SEP)
+    # option_symbol month-token (A) must take priority over expiry_hint (B)
     assert src == "futures"
-    assert anchor == "CRUDEOIL25JUNFUT", \
-        f"Expected CRUDEOIL25JUNFUT (option_symbol priority), got {anchor!r}"
+    assert anchor == sym_a, \
+        f"Expected {sym_a} (option_symbol priority), got {anchor!r}"
     assert abs(spot - 5750.0) < 0.01, \
-        f"Expected JUN LTP 5750, got {spot}"
+        f"Expected A LTP 5750, got {spot}"

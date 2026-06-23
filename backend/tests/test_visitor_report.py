@@ -56,15 +56,19 @@ from backend.scripts.visitor_report import (
     _render_report,
     _summary_block,
     _ua_short,
+    _mask_ip,
 )
-from backend.api.routes.visitors import _mask_ip
 
 
 def test_parse_counts_unique_ips():
     records = _parse_lines(FIXTURE_LINES, TARGET_DATE)
-    # Expect: 49.207.222.16, 1.2.3.4, 200.100.50.25
-    # Filtered out: 5.6.7.8 (static), 9.9.9.9 (wrong date), 10.0.0.1 (cdn-cgi)
-    assert set(records.keys()) == {"49.207.222.16", "1.2.3.4", "200.100.50.25"}
+    # Date filter is IST trading-day boundary, not UTC: 2026-06-01 23:59:59
+    # UTC = 2026-06-02 05:29:59 IST → falls inside the target IST day, so
+    # 9.9.9.9 IS included. Filtered out: 5.6.7.8 (static asset), 10.0.0.1
+    # (cdn-cgi infra path).
+    assert set(records.keys()) == {
+        "49.207.222.16", "1.2.3.4", "200.100.50.25", "9.9.9.9",
+    }
 
 
 def test_parse_request_count():
@@ -85,8 +89,17 @@ def test_parse_cf_country_captured():
 
 
 def test_parse_wrong_date_excluded():
-    records = _parse_lines(FIXTURE_LINES, TARGET_DATE)
-    assert "9.9.9.9" not in records
+    # 9.9.9.9 at 2026-06-01 23:59:59 UTC falls inside the IST 2026-06-02
+    # day, so confirm a hit on an UNAMBIGUOUSLY-different IST date is
+    # excluded. 2026-05-30 00:00:00 UTC = 2026-05-30 05:30 IST.
+    records = _parse_lines(
+        FIXTURE_LINES + [
+            '7.7.7.7 SG [30/May/2026:00:00:00 +0000] '
+            '"GET /orders HTTP/1.1" 200 3000 "-" "Firefox/113"',
+        ],
+        TARGET_DATE,
+    )
+    assert "7.7.7.7" not in records
 
 
 def test_parse_static_assets_filtered():
@@ -159,7 +172,9 @@ def test_render_report_headings():
     records = _parse_lines(FIXTURE_LINES, TARGET_DATE)
     geo_map: dict = {ip: {} for ip in records}
     report = _render_report(TARGET_DATE, records, geo_map)
-    assert "# Visitors — 2026-06-02 UTC" in report
+    # Header carries the IST trading-day clarifier so the operator knows
+    # the date filter is post-MCX close, not UTC midnight.
+    assert "# Visitors — 2026-06-02 (IST trading day, post-MCX close)" in report
     assert "## Summary" in report
     assert "## Detail" in report
     assert "| IP |" in report
@@ -169,15 +184,16 @@ def test_render_report_unique_ips_count():
     records = _parse_lines(FIXTURE_LINES, TARGET_DATE)
     geo_map = {ip: {} for ip in records}
     report = _render_report(TARGET_DATE, records, geo_map)
-    assert "**Unique IPs**: 3" in report
+    # IST boundary picks up 9.9.9.9 in addition to the three UTC-day hits.
+    assert "**Unique IPs**: 4" in report
 
 
 def test_render_report_total_requests():
     records = _parse_lines(FIXTURE_LINES, TARGET_DATE)
     geo_map = {ip: {} for ip in records}
     report = _render_report(TARGET_DATE, records, geo_map)
-    # 49.207.222.16 → 2, 1.2.3.4 → 1, 200.100.50.25 → 1 = 4
-    assert "**Total requests**: 4" in report
+    # 49.207.222.16 → 2, 1.2.3.4 → 1, 9.9.9.9 → 1, 200.100.50.25 → 1 = 5
+    assert "**Total requests**: 5" in report
 
 
 def test_render_report_row_cap():
@@ -216,10 +232,18 @@ def test_summary_block_returns_header_section(tmp_path):
     report_path.write_text(report_content, encoding="utf-8")
 
     summary = _summary_block(report_path)
-    assert "# Visitors" in summary
-    assert "## Summary" in summary
-    # Detail section should NOT be in the summary block
-    assert "## Detail" not in summary
+    # _summary_block is now an alias for summary_for_telegram which emits
+    # Telegram-flavoured HTML (<b>title</b> + bullets). Markdown markers
+    # rendered as literal '#' on Telegram mobile and were the noise we
+    # got rid of.
+    assert "<b>Visitors" in summary
+    # Summary bullets (Unique IPs / Total requests / Top paths) made it in.
+    assert "Unique IPs" in summary
+    assert "Total requests" in summary
+    # Detail rows (per-IP table) MUST NOT be in the Telegram summary.
+    assert "Detail" not in summary
+    # No raw IPs in the Telegram summary.
+    assert "49.207.222.16" not in summary
 
 
 # ---------------------------------------------------------------------------
