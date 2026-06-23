@@ -26,6 +26,9 @@ from sqlalchemy import select, and_, desc, func as _func
 from backend.api.database import async_session
 from backend.api.models import AlgoOrder, DailyBook
 from backend.api.rbac import cap_guard
+from backend.shared.helpers.ramboq_logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -455,31 +458,105 @@ class HistoryController(Controller):
         broker_id = getattr(broker, "broker_id", "unknown")
 
         # Adapter contract: optional `funds_ledger(from_date, to_date)`
-        # method. Brokers that don't implement it return a 501 here.
-        # Dhan + Kite + Groww all currently 501 — the implementation
-        # is wired adapter-by-adapter in a follow-up. The endpoint
-        # exists so the UI can show a Backfill button + a clear
-        # operator-facing message about which brokers are supported.
+        # method returning a list of normalised dicts (see
+        # backend/shared/brokers/dhan.py::DhanBroker.funds_ledger
+        # for the canonical shape). Kite has no programmatic ledger;
+        # Groww adapter wiring is still pending. Both 501 here.
         if not hasattr(broker, "funds_ledger"):
             raise HTTPException(
                 status_code=501,
                 detail=(
-                    f"Funds backfill not yet implemented for broker "
-                    f"'{broker_id}'. Dhan + Groww adapter support is "
-                    f"a follow-up slice. Kite has no programmatic "
-                    f"ledger; download from Zerodha Console manually."
+                    f"Funds backfill not implemented for broker "
+                    f"'{broker_id}'. Kite has no programmatic ledger "
+                    f"(Zerodha Console download only). Groww adapter "
+                    f"support is pending."
                 ),
             )
 
-        # Implementation slot — once a broker adapter lands a
-        # `funds_ledger` method returning a list of normalised
-        # entries [{date, segment, cash_available, opening_balance,
-        # debits, realised_m2m, net, payload}, ...], this loop
-        # writes them out idempotently. Keeping the scaffolding so
-        # the follow-up slice is a 1-file change.
+        # Pull the ledger via the broker adapter. Sync call; offload
+        # to the executor so the route stays async-clean.
+        import asyncio
+        loop = asyncio.get_running_loop()
+        try:
+            entries = await loop.run_in_executor(
+                None,
+                lambda: broker.funds_ledger(df.isoformat(), dt.isoformat()),
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Ledger fetch failed: {e}",
+            )
+        if not isinstance(entries, list):
+            entries = []
+
+        # Idempotent upsert into daily_book[kind='funds']. Re-use the
+        # same column mapping as the live snapshot path so the Funds
+        # tab reads back uniformly:
+        #   qty       = debits
+        #   avg_cost  = cash_available
+        #   ltp       = opening_balance
+        #   day_pnl   = realised_m2m
+        #   total_pnl = net
+        # ON CONFLICT clause matches the existing unique constraint
+        # (date, account, kind, symbol) — backfill DOES overwrite
+        # any prior row for the same (date, account, segment) so an
+        # operator re-running with a wider date range gets the
+        # canonical Dhan numbers rather than a stale partial.
+        from sqlalchemy import text as _text
+        import json as _json
+        added = 0
+        skipped = 0
+        now_utc = datetime.now(timezone.utc)
+        async with async_session() as s:
+            for e in entries:
+                seg = (e.get("segment") or "equity").lower()
+                params = {
+                    "date":         e.get("date"),
+                    "account":      account,
+                    "segment":      seg,
+                    "kind":         "funds",
+                    "symbol":       "__seg__",
+                    "exchange":     seg.upper(),
+                    "qty":          int(e.get("debits") or 0),
+                    "avg_cost":     e.get("cash_available"),
+                    "ltp":          e.get("opening_balance"),
+                    "day_pnl":      e.get("realised_m2m"),
+                    "total_pnl":    e.get("net"),
+                    "payload_json": _json.dumps(e.get("payload") or {}, default=str),
+                    "captured_at":  now_utc,
+                }
+                try:
+                    await s.execute(_text("""
+                        INSERT INTO daily_book
+                            (date, account, segment, kind, symbol, exchange,
+                             qty, avg_cost, ltp, day_pnl, total_pnl,
+                             payload_json, captured_at)
+                        VALUES
+                            (:date, :account, :segment, :kind, :symbol, :exchange,
+                             :qty, :avg_cost, :ltp, :day_pnl, :total_pnl,
+                             :payload_json, :captured_at)
+                        ON CONFLICT (date, account, kind, symbol) DO UPDATE SET
+                            segment      = EXCLUDED.segment,
+                            exchange     = EXCLUDED.exchange,
+                            qty          = EXCLUDED.qty,
+                            avg_cost     = EXCLUDED.avg_cost,
+                            ltp          = EXCLUDED.ltp,
+                            day_pnl      = EXCLUDED.day_pnl,
+                            total_pnl    = EXCLUDED.total_pnl,
+                            payload_json = EXCLUDED.payload_json,
+                            captured_at  = EXCLUDED.captured_at
+                    """), params)
+                    added += 1
+                except Exception as _row_err:
+                    skipped += 1
+                    logger.debug(f"backfill skip row {e!r}: {_row_err}")
+            await s.commit()
+
         return FundsBackfillResponse(
             account=account,
             from_date=df.isoformat(), to_date=dt.isoformat(),
-            rows_added=0, rows_skipped=0, broker_id=broker_id,
-            detail="adapter wiring pending — endpoint returns 0 rows",
+            rows_added=added, rows_skipped=skipped, broker_id=broker_id,
+            detail=(f"{added} rows upserted from {broker_id} ledger"
+                    if added else "no ledger entries in range"),
         )

@@ -552,6 +552,142 @@ class DhanBroker(Broker):
         resp = self._safe_call(lambda d: d.get_trade_book())
         return _normalise_trades(resp)
 
+    def funds_ledger(self, from_date: str, to_date: str) -> list[dict]:
+        """Pull Dhan's funds-ledger statement for a date range.
+        Returns a list of normalised per-(date, segment) summary rows
+        ready for upsert into `daily_book[kind='funds']`:
+
+            [
+              {
+                "date":            date,
+                "segment":         "equity" | "commodity" | ...,
+                "cash_available":  float,   # EOD running balance
+                "opening_balance": float,   # SOD running balance (best-effort)
+                "debits":          float,   # Σ debit on this day+segment
+                "realised_m2m":    float,   # net daily move (credit − debit)
+                "net":             float,   # same as cash_available
+                "payload":         dict,    # raw Dhan entries for forensics
+              },
+              ...
+            ]
+
+        The Dhan SDK exposes this as `get_ledger_report(from_date,
+        to_date)` returning the standard `{status, data: [entry, …]}`
+        envelope. Each entry is a voucher-level row:
+
+            {
+              "voucherdate": "DD/MM/YYYY" or "YYYY-MM-DD",
+              "exchange":    "NSE_EQ" | "NSE_FNO" | "MCX_COMM" | ...,
+              "debit":       "0.00",      # str — converted to float
+              "credit":      "1234.56",   # str — converted to float
+              "runbal":      "100000.00", # str — EOD running balance
+              "narration":   "Day MTM Settlement Charges",
+              "voucherdesc": "...",
+              "vouchernumber": "..."
+            }
+
+        We aggregate per `(voucherdate, segment)` so the output maps
+        cleanly onto the `daily_book` unique constraint
+        `(date, account, kind, symbol)`. Multiple Dhan exchange codes
+        collapse to two segments here (equity / commodity) to match
+        the existing snapshot pipeline's shape.
+
+        Method-name discovery — `get_ledger_report` is the v2 SDK
+        name; some older forks expose `get_funds_ledger`. Probe both
+        and fall back to an empty list if neither is wired.
+        """
+        from datetime import date as _date
+
+        sdk = self.dhan
+        # Probe both common SDK method names. The v2 SDK uses
+        # get_ledger_report; older builds expose get_funds_ledger.
+        ledger_fn = (getattr(sdk, "get_ledger_report", None)
+                     or getattr(sdk, "get_funds_ledger", None)
+                     or getattr(sdk, "ledger_report", None))
+        if ledger_fn is None:
+            logger.warning(
+                "DhanBroker.funds_ledger: SDK exposes no ledger method "
+                "(tried get_ledger_report / get_funds_ledger / "
+                "ledger_report) — returning []"
+            )
+            return []
+
+        try:
+            resp = self._safe_call(
+                lambda d: ledger_fn(from_date=from_date, to_date=to_date)
+            )
+        except TypeError:
+            # SDK signature may be positional rather than kwarg.
+            try:
+                resp = self._safe_call(
+                    lambda d: ledger_fn(from_date, to_date)
+                )
+            except Exception as e:
+                logger.warning(f"DhanBroker.funds_ledger SDK call failed: {e}")
+                return []
+        except Exception as e:
+            logger.warning(f"DhanBroker.funds_ledger SDK call failed: {e}")
+            return []
+
+        entries = _unwrap(resp)
+        if not entries:
+            return []
+
+        # Group by (voucherdate, segment). Each segment bucket collects
+        # debits / credits + tracks first + last runbal as a proxy for
+        # SOD and EOD cash. Dhan returns entries in chronological order
+        # within a day so first/last == open/close.
+        from collections import defaultdict
+        groups: dict[tuple[_date, str], dict] = defaultdict(lambda: {
+            "debits": 0.0, "credits": 0.0,
+            "open_runbal": None, "close_runbal": None,
+            "raw": [],
+        })
+        for e in entries:
+            d = _parse_dhan_date(e.get("voucherdate"))
+            if d is None:
+                continue
+            seg = _dhan_exchange_to_segment(e.get("exchange") or "")
+            key = (d, seg)
+            try:
+                debit  = float(e.get("debit")  or 0)
+                credit = float(e.get("credit") or 0)
+                runbal = float(e.get("runbal") or 0)
+            except (TypeError, ValueError):
+                continue
+            g = groups[key]
+            g["debits"]  += debit
+            g["credits"] += credit
+            if g["open_runbal"] is None:
+                g["open_runbal"] = runbal
+            g["close_runbal"] = runbal
+            g["raw"].append(e)
+
+        out: list[dict] = []
+        for (d, seg), g in groups.items():
+            close_bal = g["close_runbal"]
+            open_bal  = g["open_runbal"]
+            # M2M proxy: net daily move = credits − debits. NOT just
+            # mark-to-market; includes brokerage / STT / DP charges /
+            # etc. Documented so the operator reads it as 'net daily
+            # cash flow' rather than 'realised P&L'.
+            net_move = g["credits"] - g["debits"]
+            out.append({
+                "date":            d,
+                "segment":         seg,
+                "cash_available":  close_bal,
+                "opening_balance": (close_bal - net_move
+                                    if close_bal is not None else open_bal),
+                "debits":          g["debits"],
+                "realised_m2m":    net_move,
+                "net":             close_bal,
+                "payload":         {"entries": g["raw"]},
+            })
+
+        # Newest first matches the daily_book ordering convention.
+        out.sort(key=lambda r: r["date"], reverse=True)
+        return out
+
     # ── Market data ───────────────────────────────────────────────────
 
     def ltp(self, symbols: list[str]) -> dict:
@@ -1519,3 +1655,45 @@ def _normalise_trades(resp: Any) -> list[dict]:
             "_raw":             t,
         })
     return out
+
+
+def _parse_dhan_date(s: Any):
+    """Parse a Dhan ledger `voucherdate` string into a `datetime.date`.
+    Handles DD/MM/YYYY (the documented v2 format), YYYY-MM-DD, and
+    ISO timestamps. Returns None on a shape mismatch — the caller
+    skips that ledger entry rather than crashing the whole pull."""
+    from datetime import date as _date, datetime as _dt
+    if not s:
+        return None
+    s = str(s).strip()
+    # DD/MM/YYYY
+    if "/" in s:
+        try:
+            dd, mm, yy = s.split("/")
+            return _date(int(yy), int(mm), int(dd))
+        except (ValueError, IndexError):
+            return None
+    # ISO date or datetime
+    try:
+        return _dt.fromisoformat(s[:10]).date()
+    except ValueError:
+        return None
+
+
+# Map Dhan's per-exchange segment codes to our daily_book.segment
+# vocabulary ('equity' / 'commodity'). Anything unrecognised collapses
+# to 'equity' (the safest default — equity wallet covers NSE / BSE
+# cash + F&O + CDS for almost every operator).
+_DHAN_SEGMENT_MAP = {
+    "NSE_EQ":       "equity",
+    "BSE_EQ":       "equity",
+    "NSE_FNO":      "equity",
+    "BSE_FNO":      "equity",
+    "NSE_CURRENCY": "equity",
+    "BSE_CURRENCY": "equity",
+    "MCX_COMM":     "commodity",
+}
+
+
+def _dhan_exchange_to_segment(exchange: str) -> str:
+    return _DHAN_SEGMENT_MAP.get((exchange or "").upper(), "equity")
