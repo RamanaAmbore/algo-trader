@@ -632,7 +632,7 @@ Summary agents (`nse_open_summary`, `nse_close_summary`, `mcx_open_summary`, `mc
 **Loss agents** (prefix `loss-`) ship as 12 pure alerting agents (holdings/positions static + rate thresholds) plus 2 fund-negative agents, all **active** by default. One additional `loss-pos-total-auto-close` agent ships **inactive** (destructive close-position action). The former `check_and_alert` loss engine is retired; toggle any agent individually from the `/agents` page.
 
 ### SvelteKit Pages (routes under `frontend/src/routes/(algo)/`)
-- **`+layout.svelte`** — algo-site top nav, ordered by usage frequency: Dashboard · Agents · Orders (live monitoring) → Charts · Options (analysis surfaces) → Paper · Simulator (execution modes) → Terminal · Tokens (build / extend) → Settings · Brokers (configuration) → Users (admin). The "Investor site" cross-link is mellowed (font-weight 500, alpha 0.10 bg, alpha 0.32 border) — same amber colour as the public side's "Algo Site" pill, lower visual intensity so it reads as a context-switch affordance rather than a CTA.
+- **`+layout.svelte`** — algo-site top nav, grouped + ordered by daily-trader workflow frequency: monitor (Tour / Pulse / Dashboard / Orders / Derivatives / Charts / Automation / Strategies / NAV) inline, explore (Sandbox) inline, build (Console / Research / Tokens) dropdown, config (Brokers / Settings / Users / Statements / History / Audit / Health) dropdown. Mode toggles (SIM / PAPER / LIVE / SHADOW / REPLAY) live in a separate navbar pill that opens its own dropdown. The "Investor site" cross-link is mellowed (font-weight 500, alpha 0.10 bg, alpha 0.32 border) — same amber colour as the public side's "Algo Site" pill, lower visual intensity so it reads as a context-switch affordance rather than a CTA.
   - Polls `/api/simulator/status` (4 s) and renders the sticky red **SIMULATOR** banner on every algo page while a sim is running.
   - Polls `/api/charts/paper-status` (4 s) and renders a sticky sky-blue **PAPER** banner whenever the prod paper engine has open chase orders. Both banners can stack — sim sits on top, paper underneath. Stickiness pins them just under the navbar so they never scroll out of view.
 - **`performance/`** (public) and **`dashboard/`** (admin). The public page uses `PerformancePage.svelte` (two-row header with timestamp + Refresh on top, tabs + account picker below). The admin `/dashboard` is its own page composed of three sections in order: **(1) P&L Analysis** (`PnlAnalysis.svelte`), **(2) MarketPulse summary grids** (Funds + Positions Summary + Holdings Summary; no per-symbol grid), **(3) Agent activity** (`UnifiedLog.svelte` filtered to `agent_fire / agent_action_success / agent_action_error` kinds). The summary grids on `/dashboard` scope to the selected account (sibling accounts + TOTAL filtered out) and hide the Account column when only one account is in view. Performance **always** shows real Kite data; the background refresh keeps going even while the simulator is active. The algo theme (`ag-theme-algo`) is the dark navy-gradient variant. Pulse symbol-cell encoding (simplified per audit + operator feedback — direction lives in the background tint, no extra inset bars):
@@ -843,11 +843,11 @@ When adding a new card, copy the trio + AccountMultiSelect placement from Market
 
 ## Algo navbar — grouped + collapsible
 
-Items in [`(algo)/+layout.svelte`](frontend/src/routes/(algo)/+layout.svelte) carry a `group:` attribute ∈ `{monitor, analyze, modes, build, config}`. Render strategy splits by group size and operator frequency:
+Items in [`(algo)/+layout.svelte`](frontend/src/routes/(algo)/+layout.svelte) carry a `group:` attribute ∈ `{monitor, analyze, explore, build, config}`. Render strategy splits by group size and operator frequency:
 
-- **Inline (always visible)** — `monitor` (Tour / Pulse / Dashboard / Agents / Orders), `analyze` (Derivatives), `modes` (Lab). High-frequency surfaces stay one click.
-- **Disclosure dropdowns** — `build` (Console / Research / Tokens) and `config` (Brokers / Settings / Users / Health) collapse behind labelled triggers with carets. Trigger stays lit (`algo-nav-btn-active`) when the operator's current page is inside that group, so "I'm in Config" reads at a glance even without opening the panel.
-- **Mobile drawer** (<1024px / `lg:hidden`) — hamburger opens a section-captioned drawer (MONITOR / ANALYZE / MODES / BUILD / CONFIG headers above each group's items). Operator navigates by intent, not by scrolling a flat list.
+- **Inline (always visible)** — `monitor` (Tour / Pulse / Dashboard / Orders / Derivatives / Charts / Automation / Strategies / NAV) and `explore` (Sandbox). High-frequency surfaces stay one click.
+- **Disclosure dropdowns** — `build` (Console / Research / Tokens) and `config` (Brokers / Settings / Users / Statements / History / Audit / Health) collapse behind labelled triggers with carets. Trigger stays lit (`algo-nav-btn-active`) when the operator's current page is inside that group, so "I'm in Config" reads at a glance even without opening the panel.
+- **Mobile drawer** (<1024px / `lg:hidden`) — hamburger opens a section-captioned drawer (MONITOR / EXPLORE / BUILD / CONFIG headers above each group's items). Operator navigates by intent, not by scrolling a flat list.
 
 Industry analogue: Grafana left-rail collapsed/expanded pattern, ported to a top bar.
 
@@ -855,7 +855,7 @@ Industry analogue: Grafana left-rail collapsed/expanded pattern, ported to a top
 
 ## Agent workspace tabs
 
-The four surfaces operators visit when thinking about agents — rules, fires, tokens, lab — share a [`AgentWorkspaceTabs.svelte`](frontend/src/lib/AgentWorkspaceTabs.svelte) strip at the top of each page:
+The surfaces operators visit when thinking about agents — rules, fires, tokens, templates, research — share an [`AutomationTabs.svelte`](frontend/src/lib/AutomationTabs.svelte) strip at the top of each page:
 
 | Tab | Route |
 |---|---|
@@ -1170,7 +1170,7 @@ This matches the rest of the grammar pipeline — operator typos in `/agents/fra
 
 Operators can't delete system fragments (only toggle `is_active`); custom fragments have full CRUD.
 
-**UI**: `/agents/fragments` — filter chip (all / notify / condition), grouped list, expand-to-view-body, edit form for custom fragments. Lives as the fourth tab in `AgentWorkspaceTabs` (Agents · Activity · Tokens · Fragments · Lab).
+**UI**: `/automation/fragments` — filter chip (all / notify / condition), grouped list, expand-to-view-body, edit form for custom fragments. Surfaces through `AutomationTabs` (Agents · Order Templates · Agent Templates · Activity · Tokens · Lab).
 
 **API**:
 
@@ -1769,7 +1769,7 @@ A consolidated, reusable chart component that renders historical OHLCV + optiona
 | [`frontend/src/lib/ChartModal.svelte`](frontend/src/lib/ChartModal.svelte) | Thin overlay wrapper (~100 LOC). Esc / overlay-click closes; body scroll-locked. Props: `{symbol, exchange?, mode?, onClose}`. Hosts `<ChartWorkspace compact={false}>`. |
 | [`frontend/src/routes/(algo)/charts/+page.svelte`](frontend/src/routes/(algo)/charts/+page.svelte) | Standalone Charts page (~185 LOC). Reads `?symbol=…&mode=…` URL params; syncs picks back via `goto({replaceState:true})`. Page header carries RefreshButton + InfoHint + notification bells. Refresh increments `bump` integer; ChartWorkspace watches it via `$effect` to trigger reload. |
 
-**Navbar:** `Charts` entry in `monitor` group, between Orders and Agents. Demo-visible (no `adminOnly`).
+**Navbar:** `Charts` entry in `monitor` group, between Derivatives and Automation. Demo-visible (no `adminOnly`).
 
 **Chart-icon button — canonical pattern across surfaces:** Glyph: line-chart SVG path (14×14 in headers, 12×12 in rows). Palette: cyan-400 (`#22d3ee` resting, `#67e8f9` hover, bg α 0.12 → 0.22 on hover, border α 0.45 → 0.65). Title: `"Open chart for {symbol}"`. Used in SymbolPanel header, `/orders` entry header, `/orders` row symbol cells (via `.row-chart-btn` global), `/admin/derivatives` Candidates rows, `/performance` symbol cells (ag-Grid cellRenderer).
 

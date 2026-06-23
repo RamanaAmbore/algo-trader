@@ -304,9 +304,9 @@
     z-index: 1;
     pointer-events: none;
   }
-  .rf-badge-green { background: #16a34a; }
-  .rf-badge-amber { background: #d97706; }
-  .rf-badge-red   { background: #ef4444; }
+  .rf-badge-green { background: #4ade80; }
+  .rf-badge-amber { background: #fbbf24; }
+  .rf-badge-red   { background: #f87171; }
   /* Backend-offline state — desaturated slate grey, distinct from the
      red broker-issue state. Operator reads "no number, just a `?`" as
      "API unreachable" rather than "all brokers failed". */

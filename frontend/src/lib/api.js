@@ -923,12 +923,6 @@ export const fetchReplayResults = () => _get('/replay/results', { auth: true });
 export const fetchReplayOrders  = (n = 50) => _get(`/replay/orders/recent?limit=${n}`, { auth: true });
 export const clearReplayData    = () => _post('/replay/clear', {}, { auth: true });
 
-// ── Shadow ────────────────────────────────────────────────────────────
-export const fetchShadowStatus  = () => _get('/shadow/status', { auth: true });
-export const fetchShadowOrders  = (n = 50) => _get(`/shadow/orders?limit=${n}`, { auth: true });
-export const promoteShadowToLive = () => _post('/shadow/promote', {}, { auth: true });
-export const clearShadowData    = () => _post('/shadow/clear', {}, { auth: true });
-
 // ── Live ──────────────────────────────────────────────────────────────
 // Returns: { branch, enabled, paper_trading_mode, effective_mode, shadow_mode }
 // paper_trading_mode: true = PAPER (safe default), false = LIVE (real orders).
@@ -986,19 +980,6 @@ export const fetchOrderEvents = (limit = 50, status = null) => {
   return _get(`/orders/events/recent?${p}`, { auth: true });
 };
 
-// ── Admin: P&L date-range ────────────────────────────────────────────
-/**
- * GET /api/admin/pnl/range
- * Params: { from_date, to_date, segment, kind }
- */
-export function fetchPnlRange(params = {}) {
-  const p = new URLSearchParams();
-  if (params.from_date) p.set('from_date', String(params.from_date));
-  if (params.to_date)   p.set('to_date',   String(params.to_date));
-  if (params.segment)   p.set('segment',   String(params.segment));
-  if (params.kind)      p.set('kind',      String(params.kind));
-  return _get(`/admin/pnl/range?${p}`, { auth: true });
-}
 
 /**
  * POST /api/admin/pnl/upload-csv  (multipart/form-data)
