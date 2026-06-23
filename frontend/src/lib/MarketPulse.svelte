@@ -53,6 +53,7 @@
   }
   import { fetchSettings } from '$lib/api';
   import { liveLtp, streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
+  import { bookChanged } from '$lib/data/bookChanged';
   import { resolveUnderlying, INDEX_LTP_KEY, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
   import CollapseButton from '$lib/CollapseButton.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
@@ -575,6 +576,18 @@
   // Empty fallback when the endpoint is admin-gated for the current session.
   let _connStatusSnap = $state($connStatus);
   $effect(() => { _connStatusSnap = $connStatus; });
+
+  // book_changed bus — refetch on every terminal postback so cancels
+  // and rejections (which don't emit `position_filled`) also trigger
+  // a single-iteration update. The store is debounced 200ms upstream
+  // so a basket-order burst coalesces into one loadPulse.
+  let _pulseBookCounter = 0;
+  $effect(() => {
+    const n = $bookChanged;
+    if (n <= _pulseBookCounter) return;
+    _pulseBookCounter = n;
+    loadPulse();
+  });
   const _knownBrokerAccounts = $derived(_connStatusSnap.accounts ?? []);
   // Latches when the Account seed has firmed up after the broker
   // fetch resolved — prevents re-seeding from clobbering operator
@@ -1198,6 +1211,9 @@
     // instead of waiting up to 10 s for the next loadPulse tick.
     // Other (non-fill) events on the same socket also trigger a
     // refresh — cheap to over-fetch, expensive to lag a fill.
+    // (The wider `book_changed` bus also fires loadPulse — kept
+    // here for the qty-delta optimistic patch path which only
+    // emits on FILL, not on CANCELLED/REJECTED.)
     stopWS = createPerformanceSocket((msg) => {
       if (msg?.event === 'position_filled') {
         // Order just filled — refresh both books right now so the

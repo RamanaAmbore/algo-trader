@@ -10,6 +10,7 @@
   import LogPanel from '$lib/LogPanel.svelte';
   import BellIcon from '$lib/icons/BellIcon.svelte';
   import { fetchOrders } from '$lib/api';
+  import { bookChanged } from '$lib/data/bookChanged';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import ChaseCard from '$lib/order/ChaseCard.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
@@ -210,6 +211,20 @@
     });
   });
   onDestroy(() => { unsub?.(); });
+
+  // book_changed bus — symmetry with /pulse + /dashboard + /admin/
+  // derivatives. Redundant with the existing `order_update` WS hook
+  // above (which fires on every postback, not just terminal), but
+  // _debouncedLoadOrders coalesces back-to-back triggers so the
+  // duplication is harmless. Keeps the mental model uniform: every
+  // surface listens to the same bus.
+  let _ordersBookCounter = 0;
+  $effect(() => {
+    const n = $bookChanged;
+    if (n <= _ordersBookCounter) return;
+    _ordersBookCounter = n;
+    _debouncedLoadOrders();
+  });
 </script>
 
 <svelte:head><title>Orders | RamboQuant Analytics</title></svelte:head>

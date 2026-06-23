@@ -9,6 +9,7 @@
   import ChartModal from '$lib/ChartModal.svelte';
   import { fetchHoldings, fetchPositions, fetchFunds } from '$lib/api';
   import { createPerformanceSocket } from '$lib/ws';
+  import { bookChanged } from '$lib/data/bookChanged';
   import { dataCache, authStore } from '$lib/stores';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
@@ -860,6 +861,17 @@
         loadAll();
       }
     });
+  });
+
+  // book_changed bus — also covers cancel / reject paths where
+  // `position_filled` doesn't fire. Same single-iteration settle
+  // contract as the other surfaces. Debounced 200ms upstream.
+  let _perfBookCounter = 0;
+  $effect(() => {
+    const n = $bookChanged;
+    if (n <= _perfBookCounter) return;
+    _perfBookCounter = n;
+    try { loadAll({ fresh: true }); } catch (_) { /* unmounted */ }
   });
 
   /** Optimistic position patch from a Kite postback `position_filled`
