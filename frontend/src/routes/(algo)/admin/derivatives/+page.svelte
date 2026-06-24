@@ -81,6 +81,26 @@
   /** @type {any} */ let strategy   = $state(null);
   let strategyErr   = $state('');
   let loading       = $state(false);
+  // `loading` is toggled by loadStrategy() and short-circuits on
+  // its leg-cache shortcut, so RefreshButton wired to `loading`
+  // never animates when the operator clicks Refresh on an unchanged
+  // basket. `_refreshing` is the canonical "any of the three loads
+  // is in flight" state — the three RefreshButton instances on this
+  // page bind to this instead.
+  let _refreshing   = $state(false);
+  async function _refreshAll() {
+    if (_refreshing) return;
+    _refreshing = true;
+    try {
+      await Promise.allSettled([
+        loadPositions(),
+        loadSimStatus(),
+        loadStrategy({ force: true }),
+      ]);
+    } finally {
+      _refreshing = false;
+    }
+  }
   let teardown;
   let posTeardown;
   let simTeardown;
@@ -3234,7 +3254,7 @@
     };
   }
 
-  async function loadStrategy() {
+  async function loadStrategy(opts = { force: false }) {
     const cleanLegs = legs
       // Equity-holding legs are layered onto the rendered payoff at the
       // chart level (see _mergedPayoff). The backend strategy endpoint
@@ -3331,7 +3351,7 @@
     const legsKey = cleanLegs.map(l =>
       `${l.symbol}:${l.qty}:${l.avg_cost ?? ''}:${l.ltp ?? ''}:${l.expiry ?? ''}`
     ).join('|');
-    if (strategy && legsKey === _stratLastKey) {
+    if (!opts?.force && strategy && legsKey === _stratLastKey) {
       strategyErr = ''; _stratFails = 0;
       return;
     }
@@ -3641,8 +3661,8 @@
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
-    <RefreshButton onClick={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
-                   loading={loading} label="derivatives" />
+    <RefreshButton onClick={_refreshAll}
+                   loading={_refreshing} label="derivatives" />
     <PageHeaderActions symbol={selectedUnderlying} />
   </span>
 </div>
@@ -3843,8 +3863,8 @@
              buttons sit at the inter-button 0.15rem gap. -->
         <span class="payoff-card-controls">
           {#if _fsPayoff}
-            <RefreshButton onClick={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
-                           loading={loading} label="payoff" />
+            <RefreshButton onClick={_refreshAll}
+                           loading={_refreshing} label="payoff" />
           {/if}
           <CollapseButton bind:isCollapsed={_colPayoff} cardId="optPayoff" label="Payoff" />
           <DefaultSizeButton bind:isFullscreen={_fsPayoff} bind:isCollapsed={_colPayoff} label="Payoff" />
@@ -3950,8 +3970,8 @@
            class so the CSS rule covers both cards. -->
       <span class="payoff-card-controls">
         {#if _fsLegs}
-          <RefreshButton onClick={() => { loadPositions(); loadSimStatus(); loadStrategy(); }}
-                         loading={loading} label="legs" />
+          <RefreshButton onClick={_refreshAll}
+                         loading={_refreshing} label="legs" />
         {/if}
         <GridSearchButton bind:filter={_filterLegs} label="Legs" />
         <CollapseButton bind:isCollapsed={_colLegs} cardId="optLegs" label="Legs" />
@@ -4400,8 +4420,8 @@
     </span>
     <span class="payoff-card-controls">
       {#if _fsByund}
-        <RefreshButton onClick={() => { loadPositions(); loadStrategy(); }}
-                       loading={loading} label="snapshot" />
+        <RefreshButton onClick={_refreshAll}
+                       loading={_refreshing} label="snapshot" />
       {/if}
       <GridSearchButton bind:filter={_filterByund} label="Snapshot" />
       <CollapseButton bind:isCollapsed={_colByund} cardId="optByund" label="Snapshot" />

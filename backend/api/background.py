@@ -1640,7 +1640,7 @@ async def _task_trail_stop() -> None:
     from backend.api.models import AlgoOrder
     from backend.shared.brokers.registry import get_broker
     from backend.shared.helpers.settings import get_int
-    from sqlalchemy import select as _sel
+    from sqlalchemy import select as _sel, update as _update
     import json as _json
 
     while True:
@@ -1658,6 +1658,14 @@ async def _task_trail_stop() -> None:
                         AlgoOrder.attached_gtts_json.is_not(None),
                     ).limit(500)
                 )).scalars().all()
+            # Collect per-row attached_gtts_json updates here and flush in
+            # one session at the end of the cycle. Pre-fix the loop opened
+            # one async_session per changed row → SELECT + UPDATE + COMMIT,
+            # which at ~500 trailing rows during a burst became ~500
+            # sequential DB round-trips per 30s tick — enough to starve
+            # the asyncio scheduler and make `/api/positions` (and the
+            # Refresh button that drives it) feel sluggish.
+            pending_updates: list[tuple[int, str]] = []
             # Phase 3D #5 — batch broker.ltp per account. Pass 1 collects
             # every (account, exchange:symbol) key referenced by a trailing
             # SL entry, deduped per account. Pass 2 issues one batched
@@ -1896,13 +1904,20 @@ async def _task_trail_stop() -> None:
                         f"(LTP {ltp:.2f}, trail {trail_pct}%)"
                     )
                 if changed:
-                    async with async_session() as s2:
-                        _r2 = (await s2.execute(
-                            _sel(AlgoOrder).where(AlgoOrder.id == row.id)
-                        )).scalar_one_or_none()
-                        if _r2 is not None:
-                            _r2.attached_gtts_json = _json.dumps(attached)
-                            await s2.commit()
+                    pending_updates.append((row.id, _json.dumps(attached)))
+            # Batch flush — one session, N UPDATE statements, one commit.
+            # Drops the per-row SELECT (we already have the id from the
+            # outer query; the UPDATE is a no-op if the row was deleted
+            # between the SELECT and now, which is acceptable).
+            if pending_updates:
+                async with async_session() as s2:
+                    for _rid, _json_str in pending_updates:
+                        await s2.execute(
+                            _update(AlgoOrder)
+                            .where(AlgoOrder.id == _rid)
+                            .values(attached_gtts_json=_json_str)
+                        )
+                    await s2.commit()
         except Exception as e:
             logger.debug(f"[TRAIL] poll iteration failed: {e}")
 
@@ -1934,7 +1949,7 @@ async def _task_oco_pair_watcher() -> None:
     from backend.api.models import AlgoOrder
     from backend.shared.brokers.registry import get_broker
     from backend.shared.helpers.settings import get_int
-    from sqlalchemy import select as _sel
+    from sqlalchemy import select as _sel, update as _update
     import json as _json
 
     # Perf: lift the polled query to module scope so SQLAlchemy doesn't
@@ -1965,6 +1980,12 @@ async def _task_oco_pair_watcher() -> None:
         try:
             async with async_session() as s:
                 rows = (await s.execute(_stmt)).scalars().all()
+            # Same batch-flush rationale as _task_trail_stop: collect
+            # per-row updates into a list and flush in one session at
+            # the end of the cycle. Pre-fix the inner s2 session opens
+            # were N round-trips for N changed rows; OCO at 500 rows
+            # behaves the same way as trail-stop under burst load.
+            pending_oco_updates: list[tuple[int, str]] = []
             # Group by account so we hit broker.get_gtts() once per
             # account, not once per OCO entry.
             rows_by_account: dict[str, list] = {}
@@ -2123,13 +2144,17 @@ async def _task_oco_pair_watcher() -> None:
                                 f"{sib_id} failed: {e}"
                             )
                     if changed:
-                        async with async_session() as s2:
-                            _r2 = (await s2.execute(
-                                _sel(AlgoOrder).where(AlgoOrder.id == row.id)
-                            )).scalar_one_or_none()
-                            if _r2 is not None:
-                                _r2.attached_gtts_json = _json.dumps(attached)
-                                await s2.commit()
+                        pending_oco_updates.append((row.id, _json.dumps(attached)))
+            # Batch flush — one session, N UPDATE statements, one commit.
+            if pending_oco_updates:
+                async with async_session() as s2:
+                    for _rid, _json_str in pending_oco_updates:
+                        await s2.execute(
+                            _update(AlgoOrder)
+                            .where(AlgoOrder.id == _rid)
+                            .values(attached_gtts_json=_json_str)
+                        )
+                    await s2.commit()
         except Exception as e:
             logger.debug(f"[OCO-WATCH] poll iteration failed: {e}")
 
