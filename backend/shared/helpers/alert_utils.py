@@ -353,6 +353,15 @@ def _dispatch(msg_type: str, ist_display: str, tg_table: str, email_table_html: 
     )
     _send_telegram(telegram_msg)
 
+    # Operator request (Jun 2026): market open/close summaries ship
+    # Telegram-only. Agent alerts ('alert' msg_type) continue to fan
+    # out across both Telegram + email per the existing operator
+    # alert recipients. Deploy notifications are sent by
+    # webhook/notify_deploy.py against a dedicated Telegram channel
+    # (telegram_chat_id_deploy), already Telegram-only.
+    if msg_type in ('open', 'close'):
+        return
+
     alert_emails = get_alert_recipients()
     if alert_emails:
         subj_pfx = f"{email_prefix_full}{branch_tag}{(' ' + mode_tag) if mode_tag else ''}"
