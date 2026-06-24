@@ -699,11 +699,17 @@ class InvestorPortalController(Controller):
                   .limit(2)
             )).scalars().all()
             firm_nav = float(rows[0].nav) if rows else 0.0
-            slice_now = await compute_slice(s, user, firm_nav)
+            # Fetch events ONCE; reuse for compute_slice + day-delta.
+            # (Slice M4.)
+            from backend.api.algo.investor_units import ensure_all_bootstrapped as _eab
+            await _eab(s)
+            all_events = await fetch_all_events(s)
+            slice_now = await compute_slice(
+                s, user, firm_nav, all_events=all_events
+            )
             day_delta_share: Optional[float] = None
             day_delta_share_pct: Optional[float] = None
             if len(rows) >= 2:
-                all_events = await fetch_all_events(s)
                 user_events = [e for e in all_events if e.user_id == user.id]
                 prior_val, _ = slice_value(
                     user_events, all_events, float(rows[1].nav),

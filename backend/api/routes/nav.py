@@ -189,7 +189,13 @@ class NavController(Controller):
                   .limit(2)
             )).scalars().all()
             firm_nav = float(rows[0].nav) if rows else 0.0
-            slice_now = await compute_slice(s, user, firm_nav)
+            # Fetch events ONCE; compute_slice reuses, day-delta math
+            # reuses. Pre-fix this fetched twice. (Slice M4.)
+            await ensure_all_bootstrapped(s)
+            all_events = await fetch_all_events(s)
+            slice_now = await compute_slice(
+                s, user, firm_nav, all_events=all_events
+            )
             # Day delta on the investor's slice — recompute the
             # prior day's slice through the same units math and
             # subtract. Uses the same event set so a subscription /
@@ -198,7 +204,6 @@ class NavController(Controller):
             day_delta_share: Optional[float] = None
             day_delta_share_pct: Optional[float] = None
             if len(rows) >= 2:
-                all_events = await fetch_all_events(s)
                 user_events = [e for e in all_events if e.user_id == user.id]
                 prior_val, _ = slice_value(
                     user_events, all_events, float(rows[1].nav),

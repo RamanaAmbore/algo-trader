@@ -131,6 +131,20 @@ _PRODUCT_TO_GROWW: dict[str, str] = {
     "MTF":  "MTF",
 }
 
+# Our exchange vocabulary → Groww's segment codes for the market-status
+# probe. Multiple Groww codes per our single code; ANY mapped segment
+# reporting active means the exchange is open. Module-level constant
+# (slice M6) — was previously a local inside `market_status()` and
+# re-allocated per call.
+_XCHG_TO_GROWW_MARKET_STATUS: dict[str, tuple[str, ...]] = {
+    "NSE": ("NSE", "NSE_EQ"),
+    "BSE": ("BSE", "BSE_EQ"),
+    "NFO": ("NFO", "NSE_FO", "NSE_FNO"),
+    "BFO": ("BFO", "BSE_FO", "BSE_FNO"),
+    "CDS": ("CDS", "NSE_CURRENCY"),
+    "MCX": ("MCX", "MCX_COMM"),
+}
+
 # Kite order_type → Groww order_type. Values match GrowwAPI constants:
 #   GrowwAPI.ORDER_TYPE_MARKET             = "MARKET"
 #   GrowwAPI.ORDER_TYPE_LIMIT              = "LIMIT"
@@ -530,15 +544,7 @@ class GrowwBroker(Broker):
             logger.debug(f"GrowwBroker.market_status({exchange}) SDK call failed: {e}")
             return None
 
-        _XCHG_TO_GROWW: dict[str, tuple[str, ...]] = {
-            "NSE": ("NSE", "NSE_EQ"),
-            "BSE": ("BSE", "BSE_EQ"),
-            "NFO": ("NFO", "NSE_FO", "NSE_FNO"),
-            "BFO": ("BFO", "BSE_FO", "BSE_FNO"),
-            "CDS": ("CDS", "NSE_CURRENCY"),
-            "MCX": ("MCX", "MCX_COMM"),
-        }
-        target_codes = _XCHG_TO_GROWW.get((exchange or "").upper())
+        target_codes = _XCHG_TO_GROWW_MARKET_STATUS.get((exchange or "").upper())
         if not target_codes:
             return None
 

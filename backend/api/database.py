@@ -483,6 +483,44 @@ async def init_db() -> None:
             "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE",
         ):
             await conn.execute(text(stmt))
+        # ── Slice M — perf indexes (Jun 2026) ────────────────────────────
+        # M5 — algo_orders.basket_tag partial index. CLAUDE.md documents
+        # this as a queryable column; the basket-order margin endpoint
+        # groups by basket_tag. As basket-order volume grows, the
+        # column would seq-scan without this. Partial-index on
+        # `basket_tag IS NOT NULL` so the index only carries rows
+        # that actually have a basket tag (most rows are stand-alone).
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_algo_orders_basket_tag "
+            "ON algo_orders (basket_tag) WHERE basket_tag IS NOT NULL"
+        ))
+        # M5 — algo_orders.account + algo_orders.symbol. /admin/history
+        # Orders endpoint filters on these columns plus created_at.
+        # The created_at index narrows the date range but account+symbol
+        # filter then scans the result set. Two singleton indexes are
+        # cheap to maintain (low write amplification on an append-only
+        # table).
+        for stmt in (
+            "CREATE INDEX IF NOT EXISTS ix_algo_orders_account "
+            "ON algo_orders (account)",
+            "CREATE INDEX IF NOT EXISTS ix_algo_orders_symbol "
+            "ON algo_orders (symbol)",
+        ):
+            await conn.execute(text(stmt))
+        # M5 — agent_events composite (sim_mode, agent_id, timestamp DESC).
+        # The three existing singleton indexes (`ix_agent_events_*`)
+        # match the query columns individually; Postgres picks one and
+        # filters the rest in memory. The composite lets the planner
+        # satisfy the common /admin/alerts path
+        #   WHERE sim_mode = ? [AND agent_id = ?] ORDER BY timestamp DESC
+        # via a single index scan. Leaving the singletons in place
+        # for now — they cost ~10% write amp on a low-write table and
+        # the audit was a MED, not a HIGH. Re-evaluate the drop in a
+        # future cleanup slice.
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_agent_events_simmode_agent_ts "
+            "ON agent_events (sim_mode, agent_id, timestamp DESC)"
+        ))
         # Feature: basket orders + auto profit-target (June 2026).
         # Four new columns on algo_orders; all nullable / defaulted so
         # existing rows remain valid without any data migration.

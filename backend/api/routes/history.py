@@ -15,6 +15,7 @@ looks suspicious.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date as _date, datetime, timedelta, timezone
 from typing import Optional
 
@@ -344,18 +345,28 @@ class HistoryController(Controller):
         if accts:
             conditions.append(DailyBook.account.in_(accts))
 
-        async with async_session() as s:
-            rows = (await s.execute(
-                select(DailyBook).where(and_(*conditions))
-                  .order_by(desc(DailyBook.date), DailyBook.account, DailyBook.segment)
-            )).scalars().all()
-            # Hint — earliest funds row across ALL accounts (operator
-            # wants to know "since when do we have tracking?")
-            earliest = (await s.execute(
-                select(_func.min(DailyBook.date)).where(
-                    DailyBook.kind == "funds",
-                )
-            )).scalar_one()
+        # Run the filtered SELECT and the unfiltered "earliest" probe
+        # concurrently across two short-lived sessions. SQLAlchemy async
+        # sessions can't multiplex statements; two sessions + gather
+        # halves wall-time when the filtered query scans many rows.
+        # (Slice M3.)
+        async def _fetch_rows():
+            async with async_session() as s_rows:
+                return (await s_rows.execute(
+                    select(DailyBook).where(and_(*conditions))
+                      .order_by(desc(DailyBook.date),
+                                DailyBook.account, DailyBook.segment)
+                )).scalars().all()
+
+        async def _fetch_earliest():
+            async with async_session() as s_min:
+                return (await s_min.execute(
+                    select(_func.min(DailyBook.date)).where(
+                        DailyBook.kind == "funds",
+                    )
+                )).scalar_one()
+
+        rows, earliest = await asyncio.gather(_fetch_rows(), _fetch_earliest())
 
         # Cashbook lens — compute day-over-day Δ on cash_available
         # within each (account, segment) series. Walk rows sorted by

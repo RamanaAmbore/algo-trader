@@ -73,6 +73,19 @@ _DHAN_SEGMENT_TO_EXCHANGE: dict[str, str] = {
     "IDX_I":       "NSE",   # Index instruments — treat as NSE for lookup
 }
 
+# Our exchange vocabulary → Dhan's segment codes for the market-status
+# probe. ANY mapped segment reporting active means the exchange is
+# open. Module-level constant (slice M6) — was previously a local
+# inside `market_status()` and re-allocated per call.
+_XCHG_TO_DHAN_MARKET_STATUS: dict[str, tuple[str, ...]] = {
+    "NSE": ("NSE_EQ",),
+    "BSE": ("BSE_EQ",),
+    "NFO": ("NSE_FNO",),
+    "BFO": ("BSE_FNO",),
+    "CDS": ("NSE_CURRENCY",),
+    "MCX": ("MCX_COMM",),
+}
+
 _dhan_instruments_lock = threading.Lock()
 _DHAN_INSTRUMENTS_DATE: str = ""            # IST date string when cache was built
 _DHAN_BY_EXCHANGE: dict[str, list[dict]] = {}   # kite_exchange → [instrument rows]
@@ -877,18 +890,7 @@ class DhanBroker(Broker):
             logger.debug(f"DhanBroker.market_status({exchange}) SDK call failed: {e}")
             return None
 
-        # Map our exchange vocabulary → Dhan's segment codes. Multiple
-        # Dhan codes per our single code; the exchange is "open" if
-        # ANY mapped segment reports active.
-        _XCHG_TO_DHAN: dict[str, tuple[str, ...]] = {
-            "NSE": ("NSE_EQ",),
-            "BSE": ("BSE_EQ",),
-            "NFO": ("NSE_FNO",),
-            "BFO": ("BSE_FNO",),
-            "CDS": ("NSE_CURRENCY",),
-            "MCX": ("MCX_COMM",),
-        }
-        target_codes = _XCHG_TO_DHAN.get((exchange or "").upper())
+        target_codes = _XCHG_TO_DHAN_MARKET_STATUS.get((exchange or "").upper())
         if not target_codes:
             return None
 
