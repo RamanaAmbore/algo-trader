@@ -634,31 +634,42 @@ async def init_db() -> None:
             "FOREIGN KEY (order_id) REFERENCES algo_orders(id) ON DELETE CASCADE",
         ):
             await conn.execute(text(stmt))
-        # R6a — drop the now-redundant singleton ix_agent_events_sim_mode.
-        # The slice-M composite (ix_agent_events_simmode_agent_ts) satisfies
-        # every query that the singleton did plus the agent_id + timestamp
-        # columns; Postgres won't use two indexes for the same leading column.
-        # DROP IF EXISTS is idempotent — first boot after migration deletes it;
-        # subsequent boots are a fast no-op.
-        await conn.execute(text(
-            "DROP INDEX IF EXISTS ix_agent_events_sim_mode"
-        ))
-        # R6b — unique partial index to back the active-session lookup in
-        # auth.py stop_impersonate (WHERE ended_at IS NULL). Without it,
-        # updating the most-recent open row is a seq-scan + filter on what
-        # can become a long-lived audit table.
-        await conn.execute(text(
+        # R6a/b/c — three index migrations.
+        # WHY THE TRY/EXCEPT WRAPPER: index DDL requires table ownership.
+        # `impersonation_events` was created historically as user `postgres`
+        # on the production DB while every other table was created as the
+        # app user — `CREATE INDEX … ON impersonation_events` then errored
+        # with InsufficientPrivilege and aborted on_startup, taking the API
+        # down with a Cloudflare host error. Operator fix is a one-time
+        # `ALTER TABLE … OWNER TO rambo_admin` as postgres; this wrapper
+        # ensures that future ownership drift on ANY table can never crash
+        # boot again. Index DDL failure is operator-visible (degraded perf,
+        # logged WARNING) but is never load-bearing for correctness.
+        _index_migrations = (
+            # R6a — drop the now-redundant singleton ix_agent_events_sim_mode.
+            # The slice-M composite (ix_agent_events_simmode_agent_ts) satisfies
+            # every query that the singleton did. DROP IF EXISTS idempotent.
+            "DROP INDEX IF EXISTS ix_agent_events_sim_mode",
+            # R6b — unique partial index backs the active-session lookup in
+            # auth.py stop_impersonate (WHERE ended_at IS NULL). Without it
+            # the most-recent open row is a seq-scan + filter on a growing
+            # audit table.
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_impersonation_active "
             "ON impersonation_events (actor_username, target_username) "
-            "WHERE ended_at IS NULL"
-        ))
-        # R6c — index for research.py's default ORDER BY updated_at DESC.
-        # The list_threads endpoint runs on every Lab page load; without this
-        # index Postgres performs a full seq-scan + sort over the whole table.
-        await conn.execute(text(
+            "WHERE ended_at IS NULL",
+            # R6c — backs research.py's default ORDER BY updated_at DESC on
+            # every Lab page load.
             "CREATE INDEX IF NOT EXISTS ix_research_threads_updated_at "
-            "ON research_threads (updated_at DESC)"
-        ))
+            "ON research_threads (updated_at DESC)",
+        )
+        for _stmt in _index_migrations:
+            try:
+                await conn.execute(text(_stmt))
+            except Exception as _idx_err:
+                logger.warning(
+                    "init_db: non-critical index migration skipped — %s "
+                    "(stmt=%s)", _idx_err, _stmt[:80],
+                )
     logger.info("Database: tables verified")
 
     # Seed grammar tokens (condition / notify / action catalog) BEFORE agents
