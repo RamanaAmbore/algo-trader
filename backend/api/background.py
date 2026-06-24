@@ -2663,7 +2663,7 @@ async def _task_visitor_log_daily() -> None:
 
     await asyncio.sleep(60)  # let DB init settle
 
-    async def _run_once() -> None:
+    async def _run_once(send_telegram: bool = True) -> None:
         try:
             # Use `arun_daily` (the async variant) directly so the
             # call runs on this task's event loop — asyncpg's pool is
@@ -2680,7 +2680,7 @@ async def _task_visitor_log_daily() -> None:
             branch = config.get("deploy_branch", "main")
             branch_tag = f" [{branch}]" if branch != "main" else ""
 
-            if is_enabled("telegram"):
+            if send_telegram and is_enabled("telegram"):
                 try:
                     from backend.shared.helpers.alert_utils import _send_telegram
                     from backend.scripts.visitor_report import summary_for_telegram
@@ -2696,9 +2696,13 @@ async def _task_visitor_log_daily() -> None:
         except Exception as e:
             logger.error(f"Background: visitor log daily run failed: {e}")
 
-    # First run immediately (startup catch-up — logs from the previous day
-    # may not have been processed if the service was restarted mid-day).
-    await _run_once()
+    # Startup catch-up — refresh the markdown report on disk so an
+    # operator who SSHs in mid-day sees today's data. The Telegram
+    # dispatch is SUPPRESSED here so every redeploy doesn't fire a
+    # visitor alert (operator: "why every deployment is creating
+    # visitor alert"). The Telegram dispatch happens only on the
+    # scheduled 23:35 IST run below.
+    await _run_once(send_telegram=False)
 
     while True:
         # Daily at visitors.report_time_ist (default 23:35 IST — five min
