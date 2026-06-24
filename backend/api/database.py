@@ -537,11 +537,29 @@ async def init_db() -> None:
         #   * token_version bumped on every affected row so existing
         #     JWTs invalidate on the next request via jwt_guard's tv
         #     check; users re-login and get a fresh JWT.
+        # Bump users.role column to VARCHAR(32) BEFORE the migration —
+        # the original VARCHAR(16) was too tight: the previous boot's
+        # transient marker `'designated_tmp_xfer'` is 19 chars and got
+        # rejected by Postgres ("value too long for type character
+        # varying(16)") which rolled back the entire init_db transaction
+        # and took the app down with a Cloudflare host error. VARCHAR(32)
+        # is comfortable for any legitimate role + future markers.
+        # Idempotent: no-op when the column is already wider.
+        try:
+            await conn.execute(text(
+                "ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(32)"
+            ))
+        except Exception as _alter_err:  # noqa: BLE001
+            logger.warning(
+                f"init_db: users.role column type bump skipped: {_alter_err}"
+            )
         # Wrapped in try/except so a migration hiccup doesn't crash
         # init_db and take the whole server down. Best-effort: if it
         # fails we log ERROR and continue; the operator can hand-run
         # the SQL on the server. The role-rename migration is data-
         # transformative — getting it wrong is worse than skipping it.
+        # Transient marker `__tmp_role__` fits in any reasonable role
+        # column width (12 chars; would have fit even the original 16).
         try:
             # Step 1 — observer → partner (legacy LP role).
             await conn.execute(text(
@@ -560,11 +578,10 @@ async def init_db() -> None:
             ))
             if prior_remap_landed.scalar():
                 # Swap-through-tmp to avoid the second UPDATE catching
-                # the rows the first UPDATE just renamed.
-                # 'designated_tmp_xfer' is a transient marker — no UI
-                # shows it, no cap matches it.
+                # the rows the first UPDATE just renamed. `__tmp_role__`
+                # is a transient marker — no UI shows it, no cap matches it.
                 await conn.execute(text(
-                    "UPDATE users SET role='designated_tmp_xfer', "
+                    "UPDATE users SET role='__tmp_role__', "
                     "token_version=COALESCE(token_version,1)+1 "
                     "WHERE role='admin'"
                 ))
@@ -575,21 +592,24 @@ async def init_db() -> None:
                 ))
                 await conn.execute(text(
                     "UPDATE users SET role='designated' "
-                    "WHERE role='designated_tmp_xfer'"
+                    "WHERE role='__tmp_role__'"
                 ))
                 logger.info(
                     "init_db: role rename undo applied — 'ops' → 'admin', "
                     "prior 'admin' (was firm-owner) → 'designated'. "
                     "Affected users must re-login (token_version bumped)."
                 )
-            # Cleanup: any users still parked at the transient marker
-            # from a CRASHED previous boot get promoted to 'designated'.
-            # The marker is invisible to caps + the UI; without this
+            # Cleanup: any users still parked at the transient markers
+            # from CRASHED previous boots get promoted to 'designated'.
+            # The markers are invisible to caps + the UI; without this
             # sweep, those users would 403 on every cap-gated request.
+            # Covers both the new short marker AND the previous broken
+            # 19-char one (which only landed on rows if the column was
+            # ever widened mid-flight; defensive sweep regardless).
             await conn.execute(text(
                 "UPDATE users SET role='designated', "
                 "token_version=COALESCE(token_version,1)+1 "
-                "WHERE role='designated_tmp_xfer'"
+                "WHERE role IN ('__tmp_role__', 'designated_tmp_xfer')"
             ))
         except Exception as _role_mig_err:  # noqa: BLE001
             logger.error(
