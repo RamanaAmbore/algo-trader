@@ -335,7 +335,7 @@
     margin: 0.12rem 0 0.08rem;
   }
   .pub-brand-tagline {
-    font-size: 0.65rem;
+    font-size: 0.4rem;
     font-weight: 500;
     color: rgba(255,255,255,0.82);
     letter-spacing: 0.02em;
@@ -345,7 +345,7 @@
   }
   .pub-brand-mobile .pub-brand-name    { font-size: 0.66rem; }
   .pub-brand-mobile .pub-brand-sub     { font-size: 0.5rem; }
-  .pub-brand-mobile .pub-brand-tagline { font-size: 0.6rem; }
+  .pub-brand-mobile .pub-brand-tagline { font-size: 0.4rem; }
 
   /* Nav buttons — laptop / desktop. About / Market / Performance / FAQ /
      Contact get the prominent treatment; the right-side context-switch
