@@ -321,13 +321,12 @@ async def _enforce_capacity_guard(
         # Broker fallback. Single batched call; failure → 503 (we
         # cannot risk-check the order without a price).
         try:
-            import asyncio as _asyncio
             from backend.shared.brokers.registry import get_price_broker
             broker = get_price_broker()
             # Exchange resolution: use NFO as the safe default for F&O
             # symbols; broker.ltp accepts EXCH:SYM keys.
             key = f"NFO:{tradingsymbol.upper()}"
-            quote = await _asyncio.to_thread(broker.ltp, [key])
+            quote = await asyncio.to_thread(broker.ltp, [key])
             v = (quote or {}).get(key)
             if isinstance(v, dict):
                 lp = float(v.get("last_price") or 0.0)
@@ -382,7 +381,7 @@ async def _process_broker_postback(
       2. invalidate `orders` / `positions` / `holdings` on terminal
       3. broadcast `order_update` + `position_filled` (on COMPLETE)
          + `book_changed` (on terminal) WS events
-      4. audit-log entry tagged `category='order.fill|cancel|reject'`
+      4. audit-log entry tagged `category='order.fill|cancel|reject|expired'`
 
     Best-effort: never raises. Failures log + drop so the broker's
     webhook gets a 200 OK and stops retrying.
@@ -456,10 +455,16 @@ async def _process_broker_postback(
     # Audit trail
     try:
         from backend.api.audit import write_audit_event
-        _cat = ("order.fill" if status == "COMPLETE"
-                else "order.cancel" if status == "CANCELLED"
-                else "order.reject" if status == "REJECTED"
-                else "order.fill")
+        # Audit category mapping. Pre-fix EXPIRED + unknown statuses
+        # fell through to "order.fill" which mislabelled them in
+        # /admin/audit's Orders pill. EXPIRED gets its own category;
+        # truly-unknown statuses bucket to "order" (the generic).
+        # (Slice P3.)
+        _cat = ("order.fill"    if status == "COMPLETE"
+                else "order.cancel"  if status == "CANCELLED"
+                else "order.reject"  if status == "REJECTED"
+                else "order.expired" if status == "EXPIRED"
+                else "order")
         write_audit_event(
             category=_cat,
             action=f"BROKER_{status}",
@@ -583,7 +588,6 @@ async def _start_live_chase(account: str, symbol: str, exchange: str,
     silently failed to flip to FILLED in the DB → templates never
     attached on fill.
     """
-    import asyncio
     from backend.api.algo.chase import chase_order
     cfg = _live_chase_config(aggressiveness)
     cfg.exchange = exchange or "NFO"
@@ -1655,7 +1659,6 @@ class OrdersController(Controller):
         Sets AlgoOrder.status='CANCELLED' and writes a 'killed' event so
         the timeline reflects the operator action.
         """
-        import asyncio as _asyncio
         from sqlalchemy import select as _sql_select
         from datetime import datetime, timezone
         from backend.api.database import async_session
@@ -1725,7 +1728,7 @@ class OrdersController(Controller):
                             # passes order_id positionally then variety
                             # kwarg — match that convention so adapters
                             # don't double-bind 'order_id'.
-                            await _asyncio.to_thread(
+                            await asyncio.to_thread(
                                 broker.cancel_order,
                                 str(row.broker_order_id),
                                 variety="regular",
@@ -1955,7 +1958,6 @@ class OrdersController(Controller):
         if not is_admin_request(request):
             raise HTTPException(status_code=403, detail="admin only")
 
-        import asyncio as _asyncio
         from sqlalchemy import select as _sql_select
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
@@ -2011,7 +2013,7 @@ class OrdersController(Controller):
                     logger.warning(f"reconcile: get_broker({acct}) failed: {e}")
                     continue
                 try:
-                    broker_orders = await _asyncio.to_thread(broker.orders)
+                    broker_orders = await asyncio.to_thread(broker.orders)
                 except Exception as e:
                     logger.warning(f"reconcile: broker.orders() for {acct} failed: {e}")
                     continue
@@ -2076,7 +2078,6 @@ class OrdersController(Controller):
         if not is_admin_request(request):
             raise HTTPException(status_code=403, detail="admin only")
 
-        import asyncio as _asyncio
         from sqlalchemy import select as _sql_select
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
@@ -2104,7 +2105,7 @@ class OrdersController(Controller):
                                 detail=f"account {acct} not loaded ({e})")
 
         try:
-            broker_orders = await _asyncio.to_thread(broker.orders)
+            broker_orders = await asyncio.to_thread(broker.orders)
         except Exception as e:
             logger.warning(f"reconcile {broker_order_id}: broker.orders() failed: {e}")
             raise HTTPException(status_code=502, detail=f"broker fetch failed: {e}")
@@ -2407,9 +2408,8 @@ class OrdersController(Controller):
             logger.info(f"Order placed: {order_id} [{masked}] {data.transaction_type} "
                         f"{data.quantity} {data.tradingsymbol}")
             try:
-                import asyncio as _aio
                 from backend.api.algo.agent_engine import record_manual_event
-                _aio.create_task(record_manual_event(
+                asyncio.create_task(record_manual_event(
                     outcome="action_success", source="place",
                     account=data.account, symbol=data.tradingsymbol,
                     exchange=data.exchange, side=data.transaction_type,
@@ -2431,9 +2431,8 @@ class OrdersController(Controller):
             except Exception:
                 pass
             try:
-                import asyncio as _aio
                 from backend.api.algo.agent_engine import record_manual_event
-                _aio.create_task(record_manual_event(
+                asyncio.create_task(record_manual_event(
                     outcome="action_failure", source="place",
                     account=data.account, symbol=data.tradingsymbol,
                     exchange=data.exchange, side=data.transaction_type,
@@ -2920,9 +2919,8 @@ class OrdersController(Controller):
                 logger.info(f"Ticket LIVE order: {order_id} [{masked}] "
                             f"{side} {qty} {sym}{chase_tag}")
                 try:
-                    import asyncio as _aio
                     from backend.api.algo.agent_engine import record_manual_event
-                    _aio.create_task(record_manual_event(
+                    asyncio.create_task(record_manual_event(
                         outcome="action_success", source=data.source or "ticket",
                         account=account, symbol=sym,
                         exchange=(data.exchange or "NFO"), side=side,
@@ -2985,9 +2983,8 @@ class OrdersController(Controller):
                 except Exception:
                     pass
                 try:
-                    import asyncio as _aio
                     from backend.api.algo.agent_engine import record_manual_event
-                    _aio.create_task(record_manual_event(
+                    asyncio.create_task(record_manual_event(
                         outcome="action_failure", source=data.source or "ticket",
                         account=account, symbol=sym,
                         exchange=(data.exchange or "NFO"), side=side,
@@ -3107,8 +3104,7 @@ class OrdersController(Controller):
         if algo_order_id:
             try:
                 from backend.api.algo.order_events import write_event as _write_evt
-                import asyncio as _aio
-                _aio.create_task(_write_evt(
+                asyncio.create_task(_write_evt(
                     algo_order_id, "placed",
                     f"[PAPER-TICKET] manual {side} {qty} {sym} "
                     f"{'@₹' + f'{data.price:.2f}' if data.price is not None else '@MARKET'}",
@@ -3125,9 +3121,8 @@ class OrdersController(Controller):
         logger.info(f"Ticket paper order: {algo_order_id} [{masked}] {side} {qty} {sym}")
         if algo_order_id:
             try:
-                import asyncio as _aio
                 from backend.api.algo.agent_engine import record_manual_event
-                _aio.create_task(record_manual_event(
+                asyncio.create_task(record_manual_event(
                     outcome="action_success", source=data.source or "ticket",
                     account=account, symbol=sym,
                     exchange=(data.exchange or "NFO"), side=side,
@@ -3259,10 +3254,15 @@ class OrdersController(Controller):
             try:
                 from backend.api.audit import write_audit_event
                 _status_u = str(status or "").upper()
+                # Audit category mapping. Same shape as _process_broker_postback
+                # — EXPIRED gets its own category instead of falling through
+                # to "order.fill", and truly-unknown statuses bucket to the
+                # generic "order". (Slice P3.)
                 _cat = ("order.fill"     if _status_u == "COMPLETE"
-                        else "order.cancel" if _status_u == "CANCELLED"
-                        else "order.reject" if _status_u == "REJECTED"
-                        else "order.fill")
+                        else "order.cancel"  if _status_u == "CANCELLED"
+                        else "order.reject"  if _status_u == "REJECTED"
+                        else "order.expired" if _status_u == "EXPIRED"
+                        else "order")
                 write_audit_event(
                     category=_cat,
                     action=f"BROKER_{_status_u or 'EVENT'}",
@@ -3285,7 +3285,6 @@ class OrdersController(Controller):
                 from backend.api.database import async_session as _async_session
                 from backend.api.models import AlgoOrder as _AlgoOrder
                 from backend.api.algo.order_events import write_event as _write_event
-                import asyncio as _asyncio
 
                 # Kite → AlgoOrder.status mapping. Operator reported
                 # algo_orders rows stuck at OPEN even after Kite said the
@@ -3443,8 +3442,7 @@ class OrdersController(Controller):
                                     and _r.parent_order_id is None
                                     and _r.template_id is None
                                     and _r.fill_price):
-                                import asyncio as _aio2
-                                _aio2.create_task(_arm_take_profit(
+                                asyncio.create_task(_arm_take_profit(
                                     parent_row_id=_r.id,
                                     parent_account=str(_r.account or ""),
                                     parent_symbol=str(_r.symbol or ""),
@@ -3470,7 +3468,6 @@ class OrdersController(Controller):
                                     and _r.parent_order_id is None
                                     and _r.mode == "live"
                                     and _r.fill_price):
-                                import asyncio as _aio3
                                 # Sprint B (#4) — size exit GTTs against
                                 # the actual filled qty when partials
                                 # occurred (chase took the order in
@@ -3481,7 +3478,7 @@ class OrdersController(Controller):
                                     if int(_r.filled_quantity or 0) > 0
                                     else int(_r.quantity or 0)
                                 )
-                                _aio3.create_task(
+                                asyncio.create_task(
                                     _fire_template_attach_on_fill(
                                         parent_row_id=int(_r.id),
                                         parent_account=str(_r.account or ""),
@@ -3497,7 +3494,7 @@ class OrdersController(Controller):
                     except Exception as _pe:
                         logger.debug(f"postback event write failed: {_pe}")
 
-                _asyncio.create_task(_pb_event())
+                asyncio.create_task(_pb_event())
             except Exception:
                 pass
 
@@ -3713,8 +3710,6 @@ class OrdersController(Controller):
         if not is_admin_request(request):
             raise HTTPException(status_code=403, detail="Admin access required.")
 
-        import asyncio as _asyncio
-
         async def _margin_for_group(grp: BasketGroup) -> BasketMarginGroupResult:
             account = (grp.account or "").strip()
             if not account:
@@ -3738,7 +3733,7 @@ class OrdersController(Controller):
                     }
                     for leg in grp.legs
                 ]
-                result = await _asyncio.to_thread(broker.basket_order_margins, orders_payload)
+                result = await asyncio.to_thread(broker.basket_order_margins, orders_payload)
                 # Kite returns {"initial": {...}, "final": {...}}; we surface
                 # "final" as the post-hedge required margin.
                 final  = (result or {}).get("final", {}) or {}
@@ -3761,7 +3756,7 @@ class OrdersController(Controller):
                     shortfall=None, error=str(_e)[:200],
                 )
 
-        results = await _asyncio.gather(*[_margin_for_group(g) for g in data.groups])
+        results = await asyncio.gather(*[_margin_for_group(g) for g in data.groups])
         return BasketMarginResponse(groups=list(results))
 
     @post("/basket")
@@ -3784,7 +3779,6 @@ class OrdersController(Controller):
         Non-prod branch + mode=live → 403.
         paper_trading_mode=ON + mode=live → 403.
         """
-        import asyncio as _asyncio
         import uuid as _uuid
         from datetime import datetime, timezone
         from backend.api.database import async_session as _async_session2
@@ -3863,7 +3857,7 @@ class OrdersController(Controller):
                         from backend.shared.brokers.kite import get_lot_size
                         _ls = await get_lot_size(exch, sym)
                         _kq = broker.translate_qty(exch, qty, _ls)
-                        kite_oid = await _asyncio.to_thread(
+                        kite_oid = await asyncio.to_thread(
                             broker.place_order,
                             variety=leg.variety or "regular",
                             exchange=exch,
@@ -4030,7 +4024,7 @@ class OrdersController(Controller):
                     }
                     for leg in grp.legs
                 ]
-                mr = await _asyncio.to_thread(broker.basket_order_margins, orders_payload)
+                mr = await asyncio.to_thread(broker.basket_order_margins, orders_payload)
                 final_m = (mr or {}).get("final", {}) or {}
                 avail_m = (mr or {}).get("initial", {}).get("available", {}) or {}
                 margin_required  = float(final_m.get("total") or 0)
@@ -4046,7 +4040,7 @@ class OrdersController(Controller):
                 margin_available=margin_available,
             )
 
-        group_results = await _asyncio.gather(*[_dispatch_group(g) for g in data.groups])
+        group_results = await asyncio.gather(*[_dispatch_group(g) for g in data.groups])
         return BasketOrderResponse(groups=list(group_results))
 
     @delete("/{order_id:str}", status_code=HTTP_200_OK)

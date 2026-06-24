@@ -620,28 +620,21 @@ class DhanBroker(Broker):
         the existing snapshot pipeline's shape.
 
         Method-name discovery — `get_ledger_report` is the v2 SDK
-        name; some older forks expose `get_funds_ledger`. Probe both
-        and fall back to an empty list if neither is wired.
+        name. We log at DEBUG when missing so the operator gets a
+        clear diagnostic if a future SDK version renames it.
+        (Slice P5: dropped the vestigial `get_funds_ledger` /
+        `ledger_report` probes — neither name has shipped in any
+        installed dhanhq build; they were defensive probes for a
+        hypothetical fork that doesn't exist.)
         """
         from datetime import date as _date
 
         sdk = self.dhan
-        # Probe SDK method NAME (not the bound method) so the retry path
-        # in _safe_call resolves against the FRESH SDK handle. Pre-fix
-        # `ledger_fn = getattr(sdk, ...)` captured the bound method
-        # against the stale handle; on auth-failure retry _safe_call
-        # got a fresh `d` but the lambda still invoked the stale
-        # bound method, defeating the retry.
-        ledger_method_name = next(
-            (n for n in ("get_ledger_report", "get_funds_ledger", "ledger_report")
-             if getattr(sdk, n, None) is not None),
-            None,
-        )
-        if ledger_method_name is None:
+        ledger_method_name = "get_ledger_report"
+        if getattr(sdk, ledger_method_name, None) is None:
             logger.warning(
-                "DhanBroker.funds_ledger: SDK exposes no ledger method "
-                "(tried get_ledger_report / get_funds_ledger / "
-                "ledger_report) — returning []"
+                "DhanBroker.funds_ledger: SDK is missing "
+                f"`{ledger_method_name}` — returning []"
             )
             return []
 

@@ -1104,11 +1104,17 @@ def _normalise_holdings(resp: Any) -> list[dict]:
         # count (qty minus any T1 not-yet-settled). Groww carries the
         # field under `quantity` for delivered, `t1_quantity` for in-flight.
         opening_qty = max(qty - t1_qty, 0)
-        # Derive missing close_price / pnl / day_change from the values
-        # Groww does send. Some Groww account shapes omit these and rely
-        # on the consumer (e.g. our /performance UI) to compute them.
-        if close <= 0 and ltp > 0:
-            close = ltp
+        # Derive missing pnl / day_change from the values Groww does
+        # send. Some Groww account shapes omit these and rely on the
+        # consumer (e.g. our /performance UI) to compute them.
+        #
+        # Honest close_price (slice P4): pre-fix `close = ltp` when
+        # Groww omitted previous_close. That made day_change = 0 →
+        # silently masked these rows from broker_apis.backfill_market_data
+        # (which patches a real prior close via PriceBroker.quote()),
+        # so the operator-facing Day P&L column read 0 (looks flat)
+        # instead of waiting for the backfill (looks unknown). Now
+        # we leave close=0 like Dhan does — backfill picks them up.
         pnl = float(h.get("pnl", 0) or 0)
         if not pnl and ltp > 0 and avg > 0 and qty:
             pnl = (ltp - avg) * qty

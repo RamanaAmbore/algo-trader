@@ -66,27 +66,38 @@ class NavComputeResponse(msgspec.Struct):
 class InvestorSlice(msgspec.Struct):
     """Per-investor NAV slice. Returned by /api/nav/me.
 
-    Calculation (v1 — static share_pct, no units accounting):
-        nav_share   = share_pct × firm_nav
-        pnl         = nav_share - contribution
-        pnl_pct     = pnl / contribution    (when contribution > 0)
-        day_delta_share = day_delta × share_pct
+    Calculation: units model (compute_slice in investor_units.py).
+        units_held(user, t)   = Σ units_delta for events ≤ t
+        total_units(t)        = Σ units_held across every LP
+        nav_per_unit(t)       = firm_nav(t) / total_units(t)
+        nav_share             = units_held × nav_per_unit
+        cost_basis            = Σ amount (subscription+bootstrap)
+                                − Σ amount (redemption)
+        pnl                   = nav_share − cost_basis
+        pnl_pct               = pnl / cost_basis (when basis > 0)
+        day_delta_share       = nav_share(today) − nav_share(prior),
+                                computed off the same event set so
+                                subscriptions/redemptions between the
+                                two snapshots show as capital
+                                movements, not P&L.
 
-    Treats `User.share_pct` as the investor's % of total firm NAV.
-    Works when share_pct sums to 100 % across LPs; otherwise the
-    leftover is firm equity (operator's own stake).
+    Auto-bootstrap (ensure_all_bootstrapped) backfills missing
+    eligible LPs into the events register on first read, encoding
+    their v1 share_pct + contribution. When share_pcts sum to 100,
+    bootstrap reproduces v1 numbers exactly; otherwise units
+    proportionally redistribute and slices sum to firm_nav by
+    construction.
 
-    Subscription / redemption events are NOT modelled — share_pct
-    is static. Mid-period contribution changes need pro-rata
-    accounting (units model); that lands in a future slice when
-    the boutique opens up to a second LP.
+    `share_pct` + `contribution` are kept in the response shape for
+    LP-facing display + back-compat with NavCard.svelte — the math
+    no longer reads them.
     """
     username:              str
-    share_pct:             float        # 0..100
-    contribution:          float        # ₹ initial / cumulative
+    share_pct:             float        # 0..100 (display only)
+    contribution:          float        # ₹ initial / cumulative (display only)
     firm_nav:              float        # latest NavDaily.nav
-    nav_share:             float        # share_pct/100 × firm_nav
-    pnl:                   float        # nav_share - contribution
+    nav_share:             float        # units_held × nav_per_unit
+    pnl:                   float        # nav_share - cost_basis
     pnl_pct:               Optional[float]
     day_delta_share:       Optional[float]
     day_delta_share_pct:   Optional[float]
