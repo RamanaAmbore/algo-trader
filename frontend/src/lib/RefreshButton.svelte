@@ -229,9 +229,7 @@
        onkeydown={(e) => { if (e.key === 'Escape') { _showClosedNotice = false; } }}>
     <div class="rf-closed-title">Market closed</div>
     <div class="rf-closed-body">
-      Both NSE and MCX are currently closed. Background pollers
-      keep refreshing on their own — there's nothing new to fetch
-      manually until the next session opens.
+      Both NSE and MCX are currently closed.
     </div>
     <div class="rf-closed-actions">
       <button type="button" class="rf-closed-btn rf-closed-cancel"
