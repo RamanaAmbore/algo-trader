@@ -511,7 +511,7 @@ class KiteConnection:
 
             if expired:
                 self._conn_created_at = now
-                formatted = self._conn_created_at.strftime('%A, %B %d, %Y, %I:%M %p')
+                formatted = self._conn_created_at.strftime('%a, %b %d, %Y, %I:%M %p')
                 logger.info(f'Kite connection refreshed at {formatted}')
 
             # Try cached token first — avoids full login/2FA

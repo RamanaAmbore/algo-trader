@@ -612,6 +612,28 @@ async def init_db() -> None:
         # global row in the whole table) and was deleted in slice L1.
         # IF NOT EXISTS made it a silent no-op as long as the G2 block
         # ran first, but kept a footgun in the migration ordering.
+        # ── Slice Q — FK ondelete edges (Jun 2026) ───────────────────────
+        # Q5a — algo_orders.parent_order_id → ON DELETE SET NULL.
+        # Self-referential FK; deleting a parent (e.g. manual cleanup)
+        # was blocked at the DB level. SET NULL preserves the child row
+        # (the TP/SL order history) while releasing the back-reference.
+        for stmt in (
+            "ALTER TABLE algo_orders DROP CONSTRAINT IF EXISTS algo_orders_parent_order_id_fkey",
+            "ALTER TABLE algo_orders ADD CONSTRAINT algo_orders_parent_order_id_fkey "
+            "FOREIGN KEY (parent_order_id) REFERENCES algo_orders(id) ON DELETE SET NULL",
+        ):
+            await conn.execute(text(stmt))
+        # Q5b — algo_order_events.order_id → ON DELETE CASCADE.
+        # Timeline rows are append-only and meaningless without their
+        # parent AlgoOrder. CASCADE lets operators delete a chase row
+        # (e.g. during sim cleanup) without first manually purging the
+        # event timeline, and avoids the silent NO ACTION block.
+        for stmt in (
+            "ALTER TABLE algo_order_events DROP CONSTRAINT IF EXISTS algo_order_events_order_id_fkey",
+            "ALTER TABLE algo_order_events ADD CONSTRAINT algo_order_events_order_id_fkey "
+            "FOREIGN KEY (order_id) REFERENCES algo_orders(id) ON DELETE CASCADE",
+        ):
+            await conn.execute(text(stmt))
     logger.info("Database: tables verified")
 
     # Seed grammar tokens (condition / notify / action catalog) BEFORE agents

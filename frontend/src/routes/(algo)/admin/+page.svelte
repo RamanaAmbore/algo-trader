@@ -856,11 +856,22 @@
                 <h3 class="section-heading mb-2">Investment</h3>
                 <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
                   <div><span class="field-label">Role</span>
-                    <Select ariaLabel="Role" bind:value={editForm.role}
-                      options={[
-                        { value: 'partner', label: 'Partner' },
-                        { value: 'admin',   label: 'Admin'   },
-                      ]} />
+                    {#if iAmDesignated}
+                      <Select ariaLabel="Role" bind:value={editForm.role}
+                        options={[
+                          { value: 'designated', label: 'Designated — firm owner (full access)' },
+                          { value: 'trader',     label: 'Trader — PM who self-executes'        },
+                          { value: 'risk',       label: 'Risk — read + kill-switch'            },
+                          { value: 'admin',      label: 'Admin — broker / user ops'            },
+                          { value: 'partner',    label: 'Partner — LP read-only'               },
+                        ]} />
+                    {:else}
+                      <Select ariaLabel="Role" bind:value={editForm.role}
+                        options={[
+                          { value: 'partner', label: 'Partner — LP read-only'  },
+                          { value: 'admin',   label: 'Admin — broker / user ops' },
+                        ]} />
+                    {/if}
                   </div>
                   <!-- Capital + share % + contribution date — designated-
                        only. Backend (admin.py::update_user) silently

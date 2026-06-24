@@ -805,7 +805,7 @@ LP-facing read-only page at `/investor/<token>` showing the LP's NAV slice + 180
 | `GET /api/investor/{token}/slice` | none — token in URL | Current NAV slice (public) |
 | `GET /api/investor/{token}/history?days=180` | none — token in URL | NAV curve (public) |
 
-**Cap**: `manage_investor_tokens` is admin-only. Trader / risk / ops cannot mint — LP onboarding is a designated activity.
+**Cap**: `manage_investor_tokens` is `designated`-only. Trader, risk, admin, and partner cannot mint — LP onboarding is a designated activity.
 
 **Math** (units model — slice 7N+):
 
@@ -879,20 +879,19 @@ The platform's RBAC surface is **5 canonical roles** + 1 legacy preserved role +
 
 | Role | Caps | Notes |
 |---|---|---|
-| `admin` | Everything per the matrix in `backend/api/rbac.py::CAPS` | Default for trusted operators |
+| `designated` | Everything per the matrix in `backend/api/rbac.py::CAPS` | Firm owner / top tier |
 | `trader` | place / modify / cancel orders + view book; horizontal scope via `assigned_accounts` + `assigned_strategies` | PM tier |
 | `risk` | view everything + kill-switch + adjust risk floors | Compliance + on-call monitoring |
-| `ops` | manage brokers + manage users + view audit | Operations admin |
-| `observer` | view-only aggregate; no trading, no settings | LP-style read access |
+| `admin` | manage brokers + manage users + view audit | Operational support |
+| `partner` | view-only aggregate; no trading, no settings | LP-style read access |
 | `demo` | view-only on prod (anonymous visitor) | Public surface, no auth |
-| `designated` | Same caps as admin via `normalise_role` collapse, BUT three super-admin code paths still branch on the literal value | Legacy super-admin tier; intentionally preserved |
 
 **Where `designated` still matters at the code level:**
 - `designated_guard` on `/admin/users/{username}/terminate` and `/admin/users/{username}/toggle-designated` endpoints (can't terminate other admins or promote/demote between admin↔designated unless you're designated)
 - `alert_utils.get_alert_recipients()` always includes designated emails regardless of `receive_alerts` toggle
 - `/admin` UI hides terminate / promote / view-as buttons unless the actor is designated
 
-A user with role='designated' has all admin caps PLUS those three super-admin gates. Going forward new users should land on one of the 5 canonical roles; the auto-bootstrap migration (init_db) flips role='partner' → 'observer' on existing rows. Operator can promote an admin → designated via `/admin` → user row → Promote button.
+The designated role has all admin caps PLUS three super-admin gates. Going forward new users should land on one of the 5 canonical roles (`designated / trader / risk / admin / partner`). The auto-bootstrap migration (init_db) is complete and no longer runs. Operator can promote an admin → designated via `/admin` → user row → Promote button.
 
 ### Audit workflow — the #audit tag
 
@@ -1003,7 +1002,7 @@ postback received
 
 ## History — `/admin/history`
 
-Multi-day forensic surface for the three "book of record" datasets — Orders (every order the platform placed), Trades (broker-confirmed fills), Funds (per-account margins ledger). Cap-gated by `view_audit` (admin / risk / ops). Read-only; pairs with `/admin/audit` (event-level log) — this is the row-level book view.
+Multi-day forensic surface for the three "book of record" datasets — Orders (every order the platform placed), Trades (broker-confirmed fills), Funds (per-account margins ledger). Cap-gated by `view_audit` (designated / admin / risk). Read-only; pairs with `/admin/audit` (event-level log) — this is the row-level book view.
 
 **Endpoints** ([backend/api/routes/history.py](backend/api/routes/history.py)):
 

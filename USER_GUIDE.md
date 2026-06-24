@@ -494,7 +494,7 @@ Older builds called the Sandbox page "Lab" and the group "Modes." The labels wer
 
 ## Why every signed-in role can reach the algo surfaces now
 
-Earlier the platform redirected any signed-in user who wasn't an admin or "designated" tier back to the sign-in page the moment they hit an algo URL. That was holdover behavior from the old two-tier model — admin (operator) and partner (LP) — before the platform grew the five-role surface (admin / trader / risk / ops / observer). Today a trader or risk officer signing in can navigate every algo page; specific surfaces still check the user's role before showing data (a trader doesn't see audit logs, a risk officer doesn't see broker credentials), but the navigation itself doesn't bounce.
+Earlier the platform redirected any signed-in user who wasn't an admin or "designated" tier back to the sign-in page the moment they hit an algo URL. That was holdover behavior from the old two-tier model — admin (operator) and partner (LP) — before the platform grew the five-role surface (designated / trader / risk / admin / partner). Today a trader or risk officer signing in can navigate every algo page; specific surfaces still check the user's role before showing data (a trader doesn't see audit logs, a risk officer doesn't see broker credentials), but the navigation itself doesn't bounce.
 
 This fix also unblocked the **Tour** — clicking any showcase link as a logged-in non-admin used to drop the visitor back at /signin. It just opens the surface now.
 
@@ -542,7 +542,7 @@ Three things you'll want to look up after a trading day are usually:
 - **"What did I actually trade in October?"** — separate from order placement. Trades are the *fills* the broker confirmed. The platform takes a daily snapshot of broker-reported trades at 15:35 IST and writes them to its own history table. As long as the platform was running on that day, the trades are there to scroll through.
 - **"How much cash did the account have on Diwali?"** — broker portals show today's balance only; nothing historical. RamboQuant now captures a per-account, per-segment funds snapshot in the same 15:35 IST job so the ledger builds up over time.
 
-All three live behind one page at `/admin/history` (admin / risk / ops roles). Three tabs:
+All three live behind one page at `/admin/history` (designated / admin / risk roles). Three tabs:
 
 - **Orders** — every order the platform recorded. Filter by date range, account, symbol, status (FILLED / OPEN / REJECTED / CANCELLED / UNFILLED), and mode (live / paper / sim / shadow / replay). The summary row shows a status histogram so you can see "20 filled, 3 rejected, 1 cancelled" at a glance.
 - **Trades** — the broker-confirmed fills. Filter by date / account / symbol. Summary shows total notional across the filtered set, computed at the database so it stays accurate regardless of pagination.
@@ -580,7 +580,7 @@ There's nothing for you to configure — if a broker exposes `market_status` and
 
 Every action that changes state in RamboQuant — placing an order, a broker filling that order, an agent firing, you tweaking a setting, a monthly statement going out to an LP, the daily NAV cron writing a snapshot — lands as one row in an audit log. The log is the platform's memory of "who did what, when, and with what outcome." A SEBI Cat-III audit visit doesn't need a fancy UI; it needs the trail. RamboQuant gives them both.
 
-**Who can see it?** Admin, risk, and ops roles. Trader, observer, and demo don't have access — the audit log is forensic data, not operational data.
+**Who can see it?** Designated, admin, and risk roles. Trader, partner, and demo don't have access — the audit log is forensic data, not operational data.
 
 **Where do I find it?** `/admin/audit`. Pick a category pill at the top (Orders / Agents / Users / Config / System) or use the column filters to scope down.
 

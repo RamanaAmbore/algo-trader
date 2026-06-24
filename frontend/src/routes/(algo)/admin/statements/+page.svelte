@@ -62,7 +62,7 @@
         year: y, month: m,
         value: `${y}-${m}`,
         label: new Date(y, m - 1, 1).toLocaleDateString('en-IN', {
-          month: 'long', year: 'numeric',
+          month: 'short', year: 'numeric',
         }),
       });
       m -= 1; if (m < 1) { m = 12; y -= 1; }
@@ -158,7 +158,7 @@
   function _periodLabel() {
     if (!periodYear || !periodMonth) return '—';
     return new Date(periodYear, periodMonth - 1, 1).toLocaleDateString('en-IN', {
-      month: 'long', year: 'numeric',
+      month: 'short', year: 'numeric',
     });
   }
   function _fmtBytes(/** @type {number|null} */ b) {

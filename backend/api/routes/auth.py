@@ -652,8 +652,15 @@ class AuthController(Controller):
         actor_role     = str(payload.get("role", "")).strip()
         already_impersonating = bool(payload.get("imp_by"))
 
-        if actor_role not in ("admin", "designated"):
-            raise HTTPException(status_code=403, detail="Only admin or designated can impersonate")
+        # Slice Q — align gate with RBAC matrix.
+        # CAPS["impersonate"] = frozenset({"designated"}) — only the firm
+        # owner may impersonate. The previous inline check also admitted
+        # "admin" (operational support), which diverged from the matrix.
+        # The "admin can impersonate partners only" admin_partner_ok path
+        # is intentionally removed: operational admins have no business
+        # need to assume an LP's identity, and the matrix never granted it.
+        if actor_role != "designated":
+            raise HTTPException(status_code=403, detail="Only designated can impersonate")
         if already_impersonating:
             # Disallow nested impersonation — end the current one first.
             raise HTTPException(status_code=409, detail="Already in an impersonation session — stop the current one first")
@@ -670,10 +677,6 @@ class AuthController(Controller):
                 raise HTTPException(status_code=400, detail="Target user is terminated / inactive")
             if target.suspended_at is not None:
                 raise HTTPException(status_code=400, detail="Target user is suspended")
-
-            # Permission ladder.
-            if actor_role == "admin" and target.role != "partner":
-                raise HTTPException(status_code=403, detail="Admin can only impersonate partners")
 
             # Audit row first — if token mint fails, we still have the
             # attempt logged. ended_at left NULL; will be filled by

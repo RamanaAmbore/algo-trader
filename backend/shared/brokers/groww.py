@@ -652,9 +652,33 @@ class GrowwBroker(Broker):
             raise RuntimeError(f"Groww place_order rejected: {resp}")
         return str(order_id)
 
+    def _resolve_exchange_from_order(self, order_id: str) -> str:
+        """Look up an open order's exchange via self.orders() when the
+        caller did not supply it.  Returns an empty string when not found
+        so callers can raise a clear error rather than routing to a wrong
+        segment silently."""
+        try:
+            for o in self.orders():
+                if str(o.get("order_id", "")) == str(order_id):
+                    return str(o.get("exchange", ""))
+        except Exception as _e:
+            logger.debug(f"GrowwBroker._resolve_exchange_from_order({order_id}): {_e}")
+        return ""
+
     @_retry_groww_auth
     def modify_order(self, order_id: str, **kwargs: Any) -> str:
-        _, seg = _groww_exchange_and_segment(kwargs.get("exchange", ""))
+        # Slice Q — resolve exchange when caller omits it (e.g. chase.py
+        # doesn't pass exchange to broker.modify_order). Pre-fix: empty
+        # string raised ValueError from _groww_exchange_and_segment.
+        exchange = str(kwargs.get("exchange") or "")
+        if not exchange:
+            exchange = self._resolve_exchange_from_order(order_id)
+        if not exchange:
+            raise ValueError(
+                f"modify_order: exchange required and could not be resolved "
+                f"from broker.orders() for order_id={order_id!r}"
+            )
+        _, seg = _groww_exchange_and_segment(exchange)
         self.groww.modify_order(
             order_type=_ORDER_TYPE_TO_GROWW.get(kwargs.get("order_type", "LIMIT"),
                                                  "LIMIT"),
@@ -669,7 +693,17 @@ class GrowwBroker(Broker):
 
     @_retry_groww_auth
     def cancel_order(self, order_id: str, **kwargs: Any) -> str:
-        _, seg = _groww_exchange_and_segment(kwargs.get("exchange", "NSE"))
+        # Slice Q — resolve exchange when caller omits it. Pre-fix: default
+        # "NSE" silently sent MCX/NFO cancels to the CASH segment.
+        exchange = str(kwargs.get("exchange") or "")
+        if not exchange:
+            exchange = self._resolve_exchange_from_order(order_id)
+        if not exchange:
+            raise ValueError(
+                f"cancel_order: exchange required and could not be resolved "
+                f"from broker.orders() for order_id={order_id!r}"
+            )
+        _, seg = _groww_exchange_and_segment(exchange)
         self.groww.cancel_order(segment=seg, groww_order_id=order_id)
         return order_id
 

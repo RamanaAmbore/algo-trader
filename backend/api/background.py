@@ -990,7 +990,7 @@ async def _send_one_monthly_statement(user, period_year: int, period_month: int)
             pdf_bytes = await _asyncio.to_thread(render_statement_pdf, data)
             recipients = [user.email]
             subject = (
-                f"RamboQuant statement — {data.period_start.strftime('%B %Y')}"
+                f"RamboQuant statement — {data.period_start.strftime('%b %Y')}"
             )
             html_body = _monthly_statement_html(user, data)
             ok, msg = send_email(
@@ -1075,7 +1075,7 @@ def _monthly_statement_html(user, data) -> str:
     """Cream/champagne HTML body matching the LP portal palette.
     Plain inline-styled HTML so it renders consistently across
     Gmail / Outlook / Apple Mail without CSS class support."""
-    period_label = data.period_start.strftime("%B %Y")
+    period_label = data.period_start.strftime("%b %Y")
     fmt_inr = lambda v: _html_inr(v)
     fmt_pct = lambda v: "—" if v is None else f"{'+' if v >= 0 else ''}{v * 100:.2f}%"
     pnl_colour = lambda v: "#14653a" if (v or 0) > 0 else ("#962d2d" if (v or 0) < 0 else "#2a2418")

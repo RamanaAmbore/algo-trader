@@ -160,8 +160,8 @@ def _fmt_stamp(dt: datetime) -> str:
         ist = dt.astimezone(timestamp_indian().tzinfo)
         est = dt.astimezone(timestamp_est().tzinfo)
         return (
-            f"{ist.strftime('%a, %B %d, %Y, %I:%M %p IST')} | "
-            f"{est.strftime('%a, %B %d, %Y, %I:%M %p %Z')}"
+            f"{ist.strftime('%a, %b %d, %Y, %I:%M %p IST')} | "
+            f"{est.strftime('%a, %b %d, %Y, %I:%M %p %Z')}"
         )
     except Exception:
         return ""

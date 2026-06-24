@@ -96,7 +96,7 @@
     if (m === 0) { m = 12; y -= 1; }
     for (let i = 0; i < n; i++) {
       const label = new Date(y, m - 1, 1).toLocaleDateString('en-IN', {
-        month: 'long', year: 'numeric',
+        month: 'short', year: 'numeric',
       });
       out.push({ year: y, month: m, label });
       m -= 1;

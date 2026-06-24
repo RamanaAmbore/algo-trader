@@ -226,8 +226,8 @@ async def compute_statement(user_id: int, year: int, month: int) -> Optional[Sta
 # ---------------------------------------------------------------------------
 
 _MONTH_NAMES = [
-    "", "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
+    "", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ]
 
 

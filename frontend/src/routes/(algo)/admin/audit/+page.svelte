@@ -425,10 +425,11 @@
     border: 1px solid rgba(126, 151, 184, 0.32);
   }
   .audit-role-admin      { background: rgba(248, 113, 113, 0.16); border-color: rgba(248, 113, 113, 0.45); color: #f87171; }
-  .audit-role-designated { background: rgba(248, 113, 113, 0.16); border-color: rgba(248, 113, 113, 0.45); color: #f87171; }
+  .audit-role-designated { background: rgba(192, 132, 252, 0.16); border-color: rgba(192, 132, 252, 0.45); color: #c084fc; }
   .audit-role-trader     { background: rgba(74, 222, 128, 0.18); border-color: rgba(74, 222, 128, 0.45); color: #4ade80; }
   .audit-role-risk       { background: rgba(251, 191, 36, 0.18); border-color: rgba(251, 191, 36, 0.45); color: #fbbf24; }
   .audit-role-ops        { background: rgba(34, 211, 238, 0.16); border-color: rgba(34, 211, 238, 0.45); color: #67e8f9; }
+  .audit-role-partner    { background: rgba(74, 222, 128, 0.13); border-color: rgba(74, 222, 128, 0.35); color: #86efac; }
   .audit-role-demo       { background: rgba(168, 85, 247, 0.18); border-color: rgba(168, 85, 247, 0.45); color: #c084fc; }
   .audit-role-system     { background: rgba(196, 192, 168, 0.18); border-color: rgba(196, 192, 168, 0.45); color: #d4d0a8; }
 

@@ -1821,6 +1821,22 @@ async def _action_live_modify_order(agent, context: dict, params: dict):
         if v is not None:
             kwargs[field] = v
 
+    # Slice Q — pass exchange from persisted AlgoOrder row so Groww's
+    # segment resolver doesn't raise ValueError on empty exchange.
+    if "exchange" not in kwargs:
+        try:
+            from sqlalchemy import select as _select
+            from backend.api.database import async_session as _as
+            from backend.api.models import AlgoOrder as _AO
+            async with _as() as _s:
+                _row = (await _s.execute(
+                    _select(_AO).where(_AO.broker_order_id == order_id)
+                )).scalar_one_or_none()
+            if _row and _row.exchange:
+                kwargs["exchange"] = _row.exchange
+        except Exception:
+            pass
+
     try:
         await loop.run_in_executor(
             None,

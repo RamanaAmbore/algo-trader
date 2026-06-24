@@ -565,14 +565,21 @@ class InvestorStatementsController(Controller):
         # to 0, deactivated, dropped email) — still surface them so the
         # operator can see "this LP got a statement before; their row
         # still exists." Tagged with status from the audit row.
+        # Slice Q — bulk-fetch formerly-eligible users in one query
+        # instead of opening a fresh session per row (N+1 defect).
         eligible_ids = {u.id for u in eligible_users}
+        extra_ids = {r.user_id for r in stmt_rows if r.user_id not in eligible_ids}
+        extra_user_map: dict = {}
+        if extra_ids:
+            async with async_session() as s:
+                extra_rows = (await s.execute(
+                    select(User).where(User.id.in_(extra_ids))
+                )).scalars().all()
+            extra_user_map = {u.id: u for u in extra_rows}
         for r in stmt_rows:
             if r.user_id in eligible_ids:
                 continue
-            async with async_session() as s:
-                u = (await s.execute(
-                    select(User).where(User.id == r.user_id)
-                )).scalar_one_or_none()
+            u = extra_user_map.get(r.user_id)
             if u is None:
                 continue
             status = "sent" if r.sent_at is not None else "failed"

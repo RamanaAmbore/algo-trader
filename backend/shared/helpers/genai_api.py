@@ -97,8 +97,8 @@ def get_market_update(strict: bool = False):
     """
     now = timestamp_indian()
     now_est = timestamp_est()
-    formatted_ist = now.strftime('%a, %B %d, %Y, %I:%M %p IST')
-    formatted_est = now_est.strftime('%a, %B %d, %Y, %I:%M %p %Z')
+    formatted_ist = now.strftime('%a, %b %d, %Y, %I:%M %p IST')
+    formatted_est = now_est.strftime('%a, %b %d, %Y, %I:%M %p %Z')
     logger.info(f'GenAI for market update invoked at {formatted_ist}')
 
     message = f"Market Report — {formatted_ist} | {formatted_est}"

@@ -492,10 +492,17 @@ def _place_order(account: str, symbol: str, transaction_type: str,
     return str(order_id)
 
 
-def _cancel_order(account: str, order_id: str, variety: str = "regular"):
-    """Cancel an open order."""
+def _cancel_order(account: str, order_id: str, variety: str = "regular",
+                  exchange: str = ""):
+    """Cancel an open order.
+    Slice Q — `exchange` is forwarded to broker.cancel_order so Groww's
+    segment resolver uses the correct segment instead of defaulting to NSE
+    and silently failing for MCX/NFO cancels."""
     broker = _get_broker(account)
-    broker.cancel_order(order_id, variety=variety)
+    if exchange:
+        broker.cancel_order(order_id, variety=variety, exchange=exchange)
+    else:
+        broker.cancel_order(order_id, variety=variety)
 
 
 def _order_status(account: str, order_id: str) -> dict:
@@ -717,7 +724,8 @@ async def chase_order(
             # Cancel previous order if exists
             if current_order_id:
                 try:
-                    await _run(_cancel_order, account, current_order_id, cfg.variety)
+                    await _run(_cancel_order, account, current_order_id, cfg.variety,
+                               cfg.exchange)
                     emit("order_cancelled", {"order_id": current_order_id, "attempt": attempt})
                 except Exception as e:
                     logger.warning(f"Chase {symbol}: cancel failed: {e}")
@@ -757,7 +765,8 @@ async def chase_order(
                     f"after replace. Cancelling + terminating."
                 )
                 try:
-                    await _run(_cancel_order, account, current_order_id, cfg.variety)
+                    await _run(_cancel_order, account, current_order_id, cfg.variety,
+                               cfg.exchange)
                 except Exception as _ke:
                     logger.warning(f"Chase {symbol}: post-replace kill cancel failed: {_ke}")
                 result.status = ChaseStatus.CANCELLED
@@ -959,7 +968,8 @@ async def chase_order(
                                       "reason": "consecutive_errors"})
                 try:
                     if current_order_id:
-                        await _run(_cancel_order, account, current_order_id, cfg.variety)
+                        await _run(_cancel_order, account, current_order_id, cfg.variety,
+                                   cfg.exchange)
                 except Exception:
                     pass
                 try:
@@ -986,7 +996,8 @@ async def chase_order(
     # Max attempts exhausted
     if current_order_id:
         try:
-            await _run(_cancel_order, account, current_order_id, cfg.variety)
+            await _run(_cancel_order, account, current_order_id, cfg.variety,
+                       cfg.exchange)
         except Exception:
             pass
 

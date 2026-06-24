@@ -940,8 +940,17 @@ class DhanBroker(Broker):
                 # raw POST if missing. Either path returns a dict with
                 # a `data.totalMargin` field we map to Kite's `total`.
                 if hasattr(self.dhan, "margin_calculator"):
+                    # Slice Q — resolve security_id from tradingsymbol +
+                    # exchange when the caller didn't supply it, mirroring
+                    # place_order. Pre-fix: always used o.get("security_id",
+                    # "") which was always "" → Dhan returned 0 margin →
+                    # every paper-engine order registered OPEN not REJECTED.
+                    sid = (str(o.get("security_id") or "")
+                           or _resolve_security_id(
+                               str(o.get("tradingsymbol", "")),
+                               str(o.get("exchange", ""))))
                     resp = self._safe_call(lambda d: d.margin_calculator(
-                        security_id=str(o.get("security_id", "")),
+                        security_id=sid,
                         exchange_segment=ex_seg,
                         transaction_type=txn,
                         quantity=qty,

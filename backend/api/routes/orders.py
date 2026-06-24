@@ -4060,7 +4060,25 @@ class OrdersController(Controller):
         broker = _broker_for(account)
         masked = mask_account(account)
         try:
-            broker.cancel_order(order_id, variety=variety)
+            # Slice Q — look up exchange from the persisted AlgoOrder row
+            # so Groww's segment resolver gets the right segment instead
+            # of silently routing MCX/NFO cancels to the CASH segment.
+            _exchange = ""
+            try:
+                from sqlalchemy import select as _sel
+                from backend.api.models import AlgoOrder as _AO
+                async with async_session() as _s:
+                    _row = (await _s.execute(
+                        _sel(_AO).where(_AO.broker_order_id == order_id)
+                    )).scalar_one_or_none()
+                if _row and _row.exchange:
+                    _exchange = _row.exchange
+            except Exception:
+                pass
+            if _exchange:
+                broker.cancel_order(order_id, variety=variety, exchange=_exchange)
+            else:
+                broker.cancel_order(order_id, variety=variety)
             invalidate("orders")
             logger.info(f"Order cancelled: {order_id} [{masked}]")
             return CancelOrderResponse(order_id=order_id)

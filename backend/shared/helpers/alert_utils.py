@@ -32,7 +32,7 @@ Message type prefixes
 """
 
 from datetime import datetime
-from threading import Lock
+from threading import Lock, Thread
 
 import requests
 
@@ -362,12 +362,18 @@ def _dispatch(msg_type: str, ist_display: str, tg_table: str, email_table_html: 
             f"</div>"
             f"</body></html>"
         )
+        # Slice Q — offload SMTP to a daemon thread so a Hostinger
+        # connection-timeout (up to 30s) never stalls the event loop.
+        # Fire-and-forget: failures are logged inside the thread body.
         for email in alert_emails:
-            try:
-                send_email("", email, subject, html_body)
-                logger.info(f"{sim_prefix}{tg_prefix} email sent to {email}")
-            except Exception as e:
-                logger.error(f"Failed to send {sim_prefix}{tg_prefix} email to {email}: {e}")
+            def _send_one(addr=email, subj=subject, body=html_body,
+                          pfx=f"{sim_prefix}{tg_prefix}"):
+                try:
+                    send_email("", addr, subj, body)
+                    logger.info(f"{pfx} email sent to {addr}")
+                except Exception as _e:
+                    logger.error(f"Failed to send {pfx} email to {addr}: {_e}")
+            Thread(target=_send_one, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -653,14 +659,18 @@ def send_order_failure_alert(
             + (f" ({mode})" if mode else "")
         )
 
-        # Deliver — best-effort; never raises out of this function
+        # Deliver — best-effort; never raises out of this function.
+        # Slice Q — SMTP offloaded to daemon thread so a timeout never
+        # stalls the chase loop or agent run_cycle event-loop iteration.
         _send_telegram(tg_body)
         alert_emails = get_alert_recipients()
         for email in alert_emails:
-            try:
-                send_email("", email, subject, email_body)
-            except Exception as _mail_e:
-                logger.error(f"order-failure email to {email} failed: {_mail_e}")
+            def _send_failure_email(addr=email, subj=subject, body=email_body):
+                try:
+                    send_email("", addr, subj, body)
+                except Exception as _mail_e:
+                    logger.error(f"order-failure email to {addr} failed: {_mail_e}")
+            Thread(target=_send_failure_email, daemon=True).start()
 
         logger.warning(
             f"order-failure alert sent: {masked} {side} {qty} {symbol} "

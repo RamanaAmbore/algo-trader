@@ -32,7 +32,7 @@ class User(Base):
     # 'designated' = firm owner; 'admin' = operational support;
     # 'partner' = LP read-only (default for self-registration).
     # See backend/api/rbac.py for the cap matrix.
-    role: Mapped[str]           = mapped_column(String(16), nullable=False, default="partner")
+    role: Mapped[str]           = mapped_column(String(32), nullable=False, default="partner")
     display_name: Mapped[str]   = mapped_column(String(128), nullable=False, default="")
     email: Mapped[Optional[str]]       = mapped_column(String(128), nullable=True)
     phone: Mapped[Optional[str]]       = mapped_column(String(20), nullable=True)
@@ -164,9 +164,9 @@ class ImpersonationEvent(Base):
 
     id:                Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     actor_username:    Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    actor_role_at_time: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_role_at_time: Mapped[str] = mapped_column(String(32), nullable=False)
     target_username:   Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    target_role_at_time: Mapped[str] = mapped_column(String(16), nullable=False)
+    target_role_at_time: Mapped[str] = mapped_column(String(32), nullable=False)
     started_at:        Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),
@@ -772,7 +772,7 @@ class AlgoOrder(Base):
     # parent AlgoOrder.  NULL on parent rows; set on every TP child so
     # idempotency checks can skip duplicate TP creation.
     parent_order_id: Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("algo_orders.id"), nullable=True, index=True,
+        Integer, ForeignKey("algo_orders.id", ondelete="SET NULL"), nullable=True, index=True,
     )
     # Template attachment — captured at submit time so the postback
     # handler can fire apply_plan_live(template, actual_fill_price)
@@ -867,7 +867,7 @@ class AlgoOrderEvent(Base):
 
     id: Mapped[int]       = mapped_column(primary_key=True, autoincrement=True)
     order_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("algo_orders.id"), nullable=False, index=True
+        Integer, ForeignKey("algo_orders.id", ondelete="CASCADE"), nullable=False, index=True
     )
     ts: Mapped[datetime]  = mapped_column(
         DateTime(timezone=True), nullable=False,
@@ -1533,7 +1533,7 @@ class AdminEmailEvent(Base):
         default=lambda: datetime.now(timezone.utc),
     )
     actor_username:   Mapped[str]      = mapped_column(String(64), nullable=False, index=True)
-    actor_role:       Mapped[str]      = mapped_column(String(16), nullable=False)
+    actor_role:       Mapped[str]      = mapped_column(String(32), nullable=False)
     # JSON array of usernames actually sent to (post-resolution of presets).
     recipients:       Mapped[list]     = mapped_column(JSONB, nullable=False, default=list)
     subject:          Mapped[str]      = mapped_column(String(256), nullable=False)
@@ -1660,7 +1660,7 @@ class AuditLog(Base):
         nullable=True, index=True,
     )
     actor_username: Mapped[str]   = mapped_column(String(64), nullable=False, default="", index=True)
-    actor_role:     Mapped[str]   = mapped_column(String(16), nullable=False, default="")
+    actor_role:     Mapped[str]   = mapped_column(String(32), nullable=False, default="")
     # Action descriptor — derived from method + path. e.g. "POST /api/orders/ticket".
     action: Mapped[str]           = mapped_column(String(120), nullable=False, index=True)
     # Coarse category tag for filtering. Examples:
