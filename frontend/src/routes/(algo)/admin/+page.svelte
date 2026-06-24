@@ -596,7 +596,7 @@
                 { value: 'partner',    label: 'Partner — LP read-only'        },
               ]} />
           {:else}
-            <div class="field-input field-input-readonly">Observer</div>
+            <div class="field-input field-input-readonly">Partner</div>
           {/if}
         </div>
         <!-- Capital + share % — designated-only. Backend silently
@@ -639,10 +639,16 @@
               <span class="text-[0.6rem] text-[#7e97b8] font-mono">{user.account_id}</span>
               <span class="px-1.5 py-0.5 rounded text-[0.6rem] font-semibold uppercase border
                 {user.role === 'designated'
-                  ? 'bg-violet-500/15 text-violet-300 border-violet-500/40'
+                  ? 'bg-violet-500/15 text-[#c084fc] border-violet-500/40'
                   : user.role === 'admin'
                     ? 'bg-amber-500/15 text-amber-400 border-amber-500/40'
-                    : 'bg-teal-500/15 text-teal-300 border-teal-500/40'}">
+                    : user.role === 'trader'
+                      ? 'bg-green-500/15 text-[#4ade80] border-green-500/40'
+                      : user.role === 'risk'
+                        ? 'bg-amber-500/15 text-amber-400/75 border-amber-500/30'
+                        : user.role === 'partner'
+                          ? 'bg-green-500/10 text-[#4ade80]/60 border-green-500/25'
+                          : 'bg-slate-500/15 text-slate-400 border-slate-500/40'}">
                 {user.role}
               </span>
               {#if user.terminated_at}

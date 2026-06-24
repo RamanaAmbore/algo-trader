@@ -303,12 +303,12 @@ class AlgoOrder(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     broker_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
-    account: Mapped[str] = mapped_column(String(16), index=True)
+    account: Mapped[str] = mapped_column(String(32), index=True)
     symbol: Mapped[str] = mapped_column(String(64), index=True)
     quantity: Mapped[int] = mapped_column(Integer)
     filled_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="OPEN", index=True)
-    mode: Mapped[str] = mapped_column(String(16), default="live", index=True)
+    mode: Mapped[str] = mapped_column(String(8), default="live", index=True)
     template_id: Mapped[int | None] = mapped_column(
         ForeignKey("order_templates.id", ondelete="SET NULL"), nullable=True
     )
@@ -1365,7 +1365,7 @@ The delete-then-recompute cycle preserves history (bootstrap event has the old t
 
 ## 22.7. Audit log — forensic trail
 
-Single `audit_log` table catches every mutating event the platform produces — HTTP mutations (via middleware), broker fills (via postback handler), agent-initiated actions (via the action dispatcher), and background-task events (NAV compute, monthly statement send). Read surface at `/admin/audit` is cap-gated to `view_audit` (admin / risk / ops).
+Single `audit_log` table catches every mutating event the platform produces — HTTP mutations (via middleware), broker fills (via postback handler), agent-initiated actions (via the action dispatcher), and background-task events (NAV compute, monthly statement send). Read surface at `/admin/audit` is cap-gated to `view_audit` (designated / admin / risk).
 
 ⚙ **TECH — ASGI middleware + fire-and-forget writes** — `WHY` SEBI Cat-III's "every mutating event" requirement can't be satisfied with per-route decorators (easy to forget; impossible to enforce). A middleware catches everything by default. `WHAT` `AuditMiddleware` wraps every HTTP response; on a mutating 2xx/3xx it schedules a `_write_audit` coroutine via `asyncio.create_task`. Response leaves the server immediately; the DB write lands shortly after. `HOW` Failed audit writes log a warning and drop — the user's request never blocks on the audit pipeline. `WHERE` `backend/api/audit.py`.
 
@@ -1581,7 +1581,7 @@ def funds_ledger(self, from_date: str, to_date: str) -> list[dict]:
 Endpoint flow:
 
 ```python
-@post("/funds/backfill", guards=[cap_guard("view_audit")])
+@post("/funds/backfill", guards=[admin_guard])
 async def backfill_funds(...) -> FundsBackfillResponse:
     broker = get_broker(account)
     if not hasattr(broker, "funds_ledger"):
@@ -1757,7 +1757,7 @@ The operator runs periodic comprehensive audits by writing the literal hashtag `
   - `ix_strategy_lots_open` — composite missing from create_all on pre-existing tables
 - Operator-visible interrupt fixes batched in:
   - `/admin/history` + `/admin/audit`: $effect-gated load (was `onMount` checking `_canView` once at false; load never fired)
-  - Algo layout: removed blanket "non-admin → /signin" redirect (vestigial from old admin/partner tier; broke tour for trader/risk/ops/observer)
+  - Algo layout: removed blanket "non-admin → /signin" redirect (vestigial from old admin/partner tier; broke tour for trader/risk/admin roles — pre-rename names were ops/observer)
   - "Prev Close" → "Close" rename across PerformancePage, MarketPulse, /admin/derivatives
 
 **Slice C — defects + Dhan/Groww postback scaffold**:

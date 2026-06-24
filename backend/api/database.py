@@ -634,6 +634,31 @@ async def init_db() -> None:
             "FOREIGN KEY (order_id) REFERENCES algo_orders(id) ON DELETE CASCADE",
         ):
             await conn.execute(text(stmt))
+        # R6a — drop the now-redundant singleton ix_agent_events_sim_mode.
+        # The slice-M composite (ix_agent_events_simmode_agent_ts) satisfies
+        # every query that the singleton did plus the agent_id + timestamp
+        # columns; Postgres won't use two indexes for the same leading column.
+        # DROP IF EXISTS is idempotent — first boot after migration deletes it;
+        # subsequent boots are a fast no-op.
+        await conn.execute(text(
+            "DROP INDEX IF EXISTS ix_agent_events_sim_mode"
+        ))
+        # R6b — unique partial index to back the active-session lookup in
+        # auth.py stop_impersonate (WHERE ended_at IS NULL). Without it,
+        # updating the most-recent open row is a seq-scan + filter on what
+        # can become a long-lived audit table.
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_impersonation_active "
+            "ON impersonation_events (actor_username, target_username) "
+            "WHERE ended_at IS NULL"
+        ))
+        # R6c — index for research.py's default ORDER BY updated_at DESC.
+        # The list_threads endpoint runs on every Lab page load; without this
+        # index Postgres performs a full seq-scan + sort over the whole table.
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_research_threads_updated_at "
+            "ON research_threads (updated_at DESC)"
+        ))
     logger.info("Database: tables verified")
 
     # Seed grammar tokens (condition / notify / action catalog) BEFORE agents

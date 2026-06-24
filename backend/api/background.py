@@ -1871,12 +1871,13 @@ async def _task_trail_stop() -> None:
                                 from backend.shared.helpers.utils import is_enabled
                                 if is_enabled('telegram'):
                                     from backend.shared.helpers.alert_utils import _send_telegram
-                                    _send_telegram(
+                                    await asyncio.to_thread(
+                                        _send_telegram,
                                         f"⚠ Dhan GTT asymmetric: "
                                         f"{parent_symbol} on {row.account} — "
                                         f"trail ratcheted entry but target "
                                         f"leg rejected. Cancel + recreate "
-                                        f"or verify at broker."
+                                        f"or verify at broker.",
                                     )
                             except Exception:
                                 pass
@@ -2078,13 +2079,14 @@ async def _task_oco_pair_watcher() -> None:
                                     from backend.shared.helpers.utils import is_enabled
                                     if is_enabled('telegram'):
                                         from backend.shared.helpers.alert_utils import _send_telegram
-                                        _send_telegram(
+                                        await asyncio.to_thread(
+                                            _send_telegram,
                                             f"⚠ OCO double-fire (emulated): "
                                             f"{entry.get('parent_symbol', '?')} on "
                                             f"{entry.get('parent_account', '?')} — "
                                             f"both legs settled in one 15s poll "
                                             f"window. Verify broker position; "
-                                            f"manual close may be needed."
+                                            f"manual close may be needed.",
                                         )
                                 except Exception as _alert_err:
                                     logger.debug(
@@ -2527,7 +2529,7 @@ async def _task_ticker_watchdog(state: dict) -> None:
                         f"after {duration_min} min"
                     )
                     if is_enabled("telegram"):
-                        _send_telegram(msg)
+                        await asyncio.to_thread(_send_telegram, msg)
                 continue  # healthy
             if ticker.seconds_since_disconnect() < FAILOVER_THRESHOLD_S:
                 continue  # within KiteTicker's own retry window
@@ -2603,7 +2605,7 @@ async def _task_ticker_watchdog(state: dict) -> None:
                         f"continuing to wait for primary to recover"
                     )
                     if is_enabled("telegram"):
-                        _send_telegram(msg)
+                        await asyncio.to_thread(_send_telegram, msg)
                 continue
 
             acct, api_key, access_token = next_kc
@@ -2658,7 +2660,7 @@ async def _task_visitor_log_daily() -> None:
                     from backend.scripts.visitor_report import summary_for_telegram
                     tg_body = summary_for_telegram(report_path)
                     msg = f"<b>Visitors{branch_tag}</b>\n{tg_body}"
-                    _send_telegram(msg)
+                    await asyncio.to_thread(_send_telegram, msg)
                 except Exception as tg_err:
                     logger.warning(f"Background: visitor log telegram failed: {tg_err}")
 
@@ -2673,7 +2675,7 @@ async def _task_visitor_log_daily() -> None:
                         subject = f"RamboQuant Visitors{branch_tag}"
                         for email in recipients:
                             try:
-                                send_email(email, email, subject, html_body)
+                                await asyncio.to_thread(send_email, email, email, subject, html_body)
                             except Exception as mail_err:
                                 logger.warning(
                                     f"Background: visitor log mail to {email} failed: {mail_err}"

@@ -1002,7 +1002,7 @@ postback received
 
 ## History — `/admin/history`
 
-Multi-day forensic surface for the three "book of record" datasets — Orders (every order the platform placed), Trades (broker-confirmed fills), Funds (per-account margins ledger). Cap-gated by `view_audit` (designated / admin / risk). Read-only; pairs with `/admin/audit` (event-level log) — this is the row-level book view.
+Multi-day forensic surface for the three "book of record" datasets — Orders (every order the platform placed), Trades (broker-confirmed fills), Funds (per-account margins ledger). Cap-gated by `view_audit` (designated / admin / risk) for read access; backfill endpoint gated by `admin_guard` (designated / admin only). Read-only; pairs with `/admin/audit` (event-level log) — this is the row-level book view.
 
 **Endpoints** ([backend/api/routes/history.py](backend/api/routes/history.py)):
 
@@ -1046,7 +1046,7 @@ Multi-day forensic surface for the three "book of record" datasets — Orders (e
 
 **Backfill (Funds tab):**
 
-- `POST /api/admin/history/funds/backfill` endpoint accepting `{account, from_date, to_date}`. Cap-gated by `view_audit`.
+- `POST /api/admin/history/funds/backfill` endpoint accepting `{account, from_date, to_date}`. Cap-gated by `admin_guard` (designated / admin only).
 - Looks up the broker via the registry; if the adapter doesn't expose `funds_ledger(from_date, to_date)`, returns **501** with operator-facing guidance.
 - Broker support today:
   - **Kite (zerodha_kite)** — no programmatic ledger ever (Console download only). Always 501.
@@ -1079,7 +1079,7 @@ Multi-day forensic surface for the three "book of record" datasets — Orders (e
 
 ## Audit log — `/admin/audit`
 
-Single forensic surface for every mutating event the platform produces. Cap-gated (`view_audit` — admin / risk / ops); writes happen via [`AuditMiddleware`](backend/api/audit.py) (HTTP) + `write_audit_event()` (non-HTTP). All writes are out-of-band via `asyncio.create_task` so **zero latency cost** on the caller's hot path.
+Single forensic surface for every mutating event the platform produces. Cap-gated (`view_audit` — designated / admin / risk); writes happen via [`AuditMiddleware`](backend/api/audit.py) (HTTP) + `write_audit_event()` (non-HTTP). All writes are out-of-band via `asyncio.create_task` so **zero latency cost** on the caller's hot path.
 
 **What's captured:**
 

@@ -3628,22 +3628,35 @@ class OrdersController(Controller):
 
         # Map Dhan status → Kite-canonical via the existing
         # _DHAN_STATUS_TO_KITE table inside the adapter.
+        # Also translate the raw Dhan symbol (CRUDEOIL-16JUL2026-8500-CE) to
+        # Kite format and map the exchangeSegment (NSE_FNO, MCX_COMM) to the
+        # Kite canonical exchange string (NFO, MCX) so WS broadcasts + DB rows
+        # carry values that frontend consumers and the chase loop can match.
+        raw_seg = str(body.get("exchangeSegment") or "")
         try:
-            from backend.shared.brokers.dhan import _DHAN_STATUS_TO_KITE
+            from backend.shared.brokers.dhan import (
+                _DHAN_STATUS_TO_KITE,
+                _DHAN_SEGMENT_TO_EXCHANGE,
+                _dhan_to_kite_symbol,
+            )
             kite_status = _DHAN_STATUS_TO_KITE.get(status, status)
+            kite_symbol = _dhan_to_kite_symbol(str(symbol)) if symbol else str(symbol)
+            kite_exchange = _DHAN_SEGMENT_TO_EXCHANGE.get(raw_seg, raw_seg)
         except Exception:
             kite_status = status
+            kite_symbol = str(symbol)
+            kite_exchange = raw_seg
 
         await _process_broker_postback(
             broker_id="dhan",
             order_id=order_id,
             status=kite_status,
             account=str(account),
-            symbol=str(symbol),
+            symbol=kite_symbol,
             txn=str(txn),
             qty=qty,
             price=price,
-            exchange=str(body.get("exchangeSegment") or ""),
+            exchange=kite_exchange,
             status_message=str(body.get("statusMessage") or ""),
         )
         return {"status": "ok"}

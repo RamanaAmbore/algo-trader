@@ -1062,10 +1062,13 @@ class AgentEvent(Base):
     event_type: Mapped[str]      = mapped_column(String(32), nullable=False)
     trigger_condition: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    # Indexed — simulator panels filter sim_mode=true; live alert pages
-    # filter sim_mode=false. Both run on every page tick.
+    # The (sim_mode, agent_id, timestamp DESC) composite index in init_db
+    # covers every query that previously used a singleton sim_mode index.
+    # index=False here so SQLAlchemy's metadata.create_all (new installs)
+    # doesn't also create the now-redundant singleton; the composite is
+    # created explicitly in init_db regardless.
     sim_mode: Mapped[bool]       = mapped_column(
-        Boolean, nullable=False, default=False, index=True,
+        Boolean, nullable=False, default=False, index=False,
     )
     # Indexed — every list query orders by timestamp DESC and most filter
     # by a recent time range.

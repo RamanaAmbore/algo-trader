@@ -386,6 +386,12 @@ class AdminController(Controller):
             )
             if existing.scalar_one_or_none():
                 raise HTTPException(status_code=409, detail="Username already exists")
+            # Non-partner users created by an admin/designated actor are
+            # explicitly vetted — skip the email-verification dance so
+            # trader/risk/admin rows can log in immediately. Partners keep
+            # email_verified=False (they self-register via the public form).
+            _INTERNAL_ROLES = ("designated", "trader", "risk", "admin")
+            admin_vetted = eff_role in _INTERNAL_ROLES
             user = User(
                 username=data.username,
                 password_hash=hash_password(data.password),
@@ -397,6 +403,7 @@ class AdminController(Controller):
                 share_pct=eff_share_pct,
                 is_approved=data.is_approved,
                 receive_alerts=data.receive_alerts,
+                email_verified=admin_vetted,
             )
             session.add(user)
             await session.commit()
@@ -423,6 +430,12 @@ class AdminController(Controller):
                 raise HTTPException(status_code=404, detail=f"User {username!r} not found")
             self._check_action(request, user, designated_only=True)
             user.is_approved = True
+            # Any role promotion / explicit approval by designated/admin
+            # counts as vetting — clear the email-verification gate so
+            # trader/risk/admin accounts can log in immediately.
+            _INTERNAL_ROLES = ("designated", "trader", "risk", "admin")
+            if user.role in _INTERNAL_ROLES:
+                user.email_verified = True
             await session.commit()
         await refresh_alert_recipients()
         logger.info(f"Admin: approved user {username!r}")

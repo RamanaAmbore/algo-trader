@@ -32,6 +32,7 @@ Message type prefixes
 """
 
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 from threading import Lock, Thread
 
 import requests
@@ -44,6 +45,12 @@ urllib3.util.connection.HAS_IPV6 = False  # Server IPv6 outbound hangs
 from backend.shared.helpers.utils import secrets, config, is_enabled
 
 logger = get_logger(__name__)
+
+# Bounded SMTP thread pool — caps concurrent outbound connections to
+# Hostinger's SMTP relay (30s timeout each). Four workers handle normal
+# burst (14 agents × 3 recipients) without spawning an unbounded number
+# of daemon threads under fire.  Fire-and-forget; the wrapper logs errors.
+_SMTP_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ramboq-smtp")
 
 
 # ---------------------------------------------------------------------------
@@ -362,9 +369,10 @@ def _dispatch(msg_type: str, ist_display: str, tg_table: str, email_table_html: 
             f"</div>"
             f"</body></html>"
         )
-        # Slice Q — offload SMTP to a daemon thread so a Hostinger
-        # connection-timeout (up to 30s) never stalls the event loop.
-        # Fire-and-forget: failures are logged inside the thread body.
+        # Offload SMTP to the bounded _SMTP_EXECUTOR pool so a Hostinger
+        # connection-timeout (up to 30s) never stalls the event loop and
+        # concurrent fires can't spawn unbounded daemon threads.
+        # Fire-and-forget: failures are logged inside the wrapper.
         for email in alert_emails:
             def _send_one(addr=email, subj=subject, body=html_body,
                           pfx=f"{sim_prefix}{tg_prefix}"):
@@ -373,7 +381,7 @@ def _dispatch(msg_type: str, ist_display: str, tg_table: str, email_table_html: 
                     logger.info(f"{pfx} email sent to {addr}")
                 except Exception as _e:
                     logger.error(f"Failed to send {pfx} email to {addr}: {_e}")
-            Thread(target=_send_one, daemon=True).start()
+            _SMTP_EXECUTOR.submit(_send_one)
 
 
 # ---------------------------------------------------------------------------
@@ -660,7 +668,7 @@ def send_order_failure_alert(
         )
 
         # Deliver — best-effort; never raises out of this function.
-        # Slice Q — SMTP offloaded to daemon thread so a timeout never
+        # Offload SMTP to the bounded _SMTP_EXECUTOR pool so a timeout never
         # stalls the chase loop or agent run_cycle event-loop iteration.
         _send_telegram(tg_body)
         alert_emails = get_alert_recipients()
@@ -670,7 +678,7 @@ def send_order_failure_alert(
                     send_email("", addr, subj, body)
                 except Exception as _mail_e:
                     logger.error(f"order-failure email to {addr} failed: {_mail_e}")
-            Thread(target=_send_failure_email, daemon=True).start()
+            _SMTP_EXECUTOR.submit(_send_failure_email)
 
         logger.warning(
             f"order-failure alert sent: {masked} {side} {qty} {symbol} "

@@ -694,7 +694,7 @@ class AuthController(Controller):
 
             token = _make_token(target, imp_by=actor_username, ttl_seconds=_IMPERSONATE_TTL_SECONDS)
             return LoginResponse(
-                token=token, username=target.username, role=target.role,
+                access_token=token, username=target.username, role=target.role,
                 display_name=target.display_name or "",
                 must_change_password=False,
             )
@@ -731,7 +731,7 @@ class AuthController(Controller):
             )
             new_token = _make_token(actor)
             return LoginResponse(
-                token=new_token, username=actor.username, role=actor.role,
+                access_token=new_token, username=actor.username, role=actor.role,
                 display_name=actor.display_name or "",
                 must_change_password=False,
             )

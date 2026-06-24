@@ -29,6 +29,7 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
+  import ConfirmModal from '$lib/ConfirmModal.svelte';
 
   /** @type {any[]} */
   let threads     = $state([]);
@@ -38,6 +39,10 @@
   let loading     = $state(true);
   let teardown;
   let activeTab   = $state(/** @type {'research'|'drafts'|'audit'|'settings'} */ ('research'));
+
+  /** ConfirmModal binding — used for destructive actions (delete thread). */
+  /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
+  let confirmRef  = $state(null);
 
   /** Joined-view rows from GET /api/research/drafts — one per
    *  research thread with a linked inactive Agent. Activating the
@@ -136,6 +141,14 @@
   }
 
   async function removeThread(/** @type {number} */ id) {
+    const ok = await confirmRef?.ask({
+      title:        'Delete research thread?',
+      message:      'This removes the transcript and thesis permanently.',
+      danger:       true,
+      confirmLabel: 'Delete',
+      cancelLabel:  'Cancel',
+    });
+    if (!ok) return;
     try {
       await deleteResearchThread(id);
       if (selected?.id === id) selected = null;
@@ -836,6 +849,8 @@
 {/if}
 
 {/if}
+
+<ConfirmModal bind:this={confirmRef} />
 
 <style>
   .empty-state {

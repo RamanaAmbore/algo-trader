@@ -256,19 +256,19 @@
   let _liveConfirmRef   = $state(null);
 
   // Mode colors — keep aligned with the .mode-pill-* CSS in
-  // LogPanel.svelte and the .algo-mode-* badges below. SIM uses
-  // pink/rose (#fb7185), PAPER sky-blue (#7dd3fc), LIVE emerald
-  // (#4ade80) — NOT alt-Tailwind variants.
+  // LogPanel.svelte and the .algo-mode-* badges below. SIM and REPLAY
+  // both use green (#4ade80) — CLAUDE.md spec: "SIM/REPLAY green".
+  // PAPER sky-blue (#7dd3fc), LIVE red-400 (#f87171), SHADOW orange.
   // LIVE shifted from emerald-400 to red-400 (#f87171). The old
   // palette put LIVE and REPLAY both on green, indistinguishable at
   // a glance — operationally a footgun since LIVE is the only mode
   // that moves real money. RED is the universal trading-platform
   // convention for "real broker". Aligns with the LIVE banner red
-  // and keeps the safe modes (paper sky, replay green, sim rose,
+  // and keeps the safe modes (paper sky, replay green, sim green,
   // shadow orange) visually distinct from the dangerous one.
   const MODE_COLOR = {
     idle:   '#94a3b8',   // slate-400 — engine dormant (dev only)
-    sim:    '#fb7185',   // rose-400
+    sim:    '#4ade80',   // green-400 — matches replay (both safe/sandbox)
     replay: '#4ade80',   // pos-green
     paper:  '#7dd3fc',   // info-sky
     shadow: '#fb923c',   // short-orange
@@ -644,7 +644,13 @@
             {#if $authStore.user.role === 'designated'}
               <span class="algo-user-role algo-user-role-designated">designated</span>
             {:else if $authStore.user.role === 'admin'}
-              <span class="algo-user-role">admin</span>
+              <span class="algo-user-role algo-user-role-admin">admin</span>
+            {:else if $authStore.user.role === 'trader'}
+              <span class="algo-user-role algo-user-role-trader">trader</span>
+            {:else if $authStore.user.role === 'risk'}
+              <span class="algo-user-role algo-user-role-risk">risk</span>
+            {:else if $authStore.user.role === 'partner'}
+              <span class="algo-user-role algo-user-role-partner">partner</span>
             {/if}
           </span>
           <button onclick={signOut} class="algo-nav-btn">Sign Out</button>
@@ -723,7 +729,13 @@
             {#if $authStore.user.role === 'designated'}
               <span class="algo-user-role algo-user-role-designated">designated</span>
             {:else if $authStore.user.role === 'admin'}
-              <span class="algo-user-role">admin</span>
+              <span class="algo-user-role algo-user-role-admin">admin</span>
+            {:else if $authStore.user.role === 'trader'}
+              <span class="algo-user-role algo-user-role-trader">trader</span>
+            {:else if $authStore.user.role === 'risk'}
+              <span class="algo-user-role algo-user-role-risk">risk</span>
+            {:else if $authStore.user.role === 'partner'}
+              <span class="algo-user-role algo-user-role-partner">partner</span>
             {/if}
           </span>
         {/if}
@@ -889,7 +901,7 @@
     top: 0;
     z-index: 50;
     background: #0a1020;
-    border-bottom: 1px solid #d97706;
+    border-bottom: 1px solid #fbbf24;
     overflow: visible;
   }
 
@@ -1142,6 +1154,15 @@
   }
   /* Designated tier — violet, matches the DESIGNATED badge in /admin. */
   .algo-user-role.algo-user-role-designated { color: #c084fc; }
+  /* Admin tier — amber-400, canonical config/ops colour. */
+  .algo-user-role.algo-user-role-admin { color: #fbbf24; }
+  /* Trader — green-400 (BUY/long convention, active-trading role). */
+  .algo-user-role.algo-user-role-trader { color: #4ade80; }
+  /* Risk — amber-400 at slightly reduced alpha to distinguish from admin
+     in dense contexts; same hue signals "caution/oversight" tier. */
+  .algo-user-role.algo-user-role-risk { color: rgba(251,191,36,0.75); }
+  /* Partner (LP/investor) — muted green to distinguish from full trader. */
+  .algo-user-role.algo-user-role-partner { color: rgba(74,222,128,0.6); }
 
   /* ── Desktop disclosure dropdowns (Build / Config groups) ──────── */
   .algo-group-wrap {
@@ -1649,7 +1670,8 @@
      than the safer modes so the pill reads as ALARMED on a glance. */
   .algo-mode-badge[data-mode='live']   { color:#f87171; background:rgba(248,113,113,0.22); border-color:#f87171; }
   .algo-mode-badge[data-mode='shadow'] { color:#fb923c; background:rgba(251,146,60,0.10);  border-color:#fb923c; }
-  .algo-mode-badge[data-mode='sim']    { color:#fb7185; background:rgba(251,113,133,0.10); border-color:#fb7185; }
+  /* SIM uses green — matches REPLAY and CLAUDE.md spec: "SIM/REPLAY green". */
+  .algo-mode-badge[data-mode='sim']    { color:#4ade80; background:rgba(74,222,128,0.10);  border-color:#4ade80; }
   .algo-mode-badge[data-mode='replay'] { color:#4ade80; background:rgba(74,222,128,0.10);  border-color:#4ade80; }
 
   /* Full-viewport invisible overlay so clicking outside closes the dropdown. */
