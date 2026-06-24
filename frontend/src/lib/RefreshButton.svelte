@@ -80,6 +80,27 @@
     : _mcxOpen            ? 'MCX open · Equity closed'
     :                       'Market closed'
   );
+  // Closed-market confirmation popup. Operator: "when market is closed
+  // and pressing refresh button should show popup stating market is
+  // closed. presently it disabled during market close" — the slate
+  // palette during market-closed state visually reads as disabled, so
+  // the operator clicks and sees no feedback. Solution: explicit
+  // confirmation popup. Click during market-closed → popup with
+  // "Refresh anyway" / "Cancel". Operator dismisses on accident,
+  // confirms on intention.
+  let _showClosedConfirm = $state(false);
+  function _handleClick() {
+    if (loading) return;
+    if (!_nseOpen && !_mcxOpen) {
+      _showClosedConfirm = true;
+      return;
+    }
+    onClick?.();
+  }
+  function _refreshAnyway() {
+    _showClosedConfirm = false;
+    onClick?.();
+  }
 
   // Watch the `loading` prop for true → false transitions and stamp
   // `lastRefreshAt`. Catches BOTH manual clicks (operator hits the
@@ -161,11 +182,12 @@
   });
 </script>
 
+<div class="rf-wrap">
 <button
   type="button"
   class="rf-btn {_mktClass}"
   class:rf-spinning={loading}
-  onclick={(e) => { e.stopPropagation(); if (!loading) onClick?.(); }}
+  onclick={(e) => { e.stopPropagation(); _handleClick(); }}
   disabled={loading}
   aria-label={loading ? `Refreshing ${label}` : `Refresh ${label}`}
   title={_connTitle}>
@@ -195,6 +217,37 @@
     <span class="rf-badge {_badgeClass}">{_badgeText}</span>
   {/if}
 </button>
+
+{#if _showClosedConfirm}
+  <!-- Click-outside catcher: a transparent fixed overlay closes the
+       popup when the operator taps anywhere else. Lives at z-index just
+       below the popup body so clicks on the popup itself stay live. -->
+  <div class="rf-closed-overlay"
+       role="presentation"
+       onclick={(e) => { e.stopPropagation(); _showClosedConfirm = false; }}></div>
+  <div class="rf-closed-popup" role="dialog" aria-modal="true"
+       aria-label="Market closed confirmation"
+       tabindex="-1"
+       onclick={(e) => e.stopPropagation()}
+       onkeydown={(e) => { if (e.key === 'Escape') { _showClosedConfirm = false; } }}>
+    <div class="rf-closed-title">Market closed</div>
+    <div class="rf-closed-body">
+      Both NSE and MCX are currently closed. Live broker data may
+      not have changed since the last refresh.
+    </div>
+    <div class="rf-closed-actions">
+      <button type="button" class="rf-closed-btn rf-closed-cancel"
+              onclick={(e) => { e.stopPropagation(); _showClosedConfirm = false; }}>
+        Cancel
+      </button>
+      <button type="button" class="rf-closed-btn rf-closed-go"
+              onclick={(e) => { e.stopPropagation(); _refreshAnyway(); }}>
+        Refresh anyway
+      </button>
+    </div>
+  </div>
+{/if}
+</div>
 
 <style>
   /* Base button shape — palette comes from the .rf-mkt-* state class
@@ -282,6 +335,82 @@
   @keyframes rf-spin {
     from { transform: rotate(0deg); }
     to   { transform: rotate(360deg); }
+  }
+
+  /* ── Market-closed confirmation popup ────────────────────────────
+     Local-positioned popup anchored to the RefreshButton via the
+     .rf-wrap relative parent. Sits below the button + right-aligned
+     so it can be reached from page-header callsites without
+     overflowing the viewport on narrow viewports. */
+  .rf-wrap {
+    position: relative;
+    display: inline-flex;
+  }
+  .rf-closed-overlay {
+    position: fixed;
+    inset: 0;
+    background: transparent;
+    z-index: 1000;
+  }
+  .rf-closed-popup {
+    position: absolute;
+    top: calc(100% + 0.4rem);
+    right: 0;
+    z-index: 1001;
+    min-width: 16rem;
+    max-width: min(18rem, 92vw);
+    padding: 0.7rem 0.85rem 0.65rem;
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    border: 1px solid rgba(251, 191, 36, 0.55);
+    border-radius: 5px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    color: #c8d8f0;
+    font-size: 0.65rem;
+    line-height: 1.4;
+  }
+  .rf-closed-title {
+    font-weight: 700;
+    font-size: 0.7rem;
+    color: #fbbf24;
+    margin-bottom: 0.35rem;
+    letter-spacing: 0.03em;
+  }
+  .rf-closed-body {
+    margin-bottom: 0.6rem;
+    color: #94a3b8;
+  }
+  .rf-closed-actions {
+    display: flex;
+    gap: 0.45rem;
+    justify-content: flex-end;
+  }
+  .rf-closed-btn {
+    padding: 0.3rem 0.65rem;
+    border-radius: 3px;
+    font-size: 0.62rem;
+    font-weight: 600;
+    cursor: pointer;
+    background: transparent;
+    border: 1px solid transparent;
+    color: #c8d8f0;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+  }
+  .rf-closed-cancel {
+    border-color: rgba(126, 151, 184, 0.45);
+    color: #94a3b8;
+  }
+  .rf-closed-cancel:hover {
+    background: rgba(126, 151, 184, 0.14);
+    color: #c8d8f0;
+  }
+  .rf-closed-go {
+    background: rgba(251, 191, 36, 0.16);
+    border-color: rgba(251, 191, 36, 0.55);
+    color: #fbbf24;
+  }
+  .rf-closed-go:hover {
+    background: rgba(251, 191, 36, 0.28);
+    color: #fde68a;
   }
   /* Connection-state badge — same top-right placement + sizing as the
      unread badges on OrderNotifications / AgentNotifications so all
