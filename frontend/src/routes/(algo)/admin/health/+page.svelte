@@ -224,6 +224,49 @@
       {/if}
     </div>
 
+    <!-- ── KiteTicker card ───────────────────────────────────────── -->
+    <div class="hcard hcard-wide">
+      <div class="hcard-title">KiteTicker (live WebSocket)</div>
+      <div class="kv-row">
+        <span class="kv-key">Status</span>
+        {#if health.ticker?.connected}
+          <span class="status-pill status-loaded">CONNECTED</span>
+        {:else if health.ticker?.started}
+          <span class="status-pill status-pending">STARTED · DISCONNECTED</span>
+        {:else}
+          <span class="status-pill status-disabled">NOT STARTED</span>
+        {/if}
+      </div>
+      <div class="kv-row">
+        <span class="kv-key">Subscribed tokens</span>
+        <span class="kv-val kv-num">{_n(health.ticker?.subscribed_count)}</span>
+      </div>
+      <div class="kv-row">
+        <span class="kv-key">Live tick map size</span>
+        <span class="kv-val kv-num">{_n(health.ticker?.ticks_held)}</span>
+      </div>
+      <div class="kv-row">
+        <span class="kv-key">Stale (&gt;60s old) tokens</span>
+        <span class="kv-val kv-num" class:stale-warn={(health.ticker?.stale_count ?? 0) > 0}>
+          {_n(health.ticker?.stale_count)}
+        </span>
+      </div>
+      {#if (health.ticker?.max_age_seconds ?? 0) > 0}
+        <div class="kv-row">
+          <span class="kv-key">Oldest tick age</span>
+          <span class="kv-val kv-num">{Math.round(health.ticker.max_age_seconds)}s</span>
+        </div>
+      {/if}
+      {#if health.ticker?.stale_top?.length}
+        <div class="ticker-stale-list">
+          <div class="ticker-stale-label">Worst offenders:</div>
+          {#each health.ticker.stale_top as entry}
+            <div class="ticker-stale-row">{entry}</div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+
     <!-- ── IPv6 source IPs card ──────────────────────────────────── -->
     <div class="hcard hcard-wide">
       <div class="hcard-title">IPv6 Bindings</div>
@@ -387,6 +430,32 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.65rem;
     color: #7dd3fc;
+  }
+
+  /* Ticker card — staleness list + warn-tint on the stale_count cell */
+  .stale-warn {
+    color: #fbbf24;
+    font-weight: 700;
+  }
+  .ticker-stale-list {
+    margin-top: 0.55rem;
+    padding-top: 0.45rem;
+    border-top: 1px solid rgba(255,255,255,0.05);
+    max-height: 12rem;
+    overflow-y: auto;
+  }
+  .ticker-stale-label {
+    font-size: 0.55rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #94a3b8;
+    margin-bottom: 0.3rem;
+  }
+  .ticker-stale-row {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.62rem;
+    color: #c8d8f0;
+    padding: 0.1rem 0;
   }
 
   /* Empty state */

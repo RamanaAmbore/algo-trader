@@ -147,6 +147,11 @@ class TickerManager:
     def __init__(self) -> None:
         self._kws = None                          # KiteTicker instance
         self._tick_map: dict[int, float] = {}     # token → last_price
+        # Per-token last-tick wall-clock timestamp (unix seconds). Parallel
+        # to _tick_map; updated atomically in _on_ticks. Used by /api/admin/health
+        # to surface "which subscribed symbols have stale tick data" — distinguishes
+        # market-closed (expected staleness) from subscribe-failure (unexpected).
+        self._tick_age: dict[int, float] = {}     # token → unix ts of last tick
         self._token_to_sym: dict[int, str] = {}   # token → tradingsymbol (for SSE payload)
         self._sym_to_token: dict[str, int] = {}   # tradingsymbol (upper) → token (for O(1) has_sym)
         self._lock = threading.Lock()
@@ -312,17 +317,60 @@ class TickerManager:
             return {int(t): self._tick_map[int(t)]
                     for t in tokens if int(t) in self._tick_map}
 
-    def status(self) -> dict:
+    def status(self, stale_threshold_sec: int = 60, stale_top_n: int = 20) -> dict:
         """
         Snapshot for /api/admin/health — non-blocking, always returns.
+
+        `stale_threshold_sec` (default 60) defines what counts as a stale
+        symbol — any subscribed token whose last tick is older than this
+        is reported in `stale_count`. The `stale_top` list carries the
+        N worst offenders (oldest first) as "SYMBOL@<age_seconds>s"
+        strings so the operator can see WHICH symbols are missing ticks,
+        not just how many.
+
+        NB: subscribed-but-never-ticked tokens (e.g. a watchlist symbol
+        added pre-open before any trade fires) ARE counted as stale once
+        the threshold passes — they show up in `stale_top` as
+        "SYMBOL@never". This distinguishes "subscribe call landed but
+        Kite emitted no tick" from "subscribe call never landed".
         """
+        now = time.time()
         with self._lock:
-            return {
-                "started":          self._started,
-                "connected":        self._connected,
-                "subscribed_count": len(self._subscribed),
-                "ticks_held":       len(self._tick_map),
-            }
+            subscribed = set(self._subscribed)
+            tick_map_size = len(self._tick_map)
+            ages: list[tuple[str, float | None]] = []
+            for tok in subscribed:
+                sym = self._token_to_sym.get(tok, f"tok:{tok}")
+                last_ts = self._tick_age.get(tok)
+                age = (now - last_ts) if last_ts is not None else None
+                ages.append((sym, age))
+        # Sort: never-ticked first (None age), then oldest-tick descending.
+        ages.sort(key=lambda x: (0, 0) if x[1] is None else (1, -x[1]))
+        stale = [
+            (sym, age) for sym, age in ages
+            if age is None or age >= stale_threshold_sec
+        ]
+        # Compose top-N as printable "sym@age" strings — easier to read
+        # from a JSON dump than a list of [sym, float] pairs.
+        stale_top = [
+            f"{sym}@{'never' if age is None else f'{int(age)}s'}"
+            for sym, age in stale[:stale_top_n]
+        ]
+        # Max age across ANY token that has ever ticked. None-aged tokens
+        # are reflected in stale_count, not here.
+        max_age = max(
+            (age for _, age in ages if age is not None),
+            default=0.0,
+        )
+        return {
+            "started":          self._started,
+            "connected":        self._connected,
+            "subscribed_count": len(subscribed),
+            "ticks_held":       tick_map_size,
+            "stale_count":      len(stale),
+            "max_age_seconds":  float(max_age),
+            "stale_top":        stale_top,
+        }
 
     def stop(self) -> None:
         """Graceful shutdown — called from app on_shutdown.
@@ -518,6 +566,7 @@ class TickerManager:
                     tok = int(tok)
                     lp  = float(lp)
                     self._tick_map[tok] = lp
+                    self._tick_age[tok] = ts
                     to_publish.append({
                         "tok": tok,
                         "sym": self._token_to_sym.get(tok, ""),

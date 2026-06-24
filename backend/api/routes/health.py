@@ -77,6 +77,12 @@ class TickerStatus(msgspec.Struct):
     connected: bool          # on_connect has fired and socket is live
     subscribed_count: int    # number of instrument tokens subscribed
     ticks_held: int          # number of tokens with at least one live tick
+    # Per-symbol staleness (added Jun 2026 after operator reported
+    # missing ticks). "Stale" = subscribed token whose last tick is
+    # older than 60s, OR has never been ticked.
+    stale_count: int = 0          # number of subscribed tokens with stale ticks
+    max_age_seconds: float = 0.0  # oldest tick age across all subscribed tokens
+    stale_top: list[str] = []     # up to 20 worst offenders: "SYMBOL@<age>s" or "SYMBOL@never"
 
 
 class HealthResponse(msgspec.Struct):
@@ -236,6 +242,9 @@ def _ticker_status() -> TickerStatus:
             connected=bool(snap.get("connected", False)),
             subscribed_count=int(snap.get("subscribed_count", 0)),
             ticks_held=int(snap.get("ticks_held", 0)),
+            stale_count=int(snap.get("stale_count", 0)),
+            max_age_seconds=float(snap.get("max_age_seconds", 0.0)),
+            stale_top=list(snap.get("stale_top", [])),
         )
     except Exception:
         return TickerStatus(started=False, connected=False,
