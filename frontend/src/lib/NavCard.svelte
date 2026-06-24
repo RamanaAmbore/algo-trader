@@ -13,6 +13,7 @@
    */
   import { onMount, onDestroy } from 'svelte';
   import { fetchMyNav, fetchFirmNavPublic } from '$lib/api';
+  import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { authStore, visibleInterval } from '$lib/stores';
   import { priceFmt, pctFmt } from '$lib/format';
 
@@ -90,6 +91,19 @@
 
   let stopInterval = () => {};
 
+  // Tick-flash — brief directional pulse (green up / red down) on the
+  // big-value rows when the 60s poll lands a different number. Matches
+  // PositionStrip + /admin/derivatives convention so the operator's
+  // muscle memory for "this just refreshed" works everywhere. First
+  // sample establishes baseline (no flash on mount).
+  const flash = createTickFlash({ threshold: 0, durationMs: 550 });
+  $effect(() => {
+    flash.update('shareNav',    shareNav);
+    flash.update('shareDayPnl', shareDayPnl);
+    flash.update('firmNav',     firmNav);
+    flash.update('firmDayPnl',  firmDayPnl);
+  });
+
   onMount(() => {
     load();
     stopInterval = visibleInterval(load, 60_000);
@@ -97,6 +111,7 @@
 
   onDestroy(() => {
     stopInterval();
+    flash.dispose();
   });
 
   // Re-fetch when auth state changes (e.g. user logs in mid-session)
@@ -132,10 +147,10 @@
     {#if showMyShare}
       <div class="nav-panel">
         <div class="nav-panel-label">YOUR SHARE</div>
-        <div class="nav-big tabular-nums">
+        <div class="nav-big tabular-nums {flash.classOf('shareNav')}">
           <span class="nav-currency">₹</span>{priceFmt(shareNav)}
         </div>
-        <div class="nav-sub {pnlClass(shareDayPnl)} tabular-nums">
+        <div class="nav-sub {pnlClass(shareDayPnl)} tabular-nums {flash.classOf('shareDayPnl')}">
           {signLabel(shareDayPnl)}₹{priceFmt(Math.abs(shareDayPnl))} today
           ({signLabel(shareDayPct)}{pctFmt(Math.abs(shareDayPct))}%)
         </div>
@@ -155,10 +170,10 @@
     {#if showFirm}
       <div class="nav-panel nav-panel-firm" class:nav-panel-divider={showMyShare}>
         <div class="nav-panel-label">FIRM NAV</div>
-        <div class="nav-big tabular-nums">
+        <div class="nav-big tabular-nums {flash.classOf('firmNav')}">
           <span class="nav-currency">₹</span>{priceFmt(firmNav)}
         </div>
-        <div class="nav-sub {pnlClass(firmDayPnl)} tabular-nums">
+        <div class="nav-sub {pnlClass(firmDayPnl)} tabular-nums {flash.classOf('firmDayPnl')}">
           {signLabel(firmDayPnl)}₹{priceFmt(Math.abs(firmDayPnl))} today
           ({signLabel(firmDayPct)}{pctFmt(Math.abs(firmDayPct))}%)
         </div>
@@ -307,6 +322,30 @@
   .nav-gain { color: #1a6b3a; }
   .nav-loss { color: #9b1c1c; }
   .nav-zero { color: #7a6b52; }
+
+  /* ── Tick-flash — directional pulse on poll update ───────────────
+     Brief green / red background tint that fades over ~550ms when
+     the 60s poll lands a different number. Matches the visual
+     vocabulary on PositionStrip + /admin/derivatives, but tuned for
+     the public cream/champagne palette: deeper saturated greens and
+     reds (matching .nav-gain / .nav-loss text colors) instead of the
+     algo dark theme's lighter green-400 / red-400. */
+  @keyframes nav-tf-up {
+    0%   { background-color: rgba(26, 107, 58, 0.20); }
+    100% { background-color: transparent; }
+  }
+  @keyframes nav-tf-down {
+    0%   { background-color: rgba(155, 28, 28, 0.20); }
+    100% { background-color: transparent; }
+  }
+  .tf-up   {
+    animation: nav-tf-up   550ms ease-out;
+    border-radius: 0.35rem;
+  }
+  .tf-down {
+    animation: nav-tf-down 550ms ease-out;
+    border-radius: 0.35rem;
+  }
 
   /* ── Skeleton ───────────────────────────────────────────────────── */
   .nav-skeleton {
