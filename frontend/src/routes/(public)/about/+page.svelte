@@ -108,14 +108,12 @@
     border: 1px solid #ddd8ce;
     box-shadow: 0 1px 4px rgba(0,0,0,0.07);
     overflow: hidden;
-    /* Constrain card width on desktop so the stat-strip + prose + CTA row
-       all read as ONE column rather than the prose getting visually
-       isolated at the centre with large gutters either side. 760px is
-       just over 80ch at the prose font-size, which matches the canonical
-       reading-width comfortable range. Mobile keeps the full-width
-       behaviour via the auto margins. */
-    max-width: 760px;
-    margin: 0 auto;
+    /* Card fills the parent `.pub-card` width (capped at 1280px by the
+       layout) — matches the /market page card width. Operator
+       preference: wider card so the desktop stat-strip + prose + CTA
+       feel proportionate to the rest of the public site instead of
+       sitting as a narrow column. The prose paragraphs no longer carry
+       a per-paragraph max-width either (see `.about-prose p` below). */
   }
 
   /* ── Stat strip — warm tint, cream border, champagne divider ───────────── */
