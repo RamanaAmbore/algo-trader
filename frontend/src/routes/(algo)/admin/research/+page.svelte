@@ -16,8 +16,8 @@
   // MCP pipeline — Claude Code (subscription) is the only LLM in the loop.
 
   import { onMount, onDestroy } from 'svelte';
-  import { goto } from '$app/navigation';
   import { authStore, nowStamp, branchLabel, visibleInterval } from '$lib/stores';
+  import { userRole, userCaps, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import {
     fetchResearchThreads, fetchResearchThread,
@@ -145,18 +145,27 @@
     }
   }
 
-  onMount(() => {
-    const r = $authStore.user?.role;
-    if (!$authStore.user || (r !== 'admin' && r !== 'designated')) { goto('/signin'); return; }
-    loadThreads();
-    loadDrafts();
-    teardown = visibleInterval(() => { loadThreads(); loadDrafts(); }, 30000);
+  // Canonical $effect-gated auth (slice N4). view_lab admits
+  // admin + trader + risk + demo.
+  const _canView = $derived(hasCap('view_lab', $userCaps, $userRole));
+  let _loadedOnce = false;
+  $effect(() => {
+    if (_canView && !_loadedOnce) {
+      _loadedOnce = true;
+      loadThreads();
+      loadDrafts();
+      teardown = visibleInterval(() => { loadThreads(); loadDrafts(); }, 30000);
+    }
+  });
 
+  onMount(() => {
     // Phase 18 — Telegram deep-link handler. When the page is loaded
     // via /admin/research?audit_request=<id> (the link in every
     // request_id Telegram ping), jump straight to the Audit tab
     // pre-filtered to that exact row. The operator on their phone
-    // gets a one-tap forensic drill-down.
+    // gets a one-tap forensic drill-down. Runs regardless of
+    // _canView so the URL-param pre-fill is ready when access
+    // hydrates.
     try {
       const url = new URL(window.location.href);
       const rid = url.searchParams.get('audit_request');
@@ -408,6 +417,15 @@
     <PageHeaderActions symbol={selected?.symbol ?? ''} />
   </span>
 </div>
+
+{#if !_canView}
+  <div class="empty-state">
+    <h2>Access denied</h2>
+    <p>The research lab requires the <code>view_lab</code> capability
+       (admin, trader, or risk role). Your current role is
+       <strong>{$userRole}</strong> — contact an admin to request access.</p>
+  </div>
+{:else}
 
 {#if error}
   <div class="err-banner">{error}</div>
@@ -817,7 +835,28 @@
   </div>
 {/if}
 
+{/if}
+
 <style>
+  .empty-state {
+    text-align: center;
+    color: #94a3b8;
+    padding: 2.5rem 1rem;
+  }
+  .empty-state h2 {
+    font-size: 1rem;
+    color: #c8d8f0;
+    margin-bottom: 0.6rem;
+  }
+  .empty-state p { font-size: 0.75rem; line-height: 1.5; }
+  .empty-state code {
+    font-family: ui-monospace, monospace;
+    color: #fbbf24;
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+    background: rgba(251,191,36,0.10);
+  }
+
   /* ── Tab strip ────────────────────────────────────────────────── */
   /* Tab buttons rendered by AlgoTabs via global .algo-tab in app.css. */
   .lab-tabs-wrap {

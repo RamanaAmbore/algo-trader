@@ -4,9 +4,8 @@
   // Seed list is the authoritative catalog of editable knobs; this page
   // renders it and writes back via PATCH.
 
-  import { onMount } from 'svelte';
-  import { goto } from '$app/navigation';
-  import { authStore, nowStamp } from '$lib/stores';
+  import { nowStamp } from '$lib/stores';
+  import { userRole, userCaps, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -217,11 +216,16 @@
     return s.value !== s.default_value;
   }
 
-  onMount(() => {
-    const r = $authStore.user?.role;
-    if (!$authStore.user || (r !== 'admin' && r !== 'designated')) { goto('/signin'); return; }
-    load();
-    _loadPinnedSymbols();
+  // Canonical $effect-gated auth (slice N3). manage_settings is
+  // admin-only by design — settings writes affect every operator.
+  const _canView = $derived(hasCap('manage_settings', $userCaps, $userRole));
+  let _loadedOnce = false;
+  $effect(() => {
+    if (_canView && !_loadedOnce) {
+      _loadedOnce = true;
+      load();
+      _loadPinnedSymbols();
+    }
   });
 </script>
 
@@ -238,6 +242,15 @@
     <PageHeaderActions />
   </span>
 </div>
+
+{#if !_canView}
+  <div class="empty-state">
+    <h2>Access denied</h2>
+    <p>Editing settings requires the <code>manage_settings</code> capability
+       (admin role). Your current role is <strong>{$userRole}</strong> —
+       contact an admin to request access.</p>
+  </div>
+{:else}
 
 {#if error}<div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">{error}</div>{/if}
 {#if note}<div class="mb-3 p-2 rounded bg-emerald-500/10 text-emerald-300 text-[0.65rem] border border-emerald-500/30">{note}</div>{/if}
@@ -465,7 +478,27 @@
 {/snippet}
 {/if}
 
+{/if}
+
 <style>
+  .empty-state {
+    text-align: center;
+    color: #94a3b8;
+    padding: 2.5rem 1rem;
+  }
+  .empty-state h2 {
+    font-size: 1rem;
+    color: #c8d8f0;
+    margin-bottom: 0.6rem;
+  }
+  .empty-state p { font-size: 0.75rem; line-height: 1.5; }
+  .empty-state code {
+    font-family: ui-monospace, monospace;
+    color: #fbbf24;
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+    background: rgba(251,191,36,0.10);
+  }
   .settings-row {
     border-bottom: 1px solid rgba(255,255,255,0.05);
   }

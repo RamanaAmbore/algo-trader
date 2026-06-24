@@ -18,9 +18,9 @@
   //   - "Test" button hits broker.profile() to confirm the credential
   //     pipeline works end-to-end.
 
-  import { onMount, onDestroy } from 'svelte';
-  import { goto } from '$app/navigation';
-  import { authStore, nowStamp, visibleInterval } from '$lib/stores';
+  import { onDestroy } from 'svelte';
+  import { nowStamp, visibleInterval } from '$lib/stores';
+  import { userRole, userCaps, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import {
@@ -299,15 +299,18 @@
     }
   }
 
-  onMount(() => {
-    const r = $authStore.user?.role;
-    if (!$authStore.user || (r !== 'admin' && r !== 'designated')) {
-      goto('/signin'); return;
+  // Canonical $effect-gated auth (slice N1). manage_brokers admits
+  // admin + ops; pre-fix the page used onMount + hard goto('/signin')
+  // which raced /whoami and bounced non-admin users out before their
+  // role hydrated.
+  const _canView = $derived(hasCap('manage_brokers', $userCaps, $userRole));
+  let _loadedOnce = false;
+  $effect(() => {
+    if (_canView && !_loadedOnce) {
+      _loadedOnce = true;
+      load();
+      refreshTeardown = visibleInterval(load, 15000);
     }
-    load();
-    // Mild polling so the "loaded" pill keeps up if Connections
-    // singleton picks up a row a few seconds after the operator saves.
-    refreshTeardown = visibleInterval(load, 15000);
   });
   onDestroy(() => { refreshTeardown?.(); });
 </script>
@@ -327,6 +330,15 @@
     <PageHeaderActions />
   </span>
 </div>
+
+{#if !_canView}
+  <div class="empty-state">
+    <h2>Access denied</h2>
+    <p>Broker administration requires the <code>manage_brokers</code> capability
+       (admin or ops role). Your current role is
+       <strong>{$userRole}</strong> — contact an admin to request access.</p>
+  </div>
+{:else}
 
 <StaleBanner {error} hasData={accounts.length > 0} label="Broker accounts" />
 {#if note}<div class="mb-3 p-2 rounded bg-emerald-500/10 text-emerald-300 text-[0.65rem] border border-emerald-500/30">{note}</div>{/if}
@@ -524,7 +536,27 @@
   </div>
 {/if}
 
+{/if}
+
 <style>
+  .empty-state {
+    text-align: center;
+    color: #94a3b8;
+    padding: 2.5rem 1rem;
+  }
+  .empty-state h2 {
+    font-size: 1rem;
+    color: #c8d8f0;
+    margin-bottom: 0.6rem;
+  }
+  .empty-state p { font-size: 0.75rem; line-height: 1.5; }
+  .empty-state code {
+    font-family: ui-monospace, monospace;
+    color: #fbbf24;
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+    background: rgba(251,191,36,0.10);
+  }
   .brokers-list-header {
     display: flex;
     align-items: center;

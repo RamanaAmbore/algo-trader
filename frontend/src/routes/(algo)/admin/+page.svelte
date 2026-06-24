@@ -563,7 +563,7 @@
 <div class="algo-status-card p-5 pt-4" data-status="inactive">
 
   {#if success}
-    <div class="mb-3 p-2 rounded bg-green-500/15 text-green-300 text-xs border border-green-500/40">{success}</div>
+    <div class="mb-3 p-2 rounded bg-green-500/15 text-green-400 text-xs border border-green-500/40">{success}</div>
   {/if}
   {#if error}
     <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
@@ -644,16 +644,16 @@
                 {user.role === 'designated'
                   ? 'bg-violet-500/15 text-violet-300 border-violet-500/40'
                   : user.role === 'admin'
-                    ? 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                    ? 'bg-amber-500/15 text-amber-400 border-amber-500/40'
                     : 'bg-teal-500/15 text-teal-300 border-teal-500/40'}">
                 {user.role}
               </span>
               {#if user.terminated_at}
                 <span class="px-1.5 py-0.5 rounded bg-zinc-500/20 text-zinc-300 text-[0.6rem] font-semibold uppercase border border-zinc-500/50">Terminated</span>
               {:else if user.suspended_at}
-                <span class="px-1.5 py-0.5 rounded bg-orange-500/15 text-orange-300 text-[0.6rem] font-semibold uppercase border border-orange-500/40">Suspended</span>
+                <span class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 text-[0.6rem] font-semibold uppercase border border-amber-500/40">Suspended</span>
               {:else if !user.is_approved}
-                <span class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-300 text-[0.6rem] font-semibold uppercase border border-amber-500/40">Pending</span>
+                <span class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 text-[0.6rem] font-semibold uppercase border border-amber-500/40">Pending</span>
               {:else if !user.is_active}
                 <span class="px-1.5 py-0.5 rounded bg-red-500/15 text-red-300 text-[0.6rem] font-semibold uppercase border border-red-500/40">Inactive</span>
               {/if}
@@ -661,7 +661,7 @@
                 <span class="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 text-[0.6rem] font-semibold uppercase border border-sky-500/40" title="Email verified">✉ Verified</span>
               {/if}
               {#if user.kyc_verified}
-                <span class="px-1.5 py-0.5 rounded bg-green-500/15 text-green-300 text-[0.6rem] font-semibold uppercase border border-green-500/40">KYC</span>
+                <span class="px-1.5 py-0.5 rounded bg-green-500/15 text-green-400 text-[0.6rem] font-semibold uppercase border border-green-500/40">KYC</span>
               {/if}
               {#if user.role === 'designated' || (user.role === 'admin' && user.receive_alerts)}
                 <span class="px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-300 text-[0.6rem] font-semibold uppercase border border-yellow-500/40" title="Receives platform alerts (loss / agent / summary)">🔔 Alerts</span>
@@ -677,7 +677,7 @@
                    on partners only, never self. -->
               {#if !user.terminated_at && !isSelf && (iAmDesignated || targetIsPartner)}
                 {#if user.suspended_at}
-                  <button onclick={() => reinstate(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2 border-orange-400/50 text-orange-300">Reinstate</button>
+                  <button onclick={() => reinstate(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2 border-amber-400/50 text-amber-400">Reinstate</button>
                 {:else}
                   <button onclick={() => suspend(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2">Suspend</button>
                 {/if}
@@ -732,7 +732,7 @@
                    && (iAmDesignated || (iAmAdmin && targetIsPartner))}
                 <button
                   onclick={() => viewAs(user)}
-                  class="btn-secondary text-[0.65rem] py-1 px-2 border-amber-400/50 text-amber-300"
+                  class="btn-secondary text-[0.65rem] py-1 px-2 border-amber-400/50 text-amber-400"
                   title="Start a 30-min support session as {user.username} — view the platform exactly as they do"
                 >View as</button>
               {/if}
@@ -1029,8 +1029,8 @@
   <!-- Result strip -->
   {#if emailResult}
     <div class="mt-3 p-2 rounded text-xs border font-mono tabular-nums
-      {emailResult.kind === 'ok'      ? 'bg-green-500/15 text-green-300 border-green-500/40' :
-       emailResult.kind === 'partial' ? 'bg-amber-500/15 text-amber-300 border-amber-500/40' :
+      {emailResult.kind === 'ok'      ? 'bg-green-500/15 text-green-400 border-green-500/40' :
+       emailResult.kind === 'partial' ? 'bg-amber-500/15 text-amber-400 border-amber-500/40' :
                                         'bg-red-500/15 text-red-300 border-red-500/40'}">
       {emailResult.kind === 'ok' ? '✓' : emailResult.kind === 'partial' ? '⚠' : '✗'} {emailResult.msg}
     </div>

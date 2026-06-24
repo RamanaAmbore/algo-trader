@@ -434,10 +434,13 @@
     ws.onclose = () => setTimeout(connectWS, 3000);
   }
 
+  // LED-style status dots — all routed through the canonical 400-level
+  // tokens with /70 alpha so they sit at glass-level brightness instead
+  // of the over-saturated solid look the pre-fix mix gave them. (Slice N8.)
   const statusDot = (/** @type {string} */ s) => ({
-    active: 'bg-green-500', inactive: 'bg-slate-500',
-    triggered: 'bg-red-500', running: 'bg-amber-400',
-    cooldown: 'bg-amber-300', error: 'bg-red-600',
+    active: 'bg-green-400/70', inactive: 'bg-slate-500',
+    triggered: 'bg-red-400/70', running: 'bg-amber-400/70',
+    cooldown: 'bg-amber-400/40', error: 'bg-red-400',
   }[s] || 'bg-slate-500');
 
   function channelSummary(/** @type {any[]} */ events) {

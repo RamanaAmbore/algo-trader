@@ -4,9 +4,9 @@
   // One-glance "is everything healthy" view for pre-market-open checks.
   // Compact card grid — 2 columns desktop / 1 mobile. Polls every 15 s.
 
-  import { onMount, onDestroy } from 'svelte';
-  import { goto } from '$app/navigation';
-  import { authStore, nowStamp, branchLabel, visibleInterval } from '$lib/stores';
+  import { onDestroy } from 'svelte';
+  import { nowStamp, branchLabel, visibleInterval } from '$lib/stores';
+  import { userRole, userCaps, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { fetchSystemHealth } from '$lib/api';
@@ -29,11 +29,17 @@
     }
   }
 
-  onMount(() => {
-    const r = $authStore.user?.role;
-    if (!$authStore.user || (r !== 'admin' && r !== 'designated')) { goto('/signin'); return; }
-    load();
-    teardown = visibleInterval(load, 15000);
+  // Canonical $effect-gated auth (slice N2). view_audit admits
+  // admin + risk + ops; pre-fix the page hard-redirected to /signin
+  // before /whoami had a chance to hydrate the role.
+  const _canView = $derived(hasCap('view_audit', $userCaps, $userRole));
+  let _loadedOnce = false;
+  $effect(() => {
+    if (_canView && !_loadedOnce) {
+      _loadedOnce = true;
+      load();
+      teardown = visibleInterval(load, 15000);
+    }
   });
   onDestroy(() => teardown?.());
 
@@ -65,6 +71,15 @@
     <PageHeaderActions />
   </span>
 </div>
+
+{#if !_canView}
+  <div class="empty-state">
+    <h2>Access denied</h2>
+    <p>System health requires the <code>view_audit</code> capability
+       (admin, risk, or ops role). Your current role is
+       <strong>{$userRole}</strong> — contact an admin to request access.</p>
+  </div>
+{:else}
 
 <StaleBanner {error} hasData={!!health} label="Health snapshot" />
 
@@ -227,6 +242,8 @@
   </div>
 {:else}
   <div class="empty-state">No health data available.</div>
+{/if}
+
 {/if}
 
 <style>

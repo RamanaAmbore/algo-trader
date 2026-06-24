@@ -450,8 +450,11 @@
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   }
   .faq-zoom-x:hover {
+    /* Soft terracotta on hover instead of the algo-saturated red-600
+       (#dc2626) — keeps the close-affordance warning legible against
+       the cream public theme without screaming "alert". (Slice N6.) */
     background: #fff;
-    border-color: #dc2626;
-    color: #dc2626;
+    border-color: #b85c3a;
+    color: #b85c3a;
   }
 </style>

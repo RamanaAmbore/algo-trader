@@ -1371,7 +1371,7 @@
     {#if picked}
       <div class="text-[0.6rem] text-[#c8d8f0]/60 italic mt-2">{picked.description}</div>
       {#if seedMode === 'scripted' && picked.has_initial === false}
-        <div class="text-[0.6rem] text-amber-300 mt-2">
+        <div class="text-[0.6rem] text-amber-400 mt-2">
           Scenario <b>{picked.slug}</b> has no scripted initial state — price
           moves would have nothing to apply to. Press <b>Load live book</b>
           and switch Seed to <b>Live</b> (or <b>Live + scenario</b>), or pick
@@ -1381,7 +1381,7 @@
     {/if}
   {/if}
   {#if seedMode !== 'scripted' && !liveSnap}
-    <div class="text-[0.6rem] text-amber-300 mt-2">
+    <div class="text-[0.6rem] text-amber-400 mt-2">
       Seed mode <b>{seedMode}</b> requires a live-book snapshot — press
       <b>Load live book</b> before Start.
     </div>
