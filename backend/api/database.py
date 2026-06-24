@@ -521,6 +521,55 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS ix_agent_events_simmode_agent_ts "
             "ON agent_events (sim_mode, agent_id, timestamp DESC)"
         ))
+        # ── Legacy role remap (Jun 2026) ─────────────────────────────────
+        # ONE-SHOT. Marker: any row with role='designated' = unmigrated
+        # data; presence triggers the remap. After first run there are
+        # no 'designated' rows so subsequent init_db calls are no-ops.
+        #
+        # Why: the legacy 5-role design carried two ambiguous values —
+        # `designated` (firm owner / top tier) and `admin` (operational
+        # admin). The canonical role set is admin / trader / risk / ops /
+        # observer, where `admin` IS the top tier. The legacy values
+        # collided semantically with the canonical ones:
+        #   * legacy designated == canonical admin (firm owner)
+        #   * legacy admin       == canonical ops   (operational support)
+        # Operator-observed symptoms:
+        #   - "designated does not have access to settings" — designated
+        #     normalised to admin in code but their stored role was still
+        #     'designated'; some routes / DB-fresh reads carried the raw
+        #     value through. After remap, the row says 'admin' and the
+        #     manage_settings cap admits them.
+        #   - "admin does not have history" — operator meant the LEGACY
+        #     admin (operational tier). They actually need view_audit +
+        #     manage_brokers, which canonical `ops` has. After remap their
+        #     row says 'ops' and they get the operational cap set.
+        #
+        # token_version bumped on every affected row so the existing
+        # JWT (which still carries the stale role) invalidates on the
+        # next request; user re-logs with the correct fresh role.
+        legacy_present = await conn.execute(text(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE role='designated' LIMIT 1)"
+        ))
+        if legacy_present.scalar():
+            # Order matters: rename legacy admin → ops FIRST, then
+            # legacy designated → admin. If we reversed the order the
+            # second UPDATE would catch the just-promoted ex-designated
+            # rows and demote them back to ops.
+            await conn.execute(text(
+                "UPDATE users SET role='ops', "
+                "token_version=COALESCE(token_version,1)+1 "
+                "WHERE role='admin'"
+            ))
+            await conn.execute(text(
+                "UPDATE users SET role='admin', "
+                "token_version=COALESCE(token_version,1)+1 "
+                "WHERE role='designated'"
+            ))
+            logger.info(
+                "init_db: legacy role remap applied — "
+                "legacy 'admin' → 'ops', legacy 'designated' → 'admin'. "
+                "Affected users must re-login (token_version bumped)."
+            )
         # Feature: basket orders + auto profit-target (June 2026).
         # Four new columns on algo_orders; all nullable / defaulted so
         # existing rows remain valid without any data migration.

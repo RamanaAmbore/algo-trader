@@ -17,19 +17,25 @@ or new capability is one entry here, not 30 grep-and-replace edits.
 
 Roles
 -----
-Six effective roles. Three are NEW (trader, risk, ops, observer) and
-match the operator's 5-role boutique-fund design. Three are LEGACY
-(partner, admin, designated) — kept so existing JWTs / DB rows continue
-to work without a destructive migration. Mapping:
+Five canonical roles: admin, trader, risk, ops, observer. Plus two
+legacy aliases (`partner`, `designated`) kept as defensive
+normalisations for in-flight JWTs during the legacy-role remap
+window. Mapping:
 
-    LEGACY        NEW EQUIVALENT      RATIONALE
-    partner    →  observer            both = read-only, no exec rights
-    admin      →  admin (kept)        unchanged
-    designated →  admin (super-set)   designated was admin-of-admins;
-                                      the capability matrix collapses
-                                      the two — they have identical caps
-                                      except `manage_admins` which only
-                                      designated retains.
+    LEGACY        CANONICAL EQUIVALENT     RATIONALE
+    partner    →  observer                 both = read-only LP view
+    designated →  admin                    designated WAS the top tier
+                                           (firm owner); canonical
+                                           admin IS that role now.
+    admin (DB) →  ops  (via one-shot migration in init_db, not via
+                       normalise_role at runtime)
+                       Legacy `admin` was operational support
+                       (broker / NAV / health); canonical ops fits
+                       exactly. The remap is one-shot in init_db
+                       (guarded by presence of 'designated' rows)
+                       with token_version bump so existing JWTs
+                       invalidate immediately. After remap, value
+                       `admin` in DB means CANONICAL admin only.
 
 DEMO is implicit — any request that resolves to `role == 'demo'` (set by
 `auth_or_demo_guard` for anonymous prod visitors) gets the demo cap set:
@@ -68,14 +74,26 @@ def normalise_role(role: str | None) -> str:
     values collapse to 'observer' (the safest default — read-only,
     aggregate-only). Called by the capability resolver so the matrix
     only has to enumerate canonical roles.
+
+    Legacy notes:
+      * `partner` → `observer` (LP read-only access)
+      * `designated` → `admin` (firm owner / top tier — defensive
+        fallback for JWTs minted before the init_db role remap; the
+        DB column itself is upgraded to 'admin' on first boot post-
+        deploy).
+      * Legacy `admin` (operational tier) is NOT remapped here —
+        a remap would clash with canonical admin assignments.
+        Instead the init_db migration moves legacy 'admin' rows to
+        'ops' and bumps token_version so the stale JWT invalidates
+        on the next request; the user re-logs with role='ops'.
     """
     if not role:
         return "observer"
     r = str(role).strip().lower()
     if r == "partner":
-        return "observer"          # legacy: investor/LP → observer
+        return "observer"          # legacy: LP → observer
     if r == "designated":
-        return "admin"             # legacy: super-admin → admin
+        return "admin"             # legacy: firm owner → admin
     if r in VALID_ROLES:
         return r
     return "observer"              # unknown role → safest default

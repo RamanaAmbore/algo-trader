@@ -116,12 +116,18 @@ async def admin_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> 
 
 
 async def designated_guard(connection: ASGIConnection, handler: BaseRouteHandler) -> None:  # noqa: ARG001
-    """Require a JWT with role='designated' — strictly above admin. Used
-    for actions that touch other admins (terminate, change role, etc.)."""
+    """Require a JWT for the firm-owner tier (terminate, promote, demote,
+    impersonate). Post-2026 role remap: canonical `admin` IS the firm
+    owner. Legacy `designated` JWTs still in flight during the remap
+    window are accepted defensively until they expire (24h TTL); after
+    that, only canonical `admin` passes. Functionally identical to
+    `admin_guard` post-remap; kept as a separate name so the audit log
+    distinguishes "this code intentionally requires firm-owner tier"
+    from "this code requires admin role" in calling routes."""
     await jwt_guard(connection, handler)
     payload = getattr(connection.state, "token_payload", {})
-    if payload.get("role") != "designated":
-        raise PermissionDeniedException("Designated-admin access required")
+    if payload.get("role") not in ("admin", "designated"):
+        raise PermissionDeniedException("Firm-owner access required")
 
 
 def is_authenticated_request(connection: ASGIConnection) -> bool:
@@ -162,8 +168,9 @@ def is_admin_request(connection: ASGIConnection) -> bool:
 
 
 def is_designated_request(connection: ASGIConnection) -> bool:
-    """Check if the request has a valid designated-admin JWT. Same caveat
-    as `is_admin_request`: signature/expiry only, no live-state check."""
+    """Check if the request carries a firm-owner JWT (post-2026 remap:
+    canonical `admin` or legacy `designated`). Same caveat as
+    `is_admin_request`: signature/expiry only, no live-state check."""
     try:
         auth_header = connection.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
@@ -171,7 +178,7 @@ def is_designated_request(connection: ASGIConnection) -> bool:
         token = auth_header.removeprefix("Bearer ").strip()
         from backend.api.routes.auth import verify_token
         payload = verify_token(token)
-        return bool(payload and payload.get("role") == "designated")
+        return bool(payload and payload.get("role") in ("admin", "designated"))
     except Exception:
         return False
 

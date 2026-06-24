@@ -2504,6 +2504,26 @@ All three use `guards=[]` and `_process_broker_postback` (or inline equivalent f
 
 **What this slice closes**: orders.py is now uniform on `asyncio.create_task(...)` (no aliases). nav.py docstring matches reality. Audit log distinguishes expired orders from fills. Groww holdings + backfill work the same as Dhan. Dhan funds_ledger code is unambiguous. None of these change correctness; they make the surrounding code easier to understand and harder to misread.
 
+**Legacy role remap** (Jun 2026, post slice-P operator request): one-shot DB migration in `init_db` renames `users.role` values so the canonical 5-role system stops conflating legacy semantics with new ones.
+
+| Pre-migration `users.role` | Meant | Post-migration `users.role` | Has caps |
+|---|---|---|---|
+| `designated` | Firm owner (top tier) | `admin` | manage_settings, manage_users, manage_admins, … (full owner set) |
+| `admin` | Operational admin (legacy) | `ops` | manage_brokers, view_audit, trigger_nav_compute, view_health |
+| `partner` | LP (legacy, never written by UI) | `observer` | view_aggregate, view_nav, export_reports |
+
+**Why**: operator reported "designated does not have access to settings" and "admin does not have history". Root cause: the runtime checks worked correctly for the matrix, but the legacy semantics were already conflated — old `admin` rows wanted the operational tier (which canonical `ops` provides exactly), and old `designated` rows wanted the firm-owner tier (which canonical `admin` IS). The remap moves the rows so the canonical matrix matches operator expectations.
+
+**Migration mechanics** (`backend/api/database.py`, after the slice-L FK block):
+- One-shot, guarded by presence of any `role='designated'` row (marker of unmigrated data). After first run, no rows have that value → subsequent `init_db` calls are no-ops.
+- Order matters: rename legacy `admin` → `ops` FIRST, then legacy `designated` → `admin`. Reversing would catch just-promoted rows and demote them back.
+- `token_version` bumped on every affected row so existing JWTs invalidate on the next request via `jwt_guard`'s tv check; users re-login and get a fresh JWT with the correct role.
+- Logged at INFO with the affected-row summary so the operator sees it land in `api_log_file`.
+
+**Defensive normalisation**: `normalise_role` keeps `partner → observer` and `designated → admin` as fallbacks for in-flight JWTs minted just before the deploy. Legacy `admin` is NOT in `normalise_role` because that would clash with NEW canonical admin assignments — the migration handles it at the DB level, the JWT version bump invalidates the stale claim. `auth_guard.designated_guard` + `is_designated_request` updated to accept both `admin` (canonical firm owner) AND `designated` (defensive for in-flight JWTs).
+
+**Operator action**: deploy; everyone affected re-logs once. New caps land automatically on the fresh JWT.
+
 **Slice I — palette wave 2 + footer cleanup** (shipped Jun 2026, from #audit round 2):
 - **Violet `#c4b5fd` → `#c084fc` everywhere**. The audit identified `#c4b5fd` as a third violet shade matching neither canonical `#c084fc` (violet-400, non-AI accents) nor `#a78bfa` (canonical `--algo-ai`, AI-generated content). All non-AI usages — `UnifiedLog::ul-card-sim`, `SimulatorPanel::iter-corr-label`, `MarketPulse::badge-u`, `MarketPulse::mover-underlying box-shadow`, app.css `row-und` symbol-cell bg, `algo-user-role-designated`, derivatives `tag-greek` — collapsed onto `#c084fc`. The AI-context badge inside `/admin/derivatives` (Greeks chip wrapped in `rgba(167,139,250,…)`) moved to `#a78bfa` (the canonical AI shade) to keep the AI lane separate.
 - **StaleBanner palette**. Off-palette `#fcd34d` (amber-300) text → `var(--algo-amber-text)` (#fde68a). Red bg `rgba(239,68,68,…)` (red-500) → `var(--algo-red-bg)` (red-400 #f87171). Same banner across every algo + public surface now matches the canonical tokens.
