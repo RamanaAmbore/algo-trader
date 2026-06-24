@@ -2895,25 +2895,49 @@
       ? (dsq > 0 ? dsv / dsq : 0)
       : (dbq > 0 ? dbv / dbq : 0);
 
-    // Realised on the closed portion vs yesterday's close (the day-mark
-    // anchor — same convention the P∆ formula uses). For a long sold:
-    // gain = (exit − close) × closed. For a short covered: gain = (close
-    // − exit) × closed.
-    const closed_realised = oq > 0
+    // Day P&L contribution from the closed portion — anchors against
+    // yesterday's close, same convention as day_change_val. For a long
+    // sold today: (exit − close) × closed. For a short covered today:
+    // (close − exit) × closed. Reflects today's mark-to-market move,
+    // not the lifetime realised.
+    const closed_day_pnl = oq > 0
       ? (exit_price - close) * closed_qty
       : (close - exit_price) * closed_qty;
 
-    // Open row's day_change_val = total leg P∆ minus the realised the
-    // closed row absorbs, so the two rows sum back to the original.
-    const open_dcv = Number(p.day_change_val || 0) - closed_realised;
+    // LIFETIME realised P&L on the closed lots — anchors against the
+    // cost basis (avg_cost), same as Kite's `pnl` formula. This is
+    // what the operator sees as the actual realised gain since the
+    // position was opened, NOT just today's contribution. Fix path
+    // for the closed GOLDM-148000-CE bug (operator: "still in legs
+    // goldm closed position shows 8k profit, which is not correct"
+    // — actual realised was ₹1.52L = the broker's lifetime `p.pnl`).
+    //
+    // For a FULLY closed position (brokerQty === 0): Kite zeroes
+    // avg_price so the (avg − exit) × qty formula collapses; trust
+    // broker.pnl directly which carries the full realised cash.
+    // For a PARTIAL close: avg_price is the cost basis of both the
+    // remaining + closed lots, so realised = (avg − exit) × closed
+    // for short, (exit − avg) × closed for long.
+    const brokerQty = Math.abs(Number(p.qty || 0));
+    const avg_cost = Number(p.avg_cost || 0);
+    const closed_lifetime_pnl = brokerQty === 0
+      ? Number(p.pnl || 0)
+      : (oq > 0
+          ? (exit_price - avg_cost) * closed_qty
+          : (avg_cost - exit_price) * closed_qty);
+
+    // Open row's day_change_val = total leg P∆ minus the closed
+    // portion's day contribution, so the two rows sum back to the
+    // original day P&L.
+    const open_dcv = Number(p.day_change_val || 0) - closed_day_pnl;
 
     const closedRow = {
       ...p,
       // qty=0 means "closed" everywhere downstream (cand-row tinting,
       // P&L cell shows realised, no chart-icon for trade-action).
       qty: 0,
-      pnl: closed_realised,
-      day_change_val: closed_realised,
+      pnl: closed_lifetime_pnl,
+      day_change_val: closed_day_pnl,
       // Mark the row visually as the closed half via a synthesized
       // key suffix; cand-row `c.source + '|' + c.account + '|' +
       // c.symbol` key gets a unique tail so Svelte tracks the two
@@ -2926,15 +2950,15 @@
     // there is no actual "open" portion. Emitting an OPEN-tagged row
     // with qty=0 misled the operator into thinking there was still
     // something on the book to act on. Suppress it.
-    const brokerQty = Math.abs(Number(p.qty || 0));
     if (brokerQty === 0) return [closedRow];
 
     const openRow = {
       ...p,
-      // Re-attribute total leg P&L: closed row gets the realised
-      // portion; the open row keeps the remaining unrealised
-      // (broker's pnl − realised already attributed).
-      pnl: Number(p.pnl || 0) - closed_realised,
+      // Re-attribute total leg P&L: closed row gets the lifetime
+      // realised; the open row keeps the remaining unrealised
+      // (broker's pnl − closed lifetime already attributed). The
+      // two rows sum back to broker.pnl.
+      pnl: Number(p.pnl || 0) - closed_lifetime_pnl,
       // Zero out realised on the open half — the closed half already
       // carries it as its pnl. Without this, the per-row P&L formula
       // `(ltp − cost) × qty + realised` would double-count the
