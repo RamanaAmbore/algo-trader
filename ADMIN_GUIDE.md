@@ -731,7 +731,7 @@ You don't have to memorise this — the **(i)** info chip on each row tells you 
 
 Manage accounts via UI, no SSH/YAML/restart. Page: account table (code | broker | API key | source IP | status pill | notes | Test/Edit/Delete) + **+ New account** button.
 
-**Add account**: code (unique) · broker (kite) · API key/secret/password/TOTP (encrypted at rest) · source IP (IPv6 for multi-account Kite binding) · notes. Click **Test** to verify.
+**Add account**: code (unique) · broker (Zerodha Kite / Dhan / Groww) · API key/secret/password/TOTP (encrypted at rest) · source IP (IPv6 for multi-account Kite binding) · notes. Click **Test** to verify.
 
 **Edit**: click Edit → secret fields blank by default (blank = unchanged) → edit + Save.
 
@@ -762,7 +762,7 @@ Adapter coverage today:
 | Broker | Webhook URL | Status |
 |---|---|---|
 | Kite (Zerodha) | `https://ramboq.com/api/orders/postback` | Wired with HMAC-SHA256 validation (`order_id + order_timestamp + api_secret`). Configure in Kite developer console per app. |
-| Dhan | `https://ramboq.com/api/orders/dhan_postback` | Scaffold route — best-effort parse + log raw payload. Configure in Dhan partner dashboard per account. First real fill writes the payload to `api_log_file` so the parser can be tuned. |
+| Dhan | `https://ramboq.com/api/orders/dhan_postback` | Wired with status translation (`_DHAN_STATUS_TO_KITE`) and full fan-out (AlgoOrder sync, audit log, cache invalidate, WS broadcasts). Configure in Dhan partner dashboard per account. |
 | Groww | `https://ramboq.com/api/orders/groww_postback` | Scaffold route — same shape as Dhan. Groww postback support is uncertain per the broker-API audit. |
 
 All three routes:
@@ -882,7 +882,7 @@ The platform's RBAC surface is **5 canonical roles** + 1 legacy preserved role +
 | `designated` | Everything per the matrix in `backend/api/rbac.py::CAPS` | Firm owner / top tier |
 | `trader` | place / modify / cancel orders + view book; horizontal scope via `assigned_accounts` + `assigned_strategies` | PM tier |
 | `risk` | view everything + kill-switch + adjust risk floors | Compliance + on-call monitoring |
-| `admin` | manage brokers + manage users + view audit | Operational support |
+| `admin` | manage brokers, test broker connection, view audit, view health, trigger NAV compute, view settings (read-only) | Operational support |
 | `partner` | view-only aggregate; no trading, no settings | LP-style read access |
 | `demo` | view-only on prod (anonymous visitor) | Public surface, no auth |
 
@@ -1109,7 +1109,7 @@ Single forensic surface for every mutating event the platform produces. Cap-gate
 
 - [AGENTS_GUIDE.md](AGENTS_GUIDE.md) — agent authoring + validation ladder
 - [SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md) — scenarios, Run-in-Simulator, market-state presets
-- [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md) — Claude Code MCP, 24 tools, audit trail
+- [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md) — Claude Code MCP, 25 tools, audit trail
 
 ## Troubleshooting
 

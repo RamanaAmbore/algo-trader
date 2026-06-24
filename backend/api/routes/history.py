@@ -6,7 +6,7 @@ GET /api/admin/history/trades  — daily_book where kind='trades'
 GET /api/admin/history/funds   — daily_book where kind='funds' (per-account ledger)
 
 All three are paginated (default 50/page, cap 500). Cap-gated by
-`view_audit` — same gate as the audit log; admin / risk / ops only.
+`view_audit` — same gate as the audit log; designated / risk / admin only.
 
 Operator workflow: pick a date range + accounts + status pill, scan
 the table, drill via the Audit log for the request_id of any row that

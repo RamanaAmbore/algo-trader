@@ -993,7 +993,8 @@ async def _send_one_monthly_statement(user, period_year: int, period_month: int)
                 f"RamboQuant statement — {data.period_start.strftime('%b %Y')}"
             )
             html_body = _monthly_statement_html(user, data)
-            ok, msg = send_email(
+            ok, msg = await _asyncio.to_thread(
+                send_email,
                 user.display_name or user.username,
                 user.email,
                 subject,

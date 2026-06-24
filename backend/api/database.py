@@ -124,7 +124,11 @@ async def init_db() -> None:
             # caught these three as missing indexes on a growing append-only
             # table; without them every list query was a seq-scan.
             "CREATE INDEX IF NOT EXISTS ix_agent_events_agent_id ON agent_events (agent_id)",
-            "CREATE INDEX IF NOT EXISTS ix_agent_events_sim_mode ON agent_events (sim_mode)",
+            # ix_agent_events_sim_mode removed — covered by the
+            # ix_agent_events_simmode_agent_ts composite (slice M).
+            # The CREATE was retained here while the slice-R DROP block
+            # at ~line 652 dropped it every boot (wasted WAL). Removed
+            # the CREATE; the DROP IF EXISTS below remains for legacy installs.
             "CREATE INDEX IF NOT EXISTS ix_agent_events_timestamp ON agent_events (timestamp)",
             # daily_book — composite indexes for date-range P&L queries on
             # existing tables (Base.metadata.create_all covers brand-new tables;
@@ -634,6 +638,22 @@ async def init_db() -> None:
             "FOREIGN KEY (order_id) REFERENCES algo_orders(id) ON DELETE CASCADE",
         ):
             await conn.execute(text(stmt))
+        # S6 — watchlists.user_id FK → ON DELETE SET NULL.
+        # user_id is nullable (global rows have user_id=NULL); without
+        # the ondelete clause, deleting a user with personal watchlists
+        # was blocked at the DB level (NO ACTION default). SET NULL
+        # releases the back-reference while keeping the watchlist rows.
+        try:
+            for stmt in (
+                "ALTER TABLE watchlists DROP CONSTRAINT IF EXISTS watchlists_user_id_fkey",
+                "ALTER TABLE watchlists ADD CONSTRAINT watchlists_user_id_fkey "
+                "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL",
+            ):
+                await conn.execute(text(stmt))
+        except Exception as _wl_err:
+            logger.warning(
+                "init_db: watchlists FK migration skipped — %s", _wl_err
+            )
         # R6a/b/c — three index migrations.
         # WHY THE TRY/EXCEPT WRAPPER: index DDL requires table ownership.
         # `impersonation_events` was created historically as user `postgres`
@@ -670,6 +690,28 @@ async def init_db() -> None:
                     "init_db: non-critical index migration skipped — %s "
                     "(stmt=%s)", _idx_err, _stmt[:80],
                 )
+        # S7 — audit_log.action GIN trigram index.
+        # btree (the ORM default when index=True) cannot serve leading-wildcard
+        # ilike queries like ilike("%X%"). Replaced with a pg_trgm GIN index.
+        # Requires the pg_trgm extension (superuser CREATE EXTENSION); graceful
+        # degradation when unavailable — queries still return correct results via
+        # seq-scan, just slower on large audit tables. Each step in its own
+        # try/except so a pg_trgm absence doesn't prevent the DROP of the old index.
+        try:
+            await conn.execute(text("DROP INDEX IF EXISTS ix_audit_log_action"))
+        except Exception as _trgm_err:
+            logger.warning("init_db: could not drop ix_audit_log_action — %s", _trgm_err)
+        try:
+            await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
+            await conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_audit_log_action_trgm "
+                "ON audit_log USING gin (action gin_trgm_ops)"
+            ))
+        except Exception as _trgm_err:
+            logger.warning(
+                "init_db: pg_trgm GIN index for audit_log.action not created "
+                "(extension may require superuser) — %s", _trgm_err,
+            )
     logger.info("Database: tables verified")
 
     # Seed grammar tokens (condition / notify / action catalog) BEFORE agents

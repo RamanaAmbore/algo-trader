@@ -436,6 +436,9 @@ class AdminController(Controller):
             _INTERNAL_ROLES = ("designated", "trader", "risk", "admin")
             if user.role in _INTERNAL_ROLES:
                 user.email_verified = True
+                # Bump token_version so any pre-approval JWT is invalidated;
+                # jwt_guard's tv check forces re-issue on the next login.
+                user.token_version = (user.token_version or 1) + 1
             await session.commit()
         await refresh_alert_recipients()
         logger.info(f"Admin: approved user {username!r}")
@@ -481,6 +484,10 @@ class AdminController(Controller):
             payload = getattr(request.state, "token_payload", {}) or {}
             actor_role = payload.get("role", "")
             allowed_role_change = (actor_role == "designated")
+
+            # Snapshot prior role before the mutation loop so we can
+            # detect partner→internal promotions below.
+            prior_role = user.role
 
             # Apply all non-None fields from the request
             for field in (
@@ -566,6 +573,12 @@ class AdminController(Controller):
             # next request via jwt_guard.
             if data.role is not None and allowed_role_change:
                 user.token_version = (user.token_version or 1) + 1
+                # Auto-verify email on partner→internal promotion so the
+                # promoted user can sign in immediately without hitting the
+                # email_verified gate.
+                _INTERNAL_ROLES = ("designated", "trader", "risk", "admin")
+                if user.role in _INTERNAL_ROLES and prior_role not in _INTERNAL_ROLES:
+                    user.email_verified = True
             await session.commit()
         await refresh_alert_recipients()
         logger.info(f"Admin: updated user {username!r}")

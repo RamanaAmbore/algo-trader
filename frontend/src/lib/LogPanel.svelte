@@ -1239,7 +1239,7 @@
      grid stays uncluttered. */
   :global(.log-panel.log-rows .log-row.log-agent-success) { color: #4ade80; }
   :global(.log-panel.log-rows .log-row.log-agent-failed)  { color: #f87171; }
-  :global(.log-panel.log-rows .log-row.log-agent-alert)   { color: #facc15; }
+  :global(.log-panel.log-rows .log-row.log-agent-alert)   { color: #fbbf24; }
   :global(.log-panel.log-rows .log-row.log-agent-triggered) { color: #fb923c; }
   :global(.log-panel.log-rows .log-row.log-agent-cooldown)  { color: #94a3b8; }
   :global(.log-panel.log-rows .log-row.log-error)   { color: #f87171; }

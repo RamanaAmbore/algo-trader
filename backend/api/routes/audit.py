@@ -49,9 +49,9 @@ class AuditResponse(msgspec.Struct):
 
 class AuditController(Controller):
     path = "/api/admin/audit"
-    # `view_audit` covers admin / risk / ops — the three roles that
-    # have legitimate reason to read the forensic trail. Trader +
-    # observer + demo intentionally excluded.
+    # `view_audit` covers designated / risk / admin — the three roles
+    # that have legitimate reason to read the forensic trail. Trader,
+    # partner, and demo intentionally excluded.
 
     @get("/", guards=[cap_guard("view_audit")])
     async def list_audit(

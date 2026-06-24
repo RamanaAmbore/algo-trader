@@ -31,9 +31,10 @@ Message type prefixes
   Email    : RamboQuant Open: | RamboQuant Agent: | RamboQuant Close:
 """
 
+import atexit
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
-from threading import Lock, Thread
+from threading import Lock
 
 import requests
 
@@ -51,6 +52,10 @@ logger = get_logger(__name__)
 # burst (14 agents × 3 recipients) without spawning an unbounded number
 # of daemon threads under fire.  Fire-and-forget; the wrapper logs errors.
 _SMTP_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ramboq-smtp")
+# On SIGTERM / systemctl restart, drain in-flight submits without
+# blocking indefinitely.  wait=False so the process can exit promptly
+# while in-flight threads may still be running their final smtp.quit().
+atexit.register(lambda: _SMTP_EXECUTOR.shutdown(wait=False))
 
 
 # ---------------------------------------------------------------------------

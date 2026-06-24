@@ -14,6 +14,7 @@
 <script>
   import { onMount } from 'svelte';
   import { page } from '$app/stores';
+  import Select from '$lib/Select.svelte';
 
   /** @typedef {{
    *   display_name:string, share_pct:number, contribution:number,
@@ -105,6 +106,9 @@
     return out;
   }
   const _months = $derived(_recentMonths(12));
+  const _monthOptions = $derived(
+    _months.map(m => ({ value: `${m.year}-${m.month}`, label: m.label }))
+  );
   let selectedPeriod = $state(/** @type {string} */ (''));
   function _statementUrl() {
     if (!selectedPeriod) return '#';
@@ -234,13 +238,14 @@
     <section class="ip-statement">
       <h2 class="ip-section-heading">Monthly statement</h2>
       <div class="ip-statement-row">
-        <select class="ip-statement-select" bind:value={selectedPeriod}
-                aria-label="Select statement month">
-          <option value="" disabled>Pick a month…</option>
-          {#each _months as m}
-            <option value={`${m.year}-${m.month}`}>{m.label}</option>
-          {/each}
-        </select>
+        <div class="ip-statement-picker">
+          <Select
+            bind:value={selectedPeriod}
+            options={_monthOptions}
+            placeholder="Pick a month…"
+            theme="light"
+            ariaLabel="Select statement month" />
+        </div>
         <a class="ip-statement-btn"
            href={_statementUrl()}
            class:disabled={!selectedPeriod}
@@ -442,15 +447,8 @@
     display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center;
     margin-bottom: 0.5rem;
   }
-  .ip-statement-select {
+  .ip-statement-picker {
     flex: 1 1 14rem;
-    padding: 0.45rem 0.7rem;
-    background: #fdfaf2;
-    border: 1px solid #e7e0cf;
-    border-radius: 4px;
-    color: #2a2418;
-    font-family: inherit;
-    font-size: 0.78rem;
   }
   .ip-statement-btn {
     display: inline-block;

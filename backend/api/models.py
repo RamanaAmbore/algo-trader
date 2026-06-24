@@ -410,7 +410,7 @@ class Watchlist(Base):
     id:         Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     # user_id is NULL when the row is global (shared across all users).
     user_id:    Mapped[Optional[int]] = mapped_column(
-        Integer, ForeignKey("users.id"), nullable=True, index=True,
+        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True,
     )
     name:       Mapped[str] = mapped_column(String(64), nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -1665,7 +1665,11 @@ class AuditLog(Base):
     actor_username: Mapped[str]   = mapped_column(String(64), nullable=False, default="", index=True)
     actor_role:     Mapped[str]   = mapped_column(String(32), nullable=False, default="")
     # Action descriptor — derived from method + path. e.g. "POST /api/orders/ticket".
-    action: Mapped[str]           = mapped_column(String(120), nullable=False, index=True)
+    # index=True (btree) removed — btree cannot serve leading-wildcard ilike
+    # queries (ilike "%X%"). A GIN trigram index is created in init_db instead
+    # when the pg_trgm extension is available; without it queries fall back to
+    # seq-scan (correct result, no crash). See S7 migration block in database.py.
+    action: Mapped[str]           = mapped_column(String(120), nullable=False)
     # Coarse category tag for filtering. Examples:
     #   'http'             — generic mutating HTTP request (middleware default)
     #   'order.place'      — order placement

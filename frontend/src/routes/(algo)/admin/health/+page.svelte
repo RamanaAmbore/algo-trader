@@ -76,7 +76,7 @@
   <div class="empty-state">
     <h2>Access denied</h2>
     <p>System health requires the <code>view_audit</code> capability
-       (admin, risk, or ops role). Your current role is
+       (designated, admin, or risk role). Your current role is
        <strong>{$userRole}</strong> — contact an admin to request access.</p>
   </div>
 {:else}

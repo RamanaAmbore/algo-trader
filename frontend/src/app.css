@@ -914,7 +914,7 @@
 .log-news-panel .log-news-row:hover { background: rgba(255,255,255,0.02); }
 .log-news-panel .log-news-time {
   flex: 0 0 auto;
-  color: #fde047;
+  color: #fbbf24;
   font-weight: 700;
   font-size: 0.6rem;
   letter-spacing: 0.02em;
@@ -950,7 +950,7 @@
   color: rgba(125,211,252,0.45);
 }
 .log-panel .log-agent-triggered   { color: #fb923c; background: rgba(251,146,60,0.1); display: block; padding: 0 4px; border-radius: 2px; }
-.log-panel .log-agent-alert       { color: #facc15; background: rgba(250,204,21,0.08); display: block; padding: 0 4px; border-radius: 2px; }
+.log-panel .log-agent-alert       { color: #fbbf24; background: rgba(251,191,36,0.08); display: block; padding: 0 4px; border-radius: 2px; }
 .log-panel .log-agent-success     { color: #4ade80; background: rgba(74,222,128,0.08); display: block; padding: 0 4px; border-radius: 2px; }
 .log-panel .log-agent-failed      { color: #f87171; background: rgba(248,113,113,0.12); display: block; padding: 0 4px; border-radius: 2px; }
 .log-panel .log-agent-cooldown    { color: #64748b; display: block; padding: 0 4px; border-radius: 2px; }
@@ -964,7 +964,7 @@
    (which come from a Python timestamp parser that already produces a
    dual-zone string) and cmd entries (h.time pre-formatted at the
    callsite). Keeps the yellow accent so they stand out from row text. */
-.log-panel .log-ts-fallback { color: #fde047; font-weight: 700; font-size: 0.6rem; }
+.log-panel .log-ts-fallback { color: #fbbf24; font-weight: 700; font-size: 0.6rem; }
 
 /* `.log-sim-pill` — amber chip surfacing on EVERY log row whose source
    is a simulator artefact, regardless of which tab is rendering it.

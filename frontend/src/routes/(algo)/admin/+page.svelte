@@ -703,7 +703,7 @@
               {/if}
               <!-- Promote / Demote between admin and designated — designated only, never self, never partner. -->
               {#if iAmDesignated && !isSelf && user.role !== 'partner'}
-                <button onclick={() => flipDesignated(user)} class="btn-secondary text-[0.65rem] py-1 px-2 border-violet-400/50 text-violet-300">
+                <button onclick={() => flipDesignated(user)} class="btn-secondary text-[0.65rem] py-1 px-2 border-violet-400/50 text-[#c084fc]">
                   {user.role === 'designated' ? 'Demote' : 'Promote'}
                 </button>
               {/if}

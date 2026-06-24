@@ -653,11 +653,11 @@ Summary agents (`nse_open_summary`, `nse_close_summary`, `mcx_open_summary`, `mc
 - **`admin/`** — User management with full partner fields
 - **`admin/tokens/`** — Agent Tokens page (Condition / Notify / Action tabs), create/edit custom tokens, Reload Registry. UI label is "Tokens"; the DB table and Python class keep their legacy names (`grammar_tokens`, `GrammarRegistry`) because the data model IS a grammar in the compiler-theory sense. Route: `/admin/tokens`.
 - **`admin/simulator/`** — Market simulator control plane. Scenario dropdown · Seed (Scripted / Live / Live+scenario) · Rate · Load live book · Start / Stop / Step / Run cycle / Clear sim. Shared `LogPanel` embedded at the bottom, defaulted to the Simulator tab (streams per-symbol LTP diffs in real time). See **Simulator** section below.
-- **`agents/`** (formerly `/algo`) — Agents page: grouped compact rows (Loss & Risk / Summaries / Automation / Other), click-to-expand, Edit with live condition validation, per-row "Run in Simulator" button that deep-links to `/admin/execution?mode=sim&agent_id=<id>`. The Agent-events panel auto-scopes: real events when sim is idle, sim events when a sim is running.
+- **`automation/`** (the agent workspace) — Hub for agent authoring + testing. Grouped compact rows (Loss & Risk / Summaries / Automation / Other), click-to-expand, Edit with live condition validation, per-row "Run in Simulator" button that deep-links to `/admin/execution?mode=sim&agent_id=<id>`. The Agent-events panel auto-scopes: real events when sim is idle, sim events when a sim is running.
 - **`console/`** — Terminal: command textarea + output + live log (equal panels)
 - **`orders/`** — Order management. Entry card has 3 tabs: Order Ticket (BUY/SELL form) · Option Chain · Command Line. Chart-icon button on entry header + every row's symbol cell opens `<ChartModal>` for that symbol.
 - **`charts/`** — Unified chart workspace. Reads `?symbol=…&mode=…` URL params. Single `<ChartWorkspace>` instance with RefreshButton in page header.
-- **`agents/activity/`** — Recent agent fires (and optional action-success / -error events). Same `UnifiedLog` component the dashboard renders, lifted into a dedicated route inside the agent workspace so operators asking "what fired today?" don't have to scroll past P&L analysis.
+- **`automation/activity/`** — Recent agent fires (and optional action-success / -error events). Same `UnifiedLog` component the dashboard renders, lifted into a dedicated route inside the agent workspace so operators asking "what fired today?" don't have to scroll past P&L analysis.
 
 ---
 
@@ -1075,7 +1075,7 @@ leaf       ::=  { "metric": <metric-token>,
 
 `backend/api/algo/agent_evaluator.py`:
 - `evaluate(cond, ctx) -> list[match]` — tree walker; empty list means no fire.
-- `validate(cond) -> list[str]` — dry-check; every referenced token must exist in the registry. Used by `POST /api/agents/validate-condition` and surfaced in the `/agents` editor's Validate button.
+- `validate(cond) -> list[str]` — dry-check; every referenced token must exist in the registry. Used by `POST /api/agents/validate-condition` and surfaced in the `/automation` editor's Validate button.
 - `Context` — bundles `sum_holdings`, `sum_positions`, `df_margins`, `position_rows` (per-symbol position dicts for expiry scopes), `spot_prices` (`{underlying: ltp}` for ITM/NTM resolvers), `alert_state` (for rate history), `now`, `segments`, `rate_window_min`, `agent`. `position_rows` and `spot_prices` are populated by [`background.py::_task_performance`](backend/api/background.py) and the simulator driver; absent ⇒ expiry-aware metric leaves return None gracefully.
 
 The v1 `field/operator/rules` evaluator has been retired; every agent must use the grammar tree above. `run_cycle` calls `agent_evaluator.evaluate` directly.
@@ -1114,7 +1114,7 @@ Three **inactive** seeded agents use them. `expiry-day-positions-alert` is notif
 | `expiry-day-equity-itm-auto-close` | 15:00 IST (T-30min) | `positions.expiring_today.nfo` filtered by `is_itm == 1` | `expiry_auto_close` with `exchange: NFO` |
 | `expiry-day-commodity-itm-auto-close` | 23:00 IST (T-30min) | `positions.expiring_today.mcx_unhedged` filtered by `is_itm == 1` | `expiry_auto_close` with `exchange: MCX` |
 
-The `expiry_auto_close` action wraps the legacy [`ExpiryEngine`](backend/api/algo/expiry.py) so the agents inherit its battle-tested rules: NFO closes ALL ITM + NTM; MCX closes only UNHEDGED ITM + NTM (CE/PE pairs that net to zero are skipped at settlement). Both agents ship INACTIVE; activate from `/agents` to graduate off the bg task after a side-by-side validation pass.
+The `expiry_auto_close` action wraps the legacy [`ExpiryEngine`](backend/api/algo/expiry.py) so the agents inherit its battle-tested rules: NFO closes ALL ITM + NTM; MCX closes only UNHEDGED ITM + NTM (CE/PE pairs that net to zero are skipped at settlement). Both agents ship INACTIVE; activate from `/automation` to graduate off the bg task after a side-by-side validation pass.
 
 The default `algo.expiry_start_offset_hours` setting is now `0.5h` (T-30min, matching Sensibull / Streak conventions). The seeder PRESERVES the operator's live override, so prod boxes upgraded from the old 2h default still see `value=2` — flip to 0.5h via `/admin/settings`.
 
@@ -1160,7 +1160,7 @@ The `agent_fragments` table holds reusable sub-trees an agent can reference inli
 - Notify: other channels in the list still fire; the broken ref is logged.
 - Condition: the ref node returns `[]` matches (acts as a false leaf); other branches of the tree evaluate normally.
 
-This matches the rest of the grammar pipeline — operator typos in `/automation/fragments` don't crash the engine.
+This matches the rest of the grammar pipeline — operator typos in `/automation/fragments` don't crash the engine. Note: `/agents` URL still redirects to `/automation` for backward compatibility.
 
 **Seeded system fragments** (force-reseeded on every boot from `SYSTEM_FRAGMENTS`):
 - `notify-critical-trio` — telegram + email + log (the default for every loss / expiry agent)
@@ -1445,7 +1445,7 @@ Gated by `admin_guard` + the per-branch `cap_in_<branch>.simulator` flag in `bac
 
 - **Default path**: pick a scripted scenario (e.g. `crash-open`) → Start.
 - **Stress-test your real book**: press **Load live book** → switch Seed to **Live + scenario** → pick `generic-crash` or `random-walk` → Start.
-- **Dry-fire one agent**: on `/agents`, click **Run in Simulator** on a row → arrives at `/admin/execution?mode=sim&agent_id=<id>` with the agent armed → pick a scenario → Start. The agent fires regardless of its `status`, `schedule`, cooldown, or baseline gate; no real agent state is mutated.
+- **Dry-fire one agent**: on `/automation`, click **Run in Simulator** on a row → arrives at `/admin/execution?mode=sim&agent_id=<id>` with the agent armed → pick a scenario → Start. The agent fires regardless of its `status`, `schedule`, cooldown, or baseline gate; no real agent state is mutated.
 
 Auto-stops after 30 minutes so a forgotten sim can't bleed forever.
 
@@ -2000,7 +2000,7 @@ Earlier the row-level triangles were hand-rolled per page with mismatched colour
 
 ## Agent editor — every column is editable
 
-[`/agents`](frontend/src/routes/(algo)/agents/+page.svelte)'s inline editor now exposes every `Agent` column that's mutable through the API. Operators can read the agent's full state from one screen without falling back to "edit JSON" workarounds. Fields covered today:
+[`/automation`](frontend/src/routes/(algo)/automation/+page.svelte)'s inline editor now exposes every `Agent` column that's mutable through the API. Operators can read the agent's full state from one screen without falling back to "edit JSON" workarounds. Fields covered today:
 
 - **Identity** — `name`, `long_name` (3-part `when:… alert:… do:…` operator label), `description`
 - **Routing** — `scope`, `schedule`, `cooldown_minutes`, `fire_at_time`
@@ -2322,7 +2322,7 @@ Idempotent via existing `(date, account, kind, symbol)` unique constraint.
 
 Broker matrix:
 - **Kite**: no programmatic ledger — always 501.
-- **Dhan** ✓: `DhanBroker.funds_ledger` ([dhan.py](backend/shared/brokers/dhan.py)). Probes `get_ledger_report` (v2) / `get_funds_ledger` / `ledger_report` (fork variants), kwarg→positional fallback. Aggregates voucher-level entries per `(voucherdate, segment)`; `_DHAN_SEGMENT_MAP` collapses Dhan exchange codes (NSE_EQ / NSE_FNO / BSE_EQ / BSE_FNO / NSE_CURRENCY → equity, MCX_COMM → commodity).
+- **Dhan** ✓: `DhanBroker.funds_ledger` ([dhan.py](backend/shared/brokers/dhan.py)). Calls `get_ledger_report` to fetch voucher-level entries. Aggregates per `(voucherdate, segment)`; `_DHAN_SEGMENT_MAP` collapses Dhan exchange codes (NSE_EQ / NSE_FNO / BSE_EQ / BSE_FNO / NSE_CURRENCY / BSE_CURRENCY → equity, MCX_COMM → commodity).
 - **Groww**: adapter wiring pending — same single-file pattern.
 
 **Adapter aggregation note** — Dhan returns voucher-level rows (one per transaction); the adapter buckets per `(voucherdate, segment)`, sums debit+credit, tracks first+last `runbal` as SOD/EOD proxies. `realised_m2m = credits − debits` reads as "net daily cash move" — includes brokerage / STT / charges, NOT pure MTM. Operator UI documents this caveat.
@@ -2487,7 +2487,7 @@ All three use `guards=[]` and `_process_broker_postback` (or inline equivalent f
 **Why these matter operationally**: M1 + M4 together drop LP portal load from O(N + 2 × M) round-trips to O(2) for a typical fund. M2 drops statement-PDF generation time from seconds to milliseconds on a 5-year-old fund. M3 closes a perceptible Funds-tab latency spike. M5 pre-empts seq-scan regressions as `algo_orders` grows. M6 is cleanup. None of these change a result; they change how fast it arrives.
 
 **Slice N — UX consistency wave 3 + palette wave 3** (shipped Jun 2026, from #audit round 3):
-- **N1-N4** — four more admin pages adopted the canonical `$effect`-gated `_canView` + access-denied panel pattern: `/admin/brokers` (cap `manage_brokers`, designated+admin), `/admin/health` (cap `view_audit`, designated+admin+risk), `/admin/settings` (cap `manage_settings`, designated only), `/admin/research` (cap `view_lab`, designated+admin+trader+risk). Pre-fix each used `onMount` + hard `goto('/signin')` which raced `/whoami` and bounced legitimate non-admin viewers out before their role hydrated. Slice H established the pattern on audit/history/alerts; N closes the gap on every admin page that fetches data behind a capability check.
+- **N1-N4** — four more admin pages adopted the canonical `$effect`-gated `_canView` + access-denied panel pattern: `/admin/brokers` (cap `manage_brokers`, designated+admin), `/admin/health` (cap `view_audit`, designated+admin+risk), `/admin/settings` (cap `manage_settings`, designated only), `/admin/research` (cap `view_lab`, designated+trader+risk+demo). Pre-fix each used `onMount` + hard `goto('/signin')` which raced `/whoami` and bounced legitimate non-admin viewers out before their role hydrated. Slice H established the pattern on audit/history/alerts; N closes the gap on every admin page that fetches data behind a capability check.
 - **N5** — `/admin/+page.svelte` palette: 9 callsites of `text-green-300` / `text-amber-300` / `text-orange-300` collapsed onto canonical `text-{green,amber}-400`. The orange family doesn't exist in the algo palette — the Suspended pill, Reinstate button, and orange-tinted backgrounds all moved to amber-400 (canonical "warning-not-red" tier).
 - **N6** — `/faq` close-button hover: `#dc2626` (algo-saturated red-600) → `#b85c3a` (soft terracotta). Algo reds on the cream public theme read as alarming; terracotta sits at the right warmth alongside the champagne + cream tokens.
 - **N7** — SimulatorPanel `text-amber-300` × 2 → `text-amber-400`.

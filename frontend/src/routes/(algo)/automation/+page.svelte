@@ -582,7 +582,7 @@
     <h1 class="page-title-chip">
       Automation
       {#if simActive}
-        <span class="ml-2 align-middle text-[0.6rem] px-1.5 py-0.5 rounded bg-[#fb7185]/20 text-[#fb7185] border border-[#fb7185]/40 font-mono">
+        <span class="ml-2 align-middle text-[0.6rem] px-1.5 py-0.5 rounded bg-[#4ade80]/20 text-[#4ade80] border border-[#4ade80]/40 font-mono">
           SIMULATOR EVENTS
         </span>
       {/if}
@@ -1178,7 +1178,7 @@
                   <button type="button"
                     onclick={(e) => { e.stopPropagation(); runInSim(agent); }}
                     title="Dry-fire this agent in the Simulator (bypasses schedule / cooldown / baseline)"
-                    class="text-[#fb7185] hover:underline">Run in Simulator</button>
+                    class="text-[#4ade80] hover:underline">Run in Simulator</button>
                   {:else}
                   <span title="Demo: sim disabled"
                     class="text-[#7e97b8] cursor-not-allowed opacity-50 select-none">Run in Simulator</span>

@@ -809,9 +809,9 @@
         {@const isCenter    = xt.sigma === 0}
         {@const absSigma    = xt.sigma != null ? Math.abs(xt.sigma) : null}
         {@const isMilestone = absSigma === 1 || absSigma === 2 || absSigma === 2.5}
-        {@const mColor      = absSigma === 1   ? '#34d399'
-                            : absSigma === 2   ? '#fcd34d'
-                            : absSigma === 2.5 ? '#fb7185'
+        {@const mColor      = absSigma === 1   ? '#4ade80'
+                            : absSigma === 2   ? '#fbbf24'
+                            : absSigma === 2.5 ? '#f87171'
                             : null}
         {#if !isCenter}
           {#if isMilestone}

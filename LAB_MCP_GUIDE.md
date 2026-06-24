@@ -99,7 +99,7 @@ keywords.
 ### What the LLM in Claude Code can and cannot do
 
 CAN (with no operator approval mid-session):
-- Call any of the 16 **read** MCP tools
+- Call any of the 17 **read** MCP tools
 - Call the 2 **persist** tools (`save_research_thread`,
   `save_agent_draft` — drafts always land inactive + paper-mode)
 
