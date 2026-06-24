@@ -3,8 +3,8 @@ Audit log read endpoint.
 
 GET /api/admin/audit — paginated query of the audit_log table with
 filters by actor / action / target / date range. Gated by the
-`view_audit` capability (admin / risk / ops). Writes happen entirely
-via the AuditMiddleware; this controller is read-only.
+`view_audit` capability (designated / risk / admin). Writes happen
+entirely via the AuditMiddleware; this controller is read-only.
 """
 
 from __future__ import annotations

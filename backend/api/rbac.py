@@ -31,13 +31,10 @@ vocabulary so there's no semantic ambiguity:
 
 Plus the synthetic `demo` role (anonymous prod visitor, never stored).
 
-This intentionally REPLACES the prior `admin / ops / observer`
-canonical names. The old labels conflated semantics for the
-operator (canonical `admin` meant firm owner; legacy `admin` meant
-operational support; partner meant the same as observer). The new
-labels are operator-domain words — designated == designated partner,
-admin == operational admin, partner == LP partner — so the role on
-a User row reads as exactly what the operator intends.
+The names are operator-domain words throughout: designated == designated
+partner (firm owner), admin == operational admin (broker / NAV / health),
+partner == LP partner (read-only). No semantic translation step between
+code and the firm's mental model.
 
 Adding a new capability
 -----------------------
@@ -64,30 +61,16 @@ VALID_ROLES = (*ASSIGNABLE_ROLES, "demo")
 
 
 def normalise_role(role: str | None) -> str:
-    """Map any legacy alias to its canonical form. Unknown / None / empty
+    """Sanity check + lowercase the role string. Unknown / None / empty
     values collapse to 'partner' (the safest default — read-only LP
-    view). Called by the capability resolver so the matrix only has
-    to enumerate canonical roles.
-
-    Defensive fallbacks (for in-flight JWTs minted during a brief
-    canonical-names era that has since been replaced — see CLAUDE.md
-    for the role rename history):
-
-      * `ops`      → `admin`   (operational support tier)
-      * `observer` → `partner` (LP read-only)
-
-    These are runtime safety nets only; the `init_db` migration
-    renames the DB column values + bumps `token_version` so the
-    stale JWT invalidates on the next request. After the migration
-    settles, the legacy values never appear at runtime.
+    view). All five canonical roles are operator-domain words; there
+    are no legacy aliases to map any more (the role-rename migration
+    in Jun 2026 settled the DB on the canonical values and bumped
+    token_version on every affected row to invalidate stale JWTs).
     """
     if not role:
         return "partner"
     r = str(role).strip().lower()
-    if r == "ops":
-        return "admin"             # legacy: operational tier
-    if r == "observer":
-        return "partner"           # legacy: LP read-only
     if r in VALID_ROLES:
         return r
     return "partner"               # unknown role → safest default
@@ -210,10 +193,10 @@ def resolve_role_from_connection(connection) -> str:
 # can role X act?". The two compose: cap_guard rejects before the route
 # runs; account_scope_filter narrows the result set.
 #
-# Default policy per role (slice 5):
-#   admin / risk / ops / observer / demo   → ALL (firm-wide visibility)
-#   trader                                  → only User.assigned_accounts
-#                                             (empty = NONE — fail-safe)
+# Default policy per role:
+#   designated / risk / admin / partner / demo → ALL (firm-wide visibility)
+#   trader                                      → only User.assigned_accounts
+#                                                 (empty = NONE — fail-safe)
 #
 # A trader with an empty assigned_accounts list sees zero positions /
 # holdings / funds. That's the intended initial state for a newly-

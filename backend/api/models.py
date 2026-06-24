@@ -27,11 +27,11 @@ class User(Base):
     account_id: Mapped[str]     = mapped_column(String(16), unique=True, nullable=False, default=_gen_account_id, index=True)
     username: Mapped[str]       = mapped_column(String(64), unique=True, nullable=False, index=True)
     password_hash: Mapped[str]  = mapped_column(Text, nullable=False)
-    # Role tiers — single source of truth for privilege. Canonical
-    # set: admin / trader / risk / ops / observer. 'designated' is
-    # the legacy super-admin tier kept for the terminate / promote
-    # path. 'partner' is the canonical LP role; 'observer' is a legacy alias (init_db
-    # migrates these on startup).
+    # Role tiers — single source of truth for privilege. Canonical 5:
+    # designated / trader / risk / admin / partner (+ demo synthetic).
+    # 'designated' = firm owner; 'admin' = operational support;
+    # 'partner' = LP read-only (default for self-registration).
+    # See backend/api/rbac.py for the cap matrix.
     role: Mapped[str]           = mapped_column(String(16), nullable=False, default="partner")
     display_name: Mapped[str]   = mapped_column(String(128), nullable=False, default="")
     email: Mapped[Optional[str]]       = mapped_column(String(128), nullable=True)
@@ -104,10 +104,10 @@ class User(Base):
     # Per-user horizontal scope. Sits ON TOP of the capability matrix:
     # the cap decides "can role X do action Y?", these decide "on which
     # accounts / strategies?". Empty list means "no explicit scope" —
-    # admin / risk / ops / observer / demo treat empty as ALL (those
-    # roles are firm-wide by design); trader treats empty as NONE
-    # (fail-safe — a freshly-assigned trader sees nothing until an
-    # admin grants accounts explicitly).
+    # designated / risk / admin / partner / demo treat empty as ALL
+    # (those roles are firm-wide by design); trader treats empty as
+    # NONE (fail-safe — a freshly-assigned trader sees nothing until
+    # designated grants accounts explicitly).
     #
     # Stored as JSONB rather than ARRAY for two reasons:
     #   1) avoids an Alembic-style migration in a non-Alembic codebase
@@ -123,7 +123,7 @@ class User(Base):
     )
     # SEBI Cat-III compliance flag. Orthogonal to `role` — the legal
     # designation of compliance officer is a real-world title that can
-    # overlap with any role (often risk or ops, sometimes admin). The
+    # overlap with any role (often risk or admin, sometimes designated). The
     # flag surfaces in the audit UI + future operator-attestation forms
     # without complicating the role enum. NULL = not designated.
     compliance_designated: Mapped[bool] = mapped_column(

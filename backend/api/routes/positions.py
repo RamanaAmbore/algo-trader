@@ -422,12 +422,12 @@ class PositionsController(Controller):
             if fresh:
                 invalidate("positions")
             resp = await get_or_fetch("positions", _fetch, ttl_seconds=_TTL)
-            # Horizontal scoping (slice 5). Trader-role callers see
-            # only positions on their `assigned_accounts`; firm-wide
-            # roles (admin / risk / ops / observer / demo) see every
+            # Horizontal scoping. Trader-role callers see only
+            # positions on their `assigned_accounts`; firm-wide roles
+            # (designated / risk / admin / partner / demo) see every
             # account. Empty assigned-list for a trader = empty
             # result (fail-safe — a freshly-onboarded trader sees
-            # nothing until admin grants accounts).
+            # nothing until designated grants accounts).
             #
             # MUST run BEFORE masking — once accounts get masked to
             # `ZG####` the trader's assigned-account match can't run.

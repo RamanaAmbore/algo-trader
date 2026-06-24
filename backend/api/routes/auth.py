@@ -527,8 +527,8 @@ class AuthController(Controller):
                 username=data.username,
                 password_hash=hash_password(data.password),
                 # Self-registered users land as 'partner' — read-only
-                # aggregate view. Admin promotes them to a real role
-                # (trader/risk/ops/admin) after approval.
+                # aggregate view. Designated promotes them to a real role
+                # (trader/risk/admin) after approval.
                 role="partner",
                 display_name=data.display_name or data.username,
                 email=data.email,

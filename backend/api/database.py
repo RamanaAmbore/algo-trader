@@ -240,7 +240,7 @@ async def init_db() -> None:
             # by broker-account code (assigned_accounts) and strategy
             # id (assigned_strategies). Empty list = no explicit scope;
             # the role's scope policy decides whether that means ALL or
-            # NONE (admin/risk/ops/observer/demo → all, trader → none).
+            # NONE (designated/risk/admin/partner/demo → all, trader → none).
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_accounts JSONB "
             "NOT NULL DEFAULT '[]'::jsonb",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS assigned_strategies JSONB "
@@ -514,122 +514,6 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS ix_agent_events_simmode_agent_ts "
             "ON agent_events (sim_mode, agent_id, timestamp DESC)"
         ))
-        # ── Role rename to operator-domain names (Jun 2026) ──────────────
-        # Final 5-role set uses operator-domain words throughout:
-        #     designated  trader  risk  admin  partner    (+ demo synthetic)
-        #
-        # This REPLACES the prior canonical-names attempt (admin / ops /
-        # observer) which conflated operator semantics — `admin`
-        # ambiguously meant both firm owner AND operational tier; the
-        # operator's existing DB rows held `designated` for the firm
-        # owner and `admin` for operational support. The rename brings
-        # the code into alignment with the operator's vocabulary so
-        # there's no more semantic translation step.
-        #
-        # Migration mechanics:
-        #   * Idempotent UPDATEs — only act on rows with the stale
-        #     canonical value (`ops` / `observer`). After first run
-        #     there are no such rows so subsequent boots are no-ops.
-        #   * Two-step ordered: observer→partner runs in parallel
-        #     (independent of admin/ops swap); admin/ops needs the
-        #     swap-through-tmp pattern to avoid catching just-renamed
-        #     rows. See body comments for the details.
-        #   * token_version bumped on every affected row so existing
-        #     JWTs invalidate on the next request via jwt_guard's tv
-        #     check; users re-login and get a fresh JWT.
-        # Bump users.role column to VARCHAR(32) BEFORE the migration —
-        # the original VARCHAR(16) was too tight: the previous boot's
-        # transient marker `'designated_tmp_xfer'` is 19 chars and got
-        # rejected by Postgres ("value too long for type character
-        # varying(16)") which rolled back the entire init_db transaction
-        # and took the app down with a Cloudflare host error. VARCHAR(32)
-        # is comfortable for any legitimate role + future markers.
-        # Idempotent: no-op when the column is already wider.
-        try:
-            await conn.execute(text(
-                "ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(32)"
-            ))
-        except Exception as _alter_err:  # noqa: BLE001
-            logger.warning(
-                f"init_db: users.role column type bump skipped: {_alter_err}"
-            )
-        # Bump daily_book.exchange column to VARCHAR(16). The original
-        # VARCHAR(8) was too tight for the funds-row capture path which
-        # writes the segment label uppercased — 'COMMODITY' is 9 chars
-        # and got rejected by Postgres, crashing the daily snapshot for
-        # every account that hit the funds capture step. Same class of
-        # bug as the role-column one above. Idempotent.
-        try:
-            await conn.execute(text(
-                "ALTER TABLE daily_book ALTER COLUMN exchange TYPE VARCHAR(16)"
-            ))
-        except Exception as _alter_err:  # noqa: BLE001
-            logger.warning(
-                f"init_db: daily_book.exchange column type bump skipped: {_alter_err}"
-            )
-        # Wrapped in try/except so a migration hiccup doesn't crash
-        # init_db and take the whole server down. Best-effort: if it
-        # fails we log ERROR and continue; the operator can hand-run
-        # the SQL on the server. The role-rename migration is data-
-        # transformative — getting it wrong is worse than skipping it.
-        # Transient marker `__tmp_role__` fits in any reasonable role
-        # column width (12 chars; would have fit even the original 16).
-        try:
-            # Step 1 — observer → partner (legacy LP role).
-            await conn.execute(text(
-                "UPDATE users SET role='partner', "
-                "token_version=COALESCE(token_version,1)+1 "
-                "WHERE role='observer'"
-            ))
-            # Step 2 — admin (was firm-owner from prior canonical naming)
-            # → designated, and ops (was operational from prior canonical
-            # naming) → admin. This is a CONDITIONAL undo of the previous
-            # role remap — only acts if any 'ops' rows exist (the marker
-            # that the previous remap ran). Without this guard we'd undo
-            # legitimate post-rename admin assignments.
-            prior_remap_landed = await conn.execute(text(
-                "SELECT EXISTS(SELECT 1 FROM users WHERE role='ops')"
-            ))
-            if prior_remap_landed.scalar():
-                # Swap-through-tmp to avoid the second UPDATE catching
-                # the rows the first UPDATE just renamed. `__tmp_role__`
-                # is a transient marker — no UI shows it, no cap matches it.
-                await conn.execute(text(
-                    "UPDATE users SET role='__tmp_role__', "
-                    "token_version=COALESCE(token_version,1)+1 "
-                    "WHERE role='admin'"
-                ))
-                await conn.execute(text(
-                    "UPDATE users SET role='admin', "
-                    "token_version=COALESCE(token_version,1)+1 "
-                    "WHERE role='ops'"
-                ))
-                await conn.execute(text(
-                    "UPDATE users SET role='designated' "
-                    "WHERE role='__tmp_role__'"
-                ))
-                logger.info(
-                    "init_db: role rename undo applied — 'ops' → 'admin', "
-                    "prior 'admin' (was firm-owner) → 'designated'. "
-                    "Affected users must re-login (token_version bumped)."
-                )
-            # Cleanup: any users still parked at the transient markers
-            # from CRASHED previous boots get promoted to 'designated'.
-            # The markers are invisible to caps + the UI; without this
-            # sweep, those users would 403 on every cap-gated request.
-            # Covers both the new short marker AND the previous broken
-            # 19-char one (which only landed on rows if the column was
-            # ever widened mid-flight; defensive sweep regardless).
-            await conn.execute(text(
-                "UPDATE users SET role='designated', "
-                "token_version=COALESCE(token_version,1)+1 "
-                "WHERE role IN ('__tmp_role__', 'designated_tmp_xfer')"
-            ))
-        except Exception as _role_mig_err:  # noqa: BLE001
-            logger.error(
-                f"init_db: role rename migration FAILED: {_role_mig_err}. "
-                f"Server will continue; manual SQL may be required."
-            )
         # Feature: basket orders + auto profit-target (June 2026).
         # Four new columns on algo_orders; all nullable / defaulted so
         # existing rows remain valid without any data migration.

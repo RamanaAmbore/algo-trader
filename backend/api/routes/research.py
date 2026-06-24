@@ -581,9 +581,9 @@ class ResearchController(Controller):
     # includes demo so the showcase tour's Lab step can populate a
     # real page (threads + drafts list, which carry operator research
     # notes — not sensitive orders). The audit-tab endpoint
-    # tightens to `view_audit` (admin/risk/ops only; demo excluded).
-    # Mutations use `manage_lab_threads` (admin/trader). MCP write
-    # actions tighten to `use_mcp_tools` (admin/trader) — already
+    # tightens to `view_audit` (designated/risk/admin only; demo excluded).
+    # Mutations use `manage_lab_threads` (designated/trader). MCP write
+    # actions tighten to `use_mcp_tools` (designated/trader) — already
     # gated by confirm-token besides the cap check.
 
     @get("/threads", guards=[cap_guard("view_lab")])

@@ -29,19 +29,14 @@ export const ASSIGNABLE_ROLES = /** @type {const} */ ([
   'designated', 'trader', 'risk', 'admin', 'partner',
 ]);
 
-/** Legacy aliases — pre-rename canonical names. Defensive for in-flight
- *  JWTs minted during the brief admin/ops/observer era. After the
- *  init_db migration settles, these never appear at runtime. */
-const LEGACY_MAP = {
-  ops:      'admin',
-  observer: 'partner',
-};
-
+/** Sanity check + lowercase the role string. All five canonical roles
+ *  are operator-domain words; there are no legacy aliases to map any
+ *  more — the role-rename migration (Jun 2026) settled the DB on the
+ *  canonical values and bumped token_version on every affected row to
+ *  invalidate stale JWTs. */
 export function normaliseRole(/** @type {string | null | undefined} */ role) {
   if (!role) return 'partner';
-  const r = String(role).trim().toLowerCase();
-  if (LEGACY_MAP[r]) return LEGACY_MAP[r];
-  return r;
+  return String(role).trim().toLowerCase();
 }
 
 /** Fallback capability map used while /whoami is in flight. Sync this

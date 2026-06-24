@@ -343,9 +343,10 @@ class AdminController(Controller):
     async def create_user(self, data: CreateUserRequest, request: Request) -> dict:
         """Admin creates a user (pre-approved). Share password via other channel.
 
-        Capital fields (contribution, share_pct) and admin/designated
-        role assignment are designated-only. Admin can create observer
-        rows with role='observer' + share_pct=0 + contribution=0, but
+        Capital fields (contribution, share_pct) and elevated role
+        assignment (designated / trader / risk / admin) are
+        designated-only. Operational admin can create partner rows
+        (LP read-only) with share_pct=0 + contribution=0, but
         promoting them or seeding a stake requires designated.
         """
         from backend.api.routes.auth import hash_password
@@ -358,11 +359,11 @@ class AdminController(Controller):
         # forward-compat for old client builds that still send share_pct.
         actor_role = (getattr(request.state, "token_payload", None) or {}).get("role", "")
         is_designated = (actor_role == "designated")
-        # Validate the requested role against the RBAC catalog. Designated
-        # actors can assign any non-demo role (full RBAC catalog: 5 new
-        # roles + 3 legacy aliases). Non-designated actors fall through
-        # to 'partner' for any privileged choice (admin / designated /
-        # trader / risk / ops) and pass observer/partner verbatim.
+        # Validate the requested role against the RBAC catalog.
+        # Designated actors can assign any of the 5 canonical roles
+        # (designated / trader / risk / admin / partner). Non-designated
+        # actors fall through to 'partner' for any privileged choice
+        # (designated / trader / risk / admin) and pass 'partner' verbatim.
         from backend.api.rbac import VALID_ROLES
         requested = (data.role or "partner").strip().lower()
         if requested not in VALID_ROLES or requested == 'demo':
@@ -486,12 +487,9 @@ class AdminController(Controller):
                 if val is None:
                     continue
                 if field == 'role':
-                    # Privilege-changing field — designated only. Accepts
-                    # the full RBAC role set: 5 new (admin/trader/risk/
-                    # ops/observer) + 3 legacy aliases (partner ≡ observer,
-                    # designated = super-admin). Backend's rbac.normalise_role
-                    # collapses legacy on read, so the DB row reflects
-                    # whatever the operator chose verbatim.
+                    # Privilege-changing field — designated only.
+                    # Accepts the 5 canonical roles: designated /
+                    # trader / risk / admin / partner.
                     if not allowed_role_change:
                         continue
                     from backend.api.rbac import VALID_ROLES

@@ -579,14 +579,12 @@
         <div><span class="field-label">Full Name</span><input bind:value={createForm.display_name} class="field-input" /></div>
         <div><span class="field-label">Email</span><input type="email" bind:value={createForm.email} class="field-input" /></div>
         <div><span class="field-label">Phone</span><input bind:value={createForm.phone} class="field-input" /></div>
-        <!-- Role picker — admin can only create partners. Designated
-             can create any role from the full 8-option list (5 new
-             roles from the RBAC migration + 3 legacy aliases kept for
-             back-compat). Backend (admin.py::create_user) coerces
-             non-designated attempts to 'partner' anyway, but the UI
+        <!-- Role picker — operational admin can only create partners.
+             Designated (firm owner) can pick any of the 5 canonical
+             roles. Backend (admin.py::create_user) coerces non-
+             designated attempts to 'partner' anyway, but the UI
              hides the elevated choices to match the mental model.
-             New roles: trader, risk, ops, observer.
-             Legacy: partner (≡ observer), admin, designated. -->
+             Canonical roles: designated / trader / risk / admin / partner. -->
         <div><span class="field-label">Role</span>
           {#if $authStore.user?.role === 'designated'}
             <Select ariaLabel="Role" bind:value={createForm.role}
