@@ -108,6 +108,14 @@
     border: 1px solid #ddd8ce;
     box-shadow: 0 1px 4px rgba(0,0,0,0.07);
     overflow: hidden;
+    /* Constrain card width on desktop so the stat-strip + prose + CTA row
+       all read as ONE column rather than the prose getting visually
+       isolated at the centre with large gutters either side. 760px is
+       just over 80ch at the prose font-size, which matches the canonical
+       reading-width comfortable range. Mobile keeps the full-width
+       behaviour via the auto margins. */
+    max-width: 760px;
+    margin: 0 auto;
   }
 
   /* ── Stat strip — warm tint, cream border, champagne divider ───────────── */
@@ -183,9 +191,13 @@
     color: #1e3050;
     line-height: 1.75;
     margin-bottom: 1.1rem;
-    max-width: 65ch;
-    margin-left: auto;
-    margin-right: auto;
+    /* No max-width override: the card itself is capped at 760px on
+       desktop (and full-width on mobile), so the paragraph naturally
+       fills the available card width minus padding. Pre-fix the
+       65ch + auto-margins constraint left big visible gutters
+       INSIDE a full-width card on desktop — the stat-strip and CTA
+       row filled edge-to-edge while the prose was centred at half-
+       width. Looked visually broken. */
   }
   /* ── CTA row ───────────────────────────────────────────────────────────── */
   .cta-row {
