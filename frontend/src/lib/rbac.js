@@ -26,17 +26,19 @@ import { derived, writable } from 'svelte/store';
 
 /** Canonical assignable roles (matches backend ASSIGNABLE_ROLES). */
 export const ASSIGNABLE_ROLES = /** @type {const} */ ([
-  'admin', 'trader', 'risk', 'ops', 'observer',
+  'designated', 'trader', 'risk', 'admin', 'partner',
 ]);
 
-/** Legacy role aliases — map to canonical. Mirrors normalise_role() server-side. */
+/** Legacy aliases — pre-rename canonical names. Defensive for in-flight
+ *  JWTs minted during the brief admin/ops/observer era. After the
+ *  init_db migration settles, these never appear at runtime. */
 const LEGACY_MAP = {
-  partner:    'observer',
-  designated: 'admin',
+  ops:      'admin',
+  observer: 'partner',
 };
 
 export function normaliseRole(/** @type {string | null | undefined} */ role) {
-  if (!role) return 'observer';
+  if (!role) return 'partner';
   const r = String(role).trim().toLowerCase();
   if (LEGACY_MAP[r]) return LEGACY_MAP[r];
   return r;
@@ -48,51 +50,51 @@ export function normaliseRole(/** @type {string | null | undefined} */ role) {
  */
 const FALLBACK_CAPS = /** @type {Record<string, ReadonlyArray<string>>} */ ({
   // reads
-  view_aggregate:           ['admin', 'trader', 'risk', 'ops', 'observer', 'demo'],
-  view_all_books:           ['admin', 'trader', 'risk', 'ops', 'demo'],
-  view_derivatives:         ['admin', 'trader', 'risk', 'demo'],
-  view_strategies_catalog:  ['admin', 'trader', 'risk', 'observer', 'demo'],
-  view_agents_catalog:      ['admin', 'trader', 'risk', 'demo'],
-  view_settings_readonly:   ['admin', 'risk', 'ops', 'demo'],
-  view_audit:               ['admin', 'risk', 'ops'],
-  view_users:               ['admin'],
-  view_brokers:             ['admin', 'ops', 'risk', 'demo'],
-  view_lab:                 ['admin', 'trader', 'risk', 'demo'],
-  view_pulse:               ['admin', 'trader', 'risk', 'ops', 'demo'],
-  view_charts:              ['admin', 'trader', 'risk', 'ops', 'demo'],
-  view_market_summary:      ['admin', 'trader', 'risk', 'ops', 'observer', 'demo'],
+  view_aggregate:           ['designated', 'trader', 'risk', 'admin', 'partner', 'demo'],
+  view_all_books:           ['designated', 'trader', 'risk', 'admin', 'demo'],
+  view_derivatives:         ['designated', 'trader', 'risk', 'demo'],
+  view_strategies_catalog:  ['designated', 'trader', 'risk', 'partner', 'demo'],
+  view_agents_catalog:      ['designated', 'trader', 'risk', 'demo'],
+  view_settings_readonly:   ['designated', 'risk', 'admin', 'demo'],
+  view_audit:               ['designated', 'risk', 'admin'],
+  view_users:               ['designated'],
+  view_brokers:             ['designated', 'admin', 'risk', 'demo'],
+  view_lab:                 ['designated', 'trader', 'risk', 'demo'],
+  view_pulse:               ['designated', 'trader', 'risk', 'admin', 'demo'],
+  view_charts:              ['designated', 'trader', 'risk', 'admin', 'demo'],
+  view_market_summary:      ['designated', 'trader', 'risk', 'admin', 'partner', 'demo'],
   // trading
-  place_order:              ['admin', 'trader'],
-  modify_order:             ['admin', 'trader'],
-  cancel_order:             ['admin', 'trader'],
+  place_order:              ['designated', 'trader'],
+  modify_order:             ['designated', 'trader'],
+  cancel_order:             ['designated', 'trader'],
   // strategies + agents
-  view_strategies:          ['admin', 'trader', 'risk', 'ops', 'observer', 'demo'],
-  manage_own_strategies:    ['admin', 'trader'],
-  reassign_strategies:      ['admin'],
-  manage_own_agents:        ['admin', 'trader'],
-  disable_any_agent:        ['admin', 'risk'],
-  manage_grammar_tokens:    ['admin'],
+  view_strategies:          ['designated', 'trader', 'risk', 'admin', 'partner', 'demo'],
+  manage_own_strategies:    ['designated', 'trader'],
+  reassign_strategies:      ['designated'],
+  manage_own_agents:        ['designated', 'trader'],
+  disable_any_agent:        ['designated', 'risk'],
+  manage_grammar_tokens:    ['designated'],
   // risk / settings / brokers / users
-  adjust_risk_floors:       ['admin', 'risk'],
-  manage_settings:          ['admin'],
-  view_hedge_proxies:       ['admin', 'trader', 'risk', 'demo'],
-  manage_hedge_proxies:     ['admin', 'trader'],
-  manage_brokers:           ['admin', 'ops'],
-  test_broker_connection:   ['admin', 'ops'],
-  manage_users:             ['admin'],
-  approve_users:            ['admin'],
-  manage_admins:            ['admin'],
-  impersonate:              ['admin'],
-  manage_investor_tokens:   ['admin'],
+  adjust_risk_floors:       ['designated', 'risk'],
+  manage_settings:          ['designated'],
+  view_hedge_proxies:       ['designated', 'trader', 'risk', 'demo'],
+  manage_hedge_proxies:     ['designated', 'trader'],
+  manage_brokers:           ['designated', 'admin'],
+  test_broker_connection:   ['designated', 'admin'],
+  manage_users:             ['designated'],
+  approve_users:            ['designated'],
+  manage_admins:            ['designated'],
+  impersonate:              ['designated'],
+  manage_investor_tokens:   ['designated'],
   // sim / replay / lab
-  run_simulator:            ['admin', 'trader', 'risk', 'demo'],
-  run_replay:               ['admin', 'trader', 'risk', 'demo'],
-  manage_lab_threads:       ['admin', 'trader'],
-  mint_mcp_token:           ['admin'],
-  export_reports:           ['admin', 'trader', 'risk', 'ops', 'observer'],
-  view_nav:                 ['admin', 'trader', 'risk', 'ops', 'observer', 'demo'],
-  trigger_nav_compute:      ['admin', 'ops'],
-  use_mcp_tools:            ['admin', 'trader'],
+  run_simulator:            ['designated', 'trader', 'risk', 'demo'],
+  run_replay:               ['designated', 'trader', 'risk', 'demo'],
+  manage_lab_threads:       ['designated', 'trader'],
+  mint_mcp_token:           ['designated'],
+  export_reports:           ['designated', 'trader', 'risk', 'admin', 'partner'],
+  view_nav:                 ['designated', 'trader', 'risk', 'admin', 'partner', 'demo'],
+  trigger_nav_compute:      ['designated', 'admin'],
+  use_mcp_tools:            ['designated', 'trader'],
 });
 
 function fallbackHasCap(/** @type {string} */ role, /** @type {string} */ cap) {
@@ -105,13 +107,13 @@ function fallbackHasCap(/** @type {string} */ role, /** @type {string} */ cap) {
 // ── Reactive stores ─────────────────────────────────────────────────────
 
 /** Current effective role (normalised). Bootstrap = 'demo' until /whoami
- *  responds; on dev / non-prod the bootstrap is 'observer' so dev pages
+ *  responds; on dev / non-prod the bootstrap is 'partner' so dev pages
  *  that gate off caps don't show as "demo mode" before auth resolves. */
 const _bootRole = (typeof window !== 'undefined'
   && (window.location?.hostname?.startsWith('dev.')
       || window.location?.hostname === 'localhost'
       || window.location?.hostname === '127.0.0.1'))
-  ? 'observer'
+  ? 'partner'
   : 'demo';
 
 export const userRole = writable(/** @type {string} */ (_bootRole));

@@ -25,8 +25,9 @@
   // Is the visitor authenticated?
   const isLoggedIn  = $derived(!!_auth.token && !!_auth.user);
   const role        = $derived(_auth.user?.role ?? '');
-  // Roles that can see firm aggregate
-  const canSeeFirm  = $derived(role === 'admin' || role === 'designated');
+  // Firm-aggregate NAV view — designated (firm owner) + admin (operational
+  // support) only. Partner sees per-LP slice via /api/nav/me.
+  const canSeeFirm  = $derived(role === 'designated' || role === 'admin');
 
   /** @type {'loading'|'ready'|'hidden'} */
   let status      = $state('loading');

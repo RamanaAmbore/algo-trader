@@ -85,12 +85,13 @@
   let _ctxAction = $state(null);
   /** @type {string} */ let _ctxSym  = $state('');
   /** @type {string} */ let _ctxExch = $state('');
-  // Effective mask flag — admin/designated never see masked codes,
-  // regardless of what the parent passed. The prop still wins for
-  // partner / demo (the default `true`) and for any future caller
-  // that wants to force-mask even an admin session.
+  // Effective mask flag — designated (firm owner) and admin
+  // (operational) never see masked codes, regardless of what the
+  // parent passed. The prop still wins for partner / demo (default
+  // `true`) and for any future caller that wants to force-mask even
+  // an admin-tier session.
   const maskAccounts = $derived(
-    ($authStore.user?.role === 'admin' || $authStore.user?.role === 'designated')
+    ($authStore.user?.role === 'designated' || $authStore.user?.role === 'admin')
       ? false
       : maskAccountsProp
   );
@@ -136,7 +137,11 @@
   });
 
   async function openOrderTicket(row, source) {
-    if (!allowOrders || $authStore.user?.role !== 'admin') return;
+    // Trading rights — designated (firm owner) + trader can place orders.
+    // Operational admin / partner cannot. Match the place_order cap.
+    if (!allowOrders) return;
+    const role = $authStore.user?.role;
+    if (role !== 'designated' && role !== 'trader') return;
     if (!row?.tradingsymbol) return;
     // Wait for the instruments cache to settle before reading lot
     // size. The cache is normally instant from IndexedDB; this await

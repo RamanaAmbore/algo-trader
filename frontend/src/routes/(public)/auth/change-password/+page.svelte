@@ -34,8 +34,14 @@
         role:         data.role,
         display_name: data.display_name,
       });
-      const isAdmin = data.role === 'admin' || data.role === 'designated';
-      goto(isAdmin ? '/dashboard' : '/performance');
+      // Route post-change based on tier: firm owner + operational tier
+      // land on the algo dashboard; trader gets dashboard too; everyone
+      // else (partner / LP) lands on /performance.
+      const isAdminTier = data.role === 'designated'
+                       || data.role === 'admin'
+                       || data.role === 'trader'
+                       || data.role === 'risk';
+      goto(isAdminTier ? '/dashboard' : '/performance');
     } catch (e) {
       error = e.message;
     } finally { loading = false; }

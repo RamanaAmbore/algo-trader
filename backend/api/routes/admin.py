@@ -373,7 +373,7 @@ class AdminController(Controller):
                     + ', '.join(r for r in VALID_ROLES if r != 'demo')
                 ),
             )
-        _PRIVILEGED = ("admin", "designated", "trader", "risk", "ops")
+        _PRIVILEGED = ("designated", "trader", "risk", "admin")
         eff_role         = requested if is_designated else (
             "partner" if requested in _PRIVILEGED else requested
         )

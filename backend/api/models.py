@@ -30,9 +30,9 @@ class User(Base):
     # Role tiers — single source of truth for privilege. Canonical
     # set: admin / trader / risk / ops / observer. 'designated' is
     # the legacy super-admin tier kept for the terminate / promote
-    # path. 'partner' is a legacy alias for 'observer' (init_db
+    # path. 'partner' is the canonical LP role; 'observer' is a legacy alias (init_db
     # migrates these on startup).
-    role: Mapped[str]           = mapped_column(String(16), nullable=False, default="observer")
+    role: Mapped[str]           = mapped_column(String(16), nullable=False, default="partner")
     display_name: Mapped[str]   = mapped_column(String(128), nullable=False, default="")
     email: Mapped[Optional[str]]       = mapped_column(String(128), nullable=True)
     phone: Mapped[Optional[str]]       = mapped_column(String(20), nullable=True)

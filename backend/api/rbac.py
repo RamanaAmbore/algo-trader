@@ -17,29 +17,27 @@ or new capability is one entry here, not 30 grep-and-replace edits.
 
 Roles
 -----
-Five canonical roles: admin, trader, risk, ops, observer. Plus two
-legacy aliases (`partner`, `designated`) kept as defensive
-normalisations for in-flight JWTs during the legacy-role remap
-window. Mapping:
+Five canonical roles, intentionally using ONLY the operator's domain
+vocabulary so there's no semantic ambiguity:
 
-    LEGACY        CANONICAL EQUIVALENT     RATIONALE
-    partner    →  observer                 both = read-only LP view
-    designated →  admin                    designated WAS the top tier
-                                           (firm owner); canonical
-                                           admin IS that role now.
-    admin (DB) →  ops  (via one-shot migration in init_db, not via
-                       normalise_role at runtime)
-                       Legacy `admin` was operational support
-                       (broker / NAV / health); canonical ops fits
-                       exactly. The remap is one-shot in init_db
-                       (guarded by presence of 'designated' rows)
-                       with token_version bump so existing JWTs
-                       invalidate immediately. After remap, value
-                       `admin` in DB means CANONICAL admin only.
+    designated  — firm owner / top tier. Full cap set.
+    trader      — hands-on trading. place/modify/cancel + own
+                  strategies + own agents + simulator.
+    risk        — risk oversight. read everything execution,
+                  adjust risk floors, kill any agent.
+    admin       — operational support. broker config + audit log +
+                  NAV compute + system health. No trading rights.
+    partner     — LP / investor. read-only aggregates + NAV + reports.
 
-DEMO is implicit — any request that resolves to `role == 'demo'` (set by
-`auth_or_demo_guard` for anonymous prod visitors) gets the demo cap set:
-broad read-only access for showcase / portfolio purposes.
+Plus the synthetic `demo` role (anonymous prod visitor, never stored).
+
+This intentionally REPLACES the prior `admin / ops / observer`
+canonical names. The old labels conflated semantics for the
+operator (canonical `admin` meant firm owner; legacy `admin` meant
+operational support; partner meant the same as observer). The new
+labels are operator-domain words — designated == designated partner,
+admin == operational admin, partner == LP partner — so the role on
+a User row reads as exactly what the operator intends.
 
 Adding a new capability
 -----------------------
@@ -58,45 +56,41 @@ from typing import Iterable
 # ── Role catalog ─────────────────────────────────────────────────────────
 
 #: Roles a new user can be assigned via /admin/users.  Excludes 'demo'
-#: (implicit, never stored) and 'partner' (legacy alias for observer —
-#: we still accept it on read for back-compat but UI surfaces show
-#: 'observer' as the canonical label).
-ASSIGNABLE_ROLES = ("admin", "trader", "risk", "ops", "observer")
+#: (implicit, never stored).
+ASSIGNABLE_ROLES = ("designated", "trader", "risk", "admin", "partner")
 
-#: Every role value that may appear on `User.role` or in a JWT payload,
-#: including legacy aliases. Used for validation when reading from DB
-#: or accepting a role update.
-VALID_ROLES = (*ASSIGNABLE_ROLES, "partner", "designated", "demo")
+#: Every role value that may appear on `User.role` or in a JWT payload.
+VALID_ROLES = (*ASSIGNABLE_ROLES, "demo")
 
 
 def normalise_role(role: str | None) -> str:
     """Map any legacy alias to its canonical form. Unknown / None / empty
-    values collapse to 'observer' (the safest default — read-only,
-    aggregate-only). Called by the capability resolver so the matrix
-    only has to enumerate canonical roles.
+    values collapse to 'partner' (the safest default — read-only LP
+    view). Called by the capability resolver so the matrix only has
+    to enumerate canonical roles.
 
-    Legacy notes:
-      * `partner` → `observer` (LP read-only access)
-      * `designated` → `admin` (firm owner / top tier — defensive
-        fallback for JWTs minted before the init_db role remap; the
-        DB column itself is upgraded to 'admin' on first boot post-
-        deploy).
-      * Legacy `admin` (operational tier) is NOT remapped here —
-        a remap would clash with canonical admin assignments.
-        Instead the init_db migration moves legacy 'admin' rows to
-        'ops' and bumps token_version so the stale JWT invalidates
-        on the next request; the user re-logs with role='ops'.
+    Defensive fallbacks (for in-flight JWTs minted during a brief
+    canonical-names era that has since been replaced — see CLAUDE.md
+    for the role rename history):
+
+      * `ops`      → `admin`   (operational support tier)
+      * `observer` → `partner` (LP read-only)
+
+    These are runtime safety nets only; the `init_db` migration
+    renames the DB column values + bumps `token_version` so the
+    stale JWT invalidates on the next request. After the migration
+    settles, the legacy values never appear at runtime.
     """
     if not role:
-        return "observer"
+        return "partner"
     r = str(role).strip().lower()
-    if r == "partner":
-        return "observer"          # legacy: LP → observer
-    if r == "designated":
-        return "admin"             # legacy: firm owner → admin
+    if r == "ops":
+        return "admin"             # legacy: operational tier
+    if r == "observer":
+        return "partner"           # legacy: LP read-only
     if r in VALID_ROLES:
         return r
-    return "observer"              # unknown role → safest default
+    return "partner"               # unknown role → safest default
 
 
 # ── Capability matrix ────────────────────────────────────────────────────
@@ -112,68 +106,68 @@ def normalise_role(role: str | None) -> str:
 
 CAPS: dict[str, frozenset[str]] = {
     # ── Reads ─────────────────────────────────────────────────────────
-    "view_aggregate":           frozenset({"admin", "trader", "risk", "ops", "observer", "demo"}),
-    "view_all_books":           frozenset({"admin", "trader", "risk", "ops", "demo"}),  # demo with masked accts
-    "view_derivatives":         frozenset({"admin", "trader", "risk", "demo"}),
-    "view_strategies_catalog":  frozenset({"admin", "trader", "risk", "observer", "demo"}),
-    "view_agents_catalog":      frozenset({"admin", "trader", "risk", "demo"}),
-    "view_settings_readonly":   frozenset({"admin", "risk", "ops", "demo"}),
-    "view_audit":               frozenset({"admin", "risk", "ops"}),
-    "view_users":               frozenset({"admin"}),
-    "view_brokers":             frozenset({"admin", "ops", "risk", "demo"}),  # demo with masked secrets
-    "view_lab":                 frozenset({"admin", "trader", "risk", "demo"}),
-    "view_pulse":               frozenset({"admin", "trader", "risk", "ops", "demo"}),
-    "view_charts":              frozenset({"admin", "trader", "risk", "ops", "demo"}),
-    "view_market_summary":      frozenset({"admin", "trader", "risk", "ops", "observer", "demo"}),
+    "view_aggregate":           frozenset({"designated", "trader", "risk", "admin", "partner", "demo"}),
+    "view_all_books":           frozenset({"designated", "trader", "risk", "admin", "demo"}),  # demo with masked accts
+    "view_derivatives":         frozenset({"designated", "trader", "risk", "demo"}),
+    "view_strategies_catalog":  frozenset({"designated", "trader", "risk", "partner", "demo"}),
+    "view_agents_catalog":      frozenset({"designated", "trader", "risk", "demo"}),
+    "view_settings_readonly":   frozenset({"designated", "risk", "admin", "demo"}),
+    "view_audit":               frozenset({"designated", "risk", "admin"}),
+    "view_users":               frozenset({"designated"}),
+    "view_brokers":             frozenset({"designated", "admin", "risk", "demo"}),  # demo with masked secrets
+    "view_lab":                 frozenset({"designated", "trader", "risk", "demo"}),
+    "view_pulse":               frozenset({"designated", "trader", "risk", "admin", "demo"}),
+    "view_charts":              frozenset({"designated", "trader", "risk", "admin", "demo"}),
+    "view_market_summary":      frozenset({"designated", "trader", "risk", "admin", "partner", "demo"}),
 
     # ── Trading ───────────────────────────────────────────────────────
-    "place_order":              frozenset({"admin", "trader"}),
-    "modify_order":             frozenset({"admin", "trader"}),
-    "cancel_order":             frozenset({"admin", "trader"}),
+    "place_order":              frozenset({"designated", "trader"}),
+    "modify_order":             frozenset({"designated", "trader"}),
+    "cancel_order":             frozenset({"designated", "trader"}),
 
     # ── Strategies ────────────────────────────────────────────────────
-    "view_strategies":          frozenset({"admin", "trader", "risk", "ops", "observer", "demo"}),
-    "manage_own_strategies":    frozenset({"admin", "trader"}),
-    "reassign_strategies":      frozenset({"admin"}),
+    "view_strategies":          frozenset({"designated", "trader", "risk", "admin", "partner", "demo"}),
+    "manage_own_strategies":    frozenset({"designated", "trader"}),
+    "reassign_strategies":      frozenset({"designated"}),
 
     # ── Agents ────────────────────────────────────────────────────────
-    "manage_own_agents":        frozenset({"admin", "trader"}),
-    "disable_any_agent":        frozenset({"admin", "risk"}),
-    "manage_grammar_tokens":    frozenset({"admin"}),
+    "manage_own_agents":        frozenset({"designated", "trader"}),
+    "disable_any_agent":        frozenset({"designated", "risk"}),
+    "manage_grammar_tokens":    frozenset({"designated"}),
 
     # ── Risk / settings ───────────────────────────────────────────────
-    "adjust_risk_floors":       frozenset({"admin", "risk"}),
-    "manage_settings":          frozenset({"admin"}),
-    "view_hedge_proxies":       frozenset({"admin", "trader", "risk", "demo"}),
-    "manage_hedge_proxies":     frozenset({"admin", "trader"}),
+    "adjust_risk_floors":       frozenset({"designated", "risk"}),
+    "manage_settings":          frozenset({"designated"}),
+    "view_hedge_proxies":       frozenset({"designated", "trader", "risk", "demo"}),
+    "manage_hedge_proxies":     frozenset({"designated", "trader"}),
 
     # ── Brokers ───────────────────────────────────────────────────────
-    "manage_brokers":           frozenset({"admin", "ops"}),
-    "test_broker_connection":   frozenset({"admin", "ops"}),
+    "manage_brokers":           frozenset({"designated", "admin"}),
+    "test_broker_connection":   frozenset({"designated", "admin"}),
 
     # ── Users ─────────────────────────────────────────────────────────
-    "manage_users":             frozenset({"admin"}),
-    "approve_users":            frozenset({"admin"}),
-    "manage_admins":            frozenset({"admin"}),  # legacy: was designated-only
-    "impersonate":              frozenset({"admin"}),
-    # Mint / revoke / list investor portal access tokens. Admin owns
-    # LP onboarding so this stays admin-only — ops + risk shouldn't
-    # be handing out portal URLs.
-    "manage_investor_tokens":   frozenset({"admin"}),
+    "manage_users":             frozenset({"designated"}),
+    "approve_users":            frozenset({"designated"}),
+    "manage_admins":            frozenset({"designated"}),  # firm-owner only
+    "impersonate":              frozenset({"designated"}),
+    # Mint / revoke / list investor portal access tokens. Firm owner
+    # owns LP onboarding — operational admin shouldn't be handing out
+    # portal URLs.
+    "manage_investor_tokens":   frozenset({"designated"}),
 
     # ── Sim / replay / lab ────────────────────────────────────────────
-    "run_simulator":            frozenset({"admin", "trader", "risk", "demo"}),  # demo session-only
-    "run_replay":               frozenset({"admin", "trader", "risk", "demo"}),
-    "manage_lab_threads":       frozenset({"admin", "trader"}),
-    "mint_mcp_token":           frozenset({"admin"}),
+    "run_simulator":            frozenset({"designated", "trader", "risk", "demo"}),  # demo session-only
+    "run_replay":               frozenset({"designated", "trader", "risk", "demo"}),
+    "manage_lab_threads":       frozenset({"designated", "trader"}),
+    "mint_mcp_token":           frozenset({"designated"}),
 
     # ── Reports / export ──────────────────────────────────────────────
-    "export_reports":           frozenset({"admin", "trader", "risk", "ops", "observer"}),
-    "view_nav":                 frozenset({"admin", "trader", "risk", "ops", "observer", "demo"}),
-    "trigger_nav_compute":      frozenset({"admin", "ops"}),
+    "export_reports":           frozenset({"designated", "trader", "risk", "admin", "partner"}),
+    "view_nav":                 frozenset({"designated", "trader", "risk", "admin", "partner", "demo"}),
+    "trigger_nav_compute":      frozenset({"designated", "admin"}),
 
     # ── Lab / MCP ────────────────────────────────────────────────────
-    "use_mcp_tools":            frozenset({"admin", "trader"}),
+    "use_mcp_tools":            frozenset({"designated", "trader"}),
 }
 
 
@@ -229,7 +223,7 @@ def resolve_role_from_connection(connection) -> str:
 #: list contents. Trader is the only role that respects assigned_*;
 #: all others see everything (subject to the cap matrix's vertical
 #: gates).
-_FIRM_WIDE_ROLES = frozenset({"admin", "risk", "ops", "observer", "demo"})
+_FIRM_WIDE_ROLES = frozenset({"designated", "risk", "admin", "partner", "demo"})
 
 
 def accounts_in_scope(role: str | None, assigned: list[str] | None,
@@ -333,4 +327,4 @@ def export_role_to_caps() -> dict[str, list[str]]:
     once from the /auth/me endpoint so the SPA doesn't have to mirror
     the matrix by hand."""
     return {role: caps_for_role(role)
-            for role in (*ASSIGNABLE_ROLES, "demo", "partner", "designated")}
+            for role in (*ASSIGNABLE_ROLES, "demo")}

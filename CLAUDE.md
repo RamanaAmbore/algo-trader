@@ -2504,25 +2504,35 @@ All three use `guards=[]` and `_process_broker_postback` (or inline equivalent f
 
 **What this slice closes**: orders.py is now uniform on `asyncio.create_task(...)` (no aliases). nav.py docstring matches reality. Audit log distinguishes expired orders from fills. Groww holdings + backfill work the same as Dhan. Dhan funds_ledger code is unambiguous. None of these change correctness; they make the surrounding code easier to understand and harder to misread.
 
-**Legacy role remap** (Jun 2026, post slice-P operator request): one-shot DB migration in `init_db` renames `users.role` values so the canonical 5-role system stops conflating legacy semantics with new ones.
+**Final role surface** (Jun 2026, post canonical-rename): the 5-role system uses operator-domain vocabulary throughout. No more semantic translation between code and the firm's mental model.
 
-| Pre-migration `users.role` | Meant | Post-migration `users.role` | Has caps |
-|---|---|---|---|
-| `designated` | Firm owner (top tier) | `admin` | manage_settings, manage_users, manage_admins, … (full owner set) |
-| `admin` | Operational admin (legacy) | `ops` | manage_brokers, view_audit, trigger_nav_compute, view_health |
-| `partner` | LP (legacy, never written by UI) | `observer` | view_aggregate, view_nav, export_reports |
+| Role | Meaning | Caps |
+|---|---|---|
+| `designated` | Firm owner / top tier | manage_settings, manage_users, manage_admins, impersonate, manage_investor_tokens, mint_mcp_token, place_order, view_audit, view_users, manage_brokers, … (full owner set) |
+| `trader` | Hands-on portfolio manager | place_order, modify_order, cancel_order, manage_own_strategies, manage_own_agents, manage_lab_threads, use_mcp_tools, run_simulator/replay |
+| `risk` | Risk oversight | adjust_risk_floors, disable_any_agent, view_audit + read everything execution-related |
+| `admin` | Operational support | manage_brokers, test_broker_connection, view_audit, view_health, trigger_nav_compute, view_settings_readonly. **No trading rights.** |
+| `partner` | LP / investor | view_aggregate, view_nav, view_strategies (catalog), view_market_summary, export_reports |
 
-**Why**: operator reported "designated does not have access to settings" and "admin does not have history". Root cause: the runtime checks worked correctly for the matrix, but the legacy semantics were already conflated — old `admin` rows wanted the operational tier (which canonical `ops` provides exactly), and old `designated` rows wanted the firm-owner tier (which canonical `admin` IS). The remap moves the rows so the canonical matrix matches operator expectations.
+Plus the synthetic `demo` role (anonymous prod visitor; broad read-only with masked accounts).
+
+**Rename rationale**: the prior canonical-names era (`admin / ops / observer`) ran into operator-vocabulary clash — the operator uses `designated` for the firm owner and `admin` for operational support, and `partner` for LPs. The canonical names made `admin` semantically ambiguous (was it firm owner or operational?). The rename uses operator words, so the `role` value on a User row reads exactly as intended.
 
 **Migration mechanics** (`backend/api/database.py`, after the slice-L FK block):
-- One-shot, guarded by presence of any `role='designated'` row (marker of unmigrated data). After first run, no rows have that value → subsequent `init_db` calls are no-ops.
-- Order matters: rename legacy `admin` → `ops` FIRST, then legacy `designated` → `admin`. Reversing would catch just-promoted rows and demote them back.
-- `token_version` bumped on every affected row so existing JWTs invalidate on the next request via `jwt_guard`'s tv check; users re-login and get a fresh JWT with the correct role.
-- Logged at INFO with the affected-row summary so the operator sees it land in `api_log_file`.
+- Idempotent: only acts on rows with the stale values (`ops` / `observer`). After first boot post-deploy, no such rows exist → subsequent boots no-op.
+- Two-step: `observer` → `partner` runs unconditionally (no swap risk). The `admin`/`ops` swap uses a transient `designated_tmp_xfer` marker to avoid the second UPDATE catching the just-renamed rows.
+- `token_version` bumped on every affected row so existing JWTs invalidate via `jwt_guard`'s tv check; users re-login with a fresh JWT carrying the correct role.
+- Logged at INFO.
 
-**Defensive normalisation**: `normalise_role` keeps `partner → observer` and `designated → admin` as fallbacks for in-flight JWTs minted just before the deploy. Legacy `admin` is NOT in `normalise_role` because that would clash with NEW canonical admin assignments — the migration handles it at the DB level, the JWT version bump invalidates the stale claim. `auth_guard.designated_guard` + `is_designated_request` updated to accept both `admin` (canonical firm owner) AND `designated` (defensive for in-flight JWTs).
+**Defensive normalisation**: `normalise_role` keeps `ops → admin` and `observer → partner` as fallbacks for any in-flight JWTs from the brief canonical-names era. After the deploy settles, those values never appear at runtime.
 
-**Operator action**: deploy; everyone affected re-logs once. New caps land automatically on the fresh JWT.
+**Auth guards**:
+- `admin_guard` accepts `designated` (firm owner) OR `admin` (operational) — routes that don't specifically need firm-owner authority.
+- `designated_guard` accepts only `designated` — terminate, manage_users, manage_settings, manage_admins, impersonate.
+- `is_admin_request` accepts both designated + admin (demo-mode chokepoint: "is this any authenticated admin-tier?").
+- `is_designated_request` accepts only designated.
+
+**Operator action**: deploy; affected users re-log once. New caps land automatically.
 
 **Slice I — palette wave 2 + footer cleanup** (shipped Jun 2026, from #audit round 2):
 - **Violet `#c4b5fd` → `#c084fc` everywhere**. The audit identified `#c4b5fd` as a third violet shade matching neither canonical `#c084fc` (violet-400, non-AI accents) nor `#a78bfa` (canonical `--algo-ai`, AI-generated content). All non-AI usages — `UnifiedLog::ul-card-sim`, `SimulatorPanel::iter-corr-label`, `MarketPulse::badge-u`, `MarketPulse::mover-underlying box-shadow`, app.css `row-und` symbol-cell bg, `algo-user-role-designated`, derivatives `tag-greek` — collapsed onto `#c084fc`. The AI-context badge inside `/admin/derivatives` (Greeks chip wrapped in `rgba(167,139,250,…)`) moved to `#a78bfa` (the canonical AI shade) to keep the AI lane separate.

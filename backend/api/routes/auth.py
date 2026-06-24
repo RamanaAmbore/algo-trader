@@ -526,10 +526,10 @@ class AuthController(Controller):
             user = User(
                 username=data.username,
                 password_hash=hash_password(data.password),
-                # Self-registered users land as 'observer' — read-only
+                # Self-registered users land as 'partner' — read-only
                 # aggregate view. Admin promotes them to a real role
                 # (trader/risk/ops/admin) after approval.
-                role="observer",
+                role="partner",
                 display_name=data.display_name or data.username,
                 email=data.email,
                 phone=data.phone or None,
@@ -618,11 +618,11 @@ class AuthController(Controller):
                 contribution=payload.get("contribution", 0),
                 caps=caps_for_role(role),
             )
-        # Anonymous — surface as 'demo' (on prod) or 'observer' (dev/no
+        # Anonymous — surface as 'demo' (on prod) or 'partner' (dev/no
         # auth at all). On non-prod we don't have a demo mode; return
-        # observer caps so dev UIs that build off /whoami don't crash.
+        # partner caps so dev UIs that build off /whoami don't crash.
         from backend.shared.helpers.utils import is_prod_branch
-        role = "demo" if is_prod_branch() else "observer"
+        role = "demo" if is_prod_branch() else "partner"
         return UserProfile(
             username="", role=role, display_name="", contribution=0,
             caps=caps_for_role(role),

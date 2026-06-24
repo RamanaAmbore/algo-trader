@@ -265,21 +265,14 @@ async def init_db() -> None:
               END IF;
             END$$;
         """))
-        # Align legacy role values with the canonical 5-role surface
-        # (admin / trader / risk / ops / observer). Pre-RBAC-rework
-        # users carried role='partner' as the default LP / read-only
-        # tier; the canonical equivalent is 'observer'. `designated`
-        # is intentionally PRESERVED — separate code paths (terminate
-        # user, toggle-designated, alert routing) still branch on the
-        # literal value and treat it as the super-admin tier above
-        # plain admin. Idempotent: subsequent boots find no rows to
-        # update and no-op. NULL / empty roles also collapse to
-        # 'observer' — same safest-default contract as
-        # `normalise_role()`.
+        # Canonical 5-role surface is designated / trader / risk / admin /
+        # partner. NULL / empty roles collapse to 'partner' — the safest
+        # default (read-only LP view), same contract as `normalise_role()`.
+        # 'designated' is preserved (it's the firm-owner tier).
+        # Idempotent: subsequent boots find no rows to update and no-op.
         await conn.execute(text("""
-            UPDATE users SET role = 'observer'
-            WHERE role = 'partner'
-               OR role IS NULL
+            UPDATE users SET role = 'partner'
+            WHERE role IS NULL
                OR role = '';
         """))
         # audit_log.category — coarse tag for filtering (order.fill /
@@ -521,53 +514,65 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS ix_agent_events_simmode_agent_ts "
             "ON agent_events (sim_mode, agent_id, timestamp DESC)"
         ))
-        # ── Legacy role remap (Jun 2026) ─────────────────────────────────
-        # ONE-SHOT. Marker: any row with role='designated' = unmigrated
-        # data; presence triggers the remap. After first run there are
-        # no 'designated' rows so subsequent init_db calls are no-ops.
+        # ── Role rename to operator-domain names (Jun 2026) ──────────────
+        # Final 5-role set uses operator-domain words throughout:
+        #     designated  trader  risk  admin  partner    (+ demo synthetic)
         #
-        # Why: the legacy 5-role design carried two ambiguous values —
-        # `designated` (firm owner / top tier) and `admin` (operational
-        # admin). The canonical role set is admin / trader / risk / ops /
-        # observer, where `admin` IS the top tier. The legacy values
-        # collided semantically with the canonical ones:
-        #   * legacy designated == canonical admin (firm owner)
-        #   * legacy admin       == canonical ops   (operational support)
-        # Operator-observed symptoms:
-        #   - "designated does not have access to settings" — designated
-        #     normalised to admin in code but their stored role was still
-        #     'designated'; some routes / DB-fresh reads carried the raw
-        #     value through. After remap, the row says 'admin' and the
-        #     manage_settings cap admits them.
-        #   - "admin does not have history" — operator meant the LEGACY
-        #     admin (operational tier). They actually need view_audit +
-        #     manage_brokers, which canonical `ops` has. After remap their
-        #     row says 'ops' and they get the operational cap set.
+        # This REPLACES the prior canonical-names attempt (admin / ops /
+        # observer) which conflated operator semantics — `admin`
+        # ambiguously meant both firm owner AND operational tier; the
+        # operator's existing DB rows held `designated` for the firm
+        # owner and `admin` for operational support. The rename brings
+        # the code into alignment with the operator's vocabulary so
+        # there's no more semantic translation step.
         #
-        # token_version bumped on every affected row so the existing
-        # JWT (which still carries the stale role) invalidates on the
-        # next request; user re-logs with the correct fresh role.
-        legacy_present = await conn.execute(text(
-            "SELECT EXISTS(SELECT 1 FROM users WHERE role='designated' LIMIT 1)"
+        # Migration mechanics:
+        #   * Idempotent UPDATEs — only act on rows with the stale
+        #     canonical value (`ops` / `observer`). After first run
+        #     there are no such rows so subsequent boots are no-ops.
+        #   * Two-step ordered: observer→partner runs in parallel
+        #     (independent of admin/ops swap); admin/ops needs the
+        #     swap-through-tmp pattern to avoid catching just-renamed
+        #     rows. See body comments for the details.
+        #   * token_version bumped on every affected row so existing
+        #     JWTs invalidate on the next request via jwt_guard's tv
+        #     check; users re-login and get a fresh JWT.
+        # Step 1 — observer → partner (legacy LP role).
+        await conn.execute(text(
+            "UPDATE users SET role='partner', "
+            "token_version=COALESCE(token_version,1)+1 "
+            "WHERE role='observer'"
         ))
-        if legacy_present.scalar():
-            # Order matters: rename legacy admin → ops FIRST, then
-            # legacy designated → admin. If we reversed the order the
-            # second UPDATE would catch the just-promoted ex-designated
-            # rows and demote them back to ops.
+        # Step 2 — admin (was firm-owner from prior canonical naming)
+        # → designated, and ops (was operational from prior canonical
+        # naming) → admin. This is a CONDITIONAL undo of the previous
+        # role remap — only acts if any 'ops' rows exist (the marker
+        # that the previous remap ran). Without this guard we'd undo
+        # legitimate post-rename admin assignments.
+        prior_remap_landed = await conn.execute(text(
+            "SELECT EXISTS(SELECT 1 FROM users WHERE role='ops' LIMIT 1)"
+        ))
+        if prior_remap_landed.scalar():
+            # Swap-through-tmp to avoid the second UPDATE catching the
+            # rows the first UPDATE just renamed. 'designated_tmp_xfer'
+            # is a transient marker — no UI shows it, no cap matches it.
             await conn.execute(text(
-                "UPDATE users SET role='ops', "
+                "UPDATE users SET role='designated_tmp_xfer', "
                 "token_version=COALESCE(token_version,1)+1 "
                 "WHERE role='admin'"
             ))
             await conn.execute(text(
                 "UPDATE users SET role='admin', "
                 "token_version=COALESCE(token_version,1)+1 "
-                "WHERE role='designated'"
+                "WHERE role='ops'"
+            ))
+            await conn.execute(text(
+                "UPDATE users SET role='designated' "
+                "WHERE role='designated_tmp_xfer'"
             ))
             logger.info(
-                "init_db: legacy role remap applied — "
-                "legacy 'admin' → 'ops', legacy 'designated' → 'admin'. "
+                "init_db: role rename undo applied — 'ops' → 'admin', "
+                "prior 'admin' (was firm-owner) → 'designated'. "
                 "Affected users must re-login (token_version bumped)."
             )
         # Feature: basket orders + auto profit-target (June 2026).
