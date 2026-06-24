@@ -1491,7 +1491,7 @@ class DailyBook(Base):
     segment: Mapped[str]       = mapped_column(String(16), nullable=False)   # 'equity' | 'commodity' | 'currency' | 'derivatives'
     kind: Mapped[str]          = mapped_column(String(16), nullable=False)   # 'holdings' | 'positions' | 'trades'
     symbol: Mapped[str]        = mapped_column(String(64), nullable=False)
-    exchange: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    exchange: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     qty: Mapped[int]           = mapped_column(Integer, nullable=False, default=0)
     avg_cost: Mapped[Optional[float]] = mapped_column(Numeric, nullable=True)
     ltp: Mapped[Optional[float]]      = mapped_column(Numeric, nullable=True)

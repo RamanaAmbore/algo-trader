@@ -553,6 +553,20 @@ async def init_db() -> None:
             logger.warning(
                 f"init_db: users.role column type bump skipped: {_alter_err}"
             )
+        # Bump daily_book.exchange column to VARCHAR(16). The original
+        # VARCHAR(8) was too tight for the funds-row capture path which
+        # writes the segment label uppercased — 'COMMODITY' is 9 chars
+        # and got rejected by Postgres, crashing the daily snapshot for
+        # every account that hit the funds capture step. Same class of
+        # bug as the role-column one above. Idempotent.
+        try:
+            await conn.execute(text(
+                "ALTER TABLE daily_book ALTER COLUMN exchange TYPE VARCHAR(16)"
+            ))
+        except Exception as _alter_err:  # noqa: BLE001
+            logger.warning(
+                f"init_db: daily_book.exchange column type bump skipped: {_alter_err}"
+            )
         # Wrapped in try/except so a migration hiccup doesn't crash
         # init_db and take the whole server down. Best-effort: if it
         # fails we log ERROR and continue; the operator can hand-run
