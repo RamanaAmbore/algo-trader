@@ -438,14 +438,30 @@
   // intentional: seeds from side prop once; $effect below re-syncs on prop changes
   // svelte-ignore state_referenced_locally
   let _side    = $state($state.snapshot(side));
-  // Re-sync the internal side state when the parent updates the
-  // `side` prop. Without this, the modal's "BUY / SELL" footer
-  // buttons can change _modalSide → propagate via the side prop, but
-  // OrderTicket would still submit whichever side it last held
-  // locally. action='modify' freezes the side per the existing rule.
+  // Re-sync the internal side state when the parent EXPLICITLY changes
+  // the `side` prop. Tracks the previous prop value so this fires only
+  // on genuine prop-value transitions (e.g. SymbolPanel's _modalSide
+  // store committing, or a Command-tab parse pre-filling the ticket),
+  // NOT on every render the parent triggers for unrelated reasons.
+  //
+  // Bug class fixed (Jun 2026, operator: "when buy order is placed,
+  // the buttons are flipping to sell in red color without placing the
+  // order"): without the prop-transition guard, ANY re-render where
+  // `side` was a non-null fixed value (typically the original side
+  // prop passed to SymbolPanel, which never tracks _modalSide updates)
+  // would force _side back to the stale prop value, fighting the
+  // operator's BUY/SELL click. The new pattern lets local clicks win
+  // and only resyncs when the parent actually moves the value.
+  //
+  // action='modify' freezes the side per the existing rule.
+  // svelte-ignore state_referenced_locally
+  let _prevSideProp = $state(/** @type {string|null} */ ($state.snapshot(side)));
   $effect(() => {
     if (action === 'modify') return;
-    if (side && side !== untrack(() => _side)) _side = side;
+    if (side !== _prevSideProp) {
+      _prevSideProp = side;
+      if (side) _side = side;
+    }
   });
 
   // Resolved lot size — starts from the prop; may be updated on mount
