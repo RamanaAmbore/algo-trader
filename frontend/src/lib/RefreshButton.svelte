@@ -80,25 +80,22 @@
     : _mcxOpen            ? 'MCX open · Equity closed'
     :                       'Market closed'
   );
-  // Closed-market confirmation popup. Operator: "when market is closed
-  // and pressing refresh button should show popup stating market is
-  // closed. presently it disabled during market close" — the slate
-  // palette during market-closed state visually reads as disabled, so
-  // the operator clicks and sees no feedback. Solution: explicit
-  // confirmation popup. Click during market-closed → popup with
-  // "Refresh anyway" / "Cancel". Operator dismisses on accident,
-  // confirms on intention.
-  let _showClosedConfirm = $state(false);
+  // Closed-market notice popup. Operator: "when market is closed and
+  // pressing refresh button should show popup stating market is
+  // closed" — the slate palette during the market-closed state reads
+  // as disabled, so the operator clicks and sees no feedback. Click
+  // during market-closed now opens an informational popup explaining
+  // why. The page-level pollers continue to auto-refresh in the
+  // background ("it refreshes on its own for any data that is fine"
+  // — operator), so manual refresh during a closed session is
+  // intentionally a no-op.
+  let _showClosedNotice = $state(false);
   function _handleClick() {
     if (loading) return;
     if (!_nseOpen && !_mcxOpen) {
-      _showClosedConfirm = true;
+      _showClosedNotice = true;
       return;
     }
-    onClick?.();
-  }
-  function _refreshAnyway() {
-    _showClosedConfirm = false;
     onClick?.();
   }
 
@@ -218,31 +215,28 @@
   {/if}
 </button>
 
-{#if _showClosedConfirm}
+{#if _showClosedNotice}
   <!-- Click-outside catcher: a transparent fixed overlay closes the
        popup when the operator taps anywhere else. Lives at z-index just
        below the popup body so clicks on the popup itself stay live. -->
   <div class="rf-closed-overlay"
        role="presentation"
-       onclick={(e) => { e.stopPropagation(); _showClosedConfirm = false; }}></div>
+       onclick={(e) => { e.stopPropagation(); _showClosedNotice = false; }}></div>
   <div class="rf-closed-popup" role="dialog" aria-modal="true"
-       aria-label="Market closed confirmation"
+       aria-label="Market closed notice"
        tabindex="-1"
        onclick={(e) => e.stopPropagation()}
-       onkeydown={(e) => { if (e.key === 'Escape') { _showClosedConfirm = false; } }}>
+       onkeydown={(e) => { if (e.key === 'Escape') { _showClosedNotice = false; } }}>
     <div class="rf-closed-title">Market closed</div>
     <div class="rf-closed-body">
-      Both NSE and MCX are currently closed. Live broker data may
-      not have changed since the last refresh.
+      Both NSE and MCX are currently closed. Background pollers
+      keep refreshing on their own — there's nothing new to fetch
+      manually until the next session opens.
     </div>
     <div class="rf-closed-actions">
       <button type="button" class="rf-closed-btn rf-closed-cancel"
-              onclick={(e) => { e.stopPropagation(); _showClosedConfirm = false; }}>
-        Cancel
-      </button>
-      <button type="button" class="rf-closed-btn rf-closed-go"
-              onclick={(e) => { e.stopPropagation(); _refreshAnyway(); }}>
-        Refresh anyway
+              onclick={(e) => { e.stopPropagation(); _showClosedNotice = false; }}>
+        OK
       </button>
     </div>
   </div>
@@ -402,15 +396,6 @@
   .rf-closed-cancel:hover {
     background: rgba(126, 151, 184, 0.14);
     color: #c8d8f0;
-  }
-  .rf-closed-go {
-    background: rgba(251, 191, 36, 0.16);
-    border-color: rgba(251, 191, 36, 0.55);
-    color: #fbbf24;
-  }
-  .rf-closed-go:hover {
-    background: rgba(251, 191, 36, 0.28);
-    color: #fde68a;
   }
   /* Connection-state badge — same top-right placement + sizing as the
      unread badges on OrderNotifications / AgentNotifications so all
