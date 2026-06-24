@@ -229,7 +229,7 @@ export const fetchMyNav = () => _get('/auth/me/nav', { auth: true });
 
 /** GET /api/auth/whoami — role + capability bootstrap. No auth required;
  *  anonymous demo sessions get back `{ role: 'demo', caps: [...] }`. */
-export const fetchWhoami = () => _get('/auth/whoami', { auth: false });
+export const fetchWhoami = () => _get('/auth/whoami', { auth: _hasToken() });
 
 /** GET /api/auth/firm-nav — public unauthenticated firm-aggregate NAV.
  *  Used by NavCard on /performance for anonymous visitors so they see
