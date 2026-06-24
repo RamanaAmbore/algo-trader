@@ -537,43 +537,64 @@ async def init_db() -> None:
         #   * token_version bumped on every affected row so existing
         #     JWTs invalidate on the next request via jwt_guard's tv
         #     check; users re-login and get a fresh JWT.
-        # Step 1 — observer → partner (legacy LP role).
-        await conn.execute(text(
-            "UPDATE users SET role='partner', "
-            "token_version=COALESCE(token_version,1)+1 "
-            "WHERE role='observer'"
-        ))
-        # Step 2 — admin (was firm-owner from prior canonical naming)
-        # → designated, and ops (was operational from prior canonical
-        # naming) → admin. This is a CONDITIONAL undo of the previous
-        # role remap — only acts if any 'ops' rows exist (the marker
-        # that the previous remap ran). Without this guard we'd undo
-        # legitimate post-rename admin assignments.
-        prior_remap_landed = await conn.execute(text(
-            "SELECT EXISTS(SELECT 1 FROM users WHERE role='ops' LIMIT 1)"
-        ))
-        if prior_remap_landed.scalar():
-            # Swap-through-tmp to avoid the second UPDATE catching the
-            # rows the first UPDATE just renamed. 'designated_tmp_xfer'
-            # is a transient marker — no UI shows it, no cap matches it.
+        # Wrapped in try/except so a migration hiccup doesn't crash
+        # init_db and take the whole server down. Best-effort: if it
+        # fails we log ERROR and continue; the operator can hand-run
+        # the SQL on the server. The role-rename migration is data-
+        # transformative — getting it wrong is worse than skipping it.
+        try:
+            # Step 1 — observer → partner (legacy LP role).
             await conn.execute(text(
-                "UPDATE users SET role='designated_tmp_xfer', "
+                "UPDATE users SET role='partner', "
                 "token_version=COALESCE(token_version,1)+1 "
-                "WHERE role='admin'"
+                "WHERE role='observer'"
             ))
+            # Step 2 — admin (was firm-owner from prior canonical naming)
+            # → designated, and ops (was operational from prior canonical
+            # naming) → admin. This is a CONDITIONAL undo of the previous
+            # role remap — only acts if any 'ops' rows exist (the marker
+            # that the previous remap ran). Without this guard we'd undo
+            # legitimate post-rename admin assignments.
+            prior_remap_landed = await conn.execute(text(
+                "SELECT EXISTS(SELECT 1 FROM users WHERE role='ops')"
+            ))
+            if prior_remap_landed.scalar():
+                # Swap-through-tmp to avoid the second UPDATE catching
+                # the rows the first UPDATE just renamed.
+                # 'designated_tmp_xfer' is a transient marker — no UI
+                # shows it, no cap matches it.
+                await conn.execute(text(
+                    "UPDATE users SET role='designated_tmp_xfer', "
+                    "token_version=COALESCE(token_version,1)+1 "
+                    "WHERE role='admin'"
+                ))
+                await conn.execute(text(
+                    "UPDATE users SET role='admin', "
+                    "token_version=COALESCE(token_version,1)+1 "
+                    "WHERE role='ops'"
+                ))
+                await conn.execute(text(
+                    "UPDATE users SET role='designated' "
+                    "WHERE role='designated_tmp_xfer'"
+                ))
+                logger.info(
+                    "init_db: role rename undo applied — 'ops' → 'admin', "
+                    "prior 'admin' (was firm-owner) → 'designated'. "
+                    "Affected users must re-login (token_version bumped)."
+                )
+            # Cleanup: any users still parked at the transient marker
+            # from a CRASHED previous boot get promoted to 'designated'.
+            # The marker is invisible to caps + the UI; without this
+            # sweep, those users would 403 on every cap-gated request.
             await conn.execute(text(
-                "UPDATE users SET role='admin', "
+                "UPDATE users SET role='designated', "
                 "token_version=COALESCE(token_version,1)+1 "
-                "WHERE role='ops'"
-            ))
-            await conn.execute(text(
-                "UPDATE users SET role='designated' "
                 "WHERE role='designated_tmp_xfer'"
             ))
-            logger.info(
-                "init_db: role rename undo applied — 'ops' → 'admin', "
-                "prior 'admin' (was firm-owner) → 'designated'. "
-                "Affected users must re-login (token_version bumped)."
+        except Exception as _role_mig_err:  # noqa: BLE001
+            logger.error(
+                f"init_db: role rename migration FAILED: {_role_mig_err}. "
+                f"Server will continue; manual SQL may be required."
             )
         # Feature: basket orders + auto profit-target (June 2026).
         # Four new columns on algo_orders; all nullable / defaulted so

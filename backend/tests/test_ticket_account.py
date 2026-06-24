@@ -17,11 +17,17 @@ from unittest.mock import patch, AsyncMock
 
 
 def _admin_auth_patches():
-    """Combined patch context: mark every request as admin so the
-    `auth_or_demo_guard` doesn't tag the test request as demo on
-    prod-branch test envs. Returns a context manager."""
+    """Combined patch context: mark every request as authenticated so
+    the `auth_or_demo_guard` doesn't tag the test request as demo on
+    prod-branch test envs. Returns a context manager.
+
+    Post-fix `auth_or_demo_guard` uses `is_authenticated_request`
+    (any valid JWT — designated/admin/trader/risk/partner) instead of
+    the previous `is_admin_request` (admin-tier only). Pre-fix
+    rejected trader+risk employees on prod as demo sessions."""
     return patch.multiple(
         "backend.api.auth_guard",
+        is_authenticated_request=lambda _conn: True,
         is_admin_request=lambda _conn: True,
         jwt_guard=AsyncMock(return_value=None),
     )

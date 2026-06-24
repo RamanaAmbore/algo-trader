@@ -243,9 +243,13 @@ async def auth_or_demo_guard(connection: ASGIConnection, handler: BaseRouteHandl
         connection.state.is_demo = False
         return
 
-    if is_admin_request(connection):
-        # Admin login on prod — run the strict guard so live-state
-        # checks fire (suspended/terminated rejection, role refresh).
+    if is_authenticated_request(connection):
+        # ANY valid JWT (designated / admin / trader / risk / partner)
+        # → run the strict guard so live-state checks fire
+        # (suspended/terminated rejection, role refresh). Pre-fix this
+        # only accepted admin-tier JWTs which downgraded trader/risk
+        # employees to demo sessions on prod (they couldn't place
+        # orders or see real account codes).
         await jwt_guard(connection, handler)
         connection.state.is_demo = False
         return
