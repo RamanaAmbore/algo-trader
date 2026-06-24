@@ -52,11 +52,12 @@
   // operator can swap individual links via a future settings UI
   // without touching this component.
   const CONTACT = {
-    github:   'https://github.com/RamanaAmbore/algo-trader',
-    linkedin: 'https://www.linkedin.com/in/ramanaambore',
-    email:    'mailto:ramboquant@gmail.com?subject=RamboQuant%20-%20Engineering%20Conversation',
-    resume:   'https://ramanaambore.me/resume',
-    portfolio:'https://ramanaambore.me',
+    github:    'https://github.com/RamanaAmbore/algo-trader',
+    linkedin:  'https://www.linkedin.com/in/ambore/',
+    email:     'mailto:ramboquant@gmail.com?subject=RamboQuant%20-%20Engineering%20Conversation',
+    resume:    'https://ramanaambore.me/resume.pdf',
+    resumeTxt: 'https://ramanaambore.me/resume.txt',
+    portfolio: 'https://ramanaambore.me',
   };
 </script>
 
@@ -142,7 +143,17 @@
           <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
           <path d="M14 2v6h6"/>
         </svg>
-        Resume
+        Resume (PDF)
+      </a>
+      <a class="hm-btn" href={CONTACT.resumeTxt} target="_blank" rel="noopener">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" aria-hidden="true">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <path d="M14 2v6h6"/>
+          <path d="M9 13h6"/>
+          <path d="M9 17h6"/>
+        </svg>
+        Resume (TXT)
       </a>
     </div>
   </div>
