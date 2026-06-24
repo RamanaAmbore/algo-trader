@@ -48,7 +48,7 @@ The coordinator owns synthesis: never delegate "decide what to do based on your 
 | Surface | Status |
 |---|---|
 | Multi-mode execution ladder (sim → paper → shadow → live, with replay) | ✅ shipped |
-| Declarative agent grammar + 17 seeded agents | ✅ shipped |
+| Declarative agent grammar + 9 built-in agents | ✅ shipped |
 | Derivatives analytics (multi-leg payoff, σ-driven span, EV, R:R) | ✅ shipped |
 | **Proxy hedges — pair table + auto β regression** | ✅ shipped (2026-06-17), see "Proxy hedges" section below |
 | Multi-broker abstraction (Kite + Dhan + Groww), IP-binding, multi-account basket orders | ✅ shipped |
@@ -629,7 +629,7 @@ In-process TTL cache in `backend/api/cache.py` with per-key locking. `get_neares
 ### Built-in Agents (seeded from YAML)
 Summary agents (`nse_open_summary`, `nse_close_summary`, `mcx_open_summary`, `mcx_close_summary`) are **`status: "inactive"` by default** — `_task_performance` and `_task_close` in `backend/api/background.py` already send open/close summaries directly, so enabling the agents would cause duplicate alerts. `seed_agents()` force-resets these four to inactive on every startup.
 
-**Loss agents** (prefix `loss-`) ship as 12 pure alerting agents (holdings/positions static + rate thresholds) plus 2 fund-negative agents, all **active** by default. One additional `loss-pos-total-auto-close` agent ships **inactive** (destructive close-position action). The former `check_and_alert` loss engine is retired; toggle any agent individually from the `/agents` page.
+**Loss agents** (prefix `loss-`) ship as 4 consolidated alerting agents (`loss-positions-acct` / `loss-positions-total` / `loss-holdings-acct` / `loss-holdings-total`) plus 1 fund-negative agent (`loss-funds-negative`), all **active** by default. One additional `loss-pos-total-auto-close` agent ships **inactive** (destructive close-position action). The former `check_and_alert` loss engine is retired; toggle any agent individually from the `/automation` page.
 
 ### SvelteKit Pages (routes under `frontend/src/routes/(algo)/`)
 - **`+layout.svelte`** — algo-site top nav, grouped + ordered by daily-trader workflow frequency: monitor (Tour / Pulse / Dashboard / Orders / Derivatives / Charts / Automation / Strategies / NAV) inline, explore (Sandbox) inline, build (Console / Research / Tokens) dropdown, config (Brokers / Settings / Users / Statements / History / Audit / Health) dropdown. Mode toggles (SIM / PAPER / LIVE / SHADOW / REPLAY) live in a separate navbar pill that opens its own dropdown. The "Investor site" cross-link is mellowed (font-weight 500, alpha 0.10 bg, alpha 0.32 border) — same amber colour as the public side's "Algo Site" pill, lower visual intensity so it reads as a context-switch affordance rather than a CTA.
@@ -990,7 +990,7 @@ Ramboq's risk + automation engine is built around four words:
 
 | Word | Meaning |
 |---|---|
-| **Agent** | A rule row (DB: `agents`) with `condition + notify + actions + metadata`. Seeded from `BUILTIN_AGENTS` in `agent_engine.py`: 12 alerting + 2 fund-negative agents ship **active** by default; 1 auto-close agent ships **inactive**. Extensible via the `/agents` UI. |
+| **Agent** | A rule row (DB: `agents`) with `condition + notify + actions + metadata`. Seeded from `BUILTIN_AGENTS` in `agent_engine.py` — 9 built-in agents total: 5 loss/fund alerting (active), 1 auto-close (inactive), 3 expiry-day (1 alert + 2 auto-close, all inactive). Extensible via the `/automation` UI. |
 | **Alert** | The runtime event an agent emits when its condition fires. Persisted to `agent_events` with a `sim_mode` flag so real fires can be separated from simulated ones. |
 | **Notify** | A delivery channel (`telegram / email / websocket / log`). |
 | **Action** | A side-effect the alert invokes (order placement, monitoring, modify, cancel, close, flag-set, …). Handlers in `actions.py`; real broker wiring lands per-action as each is promoted out of stub mode. |
@@ -1318,7 +1318,7 @@ simulated.
 
 ### Shipped scenarios
 
-`generic-crash` (−3% over 3 ticks), `generic-euphoria` (+3%), `extreme-crash` (−19% over 3 ticks), `extreme-euphoria` (+19%), `random-walk` (seeded GBM). All work against any seeded book. The synthesizer covers per-agent tests; scenarios.yaml holds only these 5 book-wide stress tests.
+`generic-crash` (−3% over 3 ticks), `generic-euphoria` (+3%), `extreme-crash` (−19% over 3 ticks), `extreme-euphoria` (+19%), `random-walk` (seeded GBM). Plus 21 specialised scenarios (NIFTY ±3%, wild-swings, etc.) for a total of 26 catalogued slugs in [`backend/api/algo/sim/scenarios.yaml`](backend/api/algo/sim/scenarios.yaml). The synthesizer covers per-agent tests; scenarios.yaml holds book-wide stress tests.
 
 ### Run-in-Simulator + the synthesizer
 
@@ -2090,7 +2090,7 @@ Prod (`main`) algo pages open to anonymous visitors (real book, masked accounts 
 
 **Pages:** Research (threads + transcript) · Drafts (inactive agents from threads) · Audit (mutation forensics, filterable) · Settings (token mint + JWT bootstrap + MCP server inventory).
 
-**MCP server** ([backend/mcp/kite_server.py](backend/mcp/kite_server.py)): FastMCP subprocess. 16 read tools (positions, holdings, quote, ohlcv, news, chain snapshot, macro, agents, threads, audit, server_info) + 2 persist (save_research_thread, save_agent_draft) + 6 gated writes (place/cancel/modify/activate/deactivate/update_agent).
+**MCP server** ([backend/mcp/kite_server.py](backend/mcp/kite_server.py)): FastMCP subprocess. 17 read tools (positions, holdings, quote, ohlcv, news, chain snapshot, macro, agents, threads, audit, dry_run_agent, server_info) + 2 persist (save_research_thread, save_agent_draft) + 6 gated writes (place/cancel/modify/activate/deactivate/update_agent) = 25 total.
 
 **Confirm-token gate** (60s TTL, single-use, purpose-hash bound): `place | cancel | modify | activate | deactivate | update`. Purpose hash prevents bait-and-switch between mint and redeem. In-process dict; restart clears all.
 
@@ -2546,7 +2546,7 @@ Regex validators: pre-compile to module-level (currently per-call). Broker calls
 | Add/change market segment hours | `backend/config/backend_config.yaml` — `market_segments` block |
 | Change open/close summary timing | `backend/config/backend_config.yaml` — `open_summary_offset_minutes`, `close_summary_offset_minutes` |
 | Add/change order-entry command tokens | `backend/config/grammars/orders.yaml` (shared source; frontend picks it up via symlink + `?raw` import) |
-| Toggle a built-in agent's default status | `backend/config/agents.yaml` — `seed_agents()` will force built-in agents to match YAML `status` on startup; user-edited conditions/cooldown/events/actions are preserved |
+| Toggle a built-in agent's default status | `backend/api/algo/agent_engine.py` — edit the `status=` field in the matching `BUILTIN_AGENTS` `dict(slug=…)` definition. `seed_agents()` force-syncs built-in rows to match this on every startup; user-edited conditions/cooldown/events/actions are preserved. There is no `agents.yaml` config file — agents are seeded from Python. |
 | Add a new MCP tool | [backend/mcp/kite_server.py](backend/mcp/kite_server.py) — add a `@app.tool()` function. Update the TOOLS const in [admin/research/+page.svelte](frontend/src/routes/(algo)/admin/research/+page.svelte) so the Settings-tab inventory stays in sync. New gated writes need a new `_purpose_hash_*` + a new `kind` in the mint endpoint. Read-only tools just need the tool function + a thin HTTP proxy to an existing route. |
 | Tune MCP audit retention | `/admin/settings` → `mcp.audit_retention_days` (default 90; 0 disables) |
 | Update macro snapshot data | Edit `macros:` block in `backend/config/backend_config.yaml` on server. The deploy script preserves operator edits across deploys (same pattern as `cap_in_dev`). |

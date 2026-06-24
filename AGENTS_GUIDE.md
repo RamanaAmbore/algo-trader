@@ -21,12 +21,16 @@ Mental model: condition fires → alert emitted → notifies dispatch → action
 
 | Surface | URL | Purpose |
 |---|---|---|
-| Agents list | `/agents` | Rule editor — create, edit, activate, deactivate, dry-run, run-in-sim |
-| Activity | `/agents/activity` | Recent fires (real, not sim) |
+| Agents list | `/automation` | Rule editor — create, edit, activate, deactivate, dry-run, run-in-sim |
+| Order Templates | `/automation/templates` | Per-position TP/SL/wing/scale/trail exit rules attached at order fill |
+| Agent Templates | `/automation/agent-templates` | Reusable saved sub-trees (notify channel sets + condition snippets) |
+| Activity | `/automation/activity` | Recent fires (real, not sim) |
 | Tokens | `/admin/tokens` | Grammar catalog — every metric / scope / op / action |
-| Fragments | `/agents/fragments` | Reusable saved sub-trees (notify channel sets + condition snippets) |
 | Lab | `/admin/research` | LLM-driven research → draft agents via Claude Code MCP |
 | Simulator | `/admin/execution?mode=sim` | Fabricated price-move workspace for dry-firing agents |
+
+Legacy `/agents`, `/agents/activity`, `/agents/fragments` paths still
+308-redirect for old bookmarks; new docs link the canonical URLs.
 
 ---
 
@@ -150,7 +154,7 @@ Read the live catalog at `/admin/tokens`. The full canonical list is in [CLAUDE.
 
 ## Fragments — reuse without copy-paste
 
-Two kinds at `/agents/fragments`:
+Two kinds at `/automation/agent-templates`:
 
 **Notify fragments** — saved channel lists. Reference from `agent.events`:
 
@@ -181,18 +185,18 @@ Edit a fragment once → every consumer agent updates. Cycle detection prevents 
 
 | Stage | Location | What it does | Risk |
 |---|---|---|---|
-| 1 — Validate | `/agents` → **Validate** | Static: tokens + shape well-formed | none |
-| 2 — Dry-run | `/agents/<slug>/dry-run` or button | Evaluate against live data (no fire) | none |
-| 3 — Simulator | `/agents` → **Run in Simulator** | Synthetic ticks, `sim_mode=True`, no real broker | low |
-| 4 — Activate | `/agents` → flip Status to active | Real ticks, real money (LIVE) or paper | full |
+| 1 — Validate | `/automation` → **Validate** | Static: tokens + shape well-formed | none |
+| 2 — Dry-run | `/api/agents/<slug>/dry-run` or button | Evaluate against live data (no fire) | none |
+| 3 — Simulator | `/automation` → **Run in Simulator** | Synthetic ticks, `sim_mode=True`, no real broker | low |
+| 4 — Activate | `/automation` → flip Status to active | Real ticks, real money (LIVE) or paper | full |
 
-**Validate:** `/agents` editor → click **Validate**. Reports token typos + shape errors.
+**Validate:** `/automation` editor → click **Validate**. Reports token typos + shape errors.
 
 **Dry-run:** Returns matches + `would_fire` bool against current market WITHOUT firing. Check `blocked_by` field if you expect true but see false.
 
 **Run in Simulator:** Synthesises a scenario to trip THIS agent's first leaf. Bypasses gates (cooldown / baseline / schedule) so the agent fires immediately on the first tick. Telegram / email pings carry `SIMULATOR` prefix. See [SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md).
 
-**Activate:** Flip `status: inactive → active`. Engine picks it up next tick. Watch `/agents/activity`, Telegram, or agent row's Events panel.
+**Activate:** Flip `status: inactive → active`. Engine picks it up next tick. Watch `/automation/activity`, Telegram, or agent row's Events panel.
 
 ---
 
@@ -222,13 +226,13 @@ Three options beyond perpetual:
 | `n_fires` | Set `lifespan_max_fires=N`. Auto-deactivates on the Nth fire | Bounded campaigns |
 | `until_date` | Set `lifespan_expires_at`. Auto-deactivates when wall-clock IST passes the date | Event-window agents |
 
-Auto-deactivation is final — to re-enable, flip `status` back to `active` on `/agents`.
+Auto-deactivation is final — to re-enable, flip `status` back to `active` on `/automation`.
 
 ---
 
 ## Built-in agents you can study
 
-Open `/agents` and look at these — every one is a teaching example you can clone:
+Open `/automation` and look at these — every one is a teaching example you can clone:
 
 | Slug | Topic | Why it's worth reading |
 |---|---|---|
@@ -245,7 +249,7 @@ Built-in agents are **force-reseeded on every boot** — your changes to their `
 
 ## Authoring workflow
 
-1. **Spike the condition tree** in the `/agents` editor or via the Claude Code MCP (see [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md))
+1. **Spike the condition tree** in the `/automation` editor or via the Claude Code MCP (see [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md))
 2. **Validate** — clear all token / shape errors
 3. **Dry-run** — sanity check against current market
 4. **Run in Simulator** — confirm the alert fires + actions log correctly with the `SIM` pill
@@ -316,7 +320,7 @@ The Order log Mode pill (SIM / PAPER / LIVE / SHADOW) visualises the difference.
 | `Validate` rejects with `unknown metric token` | Typo in metric name OR token deactivated on `/admin/tokens` | `/admin/tokens` → Condition tab → search the token |
 | `dry-run` shows `would_fire: false` but you expect true | Condition mismatch — operator's threshold vs current state | Use the dry-run `matches` array; each entry shows the metric, scope, threshold, and actual value |
 | `dry-run` shows `blocked_by: "schedule"` | Agent has `schedule: market_hours` but markets are closed | Either wait for session, or flip `schedule: always` for diagnostic agents |
-| Agent never fires on real ticks | Rate metric without baseline crossed; or in cooldown; or suppressed | `/agents/<slug>` Events tab + `/admin/alerts` log; or set `cooldown_minutes: 0` temporarily |
+| Agent never fires on real ticks | Rate metric without baseline crossed; or in cooldown; or suppressed | `/automation/<slug>` Events tab + `/admin/alerts` log; or set `cooldown_minutes: 0` temporarily |
 | Sim shows alert + action but real ticks don't | Real `_task_performance` skipped because sim was active — sims auto-stop in 30 min by default | Stop the sim or wait for auto-stop |
 | Action wrote an `AlgoOrder` row but broker didn't see it | `execution.paper_trading_mode: true` — paper engine handled it, real broker untouched | Flip mode via navbar dropdown → LIVE for prod |
 | Action raised on prod with `409 Exchange closed` | Phase 23 gate — symbol's exchange is closed | Wait for session; sim mode bypasses |

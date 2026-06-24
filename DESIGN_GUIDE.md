@@ -2241,7 +2241,7 @@ The cookbook is intentionally prescriptive. You do not need to read the full doc
 
 4. **Mode resolution.** Honor `_resolve_mode()` — never call broker directly. Use `get_broker(account)` and respect the row's mode.
 
-5. **Verify.** Create a test agent in dev via `/automation/tokens`, fire-in-simulator, confirm event row + broker call.
+5. **Verify.** Create a test agent in dev via `/admin/tokens` + `/automation`, fire-in-simulator, confirm event row + broker call.
 
 ---
 

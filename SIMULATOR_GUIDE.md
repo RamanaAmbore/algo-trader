@@ -16,7 +16,7 @@ Why it's the canonical pre-prod test surface:
 - Schedule / cooldown / baseline / suppression gates all **bypassed** so the agent fires on the first tick — no waiting
 
 Use cases:
-- **Per-agent dry-fire** — click _Run in Simulator_ on `/agents`, see the alert fire
+- **Per-agent dry-fire** — click _Run in Simulator_ on `/automation`, see the alert fire
 - **Stress test the whole book** — feed a `generic-crash` scenario, watch every guardrail fire in sequence
 - **Validate auto-close logic** — confirm the chase engine closes the right positions when an agent ticks
 
@@ -27,7 +27,7 @@ Use cases:
 | Surface | URL | What it does |
 |---|---|---|
 | Sim workspace | `/admin/execution?mode=sim` | Controls + monitoring cards |
-| Per-agent test | `/agents` → **Run in Simulator** button on each row | Synthesises a scenario for that agent + arms it + lands you on the workspace |
+| Per-agent test | `/automation` → **Run in Simulator** button on each row | Synthesises a scenario for that agent + arms it + lands you on the workspace |
 | Iteration history | `/admin/simulator/iterations` | List of completed sim runs (saved as `SimIteration` rows) |
 | Iteration detail | `/admin/simulator/iterations/<slug>` | Replay one run + see its event log |
 
@@ -129,7 +129,7 @@ market_state:                               # or explicit overrides
 
 ## Run in Simulator — the operator-friendly path
 
-Don't write a scenario yaml. Just click **Run in Simulator** on the agent row at `/agents`:
+Don't write a scenario yaml. Just click **Run in Simulator** on the agent row at `/automation`:
 
 1. Backend calls `synthesize_for_agent(agent)` which walks the condition tree, picks the "nearest-to-fire" leaf, and maps it to a ticks-shape
 2. Returns an inline scenario dict (no yaml entry created)
@@ -204,7 +204,7 @@ The status snapshot carries `positions[]` (current book) + `open_order_details[]
 | Log lines | `[SIM]` prefix (shorter than the user-facing `SIMULATOR`) |
 | WebSocket `agent_alert` payload | `sim_mode: true` |
 
-The shared dispatcher writes both real + sim events to the same tables. `/agents/activity` auto-scopes (real events when no sim is running, sim events when one is).
+The shared dispatcher writes both real + sim events to the same tables. `/automation/activity` auto-scopes (real events when no sim is running, sim events when one is).
 
 ---
 
@@ -212,13 +212,13 @@ The shared dispatcher writes both real + sim events to the same tables. `/agents
 
 ### 1. Validate a new loss-* agent against the current book
 
-1. Author agent on `/agents` with `status: inactive`
+1. Author agent on `/automation` with `status: inactive`
 2. Click **Validate** → fix typos
 3. Click **Dry-run** → confirm the conditions evaluate against right-now state (sometimes shows `would_fire: true` which is fine in dry-run, it doesn't actually fire)
 4. Click **Run in Simulator** → synthesised scenario trips the agent within 3-5 ticks
 5. Watch Telegram for `SIMULATOR` alert ✓
-6. Open `/agents/activity` (auto-scoped to sim) → see the row land
-7. Flip `status: active` on `/agents`
+6. Open `/automation/activity` (auto-scoped to sim) → see the row land
+7. Flip `status: active` on `/automation`
 
 ### 2. Stress-test the whole book with a real-data crash
 
@@ -241,7 +241,7 @@ The shared dispatcher writes both real + sim events to the same tables. `/agents
 
 ### 4. Stress-test a single agent without writing yaml
 
-1. `/agents` → click **Run in Simulator** on the agent row
+1. `/automation` → click **Run in Simulator** on the agent row
 2. You'll auto-land on the workspace with the scenario synthesised
 3. Click Start
 4. Agent fires on first eligible tick
