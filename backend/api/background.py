@@ -2689,25 +2689,10 @@ async def _task_visitor_log_daily() -> None:
                     await asyncio.to_thread(_send_telegram, msg)
                 except Exception as tg_err:
                     logger.warning(f"Background: visitor log telegram failed: {tg_err}")
-
-            if is_enabled("mail"):
-                try:
-                    from backend.shared.helpers.mail_utils import send_email
-                    from backend.shared.helpers.alert_utils import get_alert_recipients
-                    from backend.scripts.visitor_report import summary_for_email
-                    recipients = get_alert_recipients()
-                    if recipients:
-                        html_body = summary_for_email(report_path)
-                        subject = f"RamboQuant Visitors{branch_tag}"
-                        for email in recipients:
-                            try:
-                                await asyncio.to_thread(send_email, email, email, subject, html_body)
-                            except Exception as mail_err:
-                                logger.warning(
-                                    f"Background: visitor log mail to {email} failed: {mail_err}"
-                                )
-                except Exception as mail_err:
-                    logger.warning(f"Background: visitor log mail failed: {mail_err}")
+            # Operator request (Jun 2026): visitor reports ship to the
+            # RamboQuant alerts Telegram channel only — no email. The
+            # full markdown report stays on disk at .log/visitors-<date>.md
+            # for any audit needs.
         except Exception as e:
             logger.error(f"Background: visitor log daily run failed: {e}")
 
