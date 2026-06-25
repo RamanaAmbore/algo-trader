@@ -274,7 +274,7 @@
 </section>
 
 {#if !isDemo}
-  <section id="frag-form" class="algo-status-card p-3 mt-4 form-card">
+  <section id="frag-form" class="algo-card mt-4 form-card">
     <h2 class="form-title">{editingId ? `Edit template #${editingId}` : 'Create custom template'}</h2>
 
     <div class="form-row">

@@ -298,7 +298,7 @@
     <div class="text-[0.65rem] text-[#c8d8f0]/60">No settings match the filter.</div>
   {/if}
   {#each grouped as [category, rows]}
-    <section class="algo-status-card p-2 mb-2" data-status="inactive">
+    <section class="algo-card mb-2" data-status="inactive">
       <h2 class="text-[0.6rem] font-bold uppercase tracking-wider text-[#fbbf24] mb-1 pb-1 border-b border-[#fbbf24]/25">
         {category} <span class="opacity-60 font-normal ml-1">({rows.length})</span>
       </h2>

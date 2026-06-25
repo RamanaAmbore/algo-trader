@@ -235,7 +235,7 @@
        can browse every metric / scope / op / action handler the engine
        supports — but creates / edits / deletes / registry reload hide
        since the backend rejects them with admin_guard. -->
-  <div class="algo-status-card p-3 mb-3" data-status="inactive">
+  <div class="algo-card mb-3" data-status="inactive">
     <div class="p-2 rounded bg-purple-500/10 border border-purple-500/30 text-[0.65rem] text-purple-200">
       <strong class="text-purple-100">Read-only in demo.</strong>
       Browse every condition / notify / action token the engine supports.

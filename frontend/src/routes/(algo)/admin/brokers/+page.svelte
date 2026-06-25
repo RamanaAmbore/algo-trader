@@ -352,7 +352,7 @@
 <StaleBanner {error} hasData={accounts.length > 0} label="Broker accounts" />
 
 <!-- Account list -->
-<div class="algo-status-card p-2 mb-3" data-status="inactive">
+<div class="algo-card mb-3" data-status="inactive">
   <div class="brokers-list-header">
     <h2 class="brokers-h">
       Accounts <span class="opacity-60 font-normal ml-1">({accounts.length})</span>

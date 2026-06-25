@@ -561,7 +561,7 @@
   </span>
 </div>
 
-<div class="algo-status-card p-3" data-status="inactive">
+<div class="algo-card" data-status="inactive">
 
   {#if success}
     <div class="mb-3 p-2 rounded bg-green-500/15 text-green-400 text-xs border border-green-500/40">{success}</div>
@@ -928,7 +928,7 @@
 
 {#if users.length > 0}
 <!-- ── Email Partners panel ─────────────────────────────────────────── -->
-<section class="email-panel algo-status-card p-3 mt-3" data-status="inactive">
+<section class="email-panel algo-card mt-3" data-status="inactive">
   <!-- Header -->
   <div class="flex items-center justify-between mb-1 gap-2 flex-wrap">
     <h2 class="text-sm font-bold uppercase tracking-wider text-[#fbbf24] mb-0">Email Partners</h2>

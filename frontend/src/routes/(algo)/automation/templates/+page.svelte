@@ -284,7 +284,7 @@
 <AutomationTabs />
 
 {#if isDemo}
-  <div class="algo-status-card p-3 mb-3">
+  <div class="algo-card mb-3">
     <p class="text-xs text-slate-300">
       Demo mode — system templates visible (read-only); create / edit / delete require sign-in.
     </p>

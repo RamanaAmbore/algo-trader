@@ -1557,6 +1557,29 @@
   letter-spacing: 0.02em;
 }
 
+/* ── Canonical .algo-card — compact, padded card ─────────────────────────── */
+/* Tighter sibling of .algo-status-card: same gradient + border but with
+   canonical density (0.55rem 0.7rem) baked in. No left-accent, no status
+   variants — use for info / form / data surfaces where status colour is not
+   semantically meaningful. Drop the Tailwind p-X alongside this class. */
+.algo-card {
+  background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 0.55rem 0.7rem;
+}
+.algo-card-wide {
+  grid-column: 1 / -1;
+}
+.algo-card-title {
+  font-size: 0.62rem;
+  font-weight: 700;
+  color: #94a3b8;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 0.35rem;
+}
+
 /* ── Canonical .bucket-card chrome ───────────────────────────────────────── */
 /* Dark navy gradient card — same visual identity as algo-status-card but with
    per-semantic color accent variants. Canonical home: all new page-level
