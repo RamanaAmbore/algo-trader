@@ -289,12 +289,12 @@
   /* Only MCX — amber (matches the order-icon hue family + signals
      "commodities only", a partial-session state). */
   .rf-mkt-mcx {
-    background: rgba(251, 191, 36, 0.16);
+    background: rgba(251, 191, 36, 0.14);
     border-color: var(--algo-amber-border);
     color: #fbbf24;
   }
   .rf-mkt-mcx:hover:not(:disabled) {
-    background: rgba(251, 191, 36, 0.28);
+    background: rgba(251, 191, 36, 0.22);
     border-color: rgba(251, 191, 36, 0.85);
     color: #fcd34d;
   }

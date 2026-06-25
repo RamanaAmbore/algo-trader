@@ -690,6 +690,40 @@ async def init_db() -> None:
                     "init_db: non-critical index migration skipped — %s "
                     "(stmt=%s)", _idx_err, _stmt[:80],
                 )
+        # ── Slice T — index additions + drops (Jun 2026) ─────────────────
+        # T-8a: composite (order_id, ts) on algo_order_events.
+        # Backs orders.py per-order timeline queries which ORDER BY ts;
+        # the existing singleton ix_algo_order_events_order_id covers
+        # equality-filter but Postgres must sort the result set. The
+        # composite covers filter + sort in one index scan.
+        # T-8b: admin_email_events.created_at DESC for admin.py ORDER BY.
+        # T-8c: monthly_statements (period_year, period_month) for the
+        # investor.py admin filter without a user_id predicate.
+        # T-8e: DROP ix_audit_log_path — audit_log.path has index=True
+        # but no WHERE clause uses it; pure write amplification on a
+        # high-volume table.
+        _slice_t_indexes = (
+            "CREATE INDEX IF NOT EXISTS ix_algo_order_events_order_id_ts "
+            "ON algo_order_events (order_id, ts)",
+            "CREATE INDEX IF NOT EXISTS ix_admin_email_events_created_at "
+            "ON admin_email_events (created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS ix_monthly_statements_period "
+            "ON monthly_statements (period_year, period_month)",
+            # T-8d: DROP ix_strategy_snapshots_date — redundant; the
+            # unique constraint (strategy_id, as_of_date) already covers
+            # point-lookups. Singleton date-only index adds write
+            # amplification with no query benefit.
+            "DROP INDEX IF EXISTS ix_strategy_snapshots_date",
+            "DROP INDEX IF EXISTS ix_audit_log_path",
+        )
+        for _stmt in _slice_t_indexes:
+            try:
+                await conn.execute(text(_stmt))
+            except Exception as _t_err:
+                logger.warning(
+                    "init_db: slice-T index migration skipped — %s "
+                    "(stmt=%s)", _t_err, _stmt[:80],
+                )
         # S7 — audit_log.action GIN trigram index.
         # btree (the ORM default when index=True) cannot serve leading-wildcard
         # ilike queries like ilike("%X%"). Replaced with a pg_trgm GIN index.

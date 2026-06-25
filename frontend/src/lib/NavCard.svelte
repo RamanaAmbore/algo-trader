@@ -96,7 +96,7 @@
   // PositionStrip + /admin/derivatives convention so the operator's
   // muscle memory for "this just refreshed" works everywhere. First
   // sample establishes baseline (no flash on mount).
-  const flash = createTickFlash({ threshold: 0, durationMs: 550 });
+  const flash = createTickFlash({ threshold: 0, durationMs: 350 });
   $effect(() => {
     flash.update('shareNav',    shareNav);
     flash.update('shareDayPnl', shareDayPnl);
@@ -339,11 +339,11 @@
     100% { background-color: transparent; }
   }
   .tf-up   {
-    animation: nav-tf-up   550ms ease-out;
+    animation: nav-tf-up   350ms ease-out;
     border-radius: 0.35rem;
   }
   .tf-down {
-    animation: nav-tf-down 550ms ease-out;
+    animation: nav-tf-down 350ms ease-out;
     border-radius: 0.35rem;
   }
 

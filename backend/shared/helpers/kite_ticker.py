@@ -281,6 +281,11 @@ class TickerManager:
                 try:
                     self._kws.unsubscribe(list(drop))
                     self._subscribed -= drop
+                    # Prune _tick_age so unsubscribed tokens don't
+                    # accumulate in memory indefinitely (monotonic
+                    # growth in a long-running process).
+                    for tok in drop:
+                        self._tick_age.pop(tok, None)
                 except Exception:
                     logger.exception("KiteTicker: unsubscribe() failed")
 
@@ -503,6 +508,11 @@ class TickerManager:
         self._pending = set(prev_subs)
         # _tick_map intentionally preserved — operator's UI keeps showing
         # the last known LTPs until fresh ticks roll in from the new account.
+        # _tick_age is intentionally reset — tokens may differ across
+        # accounts, and stale timestamps from the old account would cause
+        # status() to report stale_count=0 falsely during the brief
+        # window between restart and on_connect.
+        self._tick_age = {}
         self.start(api_key, access_token, account=account)
         return self._started
 

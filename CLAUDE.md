@@ -104,9 +104,9 @@ Gate via `is_enabled('<cap>')` in `utils.py`. On main always True; on dev reads 
 
 | Event | Telegram | Email |
 |---|---|---|
-| Market open | `Open` | `RamboQuant Open: ` |
+| Market open | `Open` | (Telegram only) |
 | Agent fire | `Agent` | `RamboQuant Agent: ` |
-| Market close | `Close` | `RamboQuant Close: ` |
+| Market close | `Close` | (Telegram only) |
 
 **Vocabulary**: Agent (rule) → Alert (event) → Notify (delivery) → Action (side-effect).
 
@@ -153,6 +153,8 @@ Open/close summaries sent at `open_summary_offset_minutes` / `close_summary_offs
 
 **Sparkline cache** — `_spark_past_cache` (past closes) + `_spark_today_cache` (intraday 30m, 5min TTL) + LTP at response time. Disk-persisted to `.log/sparkline_cache.json` (throttled 5s writes, atomic).
 
+**Warm symbol universe** — watchlist + holdings + positions + mover pairs (NIFTY MIDCAP 100 / NIFTY SMLCAP 100 / F&O largecap / indices), capped 300. Operator book always added first; movers drop if truncated.
+
 ---
 
 ## KiteTicker / SSE live-LTP pipeline
@@ -166,6 +168,16 @@ Persistent Kite WebSocket → BroadcastBus → asyncio.Queue per SSE client → 
 **Subscriptions**: Watchlist + holdings + positions at startup + dynamic on add. `subscribe()` idempotent.
 
 **Steady-state cost (market hours)**: ~0 REST calls + 1 persistent WS. LTP read from `_tick_map` (zero quota); sparkline historical 1 call on cache miss (3 req/sec budget, pre-warmed).
+
+**Health surface** (`GET /api/admin/health`) — `ticker.stale_count`, `ticker.max_age_seconds`, `ticker.stale_top` (up to 20 worst-offender entries formatted `"SYMBOL@<age>s"` or `"SYMBOL@never"`). Distinguishes "subscribed but Kite stopped emitting" from "subscribe call never landed".
+
+---
+
+## Frontend persistent cache layer
+
+In-memory Map + localStorage (key prefix `rbq.cache.`) for high-churn surfaces. Module: `frontend/src/lib/data/persistentCache.js`. TTL buckets: `day` (24h) / `hour` (1h) / `minute` (15m) / `short` (2m). Used by MarketPulse (positions, holdings, sparklines, watchQuotes, movers), PositionStrip, NavCard. Survives reload + deploy. Live LTP state intentionally NOT cached (reconnects from SSE).
+
+**Tick-flash primitive** — `createTickFlash({threshold, durationMs})` from `frontend/src/lib/data/tickFlash.svelte.js`. Canonical 350ms directional pulse (green up / red down) on numeric cell updates. Used by PositionStrip, NavCard, /admin/derivatives by-underlying snapshot.
 
 ---
 
@@ -427,7 +439,7 @@ Every algo page card follows ONE structure:
 
 **Page-header** (every algo page): `<div class="page-header">` wrapping `<span class="algo-title-group">` (title) · `<span class="algo-ts">` (now) · `<span class="ml-auto">` (spacer) · `<span class="page-header-actions">` (RefreshButton + page chips + PageHeaderActions).
 
-**RefreshButton**: cyan-400. Swaps glyph on loading (spin → arc-spinner, not rotated arrow). Native tooltip: "Refresh — 1 of 2 broker accounts loaded | Failed: ZG#### | Last refreshed: Sun 30 May · 21:42 IST · 12:12 EDT". Badge states: grey `?` (API unreachable) · green count (all loaded) · amber count (partial) · red count (none) · nothing (no brokers).
+**RefreshButton**: cyan-400. Swaps glyph on loading (spin → arc-spinner, not rotated arrow). Native tooltip: "Refresh — 1 of 2 broker accounts loaded | Failed: ZG#### | Last refreshed: Sun 30 May · 21:42 IST · 12:12 EDT". Badge states: grey `?` (API unreachable) · green count (all loaded) · amber count (partial) · red count (none) · nothing (no brokers). Clicking during market-closed shows informational popup ("Both NSE and MCX are currently closed").
 
 **PageHeaderActions**: Order (amber gradient), Chart (cyan gradient), Log (violet gradient). Order/Chart hidden when not contextually applicable. Chart without symbol navigates to `/charts` workspace.
 

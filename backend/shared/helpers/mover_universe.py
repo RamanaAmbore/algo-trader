@@ -23,7 +23,7 @@ on top movers is invisible to the operator.
 # Mirror of frontend NIFTY_MIDCAP_100 set. Quarterly rebalance.
 NIFTY_MIDCAP_100 = frozenset({
     "AUROPHARMA", "BALKRISIND", "BANDHANBNK", "BHARATFORG", "BHEL",
-    "CGPOWER", "COFORGE", "CONCOR", "CUMMININD", "DIXON",
+    "CGPOWER", "COFORGE", "CONCOR", "CUMMINSIND", "DIXON",
     "FEDERALBNK", "GMRINFRA", "GODREJPROP", "GUJGASLTD", "HDFCAMC",
     "HINDPETRO", "IDEA", "IDFCFIRSTB", "INDHOTEL", "IRCTC",
     "JINDALSTEL", "JSWENERGY", "JUBLFOOD", "LICHSGFIN", "LUPIN",

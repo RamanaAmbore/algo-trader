@@ -999,11 +999,11 @@ class SparklineController(Controller):
 
                     if tasks:
                         fetched = await asyncio.gather(*tasks)
+                        # O(1) lookup dict — avoids O(N²) `next(…)` scan over to_fetch.
+                        _to_fetch_exch = {s.tradingsymbol: s.exchange for s in to_fetch}
                         with _spark_lock:
                             for sym, past_closes in fetched:
-                                exch = next(
-                                    (s.exchange for s in to_fetch if s.tradingsymbol == sym), "NSE"
-                                )
+                                exch = _to_fetch_exch.get(sym, "NSE")
                                 cache_key = (sym, exch, days, today)
                                 # Stamp every attempt — empty or short —
                                 # so the throttle in _past_cache_is_complete
@@ -1482,14 +1482,18 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
         if sym_obj.tradingsymbol in token_map
     ]
 
+    # Build O(1) sym→exch lookup once before the result loops.
+    # Without this, `next(s.exchange for s in to_fetch if …)` is O(N)
+    # per result → O(N²) total for 300 symbols (90,000 iterations).
+    sym_to_exch      = {s.tradingsymbol: s.exchange for s in to_fetch}
+    sym_to_exch_today = {s.tradingsymbol: s.exchange for s in today_to_fetch}
+
     cached_count = 0
     if tasks:
         fetched = await asyncio.gather(*tasks)
         with _spark_lock:
             for sym, past_closes in fetched:
-                exch = next(
-                    (s.exchange for s in to_fetch if s.tradingsymbol == sym), "NSE"
-                )
+                exch = sym_to_exch.get(sym, "NSE")
                 key = (sym, exch, days, today)
                 _past_cache_record_attempt(key)
                 if past_closes:
@@ -1501,9 +1505,7 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
         fetched_today = await asyncio.gather(*today_tasks)
         for sym, today_closes in fetched_today:
             if today_closes:
-                exch = next(
-                    (s.exchange for s in today_to_fetch if s.tradingsymbol == sym), "NSE"
-                )
+                exch = sym_to_exch_today.get(sym, "NSE")
                 _today_cache_put(sym, exch, today, today_closes)
                 today_cached += 1
         if today_cached:

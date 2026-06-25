@@ -29,6 +29,11 @@
 /** @type {Map<string, {value: any, refreshed_at: number, ttl_ms: number}>} */
 const _mem = new Map();
 
+/** Per-key pending localStorage write timers. Cleared + replaced on each
+ *  cachedWrite call so rapid successive writes coalesce into one fsync. */
+/** @type {Map<string, ReturnType<typeof setTimeout>>} */
+const _lsTimers = new Map();
+
 const PREFIX = 'rbq.cache.';
 
 /**
@@ -109,8 +114,15 @@ export function cachedRead(key) {
 }
 
 /**
- * Write to both tiers. Pass ttl_ms=0 for never-expire entries (rare —
- * most data should pick from TTL above).
+ * Write to both tiers. The in-memory Map is updated synchronously
+ * (instant hot path). The localStorage write is debounced by 200ms
+ * per key so rapid successive writes (e.g. MarketPulse calling
+ * cachedWrite 5× per cycle) coalesce into a single synchronous
+ * JSON.stringify + setItem — avoiding main-thread jank on mobile
+ * Safari where localStorage writes block the event loop.
+ *
+ * Pass ttl_ms=0 for never-expire entries (rare — most data should
+ * pick from TTL above).
  *
  * @param {string} key
  * @param {any} value
@@ -118,8 +130,18 @@ export function cachedRead(key) {
  */
 export function cachedWrite(key, value, ttl_ms = TTL.minute) {
   const entry = { value, refreshed_at: _now(), ttl_ms };
+  // Synchronous in-memory update — callers read from here on the hot path.
   _mem.set(key, entry);
-  _writeLs(key, entry);
+  // Debounced localStorage write — cancel any pending write for this key
+  // and schedule a fresh one. The closure captures `entry` by reference
+  // so if another write lands within 200ms, we overwrite the timer with
+  // the newer entry (clearTimeout + re-schedule).
+  const existing = _lsTimers.get(key);
+  if (existing !== undefined) clearTimeout(existing);
+  _lsTimers.set(key, setTimeout(() => {
+    _writeLs(key, entry);
+    _lsTimers.delete(key);
+  }, 200));
 }
 
 /**
@@ -133,19 +155,5 @@ export function cachedDelete(key) {
   try { localStorage.removeItem(PREFIX + key); } catch {}
 }
 
-/**
- * Format a humanish "X ago" string for stale-stamp display. Returns
- * empty string when refreshed_at is missing.
- *
- * @param {number | null | undefined} refreshed_at
- * @returns {string}
- */
-export function staleStamp(refreshed_at) {
-  if (!refreshed_at) return '';
-  const age_s = Math.floor((_now() - refreshed_at) / 1000);
-  if (age_s < 5)    return 'just now';
-  if (age_s < 60)   return `${age_s}s ago`;
-  if (age_s < 3600) return `${Math.floor(age_s / 60)}m ago`;
-  if (age_s < 86400) return `${Math.floor(age_s / 3600)}h ago`;
-  return `${Math.floor(age_s / 86400)}d ago`;
-}
+// staleStamp was spec-tested and dropped (zero callers in codebase).
+// cachedDelete is kept for future use (e.g. cache invalidation on logout).

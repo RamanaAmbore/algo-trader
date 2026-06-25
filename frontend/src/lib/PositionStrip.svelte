@@ -17,6 +17,12 @@
   let holdings  = $state(/** @type {any[]} */ ([]));
   let funds     = $state(/** @type {any[]} */ ([]));
 
+  // Monotonic counter incremented after each successful 30s poll
+  // completion. The tick-flash $effect depends ONLY on this counter,
+  // not on the live-LTP-derived sums, so flash animations fire at
+  // most once per poll cycle rather than on every SSE tick.
+  let _pollCycleStamp = $state(0);
+
   /** @type {ReturnType<typeof marketAwareInterval> | null} */
   let teardown = null;
 
@@ -69,6 +75,10 @@
         dataCache.funds = f.value;
         if (funds.length) cachedWrite('strip.funds', funds, TTL.minute);
       }
+      // Signal that a poll cycle completed. The flash $effect watches
+      // this counter, not the live-LTP-derived sums, so flash fires
+      // at most once per 30s poll rather than on every SSE tick.
+      _pollCycleStamp += 1;
     } catch (_) { /* silent — strip stays at last-good values */ }
   }
 
@@ -236,12 +246,18 @@
     return aggCompact(v);
   }
 
-  // Drive the flash helper off every derived strip aggregate. One
-  // $effect covers all 9 cells — Svelte tracks each derived as a
-  // dep and re-runs the block when any of them changes. flash.update
-  // is a no-op on unchanged values so spurious reruns don't cost
-  // anything.
+  // Drive the flash helper off poll-cycle completions ONLY.
+  // _pollCycleStamp increments inside loadOnce() after a successful
+  // broker fetch, so flash fires at most once per 30s poll — not on
+  // every live SSE tick. The numbers still update on every tick via
+  // the live-LTP-derived sums above; only the animation is throttled.
+  // flash.update is a no-op when the value hasn't changed since last
+  // call, so the "first sample establishes baseline, no flash on mount"
+  // gate inside createTickFlash still works correctly.
   $effect(() => {
+    // Read _pollCycleStamp to create a dependency on poll completions.
+    // eslint-disable-next-line no-unused-expressions
+    _pollCycleStamp;
     flash.update('P',    positionsPnl);
     flash.update('M',    marginTotal);
     flash.update('U',    utilPct);

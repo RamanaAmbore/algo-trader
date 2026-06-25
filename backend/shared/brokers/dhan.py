@@ -1721,6 +1721,12 @@ _DHAN_STATUS_TO_KITE = {
     # mid-flight handling treats it like a Kite OPEN order; the chase
     # engine will detect the partial fill via the filled_qty delta.
     "PARTIALLY_TRADED":  "OPEN",
+    # AMO / GTT mid-flight states — treat as OPEN so the chase loop
+    # continues monitoring until a terminal state arrives.
+    "MODIFY_PENDING":              "OPEN",
+    "AMENDED":                     "OPEN",
+    "TRIGGER_PENDING":             "OPEN",
+    "AFTER_MARKET_ORDER_REQ_RECEIVED": "OPEN",
     "CANCELLED":         "CANCELLED",
     "REJECTED":          "REJECTED",
     "EXPIRED":           "EXPIRED",

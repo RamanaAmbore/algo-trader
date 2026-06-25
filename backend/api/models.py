@@ -643,7 +643,9 @@ class StrategySnapshot(Base):
 
     __table_args__ = (
         UniqueConstraint("strategy_id", "as_of_date", name="uq_strategy_snap_pair"),
-        Index("ix_strategy_snapshots_date", "as_of_date"),
+        # ix_strategy_snapshots_date (singleton as_of_date index) was
+        # dropped in slice T-8d — the unique constraint on (strategy_id,
+        # as_of_date) already covers every point-lookup. DROP in init_db.
     )
 
 
@@ -1534,6 +1536,7 @@ class AdminEmailEvent(Base):
     created_at:       Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),
+        index=True,   # backs admin.py ORDER BY created_at DESC (slice T-8b)
     )
     actor_username:   Mapped[str]      = mapped_column(String(64), nullable=False, index=True)
     actor_role:       Mapped[str]      = mapped_column(String(32), nullable=False)
@@ -1684,7 +1687,11 @@ class AuditLog(Base):
     # existed. Code paths writing new rows MUST set a category.
     category: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
     method: Mapped[str]           = mapped_column(String(8),   nullable=False)
-    path:   Mapped[str]           = mapped_column(String(255), nullable=False, index=True)
+    # index=True removed in slice T-8e — no WHERE clause uses path as a
+    # filter; the column was only accessed in ORDER BY / display, making
+    # the btree index pure write amplification on a high-volume table.
+    # DROP INDEX IF EXISTS ix_audit_log_path is in init_db (slice T block).
+    path:   Mapped[str]           = mapped_column(String(255), nullable=False)
     # Optional structured target — captured when the path includes a
     # `/{target_id}` parameter and the middleware can identify the
     # target type from the path prefix. Best-effort; absent for

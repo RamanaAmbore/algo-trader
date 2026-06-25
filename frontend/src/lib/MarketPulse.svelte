@@ -640,6 +640,13 @@
   let funds = $state(/** @type {any[]} */ ([]));
 
   let sparklines = $state(/** @type {Record<string, number[]>} */ ({}));
+  // Guard that prevents the active-universe prune from running on the
+  // very first loadSparklines() call. On mount, unifiedRows may be
+  // partially populated (e.g. watchlist loaded but positions not yet),
+  // so a prune would incorrectly drop position sparklines that were
+  // just restored from the persistent cache. Subsequent calls (the 60s
+  // cadence) run the prune normally once this flag is true.
+  let _firstSparkDone = false;
   // Local $state mirror of the liveLtp store — keeps the sparkline
   // cellRenderer and the LTP override logic inside buildUnified readable
   // without importing a store subscription into every call-site. Updated
@@ -1113,15 +1120,25 @@
       // movers rolled over, pinned changes) are dropped from BOTH the
       // in-memory sparklines map AND localStorage so the cache never
       // grows unbounded. `seen` was built above from unifiedRows.
-      const activeSyms = new Set();
-      for (const p of pairs) activeSyms.add(p.tradingsymbol);
-      const pruned = /** @type {Record<string, number[]>} */ ({});
-      for (const sym in sparklines) {
-        if (activeSyms.has(sym)) pruned[sym] = sparklines[sym];
+      //
+      // Skipped on the FIRST call (_firstSparkDone=false) because
+      // unifiedRows may be only partially populated at mount time (e.g.
+      // watchlist rows arrived but positions not yet). A prune on a
+      // partial universe would drop position sparklines just restored
+      // from the persistent cache. Subsequent 60s-cadence calls always
+      // run the prune on a fully-settled universe.
+      if (_firstSparkDone) {
+        const activeSyms = new Set();
+        for (const p of pairs) activeSyms.add(p.tradingsymbol);
+        const pruned = /** @type {Record<string, number[]>} */ ({});
+        for (const sym in sparklines) {
+          if (activeSyms.has(sym)) pruned[sym] = sparklines[sym];
+        }
+        sparklines = pruned;
       }
-      sparklines = pruned;
-      // Persist the pruned set. Backend day-evicts independently;
-      // TTL.day matches that contract.
+      _firstSparkDone = true;
+      // Persist the (possibly pruned) set. Backend day-evicts
+      // independently; TTL.day matches that contract.
       cachedWrite('mp.sparklines', sparklines, TTL.day);
     } catch (_) { /* non-fatal — sparklines are cosmetic */ }
   }
@@ -4967,7 +4984,7 @@
                   }
                 }}
                 class="text-[0.7rem] py-1 px-3 rounded font-bold border"
-                style="background: rgba(248,113,113,0.2); color: #fda4af; border-color: rgba(248,113,113,0.55);"
+                style="background: rgba(248,113,113,0.2); color: #f87171; border-color: rgba(248,113,113,0.55);"
                 title={`Delete "${_tgtList.name}" watchlist`}>
                 🗑 Delete
               </button>

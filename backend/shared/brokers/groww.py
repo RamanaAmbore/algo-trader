@@ -468,7 +468,7 @@ class GrowwBroker(Broker):
             # adapter without raising. Earlier this raised ValueError,
             # generating WARNING-level log spam every time a quote /
             # historical lookup went through the failover chain.
-            logger.warning(
+            logger.debug(
                 f"GrowwBroker.historical_data: no trading_symbol/exchange "
                 f"provided (token={instrument_token}) — returning [] for PriceBroker fallback"
             )

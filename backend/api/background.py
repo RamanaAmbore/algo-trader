@@ -2330,12 +2330,20 @@ async def _task_sparkline_warm(state: dict) -> None:
         except Exception as e:
             logger.warning(f"sparkline warm: mover universe collect failed: {e}")
 
-        # Hard cap raised 100 → 300 to fit positions + holdings +
-        # watchlist (typically ≤ 100) + ~250 mover symbols. Operator's
-        # own book remains first in the list (added above), so a
-        # truncation at the cap only ever drops mover universe
-        # symbols, never the operator's positions.
-        return pairs[:300]
+        # Hard cap: operator's book (positions + holdings + watchlist)
+        # is never truncated. Mover universe fills remaining capacity
+        # up to the 300-symbol ceiling. The comment above ("truncation
+        # only ever drops mover universe symbols") was ONLY true when
+        # the book was small — a large book (> 300 symbols) would
+        # silently drop movers and potentially book symbols added late.
+        # Fix: split at the book/mover boundary and cap movers separately.
+        from backend.shared.helpers.mover_universe import mover_warm_pairs as _mwp
+        _mover_set = set(_mwp())
+        book_pairs  = [p for p in pairs if p not in _mover_set]
+        mover_pairs = [p for p in pairs if p in _mover_set]
+        cap         = 300
+        remaining   = max(0, cap - len(book_pairs))
+        return book_pairs + mover_pairs[:remaining]
 
     async def _do_warm(label: str) -> None:
         logger.info(f"sparkline warm: starting ({label})")
@@ -2352,8 +2360,12 @@ async def _task_sparkline_warm(state: dict) -> None:
     from backend.shared.helpers.utils import is_engine_idle
 
     # ── Fire immediately at startup ──────────────────────────────────────────
+    # fire-and-forget so subsequent task startup (scheduled-warm loop below)
+    # is not blocked for the 50-90 s the warm cycle takes. The operator's
+    # first request may still pay a cold-cache miss for the first ~30 s but
+    # the rest of app startup completes without waiting.
     if not is_engine_idle():
-        await _do_warm("startup")
+        asyncio.create_task(_do_warm("startup"))
     else:
         logger.info("sparkline warm: skipped startup — engine idle (dev)")
 
