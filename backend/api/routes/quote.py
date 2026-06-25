@@ -615,14 +615,55 @@ _SPARKLINE_EXCHANGES = ("NSE", "NFO", "BSE", "BFO", "MCX", "CDS")
 def _get_today_token_map(broker) -> dict[tuple[str, str], int]:  # type: ignore[no-untyped-def]
     """Return the day-cached {(tradingsymbol, exchange) → token} map.
 
-    First call per IST day: fetches all sparkline exchanges (blocking HTTP).
-    Subsequent calls: O(1) dict lookup under the lock.
+    Read priority:
+      1. instruments_store._MEM_CACHE (Tier 1 of the persistent store) — O(1)
+         sync read; populated by get_or_fetch_all_today() on the async path.
+      2. Module-level _TOKEN_MAP_CACHE fallback — used when the persistent
+         store has not been warmed yet (e.g. first cold call from ohlcv_store
+         before background warm has run). Falls through to a live broker fetch
+         and fires a background populate of the persistent store as a side-effect.
+
+    This function is always called via asyncio.to_thread so it MUST remain
+    synchronous. Awaiting inside here would deadlock the thread pool.
     """
     today = _ist_today()
+
+    # ── Tier 1: check instruments_store memory cache (sync read) ──────────────
+    # The store's _MEM_CACHE is keyed (date_str, exchange); we union all
+    # exchanges into a single map matching the legacy return type.
+    try:
+        from backend.api.persistence.instruments_store import (
+            _MEM_CACHE as _instr_mem,
+            _SPARKLINE_EXCHANGES as _INSTR_EXCHS,
+            _purge_stale,
+        )
+        _purge_stale(today)
+        # Check if ALL exchanges have been loaded into the store's Tier 1.
+        # A partial warm (some exchanges missing) falls through to the legacy
+        # path rather than returning an incomplete map.
+        warm_keys = {(today, exch) for exch in _INSTR_EXCHS}
+        if warm_keys.issubset(_instr_mem.keys()):
+            union: dict[tuple[str, str], int] = {}
+            for exch in _INSTR_EXCHS:
+                cached_exch = _instr_mem.get((today, exch))
+                if cached_exch:
+                    union.update(cached_exch)
+            if union:
+                # Mirror into _TOKEN_MAP_CACHE so any future sync-path callers
+                # get the fast path without re-scanning _instr_mem.
+                with _TOKEN_MAP_LOCK:
+                    _TOKEN_MAP_CACHE[today] = union
+                return union
+    except Exception:
+        pass  # persistent store not available — fall through
+
+    # ── Legacy Tier 2: module-level _TOKEN_MAP_CACHE ───────────────────────────
     with _TOKEN_MAP_LOCK:
         cached = _TOKEN_MAP_CACHE.get(today)
         if cached is not None:
             return cached
+
+    # ── Legacy Tier 3: live broker fetch ──────────────────────────────────────
     # Build outside the lock — broker.instruments calls are slow (~500 kB each).
     new_map: dict[tuple[str, str], int] = {}
     for exch in _SPARKLINE_EXCHANGES:
@@ -640,7 +681,30 @@ def _get_today_token_map(broker) -> dict[tuple[str, str], int]:  # type: ignore[
             if k != today:
                 _TOKEN_MAP_CACHE.pop(k, None)
         _TOKEN_MAP_CACHE[today] = new_map
+
+    # Fire-and-forget: populate the persistent store from the result we just
+    # built so subsequent calls (and post-redeploy restarts) hit Tier 1 or
+    # Tier 2 instead of calling the broker again.
+    _trigger_instruments_store_populate()
+
     return new_map
+
+
+def _trigger_instruments_store_populate() -> None:
+    """Fire a background coroutine to populate instruments_store from broker.
+
+    Safe to call from a thread (asyncio.to_thread context). Uses
+    run_coroutine_threadsafe to schedule on the running event loop.
+    If no loop is running, silently skips (test / import-only contexts).
+    """
+    try:
+        import asyncio as _asyncio
+        from backend.api.persistence.instruments_store import get_or_fetch_all_today as _g
+        loop = _asyncio.get_event_loop()
+        if loop.is_running():
+            _asyncio.run_coroutine_threadsafe(_g(), loop)
+    except Exception:
+        pass  # never let a background-populate failure surface to the caller
 
 
 def _ist_today() -> str:

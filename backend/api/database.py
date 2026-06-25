@@ -752,6 +752,18 @@ async def init_db() -> None:
             await create_ohlcv_daily_table(conn)
         except Exception as _ohlcv_err:
             logger.warning("init_db: ohlcv_daily migration skipped — %s", _ohlcv_err)
+        # instruments_snapshot table (Stage 2 OHLCV persistence).
+        try:
+            from backend.api.persistence.migrations import create_instruments_snapshot_table
+            await create_instruments_snapshot_table(conn)
+        except Exception as _instr_err:
+            logger.warning("init_db: instruments_snapshot migration skipped — %s", _instr_err)
+        # holidays_snapshot table (Stage 2 OHLCV persistence).
+        try:
+            from backend.api.persistence.migrations import create_holidays_snapshot_table
+            await create_holidays_snapshot_table(conn)
+        except Exception as _hol_err:
+            logger.warning("init_db: holidays_snapshot migration skipped — %s", _hol_err)
     logger.info("Database: tables verified")
 
     # Seed grammar tokens (condition / notify / action catalog) BEFORE agents

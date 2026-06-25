@@ -610,23 +610,51 @@ def fetch_holidays(exchange="NSE"):
     MCX holidays are fetched from MCX website.
     Maps exchange param to the right segment.
 
-    Cached per-day in-process — first call of the day hits the API, the
-    rest of the day's calls return the cached set. The cache key is the
-    exchange + today's date, so the natural rollover happens at midnight.
+    Read priority:
+      1. holidays_store._MEM_CACHE (Tier 1 of the persistent store) — sync read.
+         Populated on the async path by get_or_fetch_holidays().
+      2. Module-level _HOLIDAY_CACHE fallback — used when the persistent store
+         has not been warmed yet (first cold call from a sync context).
+         Falls through to NSE API and fires a background populate as a side-effect.
+
+    This function is sync so it can be called from non-async code (agent engine,
+    background tasks). Do NOT make it async — that would require changing every
+    callsite throughout the codebase.
     """
     import requests
     from datetime import datetime as dt_datetime, date as dt_date
 
+    exch = exchange.upper().strip()
+
+    # ── Tier 1: check holidays_store memory cache (sync read) ─────────────────
+    try:
+        from backend.api.persistence.holidays_store import (
+            _MEM_CACHE as _hol_mem,
+            _ist_year as _hol_year,
+        )
+        yr = _hol_year()
+        hol_key = (exch, yr)
+        if hol_key in _hol_mem:
+            # Mirror into _HOLIDAY_CACHE so future sync callers get fast path.
+            cached_set = _hol_mem[hol_key]
+            today = dt_date.today()
+            _HOLIDAY_CACHE[exchange] = (today, cached_set)
+            return cached_set
+    except Exception:
+        pass  # persistent store not available — fall through
+
+    # ── Legacy Tier 2: module-level _HOLIDAY_CACHE (daily TTL) ────────────────
     today = dt_date.today()
     cached = _HOLIDAY_CACHE.get(exchange)
     if cached and cached[0] == today:
         return cached[1]
 
+    # ── Legacy Tier 3: NSE API fetch ──────────────────────────────────────────
     # Map Kite exchange names to NSE holiday API segment keys
     # CM=equity cash, FO=F&O, CD=currency, COM=commodity(MCX)
     _SEGMENT_MAP = {"NSE": "CM", "BSE": "CM", "NFO": "FO", "CDS": "CD", "MCX": "COM"}
 
-    holidays = set()
+    holidays: set = set()
     try:
         resp = requests.get(
             "https://www.nseindia.com/api/holiday-master?type=trading",
@@ -650,7 +678,37 @@ def fetch_holidays(exchange="NSE"):
     # Cache even on failure (empty set) — avoids retry-hammering nseindia
     # all day if the API is down. Next day's call retries naturally.
     _HOLIDAY_CACHE[exchange] = (today, holidays)
+
+    # Fire-and-forget: populate the persistent store so future restarts
+    # hit Tier 1 or Tier 2 instead of calling the API again.
+    if holidays:
+        _trigger_holidays_store_populate(exch, holidays)
+
     return holidays
+
+
+def _trigger_holidays_store_populate(exchange: str, holidays: set) -> None:
+    """Schedule a background write to holidays_store from a sync context.
+
+    Schedules on the running event loop if one exists. Silently skips
+    in test / import-only contexts where no loop is running.
+    """
+    try:
+        import asyncio as _asyncio
+        from backend.api.persistence.holidays_store import (
+            _MEM_CACHE as _hol_mem,
+            _ist_year as _hol_year,
+            _enqueue_db as _hol_enqueue,
+        )
+        yr = _hol_year()
+        key = (exchange, yr)
+        # Populate Tier 1 synchronously — it's just a dict write.
+        if key not in _hol_mem:
+            _hol_mem[key] = holidays
+        # Enqueue DB write — also sync (just puts to a queue).
+        _hol_enqueue(exchange, yr, holidays)
+    except Exception:
+        pass  # never let background populate surface to the caller
 
 
 def update_books(holdings, positions, margins):

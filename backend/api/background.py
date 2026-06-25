@@ -2771,12 +2771,13 @@ async def _task_visitor_log_daily() -> None:
         await _run_once()
 
 
-async def _task_purge_ohlcv_daily() -> None:
-    """Daily 03:00 IST — delete ohlcv_daily rows older than 5 years.
+async def _task_purge_persistence_caches() -> None:
+    """Daily 03:00 IST — purge stale rows from persistence-layer tables.
 
-    OHLCV bars are immutable once the day closes, but unbounded growth
-    would bloat the table over years. 5-year retention covers every
-    chart range the UI exposes (1M / 6M / 1Y) with headroom for backtests.
+    ohlcv_daily:          rows older than 5 years (immutable; 5y covers all UI ranges).
+    instruments_snapshot: rows older than 7 days (latest snapshot sufficient;
+                          anything older can be re-fetched if needed — keeps table tiny).
+    holidays_snapshot:    no purge (years are tiny + useful for backtest of any year).
     """
     from sqlalchemy import text
     from backend.api.database import async_session
@@ -2784,14 +2785,22 @@ async def _task_purge_ohlcv_daily() -> None:
     async def _run_once():
         try:
             async with async_session() as session:
-                result = await session.execute(text(
+                ohlcv_res = await session.execute(text(
                     "DELETE FROM ohlcv_daily WHERE date < now() - interval '5 years'"
                 ))
+                instr_res = await session.execute(text(
+                    "DELETE FROM instruments_snapshot WHERE date < now() - interval '7 days'"
+                ))
                 await session.commit()
-                deleted = result.rowcount if result.rowcount >= 0 else 0
-            logger.info(f"Background: ohlcv_daily purge complete — {deleted} row(s) deleted")
+                ohlcv_deleted = ohlcv_res.rowcount if ohlcv_res.rowcount >= 0 else 0
+                instr_deleted = instr_res.rowcount if instr_res.rowcount >= 0 else 0
+            logger.info(
+                f"Background: persistence cache purge complete — "
+                f"ohlcv_daily: {ohlcv_deleted} row(s), "
+                f"instruments_snapshot: {instr_deleted} row(s)"
+            )
         except Exception as exc:
-            logger.warning(f"Background: ohlcv_daily purge failed: {exc}")
+            logger.warning(f"Background: persistence cache purge failed: {exc}")
 
     await asyncio.sleep(180)   # let startup settle
 
@@ -2801,7 +2810,7 @@ async def _task_purge_ohlcv_daily() -> None:
         if now >= next_run:
             next_run += timedelta(days=1)
         sleep_s = (next_run - now).total_seconds()
-        logger.info(f"Background: ohlcv_daily purge sleeping {sleep_s/3600:.1f}h until 03:00 IST")
+        logger.info(f"Background: persistence cache purge sleeping {sleep_s/3600:.1f}h until 03:00 IST")
         await asyncio.sleep(sleep_s)
         await _run_once()
 
@@ -2843,7 +2852,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_strategy_snapshot(),   name="bg-strategy-snapshot"),
         asyncio.create_task(_task_monthly_statement(),   name="bg-monthly-statement"),
         asyncio.create_task(_task_nav_compute(),         name="bg-nav-compute"),
-        asyncio.create_task(_task_purge_ohlcv_daily(),  name="bg-purge-ohlcv"),
+        asyncio.create_task(_task_purge_persistence_caches(), name="bg-purge-persistence"),
     ]
     # Mode 2 (real-data paper) runs only on main. The PaperTradeEngine
     # singleton processes its open-order book against real Kite quotes

@@ -6,14 +6,28 @@ Batches by size (200) or timeout (5 s), whichever fires first.
 Duplicate (symbol, exchange, date) entries within a batch are coalesced
 last-write-wins before the file is touched.
 
-Schema on disk:
+Schema on disk (v2):
 {
-  "version": 1,
+  "version": 2,
   "saved_at": "<iso>",
   "ohlcv_daily": {
     "<symbol>|<exchange>": {"YYYY-MM-DD": [open, high, low, close, volume]}
+  },
+  "instruments_snapshot": {
+    "<exchange>": {"date": "YYYY-MM-DD", "payload": [...]}
+  },
+  "holidays_snapshot": {
+    "<exchange>": {"<year>": ["YYYY-MM-DD", ...]}
   }
 }
+
+v1 files (missing instruments_snapshot / holidays_snapshot keys) are read
+back-compatibly — the absent keys are treated as empty dicts.
+
+Note: instruments_snapshot payloads can be large (~500 kB × 6 exchanges).
+The disk cache is primarily useful for fast restart; the DB tier covers
+the durable persistence path. Instruments/holidays are therefore included
+for completeness but the DB is the authoritative warm source on restart.
 """
 
 from __future__ import annotations
@@ -23,6 +37,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from backend.shared.helpers.ramboq_logger import get_logger
 
@@ -74,8 +89,10 @@ async def _run_loop() -> None:
             logger.warning(f"cache_worker: flush failed: {exc}")
 
 
-def _coalesce(batch: list[dict]) -> dict[str, dict[str, list]]:
-    """Merge batch into {sym|exch: {date: [o,h,l,c,v]}} last-write-wins."""
+# ── Coalesce helpers ──────────────────────────────────────────────────────────
+
+def _coalesce_ohlcv(batch: list[dict]) -> dict[str, dict[str, list]]:
+    """Merge ohlcv_daily payloads into {sym|exch: {date: [o,h,l,c,v]}} last-write-wins."""
     merged: dict[str, dict[str, list]] = {}
     for payload in batch:
         if payload.get("kind") != "ohlcv_daily":
@@ -101,12 +118,48 @@ def _coalesce(batch: list[dict]) -> dict[str, dict[str, list]]:
     return merged
 
 
+def _coalesce_instruments(batch: list[dict]) -> dict[str, dict[str, Any]]:
+    """Merge instruments_snapshot payloads into {exchange: {date, payload}} last-write-wins."""
+    merged: dict[str, dict[str, Any]] = {}
+    for payload in batch:
+        if payload.get("kind") != "instruments_snapshot":
+            continue
+        exch = str(payload.get("exchange", ""))
+        date = str(payload.get("date", ""))
+        if not exch or not date:
+            continue
+        merged[exch] = {
+            "date":    date,
+            "payload": payload.get("payload", []),
+        }
+    return merged
+
+
+def _coalesce_holidays(batch: list[dict]) -> dict[str, dict[str, list[str]]]:
+    """Merge holidays_snapshot payloads into {exchange: {year_str: [dates]}} last-write-wins."""
+    merged: dict[str, dict[str, list[str]]] = {}
+    for payload in batch:
+        if payload.get("kind") != "holidays_snapshot":
+            continue
+        exch = str(payload.get("exchange", ""))
+        year = payload.get("year")
+        if not exch or year is None:
+            continue
+        if exch not in merged:
+            merged[exch] = {}
+        merged[exch][str(year)] = list(payload.get("dates", []))
+    return merged
+
+
 def _flush_batch(batch: list[dict]) -> None:
-    incoming = _coalesce(batch)
-    if not incoming:
+    ohlcv_inc     = _coalesce_ohlcv(batch)
+    instru_inc    = _coalesce_instruments(batch)
+    holidays_inc  = _coalesce_holidays(batch)
+
+    if not ohlcv_inc and not instru_inc and not holidays_inc:
         return
 
-    # Load existing file.
+    # Load existing file (support both v1 and v2 on disk).
     existing: dict = {}
     if _CACHE_PATH.exists():
         try:
@@ -116,16 +169,30 @@ def _flush_batch(batch: list[dict]) -> None:
             logger.warning(f"cache_worker: could not read existing cache: {exc}")
             existing = {}
 
+    # ── OHLCV ──
     ohlcv = existing.get("ohlcv_daily") or {}
-    for key, dates in incoming.items():
+    for key, dates in ohlcv_inc.items():
         if key not in ohlcv:
             ohlcv[key] = {}
         ohlcv[key].update(dates)
 
-    payload = {
-        "version":    1,
-        "saved_at":   datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "ohlcv_daily": ohlcv,
+    # ── Instruments (last-write-wins per exchange) ──
+    instruments = existing.get("instruments_snapshot") or {}
+    instruments.update(instru_inc)
+
+    # ── Holidays (merge per exchange/year, last-write-wins per year) ──
+    holidays = existing.get("holidays_snapshot") or {}
+    for exch, year_map in holidays_inc.items():
+        if exch not in holidays:
+            holidays[exch] = {}
+        holidays[exch].update(year_map)
+
+    payload: dict[str, Any] = {
+        "version":              2,
+        "saved_at":             datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "ohlcv_daily":          ohlcv,
+        "instruments_snapshot": instruments,
+        "holidays_snapshot":    holidays,
     }
 
     _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)

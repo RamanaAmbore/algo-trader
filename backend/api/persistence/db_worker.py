@@ -1,11 +1,14 @@
 """
-DB worker — drains db_queue and batches OHLCV bars into PostgreSQL via
-INSERT ... ON CONFLICT DO NOTHING.
+DB worker — drains db_queue and batches rows into PostgreSQL.
 
-Batches by size (500 rows) or timeout (500 ms), whichever fires first.
-Duplicate (symbol, exchange, date) entries within a batch are coalesced
-last-write-wins before the INSERT so the batch carries at most one row
-per primary key.
+Dispatches on payload["kind"]:
+  "ohlcv_daily"          — batched INSERT ... ON CONFLICT DO NOTHING
+  "instruments_snapshot" — last-write-wins upsert per (exchange, date)
+  "holidays_snapshot"    — last-write-wins upsert per (exchange, year)
+
+Batches by size (500 items) or timeout (500 ms), whichever fires first.
+Duplicate primary-key entries within a batch are coalesced last-write-wins
+before the INSERT so the DB sees at most one row per PK.
 
 A failed batch is dropped; the next read re-fetches from the broker.
 """
@@ -13,6 +16,7 @@ A failed batch is dropped; the next read re-fetches from the broker.
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from backend.shared.helpers.ramboq_logger import get_logger
 
@@ -20,6 +24,8 @@ logger = get_logger(__name__)
 
 _BATCH_ROWS = 500
 _FLUSH_INTERVAL = 0.5   # seconds
+
+_KNOWN_KINDS = ("ohlcv_daily", "instruments_snapshot", "holidays_snapshot")
 
 
 async def run() -> None:
@@ -58,25 +64,38 @@ async def _run_loop() -> None:
         if not batch:
             continue
 
-        rows = _coalesce(batch)
-        if not rows:
-            continue
+        by_kind = _coalesce(batch)
 
         try:
-            await _upsert(rows)
-            _record_db_flush(len(rows))
+            await _upsert(by_kind)
+            total = sum(len(v) for v in by_kind.values())
+            _record_db_flush(total)
         except Exception as exc:
             logger.warning(
-                f"db_worker: batch upsert failed ({len(rows)} rows dropped): {exc}"
+                f"db_worker: batch upsert failed (batch dropped): {exc}"
             )
 
 
-def _coalesce(batch: list[dict]) -> list[dict]:
-    """Merge batch into unique (symbol, exchange, date) rows, last-write-wins."""
-    seen: dict[tuple[str, str, str], dict] = {}
+# ── Coalesce ──────────────────────────────────────────────────────────────────
+
+def _coalesce(batch: list[dict]) -> dict[str, list[dict[str, Any]]]:
+    """Split batch by kind and apply per-kind deduplication (last-write-wins)."""
+    by_kind: dict[str, list[dict[str, Any]]] = {k: [] for k in _KNOWN_KINDS}
     for payload in batch:
-        if payload.get("kind") != "ohlcv_daily":
-            continue
+        kind = payload.get("kind")
+        if kind in by_kind:
+            by_kind[kind].append(payload)
+    return {
+        "ohlcv_daily":          _coalesce_ohlcv(by_kind["ohlcv_daily"]),
+        "instruments_snapshot": _coalesce_instruments(by_kind["instruments_snapshot"]),
+        "holidays_snapshot":    _coalesce_holidays(by_kind["holidays_snapshot"]),
+    }
+
+
+def _coalesce_ohlcv(payloads: list[dict]) -> list[dict[str, Any]]:
+    """Merge into unique (symbol, exchange, date) rows, last-write-wins."""
+    seen: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for payload in payloads:
         sym  = str(payload.get("symbol", ""))
         exch = str(payload.get("exchange", ""))
         if not sym or not exch:
@@ -98,7 +117,51 @@ def _coalesce(batch: list[dict]) -> list[dict]:
     return list(seen.values())
 
 
-async def _upsert(rows: list[dict]) -> None:
+def _coalesce_instruments(payloads: list[dict]) -> list[dict[str, Any]]:
+    """One row per (exchange, date), last-write-wins."""
+    seen: dict[tuple[str, str], dict[str, Any]] = {}
+    for payload in payloads:
+        exch = str(payload.get("exchange", ""))
+        date = str(payload.get("date", ""))
+        if not exch or not date:
+            continue
+        seen[(exch, date)] = {
+            "exchange":  exch,
+            "date":      date,
+            "payload":   payload.get("payload", []),
+            "row_count": int(payload.get("row_count", 0)),
+        }
+    return list(seen.values())
+
+
+def _coalesce_holidays(payloads: list[dict]) -> list[dict[str, Any]]:
+    """One row per (exchange, year), last-write-wins."""
+    seen: dict[tuple[str, int], dict[str, Any]] = {}
+    for payload in payloads:
+        exch = str(payload.get("exchange", ""))
+        year = payload.get("year")
+        if not exch or year is None:
+            continue
+        seen[(exch, int(year))] = {
+            "exchange": exch,
+            "year":     int(year),
+            "dates":    payload.get("dates", []),
+        }
+    return list(seen.values())
+
+
+# ── Upsert ────────────────────────────────────────────────────────────────────
+
+async def _upsert(by_kind: dict[str, list[dict[str, Any]]]) -> None:
+    if by_kind["ohlcv_daily"]:
+        await _upsert_ohlcv(by_kind["ohlcv_daily"])
+    if by_kind["instruments_snapshot"]:
+        await _upsert_instruments(by_kind["instruments_snapshot"])
+    if by_kind["holidays_snapshot"]:
+        await _upsert_holidays(by_kind["holidays_snapshot"])
+
+
+async def _upsert_ohlcv(rows: list[dict[str, Any]]) -> None:
     from sqlalchemy import text
     from backend.api.database import async_session
 
@@ -111,4 +174,68 @@ async def _upsert(rows: list[dict]) -> None:
     """)
     async with async_session() as session:
         await session.execute(stmt, rows)
+        await session.commit()
+
+
+async def _upsert_instruments(rows: list[dict[str, Any]]) -> None:
+    """DO UPDATE so intra-day additions (new weekly options) are captured.
+
+    payload is passed as a JSON string so SQLAlchemy/asyncpg binds it
+    correctly as JSONB without needing psycopg2 Json wrappers.
+    """
+    import json
+    from sqlalchemy import text
+    from backend.api.database import async_session
+
+    stmt = text("""
+        INSERT INTO instruments_snapshot
+            (exchange, date, payload, row_count, captured_at)
+        VALUES
+            (:exchange, :date, :payload::jsonb, :row_count, now())
+        ON CONFLICT (exchange, date)
+        DO UPDATE SET
+            payload     = EXCLUDED.payload,
+            row_count   = EXCLUDED.row_count,
+            captured_at = now()
+    """)
+    bound_rows = [
+        {
+            "exchange":  r["exchange"],
+            "date":      r["date"],
+            "payload":   json.dumps(r["payload"]),
+            "row_count": r["row_count"],
+        }
+        for r in rows
+    ]
+    async with async_session() as session:
+        await session.execute(stmt, bound_rows)
+        await session.commit()
+
+
+async def _upsert_holidays(rows: list[dict[str, Any]]) -> None:
+    """DO UPDATE — holiday lists may be amended mid-year by NSE announcements."""
+    import json
+    from sqlalchemy import text
+    from backend.api.database import async_session
+
+    stmt = text("""
+        INSERT INTO holidays_snapshot
+            (exchange, year, dates_json, captured_at)
+        VALUES
+            (:exchange, :year, :dates_json::jsonb, now())
+        ON CONFLICT (exchange, year)
+        DO UPDATE SET
+            dates_json  = EXCLUDED.dates_json,
+            captured_at = now()
+    """)
+    bound_rows = [
+        {
+            "exchange":   r["exchange"],
+            "year":       r["year"],
+            "dates_json": json.dumps(r["dates"]),
+        }
+        for r in rows
+    ]
+    async with async_session() as session:
+        await session.execute(stmt, bound_rows)
         await session.commit()

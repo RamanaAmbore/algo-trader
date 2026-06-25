@@ -298,6 +298,16 @@ class HealthController(Controller):
             from backend.api.persistence import write_queue
             persistence = write_queue.get_health()
 
+            try:
+                from backend.api.persistence import ohlcv_store, instruments_store, holidays_store
+                persistence["stores"] = {
+                    "ohlcv_daily":          {"mem_keys": len(ohlcv_store._MEM_CACHE)},
+                    "instruments_snapshot": {"mem_keys": len(instruments_store._MEM_CACHE)},
+                    "holidays_snapshot":    {"mem_keys": len(holidays_store._MEM_CACHE)},
+                }
+            except Exception:
+                pass  # stores block is best-effort; never break the health check
+
             return HealthResponse(
                 branch=branch,
                 git_hash=git_hash,
