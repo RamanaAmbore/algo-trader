@@ -487,6 +487,57 @@ class TickerManager:
             ts = self._failover_cooloff.get(account, 0.0)
             return ts > 0 and (time.time() - ts) < cool_seconds
 
+    def recycle(self) -> bool:
+        """Hard-reset the ticker on the CURRENT account.
+
+        Tears down the active WebSocket, wipes _tick_map + _tick_age so
+        the in-memory state rebuilds from scratch, then re-subscribes
+        every previously-known token. Different from restart_with_account
+        in that the credentials don't change — this is for refreshing
+        stale in-memory ticker state (operator's HARD refresh mode),
+        not for handling a failover.
+
+        Brief LTP gap (~2-3s reconnect + on_connect flush) but the
+        frontend SSE clients auto-reconnect and grids serve cached
+        values during the gap, so functionality continues uninterrupted.
+        """
+        import time
+        prev_account = self._current_account
+        if not prev_account:
+            logger.warning("KiteTicker: recycle() called with no current account — skipping")
+            return False
+        prev_subs = set(self._subscribed) | set(self._pending)
+        # Resolve credentials before stopping so we can reconnect against
+        # the same account in one move.
+        try:
+            from backend.shared.helpers.connections import Connections
+            conn = Connections().conn.get(prev_account)
+            if conn is None:
+                logger.warning(f"KiteTicker: recycle() — no Connections handle for {prev_account}")
+                return False
+            api_key      = conn.kite.api_key
+            access_token = conn.kite.access_token
+        except Exception as exc:
+            logger.warning(f"KiteTicker: recycle() — failed to resolve credentials: {exc}")
+            return False
+
+        logger.warning(
+            f"KiteTicker: recycling on {prev_account} "
+            f"(re-subscribing {len(prev_subs)} token(s)) — HARD refresh"
+        )
+        self.stop()
+        self._subscribed = set()
+        self._pending    = set(prev_subs)
+        # Wipe BOTH _tick_map AND _tick_age — operator wants a fresh
+        # build; stale ticks from before the recycle shouldn't
+        # contaminate the freshly-rebuilt state.
+        with self._lock:
+            self._tick_map.clear()
+            self._tick_age.clear()
+        self.start(api_key, access_token, account=prev_account)
+        return self._started
+
+
     def restart_with_account(
         self, api_key: str, access_token: str, account: str
     ) -> bool:

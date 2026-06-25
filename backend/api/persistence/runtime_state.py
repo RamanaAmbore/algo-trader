@@ -1,50 +1,133 @@
 """
-Process-level runtime knobs for the persistence pipeline.
+Process-level runtime knobs for the refresh-cycle pipeline
+(cache → DB → broker API).
 
 Two responsibilities:
 
-1. Global bypass switch — when ON, every store skips Tier 1 + Tier 2 and
-   hits the broker directly. The fresh broker payload still writes back
-   through the queue, so the next non-bypass read sees the corrected
-   data. Defect-recovery tool for "code shipped bad data into the
-   cache/DB and I need it cleaned without manual SQL". Operator:
-   "switch to use api with no db, will help refresh cache and db if
-   they are not accurate because code defects".
+1. Refresh-mode switch — three states the operator picks from when
+   the persistent tiers have shipped bad data. Operator:
+   "soft reset cycle should be triggered by a settings switch, which
+   will refresh non-ticker data in db, cache is refreshed from api.
+   hard reset: ticker AND non-ticker data gets in db and cache gets
+   refreshed from api without impacting functionality.
+   they are the two states in persistence.bypass."
+
+       off  — normal cache → DB → broker hierarchy. Default.
+       soft — non-ticker stores bypass Tier 1+2; every read fetches
+              from broker and writes back through the queue (heals
+              the persistent tiers). Live ticker stream untouched.
+       hard — soft + ticker is recycled on the transition into hard
+              (unsubscribe all → reconnect → resubscribe known
+              symbols → rebuild _tick_map). Brief LTP gap during
+              the reconnect; SSE clients auto-reconnect and grids
+              serve cached values in the meantime → no functional
+              impact per the operator's spec.
 
 2. Per-store / per-key invalidation — wipe in-memory + delete DB rows
    for a specific data class so the next read re-fetches from broker.
 
 Both are runtime-only (no DB persistence of the flag itself). A process
-restart resets bypass to OFF, which is the safe default.
+restart resets the mode to OFF, which is the safe default.
 """
 
 from __future__ import annotations
 
+import asyncio
 from datetime import date as _date
-from typing import Any
+from typing import Any, Literal
 
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
 
-# ── Bypass flag ──────────────────────────────────────────────────────────────
+# ── Refresh-mode switch ──────────────────────────────────────────────────────
 
-_bypass_db: bool = False
+ResetMode = Literal["off", "soft", "hard"]
+_VALID_MODES: tuple[ResetMode, ...] = ("off", "soft", "hard")
+
+_mode: ResetMode = "off"
+
+
+def get_mode() -> ResetMode:
+    return _mode
 
 
 def is_bypass_on() -> bool:
-    return _bypass_db
+    """True when stores should skip Tier 1+2 and go straight to broker.
+    Both `soft` and `hard` modes bypass — they only differ in whether
+    the ticker is also recycled. Stores call this on every read."""
+    return _mode != "off"
 
+
+def is_ticker_reset_pending() -> bool:
+    """True when a HARD-mode transition needs the ticker recycled.
+    Read by the ticker watchdog / set_mode flow itself."""
+    return _mode == "hard"
+
+
+def set_mode(mode: ResetMode) -> None:
+    """Flip the refresh-cycle mode. On a transition into HARD, schedules
+    a one-shot ticker restart on the running event loop (best-effort —
+    if there's no running loop, the next watchdog tick will pick it up)."""
+    global _mode
+    if mode not in _VALID_MODES:
+        raise ValueError(f"invalid mode {mode!r}; expected one of {_VALID_MODES}")
+    prev = _mode
+    if prev == mode:
+        return
+    _mode = mode
+    logger.warning(
+        f"persistence: refresh-cycle mode {prev} → {mode}. "
+        + (
+            "stores serve cache+DB normally."          if mode == "off"
+            else "stores bypass cache+DB, fetch from broker, heal on write-back."
+        )
+    )
+    # HARD transition: schedule ticker recycle so the in-memory _tick_map
+    # gets rebuilt from a fresh subscribe pass. The recycle runs in the
+    # background — caller doesn't await it.
+    if prev != "hard" and mode == "hard":
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_recycle_ticker_async(), name="persistence-ticker-recycle")
+        except RuntimeError:
+            # No running loop (called from sync context). The watchdog
+            # task in background.py polls is_ticker_reset_pending() and
+            # will trigger the recycle on its next tick.
+            logger.info("persistence: ticker recycle deferred (no running loop)")
+
+
+async def _recycle_ticker_async() -> None:
+    """Unsubscribe all → tear down WebSocket → reconnect → resubscribe
+    known symbols. Lets the live ticker rebuild its in-memory state from
+    scratch. The frontend SSE clients auto-reconnect via EventSource so
+    no manual intervention is needed.
+    """
+    try:
+        from backend.shared.helpers.kite_ticker import get_ticker
+        ticker = get_ticker()
+        ticker.recycle()
+        logger.info("persistence: ticker recycled (hard-mode transition)")
+    except AttributeError:
+        logger.warning(
+            "persistence: ticker.recycle() not implemented — falling back "
+            "to no-op. Ticker will rebuild on the next watchdog cycle if "
+            "the WebSocket drops naturally."
+        )
+    except Exception as exc:
+        logger.warning(f"persistence: ticker recycle failed: {exc}")
+
+
+# ── Back-compat shims for callers that still use the old single-bool API ─────
+# Slice X shipped set_bypass(bool); keep both around so /admin endpoints +
+# old call sites don't break. Treat `set_bypass(True)` as switching to SOFT
+# (the conservative default — most operators flipping the switch don't want
+# their tick stream interrupted).
 
 def set_bypass(value: bool) -> None:
-    global _bypass_db
-    if _bypass_db == bool(value):
-        return
-    _bypass_db = bool(value)
-    logger.warning(
-        f"persistence: bypass_db = {_bypass_db} — all stores will now "
-        f"{'skip cache + DB and hit broker directly' if _bypass_db else 'use the normal cache → DB → broker hierarchy'}"
-    )
+    """Deprecated — use set_mode("off"|"soft"|"hard") instead.
+    Maps True → "soft" (safe default that preserves the ticker)."""
+    set_mode("soft" if value else "off")
 
 
 # ── Invalidation helpers ─────────────────────────────────────────────────────

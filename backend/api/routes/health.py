@@ -310,6 +310,9 @@ class HealthController(Controller):
                     "holidays_snapshot":    {"mem_keys": len(holidays_store._MEM_CACHE)},
                     "intraday_bars":        {"mem_keys": len(intraday_store._MEM_CACHE)},
                 }
+                persistence["mode"]   = runtime_state.get_mode()
+                # Back-compat: dashboards reading `bypass` (slice X surface)
+                # still work — true whenever mode is non-default.
                 persistence["bypass"] = runtime_state.is_bypass_on()
             except Exception:
                 pass  # stores block is best-effort; never break the health check
@@ -336,11 +339,11 @@ class HealthController(Controller):
 
 
 # ---------------------------------------------------------------------------
-# Persistence admin — bypass switch + per-store invalidate
+# Persistence admin — three-state refresh mode + per-store invalidate
 # ---------------------------------------------------------------------------
 
-class _BypassResponse(msgspec.Struct):
-    bypass: bool
+class _ModeResponse(msgspec.Struct):
+    mode: str    # "off" | "soft" | "hard"
 
 
 class _InvalidateResponse(msgspec.Struct):
@@ -349,40 +352,52 @@ class _InvalidateResponse(msgspec.Struct):
 
 
 class PersistenceAdminController(Controller):
-    """Defect-recovery surface for the cache → DB → broker pipeline.
+    """Defect-recovery surface for the refresh-cycle pipeline
+    (cache → DB → broker API).
 
-    Operator: "switch to use api with no db, this will help refresh
-    cache and db if they are not accurate because code defects".
+    Three-state refresh mode (operator: "they are the two states in
+    persistence.bypass — design and code accordingly"):
 
-    - GET  /api/admin/persistence/bypass  → {bypass: bool}
-    - POST /api/admin/persistence/bypass/on  → flip ON
-    - POST /api/admin/persistence/bypass/off → flip OFF
-    - POST /api/admin/persistence/invalidate?store=…&symbol=…&exchange=…
-        store=ohlcv_daily          → wipe ohlcv (per-symbol/per-exch optional)
-        store=instruments_snapshot → wipe instruments (per-exchange optional)
-        store=holidays_snapshot    → wipe holidays    (per-exchange optional)
-        store=intraday_bars        → wipe intraday bars (per-symbol/per-exch optional)
-        store=all                  → wipe all four
+      off  — normal hierarchy. Default. All store reads consult
+             cache + DB before hitting broker.
+      soft — non-ticker stores bypass cache + DB. Every read fetches
+             from broker and writes back through the queue, healing
+             the persistent tiers. Live ticker stream untouched.
+      hard — soft + ticker recycle on the transition. The in-memory
+             _tick_map + subscriptions rebuild from scratch. Brief
+             LTP gap during reconnect; SSE clients auto-reconnect
+             so no functional impact.
+
+    Endpoints:
+      GET  /api/admin/persistence/mode             → {mode}
+      POST /api/admin/persistence/mode/{off|soft|hard}
+      POST /api/admin/persistence/invalidate?store=…&symbol=…&exchange=…
     """
     path = "/api/admin/persistence"
     guards = [admin_guard]
 
-    @get("/bypass")
-    async def get_bypass(self) -> _BypassResponse:
+    @get("/mode")
+    async def get_mode_endpoint(self) -> _ModeResponse:
         from backend.api.persistence import runtime_state
-        return _BypassResponse(bypass=runtime_state.is_bypass_on())
+        return _ModeResponse(mode=runtime_state.get_mode())
 
-    @post("/bypass/on")
-    async def bypass_on(self) -> _BypassResponse:
+    @post("/mode/off")
+    async def mode_off(self) -> _ModeResponse:
         from backend.api.persistence import runtime_state
-        runtime_state.set_bypass(True)
-        return _BypassResponse(bypass=True)
+        runtime_state.set_mode("off")
+        return _ModeResponse(mode="off")
 
-    @post("/bypass/off")
-    async def bypass_off(self) -> _BypassResponse:
+    @post("/mode/soft")
+    async def mode_soft(self) -> _ModeResponse:
         from backend.api.persistence import runtime_state
-        runtime_state.set_bypass(False)
-        return _BypassResponse(bypass=False)
+        runtime_state.set_mode("soft")
+        return _ModeResponse(mode="soft")
+
+    @post("/mode/hard")
+    async def mode_hard(self) -> _ModeResponse:
+        from backend.api.persistence import runtime_state
+        runtime_state.set_mode("hard")
+        return _ModeResponse(mode="hard")
 
     @post("/invalidate")
     async def invalidate(
