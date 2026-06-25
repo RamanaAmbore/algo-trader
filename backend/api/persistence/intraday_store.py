@@ -33,6 +33,11 @@ from collections import OrderedDict
 from datetime import date, datetime, timedelta, timezone
 from typing import TypedDict
 
+from backend.api.persistence.store_base import PersistentStoreBase
+from backend.shared.helpers.ramboq_logger import get_logger
+
+logger = get_logger(__name__)
+
 
 class IntradayBar(TypedDict):
     bar_ts: str   # ISO-8601 UTC, the timestamp of the bar's close
@@ -43,26 +48,9 @@ class IntradayBar(TypedDict):
     volume: int
 
 
-# ── Tier 1: in-memory LRU cache ──────────────────────────────────────────────
-# OrderedDict acts as LRU: read/write moves key to most-recent end; when size
-# exceeds _MEM_CACHE_MAX_KEYS we evict from the oldest end. 500 keys × ~14
-# 30-min bars/day × ~60 bytes/bar ≈ ~420 kB ceiling.
-_MEM_CACHE_MAX_KEYS = 500
-# Value shape: (cached_at_epoch, list[IntradayBar])
-_MEM_CACHE: "OrderedDict[tuple[str, str, str, str], tuple[float, list[IntradayBar]]]" = OrderedDict()
+_MemKey = tuple[str, str, str, str]   # (symbol, exchange, date_iso, interval)
 
 _TODAY_TTL_S = 300   # 5 minutes — bars are growing during the session
-
-# Per-(symbol, exchange, date, interval) lock to deduplicate concurrent fetches.
-_FETCH_LOCKS: dict[tuple[str, str, str, str], asyncio.Lock] = {}
-_LOCK_MAP_LOCK = asyncio.Lock()
-
-
-async def _get_fetch_lock(key: tuple[str, str, str, str]) -> asyncio.Lock:
-    async with _LOCK_MAP_LOCK:
-        if key not in _FETCH_LOCKS:
-            _FETCH_LOCKS[key] = asyncio.Lock()
-        return _FETCH_LOCKS[key]
 
 
 def _ist_today() -> str:
@@ -74,41 +62,12 @@ def _ist_today() -> str:
         return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m-%d")
 
 
-def _mem_get(key: tuple[str, str, str, str]) -> tuple[float, list[IntradayBar]] | None:
-    """Return (cached_at, bars) if present in Tier 1, else None. Moves to end (LRU)."""
-    if key in _MEM_CACHE:
-        _MEM_CACHE.move_to_end(key)
-        return _MEM_CACHE[key]
-    return None
-
-
-def _mem_set(key: tuple[str, str, str, str], bars: list[IntradayBar]) -> None:
-    """Populate Tier 1. Evicts oldest key when capacity exceeded."""
-    _MEM_CACHE[key] = (time.time(), bars)
-    _MEM_CACHE.move_to_end(key)
-    while len(_MEM_CACHE) > _MEM_CACHE_MAX_KEYS:
-        _MEM_CACHE.popitem(last=False)
-
-
-def _is_fresh(cached_at: float, on_date: date) -> bool:
-    """Decide whether a Tier 1 entry is usable without a re-fetch.
-
-    For today's bars (still growing): apply the 5-minute TTL.
-    For historical bars (yesterday and earlier): consider them permanently
-    fresh once cached — immutable once the session closes.
-    """
-    today = _ist_today()
-    if on_date.isoformat() == today:
-        return (time.time() - cached_at) < _TODAY_TTL_S
-    return True   # historical bars are immutable
-
-
 def _is_complete_historical(bars: list[IntradayBar], exchange: str) -> bool:
     """Check whether a historical (non-today) bar set spans the session.
 
-    NSE/NFO/BSE/BFO: must have at least one bar with bar_ts ≥ 15:00 IST.
-    MCX:             must have at least one bar with bar_ts ≥ 23:00 IST.
-    Other/CDS:       must have at least one bar with bar_ts ≥ 15:30 IST.
+    NSE/NFO/BSE/BFO: must have at least one bar with bar_ts >= 15:00 IST.
+    MCX:             must have at least one bar with bar_ts >= 23:00 IST.
+    Other/CDS:       must have at least one bar with bar_ts >= 15:30 IST.
 
     Returns True also when bars is empty AND on_date is a weekend (we don't
     fetch on non-trading days); the caller never calls this for today.
@@ -139,44 +98,156 @@ def _is_complete_historical(bars: list[IntradayBar], exchange: str) -> bool:
     return False
 
 
-# ── Tier 2: DB SELECT ─────────────────────────────────────────────────────────
+# ── IntradayStore subclass ────────────────────────────────────────────────────
 
-async def _db_fetch(
-    symbol: str, exchange: str, on_date: date, interval: str,
-) -> list[IntradayBar]:
-    from sqlalchemy import text
-    from backend.api.database import async_session
+# Stored value: (cached_at_epoch: float, bars: list[IntradayBar])
+_Entry = tuple[float, list[IntradayBar]]
 
-    stmt = text("""
-        SELECT bar_ts, open, high, low, close, volume
-        FROM   intraday_bars
-        WHERE  symbol   = :sym
-          AND  exchange = :exch
-          AND  date     = :on_date
-          AND  interval = :interval
-        ORDER BY bar_ts
-    """)
-    try:
-        async with async_session() as session:
-            result = await session.execute(stmt, {
-                "sym": symbol, "exch": exchange,
-                "on_date": on_date.isoformat(), "interval": interval,
-            })
-            rows = result.fetchall()
-        return [
-            IntradayBar(
-                bar_ts=r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
-                open=float(r[1]),   high=float(r[2]),
-                low=float(r[3]),    close=float(r[4]),
-                volume=int(r[5]),
-            )
-            for r in rows
-        ]
-    except Exception:
+
+class IntradayStore(PersistentStoreBase):
+    _name     = "intraday_store"
+    _max_keys = 500
+    _lru      = True
+
+
+    # ── Tier 1 freshness: 5-min TTL on today's bars ───────────────────────────
+
+    def _mem_get_validator(self, value: _Entry, key: _MemKey) -> bool:
+        """Enforce TTL for today's bars; historical bars are permanently valid."""
+        cached_at, _bars = value
+        _sym, _exch, date_iso, _interval = key
+        today = _ist_today()
+        if date_iso == today:
+            return (time.time() - cached_at) < _TODAY_TTL_S
+        return True   # historical bars are immutable once the session closes
+
+    # ── Tier 1 completeness ──────────────────────────────────────────────────
+
+    def _is_complete(self, value: _Entry, key: _MemKey) -> bool:
+        """For today: partial is fine (session still growing).
+        For historical: must span the session-close hour."""
+        _cached_at, bars = value
+        _sym, exch, date_iso, _interval = key
+        is_today = date_iso == _ist_today()
+        if is_today:
+            return True   # any non-empty entry is "complete" for today
+        return _is_complete_historical(bars, exch)
+
+    # ── Tier 2: DB SELECT ────────────────────────────────────────────────────
+
+    async def _db_fetch(self, key: _MemKey) -> _Entry | None:
+        """Return (cached_at=0, bars) from DB, or None on miss.
+
+        cached_at=0 means historical bars (never-expiring from TTL perspective).
+        The completeness check uses _is_complete_historical for non-today queries.
+        """
+        from sqlalchemy import text
+        from backend.api.database import async_session
+
+        sym, exch, date_iso, interval = key
+        stmt = text("""
+            SELECT bar_ts, open, high, low, close, volume
+            FROM   intraday_bars
+            WHERE  symbol   = :sym
+              AND  exchange = :exch
+              AND  date     = :on_date
+              AND  interval = :interval
+            ORDER BY bar_ts
+        """)
+        try:
+            async with async_session() as session:
+                result = await session.execute(stmt, {
+                    "sym": sym, "exch": exch,
+                    "on_date": date_iso, "interval": interval,
+                })
+                rows = result.fetchall()
+            bars = [
+                IntradayBar(
+                    bar_ts=r[0].isoformat() if hasattr(r[0], "isoformat") else str(r[0]),
+                    open=float(r[1]),   high=float(r[2]),
+                    low=float(r[3]),    close=float(r[4]),
+                    volume=int(r[5]),
+                )
+                for r in rows
+            ]
+            if not bars:
+                return None
+            # Use cached_at=0.0 so that for today's bars the TTL check
+            # (_mem_get_validator) sees them as expired and forces a re-fetch.
+            # Historical bars are always fresh regardless of cached_at.
+            is_today = date_iso == _ist_today()
+            cached_at = 0.0 if is_today else time.time()
+            return (cached_at, bars)
+        except Exception:
+            return None
+
+    # ── Tier 3: broker fetch ─────────────────────────────────────────────────
+
+    async def _broker_fetch(self, key: _MemKey) -> _Entry | None:
+        sym, exch, date_iso, interval = key
+        on_date = date.fromisoformat(date_iso)
+        bars = await asyncio.to_thread(_broker_fetch_sync, sym, exch, on_date, interval)
+        if not bars:
+            # Empty on pre-market, holiday, or unknown symbol — not cached.
+            return None
+        return (time.time(), bars)
+
+    # ── Write-back ───────────────────────────────────────────────────────────
+
+    def _enqueue_persist(self, key: _MemKey, value: _Entry) -> None:
+        sym, exch, date_iso, interval = key
+        _cached_at, bars = value
+        from backend.api.persistence import write_queue
+        payload = {
+            "kind":     "intraday_bars",
+            "symbol":   sym,
+            "exchange": exch,
+            "date":     date_iso,
+            "interval": interval,
+            "bars":     list(bars),
+        }
+        write_queue.enqueue_disk(payload)
+        write_queue.enqueue_db(payload)
+
+    # ── Override get() to unwrap the stored (cached_at, bars) tuple ──────────
+
+    async def get(self, key: _MemKey, *, bypass_cache: bool | None = None) -> list[IntradayBar]:
+        """Same three-tier flow as base, but unwraps the (cached_at, bars) entry.
+
+        On a Tier 3 miss (broker returned empty / pre-market / holiday), fall
+        back to whatever Tier 1 still holds — even if its TTL is expired — so
+        callers get the last-known bars rather than an empty list.  This matches
+        the original behaviour:
+            entry2 = _mem_get(key)
+            return entry2[1] if entry2 else []
+        """
+        result = await super().get(key, bypass_cache=bypass_cache)
+        if result is not None:
+            # Tier 1 / Tier 2 / Tier 3 hit: unwrap if needed.
+            if isinstance(result, tuple):
+                return result[1]
+            return result  # type: ignore[return-value]
+
+        # Full miss (broker returned None/empty).
+        # Serve TTL-expired Tier 1 entry if available (stale-on-miss).
+        mk = self._mem_key(key)
+        stale = self._mem_cache.get(mk)
+        if stale is not None:
+            _cached_at, bars = stale
+            return bars
         return []
 
 
-# ── Tier 3: broker fetch ──────────────────────────────────────────────────────
+# ── Module-level singleton + backward-compat alias ───────────────────────────
+
+_intraday_store = IntradayStore()
+
+# runtime_state.invalidate_intraday() reaches into _MEM_CACHE.
+# Value shape: (cached_at_epoch, list[IntradayBar]) — same as original.
+_MEM_CACHE: "OrderedDict[_MemKey, _Entry]" = _intraday_store._mem_cache  # type: ignore[assignment]
+
+
+# ── Tier 3 sync helper (module-level) ────────────────────────────────────────
 
 def _broker_fetch_sync(
     symbol: str, exchange: str, on_date: date, interval: str,
@@ -204,8 +275,6 @@ def _broker_fetch_sync(
     if token is None:
         return []
 
-    # Fetch the full session for on_date. Use from midnight to end-of-day
-    # so we capture the complete session without timezone gymnastics.
     from_dt = datetime(on_date.year, on_date.month, on_date.day, 0, 0, 0)
     to_dt   = datetime(on_date.year, on_date.month, on_date.day, 23, 59, 59)
     try:
@@ -256,82 +325,7 @@ async def get_or_fetch_intraday(
     When `bypass_cache=True`, skips Tier 1 + Tier 2 entirely (defect-recovery
     path — fresh broker data heals the persistent tiers on write-back).
     """
-    from backend.api.persistence import runtime_state
-
-    if bypass_cache is None:
-        bypass_cache = runtime_state.is_bypass_on()
-
     sym  = symbol.upper().strip()
     exch = exchange.upper().strip()
-    key  = (sym, exch, on_date.isoformat(), interval)
-    today_str = _ist_today()
-    is_today  = on_date.isoformat() == today_str
-
-    if not bypass_cache:
-        # Tier 1 — in-memory
-        entry = _mem_get(key)
-        if entry is not None:
-            cached_at, cached_bars = entry
-            if _is_fresh(cached_at, on_date):
-                if is_today or _is_complete_historical(cached_bars, exch):
-                    return cached_bars
-
-        # Tier 2 — DB
-        db_bars = await _db_fetch(sym, exch, on_date, interval)
-        if db_bars:
-            if is_today or _is_complete_historical(db_bars, exch):
-                _mem_set(key, db_bars)
-                return db_bars
-
-    # Tier 3 — broker (deduplicated per key).
-    lock = await _get_fetch_lock(key)
-    async with lock:
-        if not bypass_cache:
-            # Re-check after acquiring — another coroutine may have populated.
-            entry = _mem_get(key)
-            if entry is not None:
-                cached_at, cached_bars = entry
-                if _is_fresh(cached_at, on_date):
-                    if is_today or _is_complete_historical(cached_bars, exch):
-                        return cached_bars
-            db_bars2 = await _db_fetch(sym, exch, on_date, interval)
-            if db_bars2:
-                if is_today or _is_complete_historical(db_bars2, exch):
-                    _mem_set(key, db_bars2)
-                    return db_bars2
-
-        try:
-            broker_bars = await asyncio.to_thread(
-                _broker_fetch_sync, sym, exch, on_date, interval,
-            )
-        except Exception as exc:
-            from backend.shared.helpers.ramboq_logger import get_logger as _gl
-            _gl(__name__).warning(
-                f"intraday_store: broker fetch failed {sym}/{exch}/{on_date}: {exc}"
-            )
-            return []
-
-        if broker_bars:
-            _mem_set(key, broker_bars)
-            _enqueue_persist(sym, exch, on_date, interval, broker_bars)
-
-        # Return whatever we got (may be empty for pre-market / holiday)
-        entry2 = _mem_get(key)
-        return entry2[1] if entry2 else []
-
-
-def _enqueue_persist(
-    symbol: str, exchange: str, on_date: date, interval: str,
-    bars: list[IntradayBar],
-) -> None:
-    from backend.api.persistence import write_queue
-    payload = {
-        "kind":     "intraday_bars",
-        "symbol":   symbol,
-        "exchange": exchange,
-        "date":     on_date.isoformat(),
-        "interval": interval,
-        "bars":     list(bars),
-    }
-    write_queue.enqueue_disk(payload)
-    write_queue.enqueue_db(payload)
+    key: _MemKey = (sym, exch, on_date.isoformat(), interval)
+    return await _intraday_store.get(key, bypass_cache=bypass_cache)

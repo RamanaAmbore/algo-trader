@@ -17,8 +17,13 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
-from datetime import date, datetime, timedelta
-from typing import TypedDict
+from datetime import date, datetime
+from typing import Any, TypedDict
+
+from backend.api.persistence.store_base import PersistentStoreBase
+from backend.shared.helpers.ramboq_logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class OHLCVBar(TypedDict):
@@ -30,25 +35,7 @@ class OHLCVBar(TypedDict):
     volume: int
 
 
-# ── Tier 1: in-memory cache (LRU-bounded) ────────────────────────────────────
-# OrderedDict acts as LRU: read/write moves a key to the most-recent end;
-# when size exceeds _MEM_CACHE_MAX_KEYS we evict from the oldest end. Keeps
-# steady-state memory bounded for a long-running process. 500 keys × ~250
-# trading-day-years of bars × ~50 bytes/bar ≈ ~6 MB ceiling.
-_MEM_CACHE_MAX_KEYS = 500
-_MEM_CACHE: "OrderedDict[tuple[str, str], dict[str, OHLCVBar]]" = OrderedDict()
-
-# Per-(symbol, exchange) lock to deduplicate concurrent broker fetches.
-_FETCH_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
-_LOCK_MAP_LOCK = asyncio.Lock()
-
-
-async def _get_fetch_lock(key: tuple[str, str]) -> asyncio.Lock:
-    async with _LOCK_MAP_LOCK:
-        if key not in _FETCH_LOCKS:
-            _FETCH_LOCKS[key] = asyncio.Lock()
-        return _FETCH_LOCKS[key]
-
+# ── Completeness check ────────────────────────────────────────────────────────
 
 def _is_complete_range(bars: list[OHLCVBar], from_d: date, to_d: date) -> bool:
     """Coverage check used by BOTH tier 1 (memory) and tier 2 (DB) reads.
@@ -80,68 +67,115 @@ def _is_complete_range(bars: list[OHLCVBar], from_d: date, to_d: date) -> bool:
     return True
 
 
-def _mem_slice(key: tuple[str, str], from_d: date, to_d: date) -> list[OHLCVBar]:
-    cached = _MEM_CACHE.get(key, {})
-    if cached:
-        _MEM_CACHE.move_to_end(key)
-    bars = [v for k, v in cached.items() if from_d.isoformat() <= k <= to_d.isoformat()]
-    bars.sort(key=lambda b: b["date"])
-    return bars
+# ── OHLCVStore subclass ───────────────────────────────────────────────────────
+
+# Full lookup key type: (sym, exch, from_d_iso, to_d_iso)
+# Storage key type:     (sym, exch)
+
+_FullKey = tuple[str, str, str, str]    # (sym, exch, from_iso, to_iso)
+_MemKey  = tuple[str, str]              # (sym, exch)
 
 
-def _mem_covers(key: tuple[str, str], from_d: date, to_d: date) -> bool:
-    return _is_complete_range(_mem_slice(key, from_d, to_d), from_d, to_d)
+class OHLCVStore(PersistentStoreBase):
+    _name     = "ohlcv_store"
+    _max_keys = 500
+    _lru      = True
+
+    # ── Key normalisation ────────────────────────────────────────────────────
+
+    def _mem_key(self, key: _FullKey) -> _MemKey:
+        # Strip the date range — storage is by (sym, exch) only.
+        return (key[0], key[1])
+
+    # ── Merge-on-write (bars accumulate in the existing dict) ────────────────
+
+    def _mem_set(self, key: _FullKey, value: list[OHLCVBar]) -> None:
+        """Merge new bars into the existing date-keyed dict for this symbol,
+        rather than replacing the whole entry.  Preserves bars from other
+        date ranges already in cache (e.g. a previous shorter fetch).
+        Then applies LRU eviction as usual."""
+        mk: _MemKey = self._mem_key(key)
+        if mk not in self._mem_cache:
+            self._mem_cache[mk] = {}
+        for bar in value:
+            self._mem_cache[mk][bar["date"]] = bar
+        self._mem_cache.move_to_end(mk)  # type: ignore[attr-defined]
+        while len(self._mem_cache) > self._max_keys:
+            ek, ev = self._mem_cache.popitem(last=False)  # type: ignore[attr-defined]
+            self._on_mem_evict(ek, ev)
+
+    # ── Tier 1 completeness ──────────────────────────────────────────────────
+
+    def _is_complete(self, value: dict[str, OHLCVBar] | list[OHLCVBar], key: _FullKey) -> bool:
+        """value is the raw stored dict or the list returned from _db_fetch.
+        key carries the requested [from_d, to_d] range."""
+        from_d = date.fromisoformat(key[2])
+        to_d   = date.fromisoformat(key[3])
+        if isinstance(value, dict):
+            bars = [v for k, v in value.items() if key[2] <= k <= key[3]]
+            bars.sort(key=lambda b: b["date"])
+        else:
+            bars = list(value)
+        return _is_complete_range(bars, from_d, to_d)
+
+    # ── Tier 2: DB SELECT ────────────────────────────────────────────────────
+
+    async def _db_fetch(self, key: _FullKey) -> list[OHLCVBar] | None:
+        from sqlalchemy import text
+        from backend.api.database import async_session
+
+        sym, exch, from_iso, to_iso = key
+        stmt = text("""
+            SELECT date, open, high, low, close, volume
+            FROM   ohlcv_daily
+            WHERE  symbol   = :sym
+              AND  exchange = :exch
+              AND  date     BETWEEN :from_d AND :to_d
+            ORDER BY date
+        """)
+        try:
+            async with async_session() as session:
+                result = await session.execute(stmt, {
+                    "sym": sym, "exch": exch,
+                    "from_d": from_iso, "to_d": to_iso,
+                })
+                rows = result.fetchall()
+            return [
+                OHLCVBar(
+                    date=str(r[0]),
+                    open=float(r[1]),  high=float(r[2]),
+                    low=float(r[3]),   close=float(r[4]),
+                    volume=int(r[5]),
+                )
+                for r in rows
+            ]
+        except Exception:
+            return []
+
+    # ── Tier 3: broker fetch ─────────────────────────────────────────────────
+
+    async def _broker_fetch(self, key: _FullKey) -> list[OHLCVBar]:
+        sym, exch, from_iso, to_iso = key
+        from_d = date.fromisoformat(from_iso)
+        to_d   = date.fromisoformat(to_iso)
+        return await asyncio.to_thread(_broker_fetch_sync, sym, exch, from_d, to_d)
+
+    # ── Write-back ───────────────────────────────────────────────────────────
+
+    def _enqueue_persist(self, key: _FullKey, value: list[OHLCVBar]) -> None:
+        sym, exch = key[0], key[1]
+        _enqueue_persist_impl(sym, exch, value)
 
 
-def _mem_populate(key: tuple[str, str], bars: list[OHLCVBar]) -> None:
-    if key not in _MEM_CACHE:
-        _MEM_CACHE[key] = {}
-    for bar in bars:
-        _MEM_CACHE[key][bar["date"]] = bar
-    _MEM_CACHE.move_to_end(key)
-    while len(_MEM_CACHE) > _MEM_CACHE_MAX_KEYS:
-        _MEM_CACHE.popitem(last=False)
+# ── Module-level singleton ────────────────────────────────────────────────────
+
+_ohlcv_store = OHLCVStore()
+
+# Backward-compat alias: runtime_state.invalidate_ohlcv() reaches into _MEM_CACHE.
+_MEM_CACHE: "OrderedDict[_MemKey, dict[str, OHLCVBar]]" = _ohlcv_store._mem_cache  # type: ignore[assignment]
 
 
-# ── Tier 2: DB SELECT ─────────────────────────────────────────────────────────
-
-async def _db_fetch(symbol: str, exchange: str, from_d: date, to_d: date) -> list[OHLCVBar]:
-    from sqlalchemy import text
-    from backend.api.database import async_session
-
-    stmt = text("""
-        SELECT date, open, high, low, close, volume
-        FROM   ohlcv_daily
-        WHERE  symbol   = :sym
-          AND  exchange = :exch
-          AND  date     BETWEEN :from_d AND :to_d
-        ORDER BY date
-    """)
-    try:
-        async with async_session() as session:
-            result = await session.execute(stmt, {
-                "sym": symbol, "exch": exchange,
-                "from_d": from_d.isoformat(), "to_d": to_d.isoformat(),
-            })
-            rows = result.fetchall()
-        return [
-            OHLCVBar(
-                date=str(r[0]),
-                open=float(r[1]),  high=float(r[2]),
-                low=float(r[3]),   close=float(r[4]),
-                volume=int(r[5]),
-            )
-            for r in rows
-        ]
-    except Exception:
-        return []
-
-
-# Coverage is now centralised in _is_complete_range (above); both
-# tiers reuse it so partial DB or partial memory is always re-fetched.
-
-
-# ── Tier 3: broker fetch ──────────────────────────────────────────────────────
+# ── Tier 3 sync helper (module-level, called via asyncio.to_thread) ───────────
 
 def _broker_fetch_sync(
     symbol: str, exchange: str, from_d: date, to_d: date,
@@ -188,6 +222,18 @@ def _broker_fetch_sync(
     return bars
 
 
+def _enqueue_persist_impl(symbol: str, exchange: str, bars: list[OHLCVBar]) -> None:
+    from backend.api.persistence import write_queue
+    payload: dict[str, Any] = {
+        "kind":     "ohlcv_daily",
+        "symbol":   symbol,
+        "exchange": exchange,
+        "bars":     list(bars),
+    }
+    write_queue.enqueue_disk(payload)
+    write_queue.enqueue_db(payload)
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 async def get_or_fetch_daily(
@@ -207,59 +253,24 @@ async def get_or_fetch_daily(
     fresh data). Operator: "switch to use api with no db ... will help
     refresh cache and db if they are not accurate because code defects".
     """
-    from backend.api.persistence import runtime_state
-    if bypass_cache is None:
-        bypass_cache = runtime_state.is_bypass_on()
-
     sym  = symbol.upper().strip()
     exch = exchange.upper().strip()
-    key  = (sym, exch)
+    full_key: _FullKey = (sym, exch, from_d.isoformat(), to_d.isoformat())
 
-    if not bypass_cache:
-        # Tier 1 — in-memory
-        if _mem_covers(key, from_d, to_d):
-            return _mem_slice(key, from_d, to_d)
+    # get() returns the list of OHLCVBar (Tier 3 result) or None.
+    # After a Tier 1/2 hit it returns the raw dict; after Tier 3 it returns
+    # the list.  We need bars sliced to [from_d, to_d] in all paths.
+    result = await _ohlcv_store.get(full_key, bypass_cache=bypass_cache)
 
-        # Tier 2 — DB
-        db_bars = await _db_fetch(sym, exch, from_d, to_d)
-        if _is_complete_range(db_bars, from_d, to_d):
-            _mem_populate(key, db_bars)
-            return _mem_slice(key, from_d, to_d)
+    if result is None:
+        return []
 
-    # Tier 3 — broker (deduplicated per key). Always hit when bypass
-    # is on, regardless of cache state.
-    lock = await _get_fetch_lock(key)
-    async with lock:
-        if not bypass_cache:
-            # Re-check after acquiring — another coroutine may have populated.
-            if _mem_covers(key, from_d, to_d):
-                return _mem_slice(key, from_d, to_d)
-            db_bars2 = await _db_fetch(sym, exch, from_d, to_d)
-            if _is_complete_range(db_bars2, from_d, to_d):
-                _mem_populate(key, db_bars2)
-                return _mem_slice(key, from_d, to_d)
+    # result may be list[OHLCVBar] (from Tier 3 / Tier 2 path) or the full
+    # date-keyed dict (from Tier 1 path via _mem_get).  In both cases, slice.
+    if isinstance(result, dict):
+        bars = [v for k, v in result.items() if from_d.isoformat() <= k <= to_d.isoformat()]
+        bars.sort(key=lambda b: b["date"])
+        return bars
 
-        try:
-            broker_bars = await asyncio.to_thread(_broker_fetch_sync, sym, exch, from_d, to_d)
-        except Exception as exc:
-            from backend.shared.helpers.ramboq_logger import get_logger as _gl
-            _gl(__name__).warning(f"ohlcv_store: broker fetch failed {sym}/{exch}: {exc}")
-            return []
-
-        if broker_bars:
-            _mem_populate(key, broker_bars)
-            _enqueue_persist(sym, exch, broker_bars)
-
-        return _mem_slice(key, from_d, to_d)
-
-
-def _enqueue_persist(symbol: str, exchange: str, bars: list[OHLCVBar]) -> None:
-    from backend.api.persistence import write_queue
-    payload = {
-        "kind":     "ohlcv_daily",
-        "symbol":   symbol,
-        "exchange": exchange,
-        "bars":     list(bars),
-    }
-    write_queue.enqueue_disk(payload)
-    write_queue.enqueue_db(payload)
+    # list from Tier 2 or Tier 3 — already filtered to requested range.
+    return list(result)
