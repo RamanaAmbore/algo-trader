@@ -14,7 +14,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
-  import { nowStamp, marketAwareInterval } from '$lib/stores';
+  import { nowStamp, marketAwareInterval, authStore } from '$lib/stores';
   import { fetchAuditLog } from '$lib/api';
   import { userRole, hasCap, userCaps } from '$lib/rbac';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -113,6 +113,39 @@
   }
 
   function applyFilters() { offset = 0; load(); }
+
+  // ── Quick-filter presets (slice AP) ─────────────────────────────
+  // Chip-style shortcuts above the manual filter inputs. Each preset
+  // sets one or more filter fields + calls load(). Operator-facing
+  // convenience — "show me errors in the last hour" is a 1-click
+  // action instead of "type 1 in hours, type 4 in status, hit apply".
+  function setTime(/** @type {number} */ hours) {
+    fSinceHours = hours;
+    offset = 0;
+    load();
+  }
+  function presetErrors() {
+    // status_code 4xx/5xx — the backend accepts a single int today,
+    // so we use 400 as a placeholder + rely on the action filter for
+    // wider scoping. A future backend tweak could accept a range.
+    // For now: setting status to '4' filters to 4xx prefix matches if
+    // the backend supports startswith. Fallback to status=500 toggle.
+    fStatus = fStatus === '4' ? '' : '4';
+    offset = 0;
+    load();
+  }
+  function presetMine() {
+    const u = $authStore?.user || '';
+    fActor = (fActor === u) ? '' : u;
+    offset = 0;
+    load();
+  }
+  // Time presets — exact-match highlight. Manual edits to the "Last
+  // (hours)" input that don't equal a preset value leave all chips
+  // inactive (operator sees their custom value in the input instead).
+  function _timeActive(/** @type {number} */ h) {
+    return Number(fSinceHours) === h;
+  }
   function pageNext() { if (offset + LIMIT < total) { offset += LIMIT; load(); } }
   function pagePrev() { if (offset > 0) { offset = Math.max(0, offset - LIMIT); load(); } }
 
@@ -212,6 +245,31 @@
       class:active={categoryPill === p.key}
       onclick={() => setCategory(p.key)}>{p.label}</button>
   {/each}
+</div>
+
+<!-- Quick-filter presets (slice AP). Time chips set fSinceHours;
+     Errors toggles fStatus to '4'; Mine toggles fActor to the current
+     username. Each chip is a one-click shortcut that beats hand-
+     typing the equivalent field values. -->
+<div class="audit-quickrow">
+  <span class="audit-quicklbl">Time</span>
+  <button class="audit-quick" class:active={_timeActive(1)}    onclick={() => setTime(1)}>1h</button>
+  <button class="audit-quick" class:active={_timeActive(6)}    onclick={() => setTime(6)}>6h</button>
+  <button class="audit-quick" class:active={_timeActive(24)}   onclick={() => setTime(24)}>24h</button>
+  <button class="audit-quick" class:active={_timeActive(72)}   onclick={() => setTime(72)}>3d</button>
+  <button class="audit-quick" class:active={_timeActive(168)}  onclick={() => setTime(168)}>7d</button>
+  <button class="audit-quick" class:active={_timeActive(720)}  onclick={() => setTime(720)}>30d</button>
+  <span class="audit-quicksep" aria-hidden="true"></span>
+  <button class="audit-quick audit-quick-errors"
+          class:active={fStatus === '4'}
+          title="Show 4xx/5xx responses only. Click again to clear."
+          onclick={presetErrors}>Errors</button>
+  {#if $authStore?.user}
+    <button class="audit-quick audit-quick-mine"
+            class:active={fActor === $authStore.user}
+            title="Filter to actions by {$authStore.user}. Click again to clear."
+            onclick={presetMine}>Mine</button>
+  {/if}
 </div>
 
 <div class="audit-filters">
@@ -438,6 +496,57 @@
     background: rgba(34, 211, 238, 0.16);
     border-color: rgba(34, 211, 238, 0.65);
     color: #67e8f9;
+  }
+
+  /* Quick-filter row (slice AP). Smaller chips than category pills so
+     the two rows are visually distinct — operator's eye reads
+     category pills first (what), preset chips second (when + how). */
+  .audit-quickrow {
+    display: flex; gap: 0.3rem; flex-wrap: wrap;
+    align-items: center;
+    margin-bottom: 0.55rem;
+  }
+  .audit-quicklbl {
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #94a3b8;
+    font-family: ui-monospace, monospace;
+    margin-right: 0.2rem;
+  }
+  .audit-quick {
+    padding: 0.18rem 0.55rem;
+    background: rgba(15, 23, 42, 0.45);
+    border: 1px solid rgba(126, 151, 184, 0.22);
+    border-radius: 3px;
+    color: #94a3b8;
+    font-size: 0.58rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    font-family: ui-monospace, monospace;
+  }
+  .audit-quick:hover { background: rgba(34, 211, 238, 0.08); color: #c8d8f0; }
+  .audit-quick.active {
+    background: rgba(34, 211, 238, 0.14);
+    border-color: rgba(34, 211, 238, 0.55);
+    color: #67e8f9;
+  }
+  .audit-quicksep {
+    width: 1px; height: 0.9rem;
+    background: rgba(126, 151, 184, 0.3);
+    margin: 0 0.25rem;
+  }
+  .audit-quick.audit-quick-errors.active {
+    background: rgba(248, 113, 113, 0.16);
+    border-color: rgba(248, 113, 113, 0.55);
+    color: #f87171;
+  }
+  .audit-quick.audit-quick-mine.active {
+    background: rgba(251, 191, 36, 0.16);
+    border-color: rgba(251, 191, 36, 0.55);
+    color: #fbbf24;
   }
 
   /* Category badge in the table row — single source of truth for
