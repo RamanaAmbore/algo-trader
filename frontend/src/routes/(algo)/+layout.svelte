@@ -9,7 +9,10 @@
     fetchReplayStatus,
     fetchExecutionMode, setExecutionMode,
     fetchOrderEvents,
+    fetchPersistenceMode, setPersistenceMode,
   } from '$lib/api';
+  import { userRole, hasCap, userCaps } from '$lib/rbac';
+  import { toast } from '$lib/data/toastStore.svelte.js';
   import OrderTimelineDrawer from '$lib/order/OrderTimelineDrawer.svelte';
   import PositionStrip from '$lib/PositionStrip.svelte';
   import ImpersonationBanner from '$lib/ImpersonationBanner.svelte';
@@ -275,6 +278,31 @@
     shadow: '#fb923c',   // short-orange
     live:   '#f87171',   // red-400 — danger / real broker
   };
+  // ── Persistence refresh-cycle mode (slice AK) ───────────────────
+  // Admin-only — surfaces when the operator has flipped persistence
+  // bypass on so it stays visible from every algo page (otherwise
+  // they'd have to navigate to /admin/health to remember they're
+  // skipping cache + DB). Only fetched for admin users to avoid 401
+  // spam from non-admin sessions.
+  let persistMode = $state(/** @type {'off'|'soft'|'hard'} */ ('off'));
+  const _canViewPersistMode = $derived(hasCap('view_audit', $userCaps, $userRole));
+  async function loadPersistMode() {
+    if (!_canViewPersistMode) return;
+    try {
+      const r = await fetchPersistenceMode();
+      if (r?.mode && r.mode !== persistMode) persistMode = r.mode;
+    } catch (_) { /* silent — not load-bearing */ }
+  }
+  async function _flipPersistOff() {
+    try {
+      await setPersistenceMode('off');
+      persistMode = 'off';
+      toast.success('Refresh cycle restored to normal');
+    } catch (e) {
+      toast.error(`Failed to restore: ${e.message || e}`);
+    }
+  }
+
   async function loadMode() {
     try {
       const res = await fetchExecutionMode();
@@ -415,7 +443,7 @@
   // `isDemo` derivation + nav filter can read them; the actual
   // pollers + lifecycle live here.
   let simTeardown, paperTeardown, replayTeardown;
-  let modeTeardown, chaseTeardown;
+  let modeTeardown, chaseTeardown, persistTeardown;
   async function pollSim() {
     try { simStatus = await fetchSimStatus(); }
     catch (_) { /* cap flag off or auth gone — treat as idle */ }
@@ -477,6 +505,10 @@
     replayTeardown = _adaptiveInterval(pollReplay,
       () => !!replayStatus?.active, 5000, 30000);
     loadMode();   modeTeardown   = visibleInterval(loadMode,  30000);
+    // Persistence-mode poller (admin-only; non-admins see nothing).
+    // Same 30s cadence as execution mode.
+    loadPersistMode();
+    persistTeardown = visibleInterval(loadPersistMode, 30000);
     // pollChase — adaptive. 5 s when an order is open (operator wants
     // live chase progress), 60 s otherwise. Without this it ran at 10 s
     // on every algo page including Tokens / Settings / Brokers / Users
@@ -487,7 +519,7 @@
   });
   onDestroy(() => {
     simTeardown?.(); paperTeardown?.(); replayTeardown?.();
-    modeTeardown?.(); chaseTeardown?.();
+    modeTeardown?.(); chaseTeardown?.(); persistTeardown?.();
   });
 
   // ── Demo / signin redirect ─────────────────────────────────────────
@@ -615,6 +647,29 @@
             {/if}
             {#if modeError}<span class="mode-combo-error">{modeError}</span>{/if}
           </div>
+        {/if}
+
+        <!-- ── Persistence refresh-cycle chip (slice AK) ─────────────
+             Visible only when admin AND mode is non-default (soft/hard).
+             Operator's reminder that they're skipping cache+DB — clicking
+             flips it back to OFF immediately. Hidden when mode='off' to
+             avoid navbar clutter during normal operation. -->
+        {#if _canViewPersistMode && persistMode !== 'off'}
+          <button class="persist-chip persist-chip-{persistMode}"
+                  onclick={_flipPersistOff}
+                  title={persistMode === 'soft'
+                    ? 'SOFT bypass: every read skips cache + DB, hits broker, writes back. Click to restore normal mode.'
+                    : 'HARD bypass: soft + ticker recycle on transition. Click to restore normal mode.'}>
+            <svg width="9" height="9" viewBox="0 0 12 12" fill="none"
+                 stroke="currentColor" stroke-width="1.6" stroke-linecap="round"
+                 stroke-linejoin="round" aria-hidden="true">
+              <path d="M1 6a5 5 0 0 1 9-3" />
+              <path d="M10 1v3h-3" />
+              <path d="M11 6a5 5 0 0 1-9 3" />
+              <path d="M2 11V8h3" />
+            </svg>
+            BYPASS · {persistMode.toUpperCase()}
+          </button>
         {/if}
 
         <!-- ── Chase chip ─────────────────────────────────────────── -->
@@ -1766,6 +1821,41 @@
     filter: brightness(1.1);
   }
   .chase-chip-arrow { opacity: 0.7; }
+
+  /* ── Persistence bypass chip (slice AK) ───────────────────────────
+     Same chip-shape as .chase-chip but with mode-specific colours so
+     SOFT (amber, recoverable) and HARD (red, includes ticker recycle)
+     read at a glance. Click flips back to OFF — the operator's
+     "I forgot I was in bypass" recovery affordance. */
+  .persist-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    height: 1.4rem;
+    padding: 0 0.55rem;
+    border-radius: 9999px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    cursor: pointer;
+    white-space: nowrap;
+    outline: none;
+    margin-right: 0.3rem;
+    transition: background-color 0.08s, filter 0.08s;
+    animation: algo-mode-dot 2s ease-in-out infinite;
+  }
+  .persist-chip:hover { filter: brightness(1.15); }
+  .persist-chip-soft {
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.12);
+    border: 1px solid rgba(251, 191, 36, 0.5);
+  }
+  .persist-chip-hard {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.14);
+    border: 1px solid rgba(248, 113, 113, 0.55);
+  }
 
   /* ── Status-driven surface card — used across algo pages ───────────────────
      Operator: "make accent consistent with colors for cards in all
