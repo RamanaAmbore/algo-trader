@@ -1106,9 +1106,22 @@
           sparklines = { ...sparklines, ...res.data };
         }
       }
-      // Persist past-closes for the IST day. Backend already day-evicts;
-      // TTL.day matches that contract. The .value is just the closes
-      // array per symbol — small (~50KB for 100 symbols × 5 closes).
+      // Active-universe prune — operator: "as the pulse symbols change,
+      // tick data which is not relevant should be removed from db and
+      // cache also". Symbols that have rotated out of the current
+      // unifiedRows set (closed positions, removed from watchlist,
+      // movers rolled over, pinned changes) are dropped from BOTH the
+      // in-memory sparklines map AND localStorage so the cache never
+      // grows unbounded. `seen` was built above from unifiedRows.
+      const activeSyms = new Set();
+      for (const p of pairs) activeSyms.add(p.tradingsymbol);
+      const pruned = /** @type {Record<string, number[]>} */ ({});
+      for (const sym in sparklines) {
+        if (activeSyms.has(sym)) pruned[sym] = sparklines[sym];
+      }
+      sparklines = pruned;
+      // Persist the pruned set. Backend day-evicts independently;
+      // TTL.day matches that contract.
       cachedWrite('mp.sparklines', sparklines, TTL.day);
     } catch (_) { /* non-fatal — sparklines are cosmetic */ }
   }
@@ -1159,6 +1172,10 @@
       if (cHld?.value && Array.isArray(cHld.value)) holdings = cHld.value;
       const cSpk = cachedRead('mp.sparklines');
       if (cSpk?.value && typeof cSpk.value === 'object') sparklines = cSpk.value;
+      const cWq = cachedRead('mp.watchQuotes');
+      if (cWq?.value && typeof cWq.value === 'object') watchQuotes = cWq.value;
+      const cMov = cachedRead('mp.movers');
+      if (cMov?.value && Array.isArray(cMov.value)) movers = cMov.value;
     }
     await tick();
     mountGrid();
@@ -1357,6 +1374,7 @@
         });
       }
       movers = rows;
+      if (rows.length) cachedWrite('mp.movers', rows, TTL.short);
     } catch (e) {
       const _now = Date.now();
       if (_now - _moversWarnLast > 60_000) {
@@ -2190,6 +2208,7 @@
         }
       }
       watchQuotes = map;
+      if (Object.keys(map).length) cachedWrite('mp.watchQuotes', map, TTL.short);
       refreshedAt = latestRefreshed;
       if (quoteFailStreak > 0) {
         quoteFailStreak = 0;
