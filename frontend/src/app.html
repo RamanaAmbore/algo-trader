@@ -20,8 +20,42 @@
     <meta name="author" content="RamboQuant Analytics LLP" />
     <meta name="robots" content="index, follow" />
     <meta name="google-site-verification" content="Gxa9sHLYv2meW1M0lk9U9YmPZLpLA25yY7whTUBPjU0" />
+
+    <!-- ── Site-wide social-share fallback (slice AW) ────────────────
+         Per-page <svelte:head> overrides these on routes that have
+         richer narrative. For every other route — algo pages,
+         deep-link surfaces, anything that ships without explicit OG
+         — these tags ensure the brand identity (logo, name, slogan,
+         link preview image) renders in any social card unfurl:
+         Facebook, LinkedIn, Twitter/X, Slack, Discord, Telegram,
+         WhatsApp, iMessage, Reddit, Pinterest, Mastodon — all read
+         these tags. The image is the canonical 1200×630 share card.
+    -->
+    <meta property="og:site_name"          content="RamboQuant Analytics" />
+    <meta property="og:title"              content="RamboQuant Analytics — Quantitative Investment for Indian Markets" />
+    <meta property="og:description"        content="Systematic, transparent portfolios + open algo trading platform. 25-year track record, 22%+ XIRR." />
+    <meta property="og:url"                content="https://ramboq.com/" />
+    <meta property="og:type"               content="website" />
+    <meta property="og:locale"             content="en_IN" />
+    <meta property="og:image"              content="https://ramboq.com/og-image-home.png?v=2" />
+    <meta property="og:image:secure_url"   content="https://ramboq.com/og-image-home.png?v=2" />
+    <meta property="og:image:type"         content="image/png" />
+    <meta property="og:image:width"        content="1200" />
+    <meta property="og:image:height"       content="630" />
+    <meta property="og:image:alt"          content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
+
+    <!-- Twitter / X — same data, twitter:* namespace. summary_large_image
+         renders the full 1200×630 image; other platforms ignore these. -->
+    <meta name="twitter:card"              content="summary_large_image" />
+    <meta name="twitter:site"              content="@ramboquant" />
+    <meta name="twitter:title"             content="RamboQuant Analytics — Quantitative Investment for Indian Markets" />
+    <meta name="twitter:description"       content="Systematic, transparent portfolios + open algo trading platform. 25-year track record, 22%+ XIRR." />
+    <meta name="twitter:image"             content="https://ramboq.com/og-image-home.png?v=2" />
+    <meta name="twitter:image:alt"         content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
+
     <!-- Canonical and OG tags are injected per page via <svelte:head>
-         in each route; no site-wide hardcoded canonical here. -->
+         in each route — those overrides win over the fallback above
+         on every route that supplies them. -->
 
     <!-- Structured Data (JSON-LD) — Organization -->
     <script type="application/ld+json">

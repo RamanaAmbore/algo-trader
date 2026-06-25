@@ -7,9 +7,11 @@ bull glow invisible. resvg-py has full SVG filter support.
 
 Sources of truth (all under frontend/static/):
 - app-icon.svg       → favicon, PWA icons, apple-touch-icon
-- og-image-card.svg  → social card (1200×630), subpages
-- og-image-home.svg  → social card (1200×630), homepage
+- og-image-home.svg  → social card (1200×630), every page
 - og-image-thumb.svg → social thumb (600×600)
+  (og-image-card.* retired in slice AW — was the "subpages" variant
+   that public pages stopped referencing once og-image-home became
+   the canonical 1200×630 share image.)
 
 Edit the relevant SVG, then re-run this script.
 
@@ -110,7 +112,6 @@ def main() -> None:
     # each SVG actually shows up on the resulting PNG (cairosvg was
     # silently dropping the filter chain, leaving bare-silhouette bulls
     # in every social preview, Slack unfurl, and WhatsApp link share).
-    _save(_render_og("og-image-card.svg",  1200, 630), "og-image-card.png")
     _save(_render_og("og-image-home.svg",  1200, 630), "og-image-home.png")
     _save(_render_og("og-image-thumb.svg",  600, 600), "og-image-thumb.png")
 

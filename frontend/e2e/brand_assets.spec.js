@@ -23,8 +23,12 @@ const TIMEOUT = 20_000;
 const STATIC_OK = [
   { path: '/favicon.ico',      mime: /image\/(x-icon|vnd\.microsoft\.icon)|^$/ },
   { path: '/favicon.png',      mime: /image\/png/ },
-  { path: '/og-image-card.png',     mime: /image\/png/ },
-  { path: '/og-image-card.svg',     mime: /image\/svg\+xml/ },
+  // og-image-card.{png,svg} retired in slice AW — was the unreferenced
+  // "subpages" variant; the canonical 1200×630 share image is
+  // og-image-home.* which every public page references via og:image.
+  { path: '/og-image-home.png',     mime: /image\/png/ },
+  { path: '/og-image-home.svg',     mime: /image\/svg\+xml/ },
+  { path: '/og-image-thumb.png',    mime: /image\/png/ },
   { path: '/app-icon-192.png', mime: /image\/png/ },
   { path: '/app-icon-512.png', mime: /image\/png/ },
 ];
