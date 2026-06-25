@@ -311,6 +311,50 @@ async def _build_quote_key(item: WatchlistItem) -> tuple[str, str]:
     return f"{exch}:{sym}", sym
 
 
+async def _eod_fallback_map(
+    pairs: list[tuple[str, str]],
+) -> dict[tuple[str, str], dict]:
+    """Read most-recent OHLCV bar per (symbol, exchange) from the
+    ohlcv_daily store/table. Returns {(sym, exch): {ltp, close, open,
+    high, low, volume}} where ltp = the last available close (a
+    sensible cold-mount placeholder until a live quote lands).
+
+    Used by `_fetch_quotes` to fill in zero/stale broker responses so
+    the Pulse Pinned + Watch grids paint with yesterday's EOD prices
+    on cold mount instead of an empty 0. Operator goal: "every
+    relevant truth should go through the cycle".
+    """
+    if not pairs:
+        return {}
+    from sqlalchemy import text as _sql_text
+    sql = _sql_text("""
+        SELECT DISTINCT ON (symbol, exchange)
+               symbol, exchange, open, high, low, close, volume
+        FROM ohlcv_daily
+        WHERE (symbol, exchange) = ANY(:pairs)
+        ORDER BY symbol, exchange, date DESC
+    """)
+    try:
+        async with async_session() as session:
+            result = await session.execute(
+                sql, {"pairs": [list(p) for p in pairs]}
+            )
+            rows = result.fetchall()
+    except Exception as exc:
+        logger.warning(f"watchlist EOD fallback query failed: {exc}")
+        return {}
+    out: dict[tuple[str, str], dict] = {}
+    for r in rows:
+        out[(str(r[0]), str(r[1]))] = {
+            "open":   float(r[2]) if r[2] is not None else None,
+            "high":   float(r[3]) if r[3] is not None else None,
+            "low":    float(r[4]) if r[4] is not None else None,
+            "close":  float(r[5]) if r[5] is not None else None,
+            "volume": int(r[6])   if r[6] is not None else 0,
+        }
+    return out
+
+
 async def _fetch_quotes(items: list[WatchlistItem]) -> list[WatchlistQuote]:
     """One batched broker.quote() call for every distinct key. asyncio
     runs the sync broker call in a thread so the event loop isn't
@@ -333,6 +377,18 @@ async def _fetch_quotes(items: list[WatchlistItem]) -> list[WatchlistQuote]:
             logger.warning(f"Watchlist quote fetch failed: {exc}")
             quote_data = {}
 
+    # EOD fallback — when broker returned 0/stale for any item, look up
+    # the most recent close from ohlcv_daily so cold-mount paints with
+    # yesterday's EOD instead of 0. Built only for items the broker
+    # actually missed (skips the DB query when every quote was live).
+    eod_pairs: list[tuple[str, str]] = []
+    for it in items:
+        broker_key, quote_sym = key_map[it.id]
+        q = quote_data.get(broker_key) or {}
+        if not q or not float(q.get("last_price") or 0.0):
+            eod_pairs.append((quote_sym.upper().strip(), it.exchange.upper().strip()))
+    eod_map = await _eod_fallback_map(eod_pairs) if eod_pairs else {}
+
     out: list[WatchlistQuote] = []
     for it in items:
         broker_key, quote_sym = key_map[it.id]
@@ -345,6 +401,19 @@ async def _fetch_quotes(items: list[WatchlistItem]) -> list[WatchlistQuote]:
         sells  = depth.get("sell") or []
         bid    = float(buys[0]["price"])  if buys  and (buys[0].get("price") or 0)  else None
         ask    = float(sells[0]["price"]) if sells and (sells[0].get("price") or 0) else None
+        # EOD substitution — only kicks in when broker gave us nothing.
+        # We set ltp = last close (so the grid paints a number) AND
+        # leave the stale flag TRUE so the frontend can subtly mark
+        # the row as "showing EOD, not live". The next live tick from
+        # SSE / next poll overwrites everything.
+        is_stale = not q or not ltp
+        eod = eod_map.get((quote_sym.upper().strip(), it.exchange.upper().strip())) if is_stale else None
+        if eod:
+            if not ltp:   ltp   = float(eod.get("close") or 0.0)
+            if not close: close = eod.get("close")
+            if not ohlc.get("open"):  ohlc.setdefault("open",  eod.get("open"))
+            if not ohlc.get("high"):  ohlc.setdefault("high",  eod.get("high"))
+            if not ohlc.get("low"):   ohlc.setdefault("low",   eod.get("low"))
         change = (ltp - close) if (close and ltp) else 0.0
         chg_pct = (change / close * 100.0) if close else 0.0
         out.append(WatchlistQuote(
@@ -360,7 +429,7 @@ async def _fetch_quotes(items: list[WatchlistItem]) -> list[WatchlistQuote]:
             close=close,
             change=change, change_pct=chg_pct,
             volume=int(q.get("volume") or 0),
-            stale=(not q),
+            stale=is_stale,
         ))
     return out
 
