@@ -253,6 +253,21 @@ class GrowwBroker(Broker):
     @_retry_groww_auth
     def margins(self, segment: str | None = None) -> dict:
         resp = self.groww.get_available_margin_details()
+        # Audit cycle 8 — one-time INFO log of the raw Groww margin
+        # response keys per account, mirroring the Dhan adapter pattern.
+        # Confirms which of the optimistically-mapped fields
+        # (realised_pnl, option_premium, etc.) actually arrive.
+        global _GROWW_MARGINS_LOGGED
+        try:
+            if self.account not in _GROWW_MARGINS_LOGGED:
+                _GROWW_MARGINS_LOGGED.add(self.account)
+                _raw = resp if isinstance(resp, dict) else None
+                logger.info(
+                    f"Groww margins[{self.account}] raw response keys: "
+                    f"{sorted((_raw or {}).keys()) if isinstance(_raw, dict) else type(resp).__name__}"
+                )
+        except Exception:
+            pass
         return _normalise_margins(resp, segment)
 
     @_retry_groww_auth
@@ -1231,6 +1246,12 @@ def _normalise_positions(resp: Any) -> dict:
         # already handles.
         net.append(row)
     return {"net": net, "day": day}
+
+
+# Set of Groww accounts whose raw margin response keys have been logged.
+# Paired with the one-time INFO log in margins() to confirm field names
+# against Groww's incomplete SDK documentation. Resets on process restart.
+_GROWW_MARGINS_LOGGED: set[str] = set()
 
 
 def _normalise_margins(resp: Any, segment: str | None) -> dict:

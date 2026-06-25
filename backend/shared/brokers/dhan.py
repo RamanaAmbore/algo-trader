@@ -532,6 +532,21 @@ class DhanBroker(Broker):
 
     def margins(self, segment: str | None = None) -> dict:
         resp = self._safe_call(lambda d: d.get_fund_limits())
+        # Audit cycle 8 — log the raw Dhan fund_limits response ONCE per
+        # account so we can confirm which fields actually arrive in prod
+        # (Dhan v2 documentation is incomplete on the realized-P&L +
+        # option-premium fields the normaliser optimistically reads).
+        global _DHAN_MARGINS_LOGGED
+        try:
+            if self.account not in _DHAN_MARGINS_LOGGED:
+                _DHAN_MARGINS_LOGGED.add(self.account)
+                _raw = resp.get("data") if isinstance(resp, dict) else resp
+                logger.info(
+                    f"Dhan margins[{self.account}] raw response keys: "
+                    f"{sorted((_raw or {}).keys()) if isinstance(_raw, dict) else type(_raw).__name__}"
+                )
+        except Exception:
+            pass
         return _normalise_margins(resp, segment)
 
     def orders(self) -> list[dict]:
@@ -1661,33 +1676,76 @@ def _normalise_positions(resp: Any) -> dict:
     return {"net": net, "day": []}
 
 
+# Set of Dhan accounts whose raw fund_limits response keys have already
+# been logged at INFO. One-time per account; resets only on process
+# restart. Used by margins() above to confirm field names against
+# Dhan's incomplete v2 documentation without spamming logs every poll.
+_DHAN_MARGINS_LOGGED: set[str] = set()
+
+
 def _normalise_margins(resp: Any, segment: str | None) -> dict:
     """Dhan margins endpoint returns a single dict (not per-segment).
     Map to Kite's `equity` shape; if the caller passed segment='commodity'
-    we still return the same payload (Dhan doesn't slice this way)."""
+    we still return the same payload (Dhan doesn't slice this way).
+
+    Audit cycle 8: realized-P&L + option-premium fields now resolve
+    through a fallback chain across plausible Dhan v2 field names. Each
+    candidate matches a documented Dhan response variant. The one-time
+    INFO log in margins() above surfaces the actual keys so we can
+    confirm or tighten this mapping per account."""
     data = resp.get("data") if isinstance(resp, dict) else {}
     if not isinstance(data, dict):
         data = {}
+
+    # Available-cash field name chain — Dhan's typo `availabelBalance`
+    # plus the spelled-correctly variant for forward-compat.
+    _cash = float(
+        data.get("availabelBalance",
+                 data.get("availableBalance", 0)) or 0
+    )
+
+    # Realised M2M chain — Dhan v2 has shown all four spellings across
+    # SDK builds. First non-zero wins; falls back to 0.0 only when none
+    # of the candidates are present in the response.
+    _realised = float(
+        data.get("realizedProfit",
+                 data.get("realisedProfit",
+                          data.get("realizedPnl",
+                                   data.get("realisedPnl", 0)))) or 0
+    )
+
+    # Option premium currently parked in long options. Same fallback
+    # pattern; the strip already derives this from positions so the
+    # broker-side field is a cross-check, not load-bearing.
+    _opt_prem = float(
+        data.get("optionPremium",
+                 data.get("optionsPremium",
+                          data.get("optionsTraded", 0))) or 0
+    )
+
     payload = {
         "enabled": True,
-        "net":     float(data.get("availabelBalance", data.get("availableBalance",
-                                                                0)) or 0),
+        "net":     _cash,
         "available": {
+            # adhoc_margin maps to sodLimit (Dhan's credit-limit field).
+            # Documented mismatch: this is a credit facility, not real cash.
             "adhoc_margin":      float(data.get("sodLimit",        0) or 0),
-            "cash":              float(data.get("availabelBalance",
-                                               data.get("availableBalance", 0)) or 0),
+            "cash":              _cash,
+            # opening_balance: Dhan's `sodLimit` is the start-of-day credit
+            # limit, not the SOD actual cash balance. The Funds-table
+            # `cash` column reads this and therefore shows credit-limit
+            # for Dhan rows — strip CA is unaffected (reads `live_balance`).
             "opening_balance":   float(data.get("sodLimit",        0) or 0),
-            "live_balance":      float(data.get("availabelBalance",
-                                               data.get("availableBalance", 0)) or 0),
+            "live_balance":      _cash,
             "collateral":        float(data.get("collateralAmount", 0) or 0),
             "intraday_payin":    0.0,
         },
         "utilised": {
             "debits":            float(data.get("utilizedAmount",   0) or 0),
             "exposure":          0.0,
-            "m2m_realised":      0.0,
+            "m2m_realised":      _realised,
             "m2m_unrealised":    0.0,
-            "option_premium":    0.0,
+            "option_premium":    _opt_prem,
             "payout":            float(data.get("withdrawableBalance", 0) or 0),
             "span":              0.0,
             "holding_sales":     0.0,
