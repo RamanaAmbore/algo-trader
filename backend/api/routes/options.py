@@ -1736,7 +1736,11 @@ class OptionsController(Controller):
 
         # ── 1. Resolve metadata + LTP per leg ─────────────────────────
         resolved_legs: list[dict] = []
-        underlyings: set[str] = set()
+        # roots = the parsed symbol-family identifiers across all legs.
+        # Strategy endpoint rejects mixed roots (the legs don't share a
+        # vol surface). The downstream scalar `underlying` (price-source
+        # name) is derived from this set below.
+        roots: set[str] = set()
         expiries: set[str]    = set()
         from backend.shared.brokers.registry import get_price_broker
 
@@ -1755,7 +1759,7 @@ class OptionsController(Controller):
                     status_code=400,
                     detail=f"'{sym}' isn't a recognised option or futures contract."
                 )
-            underlyings.add(parsed["root"])
+            roots.add(parsed["root"])
             # Expiry — the operator (frontend instruments cache) wins over
             # parsed-symbol inference. The parser uses NSE F&O's last-
             # Thursday rule which is wrong for MCX commodities.
@@ -1770,14 +1774,16 @@ class OptionsController(Controller):
                 # picks the exchange — keeps this in one place.
                 need_quote[option_quote_key(sym)] = sym
 
-        if len(underlyings) > 1:
+        if len(roots) > 1:
             raise HTTPException(
                 status_code=400,
-                detail=f"All legs must share an underlying; got {sorted(underlyings)}"
+                detail=f"All legs must share an underlying; got {sorted(roots)}"
             )
         # Mixed expiries are supported — near-expiry evaluation is used for
         # the payoff curve and the far leg is re-priced with its remaining T.
-        underlying = next(iter(underlyings))
+        # The scalar `underlying` flowing downstream is the price-source name
+        # (operator-canonical vocab) derived from the single root.
+        underlying = next(iter(roots))
 
         quote_resp: dict = {}
         if need_quote:
