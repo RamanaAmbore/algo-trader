@@ -141,11 +141,8 @@
       const cached = cachedRead('strip.frozen');
       if (cached?.value && typeof cached.value === 'object') {
         const v = cached.value;
-        dispPositionsPnl   = Number(v.pnl       || 0);
         dispPositionsToday = Number(v.posToday  || 0);
         dispHoldingsToday  = Number(v.hldToday  || 0);
-        dispHoldingsTotal  = Number(v.hldTotal  || 0);
-        dispHoldingsValue  = Number(v.hldValue  || 0);
       }
     }
   });
@@ -234,31 +231,31 @@
     return _liveDeltaByRow.get(key) || 0;
   }
 
-  // Operator: "It should keep delta p as it was at the close of the
-  // market. It should be reset to zero when market opens. Similarly
-  // for all other numbers."
+  // Operator: "P calculation is not correct. It should show the
+  // current position profit. P delta is change in position profit
+  // in the day".
   //
-  // Pattern: the 5 P&L-bearing derived sums (P, Pd, HDd, Hd, H) all
-  // shadow a display $state that:
-  //   - mirrors the live value during market hours;
-  //   - FREEZES (stops updating) at the moment markets close;
-  //   - RESETS to 0 at the moment markets re-open, then resumes mirroring.
+  // Two classes of metric on this strip:
   //
-  // Margin / cash / utilisation cells are intentionally NOT in this
-  // pattern — they're broker balance-sheet fields that don't have a
-  // "day" concept, so they continue to track real-time across the
-  // session boundary.
+  //   LIFETIME (always live, never frozen) — these are "where do I
+  //   stand right now" numbers; they never reset on a session
+  //   boundary. Render directly from the live derived:
+  //     P    = positionsPnl    (lifetime P&L on open + closed-today positions)
+  //     Hld  = holdingsTotal   (lifetime unrealised P&L on holdings)
+  //     H    = holdingsValue   (current portfolio value)
   //
-  // Note: on a fresh page load DURING off-hours, all five start at 0
-  // (no prior session state in this tab). When the next session opens,
-  // they zero out (no-op) and begin tracking. Reload across sessions
-  // does not persist the frozen value — that would need localStorage,
-  // which we don't yet wire (operator can request if needed).
-  let dispPositionsPnl   = $state(0);
+  //   DAY DELTA (freeze at close, reset at open) — these are "how
+  //   far did I move today" numbers. They freeze at the close-of-
+  //   session value so the operator sees their end-of-day P&L all
+  //   evening + weekend, then zero out at the next market open and
+  //   begin tracking the new session's contribution:
+  //     P∆   = positionsToday  (today's MTM move on positions)
+  //     HD∆  = holdingsToday   (today's MTM move on holdings)
+  //
+  // Margin / cash / util / liveCash cells are also always-live —
+  // they're broker balance-sheet fields without a "day" concept.
   let dispPositionsToday = $state(0);
   let dispHoldingsToday  = $state(0);
-  let dispHoldingsTotal  = $state(0);
-  let dispHoldingsValue  = $state(0);
   let _prevMktOpen       = $state(false);
 
   const _livePositionsPnl = $derived.by(() => {
@@ -287,48 +284,24 @@
     return s;
   });
 
-  // Freeze-at-close / reset-at-open effect. Mirrors live → disp$ only
-  // while a market segment is open. On a closed → open transition,
-  // zeroes the display (operator starts the new session from 0) and
-  // also clears the localStorage snapshot so a tab reload mid-session
-  // doesn't restore yesterday's frozen values.
-  //
-  // Persistence: while open, the disp$ values are written to
-  // 'strip.frozen' via the persistent-cache helper (200ms debounced).
-  // On the operator's next tab mount during overnight / weekend, the
-  // onMount restore (above) reads this back and seeds the disp$ vars
-  // — so the strip shows the same closing P&L the operator left,
-  // not zeros.
+  // Freeze-at-close / reset-at-open for the TWO day-delta metrics.
+  // Lifetime P/Hld/H mirror their live derived directly at render
+  // time — they're never frozen.
   $effect(() => {
-    void _mktTick;  // re-run on session-boundary
+    void _mktTick;
     const open = isNseOpen() || isMcxOpen();
     if (open && !_prevMktOpen) {
-      // Closed → Open: hard reset.
-      dispPositionsPnl   = 0;
       dispPositionsToday = 0;
       dispHoldingsToday  = 0;
-      dispHoldingsTotal  = 0;
-      dispHoldingsValue  = 0;
       cachedDelete('strip.frozen');
     }
     _prevMktOpen = open;
-    if (!open) return;  // FROZEN during closed hours
-    dispPositionsPnl   = _livePositionsPnl;
+    if (!open) return;
     dispPositionsToday = _livePositionsToday;
     dispHoldingsToday  = _liveHoldingsToday;
-    dispHoldingsTotal  = _liveHoldingsTotal;
-    dispHoldingsValue  = _liveHoldingsValue;
-    // Persist for cross-reload survival. TTL is effectively 7 days
-    // (TTL.day × 7 falls back to the long-tail of TTL bucket math —
-    // anything longer than a normal market gap is fine). The
-    // Closed → Open transition above clears the entry so we never
-    // serve stale day-old frozen values into a fresh session.
     cachedWrite('strip.frozen', {
-      pnl:      dispPositionsPnl,
       posToday: dispPositionsToday,
       hldToday: dispHoldingsToday,
-      hldTotal: dispHoldingsTotal,
-      hldValue: dispHoldingsValue,
     }, TTL.day * 7);
   });
   // Live cash — Kite's `avail.cash` (= live_balance) summed across
@@ -415,15 +388,15 @@
     // Read _pollCycleStamp to create a dependency on poll completions.
     // eslint-disable-next-line no-unused-expressions
     _pollCycleStamp;
-    flash.update('P',    dispPositionsPnl);
+    flash.update('P',    _livePositionsPnl);
     flash.update('M',    marginTotal);
     flash.update('U',    utilPct);
     flash.update('Cp',   cashTotal);
     flash.update('Cash', liveCashTotal);
     flash.update('Pd',   dispPositionsToday);
     flash.update('HDd',  dispHoldingsToday);
-    flash.update('Hd',   dispHoldingsTotal);
-    flash.update('H',    dispHoldingsValue);
+    flash.update('Hd',   _liveHoldingsTotal);
+    flash.update('H',    _liveHoldingsValue);
   });
 </script>
 
@@ -431,8 +404,8 @@
    aria-label="Open the dashboard — full positions, holdings, and funds grids">
   <span class="ps-agg" title="Positions P/L — open + closed intraday">
     <span class="ps-agg-k">P</span>
-    <span class={'ps-agg-v ' + (dispPositionsPnl > 0 ? 'ps-pos' : dispPositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}>
-      {fmtMoney(dispPositionsPnl)}
+    <span class={'ps-agg-v ' + (_livePositionsPnl > 0 ? 'ps-pos' : _livePositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}>
+      {fmtMoney(_livePositionsPnl)}
     </span>
   </span>
   <span class="ps-agg" title="Available margin — summed across accounts">
@@ -491,13 +464,13 @@
   </span>
   <span class="ps-agg" title="Holdings — total unrealised P/L from entry">
     <span class="ps-agg-k ps-delta">H∆</span>
-    <span class={'ps-agg-v ' + (dispHoldingsTotal > 0 ? 'ps-pos' : dispHoldingsTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Hd')}>
-      {fmtMoney(dispHoldingsTotal)}
+    <span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos' : _liveHoldingsTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Hd')}>
+      {fmtMoney(_liveHoldingsTotal)}
     </span>
   </span>
   <span class="ps-agg" title="Current holding value — sum of cur_val across holdings">
     <span class="ps-agg-k">H</span>
-    <span class={'ps-agg-v ps-cash ' + flash.classOf('H')}>{fmtMoney(dispHoldingsValue)}</span>
+    <span class={'ps-agg-v ps-cash ' + flash.classOf('H')}>{fmtMoney(_liveHoldingsValue)}</span>
   </span>
 </a>
 
