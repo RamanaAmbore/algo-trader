@@ -1048,6 +1048,11 @@ class SparklineController(Controller):
                                 if past_closes:
                                     _spark_past_cache[cache_key] = past_closes
                                     past_result[sym] = past_closes
+                        # TODO(Stage 2): enqueue sparkline past closes to ohlcv_daily.
+                        # _trim_past_closes returns close prices only (no open/high/low),
+                        # so we cannot reconstruct a full OHLCV bar from this path.
+                        # The charts route (interval="day") has full bars and is the
+                        # correct persistence point. Skip enqueueing here.
 
         # ── Step 2: LTP for ALL symbols — tick map first, broker.ltp() fallback
         #

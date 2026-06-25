@@ -97,6 +97,7 @@ class HealthResponse(msgspec.Struct):
     sparkline_warm: SparklineWarmStatus
     ticker: TickerStatus
     ipv6: list[str]     # source_ip values configured across all accounts
+    persistence: dict   # write_queue health surface (disk + db workers)
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +295,9 @@ class HealthController(Controller):
             git_subject = _git_subject()
             branch = str(config.get("deploy_branch") or "?")
 
+            from backend.api.persistence import write_queue
+            persistence = write_queue.get_health()
+
             return HealthResponse(
                 branch=branch,
                 git_hash=git_hash,
@@ -306,6 +310,7 @@ class HealthController(Controller):
                 sparkline_warm=sparkline_warm,
                 ticker=ticker,
                 ipv6=ipv6_list,
+                persistence=persistence,
             )
         except HTTPException:
             raise

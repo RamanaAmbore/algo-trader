@@ -552,14 +552,24 @@ async def _stop_kite_ticker(app) -> None:  # noqa: ARG001
         pass
 
 
+async def _start_write_queue(app) -> None:  # noqa: ARG001
+    from backend.api.persistence import write_queue
+    await write_queue.start()
+
+
+async def _stop_write_queue(app) -> None:  # noqa: ARG001
+    from backend.api.persistence import write_queue
+    await write_queue.stop()
+
+
 from backend.api.audit import AuditMiddleware
 
 app = Litestar(
     route_handlers=_route_handlers,
     cors_config=cors_config,
     openapi_config=openapi_config,
-    on_startup=[init_db, _rebuild_broker_connections, seed_hedge_proxies, _start_kite_ticker, bg_startup],
-    on_shutdown=[bg_shutdown, _stop_kite_ticker],
+    on_startup=[init_db, _rebuild_broker_connections, seed_hedge_proxies, _start_kite_ticker, bg_startup, _start_write_queue],
+    on_shutdown=[bg_shutdown, _stop_kite_ticker, _stop_write_queue],
     before_request=_log_visitor,
     # Audit middleware — writes one audit_log row per mutating
     # request after the response leaves the server. Reads + suppressed

@@ -1567,6 +1567,40 @@ class OptionsController(Controller):
         if _cached is not None:
             return _cached
 
+        # ── Tier-1/2/3 store for daily bars (interval="day") ─────────
+        # Immutable once the day closes — serve from DB/memory cache
+        # instead of re-hitting the broker on every cold open or deploy.
+        # Intraday intervals skip this path (Stage 2 work).
+        if interval == "day":
+            from datetime import date as _date
+            from backend.api.persistence.ohlcv_store import get_or_fetch_daily
+            to_d_daily   = _date.today()
+            from_d_daily = to_d_daily - __import__("datetime").timedelta(days=days + 5)
+            resolved_exch = (exchange or "NFO").upper()
+            try:
+                store_bars = await get_or_fetch_daily(sym, resolved_exch, from_d_daily, to_d_daily)
+                if store_bars:
+                    bars = [
+                        HistoricalBar(
+                            ts=b["date"],
+                            open=float(b["open"]),
+                            high=float(b["high"]),
+                            low=float(b["low"]),
+                            close=float(b["close"]),
+                            volume=int(b["volume"]),
+                        )
+                        for b in store_bars
+                    ]
+                    result = HistoricalResponse(symbol=sym, instrument_token=None,
+                                                interval=interval, bars=bars)
+                    _hist_cache_put(cache_key, result, _HIST_CACHE_TTL_OK)
+                    return result
+            except Exception as _store_exc:
+                logger.warning(
+                    f"options historical: ohlcv_store failed for {sym}/{resolved_exch}: "
+                    f"{_store_exc} — falling through to broker"
+                )
+
         # ── Account-fallback loop ─────────────────────────────────────
         # get_historical_brokers() returns the prioritised list of eligible
         # accounts (historical_data_enabled=True, not in rate-limit cool-off).

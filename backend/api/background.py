@@ -2771,6 +2771,41 @@ async def _task_visitor_log_daily() -> None:
         await _run_once()
 
 
+async def _task_purge_ohlcv_daily() -> None:
+    """Daily 03:00 IST — delete ohlcv_daily rows older than 5 years.
+
+    OHLCV bars are immutable once the day closes, but unbounded growth
+    would bloat the table over years. 5-year retention covers every
+    chart range the UI exposes (1M / 6M / 1Y) with headroom for backtests.
+    """
+    from sqlalchemy import text
+    from backend.api.database import async_session
+
+    async def _run_once():
+        try:
+            async with async_session() as session:
+                result = await session.execute(text(
+                    "DELETE FROM ohlcv_daily WHERE date < now() - interval '5 years'"
+                ))
+                await session.commit()
+                deleted = result.rowcount if result.rowcount >= 0 else 0
+            logger.info(f"Background: ohlcv_daily purge complete — {deleted} row(s) deleted")
+        except Exception as exc:
+            logger.warning(f"Background: ohlcv_daily purge failed: {exc}")
+
+    await asyncio.sleep(180)   # let startup settle
+
+    while True:
+        now = timestamp_indian()
+        next_run = now.replace(hour=3, minute=0, second=0, microsecond=0)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+        sleep_s = (next_run - now).total_seconds()
+        logger.info(f"Background: ohlcv_daily purge sleeping {sleep_s/3600:.1f}h until 03:00 IST")
+        await asyncio.sleep(sleep_s)
+        await _run_once()
+
+
 async def on_startup(app) -> None:
     """Start all background tasks. Called by Litestar on startup."""
     state: dict = {}
@@ -2808,6 +2843,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_strategy_snapshot(),   name="bg-strategy-snapshot"),
         asyncio.create_task(_task_monthly_statement(),   name="bg-monthly-statement"),
         asyncio.create_task(_task_nav_compute(),         name="bg-nav-compute"),
+        asyncio.create_task(_task_purge_ohlcv_daily(),  name="bg-purge-ohlcv"),
     ]
     # Mode 2 (real-data paper) runs only on main. The PaperTradeEngine
     # singleton processes its open-order book against real Kite quotes

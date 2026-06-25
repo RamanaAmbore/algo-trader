@@ -746,6 +746,12 @@ async def init_db() -> None:
                 "init_db: pg_trgm GIN index for audit_log.action not created "
                 "(extension may require superuser) — %s", _trgm_err,
             )
+        # ohlcv_daily table + index (Stage 1 OHLCV persistence).
+        try:
+            from backend.api.persistence.migrations import create_ohlcv_daily_table
+            await create_ohlcv_daily_table(conn)
+        except Exception as _ohlcv_err:
+            logger.warning("init_db: ohlcv_daily migration skipped — %s", _ohlcv_err)
     logger.info("Database: tables verified")
 
     # Seed grammar tokens (condition / notify / action catalog) BEFORE agents
