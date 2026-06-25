@@ -55,6 +55,15 @@ class PersistentStoreBase(ABC):
             self._mem_cache = {}
         self._fetch_locks:   dict[Any, asyncio.Lock] = {}
         self._lock_map_lock: asyncio.Lock             = asyncio.Lock()
+        # Tier-hit counters — reset on process restart.  Surfaced via
+        # get_metrics() on /admin/health so the operator can see the
+        # actual cache-vs-broker pressure per store.  Tier-1 hits are
+        # the cheapest; tier-3 fetches are the expensive ones.
+        self._tier1_hits:    int = 0
+        self._tier2_hits:    int = 0
+        self._tier3_fetches: int = 0
+        self._tier3_errors:  int = 0
+        self._bypass_reads:  int = 0
 
     # ── Abstract hooks ───────────────────────────────────────────────────────────
 
@@ -108,16 +117,21 @@ class PersistentStoreBase(ABC):
         if bypass_cache is None:
             bypass_cache = runtime_state.is_bypass_on()
 
+        if bypass_cache:
+            self._bypass_reads += 1
+
         if not bypass_cache:
             # Tier 1
             cached = self._mem_get(key)
             if cached is not None and self._is_complete(cached, key):
+                self._tier1_hits += 1
                 return cached
 
             # Tier 2
             db_value = await self._db_fetch(key)
             if db_value is not None and self._is_complete(db_value, key):
                 self._mem_set(key, db_value)
+                self._tier2_hits += 1
                 return db_value
 
         # Tier 3 — deduplicated per mem_key
@@ -127,15 +141,19 @@ class PersistentStoreBase(ABC):
                 # Re-check after acquiring — another coroutine may have filled it.
                 cached = self._mem_get(key)
                 if cached is not None and self._is_complete(cached, key):
+                    self._tier1_hits += 1
                     return cached
                 db_value2 = await self._db_fetch(key)
                 if db_value2 is not None and self._is_complete(db_value2, key):
                     self._mem_set(key, db_value2)
+                    self._tier2_hits += 1
                     return db_value2
 
             try:
                 value = await self._broker_fetch(key)
+                self._tier3_fetches += 1
             except Exception as exc:
+                self._tier3_errors += 1
                 logger.warning(f"{self._name}: broker fetch failed for {key}: {exc}")
                 return None
 
@@ -143,6 +161,29 @@ class PersistentStoreBase(ABC):
                 self._mem_set(key, value)
                 self._enqueue_persist(key, value)
             return value
+
+    # ── Metrics ──────────────────────────────────────────────────────────────────
+
+    def get_metrics(self) -> dict[str, Any]:
+        """Snapshot of tier hit counters.  Reset on process restart.
+
+        hit_rate is the share of non-bypass reads served from cache (tier
+        1 OR 2). A high hit_rate means most reads avoid the broker
+        round-trip — exactly what the persistence pipeline buys us.
+        """
+        total = self._tier1_hits + self._tier2_hits + self._tier3_fetches
+        cache_hits = self._tier1_hits + self._tier2_hits
+        hit_rate = (cache_hits / total) if total else None
+        return {
+            "name":          self._name,
+            "mem_keys":      len(self._mem_cache),
+            "tier1_hits":    self._tier1_hits,
+            "tier2_hits":    self._tier2_hits,
+            "tier3_fetches": self._tier3_fetches,
+            "tier3_errors":  self._tier3_errors,
+            "bypass_reads":  self._bypass_reads,
+            "hit_rate":      round(hit_rate, 3) if hit_rate is not None else None,
+        }
 
     # ── Internal helpers ─────────────────────────────────────────────────────────
 

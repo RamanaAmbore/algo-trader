@@ -304,11 +304,14 @@ class HealthController(Controller):
                     ohlcv_store, instruments_store, holidays_store,
                     intraday_store, runtime_state,
                 )
+                # Per-store tier-hit metrics — exposes the actual
+                # cache-vs-broker pressure ratio the persistence layer
+                # is absorbing (slice AJ). Counters reset on restart.
                 persistence["stores"] = {
-                    "ohlcv_daily":          {"mem_keys": len(ohlcv_store._MEM_CACHE)},
-                    "instruments_snapshot": {"mem_keys": len(instruments_store._MEM_CACHE)},
-                    "holidays_snapshot":    {"mem_keys": len(holidays_store._MEM_CACHE)},
-                    "intraday_bars":        {"mem_keys": len(intraday_store._MEM_CACHE)},
+                    "ohlcv_daily":          ohlcv_store._ohlcv_store.get_metrics(),
+                    "instruments_snapshot": instruments_store._instruments_store.get_metrics(),
+                    "holidays_snapshot":    holidays_store._holidays_store.get_metrics(),
+                    "intraday_bars":        intraday_store._intraday_store.get_metrics(),
                 }
                 persistence["mode"]   = runtime_state.get_mode()
                 # Back-compat: dashboards reading `bypass` (slice X surface)

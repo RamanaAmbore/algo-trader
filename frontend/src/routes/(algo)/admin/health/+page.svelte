@@ -380,15 +380,21 @@
       </div>
       {#if health.persistence?.stores}
         <div class="kv-row kv-section">
-          <span class="kv-key">Store mem keys</span>
+          <span class="kv-key">Store tier metrics</span>
+          <span class="kv-val kv-muted">hit% · keys · t1/t2/t3</span>
         </div>
         {#each Object.entries(health.persistence.stores) as [k, v]}
+          {@const hitPct = v?.hit_rate != null ? Math.round(v.hit_rate * 100) + '%' : '—'}
+          {@const hitCls = v?.hit_rate == null ? '' : v.hit_rate >= 0.8 ? 'cell-pos' : v.hit_rate >= 0.5 ? 'cell-amber' : 'cell-neg'}
           <div class="kv-row kv-indent">
             <span class="kv-key kv-mono">{k}</span>
-            <span class="kv-val kv-num">{_n(v?.mem_keys)}</span>
+            <span class="kv-val kv-mono kv-tier-pct {hitCls}">{hitPct}</span>
+            <span class="kv-val kv-mono kv-tier-counts">
+              {_n(v?.mem_keys)} · {_n(v?.tier1_hits)}/{_n(v?.tier2_hits)}/{_n(v?.tier3_fetches)}
+            </span>
             <button type="button" class="pm-inval-btn"
                     disabled={_invalBusy}
-                    title="Wipe in-memory + delete DB rows for {k}. Next read re-fetches from broker."
+                    title="Wipe in-memory + delete DB rows for {k}. Next read re-fetches from broker. ({_n(v?.tier3_errors)} broker errors so far this process)"
                     onclick={() => _invalidate(k)}>Invalidate</button>
           </div>
         {/each}
@@ -656,6 +662,21 @@
     background: rgba(248, 113, 113, 0.10);
     border-color: rgba(248, 113, 113, 0.4);
     color: #f87171;
+  }
+  /* Tier-hit metric cells (slice AJ) */
+  .kv-tier-pct {
+    min-width: 3.2rem;
+    text-align: right;
+    font-weight: 700;
+    color: #94a3b8;
+  }
+  .kv-tier-pct.cell-pos   { color: #4ade80; }     /* ≥ 80% hit rate */
+  .kv-tier-pct.cell-amber { color: #fbbf24; }     /* 50-79% */
+  .kv-tier-pct.cell-neg   { color: #f87171; }     /* < 50% — broker-heavy */
+  .kv-tier-counts {
+    margin-left: 0.4rem;
+    color: #94a3b8;
+    font-size: 0.6rem;
   }
   .pm-inval-all:hover:not(:disabled) {
     background: rgba(248, 113, 113, 0.20);
