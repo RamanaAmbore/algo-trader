@@ -6,9 +6,9 @@ Batches by size (200) or timeout (5 s), whichever fires first.
 Duplicate (symbol, exchange, date) entries within a batch are coalesced
 last-write-wins before the file is touched.
 
-Schema on disk (v2):
+Schema on disk (v3):
 {
-  "version": 2,
+  "version": 3,
   "saved_at": "<iso>",
   "ohlcv_daily": {
     "<symbol>|<exchange>": {"YYYY-MM-DD": [open, high, low, close, volume]}
@@ -18,11 +18,16 @@ Schema on disk (v2):
   },
   "holidays_snapshot": {
     "<exchange>": {"<year>": ["YYYY-MM-DD", ...]}
+  },
+  "intraday_bars": {
+    "<symbol>|<exchange>|<date>|<interval>": {
+      "<bar_ts_iso>": [open, high, low, close, volume]
+    }
   }
 }
 
-v1 files (missing instruments_snapshot / holidays_snapshot keys) are read
-back-compatibly — the absent keys are treated as empty dicts.
+v1 / v2 files (missing intraday_bars key) are read back-compatibly — the
+absent key is treated as an empty dict.
 
 Note: instruments_snapshot payloads can be large (~500 kB × 6 exchanges).
 The disk cache is primarily useful for fast restart; the DB tier covers
@@ -151,15 +156,46 @@ def _coalesce_holidays(batch: list[dict]) -> dict[str, dict[str, list[str]]]:
     return merged
 
 
-def _flush_batch(batch: list[dict]) -> None:
-    ohlcv_inc     = _coalesce_ohlcv(batch)
-    instru_inc    = _coalesce_instruments(batch)
-    holidays_inc  = _coalesce_holidays(batch)
+def _coalesce_intraday(batch: list[dict]) -> dict[str, dict[str, list]]:
+    """Merge intraday_bars payloads into
+    {sym|exch|date|interval: {bar_ts_iso: [o,h,l,c,v]}} last-write-wins."""
+    merged: dict[str, dict[str, list]] = {}
+    for payload in batch:
+        if payload.get("kind") != "intraday_bars":
+            continue
+        sym      = str(payload.get("symbol",   ""))
+        exch     = str(payload.get("exchange", ""))
+        date_str = str(payload.get("date",     ""))
+        interval = str(payload.get("interval", "30minute"))
+        if not sym or not exch or not date_str:
+            continue
+        bucket_key = f"{sym}|{exch}|{date_str}|{interval}"
+        if bucket_key not in merged:
+            merged[bucket_key] = {}
+        for bar in payload.get("bars", []):
+            bar_ts = str(bar.get("bar_ts", ""))
+            if not bar_ts:
+                continue
+            merged[bucket_key][bar_ts] = [
+                bar.get("open",   0.0),
+                bar.get("high",   0.0),
+                bar.get("low",    0.0),
+                bar.get("close",  0.0),
+                int(bar.get("volume", 0)),
+            ]
+    return merged
 
-    if not ohlcv_inc and not instru_inc and not holidays_inc:
+
+def _flush_batch(batch: list[dict]) -> None:
+    ohlcv_inc    = _coalesce_ohlcv(batch)
+    instru_inc   = _coalesce_instruments(batch)
+    holidays_inc = _coalesce_holidays(batch)
+    intraday_inc = _coalesce_intraday(batch)
+
+    if not ohlcv_inc and not instru_inc and not holidays_inc and not intraday_inc:
         return
 
-    # Load existing file (support both v1 and v2 on disk).
+    # Load existing file (support v1, v2, and v3 on disk).
     existing: dict = {}
     if _CACHE_PATH.exists():
         try:
@@ -187,12 +223,20 @@ def _flush_batch(batch: list[dict]) -> None:
             holidays[exch] = {}
         holidays[exch].update(year_map)
 
+    # ── Intraday bars (merge per bucket/bar_ts, last-write-wins) ──
+    intraday = existing.get("intraday_bars") or {}
+    for bucket_key, bar_map in intraday_inc.items():
+        if bucket_key not in intraday:
+            intraday[bucket_key] = {}
+        intraday[bucket_key].update(bar_map)
+
     payload: dict[str, Any] = {
-        "version":              2,
+        "version":              3,
         "saved_at":             datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "ohlcv_daily":          ohlcv,
         "instruments_snapshot": instruments,
         "holidays_snapshot":    holidays,
+        "intraday_bars":        intraday,
     }
 
     _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)

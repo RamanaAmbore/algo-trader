@@ -2389,9 +2389,9 @@ async def _task_sparkline_warm(state: dict) -> None:
     #   - 09:00 IST  "commodity"  — MCX session open
     #   - 09:15 IST  "equity"     — NSE session open
     #
-    # All three populate _spark_past_cache for the day's IST date. Cache
-    # entries with stale dates are evicted lazily on every batch_sparkline
-    # call (`_evict_stale`).
+    # All three trigger warm_sparkline_cache which pre-fills ohlcv_store
+    # (past daily closes) and intraday_store (today's 30-min bars) via the
+    # persistence pipeline.
     segments = _build_segments()
     seg_warm_dates: dict[str, date | None] = {s['name']: None for s in segments}
     midnight_warm_date: date | None = None
@@ -2778,6 +2778,7 @@ async def _task_purge_persistence_caches() -> None:
     instruments_snapshot: rows older than 7 days (latest snapshot sufficient;
                           anything older can be re-fetched if needed — keeps table tiny).
     holidays_snapshot:    no purge (years are tiny + useful for backtest of any year).
+    intraday_bars:        rows older than 90 days (intraday rarely queried beyond 3 months).
     """
     from sqlalchemy import text
     from backend.api.database import async_session
@@ -2791,13 +2792,18 @@ async def _task_purge_persistence_caches() -> None:
                 instr_res = await session.execute(text(
                     "DELETE FROM instruments_snapshot WHERE date < now() - interval '7 days'"
                 ))
+                intraday_res = await session.execute(text(
+                    "DELETE FROM intraday_bars WHERE date < now() - interval '90 days'"
+                ))
                 await session.commit()
-                ohlcv_deleted = ohlcv_res.rowcount if ohlcv_res.rowcount >= 0 else 0
-                instr_deleted = instr_res.rowcount if instr_res.rowcount >= 0 else 0
+                ohlcv_deleted    = ohlcv_res.rowcount    if ohlcv_res.rowcount    >= 0 else 0
+                instr_deleted    = instr_res.rowcount    if instr_res.rowcount    >= 0 else 0
+                intraday_deleted = intraday_res.rowcount if intraday_res.rowcount >= 0 else 0
             logger.info(
                 f"Background: persistence cache purge complete — "
                 f"ohlcv_daily: {ohlcv_deleted} row(s), "
-                f"instruments_snapshot: {instr_deleted} row(s)"
+                f"instruments_snapshot: {instr_deleted} row(s), "
+                f"intraday_bars: {intraday_deleted} row(s)"
             )
         except Exception as exc:
             logger.warning(f"Background: persistence cache purge failed: {exc}")
@@ -2818,18 +2824,6 @@ async def _task_purge_persistence_caches() -> None:
 async def on_startup(app) -> None:
     """Start all background tasks. Called by Litestar on startup."""
     state: dict = {}
-    # Restore the sparkline cache from disk BEFORE any request handler
-    # can fire. Persisted entries are validated against today's IST
-    # date inside the loader — stale-day entries are ignored and the
-    # startup warm task (queued below) refills them in ~30 s. When the
-    # disk file matches today's date, /api/quotes/sparkline serves from
-    # the restored cache immediately and the startup warm finds every
-    # symbol already cached.
-    try:
-        from backend.api.routes.quote import load_sparkline_cache_from_disk
-        load_sparkline_cache_from_disk()
-    except Exception as e:
-        logger.warning(f"sparkline cache load skipped: {e}")
     # Kick the batched WebSocket-event persist loop — collapses bursts of
     # agent fires into one-commit-per-second instead of one-task-per-event.
     from backend.api.routes.algo import start_persist_flush

@@ -5,6 +5,7 @@ Tables:
   ohlcv_daily          — daily OHLCV bars (slice V)
   instruments_snapshot — per-exchange instrument list, one row per (exchange, date)
   holidays_snapshot    — trading holidays, one row per (exchange, year)
+  intraday_bars        — sub-daily OHLCV bars (30min / 5min / 15min)
 """
 
 from __future__ import annotations
@@ -81,3 +82,35 @@ async def create_holidays_snapshot_table(conn) -> None:  # type: ignore[no-untyp
             PRIMARY KEY (exchange, year)
         )
     """))
+
+
+async def create_intraday_bars_table(conn) -> None:  # type: ignore[no-untyped-def]
+    """intraday_bars — sub-daily OHLCV bars keyed (symbol, exchange, date, interval, bar_ts).
+
+    interval is '30minute' for now; '5minute' / '15minute' are forward-reserved.
+    bar_ts is TIMESTAMPTZ of the bar's CLOSE (Kite convention).
+
+    Retention: 90 days (purged by _task_purge_persistence_caches).
+    """
+    from sqlalchemy import text
+
+    await conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS intraday_bars (
+            symbol      VARCHAR(64)    NOT NULL,
+            exchange    VARCHAR(16)    NOT NULL,
+            date        DATE           NOT NULL,
+            interval    VARCHAR(8)     NOT NULL,
+            bar_ts      TIMESTAMPTZ    NOT NULL,
+            open        NUMERIC(18, 4) NOT NULL,
+            high        NUMERIC(18, 4) NOT NULL,
+            low         NUMERIC(18, 4) NOT NULL,
+            close       NUMERIC(18, 4) NOT NULL,
+            volume      BIGINT         NOT NULL DEFAULT 0,
+            captured_at TIMESTAMPTZ    NOT NULL DEFAULT now(),
+            PRIMARY KEY (symbol, exchange, date, interval, bar_ts)
+        )
+    """))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_intraday_bars_sym_date_interval "
+        "ON intraday_bars (symbol, exchange, date, interval, bar_ts)"
+    ))

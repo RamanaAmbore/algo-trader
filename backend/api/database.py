@@ -764,6 +764,12 @@ async def init_db() -> None:
             await create_holidays_snapshot_table(conn)
         except Exception as _hol_err:
             logger.warning("init_db: holidays_snapshot migration skipped — %s", _hol_err)
+        # intraday_bars table (intraday persistence pipeline).
+        try:
+            from backend.api.persistence.migrations import create_intraday_bars_table
+            await create_intraday_bars_table(conn)
+        except Exception as _intraday_err:
+            logger.warning("init_db: intraday_bars migration skipped — %s", _intraday_err)
     logger.info("Database: tables verified")
 
     # Seed grammar tokens (condition / notify / action catalog) BEFORE agents

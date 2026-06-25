@@ -5,6 +5,7 @@ Dispatches on payload["kind"]:
   "ohlcv_daily"          — batched INSERT ... ON CONFLICT DO NOTHING
   "instruments_snapshot" — last-write-wins upsert per (exchange, date)
   "holidays_snapshot"    — last-write-wins upsert per (exchange, year)
+  "intraday_bars"        — batched INSERT ... ON CONFLICT DO NOTHING per bar
 
 Batches by size (500 items) or timeout (500 ms), whichever fires first.
 Duplicate primary-key entries within a batch are coalesced last-write-wins
@@ -25,7 +26,7 @@ logger = get_logger(__name__)
 _BATCH_ROWS = 500
 _FLUSH_INTERVAL = 0.5   # seconds
 
-_KNOWN_KINDS = ("ohlcv_daily", "instruments_snapshot", "holidays_snapshot")
+_KNOWN_KINDS = ("ohlcv_daily", "instruments_snapshot", "holidays_snapshot", "intraday_bars")
 
 
 async def run() -> None:
@@ -89,6 +90,7 @@ def _coalesce(batch: list[dict]) -> dict[str, list[dict[str, Any]]]:
         "ohlcv_daily":          _coalesce_ohlcv(by_kind["ohlcv_daily"]),
         "instruments_snapshot": _coalesce_instruments(by_kind["instruments_snapshot"]),
         "holidays_snapshot":    _coalesce_holidays(by_kind["holidays_snapshot"]),
+        "intraday_bars":        _coalesce_intraday(by_kind["intraday_bars"]),
     }
 
 
@@ -150,6 +152,36 @@ def _coalesce_holidays(payloads: list[dict]) -> list[dict[str, Any]]:
     return list(seen.values())
 
 
+def _coalesce_intraday(payloads: list[dict]) -> list[dict[str, Any]]:
+    """Merge into unique (symbol, exchange, date, interval, bar_ts) rows, last-write-wins."""
+    seen: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    for payload in payloads:
+        sym      = str(payload.get("symbol",   ""))
+        exch     = str(payload.get("exchange", ""))
+        date_str = str(payload.get("date",     ""))
+        interval = str(payload.get("interval", "30minute"))
+        if not sym or not exch or not date_str:
+            continue
+        for bar in payload.get("bars", []):
+            bar_ts = str(bar.get("bar_ts", ""))
+            if not bar_ts:
+                continue
+            pk = (sym, exch, date_str, interval, bar_ts)
+            seen[pk] = {
+                "symbol":   sym,
+                "exchange": exch,
+                "date":     date_str,
+                "interval": interval,
+                "bar_ts":   bar_ts,
+                "open":     bar.get("open",   0.0),
+                "high":     bar.get("high",   0.0),
+                "low":      bar.get("low",    0.0),
+                "close":    bar.get("close",  0.0),
+                "volume":   int(bar.get("volume", 0)),
+            }
+    return list(seen.values())
+
+
 # ── Upsert ────────────────────────────────────────────────────────────────────
 
 async def _upsert(by_kind: dict[str, list[dict[str, Any]]]) -> None:
@@ -159,6 +191,8 @@ async def _upsert(by_kind: dict[str, list[dict[str, Any]]]) -> None:
         await _upsert_instruments(by_kind["instruments_snapshot"])
     if by_kind["holidays_snapshot"]:
         await _upsert_holidays(by_kind["holidays_snapshot"])
+    if by_kind.get("intraday_bars"):
+        await _upsert_intraday(by_kind["intraday_bars"])
 
 
 async def _upsert_ohlcv(rows: list[dict[str, Any]]) -> None:
@@ -209,6 +243,25 @@ async def _upsert_instruments(rows: list[dict[str, Any]]) -> None:
     ]
     async with async_session() as session:
         await session.execute(stmt, bound_rows)
+        await session.commit()
+
+
+async def _upsert_intraday(rows: list[dict[str, Any]]) -> None:
+    """DO NOTHING on conflict — intraday bars are immutable once timestamped."""
+    from sqlalchemy import text
+    from backend.api.database import async_session
+
+    stmt = text("""
+        INSERT INTO intraday_bars
+            (symbol, exchange, date, interval, bar_ts,
+             open, high, low, close, volume)
+        VALUES
+            (:symbol, :exchange, :date, :interval, :bar_ts::timestamptz,
+             :open, :high, :low, :close, :volume)
+        ON CONFLICT (symbol, exchange, date, interval, bar_ts) DO NOTHING
+    """)
+    async with async_session() as session:
+        await session.execute(stmt, rows)
         await session.commit()
 
 

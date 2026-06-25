@@ -69,7 +69,7 @@ class PaperStatus(msgspec.Struct):
 
 
 class SparklineWarmStatus(msgspec.Struct):
-    symbols_cached: int          # number of symbols in _spark_past_cache right now
+    symbols_cached: int          # number of symbols with daily data in last warm cycle
     last_warmed_at: Optional[str]  # ISO-8601 UTC of last successful warm, or None
 
 
@@ -225,9 +225,9 @@ def _sim_status() -> SimStatus:
 
 def _sparkline_warm_status() -> SparklineWarmStatus:
     try:
-        from backend.api.routes.quote import _spark_past_cache, _spark_warm_symbols, _spark_warm_at
+        from backend.api.routes.quote import _spark_warm_symbols, _spark_warm_at
         return SparklineWarmStatus(
-            symbols_cached=len(_spark_past_cache),
+            symbols_cached=_spark_warm_symbols,
             last_warmed_at=_spark_warm_at,
         )
     except Exception:
@@ -301,12 +301,14 @@ class HealthController(Controller):
 
             try:
                 from backend.api.persistence import (
-                    ohlcv_store, instruments_store, holidays_store, runtime_state,
+                    ohlcv_store, instruments_store, holidays_store,
+                    intraday_store, runtime_state,
                 )
                 persistence["stores"] = {
                     "ohlcv_daily":          {"mem_keys": len(ohlcv_store._MEM_CACHE)},
                     "instruments_snapshot": {"mem_keys": len(instruments_store._MEM_CACHE)},
                     "holidays_snapshot":    {"mem_keys": len(holidays_store._MEM_CACHE)},
+                    "intraday_bars":        {"mem_keys": len(intraday_store._MEM_CACHE)},
                 }
                 persistence["bypass"] = runtime_state.is_bypass_on()
             except Exception:
@@ -359,7 +361,8 @@ class PersistenceAdminController(Controller):
         store=ohlcv_daily          → wipe ohlcv (per-symbol/per-exch optional)
         store=instruments_snapshot → wipe instruments (per-exchange optional)
         store=holidays_snapshot    → wipe holidays    (per-exchange optional)
-        store=all                  → wipe all three
+        store=intraday_bars        → wipe intraday bars (per-symbol/per-exch optional)
+        store=all                  → wipe all four
     """
     path = "/api/admin/persistence"
     guards = [admin_guard]
@@ -395,15 +398,21 @@ class PersistenceAdminController(Controller):
             n = await runtime_state.invalidate_instruments(exchange)
         elif store == "holidays_snapshot":
             n = await runtime_state.invalidate_holidays(exchange)
+        elif store == "intraday_bars":
+            n = await runtime_state.invalidate_intraday(symbol, exchange)
         elif store == "all":
             n = (
                 await runtime_state.invalidate_ohlcv(symbol, exchange)
                 + await runtime_state.invalidate_instruments(exchange)
                 + await runtime_state.invalidate_holidays(exchange)
+                + await runtime_state.invalidate_intraday(symbol, exchange)
             )
         else:
             raise HTTPException(
                 status_code=400,
-                detail=f"unknown store '{store}' — use ohlcv_daily, instruments_snapshot, holidays_snapshot, or all",
+                detail=(
+                    f"unknown store '{store}' — use ohlcv_daily, "
+                    "instruments_snapshot, holidays_snapshot, intraday_bars, or all"
+                ),
             )
         return _InvalidateResponse(store=store, rows_deleted=n)

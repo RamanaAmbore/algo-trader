@@ -176,3 +176,58 @@ async def invalidate_holidays(exchange: str | None = None) -> int:
         f"deleted {n} DB rows (exch={exch})"
     )
     return n
+
+
+async def invalidate_intraday(symbol: str | None = None, exchange: str | None = None) -> int:
+    """Wipe intraday_bars in-memory + delete DB rows.
+
+    - symbol + exchange specified: targeted invalidation for one (sym, exch) pair
+    - symbol only: drop every exchange for that symbol
+    - neither: full wipe of the in-memory cache + all DB rows
+
+    Returns the number of DB rows deleted (in-memory drops not counted).
+    """
+    from backend.api.persistence import intraday_store
+    from backend.api.database import async_session
+    from sqlalchemy import text
+
+    sym  = symbol.upper().strip() if symbol else None
+    exch = exchange.upper().strip() if exchange else None
+
+    # Tier 1 wipe — key shape: (symbol, exchange, date_str, interval)
+    keys_to_drop = []
+    for key in list(intraday_store._MEM_CACHE.keys()):
+        k_sym, k_exch, _date, _interval = key
+        if sym and k_sym != sym:
+            continue
+        if exch and k_exch != exch:
+            continue
+        keys_to_drop.append(key)
+    for k in keys_to_drop:
+        intraday_store._MEM_CACHE.pop(k, None)
+
+    # Tier 2 delete
+    where = []
+    params: dict[str, Any] = {}
+    if sym:
+        where.append("symbol = :sym")
+        params["sym"] = sym
+    if exch:
+        where.append("exchange = :exch")
+        params["exch"] = exch
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+    sql = text(f"DELETE FROM intraday_bars{where_sql}")
+    try:
+        async with async_session() as session:
+            result = await session.execute(sql, params)
+            await session.commit()
+            n = result.rowcount or 0
+    except Exception as exc:
+        logger.warning(f"invalidate_intraday: DB delete failed: {exc}")
+        n = 0
+
+    logger.info(
+        f"invalidate_intraday: dropped {len(keys_to_drop)} mem keys, "
+        f"deleted {n} DB rows (sym={sym}, exch={exch})"
+    )
+    return n
