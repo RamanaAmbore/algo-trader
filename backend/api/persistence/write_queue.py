@@ -70,12 +70,29 @@ def enqueue_db(payload: dict) -> None:
 # ── Lifespan API ─────────────────────────────────────────────────────────────
 
 async def start() -> None:
-    global _disk_task, _db_task
+    """Capture the running loop (so sync-thread callers can schedule
+    work on it via run_coroutine_threadsafe), then spawn the two
+    worker coroutines."""
+    global _disk_task, _db_task, _main_loop
+    _main_loop = asyncio.get_running_loop()
     from backend.api.persistence.cache_worker import run as _cache_run
     from backend.api.persistence.db_worker   import run as _db_run
     _disk_task = asyncio.create_task(_cache_run(), name="persist-cache-worker")
     _db_task   = asyncio.create_task(_db_run(),   name="persist-db-worker")
     logger.info("write_queue: disk + db workers started")
+
+
+# Captured at start() so sync-thread callers (e.g. _get_today_token_map
+# called from a broker fetch running in asyncio.to_thread) can schedule
+# coroutines on the main loop without calling the deprecated
+# asyncio.get_event_loop() from a non-running-loop context.
+_main_loop: asyncio.AbstractEventLoop | None = None
+
+
+def get_main_loop() -> asyncio.AbstractEventLoop | None:
+    """Return the loop captured at start(), or None if start() never ran
+    (test / import-only contexts). Callers must handle the None case."""
+    return _main_loop
 
 
 async def stop() -> None:

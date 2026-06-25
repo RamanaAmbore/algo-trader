@@ -326,25 +326,34 @@ async def _eod_fallback_map(
     """
     if not pairs:
         return {}
+    # Use two flat-array params instead of a composite-row ANY (which
+    # asyncpg can't bind). We fetch by symbol IN-list then filter by
+    # exchange in Python — over-fetches a bit when symbols span
+    # exchanges but keeps the SQL portable + the asyncpg codec happy.
+    # Slice AQ caught the prior version silently returning {} for every
+    # call because ANY((symbol, exchange) = ANY(:pairs)) raised on
+    # parameter bind.
     from sqlalchemy import text as _sql_text
     sql = _sql_text("""
         SELECT DISTINCT ON (symbol, exchange)
                symbol, exchange, open, high, low, close, volume
         FROM ohlcv_daily
-        WHERE (symbol, exchange) = ANY(:pairs)
+        WHERE symbol = ANY(:syms)
         ORDER BY symbol, exchange, date DESC
     """)
+    syms = sorted({p[0] for p in pairs})
+    want = set(pairs)
     try:
         async with async_session() as session:
-            result = await session.execute(
-                sql, {"pairs": [list(p) for p in pairs]}
-            )
+            result = await session.execute(sql, {"syms": syms})
             rows = result.fetchall()
     except Exception as exc:
         logger.warning(f"watchlist EOD fallback query failed: {exc}")
         return {}
     out: dict[tuple[str, str], dict] = {}
     for r in rows:
+        if (str(r[0]), str(r[1])) not in want:
+            continue
         out[(str(r[0]), str(r[1]))] = {
             "open":   float(r[2]) if r[2] is not None else None,
             "high":   float(r[3]) if r[3] is not None else None,

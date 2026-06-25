@@ -95,7 +95,12 @@ class PersistentStoreBase(ABC):
         return key
 
     def _on_mem_evict(self, key: Any, value: Any) -> None:
-        """Called when LRU evicts an entry.  Default: no-op."""
+        """Called when LRU evicts an entry. Default: drop the per-key
+        fetch lock alongside the mem entry. Without this, _fetch_locks
+        grows monotonically over a long session as movers rotate
+        through (the mem entry gets LRU-evicted but the lock stayed
+        forever) — slice AQ caught this as a slow memory leak."""
+        self._fetch_locks.pop(key, None)
 
     def _mem_get_validator(self, value: Any, key: Any) -> bool:
         """Extra freshness check on Tier 1 hits.

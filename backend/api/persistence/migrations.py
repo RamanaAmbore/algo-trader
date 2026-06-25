@@ -110,7 +110,11 @@ async def create_intraday_bars_table(conn) -> None:  # type: ignore[no-untyped-d
             PRIMARY KEY (symbol, exchange, date, interval, bar_ts)
         )
     """))
+    # Slice AQ caught the prior ix_intraday_bars_sym_date_interval
+    # index as an exact duplicate of the primary key (PG already
+    # maintains a B-tree on the PK columns). Dropped to halve the
+    # write overhead + storage for this table — every PK-prefix
+    # query plan stays identical.
     await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_intraday_bars_sym_date_interval "
-        "ON intraday_bars (symbol, exchange, date, interval, bar_ts)"
+        "DROP INDEX IF EXISTS ix_intraday_bars_sym_date_interval"
     ))

@@ -124,13 +124,14 @@ class IntradayStore(PersistentStoreBase):
     # ── Tier 1 completeness ──────────────────────────────────────────────────
 
     def _is_complete(self, value: _Entry, key: _MemKey) -> bool:
-        """For today: partial is fine (session still growing).
+        """For today: partial is fine (session still growing) BUT must
+        be non-empty — an empty cached entry would mask a real miss.
         For historical: must span the session-close hour."""
         _cached_at, bars = value
         _sym, exch, date_iso, _interval = key
         is_today = date_iso == _ist_today()
         if is_today:
-            return True   # any non-empty entry is "complete" for today
+            return bool(bars)   # any non-empty entry is "complete" for today
         return _is_complete_historical(bars, exch)
 
     # ── Tier 2: DB SELECT ────────────────────────────────────────────────────

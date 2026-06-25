@@ -394,8 +394,9 @@ def _trigger_instruments_store_populate() -> None:
     try:
         import asyncio as _asyncio
         from backend.api.persistence.instruments_store import get_or_fetch_all_today as _g
-        loop = _asyncio.get_event_loop()
-        if loop.is_running():
+        from backend.api.persistence.write_queue import get_main_loop as _get_loop
+        loop = _get_loop()
+        if loop is not None and loop.is_running():
             _asyncio.run_coroutine_threadsafe(_g(), loop)
     except Exception:
         pass  # never let a background-populate failure surface to the caller

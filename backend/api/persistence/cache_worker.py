@@ -71,10 +71,10 @@ async def _run_loop() -> None:
 
     while True:
         batch: list[dict] = []
-        deadline = asyncio.get_event_loop().time() + _FLUSH_INTERVAL
+        deadline = asyncio.get_running_loop().time() + _FLUSH_INTERVAL
 
         while len(batch) < _BATCH_SIZE:
-            remaining = deadline - asyncio.get_event_loop().time()
+            remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
             try:

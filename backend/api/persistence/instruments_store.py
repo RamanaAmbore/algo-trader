@@ -207,3 +207,13 @@ async def get_or_fetch_all_today() -> dict[tuple[str, str], int]:
             continue
         union.update(result)
     return union
+
+
+# Module-level alias so quote.py's sync-path Tier-1 check can import a
+# plain function (instead of binding to the instance method on the
+# singleton). Slice AQ caught the import as silently failing: the prior
+# `from ... import _purge_stale` raised ImportError, was swallowed by
+# the `except Exception: pass` around the Tier-1 lookup, and the entire
+# token-map fast path was disabled — every call fell through to the
+# legacy 6-exchange broker fetch.
+_purge_stale = _instruments_store.purge_stale

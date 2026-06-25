@@ -45,10 +45,14 @@ def _is_complete_range(bars: list[OHLCVBar], from_d: date, to_d: date) -> bool:
 
     1. Boundary dates must be present (handles a fresh partial fetch
        that errored mid-stream and only persisted the head of the range).
-    2. No consecutive bars may be > 4 days apart. A Fri→Mon weekend is
-       3 calendar days; a Fri→Tue weekend with a holiday Monday is 4.
-       Anything larger almost certainly means missing data, not a
-       legitimate calendar gap.
+    2. No consecutive bars may be > 6 days apart. A Fri→Mon weekend is
+       3 calendar days; a Fri→Tue with a holiday Monday is 4. Diwali
+       week / election week / Holi clusters can produce legitimate
+       5-6 day gaps (Sat-Sun + 2-3 holiday weekdays), so 6 is the
+       conservative ceiling that still catches truly missing data
+       (e.g. a fetch that errored mid-stream) but doesn't false-
+       positive on Indian-market holiday clusters. Slice AQ caught
+       the prior 4-day ceiling as too tight.
 
     Returns False on either failure → caller falls back to broker. This
     is the "recognize missing data and fall back" guarantee.
@@ -61,7 +65,7 @@ def _is_complete_range(bars: list[OHLCVBar], from_d: date, to_d: date) -> bool:
     prev = date.fromisoformat(dates_sorted[0])
     for s in dates_sorted[1:]:
         cur = date.fromisoformat(s)
-        if (cur - prev).days > 4:
+        if (cur - prev).days > 6:
             return False
         prev = cur
     return True
