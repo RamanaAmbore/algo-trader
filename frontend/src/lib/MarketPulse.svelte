@@ -54,7 +54,7 @@
   import { fetchSettings } from '$lib/api';
   import { liveLtp, streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
   import { bookChanged } from '$lib/data/bookChanged';
-  import { cachedRead, cachedWrite, TTL } from '$lib/data/persistentCache';
+  import { cachedRead, cachedWrite, cachedDelete, TTL } from '$lib/data/persistentCache';
   import { resolveUnderlying, INDEX_LTP_KEY, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
   import CollapseButton from '$lib/CollapseButton.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
@@ -1193,6 +1193,15 @@
       if (cWq?.value && typeof cWq.value === 'object') watchQuotes = cWq.value;
       const cMov = cachedRead('mp.movers');
       if (cMov?.value && Array.isArray(cMov.value)) movers = cMov.value;
+      // Pinned + Watch row data lives on activeLists (loaded via
+      // /api/watchlist/{id} per active id). Without caching it, the
+      // Pinned grid renders empty for ~200-500ms on every page-switch
+      // back to /pulse while the watchlist round-trip lands — even
+      // though positions/holdings/movers paint instantly from cache.
+      // Operator: "pulse is showing the pinned grid empty briefly
+      // while other grids are showing data with no delay".
+      const cLists = cachedRead('mp.activeLists');
+      if (cLists?.value && Array.isArray(cLists.value)) activeLists = cLists.value;
     }
     await tick();
     mountGrid();
@@ -2187,6 +2196,7 @@
     if (ids.length === 0) {
       activeLists = [];
       watchQuotes = {};
+      cachedDelete('mp.activeLists');
       return;
     }
     try {
@@ -2194,6 +2204,7 @@
         ids.map(id => fetchWatchlist(id).catch(() => null))
       );
       activeLists = results.filter(Boolean);
+      if (activeLists.length) cachedWrite('mp.activeLists', activeLists, TTL.minute);
       await loadQuotes();
     } catch (e) { error = e.message; }
   }

@@ -16,14 +16,15 @@
    */
 
   /** @type {{
-   *   tabs: Array<{ id: string, label: string, badge?: number|string, color?: 'amber'|'cyan'|'green'|'sky'|'rose' }>,
+   *   tabs: Array<{ id: string, label: string, badge?: number|string, color?: 'amber'|'cyan'|'green'|'sky'|'rose', disabled?: boolean, disabledTitle?: string }>,
    *   value: string,
    *   onChange?: (id: string) => void,
    *   compact?: boolean,
    * }} */
   let { tabs, value = $bindable(), onChange, compact = false } = $props();
 
-  function select(id) {
+  function select(id, isDisabled) {
+    if (isDisabled) return;
     value = id;
     onChange?.(id);
   }
@@ -32,13 +33,18 @@
 <div role="tablist" class="algo-tabs-strip">
   {#each tabs as tab (tab.id)}
     {@const color = tab.color ?? 'amber'}
+    {@const isDisabled = !!tab.disabled}
     <button
       type="button"
       role="tab"
       class="algo-tab algo-tab-c-{color}"
       class:algo-tab--compact={compact}
+      class:algo-tab--disabled={isDisabled}
       aria-selected={value === tab.id}
-      onclick={() => select(tab.id)}
+      aria-disabled={isDisabled || undefined}
+      disabled={isDisabled}
+      title={isDisabled ? (tab.disabledTitle || '') : null}
+      onclick={() => select(tab.id, isDisabled)}
     >
       {tab.label}
       {#if tab.badge != null && tab.badge !== 0 && tab.badge !== ''}
@@ -53,5 +59,11 @@
     display: inline-flex;
     gap: 0;
     align-items: stretch;
+  }
+  /* Disabled tab — dimmer, no underline, cursor signals non-interactive. */
+  .algo-tab.algo-tab--disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
+    pointer-events: auto;     /* keep tooltip; disabled attribute blocks the click */
   }
 </style>

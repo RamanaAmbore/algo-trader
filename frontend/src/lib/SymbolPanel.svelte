@@ -221,7 +221,18 @@
   // slams the local back to the prop, undoing the operator's typing.
   $effect(() => {
     const next = String(symbol || '').toUpperCase();
-    if (next && next !== untrack(() => _localSymbol)) _localSymbol = next;
+    if (!next || next === untrack(() => _localSymbol)) return;
+    // Operator: "chain always should show root". When the parent pushes
+    // a contract (row click, basket leg) and Chain is the active tab,
+    // remember the contract as the context and display its root in the
+    // picker instead. Ticket tab keeps the contract verbatim.
+    const isContract = /\d/.test(next);
+    if (untrack(() => _activeTab) === 'chain' && isContract) {
+      _contextSymbol = next;
+      _localSymbol   = _parseRoot(next);
+    } else {
+      _localSymbol = next;
+    }
   });
 
   // Symbol search dropdown state.
@@ -246,10 +257,18 @@
     }, 150);
   }
   function _pickSymbol(/** @type {any} */ inst) {
-    _localSymbol = String(inst?.s ?? inst?.sym ?? inst?.tradingsymbol ?? _symbolQuery).toUpperCase();
-    // Capture exchange from the instrument row (field `e` in the search
-    // result shape) so _isEquityExch can correctly gate the Chain tab
-    // even when no exchange prop was supplied by the caller.
+    const picked = String(inst?.s ?? inst?.sym ?? inst?.tradingsymbol ?? _symbolQuery).toUpperCase();
+    // Operator: "chain always should show root". Picking a contract while
+    // the Chain tab is active stores the contract as the remembered
+    // context (so a later flip back to Ticket can restore it) but the
+    // picker itself displays the root. Picking on the Ticket tab keeps
+    // the full contract because Ticket is a place-the-order surface.
+    if (/\d/.test(picked)) _contextSymbol = picked;
+    if (_activeTab === 'chain') {
+      _localSymbol = _parseRoot(picked);
+    } else {
+      _localSymbol = picked;
+    }
     _pickedExchange = String(inst?.e || inst?.exchange || '').toUpperCase();
     _symbolQuery = '';
     _symbolOpen = false;
@@ -2040,6 +2059,10 @@
           label: t.label,
           badge: t.id === 'chain' && basketLegs.length > 0 ? basketLegs.length : undefined,
           color: t.id === 'chain' ? 'green' : t.id === 'ticket' ? 'amber' : 'sky',
+          disabled: t.id === 'chain' ? chainDisabled : false,
+          disabledTitle: t.id === 'chain' && chainDisabled
+            ? 'No F&O for this root — chain unavailable'
+            : undefined,
         }))}
         value={_activeTab}
         onChange={(id) => {
