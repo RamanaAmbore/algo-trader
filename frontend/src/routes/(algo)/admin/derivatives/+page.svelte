@@ -856,6 +856,73 @@
     );
   });
 
+  /** Per-underlying Exp P&L at current spot — { ROOT: { eq: number, no_eq: number } }.
+   *  Walks the same positions + holdings universe the Snapshot uses, but
+   *  computes each leg's expiry-day P&L (intrinsic - cost × qty for
+   *  options; spot - cost × qty for futures + equity) instead of broker
+   *  MTM. Operator request: "in snapshot and legs, show profit/loss
+   *  for each on expiration day and updated total for the column".
+   *  Spot per root read from _underlyingQuotes (which is populated by
+   *  loadUnderlyingQuotes()); rows whose spot isn't loaded yet show "—". */
+  const _byUnderlyingExp = $derived.by(() => {
+    /** @type {Record<string, { with: number, without: number }>} */
+    const out = {};
+    const wantedSource = simActive ? 'sim' : 'live';
+    const _wantedAccts = new Set(
+      selectedAccounts.map(a => String(a || '').trim().toUpperCase())
+    );
+    const matchAccount = (acct) => _wantedAccts.size === 0
+      || _wantedAccts.has(String(acct || '').trim().toUpperCase());
+    const matchStrategy = (sym) => {
+      if ($selectedStrategyId == null) return true;
+      if ($strategyOpenSymbols.size === 0) return false;
+      return $strategyOpenSymbols.has(String(sym || '').toUpperCase());
+    };
+    const ensure = (root) => out[root] || (out[root] = { with: 0, without: 0 });
+
+    for (const _p of positions) {
+      const p = /** @type {any} */ (_p);
+      if (p.source !== wantedSource) continue;
+      if (!matchAccount(p.account)) continue;
+      if (!matchStrategy(p.symbol || p.tradingsymbol)) continue;
+      const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
+      if (!sym) continue;
+      const isFut = /FUT$/i.test(sym);
+      const isOpt = /(CE|PE)$/i.test(sym);
+      if (!isFut && !isOpt) continue;
+      const root = (decomposeSymbol(sym).root || sym).toUpperCase();
+      if (!root) continue;
+      const spot = _underlyingQuotes[root]?.ltp ?? null;
+      const v = _expiryPnl({
+        symbol: sym, qty: p.quantity ?? p.qty,
+        avg_cost: p.average_price ?? p.avg_cost,
+        kind: isOpt ? 'opt' : 'fut',
+      }, spot);
+      if (v == null) continue;
+      const g = ensure(root);
+      g.with    += v;
+      g.without += v;
+    }
+    for (const _h of holdings) {
+      const h = /** @type {any} */ (_h);
+      if (!matchAccount(h.account)) continue;
+      const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
+      if (!sym) continue;
+      const qty = Number(h.opening_qty ?? h.opening_quantity ?? h.quantity ?? h.qty) || 0;
+      const cost = Number(h.average_price ?? h.avg_cost) || 0;
+      const _targets = targetsForProxy(sym);
+      const credits = _targets.length ? _targets : [sym];
+      for (const root of credits) {
+        const spot = _underlyingQuotes[root]?.ltp ?? null;
+        if (spot == null) continue;
+        const v = (Number(spot) - cost) * qty;
+        if (!isFinite(v)) continue;
+        ensure(root).with += v;
+      }
+    }
+    return out;
+  });
+
   /** Per-underlying live quote map — { ROOT: { ltp, day_pct, prev_close } }.
    *  Populated by loadUnderlyingQuotes() (one batchQuote per Snapshot
    *  poll). Drives the Spot / Day % / Prev Close columns. Missing roots
@@ -1595,6 +1662,43 @@
     }
     return s;
   });
+
+  // Expiry P&L per leg — what the row would settle to if every contract
+  // expired RIGHT NOW at the current underlying spot. Different from
+  // c.pnl (mark-to-market via LTP): option time-value is stripped and
+  // only intrinsic value remains; futures + equity track spot 1:1 so
+  // their MTM and expiry P&L converge to the same value. Operator: "in
+  // snapshot and legs, show the profit/loss for each on expiration day
+  // and updated total for the column".
+  /** @param {any} c - candidate row
+   *  @param {number|null} spot - current underlying spot (LTP)
+   *  @returns {number|null} P&L if every contract expired now at `spot`
+   */
+  function _expiryPnl(c, spot) {
+    if (spot == null || !isFinite(Number(spot)) || Number(spot) <= 0) return null;
+    const qty = Number(c.qty || 0);
+    const cost = Number(c.avg_cost || 0);
+    if (!qty || !cost) return null;
+    const S = Number(spot);
+    if (c.kind === 'opt') {
+      // Need strike + opt_type. Pull from legAnalyticsBySymbol when
+      // available (covers strategy-loaded legs); fall back to a regex
+      // parse of the tradingsymbol for rows that haven't joined the
+      // strategy payload yet.
+      const lg = legAnalyticsBySymbol[c.symbol];
+      let K = lg?.strike ?? null;
+      let opt = lg?.opt_type ?? null;
+      if (K == null || !opt) {
+        const m = /(\d+(?:\.\d+)?)(CE|PE)$/i.exec(String(c.symbol || ''));
+        if (m) { K = Number(m[1]); opt = m[2].toUpperCase(); }
+      }
+      if (K == null || !opt) return null;
+      const intrinsic = opt === 'CE' ? Math.max(0, S - K) : Math.max(0, K - S);
+      return (intrinsic - cost) * qty;
+    }
+    // futures + equity: P&L tracks spot 1:1 (no time value to strip).
+    return (S - cost) * qty;
+  }
 
   // Master "select all" plumbing for the Legs panel header checkbox.
   // allCandidatesOn = true when every candidate is enabled in the
@@ -4035,6 +4139,10 @@
                   title="Today's change in P&L (broker-agnostic split formula). Sum across all rows = strip's P∆ chip.">
               Day P&amp;L
             </span>
+            <span class="num"
+                  title="P&L if every contract expired RIGHT NOW at the current underlying spot — intrinsic value minus cost basis. Futures + equity track spot 1:1, so this matches their P&L. Options strip out time value and show only intrinsic settlement.">
+              Exp P&amp;L
+            </span>
             <span class="num">IV</span>
             <span class="num">Δ</span>
             <span class="num">Γ</span>
@@ -4078,6 +4186,7 @@
             {@const ltp = lg && lg.ltp != null ? lg.ltp : c.ltp}
             {@const cost = c.avg_cost != null ? c.avg_cost : (lg ? lg.avg_cost : null)}
             {@const isClosed = Number(c.qty || 0) === 0}
+            {@const _expPnlLeg = _expiryPnl(c, _underlyingQuotes[selectedUnderlying]?.ltp ?? strategy?.spot ?? null)}
             <!-- displayQty = residual qty (after netting) when the row
                  came from the Close tab's expiry analysis; otherwise
                  the original position qty. Drives the qty cell, the
@@ -4328,6 +4437,10 @@
               <span class="num cand-pnl {c.day_change_val == null ? 'cell-flat' : Number(c.day_change_val) > 0 ? 'cell-pos' : Number(c.day_change_val) < 0 ? 'cell-neg' : 'cell-flat'}">
                 {c.day_change_val == null ? '—' : aggCompact(Number(c.day_change_val))}
               </span>
+              <span class="num cand-pnl {_expPnlLeg == null ? '' : _expPnlLeg > 0 ? 'cell-pos' : _expPnlLeg < 0 ? 'cell-neg' : 'cell-flat'}"
+                    title="P&L if expired now at spot. Intrinsic value minus cost basis × qty.">
+                {_expPnlLeg == null ? '—' : aggCompact(_expPnlLeg)}
+              </span>
               <span class="num">{lg ? pctFmt(lg.iv * 100) + '%' : '—'}</span>
               <span class="num">{lg ? pctFmt(lg.greeks.delta) : '—'}</span>
               <span class="num">{lg ? pctFmt(lg.greeks.gamma) : '—'}</span>
@@ -4376,6 +4489,11 @@
             {@const _selectedCands = displayedCandidates.filter(c => _isLegEnabled(c))}
             {@const _totalPnl = _selectedCands.reduce((s, c) => s + Number(c.pnl ?? 0), 0)}
             {@const _totalDcv = _selectedCands.reduce((s, c) => s + Number(c.day_change_val ?? 0), 0)}
+            {@const _expSpot = _underlyingQuotes[selectedUnderlying]?.ltp ?? strategy?.spot ?? null}
+            {@const _totalExp = _selectedCands.reduce((s, c) => {
+              const v = _expiryPnl(c, _expSpot);
+              return v == null ? s : s + v;
+            }, 0)}
             <div class="cand-row cand-row-total">
               <span></span>
               <span class="cand-total-label">TOTAL</span>
@@ -4392,6 +4510,10 @@
               <span class="num cand-pnl {_totalDcv > 0 ? 'cell-pos' : _totalDcv < 0 ? 'cell-neg' : 'cell-flat'}"
                     title="Σ Day P&L Δ across every visible row = strip's P∆ chip for these accounts">
                 {aggCompact(_totalDcv)}
+              </span>
+              <span class="num cand-pnl {_totalExp > 0 ? 'cell-pos' : _totalExp < 0 ? 'cell-neg' : 'cell-flat'}"
+                    title="Σ Exp P&L across every selected leg — strategy expiry-day P&L at current spot.">
+                {aggCompact(_totalExp)}
               </span>
               <span class="num">—</span>
               <span class="num">—</span>
@@ -4475,6 +4597,10 @@
           <span class="num" title="Sum of contract-qty across option + future legs.">F&amp;O qty</span>
           <span class="num" title="Sum of share-qty across equity / proxy holding legs.">Eq qty</span>
           <span class="num"
+                title="P&L if every contract in this underlying's group expired RIGHT NOW at the current spot. Options strip to intrinsic value; futures + equity track spot 1:1. Operator request: 'show profit/loss for each on expiration day'.">
+            Exp P&amp;L
+          </span>
+          <span class="num"
                 title="Expected value — probability-weighted average payoff at expiry. Per-underlying EV requires backend support; populates only when the current strategy is scoped to a single underlying. TOTAL carries the merged strategy EV.">
             EV
           </span>
@@ -4495,6 +4621,8 @@
           {@const _ltp  = _q ? Number(_q.ltp) : null}
           {@const _close = _q ? Number(_q.prev_close) : null}
           {@const _pct  = _q && _q.day_pct != null ? Number(_q.day_pct) : null}
+          {@const _expG = _byUnderlyingExp[g.underlying]}
+          {@const _expVal = _expG ? (_includeHoldings ? _expG.with : _expG.without) : null}
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
             <span class="num {g.day_without > 0 ? 'cell-pos' : g.day_without < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_w`)}">{aggCompact(g.day_without)}</span>
@@ -4507,6 +4635,10 @@
             <span class="num cell-muted">{g.legs_with}{g.legs_with !== g.legs_without ? `/${g.legs_without}` : ''}</span>
             <span class="num cell-muted">{g.qty_fno || '—'}</span>
             <span class="num cell-muted">{g.qty_eq || '—'}</span>
+            <span class="num {_expVal == null ? 'cell-muted' : _expVal > 0 ? 'cell-pos' : _expVal < 0 ? 'cell-neg' : 'cell-flat'}"
+                  title="P&L if every contract in this group expired now at the current spot. Renders '—' when the underlying spot hasn't loaded yet.">
+              {_expVal == null ? '—' : aggCompact(_expVal)}
+            </span>
             <!-- Per-underlying EV: surfaces _mergedEv when the
                  current strategy is scoped to this exact root.
                  Otherwise '—' (placeholder for backend per-group
@@ -4520,6 +4652,8 @@
           </div>
         {/each}
         {#if _byUnderlyingTotals.length > 0}
+          {@const _expTotal = Object.values(_byUnderlyingExp).reduce(
+            (s, v) => s + (_includeHoldings ? v.with : v.without), 0)}
           <div class="byund-row byund-row-total">
             <span class="byund-und">TOTAL</span>
             <span class="num {_byUnderlyingTotal.day_without > 0 ? 'cell-pos' : _byUnderlyingTotal.day_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_without)}</span>
@@ -4532,6 +4666,10 @@
             <span class="num">{_byUnderlyingTotal.legs_with}{_byUnderlyingTotal.legs_with !== _byUnderlyingTotal.legs_without ? `/${_byUnderlyingTotal.legs_without}` : ''}</span>
             <span class="num">{_byUnderlyingTotal.qty_fno || '—'}</span>
             <span class="num">{_byUnderlyingTotal.qty_eq || '—'}</span>
+            <span class="num {_expTotal > 0 ? 'cell-pos' : _expTotal < 0 ? 'cell-neg' : 'cell-flat'}"
+                  title="Σ Exp P&L across every underlying in the snapshot.">
+              {aggCompact(_expTotal)}
+            </span>
             <span class="num {(_mergedEv ?? 0) > 0 ? 'cell-pos' : (_mergedEv ?? 0) < 0 ? 'cell-neg' : 'cell-flat'}">
               {_mergedEv != null ? aggCompact(_mergedEv) : '—'}
             </span>
@@ -5269,8 +5407,9 @@
       minmax(3rem,   0.55fr) /* Legs */
       minmax(4rem,   0.6fr)  /* F&O qty */
       minmax(4rem,   0.6fr)  /* Eq qty */
+      minmax(4rem,   0.6fr)  /* Exp P&L */
       minmax(4rem,   0.6fr); /* EV */
-    min-width: 740px;
+    min-width: 800px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.62rem;        /* match Pulse Positions ~0.625rem */
   }
@@ -5773,6 +5912,7 @@
       minmax(62px, max-content)            /* avg (cost basis) */
       minmax(72px, max-content)            /* day pnl - cumulative */
       minmax(72px, max-content)            /* day pnl delta - today */
+      minmax(72px, max-content)            /* exp pnl @ current spot */
       minmax(52px, max-content)            /* iv */
       minmax(56px, max-content)            /* delta */
       minmax(56px, max-content)            /* gamma */
