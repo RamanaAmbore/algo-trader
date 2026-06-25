@@ -1205,24 +1205,19 @@
            spot proxy; the legend-side duplicate was noise next to
            the SPOT readout. -->
       {#if onToggleHoldings && includeHoldings !== null}
-        <!-- Holdings toggle — right-anchored switch in the legend so
-             the operator can flip equity-overlay on/off without
-             leaving the chart's eye-line. Slider style (track + thumb)
-             so the on/off state reads at a glance. Operator: "move
-             it to legend of pay off curve. make it look like truly
-             toggle icon." -->
+        <!-- Holdings toggle — compact press-button (slice AX). Default
+             OFF. Active state: cyan filled chip. Inactive: bare dim
+             outline. Saves ~15px of legend real estate vs the prior
+             slider-style. Operator: "make hold as similar to a button
+             to press on and off. by default it is off. this will make
+             it reduce less space in payoff". -->
         <button type="button" class="legend-toggle"
                 class:legend-toggle-on={includeHoldings}
                 aria-pressed={includeHoldings}
                 title={includeHoldings
                   ? 'Holdings ON — equity holdings included in Legs + overlaid on payoff. Click to hide.'
                   : 'Holdings OFF — equity holdings hidden. Click to include.'}
-                onclick={() => onToggleHoldings && onToggleHoldings()}>
-          <span class="legend-toggle-label">Hold</span>
-          <span class="legend-toggle-track">
-            <span class="legend-toggle-thumb"></span>
-          </span>
-        </button>
+                onclick={() => onToggleHoldings && onToggleHoldings()}>HOLD</button>
       {/if}
     </div>
   {/if}
@@ -1361,56 +1356,31 @@
      so it never crowds the legend keys. */
   .legend-toggle {
     margin-left: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    padding: 0.1rem 0.2rem;
-    border: 0;
+    padding: 0.1rem 0.35rem;
     border-radius: 3px;
     background: transparent;
-    color: var(--algo-slate);
+    border: 1px solid rgba(126, 151, 184, 0.35);
+    color: var(--algo-muted);
     font-family: ui-monospace, monospace;
-    font-size: 0.5rem;
-    font-weight: 600;
-    letter-spacing: 0;
+    font-size: 0.52rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
     cursor: pointer;
     user-select: none;
-    transition: color 0.12s;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
-  .legend-toggle:hover { color: #cfe3f8; }
-  .legend-toggle-label {
-    text-transform: uppercase;
+  .legend-toggle:hover {
+    color: #cfe3f8;
+    border-color: rgba(126, 151, 184, 0.6);
   }
-  .legend-toggle-track {
-    position: relative;
-    display: inline-block;
-    width: 1.5rem;
-    height: 0.7rem;
-    border-radius: 999px;
-    background: rgba(126, 151, 184, 0.22);
-    border: 1px solid rgba(126, 151, 184, 0.45);
-    transition: background 0.15s, border-color 0.15s;
+  .legend-toggle-on {
+    background: rgba(125, 211, 252, 0.16);
+    border-color: rgba(125, 211, 252, 0.65);
+    color: #7dd3fc;
   }
-  .legend-toggle-thumb {
-    position: absolute;
-    top: 50%;
-    left: 1px;
-    transform: translateY(-50%);
-    width: 0.55rem;
-    height: 0.55rem;
-    border-radius: 999px;
-    background: #cbd5e1;
-    transition: left 0.15s, background 0.15s;
+  .legend-toggle-on:hover {
+    background: rgba(125, 211, 252, 0.22);
   }
-  .legend-toggle-on .legend-toggle-track {
-    background: rgba(125, 211, 252, 0.40);
-    border-color: rgba(125, 211, 252, 0.85);
-  }
-  .legend-toggle-on .legend-toggle-thumb {
-    left: calc(100% - 0.55rem - 1px);
-    background: #7dd3fc;
-  }
-  .legend-toggle-on .legend-toggle-label { color: #7dd3fc; }
   .legend-legs {
     display: inline-flex;
     align-items: baseline;
