@@ -11,6 +11,7 @@
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { cachedRead, cachedWrite, TTL } from '$lib/data/persistentCache';
+  import { liveLtp } from '$lib/data/quoteStream';
 
   let positions = $state(/** @type {any[]} */ ([]));
   let holdings  = $state(/** @type {any[]} */ ([]));
@@ -71,6 +72,17 @@
     } catch (_) { /* silent — strip stays at last-good values */ }
   }
 
+  // Local $state mirror of the liveLtp store. Bridging through $state
+  // keeps the per-row delta recomputation below O(1) per derived re-run
+  // (no store.subscribe overhead in the hot path) and lets the
+  // tick-flash $effect see derived-value changes immediately when
+  // any tick lands.
+  let _liveLtpSnap = $state(/** @type {Record<string, number>} */ ({}));
+  $effect(() => {
+    const unsub = liveLtp.subscribe(v => { _liveLtpSnap = v || {}; });
+    return unsub;
+  });
+
   // Tick-flash — directional pulse when any of the strip's nine
   // pills changes value on the 30s poll. Subtle enough to read as
   // ambient liveness; loud enough that the operator sees a refresh
@@ -106,29 +118,50 @@
   // Hld  = total unrealised P&L on holdings since entry.
   // H    = current holding value (cur_val sum across holdings).
   // P∆   = today's mark-to-market move on positions (day_change_val).
+  // Delta-replacement helper: the broker's `pnl` field at poll time is
+  // computed as `(poll_ltp − avg) × qty + realised`. When a live tick
+  // arrives we want pnl(live) = `(live_ltp − avg) × qty + realised`.
+  // That equals `broker_pnl + (live − poll_ltp) × qty`, which avoids
+  // re-deriving `realised` from scratch. Same trick applies to
+  // `day_change_val` (LTP coefficient is also × qty) and to holdings'
+  // `cur_val` (= LTP × qty).
+  //
+  // The `_liveLtpSnap` dep makes every sum re-run when any tick fires,
+  // which is exactly what drives the tick-flash animation (the
+  // existing $effect calls flash.update for each derived).
+  function _liveDelta(/** @type {any} */ row) {
+    const sym = String(row?.tradingsymbol || '').toUpperCase();
+    const live = _liveLtpSnap[sym];
+    if (live == null) return 0;
+    const pollLtp = Number(row?.last_price || 0);
+    const qty     = Number(row?.quantity   || 0);
+    if (!pollLtp || !qty) return 0;
+    return (Number(live) - pollLtp) * qty;
+  }
+
   const positionsPnl = $derived.by(() => {
     let s = 0;
-    for (const p of positions) s += Number(p?.pnl || 0);
+    for (const p of positions) s += Number(p?.pnl || 0) + _liveDelta(p);
     return s;
   });
   const positionsToday = $derived.by(() => {
     let s = 0;
-    for (const p of positions) s += Number(p?.day_change_val || 0);
+    for (const p of positions) s += Number(p?.day_change_val || 0) + _liveDelta(p);
     return s;
   });
   const holdingsToday = $derived.by(() => {
     let s = 0;
-    for (const h of holdings)  s += Number(h?.day_change_val || 0);
+    for (const h of holdings)  s += Number(h?.day_change_val || 0) + _liveDelta(h);
     return s;
   });
   const holdingsTotal = $derived.by(() => {
     let s = 0;
-    for (const h of holdings)  s += Number(h?.pnl || 0);
+    for (const h of holdings)  s += Number(h?.pnl || 0) + _liveDelta(h);
     return s;
   });
   const holdingsValue = $derived.by(() => {
     let s = 0;
-    for (const h of holdings)  s += Number(h?.cur_val || 0);
+    for (const h of holdings)  s += Number(h?.cur_val || 0) + _liveDelta(h);
     return s;
   });
   // Live cash — Kite's `avail.cash` (= live_balance) summed across
