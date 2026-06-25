@@ -147,39 +147,50 @@ def _enqueue_db(exchange: str, date_str: str, rows: list[dict[str, Any]]) -> Non
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-async def get_or_fetch_instruments(exchange: str) -> dict[tuple[str, str], int]:
+async def get_or_fetch_instruments(
+    exchange: str, bypass_cache: bool | None = None,
+) -> dict[tuple[str, str], int]:
     """Return {(tradingsymbol, exchange): instrument_token} for exchange.
 
     Read path: Tier 1 (memory) → Tier 2 (DB) → Tier 3 (broker).
     Write-back to Tier 1 + DB write queue happens only on Tier 3 hit.
+
+    bypass_cache=True (or runtime_state.is_bypass_on()) skips Tier 1 + 2
+    and goes straight to broker — defect-recovery escape hatch.
     """
+    from backend.api.persistence import runtime_state
+    if bypass_cache is None:
+        bypass_cache = runtime_state.is_bypass_on()
+
     exch    = exchange.upper().strip()
     today   = _ist_today()
     _purge_stale(today)
     mem_key = (today, exch)
 
-    # Tier 1 — in-memory
-    cached = _MEM_CACHE.get(mem_key)
-    if cached is not None:
-        return cached
+    if not bypass_cache:
+        # Tier 1 — in-memory
+        cached = _MEM_CACHE.get(mem_key)
+        if cached is not None:
+            return cached
 
-    # Tier 2 — DB (outside lock — read is safe without serialisation)
-    db_map = await _db_fetch(exch, today)
-    if db_map is not None:
-        _MEM_CACHE[mem_key] = db_map
-        return db_map
+        # Tier 2 — DB (outside lock — read is safe without serialisation)
+        db_map = await _db_fetch(exch, today)
+        if db_map is not None:
+            _MEM_CACHE[mem_key] = db_map
+            return db_map
 
     # Tier 3 — broker (deduplicated per exchange/date)
     lock = await _get_fetch_lock(mem_key)
     async with lock:
-        # Re-check after acquiring — another coroutine may have populated.
-        cached = _MEM_CACHE.get(mem_key)
-        if cached is not None:
-            return cached
-        db_map2 = await _db_fetch(exch, today)
-        if db_map2 is not None:
-            _MEM_CACHE[mem_key] = db_map2
-            return db_map2
+        if not bypass_cache:
+            # Re-check after acquiring — another coroutine may have populated.
+            cached = _MEM_CACHE.get(mem_key)
+            if cached is not None:
+                return cached
+            db_map2 = await _db_fetch(exch, today)
+            if db_map2 is not None:
+                _MEM_CACHE[mem_key] = db_map2
+                return db_map2
 
         try:
             rows = await asyncio.to_thread(_broker_fetch_sync, exch)

@@ -2235,8 +2235,30 @@
           latestRefreshed = r.refreshed_at;
         }
       }
-      watchQuotes = map;
-      if (Object.keys(map).length) cachedWrite('mp.watchQuotes', map, TTL.short);
+      // Merge into existing watchQuotes rather than replacing. The
+      // replace pattern blanked the Pinned/Watch grid LTPs every time
+      // a watchlist fetch returned partial / slow / failed — the row
+      // lookup `wq[it.id]` returned undefined and the grid painted
+      // LTP=0 even though seconds-old data was sitting in cache.
+      // Operator: "pinned ltp and other data is showing 0 when other
+      // grids are refreshed immediately". Prune entries whose item_id
+      // is no longer in any active list so the cache stays bounded.
+      const activeItemIds = new Set();
+      for (const r of results) {
+        if (!r) continue;
+        for (const q of (r.items || [])) activeItemIds.add(q.item_id);
+      }
+      for (const list of activeLists) {
+        for (const it of (list?.items || [])) activeItemIds.add(it.id);
+      }
+      const merged = { ...watchQuotes, ...map };
+      for (const id of Object.keys(merged)) {
+        if (!activeItemIds.has(Number(id)) && !activeItemIds.has(id)) {
+          delete merged[id];
+        }
+      }
+      watchQuotes = merged;
+      if (Object.keys(merged).length) cachedWrite('mp.watchQuotes', merged, TTL.short);
       refreshedAt = latestRefreshed;
       if (quoteFailStreak > 0) {
         quoteFailStreak = 0;

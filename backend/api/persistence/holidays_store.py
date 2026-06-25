@@ -105,38 +105,49 @@ def _enqueue_db(exchange: str, year: int, holidays: set[date]) -> None:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-async def get_or_fetch_holidays(exchange: str, year: int | None = None) -> set[date]:
+async def get_or_fetch_holidays(
+    exchange: str, year: int | None = None,
+    bypass_cache: bool | None = None,
+) -> set[date]:
     """Return the set of holiday dates for exchange/year.
 
     Read path: Tier 1 (memory) → Tier 2 (DB) → Tier 3 (NSE API).
     Write-back to Tier 1 + DB write queue on Tier 3 hit.
+
+    bypass_cache=True (or runtime_state.is_bypass_on()) skips Tier 1 + 2.
     """
+    from backend.api.persistence import runtime_state
+    if bypass_cache is None:
+        bypass_cache = runtime_state.is_bypass_on()
+
     exch = exchange.upper().strip()
     yr   = year if year is not None else _ist_year()
     key  = (exch, yr)
 
-    # Tier 1 — in-memory
-    cached = _MEM_CACHE.get(key)
-    if cached is not None:
-        return cached
+    if not bypass_cache:
+        # Tier 1 — in-memory
+        cached = _MEM_CACHE.get(key)
+        if cached is not None:
+            return cached
 
-    # Tier 2 — DB (no lock needed for read)
-    db_set = await _db_fetch(exch, yr)
-    if db_set is not None:
-        _MEM_CACHE[key] = db_set
-        return db_set
+        # Tier 2 — DB (no lock needed for read)
+        db_set = await _db_fetch(exch, yr)
+        if db_set is not None:
+            _MEM_CACHE[key] = db_set
+            return db_set
 
     # Tier 3 — NSE API (deduplicated per exchange/year)
     lock = await _get_fetch_lock(key)
     async with lock:
-        # Re-check after acquiring.
-        cached = _MEM_CACHE.get(key)
-        if cached is not None:
-            return cached
-        db_set2 = await _db_fetch(exch, yr)
-        if db_set2 is not None:
-            _MEM_CACHE[key] = db_set2
-            return db_set2
+        if not bypass_cache:
+            # Re-check after acquiring.
+            cached = _MEM_CACHE.get(key)
+            if cached is not None:
+                return cached
+            db_set2 = await _db_fetch(exch, yr)
+            if db_set2 is not None:
+                _MEM_CACHE[key] = db_set2
+                return db_set2
 
         try:
             holidays = await asyncio.to_thread(_nse_fetch_sync, exch)

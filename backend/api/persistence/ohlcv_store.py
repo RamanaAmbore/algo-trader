@@ -192,36 +192,52 @@ def _broker_fetch_sync(
 
 async def get_or_fetch_daily(
     symbol: str, exchange: str, from_d: date, to_d: date,
+    bypass_cache: bool | None = None,
 ) -> list[OHLCVBar]:
     """Return daily OHLCV bars for symbol/exchange in [from_d, to_d].
 
     Read path: Tier 1 (memory) → Tier 2 (DB) → Tier 3 (broker).
     Write-back to Tier 1 + write queues happens only on Tier 3 hit.
+
+    When `bypass_cache=True`, skips Tier 1 + Tier 2 entirely and goes
+    straight to the broker. Used by `?fresh=1` query param and the
+    global `persistence.bypass_db` settings flag. Defect-recovery
+    tool: forces a re-fetch from broker truth and heals the persistent
+    tiers on the write-back pass (the queue writer overwrites with the
+    fresh data). Operator: "switch to use api with no db ... will help
+    refresh cache and db if they are not accurate because code defects".
     """
+    from backend.api.persistence import runtime_state
+    if bypass_cache is None:
+        bypass_cache = runtime_state.is_bypass_on()
+
     sym  = symbol.upper().strip()
     exch = exchange.upper().strip()
     key  = (sym, exch)
 
-    # Tier 1 — in-memory
-    if _mem_covers(key, from_d, to_d):
-        return _mem_slice(key, from_d, to_d)
-
-    # Tier 2 — DB
-    db_bars = await _db_fetch(sym, exch, from_d, to_d)
-    if _is_complete_range(db_bars, from_d, to_d):
-        _mem_populate(key, db_bars)
-        return _mem_slice(key, from_d, to_d)
-
-    # Tier 3 — broker (deduplicated per key)
-    lock = await _get_fetch_lock(key)
-    async with lock:
-        # Re-check after acquiring — another coroutine may have populated.
+    if not bypass_cache:
+        # Tier 1 — in-memory
         if _mem_covers(key, from_d, to_d):
             return _mem_slice(key, from_d, to_d)
-        db_bars2 = await _db_fetch(sym, exch, from_d, to_d)
-        if _is_complete_range(db_bars2, from_d, to_d):
-            _mem_populate(key, db_bars2)
+
+        # Tier 2 — DB
+        db_bars = await _db_fetch(sym, exch, from_d, to_d)
+        if _is_complete_range(db_bars, from_d, to_d):
+            _mem_populate(key, db_bars)
             return _mem_slice(key, from_d, to_d)
+
+    # Tier 3 — broker (deduplicated per key). Always hit when bypass
+    # is on, regardless of cache state.
+    lock = await _get_fetch_lock(key)
+    async with lock:
+        if not bypass_cache:
+            # Re-check after acquiring — another coroutine may have populated.
+            if _mem_covers(key, from_d, to_d):
+                return _mem_slice(key, from_d, to_d)
+            db_bars2 = await _db_fetch(sym, exch, from_d, to_d)
+            if _is_complete_range(db_bars2, from_d, to_d):
+                _mem_populate(key, db_bars2)
+                return _mem_slice(key, from_d, to_d)
 
         try:
             broker_bars = await asyncio.to_thread(_broker_fetch_sync, sym, exch, from_d, to_d)

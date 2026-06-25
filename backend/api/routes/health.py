@@ -12,7 +12,8 @@ import subprocess
 from typing import Optional
 
 import msgspec
-from litestar import Controller, get
+from litestar import Controller, get, post, delete
+from litestar.params import Parameter as _LP
 from litestar.exceptions import HTTPException
 from sqlalchemy import func, select
 
@@ -299,12 +300,15 @@ class HealthController(Controller):
             persistence = write_queue.get_health()
 
             try:
-                from backend.api.persistence import ohlcv_store, instruments_store, holidays_store
+                from backend.api.persistence import (
+                    ohlcv_store, instruments_store, holidays_store, runtime_state,
+                )
                 persistence["stores"] = {
                     "ohlcv_daily":          {"mem_keys": len(ohlcv_store._MEM_CACHE)},
                     "instruments_snapshot": {"mem_keys": len(instruments_store._MEM_CACHE)},
                     "holidays_snapshot":    {"mem_keys": len(holidays_store._MEM_CACHE)},
                 }
+                persistence["bypass"] = runtime_state.is_bypass_on()
             except Exception:
                 pass  # stores block is best-effort; never break the health check
 
@@ -327,3 +331,79 @@ class HealthController(Controller):
         except Exception as exc:
             logger.error(f"HealthController.get_health failed: {exc}")
             raise HTTPException(status_code=500, detail="Health check failed")
+
+
+# ---------------------------------------------------------------------------
+# Persistence admin — bypass switch + per-store invalidate
+# ---------------------------------------------------------------------------
+
+class _BypassResponse(msgspec.Struct):
+    bypass: bool
+
+
+class _InvalidateResponse(msgspec.Struct):
+    store:        str
+    rows_deleted: int
+
+
+class PersistenceAdminController(Controller):
+    """Defect-recovery surface for the cache → DB → broker pipeline.
+
+    Operator: "switch to use api with no db, this will help refresh
+    cache and db if they are not accurate because code defects".
+
+    - GET  /api/admin/persistence/bypass  → {bypass: bool}
+    - POST /api/admin/persistence/bypass/on  → flip ON
+    - POST /api/admin/persistence/bypass/off → flip OFF
+    - POST /api/admin/persistence/invalidate?store=…&symbol=…&exchange=…
+        store=ohlcv_daily          → wipe ohlcv (per-symbol/per-exch optional)
+        store=instruments_snapshot → wipe instruments (per-exchange optional)
+        store=holidays_snapshot    → wipe holidays    (per-exchange optional)
+        store=all                  → wipe all three
+    """
+    path = "/api/admin/persistence"
+    guards = [admin_guard]
+
+    @get("/bypass")
+    async def get_bypass(self) -> _BypassResponse:
+        from backend.api.persistence import runtime_state
+        return _BypassResponse(bypass=runtime_state.is_bypass_on())
+
+    @post("/bypass/on")
+    async def bypass_on(self) -> _BypassResponse:
+        from backend.api.persistence import runtime_state
+        runtime_state.set_bypass(True)
+        return _BypassResponse(bypass=True)
+
+    @post("/bypass/off")
+    async def bypass_off(self) -> _BypassResponse:
+        from backend.api.persistence import runtime_state
+        runtime_state.set_bypass(False)
+        return _BypassResponse(bypass=False)
+
+    @post("/invalidate")
+    async def invalidate(
+        self,
+        store:    str = _LP(required=True),
+        symbol:   Optional[str] = None,
+        exchange: Optional[str] = None,
+    ) -> _InvalidateResponse:
+        from backend.api.persistence import runtime_state
+        if store == "ohlcv_daily":
+            n = await runtime_state.invalidate_ohlcv(symbol, exchange)
+        elif store == "instruments_snapshot":
+            n = await runtime_state.invalidate_instruments(exchange)
+        elif store == "holidays_snapshot":
+            n = await runtime_state.invalidate_holidays(exchange)
+        elif store == "all":
+            n = (
+                await runtime_state.invalidate_ohlcv(symbol, exchange)
+                + await runtime_state.invalidate_instruments(exchange)
+                + await runtime_state.invalidate_holidays(exchange)
+            )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown store '{store}' — use ohlcv_daily, instruments_snapshot, holidays_snapshot, or all",
+            )
+        return _InvalidateResponse(store=store, rows_deleted=n)
