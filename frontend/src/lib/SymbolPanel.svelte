@@ -1214,12 +1214,18 @@
   // SELL. Subsequent clicks toggle. Cold context (currentQty == 0)
   // defaults to BUY on first click, then toggles.
   function _cycleSide() {
+    // Operator: "fix buy/sell flip-on-press" (Jun 2026). The footer
+    // side button previously flipped BUY ⇄ SELL on every click. That
+    // misread as "this is a Place button" — the operator clicked BUY
+    // expecting a buy intent and saw it flip to SELL in red. Now the
+    // button is a one-shot SIDE PICKER: it sets the side on first
+    // click (when _modalSide is null), and is a no-op once a side
+    // has been chosen. To change the picked side, use the explicit
+    // BUY/SELL toggle inside OrderTicket — that surface is
+    // unambiguous about its toggle behaviour.
+    if (_modalSide) return;
     const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
-    if (!_modalSide) {
-      _modalSide = cq < 0 ? 'SELL' : 'BUY';
-      return;
-    }
-    _modalSide = _modalSide === 'BUY' ? 'SELL' : 'BUY';
+    _modalSide = cq < 0 ? 'SELL' : 'BUY';
   }
   // Derive ADD / CLOSE verb from a side + current position direction.
   // Used by the two-line side button label so the operator sees the
@@ -2818,10 +2824,8 @@
                           ? 'Pick a side — click to set BUY'
                           : 'Pick — click to ADD to the existing position')
                       : (_cq === 0
-                          ? (_modalSide === 'BUY'
-                              ? 'Side is BUY — click to flip to SELL'
-                              : 'Side is SELL — click to flip to BUY')
-                          : `${_addCloseVerb(_modalSide)} via ${_modalSide} — click to flip`)}
+                          ? `Side is ${_modalSide} — use the BUY/SELL toggle in the ticket to change`
+                          : `${_addCloseVerb(_modalSide)} via ${_modalSide} — use the BUY/SELL toggle in the ticket to change`)}
                     onclick={_cycleSide}>
               {#if !_modalSide}
                 <span>Pick side</span>
