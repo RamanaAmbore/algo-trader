@@ -4,7 +4,7 @@
   // same /api/positions, /api/holdings, /api/funds endpoints /performance
   // and /dashboard use. Whole strip is a single link to /dashboard.
 
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { dataCache, marketAwareInterval } from '$lib/stores';
   import { fetchPositions, fetchHoldings, fetchFunds } from '$lib/api';
   import { aggCompact } from '$lib/format';
@@ -378,29 +378,50 @@
 
   // Drive the flash helper off poll-cycle completions ONLY.
   // _pollCycleStamp increments inside loadOnce() after a successful
-  // broker fetch, so flash fires at most once per 30s poll — not on
-  // every live SSE tick. The numbers still update on every tick via
-  // the live-LTP-derived sums above; only the animation is throttled.
-  // flash.update is a no-op when the value hasn't changed since last
-  // call, so the "first sample establishes baseline, no flash on mount"
-  // gate inside createTickFlash still works correctly.
+  // broker fetch (every 30s). Critical: every value read MUST be in
+  // untrack() so the $effect's only tracked dependency is
+  // _pollCycleStamp. Without untrack the effect re-runs on every live
+  // derived change (= every SSE tick during market hours), defeating
+  // the throttle. The values inside untrack are still read fresh —
+  // they're just not tracked as deps.
   $effect(() => {
-    // Read _pollCycleStamp to create a dependency on poll completions.
-    // eslint-disable-next-line no-unused-expressions
-    _pollCycleStamp;
-    flash.update('P',    _livePositionsPnl);
-    flash.update('M',    marginTotal);
-    flash.update('U',    utilPct);
-    flash.update('Cp',   cashTotal);
-    flash.update('Cash', liveCashTotal);
-    flash.update('Pd',   dispPositionsToday);
-    flash.update('HDd',  dispHoldingsToday);
-    flash.update('Hd',   _liveHoldingsTotal);
-    flash.update('H',    _liveHoldingsValue);
+    _pollCycleStamp;  // the ONLY tracked dep
+    untrack(() => {
+      flash.update('P',    _livePositionsPnl);
+      flash.update('M',    marginTotal);
+      flash.update('U',    utilPct);
+      flash.update('Cp',   cashTotal);
+      flash.update('Cash', liveCashTotal);
+      flash.update('Pd',   dispPositionsToday);
+      flash.update('HDd',  dispHoldingsToday);
+      flash.update('Hd',   _liveHoldingsTotal);
+      flash.update('H',    _liveHoldingsValue);
+    });
+  });
+
+  // Heartbeat pulse — fires a brief amber tint across the whole strip
+  // on every successful poll cycle, independent of whether values
+  // moved. Without this, off-hours polls (when values are stable) +
+  // the createTickFlash first-sample-baseline rule leave the strip
+  // completely static — operator: "I don't see any animation
+  // refreshing nav strip". Heartbeat is a faint "data just refreshed"
+  // signal, distinct from the per-cell directional flash (which still
+  // fires when values move).
+  let _heartbeatOn = $state(false);
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _heartbeatTimer = null;
+  $effect(() => {
+    if (_pollCycleStamp === 0) return;  // skip mount paint
+    _heartbeatOn = true;
+    if (_heartbeatTimer) clearTimeout(_heartbeatTimer);
+    _heartbeatTimer = setTimeout(() => {
+      _heartbeatOn = false;
+      _heartbeatTimer = null;
+    }, 450);
   });
 </script>
 
-<a class="ps-strip" href="/dashboard"
+<a class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '')} href="/dashboard"
    aria-label="Open the dashboard — full positions, holdings, and funds grids">
   <span class="ps-agg" title="Positions P/L — open + closed intraday">
     <span class="ps-agg-k">P</span>
@@ -499,7 +520,16 @@
     letter-spacing: 0.04em;
     text-decoration: none;
     user-select: none;
-    transition: background 0.08s;
+    transition: background 0.08s, border-bottom-color 0.18s;
+  }
+  /* Heartbeat — fires on every successful 30s poll completion via a
+     class toggle that resolves after 450ms. Subtle amber-bordered
+     glow that reads as "data refreshed" without competing with the
+     per-cell directional flash. Operator: "I don't see any animation
+     refreshing nav strip". */
+  .ps-strip.ps-heartbeat {
+    border-bottom-color: rgba(251, 191, 36, 0.85);
+    background: linear-gradient(180deg, #0a1020 0%, #1a2640 100%);
   }
   .ps-strip:hover {
     background: linear-gradient(180deg, #0a1020 0%, #1a2746 100%);
