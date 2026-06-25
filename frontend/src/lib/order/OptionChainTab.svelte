@@ -140,6 +140,28 @@
   /** @type {Array<'opt'|'fut'>} */
   let chainKinds       = $state(/** @type {Array<'opt'|'fut'>} */ (['opt']));
 
+  // ── sessionStorage keys for root + per-root expiry memory ─────────
+  const _SS_ROOT    = 'chain.lastRoot';
+  const _ssExpKey   = (/** @type {string} */ root) => `chain.lastExpiry.${root}`;
+
+  // Persist root whenever it changes (operator pick or cascade result).
+  // Guard: don't write empty string — that would clobber a valid previous pick.
+  $effect(() => {
+    const r = chainUnderlying;
+    if (r) {
+      try { sessionStorage.setItem(_SS_ROOT, r); } catch { /* SSR / private mode */ }
+    }
+  });
+
+  // Persist per-root expiry whenever it changes.
+  $effect(() => {
+    const root = chainUnderlying;
+    const exp  = chainExpiry;
+    if (root && exp) {
+      try { sessionStorage.setItem(_ssExpKey(root), exp); } catch { /* SSR / private mode */ }
+    }
+  });
+
   // Account for order routing — required for basket submit.
   // Prefer the `account` prop; fall back to the first real account in `accounts`.
   function _isRealAcct(/** @type {string|null|undefined} */ a) {
@@ -294,27 +316,48 @@
 
   // Auto-default underlying once instruments are ready (when the
   // operator hasn't supplied one via the symbol prop).
+  // Root cascade (first hit wins):
+  //   1. sessionStorage 'chain.lastRoot'  — operator's last visit
+  //   2. seedUnderlying (from symbol prop) — context from host page
+  //   3. underlyingChoices[0]             — first available (popular list)
+  //   4. 'NIFTY'                          — hard fallback
   $effect(() => {
     const list = underlyingChoices;
     untrack(() => {
       if (!list.length) { if (chainUnderlying) chainUnderlying = ''; return; }
-      if (!chainUnderlying || !list.includes(chainUnderlying)) chainUnderlying = list[0];
+      if (chainUnderlying && list.includes(chainUnderlying)) return; // already valid
+      // Try sessionStorage first.
+      let ssRoot = '';
+      try { ssRoot = sessionStorage.getItem(_SS_ROOT) || ''; } catch { /* SSR */ }
+      if (ssRoot && list.includes(ssRoot)) { chainUnderlying = ssRoot; return; }
+      // Then seedUnderlying (already tracked via the effect above, but use as
+      // fallback here when instruments warm after the first effect ran empty).
+      if (seedUnderlying && list.includes(seedUnderlying)) { chainUnderlying = seedUnderlying; return; }
+      // First popular underlying.
+      chainUnderlying = list[0] || 'NIFTY';
     });
   });
+
   $effect(() => {
     void chainUnderlying;
     if (chainExpiries.length && !chainExpiries.includes(chainExpiry)) {
       // Prefer the seed contract's own expiry if it's in the list —
       // operator clicked a specific position (e.g. NIFTY26MAY22000CE)
       // and the chain should open on THAT month, not nearest-future.
-      // Bare-underlying / plain-order paths (no contract suffix) fall
-      // through to chainExpiries[0] (near month, post-listExpiries
-      // expiry filter).
       if (seedExpiry && chainExpiries.includes(seedExpiry)) {
         chainExpiry = seedExpiry;
-      } else {
-        chainExpiry = chainExpiries[0];
+        return;
       }
+      // sessionStorage per-root expiry memory — restore last-used expiry
+      // for this root when the operator reopens the same root.
+      let ssExp = '';
+      try { ssExp = sessionStorage.getItem(_ssExpKey(chainUnderlying)) || ''; } catch { /* SSR */ }
+      if (ssExp && chainExpiries.includes(ssExp)) {
+        chainExpiry = ssExp;
+        return;
+      }
+      // Default: nearest available expiry.
+      chainExpiry = chainExpiries[0];
     }
   });
 

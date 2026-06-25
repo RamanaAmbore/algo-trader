@@ -1250,6 +1250,12 @@
     return '';
   });
 
+  // True when no symbol has been resolved yet — disables all form
+  // controls below the symbol picker so the operator can't accidentally
+  // submit a blank order. Cleared as soon as the picker resolves a
+  // tradeable symbol (_resolvedSymbol) or the caller passed one in (symbol).
+  const _noSymbol = $derived(!_resolvedSymbol && !symbol);
+
   /** Build a basket-leg payload from the modal's current state.
    *  Caller (admin/options) folds this into chainBasket so the leg
    *  renders as a regular basket pill alongside quick-adds. */
@@ -2020,7 +2026,7 @@
              role="group" aria-label="Side">
           <button type="button"
                   class={'ot-side-btn ot-side-buy' + (_side === 'BUY' ? ' on' : '')}
-                  disabled={action === 'modify'}
+                  disabled={action === 'modify' || _noSymbol}
                   aria-pressed={_side === 'BUY'}
                   title={sideLabels.BUY === 'ADD' ? 'Add to position (BUY)' :
                          sideLabels.BUY === 'CLOSE' ? 'Close short position (BUY)' :
@@ -2032,7 +2038,7 @@
           </button>
           <button type="button"
                   class={'ot-side-btn ot-side-sell' + (_side === 'SELL' ? ' on' : '')}
-                  disabled={action === 'modify'}
+                  disabled={action === 'modify' || _noSymbol}
                   aria-pressed={_side === 'SELL'}
                   title={sideLabels.SELL === 'ADD' ? 'Add to position (SELL)' :
                          sideLabels.SELL === 'CLOSE' ? 'Close long position (SELL)' :
@@ -2049,6 +2055,7 @@
         <Select id="ot-type-sel"
                 bind:value={_type}
                 ariaLabel="Order type"
+                disabled={_noSymbol}
                 options={[
                   { value: 'MARKET', label: 'MARKET' },
                   { value: 'LIMIT',  label: 'LIMIT'  },
@@ -2061,6 +2068,7 @@
         <Select id="ot-product-sel"
                 bind:value={_product}
                 ariaLabel="Product"
+                disabled={_noSymbol}
                 options={productOptions.map(p => ({ value: p, label: p }))} />
       </div>
       <!-- Exchange — operator picks for dual-listed symbols (IFCI on
@@ -2076,6 +2084,7 @@
           <Select id="ot-exchange-sel"
                   value={_exchange}
                   ariaLabel="Exchange"
+                  disabled={_noSymbol}
                   onValueChange={(v) => { _exchange = String(v); _exchangeTouched = true; }}
                   options={exchangeOptions.map(e => ({ value: e, label: e }))} />
         {:else}
@@ -2090,6 +2099,7 @@
         <Select id="ot-variety-sel"
                 bind:value={_variety}
                 ariaLabel="Variety"
+                disabled={_noSymbol}
                 options={[
                   { value: 'regular', label: 'REG' },
                   { value: 'amo',     label: 'AMO' },
@@ -2101,6 +2111,7 @@
         <Select id="ot-validity-sel"
                 bind:value={_validity}
                 ariaLabel="Validity"
+                disabled={_noSymbol}
                 options={[
                   { value: 'DAY', label: 'DAY' },
                   { value: 'IOC', label: 'IOC' },
@@ -2138,17 +2149,19 @@
           <div class="ot-lots-row">
             <button type="button" class="ot-lots-step"
                     onclick={() => stepLots(-1)}
-                    disabled={_lots <= 1}
+                    disabled={_lots <= 1 || _noSymbol}
                     aria-label="Decrease lots">−</button>
             <input id="ot-lots" type="number"
                    class="ot-input ot-num ot-lots-input"
                    step="1" min="1"
                    bind:value={_lots}
+                   disabled={_noSymbol}
                    oninput={() => { _lotsTouched = true; }}
                    onblur={() => { _lots = Math.max(1, Number(_lots) || 1); }}
                    aria-label="Lots" />
             <button type="button" class="ot-lots-step"
                     onclick={() => stepLots(1)}
+                    disabled={_noSymbol}
                     aria-label="Increase lots">+</button>
             <span class="ot-meta">× {_lotSize} = {_qty}</span>
           </div>
@@ -2157,16 +2170,18 @@
           <div class="ot-lots-row">
             <button type="button" class="ot-lots-step"
                     onclick={() => { _qty = Math.max(1, (Number(_qty) || 1) - 1); }}
-                    disabled={!_qty || _qty <= 1}
+                    disabled={!_qty || _qty <= 1 || _noSymbol}
                     aria-label="Decrease qty">−</button>
             <input id="ot-qty" type="number"
                    class="ot-input ot-num ot-lots-input"
                    step="1" min="1"
                    bind:value={_qty}
+                   disabled={_noSymbol}
                    onblur={() => { _qty = Math.max(1, Number(_qty) || 1); }}
                    aria-label="Qty" />
             <button type="button" class="ot-lots-step"
                     onclick={() => { _qty = (Number(_qty) || 0) + 1; }}
+                    disabled={_noSymbol}
                     aria-label="Increase qty">+</button>
           </div>
         {/if}
@@ -2186,6 +2201,7 @@
           <input id="ot-price" type="number" class="ot-input ot-num"
                  step={_tickSize}
                  bind:value={_price}
+                 disabled={_noSymbol}
                  oninput={() => { _priceTouched = true; }}
                  onblur={() => _snapPriceField('price')} />
         </div>
@@ -2198,6 +2214,7 @@
           <input id="ot-trigger" type="number" class="ot-input ot-num"
                  step={_tickSize}
                  bind:value={_trigger}
+                 disabled={_noSymbol}
                  onblur={() => _snapPriceField('trigger')} />
         </div>
       {/if}
@@ -2214,6 +2231,7 @@
           <input id="ot-trigger" type="number" class="ot-input ot-num"
                  step={_tickSize}
                  bind:value={_trigger}
+                 disabled={_noSymbol}
                  onblur={() => _snapPriceField('trigger')} />
         </div>
       </div>
@@ -2368,25 +2386,15 @@
                   onclick={clearForm}>Clear</button>
           {#if onAddToBasket && action === 'open'}
             <button type="button" class="ot-basket"
-                    disabled={!!validationErr || submitting}
+                    disabled={!!validationErr || submitting || _noSymbol}
                     title="Add this leg to the basket — place every leg together later"
                     onclick={addToBasket}>+ Basket</button>
           {/if}
           {#if basketMode && action !== 'modify'}
             <button type="button" class="ot-submit ot-submit-basket-mode"
-                    disabled={!!validationErr}
+                    disabled={!!validationErr || _noSymbol}
                     onclick={addToBasket}>
               + Add to basket
-            </button>
-          {:else}
-            <button type="button" class="ot-submit"
-                    class:ot-submit-buy={_side === 'BUY'}
-                    class:ot-submit-sell={_side === 'SELL'}
-                    class:ot-submit-demo={_isDemo}
-                    disabled={_isDemo ? false : (!!validationErr || submitting || $executionMode === 'idle')}
-                    title={_isDemo ? 'Demo mode — click to learn how to enable real orders' : ($executionMode === 'idle' ? 'Engine is idle — pick PAPER / SIM / REPLAY from the navbar to enable order placement' : '')}
-                    onclick={submit}>
-              {#if _isDemo}Submit (Demo){:else if submitting}…{:else if $executionMode === 'idle'}Idle — pick a mode{:else if action === 'modify'}Modify{orderId ? ' · #' + orderId : ''}{:else if _mode === 'draft'}Save draft{:else if sideLabels[_side] === 'CLOSE'}Close · {_side.toLowerCase()}{:else if sideLabels[_side] === 'ADD'}Add · {_side.toLowerCase()}{:else}Place {_side.toLowerCase()}{/if}
             </button>
           {/if}
         {/if}

@@ -1613,6 +1613,8 @@
       basketResultMsg = msg;
       basketLegs = [];
       _basketMarginRows = [];
+      // Reset the symbol picker so the next session starts clean.
+      _localSymbol = '';
       _stickyResultMsg = msg;
       _stickyResultLevel = 'ok';
       if (_stickyResultTimer) clearTimeout(_stickyResultTimer);
@@ -2761,10 +2763,10 @@
           <button type="button" class="oes-common-submit"
             class:oes-common-submit-buy={_submitFlavor === 'buy'}
             class:oes-common-submit-sell={_submitFlavor === 'sell'}
-            class:oes-common-submit-basket={_submitFlavor === 'basket' || (_activeTab === 'ticket' && _toBasket)}
+            class:oes-common-submit-basket={basketLegs.length > 0 || _submitFlavor === 'basket' || (_activeTab === 'ticket' && _toBasket)}
             class:oes-common-submit-narrow={basketLegs.length > 0}
-            title={basketLegs.length > 0 && _activeTab === 'chain'
-              ? `Submit all ${basketLegs.length} basket legs`
+            title={basketLegs.length > 0
+              ? `Submit all ${basketLegs.length} basket leg${basketLegs.length > 1 ? 's' : ''}`
               : (_activeTab === 'chain'
                   ? 'Add legs via +CE / +PE on the chain rows first'
                   : _toBasket
@@ -2773,16 +2775,21 @@
             disabled={basketSubmitting
                       || (basketLegs.length === 0 && _activeTab === 'chain')}
             onclick={() => {
-              if (_activeTab === 'chain') {
-                if (basketLegs.length > 0) submitBasket();
-              } else if (_toBasket) {
+              if (basketLegs.length > 0) {
+                // Global basket submit — fires from any tab whenever there
+                // are staged legs. Ticket's _toBasket mode stays intact:
+                // when the operator toggles basket on Ticket and clicks
+                // Submit with no legs yet, _modalFireBasket() adds the
+                // current ticket as the first leg without submitting.
+                submitBasket();
+              } else if (_activeTab === 'ticket' && _toBasket) {
                 _modalFireBasket();
-              } else {
+              } else if (_activeTab === 'ticket') {
                 _modalFireSubmit();
               }
             }}>{basketSubmitting
                 ? 'Placing…'
-                : (_activeTab === 'chain' && basketLegs.length > 0
+                : (basketLegs.length > 0
                     ? `Submit (${basketLegs.length})`
                     : (_activeTab === 'ticket' && _toBasket)
                         /* Operator: "change submit to basket to just
