@@ -222,6 +222,14 @@ class QuoteController(Controller):
                 quote_data = {}
 
         items: list[BatchQuoteRow] = []
+        # Build (exch, sym) pairs alongside items so we can subscribe the
+        # universe to the live ticker below — without this, /pulse's
+        # winners/losers sparklines only get an SSE feed AFTER the next
+        # loadSparklines call (up to 30s after the mover set rotates).
+        # The sparkline tail in the renderer reads _liveLtpSnap[sym]; if
+        # SSE never subscribed the symbol, the tail stays pinned at the
+        # poll-time LTP and the curve looks frozen.
+        seen_pairs: list[tuple[str, str]] = []
         for k in keys:
             q = quote_data.get(k) or {}
             try:
@@ -247,6 +255,33 @@ class QuoteController(Controller):
                 oi=int(q.get("oi") or 0),
                 stale=(not q),
             ))
+            seen_pairs.append((exch.upper(), sym.upper()))
+
+        # Subscribe the queried universe to the live ticker so SSE starts
+        # streaming LTP for these symbols immediately. subscribe_with_sym
+        # is idempotent + cheap; safe to call on every batch request.
+        # Mover symbols rotating into the winners/losers tabs need this so
+        # their sparkline tail tracks live ticks without waiting for the
+        # next sparkline endpoint round-trip.
+        if seen_pairs:
+            try:
+                from backend.shared.brokers.registry import get_sparkline_broker
+                _bk = get_sparkline_broker()
+                _full_map = await asyncio.to_thread(_get_today_token_map, _bk)
+                _sub_pairs: list[tuple[int, str]] = []
+                for exch, sym in seen_pairs:
+                    pref = [exch] + [e for e in _SPARKLINE_EXCHANGES if e != exch]
+                    for _ex in pref:
+                        tok = _full_map.get((sym, _ex))
+                        if tok is not None:
+                            _sub_pairs.append((tok, sym))
+                            break
+                if _sub_pairs:
+                    from backend.shared.helpers.kite_ticker import get_ticker
+                    get_ticker().subscribe_with_sym(_sub_pairs)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(f"batch_quote: ticker subscribe skipped: {exc}")
+
         return BatchQuoteResponse(
             refreshed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
             items=items,
