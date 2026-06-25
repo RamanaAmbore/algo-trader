@@ -32,6 +32,7 @@
   import ConfirmModal   from '$lib/ConfirmModal.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
+  import { toast } from '$lib/data/toastStore.svelte.js';
 
   /** @type {Array<{id:number,account:string,broker_id:string,api_key:string,
    *   source_ip:string|null,is_active:boolean,historical_data_enabled:boolean,
@@ -39,7 +40,6 @@
   let accounts = $state([]);
   let loading  = $state(true);
   let error    = $state('');
-  let note     = $state('');
 
   /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
   let _confirmRef = $state(null);
@@ -157,7 +157,7 @@
       extra_config_text: '{}',
     };
     _formHistEnabled = true;
-    error = ''; note = '';
+    error = '';
   }
 
   function startEdit(/** @type {any} */ row) {
@@ -179,7 +179,7 @@
     };
     // Default true for rows pre-dating the column (undefined → ON).
     _formHistEnabled = row.historical_data_enabled !== false;
-    error = ''; note = '';
+    error = '';
   }
 
   async function load() {
@@ -191,7 +191,7 @@
   }
 
   async function save() {
-    error = ''; note = '';
+    error = '';
     try {
       // Parse + validate Advanced JSON. Bad JSON aborts the save so the
       // operator never accidentally persists a malformed config.
@@ -229,7 +229,7 @@
           if (f.secret && form[f.key]) payload[f.key] = form[f.key];
         }
         await updateBrokerAccount(editing, payload);
-        note = `Updated ${editing}`;
+        toast.success(`Updated ${editing}`);
       } else {
         if (!form.account) { error = 'Account code is required.'; return; }
         // Broker-aware required-field check. Each broker schema declares
@@ -260,7 +260,7 @@
           extra_config: parsedExtra,
         };
         await createBrokerAccount(payload);
-        note = `Created ${form.account}`;
+        toast.success(`Created ${form.account}`);
       }
       resetForm();
       await load();
@@ -279,7 +279,7 @@
     if (!ok) return;
     try {
       await deleteBrokerAccount(row.account);
-      note = `Deleted ${row.account}`;
+      toast.success(`Deleted ${row.account}`);
       delete testResults[row.account];
       testResults = { ...testResults };
       if (editing === row.account) resetForm();
@@ -293,9 +293,15 @@
       const r = await testBrokerAccount(row.account);
       testResults[row.account] = { ok: r.ok, detail: r.detail };
       testResults = { ...testResults };
+      if (r.ok) {
+        toast.success(`${row.account} — broker test passed`);
+      } else {
+        toast.error(`${row.account} — test failed: ${r.detail || 'unknown'}`);
+      }
     } catch (e) {
       testResults[row.account] = { ok: false, detail: e.message };
       testResults = { ...testResults };
+      toast.error(`${row.account} — test failed: ${e.message}`);
     } finally {
       testInFlight = '';
     }
@@ -344,7 +350,6 @@
 {:else}
 
 <StaleBanner {error} hasData={accounts.length > 0} label="Broker accounts" />
-{#if note}<div class="mb-3 p-2 rounded bg-emerald-500/10 text-emerald-300 text-[0.65rem] border border-emerald-500/30">{note}</div>{/if}
 
 <!-- Account list -->
 <div class="algo-status-card p-2 mb-3" data-status="inactive">

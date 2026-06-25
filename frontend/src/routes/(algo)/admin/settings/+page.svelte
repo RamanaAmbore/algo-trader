@@ -16,6 +16,7 @@
   import { loadHedgeProxies as _invalidateHedgeProxyCache } from '$lib/data/hedgeProxies';
   import Select   from '$lib/Select.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
+  import { toast } from '$lib/data/toastStore.svelte.js';
 
   // Pinned-watchlist symbols feed the orders.default_symbol dropdown
   // (operator request: "When you update in settings it should show the
@@ -53,7 +54,6 @@
   let settings    = $state([]);
   let loading     = $state(true);
   let error       = $state('');
-  let note        = $state('');
   let dirty       = $state(/** @type {Record<string, string>} */({}));
   let filter      = $state('');
 
@@ -155,26 +155,26 @@
   }
 
   async function save(/** @type {any} */ s) {
-    error = ''; note = '';
+    error = '';
     try {
       const updated = await updateSetting(s.key, dirty[s.key]);
       // Replace the row in-place so the UI reflects canonical server value.
       settings = settings.map(r => r.key === s.key ? updated : r);
       delete dirty[s.key];
       dirty = { ...dirty };
-      note = `Saved ${s.key}`;
-    } catch (e) { error = 'Save failed.'; }
+      toast.success(`Saved: ${s.key}`);
+    } catch (e) { error = 'Save failed.'; toast.error('Save failed'); }
   }
 
   async function reset(/** @type {any} */ s) {
-    error = ''; note = '';
+    error = '';
     try {
       const updated = await resetSetting(s.key);
       settings = settings.map(r => r.key === s.key ? updated : r);
       delete dirty[s.key];
       dirty = { ...dirty };
-      note = `Reset ${s.key} to ${updated.default_value}`;
-    } catch (e) { error = 'Reset failed.'; }
+      toast.info(`Reset ${s.key} → ${updated.default_value}`);
+    } catch (e) { error = 'Reset failed.'; toast.error('Reset failed'); }
   }
 
   // Execution-mode summary used by the top banner: how many of the
@@ -256,7 +256,6 @@
 {:else}
 
 {#if error}<div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">{error}</div>{/if}
-{#if note}<div class="mb-3 p-2 rounded bg-emerald-500/10 text-emerald-300 text-[0.65rem] border border-emerald-500/30">{note}</div>{/if}
 
 {#if execRows.length}
   <div class="mb-3 p-2 rounded text-[0.65rem] border

@@ -14,6 +14,7 @@
   import PositionStrip from '$lib/PositionStrip.svelte';
   import ImpersonationBanner from '$lib/ImpersonationBanner.svelte';
   import AgentToast from '$lib/AgentToast.svelte';
+  import ToastContainer from '$lib/ToastContainer.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import HireMeModal from '$lib/HireMeModal.svelte';
   import { bootstrapRBAC } from '$lib/rbac';
@@ -827,6 +828,11 @@
          Click a toast → opens AgentFireModal. Mounted once at the
          layout root so it survives route changes. -->
     <AgentToast />
+
+    <!-- Programmatic toast system: success / error / info / warning.
+         Mounted once; pages fire via: import { toast } from '$lib/data/toastStore.svelte.js'
+         z-index 80 — below AgentToast (9997) and modals (9998). -->
+    <ToastContainer />
 
     <footer class="algo-footer">
       <span class="algo-footer-text">RamboQuant Analytics</span>

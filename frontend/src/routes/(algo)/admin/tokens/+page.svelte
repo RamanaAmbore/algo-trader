@@ -21,6 +21,7 @@
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
+  import { toast } from '$lib/data/toastStore.svelte.js';
 
   // Agent Tokens page — read + is_active toggle for every token in the
   // grammar_tokens table. (The DB table and backend class keep the
@@ -61,8 +62,13 @@
 
   async function doReload() {
     reloading = true; error = '';
-    try { await reloadGrammarRegistry(); }
-    catch (e) { error = e.message || 'Reload failed'; }
+    try {
+      await reloadGrammarRegistry();
+      toast.success('Grammar registry reloaded');
+    } catch (e) {
+      error = e.message || 'Reload failed';
+      toast.error(e.message || 'Registry reload failed');
+    }
     reloading = false;
   }
 
@@ -155,8 +161,10 @@
         payload.token        = form.token;
         if (!payload.token) { formError = 'Token name required'; submitting = false; return; }
         await createGrammarToken(payload);
+        toast.success(`Token created: ${payload.token}`);
       } else {
         await patchGrammarToken(editingId, payload);
+        toast.success(`Token updated: ${form.token}`);
       }
       showForm = false;
       await load();
@@ -175,8 +183,14 @@
       confirmLabel: 'Delete',
     });
     if (!ok) return;
-    try { await deleteGrammarToken(t.id); await load(); }
-    catch (e) { error = e.message || 'Delete failed'; }
+    try {
+      await deleteGrammarToken(t.id);
+      toast.success(`Token deleted: ${t.token}`);
+      await load();
+    } catch (e) {
+      error = e.message || 'Delete failed';
+      toast.error(e.message || 'Token delete failed');
+    }
   }
 
   function filtered() {

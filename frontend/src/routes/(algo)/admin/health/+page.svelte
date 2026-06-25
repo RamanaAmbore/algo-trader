@@ -13,6 +13,7 @@
   import StaleBanner from '$lib/StaleBanner.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
+  import { toast } from '$lib/data/toastStore.svelte.js';
 
   /** @type {any} */
   let health      = $state(null);
@@ -66,18 +67,18 @@
   //   soft — bypass cache+DB on read; broker fetch + write-back heals
   //   hard — soft + ticker recycle (in-memory _tick_map rebuilt)
   let _modeBusy   = $state(false);
-  let _modeErr    = $state('');
   const _persMode = $derived(health?.persistence?.mode || 'off');
   async function _switchMode(/** @type {'off'|'soft'|'hard'} */ next) {
     if (_modeBusy) return;
     const cur = health?.persistence?.mode || 'off';
     if (next === cur) return;
-    _modeBusy = true; _modeErr = '';
+    _modeBusy = true;
     try {
       await setPersistenceMode(next);
-      await load();           // refresh the health snapshot
+      await load();
+      toast.success(`Refresh mode: ${next.toUpperCase()}`);
     } catch (e) {
-      _modeErr = (e && e.message) || 'mode switch failed';
+      toast.error((e && e.message) || 'Mode switch failed');
     } finally {
       _modeBusy = false;
     }
@@ -88,17 +89,16 @@
   // worker writes back through. Defect-recovery counterpart to mode
   // switching for cases where the operator wants targeted cleanup.
   let _invalBusy  = $state(false);
-  let _invalLast  = $state(/** @type {{store: string, rows_deleted: number}|null} */ (null));
-  let _invalErr   = $state('');
   async function _invalidate(/** @type {string} */ store) {
     if (_invalBusy) return;
-    _invalBusy = true; _invalErr = '';
+    _invalBusy = true;
     try {
       const r = await invalidatePersistence(store);
-      _invalLast = r;
       await load();
+      const rows = r?.rows_deleted ?? 0;
+      toast.success(`Invalidated ${r?.store ?? store} — ${rows.toLocaleString('en-IN')} rows deleted`);
     } catch (e) {
-      _invalErr = (e && e.message) || 'invalidate failed';
+      toast.error((e && e.message) || 'Invalidate failed');
     } finally {
       _invalBusy = false;
     }
@@ -354,9 +354,6 @@
                 title="Soft + ticker recycle. The in-memory _tick_map rebuilds from scratch on transition. Brief LTP gap (~2-3s) — SSE clients auto-reconnect."
                 onclick={() => _switchMode('hard')}>HARD</button>
       </div>
-      {#if _modeErr}
-        <div class="kv-row pm-err">{_modeErr}</div>
-      {/if}
       <div class="kv-row">
         <span class="kv-key">disk_queue depth</span>
         <span class="kv-val kv-num">{_n(health.persistence?.disk_queue?.depth)}</span>
@@ -402,14 +399,6 @@
                   title="Wipe every store. Heavy — only use when the entire persistence layer is suspect."
                   onclick={() => _invalidate('all')}>Invalidate all</button>
         </div>
-        {#if _invalLast}
-          <div class="kv-row kv-muted">
-            Last: <code>{_invalLast.store}</code> · {_n(_invalLast.rows_deleted)} rows deleted
-          </div>
-        {/if}
-        {#if _invalErr}
-          <div class="kv-row pm-err">{_invalErr}</div>
-        {/if}
       {/if}
     </div>
 
