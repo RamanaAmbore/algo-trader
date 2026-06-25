@@ -1220,15 +1220,15 @@
     const seen = new Set();
     const out = [];
     // Tier 1 — operator's most-used underlyings, by raw pick count.
-    // Restricted to roots currently in the book (positions OR hedge
-    // opportunities) so a no-longer-held favourite doesn't squat at
-    // the top of the dropdown. Amber label + 'frequent' hint chip so
-    // the colour-coding reads "personal-favourite" rather than the
-    // cyan "tier-2 has-options" treatment.
+    // Restricted to roots with an ACTIVE derivative position
+    // (CE/PE/FUT). Hedge opportunities are intentionally excluded so
+    // a previously-picked hedge stock (e.g. DIXON) doesn't get
+    // promoted to amber "frequent" styling — that misreads as
+    // "actively-traded" when there's no derivative position. Hedge
+    // opps stay in tier 4 with dimmed styling regardless of usage.
     const _available = new Set([
       ..._rootsWithOptions,
       ..._rootsWithFuturesOnly,
-      ..._hedgeOpportunities,
     ]);
     const _topUsed = Object.entries(_usageMap)
       .filter(([k, v]) => _available.has(k) && Number(v) > 0)
