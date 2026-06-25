@@ -1610,11 +1610,25 @@
        navbar/content/footer + per-side card padding so the cards eat
        the full viewport width. Navbar + footer already sticky via
        position: sticky on .algo-navbar / .algo-footer (kept). */
-    .algo-nav-inner { padding: 0 0.25rem; }
+    .algo-nav-inner { padding: 0 0.2rem; gap: 0.3rem; }
     .algo-content   { padding-left: 0.25rem; padding-right: 0.25rem; }
     .algo-footer    { padding: 0 0.25rem; }
     :global(.algo-status-card) { padding: 0.55rem 0.4rem; }
     :global(.algo-card)        { padding: 0.55rem 0.4rem; }
+    /* Navbar item spacing — original margins were calibrated for the
+       desktop 0.5rem container padding and accumulated to push the
+       right-hand chips off-viewport on narrow phones. Tighter
+       per-item margins reclaim that real estate. */
+    .algo-brand        { margin-right: 0.3rem; gap: 0.4rem; }
+    .algo-vert         { margin-left: -2px; margin-right: 0.2rem; }
+    /* Hide the RamboQuant wordmark below 480px — the bull logo's
+       amber glow is already unambiguous brand identity. Saves ~75px
+       of horizontal real estate for the right-side chips. */
+    .algo-user-pill    { padding: 0.18rem 0.35rem; margin-right: 0.15rem; }
+  }
+  @media (max-width: 480px) {
+    .algo-brand-name { display: none; }
+    .algo-vert       { display: none; }
   }
 
   /* Algo dark-theme overrides for classes shared with public pages */
