@@ -52,6 +52,7 @@
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
+  import EmptyState from '$lib/EmptyState.svelte';
   import { longPress } from '$lib/actions/longPress.js';
 
   // Row-level chart modal for Candidates panel rows.
@@ -4335,11 +4336,19 @@
                  underlying. Spans the whole grid via cand-empty. -->
             <div class="cand-empty">
               {#if !selectedUnderlying}
-                Pick an underlying to surface candidates.
+                <EmptyState
+                  title="No underlying selected"
+                  hint="Pick an underlying to surface candidates."
+                  icon="search"
+                />
               {:else if loading}
-                Loading candidates…
+                <EmptyState message="Loading candidates…" />
               {:else}
-                No candidates for {selectedUnderlying} on the current filter.
+                <EmptyState
+                  title="No candidates"
+                  hint="No candidates for {selectedUnderlying} on the current filter."
+                  icon="inbox"
+                />
               {/if}
             </div>
           {/if}

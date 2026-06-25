@@ -11,6 +11,7 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { fetchSystemHealth, setPersistenceMode, invalidatePersistence } from '$lib/api';
   import StaleBanner from '$lib/StaleBanner.svelte';
+  import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
 
   /** @type {any} */
   let health      = $state(null);
@@ -129,7 +130,13 @@
 <StaleBanner {error} hasData={!!health} label="Health snapshot" />
 
 {#if loading && !health}
-  <div class="empty-state">Loading…</div>
+  <!-- Skeleton grid matches the 2-col card layout so the loading
+       state occupies the same visual footprint as the real content. -->
+  <div class="health-grid">
+    {#each Array(6) as _}
+      <LoadingSkeleton variant="card" rows={4} />
+    {/each}
+  </div>
 {:else if health}
   <div class="health-grid">
 

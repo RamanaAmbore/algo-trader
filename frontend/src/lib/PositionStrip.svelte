@@ -1,22 +1,25 @@
 <script>
   // Glanceable Pos / Day / Hold / Cash strip pinned under the algo navbar.
-  // Reads from the shared dataCache for fast paint, then refreshes via the
-  // same /api/positions, /api/holdings, /api/funds endpoints /performance
-  // and /dashboard use. Whole strip is a single link to /dashboard.
+  // Data flows through marketDataStores (three-tier: memory → localStorage
+  // → broker fetch). The stores are module-level singletons so a load()
+  // here also populates /dashboard / NavCard without extra network calls.
+  // Whole strip is a single link to /dashboard.
 
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { dataCache, marketAwareInterval } from '$lib/stores';
-  import { fetchPositions, fetchHoldings, fetchFunds } from '$lib/api';
+  import { marketAwareInterval } from '$lib/stores';
   import { aggCompact } from '$lib/format';
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { cachedRead, cachedWrite, cachedDelete, TTL } from '$lib/data/persistentCache';
   import { liveLtp } from '$lib/data/quoteStream';
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
+  import { positionsStore, holdingsStore, fundsStore } from '$lib/data/marketDataStores.svelte.js';
 
-  let positions = $state(/** @type {any[]} */ ([]));
-  let holdings  = $state(/** @type {any[]} */ ([]));
-  let funds     = $state(/** @type {any[]} */ ([]));
+  // Reactive views into the three-tier stores. The stores pre-populate from
+  // localStorage on module init so these are non-empty on first render.
+  const positions = $derived(positionsStore.value ?? []);
+  const holdings  = $derived(holdingsStore.value  ?? []);
+  const funds     = $derived(fundsStore.value      ?? []);
   // Market-state tick — flips between 0/1/2/3 (no markets / NSE / MCX /
   // both) when the session boundary crosses. The _liveDeltaByRow derived
   // reads this to re-run on the boundary even when no other state has
@@ -45,55 +48,17 @@
   /** @type {ReturnType<typeof marketAwareInterval> | null} */
   let teardown = null;
 
-  async function loadOnce() {
+  // _load — fires the three-tier refresh via marketDataStores. All
+  // caching (Tier 1 memory / Tier 2 localStorage / Tier 3 broker fetch)
+  // is handled inside each store. Concurrent calls are deduped by the
+  // store (second caller awaits the same Promise).
+  async function _load() {
     try {
-      // Tier 1: in-session dataCache (lives only as long as the JS module
-      // is loaded — survives navigation, dies on reload).
-      if (dataCache.positions?.rows) positions = dataCache.positions.rows;
-      if (dataCache.holdings?.rows)  holdings  = dataCache.holdings.rows;
-      if (dataCache.funds?.rows) {
-        funds = dataCache.funds.rows.filter(
-          (/** @type {any} */ x) => x && x.account && x.account !== 'TOTAL'
-        );
-      }
-      // Tier 2: persistent localStorage — survives reload + deploy. The
-      // operator's "data is retained during deployment" requirement
-      // sits here. Only consulted when in-session dataCache is empty;
-      // skipped silently if expired/missing.
-      if (!positions.length) {
-        const cP = cachedRead('strip.positions');
-        if (cP?.value && Array.isArray(cP.value)) positions = cP.value;
-      }
-      if (!holdings.length) {
-        const cH = cachedRead('strip.holdings');
-        if (cH?.value && Array.isArray(cH.value)) holdings = cH.value;
-      }
-      if (!funds.length) {
-        const cF = cachedRead('strip.funds');
-        if (cF?.value && Array.isArray(cF.value)) funds = cF.value;
-      }
-      const [p, h, f] = await Promise.allSettled([
-        fetchPositions(), fetchHoldings(), fetchFunds(),
+      await Promise.allSettled([
+        positionsStore.load(),
+        holdingsStore.load(),
+        fundsStore.load(),
       ]);
-      if (p.status === 'fulfilled') {
-        positions = p.value?.rows || [];
-        dataCache.positions = p.value;
-        if (positions.length) cachedWrite('strip.positions', positions, TTL.minute);
-      }
-      if (h.status === 'fulfilled') {
-        holdings = h.value?.rows || [];
-        dataCache.holdings = h.value;
-        if (holdings.length) cachedWrite('strip.holdings', holdings, TTL.minute);
-      }
-      if (f.status === 'fulfilled') {
-        // /api/funds emits a TOTAL row alongside per-account rows;
-        // including it in cashTotal would double-count.
-        funds = (f.value?.rows || []).filter(
-          (/** @type {any} */ x) => x && x.account && x.account !== 'TOTAL'
-        );
-        dataCache.funds = f.value;
-        if (funds.length) cachedWrite('strip.funds', funds, TTL.minute);
-      }
       // Signal that a poll cycle completed. The flash $effect watches
       // this counter, not the live-LTP-derived sums, so flash fires
       // at most once per 30s poll rather than on every SSE tick.
@@ -127,8 +92,8 @@
     // explicitly). Silent on failure — derivation falls back to raw
     // quantity then.
     loadInstruments().catch(() => { /* fallback path handles this */ });
-    loadOnce();
-    teardown = marketAwareInterval(loadOnce, 30000);
+    _load();
+    teardown = marketAwareInterval(_load, 30000);
     // Watch the market-session boundary so _liveDeltaByRow can drop
     // the stale-tick delta immediately on close (not 30s late).
     _mktTick = (isNseOpen() ? 1 : 0) + (isMcxOpen() ? 2 : 0);
@@ -195,7 +160,7 @@
     const m = new Map();
     const snap = _liveLtpSnap;
     // Read _mktTick so the derived re-runs on the market open/close
-    // boundary (otherwise we'd wait up to 30s for loadOnce to pick it up).
+    // boundary (otherwise we'd wait up to 30s for _load to pick it up).
     void _mktTick;
     // Operator: "are the position calculations are correct?" — outside
     // market hours the SSE store holds the LAST tick from before close
@@ -303,7 +268,7 @@
     if (open && !_prevMktOpen) {
       // Closed → Open transition. Snapshot the current poll cycle so
       // we can suppress the stale prior-session day_change_val until
-      // a fresh in-session poll lands. Force loadOnce() immediately
+      // a fresh in-session poll lands. Force _load() immediately
       // instead of waiting up to 30s for the next marketAwareInterval
       // tick — without this the strip flashes yesterday's frozen MTM
       // for the first 30s of the new session.
@@ -311,7 +276,7 @@
       dispHoldingsToday  = 0;
       cachedDelete('strip.frozen');
       _openTransitionStamp = _pollCycleStamp;
-      untrack(() => { loadOnce(); });
+      untrack(() => { _load(); });
     }
     _prevMktOpen = open;
     if (!open) return;

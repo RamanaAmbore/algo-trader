@@ -1182,6 +1182,12 @@
     // shape). The .value is the previously-fetched payload; nothing
     // here ever overrides the canonical broker fetch that runs in
     // parallel.
+    //
+    // TODO (next slice): migrate mp.positions + mp.holdings to
+    // positionsStore / holdingsStore from $lib/data/marketDataStores.svelte.js.
+    // PositionStrip already migrated (slice Z). MarketPulse deferred because
+    // it uses positions/holdings in many derived blocks across 5700 lines —
+    // that migration warrants its own focused slice.
     {
       const cPos = cachedRead('mp.positions');
       if (cPos?.value && Array.isArray(cPos.value)) positions = cPos.value;
