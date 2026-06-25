@@ -1603,6 +1603,18 @@
       font-size: 0.55rem;
       letter-spacing: -0.015em;
     }
+    /* Operator: "there is a lot of wasted space before and after cards,
+       navbar and footer on mobile. navbar and footer should fully take
+       the horizontal space available and sticky to viewport on mobile
+       and desktop". Mobile-density tightening — drops 8px per side on
+       navbar/content/footer + per-side card padding so the cards eat
+       the full viewport width. Navbar + footer already sticky via
+       position: sticky on .algo-navbar / .algo-footer (kept). */
+    .algo-nav-inner { padding: 0 0.25rem; }
+    .algo-content   { padding-left: 0.25rem; padding-right: 0.25rem; }
+    .algo-footer    { padding: 0 0.25rem; }
+    :global(.algo-status-card) { padding: 0.55rem 0.4rem; }
+    :global(.algo-card)        { padding: 0.55rem 0.4rem; }
   }
 
   /* Algo dark-theme overrides for classes shared with public pages */
