@@ -12,10 +12,19 @@
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { cachedRead, cachedWrite, TTL } from '$lib/data/persistentCache';
   import { liveLtp } from '$lib/data/quoteStream';
+  import { isNseOpen, isMcxOpen } from '$lib/marketHours';
 
   let positions = $state(/** @type {any[]} */ ([]));
   let holdings  = $state(/** @type {any[]} */ ([]));
   let funds     = $state(/** @type {any[]} */ ([]));
+  // Market-state tick — flips between 0/1/2/3 (no markets / NSE / MCX /
+  // both) when the session boundary crosses. The _liveDeltaByRow derived
+  // reads this to re-run on the boundary even when no other state has
+  // changed (otherwise we'd wait up to 30s for the next loadOnce poll
+  // before clearing the stale-tick delta after market close).
+  let _mktTick = $state(0);
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let _mktTimer = null;
 
   // Monotonic counter incremented after each successful 30s poll
   // completion. The tick-flash $effect depends ONLY on this counter,
@@ -110,8 +119,19 @@
     loadInstruments().catch(() => { /* fallback path handles this */ });
     loadOnce();
     teardown = marketAwareInterval(loadOnce, 30000);
+    // Watch the market-session boundary so _liveDeltaByRow can drop
+    // the stale-tick delta immediately on close (not 30s late).
+    _mktTick = (isNseOpen() ? 1 : 0) + (isMcxOpen() ? 2 : 0);
+    _mktTimer = setInterval(() => {
+      const next = (isNseOpen() ? 1 : 0) + (isMcxOpen() ? 2 : 0);
+      if (next !== _mktTick) _mktTick = next;
+    }, 30_000);
   });
-  onDestroy(() => { teardown?.(); flash.dispose(); });
+  onDestroy(() => {
+    teardown?.();
+    flash.dispose();
+    if (_mktTimer) clearInterval(_mktTimer);
+  });
 
   // P    = positions P&L lifetime (open + closed intraday).
   // M    = available margin summed across accounts.
@@ -145,7 +165,24 @@
     /** @type {Map<string, number>} */
     const m = new Map();
     const snap = _liveLtpSnap;
+    // Read _mktTick so the derived re-runs on the market open/close
+    // boundary (otherwise we'd wait up to 30s for loadOnce to pick it up).
+    void _mktTick;
+    // Operator: "are the position calculations are correct?" — outside
+    // market hours the SSE store holds the LAST tick from before close
+    // while broker.quote() returns today's close, so their per-row
+    // divergence sums to phantom P∆. Gate the delta per exchange:
+    // MCX rows during MCX hours (09:00–23:30 IST), NSE/BSE/NFO/BFO/CDS
+    // rows during NSE hours (09:15–15:30 IST).
+    const nseOpen = isNseOpen();
+    const mcxOpen = isMcxOpen();
+    const _appliesToRow = (/** @type {any} */ row) => {
+      const exch = String(row?.exchange || '').toUpperCase();
+      if (exch === 'MCX') return mcxOpen;
+      return nseOpen;
+    };
     for (const row of positions) {
+      if (!_appliesToRow(row)) continue;
       const sym  = String(row?.tradingsymbol || '').toUpperCase();
       const live = snap[sym];
       if (live == null) continue;
@@ -156,6 +193,7 @@
       m.set(key, (Number(live) - pollLtp) * qty);
     }
     for (const row of holdings) {
+      if (!_appliesToRow(row)) continue;
       const sym  = String(row?.tradingsymbol || '').toUpperCase();
       const live = snap[sym];
       if (live == null) continue;
@@ -174,30 +212,81 @@
     return _liveDeltaByRow.get(key) || 0;
   }
 
-  const positionsPnl = $derived.by(() => {
+  // Operator: "It should keep delta p as it was at the close of the
+  // market. It should be reset to zero when market opens. Similarly
+  // for all other numbers."
+  //
+  // Pattern: the 5 P&L-bearing derived sums (P, Pd, HDd, Hd, H) all
+  // shadow a display $state that:
+  //   - mirrors the live value during market hours;
+  //   - FREEZES (stops updating) at the moment markets close;
+  //   - RESETS to 0 at the moment markets re-open, then resumes mirroring.
+  //
+  // Margin / cash / utilisation cells are intentionally NOT in this
+  // pattern — they're broker balance-sheet fields that don't have a
+  // "day" concept, so they continue to track real-time across the
+  // session boundary.
+  //
+  // Note: on a fresh page load DURING off-hours, all five start at 0
+  // (no prior session state in this tab). When the next session opens,
+  // they zero out (no-op) and begin tracking. Reload across sessions
+  // does not persist the frozen value — that would need localStorage,
+  // which we don't yet wire (operator can request if needed).
+  let dispPositionsPnl   = $state(0);
+  let dispPositionsToday = $state(0);
+  let dispHoldingsToday  = $state(0);
+  let dispHoldingsTotal  = $state(0);
+  let dispHoldingsValue  = $state(0);
+  let _prevMktOpen       = $state(false);
+
+  const _livePositionsPnl = $derived.by(() => {
     let s = 0;
     for (const p of positions) s += Number(p?.pnl || 0) + _delta(p);
     return s;
   });
-  const positionsToday = $derived.by(() => {
+  const _livePositionsToday = $derived.by(() => {
     let s = 0;
     for (const p of positions) s += Number(p?.day_change_val || 0) + _delta(p);
     return s;
   });
-  const holdingsToday = $derived.by(() => {
+  const _liveHoldingsToday = $derived.by(() => {
     let s = 0;
     for (const h of holdings)  s += Number(h?.day_change_val || 0) + _delta(h);
     return s;
   });
-  const holdingsTotal = $derived.by(() => {
+  const _liveHoldingsTotal = $derived.by(() => {
     let s = 0;
     for (const h of holdings)  s += Number(h?.pnl || 0) + _delta(h);
     return s;
   });
-  const holdingsValue = $derived.by(() => {
+  const _liveHoldingsValue = $derived.by(() => {
     let s = 0;
     for (const h of holdings)  s += Number(h?.cur_val || 0) + _delta(h);
     return s;
+  });
+
+  // Freeze-at-close / reset-at-open effect. Mirrors live → disp$ only
+  // while a market segment is open. On a closed → open transition,
+  // zeroes the display first (so the operator starts the new session
+  // from 0 rather than seeing yesterday's close).
+  $effect(() => {
+    void _mktTick;  // re-run on session-boundary
+    const open = isNseOpen() || isMcxOpen();
+    if (open && !_prevMktOpen) {
+      // Closed → Open: hard reset.
+      dispPositionsPnl   = 0;
+      dispPositionsToday = 0;
+      dispHoldingsToday  = 0;
+      dispHoldingsTotal  = 0;
+      dispHoldingsValue  = 0;
+    }
+    _prevMktOpen = open;
+    if (!open) return;  // FROZEN during closed hours
+    dispPositionsPnl   = _livePositionsPnl;
+    dispPositionsToday = _livePositionsToday;
+    dispHoldingsToday  = _liveHoldingsToday;
+    dispHoldingsTotal  = _liveHoldingsTotal;
+    dispHoldingsValue  = _liveHoldingsValue;
   });
   // Live cash — Kite's `avail.cash` (= live_balance) summed across
   // accounts. Falls back to `cash` if the backend hasn't surfaced
@@ -283,15 +372,15 @@
     // Read _pollCycleStamp to create a dependency on poll completions.
     // eslint-disable-next-line no-unused-expressions
     _pollCycleStamp;
-    flash.update('P',    positionsPnl);
+    flash.update('P',    dispPositionsPnl);
     flash.update('M',    marginTotal);
     flash.update('U',    utilPct);
     flash.update('Cp',   cashTotal);
     flash.update('Cash', liveCashTotal);
-    flash.update('Pd',   positionsToday);
-    flash.update('HDd',  holdingsToday);
-    flash.update('Hd',   holdingsTotal);
-    flash.update('H',    holdingsValue);
+    flash.update('Pd',   dispPositionsToday);
+    flash.update('HDd',  dispHoldingsToday);
+    flash.update('Hd',   dispHoldingsTotal);
+    flash.update('H',    dispHoldingsValue);
   });
 </script>
 
@@ -299,8 +388,8 @@
    aria-label="Open the dashboard — full positions, holdings, and funds grids">
   <span class="ps-agg" title="Positions P/L — open + closed intraday">
     <span class="ps-agg-k">P</span>
-    <span class={'ps-agg-v ' + (positionsPnl > 0 ? 'ps-pos' : positionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}>
-      {fmtMoney(positionsPnl)}
+    <span class={'ps-agg-v ' + (dispPositionsPnl > 0 ? 'ps-pos' : dispPositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}>
+      {fmtMoney(dispPositionsPnl)}
     </span>
   </span>
   <span class="ps-agg" title="Available margin — summed across accounts">
@@ -336,25 +425,25 @@
   </span>
   <span class="ps-agg" title="Positions Day delta — today's mark-to-market move on positions (day_change_val)">
     <span class="ps-agg-k ps-delta">P∆</span>
-    <span class={'ps-agg-v ' + (positionsToday > 0 ? 'ps-pos' : positionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}>
-      {fmtMoney(positionsToday)}
+    <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}>
+      {fmtMoney(dispPositionsToday)}
     </span>
   </span>
   <span class="ps-agg" title="Holdings Day delta — today's mark-to-market move on holdings (day_change_val)">
     <span class="ps-agg-k ps-delta">HD∆</span>
-    <span class={'ps-agg-v ' + (holdingsToday > 0 ? 'ps-pos' : holdingsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('HDd')}>
-      {fmtMoney(holdingsToday)}
+    <span class={'ps-agg-v ' + (dispHoldingsToday > 0 ? 'ps-pos' : dispHoldingsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('HDd')}>
+      {fmtMoney(dispHoldingsToday)}
     </span>
   </span>
   <span class="ps-agg" title="Holdings — total unrealised P/L from entry">
     <span class="ps-agg-k ps-delta">H∆</span>
-    <span class={'ps-agg-v ' + (holdingsTotal > 0 ? 'ps-pos' : holdingsTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Hd')}>
-      {fmtMoney(holdingsTotal)}
+    <span class={'ps-agg-v ' + (dispHoldingsTotal > 0 ? 'ps-pos' : dispHoldingsTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Hd')}>
+      {fmtMoney(dispHoldingsTotal)}
     </span>
   </span>
   <span class="ps-agg" title="Current holding value — sum of cur_val across holdings">
     <span class="ps-agg-k">H</span>
-    <span class={'ps-agg-v ps-cash ' + flash.classOf('H')}>{fmtMoney(holdingsValue)}</span>
+    <span class={'ps-agg-v ps-cash ' + flash.classOf('H')}>{fmtMoney(dispHoldingsValue)}</span>
   </span>
 </a>
 
