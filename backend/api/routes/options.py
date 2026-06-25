@@ -1570,7 +1570,6 @@ class OptionsController(Controller):
         # ── Tier-1/2/3 store for daily bars (interval="day") ─────────
         # Immutable once the day closes — serve from DB/memory cache
         # instead of re-hitting the broker on every cold open or deploy.
-        # Intraday intervals skip this path (Stage 2 work).
         if interval == "day":
             from datetime import date as _date
             from backend.api.persistence.ohlcv_store import get_or_fetch_daily
@@ -1599,6 +1598,53 @@ class OptionsController(Controller):
                 logger.warning(
                     f"options historical: ohlcv_store failed for {sym}/{resolved_exch}: "
                     f"{_store_exc} — falling through to broker"
+                )
+
+        # ── Tier-1/2/3 store for intraday bars (5/15/30/60-minute) ───
+        # Operator: "even chart data can go through refresh cycle."
+        # ChartWorkspace 1D / 1W views request intraday intervals and
+        # used to go direct to broker.historical_data. Now they walk
+        # the intraday_store per-date (memory → DB → broker) so the
+        # historical bars (yesterday and prior) hit cache + heal the
+        # DB; only today's bars (5-min TTL) ever touch the broker
+        # after the first warm.
+        #
+        # Per-day store calls dedup via the store's fetch lock, so
+        # concurrent operators on the same chart share one broker
+        # round-trip per date.
+        if interval in ("5minute", "15minute", "30minute", "60minute"):
+            from datetime import date as _date, timedelta as _td
+            from backend.api.persistence.intraday_store import get_or_fetch_intraday
+            resolved_exch = (exchange or "NFO").upper()
+            to_d_intra    = _date.today()
+            from_d_intra  = to_d_intra - _td(days=days)
+            try:
+                merged: list[HistoricalBar] = []
+                cur = from_d_intra
+                while cur <= to_d_intra:
+                    day_bars = await get_or_fetch_intraday(
+                        sym, resolved_exch, cur, interval=interval,
+                    )
+                    if day_bars:
+                        for b in day_bars:
+                            merged.append(HistoricalBar(
+                                ts=str(b["bar_ts"]),
+                                open=float(b["open"]),
+                                high=float(b["high"]),
+                                low=float(b["low"]),
+                                close=float(b["close"]),
+                                volume=int(b.get("volume", 0)),
+                            ))
+                    cur += _td(days=1)
+                if merged:
+                    result = HistoricalResponse(symbol=sym, instrument_token=None,
+                                                interval=interval, bars=merged)
+                    _hist_cache_put(cache_key, result, _HIST_CACHE_TTL_OK)
+                    return result
+            except Exception as _store_exc:
+                logger.warning(
+                    f"options historical: intraday_store failed for {sym}/{resolved_exch}/"
+                    f"{interval}: {_store_exc} — falling through to broker"
                 )
 
         # ── Account-fallback loop ─────────────────────────────────────
