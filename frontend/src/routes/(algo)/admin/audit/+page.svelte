@@ -316,10 +316,10 @@
   .audit-filters {
     display: flex; flex-wrap: wrap; gap: 0.55rem 0.8rem;
     align-items: flex-end;
-    padding: 0.7rem 0.9rem;
+    padding: 0.5rem 0.65rem;
     background: rgba(15, 23, 42, 0.45);
     border: 1px solid rgba(126, 151, 184, 0.18);
-    border-radius: 6px;
+    border-radius: 4px;
     margin-bottom: 0.7rem;
   }
   .audit-flbl {
@@ -337,7 +337,7 @@
   .audit-fbtns { display: flex; gap: 0.4rem; margin-left: auto; }
 
   .audit-error {
-    padding: 0.6rem 0.9rem;
+    padding: 0.5rem 0.65rem;
     background: rgba(248, 113, 113, 0.10);
     border: 1px solid rgba(248, 113, 113, 0.40);
     border-radius: 4px;
@@ -348,7 +348,7 @@
   .audit-table-wrap {
     overflow-x: auto;
     border: 1px solid rgba(126, 151, 184, 0.18);
-    border-radius: 6px;
+    border-radius: 4px;
   }
   .audit-table {
     width: 100%; border-collapse: collapse;

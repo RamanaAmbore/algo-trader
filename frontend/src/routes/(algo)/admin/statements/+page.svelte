@@ -299,7 +299,7 @@
 
 <style>
   .ms-error {
-    padding: 0.6rem 0.9rem;
+    padding: 0.5rem 0.65rem;
     background: rgba(248, 113, 113, 0.10);
     border: 1px solid rgba(248, 113, 113, 0.40);
     border-radius: 4px;
@@ -309,8 +309,8 @@
   }
 
   .ms-controls {
-    display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap;
-    margin-bottom: 0.9rem;
+    display: flex; gap: 0.6rem; align-items: flex-end; flex-wrap: wrap;
+    margin-bottom: 0.7rem;
   }
   .ms-field { display: flex; flex-direction: column; gap: 0.2rem; }
   .ms-field-lbl {
@@ -347,7 +347,7 @@
   .ms-table-wrap {
     overflow-x: auto;
     border: 1px solid rgba(126, 151, 184, 0.18);
-    border-radius: 6px;
+    border-radius: 4px;
     background: rgba(15, 23, 42, 0.30);
   }
   .ms-table {
@@ -357,7 +357,7 @@
   }
   .ms-table th {
     text-align: left;
-    padding: 0.45rem 0.7rem;
+    padding: 0.3rem 0.55rem;
     background: rgba(15, 23, 42, 0.65);
     color: #a3b9d0;
     font-size: 0.55rem;
@@ -369,7 +369,7 @@
   }
   .ms-table th.th-num { text-align: right; }
   .ms-table td {
-    padding: 0.4rem 0.7rem;
+    padding: 0.3rem 0.55rem;
     border-bottom: 1px solid rgba(126, 151, 184, 0.10);
   }
   .ms-table td.td-num    { text-align: right; font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }

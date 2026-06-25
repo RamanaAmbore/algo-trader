@@ -238,8 +238,8 @@
 
 <!-- Create / edit form (shown when showForm is true) -->
 {#if showForm}
-  <div class="algo-status-card p-4 mb-3" data-status="running">
-    <div class="flex items-center justify-between mb-3">
+  <div class="algo-status-card p-3 mb-3" data-status="running">
+    <div class="flex items-center justify-between mb-2">
       <h3 class="text-xs font-bold uppercase tracking-wider text-[#fbbf24]">
         {editingId == null ? 'New token' : `Edit token #${editingId}`}
       </h3>
@@ -337,7 +337,7 @@
       </div>
     </div>
 
-    <div class="flex gap-2 mt-3">
+    <div class="flex gap-2 mt-2">
       <button onclick={submitForm} disabled={submitting}
         class="text-[0.65rem] py-1 px-4 rounded border border-emerald-500/50 bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 font-semibold disabled:opacity-50">
         {submitting ? 'Saving…' : (editingId == null ? 'Create' : 'Save')}
@@ -347,7 +347,7 @@
 {/if}
 
 <!-- Tab row -->
-<div class="flex gap-1 mb-3">
+<div class="flex gap-1 mb-2">
   {#each /** @type {['condition'|'notify'|'action', string][]} */([['condition', 'Condition'], ['notify', 'Notify'], ['action', 'Action']]) as [key, label]}
     <button onclick={() => { activeTab = /** @type {'condition'|'notify'|'action'} */ (key); expandedId = null; }}
       class="px-3 py-1 text-xs font-medium border-b-2 transition-colors

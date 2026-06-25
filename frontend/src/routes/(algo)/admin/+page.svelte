@@ -561,7 +561,7 @@
   </span>
 </div>
 
-<div class="algo-status-card p-5 pt-4" data-status="inactive">
+<div class="algo-status-card p-3" data-status="inactive">
 
   {#if success}
     <div class="mb-3 p-2 rounded bg-green-500/15 text-green-400 text-xs border border-green-500/40">{success}</div>
@@ -572,8 +572,8 @@
 
   <!-- Create User Form -->
   {#if showCreate}
-    <div class="algo-status-card p-4 mb-4" data-status="running">
-      <h3 class="section-heading mb-3">New User</h3>
+    <div class="algo-status-card p-3 mb-3" data-status="running">
+      <h3 class="section-heading mb-2">New User</h3>
       <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
         <div><span class="field-label">Username</span><input bind:value={createForm.username} class="field-input" placeholder="login username" /></div>
         <div><span class="field-label">Password</span><input type="password" bind:value={createForm.password} class="field-input" placeholder="min 8 chars" /></div>
@@ -928,7 +928,7 @@
 
 {#if users.length > 0}
 <!-- ── Email Partners panel ─────────────────────────────────────────── -->
-<section class="email-panel algo-status-card p-5 pt-4 mt-4" data-status="inactive">
+<section class="email-panel algo-status-card p-3 mt-3" data-status="inactive">
   <!-- Header -->
   <div class="flex items-center justify-between mb-1 gap-2 flex-wrap">
     <h2 class="text-sm font-bold uppercase tracking-wider text-[#fbbf24] mb-0">Email Partners</h2>
@@ -939,7 +939,7 @@
       <DisclosureChevron open={showEmailHistory} />
     </button>
   </div>
-  <div class="border-b border-[rgba(251,191,36,0.25)] mb-4"></div>
+  <div class="border-b border-[rgba(251,191,36,0.25)] mb-3"></div>
 
   <!-- History panel -->
   {#if showEmailHistory}

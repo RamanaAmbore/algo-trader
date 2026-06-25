@@ -470,7 +470,7 @@
 
 <style>
   .hist-error {
-    padding: 0.6rem 0.9rem;
+    padding: 0.5rem 0.65rem;
     background: rgba(248, 113, 113, 0.10);
     border: 1px solid rgba(248, 113, 113, 0.40);
     border-radius: 4px;
@@ -527,7 +527,7 @@
   .hist-table-wrap {
     overflow-x: auto;
     border: 1px solid rgba(126, 151, 184, 0.18);
-    border-radius: 6px;
+    border-radius: 4px;
     background: rgba(15, 23, 42, 0.30);
     margin-bottom: 0.6rem;
   }
