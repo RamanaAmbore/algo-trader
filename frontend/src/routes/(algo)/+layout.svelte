@@ -721,7 +721,7 @@
       </div>
 
       <!-- Mobile -->
-      <div class="algo-nav-inner lg:hidden flex items-center justify-between h-12">
+      <div class="algo-nav-inner lg:hidden flex items-center justify-between h-10">
         <div class="flex items-center">
           <span class="algo-vert algo-vert-sm" aria-hidden="true">ALGO</span>
           <button onclick={() => goto('/about')} class="algo-brand">
@@ -918,7 +918,12 @@
     background-color: #080f1c;
     display: flex;
     flex-direction: column;
-    align-items: center;
+    /* align-items omitted — default is stretch, which lets .algo-card
+       fill the full cross-axis (viewport width). The prior `center`
+       value was vestigial from when .algo-card had a max-width; with
+       max-width removed, `center` caused iOS Safari to compute
+       .algo-card's width against its intrinsic content size rather
+       than the viewport, producing left/right gutters on mobile. */
   }
   /* Force the html + body background to the algo dark navy on every
      page that mounts this layout. Without this, the public-site
@@ -1612,7 +1617,9 @@
        position: sticky on .algo-navbar / .algo-footer (kept). */
     .algo-nav-inner { padding: 0 0.2rem; gap: 0.3rem; }
     .algo-content   { padding-left: 0.25rem; padding-right: 0.25rem; }
-    .algo-footer    { padding: 0 0.25rem; }
+    /* Footer: zero padding + tighter height so it sits flush at the
+       viewport bottom edge with no visible gutter. */
+    .algo-footer    { padding: 0; height: 1.3rem; }
     :global(.algo-status-card) { padding: 0.55rem 0.4rem; }
     :global(.algo-card)        { padding: 0.55rem 0.4rem; }
     /* Navbar item spacing — original margins were calibrated for the
@@ -1625,6 +1632,10 @@
        amber glow is already unambiguous brand identity. Saves ~75px
        of horizontal real estate for the right-side chips. */
     .algo-user-pill    { padding: 0.18rem 0.35rem; margin-right: 0.15rem; }
+    /* Mobile navbar height is h-10 (40px), not h-12 (48px) like desktop.
+       Update all CSS that was calibrated against the 48px/3rem baseline. */
+    :global(.page-header) { top: 2.5rem; }
+    :global(.algo-viewport:has(.ps-strip) .page-header) { top: calc(2.5rem + 1.5rem); }
   }
   @media (max-width: 480px) {
     .algo-brand-name { display: none; }
