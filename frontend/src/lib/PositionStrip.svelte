@@ -449,19 +449,30 @@
       </span>
     </span>
   {/if}
-  <!-- Audit fix (L-5) — single-letter `C` and `Cl` were indistinguishable
-       without hover (no tooltip access on mobile). Renamed to `C+`
-       (cash including option-tied premium, i.e. "augmented" cash) and
-       `Cash` (just live cash). The `+` is a visual cue that this is
-       the augmented value; the parent's tooltip explains the math. -->
-  <span class="ps-agg" title="Cash+ — live cash + premium tied up in long options (= cash you'd have if every long option were closed at its entry premium). The + indicates the augmented value.">
-    <span class="ps-agg-k">C+</span>
+  <!-- Operator: "show c and ca in nav strip… in place of c and cash
+       which is confusing". Canonical labels matching industry vocab
+       (Bloomberg PRTU, IBKR Portfolio, Sensibull positions tab):
+         C  = Total Cash. The full cash position the operator OWNS,
+              including premium already paid out for long options held.
+              Math: CA + (avg_price × qty for every long CE/PE).
+         CA = Cash Available. What the operator can deploy RIGHT NOW
+              without closing any position. Comes from each broker's
+              avail.cash (Kite + Dhan + Groww via @for_all_accounts) —
+              Kite's value already nets realized P&L and option-premium
+              debits; Dhan + Groww adapters fold the same fields into
+              the canonical `cash` shape.
+       Per-broker drift in how realized M2M is folded into avail.cash
+       is documented in the audit memo; if the operator sees the sum
+       diverge from broker apps, the Dhan/Groww adapter math is the
+       first place to look. -->
+  <span class="ps-agg" title="Total Cash — Cash Available + premium tied up in long options (= cash you'd have if every long option were closed at its entry premium).">
+    <span class="ps-agg-k">C</span>
     <span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cp')}>
       {fmtMoney(cashTotal)}
     </span>
   </span>
-  <span class="ps-agg" title="Cash — current live cash balance after option premium debits (sum across accounts)">
-    <span class="ps-agg-k">Cash</span>
+  <span class="ps-agg" title="Cash Available — deployable cash right now, summed across Kite + Dhan + Groww accounts. Already nets realized P&L, premium debits, and blocked margin per the broker's books.">
+    <span class="ps-agg-k">CA</span>
     <span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cash')}>
       {fmtMoney(liveCashTotal)}
     </span>
