@@ -10,7 +10,7 @@
   import { aggCompact } from '$lib/format';
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
-  import { cachedRead, cachedWrite, TTL } from '$lib/data/persistentCache';
+  import { cachedRead, cachedWrite, cachedDelete, TTL } from '$lib/data/persistentCache';
   import { liveLtp } from '$lib/data/quoteStream';
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
 
@@ -126,6 +126,28 @@
       const next = (isNseOpen() ? 1 : 0) + (isMcxOpen() ? 2 : 0);
       if (next !== _mktTick) _mktTick = next;
     }, 30_000);
+    // Restore frozen values from localStorage when the page mounts
+    // outside market hours. The freeze/reset $effect writes the
+    // current disp$ values to 'strip.frozen' on every live update
+    // during open hours, so the most recent write is always the
+    // last live state before close. On a fresh-tab mount during
+    // overnight / weekend / pre-market window, the operator sees
+    // the same closing P&L view they had at the end of the prior
+    // session. The Closed → Open transition handler clears the
+    // cache (so we don't leak yesterday's frozen values into
+    // today's session).
+    const open = isNseOpen() || isMcxOpen();
+    if (!open) {
+      const cached = cachedRead('strip.frozen');
+      if (cached?.value && typeof cached.value === 'object') {
+        const v = cached.value;
+        dispPositionsPnl   = Number(v.pnl       || 0);
+        dispPositionsToday = Number(v.posToday  || 0);
+        dispHoldingsToday  = Number(v.hldToday  || 0);
+        dispHoldingsTotal  = Number(v.hldTotal  || 0);
+        dispHoldingsValue  = Number(v.hldValue  || 0);
+      }
+    }
   });
   onDestroy(() => {
     teardown?.();
@@ -267,8 +289,16 @@
 
   // Freeze-at-close / reset-at-open effect. Mirrors live → disp$ only
   // while a market segment is open. On a closed → open transition,
-  // zeroes the display first (so the operator starts the new session
-  // from 0 rather than seeing yesterday's close).
+  // zeroes the display (operator starts the new session from 0) and
+  // also clears the localStorage snapshot so a tab reload mid-session
+  // doesn't restore yesterday's frozen values.
+  //
+  // Persistence: while open, the disp$ values are written to
+  // 'strip.frozen' via the persistent-cache helper (200ms debounced).
+  // On the operator's next tab mount during overnight / weekend, the
+  // onMount restore (above) reads this back and seeds the disp$ vars
+  // — so the strip shows the same closing P&L the operator left,
+  // not zeros.
   $effect(() => {
     void _mktTick;  // re-run on session-boundary
     const open = isNseOpen() || isMcxOpen();
@@ -279,6 +309,7 @@
       dispHoldingsToday  = 0;
       dispHoldingsTotal  = 0;
       dispHoldingsValue  = 0;
+      cachedDelete('strip.frozen');
     }
     _prevMktOpen = open;
     if (!open) return;  // FROZEN during closed hours
@@ -287,6 +318,18 @@
     dispHoldingsToday  = _liveHoldingsToday;
     dispHoldingsTotal  = _liveHoldingsTotal;
     dispHoldingsValue  = _liveHoldingsValue;
+    // Persist for cross-reload survival. TTL is effectively 7 days
+    // (TTL.day × 7 falls back to the long-tail of TTL bucket math —
+    // anything longer than a normal market gap is fine). The
+    // Closed → Open transition above clears the entry so we never
+    // serve stale day-old frozen values into a fresh session.
+    cachedWrite('strip.frozen', {
+      pnl:      dispPositionsPnl,
+      posToday: dispPositionsToday,
+      hldToday: dispHoldingsToday,
+      hldTotal: dispHoldingsTotal,
+      hldValue: dispHoldingsValue,
+    }, TTL.day * 7);
   });
   // Live cash — Kite's `avail.cash` (= live_balance) summed across
   // accounts. Falls back to `cash` if the backend hasn't surfaced
