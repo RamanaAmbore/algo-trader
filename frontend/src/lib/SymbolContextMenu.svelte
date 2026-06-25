@@ -10,6 +10,10 @@
   // Actions emitted:
   //   place-order  — parent should open SymbolPanel
   //   chart        — parent should open ChartModal
+  //   close        — parent should open SymbolPanel pre-seeded with the
+  //                  reverse-side / close-position context (slice AV
+  //                  audit fix — most time-critical action used to need
+  //                  3+ clicks; now one right-click)
   //   orders       — navigate to /orders?symbol=<sym>
   //   log          — parent should open ActivityLogModal
   //
@@ -25,17 +29,31 @@
    *   exchange?: string,
    *   x: number,
    *   y: number,
+   *   currentQty?: number,
    *   onClose: () => void,
    *   onAction?: (action: string, symbol: string, exchange: string) => void,
    * }} */
   let {
-    symbol   = '',
-    exchange = '',
-    x        = 0,
-    y        = 0,
+    symbol     = '',
+    exchange   = '',
+    x          = 0,
+    y          = 0,
+    /** Pass the row's signed qty so the menu can show "Close" only on
+     * rows that actually have an open position. Pages that don't track
+     * per-row qty (e.g. a watchlist click) can leave this at 0 — the
+     * Close item simply doesn't render. */
+    currentQty = 0,
     onClose,
     onAction = null,
   } = $props();
+
+  // Direction label for the Close menu item — long positions buy back
+  // via SELL, short positions buy back via BUY. Operator's mental model
+  // is "what side do I press to flatten this row".
+  const _closeLabel = $derived(
+    Number(currentQty) > 0 ? 'Close (sell)' :
+    Number(currentQty) < 0 ? 'Close (buy)'  : ''
+  );
 
   /** @type {HTMLElement | null} */
   let menuEl = $state(null);
@@ -92,6 +110,12 @@
   <button class="ctx-item" role="menuitem" onclick={() => _fire('place-order')}>
     Place order
   </button>
+  {#if _closeLabel}
+    <button class="ctx-item ctx-item-danger" role="menuitem"
+            onclick={() => _fire('close')}>
+      {_closeLabel}
+    </button>
+  {/if}
   <button class="ctx-item" role="menuitem" onclick={() => _fire('chart')}>
     Chart
   </button>
@@ -116,5 +140,13 @@
     color: #fbbf24;
     text-transform: uppercase;
     user-select: none;
+  }
+  /* Close-position action — red accent so the operator sees it as
+     destructive vs the neutral place-order / chart / orders items. */
+  :global(.ctx-item.ctx-item-danger) {
+    color: #f87171;
+  }
+  :global(.ctx-item.ctx-item-danger:hover) {
+    background: rgba(248, 113, 113, 0.10);
   }
 </style>

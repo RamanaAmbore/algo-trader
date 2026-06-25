@@ -1,5 +1,7 @@
 <script>
-  import { onMount, onDestroy, getContext } from 'svelte';
+  import { onMount, onDestroy, getContext, untrack } from 'svelte';
+  import { goto } from '$app/navigation';
+  import { page } from '$app/state';
   import { nowStamp, logTimeIst, formatDualTz, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
@@ -53,6 +55,39 @@
   // jumping to /charts) reads the same recent symbol.
   $effect(() => { if (_entrySymbol) setRecentSymbol(_entrySymbol); });
   $effect(() => { if (_entryAccount) setRecentAccount(_entryAccount); });
+
+  // ── URL state sync (slice AV) ─────────────────────────────────────
+  // Persist ?symbol=…&exchange=… so the operator can bookmark
+  // /orders?symbol=BANKNIFTY26JUN50000CE&exchange=NFO or share it from
+  // an alert. UX audit item #7. Mirrors /charts pattern. One-shot read
+  // on mount; sync via $effect on change.
+  if (typeof window !== 'undefined') {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const s = (sp.get('symbol') || '').trim();
+      if (s) _entrySymbol = s;
+      const x = (sp.get('exchange') || '').toUpperCase().trim();
+      if (x) _entryExchange = x;
+    } catch {}
+  }
+
+  $effect(() => {
+    const sym  = _entrySymbol;
+    const exch = _entryExchange;
+    untrack(() => {
+      try {
+        const url = new URL(window.location.href);
+        if (sym) url.searchParams.set('symbol', sym);
+        else     url.searchParams.delete('symbol');
+        if (exch) url.searchParams.set('exchange', exch);
+        else      url.searchParams.delete('exchange');
+        const next = url.pathname + (url.search ? url.search : '');
+        if (next !== page.url.pathname + page.url.search) {
+          goto(next, { replaceState: true, noScroll: true, keepFocus: true });
+        }
+      } catch {}
+    });
+  });
   // Default to 'chain' — basket-building option chain is the most-used
   // surface per operator. Ticket / Command are one click away.
   // Operator: "order ticket should be first tab and chain should be
@@ -118,11 +153,12 @@
   // inline shell handles fresh placement; this separate modal handles
   // single-target modify / repeat.
   let orderTicketProps = $state(/** @type {any|null} */(null));
-  /** @type {{ symbol: string, exchange: string, x: number, y: number } | null} */
+  /** @type {{ symbol: string, exchange: string, x: number, y: number, currentQty?: number } | null} */
   let _ctxMenu = $state(null);
-  /** @type {'place-order' | 'chart' | 'log' | null} */ let _ctxAction = $state(null);
+  /** @type {'place-order' | 'chart' | 'log' | 'close' | null} */ let _ctxAction = $state(null);
   /** @type {string} */ let _ctxSym  = $state('');
   /** @type {string} */ let _ctxExch = $state('');
+  /** @type {number} */ let _ctxQty  = $state(0);
   let unsub;
   const algoStatus = getContext('algoStatus');
   const isDemo = $derived(algoStatus.isDemo);
@@ -495,10 +531,12 @@
     exchange={_ctxMenu.exchange}
     x={_ctxMenu.x}
     y={_ctxMenu.y}
+    currentQty={_ctxMenu.currentQty ?? 0}
     onClose={() => { _ctxMenu = null; }}
     onAction={(action, sym, exch) => {
       _ctxSym  = sym;
       _ctxExch = exch;
+      _ctxQty  = _ctxMenu?.currentQty ?? 0;
       _ctxAction = /** @type {any} */ (action);
       _ctxMenu = null;
     }}
@@ -517,6 +555,21 @@
   <SymbolPanel
     symbol={_ctxSym}
     exchange={_ctxExch}
+    onSubmit={() => {}}
+    onClose={() => { _ctxAction = null; }}
+  />
+{/if}
+
+<!-- Close-position flow — slice AV audit fix. Right-click on a
+     row with non-zero qty → "Close (sell)" / "Close (buy)" menu
+     item → opens SymbolPanel in close-action mode with the held
+     qty pre-seeded. Operator-saved clicks: 3 → 1. -->
+{#if _ctxAction === 'close'}
+  <SymbolPanel
+    symbol={_ctxSym}
+    exchange={_ctxExch}
+    action="close"
+    currentQty={_ctxQty}
     onSubmit={() => {}}
     onClose={() => { _ctxAction = null; }}
   />

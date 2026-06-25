@@ -7,6 +7,7 @@
 
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
+  import { page } from '$app/state';
   import { authStore, nowStamp, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
@@ -233,6 +234,47 @@
    *  Multi-select — operator can view candidates from multiple expiries
    *  simultaneously. The strategy endpoint now accepts cross-expiry baskets. */
   let selectedExpiries = $state([]);
+
+  // ── URL state sync (slice AV) ─────────────────────────────────────
+  // Persist (underlying, expiry) to ?u=...&e=YYYY-MM-DD,YYYY-MM-DD so the
+  // operator can bookmark or share a scoped view, and jumping away then
+  // back via the browser's Back button restores the same scope. Mirrors
+  // the pattern in /charts (commit eaa9a91d) and addresses UX audit
+  // item #7. sessionStorage is kept for the rich snapshot (the URL only
+  // carries the two filter axes, not the heavy data cache).
+  //
+  // One-shot read on mount: seed from URL params if present. Any subsequent
+  // operator change to selectedUnderlying / selectedExpiries fires the
+  // sync $effect below which goto({replaceState: true}) the new URL —
+  // doesn't push a history entry on every picker click.
+  onMount(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const u = (sp.get('u') || '').toUpperCase().trim();
+      if (u) selectedUnderlying = u;
+      const e = (sp.get('e') || '').trim();
+      if (e) selectedExpiries = e.split(',').map(x => x.trim()).filter(Boolean);
+    } catch {}
+  });
+
+  $effect(() => {
+    // Track both pieces of state.
+    const u = selectedUnderlying;
+    const es = selectedExpiries.slice();
+    untrack(() => {
+      try {
+        const url = new URL(window.location.href);
+        if (u) url.searchParams.set('u', u);
+        else   url.searchParams.delete('u');
+        if (es.length) url.searchParams.set('e', es.join(','));
+        else           url.searchParams.delete('e');
+        const next = url.pathname + (url.search ? url.search : '');
+        if (next !== page.url.pathname + page.url.search) {
+          goto(next, { replaceState: true, noScroll: true, keepFocus: true });
+        }
+      } catch {}
+    });
+  });
   /** @type {Record<string, boolean>} `${account}|${symbol}` → enabled flag.
    * Composite key so the same option symbol in two broker accounts gets
    * an independent checkbox + isn't double-counted in P&L. */
