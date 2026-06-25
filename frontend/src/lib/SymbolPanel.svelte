@@ -337,10 +337,60 @@
   // Seed the host's binding from the resolved default on first render.
   $effect(() => { if (activeTab === undefined) activeTab = _activeTabInternal; });
   const _activeTab = $derived(activeTab || _activeTabInternal);
+
+  // Context-symbol remembered for tab swaps. Operator: "when you press
+  // chain, the symbol change to root. when you press ticket, it should
+  // show the actual symbol from the context".
+  //
+  // Behaviour:
+  //   - Chain tab active → _localSymbol shows the ROOT (parsed prefix,
+  //     e.g. GOLDM from GOLDM26JUN148000CE). Chain is a browse-by-family
+  //     surface so the picker reflects "which family am I scanning".
+  //   - Ticket tab active → _localSymbol shows the CONTRACT from
+  //     context (the full tradingsymbol the operator opened the modal
+  //     with, e.g. GOLDM26JUN148000CE). Ticket is a place-the-order
+  //     surface so the picker reflects "which exact contract am I
+  //     trading".
+  //
+  // _contextSymbol stores the contract; we recompute the root from it
+  // via parseRoot() so we never have to round-trip through the parent.
+  // svelte-ignore state_referenced_locally
+  let _contextSymbol = $state(String($state.snapshot(symbol) || '').toUpperCase());
+  function _parseRoot(/** @type {string} */ s) {
+    if (!s) return '';
+    const up = String(s).toUpperCase();
+    // Match the same shapes parse_tradingsymbol() handles backend-side:
+    // monthly options + futures + weekly options. The root is the
+    // alpha prefix before the date/strike token.
+    const m = up.match(/^([A-Z&]+)\d/);
+    return m ? m[1] : up;
+  }
+
   function _setActiveTab(/** @type {'ticket'|'chain'} */ id) {
     _activeTabInternal = id;
     activeTab = id;
+    // Tab swap drives the picker's displayed value per the rule above.
+    // We don't push this back to the host via onSymbolChange — it's a
+    // pure within-modal display swap. The Chain tab's internal root +
+    // expiry state still derives from this _localSymbol.
+    if (id === 'chain') {
+      _localSymbol = _parseRoot(_contextSymbol || _localSymbol);
+    } else if (id === 'ticket') {
+      // Restore the context contract if we still have one; otherwise
+      // leave _localSymbol alone (operator may have picked a different
+      // contract via Chain → +CE).
+      if (_contextSymbol) _localSymbol = _contextSymbol;
+    }
   }
+  // Keep _contextSymbol in sync when the parent passes a new contract
+  // (row click, chain pick, etc.). Only treat it as a "context" change
+  // when it's actually a contract (matches the parser's prefix-digit
+  // shape) — a bare root like "GOLDM" from a Chain pick shouldn't
+  // overwrite the previously-remembered contract.
+  $effect(() => {
+    const s = String(symbol || '').toUpperCase();
+    if (s && /\d/.test(s)) _contextSymbol = s;
+  });
 
   // Tab-activation refresh bumps. Operator request: "when chain tab is
   // pressed, the chain details need to be refreshed. when order ticket
