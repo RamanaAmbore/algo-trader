@@ -1321,10 +1321,9 @@ class OptionsController(Controller):
                 logger.warning(
                     f"chain-quotes quote() failed for {und}/{exp}: {e}")
 
-        def _best(book: list, side: str) -> float | None:
+        def _best(book: list) -> float | None:
             """Top-of-book price from a depth.buy / depth.sell list.
-            Returns None when the depth array is empty (illiquid /
-            pre-market) so the UI can fall back to a placeholder."""
+            Returns None when every level is empty/zero."""
             for level in (book or []):
                 p = level.get("price")
                 if p not in (None, 0, 0.0):
@@ -1339,10 +1338,24 @@ class OptionsController(Controller):
         for qk, (strike, side) in key_meta.items():
             q = quote_resp.get(qk) or {}
             depth = q.get("depth") or {}
-            book_by_strike[strike][side]["bid"] = _best(depth.get("buy"),
-                                                        "buy")
-            book_by_strike[strike][side]["ask"] = _best(depth.get("sell"),
-                                                        "sell")
+            bid = _best(depth.get("buy"))
+            ask = _best(depth.get("sell"))
+            # LTP fallback — when the depth array is empty (illiquid PE
+            # strikes especially have this on RELIANCE / index options
+            # outside the front 5 strikes), surface last_price as a
+            # single-value approximation for both bid and ask instead
+            # of leaving the cell as "—". Operator: "in chain, bid/ask
+            # prices for PE side not getting updated" — the broker was
+            # returning ltp but no depth, so the cell rendered blank.
+            # last_price > 0 is the gate so a true no-quote still
+            # shows "—".
+            if bid is None or ask is None:
+                lp = float(q.get("last_price") or 0.0)
+                if lp > 0:
+                    if bid is None: bid = lp
+                    if ask is None: ask = lp
+            book_by_strike[strike][side]["bid"] = bid
+            book_by_strike[strike][side]["ask"] = ask
 
         rows = [
             ChainQuoteRow(
