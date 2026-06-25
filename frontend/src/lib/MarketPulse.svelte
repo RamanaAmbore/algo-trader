@@ -21,14 +21,8 @@
   import {
     fetchWatchlists, fetchWatchlist, createWatchlist,
     deleteWatchlist, renameWatchlist, addWatchlistItem, removeWatchlistItem,
-    fetchWatchlistQuotes,
-    fetchPositions, fetchHoldings, fetchAccounts, fetchFunds, batchQuote,
-    fetchSparklines,
+    fetchPositions, fetchHoldings, fetchAccounts, batchQuote,
   } from '$lib/api';
-  import {
-    FO_QUOTE_KEYS, MIDCAP_QUOTE_KEYS, SMLCAP_QUOTE_KEYS,
-    INDICES_QUOTE_KEYS, LARGECAP_QUOTE_KEYS, symbolFromQuoteKey,
-  } from '$lib/data/indexConstituents';
   import { visibleInterval, connStatus, authStore, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
@@ -54,7 +48,10 @@
   import { fetchSettings } from '$lib/api';
   import { liveLtp, streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
   import { bookChanged } from '$lib/data/bookChanged';
-  import { cachedRead, cachedWrite, cachedDelete, TTL } from '$lib/data/persistentCache';
+  import {
+    positionsStore, holdingsStore, fundsStore,
+    moversStore, activeListsStore, watchQuotesStore, sparklinesStore,
+  } from '$lib/data/marketDataStores.svelte.js';
   import { resolveUnderlying, INDEX_LTP_KEY, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
   import CollapseButton from '$lib/CollapseButton.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
@@ -111,14 +108,18 @@
   // `watchQuotes` stays a flat itemId→quote map (item ids are
   // globally unique) populated by unioning the per-list /quotes
   // responses.
-  let activeLists = $state(/** @type {any[]} */ ([]));
-  let watchQuotes = $state(/** @type {Record<number, any>} */ ({}));
+  // activeLists / watchQuotes / positions / holdings / funds / movers /
+  // sparklines are now three-tier stores (slice AB). $derived reads are
+  // reactive and pre-populated from localStorage on module init, so the
+  // grids paint with cached data before any network fetch completes.
+  const activeLists = $derived(activeListsStore.value ?? []);
+  const watchQuotes = $derived(watchQuotesStore.value ?? /** @type {Record<number, any>} */ ({}));
   // "Target" list for add / rename / delete operations. Defaults to
   // the first selected list; updated when the operator clicks a tab
   // (set focus AND toggle inclusion in one click).
   let focusedListId = $state(/** @type {number | null} */ (null));
-  let positions   = $state(/** @type {any[]} */ ([]));
-  let holdings    = $state(/** @type {any[]} */ ([]));
+  const positions   = $derived(positionsStore.value ?? []);
+  const holdings    = $derived(holdingsStore.value  ?? []);
   // Pulse quote bag — bundles BOTH option-underlying quotes (keyed
   // by logical underlying name, each value carries a `_resolved`
   // info block from resolveUnderlying) AND contract quotes (keyed
@@ -470,7 +471,7 @@
     const sig = [...activeIds].sort((a, b) => a - b).join(',');
     if (sig === _lastActiveIdsSig) return;
     _lastActiveIdsSig = sig;
-    if (sig === '') { activeLists = []; return; }
+    if (sig === '') { activeListsStore.set([]); return; }
     loadActive();
   });
 
@@ -486,7 +487,7 @@
   // row with `_moverDirection: winners|losers`); the Show filter
   // exposes the two directions as separate toggles so the operator
   // can hide one side without losing the other.
-  let movers     = $state(/** @type {any[]} */ ([]));
+  const movers    = $derived(moversStore.value ?? []);
   let _moversWarnLast = 0;          // rate-limit movers-fetch warn to once per 60 s
   let showMovers = $state(true);  // legacy umbrella — true iff EITHER direction is on
   let showWinners = $state(true);
@@ -637,16 +638,11 @@
   let positionsSummary = $state(/** @type {any[]} */ ([]));
   let holdingsSummary  = $state(/** @type {any[]} */ ([]));
   // Funds (per-account margins) — loaded only when showFunds is true.
-  let funds = $state(/** @type {any[]} */ ([]));
+  const funds     = $derived(fundsStore.value ?? []);
 
-  let sparklines = $state(/** @type {Record<string, number[]>} */ ({}));
-  // Guard that prevents the active-universe prune from running on the
-  // very first loadSparklines() call. On mount, unifiedRows may be
-  // partially populated (e.g. watchlist loaded but positions not yet),
-  // so a prune would incorrectly drop position sparklines that were
-  // just restored from the persistent cache. Subsequent calls (the 60s
-  // cadence) run the prune normally once this flag is true.
-  let _firstSparkDone = false;
+  const sparklines = $derived(sparklinesStore.value ?? /** @type {Record<string, number[]>} */ ({}));
+  // _firstSparkDone is now tracked inside sparklinesStore's fetcher
+  // (the _firstSparkFetched module-level flag in marketDataStores).
   // Local $state mirror of the liveLtp store — keeps the sparkline
   // cellRenderer and the LTP override logic inside buildUnified readable
   // without importing a store subscription into every call-site. Updated
@@ -1087,6 +1083,10 @@
   let ticketProps     = $state(/** @type {any} */ (null));
   let realAccounts    = $state(/** @type {string[]} */ ([]));
 
+  // loadSparklines — builds the pairs list from unifiedRows and delegates
+  // to sparklinesStore (slice AB). Chunking, prune, and TTL.day write-back
+  // all live inside the store's fetcher. The first-call prune guard is
+  // tracked via _firstSparkFetched in marketDataStores.svelte.js.
   async function loadSparklines() {
     const pairs = [];
     const seen = new Set();
@@ -1101,45 +1101,8 @@
       }
     }
     if (!pairs.length) return;
-    // Backend caps the batch at 100 symbols. /pulse routinely exceeds
-    // that (positions + holdings + watchlist + movers + pinned), so
-    // chunk into ≤100-symbol requests.
-    const CHUNK = 100;
     try {
-      for (let i = 0; i < pairs.length; i += CHUNK) {
-        const slice = pairs.slice(i, i + CHUNK);
-        const res = await fetchSparklines(slice, 5);
-        if (res?.data && typeof res.data === 'object') {
-          sparklines = { ...sparklines, ...res.data };
-        }
-      }
-      // Active-universe prune — operator: "as the pulse symbols change,
-      // tick data which is not relevant should be removed from db and
-      // cache also". Symbols that have rotated out of the current
-      // unifiedRows set (closed positions, removed from watchlist,
-      // movers rolled over, pinned changes) are dropped from BOTH the
-      // in-memory sparklines map AND localStorage so the cache never
-      // grows unbounded. `seen` was built above from unifiedRows.
-      //
-      // Skipped on the FIRST call (_firstSparkDone=false) because
-      // unifiedRows may be only partially populated at mount time (e.g.
-      // watchlist rows arrived but positions not yet). A prune on a
-      // partial universe would drop position sparklines just restored
-      // from the persistent cache. Subsequent 60s-cadence calls always
-      // run the prune on a fully-settled universe.
-      if (_firstSparkDone) {
-        const activeSyms = new Set();
-        for (const p of pairs) activeSyms.add(p.tradingsymbol);
-        const pruned = /** @type {Record<string, number[]>} */ ({});
-        for (const sym in sparklines) {
-          if (activeSyms.has(sym)) pruned[sym] = sparklines[sym];
-        }
-        sparklines = pruned;
-      }
-      _firstSparkDone = true;
-      // Persist the (possibly pruned) set. Backend day-evicts
-      // independently; TTL.day matches that contract.
-      cachedWrite('mp.sparklines', sparklines, TTL.day);
+      await sparklinesStore.load(pairs);
     } catch (_) { /* non-fatal — sparklines are cosmetic */ }
   }
 
@@ -1173,42 +1136,11 @@
         if (Array.isArray(parsed) && parsed.length > 0) selectedShow = parsed;
       }
     } catch (_) { /* fall through to default seed */ }
-    // Paint from persistent cache BEFORE firing the network fetches.
-    // localStorage-backed; survives reload + deploy (operator: "the
-    // data is retained during deployment"). Each entry carries its
-    // own TTL — TTL.day for sparkline closes (static for the IST day),
-    // TTL.minute for positions/holdings (refreshed aggressively on
-    // mount anyway, the cache is only for instant paint of the grid
-    // shape). The .value is the previously-fetched payload; nothing
-    // here ever overrides the canonical broker fetch that runs in
-    // parallel.
-    //
-    // TODO (next slice): migrate mp.positions + mp.holdings to
-    // positionsStore / holdingsStore from $lib/data/marketDataStores.svelte.js.
-    // PositionStrip already migrated (slice Z). MarketPulse deferred because
-    // it uses positions/holdings in many derived blocks across 5700 lines —
-    // that migration warrants its own focused slice.
-    {
-      const cPos = cachedRead('mp.positions');
-      if (cPos?.value && Array.isArray(cPos.value)) positions = cPos.value;
-      const cHld = cachedRead('mp.holdings');
-      if (cHld?.value && Array.isArray(cHld.value)) holdings = cHld.value;
-      const cSpk = cachedRead('mp.sparklines');
-      if (cSpk?.value && typeof cSpk.value === 'object') sparklines = cSpk.value;
-      const cWq = cachedRead('mp.watchQuotes');
-      if (cWq?.value && typeof cWq.value === 'object') watchQuotes = cWq.value;
-      const cMov = cachedRead('mp.movers');
-      if (cMov?.value && Array.isArray(cMov.value)) movers = cMov.value;
-      // Pinned + Watch row data lives on activeLists (loaded via
-      // /api/watchlist/{id} per active id). Without caching it, the
-      // Pinned grid renders empty for ~200-500ms on every page-switch
-      // back to /pulse while the watchlist round-trip lands — even
-      // though positions/holdings/movers paint instantly from cache.
-      // Operator: "pulse is showing the pinned grid empty briefly
-      // while other grids are showing data with no delay".
-      const cLists = cachedRead('mp.activeLists');
-      if (cLists?.value && Array.isArray(cLists.value)) activeLists = cLists.value;
-    }
+    // Cache restoration is now handled automatically by the three-tier
+    // stores (slice AB). Each store pre-populates from localStorage
+    // on module init (see dataStore.svelte.js _initFromCache), so
+    // positions / holdings / funds / movers / activeLists / watchQuotes /
+    // sparklines are already non-empty before onMount fires.
     await tick();
     mountGrid();
 
@@ -1305,108 +1237,15 @@
   });
 
   async function loadFunds() {
-    try {
-      const r = await fetchFunds();
-      funds = (r?.rows || []).slice();
-    } catch (_) { /* nothing fatal */ }
+    await fundsStore.load();
   }
 
-  // Build the movers list from the three universe arrays (FO_QUOTE_KEYS /
-  // MIDCAP_QUOTE_KEYS / SMLCAP_QUOTE_KEYS) so /pulse and /dashboard share
-  // the SAME data source. Each row carries `_moverGroup` ('underlying' |
-  // 'midcap' | 'smallcap') so the grid can sort + label sub-sections
-  // identifiably. Backend caps batchQuote at 300 keys per request; we
-  // split into halves the same way dashboard does.
+  // Movers fetch now delegated to moversStore (slice AB). The full
+  // batchQuote + projection logic lives in marketDataStores.svelte.js
+  // so any other consumer can import the same singleton.
   async function loadMovers() {
     try {
-      // Four universes — INDICES (Nifty 50 / Bank / FinService / Midcap
-      // / Next50 / IT / Sensex / Bankex / VIX), LARGECAP (the F&O-
-      // eligible stocks), MIDCAP (Nifty Midcap 100), SMLCAP (Nifty
-      // Smallcap 100). The 'underlying' tab on Winners/Losers shows
-      // INDICES only; 'large_cap' shows the F&O stocks. Holdings tab
-      // works off the operator's holdings rows, not this mover fetch.
-      const idx = new Set(INDICES_QUOTE_KEYS);
-      const lcp = new Set(LARGECAP_QUOTE_KEYS);
-      const fo  = new Set(FO_QUOTE_KEYS);
-      const mid = new Set(MIDCAP_QUOTE_KEYS);
-      const sml = new Set(SMLCAP_QUOTE_KEYS);
-      const allKeys = [...new Set([...fo, ...mid, ...sml])];
-      // Backend caps batchQuote at 300 keys; our 3 universes total
-      // ~277 dedup so we fit in one call. Earlier two-half split lost
-      // the second batch silently when one of the parallel requests
-      // returned empty — the surviving FO_QUOTE_KEYS half is what
-      // produced the "everything tagged underlying" symptom.
-      const r = await batchQuote(allKeys);
-      /** @type {Record<string, any>} */
-      const byKey = {};
-      for (const it of (r?.items ?? [])) {
-        if (!it?.exchange || !it?.tradingsymbol) continue;
-        byKey[`${it.exchange}:${it.tradingsymbol}`] = it;
-      }
-      // Project into the shape buildUnified consumes (tradingsymbol /
-      // exchange / last_price / change_pct / previous_close) + a
-      // sub-group tag. Sub-group precedence: smallcap > midcap > F&O
-      // underlying. Many midcap / smallcap stocks ARE F&O-eligible, so
-      // larger-cap-wins ordering would absorb them all into "underlying"
-      // and leave the midcap / smallcap sections empty. Reversing means
-      // smallcap stocks land in smallcap, midcap-not-in-smallcap lands
-      // in midcap, and pure indices / large-cap-F&O land in underlying.
-      /** @type {any[]} */
-      const rows = [];
-      // 'underlying' = anything in the F&O universe (indices + F&O-
-      // eligible stocks). Many midcap/smallcap stocks are ALSO F&O-
-      // eligible, so we check the narrower universes first; everything
-      // else that's FO_QUOTE_KEYS falls into 'underlying'.
-      //
-      // Large Cap is tracked as a SEPARATE flag (_isLargeCap) rather
-      // than a single-value bucket because LARGECAP_QUOTE_KEYS is a
-      // subset of FO_QUOTE_KEYS — a single-string `_moverGroup` can't
-      // capture both memberships. The Underlying tab reads
-      // `_moverGroup === 'underlying'`; the Large Cap tab reads
-      // `_isLargeCap`. Operator can see the full FO universe under
-      // Underlying or drill into just the LC stocks via Large Cap.
-      const _groupFor = (key) =>
-        sml.has(key) ? 'smallcap'
-      : mid.has(key) ? 'midcap'
-      : fo.has(key)  ? 'underlying'
-      : null;
-      for (const [key, it] of Object.entries(byKey)) {
-        const group = _groupFor(key);
-        if (!group) continue;
-        const ltp = Number(it.ltp ?? it.last_price ?? 0);
-        let pct = Number(it.change_pct);
-        if (!isFinite(pct) || pct === 0) {
-          const close = Number(it.close ?? it.previous_close ?? 0);
-          if (close > 0 && ltp > 0) pct = ((ltp - close) / close) * 100;
-        }
-        if (!isFinite(pct) || pct === 0) continue;
-        rows.push({
-          tradingsymbol: symbolFromQuoteKey(key),
-          exchange:      it.exchange,
-          last_price:    ltp,
-          change_pct:    pct,
-          previous_close: Number(it.close ?? it.previous_close ?? 0) || null,
-          _moverGroup:   group,
-          // Large Cap = F&O stocks (FO underlyings minus indices) that
-          // are NOT also classified midcap or smallcap. Many F&O-
-          // eligible names (COFORGE, PERSISTENT, MPHASIS, BANDHANBNK…)
-          // sit in both the F&O largecap roster AND NIFTY_MIDCAP_100,
-          // so the raw `lcp.has(key)` flag tagged them as Large Cap on
-          // top of their natural midcap home — same stock showed in
-          // both tabs. Excluding mid + sml keeps the four mover tabs
-          // mutually exclusive: Underlying ⊕ Large Cap ⊕ Midcap ⊕
-          // Smallcap, each stock in exactly one bucket.
-          _isLargeCap:   lcp.has(key) && !mid.has(key) && !sml.has(key),
-          // Direction split: positive day-change = winners,
-          // negative = losers. Drives the new direction-major
-          // ordering inside the Movers section (winners block first,
-          // then losers block; each carries its own
-          // underlying / midcap / smallcap sub-grouping).
-          _moverDirection: pct >= 0 ? 'winners' : 'losers',
-        });
-      }
-      movers = rows;
-      if (rows.length) cachedWrite('mp.movers', rows, TTL.short);
+      await moversStore.load();
     } catch (e) {
       const _now = Date.now();
       if (_now - _moversWarnLast > 60_000) {
@@ -2196,76 +2035,43 @@
     } catch (e) { error = e.message; }
   }
 
+  // loadActive — fetches watchlist items for the current activeIds set
+  // and then fetches quotes. Delegates to activeListsStore (slice AB).
+  // When no lists are selected, empties both stores immediately via set().
   async function loadActive() {
     error = '';
     const ids = [...activeIds];
     if (ids.length === 0) {
-      activeLists = [];
-      watchQuotes = {};
-      cachedDelete('mp.activeLists');
+      activeListsStore.set([]);
+      watchQuotesStore.set({});
       return;
     }
     try {
-      const results = await Promise.all(
-        ids.map(id => fetchWatchlist(id).catch(() => null))
-      );
-      activeLists = results.filter(Boolean);
-      if (activeLists.length) cachedWrite('mp.activeLists', activeLists, TTL.minute);
+      await activeListsStore.load(ids);
       await loadQuotes();
     } catch (e) { error = e.message; }
   }
 
+  // loadQuotes — fetches per-item LTP map for the active lists.
+  // Delegates to watchQuotesStore (slice AB). Merge-not-replace
+  // semantics live inside the store's fetcher so partial fetches
+  // never blank Pinned-grid LTPs. The 700ms thunder-herd gate
+  // is kept here so the store dedup handles the skip cleanly.
   async function loadQuotes() {
     const ids = [...activeIds];
     if (ids.length === 0) {
-      watchQuotes = {};
+      watchQuotesStore.set({});
       return;
     }
-    // De-thundering-herd: skip this tick if loadPulse just ran. The
-    // backend is already handling /positions + /holdings + a /quote/
-    // batch from that pulse; piling N watchlist /quotes calls on top
-    // of the same network burst stalled the response on slower links.
-    // Watchlist data is still refreshed at most 5 s late vs the
-    // intent — operator can't perceive a sub-second skip.
+    // De-thundering-herd: skip this tick if loadPulse just ran.
     if (Date.now() - _lastPulseAt < 700) return;
     try {
-      const results = await Promise.all(
-        ids.map(id => fetchWatchlistQuotes(id).catch(() => null))
-      );
-      const map = /** @type {Record<number, any>} */ ({});
-      let latestRefreshed = '';
-      for (const r of results) {
-        if (!r) continue;
-        for (const q of (r.items || [])) map[q.item_id] = q;
-        if (r.refreshed_at && r.refreshed_at > latestRefreshed) {
-          latestRefreshed = r.refreshed_at;
-        }
-      }
-      // Merge into existing watchQuotes rather than replacing. The
-      // replace pattern blanked the Pinned/Watch grid LTPs every time
-      // a watchlist fetch returned partial / slow / failed — the row
-      // lookup `wq[it.id]` returned undefined and the grid painted
-      // LTP=0 even though seconds-old data was sitting in cache.
-      // Operator: "pinned ltp and other data is showing 0 when other
-      // grids are refreshed immediately". Prune entries whose item_id
-      // is no longer in any active list so the cache stays bounded.
-      const activeItemIds = new Set();
-      for (const r of results) {
-        if (!r) continue;
-        for (const q of (r.items || [])) activeItemIds.add(q.item_id);
-      }
-      for (const list of activeLists) {
-        for (const it of (list?.items || [])) activeItemIds.add(it.id);
-      }
-      const merged = { ...watchQuotes, ...map };
-      for (const id of Object.keys(merged)) {
-        if (!activeItemIds.has(Number(id)) && !activeItemIds.has(id)) {
-          delete merged[id];
-        }
-      }
-      watchQuotes = merged;
-      if (Object.keys(merged).length) cachedWrite('mp.watchQuotes', merged, TTL.short);
-      refreshedAt = latestRefreshed;
+      await watchQuotesStore.load(ids);
+      // Surface the store's last-fetch epoch as the toolbar timestamp so
+      // operators see when the quotes last refreshed. ISO string for
+      // consistency with the prior per-list `r.refreshed_at` format.
+      const ts = watchQuotesStore.lastFetch;
+      if (ts) refreshedAt = new Date(ts).toISOString();
       if (quoteFailStreak > 0) {
         quoteFailStreak = 0;
         if (/Quote refresh/.test(error)) error = '';
@@ -2340,25 +2146,23 @@
 
   async function loadPulse() {
     try {
-      // Capture per-feed failures so we can surface a banner instead
-      // of silently blanking the strip when the broker is in a bad
-      // state (e.g. positions endpoint returning 500 from a Groww
-      // recursion). Each .catch tags itself so the banner is precise
-      // about which feed is down.
+      // Fetch positions + holdings via the shared three-tier stores (slice AB).
+      // Per-feed error capture still needs the raw fetch result for the
+      // brokerErr banner, so we call the API directly here and push to
+      // the stores via .set() rather than routing through store.load() —
+      // the store's fetcher loses the per-feed error/summary context.
       let pErr = '', hErr = '';
       const [p, h] = await Promise.all([
         fetchPositions().catch((e) => { pErr = e?.message || 'positions unavailable'; return { rows: [], summary: [] }; }),
         fetchHoldings().catch((e)  => { hErr = e?.message || 'holdings unavailable';  return { rows: [], summary: [] }; }),
       ]);
       brokerErr = [pErr, hErr].filter(Boolean).join(' · ');
-      positions = (p?.rows || []).slice();
-      holdings  = (h?.rows || []).slice();
-      // Persist for instant paint on the next mount (page switch / reload
-      // / deploy). Only write when we actually got rows back — partial
-      // failures (broker error) leave whichever side succeeded cached and
-      // the other side untouched.
-      if (!pErr && positions.length) cachedWrite('mp.positions', positions, TTL.minute);
-      if (!hErr && holdings.length)  cachedWrite('mp.holdings',  holdings,  TTL.minute);
+      const p_rows = (p?.rows || []).slice();
+      const h_rows = (h?.rows || []).slice();
+      // Push to stores (writes Tier 1 + Tier 2). Only write on success
+      // so partial broker errors don't blank whichever side worked.
+      if (!pErr && p_rows.length) positionsStore.set(p_rows);
+      if (!hErr && h_rows.length) holdingsStore.set(h_rows);
       // Capture the backend's precomputed per-account summary rows
       // (used by the dashboard's summary grid). Excludes the TOTAL
       // synthetic row — we render that separately as pinnedBottomRowData.
@@ -2376,8 +2180,8 @@
       // poll below.
       if (accountPicker) {
         const accts = new Set();
-        for (const r of positions) if (r.account) accts.add(String(r.account));
-        for (const r of holdings)  if (r.account) accts.add(String(r.account));
+        for (const r of p_rows) if (r.account) accts.add(String(r.account));
+        for (const r of h_rows) if (r.account) accts.add(String(r.account));
         for (const a of _knownBrokerAccounts) accts.add(String(a));
         const sorted = [...accts].sort();
         availableAccounts = sorted;
@@ -2532,7 +2336,7 @@
           underlyingInfos.set(info.underlying_group, { ...info, _major: triggerMajor });
         }
       };
-      for (const r of positions) {
+      for (const r of p_rows) {
         const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
         const exch = r.exchange || 'NFO';
         if (sym) {
@@ -2540,7 +2344,7 @@
           contractKeys.add(`${exch}:${sym}`);
         }
       }
-      for (const r of holdings) {
+      for (const r of h_rows) {
         const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
         const exch = r.exchange || 'NSE';
         if (sym) {

@@ -43,7 +43,7 @@ export { TTL };
  * @template T
  * @param {{
  *   key: string,
- *   fetcher: () => Promise<any>,
+ *   fetcher: (args?: any) => Promise<any>,
  *   ttl?: number,
  *   parse?: (raw: any) => T,
  *   equals?: (a: T | null, b: T | null) => boolean,
@@ -63,6 +63,10 @@ export function createDataStore({ key, fetcher, ttl = TTL.minute, parse = (r) =>
   // ── In-flight dedup ───────────────────────────────────────────────
   /** @type {Promise<void> | null} */
   let _inflight = null;
+  // JSON-serialised args for the current in-flight request. Two
+  // concurrent load([1,2,3]) calls share the same Promise; a
+  // concurrent load([4,5]) with different args starts a fresh fetch.
+  let _inflightArgsKey = /** @type {string | undefined} */ (undefined);
 
   // ── Initialise from Tier 2 synchronously ──────────────────────────
   // Run once at module-evaluation time so every component that reads
@@ -78,11 +82,11 @@ export function createDataStore({ key, fetcher, ttl = TTL.minute, parse = (r) =>
   })();
 
   // ── Core fetch ───────────────────────────────────────────────────
-  async function _fetch() {
+  async function _fetch(args) {
     _loading = true;
     _error   = null;
     try {
-      const raw  = await fetcher();
+      const raw  = await fetcher(args);
       const next = parse(raw);
       // Write to Tier 2 before updating state so a hypothetical render
       // during the microtask flush sees both consistent.
@@ -103,8 +107,9 @@ export function createDataStore({ key, fetcher, ttl = TTL.minute, parse = (r) =>
         : 'Fetch failed';
       // Leave _value at last-good — stale-while-error semantics.
     } finally {
-      _loading  = false;
-      _inflight = null;
+      _loading         = false;
+      _inflight        = null;
+      _inflightArgsKey = undefined;
     }
   }
 
@@ -113,16 +118,36 @@ export function createDataStore({ key, fetcher, ttl = TTL.minute, parse = (r) =>
   /**
    * Trigger a background fetch.
    *
-   * opts.force = true — skip the in-flight dedup check (useful for manual
-   *   refresh buttons where the user explicitly wants a new request even
-   *   if one just completed).
+   * load(args?, opts?) — two optional parameters:
    *
+   *   args — passed verbatim to the fetcher. Concurrent calls with
+   *     identical args (compared via JSON.stringify) share the in-flight
+   *     Promise. Calls with different args start a fresh fetch immediately.
+   *     Omit args for fetchers that take no parameters.
+   *
+   *   opts.force = true — always start a fresh fetch even if an in-flight
+   *     request for the same args is already running (useful for manual
+   *     refresh buttons where the operator explicitly wants new data).
+   *
+   * @param {any} [args]
    * @param {{ force?: boolean }} [opts]
    * @returns {Promise<void>}
    */
-  function load(opts = {}) {
-    if (_inflight && !opts.force) return _inflight;
-    _inflight = _fetch();
+  function load(args, opts = {}) {
+    // Support the legacy zero-arg call signature load() and the
+    // opts-only call load({force: true}) used by existing callers.
+    // Distinguish by checking whether `args` is a plain options object
+    // (has a `force` key and no other "data-like" structure).
+    let _args = args;
+    let _opts = opts;
+    if (args !== undefined && !Array.isArray(args) && typeof args === 'object' && 'force' in args && Object.keys(args).every(k => k === 'force')) {
+      _opts = /** @type {{ force?: boolean }} */ (args);
+      _args = undefined;
+    }
+    const argsKey = _args !== undefined ? JSON.stringify(_args) : undefined;
+    if (_inflight && !_opts.force && argsKey === _inflightArgsKey) return _inflight;
+    _inflightArgsKey = argsKey;
+    _inflight = _fetch(_args);
     return _inflight;
   }
 

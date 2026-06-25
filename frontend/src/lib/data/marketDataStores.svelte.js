@@ -1,13 +1,14 @@
 /**
- * marketDataStores — module-level singletons for the three most-used
- * data classes (positions / holdings / funds). Every consumer imports
+ * marketDataStores — module-level singletons for the most-used
+ * data classes (positions / holdings / funds / movers /
+ * activeLists / watchQuotes / sparklines). Every consumer imports
  * the same instance, so a load() triggered in PositionStrip is
  * immediately visible in the navbar, dashboard, etc. without any
  * parent-to-child prop threading.
  *
  * Migration status:
- *   PositionStrip — migrated (slice Z)
- *   MarketPulse   — pending (next slice; still uses its own cachedRead)
+ *   PositionStrip — migrated (slice AA)
+ *   MarketPulse   — migrated (slice AB)
  *   /admin/dashboard — pending
  *   /orders          — pending
  *
@@ -18,14 +19,28 @@
  *                        double-counting. The TOTAL row is still used
  *                        on the /performance page — it reads raw API
  *                        directly and is not affected here.
+ *
+ * Parameterised stores (activeListsStore, watchQuotesStore,
+ * sparklinesStore) accept args via load(args) — see dataStore.svelte.js
+ * for the dedup-by-args contract.
  */
 
 import { createDataStore, TTL } from './dataStore.svelte.js';
-import { fetchPositions, fetchHoldings, fetchFunds } from '$lib/api';
+import {
+  fetchPositions, fetchHoldings, fetchFunds,
+  fetchWatchlist, fetchWatchlistQuotes,
+  batchQuote, fetchSparklines,
+} from '$lib/api';
+import {
+  FO_QUOTE_KEYS, MIDCAP_QUOTE_KEYS, SMLCAP_QUOTE_KEYS,
+  INDICES_QUOTE_KEYS, LARGECAP_QUOTE_KEYS, symbolFromQuoteKey,
+} from '$lib/data/indexConstituents';
 
 export { TTL };
 
 /** @typedef {import('./dataStore.svelte.js').createDataStore} DS */
+
+// ── Positions ─────────────────────────────────────────────────────────────
 
 /**
  * Live positions (open + intraday-closed).
@@ -40,6 +55,8 @@ export const positionsStore = createDataStore({
   parse:   (r) => r?.rows ?? [],
 });
 
+// ── Holdings ──────────────────────────────────────────────────────────────
+
 /**
  * Holdings (overnight / long-term book).
  * TTL 15 min — same reasoning as positions.
@@ -51,6 +68,8 @@ export const holdingsStore = createDataStore({
   /** @param {any} r */
   parse:   (r) => r?.rows ?? [],
 });
+
+// ── Funds ─────────────────────────────────────────────────────────────────
 
 /**
  * Margin / funds snapshot. The /api/funds response includes a synthetic
@@ -66,4 +85,212 @@ export const fundsStore = createDataStore({
   parse:   (r) => (r?.rows ?? []).filter(
     (/** @type {any} */ x) => x && x.account && x.account !== 'TOTAL'
   ),
+});
+
+// ── Movers ────────────────────────────────────────────────────────────────
+
+/**
+ * Top winners/losers across NSE F&O largecap + midcap + smallcap.
+ * Fetcher ports the loadMovers body from MarketPulse so any consumer
+ * can subscribe. TTL.short matches the prior 2-min cache window.
+ */
+export const moversStore = createDataStore({
+  key:     'md.movers',
+  ttl:     TTL.short,
+  /** @returns {Promise<any[]>} */
+  fetcher: async () => {
+    const idx = new Set(INDICES_QUOTE_KEYS);
+    const lcp = new Set(LARGECAP_QUOTE_KEYS);
+    const fo  = new Set(FO_QUOTE_KEYS);
+    const mid = new Set(MIDCAP_QUOTE_KEYS);
+    const sml = new Set(SMLCAP_QUOTE_KEYS);
+    const allKeys = [...new Set([...fo, ...mid, ...sml])];
+    const r = await batchQuote(allKeys);
+    /** @type {Record<string, any>} */
+    const byKey = {};
+    for (const it of (r?.items ?? [])) {
+      if (!it?.exchange || !it?.tradingsymbol) continue;
+      byKey[`${it.exchange}:${it.tradingsymbol}`] = it;
+    }
+    const _groupFor = (/** @type {string} */ key) =>
+      sml.has(key) ? 'smallcap'
+    : mid.has(key) ? 'midcap'
+    : fo.has(key)  ? 'underlying'
+    : null;
+    /** @type {any[]} */
+    const rows = [];
+    for (const [key, it] of Object.entries(byKey)) {
+      const group = _groupFor(key);
+      if (!group) continue;
+      const ltp = Number(it.ltp ?? it.last_price ?? 0);
+      let pct = Number(it.change_pct);
+      if (!isFinite(pct) || pct === 0) {
+        const close = Number(it.close ?? it.previous_close ?? 0);
+        if (close > 0 && ltp > 0) pct = ((ltp - close) / close) * 100;
+      }
+      if (!isFinite(pct) || pct === 0) continue;
+      rows.push({
+        tradingsymbol: symbolFromQuoteKey(key),
+        exchange:      it.exchange,
+        last_price:    ltp,
+        change_pct:    pct,
+        previous_close: Number(it.close ?? it.previous_close ?? 0) || null,
+        _moverGroup:   group,
+        _isLargeCap:   lcp.has(key) && !mid.has(key) && !sml.has(key),
+        _moverDirection: pct >= 0 ? 'winners' : 'losers',
+      });
+    }
+    return rows;
+  },
+  /** @param {any} r */
+  parse:   (r) => r ?? [],
+});
+
+// ── Active watchlists ─────────────────────────────────────────────────────
+
+/**
+ * Loaded watchlist items for the currently-selected list ids.
+ * Caller passes the ids array as load(ids). Deduped by JSON.stringify
+ * so concurrent calls with the same ids share the fetch.
+ * TTL.minute mirrors the prior mp.activeLists cache window (slice W).
+ *
+ * Note: the cache key changed from `mp.activeLists` → `md.activeLists`.
+ * That causes a one-time cold miss on the first deploy — subsequent
+ * sessions read from the new key and paint instantly.
+ */
+export const activeListsStore = createDataStore({
+  key:     'md.activeLists',
+  ttl:     TTL.minute,
+  /** @param {number[] | undefined} ids */
+  fetcher: async (ids) => {
+    if (!ids || ids.length === 0) return [];
+    const results = await Promise.all(
+      ids.map(id => fetchWatchlist(id).catch(() => null))
+    );
+    return results.filter(Boolean);
+  },
+  /** @param {any} r */
+  parse:   (r) => r ?? [],
+});
+
+// ── Watch quotes ──────────────────────────────────────────────────────────
+
+/**
+ * Per-item quote map (itemId → quote) for all active watchlist items.
+ * Caller passes the ids array as load(ids). Deduped by JSON.stringify.
+ *
+ * Merge-not-replace semantic (slice X fix) lives inside the fetcher:
+ * on each call we merge fresh quotes into the current stored value so
+ * a partial fetch (one list returning empty) never blanks LTPs that
+ * were just fetched for other lists. Active-item pruning keeps the
+ * cache bounded as lists change.
+ *
+ * `activeLists` context is not available inside this module — the caller
+ * (MarketPulse) must pass the ids; the fetcher queries each list for its
+ * current quote state and prunes by the union of item ids returned.
+ */
+export const watchQuotesStore = createDataStore({
+  key:     'md.watchQuotes',
+  ttl:     TTL.short,
+  /** @param {number[] | undefined} ids */
+  fetcher: async (ids) => {
+    if (!ids || ids.length === 0) return {};
+    const results = await Promise.all(
+      ids.map(id => fetchWatchlistQuotes(id).catch(() => null))
+    );
+    const map = /** @type {Record<number, any>} */ ({});
+    for (const r of results) {
+      if (!r) continue;
+      for (const q of (r.items || [])) map[q.item_id] = q;
+    }
+    // Determine the set of item_ids still present across all returned
+    // lists so we can prune stale entries.
+    const activeItemIds = new Set();
+    for (const r of results) {
+      if (!r) continue;
+      for (const q of (r.items || [])) activeItemIds.add(q.item_id);
+    }
+    // Merge into the current stored value rather than replacing. This
+    // preserves LTPs from the previous poll when a list returns empty
+    // (broker hiccup / slow response) — the Pinned grid never flickers
+    // to LTP=0. Prune item ids no longer in any active list to keep
+    // the cache bounded.
+    const prev = watchQuotesStore.value ?? {};
+    const merged = { ...prev, ...map };
+    for (const id of Object.keys(merged)) {
+      if (!activeItemIds.has(Number(id)) && !activeItemIds.has(id)) {
+        delete merged[id];
+      }
+    }
+    return merged;
+  },
+  /** @param {any} r */
+  parse: (r) => r ?? {},
+  // Shallow-equal on object keys: skip reactive writes when the merged
+  // map has the same key count and all existing values are reference-equal.
+  equals: (a, b) => {
+    if (a === b) return true;
+    if (!a || !b) return false;
+    const ak = Object.keys(a);
+    const bk = Object.keys(b);
+    if (ak.length !== bk.length) return false;
+    for (const k of ak) if (a[k] !== b[k]) return false;
+    return true;
+  },
+});
+
+// ── Sparklines ────────────────────────────────────────────────────────────
+
+/**
+ * Per-symbol 5-day sparkline arrays (symbol → number[]).
+ * Caller passes the current unifiedRows pairs list as load(pairs) so
+ * the fetcher can chunk-fetch exactly the symbols in view and prune
+ * any symbols that have rotated out (closed positions, removed
+ * watchlist items, rolled-over movers).
+ *
+ * Prune is skipped on the very first call (_firstSparkFetched=false)
+ * because unifiedRows may be only partially populated at mount time —
+ * a prune on an incomplete universe would drop position sparklines that
+ * were just restored from cache. Subsequent 60s-cadence calls always
+ * prune against the fully-settled universe.
+ *
+ * TTL.day matches the backend's daily-eviction contract for past closes.
+ */
+let _firstSparkFetched = false;
+
+export const sparklinesStore = createDataStore({
+  key:     'md.sparklines',
+  ttl:     TTL.day,
+  /**
+   * @param {{ tradingsymbol: string, exchange: string }[] | undefined} pairs
+   */
+  fetcher: async (pairs) => {
+    if (!pairs?.length) return sparklinesStore.value ?? {};
+    const CHUNK = 100;
+    /** @type {Record<string, number[]>} */
+    let merged = { ...(sparklinesStore.value ?? {}) };
+    for (let i = 0; i < pairs.length; i += CHUNK) {
+      const slice = pairs.slice(i, i + CHUNK);
+      try {
+        const res = await fetchSparklines(slice, 5);
+        if (res?.data && typeof res.data === 'object') {
+          Object.assign(merged, res.data);
+        }
+      } catch (_) { /* non-fatal — keep whatever we have */ }
+    }
+    // Active-universe prune (slice T fix). Drop symbols no longer in
+    // the current pairs set so the cache doesn't grow unbounded as
+    // movers rotate. Skipped on the first call to avoid pruning
+    // sparklines restored from cache when unifiedRows is still partial.
+    if (_firstSparkFetched) {
+      const active = new Set(pairs.map(p => p.tradingsymbol));
+      for (const sym of Object.keys(merged)) {
+        if (!active.has(sym)) delete merged[sym];
+      }
+    }
+    _firstSparkFetched = true;
+    return merged;
+  },
+  /** @param {any} r */
+  parse: (r) => r ?? {},
 });
