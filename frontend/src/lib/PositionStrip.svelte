@@ -31,6 +31,16 @@
   // not on the live-LTP-derived sums, so flash animations fire at
   // most once per poll cycle rather than on every SSE tick.
   let _pollCycleStamp = $state(0);
+  // Snapshot of _pollCycleStamp at the moment of the closed→open
+  // session transition. _livePositionsToday / _liveHoldingsToday read
+  // from positions[].day_change_val which is whatever the LAST poll
+  // returned — and `marketAwareInterval` pauses overnight, so that
+  // last poll is from yesterday's session close, carrying yesterday's
+  // MTM. Without this gate, the reset-to-0 inside the freeze effect
+  // is immediately overwritten by the stale value until the next 30s
+  // poll arrives. We instead hold disp at 0 until the FIRST fresh
+  // poll of the new session lands (_pollCycleStamp > the snapshot).
+  let _openTransitionStamp = $state(-1);
 
   /** @type {ReturnType<typeof marketAwareInterval> | null} */
   let teardown = null;
@@ -291,12 +301,24 @@
     void _mktTick;
     const open = isNseOpen() || isMcxOpen();
     if (open && !_prevMktOpen) {
+      // Closed → Open transition. Snapshot the current poll cycle so
+      // we can suppress the stale prior-session day_change_val until
+      // a fresh in-session poll lands. Force loadOnce() immediately
+      // instead of waiting up to 30s for the next marketAwareInterval
+      // tick — without this the strip flashes yesterday's frozen MTM
+      // for the first 30s of the new session.
       dispPositionsToday = 0;
       dispHoldingsToday  = 0;
       cachedDelete('strip.frozen');
+      _openTransitionStamp = _pollCycleStamp;
+      untrack(() => { loadOnce(); });
     }
     _prevMktOpen = open;
     if (!open) return;
+    // Suppress the live-derived assignment until a fresh poll cycle
+    // (one completed AFTER the open transition) lands. Until then
+    // positions[].day_change_val is stale from yesterday's last poll.
+    if (_pollCycleStamp <= _openTransitionStamp) return;
     dispPositionsToday = _livePositionsToday;
     dispHoldingsToday  = _liveHoldingsToday;
     cachedWrite('strip.frozen', {
