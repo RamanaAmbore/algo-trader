@@ -4089,19 +4089,31 @@
             {@const displayQty = c._residualQty != null
               ? Number(c._residualQty)
               : (_eqDisplayQty != null ? _eqDisplayQty : Number(c.qty || 0))}
-            <!-- Open-row P&L = (live_ltp − cost) × current_qty + realised.
-                 The realised term carries the cash from intraday
-                 closeouts so the row reconciles with Kite's broker
-                 pnl (which includes realised). Without it, a leg
-                 that's been partially closed today would show
-                 unrealised-only and diverge from the strip's P
-                 chip by the realised amount. Closed rows (qty=0)
-                 use broker's c.pnl directly — that IS realised. -->
-            {@const pnl = isClosed
-              ? (c.pnl != null ? Number(c.pnl) : null)
-              : ((ltp != null && cost != null)
+            <!-- Open-row P&L resolution order:
+                 1. Residual-reopen rows (_residualQty set): recompute
+                    via formula because broker.pnl is for the FULL qty,
+                    not the residual after netting.
+                 2. Broker.pnl when present (the authoritative value
+                    Kite shipped, computed against the LIVE broker LTP
+                    at poll time + realised). The TOTAL row sums this
+                    field, so per-leg must use the same source or the
+                    sum doesn't reconcile.
+                 3. Formula fallback when broker.pnl missing: requires
+                    BOTH ltp and cost AND that lg.ltp didn't fall back
+                    to avg_cost — that fallback collapses (ltp-cost)
+                    to 0 and the row displays ₹0 while TOTAL shows a
+                    real number. Operator: "legs individual position
+                    P&L is showing 0 profit, while total row has value". -->
+            {@const _ltpFromFallback = !!(lg && lg.ltp_source === 'avg_cost')}
+            {@const pnl = c._residualQty != null
+              ? ((ltp != null && cost != null && !_ltpFromFallback)
                   ? (ltp - cost) * displayQty + Number(c.realised || 0)
-                  : null)}
+                  : null)
+              : (c.pnl != null
+                  ? Number(c.pnl)
+                  : (ltp != null && cost != null && !_ltpFromFallback
+                      ? (ltp - cost) * displayQty + Number(c.realised || 0)
+                      : null))}
             {@const dir = displayQty < 0 ? 'short' : displayQty > 0 ? 'long' : 'flat'}
             {@const isClosable = !isClosed && c.source !== 'draft'}
             <!-- Row click → close-position ticket. Skipped on
