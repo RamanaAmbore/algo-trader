@@ -700,6 +700,122 @@ You don't have to memorise this — the **(i)** info chip on each row tells you 
 
 ---
 
+## Persistence & refresh-cycle controls
+
+Platform stores market data in three tiers: memory cache (Tier 1) → PostgreSQL
+database (Tier 2) → broker API (Tier 3). Most read paths check the hierarchy;
+if data is stale or corrupt at a tier, skip it and re-fetch from the broker.
+This section explains when to bypass the cache + DB and force a fresh fetch.
+
+**Why this matters**: After a code defect or broker API hiccup, cached bars or
+symbol maps can linger for hours. The refresh-cycle mode lets you heal the
+persistent layers without waiting for TTL expiry.
+
+### Refresh modes
+
+Three modes are available via `/admin/health` navbar chip (admin-only) or
+`POST /api/admin/persistence/mode/{off|soft|hard}`:
+
+| Mode | Use | Impact |
+|---|---|---|
+| **OFF** (default) | Normal reads use cache + DB. Use this almost always. | None — all tiers consulted in order. |
+| **SOFT** | Bypass Tier 1 + Tier 2; every read fetches fresh from broker and heals both tiers on write-back. Live ticker untouched. | Charts, intraday bars, symbols may briefly show a few-second re-fetch delay. |
+| **HARD** | Same as SOFT + ticker recycle (live WebSocket drops → reconnects → resubscribes). | 2–3 second LTP gap; SSE clients auto-reconnect and show cached prices in the meantime. |
+
+**When to flip SOFT**:
+- A chart shows yesterday's wrong close price.
+- An instrument symbol is missing from dropdowns.
+- Holiday calendar appears incomplete.
+- Intraday bars have gaps that shouldn't exist.
+
+**When to flip HARD**:
+- SOFT didn't fix it AND you suspect the live ticker's in-memory state is also wrong
+  (stale LTP, missing subscriptions).
+- Or: ticker is stuck and needs a clean reconnect.
+
+**Process**:
+1. Flip mode to SOFT (green chip appears in navbar).
+2. Refresh `/charts` or the affected page.
+3. Verify data looks correct.
+4. Flip mode back to OFF (navbar chip disappears).
+
+Mode resets to OFF on process restart (safe default).
+
+### Reading tier-hit metrics (`/admin/health`)
+
+Each store exposes cache-pressure metrics. Look for:
+
+- **Green (≥80% hit_rate)** — cache is doing its job; broker calls minimal.
+- **Amber (50–79% hit_rate)** — warming up after deploy or rotating universe
+  (movers entering/leaving). Normal during market open.
+- **Red (<50% hit_rate)** — broker-heavy. Either a cold deploy (wait ~5 min) or
+  something is wrong (high request volume, broker rate-limiting).
+
+**Columns per store**:
+- `tier1_hits` — memory cache hits (cheapest).
+- `tier2_hits` — DB hits (post-deploy this is high).
+- `tier3_fetches` — broker API calls (most expensive).
+- `hit_rate` — (tier1 + tier2) / total.
+
+### Selective invalidation
+
+When an entire refresh mode is too broad, wipe just one store:
+
+```
+POST /api/admin/persistence/invalidate?store=ohlcv_daily&symbol=NIFTY50
+```
+
+Scopes:
+- `store=ohlcv_daily` + `symbol=NIFTY50` → delete daily bars for NIFTY50 only
+- `store=ohlcv_daily` + `symbol=NIFTY50&exchange=NSE` → same (exchange
+  disambiguates multi-exchange symbols)
+- `store=instruments_snapshot&exchange=MCX` → wipe MCX instrument map
+- `store=intraday_bars` (no params) → full wipe of intraday cache + DB rows
+
+Next read re-fetches from broker.
+
+### Write-queue health
+
+The `persistence` key in `/admin/health` exposes two worker health snapshots:
+
+```json
+{
+  "disk_queue": {
+    "depth": 42,
+    "dropped": 0,
+    "last_flush_epoch": 1719325234.561,
+    "worker_alive": true
+  },
+  "db_queue": {
+    "depth": 0,
+    "dropped": 0,
+    "last_flush_epoch": 1719325230.125,
+    "worker_alive": true
+  }
+}
+```
+
+- **`depth`** — how many items waiting to write (should be <100 under normal load).
+- **`dropped`** — cumulative items that didn't fit in the queue (queue was full). Next
+  read re-fetches from broker, so no data loss, just re-work.
+- **`last_flush_epoch`** — wall-clock time of the last successful batch write. Subtract
+  from `now` to see staleness. Should be <5 sec old during market hours.
+- **`worker_alive`** — false if the worker task crashed (operator should check logs +
+  restart the service).
+
+### DB tables
+
+Rows older than retention policy are purged daily at 03:00 IST:
+
+| Table | Retention | Purpose |
+|---|---|---|
+| `ohlcv_daily` | 5 years | Daily OHLCV bars for every symbol / exchange. |
+| `instruments_snapshot` | 7 days | Per-exchange symbol→token map snapshots. Refreshed daily. |
+| `holidays_snapshot` | Forever | Exchange holiday calendars per year. Immutable. |
+| `intraday_bars` | 90 days | 5/15/30/60-minute bars. Growing window per trading day. |
+
+---
+
 ## Common tasks
 
 **Add custom loss rule** → `/automation` → copy `loss-pos-acct-static-abs` → replace scope with custom account matcher → Validate → Run in Simulator → ON

@@ -248,6 +248,64 @@ Operators manage via `/admin/brokers`, not `secrets.yaml` on server. Credentials
 
 ---
 
+## Persistence pipeline (cache → DB → broker)
+
+Three-tier read hierarchy for OHLCV, instruments, holidays, intraday bars. Each
+read checks Tier 1 (in-memory LRU) → Tier 2 (PostgreSQL) → Tier 3 (broker API).
+Per-key asyncio.Lock deduplicates concurrent in-flight fetches. Broker writes
+return immediately to caller; persistence runs off-path via two parallel worker
+coroutines (`cache_worker.py`, `db_worker.py`).
+
+**Stores** (`backend/api/persistence/`):
+- `ohlcv_store` — daily bars, (sym, exch) key, range-based completeness
+- `instruments_store` — per-exchange symbol→token map, daily TTL via purge_stale()
+- `holidays_store` — per-(exchange, year), immutable once year closes
+- `intraday_store` — 5/15/30/60-min bars, 5-min TTL on today's data
+- Base: `store_base.py` — abstract three-tier flow + LRU eviction + metrics
+
+**Completeness checks** (prevent stale-data masquerade):
+- OHLCV: boundary dates present + gaps ≤4 days (handles weekends + holidays)
+- Instruments: non-empty map
+- Holidays: non-empty set
+- Intraday: today = any bars OK (growing); historical = must span session close
+
+**Refresh-cycle modes** (operator can flip via POST `/api/admin/persistence/mode/{off|soft|hard}`):
+- `off` — normal hierarchy (default, safe)
+- `soft` — Tier 1+2 bypass, fetch from broker, write-back heals both tiers
+- `hard` — soft + ticker recycle (unsubscribe→reconnect→resubscribe)
+Mode is runtime-only (resets to `off` on process restart).
+
+**DB schema**:
+- `ohlcv_daily(symbol, exchange, date, open, high, low, close, volume)`
+- `instruments_snapshot(exchange, date, payload jsonb, row_count)`
+- `holidays_snapshot(exchange, year, dates_json)`
+- `intraday_bars(symbol, exchange, date, interval, bar_ts, open, high, low, close, volume)`
+
+**Retention** (daily 03:00 IST cron):
+- `ohlcv_daily` → 5 years; `instruments_snapshot` → 7 days; `intraday_bars` → 90 days;
+  `holidays_snapshot` → forever.
+
+**Write queues** — `write_queue.py`:
+- `disk_queue` (5K max) → batched JSON to `.log/sparkline_cache.json` (5s throttle)
+- `db_queue` (10K max) → batched SQL upserts per kind
+- Coalesce: last-write-wins on duplicate keys, 500-row batches or 500ms timeout.
+- On queue full: warn + drop, next read re-fetches from broker.
+
+**Metrics** (`GET /api/admin/health`):
+- Per-store: `tier1_hits`, `tier2_hits`, `tier3_fetches`, `tier3_errors`, `hit_rate`.
+- Write workers: `disk_queue.depth`, `db_queue.depth`, `last_flush_epoch`, `worker_alive`.
+
+**Invalidation** (selective cache wipe):
+- `POST /api/admin/persistence/invalidate?store=ohlcv_daily&symbol=NIFTY50`
+- Drops in-memory entry + deletes matching DB rows.
+- Supports symbol-only (all exchanges), exchange-only (all symbols), or full wipe.
+
+**Bypass patterns in code**:
+- `get_or_fetch_daily(..., bypass_cache=True)` — defect-recovery escape hatch
+- `runtime_state.is_bypass_on()` checks on every read; soft/hard modes set this True
+
+---
+
 ## API Architecture (Litestar + SvelteKit)
 
 **Stack**:
