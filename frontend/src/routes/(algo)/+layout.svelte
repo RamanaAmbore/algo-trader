@@ -1331,10 +1331,13 @@
   /* ── Content ─────────────────────────────────────────────────────────────── */
   .algo-content {
     flex: 1;
-    /* Operator: "gap between header row and below data is too
-       small". Padding = strip height (2rem) + 0.6rem breathing
-       room = 2.6rem. Content sits ~0.6rem below strip bottom. */
-    padding: 2.6rem 0.5rem 1.5rem;
+    /* Operator: "there is vertical gap between pinned and pulse
+       heading in pulse. reduce a little bit." — pulled the
+       breathing room from 0.6rem → 0.3rem so first card sits a
+       hair closer to the page-header strip. Earlier complaint
+       was the opposite ("gap too small") so we don't cut below
+       0.3rem. */
+    padding: 2.3rem 0.5rem 1.5rem;
     color: var(--algo-slate);
     /* flex column so descendant containers (e.g. orders page's
        `.oc-page-wrap`) can use `flex: 1` to fill the actual
