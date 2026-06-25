@@ -2396,6 +2396,29 @@
                     onclick={addToBasket}>
               + Add to basket
             </button>
+          {:else}
+            <!-- Direct-submit button. Operator: "I tried closing position
+                 using the order, it didn't place the order" — the
+                 unified-basket spec retired this for action='open' (the
+                 basket path replaces it), but action='close' /
+                 action='modify' / action='repeat' flows still need a
+                 standalone Submit because basket isn't the right vehicle
+                 for those. Label varies by action so the operator knows
+                 what's about to fire. -->
+            <button type="button" class="ot-submit"
+                    class:ot-submit-buy={_side === 'BUY'}
+                    class:ot-submit-sell={_side === 'SELL'}
+                    class:ot-submit-demo={_isDemo}
+                    disabled={_isDemo ? false : (!!validationErr || submitting || _noSymbol)}
+                    title={_isDemo ? 'Demo mode — click to learn how to enable real orders' : ''}
+                    onclick={submit}>
+              {#if _isDemo}Submit (Demo){:else if submitting}…
+              {:else if action === 'modify'}Modify{orderId ? ' · #' + orderId : ''}
+              {:else if action === 'close'}Close · {_side.toLowerCase()}
+              {:else if action === 'repeat'}Place again
+              {:else if sideLabels[_side] === 'ADD'}Add · {_side.toLowerCase()}
+              {:else}Place {_side.toLowerCase()}{/if}
+            </button>
           {/if}
         {/if}
       </div>
