@@ -915,7 +915,7 @@
   .algo-viewport {
     min-height: 100vh;
     min-height: 100dvh;
-    background-color: #080f1c;
+    background-color: var(--algo-bg-base);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -953,7 +953,7 @@
     min-height: 100dvh;
     display: flex;
     flex-direction: column;
-    background-color: #0d1829;
+    background-color: var(--algo-bg-elev2);
   }
 
   /* ── Navbar ─────────────────────────────────────────────────────────────── */
@@ -968,8 +968,13 @@
     left: 0;
     right: 0;
     z-index: 50;
-    background: #0a1020;
-    border-bottom: 1px solid #fbbf24;
+    background: var(--algo-bg-elev1);
+    /* Was border-bottom: 1px solid #fbbf24 (alpha 1.0) — ~2.5× heavier
+       than the footer's rgba(251,191,36,0.2) and page-header's 0.30
+       border. Slice AT audit fix: matched to canonical
+       --algo-amber-border (0.55) for a uniform hairline across all
+       chrome bands. */
+    border-bottom: 1px solid var(--algo-amber-border);
     overflow: visible;
   }
 
@@ -1324,9 +1329,9 @@
     left: 0;
     right: 0;
     z-index: 49;
-    background: #0a1020;
-    border-top: 1px solid rgba(251,191,36,0.2);
-    border-bottom: 1px solid rgba(251,191,36,0.2);
+    background: var(--algo-bg-elev1);
+    border-top: 1px solid var(--algo-amber-border);
+    border-bottom: 1px solid var(--algo-amber-border);
     box-shadow: 0 8px 20px rgba(0,0,0,0.5);
     /* Cap the drawer height so a many-item nav (Monitor + Analyze +
        Modes + Build + Config + 30+ entries) doesn't extend past the
@@ -1437,8 +1442,11 @@
     left: 0;
     right: 0;
     z-index: 40;
-    background: #0a1020;
-    border-top: 1px solid rgba(251,191,36,0.2);
+    background: var(--algo-bg-elev1);
+    /* Slice AT audit fix: was rgba(251,191,36,0.2), now matches the
+       navbar's --algo-amber-border so all three chrome bands share
+       the same hairline weight. */
+    border-top: 1px solid var(--algo-amber-border);
     height: 1.6rem;
     display: flex;
     align-items: center;

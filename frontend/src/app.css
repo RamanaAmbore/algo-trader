@@ -44,8 +44,16 @@
   --algo-muted:        #7e97b8;   /* secondary / label text */
   --algo-dim:          #94a3b8;   /* tertiary text */
 
-  /* Surface tokens */
-  --algo-page-bg:      #0a1020;
+  /* Surface tokens — three intentional elevation layers. Slice AT
+     audit fix: the algo layout previously hardcoded three different
+     dark-blue hex values (#080f1c viewport / #0d1829 card / #0a1020
+     navbar) with no tokens. Banding was visible on wide monitors when
+     adjacent surfaces animated. These tokens make the elevation system
+     legible and the values reusable. */
+  --algo-bg-base:      #080f1c;  /* furthest back (viewport / page) */
+  --algo-bg-elev1:     #0a1020;  /* base chrome (navbar / footer) */
+  --algo-bg-elev2:     #0d1829;  /* card wrapper / .algo-card */
+  --algo-page-bg:      var(--algo-bg-elev1);  /* legacy alias */
   --algo-card-border:  rgba(255, 255, 255, 0.10);
 
   /* Amber alpha variants */
@@ -91,10 +99,17 @@
   *::after {
     -webkit-tap-highlight-color: transparent;
     outline: none;
-    box-shadow: none;
+    /* `box-shadow: none` was removed from this reset — slice AT audit
+       fix. The wildcard reset was stripping drop-shadows from toasts,
+       canonical modals, dropdown panels, and any third-party widget
+       (ag-Grid popups, browser autocomplete) before their scoped CSS
+       could re-apply them. Tailwind Preflight + the per-component
+       styles already handle the surfaces that need a clean baseline. */
   }
   :focus-visible {
-    outline: 2px solid #ef9309 !important;
+    /* Was #ef9309 (off-palette amber-orange) — slice AT audit fix.
+       --algo-amber is the canonical platform amber token. */
+    outline: 2px solid var(--algo-amber, #fbbf24) !important;
     outline-offset: 2px;
   }
   body {

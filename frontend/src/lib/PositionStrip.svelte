@@ -502,7 +502,10 @@
     height: 1.5rem;
     box-sizing: border-box;
     padding: 0 0.5rem;
-    background: linear-gradient(180deg, #0a1020 0%, #131c33 100%);
+    /* Slice AT audit fix — was `#0a1020 → #131c33`, an off-token
+       second stop. Anchor both stops on the chrome elevation tokens
+       so the band reads as a sibling of navbar + footer. */
+    background: linear-gradient(180deg, var(--algo-bg-elev1) 0%, #0f1828 100%);
     border-bottom: 1px solid var(--algo-amber-border-soft);
     color: var(--algo-slate);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
