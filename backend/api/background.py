@@ -2312,7 +2312,30 @@ async def _task_sparkline_warm(state: dict) -> None:
         except Exception as e:
             logger.warning(f"sparkline warm: positions collect failed: {e}")
 
-        return pairs[:100]  # hard cap
+        # 4. Mover universe — indices + F&O largecap + NIFTY midcap +
+        # smallcap. Without this the Winners/Losers tab on /pulse pays
+        # a cold-cache hit every time a new symbol rotates into the
+        # top movers (operator: "winners and losers sparklines are
+        # slow to update"). The mover set is ~250 symbols static; we
+        # warm them at boot + midnight rollover so they're hot before
+        # the operator's first /pulse load. Symbols already added
+        # above (positions/holdings/watchlist) are deduped, so the
+        # operator's actual book never gets evicted by the mover top-up.
+        try:
+            from backend.shared.helpers.mover_universe import mover_warm_pairs
+            for key in mover_warm_pairs():
+                if key not in seen:
+                    seen.add(key)
+                    pairs.append(key)
+        except Exception as e:
+            logger.warning(f"sparkline warm: mover universe collect failed: {e}")
+
+        # Hard cap raised 100 → 300 to fit positions + holdings +
+        # watchlist (typically ≤ 100) + ~250 mover symbols. Operator's
+        # own book remains first in the list (added above), so a
+        # truncation at the cap only ever drops mover universe
+        # symbols, never the operator's positions.
+        return pairs[:300]
 
     async def _do_warm(label: str) -> None:
         logger.info(f"sparkline warm: starting ({label})")
