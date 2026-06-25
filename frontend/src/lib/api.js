@@ -964,6 +964,21 @@ export async function fetchAlertsHistory(params = {}) {
  */
 export const fetchSystemHealth = () => _get('/admin/health', { auth: true });
 
+// Persistence refresh-cycle mode (slice Z). Three states:
+//   off  — normal cache → DB → broker hierarchy
+//   soft — non-ticker stores bypass cache+DB; broker fetch + write-back
+//   hard — soft + ticker recycle on transition (in-memory _tick_map rebuild)
+export const fetchPersistenceMode = () =>
+  _get('/admin/persistence/mode', { auth: true });
+export const setPersistenceMode = (mode) =>
+  _post(`/admin/persistence/mode/${mode}`, undefined, { auth: true });
+export const invalidatePersistence = (store, opts = {}) => {
+  const qs = new URLSearchParams({ store });
+  if (opts.symbol)   qs.set('symbol',   opts.symbol);
+  if (opts.exchange) qs.set('exchange', opts.exchange);
+  return _post(`/admin/persistence/invalidate?${qs}`, undefined, { auth: true });
+};
+
 // ── Execution mode (admin) ────────────────────────────────────────────
 /** GET /api/admin/execution/mode — returns { mode, branch, allowed_modes }. */
 export const fetchExecutionMode = () => _get('/admin/execution/mode', { auth: true });

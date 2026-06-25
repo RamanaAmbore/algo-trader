@@ -9,7 +9,7 @@
   import { userRole, userCaps, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
-  import { fetchSystemHealth } from '$lib/api';
+  import { fetchSystemHealth, setPersistenceMode, invalidatePersistence } from '$lib/api';
   import StaleBanner from '$lib/StaleBanner.svelte';
 
   /** @type {any} */
@@ -55,6 +55,51 @@
     if (status === 'LOADED')   return 'status-loaded';
     if (status === 'PENDING')  return 'status-pending';
     return 'status-disabled';
+  }
+
+  // ── Persistence refresh-cycle mode (slice Z) ────────────────────────
+  // Three states the operator picks to recover the cache+DB tiers when
+  // they've shipped bad data:
+  //   off  — normal hierarchy
+  //   soft — bypass cache+DB on read; broker fetch + write-back heals
+  //   hard — soft + ticker recycle (in-memory _tick_map rebuilt)
+  let _modeBusy   = $state(false);
+  let _modeErr    = $state('');
+  const _persMode = $derived(health?.persistence?.mode || 'off');
+  async function _switchMode(/** @type {'off'|'soft'|'hard'} */ next) {
+    if (_modeBusy) return;
+    const cur = health?.persistence?.mode || 'off';
+    if (next === cur) return;
+    _modeBusy = true; _modeErr = '';
+    try {
+      await setPersistenceMode(next);
+      await load();           // refresh the health snapshot
+    } catch (e) {
+      _modeErr = (e && e.message) || 'mode switch failed';
+    } finally {
+      _modeBusy = false;
+    }
+  }
+
+  // Per-store invalidate — wipes in-memory + DB for the chosen store.
+  // The store re-fetches from broker on the next read and the queue
+  // worker writes back through. Defect-recovery counterpart to mode
+  // switching for cases where the operator wants targeted cleanup.
+  let _invalBusy  = $state(false);
+  let _invalLast  = $state(/** @type {{store: string, rows_deleted: number}|null} */ (null));
+  let _invalErr   = $state('');
+  async function _invalidate(/** @type {string} */ store) {
+    if (_invalBusy) return;
+    _invalBusy = true; _invalErr = '';
+    try {
+      const r = await invalidatePersistence(store);
+      _invalLast = r;
+      await load();
+    } catch (e) {
+      _invalErr = (e && e.message) || 'invalidate failed';
+    } finally {
+      _invalBusy = false;
+    }
   }
 </script>
 
@@ -267,6 +312,98 @@
       {/if}
     </div>
 
+    <!-- ── Persistence refresh-cycle mode card (slice Z) ─────────── -->
+    <div class="hcard hcard-wide">
+      <div class="hcard-title">Persistence refresh cycle</div>
+      <div class="kv-row">
+        <span class="kv-key">Mode</span>
+        {#if _persMode === 'off'}
+          <span class="status-pill status-loaded">OFF · normal</span>
+        {:else if _persMode === 'soft'}
+          <span class="status-pill status-pending">SOFT · bypass cache+DB</span>
+        {:else}
+          <span class="status-pill status-disabled">HARD · bypass + ticker recycle</span>
+        {/if}
+      </div>
+      <div class="persistence-modes">
+        <button type="button"
+                class="pm-btn pm-off"
+                class:pm-on={_persMode === 'off'}
+                disabled={_modeBusy}
+                title="Normal hierarchy. Stores read cache → DB → broker."
+                onclick={() => _switchMode('off')}>OFF</button>
+        <button type="button"
+                class="pm-btn pm-soft"
+                class:pm-on={_persMode === 'soft'}
+                disabled={_modeBusy}
+                title="Non-ticker stores bypass cache + DB. Every read hits broker; write-back heals the persistent tiers. Live ticker stream untouched."
+                onclick={() => _switchMode('soft')}>SOFT</button>
+        <button type="button"
+                class="pm-btn pm-hard"
+                class:pm-on={_persMode === 'hard'}
+                disabled={_modeBusy}
+                title="Soft + ticker recycle. The in-memory _tick_map rebuilds from scratch on transition. Brief LTP gap (~2-3s) — SSE clients auto-reconnect."
+                onclick={() => _switchMode('hard')}>HARD</button>
+      </div>
+      {#if _modeErr}
+        <div class="kv-row pm-err">{_modeErr}</div>
+      {/if}
+      <div class="kv-row">
+        <span class="kv-key">disk_queue depth</span>
+        <span class="kv-val kv-num">{_n(health.persistence?.disk_queue?.depth)}</span>
+      </div>
+      <div class="kv-row">
+        <span class="kv-key">db_queue depth</span>
+        <span class="kv-val kv-num">{_n(health.persistence?.db_queue?.depth)}</span>
+      </div>
+      <div class="kv-row">
+        <span class="kv-key">disk worker</span>
+        {#if health.persistence?.disk_queue?.worker_alive}
+          <span class="status-pill status-loaded">ALIVE</span>
+        {:else}
+          <span class="status-pill status-disabled">DEAD</span>
+        {/if}
+      </div>
+      <div class="kv-row">
+        <span class="kv-key">db worker</span>
+        {#if health.persistence?.db_queue?.worker_alive}
+          <span class="status-pill status-loaded">ALIVE</span>
+        {:else}
+          <span class="status-pill status-disabled">DEAD</span>
+        {/if}
+      </div>
+      {#if health.persistence?.stores}
+        <div class="kv-row kv-section">
+          <span class="kv-key">Store mem keys</span>
+        </div>
+        {#each Object.entries(health.persistence.stores) as [k, v]}
+          <div class="kv-row kv-indent">
+            <span class="kv-key kv-mono">{k}</span>
+            <span class="kv-val kv-num">{_n(v?.mem_keys)}</span>
+            <button type="button" class="pm-inval-btn"
+                    disabled={_invalBusy}
+                    title="Wipe in-memory + delete DB rows for {k}. Next read re-fetches from broker."
+                    onclick={() => _invalidate(k)}>Invalidate</button>
+          </div>
+        {/each}
+        <div class="kv-row kv-indent">
+          <span class="kv-key kv-mono">all</span>
+          <button type="button" class="pm-inval-btn pm-inval-all"
+                  disabled={_invalBusy}
+                  title="Wipe every store. Heavy — only use when the entire persistence layer is suspect."
+                  onclick={() => _invalidate('all')}>Invalidate all</button>
+        </div>
+        {#if _invalLast}
+          <div class="kv-row kv-muted">
+            Last: <code>{_invalLast.store}</code> · {_n(_invalLast.rows_deleted)} rows deleted
+          </div>
+        {/if}
+        {#if _invalErr}
+          <div class="kv-row pm-err">{_invalErr}</div>
+        {/if}
+      {/if}
+    </div>
+
     <!-- ── IPv6 source IPs card ──────────────────────────────────── -->
     <div class="hcard hcard-wide">
       <div class="hcard-title">IPv6 Bindings</div>
@@ -449,6 +586,81 @@
     font-size: 0.62rem;
     color: #c8d8f0;
     padding: 0.1rem 0;
+  }
+
+  /* Persistence refresh-cycle card */
+  .persistence-modes {
+    display: flex;
+    gap: 0.3rem;
+    padding: 0.4rem 0 0.2rem;
+    flex-wrap: wrap;
+  }
+  .pm-btn {
+    flex: 1 1 0;
+    min-width: 4rem;
+    padding: 0.32rem 0.55rem;
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    background: rgba(148, 163, 184, 0.08);
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 3px;
+    color: #94a3b8;
+    cursor: pointer;
+    transition: background 120ms, color 120ms, border-color 120ms;
+  }
+  .pm-btn:hover:not(:disabled) {
+    background: rgba(148, 163, 184, 0.14);
+    color: #c8d8f0;
+  }
+  .pm-btn:disabled { cursor: not-allowed; opacity: 0.55; }
+  /* Selected state — each mode adopts its own palette so the operator
+     can scan "what mode am I in" at a glance even without reading the
+     pill above. */
+  .pm-btn.pm-on.pm-off   { background: rgba(74, 222, 128, 0.18); color: #4ade80; border-color: rgba(74, 222, 128, 0.55); }
+  .pm-btn.pm-on.pm-soft  { background: rgba(251, 191, 36, 0.18); color: #fbbf24; border-color: rgba(251, 191, 36, 0.55); }
+  .pm-btn.pm-on.pm-hard  { background: rgba(248, 113, 113, 0.20); color: #f87171; border-color: rgba(248, 113, 113, 0.55); }
+  .pm-err {
+    color: #f87171;
+    font-size: 0.62rem;
+    padding-top: 0.25rem;
+  }
+  .kv-section {
+    margin-top: 0.4rem;
+    padding-top: 0.35rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+  }
+  .kv-indent {
+    padding-left: 0.6rem;
+  }
+  .kv-muted {
+    color: #6e8198;
+    font-size: 0.62rem;
+    font-style: italic;
+  }
+  .pm-inval-btn {
+    margin-left: auto;
+    padding: 0.18rem 0.45rem;
+    font-size: 0.58rem;
+    font-weight: 600;
+    background: rgba(56, 189, 248, 0.10);
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    border-radius: 2px;
+    color: #7dd3fc;
+    cursor: pointer;
+  }
+  .pm-inval-btn:hover:not(:disabled) {
+    background: rgba(56, 189, 248, 0.20);
+  }
+  .pm-inval-btn:disabled { cursor: not-allowed; opacity: 0.5; }
+  .pm-inval-all {
+    background: rgba(248, 113, 113, 0.10);
+    border-color: rgba(248, 113, 113, 0.4);
+    color: #f87171;
+  }
+  .pm-inval-all:hover:not(:disabled) {
+    background: rgba(248, 113, 113, 0.20);
   }
 
   /* Empty state */
