@@ -184,7 +184,7 @@ def _option_moneyness(ctx, row):
     if not parsed or parsed.get('kind') != 'opt':
         return (None, None)
     spots = getattr(ctx, 'spot_prices', None) or {}
-    spot = spots.get(parsed.get('underlying') or '')
+    spot = spots.get(parsed.get('root') or '')
     if spot is None or spot <= 0:
         return (None, None)
     strike = parsed.get('strike')
@@ -285,7 +285,7 @@ def _scope_positions_expiring_today_mcx_unhedged(ctx):
         parsed = _parsed_or_none(r.get('tradingsymbol') or '')
         if not parsed:
             continue
-        key = f"{parsed.get('underlying', '')}_{parsed.get('expiry', '')}"
+        key = f"{parsed.get('root', '')}_{parsed.get('expiry', '')}"
         groups.setdefault(key, []).append((r, parsed))
     out = []
     for entries in groups.values():

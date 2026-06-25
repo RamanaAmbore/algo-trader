@@ -66,7 +66,9 @@ def parse_tradingsymbol(symbol: str) -> Optional[dict]:
     """
     Parse a Kite-style F&O tradingsymbol. Returns a dict with:
         kind:        'opt' | 'fut'
-        underlying:  underlying root (e.g. 'NIFTY')
+        root:        symbol family prefix / root (e.g. 'NIFTY', 'GOLDM').
+                     NOT the price-source underlying — for that, use
+                     underlying_ltp_key(root) or option_underlying_quote_key().
         opt_type:    'CE' | 'PE'   (options only)
         strike:      float          (options only)
         expiry:      datetime.date  (best-effort — last Thursday for
@@ -88,7 +90,7 @@ def parse_tradingsymbol(symbol: str) -> Optional[dict]:
             month  = _MONTH_BY_CODE_LONG[mon]
             year   = 2000 + int(yy)
             expiry = _monthly_expiry(und, year, month)
-            return {"kind": "opt", "underlying": und,
+            return {"kind": "opt", "root": und,
                     "opt_type": opt, "strike": float(strike),
                     "expiry": expiry}
         except Exception:
@@ -102,7 +104,7 @@ def parse_tradingsymbol(symbol: str) -> Optional[dict]:
             year   = 2000 + int(yy)
             day    = int(dd)
             expiry = date(year, month, day)
-            return {"kind": "opt", "underlying": und,
+            return {"kind": "opt", "root": und,
                     "opt_type": opt, "strike": float(strike),
                     "expiry": expiry}
         except Exception:
@@ -121,7 +123,7 @@ def parse_tradingsymbol(symbol: str) -> Optional[dict]:
             # fallback so callers that don't pass `leg.expiry` get a
             # consistent (if approximate) date.
             expiry = _last_thursday(year, month)
-            return {"kind": "fut", "underlying": und, "expiry": expiry}
+            return {"kind": "fut", "root": und, "expiry": expiry}
         except Exception:
             pass
 
@@ -264,11 +266,11 @@ def implied_vol(price: float, S: float, K: float, T_years: float,
 # ── Helpers used by the simulator ─────────────────────────────────────
 
 def detect_underlying(symbol: str, row: Optional[dict] = None) -> Optional[str]:
-    """Return the underlying name for a position row, or None if the
+    """Return the root name for a position row, or None if the
     symbol isn't a recognised derivative."""
     parsed = parse_tradingsymbol(symbol)
     if parsed:
-        return parsed["underlying"]
+        return parsed["root"]
     return None
 
 
@@ -809,7 +811,7 @@ def option_quote_key(symbol: str) -> str | None:
     parsed = parse_tradingsymbol(symbol)
     if not parsed:
         return None
-    name = parsed.get("underlying") or ""
+    name = parsed.get("root") or ""
     if is_mcx_underlying(name):
         return f"MCX:{symbol}"
     return f"NFO:{symbol}"
@@ -840,7 +842,7 @@ def option_underlying_quote_key(symbol: str) -> str | None:
     parsed = parse_tradingsymbol(symbol)
     if not parsed:
         return None
-    name = parsed.get("underlying")
+    name = parsed.get("root")
     if not name:
         return None
     if is_mcx_underlying(name):

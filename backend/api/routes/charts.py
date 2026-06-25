@@ -110,7 +110,7 @@ def _classify_symbol(eng, symbol: str) -> tuple[str, str | None]:
     from backend.api.algo.derivatives import parse_tradingsymbol
     parsed = parse_tradingsymbol(symbol)
     if parsed:
-        return ("derivative", parsed["underlying"])
+        return ("derivative", parsed["root"])
     return ("other", None)
 
 

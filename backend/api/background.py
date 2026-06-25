@@ -150,7 +150,7 @@ def _resolve_spot_prices(df_positions: pd.DataFrame) -> dict[str, float]:
         parsed = parse_tradingsymbol(sym)
         if not parsed:
             continue
-        name = parsed.get('underlying')
+        name = parsed.get('root')
         ltp_key = option_underlying_quote_key(sym)
         if name and ltp_key:
             underlyings.setdefault(name, ltp_key)

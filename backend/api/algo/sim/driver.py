@@ -1885,7 +1885,7 @@ class SimDriver:
             r["_parsed"] = parsed
             if not parsed:
                 continue
-            self._positions_by_underlying.setdefault(parsed["underlying"], []).append(r)
+            self._positions_by_underlying.setdefault(parsed["root"], []).append(r)
 
         for name, rows in self._positions_by_underlying.items():
             if name in self._underlyings:
@@ -1915,7 +1915,7 @@ class SimDriver:
             p = r.get("_parsed")
             if not p or p.get("kind") != "opt":
                 continue
-            spot = self._underlyings.get(p["underlying"])
+            spot = self._underlyings.get(p["root"])
             if spot is None:
                 continue
             sigma = calibrate_iv_for_row(r, spot, ref_now=ref_now)
@@ -2309,7 +2309,7 @@ class SimDriver:
             if not parsed or parsed.get("kind") != "opt":
                 continue
             strike = float(parsed.get("strike") or 0)
-            und    = (parsed.get("underlying") or "").upper()
+            und    = (parsed.get("root") or "").upper()
             spot   = float(self._underlyings.get(und) or 0)
             if strike <= 0 or spot <= 0:
                 # No moneyness reference — fall back to flat atm_delta.
@@ -2856,7 +2856,7 @@ class SimDriver:
         parsed = parse_tradingsymbol(symbol)
         if not parsed:
             return None
-        und = parsed["underlying"]
+        und = parsed["root"]
         return und if und in self._underlyings else None
 
     # ── Convenience ──────────────────────────────────────────────────

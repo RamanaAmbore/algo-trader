@@ -457,7 +457,7 @@ class PaperTradeEngine:
                         "ask": float(ask) if ask is not None else None})
             parsed = parse_tradingsymbol(sym)
             if parsed:
-                name = parsed.get("underlying")
+                name = parsed.get("root")
                 # One call handles every flavour — index option →
                 # NSE:NIFTY 50, stock option → NSE:RELIANCE, MCX
                 # commodity option → MCX:<matching-month>FUT. None
@@ -537,7 +537,7 @@ class PaperTradeEngine:
         parsed = parse_tradingsymbol(symbol)
         if not parsed:
             return None
-        und = parsed["underlying"]
+        und = parsed["root"]
         return und if und in self._underlying_history else None
 
     async def recover_from_db(self) -> int:

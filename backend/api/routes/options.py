@@ -1071,11 +1071,11 @@ class OptionsController(Controller):
         # underlyings have no NSE spot ticker — index lookup misses
         # silently and we'd otherwise anchor on the strike).
         S, spot_src, spot_prev_close, _spot_anchor_single = await _resolve_spot(
-            parsed["underlying"], spot,
+            parsed["root"], spot,
             fallback=parsed["strike"],
             expiry_hint=parsed["expiry"],
             option_symbol=sym)
-        _close_time = (23, 30) if is_mcx_underlying(parsed["underlying"]) else (15, 30)
+        _close_time = (23, 30) if is_mcx_underlying(parsed["root"]) else (15, 30)
         T_yrs = days_to_expiry(parsed["expiry"], close_time=_close_time) / 365.0
         # Pass avg_cost AND estimated-BS inputs as last-resort fallbacks
         # so a stale broker quote on an illiquid contract still produces
@@ -1181,7 +1181,7 @@ class OptionsController(Controller):
         return OptionAnalyticsResponse(
             mode=mode,
             symbol=sym,
-            underlying=parsed["underlying"],
+            underlying=parsed["root"],
             opt_type=parsed["opt_type"],
             strike=parsed["strike"],
             expiry=parsed["expiry"].isoformat(),
@@ -1755,7 +1755,7 @@ class OptionsController(Controller):
                     status_code=400,
                     detail=f"'{sym}' isn't a recognised option or futures contract."
                 )
-            underlyings.add(parsed["underlying"])
+            underlyings.add(parsed["root"])
             # Expiry — the operator (frontend instruments cache) wins over
             # parsed-symbol inference. The parser uses NSE F&O's last-
             # Thursday rule which is wrong for MCX commodities.
