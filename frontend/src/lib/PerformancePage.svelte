@@ -10,7 +10,8 @@
   import { fetchHoldings, fetchPositions, fetchFunds } from '$lib/api';
   import { createPerformanceSocket } from '$lib/ws';
   import { bookChanged } from '$lib/data/bookChanged';
-  import { dataCache, authStore } from '$lib/stores';
+  import { authStore } from '$lib/stores';
+  import { positionsStore, holdingsStore, fundsStore } from '$lib/data/marketDataStores.svelte.js';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import GridSearchButton from '$lib/GridSearchButton.svelte';
@@ -813,9 +814,16 @@
         fetchPositions({ fresh }),
         fetchFunds({ fresh }),
       ]);
-      dataCache.holdings  = h;
-      dataCache.positions = p;
-      dataCache.funds     = f;
+      // Feed the module-level singletons so PositionStrip / NavCard / dashboard
+      // benefit from this fetch without re-hitting the broker. The stores'
+      // `parse` strips to `.rows` (and filters TOTAL for funds); we pre-parse
+      // before calling set() so the stored value matches what other consumers
+      // expect when they read store.value.
+      holdingsStore.set(h?.rows ?? []);
+      positionsStore.set(p?.rows ?? []);
+      fundsStore.set((f?.rows ?? []).filter(
+        (/** @type {any} */ x) => x && x.account && x.account !== 'TOTAL'
+      ));
       applyData(h, p, f);
     } catch (e) {
       error = e.message || 'Failed to load data';
@@ -843,8 +851,23 @@
     positionsAllGrid     = makeGrid(positionsAllEl,     positionsCols, [], (r) => openOrderTicket(r, 'positions'));
     fundsGrid            = makeGrid(fundsEl,             fundsCols);
 
-    if (dataCache.holdings && dataCache.positions && dataCache.funds) {
-      applyData(dataCache.holdings, dataCache.positions, dataCache.funds);
+    // Stale-while-revalidate: paint the grids from the module-level store
+    // cache (three-tier: memory → localStorage → broker). The stores init
+    // from localStorage synchronously at module-eval time so the grids
+    // populate before the broker fetch lands. applyData expects the full
+    // API shape ({rows, summary, refreshed_at}); wrap the store arrays back
+    // into that shape so the grid renderers work correctly.
+    {
+      const hp = holdingsStore.value;
+      const pp = positionsStore.value;
+      const fp = fundsStore.value;
+      if (hp?.length || pp?.length || fp?.length) {
+        applyData(
+          { rows: hp ?? [], summary: [] },
+          { rows: pp ?? [], summary: [] },
+          { rows: fp ?? [] },
+        );
+      }
     }
 
     await loadAll();

@@ -20,6 +20,7 @@
     fetchWatchlists, addWatchlistItem,
     batchQuote,
   } from '$lib/api';
+  import { positionsStore, holdingsStore } from '$lib/data/marketDataStores.svelte.js';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import Select        from '$lib/Select.svelte';
@@ -2992,6 +2993,14 @@
   }
 
   async function loadPositions() {
+    // Hydrate the module-level store singletons concurrently with this
+    // page's own fetch so PositionStrip / dashboard benefit from the
+    // round-trip without doubling network cost. The stores' inflight dedup
+    // ensures that if another component already issued positionsStore.load()
+    // within the same tick, both callers share the same Promise.
+    positionsStore.load();
+    holdingsStore.load();
+
     /** @type {Array<any>} */
     const merged = [];
     // Reset the excluded-row totals for this load. Equity intraday

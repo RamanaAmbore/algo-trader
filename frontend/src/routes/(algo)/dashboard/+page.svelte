@@ -18,11 +18,12 @@
   import ActionEventsToggle from '$lib/ActionEventsToggle.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import {
-    fetchPositions, fetchHoldings, fetchRecentAgentEvents,
-    fetchFunds, fetchIntradayEquity,
+    fetchRecentAgentEvents,
+    fetchIntradayEquity,
     batchQuote,
     fetchNavLatest,
   } from '$lib/api';
+  import { positionsStore, holdingsStore, fundsStore } from '$lib/data/marketDataStores.svelte.js';
   import { userCaps, userRole, hasCap } from '$lib/rbac';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
@@ -128,15 +129,14 @@
 
   // ── Raw positions + holdings (reused for winners/losers and
   //     the new Equity-card tabs) ─────────────────────────────────
-  // Slice 7h — the raw arrays live in `_positionsRaw` / `_holdingsRaw`;
-  // every downstream consumer reads the `_positions` / `_holdings`
-  // derivations below, which apply the global strategy filter. With
-  // `selectedStrategyId == null` the derivations are identity (every
-  // row passes), so behaviour with no strategy picked is unchanged.
+  // Slice 7h — raw arrays sourced from the module-level marketDataStores
+  // singletons (three-tier: memory → localStorage → broker fetch).
+  // With `selectedStrategyId == null` the derivations below are identity
+  // (every row passes), so behaviour with no strategy picked is unchanged.
   /** @type {any[]} */
-  let _positionsRaw = $state([]);
+  const _positionsRaw = $derived(positionsStore.value ?? []);
   /** @type {any[]} */
-  let _holdingsRaw  = $state([]);
+  const _holdingsRaw  = $derived(holdingsStore.value  ?? []);
   const _matchStrategySym = (/** @type {string} */ sym) => {
     if ($selectedStrategyId == null) return true;
     if ($strategyOpenSymbols.size === 0) return false;
@@ -148,11 +148,12 @@
   const _holdings = $derived(
     _holdingsRaw.filter(r => _matchStrategySym(r?.tradingsymbol || r?.symbol))
   );
-  // Full funds rows (for the Capital-card Funds table). Kept
-  // separate from _margins (which is the cleaned-down gauge
-  // input) so the table can show cash + collateral + net etc.
+  // Full funds rows (for the Capital-card Funds table). Sourced from
+  // fundsStore (three-tier cache, TOTAL row pre-stripped by the store's
+  // parse). Kept separate from _margins (gauge input) so the table can
+  // show cash + collateral + net etc.
   /** @type {any[]} */
-  let _funds     = $state([]);
+  const _funds = $derived(fundsStore.value ?? []);
 
   // Equity card stacks Positions Summary on top and Holdings
   // Summary below — no tabs. The tab variant left ~half the card
@@ -398,10 +399,23 @@
   let _equityPoints = $state([]);
 
   // ── Row 1: Margin utilisation gauges ──────────────────────────────
+  // Derived from _funds (which itself derives from fundsStore) so the
+  // gauge rows always stay in sync with the Capital-card Funds table
+  // without an extra fetch.
   /**
    * @type {{ account: string, used: number, avail: number, util_pct: number }[]}
    */
-  let _margins = $state([]);
+  const _margins = $derived(_funds.map(r => {
+    const used  = Number(r.used_margin) || 0;
+    const avail = Number(r.avail_margin ?? r.available_margin) || 0;
+    const total = used + avail;
+    return {
+      account: String(r.account),
+      used,
+      avail,
+      util_pct: total > 0 ? used / total : 0,
+    };
+  }));
 
   // ── Derived hero values ────────────────────────────────────────────
   const _todayPct = $derived(
@@ -956,34 +970,6 @@
   // via visibleInterval below.
   let _equityPollStop;
 
-  async function _fetchMargins() {
-    try {
-      const res = await fetchFunds();
-      // FundsResponse is `{rows, refreshed_at}`; older callers also
-      // hand us a bare array. Accept either.
-      const rows = Array.isArray(res) ? res : (res?.rows ?? []);
-      if (!Array.isArray(rows) || !rows.length) {
-        _margins = []; _funds = []; return;
-      }
-      // Keep full funds rows for the Capital-card table.
-      _funds = rows.filter(r => r.account && r.account !== 'TOTAL');
-      // Build gauge rows. Backend field is `avail_margin` (Polars
-      // rename of the broker's `net` column); older callers used
-      // `available_margin`. Try both.
-      _margins = _funds.map(r => {
-        const used  = Number(r.used_margin) || 0;
-        const avail = Number(r.avail_margin ?? r.available_margin) || 0;
-        const total = used + avail;
-        return {
-          account: String(r.account),
-          used,
-          avail,
-          util_pct: total > 0 ? used / total : 0,
-        };
-      });
-    } catch (_) { /* leave _margins / _funds at last-good; banner stays stale-silent */ }
-  }
-
   // Operator-initiated full-page refresh — drives the RefreshButton in
   // the page header. Fires every loader the dashboard owns so a click
   // refreshes the entire page in one go. Spinner stays busy until the
@@ -996,7 +982,7 @@
       await Promise.all([
         loadHero(),
         _fetchEquity(),
-        _fetchMargins(),
+        fundsStore.load({ force: true }),
         _fetchNav(),
       ]);
     } finally {
@@ -1032,27 +1018,21 @@
 
   async function loadHero() {
     try {
-      const [positions, holdings, events] = await Promise.all([
-        fetchPositions().catch(() => null),
-        fetchHoldings().catch(() => null),
+      // Positions + holdings flow through the module-level store singletons.
+      // _positionsRaw / _holdingsRaw are $derived from the stores so they
+      // update reactively once each load() resolves — no manual assignment.
+      // funds also flows through fundsStore; _funds + _margins are $derived.
+      const [, , events] = await Promise.all([
+        positionsStore.load().catch(() => null),
+        holdingsStore.load().catch(() => null),
         fetchRecentAgentEvents(100).catch(() => []),
       ]);
 
-      // PositionsResponse / HoldingsResponse are `{rows, summary,
-      // refreshed_at}`. Older fixtures handed us bare arrays — accept
-      // either. The previous Array.isArray(...) guard silently emptied
-      // the state when the actual {rows} object came back, which is
-      // why Positions and Holdings showed 0 in the Equity card even
-      // when the broker had open trades.
-      _positionsRaw = Array.isArray(positions) ? positions : (positions?.rows ?? []);
-      _holdingsRaw  = Array.isArray(holdings)  ? holdings  : (holdings?.rows  ?? []);
-
-      // _todayPnl + _startingNav are reactive derivations now (see
-      // top of file). They scope to the same `_accountFilter(...
-      // _eqAccounts)` the Equity tab's Positions/Holdings summary
-      // uses, so the chart stat overlay numbers and the Equity tab
-      // TOTAL row can never drift apart when the operator picks an
-      // account filter.
+      // _todayPnl + _startingNav are reactive derivations (see top of file).
+      // They scope to the same `_accountFilter(... _eqAccounts)` the Equity
+      // tab's Positions/Holdings summary uses, so the chart stat overlay
+      // numbers and the Equity tab TOTAL row can never drift apart when the
+      // operator picks an account filter.
 
       // Agent fires today (IST midnight boundary).
       const todayStart = istMidnightTodayAsDate();
@@ -1071,12 +1051,12 @@
       // loading-transition stamp wouldn't catch it.
       lastRefreshAt.set(Date.now());
 
-      // Parallel: margins + conn health + NIFTY quote.
+      // Parallel: funds + NIFTY quote.
       // _fetchEquity intentionally NOT in this batch — it has its
       // own independent 15 s poll wired in onMount so a hero-batch
       // failure can't stall the equity-curve refresh cycle.
       await Promise.all([
-        _fetchMargins(),
+        fundsStore.load(),
         _fetchNifty(),
       ]);
     } catch (_) { /* leave previous values up */ }

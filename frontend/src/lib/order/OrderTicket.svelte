@@ -30,7 +30,8 @@
   import Select from '$lib/Select.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
-  import { placeTicketOrder, previewOrderMargin, fetchAccounts, fetchFunds, modifyOrder, previewTicketTemplate, fetchStrategies } from '$lib/api';
+  import { placeTicketOrder, previewOrderMargin, fetchAccounts, modifyOrder, previewTicketTemplate, fetchStrategies } from '$lib/api';
+  import { fundsStore } from '$lib/data/marketDataStores.svelte.js';
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import { capWarningFor } from '$lib/data/brokerCapWarnings';
   import { getDefaultAccount } from '$lib/data/accounts';
@@ -1066,13 +1067,14 @@
 
   // Per-account funds — used to render the "Avail margin" pill next to
   // the account picker so the operator can see whether the chosen
-  // account has enough room to place this order. Populated lazily when
-  // the modal mounts (PAPER / LIVE submits need it; DRAFT doesn't but
-  // the cost is one cached fetch). Each row carries:
-  //   { account, cash, avail_margin, used_margin, collateral }
+  // account has enough room to place this order. Sourced from the
+  // module-level fundsStore singleton (three-tier cache, TOTAL row
+  // pre-stripped). On mount _refetchFunds() calls fundsStore.load()
+  // which either serves from cache instantly or fires a broker fetch.
+  // Each row carries: { account, cash, avail_margin, used_margin, collateral }
   /** @type {Array<{account:string, cash:number, avail_margin:number,
    *                used_margin:number, collateral:number}>} */
-  let _funds = $state([]);
+  const _funds = $derived(fundsStore.value ?? []);
   // Pick the funds row to surface in the pill. Order:
   //   1. exact match on the currently-picked account (most useful)
   //   2. summed totals across every loaded fund row (fallback when
@@ -1831,13 +1833,10 @@
   });
 
   function _refetchFunds() {
-    fetchFunds()
-      .then(/** @param {any} r */ (r) => {
-        _funds = (r?.rows || []).filter(/** @param {any} f */ (f) =>
-          f && f.account && f.account !== 'TOTAL'
-        );
-      })
-      .catch(() => { /* silent — pill stays hidden */ });
+    // Delegates to the module-level store singleton. force=true bypasses
+    // the inflight dedup so a manual refresh always gets a fresh broker
+    // snapshot rather than riding an existing in-flight request.
+    fundsStore.load({ force: true });
   }
 
   // Host-triggered refresh — when refreshKey bumps, re-fetch funds so
