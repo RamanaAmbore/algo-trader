@@ -5,6 +5,7 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import StaleBanner from '$lib/StaleBanner.svelte';
+  import { toast } from '$lib/data/toastStore.svelte.js';
   import {
     fetchAgents, activateAgent, deactivateAgent, updateAgent, createAgent,
     fetchRecentAgentEvents, fetchSimTicks, fetchSimEvents, fetchSimStatus,
@@ -179,11 +180,15 @@
   }
 
   async function toggle(/** @type {any} */ agent) {
+    const next = agent.status === 'inactive' ? 'active' : 'inactive';
     try {
       if (agent.status === 'inactive') await activateAgent(agent.slug);
       else await deactivateAgent(agent.slug);
+      toast.success(`${agent.name}: ${next === 'active' ? 'activated' : 'deactivated'}`);
       await loadAgents();
-    } catch (e) { error = e.message; }
+    } catch (e) {
+      toast.error(`Toggle failed: ${e.message}`);
+    }
   }
 
   /** Flip the agent's trade mode between paper and live in-place.
@@ -214,9 +219,10 @@
     agents = [...agents];
     try {
       await updateAgent(agent.slug, { trade_mode: next });
+      toast.success(`${agent.name}: trade mode → ${next.toUpperCase()}`);
       await loadAgents();
     } catch (e) {
-      error = e.message;
+      toast.error(`Trade mode update failed: ${e.message}`);
       // Roll back if the PATCH failed.
       agent.trade_mode = cur;
       agents = [...agents];
@@ -411,8 +417,11 @@
       });
       editing = null;
       validationErrors = []; validationGrammar = '';
+      toast.success(`Agent saved: ${editForm.name}`);
       await loadAgents();
-    } catch (e) { error = e.message; }
+    } catch (e) {
+      toast.error(`Save failed: ${e.message}`);
+    }
   }
 
   function connectWS() {
@@ -546,13 +555,13 @@
     // suppression and schedule gates bypassed so every tick that matches
     // fires. Flip the log panel to the Simulator tab so the operator sees
     // the tick stream immediately.
-    error = '';
     try {
       await startSimForAgent(agent.id);
       logTab = 'simulator';
+      toast.info(`Sim started for: ${agent.name}`);
       loadSimLog();
     } catch (e) {
-      error = e.message || 'Sim start failed.';
+      toast.error(`Sim start failed: ${e.message || 'unknown error'}`);
     }
   }
 

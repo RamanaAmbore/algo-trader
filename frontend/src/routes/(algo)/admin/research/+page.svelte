@@ -24,6 +24,7 @@
     deleteResearchThread, fetchResearchDrafts,
     mintConfirmToken, fetchResearchAudit,
   } from '$lib/api';
+  import { toast } from '$lib/data/toastStore.svelte.js';
   import InfoHint from '$lib/InfoHint.svelte';
   import Select from '$lib/Select.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -138,7 +139,7 @@
     try {
       selected = await fetchResearchThread(id);
     } catch (e) {
-      error = e.message;
+      toast.error(`Failed to load thread: ${e.message}`);
     }
   }
 
@@ -154,9 +155,10 @@
     try {
       await deleteResearchThread(id);
       if (selected?.id === id) selected = null;
+      toast.success('Thread deleted');
       await loadThreads();
     } catch (e) {
-      error = e.message;
+      toast.error(`Delete failed: ${e.message}`);
     }
   }
 
@@ -253,16 +255,12 @@
     },
   }, null, 2));
 
-  /** @type {string} */
-  let copyToast = $state('');
   async function copy(/** @type {string} */ s, /** @type {string} */ label) {
     try {
       await navigator.clipboard.writeText(s);
-      copyToast = `${label} copied`;
-      setTimeout(() => { copyToast = ''; }, 1400);
+      toast.success(`${label} copied`, { timeoutMs: 1500 });
     } catch (_) {
-      copyToast = 'copy failed';
-      setTimeout(() => { copyToast = ''; }, 1400);
+      toast.error('Copy failed — clipboard not available');
     }
   }
 
@@ -442,10 +440,6 @@
     {/snippet}
   </EmptyState>
 {:else}
-
-{#if error}
-  <div class="err-banner">{error}</div>
-{/if}
 
 <AutomationTabs />
 
@@ -833,9 +827,6 @@
       </ul>
     </article>
 
-    {#if copyToast}
-      <div class="copy-toast">{copyToast}</div>
-    {/if}
   </div>
 {/if}
 
@@ -1531,20 +1522,7 @@
   }
   .safety-list li { margin-bottom: 0.25rem; }
 
-  .copy-toast {
-    position: fixed;
-    bottom: 1.5rem;
-    right: 1.5rem;
-    background: rgba(34, 197, 94, 0.18);
-    border: 1px solid rgba(34, 197, 94, 0.45);
-    color: #4ade80;
-    padding: 0.4rem 0.8rem;
-    border-radius: 0.4rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
-    font-weight: 700;
-    z-index: 100;
-  }
+  /* .copy-toast removed — migrated to canonical toast system (slice AO). */
 
   /* ── Confidence pills ─────────────────────────────────────────── */
   .pill {

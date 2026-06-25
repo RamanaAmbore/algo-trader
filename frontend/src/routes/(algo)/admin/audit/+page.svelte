@@ -21,6 +21,7 @@
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
+  import { toast } from '$lib/data/toastStore.svelte.js';
 
   /** @typedef {{
    *   id: number, actor_user_id: number|null, actor_username: string,
@@ -86,6 +87,7 @@
       total = Number(r?.total ?? 0);
     } catch (e) {
       error = e?.message || 'Audit fetch failed';
+      toast.error(`Audit load failed: ${e?.message || 'unknown error'}`);
     } finally {
       loading = false;
     }
@@ -240,10 +242,6 @@
   </div>
 </div>
 
-{#if error}
-  <div class="audit-error">{error}</div>
-{/if}
-
 {#if loading}
   <LoadingSkeleton variant="grid-row" rows={8} height="1.2rem" />
 {:else if rows.length === 0}
@@ -336,14 +334,7 @@
   .audit-finput-narrow { width: 5rem; }
   .audit-fbtns { display: flex; gap: 0.4rem; margin-left: auto; }
 
-  .audit-error {
-    padding: 0.5rem 0.65rem;
-    background: rgba(248, 113, 113, 0.10);
-    border: 1px solid rgba(248, 113, 113, 0.40);
-    border-radius: 4px;
-    color: #fca5a5; font-size: 0.7rem;
-    margin-bottom: 0.7rem;
-  }
+  /* .audit-error removed — fetch failures converted to toasts (slice AO). */
 
   .audit-table-wrap {
     overflow-x: auto;

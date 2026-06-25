@@ -24,6 +24,7 @@
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
+  import { toast } from '$lib/data/toastStore.svelte.js';
 
   /** @typedef {{
    *   id:number, created_at:string, account:string, symbol:string,
@@ -105,7 +106,10 @@
         total         = r?.total ?? 0;
         fundsEarliest = r?.earliest_date ?? null;
       }
-    } catch (e) { error = e?.message || 'Load failed'; }
+    } catch (e) {
+      error = e?.message || 'Load failed';
+      toast.error(`History load failed: ${e?.message || 'unknown error'}`);
+    }
     finally { loading = false; }
   }
 
@@ -135,33 +139,26 @@
     }
   });
 
-  // Backfill state for the Dhan ledger pull. Endpoint returns 501
-  // until the broker adapter wires `funds_ledger()` — the UI
-  // surfaces that 501 message inline so the operator sees the
-  // status without a generic toast.
+  // Backfill state for the Dhan ledger pull.
   let bfBusy = $state(false);
-  let bfMsg  = $state(/** @type {{kind:'ok'|'err', text:string}|null} */ (null));
   let bfAccount = $state('');
   async function runBackfill() {
     if (bfBusy) return;
     if (!bfAccount.trim()) {
-      bfMsg = { kind: 'err', text: 'Pick an account first.' };
+      toast.warning('Pick an account first.');
       return;
     }
-    bfBusy = true; bfMsg = null;
+    bfBusy = true;
     try {
       const r = await backfillHistoryFunds({
         account:   bfAccount.trim(),
         from_date: fFromDate,
         to_date:   fToDate,
       });
-      bfMsg = {
-        kind: 'ok',
-        text: `Backfill: +${r.rows_added} added, ${r.rows_skipped} skipped (${r.broker_id}) — ${r.detail}`,
-      };
+      toast.success(`Backfill: +${r.rows_added} added, ${r.rows_skipped} skipped (${r.broker_id})`);
       if (r.rows_added > 0) await load();
     } catch (e) {
-      bfMsg = { kind: 'err', text: e?.message || 'Backfill failed' };
+      toast.error(`Backfill failed: ${e?.message || 'unknown error'}`);
     } finally { bfBusy = false; }
   }
 
@@ -278,10 +275,6 @@
   {/if}
   <button class="btn-primary" onclick={applyFilters}>Apply</button>
 </div>
-
-{#if error}
-  <div class="hist-error">{error}</div>
-{/if}
 
 {#if loading}
   <LoadingSkeleton variant="grid-row" rows={7} height="1.3rem" />
@@ -412,11 +405,6 @@
             disabled={bfBusy} onclick={runBackfill}>
       {bfBusy ? 'Backfilling…' : 'Pull ledger ↓'}
     </button>
-    {#if bfMsg}
-      <span class="hist-backfill-msg hist-backfill-msg-{bfMsg.kind}">
-        {bfMsg.text}
-      </span>
-    {/if}
   </div>
   {#if !loading && fundsRows.length === 0}
     <EmptyState title="No funds rows" hint="No data in this date range. Use Pull ledger to backfill Dhan, or wait for the daily capture." icon="chart" />
@@ -469,15 +457,9 @@
 {/if}
 
 <style>
-  .hist-error {
-    padding: 0.5rem 0.65rem;
-    background: rgba(248, 113, 113, 0.10);
-    border: 1px solid rgba(248, 113, 113, 0.40);
-    border-radius: 4px;
-    color: #fca5a5; font-size: 0.7rem; margin-bottom: 0.7rem;
-  }
-  /* .hist-empty rules removed — access-denied panel migrated to
-     EmptyState component (slice AE). */
+  /* .hist-error + .hist-empty rules removed — errors converted to
+     toasts (slice AO); access-denied panel migrated to EmptyState
+     component (slice AE). */
 
   .hist-filters {
     display: flex; flex-wrap: wrap; gap: 0.55rem;
@@ -617,13 +599,6 @@
     padding: 0.35rem 0.8rem;
     font-size: 0.7rem; font-weight: 700;
   }
-  .hist-backfill-msg {
-    font-size: 0.62rem;
-    font-family: ui-monospace, monospace;
-  }
-  .hist-backfill-msg-ok  { color: #4ade80; }
-  .hist-backfill-msg-err { color: #fca5a5; }
-
   .hist-pager {
     display: flex; align-items: center; gap: 0.6rem;
     color: #c8d8f0;

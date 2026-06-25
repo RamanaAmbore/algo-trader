@@ -35,6 +35,7 @@
   import CollapseButton     from '$lib/CollapseButton.svelte';
   import DefaultSizeButton  from '$lib/DefaultSizeButton.svelte';
   import FullscreenButton   from '$lib/FullscreenButton.svelte';
+  import { toast } from '$lib/data/toastStore.svelte.js';
 
   let fragments = $state(/** @type {any[]} */ ([]));
   let filterKind = $state(/** @type {'all'|'notify'|'condition'} */ ('all'));
@@ -125,6 +126,7 @@
         await patchAgentFragment(editingId, {
           body, description: formDescription,
         });
+        toast.success(`Template saved: ${formName}`);
       } else {
         await createAgentFragment({
           kind: formKind,
@@ -132,11 +134,13 @@
           body,
           description: formDescription,
         });
+        toast.success(`Template created: ${formName.trim().toLowerCase()}`);
       }
       resetForm();
       await load();
     } catch (e) {
       formError = e.message || 'save failed';
+      toast.error(`Save failed: ${e.message || 'unknown error'}`);
     } finally {
       busy = false;
     }
@@ -144,11 +148,13 @@
 
   async function toggleActive(/** @type {any} */ f) {
     busy = true;
+    const next = !f.is_active;
     try {
-      await patchAgentFragment(f.id, { is_active: !f.is_active });
+      await patchAgentFragment(f.id, { is_active: next });
+      toast.success(`Template ${next ? 'activated' : 'deactivated'}: ${f.name}`);
       await load();
     } catch (e) {
-      error = e.message || 'toggle failed';
+      toast.error(`Toggle failed: ${e.message || 'unknown error'}`);
     } finally {
       busy = false;
     }
@@ -165,9 +171,10 @@
     busy = true;
     try {
       await deleteAgentFragment(f.id);
+      toast.success(`Template deleted: ${f.name}`);
       await load();
     } catch (e) {
-      error = e.message || 'delete failed';
+      toast.error(`Delete failed: ${e.message || 'unknown error'}`);
     } finally {
       busy = false;
     }
@@ -178,6 +185,9 @@
     try {
       await reloadFragments();
       await load();
+      toast.success('Grammar reloaded');
+    } catch (e) {
+      toast.error(`Reload failed: ${e.message || 'unknown error'}`);
     } finally { busy = false; }
   }
 </script>

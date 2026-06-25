@@ -36,6 +36,7 @@
     deleteOrderTemplate,
   } from '$lib/api';
   import { loadOrderTemplates, reloadOrderTemplates } from '$lib/data/templates';
+  import { toast } from '$lib/data/toastStore.svelte.js';
 
   let templates = $state(/** @type {any[]} */ ([]));
   let loading = $state(true);
@@ -188,9 +189,11 @@
       const payload = _payloadFromForm();
       await patchOrderTemplate(t.id, payload);
       templates = await reloadOrderTemplates();
+      toast.success(`Template saved: ${formName}`);
       resetForm();
     } catch (e) {
       formError = e.message || 'save failed';
+      toast.error(`Save failed: ${e.message || 'unknown error'}`);
     } finally {
       busy = false;
     }
@@ -205,9 +208,11 @@
       // tp_pct + sl_pct + wing_* default to null when blank — that's fine
       await createOrderTemplate(payload);
       templates = await reloadOrderTemplates();
+      toast.success(`Template created: ${formName}`);
       resetForm();
     } catch (e) {
       formError = e.message || 'create failed';
+      toast.error(`Create failed: ${e.message || 'unknown error'}`);
     } finally {
       busy = false;
     }
@@ -226,8 +231,9 @@
     try {
       await deleteOrderTemplate(t.id);
       templates = await reloadOrderTemplates();
+      toast.success(`Template deleted: ${t.name}`);
     } catch (e) {
-      error = e.message || 'delete failed';
+      toast.error(`Delete failed: ${e.message || 'unknown error'}`);
     }
   }
 

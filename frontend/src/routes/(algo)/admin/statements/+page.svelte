@@ -23,6 +23,7 @@
   import Select from '$lib/Select.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
+  import { toast } from '$lib/data/toastStore.svelte.js';
 
   /** @type {{
    *   ask: (opts: any) => Promise<boolean>,
@@ -116,9 +117,13 @@
         year: row.period_year,
         month: row.period_month,
       });
-      if (r.status === 'failed' && r.error) error = r.error;
+      if (r.status === 'failed' && r.error) {
+        toast.error(`Send failed: ${r.error}`);
+      } else {
+        toast.success(`Statement sent: ${row.display_name} — ${_periodLabel()}`);
+      }
       await load();
-    } catch (e) { error = e?.message || 'Send failed'; }
+    } catch (e) { toast.error(`Send failed: ${e?.message || 'unknown error'}`); }
     finally { busyRow = null; }
   }
 
@@ -133,8 +138,9 @@
     busyRow = row.user_id; error = '';
     try {
       await deleteStatementRow(row.id);
+      toast.success(`Deleted audit row: ${row.display_name} — ${_periodLabel()}`);
       await load();
-    } catch (e) { error = e?.message || 'Delete failed'; }
+    } catch (e) { toast.error(`Delete failed: ${e?.message || 'unknown error'}`); }
     finally { busyRow = null; }
   }
 
@@ -154,7 +160,7 @@
       const dlUrl = URL.createObjectURL(blob);
       window.open(dlUrl, '_blank');
       setTimeout(() => URL.revokeObjectURL(dlUrl), 60_000);
-    } catch (e) { error = e?.message || 'Preview failed'; }
+    } catch (e) { toast.error(`Preview failed: ${e?.message || 'unknown error'}`); }
   }
 
   function _periodLabel() {
@@ -193,10 +199,6 @@
     <PageHeaderActions />
   </span>
 </div>
-
-{#if error}
-  <div class="ms-error">{error}</div>
-{/if}
 
 <section class="ms-controls">
   <label class="ms-field">
@@ -298,15 +300,7 @@
 <ConfirmModal bind:this={confirmRef} />
 
 <style>
-  .ms-error {
-    padding: 0.5rem 0.65rem;
-    background: rgba(248, 113, 113, 0.10);
-    border: 1px solid rgba(248, 113, 113, 0.40);
-    border-radius: 4px;
-    color: #fca5a5;
-    font-size: 0.7rem;
-    margin-bottom: 0.7rem;
-  }
+  /* .ms-error removed — action failures converted to toasts (slice AO). */
 
   .ms-controls {
     display: flex; gap: 0.6rem; align-items: flex-end; flex-wrap: wrap;
