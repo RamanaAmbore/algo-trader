@@ -10,6 +10,7 @@
   import { aggCompact } from '$lib/format';
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
+  import { cachedRead, cachedWrite, TTL } from '$lib/data/persistentCache';
 
   let positions = $state(/** @type {any[]} */ ([]));
   let holdings  = $state(/** @type {any[]} */ ([]));
@@ -20,6 +21,8 @@
 
   async function loadOnce() {
     try {
+      // Tier 1: in-session dataCache (lives only as long as the JS module
+      // is loaded — survives navigation, dies on reload).
       if (dataCache.positions?.rows) positions = dataCache.positions.rows;
       if (dataCache.holdings?.rows)  holdings  = dataCache.holdings.rows;
       if (dataCache.funds?.rows) {
@@ -27,16 +30,34 @@
           (/** @type {any} */ x) => x && x.account && x.account !== 'TOTAL'
         );
       }
+      // Tier 2: persistent localStorage — survives reload + deploy. The
+      // operator's "data is retained during deployment" requirement
+      // sits here. Only consulted when in-session dataCache is empty;
+      // skipped silently if expired/missing.
+      if (!positions.length) {
+        const cP = cachedRead('strip.positions');
+        if (cP?.value && Array.isArray(cP.value)) positions = cP.value;
+      }
+      if (!holdings.length) {
+        const cH = cachedRead('strip.holdings');
+        if (cH?.value && Array.isArray(cH.value)) holdings = cH.value;
+      }
+      if (!funds.length) {
+        const cF = cachedRead('strip.funds');
+        if (cF?.value && Array.isArray(cF.value)) funds = cF.value;
+      }
       const [p, h, f] = await Promise.allSettled([
         fetchPositions(), fetchHoldings(), fetchFunds(),
       ]);
       if (p.status === 'fulfilled') {
         positions = p.value?.rows || [];
         dataCache.positions = p.value;
+        if (positions.length) cachedWrite('strip.positions', positions, TTL.minute);
       }
       if (h.status === 'fulfilled') {
         holdings = h.value?.rows || [];
         dataCache.holdings = h.value;
+        if (holdings.length) cachedWrite('strip.holdings', holdings, TTL.minute);
       }
       if (f.status === 'fulfilled') {
         // /api/funds emits a TOTAL row alongside per-account rows;
@@ -45,6 +66,7 @@
           (/** @type {any} */ x) => x && x.account && x.account !== 'TOTAL'
         );
         dataCache.funds = f.value;
+        if (funds.length) cachedWrite('strip.funds', funds, TTL.minute);
       }
     } catch (_) { /* silent — strip stays at last-good values */ }
   }

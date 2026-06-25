@@ -54,6 +54,7 @@
   import { fetchSettings } from '$lib/api';
   import { liveLtp, streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
   import { bookChanged } from '$lib/data/bookChanged';
+  import { cachedRead, cachedWrite, TTL } from '$lib/data/persistentCache';
   import { resolveUnderlying, INDEX_LTP_KEY, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
   import CollapseButton from '$lib/CollapseButton.svelte';
   import FullscreenButton from '$lib/FullscreenButton.svelte';
@@ -1105,6 +1106,10 @@
           sparklines = { ...sparklines, ...res.data };
         }
       }
+      // Persist past-closes for the IST day. Backend already day-evicts;
+      // TTL.day matches that contract. The .value is just the closes
+      // array per symbol — small (~50KB for 100 symbols × 5 closes).
+      cachedWrite('mp.sparklines', sparklines, TTL.day);
     } catch (_) { /* non-fatal — sparklines are cosmetic */ }
   }
 
@@ -1138,6 +1143,23 @@
         if (Array.isArray(parsed) && parsed.length > 0) selectedShow = parsed;
       }
     } catch (_) { /* fall through to default seed */ }
+    // Paint from persistent cache BEFORE firing the network fetches.
+    // localStorage-backed; survives reload + deploy (operator: "the
+    // data is retained during deployment"). Each entry carries its
+    // own TTL — TTL.day for sparkline closes (static for the IST day),
+    // TTL.minute for positions/holdings (refreshed aggressively on
+    // mount anyway, the cache is only for instant paint of the grid
+    // shape). The .value is the previously-fetched payload; nothing
+    // here ever overrides the canonical broker fetch that runs in
+    // parallel.
+    {
+      const cPos = cachedRead('mp.positions');
+      if (cPos?.value && Array.isArray(cPos.value)) positions = cPos.value;
+      const cHld = cachedRead('mp.holdings');
+      if (cHld?.value && Array.isArray(cHld.value)) holdings = cHld.value;
+      const cSpk = cachedRead('mp.sparklines');
+      if (cSpk?.value && typeof cSpk.value === 'object') sparklines = cSpk.value;
+    }
     await tick();
     mountGrid();
 
@@ -2256,6 +2278,12 @@
       brokerErr = [pErr, hErr].filter(Boolean).join(' · ');
       positions = (p?.rows || []).slice();
       holdings  = (h?.rows || []).slice();
+      // Persist for instant paint on the next mount (page switch / reload
+      // / deploy). Only write when we actually got rows back — partial
+      // failures (broker error) leave whichever side succeeded cached and
+      // the other side untouched.
+      if (!pErr && positions.length) cachedWrite('mp.positions', positions, TTL.minute);
+      if (!hErr && holdings.length)  cachedWrite('mp.holdings',  holdings,  TTL.minute);
       // Capture the backend's precomputed per-account summary rows
       // (used by the dashboard's summary grid). Excludes the TOTAL
       // synthetic row — we render that separately as pinnedBottomRowData.
