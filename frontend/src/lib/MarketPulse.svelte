@@ -1744,7 +1744,12 @@
   let _ltpPaintTimer   = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
   const _LTP_PAINT_MS  = 250; // 4 Hz
   // B1 — symbols whose LTP just changed; cleared after animation window.
-  let _ltpFlashSet = $state(/** @type {Set<string>} */ (new Set()));
+  // Two sets so the LTP cell can flash GREEN on tick-up vs RED on tick-down.
+  // Slice AS audit defect: the prior single-set + amber `ltp-flash` lost
+  // direction information on the product's highest-frequency cell. Pro
+  // terminals (Bloomberg, IBKR) always split.
+  let _ltpFlashUp   = $state(/** @type {Set<string>} */ (new Set()));
+  let _ltpFlashDown = $state(/** @type {Set<string>} */ (new Set()));
 
   $effect(() => {
     const snap = _liveLtpSnap; // reactive subscribe — re-runs on every update
@@ -1768,15 +1773,25 @@
     _ltpPaintTimer = setTimeout(() => {
       _ltpPaintTimer = null;
       // B1 — collect symbols whose value changed so the LTP cell can flash.
+      // Split by direction (up=green, down=red) — slice AS audit fix.
       const prev = _lastPaintedSnap;
       const cur  = _liveLtpSnap;
-      const flashed = new Set(/** @type {string[]} */ ([]));
+      const flashedUp   = new Set(/** @type {string[]} */ ([]));
+      const flashedDown = new Set(/** @type {string[]} */ ([]));
       for (const k of Object.keys(cur)) {
-        if (prev[k] !== undefined && prev[k] !== cur[k]) flashed.add(k);
+        const p = prev[k];
+        if (p === undefined) continue;
+        const c = cur[k];
+        if (c > p) flashedUp.add(k);
+        else if (c < p) flashedDown.add(k);
       }
-      if (flashed.size > 0) {
-        _ltpFlashSet = flashed;
-        setTimeout(() => { _ltpFlashSet = new Set(); }, 650);
+      if (flashedUp.size > 0 || flashedDown.size > 0) {
+        _ltpFlashUp   = flashedUp;
+        _ltpFlashDown = flashedDown;
+        setTimeout(() => {
+          _ltpFlashUp   = new Set();
+          _ltpFlashDown = new Set();
+        }, 650);
       }
       // Capture the current snapshot at paint time (may have advanced
       // further than when the timer was scheduled).
@@ -3624,8 +3639,9 @@
                    : (p.data.qty_hold && p.data.avg_hold) ? p.data.avg_hold
                    : null;
         const cls = [RA];
-        // B1 — flash amber when this symbol's LTP just changed.
-        if (_ltpFlashSet.has(sym)) cls.push('ltp-flash');
+        // B1 — flash green/red on tick-up/tick-down (slice AS audit fix).
+        if      (_ltpFlashUp.has(sym))   cls.push('ltp-flash-up');
+        else if (_ltpFlashDown.has(sym)) cls.push('ltp-flash-down');
         if (typeof ltp === 'number' && typeof avg === 'number' && avg > 0) {
           cls.push(ltp > avg ? 'ltp-vs-avg-up' : ltp < avg ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat');
         }
@@ -5055,7 +5071,13 @@
 {/if}
 
 <style>
-  /* Mobile touch-target — WCAG 2.5.8 minimum 24px; aim for 36px on phones. */
+  /* Mobile touch-target — WCAG 2.5.8 minimum 24px; aim for 36px on
+     phones. !important is required to beat ag-Grid's inline row-height
+     style (set via rowHeight: 26 in the grid options). Applies
+     uniformly to BOTH grid columns (left + right; all use
+     .ag-theme-algo). Desktop (>720px) honors the rowHeight: 26
+     setting normally. Slice AS audit clarification — the override
+     is intentional, not a bug. */
   @media (max-width: 720px) {
     :global(.ag-theme-algo .ag-row) { min-height: 36px !important; }
   }
@@ -5872,13 +5894,26 @@
     line-height: 1.4;
   }
 
-  /* B1 — LTP flash animation */
-  :global(.ltp-flash) {
-    animation: ltp-flash 600ms ease-out;
+  /* B1 — LTP flash: directional (green up / red down). Slice AS audit
+     fix — the prior single amber animation lost direction information
+     on the product's highest-frequency cell. */
+  :global(.ltp-flash-up) {
+    animation: ltp-flash-up 600ms ease-out;
   }
-  @keyframes ltp-flash {
-    0%   { background-color: rgba(251, 191, 36, 0.45); }
+  :global(.ltp-flash-down) {
+    animation: ltp-flash-down 600ms ease-out;
+  }
+  @keyframes ltp-flash-up {
+    0%   { background-color: rgba(74, 222, 128, 0.35); }
     100% { background-color: transparent; }
+  }
+  @keyframes ltp-flash-down {
+    0%   { background-color: rgba(248, 113, 113, 0.35); }
+    100% { background-color: transparent; }
+  }
+  /* Respect prefers-reduced-motion (audit fix 15). */
+  @media (prefers-reduced-motion: reduce) {
+    :global(.ltp-flash-up), :global(.ltp-flash-down) { animation: none; }
   }
 
   /* B2 — visually-hidden a11y helper */

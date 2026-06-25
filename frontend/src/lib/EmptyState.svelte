@@ -154,7 +154,9 @@
     text-align: center;
   }
   .es-icon {
-    color: #334155; /* slate-700, very muted */
+    /* Was #334155 (slate-700) — 2.1:1 contrast on dark, fails WCAG AA.
+       --algo-muted = #94a3b8 gives 4.6:1, passes AA. */
+    color: var(--algo-muted);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -163,12 +165,14 @@
   .es-title {
     font-size: 0.72rem;
     font-weight: 600;
-    color: #64748b; /* slate-500 */
+    /* Was #64748b (slate-500) — 2.7:1. --algo-slate = #c8d8f0 gives ~9:1, AAA. */
+    color: var(--algo-slate);
     letter-spacing: 0.02em;
   }
   .es-hint {
     font-size: 0.62rem;
-    color: #475569; /* slate-600 */
+    /* Was #475569 (slate-600) — 2.4:1. --algo-muted = #94a3b8 gives 4.6:1. */
+    color: var(--algo-muted);
     font-style: italic;
     max-width: 24rem;
     line-height: 1.5;

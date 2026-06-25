@@ -425,7 +425,11 @@
 
   </div>
 {:else}
-  <div class="empty-state">No health data available.</div>
+  <EmptyState
+    title="No health data available"
+    hint="Health endpoint returned successfully but the snapshot is empty. Try refresh."
+    icon="chart"
+  />
 {/if}
 
 {/if}
@@ -682,15 +686,6 @@
     background: rgba(248, 113, 113, 0.20);
   }
 
-  /* Empty state */
-  .empty-state {
-    padding: 2rem;
-    text-align: center;
-    color: #4a5a70;
-    font-size: 0.7rem;
-    font-family: ui-monospace, monospace;
-    background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
-    border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 4px;
-  }
+  /* .empty-state CSS removed — slice AS audit fix migrated the
+     no-health-data branch to the canonical EmptyState component. */
 </style>

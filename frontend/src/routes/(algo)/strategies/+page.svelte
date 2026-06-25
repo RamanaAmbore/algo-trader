@@ -240,7 +240,11 @@
         {:else}
           <tr class:strat-row-inactive={!r.is_active}>
             <td class="td-slug">
-              <a class="strat-link" href={`/strategies/${r.id}`}>{r.slug}</a>
+              <!-- /strategies/[id] route doesn't exist yet (per-strategy
+                   detail page lands in slice 7 when the ledger ships).
+                   Render as plain text until then so the link doesn't 404.
+                   Slice AS audit fix. -->
+              <span class="strat-slug">{r.slug}</span>
             </td>
             <td>{r.name}</td>
             <td>{r.owner_username ?? '—'}</td>
@@ -342,8 +346,7 @@
   .strat-table td.td-slug {
     color: #fbbf24; font-weight: 700; font-family: ui-monospace, monospace;
   }
-  .strat-link { color: #fbbf24; text-decoration: none; }
-  .strat-link:hover { text-decoration: underline; color: #fcd34d; }
+  .strat-slug { color: #fbbf24; font-weight: 600; }
   .strat-table tbody tr:hover td { background: rgba(34, 211, 238, 0.05); }
   .strat-row-inactive td { opacity: 0.5; }
   .strat-row-editing td { background: rgba(251, 191, 36, 0.06); }
