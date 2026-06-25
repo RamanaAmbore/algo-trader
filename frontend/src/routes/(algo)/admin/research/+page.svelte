@@ -434,12 +434,13 @@
 </div>
 
 {#if !_canView}
-  <div class="empty-state">
-    <h2>Access denied</h2>
-    <p>The research lab requires the <code>view_lab</code> capability
-       (admin, trader, or risk role). Your current role is
-       <strong>{$userRole}</strong> — contact an admin to request access.</p>
-  </div>
+  <EmptyState title="Access denied" icon="lock">
+    {#snippet hintBody()}
+      The research lab requires the <code>view_lab</code> capability
+      (admin, trader, or risk role). Your current role is
+      <strong>{$userRole}</strong> — contact an admin to request access.
+    {/snippet}
+  </EmptyState>
 {:else}
 
 {#if error}
@@ -843,24 +844,8 @@
 <ConfirmModal bind:this={confirmRef} />
 
 <style>
-  .empty-state {
-    text-align: center;
-    color: #94a3b8;
-    padding: 2.5rem 1rem;
-  }
-  .empty-state h2 {
-    font-size: 1rem;
-    color: #c8d8f0;
-    margin-bottom: 0.6rem;
-  }
-  .empty-state p { font-size: 0.75rem; line-height: 1.5; }
-  .empty-state code {
-    font-family: ui-monospace, monospace;
-    color: #fbbf24;
-    padding: 0.05rem 0.3rem;
-    border-radius: 3px;
-    background: rgba(251,191,36,0.10);
-  }
+  /* .empty-state rules removed — access-denied panel migrated to
+     EmptyState component (slice AE). */
 
   /* ── Tab strip ────────────────────────────────────────────────── */
   /* Tab buttons rendered by AlgoTabs via global .algo-tab in app.css. */

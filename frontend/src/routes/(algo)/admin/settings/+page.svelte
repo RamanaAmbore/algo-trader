@@ -9,6 +9,7 @@
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
+  import EmptyState from '$lib/EmptyState.svelte';
   import { fetchSettings, updateSetting, resetSetting, fetchWatchlists,
            fetchHedgeProxies, createHedgeProxy, updateHedgeProxy, deleteHedgeProxy,
            computeHedgeProxy } from '$lib/api';
@@ -245,12 +246,13 @@
 </div>
 
 {#if !_canView}
-  <div class="empty-state">
-    <h2>Access denied</h2>
-    <p>Editing settings requires the <code>manage_settings</code> capability
-       (admin role). Your current role is <strong>{$userRole}</strong> —
-       contact an admin to request access.</p>
-  </div>
+  <EmptyState title="Access denied" icon="lock">
+    {#snippet hintBody()}
+      Editing settings requires the <code>manage_settings</code> capability
+      (admin role). Your current role is <strong>{$userRole}</strong> —
+      contact an admin to request access.
+    {/snippet}
+  </EmptyState>
 {:else}
 
 {#if error}<div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">{error}</div>{/if}
@@ -484,24 +486,8 @@
 {/if}
 
 <style>
-  .empty-state {
-    text-align: center;
-    color: #94a3b8;
-    padding: 2.5rem 1rem;
-  }
-  .empty-state h2 {
-    font-size: 1rem;
-    color: #c8d8f0;
-    margin-bottom: 0.6rem;
-  }
-  .empty-state p { font-size: 0.75rem; line-height: 1.5; }
-  .empty-state code {
-    font-family: ui-monospace, monospace;
-    color: #fbbf24;
-    padding: 0.05rem 0.3rem;
-    border-radius: 3px;
-    background: rgba(251,191,36,0.10);
-  }
+  /* .empty-state rules removed — access-denied panel migrated to
+     EmptyState component (slice AE). */
   .settings-row {
     border-bottom: 1px solid rgba(255,255,255,0.05);
   }

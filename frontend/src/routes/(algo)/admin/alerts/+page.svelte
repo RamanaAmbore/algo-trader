@@ -161,13 +161,13 @@
 <AutomationTabs />
 
 {#if !_canView}
-  <div class="empty-state">
-    <h2>Access denied</h2>
-    <p>Alert history requires the <code>view_audit</code> capability
-       (designated, admin, or risk role). Your current role is
-       <strong>{$userRole}</strong> — contact an admin to request
-       access.</p>
-  </div>
+  <EmptyState title="Access denied" icon="lock">
+    {#snippet hintBody()}
+      Alert history requires the <code>view_audit</code> capability
+      (designated, admin, or risk role). Your current role is
+      <strong>{$userRole}</strong> — contact an admin to request access.
+    {/snippet}
+  </EmptyState>
 {:else}
 
 <StaleBanner {error} hasData={rows.length > 0} label="Alert history" />
@@ -516,13 +516,13 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
-  .text-muted { color: #4a5a70; }
+  .text-muted { color: #94a3b8; }
 
   /* Empty state */
   .empty-state {
     padding: 2rem;
     text-align: center;
-    color: #4a5a70;
+    color: #94a3b8;
     font-size: 0.7rem;
     font-family: ui-monospace, monospace;
     background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);

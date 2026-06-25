@@ -193,13 +193,14 @@
 </div>
 
 {#if !_canView}
-  <div class="audit-empty">
-    <h2>Access denied</h2>
-    <p>The audit log requires the <code>view_audit</code> capability
-       (designated, admin, or risk role). Your current role is
-       <strong>{$userRole}</strong> — contact an admin to request
-       access if you need it.</p>
-  </div>
+  <EmptyState title="Access denied" icon="lock">
+    {#snippet hintBody()}
+      The audit log requires the <code>view_audit</code> capability
+      (designated, admin, or risk role). Your current role is
+      <strong>{$userRole}</strong> — contact an admin to request access
+      if you need it.
+    {/snippet}
+  </EmptyState>
 {:else}
 
 <div class="audit-pills">
@@ -309,25 +310,8 @@
 {/if}
 
 <style>
-  .audit-empty {
-    max-width: 32rem; margin: 4rem auto;
-    padding: 1.5rem 2rem;
-    background: rgba(248, 113, 113, 0.06);
-    border: 1px solid rgba(248, 113, 113, 0.30);
-    border-radius: 6px;
-    text-align: center;
-  }
-  .audit-empty h2 {
-    margin: 0 0 0.5rem; color: #fbbf24; font-size: 1.05rem;
-  }
-  .audit-empty p { color: #c8d8f0; font-size: 0.78rem; line-height: 1.5; }
-  .audit-empty code {
-    background: rgba(34, 211, 238, 0.10);
-    border: 1px solid rgba(34, 211, 238, 0.30);
-    border-radius: 3px;
-    padding: 0 0.3rem;
-    color: #67e8f9;
-  }
+  /* .audit-empty rules removed — access-denied panel migrated to
+     EmptyState component (slice AE). */
 
   .audit-filters {
     display: flex; flex-wrap: wrap; gap: 0.55rem 0.8rem;

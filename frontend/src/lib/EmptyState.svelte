@@ -24,6 +24,9 @@
     variant?  'card' | 'compact' — layout size for message mode
     title?    string              — primary empty-state headline (rich mode)
     hint?     string              — explanatory subtext (rich mode)
+    hintBody? snippet             — rich HTML hint (overrides `hint`).
+                                    Use for access-denied panels needing
+                                    <code> / <strong> markup.
     icon?     'inbox' | 'chart' | 'search' | 'lock' = 'inbox'
     action?   { label: string, onClick: () => void }
 
@@ -41,6 +44,14 @@
     title = '',
     /** Rich mode: explanatory subtext. */
     hint = '',
+    /**
+     * Rich mode: hint body snippet for HTML-rich content.
+     * When provided, it renders in place of the `hint` string —
+     * lets callers embed <code>, <strong>, <a>, etc. without
+     * exposing a generic content slot.
+     * @type {import('svelte').Snippet | null}
+     */
+    hintBody = null,
     /**
      * Rich mode: icon key.
      * @type {'inbox' | 'chart' | 'search' | 'lock'}
@@ -94,7 +105,9 @@
       {/if}
     </span>
     <span class="es-title">{title}</span>
-    {#if hint}
+    {#if hintBody}
+      <span class="es-hint">{@render hintBody()}</span>
+    {:else if hint}
       <span class="es-hint">{hint}</span>
     {/if}
     {#if action}
@@ -159,6 +172,28 @@
     font-style: italic;
     max-width: 24rem;
     line-height: 1.5;
+  }
+  /* When hintBody is used, embedded code / strong elements need
+     readable styling against the muted slate background. */
+  .es-hint :global(code) {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.92em;
+    padding: 0.05rem 0.25rem;
+    background: rgba(148, 163, 184, 0.10);
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    border-radius: 2px;
+    color: #94a3b8;
+    font-style: normal;
+  }
+  .es-hint :global(strong) {
+    color: #94a3b8;
+    font-weight: 700;
+    font-style: normal;
+  }
+  .es-hint :global(a) {
+    color: #7dd3fc;
+    text-decoration: underline;
+    text-underline-offset: 2px;
   }
   .es-action {
     margin-top: 0.4rem;

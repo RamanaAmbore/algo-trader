@@ -12,6 +12,7 @@
   import { fetchSystemHealth, setPersistenceMode, invalidatePersistence } from '$lib/api';
   import StaleBanner from '$lib/StaleBanner.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
+  import EmptyState from '$lib/EmptyState.svelte';
 
   /** @type {any} */
   let health      = $state(null);
@@ -119,12 +120,13 @@
 </div>
 
 {#if !_canView}
-  <div class="empty-state">
-    <h2>Access denied</h2>
-    <p>System health requires the <code>view_audit</code> capability
-       (designated, admin, or risk role). Your current role is
-       <strong>{$userRole}</strong> — contact an admin to request access.</p>
-  </div>
+  <EmptyState title="Access denied" icon="lock">
+    {#snippet hintBody()}
+      System health requires the <code>view_audit</code> capability
+      (designated, admin, or risk role). Your current role is
+      <strong>{$userRole}</strong> — contact an admin to request access.
+    {/snippet}
+  </EmptyState>
 {:else}
 
 <StaleBanner {error} hasData={!!health} label="Health snapshot" />

@@ -133,6 +133,7 @@
           {@html dualTsHtml(group.rows[0]?.started_at)}
         </span>
       </div>
+      <div class="iter-scroll">
       <table class="iter-table">
         <thead>
           <tr>
@@ -175,6 +176,7 @@
           {/each}
         </tbody>
       </table>
+      </div>
     </div>
   {/each}
 {/if}
@@ -220,8 +222,18 @@
   .run-meta { color: var(--algo-slate); }
   .run-started { color: var(--algo-muted); margin-left: auto; }
 
+  /* Horizontal scroll wrapper — keeps the wide stats table readable
+     on narrow viewports without breaking the run-card border. The
+     card's overflow:hidden clips the scrollbar to the card's rounded
+     corners; the wrapper itself scrolls under it. */
+  .iter-scroll {
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(126, 151, 184, 0.4) transparent;
+  }
   .iter-table {
     width: 100%;
+    min-width: 38rem;       /* prevents column squeeze on mobile */
     border-collapse: collapse;
     font-family: ui-monospace, monospace;
     font-size: 0.62rem;

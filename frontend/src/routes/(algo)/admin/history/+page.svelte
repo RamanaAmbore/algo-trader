@@ -230,12 +230,13 @@
 </div>
 
 {#if !_canView}
-  <div class="hist-empty">
-    <h2>Access denied</h2>
-    <p>Historical orders / trades / funds require the <code>view_audit</code>
-       capability. Your current role is <strong>{$userRole}</strong> —
-       contact an admin if you need access.</p>
-  </div>
+  <EmptyState title="Access denied" icon="lock">
+    {#snippet hintBody()}
+      Historical orders / trades / funds require the <code>view_audit</code>
+      capability. Your current role is <strong>{$userRole}</strong> —
+      contact an admin if you need access.
+    {/snippet}
+  </EmptyState>
 {:else}
 
 <AlgoTabs
@@ -475,14 +476,8 @@
     border-radius: 4px;
     color: #fca5a5; font-size: 0.7rem; margin-bottom: 0.7rem;
   }
-  .hist-empty {
-    padding: 2rem; text-align: center;
-    color: #7e97b8; font-size: 0.85rem;
-  }
-  .hist-empty h2 {
-    color: #c8d8f0; font-size: 0.85rem; font-weight: 800;
-    margin: 0 0 0.3rem;
-  }
+  /* .hist-empty rules removed — access-denied panel migrated to
+     EmptyState component (slice AE). */
 
   .hist-filters {
     display: flex; flex-wrap: wrap; gap: 0.55rem;
@@ -493,7 +488,7 @@
     display: flex; flex-direction: column; gap: 0.18rem;
     font-size: 0.55rem; font-weight: 700;
     letter-spacing: 0.06em; text-transform: uppercase;
-    color: #7e97b8;
+    color: #94a3b8;
     font-family: ui-monospace, monospace;
   }
   .hist-finput {
@@ -565,7 +560,7 @@
   .hist-table tbody tr:hover td { background: rgba(34, 211, 238, 0.05); }
   .hist-empty-row {
     padding: 2rem; text-align: center;
-    color: #7e97b8; font-style: italic;
+    color: #94a3b8; font-style: italic;
   }
 
   .hist-side {
