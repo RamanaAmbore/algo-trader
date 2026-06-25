@@ -957,9 +957,16 @@
   }
 
   /* ── Navbar ─────────────────────────────────────────────────────────────── */
+  /* Position: fixed (was sticky). Operator: "navbar is not fixed at
+     the top of the viewport. it is moving during scroll." Sticky was
+     becoming detached from viewport top in some scroll contexts (likely
+     a flex containing block edge case in Chrome on mobile). Fixed is
+     unambiguous: pinned to viewport regardless of ancestor setup. */
   .algo-navbar {
-    position: sticky;
+    position: fixed;
     top: 0;
+    left: 0;
+    right: 0;
     z-index: 50;
     background: #0a1020;
     border-bottom: 1px solid #fbbf24;
@@ -1392,13 +1399,12 @@
   /* ── Content ─────────────────────────────────────────────────────────────── */
   .algo-content {
     flex: 1;
-    /* Operator: "there is vertical gap between pinned and pulse
-       heading in pulse. reduce a little bit." — pulled the
-       breathing room from 0.6rem → 0.3rem so first card sits a
-       hair closer to the page-header strip. Earlier complaint
-       was the opposite ("gap too small") so we don't cut below
-       0.3rem. */
-    padding: 2.3rem 0.5rem 1.5rem;
+    /* Top padding = navbar height (3rem = 48px) + page-header strip
+       (1.8rem). Bottom padding = footer height (1.6rem) + safety
+       (0.2rem). Both navbar and footer are now fixed-position so
+       content needs explicit clearance. Horizontal padding 0.5rem
+       aligns the content edge with the navbar/footer inner padding. */
+    padding: calc(3rem + 1.8rem) 0.5rem calc(1.6rem + 0.4rem);
     color: var(--algo-slate);
     /* flex column so descendant containers (e.g. orders page's
        `.oc-page-wrap`) can use `flex: 1` to fill the actual
@@ -1422,13 +1428,14 @@
 
   /* ── Footer ─────────────────────────────────────────────────────────────── */
   .algo-footer {
-    /* Sticky-bottom — mirrors the public `.pub-footer` pattern so on
-       short pages the footer pins to the viewport bottom instead of
-       floating mid-screen above empty space. On long pages it still
-       lands naturally at the document bottom; sticky just keeps it
-       glued to the viewport edge while the operator scrolls. */
-    position: sticky;
+    /* Fixed-bottom — matches the navbar's fixed pattern. Sticky was
+       drifting on some scroll contexts; fixed guarantees the footer
+       stays on the viewport bottom edge. Padding matches .algo-nav-inner
+       (0 0.5rem) so footer left/right edges align with the navbar. */
+    position: fixed;
     bottom: 0;
+    left: 0;
+    right: 0;
     z-index: 40;
     background: #0a1020;
     border-top: 1px solid rgba(251,191,36,0.2);
@@ -1603,6 +1610,16 @@
       font-size: 0.55rem;
       letter-spacing: -0.015em;
     }
+    /* Mobile chrome — keep all three sticky bands (navbar / ps-strip /
+       footer) at the same 0.25rem horizontal padding so their inner
+       content aligns vertically. Drop the algo-content horizontal
+       padding to 0 so cards span the full viewport edge to edge —
+       operator: "overall mobile is using less viewport width because
+       of which there is a lot of wasted space before and after cards
+       on mobile". */
+    .algo-nav-inner { padding: 0 0.25rem; }
+    .algo-footer    { padding: 0 0.25rem; }
+    .algo-content   { padding-left: 0; padding-right: 0; }
   }
 
   /* Algo dark-theme overrides for classes shared with public pages */

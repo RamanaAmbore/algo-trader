@@ -484,21 +484,24 @@
 
 <style>
   .ps-strip {
-    /* Sticky below the navbar (which sits at top:0 z-index:50). 48px is
-       the navbar's natural rendered height (h-12). Explicit height
-       (1.5rem = 24px) keeps the layout math deterministic so the
-       page-header strip below can align flush at top:4.5rem. */
-    position: sticky;
-    top: 48px;
+    /* Fixed band below the navbar (which is also fixed at top:0).
+       49px = 48px navbar height + 1px navbar border-bottom, so the
+       ps-strip sits flush below the navbar's bottom edge with no
+       overlap. Horizontal padding matches .algo-nav-inner /
+       .algo-footer (0 0.5rem) so all three sticky-chrome elements
+       have inner content aligned along the same vertical lines. */
+    position: fixed;
+    top: 49px;
+    left: 0;
+    right: 0;
     z-index: 49;
     display: flex;
     align-items: center;
     justify-content: flex-start;
     gap: 0.9rem;
-    width: 100%;
     height: 1.5rem;
     box-sizing: border-box;
-    padding: 0 0.85rem;
+    padding: 0 0.5rem;
     background: linear-gradient(180deg, #0a1020 0%, #131c33 100%);
     border-bottom: 1px solid var(--algo-amber-border-soft);
     color: var(--algo-slate);
@@ -557,8 +560,10 @@
        phone. We tighten everything globally; values get a slightly
        smaller font; the wrapper allows horizontal scroll as a
        last-resort safety net so nothing clips off-screen on the
-       narrowest devices (~320 px). */
-    .ps-strip   { gap: 0.28rem; padding: 0.25rem 0.4rem;
+       narrowest devices (~320 px). Horizontal padding matches navbar
+       inner + footer on mobile (0 0.25rem) so the inner content
+       aligns left/right across the three chrome bands. */
+    .ps-strip   { gap: 0.28rem; padding: 0 0.25rem;
                   overflow-x: auto; -webkit-overflow-scrolling: touch;
                   scrollbar-width: none; }
     .ps-strip::-webkit-scrollbar { display: none; }
@@ -568,7 +573,7 @@
   }
   @media (max-width: 380px) {
     /* Narrowest phones — drop one more notch. */
-    .ps-strip   { gap: 0.22rem; padding: 0.22rem 0.32rem; }
+    .ps-strip   { gap: 0.22rem; padding: 0 0.2rem; }
     .ps-agg-k   { font-size: 0.46rem; }
     .ps-agg-v   { font-size: 0.55rem; }
   }
