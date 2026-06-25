@@ -20,6 +20,7 @@
   import ToastContainer from '$lib/ToastContainer.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import HireMeModal from '$lib/HireMeModal.svelte';
+  import ShortcutCheatsheet from '$lib/ShortcutCheatsheet.svelte';
   import { bootstrapRBAC } from '$lib/rbac';
   import { startBookChangedBus } from '$lib/data/bookChanged';
 
@@ -29,6 +30,98 @@
   // (visible only when isDemo). Closes via overlay click, × button,
   // or Escape (HireMeModal handles its own teardown).
   let _hireOpen = $state(false);
+
+  // ── Keyboard shortcuts (slice AU) ─────────────────────────────────
+  // Global keydown listener wired below in onMount. Pauses while the
+  // operator is typing in a field (input, textarea, contenteditable)
+  // so shortcuts don't fire mid-sentence. Discoverable via `?`.
+  let _cheatsheetOpen = $state(false);
+  /** Two-key navigation buffer — operator presses `g` then a target
+   * letter within 800ms. Mirrors GitHub / Linear muscle memory. */
+  let _gPending = false;
+  let _gTimer = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
+  function _clearG() {
+    _gPending = false;
+    if (_gTimer != null) { clearTimeout(_gTimer); _gTimer = null; }
+  }
+  function _onGlobalKeydown(/** @type {KeyboardEvent} */ e) {
+    // Always allow Esc to close the cheat-sheet — even when typing.
+    if (e.key === 'Escape' && _cheatsheetOpen) {
+      _cheatsheetOpen = false;
+      return;
+    }
+    // Pause when the operator is typing in a field. document.activeElement
+    // returns the focused control; we treat input / textarea / select /
+    // contenteditable as "operator wants this key".
+    const ae = /** @type {HTMLElement|null} */ (document.activeElement);
+    if (ae) {
+      const tag = ae.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+          || ae.isContentEditable) return;
+    }
+    // Don't intercept modifier-key combos other than Cmd+K (reserved
+    // for future command palette). Plain `O` should not fire when the
+    // operator hits Ctrl+O / Cmd+O (browser "Open file").
+    if (e.altKey || (e.metaKey && e.key.toLowerCase() !== 'k')
+        || (e.ctrlKey && e.key.toLowerCase() !== 'k')) {
+      return;
+    }
+
+    const k = e.key;
+
+    // `g` opens the two-key buffer; second key triggers the route jump.
+    if (_gPending) {
+      const target = k.toLowerCase();
+      _clearG();
+      const route =
+        target === 'p' ? '/pulse'
+      : target === 'd' ? '/dashboard'
+      : target === 'o' ? '/orders'
+      : target === 'r' ? '/admin/derivatives'
+      : target === 'h' ? '/admin/history'
+      : target === 'a' ? '/automation'
+      : target === 's' ? '/admin/settings'
+      : null;
+      if (route) { e.preventDefault(); goto(route); }
+      return;
+    }
+    if (k === 'g') {
+      _gPending = true;
+      _gTimer = setTimeout(_clearG, 800);
+      return;
+    }
+
+    // Single-key shortcuts.
+    if (k === '?') { e.preventDefault(); _cheatsheetOpen = true; return; }
+    if (k === '/') {
+      // Focus the first searchable input on the page. Prefers symbol
+      // pickers (.oes-sym-input, .cmd-input) then any text input.
+      const sel = '.oes-sym-input, .cmd-input, input[type="search"], input[type="text"]';
+      const target = /** @type {HTMLInputElement|null} */ (document.querySelector(sel));
+      if (target) { e.preventDefault(); target.focus(); target.select?.(); }
+      return;
+    }
+    if (k.toLowerCase() === 'o') {
+      e.preventDefault();
+      goto('/orders');
+      return;
+    }
+    if (k.toLowerCase() === 'r') {
+      e.preventDefault();
+      // Trigger a soft reload of the current SvelteKit route — preserves
+      // the SPA cache for non-page resources, just re-runs the load.
+      goto(window.location.pathname + window.location.search,
+           { invalidateAll: true });
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && k.toLowerCase() === 'k') {
+      // Reserved for future Cmd+K command palette. For now route to
+      // /orders (closest to a "global command launcher" today).
+      e.preventDefault();
+      goto('/orders');
+      return;
+    }
+  }
 
   const bullSrc = "/bull.webp";
 
@@ -482,6 +575,9 @@
     };
   }
   onMount(() => {
+    // Global keyboard shortcuts (slice AU). Window-level keydown
+    // listener; pauses while the operator is typing in a field.
+    window.addEventListener('keydown', _onGlobalKeydown);
     // RBAC bootstrap — populates `userRole` + `userCaps` stores from
     // /api/auth/whoami. Idempotent across remounts (the bootstrap
     // function itself short-circuits on second call). Fires before
@@ -520,6 +616,8 @@
   onDestroy(() => {
     simTeardown?.(); paperTeardown?.(); replayTeardown?.();
     modeTeardown?.(); chaseTeardown?.(); persistTeardown?.();
+    window.removeEventListener('keydown', _onGlobalKeydown);
+    _clearG();
   });
 
   // ── Demo / signin redirect ─────────────────────────────────────────
@@ -546,6 +644,8 @@
 </script>
 
 <ConfirmModal bind:this={_liveConfirmRef} />
+<ShortcutCheatsheet open={_cheatsheetOpen}
+                    onClose={() => { _cheatsheetOpen = false; }} />
 
 <div class="algo-viewport">
   <div class="algo-card">
