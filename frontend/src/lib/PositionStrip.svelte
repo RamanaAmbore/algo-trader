@@ -136,42 +136,67 @@
   // `day_change_val` (LTP coefficient is also × qty) and to holdings'
   // `cur_val` (= LTP × qty).
   //
-  // The `_liveLtpSnap` dep makes every sum re-run when any tick fires,
-  // which is exactly what drives the tick-flash animation (the
-  // existing $effect calls flash.update for each derived).
-  function _liveDelta(/** @type {any} */ row) {
-    const sym = String(row?.tradingsymbol || '').toUpperCase();
-    const live = _liveLtpSnap[sym];
-    if (live == null) return 0;
-    const pollLtp = Number(row?.last_price || 0);
-    const qty     = Number(row?.quantity   || 0);
-    if (!pollLtp || !qty) return 0;
-    return (Number(live) - pollLtp) * qty;
+  // Memoization: build the delta ONCE per _liveLtpSnap + rows change,
+  // keyed by tradingsymbol+account. All 5 derived sums read from this
+  // Map in O(1) rather than calling _liveDelta() 5× per row per tick.
+  // At 20 positions × 90 ticks/sec burst this drops inner-loop calls
+  // from ~100 to ~20 (one Map build + five O(1) lookups per tick).
+  const _liveDeltaByRow = $derived.by(() => {
+    /** @type {Map<string, number>} */
+    const m = new Map();
+    const snap = _liveLtpSnap;
+    for (const row of positions) {
+      const sym  = String(row?.tradingsymbol || '').toUpperCase();
+      const live = snap[sym];
+      if (live == null) continue;
+      const pollLtp = Number(row?.last_price || 0);
+      const qty     = Number(row?.quantity   || 0);
+      if (!pollLtp || !qty) continue;
+      const key = sym + '\x00' + String(row?.account || '');
+      m.set(key, (Number(live) - pollLtp) * qty);
+    }
+    for (const row of holdings) {
+      const sym  = String(row?.tradingsymbol || '').toUpperCase();
+      const live = snap[sym];
+      if (live == null) continue;
+      const pollLtp = Number(row?.last_price || 0);
+      const qty     = Number(row?.quantity   || 0);
+      if (!pollLtp || !qty) continue;
+      const key = sym + '\x00' + String(row?.account || '');
+      m.set(key, (Number(live) - pollLtp) * qty);
+    }
+    return m;
+  });
+
+  /** @param {any} row */
+  function _delta(row) {
+    const key = String(row?.tradingsymbol || '').toUpperCase() + '\x00' + String(row?.account || '');
+    return _liveDeltaByRow.get(key) || 0;
   }
 
   const positionsPnl = $derived.by(() => {
     let s = 0;
-    for (const p of positions) s += Number(p?.pnl || 0) + _liveDelta(p);
+    for (const p of positions) s += Number(p?.pnl || 0) + _delta(p);
     return s;
   });
   const positionsToday = $derived.by(() => {
     let s = 0;
-    for (const p of positions) s += Number(p?.day_change_val || 0) + _liveDelta(p);
+    for (const p of positions) s += Number(p?.day_change_val || 0) + _delta(p);
     return s;
   });
   const holdingsToday = $derived.by(() => {
     let s = 0;
-    for (const h of holdings)  s += Number(h?.day_change_val || 0) + _liveDelta(h);
+    for (const h of holdings)  s += Number(h?.day_change_val || 0) + _delta(h);
     return s;
   });
   const holdingsTotal = $derived.by(() => {
     let s = 0;
-    for (const h of holdings)  s += Number(h?.pnl || 0) + _liveDelta(h);
+    for (const h of holdings)  s += Number(h?.pnl || 0) + _delta(h);
     return s;
   });
   const holdingsValue = $derived.by(() => {
     let s = 0;
-    for (const h of holdings)  s += Number(h?.cur_val || 0) + _liveDelta(h);
+    for (const h of holdings)  s += Number(h?.cur_val || 0) + _delta(h);
     return s;
   });
   // Live cash — Kite's `avail.cash` (= live_balance) summed across

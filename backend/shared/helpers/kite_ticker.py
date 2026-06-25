@@ -340,15 +340,24 @@ class TickerManager:
         Kite emitted no tick" from "subscribe call never landed".
         """
         now = time.time()
+        # Snapshot the minimal state under the lock, then do all iteration
+        # and formatting outside. _on_ticks acquires this same lock on every
+        # tick frame (90+/sec); a 300-iteration loop inside the lock would
+        # block tick ingestion for the duration of the /api/admin/health call.
         with self._lock:
-            subscribed = set(self._subscribed)
+            subscribed_copy = set(self._subscribed)
             tick_map_size = len(self._tick_map)
-            ages: list[tuple[str, float | None]] = []
-            for tok in subscribed:
-                sym = self._token_to_sym.get(tok, f"tok:{tok}")
-                last_ts = self._tick_age.get(tok)
-                age = (now - last_ts) if last_ts is not None else None
-                ages.append((sym, age))
+            started = self._started
+            connected = self._connected
+            age_snapshot = {tok: self._tick_age.get(tok) for tok in subscribed_copy}
+            sym_snapshot = {tok: self._token_to_sym.get(tok, f"tok:{tok}") for tok in subscribed_copy}
+        # Build the ages list outside the lock — no shared state read here.
+        ages: list[tuple[str, float | None]] = []
+        for tok in subscribed_copy:
+            sym = sym_snapshot[tok]
+            last_ts = age_snapshot[tok]
+            age = (now - last_ts) if last_ts is not None else None
+            ages.append((sym, age))
         # Sort: never-ticked first (None age), then oldest-tick descending.
         ages.sort(key=lambda x: (0, 0) if x[1] is None else (1, -x[1]))
         stale = [
@@ -368,9 +377,9 @@ class TickerManager:
             default=0.0,
         )
         return {
-            "started":          self._started,
-            "connected":        self._connected,
-            "subscribed_count": len(subscribed),
+            "started":          started,
+            "connected":        connected,
+            "subscribed_count": len(subscribed_copy),
             "ticks_held":       tick_map_size,
             "stale_count":      len(stale),
             "max_age_seconds":  float(max_age),

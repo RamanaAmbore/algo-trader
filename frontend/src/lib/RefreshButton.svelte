@@ -232,7 +232,7 @@
       Both NSE and MCX are currently closed.
     </div>
     <div class="rf-closed-actions">
-      <button type="button" class="rf-closed-btn rf-closed-cancel"
+      <button type="button" class="rf-closed-btn rf-closed-ok"
               onclick={(e) => { e.stopPropagation(); _showClosedNotice = false; }}>
         OK
       </button>
@@ -266,10 +266,13 @@
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;
     overflow: visible;
-    /* Defaults overridden by .rf-mkt-* below. */
-    background: rgba(52, 211, 153, 0.14);
-    border: 1px solid rgba(52, 211, 153, 0.55);
-    color: #34d399;
+    /* Defaults overridden by .rf-mkt-* below.
+       Matches .rf-mkt-closed (slate) so any unclassified state
+       degrades to the "inactive / no signal" tone rather than
+       flashing emerald (the market-open colour). */
+    background: rgba(126, 151, 184, 0.14);
+    border: 1px solid rgba(126, 151, 184, 0.55);
+    color: #94a3b8;
   }
   /* Both NSE + MCX open — emerald, the "full markets active" tone. */
   .rf-mkt-both {
@@ -387,11 +390,13 @@
     color: #c8d8f0;
     transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
-  .rf-closed-cancel {
+  /* Renamed from .rf-closed-cancel — this is the ONLY action in the
+     popup (informational dismiss), not one half of a confirm/cancel pair. */
+  .rf-closed-ok {
     border-color: rgba(126, 151, 184, 0.45);
     color: #94a3b8;
   }
-  .rf-closed-cancel:hover {
+  .rf-closed-ok:hover {
     background: rgba(126, 151, 184, 0.14);
     color: #c8d8f0;
   }

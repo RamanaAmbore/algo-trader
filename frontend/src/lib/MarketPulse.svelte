@@ -5742,7 +5742,7 @@
        "total row should have a different background color scheme." */
     background: rgba(251, 191, 36, 0.22) !important;
     border-top: 2px solid rgba(251, 191, 36, 0.70) !important;
-    border-bottom: 1px solid rgba(251, 191, 36, 0.40) !important;
+    border-bottom: 1px solid var(--algo-amber-border-soft) !important;
   }
   /* TOTAL row symbol cell — amber tint instead of the per-row
      direction tint so the row reads as an aggregate, not as a

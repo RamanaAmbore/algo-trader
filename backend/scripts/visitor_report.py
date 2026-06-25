@@ -800,66 +800,6 @@ def summary_for_telegram(report_path: Path) -> str:
     return "\n".join(lines)
 
 
-def summary_for_email(report_path: Path) -> str:
-    """HTML email body — same navy-header + monospace-row look as the
-    canonical alert / open-close-summary / market-update emails so the
-    operator's inbox reads as one consistent visual family."""
-    data = _parse_summary(report_path)
-    title = data["title"] or "Visitors"
-
-    # Canonical styles — verbatim from alert_utils._html_table so a future
-    # palette change in one place propagates here unchanged. Navy header
-    # row + monospace value rows with zebra striping.
-    th_style = (
-        "background-color:#1a3a5c;color:#ffffff;padding:8px 12px;"
-        "text-align:left;font-family:monospace;font-size:13px;white-space:nowrap"
-    )
-    td_label_style = (
-        "padding:6px 12px;font-family:monospace;font-size:13px;"
-        "border-bottom:1px solid #dce3ea;white-space:nowrap;color:#1a3a5c;font-weight:600"
-    )
-    td_val_style = (
-        "padding:6px 12px;font-family:monospace;font-size:13px;"
-        "border-bottom:1px solid #dce3ea;color:#1a1e35"
-    )
-
-    rows_html = ""
-    for i, (label, value) in enumerate(data["fields"]):
-        # Highlight numeric "headline" rows (Unique IPs, Total requests)
-        # with a slightly stronger value colour so the eye scans the
-        # number first.
-        value_extra = ""
-        lower = label.lower()
-        if "ip" in lower or "request" in lower or "total" in lower:
-            value_extra = ";color:#0d4a2f;font-weight:700"
-        bg = ";background-color:#f4f7fa" if i % 2 else ""
-        rows_html += (
-            f"<tr>"
-            f"<td style='{td_label_style}{bg}'>{_html_escape(label)}</td>"
-            f"<td style='{td_val_style}{bg}{value_extra}'>{_html_escape(value)}</td>"
-            f"</tr>"
-        )
-
-    return (
-        f"<html><body style='font-family:sans-serif;background:#f5f5f0;padding:14px'>"
-        f"<p style='font-size:14px;font-weight:700;color:#1a3a5c;margin:0 0 8px 0'>"
-        f"{_html_escape(title)}"
-        f"</p>"
-        f"<table style='border-collapse:collapse;width:100%;max-width:560px'>"
-        f"<thead><tr>"
-        f"<th style='{th_style}'>Metric</th>"
-        f"<th style='{th_style}'>Value</th>"
-        f"</tr></thead>"
-        f"<tbody>{rows_html}</tbody>"
-        f"</table>"
-        f"<p style='font-size:11px;color:#7e97b8;margin-top:1rem;font-family:sans-serif'>"
-        f"Full IP + city + ASN detail in <code>{_html_escape(str(report_path))}</code> on the prod box · "
-        f"masked summary visible to partners at /admin/visitors."
-        f"</p>"
-        f"</body></html>"
-    )
-
-
 def _html_escape(s: str) -> str:
     if not s:
         return ""

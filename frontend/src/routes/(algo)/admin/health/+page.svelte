@@ -294,15 +294,6 @@
      layout's :global(.page-header) fixed-strip rule due to
      Svelte's class-hash specificity. All algo pages now share
      the same sticky-strip behavior from +layout.svelte. */
-  .err-banner {
-    margin-bottom: 0.5rem;
-    padding: 0.25rem 0.65rem;
-    border-radius: 3px;
-    background: rgba(248,113,113,0.12);
-    border: 1px solid rgba(248,113,113,0.35);
-    color: #f87171;
-    font-size: 0.65rem;
-  }
 
   /* ── Card grid ──────────────────────────────────────────────────── */
   .health-grid {
@@ -443,6 +434,8 @@
     border-top: 1px solid rgba(255,255,255,0.05);
     max-height: 12rem;
     overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(126, 151, 184, 0.4) transparent;
   }
   .ticker-stale-label {
     font-size: 0.55rem;
