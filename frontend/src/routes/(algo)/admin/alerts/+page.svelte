@@ -15,6 +15,8 @@
   import { fetchAgents, fetchAlertsHistory } from '$lib/api';
   import StaleBanner from '$lib/StaleBanner.svelte';
   import Select   from '$lib/Select.svelte';
+  import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
+  import EmptyState from '$lib/EmptyState.svelte';
 
   // ── State ──────────────────────────────────────────────────────────
   /** @type {any[]} */
@@ -228,9 +230,13 @@
 
 <!-- ── Table ───────────────────────────────────────────────────────── -->
 {#if loading && !rows.length}
-  <div class="empty-state">Loading…</div>
+  <LoadingSkeleton variant="grid-row" rows={6} height="1.4rem" />
 {:else if !filtered.length}
-  <div class="empty-state">No alert events in this window.</div>
+  <EmptyState
+    title="No alert events"
+    hint="No agent fires in this time window. Try widening the period or clearing filters."
+    icon="inbox"
+  />
 {:else}
   <div class="alerts-table-wrap">
     <table class="alerts-table">

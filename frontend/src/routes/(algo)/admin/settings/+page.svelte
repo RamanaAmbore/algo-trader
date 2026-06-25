@@ -14,6 +14,7 @@
            computeHedgeProxy } from '$lib/api';
   import { loadHedgeProxies as _invalidateHedgeProxyCache } from '$lib/data/hedgeProxies';
   import Select   from '$lib/Select.svelte';
+  import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
 
   // Pinned-watchlist symbols feed the orders.default_symbol dropdown
   // (operator request: "When you update in settings it should show the
@@ -275,7 +276,9 @@
 {/if}
 
 {#if loading}
-  <div class="text-[0.65rem] text-[#c8d8f0]/60">Loading…</div>
+  <LoadingSkeleton variant="card" rows={4} />
+  <LoadingSkeleton variant="card" rows={3} />
+  <LoadingSkeleton variant="card" rows={5} />
 {:else if !settings.length}
   <div class="text-[0.65rem] text-[#c8d8f0]/60">No settings seeded yet.</div>
 {:else}

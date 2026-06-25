@@ -30,6 +30,8 @@
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
+  import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
+  import EmptyState from '$lib/EmptyState.svelte';
 
   /** @type {any[]} */
   let threads     = $state([]);
@@ -467,17 +469,15 @@
         <InfoHint popup text="Click any row to view its full transcript + thesis. Threads are created by the <code>save_research_thread</code> MCP tool — chat with Claude Code, ask it to save the thesis, and the row appears here." />
       </div>
       {#if loading && threads.length === 0}
-        <div class="rail-empty">Loading…</div>
+        <div class="rail-empty"><LoadingSkeleton variant="grid-row" rows={5} height="0.75rem" /></div>
       {:else if threads.length === 0}
         <div class="rail-empty">
-          <div class="empty-line-1">No saved threads yet.</div>
-          <div class="empty-line-2">
-            In Claude Code, ask: <i>"Research RELIANCE and save the thesis."</i>
-          </div>
-          <button type="button" class="empty-cta"
-                  onclick={() => activeTab = 'settings'}>
-            Open Settings to bootstrap →
-          </button>
+          <EmptyState
+            title="No threads yet"
+            hint={'Ask Claude Code: "Research RELIANCE and save the thesis."'}
+            icon="inbox"
+            action={{ label: 'Open Settings →', onClick: () => { activeTab = 'settings'; } }}
+          />
         </div>
       {:else}
         <ul class="rail-list">
@@ -501,14 +501,11 @@
     <!-- ── Selected-thread viewer ──────────────────────────────────── -->
     <section class="lab-main">
       {#if !selected}
-        <div class="lab-empty">
-          <div class="lab-empty-title">No thread selected</div>
-          <p class="lab-empty-hint">
-            Pick a thread from the left rail, or start a new one by chatting
-            with Claude Code (the MCP server writes back here automatically
-            when you call <code>save_research_thread</code>).
-          </p>
-        </div>
+        <EmptyState
+          title="No thread selected"
+          hint="Pick a thread from the left rail, or start a new one by chatting with Claude Code."
+          icon="search"
+        />
       {:else}
         <header class="thr-head">
           <div class="thr-head-l">
@@ -555,17 +552,12 @@
       graduates it out of this list.
     </p>
     {#if drafts.length === 0}
-      <div class="lab-empty">
-        <div class="lab-empty-title">No draft agents yet</div>
-        <p class="lab-empty-hint">
-          In Claude Code, after a research session: <i>"Build me an agent
-          that fires if X, save it as a draft from thread N."</i>
-        </p>
-        <button type="button" class="empty-cta"
-                onclick={() => activeTab = 'research'}>
-          Pick a thread to promote →
-        </button>
-      </div>
+      <EmptyState
+        title="No draft agents yet"
+        hint={'In Claude Code, after research: "Build me an agent that fires if X, save it as a draft."'}
+        icon="inbox"
+        action={{ label: 'Pick a thread →', onClick: () => { activeTab = 'research'; } }}
+      />
     {:else}
       <table class="drafts-table">
         <thead>
@@ -643,13 +635,11 @@
       </div>
     </header>
     {#if audit.length === 0}
-      <div class="lab-empty">
-        <div class="lab-empty-title">No audit rows yet</div>
-        <p class="lab-empty-hint">
-          The first MCP-initiated <code>place_order</code> call (success or
-          failure) will land here. Until then, the trail is empty.
-        </p>
-      </div>
+      <EmptyState
+        title="No audit rows"
+        hint="The first MCP-initiated action (success or denied) will appear here."
+        icon="inbox"
+      />
     {:else}
       <table class="audit-table">
         <thead>

@@ -19,6 +19,8 @@
   import { userRole, hasCap, userCaps } from '$lib/rbac';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
+  import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
+  import EmptyState from '$lib/EmptyState.svelte';
 
   /** @typedef {{
    *   id: number, actor_user_id: number|null, actor_username: string,
@@ -241,6 +243,15 @@
   <div class="audit-error">{error}</div>
 {/if}
 
+{#if loading}
+  <LoadingSkeleton variant="grid-row" rows={8} height="1.2rem" />
+{:else if rows.length === 0}
+  <EmptyState
+    title="No audit entries"
+    hint="No rows match the current filters. Try widening the time window or clearing filters."
+    icon="search"
+  />
+{:else}
 <div class="audit-table-wrap">
   <table class="audit-table">
     <thead>
@@ -258,9 +269,6 @@
       </tr>
     </thead>
     <tbody>
-      {#if rows.length === 0 && !loading}
-        <tr><td colspan="10" class="audit-empty-row">No audit entries match the current filters.</td></tr>
-      {/if}
       {#each rows as r (r.id)}
         <tr>
           <td class="audit-ts">{_fmtTs(r.created_at)}</td>
@@ -283,6 +291,7 @@
     </tbody>
   </table>
 </div>
+{/if}
 
 <div class="audit-pager">
   <button class="btn-secondary" disabled={offset === 0} onclick={pagePrev}>← Prev</button>

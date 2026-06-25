@@ -12,6 +12,8 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { fetchSimIterations } from '$lib/api';
   import { aggCompact } from '$lib/format';
+  import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
+  import EmptyState from '$lib/EmptyState.svelte';
 
   /** @type {any[]} */
   let rows        = $state([]);
@@ -113,9 +115,14 @@
 {#if error}<div class="err-banner">{error}</div>{/if}
 
 {#if loading}
-  <div class="loading">Loading iterations…</div>
+  <LoadingSkeleton variant="block" rows={4} height="1.5rem" />
 {:else if grouped.length === 0}
-  <div class="empty">No iterations yet. Kick off a run from <a href="/admin/simulator">/admin/simulator</a>.</div>
+  <EmptyState
+    title="No iterations yet"
+    hint="Kick off a run from the Simulator page to see results here."
+    icon="chart"
+    action={{ label: 'Go to Simulator', onClick: () => goto('/admin/simulator') }}
+  />
 {:else}
   {#each grouped as group (group.run_id)}
     <div class="run-card">
@@ -191,14 +198,6 @@
     font-size: 0.65rem;
     margin-bottom: 0.5rem;
   }
-  .loading, .empty {
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
-    color: var(--algo-muted);
-    padding: 1rem;
-    text-align: center;
-  }
-  .empty a { color: #fbbf24; text-decoration: underline; }
 
   .run-card {
     background: linear-gradient(180deg, rgba(20,30,55,0.65) 0%, rgba(13,21,38,0.65) 100%);

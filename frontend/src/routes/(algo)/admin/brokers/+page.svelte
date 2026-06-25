@@ -30,6 +30,8 @@
   import StaleBanner    from '$lib/StaleBanner.svelte';
   import Select         from '$lib/Select.svelte';
   import ConfirmModal   from '$lib/ConfirmModal.svelte';
+  import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
+  import EmptyState from '$lib/EmptyState.svelte';
 
   /** @type {Array<{id:number,account:string,broker_id:string,api_key:string,
    *   source_ip:string|null,is_active:boolean,historical_data_enabled:boolean,
@@ -354,13 +356,14 @@
             disabled={editing !== ''}>+ New account</button>
   </div>
   {#if loading}
-    <div class="text-[0.6rem] text-[#7e97b8] italic">Loading…</div>
+    <LoadingSkeleton variant="grid-row" rows={3} height="1.8rem" />
   {:else if !accounts.length}
-    <div class="text-[0.6rem] text-[#7e97b8] italic">
-      No broker accounts yet. Use <b>+ New account</b> to add one
-      (or seed <span class="font-mono">secrets.yaml::kite_accounts</span> on the
-      server and restart — the table will auto-seed from YAML on first run).
-    </div>
+    <EmptyState
+      title="No broker accounts"
+      hint="Add one with + New account, or seed secrets.yaml::kite_accounts on the server."
+      icon="inbox"
+      action={{ label: '+ New account', onClick: () => resetForm(NEW_SENTINEL) }}
+    />
   {:else}
     <div class="brokers-scroll">
     <table class="brokers-table">

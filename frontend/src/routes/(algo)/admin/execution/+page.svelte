@@ -22,6 +22,7 @@
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
+  import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
 
   // Active tab — 'sim' or 'replay'. Seeded from ?tab= or the legacy
   // ?mode= (backward-compat for old SIM/REPLAY dropdown deep-links).
@@ -118,14 +119,14 @@
     {@const Comp = SimulatorPanel}
     <Comp />
   {:else}
-    <div class="lab-loading">Loading Scenario workspace…</div>
+    <LoadingSkeleton variant="card" rows={5} />
   {/if}
 {:else if tab === 'replay'}
   {#if ReplayPanel}
     {@const Comp = ReplayPanel}
     <Comp />
   {:else}
-    <div class="lab-loading">Loading Backtest workspace…</div>
+    <LoadingSkeleton variant="card" rows={5} />
   {/if}
 {/if}
 
@@ -144,15 +145,5 @@
     color: var(--algo-muted);
     font-family: ui-monospace, monospace;
     letter-spacing: 0.02em;
-  }
-  /* Loading state shown for the brief moment between tab click and
-     the lazy-imported panel bundle resolving. Subtle so it doesn't
-     read as a real "loading spinner" — it's typically gone in 100ms. */
-  .lab-loading {
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
-    color: var(--algo-muted);
-    padding: 1rem;
-    text-align: center;
   }
 </style>

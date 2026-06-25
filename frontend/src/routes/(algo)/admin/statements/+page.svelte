@@ -21,6 +21,8 @@
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import Select from '$lib/Select.svelte';
+  import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
+  import EmptyState from '$lib/EmptyState.svelte';
 
   /** @type {{
    *   ask: (opts: any) => Promise<boolean>,
@@ -224,10 +226,14 @@
 </section>
 
 <section class="ms-table-wrap">
-  {#if !loading && filteredRows.length === 0}
-    <div class="ms-empty">
-      No rows for {_periodLabel()} matching this filter.
-    </div>
+  {#if loading}
+    <LoadingSkeleton variant="grid-row" rows={4} height="1.6rem" />
+  {:else if filteredRows.length === 0}
+    <EmptyState
+      title="No statements"
+      hint="No rows for {_periodLabel()} matching this filter."
+      icon="inbox"
+    />
   {:else}
     <table class="ms-table">
       <thead>
@@ -336,11 +342,6 @@
     margin-left: 0.3rem;
     opacity: 0.75;
     font-weight: 800;
-  }
-
-  .ms-empty {
-    padding: 2rem; text-align: center;
-    color: #7e97b8; font-size: 0.78rem; font-style: italic;
   }
 
   .ms-table-wrap {

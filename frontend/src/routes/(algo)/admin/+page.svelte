@@ -17,6 +17,7 @@
   import MultiSelect from '$lib/MultiSelect.svelte';
   import Select   from '$lib/Select.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
+  import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
 
   // Shared confirm modal — replaces native confirm() which silently
   // no-ops in iOS PWA standalone mode and looks jarring in the dark
@@ -617,7 +618,7 @@
   {/if}
 
   {#if loading}
-    <div class="text-center text-[#7e97b8] text-xs animate-pulse py-8">Loading users…</div>
+    <LoadingSkeleton variant="block" rows={5} height="2.5rem" />
   {:else if !users.length}
     <p class="text-xs text-[#7e97b8]">No users registered.</p>
   {:else}

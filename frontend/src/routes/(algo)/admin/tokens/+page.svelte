@@ -19,6 +19,8 @@
   import Select   from '$lib/Select.svelte';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
+  import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
+  import EmptyState from '$lib/EmptyState.svelte';
 
   // Agent Tokens page — read + is_active toggle for every token in the
   // grammar_tokens table. (The DB table and backend class keep the
@@ -359,9 +361,13 @@
 </div>
 
 {#if loading}
-  <div class="text-center text-[#7e97b8] text-xs animate-pulse py-6">Loading tokens…</div>
+  <LoadingSkeleton variant="grid-row" rows={6} height="1.4rem" />
 {:else if !filtered().length}
-  <div class="text-center text-[#7e97b8] text-xs py-6">No tokens in this category.</div>
+  <EmptyState
+    title="No tokens in this category"
+    hint="System tokens are seeded on server boot. Use + New token to add a custom one."
+    icon="inbox"
+  />
 {:else}
   <div class="algo-status-card p-0 overflow-hidden" data-status="inactive">
     <table class="w-full text-[0.65rem]">

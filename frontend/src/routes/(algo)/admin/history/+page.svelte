@@ -22,6 +22,8 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
+  import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
+  import EmptyState from '$lib/EmptyState.svelte';
 
   /** @typedef {{
    *   id:number, created_at:string, account:string, symbol:string,
@@ -280,13 +282,20 @@
   <div class="hist-error">{error}</div>
 {/if}
 
+{#if loading}
+  <LoadingSkeleton variant="grid-row" rows={7} height="1.3rem" />
+{/if}
+
 {#if tab === 'orders'}
   <div class="hist-summary">
     {#each Object.entries(orderCounts) as [st, c]}
       <span class="hist-pill {_statusClass(st)}">{st}: {c}</span>
     {/each}
   </div>
-  <div class="hist-table-wrap">
+  {#if !loading && orderRows.length === 0}
+    <EmptyState title="No orders match" hint="Try adjusting the date range or clearing filters." icon="search" />
+  {/if}
+  <div class="hist-table-wrap" style:display={!loading && orderRows.length === 0 ? 'none' : undefined}>
     <table class="hist-table">
       <thead>
         <tr>
@@ -306,9 +315,6 @@
         </tr>
       </thead>
       <tbody>
-        {#if orderRows.length === 0 && !loading}
-          <tr><td colspan="13" class="hist-empty-row">No orders match.</td></tr>
-        {/if}
         {#each orderRows as r (r.id)}
           <tr>
             <td class="td-mono">{_fmtTs(r.created_at)}</td>
@@ -345,7 +351,10 @@
       Total notional: {_fmtInr(tradeNotional)}
     </span>
   </div>
-  <div class="hist-table-wrap">
+  {#if !loading && tradeRows.length === 0}
+    <EmptyState title="No trades match" hint="Try adjusting the date range or filters." icon="search" />
+  {/if}
+  <div class="hist-table-wrap" style:display={!loading && tradeRows.length === 0 ? 'none' : undefined}>
     <table class="hist-table">
       <thead>
         <tr>
@@ -360,9 +369,6 @@
         </tr>
       </thead>
       <tbody>
-        {#if tradeRows.length === 0 && !loading}
-          <tr><td colspan="8" class="hist-empty-row">No trades match.</td></tr>
-        {/if}
         {#each tradeRows as r, i (`${r.date}|${r.account}|${r.symbol}|${i}`)}
           <tr>
             <td class="td-mono">{_fmtDate(r.date)}</td>
@@ -411,7 +417,10 @@
       </span>
     {/if}
   </div>
-  <div class="hist-table-wrap">
+  {#if !loading && fundsRows.length === 0}
+    <EmptyState title="No funds rows" hint="No data in this date range. Use Pull ledger to backfill Dhan, or wait for the daily capture." icon="chart" />
+  {/if}
+  <div class="hist-table-wrap" style:display={!loading && fundsRows.length === 0 ? 'none' : undefined}>
     <table class="hist-table">
       <thead>
         <tr>
@@ -427,9 +436,6 @@
         </tr>
       </thead>
       <tbody>
-        {#if fundsRows.length === 0 && !loading}
-          <tr><td colspan="9" class="hist-empty-row">No funds rows in this range.</td></tr>
-        {/if}
         {#each fundsRows as r, i (`${r.date}|${r.account}|${r.segment}|${i}`)}
           <tr>
             <td class="td-mono">{_fmtDate(r.date)}</td>
