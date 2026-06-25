@@ -485,8 +485,9 @@
 <style>
   .ps-strip {
     /* Sticky below the navbar (which sits at top:0 z-index:50). 48px is
-       the desktop navbar height (h-12). Mobile is h-10 (40px); the
-       @media (max-width:640px) block below overrides top to 40px. */
+       the navbar's natural rendered height (h-12). Explicit height
+       (1.5rem = 24px) keeps the layout math deterministic so the
+       page-header strip below can align flush at top:4.5rem. */
     position: sticky;
     top: 48px;
     z-index: 49;
@@ -557,10 +558,7 @@
        smaller font; the wrapper allows horizontal scroll as a
        last-resort safety net so nothing clips off-screen on the
        narrowest devices (~320 px). */
-    /* Mobile navbar is h-10 (40px), not h-12 (48px) — sticky top
-       must match so the strip sits flush below the navbar. */
-    .ps-strip   { top: 40px;
-                  gap: 0.28rem; padding: 0.25rem 0.4rem;
+    .ps-strip   { gap: 0.28rem; padding: 0.25rem 0.4rem;
                   overflow-x: auto; -webkit-overflow-scrolling: touch;
                   scrollbar-width: none; }
     .ps-strip::-webkit-scrollbar { display: none; }
