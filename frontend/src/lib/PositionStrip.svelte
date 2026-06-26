@@ -255,6 +255,10 @@
   let dispHoldingsToday  = $state(0);
   let _prevMktOpen       = $state(false);
   let _prevExecMode      = $state('idle');
+  // Throttle the strip.frozen localStorage write to 5s — the freeze
+  // effect now runs per SSE tick so P∆ updates live; without the
+  // throttle every tick would synchronously hit disk.
+  let _stripFrozenLastWrite = 0;
 
   const _livePositionsPnl = $derived.by(() => {
     let s = 0;
@@ -285,9 +289,20 @@
   // Freeze-at-close / reset-at-open for the TWO day-delta metrics.
   // Lifetime P/Hld/H mirror their live derived directly at render
   // time — they're never frozen.
+  //
+  // Track the live derived values too so the dispPositionsToday /
+  // dispHoldingsToday assignment fires on every SSE tick during market
+  // hours. Without this the effect's tracked deps were _mktTick +
+  // _execMode only — both rare — so P updated per-tick (rendered
+  // directly from _livePositionsPnl) while P∆ stayed stuck at the
+  // last-poll value until the next 30s poll. Operator: "any change
+  // in P is caused by change in P∆ — I see P∆ constant while P is
+  // changing. Fix it."
   $effect(() => {
     void _mktTick;
     void _execMode;
+    void _livePositionsToday;
+    void _liveHoldingsToday;
     const open = isNseOpen() || isMcxOpen();
     const modeChanged = _execMode !== _prevExecMode;
     if ((open && !_prevMktOpen) || modeChanged) {
@@ -314,10 +329,20 @@
     if (_pollCycleStamp <= _openTransitionStamp) return;
     dispPositionsToday = _livePositionsToday;
     dispHoldingsToday  = _liveHoldingsToday;
-    cachedWrite('strip.frozen', {
-      posToday: dispPositionsToday,
-      hldToday: dispHoldingsToday,
-    }, TTL.day * 7);
+    // localStorage write throttled to 5s — the effect now runs per
+    // SSE tick (so P∆ tracks P live), but persisting every tick would
+    // hammer disk + slow the main thread under bursty load. 5s is
+    // tight enough that a page reload mid-session shows the recent
+    // value and loose enough that 100 ticks/sec doesn't queue 100
+    // synchronous localStorage writes.
+    const _now = Date.now();
+    if (_now - _stripFrozenLastWrite > 5000) {
+      _stripFrozenLastWrite = _now;
+      cachedWrite('strip.frozen', {
+        posToday: dispPositionsToday,
+        hldToday: dispHoldingsToday,
+      }, TTL.day * 7);
+    }
   });
   // Live cash — Kite's `avail.cash` (= live_balance) summed across
   // accounts. Falls back to `cash` if the backend hasn't surfaced

@@ -22,6 +22,7 @@
     batchQuote,
   } from '$lib/api';
   import { positionsStore, holdingsStore } from '$lib/data/marketDataStores.svelte.js';
+  import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import Select        from '$lib/Select.svelte';
@@ -1695,12 +1696,26 @@
   // position in the strip belongs to the chart's underlying AND every
   // candidate is enabled, DAY equals the strip's P∆ exactly. Useful
   // for "is my chart showing what the strip says?" sanity checks.
+  // Live-adjusted: incorporate SSE-tick price moves on top of the broker
+  // snapshot day_change_val. Without this, the DAY row in the payoff
+  // overlay stayed pinned at the last poll's value while ticks were
+  // flowing — operator: "I see P∆ constant while P is changing." Mirrors
+  // the per-row delta pattern PositionStrip uses (BH2).
   const candidatesDayPnl = $derived.by(() => {
     let s = 0;
     for (const c of candidatePositions) {
       if (!_isLegEnabled(c)) continue;
       if (!_includeHoldings && c.kind === 'eq') continue;
-      s += Number(c.day_change_val || 0);
+      const day = Number(c.day_change_val || 0);
+      const pollLtp = Number(c.ltp || 0);
+      const qty     = Number(c.qty || 0);
+      const liveLtp = Number(getSnapshot(c.symbol)?.ltp || 0);
+      // Only apply the delta when both LTPs are positive — a stale 0
+      // would post a phantom −100% move.
+      const delta = (pollLtp > 0 && liveLtp > 0 && qty !== 0)
+        ? (liveLtp - pollLtp) * qty
+        : 0;
+      s += day + delta;
     }
     return s;
   });
