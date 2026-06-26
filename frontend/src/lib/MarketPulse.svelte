@@ -16,7 +16,7 @@
   // Phase 2 additions (not wired yet): accountFilter, showSummaryRows,
   // showFundsCard.
 
-  import { onMount, onDestroy, tick } from 'svelte';
+  import { onMount, onDestroy, tick, untrack } from 'svelte';
   import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
   import {
     fetchWatchlists, fetchWatchlist, createWatchlist,
@@ -2698,7 +2698,7 @@
         // open. Pinned + watchlist + positions + holdings + movers
         // grids now share the same per-symbol freshness — no more
         // "pinned shows zeros while positions show values" asymmetry.
-        const snap = getSnapshot(sym);
+        const snap = untrack(() => getSnapshot(sym));
         row.ltp        = snap?.ltp            ?? row.ltp        ?? null;
         row.bid        = snap?.bid            ?? row.bid        ?? null;
         row.ask        = snap?.ask            ?? row.ask        ?? null;
@@ -2732,7 +2732,7 @@
       // so SSE ticks land here at the same cadence pinned/mover already
       // see them. cq (pulseQuotes) and r.last_price stay as ordered
       // fallbacks for the cold-mount path before any tick has fired.
-      const snap  = getSnapshot(sym);
+      const snap  = untrack(() => getSnapshot(sym));
       const liveQ = cq?.[`${exch}:${sym}`];
       const snapLtp = snap?.ltp;
       if (snapLtp != null) {
@@ -2825,7 +2825,7 @@
       if (r.account) row.accounts.add(String(r.account));
       // BH6: holdings branch reads from symbolStore first; cq + row
       // fallback chain stays for cold-mount.
-      const snap  = getSnapshot(sym);
+      const snap  = untrack(() => getSnapshot(sym));
       const liveQ = cq?.[`${exch}:${sym}`];
       const snapLtp = snap?.ltp;
       if (snapLtp != null) {
@@ -2998,7 +2998,7 @@
       // (every 30s). Sticky / direction / group tags still come from
       // the moversStore row (they're index-membership metadata, not
       // market data).
-      const snap = getSnapshot(sym);
+      const snap = untrack(() => getSnapshot(sym));
       const liveLtp        = snap?.ltp            ?? m.last_price ?? null;
       const liveChangePct  = snap?.day_change_pct ?? m.change_pct ?? null;
       const liveClose      = snap?.close          ?? m.previous_close ?? null;

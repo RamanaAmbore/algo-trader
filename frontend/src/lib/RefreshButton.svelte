@@ -32,6 +32,7 @@
 <script>
   import { connStatus, startConnStatusPoller, lastRefreshAt, formatDualTz } from '$lib/stores';
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
+  import { symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { onMount, onDestroy } from 'svelte';
 
   /**
@@ -62,7 +63,35 @@
     };
     _mktTimer = setInterval(tick, 30_000);
   });
-  onDestroy(() => { if (_mktTimer) clearInterval(_mktTimer); });
+  // Tick-pulse animation — fires the button's box-shadow halo at ~1Hz
+  // whenever SSE ticks land in symbolStore. Operator: "refresh button
+  // should animate when tick gets updated." Throttle to 1Hz so a
+  // 100-tick/sec burst doesn't strobe. The class toggles between
+  // `rf-tick-a`/`rf-tick-b` so CSS restarts the animation on every
+  // pulse (re-applying the same class wouldn't replay).
+  let _tickPulseClass = $state(/** @type {'' | 'rf-tick-a' | 'rf-tick-b'} */ (''));
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _pulseTimer = null;
+  /** @type {(() => void) | null} */
+  let _pulseUnsub = null;
+  onMount(() => {
+    // Subscribe inside onMount (not $effect) so the subscription is
+    // registered ONCE on mount; the callback firing per tick does not
+    // re-run an $effect body and doesn't touch reactive state, so it
+    // cannot cascade scheduler work.
+    _pulseUnsub = symbolTickCount.subscribe(() => {
+      if (_pulseTimer) return;
+      _pulseTimer = setTimeout(() => {
+        _tickPulseClass = _tickPulseClass === 'rf-tick-a' ? 'rf-tick-b' : 'rf-tick-a';
+        _pulseTimer = null;
+      }, 1000);
+    });
+  });
+  onDestroy(() => {
+    if (_mktTimer) clearInterval(_mktTimer);
+    if (_pulseTimer) clearTimeout(_pulseTimer);
+    _pulseUnsub?.();
+  });
 
   // Palette class — drives the three-bucket colour swap on the button.
   //   rf-mkt-both    → emerald  (Equity + MCX both open)
@@ -172,7 +201,7 @@
 <div class="rf-wrap">
 <button
   type="button"
-  class="rf-btn {_mktClass}"
+  class="rf-btn {_mktClass} {_tickPulseClass}"
   class:rf-spinning={loading}
   onclick={(e) => { e.stopPropagation(); _handleClick(); }}
   disabled={loading}
@@ -323,8 +352,18 @@
     from { transform: rotate(0deg); }
     to   { transform: rotate(360deg); }
   }
+  /* Tick-pulse halo — sky-blue ring fades out over ~600ms each pulse.
+     Toggling between rf-tick-a / rf-tick-b restarts the animation. */
+  .rf-btn.rf-tick-a, .rf-btn.rf-tick-b {
+    animation: rf-tick-pulse 0.6s ease-out;
+  }
+  @keyframes rf-tick-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(125, 211, 252, 0.55); }
+    100% { box-shadow: 0 0 10px 3px rgba(125, 211, 252, 0); }
+  }
   @media (prefers-reduced-motion: reduce) {
     .rf-btn.rf-spinning svg { animation: none; }
+    .rf-btn.rf-tick-a, .rf-btn.rf-tick-b { animation: none; }
   }
 
   /* ── Market-closed confirmation popup ────────────────────────────
