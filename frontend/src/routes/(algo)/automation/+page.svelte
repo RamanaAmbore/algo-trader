@@ -8,7 +8,7 @@
   import { toast } from '$lib/data/toastStore.svelte.js';
   import {
     fetchAgents, activateAgent, deactivateAgent, updateAgent, createAgent,
-    fetchRecentAgentEvents, fetchSimTicks, fetchSimEvents, fetchSimStatus,
+    fetchSimStatus,
     startSimForAgent, aiDraftAgent,
   } from '$lib/api';
   import LogPanel from '$lib/LogPanel.svelte';
@@ -18,11 +18,9 @@
   import ConfirmModal from '$lib/ConfirmModal.svelte';
 
   let agents      = $state([]);
-  let agentEvents = $state([]);
   let loading     = $state(true);
   let error       = $state('');
   let logTab      = $state('agent');
-  let simLog      = $state(/** @type {any[]} */ ([]));
   const algoStatus = getContext('algoStatus');
   const isDemo = $derived(algoStatus.isDemo);
 
@@ -130,53 +128,21 @@
     } catch (e) { error = e.message; }
   }
 
-  async function loadAgentLog() {
-    // Scope the Agent-events panel by simulator status: while the sim is
-    // running, show ONLY the sim's events (sim_mode=True rows). When idle,
-    // show the real stream. This way the /algo page tracks the sim end-to-end
-    // without the operator having to toggle filters manually.
-    try {
-      const data = simActive ? await fetchSimEvents(100)
-                              : await fetchRecentAgentEvents(100);
-      agentEvents = data;
-    } catch (e) { /* ignore */ }
-  }
-
   async function pollSimStatus() {
     try {
       const s = await fetchSimStatus();
-      const was = simActive;
       simActive = !!s.active;
-      // When the sim flips on/off we want the events panel to swap sources
-      // immediately, not on the next 30-second refresh tick.
-      if (was !== simActive) loadAgentLog();
-      // While the sim is running, refresh the Simulator tab's tick stream
-      // on every status poll (4s) so /automation shows the same up-to-date
-      // stream as /admin/simulator. Without this, simLog only updated on
-      // the 30-second loadAll cycle — the Simulator tab looked stale.
-      if (simActive) loadSimLog();
+      // simActive flows down to LogPanel via the `simScope` prop; LogPanel
+      // owns its own polling for the Agent + Simulator tabs and re-fetches
+      // on prop change. Page-level event/sim log fetches removed in BF —
+      // they wrote to dead state that no part of the template rendered,
+      // doubling broker calls for the log endpoints.
     } catch (_) { /* cap flag off — treat as idle */ }
-  }
-
-  async function loadSimLog() {
-    // Polled every few seconds while the Simulator tab is visible so the
-    // sim's tick timeline stays roughly live. Silently ignores failures
-    // (sim endpoint 400s when cap_in_<branch>.simulator is off).
-    try {
-      const data = await fetchSimTicks(100);
-      simLog = Array.isArray(data) ? data : [];
-    } catch (e) { /* ignore */ }
-  }
-
-  function loadCurrentLog() {
-    // 'order' and 'system' tabs are self-fetching inside LogPanel.
-    if (logTab === 'agent') loadAgentLog();
-    else if (logTab === 'simulator') loadSimLog();
   }
 
   async function loadAll() {
     loading = true;
-    await Promise.all([loadAgents(), loadAgentLog(), loadSimLog()]);
+    await loadAgents();
     loading = false;
   }
 
@@ -437,9 +403,10 @@
           if (idx >= 0) agents[idx].status = evt.status;
           agents = [...agents];
         }
-        if (['agent_alert', 'agent_state'].includes(evt.event)) {
-          loadAgentLog();
-        }
+        // LogPanel owns its own poll cadence for agent events — pushing
+        // a redundant page-level fetch on every WS event wrote to dead
+        // state and doubled broker calls without ever rendering the
+        // result.
       } catch { /* ignore */ }
     };
     // Without the _wsDestroyed guard, the onClose reconnect schedule
@@ -566,7 +533,8 @@
       await startSimForAgent(agent.id);
       logTab = 'simulator';
       toast.info(`Sim started for: ${agent.name}`);
-      loadSimLog();
+      // LogPanel re-fetches on its own poll once `simScope` flips to true;
+      // no page-level kick needed.
     } catch (e) {
       toast.error(`Sim start failed: ${e.message || 'unknown error'}`);
     }

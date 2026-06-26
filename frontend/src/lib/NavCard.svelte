@@ -114,10 +114,19 @@
     flash.dispose();
   });
 
-  // Re-fetch when auth state changes (e.g. user logs in mid-session)
+  // Re-fetch when auth state changes (e.g. user logs in mid-session).
+  // The $effect would otherwise fire on first mount alongside onMount,
+  // doubling the initial /api/nav/me call. Track the prior value inside
+  // the effect itself (initialized to undefined) so the first run is a
+  // no-op "remember the current value"; subsequent runs only call load()
+  // when isLoggedIn actually flips.
+  let _prevLoggedIn = $state(/** @type {boolean | undefined} */ (undefined));
   $effect(() => {
-    isLoggedIn;
-    load();
+    const now = isLoggedIn;
+    if (_prevLoggedIn !== undefined && now !== _prevLoggedIn) {
+      load();
+    }
+    _prevLoggedIn = now;
   });
 
   function signLabel(val) {

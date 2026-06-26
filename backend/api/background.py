@@ -2369,14 +2369,38 @@ async def _task_sparkline_warm(state: dict) -> None:
         remaining   = max(0, cap - len(book_pairs))
         return book_pairs + mover_pairs[:remaining]
 
-    async def _do_warm(label: str) -> None:
+    async def _do_warm(label: str) -> int:
         logger.info(f"sparkline warm: starting ({label})")
         try:
             symbols = await _collect_symbols()
             count = await warm_sparkline_cache(symbols, days=5)
             logger.info(f"sparkline warm: {label} complete — {count} symbols cached")
+            return count
         except Exception as e:
             logger.error(f"sparkline warm: {label} failed: {e}")
+            return 0
+
+    async def _do_warm_with_retry(label: str) -> None:
+        """Startup variant — if the first warm cycle returns 0 symbols
+        (broker not loaded yet, DB unavailable, full rate-limit storm),
+        schedule one retry after 60 s. Without this, a transient startup
+        failure leaves the cache cold until the next segment-open boundary
+        (up to ~12 hours away on a weekend deploy) and the first operator
+        page-load pays the full cold-miss cost for every sparkline."""
+        count = await _do_warm(label)
+        if count > 0:
+            return
+        logger.warning(
+            f"sparkline warm: {label} produced 0 cached symbols — "
+            "retrying in 60s"
+        )
+        await asyncio.sleep(60)
+        retry = await _do_warm(f"{label}-retry")
+        if retry == 0:
+            logger.warning(
+                f"sparkline warm: {label}-retry also produced 0 cached "
+                "symbols — leaving cache cold until next boundary"
+            )
 
     # Dev-idle gate (see _task_performance) — skip the startup warm on
     # dev when engine is idle so dev doesn't burn historical_data calls
@@ -2389,7 +2413,7 @@ async def _task_sparkline_warm(state: dict) -> None:
     # first request may still pay a cold-cache miss for the first ~30 s but
     # the rest of app startup completes without waiting.
     if not is_engine_idle():
-        asyncio.create_task(_do_warm("startup"))
+        asyncio.create_task(_do_warm_with_retry("startup"))
     else:
         logger.info("sparkline warm: skipped startup — engine idle (dev)")
 

@@ -23,7 +23,7 @@
     deleteWatchlist, renameWatchlist, addWatchlistItem, removeWatchlistItem,
     fetchPositions, fetchHoldings, fetchAccounts, batchQuote,
   } from '$lib/api';
-  import { visibleInterval, connStatus, authStore, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
+  import { visibleInterval, marketAwareInterval, connStatus, authStore, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
@@ -790,6 +790,7 @@
   // pulse.tick_interval_ms setting (default 5000 ms). Heavier ops
   // piggy-back every Nth tick.
   let stopPulseTick;
+  let stopTickSettingPoll;
   let _tickMs = 5000;
   let _tickCount = 0;
   // Multipliers (relative to the base tick):
@@ -1192,21 +1193,44 @@
     // even when the first call already populated everything.
     setTimeout(() => { loadSparklines(); }, 2000);
 
-    // Unified pulse tick — one visibleInterval drives every refresh.
+    // Unified pulse tick — one marketAwareInterval drives every refresh.
     // pulse.tick_interval_ms (default 5000) is the base cadence; heavier
     // operations piggy-back every Nth tick so the overall load stays
     // bounded. Earlier this page ran 4 independent intervals
     // (quotes 5s / pulse 10s / movers 30s / sparklines 60s) which made
     // the cadence non-obvious and impossible to tune from one knob.
-    try {
-      const rows = await fetchSettings();
-      const all = Array.isArray(rows) ? rows : (rows?.settings || []);
-      const row = all.find?.(s => s?.key === 'pulse.tick_interval_ms');
-      const v = Number(row?.value ?? row?.default_value);
-      if (Number.isFinite(v) && v >= 500 && v <= 60000) _tickMs = v;
-    } catch (_) { /* anon/demo — keep default 5000 */ }
+    //
+    // Market-aware gating: outside the combined NSE/MCX session (overnight,
+    // weekend, holiday) every loadQuotes/Pulse/Movers call returns the same
+    // values the page already has, so polling at 5s burns broker quota for
+    // no UI change. marketAwareInterval keeps the underlying timer alive
+    // (so the session-open boundary re-engages naturally) but no-ops the
+    // tick body when no segment is open.
+    async function _readTickSetting() {
+      try {
+        const rows = await fetchSettings();
+        const all = Array.isArray(rows) ? rows : (rows?.settings || []);
+        const row = all.find?.(s => s?.key === 'pulse.tick_interval_ms');
+        const v = Number(row?.value ?? row?.default_value);
+        if (Number.isFinite(v) && v >= 500 && v <= 60000) return v;
+      } catch (_) { /* anon/demo — keep current */ }
+      return _tickMs;
+    }
+    _tickMs = await _readTickSetting();
+    stopPulseTick = marketAwareInterval(_runTick, _tickMs);
 
-    stopPulseTick = visibleInterval(_runTick, _tickMs);
+    // Re-read the tick setting every 60s. When the operator changes
+    // pulse.tick_interval_ms in /admin/settings, the new value lands on
+    // the next 60s read without a page reload — previously the cadence
+    // froze at whatever was set on mount.
+    stopTickSettingPoll = visibleInterval(async () => {
+      const next = await _readTickSetting();
+      if (next !== _tickMs) {
+        _tickMs = next;
+        stopPulseTick?.();
+        stopPulseTick = marketAwareInterval(_runTick, _tickMs);
+      }
+    }, 60_000);
 
     // Real-time order-fill push — Kite postback fires a WS event
     // `position_filled` the moment an order fills. Subscribe so
@@ -1998,7 +2022,7 @@
   });
 
   onDestroy(() => {
-    stopPulseTick?.(); stopWS?.();
+    stopPulseTick?.(); stopTickSettingPoll?.(); stopWS?.();
     stopQuoteStream();
     document.removeEventListener('keydown', handleKeydown);
     document.removeEventListener('click', onDocClick);
