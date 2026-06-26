@@ -1214,18 +1214,27 @@
   // SELL. Subsequent clicks toggle. Cold context (currentQty == 0)
   // defaults to BUY on first click, then toggles.
   function _cycleSide() {
-    // Operator: "fix buy/sell flip-on-press" (Jun 2026). The footer
-    // side button previously flipped BUY ⇄ SELL on every click. That
-    // misread as "this is a Place button" — the operator clicked BUY
-    // expecting a buy intent and saw it flip to SELL in red. Now the
-    // button is a one-shot SIDE PICKER: it sets the side on first
-    // click (when _modalSide is null), and is a no-op once a side
-    // has been chosen. To change the picked side, use the explicit
-    // BUY/SELL toggle inside OrderTicket — that surface is
-    // unambiguous about its toggle behaviour.
-    if (_modalSide) return;
-    const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
-    _modalSide = cq < 0 ? 'SELL' : 'BUY';
+    // Operator: "ticket add sell button not working" (Jun 26 2026).
+    // The Jun 2026 "one-shot" iteration locked the side after the
+    // first click and pointed operators at OrderTicket's internal
+    // BUY/SELL toggle — but that toggle is suppressed when
+    // `actionsHidden={showCommonActions}` (true on every common-actions
+    // surface), so operators had no way to switch side at all.
+    //
+    // Revert to a proper toggle:
+    //   - cold (no _modalSide yet): derive ADD direction from current
+    //     position (short → SELL, otherwise BUY)
+    //   - subsequent clicks: flip BUY ⇄ SELL
+    // The visual (on-buy / on-sell colour classes + verb / side
+    // line in the label) reflects the live state so the operator
+    // always sees the CURRENT side, not a "this will switch you to"
+    // call to action.
+    if (!_modalSide) {
+      const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
+      _modalSide = cq < 0 ? 'SELL' : 'BUY';
+      return;
+    }
+    _modalSide = _modalSide === 'BUY' ? 'SELL' : 'BUY';
   }
   // Derive ADD / CLOSE verb from a side + current position direction.
   // Used by the two-line side button label so the operator sees the
@@ -2821,11 +2830,11 @@
                     class:is-stacked={!!_modalSide && _cq !== 0}
                     title={!_modalSide
                       ? (_cq === 0
-                          ? 'Pick a side — click to set BUY'
+                          ? 'Pick a side — click to set BUY (click again to flip to SELL)'
                           : 'Pick — click to ADD to the existing position')
                       : (_cq === 0
-                          ? `Side is ${_modalSide} — use the BUY/SELL toggle in the ticket to change`
-                          : `${_addCloseVerb(_modalSide)} via ${_modalSide} — use the BUY/SELL toggle in the ticket to change`)}
+                          ? `Side is ${_modalSide} — click to switch to ${_modalSide === 'BUY' ? 'SELL' : 'BUY'}`
+                          : `${_addCloseVerb(_modalSide)} via ${_modalSide} — click to switch to ${_modalSide === 'BUY' ? 'SELL' : 'BUY'}`)}
                     onclick={_cycleSide}>
               {#if !_modalSide}
                 <span>Pick side</span>
