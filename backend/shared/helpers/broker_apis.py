@@ -6,6 +6,13 @@ from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
 
+# One-shot flag for the Kite MCX value-units diagnostic in
+# fetch_positions. Logs the raw `day_buy_value` vs the two possible
+# unit interpretations for the first MCX-multiplier row seen so the
+# operator can confirm whether `5b995ccb` is correct or overcounts.
+# Reset on process restart.
+_KITE_VALUE_UNIT_LOGGED = False
+
 
 @for_all_accounts
 def fetch_holdings(connections=Connections, account=None, kite=None, broker=None):
@@ -147,6 +154,36 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
             df_positions.attrs['fetch_failed'] = True
             return df_positions
         df_positions = pd.DataFrame(net_rows)
+        # ── One-time diagnostic — verifies Kite ships day_buy_value in
+        # lot-units (lots × price) as `5b995ccb` assumes, NOT in absolute
+        # ₹ (lots × multiplier × price). The Jun 26 audit could not
+        # confirm Kite's convention from code alone. Fires once per
+        # process restart for the first MCX-multiplier row encountered
+        # so the operator can sanity-check on the next MCX session
+        # without a separate probe. Confirms / falsifies the patch.
+        if (not df_positions.empty
+                and 'multiplier' in df_positions.columns
+                and not _KITE_VALUE_UNIT_LOGGED):
+            _diag = df_positions[
+                (df_positions['multiplier'] > 1)
+                & (df_positions.get('day_buy_quantity', 0) > 0)
+            ].head(1)
+            if not _diag.empty:
+                _r = _diag.iloc[0].to_dict()
+                _mult_v   = _r.get('multiplier', 1)
+                _dbq_lots = _r.get('day_buy_quantity', 0)  # pre-multiply
+                _dbv_raw  = _r.get('day_buy_value', 0)
+                _avg      = _r.get('average_price', 0)
+                _expected_lot_units  = float(_dbq_lots) * float(_avg)
+                _expected_abs_rupees = float(_dbq_lots) * float(_mult_v) * float(_avg)
+                logger.warning(
+                    f"[KITE-MCX-DIAG] {_r.get('tradingsymbol', '?')} "
+                    f"mult={_mult_v} dbq_lots={_dbq_lots} "
+                    f"day_buy_value={_dbv_raw:.2f} avg={_avg:.4f} | "
+                    f"if≈{_expected_lot_units:.2f} → LOT-UNITS (5b995ccb correct), "
+                    f"if≈{_expected_abs_rupees:.2f} → ABSOLUTE ₹ (5b995ccb overcounts {_mult_v}×)"
+                )
+                globals()['_KITE_VALUE_UNIT_LOGGED'] = True
         if not df_positions.empty and "multiplier" in df_positions.columns:
             # MCX commodities: Kite ships `quantity` in LOTS but
             # `last_price` / `close_price` are per CONTRACT (gram for
