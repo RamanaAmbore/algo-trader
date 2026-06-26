@@ -633,6 +633,21 @@ class SparklineController(Controller):
             series = past + today_bars
             if tail_ltp is not None:
                 series = series + [tail_ltp]
+            # Frontend sparkline renderer needs ≥ 2 points (it draws a
+            # polyline between consecutive closes; 1 point can't make a
+            # line). When the operator's universe rotates a new mover in
+            # and the broker rate-limits the historical_data call, we
+            # end up with just [ltp]. Pad to [ltp, ltp] so the cell
+            # renders a flat horizontal line — communicates "we have the
+            # current price but no history" instead of an em-dash that
+            # looks like "data missing entirely". Operator: "when the
+            # data for sparkline comes from db and cache, why it is not
+            # showing all sparklines in pulse?" — the answer was the
+            # broker rate-limit + frontend's <2-point em-dash. Padding
+            # here fixes the cell render without waiting for the warm
+            # task to repopulate the cache.
+            if len(series) == 1:
+                series = series + series
             if series:
                 result[sym] = series
 

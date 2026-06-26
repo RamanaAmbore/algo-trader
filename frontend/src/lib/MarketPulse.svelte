@@ -3431,9 +3431,18 @@
    */
   function sparkRenderer(params) {
     const sym    = String((params.data || {}).tradingsymbol || '').toUpperCase();
-    const base   = sparklines[sym];
-    if (!base || base.length < 2) {
+    let base     = sparklines[sym];
+    if (!base || base.length === 0) {
       return '<span style="display:flex;align-items:center;justify-content:center;height:100%;color:#7e97b8;font-size:0.6rem">—</span>';
+    }
+    // Defensive: when the backend ships only the current LTP (movers
+    // entering a fresh universe with no cached history + broker rate-
+    // limited), duplicate the single point so the polyline can draw
+    // a flat baseline. Backend (quote.py:batch_sparkline) also pads
+    // this case server-side; this branch handles older deploys + any
+    // race where the response slipped through with length=1.
+    if (base.length === 1) {
+      base = [base[0], base[0]];
     }
     // Override the last (today's) point with the live SSE LTP when
     // available — sparkline tail tracks the real-time price.
