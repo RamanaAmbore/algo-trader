@@ -44,8 +44,17 @@ import { mergeSymbolBatch } from './symbolStore.svelte.js';
 // into a per-symbol batch and pushes them into the central symbolStore.
 // Section stores still hold the rows themselves for now (BH2 migrates
 // consumers; BH3 splits meta from market). Polls use snapshot_ts =
-// Date.now() at parse time — SSE ticks landing concurrently retain
-// priority via their own ltp_ts.
+// Date.now() at parse time so newer polls win for snapshot fields.
+//
+// Polls intentionally publish ltp with ltp_ts = 0 so SSE ticks ALWAYS
+// win the LTP slot regardless of who landed last. Without this, a poll
+// that completes 30s after the last SSE tick has Date.now() > tick_ts
+// and would overwrite the fresh live price with the broker's older
+// quote-at-fetch-start. The poll's LTP still seeds the store on the
+// VERY first read (when no SSE tick has arrived yet for that symbol),
+// because mergeSymbolUpdate accepts incomingTs >= storedTs and the
+// initial storedTs = 0. Once any SSE tick has stamped ltp_ts, polls
+// stop clobbering it. (BH1 audit CRITICAL fix.)
 
 /** @param {any[]} rows */
 function _publishPositionsRows(rows) {
@@ -64,7 +73,7 @@ function _publishPositionsRows(rows) {
         day_change: r.day_change_val,
         exchange:   r.exchange,
       },
-      ts: { ltp_ts: ts, snapshot_ts: ts },
+      ts: { ltp_ts: 0, snapshot_ts: ts },
     });
   }
   mergeSymbolBatch(batch);
@@ -85,10 +94,15 @@ function _publishHoldingsRows(rows) {
         ltp:            r.last_price,
         close:          r.close_price,
         day_change:     r.day_change_val,
-        day_change_pct: r.day_change,
+        // Holdings backend columns: `day_change` is per-share absolute
+        // ₹ (= last_price − close_price), `day_change_percentage` is
+        // the % field. Earlier BH1 wired day_change → day_change_pct,
+        // which put a ₹ value into the percentage slot. Fix per the
+        // BH1 audit DEFECT finding.
+        day_change_pct: r.day_change_percentage,
         exchange:       r.exchange,
       },
-      ts: { ltp_ts: ts, snapshot_ts: ts },
+      ts: { ltp_ts: 0, snapshot_ts: ts },
     });
   }
   mergeSymbolBatch(batch);
@@ -117,7 +131,7 @@ function _publishWatchQuotes(byItemId) {
         ask:            q.ask,
         exchange:       q.exchange,
       },
-      ts: { ltp_ts: ts, snapshot_ts: ts },
+      ts: { ltp_ts: 0, snapshot_ts: ts },
     });
   }
   mergeSymbolBatch(batch);
@@ -140,7 +154,7 @@ function _publishMoverRows(rows) {
         day_change_pct: r.change_pct,
         exchange:       r.exchange,
       },
-      ts: { ltp_ts: ts, snapshot_ts: ts },
+      ts: { ltp_ts: 0, snapshot_ts: ts },
     });
   }
   mergeSymbolBatch(batch);
@@ -214,7 +228,13 @@ export const fundsStore = createDataStore({
  */
 export const moversStore = createDataStore({
   key:     'md.movers',
-  ttl:     TTL.short,
+  // TTL.week so the winners/losers panel retains the last in-market
+  // snapshot across off-hours instead of going blank on a weekend
+  // page reload (operator: "winners and losers data in pulse should
+  // be retained after market closure until market reopens"). The
+  // marketAwareInterval-driven poll on MarketPulse overwrites with
+  // fresh data the moment market reopens.
+  ttl:     TTL.week,
   /** @returns {Promise<any[]>} */
   fetcher: async () => {
     const idx = new Set(INDICES_QUOTE_KEYS);
@@ -313,7 +333,13 @@ export const activeListsStore = createDataStore({
  */
 export const watchQuotesStore = createDataStore({
   key:     'md.watchQuotes',
-  ttl:     TTL.short,
+  // TTL.week so closing values for pinned + watchlist symbols survive
+  // overnight, weekends, and holiday clusters. The live SSE stream
+  // overwrites stale entries the moment market reopens; until then
+  // the operator sees Friday's close instead of LTP=0 (operator: "all
+  // stats should show closing values after the market is closed until
+  // it reopens"). Matches positions/holdings instant-paint behaviour.
+  ttl:     TTL.week,
   /** @param {number[] | undefined} ids */
   fetcher: async (ids) => {
     if (!ids || ids.length === 0) return {};

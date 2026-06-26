@@ -230,10 +230,29 @@ export function visibleInterval(fn, ms) {
  * @returns {() => void}    teardown
  */
 export function marketAwareInterval(fn, ms) {
-  return visibleInterval(() => {
+  // Two timers per consumer:
+  //   1. Main `ms`-cadence interval (the historical behaviour) — fires
+  //      fn while market is open; no-ops outside hours.
+  //   2. 5s edge-detect clock — fires fn ONCE on a closed→open transition
+  //      so the callback runs within ~5s of session open instead of
+  //      waiting up to `ms` for the main interval's next natural tick.
+  //      Operator: "when it reopens, any relevant data should refresh
+  //      the values." 5s is short enough to feel instant + long enough
+  //      that the extra ticks are negligible (<1/min per consumer).
+  let _prevOpen = isMarketOpen();
+  const mainTeardown = visibleInterval(() => {
     if (!isMarketOpen()) return;
     fn();
   }, ms);
+  const edgeTeardown = visibleInterval(() => {
+    const open = isMarketOpen();
+    if (open && !_prevOpen) fn();
+    _prevOpen = open;
+  }, 5000);
+  return () => {
+    mainTeardown();
+    edgeTeardown();
+  };
 }
 
 /** Display label for a git branch name. The `main` branch is the

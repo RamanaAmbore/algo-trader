@@ -40,18 +40,27 @@ const PREFIX = 'rbq.cache.';
  * Default TTL buckets (milliseconds). Picks match how stale the data
  * can safely be before the operator would be misled:
  *
+ *   week     7 d — closing-value preservation across weekends + holiday
+ *                   clusters (Diwali = up to 5 trading days dark). Market
+ *                   data caches (watchQuotes / movers / symbolStore disk
+ *                   blob) use this so a page reload during the closed
+ *                   window paints from cache instead of flashing empty.
+ *                   Operator: "all stats should show closing values
+ *                   after the market is closed until it reopens."
  *   day      24 h — past-N-day closes, sparkline static portion. Static
  *                   until IST midnight rollover.
  *   hour      1 h — watchlist OHLC reference. Refreshes naturally.
  *   minute   15 m — positions / holdings / funds. Aggressively refreshed
  *                   on mount; the cache is only for instant paint.
- *   short     2 m — movers / quotes. Tighter window for live-ish data.
+ *   short     2 m — tighter window for live-ish data when freshness
+ *                   matters more than off-hours persistence.
  */
 export const TTL = {
-  day:    24 * 60 * 60 * 1000,
-  hour:        60 * 60 * 1000,
-  minute: 15 *      60 * 1000,
-  short:   2 *      60 * 1000,
+  week:    7 * 24 * 60 * 60 * 1000,
+  day:        24 * 60 * 60 * 1000,
+  hour:            60 * 60 * 1000,
+  minute: 15 *          60 * 1000,
+  short:   2 *          60 * 1000,
 };
 
 function _now() { return Date.now(); }

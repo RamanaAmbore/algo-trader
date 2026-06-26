@@ -37,7 +37,13 @@ import { SvelteMap } from 'svelte/reactivity';
 import { cachedRead, cachedWrite, TTL } from './persistentCache.js';
 
 const _STORE_KEY = 'md.symbolStore';
-const _PRUNE_AGE_MS = 24 * 60 * 60 * 1000; // 24h since last touch → drop on load
+// 7 days so closing values for actively-traded symbols survive Friday
+// close → Monday open (~65 h dark) plus holiday clusters (Diwali week
+// can push 5 trading days dark). Operator: "all stats should show
+// closing values after market is closed until it reopens." Anything
+// older than a week with no re-touch is genuinely stale and safe to
+// prune.
+const _PRUNE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
  * @typedef {object} MarketSnapshot
@@ -112,7 +118,7 @@ function _schedulePersist() {
       for (const [sym, snap] of symbolStore.entries()) {
         out[sym] = snap;
       }
-      cachedWrite(_STORE_KEY, out, TTL.day);
+      cachedWrite(_STORE_KEY, out, TTL.week);
     } catch { /* quota / privacy mode — non-fatal */ }
   }, 500);
 }
@@ -265,11 +271,16 @@ export function getSnapshot(sym) {
 export function softReset() {
   const n = symbolStore.size;
   symbolStore.clear();
-  // Don't cancel the persist timer — if any pending writes were
-  // queued before the reset they'll harmlessly write an empty map.
-  // We deliberately do NOT touch localStorage here: the operator
-  // can still see prior-session values on a page reload if they
-  // want a "what did I have before the wipe?" diagnostic.
+  // Cancel any pending persist write so we don't silently clobber the
+  // localStorage blob the operator just kept on purpose. Without this,
+  // a write scheduled before softReset fires after the .clear() and
+  // serializes the empty map to disk — defeating the stale-while-
+  // revalidate intent for the SOFT path. (BH1 audit RISK fix.)
+  if (_persistTimer != null) {
+    clearTimeout(_persistTimer);
+    _persistTimer = null;
+  }
+  _dirty = false;
   return n;
 }
 
@@ -292,7 +303,7 @@ export function hardReset() {
       // Write an empty object through the cache layer so the next
       // hydrate() pass sees the cleared state immediately (also
       // covers the edge where another tab read mid-clear).
-      cachedWrite(_STORE_KEY, {}, TTL.day);
+      cachedWrite(_STORE_KEY, {}, TTL.week);
     } catch { /* quota / privacy mode — non-fatal */ }
   }
   return n;
