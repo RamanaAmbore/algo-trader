@@ -69,7 +69,14 @@ function _publishPositionsRows(rows) {
       fields: {
         ltp:        r.last_price,
         close:      r.close_price,
-        day_change: r.day_change_val,
+        // BH6 fix: symbolStore.day_change is per-share (matches the
+        // semantics of watchQuotes / pulseQuotes / movers which write
+        // `q.change` = last_price − close_price). Earlier this wrote
+        // r.day_change_val which is portfolio-total (qty × per-share)
+        // — a position with qty 100 was overwriting the watchlist's
+        // per-share value with a ~100× number, and the watchlist row
+        // showed portfolio-₹ as the per-share day_change.
+        day_change: r.day_change,
         exchange:   r.exchange,
       },
       ts: { ltp_ts: 0, snapshot_ts: ts },
@@ -92,12 +99,13 @@ function _publishHoldingsRows(rows) {
       fields: {
         ltp:            r.last_price,
         close:          r.close_price,
-        day_change:     r.day_change_val,
-        // Holdings backend columns: `day_change` is per-share absolute
-        // ₹ (= last_price − close_price), `day_change_percentage` is
-        // the % field. Earlier BH1 wired day_change → day_change_pct,
-        // which put a ₹ value into the percentage slot. Fix per the
-        // BH1 audit DEFECT finding.
+        // BH6: holdings publisher mirrors positions — symbolStore's
+        // day_change slot is per-share, not portfolio-total. Holdings
+        // backend exposes both: `day_change` (per-share = ltp − close)
+        // and `day_change_val` (portfolio = qty × day_change). Use
+        // the per-share value so cross-publisher arbitration is
+        // semantically consistent.
+        day_change:     r.day_change,
         day_change_pct: r.day_change_percentage,
         exchange:       r.exchange,
       },

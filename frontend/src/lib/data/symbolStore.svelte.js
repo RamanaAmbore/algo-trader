@@ -40,8 +40,9 @@
  * under `rbq.cache.md.symbolStore` so cold mounts paint from cache like
  * positions/holdings already do. Writes are debounced (500ms) to coalesce
  * SSE tick bursts. Prune-on-load drops entries with `touched_at` older
- * than 24h so the persisted blob stays bounded — a delisted symbol that
- * never re-appears in any source falls off after a day.
+ * than 7 days so closing values survive Fri→Mon dark windows and
+ * Diwali-style holiday clusters; anything older with no re-touch is
+ * genuinely stale and safe to drop.
  */
 
 import { browser } from '$app/environment';
@@ -176,7 +177,13 @@ const _NUMERIC_FIELDS = new Set([
  * @returns {boolean} true if any field was written; false if all were
  *                    stale-rejected by ts-arbitration or value-identical.
  */
-export function mergeSymbolUpdate(sym, fields, ts = {}) {
+/**
+ * Internal per-symbol write. Same arbitration + field semantics as
+ * `mergeSymbolUpdate` but does NOT bump `symbolTickCount` and does
+ * NOT schedule persist — callers do that once per batch to avoid
+ * N fan-outs on the writable subscriber + N persist timer-arms.
+ */
+function _mergeSymbolWrite(sym, fields, ts = {}) {
   if (!sym || !fields) return false;
   const key = String(sym).toUpperCase();
   const ltp_ts      = Number(ts.ltp_ts      ?? Date.now());
@@ -232,14 +239,25 @@ export function mergeSymbolUpdate(sym, fields, ts = {}) {
   next.touched_at = Math.max(next.ltp_ts, next.snapshot_ts);
 
   symbolStore.set(key, next);
-  symbolTickCount.update(n => n + 1);
-  _schedulePersist();
   return true;
 }
 
+export function mergeSymbolUpdate(sym, fields, ts = {}) {
+  const wrote = _mergeSymbolWrite(sym, fields, ts);
+  if (wrote) {
+    symbolTickCount.update(n => n + 1);
+    _schedulePersist();
+  }
+  return wrote;
+}
+
 /**
- * Batch variant. Coalesces persist scheduling to one disk write per call
- * batch, so a fetcher writing 300 mover rows pays one timer-arm not 300.
+ * Batch variant. BH6 fix: coalesces BOTH the persist scheduling AND
+ * the `symbolTickCount` writable bump to one each per batch — a
+ * fetcher writing 300 mover rows used to fire 300 subscriber callbacks
+ * (the flush-timer guard prevented 300 ag-Grid refreshes but didn't
+ * stop Svelte's scheduler from running every $effect that subscribed
+ * to symbolTickCount 300×).
  *
  * @param {Array<{ sym: string, fields: Partial<MarketSnapshot>, ts?: { ltp_ts?: number, snapshot_ts?: number } }>} updates
  * @returns {number} count of updates that wrote at least one field
@@ -248,7 +266,11 @@ export function mergeSymbolBatch(updates) {
   if (!Array.isArray(updates) || updates.length === 0) return 0;
   let n = 0;
   for (const u of updates) {
-    if (mergeSymbolUpdate(u.sym, u.fields, u.ts)) n++;
+    if (_mergeSymbolWrite(u.sym, u.fields, u.ts)) n++;
+  }
+  if (n > 0) {
+    symbolTickCount.update(c => c + 1);
+    _schedulePersist();
   }
   return n;
 }
@@ -306,6 +328,12 @@ export function softReset() {
     _persistTimer = null;
   }
   _dirty = false;
+  // BH6 fix: bump tickCount so consumers tracking symbolTickCount
+  // (MarketPulse's _liveLtpSnap rebuilder, refresh-pulse $effects)
+  // see the cleared state immediately. Without this, _liveLtpSnap
+  // kept the pre-reset values until the next SSE tick fired —
+  // operator-visible as a stale-looking UI after flipping to SOFT.
+  symbolTickCount.update(c => c + 1);
   return n;
 }
 
@@ -331,6 +359,8 @@ export function hardReset() {
       cachedWrite(_STORE_KEY, {}, TTL.week);
     } catch { /* quota / privacy mode — non-fatal */ }
   }
+  // BH6 fix: bump tickCount (see softReset note).
+  symbolTickCount.update(c => c + 1);
   return n;
 }
 

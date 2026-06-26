@@ -83,6 +83,9 @@ function _open() {
         /** @type {Array<{sym: string, fields: {ltp: number}, ts: {ltp_ts: number}}>} */
         const symbolUpdates = [];
         const ts = Date.now();
+        // Backend ticker.snapshot() returns `{token: {ltp, sym}}` keyed
+        // by integer token. Transform to per-sym updates so the central
+        // store joins on tradingsymbol like every other consumer.
         for (const v of Object.values(snap)) {
           if (v && typeof v === 'object' && v.sym && v.ltp != null) {
             symbolUpdates.push({
@@ -90,9 +93,8 @@ function _open() {
             });
           }
         }
-        // BH3: symbolStore is the only LTP target now. ltp_ts arbitration
-        // means a tick already newer-by-ms can't be clobbered by a re-
-        // snapshot landing later.
+        // ltp_ts arbitration means a tick already newer-by-ms can't be
+        // clobbered by a re-snapshot landing later.
         if (symbolUpdates.length) mergeSymbolBatch(symbolUpdates);
         if (!get(streamOpen)) streamOpen.set(true);
         _backoffMs = _BACKOFF_MIN;
@@ -182,6 +184,7 @@ export function stopQuoteStream() {
   _opened = false;
   _backoffMs = _BACKOFF_MIN;
   streamOpen.set(false);
-  // liveLtp is intentionally NOT reset — stale values are better than
-  // blanks while the component is tearing down (grid cells flash to "—").
+  // symbolStore is intentionally NOT reset — stale values are better
+  // than blanks while the component is tearing down (grid cells flash
+  // to "—" otherwise).
 }

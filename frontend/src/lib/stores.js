@@ -233,18 +233,24 @@ export function marketAwareInterval(fn, ms) {
   // Two timers per consumer:
   //   1. Main `ms`-cadence interval (the historical behaviour) — fires
   //      fn while market is open; no-ops outside hours.
-  //   2. 5s edge-detect clock — fires fn ONCE on a closed→open transition
-  //      so the callback runs within ~5s of session open instead of
-  //      waiting up to `ms` for the main interval's next natural tick.
+  //   2. 5s edge-detect clock — refreshes the holiday-aware server
+  //      status first, then fires fn ONCE on closed→open transition.
+  //      The status refresh is essential: isMarketOpen() reads the
+  //      cached _serverStatus, which is otherwise polled at 5min
+  //      cadence. At a session boundary (09:15 IST), the cache could
+  //      be 4+ minutes stale → edge would never see the transition.
   //      Operator: "when it reopens, any relevant data should refresh
-  //      the values." 5s is short enough to feel instant + long enough
-  //      that the extra ticks are negligible (<1/min per consumer).
+  //      the values."
   let _prevOpen = isMarketOpen();
   const mainTeardown = visibleInterval(() => {
     if (!isMarketOpen()) return;
     fn();
   }, ms);
-  const edgeTeardown = visibleInterval(() => {
+  const edgeTeardown = visibleInterval(async () => {
+    // Refresh _serverStatus first so the edge-check sees ground truth,
+    // not a 5-min-stale poll. fetchMarketStatus silently no-ops on
+    // failure — falls back to whichever value was cached.
+    try { await fetchMarketStatus(); } catch { /* silent */ }
     const open = isMarketOpen();
     if (open && !_prevOpen) fn();
     _prevOpen = open;

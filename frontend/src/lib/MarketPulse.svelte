@@ -2728,8 +2728,24 @@
       row.qty_pos  += q;
       row._avg_num += avg * q;
       if (r.account) row.accounts.add(String(r.account));
+      // BH6: positions branch now reads market fields from symbolStore
+      // so SSE ticks land here at the same cadence pinned/mover already
+      // see them. cq (pulseQuotes) and r.last_price stay as ordered
+      // fallbacks for the cold-mount path before any tick has fired.
+      const snap  = getSnapshot(sym);
       const liveQ = cq?.[`${exch}:${sym}`];
-      if (liveQ?.ltp) {
+      const snapLtp = snap?.ltp;
+      if (snapLtp != null) {
+        row.ltp        = snapLtp;
+        row.bid        = snap.bid    ?? liveQ?.bid    ?? row.bid    ?? null;
+        row.ask        = snap.ask    ?? liveQ?.ask    ?? row.ask    ?? null;
+        row.open       = snap.open   ?? liveQ?.open   ?? row.open   ?? null;
+        row.close      = snap.close  ?? liveQ?.close  ?? row.close  ?? null;
+        row.change     = snap.day_change     ?? liveQ?.change     ?? row.change     ?? null;
+        row.change_pct = snap.day_change_pct ?? liveQ?.change_pct ?? row.change_pct ?? null;
+        row.volume     = snap.volume ?? liveQ?.volume ?? row.volume ?? null;
+        row.oi         = snap.oi     ?? liveQ?.oi     ?? row.oi     ?? null;
+      } else if (liveQ?.ltp) {
         row.ltp        = liveQ.ltp;
         row.bid        = liveQ.bid ?? row.bid ?? null;
         row.ask        = liveQ.ask ?? row.ask ?? null;
@@ -2807,8 +2823,22 @@
       // intraday position).
       row._avg_hold_num += (Number(r.average_price) || 0) * heldQty;
       if (r.account) row.accounts.add(String(r.account));
+      // BH6: holdings branch reads from symbolStore first; cq + row
+      // fallback chain stays for cold-mount.
+      const snap  = getSnapshot(sym);
       const liveQ = cq?.[`${exch}:${sym}`];
-      if (liveQ?.ltp) {
+      const snapLtp = snap?.ltp;
+      if (snapLtp != null) {
+        row.ltp        = snapLtp;
+        row.bid        = snap.bid    ?? liveQ?.bid    ?? row.bid    ?? null;
+        row.ask        = snap.ask    ?? liveQ?.ask    ?? row.ask    ?? null;
+        row.open       = snap.open   ?? liveQ?.open   ?? row.open   ?? null;
+        row.close      = snap.close  ?? liveQ?.close  ?? row.close  ?? Number(r.close_price) ?? null;
+        row.change     = snap.day_change     ?? liveQ?.change     ?? row.change     ?? null;
+        row.change_pct = snap.day_change_pct ?? liveQ?.change_pct ?? row.change_pct ?? null;
+        if (snap.volume != null) row.volume = snap.volume;
+        if (snap.oi     != null) row.oi     = snap.oi;
+      } else if (liveQ?.ltp) {
         row.ltp        = liveQ.ltp;
         row.bid        = liveQ.bid ?? row.bid ?? null;
         row.ask        = liveQ.ask ?? row.ask ?? null;
@@ -2834,10 +2864,10 @@
       // (live_ltp − avg) × qty (no realised component on holdings).
       if (liveQ?.volume != null) row.volume = liveQ.volume;
       if (liveQ?.oi     != null) row.oi     = liveQ.oi;
-      // Same guard as positions above — ltp=0 is treated as "no live
-      // quote", so a holdings row with a broken / pre-open quote
-      // doesn't post a phantom −100% day move via (0 − close) × qty.
-      const liveHold = Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null;
+      // Prefer the snapshot LTP for the day-pnl recompute (cell renderers
+      // also read it via _liveLtpSnap; keep the math consistent).
+      const liveHold = (snapLtp != null && Number(snapLtp) > 0) ? Number(snapLtp)
+                     : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null);
       const holdClose = Number(r.close_price) || 0;
       const holdAvg   = Number(r.average_price) || 0;
       if (liveHold != null && holdClose > 0 && heldQty !== 0) {

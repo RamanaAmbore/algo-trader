@@ -11,7 +11,7 @@
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { cachedRead, cachedWrite, cachedDelete, TTL } from '$lib/data/persistentCache';
-  import { getSnapshot, symbolStore } from '$lib/data/symbolStore.svelte.js';
+  import { getSnapshot, symbolStore, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { positionsStore, holdingsStore, fundsStore } from '$lib/data/marketDataStores.svelte.js';
 
@@ -139,6 +139,10 @@
     if (_heartbeatTimer) {
       clearTimeout(_heartbeatTimer);
       _heartbeatTimer = null;
+    }
+    if (_tickPulseTimer) {
+      clearTimeout(_tickPulseTimer);
+      _tickPulseTimer = null;
     }
   });
 
@@ -391,16 +395,37 @@
     return aggCompact(v);
   }
 
-  // Drive the flash helper off poll-cycle completions ONLY.
-  // _pollCycleStamp increments inside loadOnce() after a successful
-  // broker fetch (every 30s). Critical: every value read MUST be in
-  // untrack() so the $effect's only tracked dependency is
-  // _pollCycleStamp. Without untrack the effect re-runs on every live
-  // derived change (= every SSE tick during market hours), defeating
-  // the throttle. The values inside untrack are still read fresh —
-  // they're just not tracked as deps.
+  // BH6 liveness fix: the flash effect was previously gated to
+  // _pollCycleStamp only (every 30s) so the strip looked static even
+  // during heavy SSE flow. Operator: "I don't see nav strip animation
+  // happening frequently though tick refresh happens frequently." Add
+  // a 1Hz tick-driven pulse from symbolTickCount so visible-value
+  // changes between polls also drive the flash. 1Hz is fast enough to
+  // read as "alive" without strobing on tick bursts.
+  let _tickPulseStamp = $state(0);
+  let _tickPulseTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
   $effect(() => {
-    _pollCycleStamp;  // the ONLY tracked dep
+    const unsub = symbolTickCount.subscribe(() => {
+      if (_tickPulseTimer) return;
+      _tickPulseTimer = setTimeout(() => {
+        _tickPulseStamp++;
+        _tickPulseTimer = null;
+      }, 1000);
+    });
+    return () => {
+      unsub();
+      if (_tickPulseTimer) { clearTimeout(_tickPulseTimer); _tickPulseTimer = null; }
+    };
+  });
+
+  // Drive the flash helper off poll-cycle completions OR the 1Hz tick
+  // pulse. Both reads are tracked deps — value reads inside untrack
+  // stay fresh-but-not-tracked. Without untrack the effect would
+  // re-run on every $derived change (every tick), defeating the
+  // intentional 1Hz throttle.
+  $effect(() => {
+    _pollCycleStamp;     // poll-cycle baseline (30s)
+    _tickPulseStamp;     // 1Hz tick pulse for SSE-driven changes
     untrack(() => {
       flash.update('P',    _livePositionsPnl);
       flash.update('M',    marginTotal);
