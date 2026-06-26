@@ -2069,8 +2069,10 @@
     // Clear any in-flight throttle timers so their setTimeout
     // callbacks don't fire into a destroyed component (audit-flagged
     // — the flush timer is cleaned up by the $effect's own teardown,
-    // but the paint timer wasn't).
+    // but the paint + prefetch timers weren't).
     if (_ltpPaintTimer) { clearTimeout(_ltpPaintTimer); _ltpPaintTimer = null; }
+    for (const t of _prefetchTimers) { try { clearTimeout(t); } catch { /* no-op */ } }
+    _prefetchTimers.length = 0;
     document.removeEventListener('keydown', handleKeydown);
     document.removeEventListener('click', onDocClick);
     gridPinned?.destroy?.();
@@ -5304,6 +5306,16 @@
     color: #f87171;
     background: rgba(248,113,113,0.12);
   }
+  /* Compositor-thread :active so mobile / touch clicks feel
+     responsive even when the main thread is busy. ag-Grid cell
+     renderers don't inherit from the global button rules in app.css,
+     so the press-feedback is scoped here. touch-action keeps the
+     ~300ms double-tap-zoom delay off. */
+  :global(.sym-remove:active) {
+    transform: scale(0.92);
+    background: rgba(248,113,113,0.18);
+  }
+  :global(.sym-remove) { touch-action: manipulation; }
 
   /* ⋯ symbol-actions button — sibling of .sym-remove. Routes click
      through openContextMenu() so the existing right-click menu also
@@ -5325,6 +5337,11 @@
     color: #fbbf24;
     background: rgba(251,191,36,0.10);
   }
+  :global(.sym-actions:active) {
+    transform: scale(0.92);
+    background: rgba(251,191,36,0.18);
+  }
+  :global(.sym-actions) { touch-action: manipulation; }
 
   /* ▲ / ▼ group-move buttons. Hidden by default, revealed on row
      hover so the icons don't compete with the symbol/badge content

@@ -160,6 +160,14 @@ export function cachedWrite(key, value, ttl_ms = TTL.minute) {
  */
 export function cachedDelete(key) {
   _mem.delete(key);
+  // Race fix: if a debounced cachedWrite is pending for this key, the
+  // timer would still fire after the delete and re-write the now-
+  // cleared key with the prior value. Cancel it.
+  const pending = _lsTimers.get(key);
+  if (pending !== undefined) {
+    clearTimeout(pending);
+    _lsTimers.delete(key);
+  }
   if (typeof localStorage === 'undefined') return;
   try { localStorage.removeItem(PREFIX + key); } catch {}
 }

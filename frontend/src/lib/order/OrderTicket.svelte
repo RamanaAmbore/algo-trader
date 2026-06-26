@@ -617,10 +617,15 @@
     _submitTried = false;
   }
   let _type    = $state(orderType);
-  // Mirror local order-type changes BACK to the bindable prop so the
-  // shell (SymbolPanel) can react immediately — operator wants chase
-  // to disable + deselect the moment MARKET is picked, without
-  // waiting for a side+margin round-trip.
+  // Bidirectional sync between local `_type` and the bindable
+  // `orderType` prop. Two paired $effects: one tracks `_type` and
+  // pushes outward; the other tracks `orderType` (the prop) and
+  // pushes inward. Both early-return on value equality so a fired
+  // write from one side immediately settles the other. The audit
+  // flagged this shape as "architecturally fragile" — true; a
+  // clean collapse to one effect would need source-of-truth
+  // tracking that exceeds the value of the change. The pattern is
+  // protected by the equality guards on both sides.
   $effect(() => { if (_type !== orderType) orderType = _type; });
   $effect(() => { if (orderType !== untrack(() => _type)) _type = orderType; });
   // intentional: seeds from variety prop once; clearForm() resets it to the prop snapshot

@@ -35,6 +35,19 @@ import {
   INDICES_QUOTE_KEYS, LARGECAP_QUOTE_KEYS, symbolFromQuoteKey,
 } from '$lib/data/indexConstituents';
 import { mergeSymbolBatch } from './symbolStore.svelte.js';
+import { cachedDelete } from './persistentCache.js';
+import { browser } from '$app/environment';
+
+// One-time migration: drop the legacy `md.watchQuotes` localStorage
+// blob that BH4 stopped writing (the wrapper store was deleted in
+// favour of the inline /watchlist/{id}/quotes fetch + publishWatchQuotes
+// → symbolStore). Browsers that ran a pre-BH4 build still carry the
+// stale blob until its TTL.week expires — a 7-day window of pre-BH4
+// pinned LTPs sitting in storage for no reader. Cheap to drop on
+// every module init; no-op once the key is gone.
+if (browser) {
+  try { cachedDelete('md.watchQuotes'); } catch { /* no-op */ }
+}
 
 // ── BH1 dual-write helpers ─────────────────────────────────────────────
 //

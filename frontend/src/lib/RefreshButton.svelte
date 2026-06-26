@@ -446,35 +446,8 @@
     background: rgba(126, 151, 184, 0.14);
     color: #c8d8f0;
   }
-  /* Connection-state badge — same top-right placement + sizing as the
-     unread badges on OrderNotifications / AgentNotifications so all
-     three "small number in the corner" indicators read as one family.
-     Background color encodes health (green/amber/red). */
-  .rf-badge {
-    position: absolute;
-    top: -3px; right: -4px;
-    min-width: 0.85rem; height: 0.85rem;
-    padding: 0 0.18rem;
-    color: #fff;
-    border-radius: 999px;
-    font-size: 0.5rem;
-    font-weight: 800;
-    line-height: 0.85rem;
-    font-family: ui-monospace, monospace;
-    border: 1px solid rgba(13, 21, 38, 0.85);
-    display: inline-flex; align-items: center; justify-content: center;
-    /* Sit above the spinning SVG via z-index */
-    z-index: 1;
-    pointer-events: none;
-  }
-  .rf-badge-green { background: #4ade80; }
-  .rf-badge-amber { background: #fbbf24; }
-  .rf-badge-red   { background: #f87171; }
-  /* Backend-offline state — desaturated slate grey, distinct from the
-     red broker-issue state. Operator reads "no number, just a `?`" as
-     "API unreachable" rather than "all brokers failed". */
-  .rf-badge-grey  {
-    background: #475569;
-    color: rgba(255, 255, 255, 0.92);
-  }
+  /* (.rf-badge + .rf-badge-* CSS removed in audit-cleanup pass —
+     the connection-state digit moved to the navbar broker-chip in
+     slice AX. This button kept the full N/M tooltip; only the
+     visible badge moved.) */
 </style>
