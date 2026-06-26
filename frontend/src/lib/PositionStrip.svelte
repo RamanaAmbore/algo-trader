@@ -513,44 +513,40 @@
       {fmtMoney(dispPositionsToday)}
     </span>
   </span>
-  <span class="ps-agg" title="Available margin — summed across accounts">
+  <!-- Combined margin chip: available margin (₹) / utilisation (%).
+       Saves a slot vs separate M + U chips. Margin value uses cyan
+       (cash palette) at positive; utilisation flips through cash/flat/
+       neg as the pool fills up (>70% = crowded, 30-70% = mid,
+       <30% = lots of room). -->
+  <span class="ps-agg" title="Margin: available (₹) / utilisation (% used)">
     <span class="ps-agg-k">M</span>
     <span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-cash' : marginTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('M')}>
       {fmtMoney(marginTotal)}
     </span>
-  </span>
-  {#if utilPct != null}
-    <span class="ps-agg" title="Margin utilisation — used / (used + avail). >70% reads as crowded; <30% means most of the pool is free to deploy.">
-      <span class="ps-agg-k">U</span>
+    {#if utilPct != null}
+      <span class="ps-agg-sep">/</span>
       <span class={'ps-agg-v ' + (utilPct > 70 ? 'ps-neg' : utilPct > 30 ? 'ps-flat' : 'ps-cash') + ' ' + flash.classOf('U')}>
         {utilPct.toFixed(1)}%
       </span>
-    </span>
-  {/if}
-  <!-- Operator: "show c and ca in nav strip… in place of c and cash
-       which is confusing". Canonical labels matching industry vocab
-       (Bloomberg PRTU, IBKR Portfolio, Sensibull positions tab):
-         C  = Total Cash. The full cash position the operator OWNS,
-              including premium already paid out for long options held.
-              Math: CA + (avg_price × qty for every long CE/PE).
-         CA = Cash Available. What the operator can deploy RIGHT NOW
-              without closing any position. Comes from each broker's
-              avail.cash (Kite + Dhan + Groww via @for_all_accounts) —
-              Kite's value already nets realized P&L and option-premium
-              debits; Dhan + Groww adapters fold the same fields into
-              the canonical `cash` shape.
-       Per-broker drift in how realized M2M is folded into avail.cash
-       is documented in the audit memo; if the operator sees the sum
-       diverge from broker apps, the Dhan/Groww adapter math is the
-       first place to look. -->
-  <span class="ps-agg" title="Total Cash — Cash Available + premium tied up in long options (= cash you'd have if every long option were closed at its entry premium).">
+    {/if}
+  </span>
+  <!-- Combined cash chip: total cash (incl. premium tied up in long
+       options) / cash available (deployable now). Canonical labels
+       (Bloomberg PRTU, IBKR Portfolio):
+         C  = Total Cash  = CA + Σ(avg × qty for long CE/PE)
+         CA = Cash Available — what the operator can deploy now,
+              already nets realised P&L, premium debits, blocked
+              margin per the broker's books.
+       Per-broker drift in how realised M2M is folded into avail.cash
+       is documented in the audit memo; if the sum diverges from
+       broker apps, the Dhan/Groww adapter math is the first place to
+       look. -->
+  <span class="ps-agg" title="Cash: total (C, incl. premium tied up in long options) / available (CA, deployable now)">
     <span class="ps-agg-k">C</span>
     <span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cp')}>
       {fmtMoney(cashTotal)}
     </span>
-  </span>
-  <span class="ps-agg" title="Cash Available — deployable cash right now, summed across Kite + Dhan + Groww accounts. Already nets realized P&L, premium debits, and blocked margin per the broker's books.">
-    <span class="ps-agg-k">CA</span>
+    <span class="ps-agg-sep">/</span>
     <span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cash')}>
       {fmtMoney(liveCashTotal)}
     </span>
