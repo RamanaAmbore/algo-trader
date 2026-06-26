@@ -11,7 +11,7 @@
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { cachedRead, cachedWrite, cachedDelete, TTL } from '$lib/data/persistentCache';
-  import { getSnapshot, symbolStore } from '$lib/data/symbolStore.svelte.js';
+  import { getSnapshot, symbolStore, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { positionsStore, holdingsStore, fundsStore } from '$lib/data/marketDataStores.svelte.js';
 
@@ -84,6 +84,29 @@
     return unsub;
   });
 
+  // 250 ms-throttled tick clock. _liveDeltaByRow + the freeze effect
+  // depend on this instead of per-tick SvelteMap reactivity, so the
+  // derived block re-runs at most 4 Hz even when SSE is bursting at
+  // 100 ticks/sec. Operator: "order button response is slow. any click
+  // event across the page should have the highest priority." Throttling
+  // the per-tick scheduler work frees the main thread for click
+  // dispatch. The subscribe is registered inside onMount (NOT inside
+  // an $effect that reads reactive state) so it stays at one timer.
+  let _throttledTick = $state(0);
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _tickThrottleTimer = null;
+  /** @type {(() => void) | null} */
+  let _tickThrottleUnsub = null;
+  onMount(() => {
+    _tickThrottleUnsub = symbolTickCount.subscribe(() => {
+      if (_tickThrottleTimer) return;
+      _tickThrottleTimer = setTimeout(() => {
+        _throttledTick++;
+        _tickThrottleTimer = null;
+      }, 250);
+    });
+  });
+
   // Tick-flash — directional pulse when any of the strip's nine
   // pills changes value on the 30s poll. Subtle enough to read as
   // ambient liveness; loud enough that the operator sees a refresh
@@ -132,6 +155,8 @@
     teardown?.();
     flash.dispose();
     if (_mktTimer) clearInterval(_mktTimer);
+    if (_tickThrottleTimer) { clearTimeout(_tickThrottleTimer); _tickThrottleTimer = null; }
+    _tickThrottleUnsub?.();
     // _heartbeatTimer is the 450ms pulse decay timer scheduled inside
     // the heartbeat $effect. Latent leak today (strip is layout-
     // persistent so it never unmounts) but the timer would fire into
@@ -180,7 +205,13 @@
   const _liveDeltaByRow = $derived.by(() => {
     /** @type {Map<string, number>} */
     const m = new Map();
-    void symbolStore.size;
+    // Read _throttledTick so the derived re-runs at 4 Hz max — not on
+    // every SvelteMap entry change (which fires per-tick). getSnapshot
+    // calls below are wrapped in untrack so they don't register
+    // per-symbol reactive deps that would defeat the throttle. This
+    // is the same scheduler-pressure fix BH6 applied to MarketPulse
+    // buildUnified after the order-button saturation incident.
+    void _throttledTick;
     // Read _mktTick so the derived re-runs on the market open/close
     // boundary (otherwise we'd wait up to 30s for _load to pick it up).
     void _mktTick;
@@ -197,34 +228,44 @@
       if (exch === 'MCX') return mcxOpen;
       return nseOpen;
     };
+    // BUGFIX: positions + holdings used to share the same map key
+    // `sym + account`. When the same symbol appeared in BOTH for the
+    // same account (operator holds long-term INFY + has an intraday
+    // INFY position), the holdings loop ran AFTER positions and
+    // overwrote the positions delta in the map — so the positions sum
+    // picked up the holdings-qty-based delta. Operator: "position
+    // profit in nav strip is not correct." Fix: prefix the key by
+    // kind ('P' vs 'H') so each kind owns its own delta entry.
     for (const row of positions) {
       if (!_appliesToRow(row)) continue;
       const sym  = String(row?.tradingsymbol || '').toUpperCase();
-      const live = getSnapshot(sym)?.ltp;
+      const live = untrack(() => getSnapshot(sym)?.ltp);
       if (live == null) continue;
       const pollLtp = Number(row?.last_price || 0);
       const qty     = Number(row?.quantity   || 0);
       if (!pollLtp || !qty) continue;
-      const key = sym + '\x00' + String(row?.account || '');
+      const key = 'P\x00' + sym + '\x00' + String(row?.account || '');
       m.set(key, (Number(live) - pollLtp) * qty);
     }
     for (const row of holdings) {
       if (!_appliesToRow(row)) continue;
       const sym  = String(row?.tradingsymbol || '').toUpperCase();
-      const live = getSnapshot(sym)?.ltp;
+      const live = untrack(() => getSnapshot(sym)?.ltp);
       if (live == null) continue;
       const pollLtp = Number(row?.last_price || 0);
       const qty     = Number(row?.quantity   || 0);
       if (!pollLtp || !qty) continue;
-      const key = sym + '\x00' + String(row?.account || '');
+      const key = 'H\x00' + sym + '\x00' + String(row?.account || '');
       m.set(key, (Number(live) - pollLtp) * qty);
     }
     return m;
   });
 
-  /** @param {any} row */
-  function _delta(row) {
-    const key = String(row?.tradingsymbol || '').toUpperCase() + '\x00' + String(row?.account || '');
+  /** @param {any} row @param {'P'|'H'} kind */
+  function _delta(row, kind) {
+    const key = kind + '\x00'
+              + String(row?.tradingsymbol || '').toUpperCase()
+              + '\x00' + String(row?.account || '');
     return _liveDeltaByRow.get(key) || 0;
   }
 
@@ -262,27 +303,27 @@
 
   const _livePositionsPnl = $derived.by(() => {
     let s = 0;
-    for (const p of positions) s += Number(p?.pnl || 0) + _delta(p);
+    for (const p of positions) s += Number(p?.pnl || 0) + _delta(p, 'P');
     return s;
   });
   const _livePositionsToday = $derived.by(() => {
     let s = 0;
-    for (const p of positions) s += Number(p?.day_change_val || 0) + _delta(p);
+    for (const p of positions) s += Number(p?.day_change_val || 0) + _delta(p, 'P');
     return s;
   });
   const _liveHoldingsToday = $derived.by(() => {
     let s = 0;
-    for (const h of holdings)  s += Number(h?.day_change_val || 0) + _delta(h);
+    for (const h of holdings)  s += Number(h?.day_change_val || 0) + _delta(h, 'H');
     return s;
   });
   const _liveHoldingsTotal = $derived.by(() => {
     let s = 0;
-    for (const h of holdings)  s += Number(h?.pnl || 0) + _delta(h);
+    for (const h of holdings)  s += Number(h?.pnl || 0) + _delta(h, 'H');
     return s;
   });
   const _liveHoldingsValue = $derived.by(() => {
     let s = 0;
-    for (const h of holdings)  s += Number(h?.cur_val || 0) + _delta(h);
+    for (const h of holdings)  s += Number(h?.cur_val || 0) + _delta(h, 'H');
     return s;
   });
 

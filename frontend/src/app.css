@@ -1783,3 +1783,39 @@
 @media (prefers-reduced-motion: reduce) {
   .content-fade-in { animation: none; }
 }
+
+/* ── Instant click feedback ──────────────────────────────────────────────────
+   Operator: "any click event across the page should have the highest
+   priority." Even with the scheduler-pressure fixes (untrack in
+   buildUnified, 250ms throttle on the PositionStrip live-delta map), a
+   JS click handler can still take 10–50 ms to dispatch under heavy
+   reactive load. A CSS-only :active state runs on the compositor
+   thread — independent of JS — so the operator gets immediate (<8 ms)
+   visual confirmation the click was registered, regardless of how
+   busy the main thread is.
+
+   `touch-action: manipulation` removes the ~300 ms tap-delay browsers
+   add to mobile click events while they wait to disambiguate double-
+   tap-to-zoom. Together these two rules drop the perceived click
+   latency on busy pages by an order of magnitude.
+
+   Scoped to interactive surfaces only — disabled / aria-disabled
+   elements still look static. */
+button, [role="button"], .ctx-item, .ot-submit, .rf-btn {
+  touch-action: manipulation;
+}
+button:not(:disabled):active,
+[role="button"]:not([aria-disabled="true"]):active,
+.ctx-item:active,
+.ot-submit:not(:disabled):active,
+.rf-btn:not(:disabled):active {
+  transform: scale(0.97);
+  transition: transform 60ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  button:active, [role="button"]:active,
+  .ctx-item:active, .ot-submit:active, .rf-btn:active {
+    transform: none;
+    transition: none;
+  }
+}
