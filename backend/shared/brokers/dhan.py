@@ -1468,11 +1468,16 @@ def _normalise_holdings(resp: Any) -> list[dict]:
         else:
             pnl = float(pnl_raw)
 
-        day_change_raw = h.get("dayChange")
-        if day_change_raw in (None, 0, "0", 0.0):
-            day_change = (last_price - close_price) * qty
-        else:
-            day_change = float(day_change_raw)
+        # day_change is per-share ₹ to match Kite's convention (= ltp − close).
+        # Dhan's raw `dayChange` field is the day's TOTAL position change
+        # (qty × per-share); using it directly produces a portfolio-₹
+        # value that downstream consumers misread as per-share. Earlier
+        # path also fell back to `(ltp − close) × qty` which doubled the
+        # qty multiplication when `broker_apis.fetch_holdings` then
+        # multiplied by opening_quantity again — net 500× drift for a
+        # 500-share row in the fallback branch. Derive from price diff
+        # directly so the unit is multiplier-invariant + qty-invariant.
+        day_change = last_price - close_price
 
         day_change_pct_raw = h.get("dayChangePerc")
         if day_change_pct_raw in (None, 0, "0", 0.0):
