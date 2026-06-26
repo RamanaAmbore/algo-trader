@@ -504,7 +504,7 @@
 <a class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '')} href="/dashboard"
    aria-label="Open the dashboard — full positions, holdings, and funds grids">
   <span class="ps-agg" title="Positions: lifetime P&L / today's MTM move (Δ)">
-    <span class="ps-agg-k">P</span>
+    <span class="ps-agg-k ps-delta">P∆</span>
     <span class={'ps-agg-v ' + (_livePositionsPnl > 0 ? 'ps-pos' : _livePositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}>
       {fmtMoney(_livePositionsPnl)}
     </span>
