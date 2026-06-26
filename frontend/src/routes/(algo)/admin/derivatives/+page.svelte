@@ -21,7 +21,7 @@
     fetchWatchlists, addWatchlistItem,
     batchQuote,
   } from '$lib/api';
-  import { positionsStore, holdingsStore } from '$lib/data/marketDataStores.svelte.js';
+  import { positionsStore, holdingsStore, publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
   import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -1020,6 +1020,14 @@
     const keys = pairs.map(p => p.quoteKey);
     try {
       const res = await batchQuote(keys);
+      // Publish underlying-anchor quotes to symbolStore so liveSpot
+      // in OptionsPayoff (and any other consumer) can read them via
+      // getSnapshot. Without this, the derivatives page fetched its
+      // own batchQuote but never fed the central store — operator
+      // reported the payoff overlay numbers didn't update with ticks
+      // because the anchor symbol had no entry in symbolStore and
+      // liveSpot fell back to the server-poll strategy.spot value.
+      publishPulseQuotes(res?.items ?? []);
       // /api/quote/batch returns `{refreshed_at, items: [...]}` where
       // each item is `{exchange, tradingsymbol, ltp, change_pct, close,
       // bid, ask, ...}`. Build an exchange:symbol → item map so we

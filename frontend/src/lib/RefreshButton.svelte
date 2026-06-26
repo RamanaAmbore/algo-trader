@@ -353,20 +353,29 @@
     from { transform: rotate(0deg); }
     to   { transform: rotate(360deg); }
   }
-  /* Tick-pulse halo — sky-blue ring fades out over ~250ms each pulse
-     so the 4Hz cadence reads as a continuous shimmer rather than
-     discrete blinks. Toggling between rf-tick-a / rf-tick-b restarts
-     the animation each pulse. */
+  /* Tick-pulse — two overlaid animations triggered when ticks land:
+       1. Halo: sky-blue ring fades out over ~250ms (box-shadow)
+       2. Rotation: icon rotates 180° smoothly each pulse so the button
+          reads as "spinning" continuously during heavy SSE flow.
+     Toggling between rf-tick-a / rf-tick-b restarts both each pulse. */
   .rf-btn.rf-tick-a, .rf-btn.rf-tick-b {
     animation: rf-tick-pulse 0.25s ease-out;
+  }
+  .rf-btn.rf-tick-a svg, .rf-btn.rf-tick-b svg {
+    animation: rf-tick-rotate 0.25s ease-in-out;
   }
   @keyframes rf-tick-pulse {
     0%   { box-shadow: 0 0 0 0 rgba(125, 211, 252, 0.55); }
     100% { box-shadow: 0 0 8px 2px rgba(125, 211, 252, 0); }
   }
+  @keyframes rf-tick-rotate {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(180deg); }
+  }
   @media (prefers-reduced-motion: reduce) {
     .rf-btn.rf-spinning svg { animation: none; }
     .rf-btn.rf-tick-a, .rf-btn.rf-tick-b { animation: none; }
+    .rf-btn.rf-tick-a svg, .rf-btn.rf-tick-b svg { animation: none; }
   }
 
   /* ── Market-closed confirmation popup ────────────────────────────
