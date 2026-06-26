@@ -244,10 +244,15 @@ function _mergeSymbolWrite(sym, fields, ts = {}) {
 
 export function mergeSymbolUpdate(sym, fields, ts = {}) {
   const wrote = _mergeSymbolWrite(sym, fields, ts);
-  if (wrote) {
-    symbolTickCount.update(n => n + 1);
-    _schedulePersist();
-  }
+  if (wrote) _schedulePersist();
+  // Always bump symbolTickCount, even on a no-op write (value-identical
+  // tick or stale-ts reject). The counter is a "tick arrived" liveness
+  // signal — RefreshButton's halo + MarketPulse's _liveLtpSnap rebuild
+  // depend on it. Bumping only on value changes left the UI looking
+  // dead during heavy flat-market ticks because every tick was a no-op
+  // write. Throttles downstream (50ms snap rebuild, 250ms halo + 250ms
+  // _liveDeltaByRow) absorb the call rate regardless of write outcome.
+  if (sym) symbolTickCount.update(n => n + 1);
   return wrote;
 }
 
@@ -268,10 +273,11 @@ export function mergeSymbolBatch(updates) {
   for (const u of updates) {
     if (_mergeSymbolWrite(u.sym, u.fields, u.ts)) n++;
   }
-  if (n > 0) {
-    symbolTickCount.update(c => c + 1);
-    _schedulePersist();
-  }
+  if (n > 0) _schedulePersist();
+  // Always bump even when every write was a no-op — see mergeSymbolUpdate
+  // note. One bump per batch (not per item) preserves the BH6 anti-
+  // saturation fix.
+  symbolTickCount.update(c => c + 1);
   return n;
 }
 
