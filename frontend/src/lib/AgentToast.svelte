@@ -207,4 +207,7 @@
     from { transform: translateX(0.5rem); opacity: 0; }
     to   { transform: translateX(0); opacity: 1; }
   }
+  @media (prefers-reduced-motion: reduce) {
+    .atst-toast { animation: none; }
+  }
 </style>

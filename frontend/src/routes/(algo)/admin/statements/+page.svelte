@@ -237,7 +237,7 @@
       icon="inbox"
     />
   {:else}
-    <table class="ms-table">
+    <table class="ms-table content-fade-in">
       <thead>
         <tr>
           <th>LP</th>

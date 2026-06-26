@@ -283,7 +283,7 @@
 {:else if !settings.length}
   <div class="text-[0.65rem] text-[#c8d8f0]/60">No settings seeded yet.</div>
 {:else}
-  <div class="mb-3 flex items-center gap-2">
+  <div class="mb-3 flex items-center gap-2 content-fade-in">
     <input type="text"
            class="field-input flex-1 max-w-md"
            placeholder="Filter by key or description…"

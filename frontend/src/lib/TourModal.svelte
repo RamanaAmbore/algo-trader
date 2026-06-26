@@ -210,6 +210,11 @@
     from { width: 0%; }
     to   { width: 100%; }
   }
+  @media (prefers-reduced-motion: reduce) {
+    /* Jump the bar to full-width immediately — the auto-advance timer
+       still fires; user just doesn't see the progress fill sweep. */
+    .tour-progress-bar { animation: none; width: 100%; }
+  }
 
   .tour-close {
     position: absolute; top: 0.55rem; right: 0.8rem;

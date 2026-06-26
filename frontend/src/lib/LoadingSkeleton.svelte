@@ -111,6 +111,9 @@
     animation: shimmer 1.5s ease-in-out infinite;
     flex-shrink: 0;
   }
+  @media (prefers-reduced-motion: reduce) {
+    .skel-bar { animation: none; }
+  }
   .skel-rounded { border-radius: 3px; }
 
   /* ── Block variant ────────────────────────────────────────────── */

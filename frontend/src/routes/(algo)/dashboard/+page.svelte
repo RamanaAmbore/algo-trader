@@ -2475,6 +2475,9 @@
     0%, 100% { opacity: 1; }
     50%       { opacity: 0.3; }
   }
+  @media (prefers-reduced-motion: reduce) {
+    .oo-dot { animation: none; }
+  }
   .oo-pills {
     display: flex;
     flex-wrap: wrap;

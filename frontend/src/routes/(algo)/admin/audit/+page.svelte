@@ -309,7 +309,7 @@
     icon="search"
   />
 {:else}
-<div class="audit-table-wrap">
+<div class="audit-table-wrap content-fade-in">
   <table class="audit-table">
     <thead>
       <tr>

@@ -1475,4 +1475,8 @@
     70%  { opacity: 1; }
     100% { opacity: 0; }
   }
+  @media (prefers-reduced-motion: reduce) {
+    .chain-quick-toast { animation: none; }
+    .chain-basket-toast { animation: none; }
+  }
 </style>

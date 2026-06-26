@@ -397,6 +397,9 @@
     0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
     50%      { box-shadow: 0 0 0 6px rgba(251, 191, 36, 0.10); }
   }
+  @media (prefers-reduced-motion: reduce) {
+    .show-cta-tour { animation: none; }
+  }
   .show-cta-hint {
     font-size: 0.62rem;
     color: rgba(155, 176, 208, 0.75);

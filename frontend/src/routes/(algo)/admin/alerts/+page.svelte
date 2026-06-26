@@ -238,7 +238,7 @@
     icon="inbox"
   />
 {:else}
-  <div class="alerts-table-wrap">
+  <div class="alerts-table-wrap content-fade-in">
     <table class="alerts-table">
       <thead>
         <tr>

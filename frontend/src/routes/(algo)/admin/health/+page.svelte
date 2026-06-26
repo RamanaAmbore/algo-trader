@@ -140,7 +140,7 @@
     {/each}
   </div>
 {:else if health}
-  <div class="health-grid">
+  <div class="health-grid content-fade-in">
 
     <!-- ── Header card: branch + build + uptime ──────────────────── -->
     <div class="hcard hcard-wide">

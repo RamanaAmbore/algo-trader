@@ -331,6 +331,9 @@
     from { transform: rotate(0deg); }
     to   { transform: rotate(360deg); }
   }
+  @media (prefers-reduced-motion: reduce) {
+    .rf-btn.rf-spinning svg { animation: none; }
+  }
 
   /* ── Market-closed confirmation popup ────────────────────────────
      Local-positioned popup anchored to the RefreshButton via the

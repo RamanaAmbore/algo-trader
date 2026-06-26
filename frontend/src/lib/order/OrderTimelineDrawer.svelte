@@ -213,6 +213,9 @@
     from { transform: translateX(100%); }
     to   { transform: translateX(0); }
   }
+  @media (prefers-reduced-motion: reduce) {
+    .otd-drawer { animation: none; }
+  }
 
   /* Header */
   .otd-header {

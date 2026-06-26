@@ -1767,3 +1767,19 @@
   letter-spacing: 0.04em;
 }
 .oes-common-clear-inline:hover { background: rgba(248, 113, 113, 0.10); }
+
+/* ── Skeleton-to-content crossfade (slice AY) ────────────────────────────────
+   Apply to the real-data container in the {:else} branch of any
+   {#if loading} / LoadingSkeleton guard. ~150ms fade-in hides the hard-cut
+   between placeholder and live data. Skipped entirely under
+   prefers-reduced-motion. */
+@keyframes content-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.content-fade-in {
+  animation: content-fade-in 150ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .content-fade-in { animation: none; }
+}

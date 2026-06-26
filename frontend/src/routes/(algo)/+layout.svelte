@@ -1,5 +1,5 @@
 <script>
-  import { goto } from '$app/navigation';
+  import { goto, onNavigate } from '$app/navigation';
   import { page } from '$app/state';
   import { onMount, onDestroy, setContext } from 'svelte';
   import { get } from 'svelte/store';
@@ -25,6 +25,23 @@
   import { startBookChangedBus } from '$lib/data/bookChanged';
 
   const { children } = $props();
+
+  // ── Route transition (slice AY, item 23) ──────────────────────────
+  // Use the View Transitions API for a ~120ms cross-fade between algo
+  // pages instead of the hard content swap. Gracefully degrades on
+  // browsers without startViewTransition (Safari < 18, Firefox < 130).
+  // Guarded to no-preference only via CSS — the JS hook still fires
+  // but the browser respects the CSS animation-duration:0 override when
+  // reduce is set, so we don't need a JS-side matchMedia check.
+  onNavigate((navigation) => {
+    if (!document.startViewTransition) return;
+    return new Promise((resolve) => {
+      document.startViewTransition(async () => {
+        resolve();
+        await navigation.complete;
+      });
+    });
+  });
 
   // Demo "Hire Me" modal open-state. Triggered by the navbar button
   // (visible only when isDemo). Closes via overlay click, × button,
@@ -1268,6 +1285,9 @@
     0%, 100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.0); }
     50%      { box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.28); }
   }
+  @media (prefers-reduced-motion: reduce) {
+    :global(.algo-nav-btn.algo-hire-btn) { animation: none; }
+  }
   :global(.algo-mobile-item.algo-hire-btn) {
     color: #fbbf24;
     font-weight: 700;
@@ -1329,6 +1349,9 @@
   @keyframes algo-mode-dot {
     0%, 100% { opacity: 1;   transform: scale(1); }
     50%      { opacity: 0.4; transform: scale(0.8); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .algo-mode-badge::before { animation: none; }
   }
 
   .algo-pub-link {
@@ -2040,6 +2063,8 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .broker-chip-partial, .broker-chip-down { animation: none; }
+    .chase-chip  { animation: none; }
+    .persist-chip { animation: none; }
   }
 
   /* ── Chase chip ──────────────────────────────────────────────────────── */
@@ -2154,5 +2179,20 @@
     border-color: rgba(248,113,113,0.85);
     border-left-color: #f87171;
     box-shadow: 0 2px 8px rgba(0,0,0,0.45), 0 0 0 1px rgba(248,113,113,0.28);
+  }
+
+  /* ── View-transition cross-fade (slice AY, item 23) ─────────────────
+     Fires when document.startViewTransition() is available. 120ms
+     opacity sweep replaces the hard content swap; invisible under
+     prefers-reduced-motion because the animation-duration is zeroed.
+     Duration is intentionally short — this is page navigation, not
+     a cinematic entrance. The :global selector is required because
+     these pseudo-elements live outside any Svelte component scope. */
+  @media (prefers-reduced-motion: no-preference) {
+    :global(::view-transition-old(root)),
+    :global(::view-transition-new(root)) {
+      animation-duration: 120ms;
+      animation-timing-function: ease-out;
+    }
   }
 </style>

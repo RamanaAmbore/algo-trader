@@ -5541,6 +5541,12 @@
     0%   { background-color: rgba(248, 113, 113, 0.42); }
     100% { background-color: transparent; }
   }
+  @media (prefers-reduced-motion: reduce) {
+    .byund-row > .tf-up,
+    .byund-row > .tf-down,
+    :global(.fs-card-on) .byund-row > .tf-up,
+    :global(.fs-card-on) .byund-row > .tf-down { animation: none; }
+  }
   /* Scope chip — small slate-grey tag inline with the Snapshot title
      that names the active account filter. Empty filter reads "all
      accounts" so the operator can confirm the snapshot is unscoped
@@ -6948,4 +6954,9 @@
     color: rgba(200,216,240,0.55);
   }
   .order-toast-oid { font-family: ui-monospace, monospace; }
+  @media (prefers-reduced-motion: reduce) {
+    .chain-quick-toast { animation: none; }
+    .chain-basket-toast { animation: none; }
+    .order-toast { animation: none; }
+  }
 </style>

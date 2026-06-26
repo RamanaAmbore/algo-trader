@@ -622,7 +622,7 @@
   {:else if !users.length}
     <p class="text-xs text-[#7e97b8]">No users registered.</p>
   {:else}
-    <div class="space-y-3">
+    <div class="space-y-3 content-fade-in">
       {#each users as user}
         {@const isSelf = user.username === $authStore.user?.username}
         {@const iAmDesignated = $authStore.user?.role === 'designated'}

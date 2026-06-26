@@ -124,6 +124,7 @@
     action={{ label: 'Go to Simulator', onClick: () => goto('/admin/simulator') }}
   />
 {:else}
+  <div class="content-fade-in">
   {#each grouped as group (group.run_id)}
     <div class="run-card">
       <div class="run-header">
@@ -179,6 +180,7 @@
       </div>
     </div>
   {/each}
+  </div>
 {/if}
 
 <style>

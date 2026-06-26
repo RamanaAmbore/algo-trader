@@ -371,7 +371,7 @@
       action={{ label: '+ New account', onClick: () => resetForm(NEW_SENTINEL) }}
     />
   {:else}
-    <div class="brokers-scroll">
+    <div class="brokers-scroll content-fade-in">
     <table class="brokers-table">
       <thead>
         <tr>

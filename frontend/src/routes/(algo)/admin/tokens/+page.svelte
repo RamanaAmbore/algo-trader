@@ -383,7 +383,7 @@
     icon="inbox"
   />
 {:else}
-  <div class="algo-status-card p-0 overflow-hidden" data-status="inactive">
+  <div class="algo-status-card p-0 overflow-hidden content-fade-in" data-status="inactive">
     <table class="w-full text-[0.65rem]">
       <thead>
         <tr class="bg-[#0a1020] text-[#fbbf24]">

@@ -520,4 +520,7 @@
     animation: blink 1s step-end infinite;
   }
   @keyframes blink { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .pair-cursor { animation: none; }
+  }
 </style>

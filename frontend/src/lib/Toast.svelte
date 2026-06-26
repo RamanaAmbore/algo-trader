@@ -221,4 +221,8 @@
     from { opacity: 1; transform: translateX(0); }
     to   { opacity: 0; transform: translateX(0.5rem); }
   }
+  @media (prefers-reduced-motion: reduce) {
+    .rbq-toast         { animation: none; }
+    .rbq-toast-dismissing { animation: none; opacity: 0; }
+  }
 </style>

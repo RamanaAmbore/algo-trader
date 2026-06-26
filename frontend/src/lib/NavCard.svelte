@@ -368,6 +368,10 @@
     0%   { background-position: 200% 0; }
     100% { background-position: -200% 0; }
   }
+  @media (prefers-reduced-motion: reduce) {
+    .tf-up, .tf-down     { animation: none; }
+    .nav-skel-bar        { animation: none; }
+  }
 
   /* tabular-nums helper class applied via inline class on elements */
   .tabular-nums { font-variant-numeric: tabular-nums; }

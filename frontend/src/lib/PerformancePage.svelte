@@ -1328,6 +1328,9 @@
     from { opacity: 0; transform: translateY(-6px); }
     to   { opacity: 1; transform: translateY(0); }
   }
+  @media (prefers-reduced-motion: reduce) {
+    .perf-fill-toast { animation: none; }
+  }
   .perf-banner-icon {
     font-size: 0.95rem;
     line-height: 1;
