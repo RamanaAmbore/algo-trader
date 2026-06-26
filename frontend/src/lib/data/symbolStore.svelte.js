@@ -34,6 +34,7 @@
 
 import { browser } from '$app/environment';
 import { SvelteMap } from 'svelte/reactivity';
+import { writable } from 'svelte/store';
 import { cachedRead, cachedWrite, TTL } from './persistentCache.js';
 
 const _STORE_KEY = 'md.symbolStore';
@@ -73,6 +74,17 @@ const _PRUNE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
  * @type {SvelteMap<string, MarketSnapshot>}
  */
 export const symbolStore = new SvelteMap();
+
+/**
+ * Monotonic write counter — bumps on every mergeSymbolUpdate call that
+ * actually wrote at least one field. Consumers that need a "something
+ * changed" reactive trigger across the whole map (e.g. MarketPulse's
+ * throttle/flash $effect calling ag-Grid refreshCells) subscribe to
+ * this writable instead of iterating every entry. Cheaper than
+ * `SvelteMap.size` (which only fires on add/remove) and cheaper than
+ * scanning the map on every render.
+ */
+export const symbolTickCount = writable(0);
 
 // ── Hydrate from localStorage ────────────────────────────────────────────
 //
@@ -208,6 +220,7 @@ export function mergeSymbolUpdate(sym, fields, ts = {}) {
   next.touched_at = Math.max(next.ltp_ts, next.snapshot_ts);
 
   symbolStore.set(key, next);
+  symbolTickCount.update(n => n + 1);
   _schedulePersist();
   return true;
 }

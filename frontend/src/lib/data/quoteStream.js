@@ -1,16 +1,23 @@
 /**
  * quoteStream.js — SSE-backed live LTP feed.
  *
- * Connects to GET /api/quote/stream and maintains two reactive primitives:
- *   liveLtp     — writable store: tradingsymbol → latest LTP
+ * Connects to GET /api/quote/stream and maintains one reactive primitive:
  *   streamOpen  — writable store: true when the SSE connection has received
  *                 at least one snapshot/tick without a subsequent error
  *
+ * SSE ticks + snapshots are written into the symbol-centric symbolStore
+ * via mergeSymbolUpdate / mergeSymbolBatch. Consumers read live LTPs via
+ * `getSnapshot(sym).ltp` instead of subscribing to a separate `liveLtp`
+ * writable. The legacy `liveLtp` store was deleted in BH3 — its only
+ * remaining consumer (MarketPulse's throttled cell-renderer mirror)
+ * was migrated to read from symbolStore + symbolTickCount.
+ *
  * Usage (inside a Svelte component):
- *   import { liveLtp, streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
+ *   import { streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
  *   onMount(() => startQuoteStream());
  *   onDestroy(() => stopQuoteStream());
- *   // in a cell renderer or $derived: $liveLtp['RELIANCE'] ?? fallback
+ *   import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
+ *   // in a cell renderer: getSnapshot('RELIANCE')?.ltp ?? fallback
  *
  * Singleton pattern — multiple components calling startQuoteStream() share one
  * connection. stopQuoteStream() closes it and resets so the next startQuoteStream()
@@ -20,9 +27,6 @@
 import { writable, get } from 'svelte/store';
 import { browser } from '$app/environment';
 import { mergeSymbolUpdate, mergeSymbolBatch } from './symbolStore.svelte.js';
-
-/** Map of tradingsymbol → live LTP, updated as SSE ticks arrive. */
-export const liveLtp = writable(/** @type {Record<string, number>} */ ({}));
 
 /**
  * True when the SSE connection has been acknowledged by the server (snapshot
@@ -76,25 +80,19 @@ function _open() {
       // later tick caught up). Transform to `{sym: ltp}` so ag-Grid
       // can read `$liveLtp[sym]` and paint immediately on first load.
       if (snap && typeof snap === 'object') {
-        /** @type {Record<string, number>} */
-        const symMap = {};
         /** @type {Array<{sym: string, fields: {ltp: number}, ts: {ltp_ts: number}}>} */
         const symbolUpdates = [];
         const ts = Date.now();
         for (const v of Object.values(snap)) {
           if (v && typeof v === 'object' && v.sym && v.ltp != null) {
-            symMap[v.sym] = v.ltp;
             symbolUpdates.push({
               sym: v.sym, fields: { ltp: Number(v.ltp) }, ts: { ltp_ts: ts },
             });
           }
         }
-        if (Object.keys(symMap).length) {
-          liveLtp.update(prev => ({ ...prev, ...symMap }));
-        }
-        // BH1 dual-write — symbolStore receives the same LTPs SSE
-        // delivers to liveLtp. ltp_ts arbitration ensures a tick already
-        // newer-by-ms can't be clobbered by a re-snapshot landing later.
+        // BH3: symbolStore is the only LTP target now. ltp_ts arbitration
+        // means a tick already newer-by-ms can't be clobbered by a re-
+        // snapshot landing later.
         if (symbolUpdates.length) mergeSymbolBatch(symbolUpdates);
         if (!get(streamOpen)) streamOpen.set(true);
         _backoffMs = _BACKOFF_MIN;
@@ -106,15 +104,9 @@ function _open() {
     try {
       const t = JSON.parse(e.data);
       if (t && t.sym && t.ltp != null) {
-        liveLtp.update(prev => {
-          // Avoid allocating a new object for every tick when the value
-          // hasn't changed — keeps ag-Grid cell-level diffs minimal.
-          if (prev[t.sym] === t.ltp) return prev;
-          return { ...prev, [t.sym]: t.ltp };
-        });
-        // BH1 dual-write — symbolStore.ltp gets the same tick. ltp_ts =
-        // Date.now() at receive time; arbitrates correctly against any
-        // poll that lands afterward carrying older broker-side LTP.
+        // BH3: writes only land in symbolStore. ltp_ts = Date.now() at
+        // receive time arbitrates correctly against any poll that
+        // lands afterward carrying older broker-side LTP.
         mergeSymbolUpdate(t.sym, { ltp: Number(t.ltp) }, { ltp_ts: Date.now() });
         if (!get(streamOpen)) streamOpen.set(true);
         _backoffMs = _BACKOFF_MIN;

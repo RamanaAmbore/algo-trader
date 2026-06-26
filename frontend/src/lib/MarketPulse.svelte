@@ -46,8 +46,8 @@
     return v;
   }
   import { fetchSettings } from '$lib/api';
-  import { liveLtp, streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
-  import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
+  import { streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
+  import { getSnapshot, symbolStore, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { bookChanged } from '$lib/data/bookChanged';
   import {
     positionsStore, holdingsStore, fundsStore,
@@ -644,22 +644,38 @@
   const sparklines = $derived(sparklinesStore.value ?? /** @type {Record<string, number[]>} */ ({}));
   // _firstSparkDone is now tracked inside sparklinesStore's fetcher
   // (the _firstSparkFetched module-level flag in marketDataStores).
-  // Local $state mirror of the liveLtp store — keeps the sparkline
-  // cellRenderer and the LTP override logic inside buildUnified readable
-  // without importing a store subscription into every call-site. Updated
-  // by a single $effect below so Svelte 5's reactivity chain stays intact.
+  // BH3: snapshot of current LTPs sourced from symbolStore, refreshed
+  // at 50ms (~20Hz) when symbolTickCount fires. Cell renderers + the
+  // sparkline tail read _liveLtpSnap[sym] for O(1) lookups instead of
+  // calling getSnapshot inside each paint. The throttle is preserved
+  // because SSE ticks can land 100/sec under load — too fast for
+  // ag-Grid refreshCells without coalescing. Replaces the previous
+  // liveLtp.subscribe-driven mirror; the `liveLtp` writable store is
+  // deleted with this slice.
   let _liveLtpSnap = $state(/** @type {Record<string, number>} */ ({}));
   let _liveLtpFlushTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
-  let _liveLtpPending = /** @type {Record<string, number>|null} */ (null);
+  /** Build a `{sym: ltp}` map snapshot from symbolStore for fast cell reads. */
+  function _buildLtpSnap() {
+    /** @type {Record<string, number>} */
+    const out = {};
+    for (const [sym, snap] of symbolStore.entries()) {
+      const v = snap?.ltp;
+      if (v != null && Number.isFinite(v)) out[sym] = v;
+    }
+    return out;
+  }
   $effect(() => {
-    const unsub = liveLtp.subscribe(v => {
-      _liveLtpPending = v;
+    // Seed once on mount so a hydrated symbolStore (loaded from
+    // localStorage at module init) paints into _liveLtpSnap before
+    // any SSE tick fires — without this, cell renderers read empty
+    // map on the first frame.
+    _liveLtpSnap = _buildLtpSnap();
+    const unsub = symbolTickCount.subscribe(() => {
       if (_liveLtpFlushTimer) return;
       _liveLtpFlushTimer = setTimeout(() => {
-        _liveLtpSnap = /** @type {Record<string, number>} */ (_liveLtpPending ?? {});
-        _liveLtpPending = null;
+        _liveLtpSnap = _buildLtpSnap();
         _liveLtpFlushTimer = null;
-      }, 50);  // 20Hz max — well below human perception, far below 90Hz tick rate
+      }, 50);
     });
     return () => {
       unsub();

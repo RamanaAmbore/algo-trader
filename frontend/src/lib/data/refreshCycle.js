@@ -27,7 +27,7 @@ import {
   watchQuotesStore, activeListsStore, moversStore, sparklinesStore,
 } from './marketDataStores.svelte.js';
 import { softReset as symbolSoftReset, hardReset as symbolHardReset } from './symbolStore.svelte.js';
-import { restartQuoteStream, liveLtp } from './quoteStream.js';
+import { restartQuoteStream } from './quoteStream.js';
 
 /** @typedef {'off' | 'soft' | 'hard'} PersistenceMode */
 
@@ -71,16 +71,13 @@ export async function applyPersistenceMode(mode) {
     for (const s of _STORES) {
       try { s.softInvalidate?.(); } catch { /* no-op */ }
     }
-    // liveLtp: drop in-memory; SSE will re-snapshot on its next tick.
     // Don't restart SSE here — soft mode preserves the ticker per the
-    // backend contract.
-    try { liveLtp.set({}); } catch { /* no-op */ }
+    // backend contract; symbolStore re-populates from the next tick.
   } else if (mode === 'hard') {
     cleared = symbolHardReset();
     for (const s of _STORES) {
       try { s.invalidate?.(); } catch { /* no-op */ }
     }
-    try { liveLtp.set({}); } catch { /* no-op */ }
     // Backend recycled the ticker; restart SSE so the rebuilt stream
     // delivers a clean snapshot into the freshly-cleared store. Without
     // this the EventSource holds onto its connection to the now-dead
