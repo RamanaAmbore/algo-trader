@@ -829,26 +829,38 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
     if token_map:
         _ticker_seed_early(token_map)
 
-    # Fan-out all daily + intraday store calls concurrently. Each store call is
-    # rate-limited by its own fetch-lock — the Semaphore(2) + 0.35 s pace that
-    # existed in the old warm loop is now inside the stores' Tier 3 paths.
+    # Kite historical_data is a 3 req/sec budget per account. Two parallel
+    # fan-outs (daily + intraday) share the same budget, so cap concurrency
+    # to 3 across both and pace 0.35s between scheduled tasks. Without this
+    # gate, 300 symbols × 2 ≈ 600 simultaneous calls land in one burst, the
+    # broker returns 429, the stores cache `None`, and the next warm cycle
+    # re-fires the same burst. The reactive 30s cool-off on the broker
+    # client only activates after the burst has already landed.
+    _warm_sem = asyncio.Semaphore(3)
+
     async def _warm_daily(sym: str, exch: str) -> bool:
-        try:
-            bars = await _ohlcv_store.get_or_fetch_daily(
-                sym, exch, from_d=from_daily, to_d=yesterday,
-            )
-            return bool(bars)
-        except Exception:
-            return False
+        async with _warm_sem:
+            try:
+                bars = await _ohlcv_store.get_or_fetch_daily(
+                    sym, exch, from_d=from_daily, to_d=yesterday,
+                )
+                return bool(bars)
+            except Exception:
+                return False
+            finally:
+                await asyncio.sleep(0.35)
 
     async def _warm_intraday(sym: str, exch: str) -> bool:
-        try:
-            bars = await _intraday_store.get_or_fetch_intraday(
-                sym, exch, on_date=today_date, interval="30minute",
-            )
-            return bool(bars)
-        except Exception:
-            return False
+        async with _warm_sem:
+            try:
+                bars = await _intraday_store.get_or_fetch_intraday(
+                    sym, exch, on_date=today_date, interval="30minute",
+                )
+                return bool(bars)
+            except Exception:
+                return False
+            finally:
+                await asyncio.sleep(0.35)
 
     daily_tasks   = [_warm_daily(sym, exch)   for sym, exch in norm]
     intraday_tasks = [_warm_intraday(sym, exch) for sym, exch in norm]

@@ -119,6 +119,7 @@
   let _liveAgentConfirmRef = $state(null);
 
   let ws;
+  let _wsDestroyed = false;
   let refreshTeardown;
   let simStatusTeardown;
 
@@ -425,6 +426,7 @@
   }
 
   function connectWS() {
+    if (_wsDestroyed) return;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${proto}//${location.host}/ws/algo`);
     ws.onmessage = (e) => {
@@ -440,7 +442,12 @@
         }
       } catch { /* ignore */ }
     };
-    ws.onclose = () => setTimeout(connectWS, 3000);
+    // Without the _wsDestroyed guard, the onClose reconnect schedule
+    // survives onDestroy: ws.close() fires onclose, which schedules another
+    // connectWS in 3s, whose own onclose schedules another, forever. Closures
+    // hold $state alive (agents, agentLog) and the operator pays a permanent
+    // background reconnect loop after navigating away from /automation.
+    ws.onclose = () => { if (!_wsDestroyed) setTimeout(connectWS, 3000); };
   }
 
   // LED-style status dots — all routed through the canonical 400-level
@@ -574,6 +581,7 @@
   });
 
   onDestroy(() => {
+    _wsDestroyed = true;
     if (ws) ws.close();
     refreshTeardown?.();
     simStatusTeardown?.();

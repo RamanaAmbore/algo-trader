@@ -103,6 +103,18 @@ function createAuthStore() {
         sessionStorage.removeItem('ramboq_user');
         sessionStorage.removeItem('ramboq_orig_token');
         sessionStorage.removeItem('ramboq_orig_user');
+        // Drop the per-user persistentCache so a second operator on the
+        // same browser does not see the prior session's positions, holdings,
+        // funds, or NAV snapshot. The 15-min `minute`-bucket TTL is long
+        // enough to leak intra-day data across a user switch otherwise.
+        try {
+          const keys = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k && k.startsWith('rbq.cache.')) keys.push(k);
+          }
+          for (const k of keys) localStorage.removeItem(k);
+        } catch { /* quota / privacy mode — non-fatal */ }
       }
       set({ token: null, user: null, impBy: null });
     },

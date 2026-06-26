@@ -6,7 +6,7 @@
   // Whole strip is a single link to /dashboard.
 
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { marketAwareInterval } from '$lib/stores';
+  import { marketAwareInterval, executionMode } from '$lib/stores';
   import { aggCompact } from '$lib/format';
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
@@ -74,6 +74,16 @@
   let _liveLtpSnap = $state(/** @type {Record<string, number>} */ ({}));
   $effect(() => {
     const unsub = liveLtp.subscribe(v => { _liveLtpSnap = v || {}; });
+    return unsub;
+  });
+
+  // Local $state mirror of executionMode so the freeze/thaw $effect can
+  // track mode transitions without subscribing inside the effect itself.
+  // Mid-session SIM↔LIVE switches need to clear the day-delta freeze so
+  // the strip doesn't display mixed real-broker + sim-fabricated P&L.
+  let _execMode = $state('idle');
+  $effect(() => {
+    const unsub = executionMode.subscribe(v => { _execMode = v || 'idle'; });
     return unsub;
   });
 
@@ -232,6 +242,7 @@
   let dispPositionsToday = $state(0);
   let dispHoldingsToday  = $state(0);
   let _prevMktOpen       = $state(false);
+  let _prevExecMode      = $state('idle');
 
   const _livePositionsPnl = $derived.by(() => {
     let s = 0;
@@ -264,21 +275,26 @@
   // time — they're never frozen.
   $effect(() => {
     void _mktTick;
+    void _execMode;
     const open = isNseOpen() || isMcxOpen();
-    if (open && !_prevMktOpen) {
-      // Closed → Open transition. Snapshot the current poll cycle so
-      // we can suppress the stale prior-session day_change_val until
-      // a fresh in-session poll lands. Force _load() immediately
-      // instead of waiting up to 30s for the next marketAwareInterval
-      // tick — without this the strip flashes yesterday's frozen MTM
-      // for the first 30s of the new session.
+    const modeChanged = _execMode !== _prevExecMode;
+    if ((open && !_prevMktOpen) || modeChanged) {
+      // Closed → Open transition OR execution-mode switch. Snapshot the
+      // current poll cycle so we suppress stale day_change_val (from the
+      // prior session, or from a real-broker poll just before swapping
+      // to SIM) until a fresh in-session poll lands. Force _load()
+      // immediately instead of waiting up to 30s for the next
+      // marketAwareInterval tick. Without the mode-change branch a
+      // mid-session SIM↔LIVE flip leaves dispPositionsToday tracking
+      // the old engine's P&L until the next poll naturally arrives.
       dispPositionsToday = 0;
       dispHoldingsToday  = 0;
       cachedDelete('strip.frozen');
       _openTransitionStamp = _pollCycleStamp;
       untrack(() => { _load(); });
     }
-    _prevMktOpen = open;
+    _prevMktOpen  = open;
+    _prevExecMode = _execMode;
     if (!open) return;
     // Suppress the live-derived assignment until a fresh poll cycle
     // (one completed AFTER the open transition) lands. Until then

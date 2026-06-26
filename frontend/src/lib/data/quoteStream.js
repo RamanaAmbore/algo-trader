@@ -33,15 +33,31 @@ export const streamOpen = writable(false);
 /** @type {EventSource | null} */
 let _es = null;
 let _opened = false;
+let _stopped = false;
+/** @type {ReturnType<typeof setTimeout> | null} */
+let _reconnectTimer = null;
+let _backoffMs = 2_000;
+const _BACKOFF_MIN = 2_000;
+const _BACKOFF_MAX = 60_000;
 
 /**
  * Open the SSE connection (idempotent — safe to call multiple times).
  * Must only be called in a browser context (onMount or behind `if (browser)`).
+ *
+ * Native EventSource auto-reconnects at a fixed ~3s interval. On a
+ * non-retryable error (e.g. 401 after token expiry) the browser keeps that
+ * loop running forever. We close + reopen manually with exponential backoff
+ * capped at 60s instead.
  */
 export function startQuoteStream() {
   if (!browser || _opened) return;
   _opened = true;
+  _stopped = false;
+  _open();
+}
 
+function _open() {
+  if (_stopped) return;
   // withCredentials sends the auth cookie — same auth path as every other
   // /api/* call. EventSource does not support arbitrary request headers so
   // bearer-token auth cannot be used here; cookie auth is the fallback the
@@ -70,6 +86,7 @@ export function startQuoteStream() {
           liveLtp.update(prev => ({ ...prev, ...symMap }));
         }
         if (!get(streamOpen)) streamOpen.set(true);
+        _backoffMs = _BACKOFF_MIN;
       }
     } catch (_) { /* malformed JSON — ignore */ }
   });
@@ -85,6 +102,7 @@ export function startQuoteStream() {
           return { ...prev, [t.sym]: t.ltp };
         });
         if (!get(streamOpen)) streamOpen.set(true);
+        _backoffMs = _BACKOFF_MIN;
       }
     } catch (_) { /* malformed JSON — ignore */ }
   });
@@ -94,15 +112,23 @@ export function startQuoteStream() {
   _es.addEventListener('heartbeat', () => { /* noop */ });
 
   _es.onerror = () => {
-    // EventSource auto-reconnects on error — the browser will retry with
-    // exponential back-off. We only flip streamOpen false here so
-    // MarketPulse can widen its polling cadence until the stream resumes.
-    // The store is flipped back to true by the next snapshot/tick that
-    // arrives after reconnection.
     streamOpen.set(false);
-    // _opened stays true so that a transient network blip doesn't
-    // cause a second EventSource to be created if startQuoteStream()
-    // is called again before the auto-reconnect fires.
+    // Close the broken EventSource and schedule a manual reopen with
+    // exponential backoff. Native EventSource would otherwise retry at
+    // its own ~3s cadence indefinitely, including on non-retryable
+    // 401/403 responses after token expiry.
+    if (_es) {
+      try { _es.close(); } catch (_) {}
+      _es = null;
+    }
+    if (_stopped) return;
+    if (_reconnectTimer != null) return;
+    const delay = _backoffMs;
+    _backoffMs = Math.min(_backoffMs * 2, _BACKOFF_MAX);
+    _reconnectTimer = setTimeout(() => {
+      _reconnectTimer = null;
+      _open();
+    }, delay);
   };
 }
 
@@ -111,11 +137,17 @@ export function startQuoteStream() {
  * Safe to call even when the stream was never started.
  */
 export function stopQuoteStream() {
+  _stopped = true;
+  if (_reconnectTimer != null) {
+    clearTimeout(_reconnectTimer);
+    _reconnectTimer = null;
+  }
   if (_es) {
     try { _es.close(); } catch (_) {}
     _es = null;
   }
   _opened = false;
+  _backoffMs = _BACKOFF_MIN;
   streamOpen.set(false);
   // liveLtp is intentionally NOT reset — stale values are better than
   // blanks while the component is tearing down (grid cells flash to "—").
