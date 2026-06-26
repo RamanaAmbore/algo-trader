@@ -128,20 +128,10 @@
     _failingAccounts = Array.isArray(v?.failingAccounts) ? v.failingAccounts : [];
   });
 
-  // Three-state visual encoding:
-  //   backendOk=false              → grey + `?` (API unreachable)
-  //   backendOk=true, loaded<total → red/amber + count (broker issue)
-  //   backendOk=true, loaded===tot → green + count    (all good)
-  //   total===0                    → no badge (demo / no config)
-  const _showBadge = $derived(_total > 0 || !_backendOk);
-  const _badgeText = $derived(_backendOk ? String(_loaded) : '?');
-  const _badgeClass = $derived(
-    !_backendOk        ? 'rf-badge-grey'
-    : _total === 0     ? ''
-    : _loaded === 0    ? 'rf-badge-red'
-    : _loaded < _total ? 'rf-badge-amber'
-    :                    'rf-badge-green'
-  );
+  // _showBadge / _badgeText / _badgeClass dropped — count is now in
+  // the navbar broker-chip (slice AX). The tooltip below still
+  // surfaces the full N/M + failing-accounts story so this button
+  // remains the diagnostic surface; only the visible digit moved.
 
   // Multi-line native tooltip (newlines render as soft breaks in
   // every browser's title="…" popover). Encodes the FULL connection
@@ -210,9 +200,11 @@
         stroke-linecap="round" stroke-linejoin="round" />
     </svg>
   {/if}
-  {#if _showBadge}
-    <span class="rf-badge {_badgeClass}">{_badgeText}</span>
-  {/if}
+  <!-- Badge moved to the navbar broker-chip (slice AX). The full
+       connection story still lives in this button's native tooltip;
+       the visible count digit was redundant once the navbar chip
+       became ambient. Operator: "since 5/5 in navbar, we don't need
+       to show the connection count on refresh button". -->
 </button>
 
 {#if _showClosedNotice}

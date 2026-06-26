@@ -847,7 +847,7 @@
           <span class="algo-user-pill">
             {$authStore.user.username ?? ''}
             {#if $authStore.user.role === 'designated'}
-              <span class="algo-user-role algo-user-role-designated">designated</span>
+              <span class="algo-user-role algo-user-role-designated" title="designated">DSG</span>
             {:else if $authStore.user.role === 'admin'}
               <span class="algo-user-role algo-user-role-admin">admin</span>
             {:else if $authStore.user.role === 'trader'}
@@ -951,7 +951,7 @@
           <span class="algo-user-pill">
             {$authStore.user.username ?? ''}
             {#if $authStore.user.role === 'designated'}
-              <span class="algo-user-role algo-user-role-designated">designated</span>
+              <span class="algo-user-role algo-user-role-designated" title="designated">DSG</span>
             {:else if $authStore.user.role === 'admin'}
               <span class="algo-user-role algo-user-role-admin">admin</span>
             {:else if $authStore.user.role === 'trader'}
