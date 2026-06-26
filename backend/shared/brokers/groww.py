@@ -1223,8 +1223,19 @@ def _normalise_positions(resp: Any) -> dict:
             "day_sell_value":     float(p.get("day_sell_value", 0) or 0)
                                   or (float(p.get("day_sell_price", 0) or 0)
                                       * int(p.get("day_sell_quantity", 0) or 0)),
-            "multiplier":      int(p.get("multiplier",
-                                         p.get("lot_size", 1)) or 1),
+            # Hard-coded to 1 (mirrors Dhan adapter at brokers/dhan.py:1654).
+            # Groww ships quantity + value fields in CONTRACTS across
+            # all segments including MCX — no lot→contract conversion
+            # needed. If Groww's positions row carried `lot_size` /
+            # `multiplier` from the instruments cache and that field
+            # leaked into the output (e.g. lot_size=100 for GOLDM),
+            # the post-fetch normaliser in broker_apis.py:165-185
+            # would multiply quantity, day_buy/sell qty AND (after the
+            # Jun 26 2026 fix) day_buy/sell value all by 100 — a 100×
+            # double-count on every field. Pinning multiplier=1 here
+            # makes the broker_apis multiply a safe no-op for Groww
+            # regardless of what's in Groww's positions payload.
+            "multiplier":      1,
             "close_price":     float(p.get("close_price",
                                            p.get("previous_close", 0)) or 0),
             "average_price":   float(p.get("average_price",

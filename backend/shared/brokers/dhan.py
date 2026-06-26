@@ -1637,17 +1637,21 @@ def _normalise_positions(resp: Any) -> dict:
             "day_sell_quantity":  dsq_contracts,
             # Day-trade cash values — forwarded to the /admin/derivatives
             # Candidates panel where `splitClosedReopened` uses them to
-            # split a closed-and-reopened leg into two display rows
-            # (operator: "if positions are closed and the same positions
-            # are opened … you have to show them as different rows").
-            # Not consumed by the day_change_val recompute in
-            # broker_apis any more — that was the retired "split P∆"
-            # formula. Derive from price × qty (in contracts) when Dhan
-            # doesn't carry the value field directly.
-            "day_buy_value":      float(p.get("dayBuyValue",  0) or 0)
-                                  or (float(p.get("dayBuyAvg", 0) or 0) * dbq_contracts),
-            "day_sell_value":     float(p.get("daySellValue", 0) or 0)
-                                  or (float(p.get("daySellAvg", 0) or 0) * dsq_contracts),
+            # split a closed-and-reopened leg into two display rows. The
+            # post-BH6 broker_apis day_change_val formula also reads
+            # these (`_bq × LTP − _bv`), so the units MUST match the
+            # contract-units quantities above.
+            #
+            # Always derive from `dayBuyAvg × dbq_contracts` rather than
+            # trusting Dhan's pre-computed `dayBuyValue` field. Dhan's
+            # docs are ambiguous on whether dayBuyValue is in
+            # `lots × price` or `contracts × price` (= absolute ₹); the
+            # derivation `dayBuyAvg × dbq_contracts` is contract-units
+            # regardless because dbq_contracts is post-multiply. Same
+            # for day_sell. (Audit Jun 26 2026 — risk surfaced when the
+            # broker_apis MCX × multiplier patch landed.)
+            "day_buy_value":      float(p.get("dayBuyAvg",  0) or 0) * dbq_contracts,
+            "day_sell_value":     float(p.get("daySellAvg", 0) or 0) * dsq_contracts,
             # Multiplier=1 on the normalised row — qty is now in contracts
             # so the broker_apis day_change_val formula treats it the same
             # as Kite's contract-qty (no extra multiplication needed).
