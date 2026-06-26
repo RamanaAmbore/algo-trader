@@ -9,7 +9,8 @@
   import { userRole, userCaps, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
-  import { fetchSystemHealth, setPersistenceMode, invalidatePersistence } from '$lib/api';
+  import { fetchSystemHealth, invalidatePersistence } from '$lib/api';
+  import { applyPersistenceMode } from '$lib/data/refreshCycle';
   import StaleBanner from '$lib/StaleBanner.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
@@ -74,9 +75,14 @@
     if (next === cur) return;
     _modeBusy = true;
     try {
-      await setPersistenceMode(next);
+      const r = await applyPersistenceMode(next);
       await load();
-      toast.success(`Refresh mode: ${next.toUpperCase()}`);
+      const cleared = r?.frontend_cleared ?? 0;
+      toast.success(
+        cleared > 0
+          ? `Refresh mode: ${next.toUpperCase()} — ${cleared.toLocaleString('en-IN')} cached symbols cleared`
+          : `Refresh mode: ${next.toUpperCase()}`
+      );
     } catch (e) {
       toast.error((e && e.message) || 'Mode switch failed');
     } finally {

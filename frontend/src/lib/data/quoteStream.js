@@ -19,6 +19,7 @@
 
 import { writable, get } from 'svelte/store';
 import { browser } from '$app/environment';
+import { mergeSymbolUpdate, mergeSymbolBatch } from './symbolStore.svelte.js';
 
 /** Map of tradingsymbol → live LTP, updated as SSE ticks arrive. */
 export const liveLtp = writable(/** @type {Record<string, number>} */ ({}));
@@ -77,14 +78,24 @@ function _open() {
       if (snap && typeof snap === 'object') {
         /** @type {Record<string, number>} */
         const symMap = {};
+        /** @type {Array<{sym: string, fields: {ltp: number}, ts: {ltp_ts: number}}>} */
+        const symbolUpdates = [];
+        const ts = Date.now();
         for (const v of Object.values(snap)) {
           if (v && typeof v === 'object' && v.sym && v.ltp != null) {
             symMap[v.sym] = v.ltp;
+            symbolUpdates.push({
+              sym: v.sym, fields: { ltp: Number(v.ltp) }, ts: { ltp_ts: ts },
+            });
           }
         }
         if (Object.keys(symMap).length) {
           liveLtp.update(prev => ({ ...prev, ...symMap }));
         }
+        // BH1 dual-write — symbolStore receives the same LTPs SSE
+        // delivers to liveLtp. ltp_ts arbitration ensures a tick already
+        // newer-by-ms can't be clobbered by a re-snapshot landing later.
+        if (symbolUpdates.length) mergeSymbolBatch(symbolUpdates);
         if (!get(streamOpen)) streamOpen.set(true);
         _backoffMs = _BACKOFF_MIN;
       }
@@ -101,6 +112,10 @@ function _open() {
           if (prev[t.sym] === t.ltp) return prev;
           return { ...prev, [t.sym]: t.ltp };
         });
+        // BH1 dual-write — symbolStore.ltp gets the same tick. ltp_ts =
+        // Date.now() at receive time; arbitrates correctly against any
+        // poll that lands afterward carrying older broker-side LTP.
+        mergeSymbolUpdate(t.sym, { ltp: Number(t.ltp) }, { ltp_ts: Date.now() });
         if (!get(streamOpen)) streamOpen.set(true);
         _backoffMs = _BACKOFF_MIN;
       }
@@ -130,6 +145,32 @@ function _open() {
       _open();
     }, delay);
   };
+}
+
+/**
+ * Tear down the current SSE connection and re-open a fresh one. Used by
+ * the HARD refresh-cycle reset path so the backend's recycled ticker
+ * delivers a clean snapshot into the freshly-cleared frontend symbolStore.
+ * Safe to call while a connection is mid-open; a backoff retry is
+ * cancelled if pending.
+ */
+export function restartQuoteStream() {
+  if (!browser) return;
+  if (_reconnectTimer != null) {
+    clearTimeout(_reconnectTimer);
+    _reconnectTimer = null;
+  }
+  if (_es) {
+    try { _es.close(); } catch (_) {}
+    _es = null;
+  }
+  _backoffMs = _BACKOFF_MIN;
+  streamOpen.set(false);
+  // _opened stays true so a concurrent startQuoteStream() doesn't open
+  // a second connection alongside ours.
+  if (!_opened) _opened = true;
+  _stopped = false;
+  _open();
 }
 
 /**

@@ -35,6 +35,116 @@ import {
   FO_QUOTE_KEYS, MIDCAP_QUOTE_KEYS, SMLCAP_QUOTE_KEYS,
   INDICES_QUOTE_KEYS, LARGECAP_QUOTE_KEYS, symbolFromQuoteKey,
 } from '$lib/data/indexConstituents';
+import { mergeSymbolBatch } from './symbolStore.svelte.js';
+
+// ── BH1 dual-write helpers ─────────────────────────────────────────────
+//
+// Every fetcher that lands rows carrying market-data fields
+// (ltp / close / day_change / volume / oi / ...) extracts those fields
+// into a per-symbol batch and pushes them into the central symbolStore.
+// Section stores still hold the rows themselves for now (BH2 migrates
+// consumers; BH3 splits meta from market). Polls use snapshot_ts =
+// Date.now() at parse time — SSE ticks landing concurrently retain
+// priority via their own ltp_ts.
+
+/** @param {any[]} rows */
+function _publishPositionsRows(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return;
+  const ts = Date.now();
+  /** @type {Array<{sym: string, fields: any, ts: {ltp_ts: number, snapshot_ts: number}}>} */
+  const batch = [];
+  for (const r of rows) {
+    const sym = String(r?.tradingsymbol || r?.symbol || '').toUpperCase();
+    if (!sym) continue;
+    batch.push({
+      sym,
+      fields: {
+        ltp:        r.last_price,
+        close:      r.close_price,
+        day_change: r.day_change_val,
+        exchange:   r.exchange,
+      },
+      ts: { ltp_ts: ts, snapshot_ts: ts },
+    });
+  }
+  mergeSymbolBatch(batch);
+}
+
+/** @param {any[]} rows */
+function _publishHoldingsRows(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return;
+  const ts = Date.now();
+  /** @type {Array<{sym: string, fields: any, ts: {ltp_ts: number, snapshot_ts: number}}>} */
+  const batch = [];
+  for (const r of rows) {
+    const sym = String(r?.tradingsymbol || r?.symbol || '').toUpperCase();
+    if (!sym) continue;
+    batch.push({
+      sym,
+      fields: {
+        ltp:            r.last_price,
+        close:          r.close_price,
+        day_change:     r.day_change_val,
+        day_change_pct: r.day_change,
+        exchange:       r.exchange,
+      },
+      ts: { ltp_ts: ts, snapshot_ts: ts },
+    });
+  }
+  mergeSymbolBatch(batch);
+}
+
+/** @param {Record<number, any>} byItemId */
+function _publishWatchQuotes(byItemId) {
+  if (!byItemId || typeof byItemId !== 'object') return;
+  const ts = Date.now();
+  /** @type {Array<{sym: string, fields: any, ts: {ltp_ts: number, snapshot_ts: number}}>} */
+  const batch = [];
+  for (const q of Object.values(byItemId)) {
+    const sym = String(q?.quote_symbol || q?.tradingsymbol || '').toUpperCase();
+    if (!sym) continue;
+    batch.push({
+      sym,
+      fields: {
+        ltp:            q.ltp,
+        close:          q.close,
+        open:           q.open,
+        day_change:     q.change,
+        day_change_pct: q.change_pct,
+        volume:         q.volume,
+        oi:             q.oi,
+        bid:            q.bid,
+        ask:            q.ask,
+        exchange:       q.exchange,
+      },
+      ts: { ltp_ts: ts, snapshot_ts: ts },
+    });
+  }
+  mergeSymbolBatch(batch);
+}
+
+/** @param {any[]} rows */
+function _publishMoverRows(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return;
+  const ts = Date.now();
+  /** @type {Array<{sym: string, fields: any, ts: {ltp_ts: number, snapshot_ts: number}}>} */
+  const batch = [];
+  for (const r of rows) {
+    const sym = String(r?.tradingsymbol || '').toUpperCase();
+    if (!sym) continue;
+    batch.push({
+      sym,
+      fields: {
+        ltp:            r.last_price,
+        close:          r.previous_close,
+        day_change_pct: r.change_pct,
+        exchange:       r.exchange,
+      },
+      ts: { ltp_ts: ts, snapshot_ts: ts },
+    });
+  }
+  mergeSymbolBatch(batch);
+}
 
 export { TTL };
 
@@ -52,7 +162,11 @@ export const positionsStore = createDataStore({
   fetcher: fetchPositions,
   ttl:     TTL.minute,
   /** @param {any} r */
-  parse:   (r) => r?.rows ?? [],
+  parse:   (r) => {
+    const rows = r?.rows ?? [];
+    _publishPositionsRows(rows);
+    return rows;
+  },
 });
 
 // ── Holdings ──────────────────────────────────────────────────────────────
@@ -66,7 +180,11 @@ export const holdingsStore = createDataStore({
   fetcher: fetchHoldings,
   ttl:     TTL.minute,
   /** @param {any} r */
-  parse:   (r) => r?.rows ?? [],
+  parse:   (r) => {
+    const rows = r?.rows ?? [];
+    _publishHoldingsRows(rows);
+    return rows;
+  },
 });
 
 // ── Funds ─────────────────────────────────────────────────────────────────
@@ -143,7 +261,11 @@ export const moversStore = createDataStore({
     return rows;
   },
   /** @param {any} r */
-  parse:   (r) => r ?? [],
+  parse:   (r) => {
+    const rows = r ?? [];
+    _publishMoverRows(rows);
+    return rows;
+  },
 });
 
 // ── Active watchlists ─────────────────────────────────────────────────────
@@ -222,6 +344,11 @@ export const watchQuotesStore = createDataStore({
         delete merged[id];
       }
     }
+    // BH1 dual-write — publish only the freshly-fetched quotes (not the
+    // merged-with-prev map) so we don't re-stamp stale entries with a
+    // current timestamp. mergeSymbolUpdate's ts-arbitration would still
+    // reject stale fields, but skipping them is cheaper.
+    _publishWatchQuotes(map);
     return merged;
   },
   /** @param {any} r */

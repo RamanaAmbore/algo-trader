@@ -405,7 +405,14 @@
   }
   async function _flipPersistOff() {
     try {
-      await setPersistenceMode('off');
+      // applyPersistenceMode handles both the backend call and any
+      // frontend symbolStore / market-store cleanup. For OFF the
+      // cleanup path is a no-op (backend resumes normal three-tier
+      // reads), so this is functionally equivalent to the old direct
+      // setPersistenceMode('off') call — but routes through the
+      // canonical refresh-cycle wrapper for consistency.
+      const { applyPersistenceMode } = await import('$lib/data/refreshCycle');
+      await applyPersistenceMode('off');
       persistMode = 'off';
       toast.success('Refresh cycle restored to normal');
     } catch (e) {

@@ -153,13 +153,29 @@ export function createDataStore({ key, fetcher, ttl = TTL.minute, parse = (r) =>
 
   /**
    * Wipe Tier 1 + Tier 2. The next load() call will skip both cache
-   * tiers and go straight to the fetcher.
+   * tiers and go straight to the fetcher. This is the "hard" path —
+   * used by the HARD refresh-cycle mode and the per-store
+   * /admin/persistence/invalidate endpoint.
    */
   function invalidate() {
     _value   = null;
     _last    = 0;
     _error   = null;
     cachedDelete(key);
+  }
+
+  /**
+   * Wipe Tier 1 only — keep Tier 2 (localStorage). The next load()
+   * still goes straight to the fetcher (Tier 2 isn't consulted at
+   * fetch time anyway), but a subsequent module-reinit will hydrate
+   * from cache. Used by the SOFT refresh-cycle mode so the operator
+   * sees stale-while-revalidate paint instead of a blank flash while
+   * the broker re-fetches.
+   */
+  function softInvalidate() {
+    _value = null;
+    _last  = 0;
+    _error = null;
   }
 
   /**
@@ -183,6 +199,7 @@ export function createDataStore({ key, fetcher, ttl = TTL.minute, parse = (r) =>
     get lastFetch(){ return _last;    },
     load,
     invalidate,
+    softInvalidate,
     set,
   };
 }
