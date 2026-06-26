@@ -1815,6 +1815,20 @@
 
     // Throttle: schedule one paint at most every _LTP_PAINT_MS.
     if (_ltpPaintTimer) return;
+    // Schedule via requestIdleCallback so the heavy ag-Grid refreshCells
+    // batch runs only when the main thread is idle. Click handlers and
+    // input dispatch jump the queue ahead of this work. Timeout 500ms
+    // forces the paint even on a saturated thread so cells don't go
+    // stale during heavy tick bursts. Safari fallback: setTimeout with
+    // a minimal delay so the work still yields one tick.
+    const _scheduleIdle = (cb) => {
+      if (typeof window !== 'undefined'
+          && typeof window.requestIdleCallback === 'function') {
+        window.requestIdleCallback(cb, { timeout: 500 });
+      } else {
+        setTimeout(cb, 1);
+      }
+    };
     _ltpPaintTimer = setTimeout(() => {
       _ltpPaintTimer = null;
       // B1 — collect symbols whose value changed so the LTP cell can flash.
@@ -1841,12 +1855,18 @@
       // Capture the current snapshot at paint time (may have advanced
       // further than when the timer was scheduled).
       _lastPaintedSnap = { ..._liveLtpSnap };
-      if (gridPinnedReady    && gridPinned    && topTab === 'pinned')    gridPinned.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
-      if (gridWatchReady     && gridWatch     && typeof topTab === 'number') gridWatch.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
-      if (gridPositionsReady && gridPositions && showPositions)          gridPositions.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
-      if (gridHoldingsReady  && gridHoldings  && showHoldings)           gridHoldings.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
-      if (gridWinReady       && gridWin       && showWinners)            gridWin.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
-      if (gridLoseReady      && gridLose      && showLosers)             gridLose.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+      // Defer the actual ag-Grid refresh batch until the main thread
+      // is idle so clicks always jump the queue. The flash class
+      // assignments above already happened synchronously — only the
+      // expensive grid work runs on idle.
+      _scheduleIdle(() => {
+        if (gridPinnedReady    && gridPinned    && topTab === 'pinned')    gridPinned.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+        if (gridWatchReady     && gridWatch     && typeof topTab === 'number') gridWatch.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+        if (gridPositionsReady && gridPositions && showPositions)          gridPositions.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+        if (gridHoldingsReady  && gridHoldings  && showHoldings)           gridHoldings.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+        if (gridWinReady       && gridWin       && showWinners)            gridWin.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+        if (gridLoseReady      && gridLose      && showLosers)             gridLose.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+      });
     }, _LTP_PAINT_MS);
   });
 

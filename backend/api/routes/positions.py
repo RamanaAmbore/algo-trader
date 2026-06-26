@@ -213,6 +213,20 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
         _dcv_calc = (_ltp - _cls) * _qty
     raw.loc[_sel, 'day_change_val'] = _dcv_calc.where(_ltp > 0, raw.loc[_sel, 'day_change_val'])
     raw.loc[_sel, 'day_change'] = _ltp - _cls
+    # Recompute pnl from the patched LTP too. Without this, broker's
+    # `pnl` (which was computed against the stale REST LTP) stays
+    # frozen — the frontend's `_livePositionsPnl = Σ p.pnl + delta`
+    # then double-misses: pnl uses stale LTP and delta = (live_ltp -
+    # patched_LTP) × qty is ~0 because patched_LTP ≈ live_ltp from the
+    # SSE stream. Operator confirmed: P showed ₹4.6L vs broker's
+    # ₹6.27L when illiquid MCX options were stuck on yesterday's close.
+    # pnl = unrealised + realised = (ltp − avg) × qty + realised.
+    if 'average_price' in raw.columns and 'pnl' in raw.columns:
+        _avg = pd.to_numeric(raw.loc[_sel, 'average_price'], errors='coerce').fillna(0)
+        _real = (pd.to_numeric(raw.loc[_sel, 'realised'], errors='coerce').fillna(0)
+                 if 'realised' in raw.columns else 0)
+        _pnl_new = (_ltp - _avg) * _qty + _real
+        raw.loc[_sel, 'pnl'] = _pnl_new.where(_ltp > 0, raw.loc[_sel, 'pnl'])
     logger.info(f"positions: ltp-override patched {len(patched_idx)}/{len(raw)} rows from KiteTicker")
 
 

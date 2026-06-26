@@ -503,10 +503,14 @@
 
 <a class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '')} href="/dashboard"
    aria-label="Open the dashboard — full positions, holdings, and funds grids">
-  <span class="ps-agg" title="Positions P/L — open + closed intraday">
+  <span class="ps-agg" title="Positions: lifetime P&L / today's MTM move (Δ)">
     <span class="ps-agg-k">P</span>
     <span class={'ps-agg-v ' + (_livePositionsPnl > 0 ? 'ps-pos' : _livePositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}>
       {fmtMoney(_livePositionsPnl)}
+    </span>
+    <span class="ps-agg-sep">/</span>
+    <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}>
+      {fmtMoney(dispPositionsToday)}
     </span>
   </span>
   <span class="ps-agg" title="Available margin — summed across accounts">
@@ -551,22 +555,14 @@
       {fmtMoney(liveCashTotal)}
     </span>
   </span>
-  <span class="ps-agg" title="Positions Day delta — today's mark-to-market move on positions (day_change_val)">
-    <span class="ps-agg-k ps-delta">P∆</span>
-    <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}>
-      {fmtMoney(dispPositionsToday)}
-    </span>
-  </span>
-  <span class="ps-agg" title="Holdings Day delta — today's mark-to-market move on holdings (day_change_val)">
-    <span class="ps-agg-k ps-delta">HD∆</span>
-    <span class={'ps-agg-v ' + (dispHoldingsToday > 0 ? 'ps-pos' : dispHoldingsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('HDd')}>
-      {fmtMoney(dispHoldingsToday)}
-    </span>
-  </span>
-  <span class="ps-agg" title="Holdings — total unrealised P/L from entry">
+  <span class="ps-agg" title="Holdings: lifetime P&L (H∆) / today's MTM move (HD∆)">
     <span class="ps-agg-k ps-delta">H∆</span>
     <span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos' : _liveHoldingsTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Hd')}>
       {fmtMoney(_liveHoldingsTotal)}
+    </span>
+    <span class="ps-agg-sep">/</span>
+    <span class={'ps-agg-v ' + (dispHoldingsToday > 0 ? 'ps-pos' : dispHoldingsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('HDd')}>
+      {fmtMoney(dispHoldingsToday)}
     </span>
   </span>
   <span class="ps-agg" title="Current holding value — sum of cur_val across holdings">
@@ -637,6 +633,14 @@
     font-size: 0.7rem;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
+  }
+  /* Slash between the lifetime + day-delta values inside a combined
+     P / P∆ or H∆ / HD∆ chip. Muted slate so the two value glyphs read
+     as the primary signal and the separator is just a divider. */
+  .ps-agg-sep {
+    color: var(--algo-muted);
+    margin: 0 0.15rem;
+    font-weight: 400;
   }
 
   .ps-pos  { color: #4ade80; }

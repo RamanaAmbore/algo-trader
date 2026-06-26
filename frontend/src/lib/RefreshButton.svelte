@@ -63,12 +63,13 @@
     };
     _mktTimer = setInterval(tick, 30_000);
   });
-  // Tick-pulse animation — fires the button's box-shadow halo at ~1Hz
-  // whenever SSE ticks land in symbolStore. Operator: "refresh button
-  // should animate when tick gets updated." Throttle to 1Hz so a
-  // 100-tick/sec burst doesn't strobe. The class toggles between
-  // `rf-tick-a`/`rf-tick-b` so CSS restarts the animation on every
-  // pulse (re-applying the same class wouldn't replay).
+  // Tick-pulse animation — fires the button's box-shadow halo at ~4Hz
+  // whenever SSE ticks land in symbolStore. Operator: "bump refresh
+  // to 4hz." Throttle to 250ms so a 100-tick/sec burst doesn't strobe
+  // but the pulse reads as continuously alive during heavy flow. The
+  // class toggles between `rf-tick-a`/`rf-tick-b` so CSS restarts the
+  // animation on every pulse (re-applying the same class wouldn't
+  // replay).
   let _tickPulseClass = $state(/** @type {'' | 'rf-tick-a' | 'rf-tick-b'} */ (''));
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _pulseTimer = null;
@@ -84,7 +85,7 @@
       _pulseTimer = setTimeout(() => {
         _tickPulseClass = _tickPulseClass === 'rf-tick-a' ? 'rf-tick-b' : 'rf-tick-a';
         _pulseTimer = null;
-      }, 1000);
+      }, 250);
     });
   });
   onDestroy(() => {
@@ -352,14 +353,16 @@
     from { transform: rotate(0deg); }
     to   { transform: rotate(360deg); }
   }
-  /* Tick-pulse halo — sky-blue ring fades out over ~600ms each pulse.
-     Toggling between rf-tick-a / rf-tick-b restarts the animation. */
+  /* Tick-pulse halo — sky-blue ring fades out over ~250ms each pulse
+     so the 4Hz cadence reads as a continuous shimmer rather than
+     discrete blinks. Toggling between rf-tick-a / rf-tick-b restarts
+     the animation each pulse. */
   .rf-btn.rf-tick-a, .rf-btn.rf-tick-b {
-    animation: rf-tick-pulse 0.6s ease-out;
+    animation: rf-tick-pulse 0.25s ease-out;
   }
   @keyframes rf-tick-pulse {
     0%   { box-shadow: 0 0 0 0 rgba(125, 211, 252, 0.55); }
-    100% { box-shadow: 0 0 10px 3px rgba(125, 211, 252, 0); }
+    100% { box-shadow: 0 0 8px 2px rgba(125, 211, 252, 0); }
   }
   @media (prefers-reduced-motion: reduce) {
     .rf-btn.rf-spinning svg { animation: none; }
