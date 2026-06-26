@@ -1155,6 +1155,17 @@ class SimDriver:
             except Exception as e:
                 logger.error(f"[SIM] could not schedule recording flush: {e}")
         logger.warning(f"[SIM] Stopped after {self.tick_index} ticks")
+        # Nudge the live performance loop so the live engine resumes its
+        # run_cycle() within one broker round-trip instead of waiting for
+        # the next 5-min boundary. Without this, a sim auto_stop left
+        # neither engine running for up to 5 minutes — agents that should
+        # have fired in the gap silently missed their window. Best-effort
+        # import (background.py may not be loaded in unit-test contexts).
+        try:
+            from backend.api.background import kick_performance
+            kick_performance()
+        except Exception as exc:
+            logger.debug(f"[SIM] kick_performance failed: {exc}")
         return self.snapshot()
 
     async def _flush_recording(self) -> None:

@@ -525,9 +525,6 @@ class TickerManager:
             f"KiteTicker: recycling on {prev_account} "
             f"(re-subscribing {len(prev_subs)} token(s)) — HARD refresh"
         )
-        self.stop()
-        self._subscribed = set()
-        self._pending    = set(prev_subs)
         # Wipe BOTH _tick_map AND _tick_age — operator wants a fresh
         # build; stale ticks from before the recycle shouldn't
         # contaminate the freshly-rebuilt state. The token↔sym maps
@@ -537,11 +534,24 @@ class TickerManager:
         # re-subscribe in subscribe_with_sym(), so get_ltp_by_sym()
         # would return None for symbols whose ticks are actually landing
         # under a different token.
+        #
+        # Race-window note: do this BEFORE stop() so an in-flight
+        # _on_ticks fired on the Twisted reactor thread can't slip a
+        # post-clear write into _tick_map between stop() and the clear.
+        # stop() sets _connected=False outside the lock, leaving a ~ms
+        # window where ticks can still land. Clearing under the lock
+        # before teardown closes that window (any in-flight tick
+        # arriving while we hold the lock blocks on the lock and
+        # finds _started=False by the time it lands, since stop()
+        # below also clears _started).
         with self._lock:
             self._tick_map.clear()
             self._tick_age.clear()
             self._token_to_sym.clear()
             self._sym_to_token.clear()
+        self.stop()
+        self._subscribed = set()
+        self._pending    = set(prev_subs)
         self.start(api_key, access_token, account=prev_account)
         return self._started
 

@@ -135,6 +135,14 @@
     teardown?.();
     flash.dispose();
     if (_mktTimer) clearInterval(_mktTimer);
+    // _heartbeatTimer is the 450ms pulse decay timer scheduled inside
+    // the heartbeat $effect. Latent leak today (strip is layout-
+    // persistent so it never unmounts) but the timer would fire into
+    // a destroyed component if the strip ever became conditional.
+    if (_heartbeatTimer) {
+      clearTimeout(_heartbeatTimer);
+      _heartbeatTimer = null;
+    }
   });
 
   // P    = positions P&L lifetime (open + closed intraday).

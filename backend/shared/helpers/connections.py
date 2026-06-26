@@ -1646,6 +1646,49 @@ class Connections(SingletonBase):
             self._hist_enabled_map  = new_hist_enabled_map
         logger.info(f"Connections: rebuilt from DB · accounts={sorted(new_conn.keys())}")
 
+        # Notify the KiteTicker if the account it's currently bound to
+        # disappeared from the rebuilt conn map. Without this nudge the
+        # ticker keeps running against dead credentials, recycle() resolves
+        # nothing, and the WebSocket stays bound until the watchdog's 90s
+        # disconnect threshold (or a manual restart). The new active
+        # account is picked from the rebuilt conn map (lowest-priority
+        # Kite/Dhan account first). Best-effort — Groww / no-Kite-accounts
+        # operators don't trigger this path.
+        try:
+            from backend.shared.helpers.kite_ticker import get_ticker
+            ticker = get_ticker()
+            current = ticker.current_account()
+            if current and current not in new_conn:
+                # Pick the next eligible account: prefer one with lower
+                # priority value (= operator's preferred order). Restrict
+                # to Kite accounts since restart_with_account is Kite-shaped.
+                kite_accounts = [
+                    acct for acct, br_id in new_broker_id_map.items()
+                    if (br_id or "zerodha_kite") == "zerodha_kite"
+                ]
+                kite_accounts.sort(key=lambda a: new_priority_map.get(a, 100))
+                for acct in kite_accounts:
+                    kc = new_conn[acct].kite
+                    api_key = getattr(kc, "api_key", None)
+                    access_token = (
+                        getattr(kc, "_access_token", None)
+                        or getattr(kc, "access_token", None)
+                    )
+                    if api_key and access_token:
+                        ok = ticker.restart_with_account(api_key, access_token, acct)
+                        logger.warning(
+                            f"Connections: ticker was bound to deleted {current!r}; "
+                            f"restarting on {acct!r} (ok={ok})"
+                        )
+                        break
+                else:
+                    logger.warning(
+                        f"Connections: ticker was bound to deleted {current!r}; "
+                        "no eligible Kite account to restart on — ticker will idle"
+                    )
+        except Exception as e:
+            logger.warning(f"Connections: ticker rebuild-nudge failed: {e}")
+
     async def _seed_db_from_yaml(self) -> int:
         """
         First-run migration: copy `secrets.yaml::kite_accounts` into the

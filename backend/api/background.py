@@ -314,6 +314,21 @@ async def _task_market(state: dict) -> None:
             logger.error(f"Background: market warm failed: {e}")
 
 
+_PERF_KICK_EVENT: asyncio.Event | None = None
+
+
+def kick_performance() -> bool:
+    """Wake `_task_performance` immediately instead of waiting for its
+    next 5-min cycle. Called by the sim driver when an iteration
+    auto-stops so the live engine resumes within one broker round-trip
+    instead of leaving a 5-min agent gap. No-op if the event hasn't
+    been initialized (pre-startup, or _task_performance not running)."""
+    if _PERF_KICK_EVENT is None:
+        return False
+    _PERF_KICK_EVENT.set()
+    return True
+
+
 async def _task_performance(state: dict) -> None:
     """Refresh performance data every N minutes during market hours."""
     from backend.shared.helpers.broker_apis import fetch_holidays
@@ -342,12 +357,24 @@ async def _task_performance(state: dict) -> None:
     alert_state = {}
     holiday_cache: dict = {}
 
+    global _PERF_KICK_EVENT
+    _PERF_KICK_EVENT = asyncio.Event()
+
     while True:
         # Re-read each iteration so a /admin/settings tweak lands on the
         # next cycle instead of after a service restart.
         interval    = _interval()
         open_offset = _open_offset()
-        await asyncio.sleep(interval * 60)
+        # asyncio.wait_for instead of plain sleep so the sim driver can
+        # signal an immediate kick via kick_performance() when it
+        # auto-stops. Without this, an auto-stopped sim left up to 5 min
+        # where the live engine wasn't running (still waiting for the
+        # next 5-min cycle) AND the sim engine was already inactive.
+        try:
+            await asyncio.wait_for(_PERF_KICK_EVENT.wait(), timeout=interval * 60)
+        except asyncio.TimeoutError:
+            pass
+        _PERF_KICK_EVENT.clear()
 
         # Dev-idle gate — on non-main branches, when execution.dev_active
         # is False AND no sim/replay driver is running, skip the broker
@@ -2545,7 +2572,12 @@ _ticker_alert_state: dict = {
 
 async def _task_ticker_watchdog(state: dict) -> None:
     CHECK_INTERVAL_S    = 30.0   # how often to poll ticker.status()
-    FAILOVER_THRESHOLD_S = 60.0  # how long disconnected before we fail over
+    # Raised from 60s in BG to absorb one full Twisted reconnect cycle.
+    # KiteTicker's internal exponential backoff can reach 60–120s; with
+    # the old 60s window, the second watchdog tick could trigger a
+    # failover stop() exactly as Twisted was about to reconnect, killing
+    # the recovery and pointlessly restarting on a different account.
+    FAILOVER_THRESHOLD_S = 90.0  # how long disconnected before we fail over
     FAILOVER_COOLOFF_S  = 300.0  # don't retry a failed account for 5 min
     ALERT_REFIRE_S      = 1800.0  # re-alert after 30 min of sustained degradation
 
@@ -2842,7 +2874,11 @@ async def _task_visitor_log_daily() -> None:
 
 
 async def _task_purge_persistence_caches() -> None:
-    """Daily 03:00 IST — purge stale rows from persistence-layer tables.
+    """Daily 03:10 IST — purge stale rows from persistence-layer tables.
+
+    Scheduled 10 minutes after `_task_sim_cleanup` (which runs at 03:00 IST)
+    so the two DELETE-heavy tasks don't compete for the connection pool at
+    the same instant. mcp_audit cleanup at 03:15 stays clear of both.
 
     ohlcv_daily:          rows older than 5 years (immutable; 5y covers all UI ranges).
     instruments_snapshot: rows older than 7 days (latest snapshot sufficient;
@@ -2882,11 +2918,11 @@ async def _task_purge_persistence_caches() -> None:
 
     while True:
         now = timestamp_indian()
-        next_run = now.replace(hour=3, minute=0, second=0, microsecond=0)
+        next_run = now.replace(hour=3, minute=10, second=0, microsecond=0)
         if now >= next_run:
             next_run += timedelta(days=1)
         sleep_s = (next_run - now).total_seconds()
-        logger.info(f"Background: persistence cache purge sleeping {sleep_s/3600:.1f}h until 03:00 IST")
+        logger.info(f"Background: persistence cache purge sleeping {sleep_s/3600:.1f}h until 03:10 IST")
         await asyncio.sleep(sleep_s)
         await _run_once()
 
