@@ -1830,6 +1830,40 @@
     .algo-nav-inner { padding: 0 0.25rem; }
     .algo-footer    { padding: 0 0.25rem; }
     .algo-content   { padding-left: 0; padding-right: 0; }
+    /* Tighter card padding on mobile — operator: "increase card width
+       to reduce wasted space". algo-status-card defaults to 0.75rem
+       all sides; trimming to 0.35rem reclaims ~0.8rem of horizontal
+       inner-width per card. Vertical padding tightened similarly so
+       the card chrome doesn't waste height either. */
+    :global(.algo-status-card) {
+      padding: 0.35rem;
+    }
+    :global(.algo-card) {
+      padding: 0.35rem 0.4rem;
+    }
+    :global(.bucket-card) {
+      padding: 0.35rem 0.4rem;
+    }
+    /* Tighter page-header on mobile — saves ~0.5rem of vertical
+       chrome between the ps-strip and the page's first content
+       (operator: "reduce the space between nav strip and pinned text
+       in pulse page"). The page-header still holds the title chip +
+       timestamp + RefreshButton trio; only the padding + min-height
+       shrink. algo-content's padding-top is adjusted in lockstep
+       below so the first card sits at the new page-header bottom. */
+    :global(.page-header) {
+      padding: 0.05rem 0.4rem;
+      min-height: 1.6rem;
+    }
+    /* Page-header is now ~1.7rem instead of 2.3rem → save 0.6rem
+       on the algo-content top clearance (no ps-strip and with ps-strip
+       variants both tighten). */
+    .algo-content {
+      padding-top: calc(3rem + 1.7rem);
+    }
+    :global(.algo-viewport:has(.ps-strip)) .algo-content {
+      padding-top: calc(3rem + 1.5rem + 1.7rem);
+    }
     /* Mobile relaxation: the page-header action cluster has
        `white-space: nowrap` + `flex-shrink: 0` for desktop so the
        buttons stay glued together when there's headroom. On a
