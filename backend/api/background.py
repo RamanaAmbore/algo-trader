@@ -2513,6 +2513,28 @@ async def _task_ticker_watchdog(state: dict) -> None:
     while True:
         try:
             await asyncio.sleep(CHECK_INTERVAL_S)
+            # HARD-mode deferred recycle — runs BEFORE the dev-idle and
+            # market-hours gates so an operator who flips HARD overnight
+            # or from a sync context still gets the ticker rebuilt on
+            # the next watchdog tick. consume_ticker_reset_pending()
+            # atomically read-and-clears the flag, so two simultaneous
+            # watchdog ticks (impossible in practice) would still only
+            # fire one recycle.
+            try:
+                from backend.api.persistence.runtime_state import (
+                    consume_ticker_reset_pending,
+                )
+                if consume_ticker_reset_pending():
+                    from backend.shared.helpers.kite_ticker import get_ticker
+                    try:
+                        get_ticker().recycle()
+                        logger.info("ticker watchdog: ran deferred HARD-mode recycle")
+                    except Exception as e:
+                        logger.warning(
+                            f"ticker watchdog: deferred HARD-mode recycle failed: {e}"
+                        )
+            except Exception as e:
+                logger.warning(f"ticker watchdog: pending-flag check failed: {e}")
             # Dev-idle gate — skip ticker watchdog on dev when engine is
             # idle. The ticker isn't started either (per app.py gate) so
             # there's nothing to watch; this short-circuit prevents the

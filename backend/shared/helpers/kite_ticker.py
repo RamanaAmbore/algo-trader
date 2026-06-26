@@ -530,10 +530,18 @@ class TickerManager:
         self._pending    = set(prev_subs)
         # Wipe BOTH _tick_map AND _tick_age — operator wants a fresh
         # build; stale ticks from before the recycle shouldn't
-        # contaminate the freshly-rebuilt state.
+        # contaminate the freshly-rebuilt state. The token↔sym maps
+        # are wiped too: on instrument roll / expiry change the post-
+        # recycle token may map to a different sym; preserving the old
+        # entry would let has_sym() return True and silently skip the
+        # re-subscribe in subscribe_with_sym(), so get_ltp_by_sym()
+        # would return None for symbols whose ticks are actually landing
+        # under a different token.
         with self._lock:
             self._tick_map.clear()
             self._tick_age.clear()
+            self._token_to_sym.clear()
+            self._sym_to_token.clear()
         self.start(api_key, access_token, account=prev_account)
         return self._started
 
@@ -572,7 +580,13 @@ class TickerManager:
         # accounts, and stale timestamps from the old account would cause
         # status() to report stale_count=0 falsely during the brief
         # window between restart and on_connect.
-        self._tick_age = {}
+        # _token_to_sym + _sym_to_token also reset for the same reason:
+        # tokens may differ across accounts, and a stale entry would let
+        # has_sym() short-circuit subscribe_with_sym() on the new account.
+        with self._lock:
+            self._tick_age = {}
+            self._token_to_sym.clear()
+            self._sym_to_token.clear()
         self.start(api_key, access_token, account=account)
         return self._started
 

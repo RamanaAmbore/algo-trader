@@ -46,6 +46,10 @@ ResetMode = Literal["off", "soft", "hard"]
 _VALID_MODES: tuple[ResetMode, ...] = ("off", "soft", "hard")
 
 _mode: ResetMode = "off"
+# One-shot flag set on a transition into HARD mode and cleared after the
+# ticker recycle runs. Decoupled from `_mode` so callers can stay in HARD
+# after the recycle without retriggering it on every watchdog tick.
+_recycle_pending: bool = False
 
 
 def get_mode() -> ResetMode:
@@ -60,16 +64,30 @@ def is_bypass_on() -> bool:
 
 
 def is_ticker_reset_pending() -> bool:
-    """True when a HARD-mode transition needs the ticker recycled.
-    Read by the ticker watchdog / set_mode flow itself."""
-    return _mode == "hard"
+    """True when a HARD-mode transition has scheduled a ticker recycle
+    that has not yet run. The watchdog polls this and clears the flag
+    via `consume_ticker_reset_pending()` once the recycle has fired."""
+    return _recycle_pending
+
+
+def consume_ticker_reset_pending() -> bool:
+    """Atomically read-and-clear the pending flag. Returns True iff the
+    caller is now responsible for running the recycle. Called by the
+    watchdog (and only the watchdog) — multiple concurrent watchdogs do
+    not exist, so this can be a plain compare-and-clear."""
+    global _recycle_pending
+    if _recycle_pending:
+        _recycle_pending = False
+        return True
+    return False
 
 
 def set_mode(mode: ResetMode) -> None:
     """Flip the refresh-cycle mode. On a transition into HARD, schedules
     a one-shot ticker restart on the running event loop (best-effort —
-    if there's no running loop, the next watchdog tick will pick it up)."""
-    global _mode
+    if there's no running loop, the watchdog polls
+    is_ticker_reset_pending() and runs the recycle on its next tick)."""
+    global _mode, _recycle_pending
     if mode not in _VALID_MODES:
         raise ValueError(f"invalid mode {mode!r}; expected one of {_VALID_MODES}")
     prev = _mode
@@ -84,9 +102,11 @@ def set_mode(mode: ResetMode) -> None:
         )
     )
     # HARD transition: schedule ticker recycle so the in-memory _tick_map
-    # gets rebuilt from a fresh subscribe pass. The recycle runs in the
-    # background — caller doesn't await it.
+    # gets rebuilt from a fresh subscribe pass. Mark the pending flag
+    # FIRST so the watchdog has a fallback path even if create_task fires.
+    # The recycle runs in the background — caller doesn't await it.
     if prev != "hard" and mode == "hard":
+        _recycle_pending = True
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(_recycle_ticker_async(), name="persistence-ticker-recycle")
@@ -103,6 +123,7 @@ async def _recycle_ticker_async() -> None:
     scratch. The frontend SSE clients auto-reconnect via EventSource so
     no manual intervention is needed.
     """
+    global _recycle_pending
     try:
         from backend.shared.helpers.kite_ticker import get_ticker
         ticker = get_ticker()
@@ -116,6 +137,11 @@ async def _recycle_ticker_async() -> None:
         )
     except Exception as exc:
         logger.warning(f"persistence: ticker recycle failed: {exc}")
+    finally:
+        # Whether the recycle succeeded or failed, drop the pending flag
+        # so the watchdog doesn't fire a second recycle attempt on its
+        # next tick. A persistent failure surfaces in logs + ticker.status().
+        _recycle_pending = False
 
 
 # ── Back-compat shims for callers that still use the old single-bool API ─────
