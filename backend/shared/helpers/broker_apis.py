@@ -200,23 +200,27 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
             # — producing the GOLDM146000CE ₹61 537 phantom that pushed
             # the strip's P∆ to ₹1.11 L on a real ~₹50 k day.
             #
-            # Second pass (Jun 26 2026): day_buy_value + day_sell_value
-            # MUST also scale by multiplier. Kite ships these as
-            # `lots × per_unit_price` (NOT total ₹) — same lot-unit
-            # convention as quantity. The day_pnl formula
-            #     (_bq × LTP − _bv) + (_sv − _sq × LTP)
-            # is dimensionally wrong if _bq/_sq are in contracts
-            # (post-multiply) but _bv/_sv are still in lot-units. For
-            # GOLDM with multiplier=100, a 1-lot buy at 9200 with LTP
-            # 9250 produces _bq×LTP − _bv = 100×9250 − 9200 = 915,800
-            # phantom day_pnl vs the correct 100×(9250−9200) = 5,000.
-            # That's the "GOLDM calculation not correct" operator
-            # report. Multiplying _bv and _sv by `_mult` here brings
-            # them onto the same contract-units basis as _bq/_sq.
+            # REVERTED Jun 26 2026 (commit 5b995ccb): the second-pass
+            # multiply of `day_buy_value` + `day_sell_value` was based
+            # on the assumption Kite ships them as `lots × per_unit_price`
+            # (lot-units). Operator empirical data refutes that:
+            # GOLDM day net showed −35.68 L in snapshot vs a real
+            # ~−35 k, an exact ×100 overcount matching the GOLDM
+            # multiplier. Kite actually ships day_buy_value /
+            # day_sell_value as ABSOLUTE ₹ (lots × multiplier × price)
+            # — the same magnitude as the final answer.
+            #
+            # So the formula `(_bq × LTP − _bv) + (_sv − _sq × LTP)`
+            # is already balanced WITHOUT scaling the value fields:
+            #   _bq (post-multiply) × LTP = contract_qty × per-contract LTP = ₹ total
+            #   _bv (Kite native)          = ₹ total
+            # diff = day_pnl. Correct.
+            #
+            # Keep multiplying only the quantity fields (the original
+            # pre-5b995ccb behaviour that operator confirmed working).
             _mult = df_positions['multiplier']
             df_positions['quantity'] = df_positions['quantity'] * _mult
-            for _c in ('overnight_quantity', 'day_buy_quantity', 'day_sell_quantity',
-                       'day_buy_value', 'day_sell_value'):
+            for _c in ('overnight_quantity', 'day_buy_quantity', 'day_sell_quantity'):
                 if _c in df_positions.columns:
                     df_positions[_c] = df_positions[_c] * _mult
 
