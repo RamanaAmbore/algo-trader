@@ -28,6 +28,7 @@
   // symbol, no hidden context menus.
 
   import { onMount, onDestroy, untrack, getContext } from 'svelte';
+  import { toast } from '$lib/data/toastStore.svelte.js';
   import { get as _storeGet } from 'svelte/store';
   import { portal } from '$lib/portal';
   import { ORDER_TABS } from '$lib/order/tabs.js';
@@ -1205,7 +1206,26 @@
   let _modalTriggerSubmit = $state(0);
   let _modalTriggerBasket = $state(0);
   function _modalFireBasket() { if (_activeTab === 'ticket') _modalTriggerBasket++; }
-  function _modalFireSubmit() { if (_activeTab === 'ticket') _modalTriggerSubmit++; }
+  function _modalFireSubmit() {
+    if (_activeTab !== 'ticket') {
+      // Tab drift — operator clicked the common-actions Submit but the
+      // active tab isn't 'ticket', so OrderTicket.submit() wouldn't
+      // fire. Surface the silent-swallow rather than no-op.
+      toast.info('Switch to the Ticket tab to place an order');
+      return;
+    }
+    if (!_modalSide) {
+      // Side was never picked — without this, the trigger fires
+      // submit() in OrderTicket with side=null, which builds a
+      // null-side payload that the backend rejects + the error
+      // toast may not paint if the modal auto-closes. Operator sees
+      // nothing happen and assumes the button is broken. Block here
+      // with an explicit affordance.
+      toast.warning('Pick BUY or SELL before submitting');
+      return;
+    }
+    _modalTriggerSubmit++;
+  }
   function _modalFlipSide()   { _modalSide = _modalSide === 'BUY' ? 'SELL' : 'BUY'; }
   // Stable handler reference for the single side footer button.
   // Operator: "based on short or long existing position it should

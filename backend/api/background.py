@@ -683,7 +683,6 @@ async def _task_close(state: dict) -> None:
                        config.get("close_summary_offset_minutes", 15))
 
     seg_state     = state.setdefault('close_seg_state', _default_seg_state())
-    holiday_cache: dict = {}
 
     while True:
         # Dev-idle gate (see _task_performance comment) — also skip the
@@ -701,26 +700,32 @@ async def _task_close(state: dict) -> None:
         segments = _build_segments()
 
         for seg in segments:
-            exch = seg['holiday_exchange']
-            if exch not in holiday_cache:
-                try:
-                    holiday_cache[exch] = await _run(fetch_holidays, exch)
-                except Exception:
-                    holiday_cache[exch] = set()
-
-        for seg in segments:
             ss = seg_state[seg['name']]
             if ss['last_close'] == today:
                 continue
 
-            h_set = holiday_cache.get(seg['holiday_exchange'], set())
             close_trigger = now.replace(
                 hour=seg['hours_end'].hour,
                 minute=seg['hours_end'].minute,
                 second=0, microsecond=0
             ) + timedelta(minutes=close_offset)
 
-            if today not in h_set and now.weekday() < 5 and now >= close_trigger:
+            # Operator: "I don't see closing summary in telegram after
+            # MCX closure" — observed on a partial-session day where
+            # NSE was a holiday but MCX evening was open. Kite's MCX
+            # holiday list flags today as closed (since one of the two
+            # sessions skipped), so the previous `today not in h_set`
+            # gate silently swallowed the summary. The close trigger
+            # at 23:45 IST is outside the live-quote probe window so
+            # `is_trading_day(..., now=...)` returns False too.
+            #
+            # Fix: drop the holiday gate from this path. The summary
+            # is informational — firing on a true holiday at most
+            # produces a one-line "no activity" Telegram, which is
+            # cheap and clearly diagnostic. The `weekday() < 5` gate
+            # still prevents weekend noise (markets are weekend-closed
+            # globally; no broker activity to summarise).
+            if now.weekday() < 5 and now >= close_trigger:
                 try:
                     (df_h, sum_h), (df_p, sum_p) = await _run(
                         lambda: (_fetch_holdings_direct(), _fetch_positions_direct()))
