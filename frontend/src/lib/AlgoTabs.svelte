@@ -56,14 +56,34 @@
 
 <style>
   .algo-tabs-strip {
-    display: inline-flex;
+    display: flex;
     gap: 0;
     align-items: stretch;
+    /* When the consumer drops the strip into a card narrower than the
+       sum of tab widths (mobile, narrow sidebars), the strip used to
+       blow out the card and push the page's horizontal scroll,
+       cascading into the fixed navbar + footer. Contain to a self-
+       managed horizontal scroll. Hide the scrollbar — the active-tab
+       underline + tab edges make the swipe affordance obvious. */
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
   }
+  .algo-tabs-strip::-webkit-scrollbar { display: none; }
   /* Disabled tab — dimmer, no underline, cursor signals non-interactive. */
   .algo-tab.algo-tab--disabled {
     opacity: 0.42;
     cursor: not-allowed;
     pointer-events: auto;     /* keep tooltip; disabled attribute blocks the click */
+  }
+  /* Every algo-tab is a flex child of the strip and must refuse to
+     shrink — otherwise wide labels squash and become unreadable. The
+     strip's overflow-x handles the case when the row genuinely
+     doesn't fit. Targets every color variant via the global class. */
+  :global(.algo-tabs-strip .algo-tab) {
+    flex-shrink: 0;
+    white-space: nowrap;
   }
 </style>

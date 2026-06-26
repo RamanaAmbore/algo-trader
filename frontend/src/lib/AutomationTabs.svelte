@@ -68,7 +68,21 @@
     border-bottom: 1px solid var(--algo-amber-border-soft);
     background: linear-gradient(180deg, rgba(15,23,41,0.7) 0%, rgba(10,16,32,0.7) 100%);
     border-radius: 0.25rem 0.25rem 0 0;
+    /* 6 tabs × ~6rem each ≈ 36rem of inline content. On any sub-580px
+       viewport the strip overflows; without containment the parent
+       picks up a horizontal scrollbar and the fixed navbar / footer
+       get pushed sideways (iOS Safari resolves `right: 0` against
+       document scrollWidth, not visual viewport). Contain to a
+       horizontal scroll on the strip itself — same pattern Material
+       and TradingView use. Hide the scrollbar; the active tab + small
+       gradient hints make the scrollability obvious enough. */
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
   }
+  .aw-tabs::-webkit-scrollbar { display: none; }
   .aw-tab {
     padding: 0.35rem 0.85rem;
     font-size: 0.72rem;
@@ -83,6 +97,15 @@
     transition: color 0.06s, border-bottom-color 0.06s, background-color 0.06s;
     outline: none;
     margin-bottom: -1px; /* stitch the tab's bottom border flush with the strip's. */
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  @media (max-width: 640px) {
+    .aw-tab {
+      padding: 0.3rem 0.55rem;
+      font-size: 0.68rem;
+      letter-spacing: 0.02em;
+    }
   }
   .aw-tab:focus-visible { outline: 2px solid #fbbf24; outline-offset: 2px; }
   .aw-tab:hover {
