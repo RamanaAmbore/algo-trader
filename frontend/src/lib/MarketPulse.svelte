@@ -47,6 +47,7 @@
   }
   import { fetchSettings } from '$lib/api';
   import { liveLtp, streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
+  import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
   import { bookChanged } from '$lib/data/bookChanged';
   import {
     positionsStore, holdingsStore, fundsStore,
@@ -2657,19 +2658,28 @@
         row.src.w = true;
         // Back-compat tag for the legacy isPinnedIndexRow check.
         if (major === 'pinned') row._fromPinnedList = true;
-        row.ltp    = q?.ltp    ?? row.ltp    ?? null;
-        row.bid    = q?.bid    ?? row.bid    ?? null;
-        row.ask    = q?.ask    ?? row.ask    ?? null;
+        // BH2: fall back to symbolStore when the per-item watchquote
+        // hasn't loaded yet OR is stale. symbolStore.localStorage cache
+        // is populated by every market-data fetcher (positions,
+        // holdings, watchQuotes, movers) + SSE ticks, so a cold mount
+        // hits closing values for any sym seen in the prior session
+        // instead of flashing LTP=0 until the watchQuotes round-trip
+        // completes. Closes the operator's "pinned shows zeros while
+        // positions show values" asymmetry.
+        const snap = getSnapshot(sym);
+        row.ltp    = q?.ltp    ?? snap?.ltp    ?? row.ltp    ?? null;
+        row.bid    = q?.bid    ?? snap?.bid    ?? row.bid    ?? null;
+        row.ask    = q?.ask    ?? snap?.ask    ?? row.ask    ?? null;
         // Prev Close + Open need to flow through here too — without
         // them, indices in the Markets/Default watchlists (NIFTY 50,
         // BANKNIFTY etc.) render with empty Prev Close cells even
         // though the watch-quote payload carries the value.
-        row.close  = q?.close  ?? row.close  ?? null;
-        row.open   = q?.open   ?? row.open   ?? null;
-        row.change = q?.change ?? row.change ?? null;
-        row.change_pct = q?.change_pct ?? row.change_pct ?? null;
-        row.volume = q?.volume ?? row.volume ?? null;
-        row.oi     = q?.oi     ?? row.oi     ?? null;
+        row.close  = q?.close  ?? snap?.close  ?? row.close  ?? null;
+        row.open   = q?.open   ?? snap?.open   ?? row.open   ?? null;
+        row.change = q?.change ?? snap?.day_change     ?? row.change     ?? null;
+        row.change_pct = q?.change_pct ?? snap?.day_change_pct ?? row.change_pct ?? null;
+        row.volume = q?.volume ?? snap?.volume ?? row.volume ?? null;
+        row.oi     = q?.oi     ?? snap?.oi     ?? row.oi     ?? null;
         fill(row, sym);
       }
     }

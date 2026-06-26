@@ -11,7 +11,7 @@
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { cachedRead, cachedWrite, cachedDelete, TTL } from '$lib/data/persistentCache';
-  import { liveLtp } from '$lib/data/quoteStream';
+  import { getSnapshot, symbolStore } from '$lib/data/symbolStore.svelte.js';
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { positionsStore, holdingsStore, fundsStore } from '$lib/data/marketDataStores.svelte.js';
 
@@ -66,16 +66,13 @@
     } catch (_) { /* silent — strip stays at last-good values */ }
   }
 
-  // Local $state mirror of the liveLtp store. Bridging through $state
-  // keeps the per-row delta recomputation below O(1) per derived re-run
-  // (no store.subscribe overhead in the hot path) and lets the
-  // tick-flash $effect see derived-value changes immediately when
-  // any tick lands.
-  let _liveLtpSnap = $state(/** @type {Record<string, number>} */ ({}));
-  $effect(() => {
-    const unsub = liveLtp.subscribe(v => { _liveLtpSnap = v || {}; });
-    return unsub;
-  });
+  // BH2: live LTP reads come from symbolStore.get(sym) via getSnapshot.
+  // SvelteMap's fine-grained reactivity scopes re-runs of
+  // _liveDeltaByRow to the specific syms it touches — each tick only
+  // re-triggers consumers reading THAT sym, not every consumer. The
+  // local _liveLtpSnap mirror is gone; the writable `liveLtp` store is
+  // intentionally still kept alive in quoteStream.js for back-compat
+  // until BH3 drops it.
 
   // Local $state mirror of executionMode so the freeze/thaw $effect can
   // track mode transitions without subscribing inside the effect itself.
@@ -168,15 +165,22 @@
   // `day_change_val` (LTP coefficient is also × qty) and to holdings'
   // `cur_val` (= LTP × qty).
   //
-  // Memoization: build the delta ONCE per _liveLtpSnap + rows change,
+  // Memoization: build the delta ONCE per symbolStore + rows change,
   // keyed by tradingsymbol+account. All 5 derived sums read from this
   // Map in O(1) rather than calling _liveDelta() 5× per row per tick.
   // At 20 positions × 90 ticks/sec burst this drops inner-loop calls
   // from ~100 to ~20 (one Map build + five O(1) lookups per tick).
+  //
+  // BH2: live LTPs sourced via symbolStore.get(sym) (SvelteMap). The
+  // $derived.by re-runs only when one of the syms it actually read
+  // changes — fine-grained reactivity at the symbol level, not the
+  // whole-map churn of the old liveLtp writable. Touch symbolStore.size
+  // once at the top so the derived also re-runs when symbols are
+  // ADDED to the store (first SSE tick for a previously-unknown sym).
   const _liveDeltaByRow = $derived.by(() => {
     /** @type {Map<string, number>} */
     const m = new Map();
-    const snap = _liveLtpSnap;
+    void symbolStore.size;
     // Read _mktTick so the derived re-runs on the market open/close
     // boundary (otherwise we'd wait up to 30s for _load to pick it up).
     void _mktTick;
@@ -196,7 +200,7 @@
     for (const row of positions) {
       if (!_appliesToRow(row)) continue;
       const sym  = String(row?.tradingsymbol || '').toUpperCase();
-      const live = snap[sym];
+      const live = getSnapshot(sym)?.ltp;
       if (live == null) continue;
       const pollLtp = Number(row?.last_price || 0);
       const qty     = Number(row?.quantity   || 0);
@@ -207,7 +211,7 @@
     for (const row of holdings) {
       if (!_appliesToRow(row)) continue;
       const sym  = String(row?.tradingsymbol || '').toUpperCase();
-      const live = snap[sym];
+      const live = getSnapshot(sym)?.ltp;
       if (live == null) continue;
       const pollLtp = Number(row?.last_price || 0);
       const qty     = Number(row?.quantity   || 0);
