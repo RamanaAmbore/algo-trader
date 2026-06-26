@@ -1696,6 +1696,27 @@
   // position in the strip belongs to the chart's underlying AND every
   // candidate is enabled, DAY equals the strip's P∆ exactly. Useful
   // for "is my chart showing what the strip says?" sanity checks.
+  // Live underlying spot for the payoff chart. server-side `strategy.spot`
+  // is a per-poll snapshot; overriding with the SSE-tick LTP from
+  // symbolStore makes the SPOT row + TDAY / EXP / spot vertical line +
+  // curveAtSpot interpolation all track the underlying live. Prefer
+  // strategy.spot_anchor_contract (the actual quote symbol — for MCX
+  // commodity options the "spot" anchor is the front-month future), fall
+  // back to strategy.underlying, fall back to the server value.
+  const liveSpot = $derived.by(() => {
+    const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
+    if (anchor) {
+      const v = Number(getSnapshot(anchor)?.ltp);
+      if (Number.isFinite(v) && v > 0) return v;
+    }
+    const und = String(strategy?.underlying || '').toUpperCase();
+    if (und) {
+      const v = Number(getSnapshot(und)?.ltp);
+      if (Number.isFinite(v) && v > 0) return v;
+    }
+    return strategy?.spot;
+  });
+
   // Live-adjusted: incorporate SSE-tick price moves on top of the broker
   // snapshot day_change_val. Without this, the DAY row in the payoff
   // overlay stayed pinned at the last poll's value while ticks were
@@ -4058,7 +4079,7 @@
     <div class="card-body" hidden={_colPayoff}>
       <OptionsPayoff
         payoff={_mergedPayoff}
-        spot={strategy.spot}
+        spot={liveSpot}
         prevClose={strategy.spot_prev_close}
         breakevens={_mergedRisk?.breakevens ?? strategy.risk.breakevens}
         intermediateCurves={strategy.intermediate_curves || []}
