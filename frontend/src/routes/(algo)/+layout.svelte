@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { onMount, onDestroy, setContext } from 'svelte';
   import { get } from 'svelte/store';
-  import { authStore, visibleInterval, executionMode } from '$lib/stores';
+  import { authStore, visibleInterval, executionMode, connStatus, startConnStatusPoller } from '$lib/stores';
   import {
     fetchSimStatus, fetchPaperStatus,
     fetchReplayStatus,
@@ -578,6 +578,12 @@
     // Global keyboard shortcuts (slice AU). Window-level keydown
     // listener; pauses while the operator is typing in a field.
     window.addEventListener('keydown', _onGlobalKeydown);
+    // Broker connectivity poller (slice AX). Singleton — safe to call
+    // from multiple components; the poller idempotently short-circuits
+    // on second invocation. Already used by RefreshButton; calling here
+    // ensures the navbar chip stays fresh even on pages with no
+    // RefreshButton mounted.
+    startConnStatusPoller();
     // RBAC bootstrap — populates `userRole` + `userCaps` stores from
     // /api/auth/whoami. Idempotent across remounts (the bootstrap
     // function itself short-circuits on second call). Fires before
@@ -772,6 +778,32 @@
           </button>
         {/if}
 
+        <!-- ── Broker connectivity chip (slice AX) ────────────────────
+             Ambient signal — green when every configured broker
+             account is loaded, amber on partial, red when none. IBKR
+             TWS keeps connection status permanently visible in its
+             status bar; this is the equivalent at the navbar level.
+             Hidden when total=0 (demo / no config). Click → /admin/health
+             for the full broker accounts table + ticker status. -->
+        {#if $authStore.user && $connStatus.total > 0}
+          {@const _loaded = $connStatus.loaded}
+          {@const _total  = $connStatus.total}
+          {@const _ok     = $connStatus.backendOk}
+          {@const _cls    = !_ok ? 'broker-chip-unknown'
+                          : _loaded === 0 ? 'broker-chip-down'
+                          : _loaded < _total ? 'broker-chip-partial'
+                          : 'broker-chip-ok'}
+          {@const _failList = $connStatus.failingAccounts.join(', ')}
+          <button class="broker-chip {_cls}"
+                  onclick={() => goto('/admin/health')}
+                  title={!_ok ? 'Broker status: API unreachable. Click for diagnostics.'
+                       : _loaded === _total ? `Broker status: ${_loaded} / ${_total} accounts loaded.`
+                       : `Broker status: ${_loaded} / ${_total} loaded. Failing: ${_failList}`}>
+            <span class="broker-chip-dot" aria-hidden="true"></span>
+            {_ok ? `${_loaded}/${_total}` : '?'}
+          </button>
+        {/if}
+
         <!-- ── Chase chip ─────────────────────────────────────────── -->
         {#if $authStore.user && showChaseChip}
           <button
@@ -865,6 +897,25 @@
             {#if modeError}<span class="mode-combo-error">{modeError}</span>{/if}
           </div>
         {/if}
+
+        <!-- Broker connectivity chip (mobile mirror of the desktop block above). -->
+        {#if $authStore.user && $connStatus.total > 0}
+          {@const _loaded = $connStatus.loaded}
+          {@const _total  = $connStatus.total}
+          {@const _ok     = $connStatus.backendOk}
+          {@const _cls    = !_ok ? 'broker-chip-unknown'
+                          : _loaded === 0 ? 'broker-chip-down'
+                          : _loaded < _total ? 'broker-chip-partial'
+                          : 'broker-chip-ok'}
+          <button class="broker-chip {_cls}"
+                  onclick={() => goto('/admin/health')}
+                  title={!_ok ? 'Broker status: API unreachable.'
+                       : `Broker status: ${_loaded} / ${_total} loaded.`}>
+            <span class="broker-chip-dot" aria-hidden="true"></span>
+            {_ok ? `${_loaded}/${_total}` : '?'}
+          </button>
+        {/if}
+
         {#if $authStore.user && showChaseChip}
           <button
             class="chase-chip"
@@ -1934,6 +1985,61 @@
     border-radius: 4px;
     white-space: nowrap;
     z-index: 61;
+  }
+
+  /* ── Broker connectivity chip (slice AX) ─────────────────────────
+     Ambient navbar chip showing N/M brokers loaded. Green = all
+     loaded, amber = partial, red = none, slate = API unreachable.
+     Same pill shape as .chase-chip; click → /admin/health.
+     Operator: "ambient broker-status indicator" — IBKR equivalent. */
+  .broker-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    height: 1.4rem;
+    padding: 0 0.55rem;
+    border-radius: 9999px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    cursor: pointer;
+    white-space: nowrap;
+    outline: none;
+    margin-right: 0.3rem;
+    transition: background-color 0.08s, filter 0.08s;
+  }
+  .broker-chip:hover { filter: brightness(1.15); }
+  .broker-chip-dot {
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: 50%;
+    background: currentColor;
+  }
+  .broker-chip-ok {
+    color: #4ade80;
+    background: rgba(74, 222, 128, 0.12);
+    border: 1px solid rgba(74, 222, 128, 0.5);
+  }
+  .broker-chip-partial {
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.12);
+    border: 1px solid rgba(251, 191, 36, 0.5);
+    animation: algo-mode-dot 2s ease-in-out infinite;
+  }
+  .broker-chip-down {
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.14);
+    border: 1px solid rgba(248, 113, 113, 0.55);
+    animation: algo-mode-dot 2s ease-in-out infinite;
+  }
+  .broker-chip-unknown {
+    color: #94a3b8;
+    background: rgba(148, 163, 184, 0.10);
+    border: 1px solid rgba(148, 163, 184, 0.40);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .broker-chip-partial, .broker-chip-down { animation: none; }
   }
 
   /* ── Chase chip ──────────────────────────────────────────────────────── */
