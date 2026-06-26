@@ -505,13 +505,11 @@
    aria-label="Open the dashboard — full positions, holdings, and funds grids">
   <span class="ps-agg" title="Positions: lifetime P&L / today's MTM move (Δ)">
     <span class="ps-agg-k ps-delta">P∆</span>
-    <span class={'ps-agg-v ' + (_livePositionsPnl > 0 ? 'ps-pos' : _livePositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}>
-      {fmtMoney(_livePositionsPnl)}
-    </span>
-    <span class="ps-agg-sep">/</span>
-    <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}>
-      {fmtMoney(dispPositionsToday)}
-    </span>
+    <span class={'ps-agg-v ' + (_livePositionsPnl > 0 ? 'ps-pos' : _livePositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}
+      >{fmtMoney(_livePositionsPnl)}</span
+    ><span class="ps-agg-sep">/</span
+    ><span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
+      >{fmtMoney(dispPositionsToday)}</span>
   </span>
   <!-- Combined margin chip: available margin (₹) / utilisation (%).
        Saves a slot vs separate M + U chips. Margin value uses cyan
@@ -520,15 +518,11 @@
        <30% = lots of room). -->
   <span class="ps-agg" title="Margin: available (₹) / utilisation (% used)">
     <span class="ps-agg-k">M</span>
-    <span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-cash' : marginTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('M')}>
-      {fmtMoney(marginTotal)}
-    </span>
-    {#if utilPct != null}
-      <span class="ps-agg-sep">/</span>
-      <span class={'ps-agg-v ' + (utilPct > 70 ? 'ps-neg' : utilPct > 30 ? 'ps-flat' : 'ps-cash') + ' ' + flash.classOf('U')}>
-        {utilPct.toFixed(1)}%
-      </span>
-    {/if}
+    <span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-cash' : marginTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('M')}
+      >{fmtMoney(marginTotal)}</span
+    >{#if utilPct != null}<span class="ps-agg-sep">/</span
+      ><span class={'ps-agg-v ' + (utilPct > 70 ? 'ps-neg' : utilPct > 30 ? 'ps-flat' : 'ps-cash') + ' ' + flash.classOf('U')}
+      >{utilPct.toFixed(1)}%</span>{/if}
   </span>
   <!-- Combined cash chip: total cash (incl. premium tied up in long
        options) / cash available (deployable now). Canonical labels
@@ -543,23 +537,19 @@
        look. -->
   <span class="ps-agg" title="Cash: total (C, incl. premium tied up in long options) / available (CA, deployable now)">
     <span class="ps-agg-k">C</span>
-    <span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cp')}>
-      {fmtMoney(cashTotal)}
-    </span>
-    <span class="ps-agg-sep">/</span>
-    <span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cash')}>
-      {fmtMoney(liveCashTotal)}
-    </span>
+    <span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cp')}
+      >{fmtMoney(cashTotal)}</span
+    ><span class="ps-agg-sep">/</span
+    ><span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cash')}
+      >{fmtMoney(liveCashTotal)}</span>
   </span>
   <span class="ps-agg" title="Holdings: lifetime P&L (H∆) / today's MTM move (HD∆)">
     <span class="ps-agg-k ps-delta">H∆</span>
-    <span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos' : _liveHoldingsTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Hd')}>
-      {fmtMoney(_liveHoldingsTotal)}
-    </span>
-    <span class="ps-agg-sep">/</span>
-    <span class={'ps-agg-v ' + (dispHoldingsToday > 0 ? 'ps-pos' : dispHoldingsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('HDd')}>
-      {fmtMoney(dispHoldingsToday)}
-    </span>
+    <span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos' : _liveHoldingsTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Hd')}
+      >{fmtMoney(_liveHoldingsTotal)}</span
+    ><span class="ps-agg-sep">/</span
+    ><span class={'ps-agg-v ' + (dispHoldingsToday > 0 ? 'ps-pos' : dispHoldingsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('HDd')}
+      >{fmtMoney(dispHoldingsToday)}</span>
   </span>
   <span class="ps-agg" title="Current holding value — sum of cur_val across holdings">
     <span class="ps-agg-k">H</span>
@@ -630,12 +620,14 @@
     font-weight: 700;
     font-variant-numeric: tabular-nums;
   }
-  /* Slash between the lifetime + day-delta values inside a combined
-     P / P∆ or H∆ / HD∆ chip. Muted slate so the two value glyphs read
-     as the primary signal and the separator is just a divider. */
+  /* Slash between the two values inside a paired chip. Muted slate
+     so the value glyphs read as the primary signal and the slash is
+     just a divider. Zero margin; the surrounding HTML is written with
+     no whitespace either side of the slash so it sits flush against
+     the values. */
   .ps-agg-sep {
     color: var(--algo-muted);
-    margin: 0 0.15rem;
+    margin: 0;
     font-weight: 400;
   }
 
