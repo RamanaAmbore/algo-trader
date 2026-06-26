@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { onMount, onDestroy, setContext } from 'svelte';
   import { get } from 'svelte/store';
-  import { authStore, visibleInterval, executionMode, connStatus, startConnStatusPoller } from '$lib/stores';
+  import { authStore, visibleInterval, executionMode, connStatus, startConnStatusPoller, startMarketStatusPoller } from '$lib/stores';
   import {
     fetchSimStatus, fetchPaperStatus,
     fetchReplayStatus,
@@ -608,6 +608,10 @@
     // ensures the navbar chip stays fresh even on pages with no
     // RefreshButton mounted.
     startConnStatusPoller();
+    // Holiday-aware /api/market/status poller — feeds isNseOpen/isMcxOpen
+    // so the RefreshButton "market closed" popup fires correctly on
+    // Indian-market holidays where weekday+time alone says "open".
+    startMarketStatusPoller();
     // RBAC bootstrap — populates `userRole` + `userCaps` stores from
     // /api/auth/whoami. Idempotent across remounts (the bootstrap
     // function itself short-circuits on second call). Fires before

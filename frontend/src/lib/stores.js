@@ -11,7 +11,7 @@
 
 import { writable, derived, get } from 'svelte/store';
 import { browser } from '$app/environment';
-import { isMarketOpen } from '$lib/marketHours';
+import { isMarketOpen, fetchMarketStatus } from '$lib/marketHours';
 
 // ---------------------------------------------------------------------------
 // Auth store
@@ -737,4 +737,27 @@ export function stopConnStatusPoller() {
     _connPollerTeardown = null;
   }
   _connPollerStarted = false;
+}
+
+// Holiday-aware market status poller — fetches /api/market/status every
+// 5 min so isNseOpen / isMcxOpen / isMarketOpen return the correct value
+// on Republic Day, Diwali, etc. (where weekday+time alone would falsely
+// say "open"). The RefreshButton "Both NSE and MCX are currently closed"
+// popup depends on this. Started from the (algo)/+layout onMount.
+let _mktStatusStarted = false;
+/** @type {(() => void) | null} */
+let _mktStatusTeardown = null;
+export function startMarketStatusPoller() {
+  if (!browser || _mktStatusStarted) return;
+  _mktStatusStarted = true;
+  fetchMarketStatus();
+  _mktStatusTeardown = visibleInterval(fetchMarketStatus, 5 * 60 * 1000);
+}
+
+export function stopMarketStatusPoller() {
+  if (_mktStatusTeardown) {
+    _mktStatusTeardown();
+    _mktStatusTeardown = null;
+  }
+  _mktStatusStarted = false;
 }
