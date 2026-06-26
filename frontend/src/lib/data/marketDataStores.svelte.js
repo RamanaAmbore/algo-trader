@@ -55,6 +55,18 @@ import { mergeSymbolBatch } from './symbolStore.svelte.js';
 // initial storedTs = 0. Once any SSE tick has stamped ltp_ts, polls
 // stop clobbering it. (BH1 audit CRITICAL fix.)
 
+/**
+ * Public publishers — call after a raw broker fetch when bypassing the
+ * createDataStore.parse hook (e.g. MarketPulse.loadPulse and
+ * PerformancePage.loadAll route through positionsStore.set() / .set() to
+ * preserve per-feed error context; that path skips parse and therefore
+ * skips the inline publishers below, so callers must invoke these
+ * explicitly).
+ */
+export function publishPositionsRows(rows) { _publishPositionsRows(rows); }
+export function publishHoldingsRows(rows)  { _publishHoldingsRows(rows);  }
+export function publishMoverRows(rows)     { _publishMoverRows(rows);     }
+
 /** @param {any[]} rows */
 function _publishPositionsRows(rows) {
   if (!Array.isArray(rows) || rows.length === 0) return;

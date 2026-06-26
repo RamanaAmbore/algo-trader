@@ -11,7 +11,10 @@
   import { createPerformanceSocket } from '$lib/ws';
   import { bookChanged } from '$lib/data/bookChanged';
   import { authStore } from '$lib/stores';
-  import { positionsStore, holdingsStore, fundsStore } from '$lib/data/marketDataStores.svelte.js';
+  import {
+    positionsStore, holdingsStore, fundsStore,
+    publishPositionsRows, publishHoldingsRows,
+  } from '$lib/data/marketDataStores.svelte.js';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import GridSearchButton from '$lib/GridSearchButton.svelte';
@@ -819,11 +822,20 @@
       // `parse` strips to `.rows` (and filters TOTAL for funds); we pre-parse
       // before calling set() so the stored value matches what other consumers
       // expect when they read store.value.
-      holdingsStore.set(h?.rows ?? []);
-      positionsStore.set(p?.rows ?? []);
+      const _h_rows = h?.rows ?? [];
+      const _p_rows = p?.rows ?? [];
+      holdingsStore.set(_h_rows);
+      positionsStore.set(_p_rows);
       fundsStore.set((f?.rows ?? []).filter(
         (/** @type {any} */ x) => x && x.account && x.account !== 'TOTAL'
       ));
+      // .set() bypasses the parse hook → publish to symbolStore
+      // explicitly so the central market-data sink stays current on
+      // a direct /performance landing (audit found this leak — the
+      // page was the ONLY surface that fed the section stores
+      // without publishing to symbolStore).
+      publishPositionsRows(_p_rows);
+      publishHoldingsRows(_h_rows);
       applyData(h, p, f);
     } catch (e) {
       error = e.message || 'Failed to load data';

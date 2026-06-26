@@ -268,15 +268,16 @@ export function mergeSymbolUpdate(sym, fields, ts = {}) {
  * @returns {number} count of updates that wrote at least one field
  */
 export function mergeSymbolBatch(updates) {
-  if (!Array.isArray(updates) || updates.length === 0) return 0;
+  if (!Array.isArray(updates)) return 0;
   let n = 0;
   for (const u of updates) {
     if (_mergeSymbolWrite(u.sym, u.fields, u.ts)) n++;
   }
   if (n > 0) _schedulePersist();
-  // Always bump even when every write was a no-op — see mergeSymbolUpdate
-  // note. One bump per batch (not per item) preserves the BH6 anti-
-  // saturation fix.
+  // Always bump — even on empty batches (which represent "a fetch
+  // cycle completed with no rows", still a liveness signal that
+  // RefreshButton + MarketPulse should see). One bump per call
+  // (not per item) preserves the BH6 anti-saturation fix.
   symbolTickCount.update(c => c + 1);
   return n;
 }

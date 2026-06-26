@@ -52,7 +52,8 @@
   import { bookChanged } from '$lib/data/bookChanged';
   import {
     positionsStore, holdingsStore, fundsStore,
-    moversStore, activeListsStore, sparklinesStore, publishWatchQuotes, publishPulseQuotes,
+    moversStore, activeListsStore, sparklinesStore,
+    publishWatchQuotes, publishPulseQuotes, publishPositionsRows, publishHoldingsRows,
   } from '$lib/data/marketDataStores.svelte.js';
   import { resolveUnderlying, INDEX_LTP_KEY, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
   import CollapseButton from '$lib/CollapseButton.svelte';
@@ -2065,6 +2066,11 @@
   onDestroy(() => {
     stopPulseTick?.(); stopTickSettingPoll?.(); stopWS?.();
     stopQuoteStream();
+    // Clear any in-flight throttle timers so their setTimeout
+    // callbacks don't fire into a destroyed component (audit-flagged
+    // — the flush timer is cleaned up by the $effect's own teardown,
+    // but the paint timer wasn't).
+    if (_ltpPaintTimer) { clearTimeout(_ltpPaintTimer); _ltpPaintTimer = null; }
     document.removeEventListener('keydown', handleKeydown);
     document.removeEventListener('click', onDocClick);
     gridPinned?.destroy?.();
@@ -2244,8 +2250,19 @@
       const h_rows = (h?.rows || []).slice();
       // Push to stores (writes Tier 1 + Tier 2). Only write on success
       // so partial broker errors don't blank whichever side worked.
-      if (!pErr && p_rows.length) positionsStore.set(p_rows);
-      if (!hErr && h_rows.length) holdingsStore.set(h_rows);
+      if (!pErr && p_rows.length) {
+        positionsStore.set(p_rows);
+        // .set() bypasses the parse hook; publish to symbolStore
+        // explicitly so the per-row LTPs land in the central store
+        // (audit found this was the primary 10s-poll gap — pinned/
+        // watchlist LTPs went stale because the parse-hook publish
+        // never fired on the .set() path).
+        publishPositionsRows(p_rows);
+      }
+      if (!hErr && h_rows.length) {
+        holdingsStore.set(h_rows);
+        publishHoldingsRows(h_rows);
+      }
       // Capture the backend's precomputed per-account summary rows
       // (used by the dashboard's summary grid). Excludes the TOTAL
       // synthetic row — we render that separately as pinnedBottomRowData.

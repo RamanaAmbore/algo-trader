@@ -242,18 +242,31 @@ export function marketAwareInterval(fn, ms) {
   //      Operator: "when it reopens, any relevant data should refresh
   //      the values."
   let _prevOpen = isMarketOpen();
+  // Re-entrancy guard. `visibleInterval` fires every 5s via
+  // `setInterval`, which doesn't await async callbacks. On a slow
+  // network where `fetchMarketStatus()` takes >5s, the next interval
+  // would otherwise stack a second concurrent invocation; two
+  // overlapping awaits could mutate `_prevOpen` in non-deterministic
+  // order, missing or duplicating the closed→open fire.
+  let _edgeRunning = false;
   const mainTeardown = visibleInterval(() => {
     if (!isMarketOpen()) return;
     fn();
   }, ms);
   const edgeTeardown = visibleInterval(async () => {
-    // Refresh _serverStatus first so the edge-check sees ground truth,
-    // not a 5-min-stale poll. fetchMarketStatus silently no-ops on
-    // failure — falls back to whichever value was cached.
-    try { await fetchMarketStatus(); } catch { /* silent */ }
-    const open = isMarketOpen();
-    if (open && !_prevOpen) fn();
-    _prevOpen = open;
+    if (_edgeRunning) return;
+    _edgeRunning = true;
+    try {
+      // Refresh _serverStatus first so the edge-check sees ground
+      // truth, not a 5-min-stale poll. fetchMarketStatus silently
+      // no-ops on failure — falls back to whichever value was cached.
+      try { await fetchMarketStatus(); } catch { /* silent */ }
+      const open = isMarketOpen();
+      if (open && !_prevOpen) fn();
+      _prevOpen = open;
+    } finally {
+      _edgeRunning = false;
+    }
   }, 5000);
   return () => {
     mainTeardown();

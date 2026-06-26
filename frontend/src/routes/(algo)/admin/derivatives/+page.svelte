@@ -22,7 +22,7 @@
     batchQuote,
   } from '$lib/api';
   import { positionsStore, holdingsStore, publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
-  import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
+  import { getSnapshot, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import Select        from '$lib/Select.svelte';
@@ -1697,6 +1697,33 @@
     return s;
   });
 
+  // 250ms-throttled SSE-tick mirror. liveSpot + candidatesDayPnl read
+  // it as their only tracked dep (the getSnapshot calls inside them
+  // are wrapped in untrack), so they re-derive at 4Hz max regardless
+  // of burst rate — same pattern PositionStrip uses to keep the main
+  // thread free for click handlers. Without this, getSnapshot reads
+  // inside $derived.by registered per-symbol SvelteMap deps and
+  // re-derived at full SSE rate (~100 ticks/sec), saturating the
+  // scheduler.
+  let _throttledTick = $state(0);
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _tickThrottleTimer = null;
+  /** @type {(() => void) | null} */
+  let _tickThrottleUnsub = null;
+  onMount(() => {
+    _tickThrottleUnsub = symbolTickCount.subscribe(() => {
+      if (_tickThrottleTimer) return;
+      _tickThrottleTimer = setTimeout(() => {
+        _throttledTick++;
+        _tickThrottleTimer = null;
+      }, 250);
+    });
+  });
+  onDestroy(() => {
+    if (_tickThrottleTimer) clearTimeout(_tickThrottleTimer);
+    _tickThrottleUnsub?.();
+  });
+
   // Sum of day_change_val across enabled candidates. Surfaced as the
   // DAY row in the OptionsPayoff overlay so the operator can reconcile
   // it with the PositionStrip's P∆ chip (= sum of day_change_val
@@ -1712,14 +1739,15 @@
   // commodity options the "spot" anchor is the front-month future), fall
   // back to strategy.underlying, fall back to the server value.
   const liveSpot = $derived.by(() => {
+    void _throttledTick;
     const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
     if (anchor) {
-      const v = Number(getSnapshot(anchor)?.ltp);
+      const v = Number(untrack(() => getSnapshot(anchor)?.ltp));
       if (Number.isFinite(v) && v > 0) return v;
     }
     const und = String(strategy?.underlying || '').toUpperCase();
     if (und) {
-      const v = Number(getSnapshot(und)?.ltp);
+      const v = Number(untrack(() => getSnapshot(und)?.ltp));
       if (Number.isFinite(v) && v > 0) return v;
     }
     return strategy?.spot;
@@ -1731,6 +1759,7 @@
   // flowing — operator: "I see P∆ constant while P is changing." Mirrors
   // the per-row delta pattern PositionStrip uses (BH2).
   const candidatesDayPnl = $derived.by(() => {
+    void _throttledTick;
     let s = 0;
     for (const c of candidatePositions) {
       if (!_isLegEnabled(c)) continue;
@@ -1738,7 +1767,7 @@
       const day = Number(c.day_change_val || 0);
       const pollLtp = Number(c.ltp || 0);
       const qty     = Number(c.qty || 0);
-      const liveLtp = Number(getSnapshot(c.symbol)?.ltp || 0);
+      const liveLtp = Number(untrack(() => getSnapshot(c.symbol)?.ltp || 0));
       // Only apply the delta when both LTPs are positive — a stale 0
       // would post a phantom −100% move.
       const delta = (pollLtp > 0 && liveLtp > 0 && qty !== 0)

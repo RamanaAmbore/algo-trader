@@ -24,7 +24,7 @@
   // page's drafts array, the strategy state, the broker. Every
   // outcome routes through onSubmit(payload).
 
-  import { onMount, untrack, getContext } from 'svelte';
+  import { onMount, onDestroy, untrack, getContext } from 'svelte';
   import { get } from 'svelte/store';
   import OrderDepth from './OrderDepth.svelte';
   import Select from '$lib/Select.svelte';
@@ -1732,6 +1732,15 @@
       .catch(() => { /* silent — picker stays empty */ });
 
     return () => _escCleanup?.();
+  });
+
+  // Final-teardown sweep: cancel any in-flight debounce timers so
+  // their async setTimeout callbacks don't fire $state writes into a
+  // destroyed component. The $effects that own these timers also
+  // clear them on re-run, but they don't run on unmount.
+  onDestroy(() => {
+    if (_marginTimer)  { clearTimeout(_marginTimer);  _marginTimer  = null; }
+    if (_previewTimer) { clearTimeout(_previewTimer); _previewTimer = null; }
   });
 
   // Re-sync when the catalog mutates elsewhere (e.g. operator edits a
