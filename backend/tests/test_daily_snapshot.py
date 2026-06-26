@@ -188,15 +188,19 @@ class TestSegmentClassifier:
 
 class TestRowBuilders:
     _D = date(2026, 5, 8)
+    # 23:35 IST — after both NSE (15:30) and MCX (23:30) close, so row
+    # builders emit full ltp/day_pnl for every exchange (no mid-session
+    # gating). Keeps these unit tests independent of clock time.
+    _NOW_EOD = datetime(2026, 5, 8, 23, 35)
 
     def test_holdings_row_count(self):
         from backend.api.algo.daily_snapshot import _holdings_rows
-        rows = _holdings_rows("ZG0790", self._D, _HOLDINGS)
+        rows = _holdings_rows("ZG0790", self._D, _HOLDINGS, self._NOW_EOD)
         assert len(rows) == 2
 
     def test_holdings_row_shape(self):
         from backend.api.algo.daily_snapshot import _holdings_rows
-        rows = _holdings_rows("ZG0790", self._D, _HOLDINGS)
+        rows = _holdings_rows("ZG0790", self._D, _HOLDINGS, self._NOW_EOD)
         r = rows[0]
         assert r["kind"] == "holdings"
         assert r["segment"] == "equity"
@@ -208,12 +212,37 @@ class TestRowBuilders:
 
     def test_positions_row_shape(self):
         from backend.api.algo.daily_snapshot import _positions_rows
-        rows = _positions_rows("ZG0790", self._D, _POSITIONS)
+        rows = _positions_rows("ZG0790", self._D, _POSITIONS, self._NOW_EOD)
         assert len(rows) == 1
         r = rows[0]
         assert r["kind"] == "positions"
         assert r["segment"] == "derivatives"
         assert r["qty"] == -50
+
+    def test_positions_mid_session_mcx_emits_none(self):
+        """MCX position snapshotted at 15:35 IST (mid-MCX-session) must
+        emit ltp=None + day_pnl=None so the close-override path in
+        positions.py doesn't consume a mid-session value as yesterday's
+        EOD. The 23:35 IST follow-up pass captures the real EOD."""
+        from backend.api.algo.daily_snapshot import _positions_rows
+        mcx_pos = [{
+            "tradingsymbol": "CRUDEOIL26JUL6900PE", "exchange": "MCX",
+            "last_price": 264.5, "close_price": 220.0, "quantity": 1,
+            "average_price": 245.0, "pnl": 19.5,
+        }]
+        now_1535 = datetime(2026, 5, 8, 15, 35)
+        rows = _positions_rows("ZG0790", self._D, mcx_pos, now_1535)
+        assert rows[0]["ltp"] is None
+        assert rows[0]["day_pnl"] is None
+        # qty + avg_cost + total_pnl still captured — they're not session-sensitive
+        assert rows[0]["qty"] == 1
+        assert rows[0]["avg_cost"] == 245.0
+        assert rows[0]["total_pnl"] == 19.5
+        # Same row at 23:35 (after MCX close) gets full EOD values
+        now_2335 = datetime(2026, 5, 8, 23, 35)
+        rows = _positions_rows("ZG0790", self._D, mcx_pos, now_2335)
+        assert rows[0]["ltp"] == 264.5
+        assert rows[0]["day_pnl"] == 44.5  # (264.5 - 220.0) × 1
 
     def test_trades_row_shape(self):
         from backend.api.algo.daily_snapshot import _trades_rows

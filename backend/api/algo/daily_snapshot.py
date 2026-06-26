@@ -16,7 +16,7 @@ import asyncio
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time as _dt_time, timezone
 from typing import Optional
 
 from sqlalchemy import text
@@ -26,6 +26,33 @@ from backend.shared.helpers.date_time_utils import timestamp_indian
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# Exchange session windows (IST) — used to decide whether a snapshot
+# captures EOD or mid-session data. MCX runs 09:00–23:30; NSE/BSE and
+# derivatives run 09:15–15:30. Weekends and holidays are not checked
+# here — the upstream task gates by `is_market_open` already; this
+# helper only answers "if it were a trading day, is this exchange in
+# session at now_ist?". Used by row builders to skip ltp/day_pnl
+# capture for mid-session rows.
+_NSE_OPEN_T  = _dt_time(9, 15)
+_NSE_CLOSE_T = _dt_time(15, 30)
+_MCX_OPEN_T  = _dt_time(9, 0)
+_MCX_CLOSE_T = _dt_time(23, 30)
+
+
+def _is_exchange_open_at(exchange: str, now_ist: datetime) -> bool:
+    """True when `exchange` is in active session at `now_ist` (time-of-day
+    only). MCX session 09:00–23:30 IST; equity exchanges 09:15–15:30 IST.
+    Mid-session captures pollute the close-override path in positions.py
+    (which treats the most recent pre-today daily_book row as yesterday's
+    EOD) so callers emit `ltp=None`, `day_pnl=None` for in-session rows
+    and rely on the 23:35 IST follow-up snapshot to fill MCX correctly."""
+    exch = (exchange or "").upper()
+    t = now_ist.time()
+    if exch == "MCX":
+        return _MCX_OPEN_T <= t <= _MCX_CLOSE_T
+    return _NSE_OPEN_T <= t <= _NSE_CLOSE_T
 
 # Reuse background.py's executor when called from there; create a local one
 # for the admin endpoint path.
@@ -122,13 +149,24 @@ def _fetch_account_data(broker, account: str, target_date: date) -> dict:
 # Row builders
 # ---------------------------------------------------------------------------
 
-def _holdings_rows(account: str, target_date: date, raw: list[dict]) -> list[dict]:
+def _holdings_rows(
+    account: str, target_date: date, raw: list[dict], now_ist: datetime,
+) -> list[dict]:
     rows = []
     for r in raw:
         symbol = r.get("tradingsymbol", "")
         if not symbol:
             continue
         exchange = r.get("exchange", "NSE")
+        mid_session = _is_exchange_open_at(exchange, now_ist)
+        last_price = r.get("last_price")
+        day_change = r.get("day_change")
+        # Holdings are eq-only (no MCX), so this branch matters only on
+        # mid-NSE-session snapshots — e.g. an operator triggering a manual
+        # snapshot via /admin during market hours. Mid-session ltp/day_pnl
+        # would feed downstream P&L summation as a partial-day value
+        # masquerading as EOD, so emit None and let the next EOD pass
+        # (15:35 IST default) fill them.
         rows.append({
             "date":         target_date,
             "account":      account,
@@ -138,15 +176,17 @@ def _holdings_rows(account: str, target_date: date, raw: list[dict]) -> list[dic
             "exchange":     exchange,
             "qty":          int(r.get("opening_quantity") or r.get("quantity") or 0),
             "avg_cost":     float(r["average_price"]) if r.get("average_price") is not None else None,
-            "ltp":          float(r["last_price"])    if r.get("last_price")    is not None else None,
-            "day_pnl":      float(r["day_change"])    if r.get("day_change")    is not None else None,
-            "total_pnl":    float(r["pnl"])           if r.get("pnl")           is not None else None,
+            "ltp":          None if mid_session else (float(last_price) if last_price is not None else None),
+            "day_pnl":      None if mid_session else (float(day_change) if day_change is not None else None),
+            "total_pnl":    float(r["pnl"]) if r.get("pnl") is not None else None,
             "payload_json": json.dumps(r, default=str),
         })
     return rows
 
 
-def _positions_rows(account: str, target_date: date, raw: list[dict]) -> list[dict]:
+def _positions_rows(
+    account: str, target_date: date, raw: list[dict], now_ist: datetime,
+) -> list[dict]:
     rows = []
     for r in raw:
         symbol = r.get("tradingsymbol", "")
@@ -156,13 +196,23 @@ def _positions_rows(account: str, target_date: date, raw: list[dict]) -> list[di
         last_price  = r.get("last_price")
         close_price = r.get("close_price")
         qty         = r.get("quantity") or 0
-        # Kite's net positions don't expose a day-only pnl field, but the
-        # math is unambiguous: (last - close) × qty captures the move
-        # from yesterday's close to now. Same formula broker_apis uses
-        # for live data — keeping the snapshot in sync.
-        day_pnl = None
-        if last_price is not None and close_price is not None:
-            day_pnl = float((last_price - close_price) * qty)
+        mid_session = _is_exchange_open_at(exchange, now_ist)
+        # (last - close) × qty is the move from yesterday's EOD to now.
+        # Captured AT EOD (after the exchange closes) this is the correct
+        # day_pnl. Captured MID-SESSION it's a partial-day value — and
+        # positions.py's close-override consumes daily_book.ltp as
+        # "yesterday's close" the next session, which would silently
+        # displace the real prior-session EOD by hours. Skip both fields
+        # when the row's exchange is mid-session; rely on the 23:35 IST
+        # follow-up pass (added in BE) to capture MCX EOD post-close.
+        if mid_session:
+            day_pnl = None
+            ltp_val = None
+        else:
+            day_pnl = None
+            if last_price is not None and close_price is not None:
+                day_pnl = float((last_price - close_price) * qty)
+            ltp_val = float(last_price) if last_price is not None else None
         rows.append({
             "date":         target_date,
             "account":      account,
@@ -172,7 +222,7 @@ def _positions_rows(account: str, target_date: date, raw: list[dict]) -> list[di
             "exchange":     exchange,
             "qty":          int(qty),
             "avg_cost":     float(r["average_price"]) if r.get("average_price") is not None else None,
-            "ltp":          float(last_price)         if last_price             is not None else None,
+            "ltp":          ltp_val,
             "day_pnl":      day_pnl,
             "total_pnl":    float(r["pnl"])           if r.get("pnl")           is not None else None,
             "payload_json": json.dumps(r, default=str),
@@ -308,8 +358,9 @@ async def snapshot_daily_book(target_date: Optional[date] = None) -> dict:
     date will produce holdings + positions rows but zero trades rows.
     """
 
+    now_ist = timestamp_indian()
     if target_date is None:
-        target_date = timestamp_indian().date()  # type: ignore[attr-defined]
+        target_date = now_ist.date()  # type: ignore[attr-defined]
 
     connections = _get_connections()
     accounts = list(connections.conn.keys())
@@ -332,8 +383,8 @@ async def snapshot_daily_book(target_date: Optional[date] = None) -> dict:
                 _local_executor, _fetch_account_data, broker, account, target_date
             )
 
-            h_rows = _holdings_rows(account,  target_date, raw["holdings"])
-            p_rows = _positions_rows(account, target_date, raw["positions"])
+            h_rows = _holdings_rows(account,  target_date, raw["holdings"],  now_ist)
+            p_rows = _positions_rows(account, target_date, raw["positions"], now_ist)
             t_rows = _trades_rows(account,    target_date, raw["trades"])
             f_rows = _funds_rows(account,     target_date, raw["funds"])
 

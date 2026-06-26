@@ -1262,7 +1262,20 @@ async def _task_strategy_snapshot() -> None:
 async def _task_daily_snapshot() -> None:
     """
     Capture a daily book snapshot once at startup (so a fresh deploy immediately
-    has today's data) and then every day at 15:35 IST (5 min after equity close).
+    has today's data) and then every day at 15:35 IST (5 min after equity close)
+    plus a 23:35 IST follow-up so MCX positions get an EOD capture too.
+
+    Why two passes:
+      - 15:35 IST: NSE/derivatives closed → ltp/day_pnl captured as EOD.
+        MCX still in session (09:00–23:30) → row builders emit ltp=None,
+        day_pnl=None for MCX rows to avoid poisoning the close-override
+        path in positions.py (which reads the most recent pre-today
+        daily_book row as "yesterday's EOD" the next session).
+      - 23:35 IST: MCX closed (23:30 + 5 min buffer). Re-run snapshot;
+        upsert overwrites the placeholder MCX rows from 15:35 with EOD
+        ltp/day_pnl. NSE/derivatives values are recomputed identically
+        (Kite doesn't roll close_price until next-day session open per
+        the CLAUDE.md critical-math-guard) so no regression.
     """
     from backend.api.algo.daily_snapshot import snapshot_daily_book
     from backend.shared.helpers.date_time_utils import (
@@ -1305,20 +1318,31 @@ async def _task_daily_snapshot() -> None:
         except Exception as e:
             logger.error(f"Background: startup daily snapshot failed: {e}")
 
+    # Two scheduled passes per day: 15:35 IST (NSE EOD) and 23:35 IST
+    # (MCX EOD). Pick the next one from the pair on each loop iteration.
+    _SCHEDULED_TIMES = ((15, 35), (23, 35))
+
     while True:
         now = timestamp_indian()
-        # Schedule for 15:35 IST (5 min after NSE equity close at 15:30)
-        snap_time = now.replace(hour=15, minute=35, second=0, microsecond=0)
-        if now >= snap_time:
-            snap_time += timedelta(days=1)
+        candidates = []
+        for hh, mm in _SCHEDULED_TIMES:
+            slot = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if slot <= now:
+                slot += timedelta(days=1)
+            candidates.append(slot)
+        snap_time = min(candidates)
         sleep_s = (snap_time - now).total_seconds()
-        logger.info(f"Background: daily snapshot sleeping {sleep_s/3600:.1f}h until 15:35 IST")
+        logger.info(
+            f"Background: daily snapshot sleeping {sleep_s/3600:.1f}h until "
+            f"{snap_time.strftime('%H:%M')} IST"
+        )
         await asyncio.sleep(sleep_s)
 
         try:
             result = await snapshot_daily_book()
             logger.info(
-                f"Background: daily snapshot complete — "
+                f"Background: daily snapshot complete "
+                f"({snap_time.strftime('%H:%M')} IST) — "
                 f"accounts={result['accounts']} "
                 f"h={result['holdings_rows']} p={result['positions_rows']} t={result['trades_rows']} "
                 f"errors={result['errors']}"
