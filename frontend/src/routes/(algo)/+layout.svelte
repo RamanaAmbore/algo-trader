@@ -1819,6 +1819,21 @@
     .algo-nav-inner { padding: 0 0.25rem; }
     .algo-footer    { padding: 0 0.25rem; }
     .algo-content   { padding-left: 0; padding-right: 0; }
+    /* Mobile relaxation: the page-header action cluster has
+       `white-space: nowrap` + `flex-shrink: 0` for desktop so the
+       buttons stay glued together when there's headroom. On a
+       375px viewport the automation page injects two extra pills
+       (History + Ask AI) and the cluster's max-content width
+       overflows the viewport — `flex-wrap: wrap` on `.page-header`
+       can't help because the cluster itself refuses to shrink.
+       Allow the buttons to wrap and shrink on narrow viewports so
+       the navbar stops being pushed out of frame. */
+    :global(.page-header-actions) {
+      flex-wrap: wrap;
+      white-space: normal;
+      flex-shrink: 1;
+      min-width: 0;
+    }
   }
 
   /* Algo dark-theme overrides for classes shared with public pages */

@@ -1220,6 +1220,16 @@
     grid-template-columns: 1fr;
     gap: 0.25rem;
   }
+  /* Grid children default to `min-width: auto` which resolves to
+     `max-content` — so any wide descendant (a long condition leaf,
+     a JSON params <pre>, an inline ai-meta-why) pushes the 1fr
+     track wider than the viewport. Forcing `min-width: 0` makes
+     the track honour `1fr` and lets inner overflow guards
+     (word-break, overflow-x) actually engage. */
+  .agent-group-grid > * {
+    min-width: 0;
+    max-width: 100%;
+  }
   @media (min-width: 720px) {
     .agent-group-grid {
       grid-template-columns: repeat(2, 1fr);
@@ -1399,7 +1409,7 @@
     letter-spacing: 0.06em;
     flex-shrink: 0;
   }
-  .ai-meta-why { color: var(--algo-slate); flex: 1; min-width: 12rem; }
+  .ai-meta-why { color: var(--algo-slate); flex: 1 1 8rem; min-width: 0; }
   .ai-meta-prompt { font-size: 0.6rem; color: var(--algo-muted); }
   .ai-meta-prompt summary { cursor: pointer; color: #a78bfa; }
   .ai-meta-prompt summary:hover { color: #c4b5fd; }
@@ -1483,6 +1493,9 @@
     border-radius: 3px;
     margin: 0.15rem 0;
     display: inline-block;
+    max-width: 100%;
+    word-break: break-word;
+    overflow-wrap: anywhere;
   }
   .preview-chip {
     font-size: 0.55rem;
@@ -1543,6 +1556,11 @@
     border-radius: 2px;
     margin-top: 0.2rem;
     overflow-x: auto;
+    max-width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 
   /* ── Tier + topic + digest strip ───────────────────────────────────────
