@@ -1504,12 +1504,21 @@
   /* ── Content ─────────────────────────────────────────────────────────────── */
   .algo-content {
     flex: 1;
-    /* Top padding = navbar height (3rem = 48px) + page-header strip
-       (1.8rem). Bottom padding = footer height (1.6rem) + safety
-       (0.2rem). Both navbar and footer are now fixed-position so
-       content needs explicit clearance. Horizontal padding 0.5rem
-       aligns the content edge with the navbar/footer inner padding. */
-    padding: calc(3rem + 1.8rem) 0.5rem calc(1.6rem + 0.4rem);
+    /* Top padding = navbar (3rem = 48px) + page-header strip
+       (~2.3rem: 2rem min-height + 0.3rem padding + 1px border).
+       The :has(.ps-strip) override below adds the strip's 1.5rem.
+       Bottom padding = footer (1.6rem) + safety (0.4rem).
+
+       Both navbar and footer are now fixed-position so content
+       needs explicit clearance. Horizontal padding 0.5rem aligns
+       the content edge with the navbar/footer inner padding.
+
+       Operator: "page heading is overlapping content in all the
+       pages. pinned text is partially hidden. order status cards
+       are partially hidden." — prior 1.8rem under-counted the
+       page-header height by ~0.5rem and didn't include the
+       ps-strip at all. */
+    padding: calc(3rem + 2.3rem) 0.5rem calc(1.6rem + 0.4rem);
     color: var(--algo-slate);
     /* flex column so descendant containers (e.g. orders page's
        `.oc-page-wrap`) can use `flex: 1` to fill the actual
@@ -1645,6 +1654,14 @@
      .algo-content now that the mode banners are gone. */
   :global(.algo-viewport:has(.ps-strip) .page-header) {
     top: calc(3rem + 1.5rem);  /* 72px — flush with ps-strip's sticky bottom */
+  }
+  /* When ps-strip is present, content also needs to clear it on top
+     of clearing the page-header. Without this override the first
+     card / Pinned grid / order status row slid under page-header.
+     Slice fix for the operator's "pinned text is partially hidden /
+     order status cards are partially hidden" report. */
+  :global(.algo-viewport:has(.ps-strip)) .algo-content {
+    padding-top: calc(3rem + 1.5rem + 2.3rem);  /* 108.8px */
   }
   /* Page-header timestamp — leaves only a hair before the bells (operator
      feedback: gap was pushing the agent icon to a second line on mobile)
