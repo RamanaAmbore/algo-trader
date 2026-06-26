@@ -22,6 +22,7 @@
     fetchWatchlists, fetchWatchlist, createWatchlist,
     deleteWatchlist, renameWatchlist, addWatchlistItem, removeWatchlistItem,
     fetchPositions, fetchHoldings, fetchAccounts, batchQuote,
+    fetchWatchlistQuotes,
   } from '$lib/api';
   import { visibleInterval, marketAwareInterval, connStatus, authStore, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
@@ -51,7 +52,7 @@
   import { bookChanged } from '$lib/data/bookChanged';
   import {
     positionsStore, holdingsStore, fundsStore,
-    moversStore, activeListsStore, watchQuotesStore, sparklinesStore,
+    moversStore, activeListsStore, sparklinesStore, publishWatchQuotes,
   } from '$lib/data/marketDataStores.svelte.js';
   import { resolveUnderlying, INDEX_LTP_KEY, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
   import CollapseButton from '$lib/CollapseButton.svelte';
@@ -114,7 +115,10 @@
   // reactive and pre-populated from localStorage on module init, so the
   // grids paint with cached data before any network fetch completes.
   const activeLists = $derived(activeListsStore.value ?? []);
-  const watchQuotes = $derived(watchQuotesStore.value ?? /** @type {Record<number, any>} */ ({}));
+  // BH4: watchQuotesStore is deleted. Per-item LTPs land in symbolStore
+  // (via SSE + the inline loadQuotes() fetcher below + every other
+  // market-data publisher). buildUnified reads getSnapshot(sym) directly;
+  // no derived store mirror is needed.
   // "Target" list for add / rename / delete operations. Defaults to
   // the first selected list; updated when the operator clicks a tab
   // (set focus AND toggle inclusion in one click).
@@ -2092,14 +2096,14 @@
   }
 
   // loadActive — fetches watchlist items for the current activeIds set
-  // and then fetches quotes. Delegates to activeListsStore (slice AB).
-  // When no lists are selected, empties both stores immediately via set().
+  // and then triggers a per-list quote fetch that publishes directly
+  // into symbolStore (BH4 — no intermediary watchQuotesStore). When
+  // no lists are selected, empties activeListsStore immediately.
   async function loadActive() {
     error = '';
     const ids = [...activeIds];
     if (ids.length === 0) {
       activeListsStore.set([]);
-      watchQuotesStore.set({});
       return;
     }
     try {
@@ -2108,26 +2112,29 @@
     } catch (e) { error = e.message; }
   }
 
-  // loadQuotes — fetches per-item LTP map for the active lists.
-  // Delegates to watchQuotesStore (slice AB). Merge-not-replace
-  // semantics live inside the store's fetcher so partial fetches
-  // never blank Pinned-grid LTPs. The 700ms thunder-herd gate
-  // is kept here so the store dedup handles the skip cleanly.
+  // loadQuotes — direct per-list /watchlist/{id}/quotes fetch that
+  // publishes the response into symbolStore. The 700ms thunder-herd
+  // gate skips when loadPulse just ran (positions/holdings already
+  // refreshed the same syms). Slice BH4 removed the watchQuotesStore
+  // wrapper — its only consumer was buildUnified's wq[it.id] lookup,
+  // which is gone now that symbolStore is the single market-data sink.
   async function loadQuotes() {
     const ids = [...activeIds];
-    if (ids.length === 0) {
-      watchQuotesStore.set({});
-      return;
-    }
+    if (ids.length === 0) return;
     // De-thundering-herd: skip this tick if loadPulse just ran.
     if (Date.now() - _lastPulseAt < 700) return;
     try {
-      await watchQuotesStore.load(ids);
-      // Surface the store's last-fetch epoch as the toolbar timestamp so
-      // operators see when the quotes last refreshed. ISO string for
-      // consistency with the prior per-list `r.refreshed_at` format.
-      const ts = watchQuotesStore.lastFetch;
-      if (ts) refreshedAt = new Date(ts).toISOString();
+      const results = await Promise.all(
+        ids.map(id => fetchWatchlistQuotes(id).catch(() => null))
+      );
+      /** @type {Record<number, any>} */
+      const map = {};
+      for (const r of results) {
+        if (!r) continue;
+        for (const q of (r.items || [])) map[q.item_id] = q;
+      }
+      publishWatchQuotes(map);
+      refreshedAt = new Date().toISOString();
       if (quoteFailStreak > 0) {
         quoteFailStreak = 0;
         if (/Quote refresh/.test(error)) error = '';
@@ -2537,7 +2544,7 @@
     // that pre-filled the picker; with the new "All accounts" default
     // it dropped every row when no narrowing was active.
     return buildUnified(
-      activeLists, watchQuotes, scopedPositions, scopedHoldings, pulseQuotes, getInstrument,
+      activeLists, scopedPositions, scopedHoldings, pulseQuotes, getInstrument,
       showPositions, showHoldings,
       movers, showMovers,
       showWatchlist,
@@ -2610,7 +2617,7 @@
   // contiguous blocks.
   const MAJOR_ORDER = { pinned: 0, watchlist: 1, positions: 2, holdings: 3, movers: 4 };
 
-  function buildUnified(actLists, wq, pos, hold, pq, getInst, includePos, includeHold, moverRows, includeMovers, includeWatch = true) {
+  function buildUnified(actLists, pos, hold, pq, getInst, includePos, includeHold, moverRows, includeMovers, includeWatch = true) {
     const uq = pq?.underlyings || {};
     const cq = pq?.contracts   || {};
     const byKey = /** @type {Record<string, any>} */ ({});
@@ -2657,12 +2664,17 @@
     for (const list of (actLists || [])) {
       const major = list?.is_pinned ? 'pinned' : 'watchlist';
       for (const it of (list?.items || [])) {
-        const q = wq[it.id];
-        const sym = String(q?.quote_symbol || it.tradingsymbol).toUpperCase();
+        // BH4: alias resolution dropped. Post-_expand_root_items_to_futures
+        // the backend already ships actual broker tradingsymbols (GOLD →
+        // GOLD25APRFUT, NIFTY → NIFTY 50). Market data is keyed by
+        // tradingsymbol everywhere downstream — no second-level alias
+        // lookup needed. The legacy wq[it.id].quote_symbol path is gone
+        // along with watchQuotesStore.
+        const sym = String(it.tradingsymbol || '').toUpperCase();
+        if (!sym) continue;
         const row = get(sym, major);
         row.exchange      = row.exchange || it.exchange;
         row.tradingsymbol = sym;
-        row.alias         = (q?.quote_symbol && q.quote_symbol !== it.tradingsymbol) ? it.tradingsymbol : null;
         // Operator-supplied display name on the WatchlistItem (e.g.
         // "Crude oil" labelling CRUDEOIL26JUNFUT). The symbol cell
         // shows this when present; tradingsymbol moves to the tooltip.
@@ -2674,28 +2686,23 @@
         row.src.w = true;
         // Back-compat tag for the legacy isPinnedIndexRow check.
         if (major === 'pinned') row._fromPinnedList = true;
-        // BH2: fall back to symbolStore when the per-item watchquote
-        // hasn't loaded yet OR is stale. symbolStore.localStorage cache
-        // is populated by every market-data fetcher (positions,
-        // holdings, watchQuotes, movers) + SSE ticks, so a cold mount
-        // hits closing values for any sym seen in the prior session
-        // instead of flashing LTP=0 until the watchQuotes round-trip
-        // completes. Closes the operator's "pinned shows zeros while
-        // positions show values" asymmetry.
+        // All market fields source from symbolStore — populated by
+        // every fetcher (positions/holdings/movers/inline-watchQuotes-
+        // fetch) + SSE ticks. TTL.week localStorage carries closing
+        // values across off-hours; live ticks overwrite on session
+        // open. Pinned + watchlist + positions + holdings + movers
+        // grids now share the same per-symbol freshness — no more
+        // "pinned shows zeros while positions show values" asymmetry.
         const snap = getSnapshot(sym);
-        row.ltp    = q?.ltp    ?? snap?.ltp    ?? row.ltp    ?? null;
-        row.bid    = q?.bid    ?? snap?.bid    ?? row.bid    ?? null;
-        row.ask    = q?.ask    ?? snap?.ask    ?? row.ask    ?? null;
-        // Prev Close + Open need to flow through here too — without
-        // them, indices in the Markets/Default watchlists (NIFTY 50,
-        // BANKNIFTY etc.) render with empty Prev Close cells even
-        // though the watch-quote payload carries the value.
-        row.close  = q?.close  ?? snap?.close  ?? row.close  ?? null;
-        row.open   = q?.open   ?? snap?.open   ?? row.open   ?? null;
-        row.change = q?.change ?? snap?.day_change     ?? row.change     ?? null;
-        row.change_pct = q?.change_pct ?? snap?.day_change_pct ?? row.change_pct ?? null;
-        row.volume = q?.volume ?? snap?.volume ?? row.volume ?? null;
-        row.oi     = q?.oi     ?? snap?.oi     ?? row.oi     ?? null;
+        row.ltp        = snap?.ltp            ?? row.ltp        ?? null;
+        row.bid        = snap?.bid            ?? row.bid        ?? null;
+        row.ask        = snap?.ask            ?? row.ask        ?? null;
+        row.close      = snap?.close          ?? row.close      ?? null;
+        row.open       = snap?.open           ?? row.open       ?? null;
+        row.change     = snap?.day_change     ?? row.change     ?? null;
+        row.change_pct = snap?.day_change_pct ?? row.change_pct ?? null;
+        row.volume     = snap?.volume         ?? row.volume     ?? null;
+        row.oi         = snap?.oi             ?? row.oi         ?? null;
         fill(row, sym);
       }
     }

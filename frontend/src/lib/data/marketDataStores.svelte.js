@@ -28,7 +28,7 @@
 import { createDataStore, TTL } from './dataStore.svelte.js';
 import {
   fetchPositions, fetchHoldings, fetchFunds,
-  fetchWatchlist, fetchWatchlistQuotes,
+  fetchWatchlist,
   batchQuote, fetchSparklines,
 } from '$lib/api';
 import {
@@ -106,6 +106,19 @@ function _publishHoldingsRows(rows) {
     });
   }
   mergeSymbolBatch(batch);
+}
+
+/**
+ * Publish per-item watchlist quotes (from /watchlist/{id}/quotes) into
+ * symbolStore. Exported as `publishWatchQuotes` so MarketPulse can call
+ * it directly after the BH4 watchQuotesStore deletion — the wrapper
+ * store is gone, but the publish step is still useful when the inline
+ * loadQuotes lands.
+ *
+ * @param {Record<number, any>} byItemId
+ */
+export function publishWatchQuotes(byItemId) {
+  _publishWatchQuotes(byItemId);
 }
 
 /** @param {Record<number, any>} byItemId */
@@ -315,82 +328,16 @@ export const activeListsStore = createDataStore({
   parse:   (r) => r ?? [],
 });
 
-// ── Watch quotes ──────────────────────────────────────────────────────────
-
-/**
- * Per-item quote map (itemId → quote) for all active watchlist items.
- * Caller passes the ids array as load(ids). Deduped by JSON.stringify.
- *
- * Merge-not-replace semantic (slice X fix) lives inside the fetcher:
- * on each call we merge fresh quotes into the current stored value so
- * a partial fetch (one list returning empty) never blanks LTPs that
- * were just fetched for other lists. Active-item pruning keeps the
- * cache bounded as lists change.
- *
- * `activeLists` context is not available inside this module — the caller
- * (MarketPulse) must pass the ids; the fetcher queries each list for its
- * current quote state and prunes by the union of item ids returned.
- */
-export const watchQuotesStore = createDataStore({
-  key:     'md.watchQuotes',
-  // TTL.week so closing values for pinned + watchlist symbols survive
-  // overnight, weekends, and holiday clusters. The live SSE stream
-  // overwrites stale entries the moment market reopens; until then
-  // the operator sees Friday's close instead of LTP=0 (operator: "all
-  // stats should show closing values after the market is closed until
-  // it reopens"). Matches positions/holdings instant-paint behaviour.
-  ttl:     TTL.week,
-  /** @param {number[] | undefined} ids */
-  fetcher: async (ids) => {
-    if (!ids || ids.length === 0) return {};
-    const results = await Promise.all(
-      ids.map(id => fetchWatchlistQuotes(id).catch(() => null))
-    );
-    const map = /** @type {Record<number, any>} */ ({});
-    for (const r of results) {
-      if (!r) continue;
-      for (const q of (r.items || [])) map[q.item_id] = q;
-    }
-    // Determine the set of item_ids still present across all returned
-    // lists so we can prune stale entries.
-    const activeItemIds = new Set();
-    for (const r of results) {
-      if (!r) continue;
-      for (const q of (r.items || [])) activeItemIds.add(q.item_id);
-    }
-    // Merge into the current stored value rather than replacing. This
-    // preserves LTPs from the previous poll when a list returns empty
-    // (broker hiccup / slow response) — the Pinned grid never flickers
-    // to LTP=0. Prune item ids no longer in any active list to keep
-    // the cache bounded.
-    const prev = watchQuotesStore.value ?? {};
-    const merged = { ...prev, ...map };
-    for (const id of Object.keys(merged)) {
-      if (!activeItemIds.has(Number(id)) && !activeItemIds.has(id)) {
-        delete merged[id];
-      }
-    }
-    // BH1 dual-write — publish only the freshly-fetched quotes (not the
-    // merged-with-prev map) so we don't re-stamp stale entries with a
-    // current timestamp. mergeSymbolUpdate's ts-arbitration would still
-    // reject stale fields, but skipping them is cheaper.
-    _publishWatchQuotes(map);
-    return merged;
-  },
-  /** @param {any} r */
-  parse: (r) => r ?? {},
-  // Shallow-equal on object keys: skip reactive writes when the merged
-  // map has the same key count and all existing values are reference-equal.
-  equals: (a, b) => {
-    if (a === b) return true;
-    if (!a || !b) return false;
-    const ak = Object.keys(a);
-    const bk = Object.keys(b);
-    if (ak.length !== bk.length) return false;
-    for (const k of ak) if (a[k] !== b[k]) return false;
-    return true;
-  },
-});
+// ── Watch quotes (BH4: store deleted) ─────────────────────────────────────
+//
+// The watchQuotesStore wrapper around fetchWatchlistQuotes(id) was deleted
+// in BH4 — its only consumer was MarketPulse buildUnified's wq[it.id]
+// lookup, which had been reduced (BH2) to a fallback chain after symbolStore
+// and is now gone entirely. Per-list LTP fetches are still useful (they
+// seed symbolStore with watchlist-only symbols that don't appear in
+// positions/holdings/movers/SSE), but they happen inline in MarketPulse
+// via `loadQuotes` → `fetchWatchlistQuotes` → `publishWatchQuotes`. The
+// localStorage cache rolls forward to symbolStore's TTL.week blob.
 
 // ── Sparklines ────────────────────────────────────────────────────────────
 

@@ -24,7 +24,7 @@
 import { setPersistenceMode } from '$lib/api';
 import {
   positionsStore, holdingsStore, fundsStore,
-  watchQuotesStore, activeListsStore, moversStore, sparklinesStore,
+  activeListsStore, moversStore, sparklinesStore,
 } from './marketDataStores.svelte.js';
 import { softReset as symbolSoftReset, hardReset as symbolHardReset } from './symbolStore.svelte.js';
 import { restartQuoteStream } from './quoteStream.js';
@@ -40,7 +40,6 @@ import { restartQuoteStream } from './quoteStream.js';
 const _STORES = [
   positionsStore,
   holdingsStore,
-  watchQuotesStore,
   moversStore,
   sparklinesStore,
   fundsStore,
