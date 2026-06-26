@@ -1,26 +1,38 @@
 /**
- * symbolStore — symbol-centric reactive store (Slice BH1, dual-write phase).
+ * symbolStore — symbol-centric reactive store (BH1–BH5 complete).
  *
- * Goal: collapse the per-endpoint fan-out (positionsStore.last_price +
- * watchQuotesStore[item_id].ltp + liveLtp[sym] + moversStore[].last_price)
- * into a single Map<tradingsymbol, MarketSnapshot> so every grid + card
- * reads the same LTP / day_change / volume / OI for a given symbol.
+ * The single source of truth for per-symbol market state across the
+ * whole frontend. Every grid + card reads from `getSnapshot(sym)` so
+ * pinned, watchlist, positions, holdings, and movers all see the same
+ * LTP / day_change / volume / OI for a given symbol — fixing the
+ * pinned-shows-zeros asymmetry that motivated the BH migration.
  *
- * BH1 status — shadow-population only. Existing stores still serve UI;
- * symbolStore is dual-written by fetchers + SSE so its content can be
- * verified before any consumer is migrated to read from it (BH2) and
- * before the old stores' market fields are deleted (BH3).
+ * Status:
+ *   BH1 — shadow dual-write (this file shipped)
+ *   BH2 — PositionStrip + MarketPulse pinned read from symbolStore
+ *   BH3 — liveLtp writable deleted; SSE writes only here
+ *   BH4 — watchQuotesStore deleted; inline /quotes fetch publishes here
+ *   BH5 — pulseQuotes contracts published here; mover branch reads here
+ *
+ * Writers (publishers in marketDataStores.svelte.js):
+ *   - publishPositionsRows  ← /api/positions  (poll, ltp_ts=0)
+ *   - publishHoldingsRows   ← /api/holdings   (poll, ltp_ts=0)
+ *   - publishWatchQuotes    ← /api/watchlist/{id}/quotes (poll, ltp_ts=0)
+ *   - publishMoverRows      ← batchQuote(mover universe) (poll, ltp_ts=0)
+ *   - publishPulseQuotes    ← batchQuote(in-view) (poll, ltp_ts=0)
+ *   - quoteStream.js        ← SSE ticks (ltp_ts=Date.now())
  *
  * Per-field timestamp arbitration
  * ────────────────────────────────
- * SSE ticks (real-time) carry `ltp` only and ALWAYS win for the ltp field
- * regardless of poll lateness; polls carry the whole snapshot but the
- * broker's quote-at-fetch-start is older than an SSE tick that landed
- * 500ms ago. We track two stamps per symbol: `ltp_ts` and `snapshot_ts`.
- * Merges accept new `ltp` only if incoming `ltp_ts > stored.ltp_ts`;
- * snapshot fields only if `snapshot_ts > stored.snapshot_ts`. This kills
- * the SSE-tick-then-late-poll-clobber race that exists today across
- * liveLtp + watchQuotes + positionsStore.
+ * SSE ticks (real-time) carry `ltp` only and ALWAYS win for the ltp field;
+ * polls carry the whole snapshot but the broker's quote-at-fetch-start is
+ * always older than the most recent SSE tick. Two stamps per symbol:
+ * `ltp_ts` and `snapshot_ts`. Merges accept new `ltp` only if incoming
+ * `ltp_ts >= stored.ltp_ts`, non-LTP fields only if `snapshot_ts >=
+ * stored.snapshot_ts`. Polls publish with `ltp_ts=0` so they seed when
+ * no SSE has stamped the LTP yet but defer to live ticks otherwise. This
+ * kills the SSE-tick-then-late-poll-clobber race the multi-source layout
+ * used to have.
  *
  * Persistence
  * ───────────

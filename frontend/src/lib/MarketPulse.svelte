@@ -52,7 +52,7 @@
   import { bookChanged } from '$lib/data/bookChanged';
   import {
     positionsStore, holdingsStore, fundsStore,
-    moversStore, activeListsStore, sparklinesStore, publishWatchQuotes,
+    moversStore, activeListsStore, sparklinesStore, publishWatchQuotes, publishPulseQuotes,
   } from '$lib/data/marketDataStores.svelte.js';
   import { resolveUnderlying, INDEX_LTP_KEY, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
   import CollapseButton from '$lib/CollapseButton.svelte';
@@ -2439,6 +2439,11 @@
 
       if (allKeys.size) {
         const items = await batchQuoteChunked([...allKeys]);
+        // BH5: publish the broker-quote snapshot for every symbol in
+        // view into symbolStore. This is the last non-symbolStore data
+        // sink — after this, every market-data poll on this page feeds
+        // the same per-symbol cache.
+        publishPulseQuotes(items);
         const cMap = {};
         for (const q of items) {
           cMap[`${q.exchange}:${q.tradingsymbol}`] = q;
@@ -2957,13 +2962,23 @@
     for (const m of (moverRows || [])) {
       const sym = String(m.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
+      // BH5: market fields (ltp / change_pct / close) sourced from
+      // symbolStore where available — keeps the mover panel live with
+      // SSE ticks rather than frozen at the last moversStore poll
+      // (every 30s). Sticky / direction / group tags still come from
+      // the moversStore row (they're index-membership metadata, not
+      // market data).
+      const snap = getSnapshot(sym);
+      const liveLtp        = snap?.ltp            ?? m.last_price ?? null;
+      const liveChangePct  = snap?.day_change_pct ?? m.change_pct ?? null;
+      const liveClose      = snap?.close          ?? m.previous_close ?? null;
       if (existingSymbols.has(sym)) {
         // Badge every existing row for this symbol (across majors).
         for (const row of Object.values(byKey)) {
           if (row.tradingsymbol === sym) {
             row.src.m = true;
             row._mover_sticky    = m.sticky ?? row._mover_sticky    ?? false;
-            row._mover_change_pct = m.change_pct ?? row._mover_change_pct ?? null;
+            row._mover_change_pct = liveChangePct ?? row._mover_change_pct ?? null;
           }
         }
         continue;
@@ -2973,19 +2988,19 @@
       row.src.m = true;
       row.exchange      = row.exchange || m.exchange || 'NSE';
       row.tradingsymbol = sym;
-      if (row.ltp == null && m.last_price != null)    row.ltp        = m.last_price;
-      if (row.change_pct == null && m.change_pct != null) row.change_pct = m.change_pct;
+      if (row.ltp == null && liveLtp != null)             row.ltp        = liveLtp;
+      if (row.change_pct == null && liveChangePct != null) row.change_pct = liveChangePct;
       // Wire previous_close → row.close so the Prev Close column
       // renders on mover rows (including futures showing up as
       // pure movers). Without this, futures and stocks in the
       // movers buckets showed a blank Prev Close cell — only
       // watchlist + positions rows had close hooked up.
-      if (row.close == null && m.previous_close != null)
-        row.close = m.previous_close;
-      if (m.previous_close != null && row.change == null && row.ltp != null)
-        row.change = row.ltp - m.previous_close;
+      if (row.close == null && liveClose != null)
+        row.close = liveClose;
+      if (liveClose != null && row.change == null && row.ltp != null)
+        row.change = row.ltp - liveClose;
       row._mover_sticky    = m.sticky ?? false;
-      row._mover_change_pct = m.change_pct ?? null;
+      row._mover_change_pct = liveChangePct ?? null;
       // Sub-group tag carried over from loadMovers() — drives the
       // identifiable underlying / midcap / smallcap sections in the grid.
       if (m._moverGroup)     row._moverGroup     = m._moverGroup;

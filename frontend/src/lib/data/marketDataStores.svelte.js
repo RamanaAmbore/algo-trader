@@ -1,28 +1,27 @@
 /**
  * marketDataStores — module-level singletons for the most-used
- * data classes (positions / holdings / funds / movers /
- * activeLists / watchQuotes / sparklines). Every consumer imports
- * the same instance, so a load() triggered in PositionStrip is
- * immediately visible in the navbar, dashboard, etc. without any
- * parent-to-child prop threading.
+ * data classes (positions / holdings / funds / movers / activeLists /
+ * sparklines). Every consumer imports the same instance, so a load()
+ * triggered in PositionStrip is immediately visible in the navbar,
+ * dashboard, etc. without any parent-to-child prop threading.
  *
- * Migration status:
- *   PositionStrip — migrated (slice AA)
- *   MarketPulse   — migrated (slice AB)
- *   /admin/dashboard — pending
- *   /orders          — pending
+ * BH1–BH5: every fetcher dual-writes to symbolStore via the
+ *   publish*Rows / publishWatchQuotes / publishPulseQuotes helpers
+ *   below. symbolStore is the single source of truth for per-symbol
+ *   market data (ltp / close / day_change / volume / oi / bid / ask);
+ *   the section stores keep only what's section-specific (qty / avg /
+ *   account / pnl / etc.). watchQuotesStore was deleted in BH4 — the
+ *   /watchlist/{id}/quotes fetch lives inline in MarketPulse.loadQuotes
+ *   and publishes here directly.
  *
  * The `parse` selectors mirror what each ad-hoc caller was doing inline:
  *   positions/holdings — extract `.rows`, default to []
  *   funds              — extract `.rows`, strip the TOTAL aggregate row
  *                        so callers can sum across accounts without
- *                        double-counting. The TOTAL row is still used
- *                        on the /performance page — it reads raw API
- *                        directly and is not affected here.
+ *                        double-counting.
  *
- * Parameterised stores (activeListsStore, watchQuotesStore,
- * sparklinesStore) accept args via load(args) — see dataStore.svelte.js
- * for the dedup-by-args contract.
+ * Parameterised stores (activeListsStore, sparklinesStore) accept args
+ * via load(args) — see dataStore.svelte.js for the dedup-by-args contract.
  */
 
 import { createDataStore, TTL } from './dataStore.svelte.js';
@@ -144,6 +143,48 @@ function _publishWatchQuotes(byItemId) {
         ask:            q.ask,
         exchange:       q.exchange,
       },
+      ts: { ltp_ts: 0, snapshot_ts: ts },
+    });
+  }
+  mergeSymbolBatch(batch);
+}
+
+/**
+ * Publish the batchQuote(...) items from MarketPulse's loadPulse into
+ * symbolStore. These are the broker-quote snapshots for every symbol
+ * in view (positions + holdings + watchlist underlyings + contracts);
+ * after BH5 they're the authoritative per-poll source for ltp/close/
+ * day_change/volume/oi just like watchQuotes and positions/holdings
+ * already were.
+ *
+ * @param {Array<any>} items
+ */
+export function publishPulseQuotes(items) {
+  if (!Array.isArray(items) || items.length === 0) return;
+  const ts = Date.now();
+  /** @type {Array<{sym: string, fields: any, ts: {ltp_ts: number, snapshot_ts: number}}>} */
+  const batch = [];
+  for (const q of items) {
+    const sym = String(q?.tradingsymbol || '').toUpperCase();
+    if (!sym) continue;
+    batch.push({
+      sym,
+      fields: {
+        ltp:            q.ltp,
+        close:          q.close,
+        open:           q.open,
+        high:           q.high,
+        low:            q.low,
+        day_change:     q.change,
+        day_change_pct: q.change_pct,
+        volume:         q.volume,
+        oi:             q.oi,
+        bid:            q.bid,
+        ask:            q.ask,
+        exchange:       q.exchange,
+      },
+      // BH1 audit-CRITICAL pattern: poll ltp_ts=0 so SSE always wins
+      // for LTP; poll snapshot_ts=now wins for non-LTP fields.
       ts: { ltp_ts: 0, snapshot_ts: ts },
     });
   }
