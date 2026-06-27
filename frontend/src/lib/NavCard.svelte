@@ -206,9 +206,15 @@
 
 <style>
   /* ── Card shell ─────────────────────────────────────────────────── */
+  /* Operator: "flip card decoration between first and second cards
+     in performance page." NavCard (primary content — the partner's
+     NAV slice) swapped to the WARMER prominent treatment that was
+     on .perf-strategy. Strategy thesis below it gets the softer
+     palette in return so the visual hierarchy now reads NAV first,
+     context-blurb second. */
   .nav-card {
-    background: #faf7f0;
-    border: 1px solid #e0d9cc;
+    background: #f0ead8;
+    border: 1px solid #d4c89f;
     border-radius: 6px;
     padding: 0.9rem 1.1rem 0.75rem;
     margin-bottom: 1rem;

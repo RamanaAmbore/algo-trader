@@ -287,7 +287,11 @@
 
 <style>
   /* FAQ list */
-  .faq-list { border-top: 1px solid #ddd8ce; }
+  /* .faq-list border-top retired — operator: "the card has line
+     break in the beginning which needs to be removed." Each
+     .faq-item already carries its own border-bottom, so dividers
+     between items still render; the first item just no longer has
+     a stray line above it. */
   .faq-item { border-bottom: 1px solid #ddd8ce; }
   .faq-question {
     width: 100%;

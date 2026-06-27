@@ -1017,7 +1017,7 @@
        already know the strategy, but seeing it consistently above
        the grid reads as "this is what we do" not "this is internal
        ops". Hidden on the algo dashboard (compactHeader=true). -->
-  <div class="perf-strategy pub-callout">
+  <div class="perf-strategy">
     <span class="perf-strategy-lbl">Strategy:</span>
     <span class="perf-strategy-val">Long stocks + algo-executed derivatives overlay</span>
     <span class="perf-strategy-sep" aria-hidden="true">·</span>
@@ -1247,14 +1247,21 @@
     margin-bottom: 0.25rem;
   }
 
-  /* Strategy thesis — chrome (bg + border + radius + padding +
-     color) now comes from the shared global `.pub-callout` class in
-     app.css. Only the page-local metrics (margin, font-size,
-     line-height) stay scoped. */
+  /* Strategy thesis — operator: "flip card decoration between first
+     and second cards in performance page." Strategy traded its
+     prominent .pub-callout (warm #f0ead8 + #d4c89f) for the softer
+     palette that NavCard used to carry (#faf7f0 + #e0d9cc). NavCard
+     now carries the prominent treatment so the partner's NAV slice
+     reads as the primary card. */
   .perf-strategy {
+    background: #faf7f0;
+    border: 1px solid #e0d9cc;
+    border-radius: 0.3rem;
+    padding: 0.45rem 0.75rem;
     margin-bottom: 0.6rem;
     font-size: 0.75rem;
     line-height: 1.4;
+    color: #1e3050;
   }
   .perf-strategy-lbl {
     font-weight: 700;
