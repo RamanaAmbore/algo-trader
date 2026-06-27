@@ -57,11 +57,7 @@
     publishWatchQuotes, publishPulseQuotes, publishPositionsRows, publishHoldingsRows,
   } from '$lib/data/marketDataStores.svelte.js';
   import { resolveUnderlying, INDEX_LTP_KEY, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
-  import CollapseButton from '$lib/CollapseButton.svelte';
-  import FullscreenButton from '$lib/FullscreenButton.svelte';
-  import GridSearchButton from '$lib/GridSearchButton.svelte';
-  import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
-  import RefreshButton from '$lib/RefreshButton.svelte';
+  import CardControls from '$lib/CardControls.svelte';
   import { createPerformanceSocket } from '$lib/ws';
   import { lastRefreshAt } from '$lib/stores';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
@@ -4705,13 +4701,15 @@
               </svg>
             </button>
             <span class="mp-bucket-head-spacer"></span>
-            {#if _fsPinWatch}
-              <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="pulse" />
-            {/if}
-            <GridSearchButton bind:filter={_filterPinWatch} label="Pinned/Watchlist" />
-            <CollapseButton bind:isCollapsed={_colPinWatch} cardId="pulse-pinwatch" label="Pinned/Watchlist" />
-            <DefaultSizeButton bind:isFullscreen={_fsPinWatch} bind:isCollapsed={_colPinWatch} label="Pinned/Watchlist" />
-            <FullscreenButton bind:isFullscreen={_fsPinWatch} label="Pinned/Watchlist" />
+            <CardControls
+              bind:isCollapsed={_colPinWatch}
+              bind:isFullscreen={_fsPinWatch}
+              bind:filter={_filterPinWatch}
+              cardId="pulse-pinwatch"
+              label="Pinned/Watchlist"
+              onRefresh={refreshAllNow}
+              refreshLoading={_refreshing}
+            />
           </div>
           <!-- Sub-tab strip retired — each user watchlist now lives
                as its own top-tab next to Pinned. -->
@@ -4743,13 +4741,15 @@
                 />
               </div>
               <span class="mp-bucket-head-spacer"></span>
-              {#if _fsWinners}
-                <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="winners" />
-              {/if}
-              <GridSearchButton bind:filter={_filterWinners} label="Winners" />
-              <CollapseButton bind:isCollapsed={_colWinners} cardId="pulse-winners" label="Winners" />
-              <DefaultSizeButton bind:isFullscreen={_fsWinners} bind:isCollapsed={_colWinners} label="Winners" />
-              <FullscreenButton bind:isFullscreen={_fsWinners} label="Winners" />
+              <CardControls
+                bind:isCollapsed={_colWinners}
+                bind:isFullscreen={_fsWinners}
+                bind:filter={_filterWinners}
+                cardId="pulse-winners"
+                label="Winners"
+                onRefresh={refreshAllNow}
+                refreshLoading={_refreshing}
+              />
             </div>
             <div bind:this={gridWinEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
           </section>
@@ -4770,13 +4770,15 @@
                 />
               </div>
               <span class="mp-bucket-head-spacer"></span>
-              {#if _fsLosers}
-                <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="losers" />
-              {/if}
-              <GridSearchButton bind:filter={_filterLosers} label="Losers" />
-              <CollapseButton bind:isCollapsed={_colLosers} cardId="pulse-losers" label="Losers" />
-              <DefaultSizeButton bind:isFullscreen={_fsLosers} bind:isCollapsed={_colLosers} label="Losers" />
-              <FullscreenButton bind:isFullscreen={_fsLosers} label="Losers" />
+              <CardControls
+                bind:isCollapsed={_colLosers}
+                bind:isFullscreen={_fsLosers}
+                bind:filter={_filterLosers}
+                cardId="pulse-losers"
+                label="Losers"
+                onRefresh={refreshAllNow}
+                refreshLoading={_refreshing}
+              />
             </div>
             <div bind:this={gridLoseEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
           </section>
@@ -4803,13 +4805,15 @@
               </div>
             {/if}
             <span class="mp-bucket-head-spacer"></span>
-            {#if _fsPositions}
-              <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="positions" />
-            {/if}
-            <GridSearchButton bind:filter={_filterPositions} label="Positions" />
-            <CollapseButton bind:isCollapsed={_colPositions} cardId="pulse-positions" label="Positions" />
-            <DefaultSizeButton bind:isFullscreen={_fsPositions} bind:isCollapsed={_colPositions} label="Positions" />
-            <FullscreenButton bind:isFullscreen={_fsPositions} label="Positions" />
+            <CardControls
+              bind:isCollapsed={_colPositions}
+              bind:isFullscreen={_fsPositions}
+              bind:filter={_filterPositions}
+              cardId="pulse-positions"
+              label="Positions"
+              onRefresh={refreshAllNow}
+              refreshLoading={_refreshing}
+            />
           </div>
           <div bind:this={gridPositionsEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
         </section>
@@ -4826,13 +4830,15 @@
               </div>
             {/if}
             <span class="mp-bucket-head-spacer"></span>
-            {#if _fsHoldings}
-              <RefreshButton onClick={refreshAllNow} loading={_refreshing} label="holdings" />
-            {/if}
-            <GridSearchButton bind:filter={_filterHoldings} label="Holdings" />
-            <CollapseButton bind:isCollapsed={_colHoldings} cardId="pulse-holdings" label="Holdings" />
-            <DefaultSizeButton bind:isFullscreen={_fsHoldings} bind:isCollapsed={_colHoldings} label="Holdings" />
-            <FullscreenButton bind:isFullscreen={_fsHoldings} label="Holdings" />
+            <CardControls
+              bind:isCollapsed={_colHoldings}
+              bind:isFullscreen={_fsHoldings}
+              bind:filter={_filterHoldings}
+              cardId="pulse-holdings"
+              label="Holdings"
+              onRefresh={refreshAllNow}
+              refreshLoading={_refreshing}
+            />
           </div>
           <div bind:this={gridHoldingsEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
         </section>
