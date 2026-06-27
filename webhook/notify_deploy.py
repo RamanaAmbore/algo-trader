@@ -39,6 +39,10 @@ def main():
                         help="Short commit hash (default: unknown)")
     parser.add_argument("--reason", default="",
                         help="Failure reason string (used when --status fail)")
+    parser.add_argument("--deploy-type", default="full",
+                        choices=["full", "fe-only"],
+                        help="full = backend service restarted; fe-only = "
+                             "frontend rebuild only, broker sessions preserved")
     args = parser.parse_args()
 
     try:
@@ -77,11 +81,17 @@ def main():
     ts = _timestamp()
     errors = []
 
-    # Build the event label and detail line based on status.
+    # Suffix the success label with the deploy-type so the operator can
+    # see at a glance whether the API service restarted (full) or stayed
+    # up with broker sessions preserved (fe-only). Failure label has no
+    # suffix — a failed deploy is always interesting regardless of type.
+    deploy_type = args.deploy_type
+    type_suffix = " · FE-only" if (status == "ok" and deploy_type == "fe-only") else ""
+
     if status == "ok":
-        event_label = f"Deploy OK{branch_tag}"
+        event_label = f"Deploy OK{branch_tag}{type_suffix}"
         detail_line = f"{branch} → {commit}"
-        tg_header   = f"<b>Deploy OK{branch_tag}</b> · <code>{commit}</code>"
+        tg_header   = f"<b>Deploy OK{branch_tag}{type_suffix}</b> · <code>{commit}</code>"
     else:
         event_label = f"⚠ DEPLOY FAILED{branch_tag}"
         detail_line = f"{branch} → {commit}" + (f" — {reason}" if reason else "")

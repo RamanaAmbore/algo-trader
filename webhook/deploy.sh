@@ -177,6 +177,38 @@ PYEOF
   echo "[$TS] Changed files:"
   echo "$CHANGED"
 
+  # ─── Selective restart: protect broker connections from FE-only pushes ───
+  # Most pushes are CSS / Svelte / static-asset tweaks that don't touch the
+  # Python API service. Restarting on every push tears down the Connections
+  # singleton (Kite + Dhan + Groww), the KiteTicker WebSocket, every in-process
+  # cache (positions, holdings, funds), and the Dhan rate-limit cool-off
+  # state — which then triggers the "Token can be generated once every 2
+  # minutes" cascade when two Dhan accounts race for re-login on cold start.
+  # Operator: "is there anyway to protect api code from redeployment so that
+  # connections need not be reset frequently."
+  #
+  # Strict whitelist — if ANYTHING under backend/, webhook/notify_*, or the
+  # systemd unit file changed, we do a full restart (safe). Otherwise treat
+  # the push as frontend-only: skip the kite_tokens.json wipe AND skip the
+  # systemctl restart. The new SvelteKit build (already done above) is served
+  # from disk on the next request without any service interaction — Litestar
+  # reads static files per-request, no content caching.
+  BACKEND_TOUCHED=false
+  if echo "$CHANGED" | grep -qE '^(backend/|webhook/notify_|etc/systemd/)'; then
+      BACKEND_TOUCHED=true
+  fi
+  DEPLOY_TYPE=$([ "$BACKEND_TOUCHED" = "true" ] && echo "full" || echo "fe-only")
+  echo "[$TS] Deploy type: $DEPLOY_TYPE"
+
+  # ─── Skip pip install when no Python dep file changed ──────────────────
+  # pip install --no-cache-dir takes ~20-40s on this box even when everything
+  # is already installed because it re-resolves the entire dependency tree.
+  # Only fire when one of the requirements files actually changed.
+  DEPS_CHANGED=false
+  if echo "$CHANGED" | grep -qE '^backend/requirements.*\.txt$'; then
+      DEPS_CHANGED=true
+  fi
+
   # --- Prod-only: sync nginx configs ---
   if [ "$ENV" = "prod" ]; then
     if echo "$CHANGED" | grep -q '^etc/'; then
@@ -193,10 +225,15 @@ PYEOF
   # --- Install Python deps + build SvelteKit frontend ---
   source venv/bin/activate
 
-  # Install Python dependencies (API layer only)
-  pip install --no-cache-dir -r backend/requirements.txt -r backend/requirements-api.txt \
-    && echo "[$TS] Python deps installed" \
-    || { echo "[$TS] ERROR: pip install failed"; exit 1; }
+  # Install Python dependencies (API layer only) — only when a
+  # requirements file actually changed in this push.
+  if [ "$DEPS_CHANGED" = "true" ]; then
+      pip install --no-cache-dir -r backend/requirements.txt -r backend/requirements-api.txt \
+        && echo "[$TS] Python deps installed" \
+        || { echo "[$TS] ERROR: pip install failed"; exit 1; }
+  else
+      echo "[$TS] No requirements.txt change — skipping pip install"
+  fi
 
   # Build SvelteKit frontend
   #
@@ -224,30 +261,48 @@ PYEOF
     "$APP_ROOT/frontend/.svelte-kit" "$APP_ROOT/frontend/build" \
     "$APP_ROOT/frontend/node_modules" 2>/dev/null || true
 
-  # Clear stale Kite token cache — forces fresh login after deploy
-  rm -f "$APP_ROOT/.log/kite_tokens.json" 2>/dev/null || true
-
-  echo "[$TS] Restarting $API_SERVICE..."
-  sudo systemctl restart "$API_SERVICE" || echo "[$TS] ERROR: failed to restart $API_SERVICE"
-
-  # D5 — Health check: verify the service actually came up before declaring success.
-  # Tries /api/health first; falls back to / (SPA shell). Both return 200 when
-  # Litestar is up. Uvicorn binds locally to 8000 (prod) / 8001 (dev) —
-  # CLAUDE.md's "8502/8503" labels are the public-facing identifiers via nginx,
-  # not the in-process ports a curl from the same host can reach.
+  # ─── Restart path (BACKEND_TOUCHED only) ──────────────────────────────
   PORT=$([ "$ENV" = "prod" ] && echo 8000 || echo 8001)
   DEPLOY_STATUS="fail"
-  for i in 1 2 3 4 5 6; do
-      if curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1 || \
+  if [ "$BACKEND_TOUCHED" = "true" ]; then
+      # Clear stale Kite token cache — forces fresh login after deploy
+      rm -f "$APP_ROOT/.log/kite_tokens.json" 2>/dev/null || true
+
+      echo "[$TS] Restarting $API_SERVICE..."
+      sudo systemctl restart "$API_SERVICE" || echo "[$TS] ERROR: failed to restart $API_SERVICE"
+
+      # D5 — Health check: verify the service actually came up before declaring success.
+      # Tries /api/health first; falls back to / (SPA shell). Both return 200 when
+      # Litestar is up. Uvicorn binds locally to 8000 (prod) / 8001 (dev) —
+      # CLAUDE.md's "8502/8503" labels are the public-facing identifiers via nginx,
+      # not the in-process ports a curl from the same host can reach.
+      for i in 1 2 3 4 5 6; do
+          if curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1 || \
+             curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/" >/dev/null 2>&1; then
+              DEPLOY_STATUS="ok"
+              echo "[$TS] Health check OK on port $PORT (attempt $i)"
+              break
+          fi
+          sleep 5
+      done
+      if [ "$DEPLOY_STATUS" = "fail" ]; then
+          echo "[$TS] ERROR: Health check failed — service did not respond on port $PORT after 6 attempts"
+      fi
+  else
+      # Frontend-only push — preserve broker sessions + KiteTicker + caches.
+      # Litestar serves the new frontend/build/ static files on the next
+      # request automatically. No service interaction needed.
+      echo "[$TS] FE-only push — skipping service restart"
+      echo "[$TS] Preserved: broker connections, KiteTicker, in-process caches, Dhan cool-off state"
+      # Light health check — verify the new build is in place AND the
+      # already-running service still responds.
+      if [ -f "$APP_ROOT/frontend/build/index.html" ] && \
          curl -fsS --max-time 5 "http://127.0.0.1:${PORT}/" >/dev/null 2>&1; then
           DEPLOY_STATUS="ok"
-          echo "[$TS] Health check OK on port $PORT (attempt $i)"
-          break
+          echo "[$TS] FE-only health OK: new build present, running service responsive"
+      else
+          echo "[$TS] ERROR: FE-only health failed — missing build artefact or service unresponsive"
       fi
-      sleep 5
-  done
-  if [ "$DEPLOY_STATUS" = "fail" ]; then
-      echo "[$TS] ERROR: Health check failed — service did not respond on port $PORT after 6 attempts"
   fi
 
   # D11 — Write last_deploy.json for /admin/health to surface deploy info.
@@ -269,6 +324,7 @@ JSONEOF
       --status "$DEPLOY_STATUS" \
       --branch "$BRANCH" \
       --commit "$(git rev-parse --short HEAD)" \
+      --deploy-type "$DEPLOY_TYPE" \
       && echo "[$TS] Startup notification done" \
       || echo "[$TS] WARNING: startup notification failed"
 
