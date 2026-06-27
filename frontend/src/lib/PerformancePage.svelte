@@ -1092,7 +1092,9 @@
 <!-- Funds & NAV — account-level card. NAV (default) shows per-account
      wealth (Net + Position M2M + Holdings MTM); Balances shows the
      existing Funds grid (Net, Avail, Util %, Used, Cash, Collateral). -->
-<h2 class="section-heading">NAV and Funds</h2>
+<!-- Section heading retired — the AlgoTabs strip itself
+     ('NAV' / 'Funds') is the heading. Operator: 'remove NAV and
+     funds text completely.' -->
 <div class="funds-nav-tabs mb-2">
   <AlgoTabs
     tabs={[
@@ -1444,16 +1446,20 @@
     border-bottom-color: rgba(212, 146, 12, 0.5) !important;
   }
   /* Account dropdown wrapper. Theme + colour handled inside
-     AccountMultiSelect. Sits right after the active tab. */
+     AccountMultiSelect. Tightened from 8.5rem → 7rem so the
+     timestamp + Refresh button keep room on the same row even when
+     the picker shows a multi-account selection (operator: "reduce
+     all accounts size slightly smaller so that timestamp row fits
+     in the same row"). */
   .acct-multi {
-    width: 8.5rem;
+    width: 7rem;
     min-width: 0;
   }
 
-  /* Mobile — the dropdown tightens, tabs stay full size. */
+  /* Mobile — the dropdown tightens further, tabs stay full size. */
   @media (max-width: 639px) {
     .tabs-row { gap: 0.3rem; }
-    .acct-multi { width: 7.5rem; }
+    .acct-multi { width: 6rem; }
   }
   /* Funds & NAV tabs — sub-tab strip inside the card. Top-margin
      pulls the AlgoTabs flush below the section heading. */
