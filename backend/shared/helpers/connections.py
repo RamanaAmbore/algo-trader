@@ -1045,26 +1045,27 @@ class DhanConnection:
                     f"wait {wait_s}s before retrying"
                 )
 
-            # ── Renewal-first path ──────────────────────────────────
-            # When the current token is STILL VALID (didn't raise
-            # DH-906; just routine refresh as we approach
-            # CONN_RESET_HOURS), prefer `renew_token` over
-            # `generate_token`. `renew_token` extends the existing
-            # token's validity without minting a new one, so other
-            # threads / processes still holding the old token keep
-            # working. `generate_token` always mints a fresh token AND
-            # invalidates the prior — that's the right call for an
-            # initial login or after a DH-906, but wrong for routine
-            # rolling refreshes. test_conn=True (after auth failure)
-            # skips this path because the existing token is dead.
+            # ── Token mint via _do_login ─────────────────────────────
+            # The `_try_renew()` call that used to live here was
+            # hitting `api.dhan.co/v2/RenewToken` — wrong domain. The
+            # data API at api.dhan.co/v2 has no token-renewal endpoint;
+            # all auth lives on auth.dhan.co. Result: `_try_renew` has
+            # ALWAYS returned None silently (verified: zero "token
+            # renewed" log entries across the entire api_log_file
+            # history), and every "renewal" cycle has actually been a
+            # full re-mint via `_do_login`. Dropping the broken call
+            # so the flow is honest about what's happening.
+            #
+            # If a real renewal endpoint is later confirmed (likely at
+            # auth.dhan.co/app/RenewToken or similar), re-add it here
+            # as a best-effort skip-the-mint path. Until then, we
+            # rely on:
+            #   • Tokens lasting 24h-30d (set in Dhan dashboard)
+            #   • The 60s recency guard above (multiple concurrent
+            #     DH-906s under the same lock window share one mint)
+            #   • The 130s rate-limit cool-off (catches the 2-min
+            #     "Token can be generated once every 2 minutes" guard)
             access_token: str | None = None
-            if not test_conn and self._access_token:
-                access_token = self._try_renew()
-                if access_token:
-                    logger.info(
-                        f"Dhan {self.account!r}: token renewed (no re-mint, "
-                        f"previous token stays valid)"
-                    )
 
             if access_token is None:
                 try:
