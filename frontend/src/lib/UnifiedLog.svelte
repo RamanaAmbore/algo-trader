@@ -222,12 +222,29 @@
 
   /* Stacked layout: time on its own line (compact), kind + message below.
      Matches OrderEntryShell.svelte's .oes-event-row so copy-paste across
-     surfaces is zero-friction. */
+     surfaces is zero-friction. Desktop override below flips to a single
+     row with time | message in two columns — Bloomberg/TradingView log
+     convention on wide viewports. */
   .ul-row {
     display: flex;
     flex-direction: column;
     gap: 0.08rem;
     color: var(--algo-slate);
+  }
+  @media (min-width: 1024px) {
+    .ul-row {
+      flex-direction: row;
+      align-items: baseline;
+      gap: 0.5rem;
+    }
+    .ul-time {
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+    .ul-line {
+      flex: 1 1 0;
+      min-width: 0;
+    }
   }
   .ul-time {
     color: var(--algo-muted);
