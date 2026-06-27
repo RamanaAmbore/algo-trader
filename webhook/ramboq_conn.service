@@ -1,0 +1,40 @@
+[Unit]
+Description=RamboQuant Connection Service (prod — UDS /tmp/ramboq_conn.sock)
+After=network.target postgresql.service
+Wants=postgresql.service
+# ramboq_api restarts often (every backend code push). This service
+# does NOT restart in lockstep — it owns the broker sessions
+# (Kite + Dhan + Groww) and keeps them alive across api restarts.
+
+[Service]
+WorkingDirectory=/opt/ramboq
+User=www-data
+Group=www-data
+# Single worker by design: the Connections singleton, KiteTicker
+# WebSocket, and Dhan login lock are process-local state that can't
+# safely shard across workers.
+#
+# Unix domain socket: the main API (ramboq_api.service on port 8000)
+# is the only consumer, both run as www-data on the same host, so a
+# UDS removes the TCP overhead and the file mode (0660) acts as the
+# auth boundary — no JWT or shared-secret needed at the HTTP layer.
+ExecStart=/bin/bash -c 'source /opt/ramboq/venv/bin/activate && \
+  uvicorn backend.conn_service.app:app \
+    --uds /tmp/ramboq_conn.sock \
+    --workers 1 \
+    --log-level warning \
+    2>&1 | tee -a /opt/ramboq/.log/conn_error_file'
+# Ensure the UDS file is reachable + writable by www-data after
+# uvicorn creates it. uvicorn creates the socket with 0660 by default
+# under the service user; this is a belt-and-suspenders chmod in case
+# of UMASK drift.
+ExecStartPost=/bin/sh -c 'sleep 1 && chmod 0660 /tmp/ramboq_conn.sock 2>/dev/null || true'
+# Clean up the socket on stop so a quick restart doesn't fail with
+# "Address already in use".
+ExecStopPost=/bin/sh -c 'rm -f /tmp/ramboq_conn.sock'
+Restart=always
+RestartSec=5
+Environment=RAMBOQ_LOG_PREFIX=conn_
+
+[Install]
+WantedBy=multi-user.target
