@@ -1,27 +1,22 @@
-"""Internal endpoints exposed by conn_service.
+"""Internal endpoints exposed by conn_service — the broker wrapper.
 
 The main API speaks to this service via Unix domain socket. Every
 endpoint here delegates to the existing `broker_apis` module, which
 in turn reads from the in-process Connections singleton owned by
 this process. All three brokers (Kite + Dhan + Groww) flow through
-the same path because broker_apis.fetch_holdings is decorated with
-@for_all_accounts which iterates Connections.conn.keys() — operator
-explicitly asked for Groww to be in scope here.
+the same path because the @for_all_accounts decorator iterates
+Connections.conn.keys() uniformly — no broker-specific branches.
 
 These endpoints are NOT meant to be public — they're consumed by
 the main API service over the UDS. No auth required at the HTTP
 layer because the socket itself is the auth boundary (file mode
 0660 owned by www-data:www-data restricts access to the same OS
-user that runs ramboq_api.service).
+user that runs ramboq_api.service / ramboq_dev_api.service).
 
-Endpoint shape:
-  GET  /health              — readiness probe + broker count
-  GET  /internal/holdings   — every account's holdings (one DataFrame
-                              per account, returned as JSON)
-  GET  /internal/positions  — same shape for positions
-  GET  /internal/margins    — same shape for margins (funds)
-  GET  /internal/health/brokers — per-account fetch-health snapshot
-  GET  /internal/accounts   — currently-loaded broker accounts
+Wire format for fetch endpoints — `{accounts: [...]}` instead of a
+flat row list. Each entry preserves the per-account boundary plus
+the `fetch_failed` flag so callers can keep their outage-detection
+logic (`if all(df.attrs['fetch_failed'])`) drop-in compatible.
 """
 
 from __future__ import annotations
@@ -35,21 +30,39 @@ from litestar import Controller, get
 logger = logging.getLogger(__name__)
 
 
-def _df_list_to_records(dfs: list) -> list[dict[str, Any]]:
-    """Convert a list of pandas DataFrames to a single JSON-able
-    list of records, preserving each row's `account` column.
+def _df_list_to_per_account(dfs: list) -> list[dict[str, Any]]:
+    """Convert a list of per-account DataFrames into a per-account
+    wire format that survives the JSON hop.
 
-    Used by every internal endpoint so the wire format is uniform:
-    a JSON array of row dicts, regardless of how many accounts
-    contributed. Returns [] when there's no data.
+    Output shape (one entry per DataFrame returned by @for_all_accounts):
+
+      [
+        {"account": "ZG####", "ok": true,  "rows": [...]},
+        {"account": "DH####", "ok": false, "rows": [], "error": ""},
+        ...
+      ]
+
+    The per-account boundary is preserved so conn_client can rebuild
+    `list[DataFrame]` with `df.attrs['fetch_failed']` flipped back on
+    for callers that pre-date this refactor. Account is taken from
+    the row data (every adapter sets the `account` column).
     """
     out: list[dict[str, Any]] = []
     for df in dfs or []:
-        if df is None or getattr(df, "empty", True):
+        if df is None:
             continue
-        # to_dict('records') is the cheapest path that preserves
-        # column dtypes-as-Python via msgspec/json-friendly types.
-        out.extend(df.to_dict(orient="records"))
+        fetch_failed = bool(getattr(df, "attrs", {}).get("fetch_failed", False))
+        # Pull account name from the first row; falls back to None on
+        # empty frames (the rebuild side will key on insertion order).
+        acct = None
+        if not df.empty and "account" in df.columns:
+            acct = df["account"].iloc[0]
+        rows = [] if df.empty else df.to_dict(orient="records")
+        out.append({
+            "account": acct,
+            "ok": not fetch_failed,
+            "rows": rows,
+        })
     return out
 
 
@@ -109,10 +122,10 @@ class InternalBrokerController(Controller):
 
         try:
             dfs = await asyncio.to_thread(fetch_holdings)
-            return {"rows": _df_list_to_records(dfs), "errors": []}
+            return {"accounts": _df_list_to_per_account(dfs), "errors": []}
         except Exception as e:
             logger.exception("conn_service: fetch_holdings failed")
-            return {"rows": [], "errors": [str(e)[:300]]}
+            return {"accounts": [], "errors": [str(e)[:300]]}
 
     @get("/positions")
     async def positions(self) -> dict[str, Any]:
@@ -121,10 +134,10 @@ class InternalBrokerController(Controller):
 
         try:
             dfs = await asyncio.to_thread(fetch_positions)
-            return {"rows": _df_list_to_records(dfs), "errors": []}
+            return {"accounts": _df_list_to_per_account(dfs), "errors": []}
         except Exception as e:
             logger.exception("conn_service: fetch_positions failed")
-            return {"rows": [], "errors": [str(e)[:300]]}
+            return {"accounts": [], "errors": [str(e)[:300]]}
 
     @get("/margins")
     async def margins(self) -> dict[str, Any]:
@@ -136,10 +149,10 @@ class InternalBrokerController(Controller):
 
         try:
             dfs = await asyncio.to_thread(fetch_margins)
-            return {"rows": _df_list_to_records(dfs), "errors": []}
+            return {"accounts": _df_list_to_per_account(dfs), "errors": []}
         except Exception as e:
             logger.exception("conn_service: fetch_margins failed")
-            return {"rows": [], "errors": [str(e)[:300]]}
+            return {"accounts": [], "errors": [str(e)[:300]]}
 
     @get("/health/brokers")
     async def broker_health(self) -> dict[str, Any]:
