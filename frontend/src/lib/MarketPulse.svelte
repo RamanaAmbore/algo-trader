@@ -4581,15 +4581,11 @@
        it appeared below the chrome row AFTER the Add popup closed,
        leaving the operator with no clear visual continuity. -->
 
-  {#if showFunds}
-    <!-- Funds strip — per-account Cash / Avail Margin / Used Margin /
-         Collateral. Same first-impression order as the previous
-         PerformancePage-driven /dashboard ("what's my cash" answers
-         before "what's my P&L"). -->
-    <div class="mp-section-label">Funds</div>
-    <div bind:this={fundsEl} class="ag-theme-quartz ag-theme-algo funds-grid mb-2"></div>
-  {/if}
-
+  <!-- Operator: 'summary, fund balances, positions/holdings is the
+       sequence.' Summary leads (the at-a-glance per-account P&L
+       answer), Funds follows as shared cash/margin context, and the
+       symbol grids below (when showSymbolsGrid is true) carry the
+       per-row drill-down. -->
   {#if showSummary}
     <!-- Positions Summary — per-account Day P&L + P&L. -->
     <div class="mp-section-label">Positions Summary</div>
@@ -4597,6 +4593,14 @@
     <!-- Holdings Summary — per-account Day P&L + P&L + Cur Val. -->
     <div class="mp-section-label">Holdings Summary</div>
     <div bind:this={holdingsSummaryEl} class="ag-theme-quartz ag-theme-algo summary-grid mb-2"></div>
+  {/if}
+
+  {#if showFunds}
+    <!-- Funds strip — per-account Cash / Avail Margin / Used Margin /
+         Collateral. Shared cash/margin context between Positions
+         and Holdings summaries above. -->
+    <div class="mp-section-label">Funds</div>
+    <div bind:this={fundsEl} class="ag-theme-quartz ag-theme-algo funds-grid mb-2"></div>
   {/if}
 
   {#if showSymbolsGrid}
