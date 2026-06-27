@@ -321,11 +321,18 @@
   .market-tab:hover {
     color: #1a2744;
     border-bottom-color: rgba(212,146,12,0.5);
+    background: rgba(212,146,12,0.04);
   }
+  /* Active state mirrors the AlgoTabs canonical 10% bg tint that
+     /performance's NAV/Funds tabs use, so every tab strip on every
+     public page shares one active-state decoration: champagne
+     underline + 10% champagne background. Operator: "have nav funds
+     background decoration to other tabs in public pages." */
   .market-tab-active {
     color: #1a2744;
     font-weight: 700;
     border-bottom-color: #d4920c;
+    background: rgba(212,146,12,0.10);
   }
   .market-tabs-row + .pub-card {
     margin-top: 0.6rem;

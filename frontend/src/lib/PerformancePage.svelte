@@ -1432,18 +1432,21 @@
     flex-wrap: nowrap;
   }
 
-  /* Light-theme tab decoration — pure champagne bottom-border on
-     active, faint champagne on hover. Matches /market's
-     .market-tab-active (border-bottom-color: #d4920c) so the two
-     public pages share one tab underline color. The Tailwind
-     `border-primary` class on the button sets the active border to
-     navy (#1a2744); this rule overrides it to champagne. Text color
-     stays navy via `text-primary` — matches /market's active text. */
+  /* Light-theme tab decoration — champagne bottom-border + faint
+     champagne background tint on active. Mirrors the AlgoTabs
+     active-state shape used by the NAV/Funds tab strip directly
+     above (canonical .algo-tab[aria-selected="true"] in app.css
+     ships background: rgba(251,191,36,0.10) on amber). Operator:
+     "have nav funds background decoration to other tabs in public
+     pages." Same shape across all public-page tabs now — pure
+     underline + 10% color tint on the active label. */
   .tabs-row :global(button[class*="border-primary"]) {
     border-bottom-color: #d4920c !important;
+    background: rgba(212, 146, 12, 0.10) !important;
   }
   .tabs-row :global(button[class*="text-muted"]:hover) {
     border-bottom-color: rgba(212, 146, 12, 0.5) !important;
+    background: rgba(212, 146, 12, 0.04) !important;
   }
   /* Account dropdown wrapper. Theme + colour handled inside
      AccountMultiSelect. Tightened from 8.5rem → 7rem so the
