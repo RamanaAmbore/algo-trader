@@ -764,15 +764,19 @@
     fundsGrid.setGridOption('pinnedBottomRowData', fTotal);
     // NAV grid — per-account wealth aggregated from the same three
     // raw arrays. Same arithmetic as scripts/nav_breakdown.py.
-    // Sorted alphabetically so the row order in the NAV grid matches
-    // the Funds grid (also sorted on the backend) and the Summary
-    // grids. Operator: "the account order sequence should be same in
-    // all grids."
-    const navAccts = [...new Set([
-      ...rawHoldings.filter(keepAcct).map(r => r.account),
-      ...rawPositions.filter(keepAcct).map(r => r.account),
-      ...rawFunds.filter(keepAcct).map(r => r.account).filter(a => a && a !== 'TOTAL'),
-    ])].sort();
+    // Use the page-wide `accounts` list (derived from the union of
+    // rawFunds + rawHoldings + rawPositions at fetch time) so the NAV
+    // grid lists EVERY account that has data in any source — not just
+    // accounts present in the per-render filtered subset. An account
+    // with only holdings (no positions, no funds — e.g. Groww when
+    // its funds API is auth-failed but holdings cache is warm) still
+    // surfaces as a NAV row. Sorted alphabetically so the row order
+    // matches every other grid (operator: "the account order sequence
+    // should be same in all grids").
+    const navAccts = accounts
+      .filter(a => selectedAccounts.length === 0 || selectedAccounts.includes(a))
+      .slice()
+      .sort();
     const navByAcct = navAccts.map(acct => {
       // The /api/funds payload renames broker's `net` → `avail_margin`
       // (see backend/api/routes/funds.py _COL_MAP) so the per-account
