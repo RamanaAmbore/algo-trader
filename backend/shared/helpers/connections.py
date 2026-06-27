@@ -876,8 +876,21 @@ class DhanConnection:
         Same source-binding as `_do_login` — the renewal HTTP call
         egresses from this account's source_ip so the per-IP session
         affinity is preserved.
+
+        Operator: "why did auth expire. with kite we are getting
+        renewing the tokens. same mechanism is used for dhan." —
+        renewal was silently failing for Dhan because the success path
+        had no log line and the failure paths returned None without
+        surfacing the response. Now every branch logs at warning level
+        so the operator can see WHY a renewal fell through to
+        `_do_login` (which mints a new token + invalidates the old
+        and is rate-limited to once per 2 minutes per Dhan account).
         """
         if not self._access_token:
+            logger.warning(
+                f"Dhan renew_token skipped for {self.account!r}: "
+                f"no current access_token cached"
+            )
             return None
         session = self._login_session()
         url = f"{self._DHAN_API_BASE}/RenewToken"
@@ -889,14 +902,32 @@ class DhanConnection:
             response = session.get(url, headers=headers, timeout=30)
             resp = response.json() if response.content else {}
         except Exception as e:
-            logger.warning(f"Dhan renew_token failed for {self.account!r}: {e}")
+            logger.warning(
+                f"Dhan renew_token HTTP failed for {self.account!r}: {e}"
+            )
             return None
-        if isinstance(resp, dict):
-            data = resp.get("data") if isinstance(resp.get("data"), dict) else resp
-            new_token = (data.get("accessToken")
-                         or data.get("access_token"))
-            if new_token:
-                return str(new_token)
+        if not isinstance(resp, dict):
+            logger.warning(
+                f"Dhan renew_token returned non-dict for {self.account!r}: "
+                f"type={type(resp).__name__} body={str(resp)[:200]}"
+            )
+            return None
+        data = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+        new_token = (data.get("accessToken")
+                     or data.get("access_token"))
+        if new_token:
+            logger.info(
+                f"Dhan renew_token success for {self.account!r}: "
+                f"new token issued (no re-mint required)"
+            )
+            return str(new_token)
+        # Renewal endpoint reached us but didn't return a token —
+        # surface what it actually said. Common cases: 401 (token
+        # already expired), 404 (endpoint changed), {"error": "..."}.
+        logger.warning(
+            f"Dhan renew_token no accessToken for {self.account!r}: "
+            f"status={response.status_code} body={str(resp)[:200]}"
+        )
         return None
 
     def get_dhan_conn(self, test_conn: bool = False):
