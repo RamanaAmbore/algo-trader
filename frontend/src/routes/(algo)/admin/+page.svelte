@@ -17,6 +17,7 @@
   import MultiSelect from '$lib/MultiSelect.svelte';
   import Select   from '$lib/Select.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
+  import AlgoTabs from '$lib/AlgoTabs.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
 
   // Shared confirm modal — replaces native confirm() which silently
@@ -1076,12 +1077,16 @@
       </header>
 
       <div class="ip-modal-tabs">
-        <button class="ip-modal-tab" class:active={portalTab === 'tokens'}
-                onclick={() => portalTab = 'tokens'}>URL access</button>
-        <button class="ip-modal-tab" class:active={portalTab === 'statement'}
-                onclick={() => portalTab = 'statement'}>Statement preview</button>
-        <button class="ip-modal-tab" class:active={portalTab === 'events'}
-                onclick={() => portalTab = 'events'}>Events</button>
+        <AlgoTabs
+          tabs={[
+            { id: 'tokens',    label: 'URL access'         },
+            { id: 'statement', label: 'Statement preview'  },
+            { id: 'events',    label: 'Events'             },
+          ]}
+          value={portalTab}
+          onChange={(id) => { portalTab = /** @type {'tokens'|'statement'|'events'} */ (id); }}
+          compact={true}
+        />
       </div>
 
       {#if portalError}
@@ -1367,27 +1372,13 @@
     font-size: 0.65rem; color: #7e97b8; margin-top: 0.15rem;
     font-family: ui-monospace, monospace;
   }
+  /* Thin wrapper for the AlgoTabs strip inside the portal modal.
+     Hand-rolled `.ip-modal-tab` / `.ip-modal-tab.active` retired —
+     AlgoTabs supplies canonical underline, font, and active-state
+     decoration matching every other tab strip in the workspace. */
   .ip-modal-tabs {
-    display: flex; gap: 0.3rem; margin-bottom: 0.8rem;
+    margin-bottom: 0.8rem;
     border-bottom: 1px solid rgba(126, 151, 184, 0.18);
-  }
-  .ip-modal-tab {
-    padding: 0.4rem 0.9rem;
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    color: #7e97b8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem; font-weight: 700;
-    letter-spacing: 0.06em; text-transform: uppercase;
-    cursor: pointer;
-    margin-bottom: -1px;
-    transition: color 120ms, border-color 120ms;
-  }
-  .ip-modal-tab:hover { color: #c8d8f0; }
-  .ip-modal-tab.active {
-    color: #67e8f9;
-    border-bottom-color: #22d3ee;
   }
 
   .ip-modal-x {

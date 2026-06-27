@@ -2530,60 +2530,6 @@
     gap: 0.6rem;
     margin-bottom: 0.4rem;
   }
-  /* Winners / Losers — 5 tabbed buckets per card. Tab strip sits
-     below the card heading; active tab gets the amber underline +
-     brighter text. Count chip stays muted (slate-blue when inactive,
-     amber when active). Tab labels are short ("Underlying" / "Midcap"
-     / …) so the row fits one line on desktop and wraps on mobile. */
-  .wl-tabs {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.05rem 0.15rem;
-    margin-bottom: 0.4rem;
-    border-bottom: 1px solid rgba(126, 151, 184, 0.18);
-    padding-bottom: 0.05rem;
-  }
-  .wl-tab {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    background: none;
-    border: none;
-    padding: 0.22rem 0.4rem 0.24rem;
-    color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    cursor: pointer;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    transition: color 0.12s, border-color 0.12s;
-  }
-  .wl-tab:hover { color: var(--algo-slate); }
-  .wl-tab-on {
-    color: #fbbf24;
-    border-bottom-color: #fbbf24;
-  }
-  .wl-tab-count {
-    display: inline-block;
-    padding: 0 0.32rem;
-    border-radius: 0.5rem;
-    background: rgba(126, 151, 184, 0.18);
-    color: inherit;
-    font-size: 0.55rem;
-    font-weight: 700;
-    line-height: 1.15rem;
-    letter-spacing: 0.02em;
-  }
-  .wl-bucket-empty {
-    padding: 0.5rem 0.3rem;
-    color: rgba(126, 151, 184, 0.55);
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
-    letter-spacing: 0.04em;
-    text-align: center;
-  }
   /* AccountMultiSelect (.ams) is LEFT-aligned in card-header-row,
      matching the canonical card-header rule (text + picker on the
      LEFT, control trio on the right via the first button's

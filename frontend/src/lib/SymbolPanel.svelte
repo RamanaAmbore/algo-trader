@@ -4961,53 +4961,6 @@
     font-family: ui-monospace, monospace;
     font-size: 0.62rem;
   }
-  .oes-bottom-tabs {
-    display: flex;
-    gap: 0;
-    padding: 0;
-    /* Active-tab underline already encodes which tab is on. The
-       container's bottom divider was clutter — dropped. */
-  }
-  .oes-bottom-tab {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0.35rem 0.65rem;
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    font-size: 0.6rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: #94a3b8;
-    cursor: pointer;
-    white-space: nowrap;
-    transition: color 0.12s, border-color 0.12s;
-  }
-  .oes-bottom-tab.active {
-    color: #c084fc;
-    border-bottom-color: #c084fc;
-    font-weight: 800;
-  }
-  .oes-bottom-tab:hover:not(.active) { color: var(--algo-slate); }
-  .oes-bottom-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 1.0rem;
-    height: 1.0rem;
-    padding: 0 0.2rem;
-    border-radius: 999px;
-    background: rgba(192,132,252,0.22);
-    border: 1px solid rgba(192,132,252,0.55);
-    color: #c084fc;
-    font-size: 0.52rem;
-    font-weight: 800;
-    font-variant-numeric: tabular-nums;
-    line-height: 1;
-  }
   /* Bottom body fills the bottom-panel's fixed slot; LogPanel inside
      manages its own internal scroll for the active tab. */
   .oes-bottom-body {
