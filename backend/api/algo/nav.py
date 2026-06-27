@@ -1,22 +1,37 @@
 """
 NAV calculation — firm-level daily aggregate.
 
-NAV (v2) =  Σ funds.net                  across all funded accounts
-          + Σ position.unrealised        across open positions
-          + Σ holding.quantity × LTP     across all holdings
+NAV (v3) = Σ (cash + used_margin)        across all funded accounts
+         + Σ position.unrealised         across open positions
+         + Σ holding.cur_val             across all holdings
 
-Why these three terms (v2 corrects v1, which had two bugs):
+Operator framework (v3 replaces v2):
 
-1. funds.net — the broker's authoritative "net account value"
-   = cash + collateral_haircut + realized_pnl − utilized_margin
-   It already accounts for margin currently locked in open positions,
-   stock collateral haircuts, and intraday realized P&L. v1 read
-   `row.get("live_cash")` / `row.get("cash")` — neither column exists
-   in the flattened margins DataFrame (the adapter prefixes
-   available.cash → `avail cash` and available.live_balance →
-   `avail live_balance` with a space). Net result: cash_total was
-   always 0. Using `net` gives the broker's single-source-of-truth
-   for cash-equivalent value.
+  • Collateral has zero impact on NAV. Pledged stock is the SAME
+    stock already counted in holdings.cur_val — including
+    funds.collateral would double-count it.
+  • Used margin has zero impact on NAV. Margin currently locked
+    behind open positions is still YOUR cash; it just isn't free.
+    Subtracting it (as funds.net does) drops it from NAV; the fix
+    is to add it back to cash so total_cash_owned = free_cash +
+    locked_cash.
+  • Only M2M unrealized gains/losses move NAV. Positions
+    contribute their unrealised field (LTP-avg)×qty — the broker's
+    pre-computed open-position P&L. Holdings contribute cur_val
+    (qty × LTP). Neither term double-counts the cash spent on
+    them; that cash converted into the position/holding at cost,
+    and cur_val / unrealised captures the M2M re-valuation.
+  • Cash spent on options or stocks counts the same as cash. The
+    cost basis is automatically captured: for stocks via cur_val
+    (= cost + M2M), for options via the LTP-vs-avg unrealised
+    delta. No separate cash-equivalence term is needed.
+
+v2 used funds.net + cur_val + unrealised which expanded to:
+  (cash + collateral − used_margin) + cur_val + unrealised
+This over-counted pledged stock (+collateral) and dropped locked
+margin (−used_margin). Net error per account ≈ collateral − 2 ×
+used_margin. v3 drops the collateral term and adds used_margin
+back, restoring both errors.
 
 2. position.unrealised — the broker's already-computed unrealized
    P&L per position. v1 used `qty × LTP` which is the NOTIONAL value
@@ -86,20 +101,46 @@ async def compute_firm_nav() -> dict:
 
     conn_keys = list(Connections().conn.keys())
 
-    # ── Funds (net account value per broker) ──────────────────────────
-    # `net` is the broker's authoritative "your account is worth this":
-    #   net = cash + collateral_haircut + realized_pnl − utilized_margin
-    # Already nets out margin currently locked in open positions and
-    # stock-collateral haircuts. Open-position unrealized P&L is added
-    # separately below via positions.unrealised.
+    # ── Funds (cash + locked margin per broker) ───────────────────────
+    # Operator framework: total cash owned = free cash + locked-as-
+    # margin cash. The Kite margins payload (flattened by
+    # broker_apis.fetch_margins) prefixes the keys with a space:
+    #     `avail opening_balance` = SOD cash (frozen, doesn't decay
+    #         intraday as the operator spends on option premium /
+    #         stock buys — those debits move into holdings.cur_val
+    #         and positions.unrealised respectively, so SOD cash
+    #         remains the right baseline for `total_cash_owned`)
+    #     `util debits` = total margin currently locked behind open
+    #         positions (cash that's yours but unavailable to deploy
+    #         until you close the positions). Added back to cash
+    #         because it didn't leave your account; it's just
+    #         reserved.
+    # NOT used:
+    #     `avail collateral` — the haircut value of pledged stock.
+    #         The underlying stock is already in holdings.cur_val at
+    #         full LTP. Including collateral here would double-count
+    #         a second copy of the same stock.
     try:
         funds_dfs = await asyncio.to_thread(fetch_margins)
         for df in funds_dfs or []:
             if df is None or df.empty:
                 continue
             for _, row in df.iterrows():
-                net_val = float(row.get("net") or 0.0)
-                cash_total += net_val
+                # The adapter ships keys with literal spaces. Fall
+                # back to the renamed schema names ("cash",
+                # "used_margin") used by the polars layer downstream
+                # so this code works against either source.
+                cash_sod = float(
+                    row.get("avail opening_balance")
+                    or row.get("cash")
+                    or 0.0
+                )
+                used_margin = float(
+                    row.get("util debits")
+                    or row.get("used_margin")
+                    or 0.0
+                )
+                cash_total += cash_sod + used_margin
                 acct = str(row.get("account") or "")
                 if acct and acct != "TOTAL" and acct not in accounts_in:
                     accounts_in.append(acct)
@@ -139,9 +180,14 @@ async def compute_firm_nav() -> dict:
                 continue
             for _, row in df.iterrows():
                 qty = int(row.get("quantity") or row.get("opening_qty") or 0)
-                if qty == 0:
-                    continue
                 cv = float(row.get("cur_val") or 0.0)
+                # Skip only when the row has neither qty nor value.
+                # Pledged stocks often show quantity=0 (the shares
+                # are reclassified to the collateral bucket) but
+                # keep their cur_val populated — operator owns them
+                # and they belong in holdings_mtm.
+                if qty == 0 and cv == 0:
+                    continue
                 if cv == 0:
                     # Fallback to qty × LTP for adapters that don't
                     # populate cur_val. Same chain as v1.

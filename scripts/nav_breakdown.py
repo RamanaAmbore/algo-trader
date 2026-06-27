@@ -38,12 +38,11 @@ async def main() -> None:
     pos_rows_by_acct      = defaultdict(int)
     hold_rows_by_acct     = defaultdict(int)
 
-    # ── Funds (broker's net account value) ────────────────────────────
-    # Use `net` — the broker's authoritative account value (cash +
-    # collateral_haircut + realized_pnl − utilized_margin). v1 read
-    # `live_cash` and `cash` which don't exist in the flattened
-    # margins DataFrame; they're `avail cash` / `avail live_balance`
-    # with a space prefix. Either way `net` is more meaningful for NAV.
+    # ── Funds (cash + locked margin) ──────────────────────────────────
+    # Operator framework: NAV's cash term = total cash owned, free
+    # plus locked-as-margin. Excludes collateral (that's pledged
+    # stock, already counted in holdings.cur_val below). Excludes
+    # `net` (which subtracts used_margin from the operator's wealth).
     print("Fetching funds…", file=sys.stderr)
     funds_dfs = await asyncio.to_thread(fetch_margins)
     for df in funds_dfs or []:
@@ -54,7 +53,15 @@ async def main() -> None:
             if not acct or acct == "TOTAL":
                 continue
             accounts.add(acct)
-            cash_by_acct[acct] += float(row.get("net") or 0.0)
+            cash_sod = float(
+                row.get("avail opening_balance")
+                or row.get("cash") or 0.0
+            )
+            used_margin = float(
+                row.get("util debits")
+                or row.get("used_margin") or 0.0
+            )
+            cash_by_acct[acct] += cash_sod + used_margin
 
     # ── Positions (broker's unrealised P&L) ───────────────────────────
     # Use `unrealised` directly — the broker (Kite) computes it natively
@@ -80,7 +87,8 @@ async def main() -> None:
     # ── Holdings ───────────────────────────────────────────────────────
     # Use `cur_val` (broker's pre-computed qty × LTP) — matches the
     # Holdings detail grid's Value column on /performance so NAV
-    # reconciles row-by-row.
+    # reconciles row-by-row. Pledged stock rows often have qty=0
+    # but keep cur_val populated; include those too.
     print("Fetching holdings…", file=sys.stderr)
     hold_dfs = await asyncio.to_thread(fetch_holdings)
     for df in hold_dfs or []:
@@ -88,13 +96,14 @@ async def main() -> None:
             continue
         for _, row in df.iterrows():
             qty = int(row.get("quantity") or row.get("opening_qty") or 0)
-            if qty == 0:
+            cv = float(row.get("cur_val") or 0.0)
+            if qty == 0 and cv == 0:
                 continue
             acct = str(row.get("account") or "")
             if not acct:
                 continue
             accounts.add(acct)
-            holdings_mtm_by_acct[acct] += float(row.get("cur_val") or 0.0)
+            holdings_mtm_by_acct[acct] += cv
             hold_rows_by_acct[acct] += 1
 
     # ── Print per-account table ────────────────────────────────────────
@@ -102,7 +111,7 @@ async def main() -> None:
         return f"{v:>15,.2f}"
 
     print()
-    print(f"{'Account':<10}{'Net':>17}{'Pos M2M':>17}{'Hold MTM':>17}{'NAV':>17}{'  Pos#':>7}{'  Hold#':>7}")
+    print(f"{'Account':<10}{'Cash+Lock':>17}{'Pos M2M':>17}{'Hold MTM':>17}{'NAV':>17}{'  Pos#':>7}{'  Hold#':>7}")
     print("-" * 90)
     firm_cash = firm_pos = firm_hold = 0.0
     for acct in sorted(accounts):
@@ -120,7 +129,7 @@ async def main() -> None:
     firm_nav = firm_cash + firm_pos + firm_hold
     print(f"{'TOTAL':<10}{fmt(firm_cash)}{fmt(firm_pos)}{fmt(firm_hold)}{fmt(firm_nav)}")
     print()
-    print(f"firm_nav = Σ funds.net  +  Σ position.unrealised  +  Σ qty × LTP (holdings)")
+    print(f"firm_nav = Σ (cash + used_margin)  +  Σ position.unrealised  +  Σ holdings.cur_val")
     print(f"         = {firm_cash:,.2f} + {firm_pos:,.2f} + {firm_hold:,.2f}")
     print(f"         = ₹{firm_nav:,.2f}")
 

@@ -585,7 +585,7 @@
   // waiting for the 16:00 IST cron.
   const navCols = [
     { field: 'account',      headerName: 'Account',  width: 76, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
-    { field: 'net',          headerName: 'Net',          flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'net',          headerName: 'Cash',         flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pos_m2m',      headerName: 'Pos M2M',      flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'holdings_mtm', headerName: 'Holdings MTM', flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'nav',          headerName: 'NAV',          flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
@@ -788,22 +788,32 @@
       .slice()
       .sort();
     const navByAcct = navAccts.map(acct => {
-      // The /api/funds payload renames broker's `net` → `avail_margin`
-      // (see backend/api/routes/funds.py _COL_MAP) so the per-account
-      // 'Net' here reads from .avail_margin, NOT .net.
+      // Operator's NAV framework: per-account NAV is the sum of
+      //   1. total cash owned (free + locked-as-margin), EXCLUDING
+      //      collateral haircut (= pledged stock, already counted
+      //      in holdings_mtm below)
+      //   2. open-position unrealised P&L (broker pre-computed)
+      //   3. holdings cur_val (broker pre-computed qty × LTP)
+      // The /api/funds payload renames the broker's
+      // `avail opening_balance` → `cash` and `util debits` →
+      // `used_margin` (see backend/api/routes/funds.py _COL_MAP).
       const fundsRow = rawFunds.find(r => r.account === acct);
-      const net = Number(fundsRow?.avail_margin) || 0;
+      const cash_sod    = Number(fundsRow?.cash) || 0;
+      const used_margin = Number(fundsRow?.used_margin) || 0;
+      const cash_total  = cash_sod + used_margin;
       const pos_m2m = rawPositions
         .filter(r => r.account === acct)
         .reduce((s, r) => s + (Number(r.unrealised) || 0), 0);
-      // Use cur_val (broker's pre-computed qty × LTP) instead of
-      // recomputing — matches what the Holdings detail grid's
-      // "Value" column shows so the NAV grid TOTAL reconciles
-      // against summing the Holdings Value column.
       const holdings_mtm = rawHoldings
         .filter(r => r.account === acct)
         .reduce((s, r) => s + (Number(r.cur_val) || 0), 0);
-      return { account: acct, net, pos_m2m, holdings_mtm, nav: net + pos_m2m + holdings_mtm };
+      return {
+        account: acct,
+        net: cash_total,
+        pos_m2m,
+        holdings_mtm,
+        nav: cash_total + pos_m2m + holdings_mtm,
+      };
     });
     const navTotal = navByAcct.length === 0 ? null : navByAcct.reduce((acc, r) => ({
       account: 'TOTAL',
