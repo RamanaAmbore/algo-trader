@@ -78,6 +78,9 @@ async def main() -> None:
             pos_rows_by_acct[acct] += 1
 
     # ── Holdings ───────────────────────────────────────────────────────
+    # Use `cur_val` (broker's pre-computed qty × LTP) — matches the
+    # Holdings detail grid's Value column on /performance so NAV
+    # reconciles row-by-row.
     print("Fetching holdings…", file=sys.stderr)
     hold_dfs = await asyncio.to_thread(fetch_holdings)
     for df in hold_dfs or []:
@@ -87,19 +90,11 @@ async def main() -> None:
             qty = int(row.get("quantity") or row.get("opening_qty") or 0)
             if qty == 0:
                 continue
-            sym = str(row.get("tradingsymbol") or "")
-            if not sym:
-                continue
-            lp = _ticker.get_ltp_by_sym(sym) or 0.0
-            if lp <= 0:
-                lp = float(row.get("last_price") or 0.0)
-            if lp <= 0:
-                continue
             acct = str(row.get("account") or "")
             if not acct:
                 continue
             accounts.add(acct)
-            holdings_mtm_by_acct[acct] += qty * lp
+            holdings_mtm_by_acct[acct] += float(row.get("cur_val") or 0.0)
             hold_rows_by_acct[acct] += 1
 
     # ── Print per-account table ────────────────────────────────────────

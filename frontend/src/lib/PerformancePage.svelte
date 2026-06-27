@@ -232,9 +232,9 @@
   let positionsSummaryGrid = null;
   let positionsAllGrid     = null;
 
-  // Funds & NAV card — NAV (per-account wealth) is the default tab;
-  // Balances flips to the existing per-account funds grid.
-  let fundsNavTab = $state(/** @type {'nav' | 'balances'} */ ('nav'));
+  // NAV and Funds card — NAV (per-account wealth) is the default tab;
+  // Funds flips to the existing per-account margin/cash grid.
+  let fundsNavTab = $state(/** @type {'nav' | 'funds'} */ ('nav'));
 
   // Header symbol filters — bound by <GridSearchButton> next to the
   // Positions / Holdings section headings. Empty = no filter.
@@ -542,18 +542,23 @@
     { field: 'account',       headerName: 'Account',   width: 76, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
   ]);
 
-  // Order priority: Net (real balance) → Avail Margin → Utilisation %
-  // (headroom) → Used Margin → Cash → Collateral. Operator decides
-  // "can I deploy more" off Net + Utilisation %; the components
-  // follow. Kite + IBKR both lead with the summary number, not Cash.
+  // Order: Net (broker's account value, renamed avail_margin in
+  // the API payload) → Avail Margin → Util % → Used → Cash →
+  // Collateral. Field names match backend/api/schemas.py FundsRow
+  // AFTER funds.py _COL_MAP renames the raw 'avail cash' / 'util
+  // debits' broker columns to schema-friendly snake_case.
+  //   API field → broker source
+  //   cash          ← avail opening_balance (start-of-day cash)
+  //   live_cash     ← avail cash (= live_balance, intraday-adjusted)
+  //   avail_margin  ← net (broker's account value)
+  //   used_margin   ← util debits
+  //   collateral    ← avail collateral
   const fundsCols = [
     { field: 'account',      headerName: 'Account',      width: 76, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
-    { headerName: 'Net', flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr, cellClass: pnlCls,
-      valueGetter: (p) => (Number(p.data?.cash) || 0) + (Number(p.data?.collateral) || 0) - (Number(p.data?.used_margin) || 0) },
-    { field: 'avail_margin', headerName: 'Avail Margin', flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'avail_margin', headerName: 'Net',          flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { headerName: 'Util %', flex: 1, valueFormatter: pctFmtGrid, type: 'numericColumn', headerClass: numericHdr,
       valueGetter: (p) => {
-        const used = Number(p.data?.used_margin) || 0;
+        const used  = Number(p.data?.used_margin) || 0;
         const avail = Number(p.data?.avail_margin) || 0;
         const denom = used + avail;
         return denom > 0 ? (used / denom) * 100 : null;
@@ -760,22 +765,21 @@
       ...rawFunds.filter(keepAcct).map(r => r.account).filter(a => a && a !== 'TOTAL'),
     ])];
     const navByAcct = navAccts.map(acct => {
-      // funds.net may live on either `net` (post-fix backend field)
-      // or fallback to the funds-card derivation if older payloads
-      // still come through.
+      // The /api/funds payload renames broker's `net` → `avail_margin`
+      // (see backend/api/routes/funds.py _COL_MAP) so the per-account
+      // 'Net' here reads from .avail_margin, NOT .net.
       const fundsRow = rawFunds.find(r => r.account === acct);
-      const net = Number(fundsRow?.net)
-        || ((Number(fundsRow?.cash) || 0) + (Number(fundsRow?.collateral) || 0) - (Number(fundsRow?.used_margin) || 0));
+      const net = Number(fundsRow?.avail_margin) || 0;
       const pos_m2m = rawPositions
         .filter(r => r.account === acct)
         .reduce((s, r) => s + (Number(r.unrealised) || 0), 0);
+      // Use cur_val (broker's pre-computed qty × LTP) instead of
+      // recomputing — matches what the Holdings detail grid's
+      // "Value" column shows so the NAV grid TOTAL reconciles
+      // against summing the Holdings Value column.
       const holdings_mtm = rawHoldings
         .filter(r => r.account === acct)
-        .reduce((s, r) => {
-          const qty = Number(r.quantity) || Number(r.opening_qty) || 0;
-          const ltp = Number(r.last_price) || 0;
-          return s + (qty * ltp);
-        }, 0);
+        .reduce((s, r) => s + (Number(r.cur_val) || 0), 0);
       return { account: acct, net, pos_m2m, holdings_mtm, nav: net + pos_m2m + holdings_mtm };
     });
     const navTotal = navByAcct.length === 0 ? null : navByAcct.reduce((acc, r) => ({
@@ -1075,15 +1079,15 @@
 <!-- Funds & NAV — account-level card. NAV (default) shows per-account
      wealth (Net + Position M2M + Holdings MTM); Balances shows the
      existing Funds grid (Net, Avail, Util %, Used, Cash, Collateral). -->
-<h2 class="section-heading">Funds &amp; NAV</h2>
+<h2 class="section-heading">NAV and Funds</h2>
 <div class="funds-nav-tabs mb-2">
   <AlgoTabs
     tabs={[
-      { id: 'nav',      label: 'NAV'      },
-      { id: 'balances', label: 'Balances' },
+      { id: 'nav',   label: 'NAV'   },
+      { id: 'funds', label: 'Funds' },
     ]}
     value={fundsNavTab}
-    onChange={(id) => { fundsNavTab = /** @type {'nav'|'balances'} */ (id); }}
+    onChange={(id) => { fundsNavTab = /** @type {'nav'|'funds'} */ (id); }}
     compact={true}
   />
 </div>
@@ -1091,7 +1095,7 @@
   <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
 {/if}
 <div bind:this={navEl}    class="ag-theme-quartz {theme} mb-2 w-full" class:hidden={fundsNavTab !== 'nav'}></div>
-<div bind:this={fundsEl}  class="ag-theme-quartz {theme} mb-2 w-full" class:hidden={fundsNavTab !== 'balances'}></div>
+<div bind:this={fundsEl}  class="ag-theme-quartz {theme} mb-2 w-full" class:hidden={fundsNavTab !== 'funds'}></div>
 
 <!-- Tabs — Positions / Holdings. No account picker here; the page-
      level picker above scopes both tabs uniformly. -->

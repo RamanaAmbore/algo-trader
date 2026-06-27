@@ -129,6 +129,9 @@ async def compute_firm_nav() -> dict:
         errors.append(f"positions: {e}")
 
     # ── Holdings MTM ──────────────────────────────────────────────────
+    # Use `cur_val` (broker's pre-computed qty × LTP, post lot-size
+    # multiplier for MCX) so the NAV total reconciles against summing
+    # the Holdings detail grid's Value column on /performance.
     try:
         hold_dfs = await asyncio.to_thread(fetch_holdings)
         for df in hold_dfs or []:
@@ -138,15 +141,20 @@ async def compute_firm_nav() -> dict:
                 qty = int(row.get("quantity") or row.get("opening_qty") or 0)
                 if qty == 0:
                     continue
-                sym = str(row.get("tradingsymbol") or "")
-                if not sym:
-                    continue
-                lp = _ticker.get_ltp_by_sym(sym) or 0.0
-                if lp <= 0:
-                    lp = float(row.get("last_price") or 0.0)
-                if lp <= 0:
-                    continue
-                holdings_mtm += qty * lp
+                cv = float(row.get("cur_val") or 0.0)
+                if cv == 0:
+                    # Fallback to qty × LTP for adapters that don't
+                    # populate cur_val. Same chain as v1.
+                    sym = str(row.get("tradingsymbol") or "")
+                    if not sym:
+                        continue
+                    lp = _ticker.get_ltp_by_sym(sym) or 0.0
+                    if lp <= 0:
+                        lp = float(row.get("last_price") or 0.0)
+                    if lp <= 0:
+                        continue
+                    cv = qty * lp
+                holdings_mtm += cv
                 acct = str(row.get("account") or "")
                 if acct and acct not in accounts_in:
                     accounts_in.append(acct)
