@@ -202,22 +202,52 @@ def get_nearest_time(from_hour: int = 9, from_min: int = 0, to_hour: int = 23, t
         return fixed_datetime.strftime("%d-%b-%y %H:%M")
 
 
-def mask_column(col):
-    return col.astype(str).str.replace(r'\d', '#', regex=True)
-
-
 _MASK_RE = re.compile(r'\d')
 
 
 def mask_account(s: str) -> str:
-    """Scalar account-mask: 'ZG0790' → 'ZG####'. Equivalent to
-    `mask_column(pd.Series([s]))[0]` but avoids the per-call pandas
-    Series allocation. Used in hot paths (per-postback log lines,
-    per-row order serialization) where the pandas variant added a
-    measurable allocation overhead at 10+ postbacks/sec."""
+    """Scalar account-mask: keeps the FIRST digit verbatim, masks the
+    rest with `#`. Examples:
+        'ZG0790' → 'ZG0###'
+        'ZJ6294' → 'ZJ6###'
+        'DH3747' → 'DH3###'
+        'DH6847' → 'DH6###'
+        'GR87DF' → 'GR8##F'   (only digits masked; letters preserved)
+
+    Why preserve the first digit: operator runs multiple accounts
+    from the same broker (DH3747 + DH6847 are both Dhan). The
+    previous mask replaced ALL digits with `#`, so both Dhan
+    accounts collapsed to the SAME masked string 'DH####'. Downstream
+    de-duplication (e.g. NAV grid's `new Set(...)`) treated them as
+    one account and merged their rows, hiding one Dhan account from
+    the visible breakdown. Preserving the first digit gives every
+    same-broker account a unique mask while still hiding the bulk
+    of the digits.
+
+    Audit traceability for masked logs is preserved — the first
+    digit alone isn't enough to uniquely identify the operator's
+    account to an outsider, but is enough for the operator to
+    distinguish their own accounts in the masked view."""
     if not s:
         return ""
-    return _MASK_RE.sub('#', s)
+    # Mask all digits EXCEPT the first one (left-to-right). Letters
+    # are never masked.
+    out = []
+    seen_first_digit = False
+    for ch in s:
+        if ch.isdigit():
+            if not seen_first_digit:
+                out.append(ch)
+                seen_first_digit = True
+            else:
+                out.append('#')
+        else:
+            out.append(ch)
+    return ''.join(out)
+
+
+def mask_column(col):
+    return col.astype(str).map(mask_account)
 
 
 def add_comma_to_df_numbers(df):
