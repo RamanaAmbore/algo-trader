@@ -1,4 +1,5 @@
 import pandas as pd
+import time as _time
 
 from backend.shared.helpers.connections import Connections
 from backend.shared.helpers.decorators import for_all_accounts
@@ -12,6 +13,52 @@ logger = get_logger(__name__)
 # operator can confirm whether `5b995ccb` is correct or overcounts.
 # Reset on process restart.
 _KITE_VALUE_UNIT_LOGGED = False
+
+# Per-account fetch-result tracker — the navbar broker-health badge
+# reads from this to flag accounts whose latest fetch attempt FAILED
+# (even though the connection object is still in Connections.conn).
+# Operator: "when connection issue there in groww, I still 5/5 in
+# navbar instead 4/5 as one account connection has issue."
+#
+# Shape per account:
+#   { 'last_ok_at':   float (unix ts) | 0,   # most recent successful call
+#     'last_fail_at': float (unix ts) | 0,   # most recent failed call
+#     'last_fail_msg': str }
+# An account is healthy when last_ok_at >= last_fail_at OR there's
+# no recorded attempt yet (never tried = assume healthy).
+_FETCH_HEALTH: dict[str, dict] = {}
+
+
+def _record_fetch(account: str, ok: bool, error: str = "") -> None:
+    """Record one fetch attempt's outcome. Called from every
+    per-account broker API wrapper (fetch_holdings / fetch_positions /
+    fetch_margins) on both success and failure paths so the per-account
+    health state stays current."""
+    if not account:
+        return
+    e = _FETCH_HEALTH.setdefault(account, {
+        "last_ok_at": 0.0, "last_fail_at": 0.0, "last_fail_msg": ""
+    })
+    now = _time.time()
+    if ok:
+        e["last_ok_at"] = now
+    else:
+        e["last_fail_at"] = now
+        e["last_fail_msg"] = str(error)[:200]
+
+
+def is_account_healthy(account: str) -> bool:
+    """True iff the most recent fetch for this account succeeded (or
+    no attempt yet)."""
+    e = _FETCH_HEALTH.get(account)
+    if not e:
+        return True  # never tried — give benefit of the doubt
+    return e["last_ok_at"] >= e["last_fail_at"]
+
+
+def fetch_health_snapshot() -> dict[str, dict]:
+    """Read-only copy of the per-account health map."""
+    return {k: dict(v) for k, v in _FETCH_HEALTH.items()}
 
 
 @for_all_accounts
@@ -32,15 +79,18 @@ def fetch_holdings(connections=Connections, account=None, kite=None, broker=None
             rows = kite.holdings()
         if rows is None:
             df_holdings.attrs['fetch_failed'] = True
+            _record_fetch(account, ok=False, error="broker.holdings() returned None")
             return df_holdings
         df_holdings = pd.DataFrame(rows)
 
         if not df_holdings.empty:
             df_holdings["account"] = account
             df_holdings["type"] = "H"
+        _record_fetch(account, ok=True)
     except Exception as e:
         logger.error(f"[{account}] Failed to fetch holdings: {e}")
         df_holdings.attrs['fetch_failed'] = True
+        _record_fetch(account, ok=False, error=str(e))
 
     # Calculated columns — guard against an empty / fetch-failed frame
     # (broker 502 / 503 outages leave df_holdings empty and skipping the
@@ -152,8 +202,10 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
             net_rows = kite.positions()["net"]
         if net_rows is None:
             df_positions.attrs['fetch_failed'] = True
+            _record_fetch(account, ok=False, error="broker.positions() returned None")
             return df_positions
         df_positions = pd.DataFrame(net_rows)
+        _record_fetch(account, ok=True)
         # ── One-time diagnostic — verifies Kite ships day_buy_value in
         # lot-units (lots × price) as `5b995ccb` assumes, NOT in absolute
         # ₹ (lots × multiplier × price). The Jun 26 audit could not
@@ -230,6 +282,7 @@ def fetch_positions(connections=Connections, account=None, kite=None, broker=Non
     except Exception as e:
         logger.error(f"[{account}] Failed to fetch positions: {e}")
         df_positions.attrs['fetch_failed'] = True
+        _record_fetch(account, ok=False, error=str(e))
         return df_positions
 
     if df_positions.empty:
@@ -644,8 +697,10 @@ def fetch_margins(connections=Connections, account=None, kite=None, broker=None)
         if not df_margins.empty:
             df_margins["account"] = account
             df_margins["type"] = "C"
+        _record_fetch(account, ok=True)
     except Exception as e:
         logger.error(f"[{account}] Failed to fetch margins: {e}")
+        _record_fetch(account, ok=False, error=str(e))
 
     return df_margins
 

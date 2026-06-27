@@ -148,11 +148,24 @@ async def _reload_connections() -> None:
 
 
 def _loaded_accounts() -> set[str]:
-    """Account codes currently in the Connections singleton — used to
-    flag rows as 'loaded' vs 'not yet picked up'."""
+    """Account codes considered HEALTHY: connection object exists in
+    the Connections singleton AND the most recent broker fetch for
+    this account succeeded.
+
+    Operator: 'when connection issue there in groww, I still 5/5 in
+    navbar instead 4/5 as one account connection has issue.' The
+    previous implementation flagged loaded=True as soon as the
+    Connection object was constructed at startup, even if every
+    subsequent API call failed (e.g. Groww 403 / Dhan rate-limit).
+    Per-account fetch results are now tracked in
+    broker_apis._FETCH_HEALTH and an account is only loaded when its
+    latest attempt succeeded — failing accounts drop out of the
+    navbar count, surfacing the outage at a glance."""
     try:
         from backend.shared.helpers.connections import Connections
-        return set(Connections().conn.keys())
+        from backend.shared.helpers.broker_apis import is_account_healthy
+        in_conn = set(Connections().conn.keys())
+        return {a for a in in_conn if is_account_healthy(a)}
     except Exception:
         return set()
 
