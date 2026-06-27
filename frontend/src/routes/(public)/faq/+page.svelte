@@ -96,12 +96,15 @@
     /** @type {any} */
     const win = window;
     // Dynamically load mermaid — no npm package needed, CDN via script tag.
-    // SRI hash computed from mermaid@11.15.0 (jsDelivr canonical build).
-    // crossorigin="anonymous" is required for SRI enforcement.
+    // URL pinned to the exact version whose SRI hash is below; otherwise
+    // jsDelivr's "@11" floating tag would resolve to a newer build whose
+    // hash no longer matches the integrity attribute and the browser would
+    // silently refuse to execute the script (operator: "mermaid flow
+    // charts are not showing up" — was this exact failure mode).
     if (!win.mermaid) {
       const loaded = await new Promise((resolve) => {
         const s = document.createElement('script');
-        s.src = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
+        s.src = 'https://cdn.jsdelivr.net/npm/mermaid@11.15.0/dist/mermaid.min.js';
         s.crossOrigin = 'anonymous';
         s.integrity = 'sha384-yQ4mmBBT+vhTAwjFH0toJXNYJ6O4usWnt6EPIdWwrRvx2V/n5lXuDZQwQFeSFydF';
         const timer = setTimeout(() => { s.onerror?.('timeout'); }, 8000);
@@ -186,8 +189,9 @@
 
 <svelte:window onkeydown={(e) => { if (_zoomedDiagram && e.key === 'Escape') _closeZoom(); }} />
 
+<h1 class="pub-page-heading">FAQ</h1>
+
 <div class="pub-card rounded-lg shadow-sm p-5 pt-4">
-<h1 class="pub-page-heading">Frequently Asked Questions</h1>
 
 <div class="faq-list mb-10">
   {#each faqs as faq, i}

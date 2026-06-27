@@ -32,19 +32,5 @@
   <meta name="twitter:image:alt" content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
 </svelte:head>
 
-<style>
-  /* .perf-heading retired — migrated to canonical .pub-page-heading
-     in app.css. Local wrapper kept for the padded top inset that
-     matches the page's first-section spacing. */
-  .perf-heading-wrap {
-    padding: 1.25rem 1.25rem 0;
-  }
-  @media (max-width: 600px) {
-    .perf-heading-wrap { padding: 1rem 0.75rem 0; }
-  }
-</style>
-
-<div class="perf-heading-wrap">
-  <h1 class="pub-page-heading">Live Portfolio Performance</h1>
-</div>
+<h1 class="pub-page-heading">Live Portfolio Performance</h1>
 <PerformancePage />

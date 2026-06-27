@@ -39,8 +39,9 @@
   })}<\/script>`}
 </svelte:head>
 
+<h1 class="pub-hero-title about-hero">About RamboQuant Analytics LLP</h1>
+
 <div class="about-card">
-  <h1 class="pub-hero-title">About RamboQuant Analytics LLP</h1>
   <!-- Stat strip — four cells matching the home page trust strip so
        the trust signal (XIRR / years / creds / LLP) reads identically
        across both public entry points. -->
@@ -90,7 +91,13 @@
 
 <style>
   /* .about-heading retired — migrated to canonical .pub-hero-title
-     in app.css so /, /about share one hero treatment. */
+     in app.css so /, /about share one hero treatment. The hero now
+     sits ABOVE the .about-card (was previously squeezed inside it)
+     so the heading reads as a page title, not a card title. */
+  .about-hero {
+    margin: 1.5rem 0 1rem;
+    padding: 0 1rem;
+  }
 
   /* ── Card shell — public palette tokens ────────────────────────────────── */
   .about-card {
