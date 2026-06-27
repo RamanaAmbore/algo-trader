@@ -5859,8 +5859,22 @@
     flex-wrap: wrap;
     gap: 0.5rem;
   }
+  /* Standalone wrapper used ONLY on /pulse (showSummary + showFunds
+     both false → no "Symbols" header to host the picker inline).
+     `display: contents` removes the wrapper from layout entirely so:
+       - when StrategyPicker renders nothing (no strategies loaded /
+         operator hasn't set any up — the common case), there is
+         ZERO vertical footprint between the page-header and the
+         first .mp-bucket-wrap (Pinned/Watchlist card)
+       - when the picker DOES render, `.sp-wrap` flows directly into
+         .mp-flat-wrap's flex column at its natural ~1.7rem height
+         without the wrapper contributing extra margin
+     Operator: "pulse the gap after header is still not reduced" —
+     prior CSS edits (page-header, mp-toptab, mp-bucket-head) were
+     nibbling pixels while this empty wrapper kept reserving ~30 px
+     of gap on every /pulse render. */
   .mp-picker-standalone {
-    margin-bottom: 0.4rem;
+    display: contents;
   }
 
   /* Per-source subtotals strip retired — the block was commented
