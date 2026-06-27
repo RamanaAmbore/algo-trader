@@ -152,7 +152,7 @@
        both cards and still want a way out. -->
   <section class="closer">
     <p class="closer-line">Questions? <a href="/contact">Talk to us</a> · already a partner? <a href="/signin">Sign in</a></p>
-    <p class="closer-disclaimer">Investment in markets is subject to risk. Past performance is not indicative of future results.</p>
+    <p class="closer-disclaimer pub-callout">Investment in markets is subject to risk. Past performance is not indicative of future results.</p>
   </section>
 </div>
 
@@ -429,10 +429,15 @@
     text-decoration: none;
   }
   .closer-line a:hover { text-decoration: underline; }
+  /* Italic + size kept local; frame + bg now come from the shared
+     .pub-callout class so the SEBI risk note reads with the same
+     weight as /performance's strategy thesis and /about's closing
+     statement. */
   .closer-disclaimer {
     font-size: 0.62rem;
-    color: #6b7894;
-    margin: 0;
+    margin: 1rem auto 0;
+    max-width: 32rem;
     font-style: italic;
+    text-align: center;
   }
 </style>

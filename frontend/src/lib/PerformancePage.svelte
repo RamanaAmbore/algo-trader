@@ -1017,7 +1017,7 @@
        already know the strategy, but seeing it consistently above
        the grid reads as "this is what we do" not "this is internal
        ops". Hidden on the algo dashboard (compactHeader=true). -->
-  <div class="perf-strategy">
+  <div class="perf-strategy pub-callout">
     <span class="perf-strategy-lbl">Strategy:</span>
     <span class="perf-strategy-val">Long stocks + algo-executed derivatives overlay</span>
     <span class="perf-strategy-sep" aria-hidden="true">·</span>
@@ -1247,23 +1247,14 @@
     margin-bottom: 0.25rem;
   }
 
-  /* Strategy thesis — single-line frame above the data grids on the
-     public side. Distinguished from the data grids below via a
-     slightly stronger uniform 1px border (#d4c89f) + warmer panel
-     background (#f0ead8). Reads as a typographic callout (prose,
-     not data) without a left-edge accent — matches Bloomberg /
-     TradingView / Carta editorial-callout convention. Operator
-     directive: "no left-edge accent on cards" preserved — every
-     side carries the same frame weight. */
+  /* Strategy thesis — chrome (bg + border + radius + padding +
+     color) now comes from the shared global `.pub-callout` class in
+     app.css. Only the page-local metrics (margin, font-size,
+     line-height) stay scoped. */
   .perf-strategy {
-    background: #f0ead8;
-    border: 1px solid #d4c89f;
-    border-radius: 0.3rem;
-    padding: 0.45rem 0.75rem;
     margin-bottom: 0.6rem;
     font-size: 0.75rem;
     line-height: 1.4;
-    color: #1e3050;
   }
   .perf-strategy-lbl {
     font-weight: 700;

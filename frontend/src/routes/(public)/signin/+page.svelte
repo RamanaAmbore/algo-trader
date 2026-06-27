@@ -261,7 +261,7 @@
             </div>
           </div>
 
-          <p class="text-[0.6rem] text-muted mt-2">
+          <p class="pub-banner-info text-[0.62rem] mt-2 px-2 py-1 rounded">
             Verify your email after registering, then wait for admin approval before signing in.
           </p>
 

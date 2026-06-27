@@ -74,7 +74,7 @@
 
     <p>With a long-term portfolio XIRR exceeding 22%, Rambo's approach blends high-conviction stock picks with strategic covered calls and intelligent derivatives positioning. Every move is grounded in deep analytics, rigorous risk management, and an unwavering commitment to the power of compounding.</p>
 
-    <div class="closing-statement">
+    <div class="closing-statement pub-callout">
       RamboQuant Analytics is not for those content with average, index-like returns. It's built for partners who demand more — smarter strategies, sharper execution, and sustainable wealth creation.
     </div>
   </div>
@@ -245,10 +245,11 @@
     color: #fff;
   }
 
+  /* Italic font + size kept local; frame + bg now come from
+     the shared .pub-callout class in app.css. */
   .closing-statement {
     font-size: 0.95rem;
     font-weight: 600;
-    color: #1a2744;
     line-height: 1.65;
     margin-top: 1.75rem;
     font-style: italic;

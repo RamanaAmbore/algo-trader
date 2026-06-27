@@ -1289,6 +1289,19 @@
     border: 1px solid #a8c098;
     color: #2f4a26;
   }
+  /* Public-site prose callout — warm cream frame for context-framing
+     prose blocks (strategy thesis, mission statements, risk
+     disclaimers). Distinguishes prose from data without a left-edge
+     accent. First used by .perf-strategy on /performance; promoted
+     to a shared class so /about closing-statement + landing-page
+     risk disclaimer can share the same tokens. */
+  .pub-callout {
+    background: #f0ead8;
+    border: 1px solid #d4c89f;
+    border-radius: 0.3rem;
+    padding: 0.45rem 0.75rem;
+    color: #1e3050;
+  }
 }
 
 /* ── Fullscreen card pattern (algo terminal) ────────────────────────────
