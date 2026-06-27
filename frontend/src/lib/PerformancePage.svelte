@@ -741,11 +741,16 @@
     // column the operator clicks on.
     const isTotalRow = (/** @type {any} */ r) =>
       r?.tradingsymbol === 'TOTAL' || r?.account === 'TOTAL';
-    const hSummaryBody  = hSummary.filter(r => !isTotalRow(r));
+    // Sort every per-account body by account so the row order matches
+    // across Funds, Positions Summary, Holdings Summary, and the NAV
+    // grid (also sorted below). Operator: "the account order sequence
+    // should be same in all grids."
+    const byAcct = (a, b) => String(a.account || '').localeCompare(String(b.account || ''));
+    const hSummaryBody  = hSummary.filter(r => !isTotalRow(r)).slice().sort(byAcct);
     const hSummaryTotal = hSummary.filter(isTotalRow);
-    const pSummaryBody  = pSummary.filter(r => !isTotalRow(r));
+    const pSummaryBody  = pSummary.filter(r => !isTotalRow(r)).slice().sort(byAcct);
     const pSummaryTotal = pSummary.filter(isTotalRow);
-    const fBody         = fRows.filter(r => !isTotalRow(r));
+    const fBody         = fRows.filter(r => !isTotalRow(r)).slice().sort(byAcct);
     const fTotal        = fRows.filter(isTotalRow);
     updateGrid(holdingsSummaryGrid, hSummaryBody);
     holdingsSummaryGrid.setGridOption('pinnedBottomRowData', hSummaryTotal);
@@ -759,11 +764,15 @@
     fundsGrid.setGridOption('pinnedBottomRowData', fTotal);
     // NAV grid — per-account wealth aggregated from the same three
     // raw arrays. Same arithmetic as scripts/nav_breakdown.py.
+    // Sorted alphabetically so the row order in the NAV grid matches
+    // the Funds grid (also sorted on the backend) and the Summary
+    // grids. Operator: "the account order sequence should be same in
+    // all grids."
     const navAccts = [...new Set([
       ...rawHoldings.filter(keepAcct).map(r => r.account),
       ...rawPositions.filter(keepAcct).map(r => r.account),
       ...rawFunds.filter(keepAcct).map(r => r.account).filter(a => a && a !== 'TOTAL'),
-    ])];
+    ])].sort();
     const navByAcct = navAccts.map(acct => {
       // The /api/funds payload renames broker's `net` → `avail_margin`
       // (see backend/api/routes/funds.py _COL_MAP) so the per-account
