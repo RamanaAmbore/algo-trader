@@ -1,15 +1,40 @@
 """
 NAV calculation — firm-level daily aggregate.
 
-NAV (v1) =  Σ cash      across all funded accounts
-          + Σ positions × last_price
-          + Σ holdings  × last_price
+NAV (v2) =  Σ funds.net                  across all funded accounts
+          + Σ position.unrealised        across open positions
+          + Σ holding.quantity × LTP     across all holdings
+
+Why these three terms (v2 corrects v1, which had two bugs):
+
+1. funds.net — the broker's authoritative "net account value"
+   = cash + collateral_haircut + realized_pnl − utilized_margin
+   It already accounts for margin currently locked in open positions,
+   stock collateral haircuts, and intraday realized P&L. v1 read
+   `row.get("live_cash")` / `row.get("cash")` — neither column exists
+   in the flattened margins DataFrame (the adapter prefixes
+   available.cash → `avail cash` and available.live_balance →
+   `avail live_balance` with a space). Net result: cash_total was
+   always 0. Using `net` gives the broker's single-source-of-truth
+   for cash-equivalent value.
+
+2. position.unrealised — the broker's already-computed unrealized
+   P&L per position. v1 used `qty × LTP` which is the NOTIONAL value
+   of an F&O contract (your obligation), NOT what the position is
+   worth to you. For futures and short options, qty × LTP is the
+   total contract value (lakhs); your actual exposure is just the
+   M2M change since entry. v2 uses the `unrealised` field that
+   broker_apis.fetch_positions surfaces (Kite computes it natively).
+
+3. holdings qty × LTP — kept as v1. You DO own the shares, so the
+   full mark-to-market value is your wealth. Pledged shares are
+   already counted via funds.net (haircut collateral), so non-pledged
+   holdings are what fetch_holdings returns.
 
 LTPs come from the same fallback chain the strategy unrealised
 calc uses: KiteTicker tick_map (zero broker quota for subscribed
-symbols) → batched broker.ltp() for the rest. Symbols with no
-LTP available contribute 0 to the MTM (under-estimate is safer
-than refusing to compute).
+symbols) → row.last_price. Symbols with no LTP available contribute
+0 to the MTM (under-estimate is safer than refusing to compute).
 
 Caller responsibility:
 - Pass an active asyncio session (not running on the chase loop
@@ -61,28 +86,32 @@ async def compute_firm_nav() -> dict:
 
     conn_keys = list(Connections().conn.keys())
 
-    # ── Funds (cash + margin) ─────────────────────────────────────────
+    # ── Funds (net account value per broker) ──────────────────────────
+    # `net` is the broker's authoritative "your account is worth this":
+    #   net = cash + collateral_haircut + realized_pnl − utilized_margin
+    # Already nets out margin currently locked in open positions and
+    # stock-collateral haircuts. Open-position unrealized P&L is added
+    # separately below via positions.unrealised.
     try:
         funds_dfs = await asyncio.to_thread(fetch_margins)
         for df in funds_dfs or []:
             if df is None or df.empty:
                 continue
             for _, row in df.iterrows():
-                # Prefer cash (raw availability); fall back to net (margin
-                # after open-position SPAN). The two diverge when positions
-                # are open — cash is the conservative number for NAV
-                # (positions_mtm + cash double-counts variation margin
-                # otherwise).
-                live_cash = float(row.get("live_cash") or 0.0)
-                cash = live_cash if live_cash else float(row.get("cash") or 0.0)
-                cash_total += cash
+                net_val = float(row.get("net") or 0.0)
+                cash_total += net_val
                 acct = str(row.get("account") or "")
                 if acct and acct != "TOTAL" and acct not in accounts_in:
                     accounts_in.append(acct)
     except Exception as e:
         errors.append(f"funds: {e}")
 
-    # ── Positions MTM ─────────────────────────────────────────────────
+    # ── Positions unrealized P&L ─────────────────────────────────────
+    # Broker fills `unrealised` per position natively (Kite) — same
+    # value our chase / agent engine reads. Using it directly avoids
+    # the F&O notional-vs-value bug: `qty × LTP` would treat a
+    # 50-contract NIFTY future as worth its full notional (₹12L+) when
+    # the actual exposure is just (LTP − avg_price) × qty.
     try:
         pos_dfs = await asyncio.to_thread(fetch_positions)
         for df in pos_dfs or []:
@@ -92,17 +121,7 @@ async def compute_firm_nav() -> dict:
                 qty = int(row.get("quantity") or 0)
                 if qty == 0:
                     continue
-                sym = str(row.get("tradingsymbol") or "")
-                if not sym:
-                    continue
-                # Prefer ticker LTP (live) then row's last_price (broker
-                # MTM at fetch time). Both are signed via qty automatically.
-                lp = _ticker.get_ltp_by_sym(sym) or 0.0
-                if lp <= 0:
-                    lp = float(row.get("last_price") or 0.0)
-                if lp <= 0:
-                    continue
-                positions_mtm += qty * lp
+                positions_mtm += float(row.get("unrealised") or 0.0)
                 acct = str(row.get("account") or "")
                 if acct and acct not in accounts_in:
                     accounts_in.append(acct)
@@ -137,9 +156,9 @@ async def compute_firm_nav() -> dict:
     nav = cash_total + positions_mtm + holdings_mtm
     return {
         "nav": round(nav, 2),
-        "cash_total": round(cash_total, 2),
-        "positions_mtm": round(positions_mtm, 2),
-        "holdings_mtm": round(holdings_mtm, 2),
+        "cash_total": round(cash_total, 2),           # = Σ funds.net (v2)
+        "positions_mtm": round(positions_mtm, 2),     # = Σ position.unrealised (v2)
+        "holdings_mtm": round(holdings_mtm, 2),       # = Σ qty × LTP per holding
         "accounts": sorted(accounts_in),
         "errors": errors,
     }

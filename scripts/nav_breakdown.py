@@ -38,7 +38,12 @@ async def main() -> None:
     pos_rows_by_acct      = defaultdict(int)
     hold_rows_by_acct     = defaultdict(int)
 
-    # ── Funds ──────────────────────────────────────────────────────────
+    # ── Funds (broker's net account value) ────────────────────────────
+    # Use `net` — the broker's authoritative account value (cash +
+    # collateral_haircut + realized_pnl − utilized_margin). v1 read
+    # `live_cash` and `cash` which don't exist in the flattened
+    # margins DataFrame; they're `avail cash` / `avail live_balance`
+    # with a space prefix. Either way `net` is more meaningful for NAV.
     print("Fetching funds…", file=sys.stderr)
     funds_dfs = await asyncio.to_thread(fetch_margins)
     for df in funds_dfs or []:
@@ -49,11 +54,13 @@ async def main() -> None:
             if not acct or acct == "TOTAL":
                 continue
             accounts.add(acct)
-            live_cash = float(row.get("live_cash") or 0.0)
-            cash = live_cash if live_cash else float(row.get("cash") or 0.0)
-            cash_by_acct[acct] += cash
+            cash_by_acct[acct] += float(row.get("net") or 0.0)
 
-    # ── Positions ──────────────────────────────────────────────────────
+    # ── Positions (broker's unrealised P&L) ───────────────────────────
+    # Use `unrealised` directly — the broker (Kite) computes it natively
+    # and surfaces it on every position row. Using `qty × LTP` would
+    # mis-value F&O positions at their notional rather than their actual
+    # exposure to the operator.
     print("Fetching positions…", file=sys.stderr)
     pos_dfs = await asyncio.to_thread(fetch_positions)
     for df in pos_dfs or []:
@@ -63,19 +70,11 @@ async def main() -> None:
             qty = int(row.get("quantity") or 0)
             if qty == 0:
                 continue
-            sym = str(row.get("tradingsymbol") or "")
-            if not sym:
-                continue
-            lp = _ticker.get_ltp_by_sym(sym) or 0.0
-            if lp <= 0:
-                lp = float(row.get("last_price") or 0.0)
-            if lp <= 0:
-                continue
             acct = str(row.get("account") or "")
             if not acct:
                 continue
             accounts.add(acct)
-            positions_mtm_by_acct[acct] += qty * lp
+            positions_mtm_by_acct[acct] += float(row.get("unrealised") or 0.0)
             pos_rows_by_acct[acct] += 1
 
     # ── Holdings ───────────────────────────────────────────────────────
@@ -108,7 +107,7 @@ async def main() -> None:
         return f"{v:>15,.2f}"
 
     print()
-    print(f"{'Account':<10}{'Cash':>17}{'Pos MTM':>17}{'Hold MTM':>17}{'NAV':>17}{'  Pos#':>7}{'  Hold#':>7}")
+    print(f"{'Account':<10}{'Net':>17}{'Pos M2M':>17}{'Hold MTM':>17}{'NAV':>17}{'  Pos#':>7}{'  Hold#':>7}")
     print("-" * 90)
     firm_cash = firm_pos = firm_hold = 0.0
     for acct in sorted(accounts):
@@ -126,7 +125,7 @@ async def main() -> None:
     firm_nav = firm_cash + firm_pos + firm_hold
     print(f"{'TOTAL':<10}{fmt(firm_cash)}{fmt(firm_pos)}{fmt(firm_hold)}{fmt(firm_nav)}")
     print()
-    print(f"firm_nav = cash_total + positions_mtm + holdings_mtm")
+    print(f"firm_nav = Σ funds.net  +  Σ position.unrealised  +  Σ qty × LTP (holdings)")
     print(f"         = {firm_cash:,.2f} + {firm_pos:,.2f} + {firm_hold:,.2f}")
     print(f"         = ₹{firm_nav:,.2f}")
 
