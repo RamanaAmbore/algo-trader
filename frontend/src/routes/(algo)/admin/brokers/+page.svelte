@@ -74,16 +74,22 @@
       { key: 'totp_token', label: 'TOTP seed',   secret: true,  required: true },
     ],
     groww: [
-      // Groww supports two programmatic auth modes (api_key + api_secret
-      // OR api_key + TOTP seed) PLUS a legacy 24 h dashboard token. The
-      // form shows all three; supply api_key + api_secret for set-and-
-      // forget auto-refresh, OR paste a fresh access_token every day if
-      // you prefer the manual flow. Leaving a field blank on Edit means
-      // "no change" (the connection wrapper picks whichever's set).
-      { key: 'api_key',      label: 'API key',     secret: false, required: false },
-      { key: 'api_secret',   label: 'API secret',  secret: true,  required: false },
-      { key: 'totp_token',   label: 'TOTP seed (alt to secret)', secret: true, required: false },
-      { key: 'access_token', label: 'Access token (24 h manual fallback)', secret: true, required: false },
+      // Groww's only unattended auth path is the TOTP flow:
+      //   GrowwAPI.get_access_token(api_key, totp=<code from totp_seed>)
+      // The 'api_key + api_secret' approval flow was retired (required
+      // manual daily approval on Groww's web UI) and the 24h access_token
+      // fallback was a stopgap when TOTP failed. Both are gone — operator
+      // confirmed: "you are supposed to use TOTP flow."
+      //
+      // Field mapping for Groww:
+      //   - "TOTP token" (the long JWT from Groww's developer dashboard)
+      //     maps to BrokerAccount.api_key on the backend.
+      //   - "TOTP key" (the base32 seed paired with that JWT in the same
+      //     dashboard panel) maps to BrokerAccount.totp_token_enc.
+      // Operator names them "totp token" / "totp key" to match Groww's
+      // dev portal labelling, NOT our internal model field names.
+      { key: 'api_key',    label: 'TOTP token (JWT)', secret: true, required: true },
+      { key: 'totp_token', label: 'TOTP key (base32 seed)', secret: true, required: true },
     ],
     dhan: [
       { key: 'client_id',  label: 'Client ID',  secret: false, required: true },
