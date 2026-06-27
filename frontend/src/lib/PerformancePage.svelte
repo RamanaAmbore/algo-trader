@@ -1299,30 +1299,6 @@
     .perf-strategy-sep  { display: none; }
   }
 
-  /* Mobile-only swipe hint — ag-Grid handles horizontal scroll natively
-     but first-time visitors on phones may not realise the grid extends
-     past the viewport edge. A small italic hint above the grids on
-     narrow screens makes the affordance discoverable without changing
-     the grid itself. Hidden on tablet+ where every column fits.
-
-     Scope: `.perf-strategy ~ ...` confines this to the public layout
-     (where the strategy strip is rendered) — the algo dashboard
-     suppresses .perf-strategy via compactHeader=true, so its section
-     headings never pick up the suffix even though they share the
-     same .section-heading class. */
-  @media (max-width: 600px) {
-    :global(.perf-strategy ~ section .section-heading)::after,
-    :global(.perf-strategy ~ .funds-heading-row .funds-heading-title)::after {
-      content: ' · swipe →';
-      font-size: 0.6rem;
-      font-weight: 500;
-      color: #8a98b0;
-      font-style: italic;
-      letter-spacing: 0;
-      text-transform: none;
-    }
-  }
-
   .hidden { display: none; }
 
   /* ── Page banners ────────────────────────────────────────────────
