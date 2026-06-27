@@ -344,9 +344,19 @@
   // cellRenderer for the account column — handles maskAccounts only.
   // The per-account stripe lives on the cell's left border (via
   // cellStyle injecting --acct-stripe); no dot decoration anymore.
+  //
+  // Mask logic: when the backend has already masked the string
+  // (detected via the presence of `#`), trust it and pass through.
+  // Re-applying /\d/g would corrupt the ordinal digit in masks like
+  // 'D1####' / 'D2####' (operator: 'it is showing D##### for both
+  // dhan accounts on frontend'). Only when the string has no `#`
+  // (admin path, unmasked source) do we apply the regex as a
+  // belt-and-suspenders defence against an accidental backend
+  // leak.
   function acctCellRenderer(params) {
-    const raw     = params.value || '';
-    return maskAccounts && raw ? String(raw).replace(/\d/g, '#') : raw;
+    const raw = params.value || '';
+    if (!maskAccounts || !raw) return raw;
+    return String(raw).includes('#') ? raw : String(raw).replace(/\d/g, '#');
   }
 
   // cellStyle for account column — injects a CSS custom property that the
@@ -1073,7 +1083,12 @@
       <div class="acct-multi">
         <AccountMultiSelect
           bind:value={selectedAccounts}
-          options={accounts.map(a => ({ value: a, label: maskAccounts ? String(a ?? '').replace(/\d/g, '#') : a }))}
+          options={accounts.map(a => ({
+            value: a,
+            label: !maskAccounts || !a
+              ? a
+              : (String(a).includes('#') ? String(a) : String(a).replace(/\d/g, '#'))
+          }))}
           theme={compactHeader ? 'dark' : 'light'} />
       </div>
     {/if}
