@@ -210,7 +210,7 @@
 
 <AutomationTabs />
 
-<section class="bucket-card bucket-card-data p-3 mb-3"
+<section class="bucket-card p-3 mb-3"
   class:fs-card-on={_fsTemplates}
   class:is-collapsed={_colTemplates}>
   <div class="bucket-header">

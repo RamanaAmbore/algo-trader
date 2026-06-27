@@ -55,7 +55,7 @@
 
 <AutomationTabs />
 
-<section class="bucket-card bucket-card-activity"
+<section class="bucket-card"
   class:fs-card-on={_fsActivity}
   class:is-collapsed={_colActivity}>
   <div class="bucket-header">

@@ -302,7 +302,7 @@
      modal resolves to one of these per (side × instrument-type) combo.
      Click a cell to filter the list to that scope below + jump to the
      active row when one exists. -->
-<section class="bucket-card bucket-card-data p-3 mb-3">
+<section class="bucket-card p-3 mb-3">
   <div class="tpl-matrix-head">
     <span class="mp-section-label">Side-default coverage</span>
     <InfoHint popup={true} align="right"
@@ -331,7 +331,7 @@
 </section>
 
 <!-- Filter strip + create button -->
-<section class="bucket-card bucket-card-data p-3 mb-3"
+<section class="bucket-card p-3 mb-3"
   class:fs-card-on={_fsTemplates}
   class:is-collapsed={_colTemplates}>
   <div class="bucket-header">
@@ -551,7 +551,7 @@
 
 <!-- Create-new form (separate from edit so they don't fight over state) -->
 {#if creatingNew}
-  <section id="tpl-create-form" class="bucket-card bucket-card-data p-3 mt-3">
+  <section id="tpl-create-form" class="bucket-card p-3 mt-3">
     <h2 class="mp-section-label mb-2">Create custom template</h2>
     <div class="tpl-form">
       <label class="tpl-field">

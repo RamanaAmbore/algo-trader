@@ -1736,7 +1736,7 @@
        stay mounted (hidden, not {#if}) so internal state — including
        PnlAnalysis filters + benchmark series — persists across tab
        flips. -->
-  <section class="row1-col row1-col-chart"
+  <section class="bucket-card row1-col-chart"
     class:fs-card-on={_fsEquityCurve}
     class:is-collapsed={_colEquityCurve}>
     <div class="card-header-row">
@@ -1943,7 +1943,7 @@
      equity card to the news strip. -->
 
 <!-- Row 3: Market news strip — single column. -->
-<div class="dash-row3"
+<div class="bucket-card dash-row3"
   class:fs-card-on={_fsNews}
   class:is-collapsed={_colNews}>
   <div class="row3-header">
@@ -1980,7 +1980,7 @@
 <!-- Agent activity — same CollapseButton pattern as every other card.
      Default collapsed; CollapseButton restores from localStorage if
      the operator's last state was expanded. -->
-<section class="dash-agent"
+<section class="bucket-card dash-agent"
   class:fs-card-on={_fsAgent}
   class:is-collapsed={_colAgent}>
   <div class="card-header-row dash-agent-summary">
@@ -2101,15 +2101,10 @@
       grid-template-columns: 1fr 1fr;
     }
   }
-  .row1-col {
-    min-width: 0;
-    padding: 0.65rem 0.75rem 0.6rem;
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
-    border: 1.5px solid rgba(255, 255, 255, 0.10);
-    border-radius: 6px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  }
+  /* .row1-col chrome migrated to canonical .bucket-card (which carries
+     the same gradient, border, radius, shadow + the amber 3px left
+     accent that every other card now uses). Only the local class is
+     kept for `.row1-col-chart .card-body` positioning below. */
   /* Tabbed Capital | Equity card — tab buttons now rendered by AlgoTabs
      (global .algo-tab rules in app.css). */
   .cap-eq-tabbed { display: flex; flex-direction: column; }
@@ -2376,31 +2371,14 @@
      .dash-pnl-full retired — PnlAnalysis moved into the
      Intraday / Performance tabbed card. */
 
-  /* Agent log */
+  /* Agent log — chrome now lives on the .bucket-card outer class.
+     Local rules cover only the margin + the inner header-row layout
+     (which uses the same `.dash-agent-summary` class but no longer
+     duplicates the card chrome that .bucket-card supplies). */
   .dash-agent {
     margin-top: 0.6rem;
   }
-  .dash-agent-summary {
-    display: flex;
-    align-items: center;
-    gap: 0.55rem;
-    cursor: pointer;
-    list-style: none;
-    user-select: none;
-    padding: 0.5rem 0.7rem;
-    border-radius: 6px;
-    border: 1.5px solid rgba(255, 255, 255, 0.10);
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                inset 0 1px 0 rgba(255, 255, 255, 0.08);
-    transition: border-color 0.15s, box-shadow 0.15s;
-  }
   .dash-agent-summary::-webkit-details-marker { display: none; }
-  .dash-agent-summary:hover {
-    border-color: rgba(251, 191, 36, 0.50);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                0 0 0 1px rgba(251, 191, 36, 0.18);
-  }
   .dash-agent-chip {
     display: inline-flex;
     /* Center-align the count + label vertically — baseline-align made
@@ -2677,14 +2655,10 @@
   }
 
   /* ── Row 3: Market news strip ───────────────────────────────────── */
+  /* Chrome migrated to canonical .bucket-card; local class kept for
+     the bottom-margin only. */
   .dash-row3 {
     margin-bottom: 0.6rem;
-    padding: 0.55rem 0.75rem 0.6rem;
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
-    border: 1.5px solid rgba(255, 255, 255, 0.10);
-    border-radius: 6px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
   .row3-header {
     /* align-items: center (not baseline) to match the canonical

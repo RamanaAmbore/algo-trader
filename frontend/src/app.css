@@ -1573,13 +1573,14 @@
 }
 
 /* ── Canonical .algo-card — compact, padded card ─────────────────────────── */
-/* Tighter sibling of .algo-status-card: same gradient + border but with
-   canonical density (0.55rem 0.7rem) baked in. No left-accent, no status
-   variants — use for info / form / data surfaces where status colour is not
-   semantically meaningful. Drop the Tailwind p-X alongside this class. */
+/* Tighter sibling of .algo-status-card. Uniform 3px amber left-border so
+   every card across the workspace shares the same edge accent (operator:
+   "be consistent" — some cards had no border, some had cyan/rose/sky/slate
+   variants; all collapsed to one amber identity). */
 .algo-card {
   background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
   border: 1px solid rgba(255, 255, 255, 0.08);
+  border-left: 3px solid rgba(251, 191, 36, 0.70);
   border-radius: 4px;
   padding: 0.55rem 0.7rem;
 }
@@ -1615,12 +1616,20 @@
   box-sizing: border-box;
   color: var(--algo-slate);
 }
-/* Semantic accent variants — override only the left border colour. */
-.bucket-card-entry    { border-left-color: rgba(251, 191, 36, 0.70); } /* amber  — primary/data-entry */
-.bucket-card-activity { border-left-color: rgba(34, 211, 238, 0.75); } /* cyan   — activity/log/events */
-.bucket-card-chase    { border-left-color: rgba(248, 113, 133, 0.70); } /* rose   — destructive/action */
-.bucket-card-info     { border-left-color: rgba(125, 211, 252, 0.70); } /* sky    — info/status/charts */
-.bucket-card-data     { border-left-color: rgba(200, 216, 240, 0.45); } /* slate  — neutral data display */
+/* Semantic accent variants retired — every card now carries one amber
+   3px left border (see .bucket-card default + .algo-card + .algo-status-card).
+   Variant classes preserved as no-ops so existing HTML markup keeps
+   compiling; remove the class from markup at next touch. Semantic info
+   that lived in the chrome (activity/chase/data) now belongs in the
+   card title or an inline chip, not on the card edge.
+   Operator: "in some card left highlighter with various colors, some
+   cards with no highlighter, some cards with different highlighter
+   color. Be consistent" — collapsed to one amber identity. */
+.bucket-card-entry,
+.bucket-card-activity,
+.bucket-card-chase,
+.bucket-card-info,
+.bucket-card-data { /* no-op — inherits amber from .bucket-card */ }
 
 /* ── AlgoTabs — canonical tab-strip base shared across all algo pages ── */
 /* See frontend/src/lib/AlgoTabs.svelte for the component. */

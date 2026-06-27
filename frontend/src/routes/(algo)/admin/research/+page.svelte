@@ -671,7 +671,7 @@
   <div class="lab-settings">
 
     <!-- ── 0. Confirm-token mint — Phase 3 ────────────────────────── -->
-    <article class="lab-card lab-card-mint">
+    <article class="lab-card">
       <h2>0. Mint a confirm token (place_order gate)</h2>
       <p>
         The MCP write tools (<code>place_order</code> · <code>cancel_order</code>
@@ -816,7 +816,7 @@
       </table>
     </article>
 
-    <article class="lab-card lab-card-safety">
+    <article class="lab-card">
       <h2>4. Safety</h2>
       <ul class="safety-list">
         <li>No order placement from MCP yet. The server cannot move money.</li>
@@ -1291,6 +1291,7 @@
   .lab-card {
     background: rgba(15, 25, 45, 0.4);
     border: 1px solid rgba(126, 151, 184, 0.18);
+    border-left: 3px solid rgba(251, 191, 36, 0.70);
     border-radius: 0.5rem;
     padding: 0.8rem;
   }
@@ -1399,8 +1400,8 @@
     color: var(--algo-slate);
     border-bottom: 1px solid rgba(126, 151, 184, 0.08);
   }
-  .lab-card-safety { border-left: 2px solid rgba(248, 113, 113, 0.5); }
-  .lab-card-mint   { border-left: 2px solid rgba(251, 191, 36, 0.65); }
+  /* .lab-card-safety / .lab-card-mint retired — every card now
+     carries the canonical 3px amber left border via .lab-card. */
   .mint-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));

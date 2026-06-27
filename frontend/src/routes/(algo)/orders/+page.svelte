@@ -657,24 +657,16 @@
     flex-direction: column;
     box-sizing: border-box;
   }
-  .bucket-card-activity { border-left-color: rgba(34, 211, 238, 0.75); }
   /* Order Entry card overrides `.bucket-card`'s inner padding to
      zero — SymbolPanel's picker / tabs / body / common-actions
      each define their own horizontal inset, the same way they do
-     inside the modal panel chrome. Operator: "if you keep order
-     ticket specific content in card, it will match order modal".
-     Card-body still ships a small inner bottom buffer so the
-     common-actions row doesn't slam against the bucket-card border. */
+     inside the modal panel chrome. Card-body still ships a small
+     inner bottom buffer so the common-actions row doesn't slam
+     against the bucket-card border. */
   .bucket-card-entry { padding: 0 0 0.4rem 0; }
   .bucket-card-entry > .card-body { padding: 0; }
-  /* Chase card — rose accent so it reads as the "kill" surface
-     alongside amber Entry and cyan Activity. Section label inherits
-     the same rose via the cc-label rule inside ChaseCard. */
-  .bucket-card-chase { border-left-color: rgba(248, 113, 133, 0.70); }
   /* Hide the outer chase card chrome when ChaseCard renders nothing
-     (no active chases). Avoids an empty rose-bordered band on idle
-     pages. Operator: "if there are no active chases, no need to
-     show 'no active chases'". */
+     (no active chases). Avoids an empty card on idle pages. */
   .bucket-card-chase:not(:has(.cc-root)) { display: none; }
   .oc-chase-header { margin-bottom: 0.25rem; }
   .oc-chase-body { padding: 0; }
@@ -684,7 +676,9 @@
   .bucket-header { margin-bottom: 0.35rem; }
   /* .mp-section-label is defined globally in app.css. */
   /* Match each card's section-label colour to its left-edge accent. */
-  .bucket-card-activity .mp-section-label { color: rgba(34, 211, 238, 0.85); }
+  /* .bucket-card-activity section-label color override retired —
+     section labels now share one default treatment so cards
+     don't carry per-section color schemes. */
   /* Operator: "order entry card header in order page and modal should
      be more prominent". Bumps the section label to a chip-style amber
      pill so the "ORDER ENTRY" reads at a glance from across the
