@@ -64,14 +64,22 @@ OS user that runs `ramboq_api.service`.
 - [x] **Slice 1:** Build conn_service Litestar app + routes
 - [x] **Slice 2:** Build `backend/conn_client/` HTTP wrapper (async + sync)
 - [x] **Slice 3A:** Flag-gated proxy inside `broker_apis.fetch_*`
-                   (no caller migrations — single-line cutover)
-- [ ] **Slice 3B:** Optional — migrate callers from
-                   `broker_apis.fetch_*` directly to `conn_client`
-                   once the flag-gated path is proven stable.
-- [ ] **Slice 4:** Migrate KiteTicker LTP access (the biggest
-                   restart-pain surface — keeps SSE ticks alive
-                   across `ramboq_api` restarts).
-- [ ] **Slice 5:** Migrate order placement (`broker.place_order`).
+- [x] **Slice 3B:** Generic `/internal/broker/{account}/call/{method}`
+                   dispatch + `RemoteBroker` (Broker ABC over UDS) +
+                   `registry.get_broker` flag-aware + skip
+                   `rebuild_from_db` on main API + caller migrations
+                   for 8 direct-Connections callers (actions, nav,
+                   expiry × 2, instruments, history, snapshot, health,
+                   brokers, simulator, orders postback HMAC) +
+                   `_start_kite_ticker` fetches access_token via UDS.
+- [ ] **Slice 4:** Move KiteTicker WebSocket ownership into
+                   conn_service. Main API becomes pure SSE relay
+                   (subscribes to a conn_service SSE feed). Removes
+                   the last per-restart Kite session in main API.
+- [ ] **Slice 5:** Optional — migrate `broker_apis.fetch_*` callers
+                   directly to `conn_client` instead of going through
+                   the broker_apis proxy. Saves one extra function-
+                   call hop; cosmetic, not behavioural.
 - [ ] **Slice 6:** Update `webhook/deploy.sh` to recognize the
                    conn_service vs api distinction and only restart
                    the right service per push.

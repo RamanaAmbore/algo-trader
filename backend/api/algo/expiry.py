@@ -125,14 +125,20 @@ class ExpiryEngine:
     # ------------------------------------------------------------------
 
     def _load_instruments(self, exchange: str) -> list:
-        """Load instruments for an exchange. Cached for the day."""
+        """Load instruments for an exchange. Cached for the day.
+
+        Routes through the Broker ABC so the call hops to conn_service
+        when RAMBOQ_USE_CONN_SERVICE=1 — the main API holds no Kite
+        session in that mode."""
         if exchange in self._instruments_cache:
             return self._instruments_cache[exchange]
 
-        conns = Connections()
-        account = list(conns.conn.keys())[0]
-        kite = conns.conn[account].kite
-        instruments = kite.instruments(exchange)
+        from backend.shared.brokers.registry import get_broker, all_brokers
+        # Pick any loaded account — instruments are the same broker-side.
+        brokers = all_brokers()
+        if not brokers:
+            return []
+        instruments = brokers[0].instruments(exchange)
         self._instruments_cache[exchange] = instruments
         logger.info(f"Expiry: loaded {len(instruments)} instruments for {exchange}")
         return instruments
@@ -371,10 +377,15 @@ class ExpiryEngine:
             return "OTM"
 
     def _fetch_underlying_ltps(self, positions: list[OptionPosition]) -> dict:
-        """Fetch LTPs for all unique underlyings."""
-        conns = Connections()
-        account = list(conns.conn.keys())[0]
-        kite = conns.conn[account].kite
+        """Fetch LTPs for all unique underlyings.
+
+        Routes through the Broker ABC so the call hops to conn_service
+        when RAMBOQ_USE_CONN_SERVICE=1."""
+        from backend.shared.brokers.registry import all_brokers
+        brokers = all_brokers()
+        if not brokers:
+            return {}
+        broker = brokers[0]
 
         # Map underlying name to its index/futures symbol for LTP
         # For equity indices: use NSE:NIFTY 50, NSE:NIFTY BANK, etc.
@@ -391,7 +402,7 @@ class ExpiryEngine:
             return {}
 
         try:
-            data = kite.ltp(list(symbols))
+            data = broker.ltp(list(symbols))
             return {k.split(":")[-1]: v.get("last_price", 0) for k, v in data.items()}
         except Exception as e:
             logger.error(f"Expiry: LTP fetch failed: {e}")

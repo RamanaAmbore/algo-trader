@@ -94,15 +94,20 @@ class InstrumentsResponse(msgspec.Struct):
 
 
 def _fetch_instruments() -> InstrumentsResponse:
-    """Fetch full instrument dump from Kite across all relevant exchanges."""
-    conns = Connections()
-    account = next(iter(conns.conn))
-    kite = conns.conn[account].kite
+    """Fetch full instrument dump from Kite across all relevant exchanges.
+
+    Routes through the Broker ABC so the call hops to conn_service when
+    RAMBOQ_USE_CONN_SERVICE=1."""
+    from backend.shared.brokers.registry import all_brokers
+    brokers = all_brokers()
+    if not brokers:
+        return InstrumentsResponse(cycle_date="", count=0, items=[])
+    broker = brokers[0]
 
     items: list[Instrument] = []
     for exch in _EXCHANGES:
         try:
-            raw = kite.instruments(exch)
+            raw = broker.instruments(exch)
         except Exception as e:
             logger.warning(f"Instruments: {exch} fetch failed: {e}")
             continue

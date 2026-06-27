@@ -165,6 +165,13 @@ def _loaded_accounts() -> set[str]:
         from backend.shared.helpers.connections import Connections
         from backend.shared.helpers.broker_apis import is_account_healthy
         in_conn = set(Connections().conn.keys())
+        # Cutover branch — when local Connections is empty (flag-on),
+        # pull the loaded-account list from conn_service.
+        if not in_conn:
+            from backend.conn_client import is_cutover_on
+            if is_cutover_on():
+                from backend.conn_client.remote_broker import list_remote_accounts
+                in_conn = {r["account"] for r in list_remote_accounts() if r.get("account")}
         return {a for a in in_conn if is_account_healthy(a)}
     except Exception:
         return set()

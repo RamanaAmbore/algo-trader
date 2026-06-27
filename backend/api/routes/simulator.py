@@ -704,6 +704,15 @@ class SimulatorController(Controller):
         try:
             from backend.shared.helpers.connections import Connections
             available_accounts = sorted(Connections().conn.keys())
+            if not available_accounts:
+                # Cutover branch — Connections empty when conn_service
+                # owns sessions; pull canonical list.
+                from backend.conn_client import is_cutover_on
+                if is_cutover_on():
+                    from backend.conn_client.remote_broker import list_remote_accounts
+                    available_accounts = sorted(
+                        r["account"] for r in list_remote_accounts() if r.get("account")
+                    )
         except Exception:
             available_accounts = []
         return SimDefaultsResponse(

@@ -85,21 +85,61 @@ _ADAPTERS: dict[str, type[Broker]] = {
 }
 
 
+# Lazily-populated broker_id cache for the cutover flag-on case. When
+# main API skips Connections.rebuild_from_db, the local _broker_id_map
+# is empty; we instead fetch the per-account broker_id from conn_service's
+# /internal/accounts on first use and cache here for the process
+# lifetime (re-populated when /internal/rebuild fires post-CRUD).
+_REMOTE_BROKER_ID_CACHE: dict[str, str] = {}
+
+
+def _refresh_remote_broker_id_cache() -> None:
+    """Pull the broker_id map from conn_service and stash it in
+    `_REMOTE_BROKER_ID_CACHE`. Best-effort — failures leave the cache
+    untouched so a transient UDS hiccup doesn't break `_broker_id_for`."""
+    try:
+        from backend.conn_client.remote_broker import list_remote_accounts
+        rows = list_remote_accounts()
+    except Exception:
+        rows = []
+    if not rows:
+        return
+    _REMOTE_BROKER_ID_CACHE.clear()
+    for r in rows:
+        acct = r.get("account")
+        bid = r.get("broker_id")
+        if acct and bid:
+            _REMOTE_BROKER_ID_CACHE[acct] = bid
+
+
 def _broker_id_for(account: str) -> str:
     """Canonical broker_id for a given account.
 
     Resolution order:
     1. Connections._broker_id_map — populated from broker_accounts.broker_id
        during rebuild_from_db (DB-authoritative, no extra query needed).
-    2. secrets.yaml kite_accounts[account].broker — legacy fallback for
+    2. _REMOTE_BROKER_ID_CACHE — populated from conn_service's
+       /internal/accounts when the cutover flag is on (lazy refresh).
+    3. secrets.yaml kite_accounts[account].broker — legacy fallback for
        accounts that were seeded before the DB-backed broker_id existed.
-    3. "zerodha_kite" — safe default (every account today is Kite).
+    4. "zerodha_kite" — safe default (every account today is Kite).
     """
     conns = Connections()
     # Step 1 — DB-backed cache (populated by rebuild_from_db).
     id_map: dict[str, str] = getattr(conns, "_broker_id_map", {})
     if account in id_map:
         return id_map[account]
+    # Step 1b — Remote cache (cutover flag-on path).
+    if account in _REMOTE_BROKER_ID_CACHE:
+        return _REMOTE_BROKER_ID_CACHE[account]
+    import os
+    if os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        # Cache miss + flag is on — refresh once and look again.
+        _refresh_remote_broker_id_cache()
+        if account in _REMOTE_BROKER_ID_CACHE:
+            return _REMOTE_BROKER_ID_CACHE[account]
     # Step 2 — YAML fallback.
     try:
         from backend.shared.helpers.utils import secrets
@@ -120,7 +160,20 @@ def get_broker(account: str) -> Broker:
     wraps it in the right adapter class. Calling this on a hot path
     is fine — no re-auth happens here, and adapter construction is a
     two-attribute object that reuses the cached connection.
+
+    When RAMBOQ_USE_CONN_SERVICE=1 is set on this process, returns a
+    `RemoteBroker` that dispatches every method call to the
+    conn_service over UDS — no in-process broker session needed.
+    Conn_service itself runs with the flag UNSET so its own
+    `get_broker(account)` builds the real local adapter.
     """
+    import os
+    if os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        from backend.conn_client.remote_broker import RemoteBroker
+        return RemoteBroker(account, broker_id=_broker_id_for(account))
+
     conn = Connections().conn.get(account)
     if conn is None:
         raise KeyError(f"No broker client configured for account {account!r}")
@@ -142,8 +195,21 @@ def get_broker(account: str) -> Broker:
 
 
 def all_brokers() -> list[Broker]:
-    """Every configured broker adapter, one per account."""
-    return [get_broker(acct) for acct in Connections().conn.keys()]
+    """Every configured broker adapter, one per account.
+
+    Reads the local Connections singleton when present (status quo);
+    falls back to conn_service's /internal/accounts when the cutover
+    flag is on and the local singleton is empty."""
+    accts = list(Connections().conn.keys())
+    if not accts:
+        import os
+        if os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
+            "1", "true", "yes", "on",
+        ):
+            from backend.conn_client.remote_broker import list_remote_accounts
+            rows = list_remote_accounts()
+            accts = [r["account"] for r in rows if r.get("account")]
+    return [get_broker(acct) for acct in accts]
 
 
 def _quote_has_data(result: Any, symbols: list[str]) -> bool:

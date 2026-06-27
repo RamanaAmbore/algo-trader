@@ -3206,31 +3206,62 @@ class OrdersController(Controller):
             # iterating every loaded account (Kite postback doesn't
             # always include a recognisable user_id). We have ≤5
             # accounts so the iteration is negligible.
-            conns = Connections()
-            # Skip non-Kite connections — postbacks only come from Kite,
-            # and Dhan/Groww connections don't expose `api_secret` so
-            # iterating them would AttributeError. KiteConnection is
-            # the only class with the property today; check by class to
-            # avoid hardcoding strings.
-            from backend.shared.helpers.connections import KiteConnection
-            kite_candidates: list[str] = [
-                a for a, c in conns.conn.items() if isinstance(c, KiteConnection)
-            ]
-            candidates: list[str] = []
-            if account and account in kite_candidates:
-                # Put the claimed account first so the fast path hits.
-                candidates = [account] + [a for a in kite_candidates if a != account]
-            else:
-                candidates = kite_candidates
+            #
+            # When RAMBOQ_USE_CONN_SERVICE is set, the api_secret lives
+            # in the conn_service process — we hop over UDS for the
+            # HMAC check (api_secret never crosses the wire, the
+            # comparison runs inside conn_service).
+            import os as _os
+            _use_conn_svc = _os.environ.get(
+                "RAMBOQ_USE_CONN_SERVICE", "",
+            ).strip().lower() in ("1", "true", "yes", "on")
 
-            sig_valid = False
-            for acct in candidates:
-                api_secret = conns.conn[acct].api_secret
-                msg = (str(order_id) + str(order_timestamp) + api_secret).encode()
-                expected = hashlib.sha256(msg).hexdigest()
-                if hmac.compare_digest(expected, str(checksum)):
-                    sig_valid = True
-                    break
+            if _use_conn_svc:
+                from backend.conn_client.remote_broker import (
+                    list_remote_accounts, verify_postback,
+                )
+                kite_candidates = [
+                    r["account"] for r in list_remote_accounts()
+                    if r.get("broker_id") == "zerodha_kite"
+                ]
+                candidates = (
+                    [account] + [a for a in kite_candidates if a != account]
+                    if account and account in kite_candidates
+                    else kite_candidates
+                )
+                sig_valid = False
+                for acct in candidates:
+                    if verify_postback(
+                        acct,
+                        order_id=order_id,
+                        order_timestamp=order_timestamp,
+                        checksum=checksum,
+                    ):
+                        sig_valid = True
+                        break
+            else:
+                conns = Connections()
+                # Skip non-Kite connections — postbacks only come from
+                # Kite, and Dhan/Groww connections don't expose
+                # `api_secret` so iterating them would AttributeError.
+                from backend.shared.helpers.connections import KiteConnection
+                kite_candidates: list[str] = [
+                    a for a, c in conns.conn.items() if isinstance(c, KiteConnection)
+                ]
+                candidates: list[str] = []
+                if account and account in kite_candidates:
+                    candidates = [account] + [a for a in kite_candidates if a != account]
+                else:
+                    candidates = kite_candidates
+
+                sig_valid = False
+                for acct in candidates:
+                    api_secret = conns.conn[acct].api_secret
+                    msg = (str(order_id) + str(order_timestamp) + api_secret).encode()
+                    expected = hashlib.sha256(msg).hexdigest()
+                    if hmac.compare_digest(expected, str(checksum)):
+                        sig_valid = True
+                        break
 
             if not sig_valid:
                 logger.warning(

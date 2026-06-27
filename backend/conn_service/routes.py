@@ -1,5 +1,36 @@
 """Internal endpoints exposed by conn_service — the broker wrapper.
 
+This file exposes two endpoint families:
+
+  /internal/holdings | /positions | /margins | /health/brokers
+      — high-level aggregations across every loaded broker account.
+
+  /internal/broker/{account}/{method}  (POST)
+      — generic per-account dispatch to any whitelisted Broker ABC
+        method. Lets the main API treat conn_service as a remote
+        broker registry: it constructs a RemoteBroker that proxies
+        every call through here, and downstream code (registry.get_
+        broker(account).quote(...)) works without knowing it's
+        remote.
+
+  /internal/broker/{account}/api_secret  (GET, sensitive)
+      — single-purpose endpoint for Kite postback HMAC verification.
+        The postback signature gate in routes/orders.py needs the
+        api_secret for an HMAC-SHA256, but we don't want to expose
+        the full credential to the main API process at-rest. This
+        endpoint scopes the disclosure to the postback path only.
+
+  /internal/broker/{account}/verify_postback  (POST)
+      — preferred alternative: compute the HMAC inside conn_service
+        so api_secret never leaves this process. Body: {order_id,
+        order_timestamp, checksum}. Returns {ok: bool}.
+
+  /internal/rebuild  (POST)
+      — re-run Connections.rebuild_from_db(). Called by main API
+        after /admin/brokers CRUD mutations so credential changes
+        propagate without restarting either service.
+
+
 The main API speaks to this service via Unix domain socket. Every
 endpoint here delegates to the existing `broker_apis` module, which
 in turn reads from the in-process Connections singleton owned by
@@ -22,12 +53,53 @@ logic (`if all(df.attrs['fetch_failed'])`) drop-in compatible.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import logging
 from typing import Any
 
-from litestar import Controller, get
+from litestar import Controller, get, post
+from litestar.exceptions import HTTPException, NotFoundException
 
 logger = logging.getLogger(__name__)
+
+
+# Broker ABC methods exposed via the generic dispatch endpoint. Anything
+# not in this set returns 403 — keeps a hostile main API (or operator
+# mistake) from invoking unintended adapter internals over the UDS.
+#
+# Categories:
+#   read    — quote / position / account state, safe to invoke freely.
+#   write   — order placement / modification / cancellation. Sensitive
+#             but the UDS file mode (0660 www-data) is the auth
+#             boundary; no extra layer needed.
+#   meta    — capability lookups, pure-math helpers.
+_ALLOWED_BROKER_METHODS = frozenset({
+    # read
+    "profile", "holdings", "positions", "margins", "orders",
+    "order_status", "trades",
+    "ltp", "quote",
+    "instruments", "historical_data", "holidays", "market_status",
+    "basket_order_margins", "get_gtts",
+    # write
+    "place_order", "modify_order", "cancel_order",
+    "place_gtt", "modify_gtt", "cancel_gtt",
+    # meta
+    "translate_qty", "normalise_qty",
+})
+
+
+def _to_jsonable(value: Any) -> Any:
+    """Coerce broker return values into something msgspec/json can
+    serialize. The common odd type is `set[str]` from Broker.holidays;
+    nested dicts and lists pass through unchanged."""
+    if isinstance(value, set):
+        return sorted(value)
+    if isinstance(value, dict):
+        return {k: _to_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(v) for v in value]
+    return value
 
 
 def _df_list_to_per_account(dfs: list) -> list[dict[str, Any]]:
@@ -97,17 +169,49 @@ class InternalBrokerController(Controller):
     @get("/accounts")
     async def accounts(self) -> dict[str, Any]:
         """Return the currently-loaded broker accounts, including
-        which broker each one is bound to. Useful for the main API
-        to surface 'who's connected' without needing to query each
-        endpoint separately."""
+        which broker each one is bound to AND the canonical broker_id
+        (zerodha_kite / dhan / groww) so the main API can populate
+        its registry without holding a real Connections singleton.
+
+        Shape:
+          {accounts: [
+              {account, conn_cls, broker_id},
+              ...
+          ]}
+        """
         from backend.shared.helpers.connections import Connections
 
         c = Connections()
+        id_map = getattr(c, "_broker_id_map", {}) or {}
         out: list[dict[str, str]] = []
         for acct, conn in c.conn.items():
-            broker_cls = type(conn).__name__  # KiteConnection / DhanConnection / GrowwConnection
-            out.append({"account": acct, "broker": broker_cls})
+            conn_cls = type(conn).__name__
+            broker_id = id_map.get(acct, "zerodha_kite")
+            out.append({
+                "account": acct,
+                "conn_cls": conn_cls,
+                "broker_id": broker_id,
+            })
         return {"accounts": out}
+
+    @post("/rebuild")
+    async def rebuild(self) -> dict[str, Any]:
+        """Re-run Connections.rebuild_from_db(). Called by main API
+        after /admin/brokers CRUD mutations so credential changes
+        land in conn_service without restarting either service.
+
+        Idempotent (every call re-reads the broker_accounts table)
+        but expensive (touches every account's auth flow). Don't
+        call on a hot path."""
+        from backend.shared.helpers.connections import Connections
+
+        try:
+            await Connections().rebuild_from_db()
+            accts = sorted(Connections().conn.keys())
+            return {"ok": True, "accounts": accts}
+        except Exception as e:
+            logger.exception("conn_service: rebuild failed")
+            return {"ok": False, "error": str(e)[:300]}
 
     @get("/holdings")
     async def holdings(self) -> dict[str, Any]:
@@ -161,3 +265,140 @@ class InternalBrokerController(Controller):
         from backend.shared.helpers.broker_apis import fetch_health_snapshot
 
         return {"health": fetch_health_snapshot()}
+
+
+class BrokerDispatchController(Controller):
+    """Per-account broker dispatch — RemoteBroker in main API speaks
+    to this controller to invoke any whitelisted Broker ABC method
+    over UDS. Keeps the per-call surface generic so adding a new
+    Broker method doesn't require a new endpoint here.
+
+    Path layout:
+      POST  /internal/broker/{account}/call/{method}
+            — invoke broker.method(*args, **kwargs)
+      POST  /internal/broker/{account}/verify_postback
+            — compute HMAC(order_id + order_timestamp + api_secret)
+              inside this process and compare to checksum, so the
+              api_secret never crosses the UDS.
+      GET   /internal/broker/{account}/access_token
+            — fetch the live Kite access_token. Needed by the main
+              API's KiteTicker until ticker ownership moves into
+              conn_service (slice 4).
+    """
+
+    path = "/internal/broker"
+
+    @post("/{account:str}/call/{method:str}")
+    async def call_broker(
+        self,
+        account: str,
+        method: str,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Generic dispatch to a Broker ABC method.
+
+        Body: {"args": [...], "kwargs": {...}}
+        Returns: {"ok": true, "result": <json-coerced return value>}
+        Errors: {"ok": false, "error": "<msg>"}
+        """
+        if method not in _ALLOWED_BROKER_METHODS:
+            raise HTTPException(
+                status_code=403,
+                detail=f"method '{method}' not in dispatch whitelist",
+            )
+
+        from backend.shared.brokers.registry import get_broker
+
+        try:
+            broker = get_broker(account)
+        except (KeyError, ValueError) as e:
+            raise NotFoundException(detail=str(e))
+
+        fn = getattr(broker, method, None)
+        if not callable(fn):
+            raise NotFoundException(
+                detail=f"broker for {account!r} has no method '{method}'",
+            )
+
+        payload = data or {}
+        args = payload.get("args", []) or []
+        kwargs = payload.get("kwargs", {}) or {}
+
+        try:
+            result = await asyncio.to_thread(fn, *args, **kwargs)
+            return {"ok": True, "result": _to_jsonable(result)}
+        except Exception as e:
+            logger.exception(
+                "conn_service: broker dispatch failed: %s.%s",
+                account, method,
+            )
+            return {"ok": False, "error": str(e)[:500]}
+
+    @post("/{account:str}/verify_postback")
+    async def verify_postback(
+        self,
+        account: str,
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Verify a Kite postback signature without exposing the
+        api_secret to the main API process.
+
+        Body: {order_id, order_timestamp, checksum}
+        Returns: {"ok": bool}
+
+        Kite spec: HMAC-SHA256-ish (actually a plain SHA-256 of the
+        concatenated string) = sha256(order_id + order_timestamp +
+        api_secret). We mirror the existing main-API code path so
+        the signature semantics are unchanged.
+        """
+        from backend.shared.helpers.connections import Connections
+
+        conn = Connections().conn.get(account)
+        if conn is None:
+            raise NotFoundException(detail=f"no account {account!r}")
+        api_secret = getattr(conn, "api_secret", None)
+        if not api_secret:
+            # Dhan / Groww / non-Kite account — no postback signature
+            # to verify. Treat as a programming error from the caller
+            # since the route should only post here for Kite accounts.
+            return {"ok": False, "error": "no api_secret on this account"}
+
+        order_id = str(data.get("order_id", ""))
+        ts = str(data.get("order_timestamp", ""))
+        checksum = str(data.get("checksum", ""))
+        msg = (order_id + ts + api_secret).encode()
+        expected = hashlib.sha256(msg).hexdigest()
+        return {"ok": hmac.compare_digest(expected, checksum)}
+
+    @get("/{account:str}/access_token")
+    async def access_token(self, account: str) -> dict[str, Any]:
+        """Return the live Kite access_token for `account`.
+
+        Used by the main API's KiteTicker initialiser — the WebSocket
+        construction needs the token, but main API doesn't load
+        Connections when the flag is on. Once slice 4 moves ticker
+        ownership into conn_service, this endpoint goes away.
+
+        Returns {api_key, access_token} for Kite accounts; 404 for
+        non-Kite. Treat the token as sensitive: it grants full broker
+        access. UDS file-mode is the auth boundary.
+        """
+        from backend.shared.helpers.connections import Connections
+
+        conn = Connections().conn.get(account)
+        if conn is None:
+            raise NotFoundException(detail=f"no account {account!r}")
+        # Kite-only — Dhan + Groww have different token shapes and don't
+        # feed KiteTicker.
+        api_key = getattr(conn, "api_key", None)
+        token_getter = getattr(conn, "get_access_token", None)
+        if api_key is None or token_getter is None:
+            raise NotFoundException(
+                detail=f"account {account!r} is not Kite-shaped",
+            )
+        try:
+            token = await asyncio.to_thread(token_getter)
+        except Exception as e:
+            logger.warning("conn_service: access_token fetch failed: %s", e)
+            return {"api_key": api_key, "access_token": None}
+        return {"api_key": api_key, "access_token": token}

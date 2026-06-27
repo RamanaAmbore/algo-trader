@@ -136,6 +136,22 @@ async def _fetch_broker_statuses() -> tuple[list[BrokerStatus], list[str]]:
     except Exception:
         loaded_accounts = set()
 
+    # Cutover branch — when conn_service owns sessions, the canonical
+    # loaded-account list lives there. Merge to keep the navbar pill
+    # honest (PENDING → LOADED for everything conn_service reports).
+    import os as _os
+    if _os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        try:
+            from backend.conn_client.remote_broker import list_remote_accounts
+            for r in list_remote_accounts():
+                acct = r.get("account")
+                if acct:
+                    loaded_accounts.add(acct)
+        except Exception:
+            pass
+
     statuses: list[BrokerStatus] = []
     ipv6_list: list[str] = []
 

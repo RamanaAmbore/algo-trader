@@ -365,6 +365,13 @@ async def snapshot_daily_book(target_date: Optional[date] = None) -> dict:
     connections = _get_connections()
     accounts = list(connections.conn.keys())
     if not accounts:
+        # Cutover branch — Connections is empty when conn_service owns
+        # sessions; pull the canonical account list from there.
+        from backend.conn_client import is_cutover_on
+        if is_cutover_on():
+            from backend.conn_client.remote_broker import list_remote_accounts
+            accounts = [r["account"] for r in list_remote_accounts() if r.get("account")]
+    if not accounts:
         logger.warning("Snapshot: no loaded broker accounts — nothing to capture")
         return {"accounts": [], "holdings_rows": 0, "positions_rows": 0,
                 "trades_rows": 0, "errors": ["No loaded broker accounts"]}

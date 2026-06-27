@@ -38,6 +38,7 @@ from __future__ import annotations
 from litestar import Litestar
 
 from backend.conn_service.routes import (
+    BrokerDispatchController,
     HealthController,
     InternalBrokerController,
 )
@@ -53,6 +54,7 @@ def create_app() -> Litestar:
         route_handlers=[
             HealthController,
             InternalBrokerController,
+            BrokerDispatchController,
         ],
         on_startup=[_init_connections_on_startup],
         debug=False,

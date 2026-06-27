@@ -100,6 +100,13 @@ async def compute_firm_nav() -> dict:
     errors: list[str] = []
 
     conn_keys = list(Connections().conn.keys())
+    if not conn_keys:
+        # Cutover branch — local Connections is empty when conn_service
+        # owns the sessions; fall back to the canonical account list.
+        from backend.conn_client import is_cutover_on
+        if is_cutover_on():
+            from backend.conn_client.remote_broker import list_remote_accounts
+            conn_keys = [r["account"] for r in list_remote_accounts() if r.get("account")]
 
     # ── Funds (cash + locked margin per broker) ───────────────────────
     # Operator framework: total cash owned = free cash + locked-as-

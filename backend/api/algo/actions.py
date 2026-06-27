@@ -854,7 +854,14 @@ async def run_preflight(
 
     # ── 1. ACCOUNT_UNKNOWN ────────────────────────────────────────────────
     conns = Connections()
-    if account not in conns.conn:
+    loaded_accounts: set[str] = set(conns.conn.keys())
+    # Cutover branch — local Connections is empty when conn_service owns
+    # the sessions, so consult /internal/accounts for the canonical list.
+    from backend.conn_client import is_cutover_on
+    if is_cutover_on() and not loaded_accounts:
+        from backend.conn_client.remote_broker import list_remote_accounts
+        loaded_accounts = {r["account"] for r in list_remote_accounts() if r.get("account")}
+    if account not in loaded_accounts:
         from backend.shared.helpers.utils import mask_account
         masked = mask_account(account) if account else account
         blocked.append({

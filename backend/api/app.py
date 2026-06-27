@@ -286,39 +286,69 @@ async def _start_kite_ticker() -> None:
             )
             return
 
-        spark_broker = get_sparkline_broker()
-        # PriceBroker wraps a list of underlying Broker adapters. Walk
-        # them to find the first KiteBroker whose KiteConnection has a
-        # live access_token. Non-Kite adapters (Dhan, Groww) don't
-        # support KiteTicker and are skipped silently.
-        brokers = getattr(spark_broker, "_brokers", [spark_broker])
-
         api_key: str | None = None
         access_token: str | None = None
+        _ticker_account: str = ""
 
-        for broker in brokers:
-            if not isinstance(broker, KiteBroker):
-                continue
-            conn = getattr(broker, "_conn", None)
-            if conn is None:
-                # KiteBroker stores the connection at construction time;
-                # fall back to looking it up directly from Connections.
-                account = broker.account
-                conn = Connections().conn.get(account)
-            if conn is None:
-                continue
-            tok = getattr(conn, "_access_token", None) or (
-                conn.get_access_token() if hasattr(conn, "get_access_token") else None
+        # Cutover branch — when conn_service owns the broker sessions,
+        # main API doesn't construct local KiteConnection objects. Fetch
+        # the live access_token from conn_service for the first Kite
+        # account it lists, then open our local KiteTicker WebSocket
+        # with that token. Token doesn't get rotated mid-session, so
+        # one fetch is enough; if conn_service rebuilds and gets a new
+        # token, the next ramboq_api restart picks it up.
+        import os as _os
+        _use_conn_svc = _os.environ.get(
+            "RAMBOQ_USE_CONN_SERVICE", "",
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+        if _use_conn_svc:
+            from backend.conn_client.remote_broker import (
+                list_remote_accounts, fetch_access_token,
             )
-            if tok:
-                api_key = getattr(conn, "api_key", None)
-                access_token = tok
-                _ticker_account = getattr(conn, "account", "") or ""
-                logger.info(
-                    f"KiteTicker: using account {_ticker_account or '?'} "
-                    f"(api_key=…{(api_key or '')[-4:]})"
+            for r in list_remote_accounts():
+                if r.get("broker_id") != "zerodha_kite":
+                    continue
+                acct = r["account"]
+                ak, tok = fetch_access_token(acct)
+                if ak and tok:
+                    api_key, access_token, _ticker_account = ak, tok, acct
+                    logger.info(
+                        f"KiteTicker (conn_svc): using account {acct} "
+                        f"(api_key=…{ak[-4:]})"
+                    )
+                    break
+        else:
+            spark_broker = get_sparkline_broker()
+            # PriceBroker wraps a list of underlying Broker adapters. Walk
+            # them to find the first KiteBroker whose KiteConnection has a
+            # live access_token. Non-Kite adapters (Dhan, Groww) don't
+            # support KiteTicker and are skipped silently.
+            brokers = getattr(spark_broker, "_brokers", [spark_broker])
+
+            for broker in brokers:
+                if not isinstance(broker, KiteBroker):
+                    continue
+                conn = getattr(broker, "_conn", None)
+                if conn is None:
+                    # KiteBroker stores the connection at construction time;
+                    # fall back to looking it up directly from Connections.
+                    account = broker.account
+                    conn = Connections().conn.get(account)
+                if conn is None:
+                    continue
+                tok = getattr(conn, "_access_token", None) or (
+                    conn.get_access_token() if hasattr(conn, "get_access_token") else None
                 )
-                break
+                if tok:
+                    api_key = getattr(conn, "api_key", None)
+                    access_token = tok
+                    _ticker_account = getattr(conn, "account", "") or ""
+                    logger.info(
+                        f"KiteTicker: using account {_ticker_account or '?'} "
+                        f"(api_key=…{(api_key or '')[-4:]})"
+                    )
+                    break
 
         if not api_key or not access_token:
             logger.warning(

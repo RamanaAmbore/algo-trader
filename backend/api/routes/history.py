@@ -472,7 +472,14 @@ class HistoryController(Controller):
             )
 
         conns = Connections()
-        if account not in conns.conn:
+        loaded = set(conns.conn.keys())
+        # Cutover branch — local Connections is empty when conn_service
+        # owns sessions; consult /internal/accounts for the canonical list.
+        from backend.conn_client import is_cutover_on
+        if is_cutover_on() and not loaded:
+            from backend.conn_client.remote_broker import list_remote_accounts
+            loaded = {r["account"] for r in list_remote_accounts() if r.get("account")}
+        if account not in loaded:
             raise HTTPException(status_code=404,
                                 detail=f"account {mask_account(account)} not loaded")
 

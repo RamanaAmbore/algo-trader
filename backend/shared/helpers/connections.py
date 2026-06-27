@@ -1449,7 +1449,52 @@ class Connections(SingletonBase):
         Safe to call multiple times — every CRUD mutation on
         `/api/admin/brokers/*` runs this so subsequent broker calls see
         fresh credentials without a service restart.
+
+        When RAMBOQ_USE_CONN_SERVICE=1 is set on this process, the
+        local Connections singleton is left empty — broker sessions
+        live in conn_service, not here. The cutover delegates
+        downstream to a POST /internal/rebuild call against the
+        conn_service so credential changes still propagate without
+        either service restarting. self._broker_id_map is populated
+        from the /internal/accounts response so registry.get_broker
+        can resolve broker_id without a per-call hop.
         """
+        import os
+        if os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
+            "1", "true", "yes", "on",
+        ):
+            # Cutover flag-on path. Don't touch any broker SDKs in this
+            # process. Pull the account list from conn_service so
+            # registry / mask_account / navbar surfaces still work.
+            from backend.conn_client.remote_broker import (
+                list_remote_accounts, trigger_rebuild,
+            )
+            try:
+                # Hot-rebuild on the canonical side first (this is the
+                # CRUD-after-write path); if conn_service is unreachable
+                # we still update the local id_map for any cached rows.
+                trigger_rebuild()
+                rows = list_remote_accounts()
+            except Exception as e:
+                logger.warning(
+                    "rebuild_from_db: conn_service delegation failed: %s", e
+                )
+                rows = []
+            self.conn = {}  # canonical: no local broker sessions
+            self._broker_id_map = {
+                r["account"]: r.get("broker_id", "zerodha_kite")
+                for r in rows
+                if r.get("account")
+            }
+            # Mirror to register_accounts so mask_account() / utils
+            # functions that key on the live account list still resolve.
+            try:
+                from backend.shared.helpers.utils import register_accounts
+                register_accounts(list(self._broker_id_map.keys()))
+            except Exception:
+                pass
+            return
+
         from backend.api.database import async_session
         from backend.api.models    import BrokerAccount
         from backend.shared.helpers.broker_creds import decrypt
