@@ -200,6 +200,35 @@ PYEOF
   DEPLOY_TYPE=$([ "$BACKEND_TOUCHED" = "true" ] && echo "full" || echo "fe-only")
   echo "[$TS] Deploy type: $DEPLOY_TYPE"
 
+  # ─── conn_service vs api: independent restart decisions ─────────────
+  # ramboq_conn.service owns the broker sessions (Kite + Dhan + Groww)
+  # in a SEPARATE process from ramboq_api. The whole point of the split
+  # is that ramboq_api can restart for backend code changes without
+  # tearing down broker auth.
+  #
+  # Code paths that affect the connection service:
+  #   • backend/conn_service/                  — the service itself
+  #   • backend/conn_client/                   — shared schema; restart
+  #                                              avoids wire-format drift
+  #   • backend/shared/helpers/connections.py  — Connections singleton
+  #   • backend/shared/helpers/broker_apis.py  — broker_apis surface
+  #   • backend/shared/brokers/                — adapters (Kite/Dhan/Groww)
+  #   • webhook/ramboq_conn.service            — systemd unit changes
+  #
+  # When ONLY non-conn backend code changes (routes/, algo/, models, etc.),
+  # we restart ramboq_api but leave ramboq_conn alone — broker sessions
+  # stay warm across the api code update.
+  #
+  # Only fires on prod ($ENV=prod) because the conn_service unit lives
+  # at /opt/ramboq (prod path). Dev pushes (/opt/ramboq_dev) NEVER
+  # restart ramboq_conn — dev shares the prod UDS. conn-related code
+  # changes only take effect after merging to main.
+  CONN_TOUCHED=false
+  if [ "$ENV" = "prod" ] && echo "$CHANGED" | grep -qE '^(backend/conn_service/|backend/conn_client/|backend/shared/helpers/connections\.py|backend/shared/helpers/broker_apis\.py|backend/shared/brokers/|webhook/ramboq_conn\.service)'; then
+      CONN_TOUCHED=true
+  fi
+  echo "[$TS] conn_service restart needed: $CONN_TOUCHED"
+
   # ─── Skip pip install when no Python dep file changed ──────────────────
   # pip install --no-cache-dir takes ~20-40s on this box even when everything
   # is already installed because it re-resolves the entire dependency tree.
@@ -265,8 +294,18 @@ PYEOF
   PORT=$([ "$ENV" = "prod" ] && echo 8000 || echo 8001)
   DEPLOY_STATUS="fail"
   if [ "$BACKEND_TOUCHED" = "true" ]; then
-      # Clear stale Kite token cache — forces fresh login after deploy
-      rm -f "$APP_ROOT/.log/kite_tokens.json" 2>/dev/null || true
+      # ramboq_conn restart only when connection-layer code actually
+      # changed (CONN_TOUCHED). Most backend pushes (route logic, agent
+      # rules, etc.) don't touch broker auth and leave ramboq_conn warm.
+      if [ "$CONN_TOUCHED" = "true" ]; then
+          # Conn-layer code changed — clear stale Kite tokens BEFORE
+          # restart so the fresh process re-auths cleanly.
+          rm -f "$APP_ROOT/.log/kite_tokens.json" 2>/dev/null || true
+          echo "[$TS] Restarting ramboq_conn.service (conn-layer change)..."
+          sudo systemctl restart ramboq_conn.service 2>&1 || echo "[$TS] WARN: ramboq_conn restart failed (might not be installed yet)"
+      else
+          echo "[$TS] Preserving ramboq_conn.service — broker sessions stay warm"
+      fi
 
       echo "[$TS] Restarting $API_SERVICE..."
       sudo systemctl restart "$API_SERVICE" || echo "[$TS] ERROR: failed to restart $API_SERVICE"
@@ -291,9 +330,10 @@ PYEOF
   else
       # Frontend-only push — preserve broker sessions + KiteTicker + caches.
       # Litestar serves the new frontend/build/ static files on the next
-      # request automatically. No service interaction needed.
+      # request automatically. No service interaction needed. ramboq_conn
+      # is similarly untouched.
       echo "[$TS] FE-only push — skipping service restart"
-      echo "[$TS] Preserved: broker connections, KiteTicker, in-process caches, Dhan cool-off state"
+      echo "[$TS] Preserved: ramboq_conn broker sessions, ramboq_api state, KiteTicker, in-process caches, Dhan cool-off"
       # Light health check — verify the new build is in place AND the
       # already-running service still responds.
       if [ -f "$APP_ROOT/frontend/build/index.html" ] && \
