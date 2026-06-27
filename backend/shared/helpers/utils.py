@@ -228,21 +228,46 @@ def register_accounts(accounts) -> None:
     via /admin/brokers). Idempotent — re-registering replaces the
     previous mapping atomically.
 
-    Sort order is the raw account code (alphabetical) so the ordinal
-    assignment is deterministic across deploys: if you add a new Dhan
-    account whose code sorts after the existing two, it becomes D3####
-    without renumbering the existing D1 / D2.
+    Mask shape: 6 chars total, last 4 masked.
+      • When the natural first 2 chars are UNIQUE across the account
+        list, preserve them as-is:
+            ZG0790 → ZG####     (only Zerodha-G account)
+            ZJ6294 → ZJ####     (only Zerodha-J account)
+            GR87DF → GR####     (only Groww account)
+      • When 2+ accounts collide on their first 2 chars (e.g. both
+        Dhan accounts start with 'DH'), fall back to the
+        ordinal-disambiguator:
+            DH3747 → D1####     (1st Dhan by alphabetical order)
+            DH6847 → D2####     (2nd Dhan)
+
+    Sort order is the raw account code so ordinal assignment stays
+    deterministic across deploys: if you add a new Dhan account
+    whose code sorts after the existing two, it becomes D3#### and
+    the existing D1 / D2 don't renumber.
+
+    Operator: 'for the masked accounts, only the last 4 chars should
+    be masked. for dhan the first 2 chars should show as D1 and D2'.
     """
     global _REGISTRY
-    by_prefix: dict[str, list[str]] = {}
+    # First pass: bucket by FIRST-2-CHAR prefix to detect collisions.
+    by_prefix2: dict[str, list[str]] = {}
     for a in sorted(set(accounts or []) - {"", "TOTAL"}):
-        if not a:
+        if not a or len(a) < 2:
             continue
-        by_prefix.setdefault(a[0].upper(), []).append(a)
+        by_prefix2.setdefault(a[:2].upper(), []).append(a)
+
     new_map: dict[str, str] = {}
-    for prefix, accts in by_prefix.items():
-        for i, a in enumerate(accts, 1):
-            new_map[a] = f"{prefix}{i}####"
+    for prefix2, accts in by_prefix2.items():
+        if len(accts) == 1:
+            # No collision — keep the natural first 2 chars.
+            new_map[accts[0]] = f"{prefix2}####"
+        else:
+            # Collision — use broker-letter + 1-based ordinal so
+            # multi-account brokers like the operator's two Dhans
+            # stay distinguishable in masked views.
+            broker_letter = prefix2[0]
+            for i, a in enumerate(accts, 1):
+                new_map[a] = f"{broker_letter}{i}####"
     _REGISTRY = new_map
 
 
