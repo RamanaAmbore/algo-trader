@@ -149,7 +149,7 @@
   <div class="health-grid content-fade-in">
 
     <!-- ── Header card: branch + build + uptime ──────────────────── -->
-    <div class="hcard hcard-wide">
+    <div class="algo-card algo-card-wide">
       <div class="hcard-title">Deployment</div>
       <div class="kv-row">
         <span class="kv-key">Branch</span>
@@ -170,7 +170,7 @@
     </div>
 
     <!-- ── Broker accounts card ──────────────────────────────────── -->
-    <div class="hcard">
+    <div class="algo-card">
       <div class="hcard-title">Broker Accounts</div>
       {#if health.broker_accounts?.length}
         {#each health.broker_accounts as b}
@@ -187,7 +187,7 @@
     </div>
 
     <!-- ── Database row-counts card ──────────────────────────────── -->
-    <div class="hcard">
+    <div class="algo-card">
       <div class="hcard-title">Database</div>
       <div class="kv-row">
         <span class="kv-key">Users</span>
@@ -212,7 +212,7 @@
     </div>
 
     <!-- ── Cache card ────────────────────────────────────────────── -->
-    <div class="hcard">
+    <div class="algo-card">
       <div class="hcard-title">Cache</div>
       <div class="kv-row">
         <span class="kv-key">Keys</span>
@@ -230,7 +230,7 @@
     </div>
 
     <!-- ── Simulator card ────────────────────────────────────────── -->
-    <div class="hcard">
+    <div class="algo-card">
       <div class="hcard-title">Simulator</div>
       {#if health.sim?.enabled === false}
         <div class="kv-row">
@@ -262,7 +262,7 @@
     </div>
 
     <!-- ── Paper engine card ─────────────────────────────────────── -->
-    <div class="hcard">
+    <div class="algo-card">
       <div class="hcard-title">Paper Engine</div>
       {#if health.paper?.enabled === false}
         <div class="kv-row">
@@ -285,7 +285,7 @@
     </div>
 
     <!-- ── KiteTicker card ───────────────────────────────────────── -->
-    <div class="hcard hcard-wide">
+    <div class="algo-card algo-card-wide">
       <div class="hcard-title">KiteTicker (live WebSocket)</div>
       <div class="kv-row">
         <span class="kv-key">Status</span>
@@ -328,7 +328,7 @@
     </div>
 
     <!-- ── Persistence refresh-cycle mode card (slice Z) ─────────── -->
-    <div class="hcard hcard-wide">
+    <div class="algo-card algo-card-wide">
       <div class="hcard-title">Persistence refresh cycle</div>
       <div class="kv-row">
         <span class="kv-key">Mode</span>
@@ -415,7 +415,7 @@
     </div>
 
     <!-- ── IPv6 source IPs card ──────────────────────────────────── -->
-    <div class="hcard hcard-wide">
+    <div class="algo-card algo-card-wide">
       <div class="hcard-title">IPv6 Bindings</div>
       {#if health.broker_accounts?.filter(b => b.source_ip)?.length}
         {#each health.broker_accounts.filter(b => b.source_ip) as b}
@@ -455,15 +455,12 @@
   @media (max-width: 768px) {
     .health-grid { grid-template-columns: 1fr; }
   }
-  .hcard {
-    background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 4px;
-    padding: 0.55rem 0.7rem;
-  }
-  .hcard-wide {
-    grid-column: 1 / -1;
-  }
+  /* .hcard / .hcard-wide migrated to canonical .algo-card /
+     .algo-card-wide — the chrome (gradient, border, radius,
+     padding) was a pixel-perfect duplicate of the canonical class.
+     .hcard-title kept as a page-local title decoration since its
+     amber underline accent is intentionally distinct from
+     .algo-card-title (which is slate, no underline). */
   .hcard-title {
     font-size: 0.6rem;
     font-weight: 700;
