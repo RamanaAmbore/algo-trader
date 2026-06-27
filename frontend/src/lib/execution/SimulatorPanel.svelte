@@ -1810,8 +1810,7 @@
     margin: 0.6rem 0;
     padding: 0.55rem 0.65rem 0.65rem;
     background: rgba(13, 21, 38, 0.55);
-    border: 1px solid rgba(251, 191, 36, 0.18);
-    border-left: 3px solid #fbbf24;
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 4px;
   }
   .sim-payoff-header {

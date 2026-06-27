@@ -5257,8 +5257,7 @@
   }
   .opt-block {
     background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
-    border: 1px solid rgba(251,191,36,0.18);
-    border-left: 3px solid #fbbf24;
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 4px;
     padding: 0.5rem 0.65rem;
   }

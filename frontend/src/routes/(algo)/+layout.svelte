@@ -92,7 +92,6 @@
       _clearG();
       const route =
         target === 'p' ? '/pulse'
-      : target === 'd' ? '/dashboard'
       : target === 'o' ? '/orders'
       : target === 'r' ? '/admin/derivatives'
       : target === 'h' ? '/admin/history'
@@ -222,7 +221,6 @@
     //   Automation (rule review, lower frequency than active trading)
     //   Strategies → NAV (attribution + LP / fund views, weekly)
     { href: '/pulse',            label: 'Pulse',     group: 'monitor' },
-    { href: '/dashboard',        label: 'Dashboard', group: 'monitor' },
     { href: '/orders',           label: 'Orders',    group: 'monitor' },
     { href: '/admin/derivatives', label: 'Derivatives', group: 'monitor' },
     { href: '/charts',           label: 'Charts',    group: 'monitor' },

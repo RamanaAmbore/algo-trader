@@ -645,20 +645,8 @@
        • Order Book     → green-400 (records / history)
      Industry analogue: Splunk panel side-stripe, Datadog widget
      accent, Bloomberg PRTU section identity bars. */
-  .bucket-card {
-    width: 100%;
-    min-width: 0;
-    padding: 0.55rem 0.65rem 0.6rem 0.8rem;
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
-    border: 1.5px solid rgba(255, 255, 255, 0.10);
-    border-left: 3px solid rgba(251, 191, 36, 0.70);
-    border-radius: 6px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
-                inset 0 1px 0 rgba(255, 255, 255, 0.06);
-    display: flex;
-    flex-direction: column;
-    box-sizing: border-box;
-  }
+  /* Local .bucket-card chrome retired — inherits the canonical
+     flat chrome from app.css. */
   /* Order Entry card overrides `.bucket-card`'s inner padding to
      zero — SymbolPanel's picker / tabs / body / common-actions
      each define their own horizontal inset, the same way they do

@@ -217,8 +217,7 @@
   }
   .card {
     background: linear-gradient(180deg, rgba(20,30,55,0.65) 0%, rgba(13,21,38,0.65) 100%);
-    border: 1px solid rgba(251,191,36,0.18);
-    border-left: 3px solid #fbbf24;
+    border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 4px;
     padding: 0.65rem 0.75rem;
   }
