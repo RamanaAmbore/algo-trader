@@ -1225,12 +1225,29 @@
     line-height: 1.3;
   }
   :global(.log-panel.log-rows .log-row-msg) {
-    /* flex-basis: 100% pushes msg to its own line below time + tag */
+    /* flex-basis: 100% pushes msg to its own line below time + tag
+       on narrow viewports — mobile convention. Desktop override
+       below collapses time + msg into one row. */
     flex: 1 1 100%;
     order: 2;
     min-width: 0;
     word-break: break-word;
     line-height: 1.3;
+  }
+  /* Desktop ≥1024px — collapse the stacked layout into a single
+     row with two columns: [time TAG] | [message]. Matches the
+     Bloomberg / TradingView / IBKR convention for log surfaces on
+     wide viewports — doubles entries-per-screen without info loss.
+     Long messages still wrap inside their own column (the message
+     col grows + shrinks but `word-break: break-word` from the rule
+     above keeps overflow handled). Mobile layout unchanged. */
+  @media (min-width: 1024px) {
+    :global(.log-panel.log-rows .log-row) {
+      flex-wrap: nowrap;
+    }
+    :global(.log-panel.log-rows .log-row-msg) {
+      flex: 1 1 0;
+    }
   }
   /* Row-class semantics now carry through TEXT COLOR ONLY — no inside
      accent (left-border stripe, background tint) per operator
