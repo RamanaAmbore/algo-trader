@@ -29,10 +29,7 @@
   import MultiSelect   from '$lib/MultiSelect.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import InfoHint      from '$lib/InfoHint.svelte';
-  import CollapseButton  from '$lib/CollapseButton.svelte';
-  import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
-  import FullscreenButton from '$lib/FullscreenButton.svelte';
-  import GridSearchButton from '$lib/GridSearchButton.svelte';
+  import CardControls from '$lib/CardControls.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import {
@@ -4092,13 +4089,15 @@
              from the previous greek chip, but inside the cluster the
              buttons sit at the inter-button 0.15rem gap. -->
         <span class="payoff-card-controls">
-          {#if _fsPayoff}
-            <RefreshButton onClick={_refreshAll}
-                           loading={_refreshing} label="payoff" />
-          {/if}
-          <CollapseButton bind:isCollapsed={_colPayoff} cardId="optPayoff" label="Payoff" />
-          <DefaultSizeButton bind:isFullscreen={_fsPayoff} bind:isCollapsed={_colPayoff} label="Payoff" />
-          <FullscreenButton bind:isFullscreen={_fsPayoff} label="Payoff" />
+          <CardControls
+            bind:isCollapsed={_colPayoff}
+            bind:isFullscreen={_fsPayoff}
+            cardId="optPayoff"
+            label="Payoff"
+            onRefresh={_refreshAll}
+            bind:refreshLoading={_refreshing}
+            showSearch={false}
+          />
         </span>
       </div>
     </div>
@@ -4191,14 +4190,15 @@
            the comment over `.payoff-card-controls`. Reuses the same
            class so the CSS rule covers both cards. -->
       <span class="payoff-card-controls">
-        {#if _fsLegs}
-          <RefreshButton onClick={_refreshAll}
-                         loading={_refreshing} label="legs" />
-        {/if}
-        <GridSearchButton bind:filter={_filterLegs} label="Legs" />
-        <CollapseButton bind:isCollapsed={_colLegs} cardId="optLegs" label="Legs" />
-        <DefaultSizeButton bind:isFullscreen={_fsLegs} bind:isCollapsed={_colLegs} label="Legs" />
-        <FullscreenButton bind:isFullscreen={_fsLegs} label="Legs" />
+        <CardControls
+          bind:isCollapsed={_colLegs}
+          bind:isFullscreen={_fsLegs}
+          bind:filter={_filterLegs}
+          cardId="optLegs"
+          label="Legs"
+          onRefresh={_refreshAll}
+          bind:refreshLoading={_refreshing}
+        />
       </span>
     </div>
     {#if !_colLegs}
@@ -4679,14 +4679,15 @@
       <StrategyPicker label="Strategy" />
     </span>
     <span class="payoff-card-controls">
-      {#if _fsByund}
-        <RefreshButton onClick={_refreshAll}
-                       loading={_refreshing} label="snapshot" />
-      {/if}
-      <GridSearchButton bind:filter={_filterByund} label="Snapshot" />
-      <CollapseButton bind:isCollapsed={_colByund} cardId="optByund" label="Snapshot" />
-      <DefaultSizeButton bind:isFullscreen={_fsByund} bind:isCollapsed={_colByund} label="Snapshot" />
-      <FullscreenButton bind:isFullscreen={_fsByund} label="Snapshot" />
+      <CardControls
+        bind:isCollapsed={_colByund}
+        bind:isFullscreen={_fsByund}
+        bind:filter={_filterByund}
+        cardId="optByund"
+        label="Snapshot"
+        onRefresh={_refreshAll}
+        bind:refreshLoading={_refreshing}
+      />
     </span>
   </div>
   {#if !_colByund}

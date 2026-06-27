@@ -5,9 +5,7 @@
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
-  import FullscreenButton from '$lib/FullscreenButton.svelte';
-  import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
-  import CollapseButton from '$lib/CollapseButton.svelte';
+  import CardControls from '$lib/CardControls.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
@@ -1654,26 +1652,26 @@
            `bind:`, so we split into two component instances guarded
            by {#if}. -->
       {#if _capEqTab === 'capital'}
-        {#if _fsCapital}
-          <RefreshButton onClick={_refreshAll} loading={_refreshing} label="capital" />
-        {/if}
-        <!-- No cardId → CollapseButton.onMount early-returns, so the
-             collapse state is NOT persisted to localStorage. Both
-             tabs always start expanded on every page load; operators
-             can still toggle in-session but the choice resets on
-             reload. Matches operator intent: this card is "always
-             show me capital + equity at-a-glance"; persistent
-             collapse hid data and caused stale-state confusion. -->
-        <CollapseButton bind:isCollapsed={_colCapital} label="Capital" />
-        <DefaultSizeButton bind:isFullscreen={_fsCapital} bind:isCollapsed={_colCapital} label="Capital" />
-        <FullscreenButton bind:isFullscreen={_fsCapital} label="Capital" />
+        <!-- No cardId → collapse state NOT persisted to localStorage.
+             Both tabs always start expanded on every page load.
+             Matches operator intent: no stale-state confusion. -->
+        <CardControls
+          bind:isCollapsed={_colCapital}
+          bind:isFullscreen={_fsCapital}
+          label="Capital"
+          onRefresh={_refreshAll}
+          bind:refreshLoading={_refreshing}
+          showSearch={false}
+        />
       {:else}
-        {#if _fsEquity}
-          <RefreshButton onClick={_refreshAll} loading={_refreshing} label="equity" />
-        {/if}
-        <CollapseButton bind:isCollapsed={_colEquity} label="Equity" />
-        <DefaultSizeButton bind:isFullscreen={_fsEquity} bind:isCollapsed={_colEquity} label="Equity" />
-        <FullscreenButton bind:isFullscreen={_fsEquity} label="Equity" />
+        <CardControls
+          bind:isCollapsed={_colEquity}
+          bind:isFullscreen={_fsEquity}
+          label="Equity"
+          onRefresh={_refreshAll}
+          bind:refreshLoading={_refreshing}
+          showSearch={false}
+        />
       {/if}
     </div>
 
@@ -1745,16 +1743,18 @@
         bind:value={_chartTab}
         compact={true}
       />
-      {#if _fsEquityCurve}
-        <RefreshButton onClick={_refreshAll} loading={_refreshing} label="chart" />
-      {/if}
       <!-- No cardId — collapse state resets to expanded on every page
            load. Operator can still toggle in-session. Matches the
            "no card collapsed if there's no data by default" rule
            applied across the dashboard. -->
-      <CollapseButton bind:isCollapsed={_colEquityCurve} label="Chart" />
-      <DefaultSizeButton bind:isFullscreen={_fsEquityCurve} bind:isCollapsed={_colEquityCurve} label="Chart" />
-      <FullscreenButton bind:isFullscreen={_fsEquityCurve} label="Chart" />
+      <CardControls
+        bind:isCollapsed={_colEquityCurve}
+        bind:isFullscreen={_fsEquityCurve}
+        label="Chart"
+        onRefresh={_refreshAll}
+        bind:refreshLoading={_refreshing}
+        showSearch={false}
+      />
     </div>
 
     <!-- Intraday panel — SVG curve of today's cum P&L. -->
@@ -1948,12 +1948,14 @@
   class:is-collapsed={_colNews}>
   <div class="row3-header">
     <span class="mp-section-label mp-section-label--bar">MARKET NEWS</span>
-    {#if _fsNews}
-      <RefreshButton onClick={_refreshAll} loading={_refreshing} label="news" />
-    {/if}
-    <CollapseButton bind:isCollapsed={_colNews} label="Market News" />
-    <DefaultSizeButton bind:isFullscreen={_fsNews} bind:isCollapsed={_colNews} label="Market News" />
-    <FullscreenButton bind:isFullscreen={_fsNews} label="Market News" />
+    <CardControls
+      bind:isCollapsed={_colNews}
+      bind:isFullscreen={_fsNews}
+      label="Market News"
+      onRefresh={_refreshAll}
+      bind:refreshLoading={_refreshing}
+      showSearch={false}
+    />
   </div>
   <div class="card-body" hidden={_colNews}>
     <!-- Two-column magazine flow on wide viewports (≥900 px) so the
@@ -1989,15 +1991,17 @@
       <span class="dash-agent-count">{_firesToday}</span>
       <span class="dash-agent-label">fires today</span>
     </span>
-    {#if _fsAgent}
-      <RefreshButton onClick={_refreshAll} loading={_refreshing} label="agent activity" />
-    {/if}
     <!-- Default expanded — was previously `initialCollapsed=true` so
          the empty-state "No agent fires yet today" was hidden behind
          a collapse the operator had to click to discover. -->
-    <CollapseButton bind:isCollapsed={_colAgent} label="Agent activity" />
-    <DefaultSizeButton bind:isFullscreen={_fsAgent} bind:isCollapsed={_colAgent} label="Agent activity" />
-    <FullscreenButton bind:isFullscreen={_fsAgent} label="Agent activity" />
+    <CardControls
+      bind:isCollapsed={_colAgent}
+      bind:isFullscreen={_fsAgent}
+      label="Agent activity"
+      onRefresh={_refreshAll}
+      bind:refreshLoading={_refreshing}
+      showSearch={false}
+    />
   </div>
   <div class="card-body" hidden={_colAgent}>
     <ActionEventsToggle bind:value={_agentLogShowActions} />

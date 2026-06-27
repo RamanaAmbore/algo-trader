@@ -22,14 +22,12 @@
   import { authStore, nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
+  import CardControls from '$lib/CardControls.svelte';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import Select from '$lib/Select.svelte';
-  import CollapseButton from '$lib/CollapseButton.svelte';
-  import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
-  import FullscreenButton from '$lib/FullscreenButton.svelte';
   import {
     createOrderTemplate,
     patchOrderTemplate,
@@ -355,12 +353,15 @@
         </button>
       {/if}
     </div>
-    {#if _fsTemplates}
-      <RefreshButton onClick={load} loading={loading} label="Templates" />
-    {/if}
-    <CollapseButton bind:isCollapsed={_colTemplates} cardId="automation-templates" label="Templates" />
-    <DefaultSizeButton bind:isFullscreen={_fsTemplates} bind:isCollapsed={_colTemplates} label="Templates" />
-    <FullscreenButton bind:isFullscreen={_fsTemplates} label="Templates" />
+    <CardControls
+      bind:isCollapsed={_colTemplates}
+      bind:isFullscreen={_fsTemplates}
+      cardId="automation-templates"
+      label="Templates"
+      onRefresh={load}
+      bind:refreshLoading={loading}
+      showSearch={false}
+    />
   </div>
   <div class="card-body" hidden={_colTemplates}>
 

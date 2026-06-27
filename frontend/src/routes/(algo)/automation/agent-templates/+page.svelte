@@ -24,6 +24,7 @@
   import { authStore, nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
+  import CardControls from '$lib/CardControls.svelte';
   import {
     fetchAgentFragments, createAgentFragment,
     patchAgentFragment, deleteAgentFragment, reloadFragments,
@@ -32,9 +33,6 @@
   import DisclosureChevron  from '$lib/DisclosureChevron.svelte';
   import ConfirmModal       from '$lib/ConfirmModal.svelte';
   import Select             from '$lib/Select.svelte';
-  import CollapseButton     from '$lib/CollapseButton.svelte';
-  import DefaultSizeButton  from '$lib/DefaultSizeButton.svelte';
-  import FullscreenButton   from '$lib/FullscreenButton.svelte';
   import { toast } from '$lib/data/toastStore.svelte.js';
 
   let fragments = $state(/** @type {any[]} */ ([]));
@@ -227,12 +225,15 @@
         {fragments.length} total · {visible.length} shown
       </span>
     </div>
-    {#if _fsTemplates}
-      <RefreshButton onClick={doReload} loading={busy} label="templates" />
-    {/if}
-    <CollapseButton bind:isCollapsed={_colTemplates} cardId="automation-agent-templates" label="Agent Templates" />
-    <DefaultSizeButton bind:isFullscreen={_fsTemplates} bind:isCollapsed={_colTemplates} label="Agent Templates" />
-    <FullscreenButton bind:isFullscreen={_fsTemplates} label="Agent Templates" />
+    <CardControls
+      bind:isCollapsed={_colTemplates}
+      bind:isFullscreen={_fsTemplates}
+      cardId="automation-agent-templates"
+      label="Agent Templates"
+      onRefresh={doReload}
+      bind:refreshLoading={busy}
+      showSearch={false}
+    />
   </div>
 
   <div class="card-body" hidden={_colTemplates}>

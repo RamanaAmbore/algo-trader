@@ -13,9 +13,7 @@
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
   import ActionEventsToggle from '$lib/ActionEventsToggle.svelte';
-  import CollapseButton from '$lib/CollapseButton.svelte';
-  import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
-  import FullscreenButton from '$lib/FullscreenButton.svelte';
+  import CardControls from '$lib/CardControls.svelte';
 
   // Match the dashboard's default — fires only, with an opt-in to
   // surface action successes / errors.
@@ -61,12 +59,15 @@
   <div class="bucket-header">
     <span class="mp-section-label">Agent Activity</span>
     <ActionEventsToggle bind:value={showActions} />
-    {#if _fsActivity}
-      <RefreshButton onClick={_onRefresh} loading={_refreshing} label="activity" />
-    {/if}
-    <CollapseButton bind:isCollapsed={_colActivity} cardId="automation-activity" label="Activity" />
-    <DefaultSizeButton bind:isFullscreen={_fsActivity} bind:isCollapsed={_colActivity} label="Activity" />
-    <FullscreenButton bind:isFullscreen={_fsActivity} label="Activity" />
+    <CardControls
+      bind:isCollapsed={_colActivity}
+      bind:isFullscreen={_fsActivity}
+      cardId="automation-activity"
+      label="Activity"
+      onRefresh={_onRefresh}
+      refreshLoading={_refreshing}
+      showSearch={false}
+    />
   </div>
   <div class="card-body" hidden={_colActivity}>
     <UnifiedLog

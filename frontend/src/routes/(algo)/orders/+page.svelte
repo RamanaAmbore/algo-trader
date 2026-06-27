@@ -6,9 +6,7 @@
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
-  import CollapseButton from '$lib/CollapseButton.svelte';
-  import FullscreenButton from '$lib/FullscreenButton.svelte';
-  import DefaultSizeButton from '$lib/DefaultSizeButton.svelte';
+  import CardControls from '$lib/CardControls.svelte';
   import LogPanel from '$lib/LogPanel.svelte';
   import BellIcon from '$lib/icons/BellIcon.svelte';
   import { fetchOrders } from '$lib/api';
@@ -390,12 +388,14 @@
       {/if}
     </span>
     <span class="oc-spacer"></span>
-    {#if _fsEntry}
-      <RefreshButton onClick={loadOrders} loading={loading} label="orders" />
-    {/if}
-    <CollapseButton bind:isCollapsed={_colEntry} label="Order Entry" />
-    <DefaultSizeButton bind:isFullscreen={_fsEntry} bind:isCollapsed={_colEntry} label="Order Entry" />
-    <FullscreenButton bind:isFullscreen={_fsEntry} label="Order Entry" />
+    <CardControls
+      bind:isCollapsed={_colEntry}
+      bind:isFullscreen={_fsEntry}
+      label="Order Entry"
+      onRefresh={loadOrders}
+      bind:refreshLoading={loading}
+      showSearch={false}
+    />
   </div>
   <div class="card-body" hidden={_colEntry}>
     <!-- `headerless` re-added: SymbolPanel's internal header strip
@@ -480,12 +480,14 @@
       Activity
     </span>
     <span class="oc-spacer"></span>
-    {#if _fsActivity}
-      <RefreshButton onClick={loadOrders} loading={loading} label="activity" />
-    {/if}
-    <CollapseButton bind:isCollapsed={_colActivity} label="Activity" />
-    <DefaultSizeButton bind:isFullscreen={_fsActivity} bind:isCollapsed={_colActivity} label="Activity" />
-    <FullscreenButton bind:isFullscreen={_fsActivity} label="Activity" />
+    <CardControls
+      bind:isCollapsed={_colActivity}
+      bind:isFullscreen={_fsActivity}
+      label="Activity"
+      onRefresh={loadOrders}
+      bind:refreshLoading={loading}
+      showSearch={false}
+    />
   </div>
   <div class="card-body oc-act-body" hidden={_colActivity}>
     <LogPanel defaultTab="order" pollMs={3000}
