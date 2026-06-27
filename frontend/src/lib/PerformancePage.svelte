@@ -1007,6 +1007,17 @@
      joins this row as the last element (no Refresh button — the
      performance WebSocket already handles auto-refresh). -->
 <div class="tabs-row mb-2">
+  {#if accounts.length > 0}
+    <!-- Operator: "left align accounts dropdown." Account picker
+         now leads the row so it sits at the leftmost edge; tabs
+         follow to its right. -->
+    <div class="acct-multi">
+      <AccountMultiSelect
+        bind:value={selectedAccounts}
+        options={accounts.map(a => ({ value: a, label: maskAccounts ? String(a ?? '').replace(/\d/g, '#') : a }))}
+        theme={compactHeader ? 'dark' : 'light'} />
+    </div>
+  {/if}
   <div class="flex gap-0.5">
     {#each [['positions','Positions'],['holdings','Holdings']] as [id, label]}
       <button
@@ -1016,18 +1027,6 @@
       >{label}</button>
     {/each}
   </div>
-  {#if accounts.length > 0}
-    <!-- Account picker — always enabled here because PerformancePage
-         is fundamentally about per-account positions/holdings (no
-         non-account context to disable for). Mirrors the Symbol
-         MultiSelect next to it for visual consistency. -->
-    <div class="acct-multi">
-      <AccountMultiSelect
-        bind:value={selectedAccounts}
-        options={accounts.map(a => ({ value: a, label: maskAccounts ? String(a ?? '').replace(/\d/g, '#') : a }))}
-        theme={compactHeader ? 'dark' : 'light'} />
-    </div>
-  {/if}
   <!-- Symbol dropdown retired — GridSearchButton on each detail
        grid below provides the same per-symbol filter via free-text
        search. -->
