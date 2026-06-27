@@ -5,6 +5,7 @@
   import { fetchPnlBenchmarks } from '$lib/api.js';
   import PnlPanel from '$lib/PnlPanel.svelte';
   import Select   from '$lib/Select.svelte';
+  import AlgoTabs from '$lib/AlgoTabs.svelte';
 
   // Bindable prop — flips to `false` only after a successful fetch
   // confirms zero rows for the current filters. Defaults to `true` so
@@ -645,20 +646,17 @@
 
   <!-- Range breakdown — tabbed -->
   <div class="card">
-    <div class="tab-strip" role="tablist" aria-label="Range breakdown">
-      <button class="tab {breakTab === 'segment' ? 'tab-on' : ''}"
-              role="tab" aria-selected={breakTab === 'segment'}
-              onclick={() => breakTab = 'segment'}>Segment</button>
-      <button class="tab {breakTab === 'account' ? 'tab-on' : ''}"
-              role="tab" aria-selected={breakTab === 'account'}
-              onclick={() => breakTab = 'account'}>Account</button>
-      <button class="tab {breakTab === 'symbol' ? 'tab-on' : ''}"
-              role="tab" aria-selected={breakTab === 'symbol'}
-              onclick={() => breakTab = 'symbol'}>Symbol</button>
-      <button class="tab {breakTab === 'daily' ? 'tab-on' : ''}"
-              role="tab" aria-selected={breakTab === 'daily'}
-              onclick={() => breakTab = 'daily'}>Daily</button>
-    </div>
+    <AlgoTabs
+      tabs={[
+        { id: 'segment', label: 'Segment' },
+        { id: 'account', label: 'Account' },
+        { id: 'symbol',  label: 'Symbol'  },
+        { id: 'daily',   label: 'Daily'   },
+      ]}
+      value={breakTab}
+      onChange={(id) => { breakTab = /** @type {'segment'|'account'|'symbol'|'daily'} */ (id); }}
+      compact={true}
+    />
 
     {#if breakTab === 'segment'}
       {#if data.by_segment.length === 0}
@@ -1142,32 +1140,11 @@
     opacity: 0.9;
   }
 
-  .tab-strip {
-    display: flex;
-    gap: 0.05rem;
-    border-bottom: 1px solid rgba(255,255,255,0.07);
-    margin-bottom: 0.45rem;
-  }
-  .tab {
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    padding: 0.28rem 0.7rem;
-    font-size: 0.6rem;
-    color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    font-weight: 700;
-    cursor: pointer;
-    transition: color 0.12s, border-color 0.12s;
-  }
-  .tab:hover { color: var(--algo-slate); }
-  .tab.tab-on {
-    color: #fbbf24;
-    border-bottom-color: #fbbf24;
-  }
+  /* Range-breakdown tab strip migrated to canonical AlgoTabs.
+     Hand-rolled `.tab-strip` / `.tab` / `.tab-on` retired — the
+     decoration now matches every other tab strip in the workspace
+     (LogPanel, SymbolPanel, Dashboard, Derivatives, History,
+     Execution, Research, MarketPulse). */
   .tab-hint {
     font-size: 0.6rem;
     color: var(--algo-muted);

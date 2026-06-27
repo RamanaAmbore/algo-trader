@@ -15,24 +15,27 @@
   serve different lifecycles — order templates pick at submit time,
   agent templates pick at agent-design time.
 
-  Industry analogue: TradingView "Alerts & Automations" tab strip;
-  NinjaTrader Control Center workspace. Renamed from
-  AgentWorkspaceTabs in v2.1 when Templates joined the workspace.
+  Visual: renders through the canonical AlgoTabs primitive so the
+  font-size, padding, letter-spacing, active-tab background tint,
+  and hover treatment exactly match every other tab strip in the
+  algo workspace (LogPanel, SymbolPanel, Dashboard, Derivatives,
+  History, Execution, Research, MarketPulse). Operator: "tab
+  decoration is not consistent across all pages" — prior hand-rolled
+  `.aw-tab` ran 0.72rem with a gradient strip background unique to
+  this nav; the AlgoTabs swap collapses it into the platform default.
 -->
 <script>
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
+  import AlgoTabs from '$lib/AlgoTabs.svelte';
 
-  // Operator-workflow order: configuration surfaces first (Agents +
-  // both template kinds), history (Activity), building blocks
-  // (Tokens), exploration (Lab).
   const TABS = [
-    { href: '/automation',                 label: 'Agents'           },
-    { href: '/automation/templates',       label: 'Order Templates'  },
-    { href: '/automation/agent-templates', label: 'Agent Templates'  },
-    { href: '/automation/activity',        label: 'Activity'         },
-    { href: '/admin/tokens',               label: 'Tokens'           },
-    { href: '/admin/research',             label: 'Lab'              },
+    { id: '/automation',                 label: 'Agents'          },
+    { id: '/automation/templates',       label: 'Order Templates' },
+    { id: '/automation/agent-templates', label: 'Agent Templates' },
+    { id: '/automation/activity',        label: 'Activity'        },
+    { id: '/admin/tokens',               label: 'Tokens'          },
+    { id: '/admin/research',             label: 'Lab'             },
   ];
 
   // Longest-match — /automation/activity must beat /automation.
@@ -40,81 +43,30 @@
     const path = page.url.pathname;
     let best = '';
     for (const t of TABS) {
-      if ((path === t.href || path.startsWith(t.href + '/')) && t.href.length > best.length) {
-        best = t.href;
+      if ((path === t.id || path.startsWith(t.id + '/')) && t.id.length > best.length) {
+        best = t.id;
       }
     }
     return best;
   });
 </script>
 
-<nav class="aw-tabs" aria-label="Automation workspace">
-  {#each TABS as t}
-    <button
-      class="aw-tab {activeHref === t.href ? 'aw-tab-active' : ''}"
-      onclick={() => goto(t.href)}
-      type="button"
-    >{t.label}</button>
-  {/each}
-</nav>
+<div class="aw-tabs-wrap">
+  <AlgoTabs
+    tabs={TABS}
+    value={activeHref}
+    onChange={(href) => goto(href)}
+  />
+</div>
 
 <style>
-  .aw-tabs {
-    display: flex;
-    align-items: center;
-    gap: 0.15rem;
-    padding: 0.15rem 0.2rem;
+  /* Thin wrapper carries only the bottom margin so consumers get a
+     consistent gap before the page content (matches the previous
+     `.aw-tabs { margin: 0 0 0.6rem 0 }`). Border-bottom + background
+     gradient + padding are dropped — AlgoTabs supplies its own
+     underline + transparent ground so the strip looks identical to
+     every other in-page tab strip. */
+  .aw-tabs-wrap {
     margin: 0 0 0.6rem 0;
-    border-bottom: 1px solid var(--algo-amber-border-soft);
-    background: linear-gradient(180deg, rgba(15,23,41,0.7) 0%, rgba(10,16,32,0.7) 100%);
-    border-radius: 0.25rem 0.25rem 0 0;
-    /* 6 tabs × ~6rem each ≈ 36rem of inline content. On any sub-580px
-       viewport the strip overflows; without containment the parent
-       picks up a horizontal scrollbar and the fixed navbar / footer
-       get pushed sideways (iOS Safari resolves `right: 0` against
-       document scrollWidth, not visual viewport). Contain to a
-       horizontal scroll on the strip itself — same pattern Material
-       and TradingView use. Hide the scrollbar; the active tab + small
-       gradient hints make the scrollability obvious enough. */
-    max-width: 100%;
-    overflow-x: auto;
-    overflow-y: hidden;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-  }
-  .aw-tabs::-webkit-scrollbar { display: none; }
-  .aw-tab {
-    padding: 0.35rem 0.85rem;
-    font-size: 0.72rem;
-    font-weight: 500;
-    color: rgba(180,200,230,0.75);
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    cursor: pointer;
-    font-family: ui-monospace, monospace;
-    letter-spacing: 0.04em;
-    transition: color 0.06s, border-bottom-color 0.06s, background-color 0.06s;
-    outline: none;
-    margin-bottom: -1px; /* stitch the tab's bottom border flush with the strip's. */
-    flex-shrink: 0;
-    white-space: nowrap;
-  }
-  @media (max-width: 640px) {
-    .aw-tab {
-      padding: 0.3rem 0.55rem;
-      font-size: 0.68rem;
-      letter-spacing: 0.02em;
-    }
-  }
-  .aw-tab:focus-visible { outline: 2px solid #fbbf24; outline-offset: 2px; }
-  .aw-tab:hover {
-    color: #fbbf24;
-    background: rgba(251,191,36,0.06);
-  }
-  .aw-tab-active {
-    color: #fbbf24;
-    font-weight: 700;
-    border-bottom-color: #fbbf24;
   }
 </style>

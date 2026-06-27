@@ -26,6 +26,7 @@
   } from '$lib/api';
   import { visibleInterval, marketAwareInterval, connStatus, authStore, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
+  import AlgoTabs from '$lib/AlgoTabs.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
 
@@ -4663,24 +4664,24 @@
                  its own peer tab to the right, labelled with the list
                  name directly. No generic "Watchlist" wrapper or
                  sub-tabs — operator request: "there should not be any
-                 watchlist tab. it should be the tab I have created". -->
-            <div class="mp-toptabs" role="tablist" aria-label="Pinned and user watchlists">
-              <button type="button" role="tab"
-                      class="mp-toptab mp-toptab-pinned"
-                      class:mp-toptab-on={topTab === 'pinned'}
-                      aria-selected={topTab === 'pinned'}
-                      onclick={() => topTab = 'pinned'}>Pinned</button>
-              {#each _userLists as l (l.id)}
-                <button type="button" role="tab"
-                        class="mp-toptab mp-toptab-watch"
-                        class:mp-toptab-on={topTab === l.id}
-                        aria-selected={topTab === l.id}
-                        title={l.name}
-                        onclick={() => topTab = l.id}>
-                  {l.name}
-                </button>
-              {/each}
-            </div>
+                 watchlist tab. it should be the tab I have created".
+                 AlgoTabs supplies the canonical underline-on-active
+                 decoration shared with every other tab strip on the
+                 site. Per-tab color: amber for Pinned, sky for each
+                 user watchlist so the operator can still distinguish
+                 the two feed families at a glance. Watchlist ids are
+                 string-encoded as `wl:<id>` since AlgoTabs uses string
+                 ids; onChange decodes back to the number/'pinned'
+                 union the rest of MarketPulse expects. -->
+            <AlgoTabs
+              tabs={[
+                { id: 'pinned', label: 'Pinned', color: /** @type {const} */ ('amber') },
+                ..._userLists.map(l => ({ id: `wl:${l.id}`, label: l.name, color: /** @type {const} */ ('sky') }))
+              ]}
+              value={topTab === 'pinned' ? 'pinned' : `wl:${topTab}`}
+              onChange={(id) => { topTab = id === 'pinned' ? 'pinned' : Number(id.slice(3)); }}
+              compact={true}
+            />
             <!-- Watchlist manage button — opens the Add-to-Pulse modal
                  which handles every list-level operation: add a symbol,
                  create a new watchlist, rename existing, delete it,
@@ -4733,16 +4734,13 @@
                    class:fs-card-on={_fsWinners}>
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
-              <div class="mp-wl-tabs mp-head-tabs" role="tablist" aria-label="Winners universe">
-                {#each MOVER_TABS as t}
-                  <button type="button" role="tab"
-                          class="mp-wl-tab"
-                          class:mp-wl-tab-on={winTab === t}
-                          aria-selected={winTab === t}
-                          onclick={() => winTab = t}>
-                    {MOVER_TAB_LABEL[t]}
-                  </button>
-                {/each}
+              <div class="mp-head-tabs">
+                <AlgoTabs
+                  tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t] }))}
+                  value={winTab}
+                  onChange={(id) => { winTab = /** @type {MoverTab} */ (id); }}
+                  compact={true}
+                />
               </div>
               <span class="mp-bucket-head-spacer"></span>
               {#if _fsWinners}
@@ -4763,16 +4761,13 @@
                    class:fs-card-on={_fsLosers}>
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
-              <div class="mp-wl-tabs mp-head-tabs" role="tablist" aria-label="Losers universe">
-                {#each MOVER_TABS as t}
-                  <button type="button" role="tab"
-                          class="mp-wl-tab"
-                          class:mp-wl-tab-on={loseTab === t}
-                          aria-selected={loseTab === t}
-                          onclick={() => loseTab = t}>
-                    {MOVER_TAB_LABEL[t]}
-                  </button>
-                {/each}
+              <div class="mp-head-tabs">
+                <AlgoTabs
+                  tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t] }))}
+                  value={loseTab}
+                  onChange={(id) => { loseTab = /** @type {MoverTab} */ (id); }}
+                  compact={true}
+                />
               </div>
               <span class="mp-bucket-head-spacer"></span>
               {#if _fsLosers}
@@ -5605,52 +5600,6 @@
   .mp-bucket-head-spacer {
     flex: 1 1 0;
   }
-  .mp-wl-tabs {
-    display: flex;
-    gap: 0.15rem;
-  }
-
-  /* Top-tab strip inside the merged Pinned/Watchlist card.
-     Underline pattern shared with every other sub-tab strip on
-     the algo site (lab-tab, cap-eq-tab, exec-tab, mp-wl-tab,
-     legs-tab) — Bloomberg / Sensibull / IBKR convention. Per-feed
-     colour identity (amber for Pinned, sky for Watchlist) is
-     preserved via the active-state underline + text colour so
-     the operator can still tell the two apart at a glance. */
-  .mp-toptabs {
-    display: flex;
-    gap: 0;
-  }
-  .mp-toptab {
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    /* Tightened so the Pinned tab strip sits flush below the
-       page-header on both desktop + mobile (operator: "the gap
-       between rows with pulse and pinned text needs to be
-       reduced"). top-padding 0 = pinned text starts at the strip's
-       own top edge. */
-    padding: 0 0.6rem 0.15rem;
-    cursor: pointer;
-    line-height: 1;
-    transition: color 0.12s, border-color 0.12s;
-  }
-  .mp-toptab:hover { color: var(--algo-slate); }
-  .mp-toptab-on.mp-toptab-pinned {
-    color: #fbbf24;
-    border-bottom-color: #fbbf24;
-  }
-  .mp-toptab-on.mp-toptab-watch {
-    color: #7dd3fc;
-    border-bottom-color: #7dd3fc;
-  }
-
   /* Hidden grid container (inactive tab) — display:none keeps it
      in the DOM so bind:this lands at mount, but ag-Grid won't
      render anything until the operator flips back. ag-Grid's
@@ -5658,34 +5607,12 @@
   .bucket-grid.mp-grid-hidden {
     display: none;
   }
-  /* Sub-tab strip used for the watchlist list (when multiple
-     custom lists exist) and the Winners/Losers universe filters.
-     Same underline pattern as .mp-toptab — one consistent sub-tab
-     family across the algo site. Smaller font-size since this
-     strip sometimes shares the bucket-head with the label, the
-     account picker and the controls cluster. */
-  .mp-wl-tab {
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    padding: 0.18rem 0.45rem 0.16rem;
-    cursor: pointer;
-    line-height: 1;
+  /* mp-head-tabs is a thin wrapper around AlgoTabs inside the
+     bucket-head row — gives the strip a flex-shrink: 0 anchor so
+     the label + controls cluster around it predictably. */
+  .mp-head-tabs {
     display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    transition: color 0.12s, border-color 0.12s;
-  }
-  .mp-wl-tab:hover { color: var(--algo-slate); }
-  .mp-wl-tab-on {
-    color: #fbbf24;
-    border-bottom-color: #fbbf24;
+    flex-shrink: 0;
   }
 
   /* Symbol cell on the RIGHT grid — account-tinted left + right

@@ -34,6 +34,7 @@
   import FullscreenButton from '$lib/FullscreenButton.svelte';
   import GridSearchButton from '$lib/GridSearchButton.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
+  import AlgoTabs from '$lib/AlgoTabs.svelte';
   import {
     loadInstruments, suggestUnderlyings,
     listExpiries, listStrikes, findOption,
@@ -4169,30 +4170,22 @@
           <span class="legs-header-sep" aria-hidden="true"></span>
         {/if}
         <!-- Tabs replace the static title — operator flips between
-             the full leg list and the close-list summary. -->
-        <div class="legs-tabs" role="tablist" aria-label="Legs view">
-          <button type="button" role="tab"
-                  class="legs-tab"
-                  class:legs-tab-on={legsTab === 'legs'}
-                  aria-selected={legsTab === 'legs'}
-                  onclick={() => legsTab = 'legs'}>
-            Legs
-            {#if candidatePositions.length > 0}
-              <span class="legs-tab-count">{candidatePositions.length}</span>
-            {/if}
-          </button>
-          <button type="button" role="tab"
-                  class="legs-tab"
-                  class:legs-tab-on={legsTab === 'expiry'}
-                  aria-selected={legsTab === 'expiry'}
-                  title="Positions identified for close before expiry day"
-                  onclick={() => legsTab = 'expiry'}>
-            Exp close
-            {#if expiryCloseTotal > 0}
-              <span class="legs-tab-count legs-tab-count-alert">{expiryCloseTotal}</span>
-            {/if}
-          </button>
-        </div>
+             the full leg list and the close-list summary. Expiry
+             tab carries its count in a rose-colored badge variant
+             so an unfilled close-before-expiry surface flags as
+             warning vs the neutral leg count on Legs. -->
+        <AlgoTabs
+          tabs={[
+            { id: 'legs', label: 'Legs',
+              badge: candidatePositions.length > 0 ? candidatePositions.length : null },
+            { id: 'expiry', label: 'Exp close',
+              color: expiryCloseTotal > 0 ? 'rose' : 'amber',
+              badge: expiryCloseTotal > 0 ? expiryCloseTotal : null },
+          ]}
+          value={legsTab}
+          onChange={(id) => { legsTab = /** @type {'legs'|'expiry'} */ (id); }}
+          compact={true}
+        />
       </div>
       <!-- Same tight no-wrap trio cluster as the Payoff header — see
            the comment over `.payoff-card-controls`. Reuses the same
@@ -5724,56 +5717,11 @@
   }
   .legs-header:hover { color: #fde047; }
 
-  /* Legs / Expiry Action tab strip — same underline pattern shared
-     across every sub-tab strip on the algo site (mp-toptab,
-     mp-wl-tab, lab-tab, cap-eq-tab, exec-tab). Bloomberg / Sensibull
-     / IBKR TWS convention. */
-  .legs-tabs {
-    display: flex;
-    align-items: center;
-    gap: 0;
-  }
-  .legs-tab {
-    background: transparent;
-    border: none;
-    border-bottom: 2px solid transparent;
-    color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    padding: 0.22rem 0.55rem 0.2rem;
-    cursor: pointer;
-    line-height: 1;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    transition: color 0.12s, border-color 0.12s;
-  }
-  .legs-tab:hover { color: var(--algo-slate); }
-  .legs-tab-on {
-    color: #fbbf24;
-    border-bottom-color: #fbbf24;
-  }
-  .legs-tab-count {
-    font-size: 0.55rem;
-    font-weight: 800;
-    padding: 0 0.3rem;
-    border-radius: 999px;
-    background: rgba(126, 151, 184, 0.18);
-    color: rgba(200, 216, 240, 0.85);
-  }
-  .legs-tab-on .legs-tab-count {
-    background: var(--algo-amber-bg-strong);
-    color: #fbbf24;
-  }
-  /* Alert badge when expiry-close has 1+ rows — red so the
-     operator's eye lands on it when contracts need closing. */
-  .legs-tab-count-alert {
-    background: var(--algo-red-bg-strong);
-    color: #f87171;
-  }
+  /* Legs / Expiry tabs migrated to canonical AlgoTabs (compact
+     amber; expiry switches to rose color when expiryCloseTotal>0
+     so the unfilled-close alert reads as warning instead of
+     neutral). All `.legs-tab*` CSS retired — AlgoTabs owns the
+     decoration via `.algo-tab` in app.css. */
 
   /* Underlying chip — sits before the legs/close tabs. Visually
      distinct from the tabs so the operator's eye reads it as
