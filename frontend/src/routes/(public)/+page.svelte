@@ -53,7 +53,7 @@
 <div class="home">
   <!-- Hero — credibility-first headline + 4-cell trust strip. -->
   <section class="hero">
-    <h1 class="hero-title">RamboQuant Analytics LLP</h1>
+    <h1 class="pub-hero-title">RamboQuant Analytics LLP</h1>
     <p class="hero-tag">Long-term stock investments paired with a toolkit of algo-executed options strategies — covered calls, cash-secured puts, spreads, and more — using stocks and cash as margin. Stocks appreciate, premiums compound.</p>
 
     <div class="trust-strip">
@@ -169,14 +169,8 @@
     text-align: center;
     padding: 1.5rem 1rem 1.25rem;
   }
-  .hero-title {
-    font-size: clamp(1.4rem, 4vw, 1.85rem);
-    font-weight: 900;
-    color: #0c1830;
-    letter-spacing: -0.01em;
-    margin: 0 0 0.5rem;
-    line-height: 1.15;
-  }
+  /* .hero-title retired — migrated to canonical .pub-hero-title in
+     app.css so /, /about share one hero treatment. */
   .hero-tag {
     font-size: clamp(0.85rem, 2.2vw, 1rem);
     color: #3a4d6e;

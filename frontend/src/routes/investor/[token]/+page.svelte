@@ -142,6 +142,7 @@
       </div>
     </div>
   {:else if slice}
+    <h1 class="pub-page-heading">Investor Statement</h1>
     <section class="ip-greeting">
       Hello {slice.display_name},
     </section>

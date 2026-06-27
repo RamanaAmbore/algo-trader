@@ -1240,18 +1240,62 @@
   }
 }
 
-/* ── Dark-underline heading — full width, same color as text ─────────────── */
+/* ── Public-site heading system ─────────────────────────────────────────── */
+/* Two tiers, applied consistently across every public page. Operator:
+   "page heading is inconsistent across public pages" — five hand-rolled
+   classes (.hero-title, .about-heading, .perf-heading, .page-heading,
+   <h1 class='sr-only'>) collapsed into two canonical roles.
+     • .pub-hero-title — marketing first-impression pages (/, /about)
+     • .pub-page-heading — content/data pages (/performance, /market,
+       /faq, /contact, /investor/[token])
+     • .pub-section-heading — sub-sections within a page (e.g. /faq's
+       "Process Flows" between the Q&A list and the diagrams) */
 @layer components {
-  .page-heading {
-    font-size: 1.15rem;
-    font-weight: 800;
+  .pub-hero-title {
+    font-size: clamp(1.3rem, 4vw, 1.75rem);
+    font-weight: 900;
     color: #0c1830;
-    padding-bottom: 0;
-    border-bottom: none;
+    letter-spacing: -0.01em;
+    line-height: 1.2;
+    text-align: center;
+    margin: 0 0 0.5rem;
+  }
+  .pub-page-heading {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: #0c1830;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
+    margin: 0 0 1.25rem;
     display: block;
     width: 100%;
-    margin-bottom: 1.25rem;
+  }
+  @media (max-width: 600px) {
+    .pub-page-heading { font-size: 1.1rem; margin-bottom: 1rem; }
+  }
+  .pub-section-heading {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #0c1830;
+    letter-spacing: -0.005em;
+    margin: 1.5rem 0 0.75rem;
+    display: block;
+    width: 100%;
+  }
+  /* Legacy alias — any markup that still says class="page-heading"
+     keeps working until the migration completes. */
+  .page-heading {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: #0c1830;
     letter-spacing: -0.01em;
+    line-height: 1.25;
+    margin: 0 0 1.25rem;
+    display: block;
+    width: 100%;
+  }
+  @media (max-width: 600px) {
+    .page-heading { font-size: 1.1rem; margin-bottom: 1rem; }
   }
 
   /* ── Public-site palette utilities ────────────────────────────────

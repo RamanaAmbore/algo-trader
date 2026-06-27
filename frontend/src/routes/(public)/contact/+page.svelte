@@ -49,7 +49,7 @@
      mobile keeps the existing tight width via the breakpoint cap. -->
 <div class="contact-wrap mx-auto">
   <div class="pub-card rounded-lg shadow-sm p-5 pt-4">
-  <h1 class="page-heading">Contact</h1>
+  <h1 class="pub-page-heading">Contact</h1>
   {#if success}
     <div class="pub-banner-success mb-4 p-3 rounded text-sm" role="status" aria-live="polite">{success}</div>
   {/if}

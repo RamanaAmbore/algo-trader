@@ -157,7 +157,7 @@
 </svelte:head>
 
 
-<h1 class="sr-only">Daily Market Report</h1>
+<h1 class="pub-page-heading">Daily Market Report</h1>
 
 <!-- Tabs sit OUTSIDE the white card on the page background, mirroring
      the /performance page treatment. Champagne BOTTOM border on the

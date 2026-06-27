@@ -187,7 +187,7 @@
 <svelte:window onkeydown={(e) => { if (_zoomedDiagram && e.key === 'Escape') _closeZoom(); }} />
 
 <div class="pub-card rounded-lg shadow-sm p-5 pt-4">
-<h1 class="page-heading">Frequently Asked Questions</h1>
+<h1 class="pub-page-heading">Frequently Asked Questions</h1>
 
 <div class="faq-list mb-10">
   {#each faqs as faq, i}
@@ -217,7 +217,7 @@
   {/each}
 </div>
 
-<h2 class="page-heading">Process Flows</h2>
+<h2 class="pub-section-heading">Process Flows</h2>
 <div class="space-y-6">
   {#each diagrams as d}
     <div class="flow-card">

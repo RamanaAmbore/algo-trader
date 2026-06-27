@@ -33,18 +33,18 @@
 </svelte:head>
 
 <style>
-  .perf-heading {
-    font-size: 1.35rem;
-    font-weight: 700;
-    color: #1e3050;
-    letter-spacing: -0.01em;
-    padding: 1.25rem 1.25rem 0.25rem;
-    margin: 0;
+  /* .perf-heading retired — migrated to canonical .pub-page-heading
+     in app.css. Local wrapper kept for the padded top inset that
+     matches the page's first-section spacing. */
+  .perf-heading-wrap {
+    padding: 1.25rem 1.25rem 0;
   }
   @media (max-width: 600px) {
-    .perf-heading { font-size: 1.1rem; padding: 1rem 0.75rem 0.15rem; }
+    .perf-heading-wrap { padding: 1rem 0.75rem 0; }
   }
 </style>
 
-<h1 class="perf-heading">Live Portfolio Performance</h1>
+<div class="perf-heading-wrap">
+  <h1 class="pub-page-heading">Live Portfolio Performance</h1>
+</div>
 <PerformancePage />
