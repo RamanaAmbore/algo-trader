@@ -1464,10 +1464,29 @@
     .tabs-row { gap: 0.3rem; }
     .acct-multi { width: 6rem; }
   }
-  /* Funds & NAV tabs — sub-tab strip inside the card. Top-margin
-     pulls the AlgoTabs flush below the section heading. */
+  /* Funds & NAV tabs — sub-tab strip rendered by AlgoTabs. The
+     canonical AlgoTabs amber palette (#fbbf24 + rgba(251,191,36,0.10)
+     fill) is overridden here to champagne so this strip matches the
+     Positions/Holdings tabs immediately below it. Operator: "make
+     nav and funds tabs decoration to be similar to positions/
+     holdings."
+
+     Same shape now across both tab strips on /performance:
+       • inactive text muted slate-blue (unchanged)
+       • active text + underline navy/champagne
+       • 10% champagne fill behind the active label
+       • faint champagne fill on hover for symmetry */
   .funds-nav-tabs {
     display: flex;
+  }
+  .funds-nav-tabs :global(.algo-tab[aria-selected="true"]) {
+    color: #1a2744 !important;
+    border-bottom-color: #d4920c !important;
+    background: rgba(212, 146, 12, 0.10) !important;
+  }
+  .funds-nav-tabs :global(.algo-tab:hover:not([aria-selected="true"])) {
+    border-bottom-color: rgba(212, 146, 12, 0.5) !important;
+    background: rgba(212, 146, 12, 0.04) !important;
   }
 
   /* Heading row for the Positions / Holdings grids — pairs the h2
