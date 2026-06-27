@@ -375,15 +375,17 @@
   // LEFT half. Each column gets just enough room for its widest
   // expected value + the ~4 px cell padding from the theme.
   const holdingsSummaryCols = [
-    // Action-first order — Day P&L leads, Account trails. Operator scans
-    // numbers first (today's move → carry → value) before routing context.
+    // Operator: "in summary keep the account number as the first
+    // column." Account leads so the row's routing context reads
+    // first, matching the Funds grid convention (which already has
+    // Account at column 0).
+    { field: 'account',               headerName: 'Account',  width: 76,  minWidth: 76,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'day_change_val',        headerName: 'Day P&L',  width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage', headerName: 'Day %',    width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                   headerName: 'P&L',      width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl_percentage',        headerName: 'P&L %',    width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'cur_val',               headerName: 'Value',  width: 110, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
     { field: 'inv_val',               headerName: 'Invested',  width: 110, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'account',               headerName: 'Account',  width: 76,  minWidth: 76,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
   ];
 
   // Cluster: LTP → Prev → Avg → Day P&L → Day % → P&L → P&L %.
@@ -428,12 +430,13 @@
     { field: 'account',               headerName: 'Account',  width: 76, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
   ];
 
-  // Positions summary — same action-first ordering as holdings summary.
+  // Positions summary — Account leads (operator: "in summary keep the
+  // account number as the first column").
   const positionsSummaryCols = [
+    { field: 'account',               headerName: 'Account', width: 76,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'day_change_val',        headerName: 'Day P&L', width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage', headerName: 'Day %',   width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                   headerName: 'P&L',     width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'account',               headerName: 'Account', width: 76,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
   ];
 
   // Symbol cell renderer with inline chart-icon button. Used on both
@@ -763,7 +766,18 @@
     rawHoldingsSummary  = h.summary ?? [];
     rawPositionsSummary = p.summary ?? [];
     rawFunds            = f.rows ?? [];
-    const allAccts = [...new Set([...rawHoldings.map(r => r.account), ...rawPositions.map(r => r.account)])];
+    // Account picker scope includes funds-only accounts too — a Dhan
+    // account holding cash with zero open positions on a given day
+    // was silently disappearing from the picker (operator: "the
+    // performance page is not including the other accounts like
+    // algo pages"). The Funds grid was always showing those rows;
+    // the picker now matches that coverage. TOTAL is filtered out
+    // since it's an aggregate row, not a real account.
+    const allAccts = [...new Set([
+      ...rawHoldings.map(r => r.account),
+      ...rawPositions.map(r => r.account),
+      ...rawFunds.map(r => r.account).filter(a => a && a !== 'TOTAL'),
+    ])];
     accounts = allAccts;
     // Two separate symbol lists — the dropdown narrows to just what the
     // active tab needs, so Positions never shows holding-only symbols
@@ -1074,25 +1088,16 @@
   {/if}
 </div>
 
-<!-- Fund Balances heading — on compactHeader layouts (the admin
-     dashboard) the Refresh button sits on this row instead of crowding
-     the tabs / filter row above. Public /performance keeps its
-     top-of-page Refresh button. -->
-<div class="funds-heading-row">
-  <h2 class="section-heading funds-heading-title">Fund Balances</h2>
-  {#if compactHeader}
-    <span class="funds-heading-refresh">
-      <RefreshButton onClick={() => loadAll({ fresh: true })} {loading} label="funds" />
-    </span>
-  {/if}
-</div>
-{#if !_agGridReady}
-  <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
-{/if}
-<div bind:this={fundsEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
-
+<!-- Operator: "summary should be before fund balances". Summary
+     grids (per-account Day P&L + P&L) for the active tab read
+     first, then the detail grid below, then Fund Balances last.
+     The summary row IS the at-a-glance answer; funds are reference
+     data the operator drills into when they want margin context. -->
 <section class:hidden={activeTab !== 'positions'}>
   <h2 class="section-heading">Summary</h2>
+  {#if !_agGridReady}
+    <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
+  {/if}
   <div bind:this={positionsSummaryEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
 
   <div class="perf-grid-headrow">
@@ -1105,6 +1110,9 @@
 
 <section class:hidden={activeTab !== 'holdings'}>
   <h2 class="section-heading">Summary</h2>
+  {#if !_agGridReady}
+    <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
+  {/if}
   <div bind:this={holdingsSummaryEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
 
   <div class="perf-grid-headrow">
@@ -1114,6 +1122,21 @@
   </div>
   <div bind:this={holdingsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>
+
+<!-- Fund Balances — moved below the summary + detail grids per
+     operator request. On compactHeader layouts (admin dashboard)
+     the Refresh button sits on this row instead of crowding the
+     tabs / filter row above. Public /performance keeps its
+     top-of-page Refresh button. -->
+<div class="funds-heading-row">
+  <h2 class="section-heading funds-heading-title">Fund Balances</h2>
+  {#if compactHeader}
+    <span class="funds-heading-refresh">
+      <RefreshButton onClick={() => loadAll({ fresh: true })} {loading} label="funds" />
+    </span>
+  {/if}
+</div>
+<div bind:this={fundsEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
 
 {#if _chartModalSym}
   <ChartModal
@@ -1395,20 +1418,12 @@
     flex-wrap: nowrap;
   }
 
-  /* Light-theme (public /performance) tab background — matches the
-     dark-theme treatment in shape: amber tint on active, faint
-     hover tint on inactive, both with rounded top corners so the
-     active tab reads as a panel header. */
-  .tabs-row :global(button[class*="border-primary"]) {
-    background: rgba(212,146,12,0.10);
-    border-top-left-radius: 4px;
-    border-top-right-radius: 4px;
-  }
-  .tabs-row :global(button[class*="text-muted"]:hover) {
-    background: rgba(212,146,12,0.04);
-    border-top-left-radius: 4px;
-    border-top-right-radius: 4px;
-  }
+  /* Light-theme tab decoration — pure champagne bottom-border on
+     active, faint slate on hover. Matches the /market tab strip
+     (.market-tab / .market-tab-active) so the two public pages
+     share one tab convention. Operator: "check for card, accent,
+     tab consistency in investor site" — bg tint + rounded top
+     corners retired so the strip reads the same as /market's. */
   /* Account + Symbol dropdown wrappers. Same width + min-width so the
      two sit side-by-side as equal-footprint fields. Theme + colour are
      handled inside Select / MultiSelect. Both live right after the
