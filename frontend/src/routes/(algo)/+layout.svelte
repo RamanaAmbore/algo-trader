@@ -1905,13 +1905,10 @@
     border-left-color: #fbbf24 !important;
   }
 
-  /* .cmd-surface: mirrors the Orders command-bar amber left accent onto
-     any entry/form card so the user knows at a glance "this is where
-     input goes". Applied to the Simulator's control card; can be added
-     to future form surfaces as-is. */
-  :global(.algo-content .cmd-surface) {
-    border-left: 3px solid #fbbf24 !important;
-  }
+  /* .cmd-surface left-accent rule retired — operator reverted the
+     universal amber left rule on cards. Class name preserved in
+     markup as a no-op layout hook for any local CSS that still
+     targets it. */
 
   /* .sim-btn-order: compact modifier for places where the sim-btn
      palette is reused outside the Simulator's grow-to-fill row. Drops
@@ -2205,26 +2202,30 @@
   :global(.algo-status-card) {
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     border: 1.5px solid rgba(255,255,255,0.1);
-    border-left: 3px solid #fbbf24;
     border-radius: 6px;
     padding: 0.75rem;
     box-shadow: 0 2px 8px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.08);
     color: var(--algo-slate);
-    transition: border-color 0.15s, border-left-color 0.15s, box-shadow 0.15s, background 0.15s;
+    transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
   }
+  /* Status variants still encode agent state via a thin colored
+     left rule (active green / inactive dim / triggered red).
+     Operator reverted the universal amber left accent; the status
+     accent stays because it's semantic, not decorative — operator
+     scans which agent is active vs idle at a glance. */
   :global(.algo-status-card[data-status="active"]) {
     border-color: rgba(74,222,128,0.6);
-    border-left-color: #4ade80;
+    border-left: 3px solid #4ade80;
     box-shadow: 0 2px 8px rgba(0,0,0,0.45), 0 0 0 1px rgba(74,222,128,0.18);
   }
   :global(.algo-status-card[data-status="inactive"]) {
     border-color: rgba(180,200,230,0.18);
-    border-left-color: rgba(180,200,230,0.35);
+    border-left: 3px solid rgba(180,200,230,0.35);
     opacity: 0.82;
   }
   :global(.algo-status-card[data-status="triggered"]) {
     border-color: rgba(248,113,113,0.75);
-    border-left-color: #f87171;
+    border-left: 3px solid #f87171;
     box-shadow: 0 2px 8px rgba(0,0,0,0.45), 0 0 0 1px rgba(248,113,113,0.22);
   }
   :global(.algo-status-card[data-status="running"]) {

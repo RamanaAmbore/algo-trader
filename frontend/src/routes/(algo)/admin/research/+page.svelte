@@ -1291,7 +1291,6 @@
   .lab-card {
     background: rgba(15, 25, 45, 0.4);
     border: 1px solid rgba(126, 151, 184, 0.18);
-    border-left: 3px solid rgba(251, 191, 36, 0.70);
     border-radius: 0.5rem;
     padding: 0.8rem;
   }

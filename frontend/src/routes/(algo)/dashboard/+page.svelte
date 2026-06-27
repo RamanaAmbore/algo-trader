@@ -2293,24 +2293,13 @@
      `dash-row1-split` 2-col grid above. */
 
   .bucket-card {
-    /* width: 100% keeps the card filling its grid track / flex parent
-       even when the body is hidden via {hidden={_colXxx}}. Without
-       this rule, some browser/grid combos let the card shrink to its
-       (now header-only) intrinsic width when collapsed, causing the
-       visible row width to jump. */
-    width: 100%;
-    min-width: 0;
+    /* Local override targets only the dashboard's padding (slightly
+       tighter than the global 0.55/0.65/0.6/0.8). All other chrome
+       (gradient, border, radius, shadow, amber 3px left accent)
+       inherits from app.css's canonical .bucket-card so the
+       dashboard cards share the same edge accent as every other
+       page (operator: "be consistent"). */
     padding: 0.65rem 0.75rem 0.7rem;
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
-    border: 1.5px solid rgba(255, 255, 255, 0.10);
-    border-radius: 6px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                inset 0 1px 0 rgba(255, 255, 255, 0.08);
-    /* Flex column so the card stretches to the row's height while
-       its content stacks naturally from the top. */
-    display: flex;
-    flex-direction: column;
-    box-sizing: border-box;
   }
   .bucket-header {
     display: flex;

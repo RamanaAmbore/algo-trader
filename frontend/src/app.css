@@ -1573,14 +1573,12 @@
 }
 
 /* ── Canonical .algo-card — compact, padded card ─────────────────────────── */
-/* Tighter sibling of .algo-status-card. Uniform 3px amber left-border so
-   every card across the workspace shares the same edge accent (operator:
-   "be consistent" — some cards had no border, some had cyan/rose/sky/slate
-   variants; all collapsed to one amber identity). */
+/* Tighter sibling of .algo-status-card. Flat — no left-edge accent. Operator
+   reverted the amber 3px left-border that was briefly added in 098b4de2;
+   every card across the workspace now reads as a flat panel. */
 .algo-card {
   background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-left: 3px solid rgba(251, 191, 36, 0.70);
   border-radius: 4px;
   padding: 0.55rem 0.7rem;
 }
@@ -1607,7 +1605,6 @@
   padding: 0.55rem 0.65rem 0.6rem 0.8rem;
   background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
   border: 1.5px solid rgba(255, 255, 255, 0.10);
-  border-left: 3px solid rgba(251, 191, 36, 0.70);   /* amber default */
   border-radius: 6px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
               inset 0 1px 0 rgba(255, 255, 255, 0.06);
