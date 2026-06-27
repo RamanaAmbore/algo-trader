@@ -1676,6 +1676,17 @@ class Connections(SingletonBase):
             self._broker_id_map     = new_broker_id_map
             self._priority_map      = new_priority_map
             self._hist_enabled_map  = new_hist_enabled_map
+        # Refresh the masked-account registry so every downstream
+        # surface (funds.py, holdings.py, telegram alerts, audit log)
+        # sees the new ordinal-per-broker masking scheme. Operator:
+        # "update the dhan accounts as d1#### and d2#### …"
+        try:
+            from backend.shared.helpers.utils import register_accounts
+            register_accounts(new_conn.keys())
+        except Exception as e:
+            # Mask registry refresh isn't load-critical — fall back to
+            # the scalar mask. Log and continue.
+            logger.warning(f"mask_account registry refresh failed: {e}")
         logger.info(f"Connections: rebuilt from DB · accounts={sorted(new_conn.keys())}")
 
         # Notify the KiteTicker if the account it's currently bound to

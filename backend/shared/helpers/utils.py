@@ -204,46 +204,81 @@ def get_nearest_time(from_hour: int = 9, from_min: int = 0, to_hour: int = 23, t
 
 _MASK_RE = re.compile(r'\d')
 
+# Account → masked-code registry, built from the live broker account
+# list at Connections.rebuild_from_db time. Each account maps to:
+#     <broker letter><1-based ordinal within broker>####
+# Example registry with the operator's 5 accounts:
+#     ZG0790 → Z1####    (1st Zerodha by alphabetical order)
+#     ZJ6294 → Z2####
+#     DH3747 → D1####    (1st Dhan)
+#     DH6847 → D2####
+#     GR87DF → G1####    (only Groww)
+#
+# Empty until `register_accounts` is called; mask_account falls back
+# to scalar masking for unregistered codes so demo / test paths that
+# never load Connections still produce a sensible mask.
+_REGISTRY: dict[str, str] = {}
+
+
+def register_accounts(accounts) -> None:
+    """Rebuild the mask registry from the current account list.
+
+    Called from `Connections.rebuild_from_db()` whenever the broker
+    list changes (initial load, operator adds/edits/removes a broker
+    via /admin/brokers). Idempotent — re-registering replaces the
+    previous mapping atomically.
+
+    Sort order is the raw account code (alphabetical) so the ordinal
+    assignment is deterministic across deploys: if you add a new Dhan
+    account whose code sorts after the existing two, it becomes D3####
+    without renumbering the existing D1 / D2.
+    """
+    global _REGISTRY
+    by_prefix: dict[str, list[str]] = {}
+    for a in sorted(set(accounts or []) - {"", "TOTAL"}):
+        if not a:
+            continue
+        by_prefix.setdefault(a[0].upper(), []).append(a)
+    new_map: dict[str, str] = {}
+    for prefix, accts in by_prefix.items():
+        for i, a in enumerate(accts, 1):
+            new_map[a] = f"{prefix}{i}####"
+    _REGISTRY = new_map
+
+
+def _scalar_mask(s: str) -> str:
+    """Fallback for accounts not in the registry: replace ALL digits
+    with `#` (the old default). Letters preserved. Examples:
+        'ZG0790' → 'ZG####'
+        'GR87DF' → 'GR##DF'
+    Used when register_accounts hasn't run yet (e.g. ad-hoc scripts,
+    tests, or transient calls during boot before Connections loads).
+    """
+    return _MASK_RE.sub('#', s)
+
 
 def mask_account(s: str) -> str:
-    """Scalar account-mask: keeps the FIRST digit verbatim, masks the
-    rest with `#`. Examples:
-        'ZG0790' → 'ZG0###'
-        'ZJ6294' → 'ZJ6###'
-        'DH3747' → 'DH3###'
-        'DH6847' → 'DH6###'
-        'GR87DF' → 'GR8##F'   (only digits masked; letters preserved)
+    """Scalar account-mask. Examples (after register_accounts has run):
+        'ZG0790' → 'Z1####'
+        'ZJ6294' → 'Z2####'
+        'DH3747' → 'D1####'
+        'DH6847' → 'D2####'
+        'GR87DF' → 'G1####'
 
-    Why preserve the first digit: operator runs multiple accounts
-    from the same broker (DH3747 + DH6847 are both Dhan). The
-    previous mask replaced ALL digits with `#`, so both Dhan
-    accounts collapsed to the SAME masked string 'DH####'. Downstream
-    de-duplication (e.g. NAV grid's `new Set(...)`) treated them as
-    one account and merged their rows, hiding one Dhan account from
-    the visible breakdown. Preserving the first digit gives every
-    same-broker account a unique mask while still hiding the bulk
-    of the digits.
+    The mask shape is <broker letter><1-based ordinal>#### — operator
+    asked for this so the broker is recognisable at a glance AND
+    multiple accounts at the same broker don't collapse to the same
+    masked string.
 
-    Audit traceability for masked logs is preserved — the first
-    digit alone isn't enough to uniquely identify the operator's
-    account to an outsider, but is enough for the operator to
-    distinguish their own accounts in the masked view."""
+    TOTAL is special-cased — it's a virtual aggregate row, not a real
+    account, and should pass through unchanged in every masked view."""
     if not s:
         return ""
-    # Mask all digits EXCEPT the first one (left-to-right). Letters
-    # are never masked.
-    out = []
-    seen_first_digit = False
-    for ch in s:
-        if ch.isdigit():
-            if not seen_first_digit:
-                out.append(ch)
-                seen_first_digit = True
-            else:
-                out.append('#')
-        else:
-            out.append(ch)
-    return ''.join(out)
+    if s == "TOTAL":
+        return s
+    if s in _REGISTRY:
+        return _REGISTRY[s]
+    return _scalar_mask(s)
 
 
 def mask_column(col):
