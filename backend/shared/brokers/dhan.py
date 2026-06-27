@@ -1404,31 +1404,27 @@ def _normalise_holdings(resp: Any) -> list[dict]:
     out: list[dict] = []
     for h in _unwrap(resp):
         # Dhan splits "settled to demat" (totalQty) and "T+1 pending"
-        # (t1Qty) cleanly: a CNC buy executed today shows up as
-        # totalQty=0 + t1Qty=N for the rest of T-day and only moves
-        # into totalQty after settlement. Without folding t1Qty in
-        # here, the row's quantity is 0 and downstream surfaces
-        # (Pulse / PerformancePage / Dashboard holdings grids) all
-        # treat the freshly-bought stock as invisible for ~24 h.
-        # Operator: "I bought ifci shares in dhan account today.
-        # However, I don't see them in positions or holdings in pulse
-        # in other places."
+        # (t1Qty). The contract observed in production:
+        #   • Fresh CNC buy (today):   totalQty=0, t1Qty=N    → qty=N
+        #   • Fully settled (T+3):     totalQty=N, t1Qty=0    → qty=N
+        #   • Both populated:          totalQty=N, t1Qty=N    → qty=N
+        #     (Dhan reports the SAME N shares in both fields — not
+        #     additive. Confirmed by operator who has 2 SIEMENS shares
+        #     but saw qty=4 when v1 of this code summed the fields.)
         #
-        # Audit guard: log a WARNING when BOTH fields are populated.
-        # The v2 Holdings API was observed to separate the two cleanly,
-        # but if a future Dhan rev bundles T+1 into totalQty, this
-        # addition would silently double-count. The log gives staging
-        # an early signal before the operator sees a 2× quantity.
+        # Right interpretation: max(totalQty, t1Qty). Equivalent to
+        # "use settled if any, else use pending" — handles all three
+        # cases without double-counting.
+        #
+        # Prior code (qty = _t_settled + t1q) was based on the
+        # assumption that t1Qty was strictly INCREMENTAL to totalQty.
+        # The "both populated" case (operator: 'I have only 2 siemens
+        # shares' but display showed 4) proves Dhan's v2 contract
+        # actually reports T+1 shares in BOTH fields once they appear
+        # in the holdings list.
         _t_settled = int(h.get("totalQty",  0) or 0)
         t1q = int(h.get("t1Qty",     0) or 0)
-        if _t_settled > 0 and t1q > 0:
-            logger.warning(
-                f"Dhan holdings: both totalQty={_t_settled} AND t1Qty={t1q} "
-                f"set for {h.get('tradingSymbol') or h.get('symbol')!r} — "
-                f"verify Dhan v2 contract; current code sums them which "
-                f"would double-count if totalQty already includes T+1."
-            )
-        qty = _t_settled + t1q
+        qty = max(_t_settled, t1q)
         # Dhan returns securityId as a numeric string ("21131"); coerce
         # to int so concat with Kite holdings doesn't trip polars.
         try:
