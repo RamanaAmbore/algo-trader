@@ -5631,7 +5631,10 @@
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    padding: 0.22rem 0.6rem 0.2rem;
+    /* Tightened from 0.22rem 0.6rem 0.2rem so the Pinned tab strip
+       sits closer to the page-header above. Reclaims ~3 px of
+       vertical gap on /pulse. */
+    padding: 0.1rem 0.6rem 0.15rem;
     cursor: pointer;
     line-height: 1;
     transition: color 0.12s, border-color 0.12s;
@@ -5824,7 +5827,12 @@
     .mp-flat-wrap {
       min-height: 0;
       overflow: hidden;
-      padding: 0.3rem;
+      /* padding-top zeroed (was 0.3rem all-sides) so the Pinned tab
+         strip sits flush below the page-header on mobile, matching
+         the desktop rule above. Operator: "the gap between rows
+         with pulse and pinned text needs to be reduced a little
+         bit in pulse page". */
+      padding: 0 0.3rem 0.3rem;
     }
     .bucket-grid {
       height: 220px;
