@@ -250,8 +250,6 @@
     font-weight: 600;
     color: #1a2744;
     line-height: 1.65;
-    border-left: 3px solid #c8a84b;
-    padding-left: 1rem;
     margin-top: 1.75rem;
     font-style: italic;
   }

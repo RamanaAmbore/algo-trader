@@ -268,8 +268,11 @@
     box-shadow: 0 4px 14px rgba(212,146,12,0.14);
     transform: translateY(-1px);
   }
-  .fork-investor { border-top: 3px solid #d4920c; }
-  .fork-quant    { border-top: 3px solid #1a4e7e; }
+  /* Top-edge accent variants retired — operator: every public card
+     should read as a flat panel. The fork cards keep their hover
+     lift + champagne `.fork-cta` underline as the directional
+     affordance; the colored top stripes added competing chrome
+     that didn't earn its visual weight. */
   .fork-head {
     display: flex;
     align-items: center;
