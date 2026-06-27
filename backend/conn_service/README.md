@@ -61,20 +61,40 @@ OS user that runs `ramboq_api.service`.
 
 ## Migration plan (slice progress)
 
-- [x] **Slice 1:** Build conn_service Litestar app + routes (this commit)
-- [ ] **Slice 2:** Build `backend/conn_client/` HTTP wrapper
-- [ ] **Slice 3:** Migrate `broker_apis.fetch_*` callers in main API
-- [ ] **Slice 4:** Migrate KiteTicker LTP access (`_ticker.get_ltp`)
-- [ ] **Slice 5:** Migrate order placement (`broker.place_order`)
+- [x] **Slice 1:** Build conn_service Litestar app + routes
+- [x] **Slice 2:** Build `backend/conn_client/` HTTP wrapper (async + sync)
+- [x] **Slice 3A:** Flag-gated proxy inside `broker_apis.fetch_*`
+                   (no caller migrations — single-line cutover)
+- [ ] **Slice 3B:** Optional — migrate callers from
+                   `broker_apis.fetch_*` directly to `conn_client`
+                   once the flag-gated path is proven stable.
+- [ ] **Slice 4:** Migrate KiteTicker LTP access (the biggest
+                   restart-pain surface — keeps SSE ticks alive
+                   across `ramboq_api` restarts).
+- [ ] **Slice 5:** Migrate order placement (`broker.place_order`).
 - [ ] **Slice 6:** Update `webhook/deploy.sh` to recognize the
-                  conn_service vs api distinction and only restart
-                  the right service per push.
+                   conn_service vs api distinction and only restart
+                   the right service per push.
 
-Slices 1 and 2 are safe to ship without breaking anything — the
-conn_service runs in parallel with the existing in-process broker
-code; no production caller talks to it yet. Slices 3-5 progressively
-flip callers over; each can be guarded behind a feature flag for
-side-by-side verification before the cutover.
+## Cutover flag — `RAMBOQ_USE_CONN_SERVICE`
+
+After slice 3A, the cutover is a single env var on the main API
+process:
+
+  • Unset (default) — main API runs broker code in-process, same
+    as today. No behaviour change.
+  • Set to `1` — `broker_apis.fetch_holdings/positions/margins/
+    health_snapshot` proxy through conn_client.sync to the UDS
+    instead of calling the local Connections singleton.
+
+Flip it on by installing the drop-in at
+`webhook/ramboq_api.service.d-conn.conf` into the systemd unit
+directory. See that file's header comment for the exact steps.
+
+Conn_service ITSELF must run with the flag UNSET — otherwise its
+own `broker_apis.fetch_*` call inside `routes.py` would recurse
+back into itself via the UDS. The `ramboq_conn.service` unit
+deliberately doesn't set the env var.
 
 ## Running locally
 

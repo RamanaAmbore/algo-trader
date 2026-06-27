@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import time as _time
 
@@ -6,6 +7,20 @@ from backend.shared.helpers.decorators import for_all_accounts
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# RAMBOQ_USE_CONN_SERVICE — when set on the main API process, the
+# zero-arg public fetch_* entry points proxy to conn_service over UDS
+# instead of running the in-process broker code. Conn_service itself
+# leaves this UNSET, so its own broker_apis import keeps running the
+# local @for_all_accounts path (no recursion).
+#
+# Single-line cutover lever — operator flips it on after verifying
+# ramboq_conn.service is healthy, no caller-code changes required.
+def _use_conn_service() -> bool:
+    return os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
 # One-shot flag for the Kite MCX value-units diagnostic in
 # fetch_positions. Logs the raw `day_buy_value` vs the two possible
@@ -57,12 +72,42 @@ def is_account_healthy(account: str) -> bool:
 
 
 def fetch_health_snapshot() -> dict[str, dict]:
-    """Read-only copy of the per-account health map."""
+    """Read-only copy of the per-account health map.
+
+    When RAMBOQ_USE_CONN_SERVICE is on, the canonical health map
+    lives in the conn_service process — the local _FETCH_HEALTH
+    in this process is empty (no broker calls landed here). We
+    fall back to a synchronous httpx call against the conn_service
+    health endpoint and surface its map instead. The navbar badge
+    already reads through this function, so no caller migration."""
+    if _use_conn_service():
+        try:
+            from backend.conn_client.sync import _get_client
+            resp = _get_client().get("/internal/health/brokers")
+            resp.raise_for_status()
+            return (resp.json() or {}).get("health", {}) or {}
+        except Exception as e:
+            logger.warning(f"conn_service health snapshot failed: {e}")
+            return {}
     return {k: dict(v) for k, v in _FETCH_HEALTH.items()}
 
 
+def fetch_holdings(*args, **kwargs):
+    """Public entry — proxies to conn_service when the cutover flag
+    is on, otherwise runs the local @for_all_accounts path.
+
+    The proxy branch only kicks in for the zero-arg shape
+    (`fetch_holdings()` — every caller in the codebase uses this).
+    Explicit `account=`/`broker=` kwargs fall through to the local
+    path so single-account internal use keeps working."""
+    if _use_conn_service() and not args and not kwargs:
+        from backend.conn_client import sync as conn_sync
+        return conn_sync.fetch_holdings()
+    return _fetch_holdings_local(*args, **kwargs)
+
+
 @for_all_accounts
-def fetch_holdings(connections=Connections, account=None, kite=None, broker=None):
+def _fetch_holdings_local(connections=Connections, account=None, kite=None, broker=None):
     """Multi-broker holdings fetch. Uses the Broker ABC abstraction
     (broker.holdings()) when available so Dhan / Groww accounts route
     through their own adapters; falls back to the legacy `kite=`
@@ -182,8 +227,17 @@ def fetch_holdings(connections=Connections, account=None, kite=None, broker=None
     return df_holdings
 
 
+def fetch_positions(*args, **kwargs):
+    """Public entry — proxies to conn_service when the cutover flag
+    is on, otherwise runs the local @for_all_accounts path."""
+    if _use_conn_service() and not args and not kwargs:
+        from backend.conn_client import sync as conn_sync
+        return conn_sync.fetch_positions()
+    return _fetch_positions_local(*args, **kwargs)
+
+
 @for_all_accounts
-def fetch_positions(connections=Connections, account=None, kite=None, broker=None):
+def _fetch_positions_local(connections=Connections, account=None, kite=None, broker=None):
     """Multi-broker positions fetch. Same broker-vs-kite resolution
     pattern as fetch_holdings; non-Kite adapters return Kite-shape
     rows via their respective normalisers."""
@@ -666,8 +720,17 @@ def backfill_market_data(df) -> int:
 backfill_close_prices = backfill_market_data
 
 
+def fetch_margins(*args, **kwargs):
+    """Public entry — proxies to conn_service when the cutover flag
+    is on, otherwise runs the local @for_all_accounts path."""
+    if _use_conn_service() and not args and not kwargs:
+        from backend.conn_client import sync as conn_sync
+        return conn_sync.fetch_margins()
+    return _fetch_margins_local(*args, **kwargs)
+
+
 @for_all_accounts
-def fetch_margins(connections=Connections, account=None, kite=None, broker=None):
+def _fetch_margins_local(connections=Connections, account=None, kite=None, broker=None):
     """Multi-broker margins fetch. broker.margins(segment) returns the
     same Kite-shape dict every adapter normalises to."""
     df_margins = pd.DataFrame()
