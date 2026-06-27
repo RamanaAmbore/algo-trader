@@ -1157,7 +1157,7 @@
 <!-- Detail (active tab) — the per-symbol drill-down -->
 <section class:hidden={activeTab !== 'positions'}>
   <div class="perf-grid-headrow">
-    <h2 class="section-heading">Positions</h2>
+    <h2 class="section-heading">Breakdown</h2>
     <span class="perf-grid-headrow-spacer"></span>
     <GridSearchButton bind:filter={_filterPositions} label="Positions" />
   </div>
@@ -1166,7 +1166,7 @@
 
 <section class:hidden={activeTab !== 'holdings'}>
   <div class="perf-grid-headrow">
-    <h2 class="section-heading">Holdings</h2>
+    <h2 class="section-heading">Breakdown</h2>
     <span class="perf-grid-headrow-spacer"></span>
     <GridSearchButton bind:filter={_filterHoldings} label="Holdings" />
   </div>
