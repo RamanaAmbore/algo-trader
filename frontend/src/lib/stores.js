@@ -91,6 +91,24 @@ function createAuthStore() {
       if (browser) {
         sessionStorage.setItem('ramboq_token', token);
         sessionStorage.setItem('ramboq_user', JSON.stringify(user));
+        // Wipe the persistent cache (mirrors logout). Demo / anonymous
+        // sessions fetch MASKED account codes from the server; after
+        // login the same endpoints return UNMASKED codes (admin paths)
+        // so the cached masked rows would briefly flash on first paint
+        // until the next fetch completes. Dropping the cache here
+        // forces a fresh round of fetches that pick up the new JWT
+        // and render unmasked from the first paint. Operator: "when a
+        // user demo mode to go through the pages, when he logins and
+        // goes through the same pages, do the account unmasked
+        // automatically".
+        try {
+          const keys = [];
+          for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (k && k.startsWith('rbq.cache.')) keys.push(k);
+          }
+          for (const k of keys) localStorage.removeItem(k);
+        } catch { /* quota / privacy mode — non-fatal */ }
       }
       const claims = _decodeJwt(token);
       set({ token, user, impBy: claims?.imp_by || null });
