@@ -1088,24 +1088,23 @@
   {/if}
 </div>
 
-<!-- Operator: "summary should be before fund balances". Summary
-     grids (per-account Day P&L + P&L) for the active tab read
-     first, then the detail grid below, then Fund Balances last.
-     The summary row IS the at-a-glance answer; funds are reference
-     data the operator drills into when they want margin context. -->
+<!-- Operator: "fund balances should be the second element. summary,
+     fund balances, positions/holdings is the sequence."
+
+     The summary IS the at-a-glance answer (Day P&L + P&L per account
+     for the active tab), Fund Balances is shared margin/cash context
+     for the same accounts, and the per-row detail grid is the
+     drill-down. Each tab section is split into two: the Summary block
+     above the Fund Balances strip and the Detail block below it, so
+     the shared Fund Balances renders once between them. -->
+
+<!-- Summary (active tab) -->
 <section class:hidden={activeTab !== 'positions'}>
   <h2 class="section-heading">Summary</h2>
   {#if !_agGridReady}
     <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
   {/if}
   <div bind:this={positionsSummaryEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
-
-  <div class="perf-grid-headrow">
-    <h2 class="section-heading">Positions</h2>
-    <span class="perf-grid-headrow-spacer"></span>
-    <GridSearchButton bind:filter={_filterPositions} label="Positions" />
-  </div>
-  <div bind:this={positionsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>
 
 <section class:hidden={activeTab !== 'holdings'}>
@@ -1114,20 +1113,12 @@
     <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
   {/if}
   <div bind:this={holdingsSummaryEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
-
-  <div class="perf-grid-headrow">
-    <h2 class="section-heading">Holdings</h2>
-    <span class="perf-grid-headrow-spacer"></span>
-    <GridSearchButton bind:filter={_filterHoldings} label="Holdings" />
-  </div>
-  <div bind:this={holdingsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>
 
-<!-- Fund Balances — moved below the summary + detail grids per
-     operator request. On compactHeader layouts (admin dashboard)
-     the Refresh button sits on this row instead of crowding the
-     tabs / filter row above. Public /performance keeps its
-     top-of-page Refresh button. -->
+<!-- Fund Balances — shared between both tabs (same accounts,
+     same cash/margin numbers). On compactHeader layouts (admin
+     dashboard) the Refresh button sits on this row instead of
+     crowding the tabs / filter row above. -->
 <div class="funds-heading-row">
   <h2 class="section-heading funds-heading-title">Fund Balances</h2>
   {#if compactHeader}
@@ -1137,6 +1128,25 @@
   {/if}
 </div>
 <div bind:this={fundsEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
+
+<!-- Detail (active tab) — the per-symbol drill-down -->
+<section class:hidden={activeTab !== 'positions'}>
+  <div class="perf-grid-headrow">
+    <h2 class="section-heading">Positions</h2>
+    <span class="perf-grid-headrow-spacer"></span>
+    <GridSearchButton bind:filter={_filterPositions} label="Positions" />
+  </div>
+  <div bind:this={positionsAllEl} class="ag-theme-quartz {theme} w-full"></div>
+</section>
+
+<section class:hidden={activeTab !== 'holdings'}>
+  <div class="perf-grid-headrow">
+    <h2 class="section-heading">Holdings</h2>
+    <span class="perf-grid-headrow-spacer"></span>
+    <GridSearchButton bind:filter={_filterHoldings} label="Holdings" />
+  </div>
+  <div bind:this={holdingsAllEl} class="ag-theme-quartz {theme} w-full"></div>
+</section>
 
 {#if _chartModalSym}
   <ChartModal
