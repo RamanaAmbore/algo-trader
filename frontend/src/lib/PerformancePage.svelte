@@ -1442,11 +1442,11 @@
      underline + 10% color tint on the active label. */
   .tabs-row :global(button[class*="border-primary"]) {
     border-bottom-color: #d4920c !important;
-    background: rgba(212, 146, 12, 0.10) !important;
+    background: rgba(212, 146, 12, 0.13) !important;
   }
   .tabs-row :global(button[class*="text-muted"]:hover) {
     border-bottom-color: rgba(212, 146, 12, 0.5) !important;
-    background: rgba(212, 146, 12, 0.04) !important;
+    background: rgba(212, 146, 12, 0.07) !important;
   }
   /* Account dropdown wrapper. Theme + colour handled inside
      AccountMultiSelect. Tightened from 8.5rem → 7rem so the
@@ -1482,11 +1482,11 @@
   .funds-nav-tabs :global(.algo-tab[aria-selected="true"]) {
     color: #1a2744 !important;
     border-bottom-color: #d4920c !important;
-    background: rgba(212, 146, 12, 0.10) !important;
+    background: rgba(212, 146, 12, 0.13) !important;
   }
   .funds-nav-tabs :global(.algo-tab:hover:not([aria-selected="true"])) {
     border-bottom-color: rgba(212, 146, 12, 0.5) !important;
-    background: rgba(212, 146, 12, 0.04) !important;
+    background: rgba(212, 146, 12, 0.07) !important;
   }
 
   /* Heading row for the Positions / Holdings grids — pairs the h2
