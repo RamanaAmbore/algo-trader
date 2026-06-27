@@ -1239,12 +1239,13 @@
 
   /* Strategy thesis — single-line frame above the data grids on the
      public side. Inherits public-side palette tokens (navy text on
-     warm cream chip background, champagne left-accent). On the algo
-     side this block is hidden (compactHeader=true). */
+     warm cream chip background). Operator: "the top card in
+     performance has accent. No other card has accent" — left-edge
+     champagne accent retired so this frame reads as a flat panel
+     like every other card on /performance and /investor/. */
   .perf-strategy {
     background: #f5f2eb;
     border: 1px solid #e7e0cf;
-    border-left: 3px solid #d4920c;
     border-radius: 0.3rem;
     padding: 0.45rem 0.75rem;
     margin-bottom: 0.6rem;
@@ -1419,11 +1420,18 @@
   }
 
   /* Light-theme tab decoration — pure champagne bottom-border on
-     active, faint slate on hover. Matches the /market tab strip
-     (.market-tab / .market-tab-active) so the two public pages
-     share one tab convention. Operator: "check for card, accent,
-     tab consistency in investor site" — bg tint + rounded top
-     corners retired so the strip reads the same as /market's. */
+     active, faint champagne on hover. Matches /market's
+     .market-tab-active (border-bottom-color: #d4920c) so the two
+     public pages share one tab underline color. The Tailwind
+     `border-primary` class on the button sets the active border to
+     navy (#1a2744); this rule overrides it to champagne. Text color
+     stays navy via `text-primary` — matches /market's active text. */
+  .tabs-row :global(button[class*="border-primary"]) {
+    border-bottom-color: #d4920c !important;
+  }
+  .tabs-row :global(button[class*="text-muted"]:hover) {
+    border-bottom-color: rgba(212, 146, 12, 0.5) !important;
+  }
   /* Account + Symbol dropdown wrappers. Same width + min-width so the
      two sit side-by-side as equal-footprint fields. Theme + colour are
      handled inside Select / MultiSelect. Both live right after the
