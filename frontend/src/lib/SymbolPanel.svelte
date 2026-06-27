@@ -1148,6 +1148,28 @@
   // intentional: seeds modal side from prop once; operator changes it directly thereafter
   // svelte-ignore state_referenced_locally
   let _modalSide          = $state(/** @type {'BUY'|'SELL'|null} */ ($state.snapshot(side)));
+  // When the panel mounts with a deterministic side context (action=close
+  // or a non-zero currentQty), seed _modalSide on first render so the
+  // operator can click Submit immediately without first clicking the
+  // side-toggle to pick BUY/SELL. The Jun 26 2026 `_modalFireSubmit`
+  // guard (commit 5ac190e2) blocks null-side submits with a toast — fine
+  // when the operator genuinely hasn't picked, but on a close/add row
+  // the side IS deterministic and shouldn't require a manual pick first.
+  $effect(() => {
+    if (_modalSide !== null) return;
+    const cq = Number($state.snapshot(currentQty)) || 0;
+    if (action === 'close') {
+      // Long → SELL closes; short → BUY closes.
+      _modalSide = cq < 0 ? 'BUY' : 'SELL';
+    } else if (cq !== 0) {
+      // Open from a row context with an existing position — default to
+      // the ADD direction (long → BUY adds; short → SELL adds). Matches
+      // the visual cue the operator gets from the row's qty sign.
+      _modalSide = cq < 0 ? 'SELL' : 'BUY';
+    }
+    // cq == 0 + action != 'close' → genuine fresh-open path, leave null
+    // so the side toggle reads as "Pick side" until the operator chooses.
+  });
   // Submit button label adapts to:
   //   currentQty=0  → "Buy" / "Sell" (plain new order)
   //   currentQty>0  → "Add to position" / "Close position"  (long)
