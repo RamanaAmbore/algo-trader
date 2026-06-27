@@ -689,8 +689,10 @@
         <!-- Vertical ALGO label, flush at the left edge. Bare text —
              no chip, no background, no border. -->
         <span class="algo-vert" aria-hidden="true">ALGO</span>
-        <!-- Site label -->
-        <button onclick={() => goto('/about')} class="algo-brand">
+        <!-- Site label — bull + name link to the main landing page
+             at ramboq.com. Operator: "when I click on bull hero logo,
+             it should show main landing page of ramboq.com." -->
+        <button onclick={() => goto('/')} class="algo-brand">
           <img src={bullSrc} alt="" class="algo-brand-bull" />
           <span class="algo-brand-name">RamboQuant</span>
         </button>
@@ -884,7 +886,7 @@
       <div class="algo-nav-inner lg:hidden flex items-center justify-between h-12">
         <div class="flex items-center">
           <span class="algo-vert algo-vert-sm" aria-hidden="true">ALGO</span>
-          <button onclick={() => goto('/about')} class="algo-brand">
+          <button onclick={() => goto('/')} class="algo-brand">
             <img src={bullSrc} alt="" class="algo-brand-bull algo-brand-bull-sm" />
             <span class="algo-brand-name">RamboQuant</span>
           </button>
