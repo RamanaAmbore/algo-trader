@@ -2206,25 +2206,16 @@
     color: var(--algo-slate);
     transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
   }
-  /* Status variants still encode agent state via a thin colored
-     left rule (active green / inactive dim / triggered red).
-     Operator reverted the universal amber left accent; the status
-     accent stays because it's semantic, not decorative — operator
-     scans which agent is active vs idle at a glance. */
-  :global(.algo-status-card[data-status="active"]) {
-    border-color: rgba(74,222,128,0.6);
-    border-left: 3px solid #4ade80;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.45), 0 0 0 1px rgba(74,222,128,0.18);
-  }
+  /* Status-coded card chrome retired. Agent cards already carry a
+     colored status dot in their title row (line 696 of /automation
+     +page.svelte: <span class="w-2 h-2 rounded-full {statusDot}">),
+     plus an ON/OFF pill on the right and an animate-pulse class on
+     triggered rows. The frame ring + colored left rule duplicated
+     the same info on a more cluttered surface. Inactive gets opacity
+     dim only — keeps the row scannable as "this one's idle" without
+     repainting the chrome. */
   :global(.algo-status-card[data-status="inactive"]) {
-    border-color: rgba(180,200,230,0.18);
-    border-left: 3px solid rgba(180,200,230,0.35);
     opacity: 0.82;
-  }
-  :global(.algo-status-card[data-status="triggered"]) {
-    border-color: rgba(248,113,113,0.75);
-    border-left: 3px solid #f87171;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.45), 0 0 0 1px rgba(248,113,113,0.22);
   }
   :global(.algo-status-card[data-status="running"]) {
     border-color: rgba(251,191,36,0.65);
