@@ -1248,14 +1248,16 @@
   }
 
   /* Strategy thesis — single-line frame above the data grids on the
-     public side. Inherits public-side palette tokens (navy text on
-     warm cream chip background). Operator: "the top card in
-     performance has accent. No other card has accent" — left-edge
-     champagne accent retired so this frame reads as a flat panel
-     like every other card on /performance and /investor/. */
+     public side. Distinguished from the data grids below via a
+     slightly stronger uniform 1px border (#d4c89f) + warmer panel
+     background (#f0ead8). Reads as a typographic callout (prose,
+     not data) without a left-edge accent — matches Bloomberg /
+     TradingView / Carta editorial-callout convention. Operator
+     directive: "no left-edge accent on cards" preserved — every
+     side carries the same frame weight. */
   .perf-strategy {
-    background: #f5f2eb;
-    border: 1px solid #e7e0cf;
+    background: #f0ead8;
+    border: 1px solid #d4c89f;
     border-radius: 0.3rem;
     padding: 0.45rem 0.75rem;
     margin-bottom: 0.6rem;
