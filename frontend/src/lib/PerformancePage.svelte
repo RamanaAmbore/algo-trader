@@ -48,6 +48,7 @@
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import NavCard from '$lib/NavCard.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
+  import AlgoTabs from '$lib/AlgoTabs.svelte';
 
   // ModuleRegistry is registered inside onMount after the dynamic import.
 
@@ -218,16 +219,22 @@
 
   // Static grid refs
   let fundsEl            = null;
+  let navEl              = null;
   let holdingsSummaryEl  = null;
   let holdingsAllEl      = null;
   let positionsSummaryEl = null;
   let positionsAllEl     = null;
 
   let fundsGrid            = null;
+  let navGrid              = null;
   let holdingsSummaryGrid  = null;
   let holdingsAllGrid      = null;
   let positionsSummaryGrid = null;
   let positionsAllGrid     = null;
+
+  // Funds & NAV card — NAV (per-account wealth) is the default tab;
+  // Balances flips to the existing per-account funds grid.
+  let fundsNavTab = $state(/** @type {'nav' | 'balances'} */ ('nav'));
 
   // Header symbol filters — bound by <GridSearchButton> next to the
   // Positions / Holdings section headings. Empty = no filter.
@@ -556,6 +563,19 @@
     { field: 'collateral',   headerName: 'Collateral',   flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
   ];
 
+  // NAV grid — per-account wealth. Mirrors scripts/nav_breakdown.py:
+  //   NAV = funds.net + Σ position.unrealised + Σ qty × LTP (holdings)
+  // Same arithmetic the backend NavDaily snapshot writes; surfaced
+  // live on the client so the operator can see today's NAV without
+  // waiting for the 16:00 IST cron.
+  const navCols = [
+    { field: 'account',      headerName: 'Account',  width: 76, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
+    { field: 'net',          headerName: 'Net',          flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pos_m2m',      headerName: 'Pos M2M',      flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'holdings_mtm', headerName: 'Holdings MTM', flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'nav',          headerName: 'NAV',          flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+  ];
+
   function makeGrid(el, colDefs, rowData = [], onRowClick = null) {
     if (!_createGrid) throw new Error('ag-Grid not yet loaded');
     return _createGrid(el, {
@@ -732,12 +752,49 @@
     positionsAllGrid.setGridOption('pinnedBottomRowData', pTotals ? [pTotals] : []);
     updateGrid(fundsGrid, fBody);
     fundsGrid.setGridOption('pinnedBottomRowData', fTotal);
+    // NAV grid — per-account wealth aggregated from the same three
+    // raw arrays. Same arithmetic as scripts/nav_breakdown.py.
+    const navAccts = [...new Set([
+      ...rawHoldings.filter(keepAcct).map(r => r.account),
+      ...rawPositions.filter(keepAcct).map(r => r.account),
+      ...rawFunds.filter(keepAcct).map(r => r.account).filter(a => a && a !== 'TOTAL'),
+    ])];
+    const navByAcct = navAccts.map(acct => {
+      // funds.net may live on either `net` (post-fix backend field)
+      // or fallback to the funds-card derivation if older payloads
+      // still come through.
+      const fundsRow = rawFunds.find(r => r.account === acct);
+      const net = Number(fundsRow?.net)
+        || ((Number(fundsRow?.cash) || 0) + (Number(fundsRow?.collateral) || 0) - (Number(fundsRow?.used_margin) || 0));
+      const pos_m2m = rawPositions
+        .filter(r => r.account === acct)
+        .reduce((s, r) => s + (Number(r.unrealised) || 0), 0);
+      const holdings_mtm = rawHoldings
+        .filter(r => r.account === acct)
+        .reduce((s, r) => {
+          const qty = Number(r.quantity) || Number(r.opening_qty) || 0;
+          const ltp = Number(r.last_price) || 0;
+          return s + (qty * ltp);
+        }, 0);
+      return { account: acct, net, pos_m2m, holdings_mtm, nav: net + pos_m2m + holdings_mtm };
+    });
+    const navTotal = navByAcct.length === 0 ? null : navByAcct.reduce((acc, r) => ({
+      account: 'TOTAL',
+      net: acc.net + r.net,
+      pos_m2m: acc.pos_m2m + r.pos_m2m,
+      holdings_mtm: acc.holdings_mtm + r.holdings_mtm,
+      nav: acc.nav + r.nav,
+    }), { account: 'TOTAL', net: 0, pos_m2m: 0, holdings_mtm: 0, nav: 0 });
+    if (navGrid) {
+      updateGrid(navGrid, navByAcct);
+      navGrid.setGridOption('pinnedBottomRowData', navTotal ? [navTotal] : []);
+    }
     // Account column hides across every grid when exactly ONE account
     // is picked (no need to repeat the same account on every row).
     // Empty selection (all accounts) and multi-pick keep the column
     // visible so the operator can read which row belongs where.
     const showAcct = selectedAccounts.length !== 1;
-    for (const g of [holdingsAllGrid, positionsAllGrid, fundsGrid, holdingsSummaryGrid, positionsSummaryGrid]) {
+    for (const g of [holdingsAllGrid, positionsAllGrid, fundsGrid, navGrid, holdingsSummaryGrid, positionsSummaryGrid]) {
       try { g?.setColumnsVisible?.(['account'], showAcct); } catch (_) { /* older AG API */ }
     }
   }
@@ -829,6 +886,7 @@
     positionsSummaryGrid = makeGrid(positionsSummaryEl, positionsSummaryCols);
     positionsAllGrid     = makeGrid(positionsAllEl,     positionsCols, [], (r) => openOrderTicket(r, 'positions'));
     fundsGrid            = makeGrid(fundsEl,             fundsCols);
+    navGrid              = makeGrid(navEl,               navCols);
 
     // Stale-while-revalidate: paint the grids from the module-level store
     // cache (three-tier: memory → localStorage → broker). The stores init
@@ -932,7 +990,7 @@
 
   onDestroy(() => {
     unsub?.();
-    [fundsGrid, holdingsSummaryGrid, holdingsAllGrid,
+    [fundsGrid, navGrid, holdingsSummaryGrid, holdingsAllGrid,
      positionsSummaryGrid, positionsAllGrid]
       .forEach(g => g?.destroy());
   });
@@ -989,9 +1047,19 @@
 {/if}
 
 {#if !compactHeader}
-  <!-- Default layout: timestamp + Refresh button on their own line, tabs
-       below. The public /performance page uses this. -->
-  <div class="perf-ts-row flex items-center justify-between mb-1.5 pb-1.5">
+  <!-- Operator: "all accounts drop down will go before timestamp."
+       AccountMultiSelect now lives at the head of the timestamp row
+       as a page-level filter — scopes Funds, NAV, Positions
+       Summary, Holdings Summary, and both Detail grids in one place. -->
+  <div class="perf-ts-row flex items-center gap-3 mb-1.5 pb-1.5">
+    {#if accounts.length > 0}
+      <div class="acct-multi">
+        <AccountMultiSelect
+          bind:value={selectedAccounts}
+          options={accounts.map(a => ({ value: a, label: maskAccounts ? String(a ?? '').replace(/\d/g, '#') : a }))}
+          theme={compactHeader ? 'dark' : 'light'} />
+      </div>
+    {/if}
     <div class="text-[0.65rem] text-muted perf-ts">
       {#if loading && !lastRefresh}
         <span class="animate-pulse">Loading…</span>
@@ -999,25 +1067,35 @@
         <span>{lastRefresh}</span>
       {/if}
     </div>
+    <span class="ml-auto"></span>
     <RefreshButton onClick={() => loadAll({ fresh: true })} {loading} label="performance" />
   </div>
 {/if}
 
-<!-- Tabs + account selector. With `compactHeader`, the refresh timestamp
-     joins this row as the last element (no Refresh button — the
-     performance WebSocket already handles auto-refresh). -->
+<!-- Funds & NAV — account-level card. NAV (default) shows per-account
+     wealth (Net + Position M2M + Holdings MTM); Balances shows the
+     existing Funds grid (Net, Avail, Util %, Used, Cash, Collateral). -->
+<h2 class="section-heading">Funds &amp; NAV</h2>
+<div class="funds-nav-tabs mb-2">
+  <AlgoTabs
+    tabs={[
+      { id: 'nav',      label: 'NAV'      },
+      { id: 'balances', label: 'Balances' },
+    ]}
+    value={fundsNavTab}
+    onChange={(id) => { fundsNavTab = /** @type {'nav'|'balances'} */ (id); }}
+    compact={true}
+  />
+</div>
+{#if !_agGridReady}
+  <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
+{/if}
+<div bind:this={navEl}    class="ag-theme-quartz {theme} mb-2 w-full" class:hidden={fundsNavTab !== 'nav'}></div>
+<div bind:this={fundsEl}  class="ag-theme-quartz {theme} mb-2 w-full" class:hidden={fundsNavTab !== 'balances'}></div>
+
+<!-- Tabs — Positions / Holdings. No account picker here; the page-
+     level picker above scopes both tabs uniformly. -->
 <div class="tabs-row mb-2">
-  {#if accounts.length > 0}
-    <!-- Operator: "left align accounts dropdown." Account picker
-         now leads the row so it sits at the leftmost edge; tabs
-         follow to its right. -->
-    <div class="acct-multi">
-      <AccountMultiSelect
-        bind:value={selectedAccounts}
-        options={accounts.map(a => ({ value: a, label: maskAccounts ? String(a ?? '').replace(/\d/g, '#') : a }))}
-        theme={compactHeader ? 'dark' : 'light'} />
-    </div>
-  {/if}
   <div class="flex gap-0.5">
     {#each [['positions','Positions'],['holdings','Holdings']] as [id, label]}
       <button
@@ -1027,9 +1105,6 @@
       >{label}</button>
     {/each}
   </div>
-  <!-- Symbol dropdown retired — GridSearchButton on each detail
-       grid below provides the same per-symbol filter via free-text
-       search. -->
 </div>
 
 <!-- Operator: "fund balances should be the second element. summary,
@@ -1059,19 +1134,8 @@
   <div bind:this={holdingsSummaryEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
 </section>
 
-<!-- Fund Balances — shared between both tabs (same accounts,
-     same cash/margin numbers). On compactHeader layouts (admin
-     dashboard) the Refresh button sits on this row instead of
-     crowding the tabs / filter row above. -->
-<div class="funds-heading-row">
-  <h2 class="section-heading funds-heading-title">Fund Balances</h2>
-  {#if compactHeader}
-    <span class="funds-heading-refresh">
-      <RefreshButton onClick={() => loadAll({ fresh: true })} {loading} label="funds" />
-    </span>
-  {/if}
-</div>
-<div bind:this={fundsEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
+<!-- Fund Balances section retired here — moved into the Funds & NAV
+     tabbed card above the Pos/Hold tabs. -->
 
 <!-- Detail (active tab) — the per-symbol drill-down -->
 <section class:hidden={activeTab !== 'positions'}>
@@ -1187,7 +1251,7 @@
      marker (always present on the public route, absent on the algo
      dashboard) scopes this and every other public-only style below. */
   :global(.perf-strategy ~ section .section-heading),
-  :global(.perf-strategy ~ .funds-heading-row .funds-heading-title) {
+  :global(.perf-strategy ~ h2.section-heading) {
     margin-bottom: 0.25rem;
   }
 
@@ -1374,29 +1438,11 @@
     .tabs-row { gap: 0.3rem; }
     .acct-multi { width: 7.5rem; }
   }
-  /* Fund Balances heading — heading left, Refresh button (compactHeader
-     only) pinned to the right. Keeps the tabs / filter row focused on
-     Account + Symbol selection. */
-  .funds-heading-row {
+  /* Funds & NAV tabs — sub-tab strip inside the card. Top-margin
+     pulls the AlgoTabs flush below the section heading. */
+  .funds-nav-tabs {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-    margin-bottom: 0.25rem;
   }
-  /* The h2 carries `margin-bottom: 0.5rem` from .section-heading,
-     which makes its box taller than the Refresh button — `align-items:
-     center` then centers the boxes, but the visible "Fund Balances"
-     text reads above the button text. Zero out the h2's margin in
-     this flex row + match line-height so the two elements share a
-     baseline. */
-  .funds-heading-row .section-heading {
-    margin-bottom: 0;
-    line-height: 1.4;
-    display: inline-flex;
-    align-items: center;
-  }
-  .funds-heading-refresh { margin-left: auto; }
 
   /* Heading row for the Positions / Holdings grids — pairs the h2
      with a <GridSearchButton> at the right. Same baseline-pull as
