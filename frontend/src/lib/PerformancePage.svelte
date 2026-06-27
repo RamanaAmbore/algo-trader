@@ -40,7 +40,6 @@
     return v;
   }
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
-  import MultiSelect from '$lib/MultiSelect.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
@@ -200,13 +199,11 @@
   // `selectedAccount` string which only let the operator look at
   // one account at a time (or all).
   let selectedAccounts = $state(/** @type {string[]} */ ([]));
-  // Multi-select: empty array ⇒ "all symbols". Populated array ⇒ only
-  // those symbols show in the detail grid under the active tab.
-  let selectedSymbols = $state(/** @type {string[]} */([]));
+  // Symbol dropdown retired — the GridSearchButton on each detail
+  // grid (Positions / Holdings) handles the same filter via free-text
+  // search. Operator: "you can remove symbol dropdown for performance,
+  // as search button can be used for the same functionality."
   let accounts        = $state([]);
-  let positionSymbols = $state(/** @type {string[]} */([]));
-  let holdingSymbols  = $state(/** @type {string[]} */([]));
-  const symbols = $derived(activeTab === 'holdings' ? holdingSymbols : positionSymbols);
   let rawHoldings     = $state([]);
   let rawPositions    = $state([]);
   let rawFunds        = $state([]);
@@ -247,12 +244,10 @@
 
   // Strip from the first digit onward — Zerodha F&O tradingsymbols are
   // "<UNDERLYING><expiry><strike><opt-type>" (NIFTY25APR22000CE,
-  // BANKNIFTY25MAYFUT, CRUDEOIL25MAYFUT, …). For plain equity symbols
-  // with no digits (RELIANCE, SBIN, …) this is a no-op, which is the
-  // right answer for holdings.
-  function underlyingOf(/** @type {string} */ sym) {
-    return (sym || '').replace(/\d.*$/, '');
-  }
+  // underlyingOf() retired alongside the symbol dropdown — was only
+  // used to collapse F&O contracts to their underlying (NIFTY25MAYFUT
+  // → NIFTY) for the picker. GridSearchButton matches on the full
+  // tradingsymbol so no derivation is needed.
 
   // AG Grid valueFormatter wrappers — receive { value } objects.
   const numFmt = ({ value }) => value == null ? '' : priceFmt(value);
@@ -690,22 +685,11 @@
     if (!holdingsAllGrid) return;
     // ACCOUNT filter scopes every grid (detail + summary + funds). With a
     // specific account picked we drop other accounts AND the TOTAL row.
-    // SYMBOL filter scopes ONLY the last (detail) aggrid — summary and
-    // funds are per-account aggregates that don't reduce cleanly to a
-    // single symbol, so they stay on the account-level view.
+    // Symbol filter retired — GridSearchButton on each detail grid
+    // handles the equivalent.
     const keepAcct = (r) => selectedAccounts.length === 0
       ? true
       : selectedAccounts.includes(String(r.account || ''));
-    // Empty selection ⇒ "all". Otherwise a row matches when either its
-    // full tradingsymbol or its derived underlying is in the set. That
-    // dual match lets the Positions tab filter by underlying (NIFTY,
-    // BANKNIFTY, RELIANCE, …) while Holdings keeps matching on the
-    // straight equity symbol. Underlyings are never in the holdings
-    // list, and tradingsymbols are never in the positions list, so
-    // the double-check is safe.
-    const keepSym  = (r) => !selectedSymbols.length
-      || selectedSymbols.includes(r.tradingsymbol)
-      || selectedSymbols.includes(underlyingOf(r.tradingsymbol));
     // Stable sort with closed (qty=0) rows at the end. Kite returns
     // closed intraday positions / sold-off holdings with quantity=0
     // so realised P/L stays visible — operators want them grouped
@@ -715,10 +699,8 @@
       const bc = (Number(b?.quantity || 0) === 0) ? 1 : 0;
       return ac - bc;
     };
-    const hRows = rawHoldings.filter(r => keepAcct(r) && keepSym(r))
-      .slice().sort(closedLast);
-    const pRows = rawPositions.filter(r => keepAcct(r) && keepSym(r))
-      .slice().sort(closedLast);
+    const hRows = rawHoldings.filter(keepAcct).slice().sort(closedLast);
+    const pRows = rawPositions.filter(keepAcct).slice().sort(closedLast);
     // Recompute total cur_val so the Weight % column always reflects
     // the currently-filtered view (per-account picks change the base).
     _holdingsTotalCurVal = hRows.reduce(
@@ -779,47 +761,18 @@
       ...rawFunds.map(r => r.account).filter(a => a && a !== 'TOTAL'),
     ])];
     accounts = allAccts;
-    // Two separate symbol lists — the dropdown narrows to just what the
-    // active tab needs, so Positions never shows holding-only symbols
-    // (and vice versa).
-    // Positions dropdown lists UNDERLYINGS (NIFTY, BANKNIFTY, RELIANCE,
-    // …) so one pick scopes every option / future / cash-equity position
-    // on that underlying at once. Holdings keeps the full tradingsymbol
-    // since holdings are typically equities with no derived-from
-    // hierarchy to collapse.
-    positionSymbols = [...new Set(rawPositions.map(r => underlyingOf(r.tradingsymbol)))]
-      .filter(Boolean).sort();
-    holdingSymbols  = [...new Set(rawHoldings.map(r => r.tradingsymbol))]
-      .filter(Boolean).sort();
-    // Drop any selected symbols that no longer exist in the currently-
-    // visible (tab-scoped) list — keeps the filter honest when symbols
-    // get closed out, renamed, or aren't in the active tab's book.
-    reconcileSymbols();
+    // Symbol-list derivation + reconcileSymbols() retired alongside
+    // the dropdown — GridSearchButton handles filtering with no
+    // pre-computed picker scope.
     lastRefresh = h.refreshed_at ?? '';
     applyAccountFilter();
   }
 
-  function reconcileSymbols() {
-    const visible = (activeTab === 'holdings' ? holdingSymbols : positionSymbols);
-    const kept = selectedSymbols.filter(s => visible.includes(s));
-    if (kept.length !== selectedSymbols.length) selectedSymbols = kept;
-  }
-
-  // Switching tabs changes which symbol list the picker shows; reconcile
-  // the selection so stale symbols don't hold the grid empty.
   $effect(() => {
-    activeTab; holdingSymbols; positionSymbols;
-    reconcileSymbols();
-  });
-
-  $effect(() => {
-    // Track account + symbol filters + active tab. activeTab is in here
-    // so the filter re-runs on tab switch (defensive — the grids already
-    // hold the right rows since applyAccountFilter runs on every data
-    // refresh, but re-running on tab-switch guards against any edge
-    // case where the tab-scoped symbol list reconciliation runs
-    // mid-flight).
-    selectedAccounts; selectedSymbols; activeTab;
+    // Track account + active tab. activeTab is in here so the filter
+    // re-runs on tab switch (defensive — the grids already hold the
+    // right rows since applyAccountFilter runs on every data refresh).
+    selectedAccounts; activeTab;
     applyAccountFilter();
   });
 
@@ -1075,17 +1028,9 @@
         theme={compactHeader ? 'dark' : 'light'} />
     </div>
   {/if}
-  {#if symbols.length > 0}
-    <!-- Multi-select: empty array ⇒ "all symbols"; any non-empty
-         selection ⇒ filter the active tab's detail grid to that set. -->
-    <div class="sym-multi">
-      <MultiSelect
-        bind:value={selectedSymbols}
-        options={symbols.map(s => ({ value: s, label: s }))}
-        placeholder="Symbols"
-        theme={compactHeader ? 'dark' : 'light'} />
-    </div>
-  {/if}
+  <!-- Symbol dropdown retired — GridSearchButton on each detail
+       grid below provides the same per-symbol filter via free-text
+       search. -->
 </div>
 
 <!-- Operator: "fund balances should be the second element. summary,
@@ -1418,21 +1363,17 @@
   .tabs-row :global(button[class*="text-muted"]:hover) {
     border-bottom-color: rgba(212, 146, 12, 0.5) !important;
   }
-  /* Account + Symbol dropdown wrappers. Same width + min-width so the
-     two sit side-by-side as equal-footprint fields. Theme + colour are
-     handled inside Select / MultiSelect. Both live right after the
-     Holdings tab — no right-push. */
-  .acct-multi,
-  .sym-multi {
+  /* Account dropdown wrapper. Theme + colour handled inside
+     AccountMultiSelect. Sits right after the active tab. */
+  .acct-multi {
     width: 8.5rem;
     min-width: 0;
   }
 
-  /* Mobile — the dropdowns tighten, tabs stay full size. */
+  /* Mobile — the dropdown tightens, tabs stay full size. */
   @media (max-width: 639px) {
     .tabs-row { gap: 0.3rem; }
-    .acct-multi,
-    .sym-multi { width: 7.5rem; }
+    .acct-multi { width: 7.5rem; }
   }
   /* Fund Balances heading — heading left, Refresh button (compactHeader
      only) pinned to the right. Keeps the tabs / filter row focused on
