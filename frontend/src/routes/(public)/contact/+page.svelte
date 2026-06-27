@@ -45,50 +45,57 @@
   <meta name="twitter:image:alt" content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
 </svelte:head>
 
-<!-- Wider on laptop so the form doesn't float in a sea of cream;
-     mobile keeps the existing tight width via the breakpoint cap. -->
+<!-- Operator: "I like sign in page layout. can you use for contact.
+     make them consistent." /contact now uses the shared
+     .pub-form-panel family (navy header strip + cream body) that
+     /signin owns; both form-entry pages now read as siblings. -->
 <div class="contact-wrap mx-auto">
-  <h1 class="pub-page-heading">Contact</h1>
-  <div class="pub-card rounded-lg shadow-sm p-5 pt-4">
-  {#if success}
-    <div class="pub-banner-success mb-4 p-3 rounded text-sm" role="status" aria-live="polite">{success}</div>
-  {/if}
-  {#if error}
-    <div class="pub-banner-error mb-4 p-3 rounded text-sm" role="alert" aria-live="assertive">{error}</div>
-  {/if}
+  <h1 class="sr-only">Contact RamboQuant</h1>
+  <div class="pub-form-panel">
+    <div class="pub-form-panel-header">
+      <div class="pub-form-panel-title">Contact us</div>
+    </div>
+    <div class="pub-form-panel-body">
+      {#if success}
+        <div class="pub-banner-success mb-4 p-3 rounded text-sm" role="status" aria-live="polite">{success}</div>
+      {/if}
+      {#if error}
+        <div class="pub-banner-error mb-4 p-3 rounded text-sm" role="alert" aria-live="assertive">{error}</div>
+      {/if}
 
-  <form onsubmit={(e) => { e.preventDefault(); submit(); }}>
-  <div class="space-y-4">
-    <div>
-      <label class="field-label" for="c-name">Name</label>
-      <input id="c-name" bind:value={form.name} class="field-input" placeholder="Your name"
-        required aria-required="true" />
+      <form onsubmit={(e) => { e.preventDefault(); submit(); }}>
+        <div class="space-y-4">
+          <div>
+            <label class="field-label" for="c-name">Name</label>
+            <input id="c-name" bind:value={form.name} class="field-input" placeholder="Your name"
+              required aria-required="true" />
+          </div>
+          <div>
+            <label class="field-label" for="c-email">Email</label>
+            <input id="c-email" type="email" bind:value={form.email} class="field-input" placeholder="you@example.com"
+              required aria-required="true" />
+          </div>
+          <div>
+            <label class="field-label" for="c-msg">Message</label>
+            <textarea
+              id="c-msg"
+              bind:value={form.message}
+              class="field-input min-h-[120px] resize-y"
+              placeholder="How can we help you?"
+              required
+              aria-required="true"
+            ></textarea>
+          </div>
+          <button
+            type="submit"
+            disabled={submitting || !form.name || !form.email || !form.message}
+            class="contact-send-btn w-full disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {submitting ? 'Sending…' : 'Send Message'}
+          </button>
+        </div>
+      </form>
     </div>
-    <div>
-      <label class="field-label" for="c-email">Email</label>
-      <input id="c-email" type="email" bind:value={form.email} class="field-input" placeholder="you@example.com"
-        required aria-required="true" />
-    </div>
-    <div>
-      <label class="field-label" for="c-msg">Message</label>
-      <textarea
-        id="c-msg"
-        bind:value={form.message}
-        class="field-input min-h-[120px] resize-y"
-        placeholder="How can we help you?"
-        required
-        aria-required="true"
-      ></textarea>
-    </div>
-    <button
-      type="submit"
-      disabled={submitting || !form.name || !form.email || !form.message}
-      class="contact-send-btn w-full disabled:opacity-50 disabled:cursor-not-allowed"
-    >
-      {submitting ? 'Sending…' : 'Send Message'}
-    </button>
-  </div>
-  </form>
   </div>
 </div>
 

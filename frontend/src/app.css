@@ -1346,6 +1346,45 @@
     padding: 0.45rem 0.75rem;
     color: #1e3050;
   }
+  /* Public-site form panel — navy header strip + cream body. Used
+     for any single-form action page (/signin, /contact). Operator:
+     "I like sign in page layout. can you use for contact. make
+     them consistent." Was previously .signin-panel / .signin-header
+     / .signin-header-title / .signin-body scoped to /signin only;
+     promoted to a shared class family. */
+  .pub-form-panel {
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid #b4c0bc;
+    box-shadow: 0 4px 20px rgba(22, 53, 53, 0.12);
+  }
+  .pub-form-panel-header {
+    background: #0c1830;
+    padding: 1.5rem 1.5rem 1.25rem;
+    border-bottom: 2px solid #c8a84b;
+  }
+  .pub-form-panel-title {
+    font-size: 1rem;
+    font-weight: 800;
+    color: #fff;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .pub-form-panel-body {
+    background: #fffdf8;
+    padding: 1.25rem 1.5rem 1.5rem;
+  }
+  /* Override browser autofill yellow background so the cream form
+     body stays consistent when the operator's password manager
+     prefills credentials. */
+  .pub-form-panel-body input:-webkit-autofill,
+  .pub-form-panel-body input:-webkit-autofill:hover,
+  .pub-form-panel-body input:-webkit-autofill:focus {
+    -webkit-box-shadow: 0 0 0 1000px #fff inset !important;
+    box-shadow: 0 0 0 1000px #fff inset !important;
+    -webkit-text-fill-color: #1e3050 !important;
+    border-color: #c0ccdc !important;
+  }
 }
 
 /* ── Fullscreen card pattern (algo terminal) ────────────────────────────

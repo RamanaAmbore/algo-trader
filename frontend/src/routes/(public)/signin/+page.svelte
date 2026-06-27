@@ -128,11 +128,12 @@
 </svelte:head>
 
 <div class="max-w-sm mx-auto mt-4">
-  <div class="signin-panel">
-    <div class="signin-header">
-      <div class="signin-header-title">Partner Portal</div>
+  <h1 class="sr-only">Sign in to Partner Portal</h1>
+  <div class="pub-form-panel">
+    <div class="pub-form-panel-header">
+      <div class="pub-form-panel-title">Partner Portal</div>
     </div>
-    <div class="signin-body">
+    <div class="pub-form-panel-body">
       <!-- Tab selector — cream divider matches the public-card border. -->
       <div class="flex pub-divider border-b mb-4" role="tablist" aria-label="Auth options">
         <button
@@ -278,28 +279,10 @@
 </div>
 
 <style>
-  .signin-panel {
-    border-radius: 6px;
-    overflow: hidden;
-    border: 1px solid #b4c0bc;
-    box-shadow: 0 4px 20px rgba(22,53,53,0.12);
-  }
-  .signin-header {
-    background: #0c1830;
-    padding: 1.5rem 1.5rem 1.25rem;
-    border-bottom: 2px solid #c8a84b;
-  }
-  .signin-header-title {
-    font-size: 1rem;
-    font-weight: 800;
-    color: #fff;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-  }
-  .signin-body {
-    background: #fffdf8;        /* card-cream — matches .pub-card */
-    padding: 1.25rem 1.5rem 1.5rem;
-  }
+  /* .signin-panel / .signin-header / .signin-header-title /
+     .signin-body retired — chrome promoted to the shared
+     .pub-form-panel family in app.css so /contact can mount the
+     same layout. */
   /* Password show/hide affordance — small text button overlaid on the
      right edge of the input. Stays neutral with the cream palette
      (subtle muted text on hover-darker), no icon to keep the bundle
@@ -327,13 +310,6 @@
   .pw-toggle:hover {
     color: #1e3050;
   }
-  /* Override browser autofill yellow background */
-  .signin-body :global(input:-webkit-autofill),
-  .signin-body :global(input:-webkit-autofill:hover),
-  .signin-body :global(input:-webkit-autofill:focus) {
-    -webkit-box-shadow: 0 0 0 1000px #fff inset !important;
-    box-shadow: 0 0 0 1000px #fff inset !important;
-    -webkit-text-fill-color: #1e3050 !important;
-    border-color: #c0ccdc !important;
-  }
+  /* Autofill override moved to app.css so it applies on every page
+     mounting .pub-form-panel-body — not just /signin. */
 </style>
