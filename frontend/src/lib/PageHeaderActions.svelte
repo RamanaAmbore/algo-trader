@@ -251,10 +251,10 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    /* 1.4rem matches RefreshButton so every chip in the page-header
-       strip has the same height — strip stays predictable at
-       ~1.8rem total (1.4rem buttons + 0.2rem pad both sides + 1px
-       border) and padding-top can match exactly. */
+    /* 1.4rem matches RefreshButton's 1.4rem chip so the trio +
+       refresh share one icon-size across every algo page-header.
+       Strip is ~1.8rem total (min-height 1.8rem with 0.2rem of
+       breathing room above/below each 1.4rem icon). */
     width: 1.4rem;
     height: 1.4rem;
     padding: 0;

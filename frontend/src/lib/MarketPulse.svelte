@@ -5587,7 +5587,7 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    margin-bottom: 0.2rem;
+    margin-bottom: 0.1rem;
     /* flex-wrap: nowrap so the CollapseButton stays on the same
        row as the label across every card — uniform vertical
        offset (operator: "watchlist expand should align with the
@@ -5631,10 +5631,12 @@
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    /* Tightened from 0.22rem 0.6rem 0.2rem so the Pinned tab strip
-       sits closer to the page-header above. Reclaims ~3 px of
-       vertical gap on /pulse. */
-    padding: 0.1rem 0.6rem 0.15rem;
+    /* Tightened so the Pinned tab strip sits flush below the
+       page-header on both desktop + mobile (operator: "the gap
+       between rows with pulse and pinned text needs to be
+       reduced"). top-padding 0 = pinned text starts at the strip's
+       own top edge. */
+    padding: 0 0.6rem 0.15rem;
     cursor: pointer;
     line-height: 1;
     transition: color 0.12s, border-color 0.12s;

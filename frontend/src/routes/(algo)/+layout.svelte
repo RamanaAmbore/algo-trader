@@ -1603,7 +1603,7 @@
        are partially hidden." — prior 1.8rem under-counted the
        page-header height by ~0.5rem and didn't include the
        ps-strip at all. */
-    padding: calc(3rem + 2.3rem) 0.5rem calc(1.6rem + 0.4rem);
+    padding: calc(3rem + 1.8rem) 0.5rem calc(1.6rem + 0.4rem);
     color: var(--algo-slate);
     /* flex column so descendant containers (e.g. orders page's
        `.oc-page-wrap`) can use `flex: 1` to fill the actual
@@ -1728,8 +1728,8 @@
        more space at the bottom of the row within the row".
        Breathing room between strip and content lives OUTSIDE the
        strip (in .algo-content's padding-top below), not inside. */
-    padding: 0.15rem 0.65rem;
-    min-height: 2rem;
+    padding: 0.1rem 0.65rem;
+    min-height: 1.8rem;
     box-sizing: border-box;
     overflow: visible;
     border-bottom: 1px solid var(--algo-amber-border-soft);
@@ -1746,7 +1746,7 @@
      Slice fix for the operator's "pinned text is partially hidden /
      order status cards are partially hidden" report. */
   :global(.algo-viewport:has(.ps-strip)) .algo-content {
-    padding-top: calc(3rem + 1.5rem + 2.3rem);  /* 108.8px */
+    padding-top: calc(3rem + 1.5rem + 1.8rem);  /* 100.8px */
   }
   /* Page-header timestamp — leaves only a hair before the bells (operator
      feedback: gap was pushing the agent icon to a second line on mobile)
@@ -1852,17 +1852,18 @@
        shrink. algo-content's padding-top is adjusted in lockstep
        below so the first card sits at the new page-header bottom. */
     :global(.page-header) {
-      padding: 0.05rem 0.4rem;
-      min-height: 1.6rem;
+      padding: 0.1rem 0.4rem;
+      min-height: 1.8rem;
     }
-    /* Page-header is now ~1.7rem instead of 2.3rem → save 0.6rem
-       on the algo-content top clearance (no ps-strip and with ps-strip
-       variants both tighten). */
+    /* Page-header is 1.8rem on both desktop + mobile now — icons
+       (1.4rem buttons) get 0.2rem breathing room above/below instead
+       of touching the strip's top/bottom borders. algo-content
+       padding-top stays in lockstep with desktop. */
     .algo-content {
-      padding-top: calc(3rem + 1.7rem);
+      padding-top: calc(3rem + 1.8rem);
     }
     :global(.algo-viewport:has(.ps-strip)) .algo-content {
-      padding-top: calc(3rem + 1.5rem + 1.7rem);
+      padding-top: calc(3rem + 1.5rem + 1.8rem);
     }
     /* Mobile relaxation: the page-header action cluster has
        `white-space: nowrap` + `flex-shrink: 0` for desktop so the
