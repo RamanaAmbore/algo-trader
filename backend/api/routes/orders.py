@@ -311,7 +311,9 @@ async def _enforce_capacity_guard(
     if px is None:
         # Ticker first (zero broker quota).
         try:
-            from backend.brokers.kite_ticker import _ticker
+            from backend.brokers.kite_ticker import get_ticker as _get_ticker
+
+            _ticker = _get_ticker()
             t = _ticker.get_ltp_by_sym(tradingsymbol.upper())
             if t is not None and t > 0:
                 px = float(t)
@@ -4142,13 +4144,26 @@ class AccountsController(Controller):
         # row endpoints (positions/holdings/funds). Demo never reaches
         # this endpoint — controller guard is jwt_guard.
         conn = Connections().conn
+        # Cutover branch — when conn_service owns the sessions, local
+        # Connections.conn is empty. Fetch the canonical account list
+        # from /internal/accounts so order modals get a populated
+        # dropdown. Without this, every order surface (derivatives
+        # ticket, /orders ticket, /pulse modal) saw an empty list.
+        loaded_accounts: list[str] = list(conn.keys())
+        if not loaded_accounts:
+            from backend.brokers.client import is_cutover_on
+            if is_cutover_on():
+                from backend.brokers.client.remote_broker import list_remote_accounts
+                loaded_accounts = [
+                    r["account"] for r in list_remote_accounts() if r.get("account")
+                ]
         do_mask = not is_admin_request(request)
         accounts = [
             AccountInfo(
                 account_id=account,
                 display=(mask_account(account) if do_mask else account),
             )
-            for account in conn
+            for account in loaded_accounts
         ]
         # Default broker account is operator-configurable from
         # /admin/settings (orders.default_account). When set + the
@@ -4161,7 +4176,7 @@ class AccountsController(Controller):
         # otherwise the frontend would try to pre-select an account
         # that doesn't exist (silent fail; operator sees the dropdown
         # stay empty). Stale settings shouldn't break the UI.
-        if default_acct and default_acct not in conn:
+        if default_acct and default_acct not in loaded_accounts:
             default_acct = ""
         # orders.default_symbol setting retired — modals now use the
         # operator's recent symbol (localStorage on the FE) or open

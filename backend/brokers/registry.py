@@ -183,7 +183,7 @@ def get_broker(account: str) -> Broker:
         raise ValueError(
             f"Account {account!r} is tagged broker={broker_id!r} but no "
             f"adapter is registered. Add it under "
-            f"backend/shared/brokers/{broker_id}.py and register in "
+            f"backend/brokers/{broker_id}.py and register in "
             f"_ADAPTERS in this file."
         )
     # KiteBroker expects a KiteConnection. Future adapters may expect a
@@ -531,7 +531,11 @@ def get_historical_brokers() -> list[Broker]:
     """
     from backend.shared.helpers.settings import get_string
 
-    accounts = list(Connections().conn.keys())
+    # Use _loaded_accounts so the conn_service-flag-on path also works
+    # (Connections().conn is empty in that mode). Without this fallback,
+    # historical chart data + options.py / charts.py callers see an
+    # empty broker list and silently return empty bars.
+    accounts = _loaded_accounts()
     if not accounts:
         return []
 

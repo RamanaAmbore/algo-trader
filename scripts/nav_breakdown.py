@@ -53,15 +53,19 @@ async def main() -> None:
             if not acct or acct == "TOTAL":
                 continue
             accounts.add(acct)
+            # v4 — SOD cash + option_premium (NOT util debits as a
+            # whole). Operator: futures SPAN/exposure margin is not a
+            # position COST; only long-option premium needs adding
+            # back so NAV doesn't undercount premium-paid positions.
             cash_sod = float(
                 row.get("avail opening_balance")
                 or row.get("cash") or 0.0
             )
-            used_margin = float(
-                row.get("util debits")
-                or row.get("used_margin") or 0.0
+            opt_premium = float(
+                row.get("util option_premium")
+                or row.get("option_premium") or 0.0
             )
-            cash_by_acct[acct] += cash_sod + used_margin
+            cash_by_acct[acct] += cash_sod + opt_premium
 
     # ── Positions (broker's unrealised P&L) ───────────────────────────
     # Use `unrealised` directly — the broker (Kite) computes it natively

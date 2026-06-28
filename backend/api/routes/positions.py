@@ -166,7 +166,9 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
     if raw.empty or 'tradingsymbol' not in raw.columns:
         return
     try:
-        from backend.brokers.kite_ticker import _ticker
+        from backend.brokers.kite_ticker import get_ticker as _get_ticker
+
+        _ticker = _get_ticker()
     except Exception:
         return
     # Track (idx, pre-patch LTP) per row so the pnl additive patch

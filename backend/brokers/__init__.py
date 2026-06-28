@@ -18,7 +18,7 @@ Public API:
         b.holdings()
 
 Adding a new broker:
-  1. Create `backend/shared/brokers/<name>.py` with a class that
+  1. Create `backend/brokers/adapters/<name>.py` with a class that
      implements every method of `Broker` (see base.py) for that
      vendor's SDK.
   2. Register it in `registry.py` under the broker identifier you

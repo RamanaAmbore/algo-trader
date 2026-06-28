@@ -1,5 +1,5 @@
 """
-Broker abstract base. See `backend/shared/brokers/__init__.py` for the
+Broker abstract base. See `backend/brokers/__init__.py` for the
 extension contract. Every method here corresponds to a capability the
 rest of the codebase depends on — if a new vendor doesn't natively
 expose one, the adapter should either synthesise the result or raise a

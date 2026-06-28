@@ -355,7 +355,9 @@ async def compute_unrealised_marked_to_ltp(
     # the watchdog has subscribed (positions, holdings, watchlist).
     ltp_map: dict[str, float] = {}
     try:
-        from backend.brokers.kite_ticker import _ticker
+        from backend.brokers.kite_ticker import get_ticker as _get_ticker
+
+        _ticker = _get_ticker()
         for sym in symbol_exchange:
             t = _ticker.get_ltp_by_sym(sym)
             if t is not None and t > 0:

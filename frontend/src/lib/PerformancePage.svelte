@@ -578,11 +578,26 @@
     { field: 'collateral',   headerName: 'Collateral',   flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
   ];
 
-  // NAV grid — per-account wealth. Mirrors scripts/nav_breakdown.py:
-  //   NAV = funds.net + Σ position.unrealised + Σ qty × LTP (holdings)
-  // Same arithmetic the backend NavDaily snapshot writes; surfaced
-  // live on the client so the operator can see today's NAV without
-  // waiting for the 16:00 IST cron.
+  // NAV grid — per-account wealth. Mirrors scripts/nav_breakdown.py
+  // and backend/api/algo/nav.py:compute_firm_nav (v4 formula):
+  //
+  //   NAV = (cash_sod + option_premium)     ← "Cash" column
+  //       + Σ position.unrealised           ← "Pos M2M" column
+  //       + Σ holdings.cur_val              ← "Holdings" column
+  //
+  // The Cash column adds long-option premium back to SOD cash —
+  // when the operator pays ₹X premium for a long option, the ₹X
+  // leaves cash but the option's unrealised only carries the
+  // P&L since open (not the full ₹X). Adding option_premium back
+  // recovers the cost so NAV doesn't undercount.
+  //
+  // Used margin (futures SPAN/exposure) is NOT added back — the
+  // mark-to-market on futures positions already carries every
+  // rupee of P&L. Collateral is also excluded (pledged stock is
+  // already in holdings.cur_val at full LTP).
+  //
+  // Surfaced live on the client so the operator can see today's
+  // NAV without waiting for the 16:00 IST cron.
   const navCols = [
     { field: 'account',      headerName: 'Account',  width: 76, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'net',          headerName: 'Cash',         flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
@@ -799,8 +814,8 @@
       // `used_margin` (see backend/api/routes/funds.py _COL_MAP).
       const fundsRow = rawFunds.find(r => r.account === acct);
       const cash_sod    = Number(fundsRow?.cash) || 0;
-      const used_margin = Number(fundsRow?.used_margin) || 0;
-      const cash_total  = cash_sod + used_margin;
+      const opt_premium = Number(fundsRow?.option_premium) || 0;
+      const cash_total  = cash_sod + opt_premium;
       const pos_m2m = rawPositions
         .filter(r => r.account === acct)
         .reduce((s, r) => s + (Number(r.unrealised) || 0), 0);

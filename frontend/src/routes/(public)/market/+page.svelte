@@ -156,9 +156,6 @@
   <meta name="twitter:image:alt" content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
 </svelte:head>
 
-
-<h1 class="pub-page-heading">Market Update</h1>
-
 <!-- Tabs sit OUTSIDE the white card on the page background, mirroring
      the /performance page treatment. Champagne BOTTOM border on the
      active tab; the panel below carries only the content. -->

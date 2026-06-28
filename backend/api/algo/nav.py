@@ -91,7 +91,9 @@ async def compute_firm_nav() -> dict:
         fetch_holdings, fetch_positions, fetch_margins,
     )
     from backend.brokers.connections import Connections
-    from backend.brokers.kite_ticker import _ticker
+    from backend.brokers.kite_ticker import get_ticker as _get_ticker
+
+    _ticker = _get_ticker()
 
     cash_total = 0.0
     positions_mtm = 0.0
@@ -133,21 +135,32 @@ async def compute_firm_nav() -> dict:
             if df is None or df.empty:
                 continue
             for _, row in df.iterrows():
-                # The adapter ships keys with literal spaces. Fall
-                # back to the renamed schema names ("cash",
-                # "used_margin") used by the polars layer downstream
-                # so this code works against either source.
+                # NAV cash term (v4) — SOD cash + long-option premium
+                # paid. Operator framework:
+                #   • SOD cash (avail opening_balance) — frozen baseline
+                #     at session start, doesn't decay intraday.
+                #   • Plus: option_premium — when the operator buys
+                #     a long option for ₹X premium, that ₹X leaves
+                #     cash but the option appears in positions with
+                #     unrealised = (LTP − avg_price) × qty (a delta
+                #     from ₹X, NOT the full ₹X). Without adding back
+                #     the premium, NAV undercounts by ₹X.
+                #   • Does NOT add util debits as a whole. Futures
+                #     SPAN/exposure margin is "locked" but isn't a
+                #     position COST — the contract's mark-to-market
+                #     captures all P&L. Adding span back would double-
+                #     count gains on profitable futures.
                 cash_sod = float(
                     row.get("avail opening_balance")
                     or row.get("cash")
                     or 0.0
                 )
-                used_margin = float(
-                    row.get("util debits")
-                    or row.get("used_margin")
+                opt_premium = float(
+                    row.get("util option_premium")
+                    or row.get("option_premium")
                     or 0.0
                 )
-                cash_total += cash_sod + used_margin
+                cash_total += cash_sod + opt_premium
                 acct = str(row.get("account") or "")
                 if acct and acct != "TOTAL" and acct not in accounts_in:
                     accounts_in.append(acct)

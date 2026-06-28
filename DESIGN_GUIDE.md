@@ -107,7 +107,7 @@ flowchart LR
 | Frontend | SvelteKit + Svelte 5 runes + ag-Grid + hand-rolled SVG charts | `frontend/src/` |
 | API | Litestar 2.x + msgspec.Struct schemas | `backend/api/` |
 | DB | PostgreSQL 17 + SQLAlchemy 2.x async + asyncpg | `backend/api/database.py`, `models.py` |
-| Brokers | Vendor SDKs behind a unified `Broker` ABC | `backend/shared/brokers/` |
+| Brokers | Vendor SDKs behind a unified `Broker` ABC | `backend/brokers/` |
 | Background | asyncio tasks spawned at app startup | `backend/api/background.py` |
 
 ---
@@ -134,9 +134,9 @@ Full rationale for each technology appears as **⚙ TECH** callouts throughout t
 
 ### 3.1 Single source of truth at the broker boundary
 
-The `Broker` abstract base class (`backend/shared/brokers/base.py`) is the **only** place vendor differences should leak. Every route, agent, and background task talks to a `Broker` instance via `get_broker(account)` from the registry.
+The `Broker` abstract base class (`backend/brokers/base.py`) is the **only** place vendor differences should leak. Every route, agent, and background task talks to a `Broker` instance via `get_broker(account)` from the registry.
 
-⚙ **TECH** — `WHY` Vendor SDKs disagree on EVERYTHING (qty units, status strings, GTT shape). Letting that disagreement propagate past the adapter boundary creates bug surface area in every consumer. `WHAT` The ABC declares ~20 methods (place_order, modify_order, cancel_order, orders, holdings, positions, funds, ltp, quote, historical_data, place_gtt, modify_gtt, cancel_gtt, get_gtts, instruments, profile, holidays, order_status, trades, basket_order_margins). `HOW` New broker? Implement every method, translate to Kite shape in `_normalise_*` helpers, register in `_ADAPTERS`. Capability gaps go in `BrokerCapabilities` — never inline `if broker_id == "groww"`. `WHERE` `backend/shared/brokers/base.py` (ABC); `backend/shared/brokers/kite.py` / `dhan.py` / `groww.py` (implementations); `backend/shared/brokers/capabilities.py` (matrix).
+⚙ **TECH** — `WHY` Vendor SDKs disagree on EVERYTHING (qty units, status strings, GTT shape). Letting that disagreement propagate past the adapter boundary creates bug surface area in every consumer. `WHAT` The ABC declares ~20 methods (place_order, modify_order, cancel_order, orders, holdings, positions, funds, ltp, quote, historical_data, place_gtt, modify_gtt, cancel_gtt, get_gtts, instruments, profile, holidays, order_status, trades, basket_order_margins). `HOW` New broker? Implement every method, translate to Kite shape in `_normalise_*` helpers, register in `_ADAPTERS`. Capability gaps go in `BrokerCapabilities` — never inline `if broker_id == "groww"`. `WHERE` `backend/brokers/base.py` (ABC); `backend/brokers/adapters/kite.py` / `dhan.py` / `groww.py` (implementations); `backend/brokers/capabilities.py` (matrix).
 
 ### 3.2 Idempotency is the default
 
@@ -192,7 +192,7 @@ If we ever scale horizontally we'd need to externalize: tokens → DB, locks →
 
 The lock is non-reentrant and the critical section is O(1) so no deadlock risk.
 
-⚙ **TECH** — `WHY` Twisted reactors can't see asyncio's event loop, so we can't `await` from a tick callback. Lock-protected dict is the simplest viable bridge. `WHAT` `TickerManager._tick_map: dict[int, float]` + `_tick_lock: threading.Lock`. `HOW` Tick handler does `with self._tick_lock: self._tick_map[token] = ltp`. Async reader does the same under the lock, briefly. `WHERE` `backend/shared/helpers/kite_ticker.py`.
+⚙ **TECH** — `WHY` Twisted reactors can't see asyncio's event loop, so we can't `await` from a tick callback. Lock-protected dict is the simplest viable bridge. `WHAT` `TickerManager._tick_map: dict[int, float]` + `_tick_lock: threading.Lock`. `HOW` Tick handler does `with self._tick_lock: self._tick_map[token] = ltp`. Async reader does the same under the lock, briefly. `WHERE` `backend/brokers/kite_ticker.py`.
 
 **If you add anything that runs on the Twisted side**, never call `asyncio.run_coroutine_threadsafe` without testing both directions of the round-trip. The reactor doesn't know about asyncio's event loop.
 
@@ -804,9 +804,9 @@ sequenceDiagram
 **Key files:**
 - `backend/api/background.py::_task_trail_stop`
 - `backend/api/background.py` — Dhan partial-modify detect + alert (M-2 fix, search `dhan_partial_modify`)
-- `backend/shared/brokers/dhan.py::modify_gtt` — two-leg dispatch (Sprint C)
-- `backend/shared/brokers/groww.py` — emulated OCO trail (currently `NotImplementedError`-skip)
-- `backend/shared/brokers/dhan.py::ltp` — wired via instruments cache (B-2 fix)
+- `backend/brokers/adapters/dhan.py::modify_gtt` — two-leg dispatch (Sprint C)
+- `backend/brokers/adapters/groww.py` — emulated OCO trail (currently `NotImplementedError`-skip)
+- `backend/brokers/adapters/dhan.py::ltp` — wired via instruments cache (B-2 fix)
 
 **Asymmetric SELL guard note:** the poller's SELL ratchet check is `current_trigger > 0 AND proposed < current_trigger`. If `current_trigger=0` (entry never persisted), the guard short-circuits → trail silently dead. This is why **every persistence path that writes a trail entry MUST seed `current_trigger`** (see Sc.5a fix in `retry_template`).
 
@@ -860,13 +860,13 @@ flowchart TD
 ```
 
 **Capability matrix surface:**
-- `backend/shared/brokers/capabilities.py::BrokerCapabilities` — dataclass with every capability flag
-- `backend/shared/brokers/registry.py::get_historical_brokers` — Kite-only filter
+- `backend/brokers/capabilities.py::BrokerCapabilities` — dataclass with every capability flag
+- `backend/brokers/registry.py::get_historical_brokers` — Kite-only filter
 - `frontend/src/lib/data/brokerCapWarnings.js` — single source of truth for warning strings (H-5)
 - `frontend/src/lib/order/OrderTicket.svelte::capWarningFor` — single-account
 - `frontend/src/lib/SymbolPanel.svelte::aggregateCapWarnings` — cross-account (H-5)
 
-⚙ **TECH — PriceBroker fallback chain** — `WHY` Some brokers can answer quote/ltp/historical (Kite), some can't (Dhan returns `{}` by design for `quote`). Walking the chain lets the operator's chart still render even when their primary account is throttled. `WHAT` `PriceBroker._try(method_name, *args)` iterates eligible brokers, calls method, checks predicates (`_quote_has_data` / `_ltp_has_data` / `_historical_has_data`), returns first successful response. `HOW` Add a new method by name in the predicate map. Rate-limit cool-off (`_RATE_LIMIT_COOLOFF`) excludes throttled accounts for 30s. `WHERE` `backend/shared/brokers/registry.py::PriceBroker`.
+⚙ **TECH — PriceBroker fallback chain** — `WHY` Some brokers can answer quote/ltp/historical (Kite), some can't (Dhan returns `{}` by design for `quote`). Walking the chain lets the operator's chart still render even when their primary account is throttled. `WHAT` `PriceBroker._try(method_name, *args)` iterates eligible brokers, calls method, checks predicates (`_quote_has_data` / `_ltp_has_data` / `_historical_has_data`), returns first successful response. `HOW` Add a new method by name in the predicate map. Rate-limit cool-off (`_RATE_LIMIT_COOLOFF`) excludes throttled accounts for 30s. `WHERE` `backend/brokers/registry.py::PriceBroker`.
 
 ---
 
@@ -874,7 +874,7 @@ flowchart TD
 
 **Full broker layer architecture** — file map, singleton lifecycle, token caching, source-IP binding, and capability matrix — **lives in [CLAUDE.md §14.5](CLAUDE.md#145-broker-abstraction--implementation-detail) for brevity**. This section is a quick read list only.
 
-**Files** — `backend/shared/brokers/{base.py, kite.py, dhan.py, groww.py, capabilities.py, registry.py}` + `backend/shared/helpers/{connections.py, broker_creds.py, kite_ticker.py}`.
+**Files** — `backend/brokers/{base.py, kite.py, dhan.py, groww.py, capabilities.py, registry.py}` + `backend/shared/helpers/{connections.py, broker_creds.py, kite_ticker.py}`.
 
 **Key rules:**
 1. **Kite-shape contract** — every return value must match Kite Connect shape. Dhan/Groww adapters have `_normalise_*` helpers. The `_DHAN_STATUS_TO_KITE` status map is critical (audit B-1).
@@ -922,7 +922,7 @@ These are documented inline in code, but listed here for orientation:
 
 | Broker | Quirk | Where it's handled |
 |---|---|---|
-| **Kite** | `tag` is 20-char max | `_truncate_tag` in `backend/shared/brokers/kite.py` |
+| **Kite** | `tag` is 20-char max | `_truncate_tag` in `backend/brokers/adapters/kite.py` |
 | **Kite** | Postback HMAC validation | `order_postback` route checksum check |
 | **Kite** | Rate-limited historical_data quota (low per-second budget) | `_RATE_LIMIT_COOLOFF` 30s window in registry — `_RATE_LIMIT_COOLOFF_SECONDS = 30` |
 | **Kite** | One-IP-per-app rule | `_IPv6SourceAdapter` mount |
@@ -937,7 +937,7 @@ These are documented inline in code, but listed here for orientation:
 
 ### 14.5.10 Modifying the broker layer — guard rails
 
-If you're touching anything in `backend/shared/brokers/`:
+If you're touching anything in `backend/brokers/`:
 
 - **Never branch in callers by `broker_id`.** The whole point of the abstraction is that callers don't know which vendor they're talking to. If you find yourself writing `if isinstance(broker, KiteBroker)` in a route, the right fix is a new capability flag.
 - **Always re-shape vendor responses to Kite shape.** Frontend + chase + template all expect Kite shape. Skipping the normalize step silently breaks things downstream.
@@ -954,7 +954,7 @@ If you're integrating a new vendor (e.g. "Upstox"):
 
 ### Backend
 
-1. **Implement the adapter** in `backend/shared/brokers/upstox.py`. Subclass `Broker` (ABC at `base.py`). Implement EVERY method — there's no "partial" mode. If a method genuinely doesn't apply, raise `NotImplementedError` with a clear message rather than returning empty.
+1. **Implement the adapter** in `backend/brokers/upstox.py`. Subclass `Broker` (ABC at `base.py`). Implement EVERY method — there's no "partial" mode. If a method genuinely doesn't apply, raise `NotImplementedError` with a clear message rather than returning empty.
 
 2. **Translate to Kite shape.** Every method that returns operator-facing data (orders, positions, ltp, GTTs) must shape its return to match Kite's structure. Frontend renders are Kite-shape; downstream chase + template code expects Kite-shape. Build a `_normalise_*` helper per category. Mirror the patterns in `dhan.py` and `groww.py`.
 
@@ -1172,7 +1172,7 @@ sequenceDiagram
 **Key files:**
 - `frontend/src/lib/PositionStrip.svelte` — navbar strip aggregations
 - `backend/api/routes/positions.py`, `holdings.py`, `funds.py` — REST endpoints
-- `backend/shared/helpers/broker_apis.py::fetch_positions / fetch_holdings / fetch_margins`
+- `backend/brokers/broker_apis.py::fetch_positions / fetch_holdings / fetch_margins`
 - `backend/api/cache.py` — server-side cache (per-key locking + TTL)
 
 **`/admin/derivatives` Snapshot TOTAL reconciles to PositionStrip** by adding back the rows the page filters out (equity intraday positions + derivative-looking holdings) via `_excludedByAccount`. See `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` (search `_byUnderlyingTotal`).
@@ -1202,7 +1202,7 @@ flowchart LR
 - `backend/api/auth_guard.py::is_demo_request` + `auth_or_demo_guard`
 - `frontend/src/routes/(algo)/+layout.svelte` — demo nav-link gating
 - `frontend/src/lib/SymbolPanel.svelte` — template row demo gate (L-3)
-- `backend/shared/helpers/broker_apis.py::mask_column` — for demo + public
+- `backend/brokers/broker_apis.py::mask_column` — for demo + public
 
 ---
 
@@ -1595,7 +1595,7 @@ async def backfill_funds(...) -> FundsBackfillResponse:
 Broker support matrix:
 
 - **Kite (zerodha_kite)** — no programmatic ledger. Always 501.
-- **Dhan** — wired ([DhanBroker.funds_ledger](backend/shared/brokers/dhan.py)). SDK method discovery probes `get_ledger_report` (v2) / `get_funds_ledger` / `ledger_report` (fork variants) with kwarg→positional fallback. Aggregates voucher-level entries per `(voucherdate, segment)`; `_DHAN_SEGMENT_MAP` collapses Dhan exchange codes to our 2-segment vocabulary.
+- **Dhan** — wired ([DhanBroker.funds_ledger](backend/brokers/adapters/dhan.py)). SDK method discovery probes `get_ledger_report` (v2) / `get_funds_ledger` / `ledger_report` (fork variants) with kwarg→positional fallback. Aggregates voucher-level entries per `(voucherdate, segment)`; `_DHAN_SEGMENT_MAP` collapses Dhan exchange codes to our 2-segment vocabulary.
 - **Groww** — pending. Same single-file pattern: add `funds_ledger(from, to)` to `GrowwBroker` returning the normalised shape.
 
 ### ⚙ TECH — Voucher-level aggregation vs daily snapshot
@@ -1787,7 +1787,7 @@ Status normalization uses `_DHAN_STATUS_TO_KITE` and `_GROWW_STATUS_TO_KITE` tab
 
 - `backend/api/algo/actions.py::run_preflight` — parallel gather (slice 22.10)
 - `backend/api/background.py::_task_{performance,trail_stop,oco_pair_watcher}` — slice B parallel gathers
-- `backend/shared/brokers/kite.py::get_lot_size` + `_LOT_INDEX` — slice B O(1) lookup
+- `backend/brokers/adapters/kite.py::get_lot_size` + `_LOT_INDEX` — slice B O(1) lookup
 - `backend/api/database.py::init_db` — slice B index migrations
 - `backend/api/routes/orders.py::list_active_chases` — slice C template-attach fix
 - `backend/api/algo/chase.py:806` — slice C slippage formula
@@ -1838,7 +1838,7 @@ Net effect: a chip background on one page now visually matches the same conceptu
 
 The agent engine's `market_hours` schedule gate and the daily snapshot pipeline both consult `probe_market_active(exchange)` to decide whether the market is currently trading. Pre-slice-E the probe used a workaround: call `kite.quote()` on bellwether symbols (NIFTY 50 + NIFTY BANK for NSE/NFO, SENSEX for BSE/BFO, or the dynamically-resolved nearest MCX commodity futures contract — not hardcoded CRUDEOIL), check `last_trade_time` freshness within a 15-minute window. Worked, but spent Kite's quote budget on a question Kite's API can't answer directly.
 
-⚙ **TECH — Authoritative broker API vs inferred bellwether probe** — `WHY` Kite Connect has no market-status endpoint; the only signal Kite exposes is a quote with `last_trade_time`. Dhan and Groww both ship a direct market-status API (`get_market_status` and variants). When an authoritative answer is one round-trip away, prefer it over an inferred one — bellwether probes have edge cases (illiquid contracts, weekend Muhurat sessions, MCX evening sessions) where the inference disagrees with the broker. `WHAT` Extend the `Broker` ABC with an optional `market_status(exchange) -> bool | None` method. Adapters that have the API override and return True/False. The probe layer iterates brokers, takes the first definitive answer, falls back to the bellwether path when no broker answers. `HOW` SDK-method discovery probes (`getattr(sdk, 'get_market_status', None)` etc.) handle adapter version drift. Per-exchange 60s cache absorbs the per-tick gate evaluation. `WHERE` `backend/shared/brokers/base.py::market_status`, `backend/shared/brokers/dhan.py::market_status`, `backend/shared/brokers/groww.py::market_status`, `backend/shared/helpers/market_probe.py::probe_market_active`.
+⚙ **TECH — Authoritative broker API vs inferred bellwether probe** — `WHY` Kite Connect has no market-status endpoint; the only signal Kite exposes is a quote with `last_trade_time`. Dhan and Groww both ship a direct market-status API (`get_market_status` and variants). When an authoritative answer is one round-trip away, prefer it over an inferred one — bellwether probes have edge cases (illiquid contracts, weekend Muhurat sessions, MCX evening sessions) where the inference disagrees with the broker. `WHAT` Extend the `Broker` ABC with an optional `market_status(exchange) -> bool | None` method. Adapters that have the API override and return True/False. The probe layer iterates brokers, takes the first definitive answer, falls back to the bellwether path when no broker answers. `HOW` SDK-method discovery probes (`getattr(sdk, 'get_market_status', None)` etc.) handle adapter version drift. Per-exchange 60s cache absorbs the per-tick gate evaluation. `WHERE` `backend/brokers/base.py::market_status`, `backend/brokers/adapters/dhan.py::market_status`, `backend/brokers/adapters/groww.py::market_status`, `backend/shared/helpers/market_probe.py::probe_market_active`.
 
 ### Resolution order
 
@@ -1899,9 +1899,9 @@ def market_status(self, exchange: str) -> bool | None:
 
 ### Source files
 
-- `backend/shared/brokers/base.py::market_status` — ABC default
-- `backend/shared/brokers/dhan.py::market_status` — Dhan implementation
-- `backend/shared/brokers/groww.py::market_status` — Groww implementation
+- `backend/brokers/base.py::market_status` — ABC default
+- `backend/brokers/adapters/dhan.py::market_status` — Dhan implementation
+- `backend/brokers/adapters/groww.py::market_status` — Groww implementation
 - `backend/shared/helpers/market_probe.py::probe_market_active` — resolution chain + cache
 
 ---
@@ -2030,9 +2030,9 @@ If you've got a week to onboard:
 - Trace one BUY CE order from click → fill → attach end-to-end
 
 **Day 4 — brokers:**
-- `backend/shared/brokers/base.py` (the ABC)
-- `backend/shared/brokers/kite.py` (reference impl)
-- `backend/shared/brokers/dhan.py` + `groww.py` (vendor quirks)
+- `backend/brokers/base.py` (the ABC)
+- `backend/brokers/adapters/kite.py` (reference impl)
+- `backend/brokers/adapters/dhan.py` + `groww.py` (vendor quirks)
 
 **Day 5 — background + extras:**
 - `backend/api/background.py` (every task)
@@ -2307,7 +2307,7 @@ The cookbook is intentionally prescriptive. You do not need to read the full doc
 
 ### Steps
 
-1. **Add the field** to `backend/shared/brokers/capabilities.py::BrokerCapabilities`:
+1. **Add the field** to `backend/brokers/capabilities.py::BrokerCapabilities`:
    ```python
    @dataclass(frozen=True)
    class BrokerCapabilities:

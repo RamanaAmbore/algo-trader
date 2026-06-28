@@ -151,7 +151,7 @@ def for_all_accounts(func):
       * `account` — the RamboQuant account code (string).
 
     Adding a new broker ⇒ implement `Broker` under
-    `backend/shared/brokers/<vendor>.py`, register it in
+    `backend/brokers/<vendor>.py`, register it in
     `registry.py`, and callers that use `broker=` keep working
     without change.
     """

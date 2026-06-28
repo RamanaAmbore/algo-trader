@@ -2589,11 +2589,26 @@ async def _task_ticker_watchdog(state: dict) -> None:
     from backend.brokers.kite_ticker import get_ticker
     from backend.brokers.registry import get_historical_brokers
     from backend.brokers.broker_apis import fetch_holidays
+    from backend.brokers.client import is_cutover_on
 
     # Per-watchdog holiday cache keyed by year so off-hours gating doesn't
     # hammer nseindia.com every 30 s. Refreshes naturally at year rollover.
     _wd_holiday_cache: dict = {}
     _wd_holiday_year: int | None = None
+
+    # Cutover branch — when KiteTicker lives in conn_service, the WS
+    # lifecycle is its job (conn_service has its own ticker_watchdog).
+    # Main API just reads the mmap buffer; failover-stop / restart-
+    # with-account calls on MmapTickReader are no-ops AND get_historical
+    # _brokers returns the conn_service account list, which would emit
+    # false "degraded" Telegram alerts every 30min during market hours.
+    # Skip this whole task in cutover mode.
+    if is_cutover_on():
+        logger.info(
+            "ticker_watchdog: skipped — conn_service owns the WebSocket "
+            "(its own watchdog supervises restart). Main API is mmap-reader only."
+        )
+        return
 
     while True:
         try:

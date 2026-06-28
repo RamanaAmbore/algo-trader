@@ -4,7 +4,7 @@ Dhan implementation of the `Broker` interface.
 Production-wired adapter: orders, holdings, positions, margins, GTT
 (Forever) order book, trades, basket margin. Built on the official
 `dhanhq` Python SDK (PyPI: `dhanhq`). Auth + token refresh are managed
-in `DhanConnection` (backend/shared/helpers/connections.py).
+in `DhanConnection` (backend/brokers/connections.py).
 
 Token refresh — fully headless. The earlier "paste from portal" path
 was retired. Tokens are minted via a direct REST POST to

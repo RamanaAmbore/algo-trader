@@ -189,8 +189,6 @@
 
 <svelte:window onkeydown={(e) => { if (_zoomedDiagram && e.key === 'Escape') _closeZoom(); }} />
 
-<h1 class="pub-page-heading">FAQ</h1>
-
 <div class="pub-card rounded-lg shadow-sm p-5 pt-4">
 
 <div class="faq-list mb-10">

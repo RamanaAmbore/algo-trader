@@ -2,7 +2,7 @@
 Zerodha Kite implementation of the `Broker` interface.
 
 Wraps the existing `KiteConnection` (see
-`backend/shared/helpers/connections.py`) so auth, token caching, 23 h
+`backend/brokers/connections.py`) so auth, token caching, 23 h
 refresh, multi-account IPv6 binding, and the parallel-login lock all
 keep working exactly as they do today — this module is a thin typed
 facade over that machinery.
