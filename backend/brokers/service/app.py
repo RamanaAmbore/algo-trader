@@ -62,62 +62,131 @@ def create_app() -> Litestar:
     return app
 
 
-async def _start_kite_ticker(app: Litestar) -> None:
-    """Start the KiteTicker WebSocket inside conn_service and wire it
-    to the shared-memory tick buffer.
+def _pick_kite_account() -> tuple[str | None, str | None, str]:
+    """Walk the loaded Connections singleton and return
+    (api_key, access_token, account_code) for the first Kite account
+    whose token is live. Returns (None, None, "") when no Kite account
+    is authenticated yet — caller decides whether to retry."""
+    from backend.brokers.connections import Connections
 
-    Slice 4: KiteTicker now lives in conn_service. ramboq_api consumes
+    for acct, conn in Connections().conn.items():
+        tok_getter = getattr(conn, "get_access_token", None)
+        ak = getattr(conn, "api_key", None)
+        if tok_getter is None or not ak:
+            continue  # non-Kite (Dhan / Groww)
+        try:
+            tok = tok_getter()
+        except Exception:
+            continue
+        if tok:
+            return ak, tok, acct
+    return None, None, ""
+
+
+def _try_start_ticker() -> bool:
+    """Single attempt to start the KiteTicker against the first live
+    Kite account. Returns True when the ticker is started (or already
+    running). False when no token is available yet; caller should retry."""
+    import logging
+    log = logging.getLogger(__name__)
+    from backend.brokers.kite_ticker import get_ticker
+    from backend.brokers.tick_buffer import TickBufferWriter
+
+    ticker = get_ticker()
+    # Already running — nothing to do. status()["started"] is the
+    # authoritative flag inside TickerManager.
+    if ticker.status().get("started"):
+        return True
+
+    # Buffer is a process singleton; safe to attach idempotently.
+    if getattr(ticker, "_tick_buffer", None) is None:
+        try:
+            ticker.attach_tick_buffer(TickBufferWriter())
+        except Exception:
+            log.exception("conn_service: tick buffer attach failed")
+            return False
+
+    api_key, access_token, ticker_account = _pick_kite_account()
+    if not api_key or not access_token:
+        return False
+
+    import asyncio as _asyncio
+    ticker.set_loop(_asyncio.get_event_loop())
+    ticker.start(api_key, access_token, account=ticker_account)
+    log.info(
+        "conn_service: KiteTicker started · account=%s · mmap=/dev/shm/ramboq_ticks",
+        ticker_account,
+    )
+    return True
+
+
+async def _start_kite_ticker(app: Litestar) -> None:
+    """Start the KiteTicker WebSocket and spawn the supervising watchdog.
+
+    Slice 4: KiteTicker lives in conn_service. ramboq_api consumes
     LTPs by mmap'ing the buffer — no UDS hop per read, no WS in the
     main process, no broker re-auth when ramboq_api restarts.
 
-    Account selection — first Kite account whose token is live.
-    Defer-silent if no Kite account is authenticated yet; the watchdog
-    on conn_service's side can retry later.
+    First attempt happens inline so a successful boot doesn't waste
+    a 30s tick. If no Kite account is authenticated yet (chicken-and-egg
+    when rebuild_from_db just re-minted the token), the watchdog task
+    keeps trying every 30s until it succeeds or the process exits.
     """
     import logging
     log = logging.getLogger(__name__)
     try:
-        from backend.brokers.connections import Connections
-        from backend.brokers.kite_ticker import get_ticker
-        from backend.brokers.tick_buffer import TickBufferWriter
-
-        # Attach the shared-memory buffer BEFORE start() so the very
-        # first tick frame after handshake is mirrored. Buffer is a
-        # process singleton; safe to instantiate here.
-        buffer = TickBufferWriter()
-        ticker = get_ticker()
-        ticker.attach_tick_buffer(buffer)
-
-        api_key = access_token = ticker_account = None
-        for acct, conn in Connections().conn.items():
-            tok_getter = getattr(conn, "get_access_token", None)
-            ak = getattr(conn, "api_key", None)
-            if tok_getter is None or not ak:
-                continue  # non-Kite (Dhan / Groww)
-            try:
-                tok = tok_getter()
-            except Exception:
-                continue
-            if tok:
-                api_key, access_token, ticker_account = ak, tok, acct
-                break
-
-        if not api_key or not access_token:
-            log.warning(
-                "conn_service: no live Kite access_token at startup — "
-                "ticker deferred; subscribe calls will trigger start later"
-            )
+        if _try_start_ticker():
             return
-
-        import asyncio as _asyncio
-        ticker.set_loop(_asyncio.get_event_loop())
-        ticker.start(api_key, access_token, account=ticker_account)
-        log.info(
-            "conn_service: KiteTicker started · account=%s · mmap=/dev/shm/ramboq_ticks",
-            ticker_account,
+        log.warning(
+            "conn_service: no live Kite access_token at startup — "
+            "watchdog will retry every 30s until success"
         )
     except Exception:
         log.exception("conn_service: KiteTicker startup failed")
+
+    # Spawn the watchdog. Use create_task on the running loop so the
+    # task outlives this on_startup hook. Litestar's lifespan keeps
+    # the loop alive for the process's lifetime.
+    import asyncio as _asyncio
+    _asyncio.get_event_loop().create_task(_ticker_watchdog())
+
+
+async def _ticker_watchdog() -> None:
+    """Background supervisor that brings the ticker up when it isn't
+    running yet (chicken-and-egg at boot when Connections is still
+    re-minting tokens) AND restarts it if the WebSocket dies later.
+
+    Interval: 30s. Cheap — status() is a single dict copy plus a few
+    field reads; no broker calls. When the ticker is healthy the loop
+    just sleeps; when it isn't, it tries _try_start_ticker() which
+    is idempotent."""
+    import asyncio
+    import logging
+    log = logging.getLogger(__name__)
+    from backend.brokers.kite_ticker import get_ticker
+
+    INTERVAL_S = 30.0
+    while True:
+        try:
+            await asyncio.sleep(INTERVAL_S)
+            ticker = get_ticker()
+            status = ticker.status()
+            if status.get("started") and status.get("connected"):
+                # All good — nothing to do.
+                continue
+            # Not started OR disconnected — try to (re)start.
+            if _try_start_ticker():
+                log.info(
+                    "ticker_watchdog: ticker recovered "
+                    "(prev state started=%s connected=%s)",
+                    status.get("started"), status.get("connected"),
+                )
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            # Don't let the watchdog die on a transient error; log and
+            # continue. The next iteration will retry.
+            log.exception("ticker_watchdog: loop error")
 
 
 async def _init_connections_on_startup(app: Litestar) -> None:
