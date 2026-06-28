@@ -2039,6 +2039,7 @@
   <div class="card-body" hidden={_colActivity}>
     <ActivityLogSurface
       defaultTab="news"
+      context="card"
       bind:accountFilter={_actAccountFilter}
       bind:availableAccounts={_actAvailableAccounts}
       bind:levelFilter={_actLevelFilter} />

@@ -136,6 +136,7 @@
            bindable shape. -->
       <ActivityLogSurface
         defaultTab={initialTab}
+        context="modal"
         symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
         bind:accountFilter={_accountFilter}
         bind:availableAccounts={_availableAccounts}

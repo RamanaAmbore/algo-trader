@@ -1,33 +1,47 @@
 /**
  * activity_column_divider.spec.js
  *
- * Verifies the multi-column divider (column-rule) is visible on desktop
- * and absent on mobile across all three mount points of the activity
- * surface AND the sibling NewsList magazine-flow surface:
+ * Verifies the context-aware multi-column layout across the three
+ * activity surfaces AND the sibling NewsList magazine-flow surface:
  *
- *   1. ActivityLogModal  — opened from /dashboard via the bell button
- *   2. Activity card     — inline card on /orders
- *   3. /activity page    — standalone bookmarkable route
- *   4. NewsList          — magazine-style column flow used on the
- *                          dashboard market-news card and Activity News tab
+ *   1. ActivityLogModal      — opened from /dashboard via the bell button.
+ *                              Always single-column (context="modal") even
+ *                              on desktop viewports, because the modal's
+ *                              content width is bounded ~660px.
+ *   2. Activity card on /orders — single-column (context="card") because
+ *                              the card width is narrower than the 900px
+ *                              container threshold for readable two-up flow.
+ *   3. Activity card on /dashboard — same single-column rule (context="card").
+ *   4. /activity page        — full-width surface, two-column on desktop
+ *                              (>=900px viewport) and single-column on mobile.
+ *   5. NewsList              — magazine-style column flow used on the
+ *                              dashboard market-news card and Activity News
+ *                              tab; column-rule SSOT shared with LogPanel.
+ *
+ * Operator: "on smaller modal pages, and mobiles, show one element per
+ * row in activity tabs. only activity shows full width on desktop, the
+ * two column format."
  *
  * Five-dimension quality assertions per feedback_test_dimensions.md:
- *   • SSOT        — the column-rule-color alpha is the SAME value in all
- *                   three activity mount points (single declaration in
- *                   LogPanel.svelte) and matches the NewsList declaration
- *                   so the two magazine-flow surfaces look consistent.
- *   • Performance — modal open XHR budget <= 20 calls (unchanged from baseline)
- *   • Stale code  — old low-alpha values (0.04 white, 0.10 NewsList,
- *                   prior 0.18 LogPanel) are gone; current value
+ *   • SSOT        — the column-rule-color alpha is the SAME value on every
+ *                   `.log-panel.log-rows.lp-multicol` mount (single
+ *                   declaration in LogPanel.svelte) and matches the NewsList
+ *                   declaration so the two magazine-flow surfaces look
+ *                   consistent.
+ *   • Performance — modal open XHR budget <= 20 calls (unchanged baseline)
+ *   • Stale code  — old low-alpha values (0.04 white, 0.10 NewsList, prior
+ *                   0.18 LogPanel) are gone; current value
  *                   rgba(148, 163, 184, 0.22) is the SSOT.
- *   • Reusable    — all three activity surfaces use the SAME
- *                   .log-panel.log-rows.lp-multicol selector (canonical
- *                   LogPanel, not a hand-rolled clone).
- *   • UX          — desktop: alpha >= 0.18 (visible divider without
- *                   being loud).
- *                   mobile (<900px): column-count collapses to 1,
- *                   column-rule is "none" — no divider visible.
- *                   Row heights and tap targets unchanged vs desktop baseline.
+ *   • Reusable    — every activity surface uses ActivityLogSurface (which
+ *                   wraps LogPanel) — no hand-rolled clones. The `context`
+ *                   prop is the single switch that gates multiColumn.
+ *   • UX          — /activity page on desktop: column-count=2.
+ *                   /activity page on mobile  : column-count=1.
+ *                   ActivityLogModal on desktop: column-count=1 (no
+ *                   .lp-multicol class — context="modal" suppresses it).
+ *                   /dashboard activity card on desktop: column-count=1.
+ *                   /orders activity card on desktop  : column-count=1.
+ *                   Row heights and tap targets unchanged vs baseline.
  *                   Fluid-width loop at 360/768/1280 — no overlap, no
  *                   horizontal scroll.
  *
@@ -98,7 +112,7 @@ async function injectSession(page, items) {
   }
 }
 
-test.describe('activity multi-column divider — desktop visible, mobile absent', () => {
+test.describe('activity multi-column layout — context-aware', () => {
   test.describe.configure({ mode: 'serial' });
 
   /** @type {Record<string, string>} */
@@ -183,9 +197,65 @@ test.describe('activity multi-column divider — desktop visible, mobile absent'
     ).toBe(1);
   });
 
-  // ── Mount point 1: ActivityLogModal from /dashboard ──────────────────────
-  test('desktop: ActivityLogModal column-rule visible (alpha >= 0.18)', async ({ page, viewport }) => {
-    test.skip(!viewport || viewport.width < 900, 'desktop-only — multi-col divider only renders at >=900px viewport');
+  // ── Dimension 4 (reusable): context prop is the single switch ────────────
+  test('reusable: ActivityLogSurface exposes a `context` prop and gates multiColumn on it', async () => {
+    const { readFileSync } = await import('fs');
+    const surfaceSrc = readFileSync(
+      new URL('../src/lib/ActivityLogSurface.svelte', import.meta.url),
+      'utf8',
+    );
+    // The prop declaration must include 'page'|'card'|'modal' (or similar) and
+    // the LogPanel mount must thread a derived multiColumn off that context.
+    expect(
+      surfaceSrc,
+      'ActivityLogSurface must declare a `context` prop (page|card|modal).',
+    ).toMatch(/context\s*=\s*'page'/);
+    expect(
+      surfaceSrc,
+      'ActivityLogSurface must thread context into multiColumn (single switch).',
+    ).toMatch(/multiColumn\s*=\s*\{[^}]*context[^}]*\}|multiColumn\s*=\s*\{_multiColumn\}/);
+
+    // The three mount sites must each pass an explicit `context`.
+    const modalSrc = readFileSync(
+      new URL('../src/lib/ActivityLogModal.svelte', import.meta.url),
+      'utf8',
+    );
+    expect(
+      modalSrc,
+      'ActivityLogModal must pass context="modal" to ActivityLogSurface.',
+    ).toMatch(/context\s*=\s*"modal"/);
+
+    const activityPageSrc = readFileSync(
+      new URL('../src/routes/(algo)/activity/+page.svelte', import.meta.url),
+      'utf8',
+    );
+    expect(
+      activityPageSrc,
+      '/activity page must pass context="page" to ActivityLogSurface.',
+    ).toMatch(/context\s*=\s*"page"/);
+
+    const ordersPageSrc = readFileSync(
+      new URL('../src/routes/(algo)/orders/+page.svelte', import.meta.url),
+      'utf8',
+    );
+    expect(
+      ordersPageSrc,
+      '/orders activity card must pass context="card" to ActivityLogSurface.',
+    ).toMatch(/context\s*=\s*"card"/);
+
+    const dashSrc = readFileSync(
+      new URL('../src/routes/(algo)/dashboard/+page.svelte', import.meta.url),
+      'utf8',
+    );
+    expect(
+      dashSrc,
+      '/dashboard activity card must pass context="card" to ActivityLogSurface.',
+    ).toMatch(/context\s*=\s*"card"/);
+  });
+
+  // ── Mount point 1: ActivityLogModal on desktop is SINGLE column ─────────
+  test('desktop: ActivityLogModal renders single column (context=modal)', async ({ page, viewport }) => {
+    test.skip(!viewport || viewport.width < 900, 'desktop-only — verifies modal stays 1-col even when viewport >=900px');
     test.setTimeout(45_000);
     await injectSession(page, _session);
 
@@ -207,30 +277,34 @@ test.describe('activity multi-column divider — desktop visible, mobile absent'
     const modal = page.locator('.canonical-modal-panel.alm-panel');
     await expect(modal, 'ActivityLogModal appears').toBeVisible({ timeout: 8_000 });
 
-    // Switch to a multicol tab (Agents / System / Conn) to ensure lp-multicol is active.
+    // Switch to a tab (Agents / System / Conn) where the magazine flow
+    // would historically have applied.
     const systemTab = modal.locator('button', { hasText: /system/i }).first();
     if (await systemTab.count()) {
       await systemTab.click();
       await page.waitForTimeout(300);
     }
 
-    // ── Dimension 4: reusable — canonical LogPanel selector present ─────
-    const logRows = modal.locator('.log-panel.log-rows.lp-multicol').first();
+    // The modal must NOT carry the .lp-multicol class — context="modal"
+    // suppresses the magazine flow regardless of viewport width.
+    const logRows = modal.locator('.log-panel.log-rows').first();
     await expect(
       logRows,
-      'ActivityLogModal must use .log-panel.log-rows.lp-multicol (canonical LogPanel)',
+      'ActivityLogModal must mount .log-panel.log-rows (canonical LogPanel).',
     ).toBeVisible({ timeout: 8_000 });
 
-    // ── Dimension 1 (SSOT) + Dimension 5 (UX): column-rule alpha >= 0.18 ─
-    const ruleColor = await getColumnRuleColor(logRows);
-    const alpha = alphaOf(ruleColor);
+    const hasMulticol = await logRows.evaluate((el) => el.classList.contains('lp-multicol'));
+    const columnCount = await logRows.evaluate((el) => getComputedStyle(el).columnCount);
     expect(
-      alpha,
-      `ActivityLogModal column-rule-color alpha must be >= ${MIN_VISIBLE_ALPHA} (visible divider). Got "${ruleColor}" (alpha=${alpha}).`,
-    ).toBeGreaterThanOrEqual(MIN_VISIBLE_ALPHA);
+      hasMulticol,
+      'ActivityLogModal must NOT carry .lp-multicol on desktop (context="modal" forces 1-col).',
+    ).toBe(false);
+    expect(
+      columnCount,
+      `ActivityLogModal computed column-count must be 1 (single column), got "${columnCount}".`,
+    ).toBe('1');
 
     // ── Dimension 2: perf — modal open <= 20 XHRs ───────────────────────
-    // Allow a brief settle so async log polls register.
     await page.waitForTimeout(500);
     expect(
       apiCalls.length,
@@ -238,9 +312,9 @@ test.describe('activity multi-column divider — desktop visible, mobile absent'
     ).toBeLessThanOrEqual(20);
   });
 
-  // ── Mount point 2: Activity card on /orders ───────────────────────────────
-  test('desktop: /orders Activity card column-rule visible (alpha >= 0.18)', async ({ page, viewport }) => {
-    test.skip(!viewport || viewport.width < 900, 'desktop-only — multi-col divider only renders at >=900px viewport');
+  // ── Mount point 2: /orders Activity card on desktop is SINGLE column ────
+  test('desktop: /orders Activity card renders single column (context=card)', async ({ page, viewport }) => {
+    test.skip(!viewport || viewport.width < 900, 'desktop-only — verifies card stays 1-col even at >=900px viewport');
     test.setTimeout(45_000);
     await injectSession(page, _session);
     await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded' });
@@ -252,37 +326,64 @@ test.describe('activity multi-column divider — desktop visible, mobile absent'
     // Wait for log poll to fire.
     await page.waitForTimeout(1000);
 
-    // Click a multicol tab inside the activity card.
+    // Click a tab inside the activity card.
     const agentsTab = activityCard.locator('[role="tab"]:has-text("Agents")');
     if (await agentsTab.count()) {
       await agentsTab.click();
       await page.waitForTimeout(300);
     }
 
-    // ── Dimension 4: reusable ───────────────────────────────────────────
-    const logRows = activityCard.locator('.log-panel.log-rows.lp-multicol').first();
+    const logRows = activityCard.locator('.log-panel.log-rows').first();
     await expect(
       logRows,
-      '/orders Activity card must use .log-panel.log-rows.lp-multicol (canonical LogPanel)',
+      '/orders Activity card must mount .log-panel.log-rows (canonical LogPanel).',
     ).toBeVisible({ timeout: 8_000 });
 
-    // ── Dimension 1 (SSOT) + 5 (UX) ────────────────────────────────────
-    const ruleColor = await getColumnRuleColor(logRows);
-    const alpha = alphaOf(ruleColor);
+    const hasMulticol = await logRows.evaluate((el) => el.classList.contains('lp-multicol'));
+    const columnCount = await logRows.evaluate((el) => getComputedStyle(el).columnCount);
     expect(
-      alpha,
-      `/orders Activity card column-rule-color alpha must be >= ${MIN_VISIBLE_ALPHA}. Got "${ruleColor}" (alpha=${alpha}).`,
-    ).toBeGreaterThanOrEqual(MIN_VISIBLE_ALPHA);
+      hasMulticol,
+      '/orders Activity card must NOT carry .lp-multicol on desktop (context="card" forces 1-col).',
+    ).toBe(false);
+    expect(
+      columnCount,
+      `/orders Activity card computed column-count must be 1, got "${columnCount}".`,
+    ).toBe('1');
   });
 
-  // ── Mount point 3: /activity standalone page ──────────────────────────────
-  test('desktop: /activity page column-rule visible (alpha >= 0.18)', async ({ page, viewport }) => {
-    test.skip(!viewport || viewport.width < 900, 'desktop-only — multi-col divider only renders at >=900px viewport');
+  // ── Mount point 3: /dashboard Activity card on desktop is SINGLE column ──
+  test('desktop: /dashboard Activity card renders single column (context=card)', async ({ page, viewport }) => {
+    test.skip(!viewport || viewport.width < 900, 'desktop-only — verifies card stays 1-col even at >=900px viewport');
+    test.setTimeout(45_000);
+    await injectSession(page, _session);
+    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+
+    // The /dashboard activity section is the last card; scroll it into view.
+    const dashLogRows = page.locator('main .log-panel.log-rows').first();
+    await expect(dashLogRows, '.log-panel.log-rows on /dashboard').toBeVisible({ timeout: 20_000 });
+    await dashLogRows.scrollIntoViewIfNeeded();
+    await page.waitForTimeout(500);
+
+    const hasMulticol = await dashLogRows.evaluate((el) => el.classList.contains('lp-multicol'));
+    const columnCount = await dashLogRows.evaluate((el) => getComputedStyle(el).columnCount);
+    expect(
+      hasMulticol,
+      '/dashboard Activity card must NOT carry .lp-multicol on desktop (context="card" forces 1-col).',
+    ).toBe(false);
+    expect(
+      columnCount,
+      `/dashboard Activity card computed column-count must be 1, got "${columnCount}".`,
+    ).toBe('1');
+  });
+
+  // ── Mount point 4: /activity page on desktop is TWO columns ──────────────
+  test('desktop: /activity page renders two columns (context=page)', async ({ page, viewport }) => {
+    test.skip(!viewport || viewport.width < 900, 'desktop-only — multi-col layout only renders at >=900px viewport');
     test.setTimeout(45_000);
     await injectSession(page, _session);
     await page.goto(`${BASE}/activity`, { waitUntil: 'domcontentloaded' });
 
-    // Click a multicol tab.
+    // Click a multicol tab (Agents / System / Conn).
     const agentsTab = page.locator('[role="tab"]:has-text("Agents")').first();
     await expect(agentsTab, 'Agents tab on /activity page').toBeVisible({ timeout: 15_000 });
     await agentsTab.click();
@@ -292,80 +393,30 @@ test.describe('activity multi-column divider — desktop visible, mobile absent'
     const logRows = page.locator('.log-panel.log-rows.lp-multicol').first();
     await expect(
       logRows,
-      '/activity page must use .log-panel.log-rows.lp-multicol (canonical LogPanel)',
+      '/activity page must use .log-panel.log-rows.lp-multicol (canonical LogPanel, context=page).',
     ).toBeVisible({ timeout: 8_000 });
 
-    // ── Dimension 1 (SSOT) + 5 (UX) ────────────────────────────────────
+    const columnCount = await logRows.evaluate((el) => getComputedStyle(el).columnCount);
+    expect(
+      columnCount,
+      `/activity page computed column-count must be 2 on desktop, got "${columnCount}".`,
+    ).toBe('2');
+
+    // ── Dimension 1 (SSOT) + 5 (UX): column-rule alpha >= 0.18 ─────────
     const ruleColor = await getColumnRuleColor(logRows);
     const alpha = alphaOf(ruleColor);
     expect(
       alpha,
       `/activity page column-rule-color alpha must be >= ${MIN_VISIBLE_ALPHA}. Got "${ruleColor}" (alpha=${alpha}).`,
     ).toBeGreaterThanOrEqual(MIN_VISIBLE_ALPHA);
+    expect(
+      alpha,
+      `/activity page column-rule-color alpha must equal canonical ${SSOT_ALPHA}.`,
+    ).toBeCloseTo(SSOT_ALPHA, 2);
   });
 
-  // ── Dimension 1 (SSOT): all three mount points return the SAME alpha ──────
-  test('SSOT: column-rule-color is identical across all three mount points', async ({ page, viewport }) => {
-    test.skip(!viewport || viewport.width < 900, 'desktop-only — multi-col divider only renders at >=900px viewport');
-    test.setTimeout(90_000);
-    await injectSession(page, _session);
-
-    const alphas = [];
-
-    // Mount point A: ActivityLogModal
-    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
-    const bellBtn = page.locator('button[aria-label="Open Activity"]').first();
-    await expect(bellBtn).toBeVisible({ timeout: 15_000 });
-    await bellBtn.click();
-    const modal = page.locator('.canonical-modal-panel.alm-panel');
-    await expect(modal).toBeVisible({ timeout: 8_000 });
-    const systemTab = modal.locator('button', { hasText: /system/i }).first();
-    if (await systemTab.count()) { await systemTab.click(); await page.waitForTimeout(300); }
-    const modalLogRows = modal.locator('.log-panel.log-rows.lp-multicol').first();
-    await expect(modalLogRows).toBeVisible({ timeout: 8_000 });
-    const colorA = await getColumnRuleColor(modalLogRows);
-    alphas.push({ mount: 'ActivityLogModal', color: colorA, alpha: alphaOf(colorA) });
-
-    // Close the modal (Esc) before navigating.
-    await page.keyboard.press('Escape');
-    await page.waitForTimeout(200);
-
-    // Mount point B: /orders Activity card
-    await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded' });
-    const activityCard = page.locator('section.bucket-card-activity');
-    await expect(activityCard).toBeVisible({ timeout: 20_000 });
-    await activityCard.scrollIntoViewIfNeeded();
-    await page.waitForTimeout(800);
-    const agentsTabOrders = activityCard.locator('[role="tab"]:has-text("Agents")');
-    if (await agentsTabOrders.count()) { await agentsTabOrders.click(); await page.waitForTimeout(300); }
-    const cardLogRows = activityCard.locator('.log-panel.log-rows.lp-multicol').first();
-    await expect(cardLogRows).toBeVisible({ timeout: 8_000 });
-    const colorB = await getColumnRuleColor(cardLogRows);
-    alphas.push({ mount: '/orders activity card', color: colorB, alpha: alphaOf(colorB) });
-
-    // Mount point C: /activity page
-    await page.goto(`${BASE}/activity`, { waitUntil: 'domcontentloaded' });
-    const agentsTabActivity = page.locator('[role="tab"]:has-text("Agents")').first();
-    await expect(agentsTabActivity).toBeVisible({ timeout: 15_000 });
-    await agentsTabActivity.click();
-    await page.waitForTimeout(300);
-    const pageLogRows = page.locator('.log-panel.log-rows.lp-multicol').first();
-    await expect(pageLogRows).toBeVisible({ timeout: 8_000 });
-    const colorC = await getColumnRuleColor(pageLogRows);
-    alphas.push({ mount: '/activity page', color: colorC, alpha: alphaOf(colorC) });
-
-    // All three alphas should be equal (same CSS class, single declaration).
-    const [a, b, c] = alphas.map((x) => x.alpha);
-    const summary = alphas.map((x) => `${x.mount}: "${x.color}" (alpha=${x.alpha})`).join('\n');
-
-    expect(a, `SSOT: all mount points must share the same column-rule alpha.\n${summary}`).toBeCloseTo(b, 2);
-    expect(a, `SSOT: all mount points must share the same column-rule alpha.\n${summary}`).toBeCloseTo(c, 2);
-    expect(a, `SSOT: alpha must be >= ${MIN_VISIBLE_ALPHA} (visible divider).\n${summary}`).toBeGreaterThanOrEqual(MIN_VISIBLE_ALPHA);
-    expect(a, `SSOT: alpha must equal canonical ${SSOT_ALPHA}.\n${summary}`).toBeCloseTo(SSOT_ALPHA, 2);
-  });
-
-  // ── Dimension 5 (UX — mobile): column-count collapses, rule is none ───────
-  test('mobile: column-count collapses to 1 and column-rule is none on /activity', async ({ page }) => {
+  // ── Dimension 5 (UX — mobile): column-count collapses to 1 on /activity ──
+  test('mobile: /activity page collapses to 1 column and column-rule is none', async ({ page }) => {
     test.setTimeout(45_000);
     await injectSession(page, _session);
 
@@ -387,8 +438,7 @@ test.describe('activity multi-column divider — desktop visible, mobile absent'
       `At 375px viewport, .lp-multicol must collapse to column-count:1, got "${columnCount}".`,
     ).toBe('1');
 
-    // At column-count:1 the column-rule is visually suppressed (none or transparent).
-    // The @media block sets column-rule:none explicitly, so column-rule-style = "none".
+    // At column-count:1 the column-rule is visually suppressed (none).
     const ruleStyle = await logRows.evaluate((el) => {
       const s = getComputedStyle(el);
       return s.getPropertyValue('column-rule-style') || s.columnRuleStyle || '';
@@ -400,7 +450,7 @@ test.describe('activity multi-column divider — desktop visible, mobile absent'
   });
 
   // ── Dimension 5 (UX — row heights): verify tap target unchanged ───────────
-  test('log-row heights are not changed by the divider bump', async ({ page }) => {
+  test('log-row heights are not changed by the context switch', async ({ page }) => {
     test.setTimeout(30_000);
     await injectSession(page, _session);
     await page.goto(`${BASE}/activity`, { waitUntil: 'domcontentloaded' });
@@ -410,12 +460,9 @@ test.describe('activity multi-column divider — desktop visible, mobile absent'
     await agentsTab.click();
     await page.waitForTimeout(300);
 
-    // A row height change from the divider would be unusual (column-rule is
-    // decorative, between columns), but we assert row height >= 20px as a
-    // sanity guard that no layout regression crept in alongside the edit.
     // Threshold 20px reflects the compact log-row design (timestamp + msg
     // stacked, ~24px nominal, ~23.9px with sub-pixel rounding on retina).
-    const firstRow = page.locator('.log-panel.log-rows.lp-multicol .log-row').first();
+    const firstRow = page.locator('.log-panel.log-rows .log-row').first();
     await expect(firstRow, '.log-row must be present after Agents tab click').toBeVisible({ timeout: 10_000 });
 
     const rowHeight = await firstRow.evaluate((el) => el.getBoundingClientRect().height);

@@ -85,6 +85,7 @@
     <ActivityLogSurface
       heightClass="activity-page-rows"
       defaultTab={_urlTab}
+      context="page"
       symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
       bind:accountFilter={_accountFilter}
       bind:availableAccounts={_availableAccounts}
