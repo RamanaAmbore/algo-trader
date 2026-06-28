@@ -69,6 +69,18 @@ def _fetch() -> FundsResponse:
     df_all = pl.concat([df.select(['account', *present]), totals], how='diagonal') \
                .fill_nan(0).fill_null(0)
 
+    # Derived columns — computed after TOTAL aggregation so the TOTAL row
+    # also carries correct derived values.
+    #   available_funds = avail_margin  (broker's "net" — free margin for new trades)
+    #   available_cash  = cash − option_premium  (SOD cash net of locked long-option premiums)
+    cash_col   = pl.col('cash') if 'cash' in df_all.columns else pl.lit(0.0)
+    prem_col   = pl.col('option_premium') if 'option_premium' in df_all.columns else pl.lit(0.0)
+    avail_col  = pl.col('avail_margin') if 'avail_margin' in df_all.columns else pl.lit(0.0)
+    df_all = df_all.with_columns([
+        avail_col.alias('available_funds'),
+        (cash_col - prem_col).alias('available_cash'),
+    ])
+
     rows = [FundsRow(**r) for r in df_all.to_dicts()]
     return FundsResponse(rows=rows, refreshed_at=timestamp_display())
 

@@ -579,8 +579,12 @@
         return denom > 0 ? (used / denom) * 100 : null;
       } },
     { field: 'used_margin',  headerName: 'Used Margin',  flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'cash',         headerName: 'Cash',         flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'collateral',   headerName: 'Collateral',   flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'cash',             headerName: 'Cash',            flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'available_funds',  headerName: 'Available Funds', flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr,
+      headerTooltip: 'Free margin available for new trades (broker "net")' },
+    { field: 'available_cash',   headerName: 'Available Cash',  flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr,
+      headerTooltip: 'Start-of-day cash minus long-option premiums locked in open positions' },
+    { field: 'collateral',       headerName: 'Collateral',      flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
   ];
 
   // NAV grid — per-account wealth. Mirrors scripts/nav_breakdown.py

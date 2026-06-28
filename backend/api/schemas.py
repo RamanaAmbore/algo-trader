@@ -122,9 +122,13 @@ class FundsRow(msgspec.Struct):
     # surface them) fall through cleanly instead of raising a
     # missing-key construction error in the route's FundsRow(**r)
     # builder.
-    live_cash:       float = 0.0  # avail cash (= live_balance) — decreases on option premium debit
-    option_premium:  float = 0.0  # util option_premium — net cash spent on currently-held long options
-                                  # (≈ debits − receipts; positive when net long premium)
+    live_cash:        float = 0.0  # avail cash (= live_balance) — decreases on option premium debit
+    option_premium:   float = 0.0  # util option_premium — net cash spent on currently-held long options
+                                   # (≈ debits − receipts; positive when net long premium)
+    # Derived convenience columns — computed server-side so the frontend
+    # never re-implements the arithmetic.
+    available_funds:  float = 0.0  # = avail_margin — free cash for new trades (broker "net")
+    available_cash:   float = 0.0  # = cash − option_premium — SOD cash net of locked option premiums
 
 
 class FundsResponse(msgspec.Struct):
