@@ -687,6 +687,34 @@ export function parseLogLineDate(line) {
 // loadPulse inside MarketPulse).
 export const lastRefreshAt = writable(0);
 
+// ── Activity-modal control ───────────────────────────────────────────
+// Single mount point lives in (algo)/+layout.svelte. Anything that
+// wants to open the activity log surfaces (page header Log button,
+// navbar broker-status chip, future deep-links) writes to this store
+// instead of mounting a second ActivityLogModal.
+//
+// Shape: { open: bool, initialTab: 'order'|'agent'|'simulator'|'system'|'conn'|'news' }
+//   initialTab — which LogPanel tab to land on. The navbar broker chip
+//                sets 'conn' so the operator drops straight into the
+//                conn_service log; the Log button uses the default 'order'.
+/** @typedef {'order'|'agent'|'terminal'|'simulator'|'system'|'conn'|'news'} ActivityTab */
+
+export const activityModal = writable(
+  /** @type {{ open: boolean, initialTab: ActivityTab }} */
+  ({ open: false, initialTab: /** @type {ActivityTab} */ ('order') })
+);
+
+/** Open the activity modal pre-selected on a given LogPanel tab.
+ *  @param {ActivityTab} [initialTab] */
+export function openActivityModal(initialTab = 'order') {
+  activityModal.set({ open: true, initialTab });
+}
+
+/** Close the activity modal. */
+export function closeActivityModal() {
+  activityModal.update((s) => ({ ...s, open: false }));
+}
+
 // ── Connection-status store ──────────────────────────────────────────
 // Single global health snapshot surfaced as a badge + tooltip on every
 // RefreshButton. Polled every 15 s — auto-retries forever via

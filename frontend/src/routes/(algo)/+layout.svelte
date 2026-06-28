@@ -3,7 +3,8 @@
   import { page } from '$app/state';
   import { onMount, onDestroy, setContext } from 'svelte';
   import { get } from 'svelte/store';
-  import { authStore, visibleInterval, executionMode, connStatus, startConnStatusPoller, startMarketStatusPoller } from '$lib/stores';
+  import { authStore, visibleInterval, executionMode, connStatus, startConnStatusPoller, startMarketStatusPoller, activityModal, openActivityModal, closeActivityModal } from '$lib/stores';
+  import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import {
     fetchSimStatus, fetchPaperStatus,
     fetchReplayStatus,
@@ -681,6 +682,17 @@
 <ShortcutCheatsheet open={_cheatsheetOpen}
                     onClose={() => { _cheatsheetOpen = false; }} />
 
+<!-- Single ActivityLogModal mount for the entire algo surface — driven
+     by the activityModal store. PageHeaderActions's Log button and the
+     navbar broker-status chip both write to the store; this is the only
+     instance rendered, so they can't stack duplicates. initialTab seeds
+     LogPanel's defaultTab on open. -->
+{#if $activityModal.open}
+  <ActivityLogModal
+    initialTab={$activityModal.initialTab}
+    onClose={closeActivityModal} />
+{/if}
+
 <div class="algo-viewport">
   <div class="algo-card">
     <!-- Top bar -->
@@ -825,10 +837,10 @@
                           : 'broker-chip-ok'}
           {@const _failList = $connStatus.failingAccounts.join(', ')}
           <button class="broker-chip {_cls}"
-                  onclick={() => goto('/admin/health')}
-                  title={!_ok ? 'Broker status: API unreachable. Click for diagnostics.'
-                       : _loaded === _total ? `Broker status: ${_loaded} / ${_total} accounts loaded.`
-                       : `Broker status: ${_loaded} / ${_total} loaded. Failing: ${_failList}`}>
+                  onclick={() => openActivityModal('conn')}
+                  title={!_ok ? 'Broker status: API unreachable. Open conn_service activity log.'
+                       : _loaded === _total ? `Broker status: ${_loaded} / ${_total} accounts loaded. Click for conn_service log.`
+                       : `Broker status: ${_loaded} / ${_total} loaded. Failing: ${_failList}. Click for conn_service log.`}>
             <span class="broker-chip-dot" aria-hidden="true"></span>
             {_ok ? `${_loaded}/${_total}` : '?'}
           </button>

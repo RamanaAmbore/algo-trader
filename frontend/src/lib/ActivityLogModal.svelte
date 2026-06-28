@@ -18,13 +18,30 @@
   import LogPanel from '$lib/LogPanel.svelte';
   import ChaseCard from '$lib/order/ChaseCard.svelte';
   import BellIcon from '$lib/icons/BellIcon.svelte';
+  import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import { portal } from '$lib/portal';
   import { selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
 
   let {
     /** @type {() => void} */
     onClose,
+    /**
+     * Which LogPanel tab to land on. Defaults to 'order' (matches the
+     * historical Activity button behaviour). Navbar broker chip passes
+     * 'conn' to drop the operator directly on the conn_service log.
+     * @type {'order'|'agent'|'terminal'|'simulator'|'system'|'conn'|'news'}
+     */
+    initialTab = 'order',
   } = $props();
+
+  // Account filter — owned by the modal so it sits in the header
+  // (operator: "the account on the tab line should go to activity
+  // header"). LogPanel binds to this prop and skips its own inline
+  // dropdown when hideInlineAccountFilter=true.
+  /** @type {string[]} */
+  let _accountFilter = $state([]);
+  /** @type {string[]} */
+  let _availableAccounts = $state([]);
 
   let _modalEl = $state(/** @type {HTMLElement|null} */ (null));
   let _closeBtnEl = $state(/** @type {HTMLButtonElement|null} */ (null));
@@ -90,6 +107,19 @@
         <BellIcon width="14" height="14" class="alm-title-icon alm-title-icon-3d" />
         Activity
       </span>
+      <!-- Account filter lifted out of LogPanel's tab row. Operator:
+           "the account on the tab line should go to activity header."
+           Visible only when multiple accounts are present in the
+           currently-loaded order rows; hidden in single-account or
+           demo modes so the header stays uncluttered. -->
+      {#if _availableAccounts.length > 1}
+        <span class="alm-acct">
+          <AccountMultiSelect
+            bind:value={_accountFilter}
+            options={_availableAccounts.map(a => ({ value: a, label: a }))}
+            placeholder="All acc." />
+        </span>
+      {/if}
       <button type="button" class="alm-close" bind:this={_closeBtnEl}
               aria-label="Close activity log">×</button>
     </div>
@@ -104,8 +134,11 @@
            /automation) in sync without duplicating the array per callsite. -->
       <LogPanel
         heightClass="flex-1 min-h-0"
-        defaultTab="order"
+        defaultTab={initialTab}
         symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
+        hideInlineAccountFilter={true}
+        bind:accountFilter={_accountFilter}
+        bind:availableAccounts={_availableAccounts}
       />
     </div>
   </div>
@@ -144,6 +177,17 @@
      colour (#fb923c = orange-400) so the modal title icon is the
      exact same shade as the button that opened it. */
   :global(.alm-title-icon) { color: #fbbf24; flex-shrink: 0; }
+  .alm-acct {
+    /* Account dropdown — sits to the right of the spacer, just left
+       of the close button. Operator: "the account on the tab line
+       should go to activity header." `margin-left: auto` takes
+       ownership of the flex spacer so the close button no longer
+       needs it (handled in CSS below). */
+    display: inline-flex;
+    align-items: center;
+    margin-left: auto;
+    font-size: 0.7rem;
+  }
   .alm-close {
     /* Standard close — square 1.4rem matches ChartModal +
        SymbolPanel close buttons; glyph 0.95rem is proportional to

@@ -34,6 +34,9 @@
    *   gateByMode?: boolean,
    *   statusFilter?: 'all'|'open'|'complete'|'rejected'|'cancelled',
    *   symbolFilter?: Set<string> | null,
+   *   accountFilter?: string[],
+   *   hideInlineAccountFilter?: boolean,
+   *   availableAccounts?: string[],
    * }} */
   let {
     heightClass = 'flex-1 min-h-0',
@@ -63,6 +66,29 @@
     // /orders + ActivityLogModal callers to thread the global
     // strategy filter into the order grid.
     symbolFilter = /** @type {Set<string> | null} */ (null),
+    /**
+     * Optional external account filter — used by ActivityLogModal so
+     * the account dropdown can live in the modal header instead of
+     * the tab row. When provided (bindable), LogPanel reads + writes
+     * through this prop; when omitted, LogPanel falls back to its
+     * internal $state and renders the inline dropdown.
+     * @type {string[] | undefined}
+     */
+    accountFilter = $bindable(/** @type {string[] | undefined} */ (undefined)),
+    /**
+     * Hide the inline account dropdown in the tab row. Set by
+     * ActivityLogModal which renders its own copy in the modal
+     * header. Other mounts (orders strip, console, etc.) leave this
+     * false and keep the inline behaviour.
+     */
+    hideInlineAccountFilter = false,
+    /**
+     * Optional bindable — receives the list of accounts present in
+     * the current order rows so parents (ActivityLogModal) can show
+     * a matching dropdown without re-deriving the list themselves.
+     * @type {string[] | undefined}
+     */
+    availableAccounts = $bindable(/** @type {string[] | undefined} */ (undefined)),
   } = $props();
 
   // intentional: defaultTab seeds the active tab; $effect below re-syncs on prop changes
@@ -484,8 +510,19 @@
   // panel of orders page should be in sync with activity panel of
   // orders modal". Empty array = no account filter (show every row);
   // any selection narrows the order grid to just those accounts.
+  // Internal state used when the parent doesn't provide an account
+  // filter prop. With Svelte 5 $bindable, accountFilter is undefined
+  // when no parent binds it; we fall back to this local state so
+  // existing callsites (orders strip, console) keep working.
   /** @type {string[]} */
-  let orderAccountFilter = $state([]);
+  let _internalAccountFilter = $state([]);
+  // Read/write helper that picks the prop when provided, otherwise
+  // the internal state. Always returns the effective filter for the
+  // filter-by-account predicate below.
+  const orderAccountFilter = $derived(
+    accountFilter !== undefined ? accountFilter : _internalAccountFilter,
+  );
+
   const _availableAccounts = $derived.by(() => {
     const s = new Set();
     for (const o of orderRows || []) {
@@ -493,6 +530,14 @@
       if (a) s.add(a);
     }
     return [...s].sort();
+  });
+  // Mirror _availableAccounts into the parent's bindable when one
+  // is provided. ActivityLogModal uses this to render its own
+  // account dropdown in the modal header.
+  $effect(() => {
+    if (availableAccounts !== undefined) {
+      availableAccounts = _availableAccounts;
+    }
   });
   const filteredOrderRows = $derived.by(() => {
     let rows = orderRows || [];
@@ -955,15 +1000,18 @@
   <!-- Operator: "in log panel remove live and move all accounts dropdown
        in its place". Mode chip dropped (navbar already shows mode);
        AccountMultiSelect lifted from the order-strip into the tab row
-       so the account filter is visible at panel level. -->
-  {#if _availableAccounts.length > 1}
+       so the account filter is visible at panel level.
+       ActivityLogModal renders its own copy in the modal header and
+       passes hideInlineAccountFilter=true so this version doesn't
+       duplicate. -->
+  {#if !hideInlineAccountFilter && _availableAccounts.length > 1}
     <span class="lp-tabrow-acct">
       <!-- Operator: "the text is spilling to the right. change it to
            all acc. to reduce text width." Tab row is tighter than the
            order strip; use the short placeholder so the empty state
            doesn't push the dropdown trigger past its container. -->
       <AccountMultiSelect
-        bind:value={orderAccountFilter}
+        bind:value={_internalAccountFilter}
         options={_availableAccounts.map(a => ({ value: a, label: a }))}
         placeholder="All acc." />
     </span>

@@ -15,7 +15,7 @@
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import ChartModal from '$lib/ChartModal.svelte';
   import { prefetchChartBars } from '$lib/ChartWorkspace.svelte';
-  import ActivityLogModal from '$lib/ActivityLogModal.svelte';
+  import { openActivityModal } from '$lib/stores';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   // Symbol-resolver imports retired — operators pick tradeable
   // symbols directly (no NIFTY 50 → NIFTY26JUNFUT mapping). Operator:
@@ -98,11 +98,14 @@
   // ── Internal modal state ──────────────────────────────────────────────
   let _orderOpen = $state(false);
   let _chartOpen = $state(false);
-  let _logOpen   = $state(false);
+  // _logOpen lifted to the global activityModal store — the modal is
+  // now mounted once in (algo)/+layout.svelte so multiple opener
+  // surfaces (this button, the navbar broker-status chip) don't end
+  // up stacking duplicate instances. Operator: navbar 5/5 chip should
+  // open Activity with the conn tab selected.
 
   async function _openOrder() {
     _chartOpen = false;
-    _logOpen   = false;
     // If the operator clicks before the default-symbol store has
     // resolved, wait briefly so the modal opens with the right anchor
     // (e.g. CRUDEOIL) rather than the empty fallback that would later
@@ -120,7 +123,6 @@
     // symbol from inside. Same default-symbol wait as _openOrder so
     // the chart opens against the right anchor on first invoke.
     _orderOpen = false;
-    _logOpen   = false;
     if (!_accountsReady) {
       try { await loadAccounts(); } catch (_) { /* open anyway */ }
     }
@@ -130,7 +132,7 @@
   function _openLog() {
     _orderOpen = false;
     _chartOpen = false;
-    _logOpen   = true;
+    openActivityModal('order');
   }
 </script>
 
@@ -230,9 +232,11 @@
   />
 {/if}
 
-{#if _logOpen}
-  <ActivityLogModal onClose={() => { _logOpen = false; }} />
-{/if}
+<!-- ActivityLogModal is mounted once at the (algo) layout level —
+     consuming the activityModal store — so this component no longer
+     needs its own copy. _openLog() above writes to the store; the
+     layout's mount opens. -->
+
 
 <style>
   /* Wrapper: keeps the three buttons as a tight cluster, aligned like
