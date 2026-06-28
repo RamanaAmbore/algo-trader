@@ -398,7 +398,7 @@ Mode is runtime-only (resets to `off` on process restart).
 **Stack**:
 - **Framework**: Litestar 2.x + msgspec.Struct (10× faster pydantic)
 - **Database**: PostgreSQL 17 + SQLAlchemy 2.x async + asyncpg
-- **DataFrames**: Polars (routes) / pandas (broker/alert layer)
+- **DataFrames**: Polars (routes: positions.py, holdings.py, funds.py, nav.py) / pandas (broker SDK boundary: broker_apis.py, background.py, summarise.py, sim/driver.py, agent_evaluator.py). Conversion at boundary: `pl.from_pandas(df)` in the route layer. Dead pandas imports audited and removed from orders.py, logs.py, actions.py (Jun 2026).
 - **Background**: asyncio tasks (market, performance, close, expiry)
 - **Auth**: JWT HS256 (24h TTL), PBKDF2-SHA256 passwords
 - **SEO**: OG/Twitter cards, JSON-LD, sitemap.xml, robots.txt
