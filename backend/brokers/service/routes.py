@@ -266,6 +266,60 @@ class InternalBrokerController(Controller):
 
         return {"health": fetch_health_snapshot()}
 
+    @post("/ticker/subscribe")
+    async def ticker_subscribe(self, data: dict[str, Any]) -> dict[str, Any]:
+        """Push a batch of token-symbol pairs onto the KiteTicker
+        subscription set.
+
+        Body shape: {"pairs": [[token, "SYM1"], [token2, "SYM2"], ...]}
+        Returns: {"ok": true, "subscribed": N, "total": M}
+
+        Idempotent — subscribe_with_sym on the underlying TickerManager
+        already dedupes against the existing token set. Called by main
+        API on sparkline-warm / watchlist add / quote routes."""
+        from backend.brokers.kite_ticker import get_ticker
+
+        ticker = get_ticker()
+        pairs_raw = data.get("pairs") or []
+        # Accept either [[tok, sym], ...] or [{"token": ..., "sym": ...}].
+        pairs: list[tuple[int, str]] = []
+        for entry in pairs_raw:
+            if isinstance(entry, dict):
+                tok = entry.get("token") or entry.get("tok")
+                sym = entry.get("sym") or entry.get("symbol")
+            else:
+                tok = entry[0] if len(entry) > 0 else None
+                sym = entry[1] if len(entry) > 1 else ""
+            if tok is None:
+                continue
+            try:
+                pairs.append((int(tok), str(sym or "")))
+            except (TypeError, ValueError):
+                continue
+        if not pairs:
+            return {"ok": True, "subscribed": 0, "total": 0}
+        try:
+            ticker.subscribe_with_sym(pairs)
+            status = ticker.status()
+            return {
+                "ok": True,
+                "subscribed": len(pairs),
+                "total": status.get("subscribed_count", 0),
+            }
+        except Exception as e:
+            logger.exception("conn_service: ticker subscribe failed")
+            return {"ok": False, "error": str(e)[:300]}
+
+    @get("/ticker/status")
+    async def ticker_status(self) -> dict[str, Any]:
+        """KiteTicker health snapshot. Used by /admin/health badge and
+        the watchdog in main API."""
+        from backend.brokers.kite_ticker import get_ticker
+        try:
+            return {"ok": True, "status": get_ticker().status()}
+        except Exception as e:
+            return {"ok": False, "error": str(e)[:300]}
+
 
 class BrokerDispatchController(Controller):
     """Per-account broker dispatch — RemoteBroker in main API speaks

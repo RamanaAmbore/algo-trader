@@ -152,6 +152,12 @@ class TickerManager:
         # to surface "which subscribed symbols have stale tick data" — distinguishes
         # market-closed (expected staleness) from subscribe-failure (unexpected).
         self._tick_age: dict[int, float] = {}     # token → unix ts of last tick
+        # Optional shared-memory tick buffer — when set, every tick gets
+        # mirrored to mmap so the main API process can read LTPs at
+        # mmap-byte speed instead of paying a UDS round-trip per call.
+        # Set via attach_tick_buffer() at construction in conn_service;
+        # left None in the main API process (which has no writer role).
+        self._tick_buffer = None                  # TickBufferWriter | None
         self._token_to_sym: dict[int, str] = {}   # token → tradingsymbol (for SSE payload)
         self._sym_to_token: dict[str, int] = {}   # tradingsymbol (upper) → token (for O(1) has_sym)
         self._lock = threading.Lock()
@@ -170,6 +176,16 @@ class TickerManager:
         self._failover_cooloff: dict[str, float] = {}
 
     # ── Public API ────────────────────────────────────────────────────────
+
+    def attach_tick_buffer(self, buffer) -> None:
+        """Attach a TickBufferWriter so every tick is mirrored to mmap.
+
+        Called from conn_service startup. The main API process leaves
+        this unset — its TickerManager dict view is local-only (and will
+        be replaced by an mmap reader entirely in the consumer phase
+        of slice 4).
+        """
+        self._tick_buffer = buffer
 
     def start(self, api_key: str, access_token: str, account: str = "") -> None:
         """
@@ -652,6 +668,7 @@ class TickerManager:
         """
         to_publish: list[dict] = []
         ts = int(time.time())
+        ts_ns = time.time_ns()
         with self._lock:
             for t in ticks:
                 tok = t.get("instrument_token")
@@ -667,6 +684,23 @@ class TickerManager:
                         "ltp": lp,
                         "ts":  ts,
                     })
+        # Mirror to the shared-memory buffer outside the lock — the
+        # writer's only state is mmap byte positions; safe to call
+        # concurrently with reads from other processes (we're the
+        # single writer in this process). Cheap: each upsert is one
+        # hash + one struct.pack_into.
+        if self._tick_buffer is not None:
+            for payload in to_publish:
+                try:
+                    self._tick_buffer.upsert(
+                        payload["tok"],
+                        payload["ltp"],
+                        ts_ns=ts_ns,
+                    )
+                except Exception:
+                    # Don't let a buffer write blow up the tick path.
+                    # Worst case: readers see stale data — fine.
+                    pass
         # Publish outside the lock so the Twisted reactor is not held
         # while the bus iterates its queue set.
         for payload in to_publish:
