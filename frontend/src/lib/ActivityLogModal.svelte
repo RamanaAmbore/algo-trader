@@ -15,10 +15,10 @@
    */
 
   import { onMount, onDestroy } from 'svelte';
-  import LogPanel from '$lib/LogPanel.svelte';
+  import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
+  import ActivityAccountSelect from '$lib/ActivityAccountSelect.svelte';
   import ChaseCard from '$lib/order/ChaseCard.svelte';
   import BellIcon from '$lib/icons/BellIcon.svelte';
-  import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import { portal } from '$lib/portal';
   import { selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
 
@@ -109,17 +109,11 @@
       </span>
       <!-- Account filter lifted out of LogPanel's tab row. Operator:
            "the account on the tab line should go to activity header."
-           Visible only when multiple accounts are present in the
-           currently-loaded order rows; hidden in single-account or
-           demo modes so the header stays uncluttered. -->
-      {#if _availableAccounts.length > 1}
-        <span class="alm-acct">
-          <AccountMultiSelect
-            bind:value={_accountFilter}
-            options={_availableAccounts.map(a => ({ value: a, label: a }))}
-            placeholder="All accounts" />
-        </span>
-      {/if}
+           Shared component — same dropdown chrome the /orders Activity
+           card uses, so the two surfaces stay visually identical. -->
+      <ActivityAccountSelect
+        bind:value={_accountFilter}
+        availableAccounts={_availableAccounts} />
       <button type="button" class="alm-close" bind:this={_closeBtnEl}
               aria-label="Close activity log">×</button>
     </div>
@@ -132,15 +126,15 @@
       <!-- Tab list inherited from LogPanel's default — keeps every
            surface (this modal, the Order modal bottom panel, /console,
            /automation) in sync without duplicating the array per callsite. -->
-      <LogPanel
-        heightClass="flex-1 min-h-0"
+      <!-- ActivityLogSurface is the SAME wrapper /orders renders inside
+           its Activity card. Encapsulates the canonical config so the
+           two surfaces can't drift on multiColumn / hideInline /
+           bindable shape. -->
+      <ActivityLogSurface
         defaultTab={initialTab}
         symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
-        hideInlineAccountFilter={true}
         bind:accountFilter={_accountFilter}
-        bind:availableAccounts={_availableAccounts}
-        multiColumn={true}
-      />
+        bind:availableAccounts={_availableAccounts} />
     </div>
   </div>
 </div>
@@ -178,27 +172,9 @@
      colour (#fb923c = orange-400) so the modal title icon is the
      exact same shade as the button that opened it. */
   :global(.alm-title-icon) { color: #fbbf24; flex-shrink: 0; }
-  .alm-acct {
-    /* Account dropdown — sits to the right of the spacer, just left
-       of the close button. Operator: "the account on the tab line
-       should go to activity header." `margin-left: auto` takes
-       ownership of the flex spacer so the close button no longer
-       needs it (handled in CSS below).
-
-       Min-width 11rem so the dropdown is wide enough to show
-       "All accounts" or multi-account chips without truncating
-       (operator: "you can increase width of accounts dropdown on
-       activity header"). */
-    display: inline-flex;
-    align-items: center;
-    margin-left: auto;
-    font-size: 0.7rem;
-    min-width: 11rem;
-  }
-  :global(.alm-acct .multiselect-trigger),
-  :global(.alm-acct .multiselect-control) {
-    min-width: 11rem;
-  }
+  /* .alm-acct CSS moved into ActivityAccountSelect.svelte so the
+     dropdown chrome is shared with the /orders Activity card via
+     the .act-acct class on the canonical component. */
   .alm-close {
     /* Standard close — square 1.4rem matches ChartModal +
        SymbolPanel close buttons; glyph 0.95rem is proportional to
