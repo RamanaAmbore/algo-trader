@@ -25,6 +25,8 @@ from datetime import date, datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import numpy as np
+
 # F&O contracts are Indian instruments — Kite expiry dates are calendar
 # days in IST. Computing DTE against the server's local clock (which is
 # UTC on most VPS hosts) drops a day across the IST→UTC offset and gives
@@ -201,6 +203,64 @@ def days_to_expiry(expiry: date, *, ref: Optional[datetime] = None,
 
 def _norm_cdf(x: float) -> float:
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+# A&S 7.1.26 polynomial approximation for erf (max err 1.5e-7). Used by
+# the vectorized BS helpers below — scipy isn't a project dep and
+# `np.vectorize(math.erf)` is just a loop wrapper (no SIMD). The
+# polynomial evaluates entirely in NumPy ufuncs so the whole array gets
+# C-level vectorization. Accuracy is ~5 orders of magnitude better than
+# the operator's typical 2-decimal payoff display precision.
+_AS_A1 =  0.254829592
+_AS_A2 = -0.284496736
+_AS_A3 =  1.421413741
+_AS_A4 = -1.453152027
+_AS_A5 =  1.061405429
+_AS_P  =  0.3275911
+
+def _erf_vec(x: np.ndarray) -> np.ndarray:
+    x  = np.asarray(x, dtype=np.float64)
+    sign = np.where(x >= 0.0, 1.0, -1.0)
+    ax = np.abs(x)
+    t  = 1.0 / (1.0 + _AS_P * ax)
+    y  = 1.0 - ((((_AS_A5 * t + _AS_A4) * t + _AS_A3) * t + _AS_A2) * t + _AS_A1) \
+              * t * np.exp(-ax * ax)
+    return sign * y
+
+
+_INV_SQRT_2 = 1.0 / math.sqrt(2.0)
+
+def _norm_cdf_vec(x: np.ndarray) -> np.ndarray:
+    return 0.5 * (1.0 + _erf_vec(x * _INV_SQRT_2))
+
+
+def _black_scholes_vec(S_arr: np.ndarray, K: float, T_years: float,
+                       r: float, sigma: float, opt_type: str) -> np.ndarray:
+    """Vectorized BS over an array of spots. K, T, sigma, opt_type are
+    leg-level scalars. Returns a same-shape ndarray of per-share prices.
+    Matches the scalar `black_scholes` output to ~1e-7 (A&S erf bound)."""
+    S_arr = np.asarray(S_arr, dtype=np.float64)
+    if K <= 0:
+        return np.zeros_like(S_arr)
+    # Degenerate: at/past expiry or zero vol → intrinsic.
+    if T_years <= 0 or sigma <= 0:
+        if opt_type == "CE":
+            return np.maximum(0.0, S_arr - K)
+        return np.maximum(0.0, K - S_arr)
+    sqrt_T = math.sqrt(T_years)
+    # Mask S<=0 to 1.0 inside the log so we don't get -inf; we zero
+    # those entries at the end with `np.where(valid, ...)`.
+    valid = S_arr > 0
+    safe_S = np.where(valid, S_arr, 1.0)
+    d1 = (np.log(safe_S / K) + (r + sigma * sigma / 2.0) * T_years) \
+         / (sigma * sqrt_T)
+    d2 = d1 - sigma * sqrt_T
+    disc = math.exp(-r * T_years)
+    if opt_type == "CE":
+        prices = safe_S * _norm_cdf_vec(d1) - K * disc * _norm_cdf_vec(d2)
+    else:
+        prices = K * disc * _norm_cdf_vec(-d2) - safe_S * _norm_cdf_vec(-d1)
+    return np.where(valid, prices, 0.0)
 
 
 def black_scholes(S: float, K: float, T_years: float, r: float,
@@ -1080,25 +1140,20 @@ def payoff_curve(*, S: float, K: float, T_years: float, r: float,
     """
     if S <= 0 or qty == 0 or points < 2:
         return []
-    lo  = S * (1.0 - span_pct)
-    hi  = S * (1.0 + span_pct)
-    step = (hi - lo) / (points - 1)
-    cost = entry_price * qty   # signed: positive when you paid, negative when you collected
-    out: list[dict] = []
-    for i in range(points):
-        s_i = lo + step * i
-        # Today's BS value × qty − what you paid
-        bs_value     = black_scholes(s_i, K, T_years, r, sigma, opt_type)
-        today_pnl    = bs_value * qty - cost
-        # Expiry intrinsic × qty − what you paid
-        intrinsic    = max(0.0, s_i - K) if opt_type == "CE" else max(0.0, K - s_i)
-        expiry_pnl   = intrinsic * qty - cost
-        out.append({
-            "spot":         round(s_i, 4),
-            "today_value":  round(today_pnl, 2),
-            "expiry_value": round(expiry_pnl, 2),
-        })
-    return out
+    S_grid = np.linspace(S * (1.0 - span_pct), S * (1.0 + span_pct), points)
+    cost   = entry_price * qty   # signed
+    today_vals  = _black_scholes_vec(S_grid, K, T_years, r, sigma, opt_type) * qty - cost
+    if opt_type == "CE":
+        intrinsic = np.maximum(0.0, S_grid - K)
+    else:
+        intrinsic = np.maximum(0.0, K - S_grid)
+    expiry_vals = intrinsic * qty - cost
+    return [
+        {"spot":         round(float(S_grid[i]),       4),
+         "today_value":  round(float(today_vals[i]),   2),
+         "expiry_value": round(float(expiry_vals[i]),  2)}
+        for i in range(points)
+    ]
 
 
 # ── Multi-leg helpers ─────────────────────────────────────────────────
@@ -1131,53 +1186,50 @@ def multileg_payoff_curve(legs: list[dict], *, S: float,
     """
     if S <= 0 or not legs or points < 2:
         return []
-    lo  = S * (1.0 - span_pct)
-    hi  = S * (1.0 + span_pct)
-    step = (hi - lo) / (points - 1)
-    total_cost = sum(float(l.get("entry_price") or 0) * int(l.get("qty") or 0) for l in legs)
+    S_grid = np.linspace(S * (1.0 - span_pct), S * (1.0 + span_pct), points)
+    total_cost = sum(float(l.get("entry_price") or 0) * int(l.get("qty") or 0)
+                     for l in legs)
 
-    out: list[dict] = []
-    for i in range(points):
-        s_i = lo + step * i
-        today_sum  = 0.0
-        expiry_sum = 0.0
-        for l in legs:
-            kind = l.get("kind") or "opt"
-            qty  = int(l["qty"])
-            # scale_ratio maps the chart's near-month spot axis to the
-            # leg's own contract-month spot. For non-MCX legs this is 1.0
-            # (no-op). For MCX legs it equals S_leg_current / S_near so
-            # a CRUDEOIL26JUN option at a chart x=9663 evaluates at its
-            # actual JUN price = 9663 × (9356/9663) = 9356.
-            scale = float(l.get("scale_ratio") or 1.0)
-            s_leg = s_i * scale
-            if kind == "fut":
-                # Futures: linear in leg-spot. Both today and expiry
-                # track the leg's own contract price proportionally.
-                today_sum  += s_leg * qty
-                expiry_sum += s_leg * qty
-                continue
-            # Options
-            K     = float(l["strike"])
-            opt   = l["opt_type"]
-            T_yrs = float(l.get("T_years") or 0)
-            sig   = float(l.get("sigma") or DEFAULT_IV)
-            today_sum  += black_scholes(s_leg, K, T_yrs, r, sig, opt) * qty
-            # Expiry value: when eval_T is set and this leg has remaining
-            # time after the near expiry, re-price via BS with T_remaining
-            # so the far leg's time value is captured (calendar spread).
-            if eval_T is not None and T_yrs > eval_T:
-                T_remaining = T_yrs - eval_T
-                expiry_sum += black_scholes(s_leg, K, T_remaining, r, sig, opt) * qty
+    today_arr  = np.zeros(points, dtype=np.float64)
+    expiry_arr = np.zeros(points, dtype=np.float64)
+    for l in legs:
+        kind = l.get("kind") or "opt"
+        qty  = int(l["qty"])
+        # scale_ratio maps the chart's near-month spot axis to the leg's
+        # own contract-month spot. For non-MCX legs this is 1.0. For MCX
+        # the leg evaluates at the chart spot × scale_ratio.
+        scale = float(l.get("scale_ratio") or 1.0)
+        s_leg = S_grid * scale
+        if kind == "fut":
+            # Futures: linear in leg-spot, today + expiry both track it.
+            today_arr  += s_leg * qty
+            expiry_arr += s_leg * qty
+            continue
+        K     = float(l["strike"])
+        opt   = l["opt_type"]
+        T_yrs = float(l.get("T_years") or 0)
+        sig   = float(l.get("sigma") or DEFAULT_IV)
+        today_arr  += _black_scholes_vec(s_leg, K, T_yrs, r, sig, opt) * qty
+        # Expiry value: when eval_T is set and this leg has remaining
+        # time after the near expiry, re-price with T_remaining so the
+        # far leg's time value is captured (calendar spread).
+        if eval_T is not None and T_yrs > eval_T:
+            T_remaining = T_yrs - eval_T
+            expiry_arr += _black_scholes_vec(s_leg, K, T_remaining, r, sig, opt) * qty
+        else:
+            if opt == "CE":
+                intrinsic = np.maximum(0.0, s_leg - K)
             else:
-                intrinsic   = max(0.0, s_leg - K) if opt == "CE" else max(0.0, K - s_leg)
-                expiry_sum += intrinsic * qty
-        out.append({
-            "spot":         round(s_i, 4),
-            "today_value":  round(today_sum  - total_cost, 2),
-            "expiry_value": round(expiry_sum - total_cost, 2),
-        })
-    return out
+                intrinsic = np.maximum(0.0, K - s_leg)
+            expiry_arr += intrinsic * qty
+    today_arr  -= total_cost
+    expiry_arr -= total_cost
+    return [
+        {"spot":         round(float(S_grid[i]),     4),
+         "today_value":  round(float(today_arr[i]),  2),
+         "expiry_value": round(float(expiry_arr[i]), 2)}
+        for i in range(points)
+    ]
 
 
 # ── Time-slice payoff curves ──────────────────────────────────────────
@@ -1228,19 +1280,14 @@ def intermediate_curves(*, S: float, K: float, T_years: float, r: float,
     fractions = _slice_fractions(time_slices)
     if S <= 0 or qty == 0 or points < 2 or not fractions or T_years <= 0:
         return []
-    lo  = S * (1.0 - span_pct)
-    hi  = S * (1.0 + span_pct)
-    step = (hi - lo) / (points - 1)
+    S_grid = np.linspace(S * (1.0 - span_pct), S * (1.0 + span_pct), points)
     cost = entry_price * qty
     out: list[dict] = []
     for p in fractions:
         T_p = T_years * (1.0 - p)
         days_left = max(0.0, T_p * 365.0)
-        values: list[float] = []
-        for i in range(points):
-            s_i = lo + step * i
-            bs_value = black_scholes(s_i, K, T_p, r, sigma, opt_type)
-            values.append(round(bs_value * qty - cost, 2))
+        bs_arr = _black_scholes_vec(S_grid, K, T_p, r, sigma, opt_type)
+        values = [round(float(bs_arr[i]) * qty - cost, 2) for i in range(points)]
         out.append({
             "label":       _slice_label(days_left),
             "elapsed_pct": round(p, 3),
@@ -1266,10 +1313,9 @@ def multileg_intermediate_curves(legs: list[dict], *, S: float,
     fractions = _slice_fractions(time_slices)
     if S <= 0 or not legs or points < 2 or not fractions:
         return []
-    lo  = S * (1.0 - span_pct)
-    hi  = S * (1.0 + span_pct)
-    step = (hi - lo) / (points - 1)
-    total_cost = sum(float(l.get("entry_price") or 0) * int(l.get("qty") or 0) for l in legs)
+    S_grid = np.linspace(S * (1.0 - span_pct), S * (1.0 + span_pct), points)
+    total_cost = sum(float(l.get("entry_price") or 0) * int(l.get("qty") or 0)
+                     for l in legs)
     base_T_years = max(
         (float(l.get("T_years") or 0) for l in legs
          if (l.get("kind") or "opt") == "opt"),
@@ -1281,24 +1327,22 @@ def multileg_intermediate_curves(legs: list[dict], *, S: float,
     for p in fractions:
         T_label   = base_T_years * (1.0 - p)
         days_left = max(0.0, T_label * 365.0)
-        values: list[float] = []
-        for i in range(points):
-            s_i = lo + step * i
-            slice_sum = 0.0
-            for l in legs:
-                kind  = l.get("kind") or "opt"
-                qty   = int(l["qty"])
-                scale = float(l.get("scale_ratio") or 1.0)
-                s_leg = s_i * scale
-                if kind == "fut":
-                    slice_sum += s_leg * qty
-                    continue
-                K     = float(l["strike"])
-                opt   = l["opt_type"]
-                T_yrs = float(l.get("T_years") or 0) * (1.0 - p)
-                sig   = float(l.get("sigma") or DEFAULT_IV)
-                slice_sum += black_scholes(s_leg, K, T_yrs, r, sig, opt) * qty
-            values.append(round(slice_sum - total_cost, 2))
+        slice_arr = np.zeros(len(S_grid), dtype=np.float64)
+        for l in legs:
+            kind  = l.get("kind") or "opt"
+            qty   = int(l["qty"])
+            scale = float(l.get("scale_ratio") or 1.0)
+            s_leg = S_grid * scale
+            if kind == "fut":
+                slice_arr += s_leg * qty
+                continue
+            K     = float(l["strike"])
+            opt   = l["opt_type"]
+            T_yrs = float(l.get("T_years") or 0) * (1.0 - p)
+            sig   = float(l.get("sigma") or DEFAULT_IV)
+            slice_arr += _black_scholes_vec(s_leg, K, T_yrs, r, sig, opt) * qty
+        slice_arr -= total_cost
+        values = [round(float(slice_arr[i]), 2) for i in range(len(S_grid))]
         out.append({
             "label":       _slice_label(days_left),
             "elapsed_pct": round(p, 3),
@@ -1440,22 +1484,21 @@ def expected_value(curve: list[dict], *, S: float, T_years: float,
     """
     if not curve or len(curve) < 2 or T_years <= 0 or sigma <= 0 or S <= 0:
         return 0.0
+    spots  = np.fromiter((p["spot"] for p in curve), dtype=np.float64, count=len(curve))
+    values = np.fromiter((p[key]    for p in curve), dtype=np.float64, count=len(curve))
+    # Risk-neutral lognormal PDF vectorized over the spot grid:
+    #   f(S_T) = (1 / (S_T σ √(2πT))) · exp(-(ln(S_T/S) − (r − σ²/2)T)² / (2σ²T))
     sqrt_T = math.sqrt(T_years)
     mu     = math.log(S) + (r - sigma * sigma / 2.0) * T_years
     inv_2v = 1.0 / (2.0 * sigma * sigma * T_years)
     norm_k = 1.0 / (sigma * sqrt_T * math.sqrt(2.0 * math.pi))
-
-    def pdf(s_t: float) -> float:
-        if s_t <= 0:
-            return 0.0
-        z = math.log(s_t) - mu
-        return (norm_k / s_t) * math.exp(-z * z * inv_2v)
-
-    integral = 0.0
-    for i in range(len(curve) - 1):
-        a, b   = curve[i], curve[i + 1]
-        ya, yb = a[key] * pdf(a["spot"]), b[key] * pdf(b["spot"])
-        integral += 0.5 * (ya + yb) * (b["spot"] - a["spot"])
+    safe   = spots > 0
+    z      = np.log(np.where(safe, spots, 1.0)) - mu
+    pdf    = np.where(safe, (norm_k / np.where(safe, spots, 1.0))
+                              * np.exp(-z * z * inv_2v), 0.0)
+    integrand = values * pdf
+    # Trapezoidal rule — NumPy 2.x renames trapz → trapezoid.
+    integral = float(np.trapezoid(integrand, spots))
     return round(integral, 2)
 
 
