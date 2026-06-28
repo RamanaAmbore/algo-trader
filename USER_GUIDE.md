@@ -443,6 +443,16 @@ restart it manually — it's designed to be transparent to your workflow.
 A typical session for an active operator:
 
 1. **Open `/dashboard`** — quick check: holdings, positions, P&L per account.
+   The right-hand sidebar opens on the **NAV** tab by default — that's the
+   per-account wealth breakdown using the same arithmetic as the canonical
+   `/performance` NAV grid (cash + open-position MTM + holdings MTM, summed
+   to a firm TOTAL row at the bottom). Click **Capital** for the margin /
+   funds breakdown, or **Equity** for the Positions / Holdings summaries.
+   The card on the left is the intraday equity curve plus the historical
+   Performance drill-down behind one tab. At the bottom of the page, the
+   **Activity** card opens on **News** by default; flip to Orders, Agents,
+   Terminal, Conn, System, or Ticks to scan whichever paper trail you need
+   without leaving the dashboard.
 2. **Watch `/agents`** — any fires today? Any in cooldown?
 3. **If a new strategy is being considered**: `/admin/derivatives` → Strategy mode → build the legs → eyeball the breakevens, max loss, POP → if it looks good, place the trade through the Terminal or your usual flow.
 4. **If thresholds need adjusting**: `/admin/settings` or edit the relevant agent on `/agents`.

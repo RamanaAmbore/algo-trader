@@ -593,6 +593,8 @@ Unified chart for any symbol kind (underlying / future / option / equity). Reads
 
 **PerformancePage** — canonical-cluster reference. Public page (cream theme) shows real Kite data even during sim. Admin `/dashboard` = P&L Analysis + MarketPulse summary grids (Funds/Positions/Holdings, single-account scoped) + Agent activity log.
 
+**Dashboard layout (`dash-row1-split`)** — chart card LEFT, tabbed NAV / Capital / Equity sidebar RIGHT (Jun 2026 shuffle). NAV is the default tab on the sidebar; renders `NavBreakdown.svelte` which shares the `cash_sod + option_premium + Σ position.unrealised + Σ holdings.cur_val` arithmetic with `PerformancePage` `navByAcct` and `backend/api/algo/nav.py:compute_firm_nav` (v4 formula). Both surfaces source positions / holdings / funds from the module-level `marketDataStores` singletons so the dashboard NAV tab and the `/performance` NAV grid can't drift. Grid cells stretch vertically via flex so the sidebar height responds to whichever chart tab is active.
+
 **Public-theme row bars** — left + right edges on symbol cell only (`.ag-col-sym`). Background tint extends symbol + account cells (`.ag-col-fill`).
 
 ---
@@ -612,12 +614,17 @@ two reusable components + filter state:
 - `LogPanel.svelte` — refined with per-tab level parsing + multi-column layout
   at ≥900px container width.
 
-**Three mount points**:
+**Four mount points**:
 - **ActivityLogModal** — full-screen modal (e.g., from navbar Log icon). Shows
   all tabs (System / Conn / Agents / Orders / Terminal) with independent filters.
-- **Activity card** (`/admin/execution`, `/dashboard`) — inline card with single
+- **Activity card** (`/admin/execution`, `/orders`) — inline card with single
   tab (Orders), filters live in card state.
-- **`/activity` page** — new bookmarkable route (part of navbar `build` dropdown).
+- **Dashboard activity card** (`/dashboard`) — replaces the legacy MARKET NEWS
+  strip (Jun 2026). `defaultTab='news'` so the dashboard still lands on the
+  market headlines flow, but a click switches to Orders / Agents / Terminal /
+  Conn / System / Ticks for the wider operator paper trail without leaving
+  the page.
+- **`/activity` page** — bookmarkable route (part of navbar `build` dropdown).
   Defaults to Orders tab. Filters persist across tab switches via single shared
   thread.
 
@@ -626,8 +633,12 @@ as bindable props per-tab. Same thread (component instance) keeps filters in syn
 when switching tabs without resetting selections.
 
 **Multi-column layout** — CSS `column-count: 2` at ≥900px container width
-(NewsList-style magazine flow). Single column below 900px. All three contexts
-(modal / card / page) apply same responsive pattern.
+(NewsList-style magazine flow). Single column below 900px. All four mounts
+(modal / dashboard card / orders card / page) apply the same responsive
+pattern. NewsList accepts `columns={n}` (default 1) and `showSource={bool}`
+(default true); the activity-surface News tab passes `columns={2},
+showSource={false}` so the per-row source pill collapses and the title
+runs the full row width.
 
 **Log-level parsing**:
 - System/Conn lines: extract `[LEVEL]` token from message text (case-insensitive)

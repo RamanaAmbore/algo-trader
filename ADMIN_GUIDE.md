@@ -1333,13 +1333,16 @@ Multi-day forensic surface for the three "book of record" datasets — Orders (e
 
 ## Activity logs — system + order + agent runtime
 
-Multi-mount unified log viewer for all three categories (System / Conn / Orders /
-Agents / Terminal). Accessible via:
+Multi-mount unified log viewer for all categories (System / Conn / Orders /
+Agents / Terminal / News). Accessible via:
 - **Navbar Log icon** → ActivityLogModal (full-screen, all tabs)
-- **Execution page** → inline Activity card (Orders only)
-- **`/activity` page** (new, bookmarkable) → defaults to Orders, full tabs available
+- **Execution page** → inline Activity card (Orders default)
+- **Dashboard activity card** → replaces the legacy MARKET NEWS strip (Jun 2026);
+  defaults to **News** tab so the dashboard still lands on market headlines,
+  but a click reveals the full Orders / Agents / Terminal / Conn / System paper trail
+- **`/activity` page** → bookmarkable, defaults to Orders, full tabs available
 
-All three surfaces share reusable components + filter state. Filters (`account`, `level`)
+All four surfaces share reusable components + filter state. Filters (`account`, `level`)
 persist across tab switches.
 
 **Log levels**: All/Error/Warning/Info. Default 'All'. Parsing:
