@@ -1835,7 +1835,14 @@ class OptionsController(Controller):
         # name) is derived from this set below.
         roots: set[str] = set()
         expiries: set[str]    = set()
+        # Single get_price_broker() construction per request — was being
+        # built twice in this impl (line ~1838 for spot/leg quotes, again
+        # at the MCX futures batch around line ~2065). Each construction
+        # calls _loaded_accounts() which under the cutover flag hops to
+        # list_remote_accounts() via UDS. Audit P1 finding — measurable
+        # on the derivatives page first-load.
         from backend.brokers.registry import get_price_broker
+        _price_broker = get_price_broker()
 
         # Bulk quote fetch — for legs without operator-supplied ltp, hit
         # broker.quote() once (richer than ltp(): includes ohlc.close +
@@ -1881,7 +1888,7 @@ class OptionsController(Controller):
         quote_resp: dict = {}
         if need_quote:
             try:
-                quote_resp = await asyncio.to_thread(get_price_broker().quote, list(need_quote.keys())) or {}
+                quote_resp = await asyncio.to_thread(_price_broker.quote, list(need_quote.keys())) or {}
             except Exception as e:
                 # Don't fail the whole request — sim legs and operator
                 # overrides + per-leg fallbacks (avg_cost) can still
@@ -2062,7 +2069,7 @@ class OptionsController(Controller):
             _fut_quote_resp: dict = {}
             if _fut_quote_keys:
                 try:
-                    _fut_quote_resp = await asyncio.to_thread(get_price_broker().quote, _fut_quote_keys) or {}
+                    _fut_quote_resp = await asyncio.to_thread(_price_broker.quote, _fut_quote_keys) or {}
                 except Exception as _e:
                     logger.warning(
                         f"MCX per-leg futures batch quote failed: {_e}; "

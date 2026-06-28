@@ -842,10 +842,10 @@
                           : 'broker-chip-ok'}
           {@const _failList = $connStatus.failingAccounts.join(', ')}
           <button class="broker-chip {_cls}"
-                  onclick={() => openActivityModal('conn')}
-                  title={!_ok ? 'Broker status: API unreachable. Open conn_service activity log.'
-                       : _loaded === _total ? `Broker status: ${_loaded} / ${_total} accounts loaded. Click for conn_service log.`
-                       : `Broker status: ${_loaded} / ${_total} loaded. Failing: ${_failList}. Click for conn_service log.`}>
+                  onclick={() => goto('/activity?tab=conn')}
+                  title={!_ok ? 'Broker status: API unreachable. Open /activity (Conn tab).'
+                       : _loaded === _total ? `Broker status: ${_loaded} / ${_total} accounts loaded. Open /activity (Conn tab).`
+                       : `Broker status: ${_loaded} / ${_total} loaded. Failing: ${_failList}. Open /activity (Conn tab).`}>
             <span class="broker-chip-dot" aria-hidden="true"></span>
             {_ok ? `${_loaded}/${_total}` : '?'}
           </button>

@@ -13,6 +13,7 @@
    * components, so the three surfaces (modal, card, page) can't
    * drift on filter UI or LogPanel config.
    */
+  import { page } from '$app/state';
   import { authStore, nowStamp } from '$lib/stores';
   import { selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
@@ -29,6 +30,15 @@
   let _availableAccounts = $state([]);
   /** @type {'all'|'error'|'warning'|'info'} */
   let _levelFilter       = $state('all');
+
+  // Read ?tab=... so the navbar broker chip and other deep-links can
+  // open this page on a specific tab. Whitelist against the known tab
+  // ids so a typo / hostile URL can't end up showing a broken tab.
+  const _ALLOWED_TABS = ['order','agent','terminal','simulator','system','conn','news'];
+  const _urlTab = $derived.by(() => {
+    const t = page?.url?.searchParams?.get('tab') || '';
+    return _ALLOWED_TABS.includes(t) ? t : 'order';
+  });
 
   // Manual-refresh bump — clicking the page-header Refresh icon
   // rotates the badge and asks ActivityLogSurface to re-poll
@@ -68,7 +78,7 @@
   {#key _refreshKey}
     <ActivityLogSurface
       heightClass="activity-page-rows"
-      defaultTab="order"
+      defaultTab={_urlTab}
       symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
       bind:accountFilter={_accountFilter}
       bind:availableAccounts={_availableAccounts}
