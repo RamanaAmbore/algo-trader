@@ -53,6 +53,11 @@ async function acquireToken(request) {
 
 test.describe('/pulse — column order: Day % before Close', () => {
 
+  // Skip entirely on mobile projects — the viewport skip guard inside each
+  // test fires only after beforeAll, which would still attempt a login and
+  // burn rate-limit tokens unnecessarily.
+  test.skip(({ isMobile }) => isMobile, 'Desktop-only spec');
+
   test.beforeAll(async ({ request }) => {
     sharedToken = await acquireToken(request);
     if (!sharedToken) throw new Error('pulse_column_order: could not acquire auth token in beforeAll');
