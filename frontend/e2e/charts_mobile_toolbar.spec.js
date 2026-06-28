@@ -63,7 +63,10 @@ async function injectSession(page, items) {
 
 // ── 1. SSOT: row alignment at mobile viewport ─────────────────────────
 
-test.describe('mobile toolbar — single-row layout', () => {
+// Serial mode — tests share one token via beforeAll. Without serial,
+// fullyParallel=true assigns each test its own worker, causing N parallel
+// loginAsAdmin calls that trip the 5/min rate-limiter on dev.
+test.describe.serial('mobile toolbar — single-row layout', () => {
   test.use({ viewport: { width: 360, height: 800 }, isMobile: true });
 
   let _session = /** @type {{ token: string }|null} */ (null);
@@ -251,7 +254,7 @@ test.describe('reuse — modal toolbar shares same CSS classes as page', () => {
 
 // ── Desktop regression: layout unchanged at 1400px ───────────────────
 
-test.describe('desktop regression — toolbar layout intact', () => {
+test.describe.serial('desktop regression — toolbar layout intact', () => {
   test.use({ viewport: { width: 1400, height: 900 } });
 
   let _session = /** @type {{ token: string }|null} */ (null);
