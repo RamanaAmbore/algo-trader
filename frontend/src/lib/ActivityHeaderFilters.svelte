@@ -49,53 +49,67 @@
   <ActivityAccountSelect
     bind:value={accountFilter}
     {availableAccounts} />
-  <label class="act-level" title="Filter rows by log level (applies to the active tab)">
-    <span class="act-level-glyph" aria-hidden="true">⚑</span>
-    <select bind:value={levelFilter} class="act-level-sel"
-            aria-label="Log level filter">
-      {#each _LEVELS as L}
-        <option value={L.value}>{L.label}</option>
-      {/each}
-    </select>
-  </label>
+  <!-- Level filter — chrome matches MultiSelect (amber-on-slate gradient,
+       same border/radius/font/height) so the two controls in the header
+       read as a single visual pair. Operator: "the two dropdowns in
+       activity header are not aligned, dont have consistent colour
+       scheme." -->
+  <select bind:value={levelFilter} class="act-level-sel"
+          aria-label="Log level filter"
+          title="Filter rows by log level (applies to the active tab)">
+    {#each _LEVELS as L}
+      <option value={L.value}>{L.label}</option>
+    {/each}
+  </select>
 </span>
 
 <style>
   /* Flex group so both controls land together — parent decides the
-     overall placement (margin-left:auto on the wrapper if needed). */
+     overall placement (margin-left:auto on the wrapper if needed).
+     align-items: stretch so both children share the same height. */
   .act-filters {
     display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
+    align-items: stretch;
+    gap: 0.4rem;
     margin-left: auto;
   }
-  .act-level {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.2rem;
-    font-size: 0.7rem;
-    color: rgba(255, 255, 255, 0.72);
-  }
-  .act-level-glyph {
-    font-size: 0.78rem;
-    color: rgba(251, 191, 36, 0.85);
-    line-height: 1;
-  }
+  /* Level dropdown chrome — exact match to MultiSelect's trigger
+     (frontend/src/lib/MultiSelect.svelte .rbq-multi-trigger). Same
+     gradient bg, amber border, slate text, font-size, padding,
+     min-height, border-radius. Keep these in lockstep when the
+     MultiSelect chrome changes. */
   .act-level-sel {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    min-height: 1.55rem;
+    padding: 0.25rem 1.4rem 0.25rem 0.5rem;
+    background-image: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    background-color: #1d2a44;
+    border: 1px solid rgba(251, 191, 36, 0.25);
     border-radius: 3px;
-    color: rgba(255, 255, 255, 0.85);
-    font-size: 0.68rem;
-    padding: 0.15rem 0.35rem;
-    line-height: 1.15;
+    color: var(--algo-slate);
+    font-size: 0.62rem;
+    font-family: inherit;
     cursor: pointer;
+    line-height: 1.15;
+    /* Native caret repositioned to align with MultiSelect's amber caret
+       — same 0.95rem visual weight, same right-edge gap. */
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-image:
+      linear-gradient(180deg, #273552 0%, #1d2a44 100%),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%23fbbf24' d='M5 6 0 0h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat, no-repeat;
+    background-position: center, right 0.45rem center;
+    background-size: auto, 0.5rem 0.3rem;
+    transition: border-color 0.08s;
   }
-  .act-level-sel:hover {
-    border-color: rgba(255, 255, 255, 0.22);
-  }
-  .act-level-sel:focus-visible {
-    outline: 2px solid rgba(34, 211, 238, 0.6);
-    outline-offset: 1px;
+  .act-level-sel:hover         { border-color: rgba(251, 191, 36, 0.6); }
+  .act-level-sel:focus         { outline: none; border-color: #fbbf24; }
+  .act-level-sel:focus-visible { outline: none; border-color: #fbbf24; }
+  /* Options inherit dark bg from the page; spell out the contrast so
+     OS-dark-mode users don't see washed-out white-on-white menus. */
+  .act-level-sel option {
+    background: #1d2a44;
+    color: var(--algo-slate);
   }
 </style>
