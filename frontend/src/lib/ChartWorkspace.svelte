@@ -2567,14 +2567,17 @@
       min-height: 2rem;
     }
 
-    /* Overlay panel — just enough to show "Overlays" text */
+    /* Overlay panel — just enough to show "Overlays" text.
+       min-height on trigger wrapper + trigger itself = 32px tap target. */
     .cw-overlay-panel {
       flex-shrink: 0;
     }
+    .cw-overlay-panel :global(.rbq-multi-trigger-wrap),
     .cw-overlay-panel :global(.rbq-multi-trigger) {
       padding: 0.18rem 0.28rem;
       font-size: 0.58rem;
       white-space: nowrap;
+      min-height: 2rem;
     }
   }
 

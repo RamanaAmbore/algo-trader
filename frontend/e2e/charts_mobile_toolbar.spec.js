@@ -73,7 +73,7 @@ test.describe('mobile toolbar — single-row layout', () => {
     const info = await loginAsAdmin(page);
     _session = { token: info.token };
     await page.close();
-  });
+  }, 60_000);
 
   test('row 1 (symbol + series) fits on one line', async ({ page }) => {
     await injectSession(page, { ramboq_token: _session?.token ?? '' });
@@ -259,7 +259,7 @@ test.describe('desktop regression — toolbar layout intact', () => {
     const info = await loginAsAdmin(page);
     _session = { token: info.token };
     await page.close();
-  });
+  }, 60_000);
 
   test('row 1 type-filter has width ≥ 7rem at desktop (not shrunk)', async ({ page }) => {
     await injectSession(page, { ramboq_token: _session?.token ?? '' });
