@@ -11,28 +11,14 @@
  *   --project=chromium-desktop --workers=1
  */
 import { test, expect } from '@playwright/test';
+import { loginAsAdmin } from './fixtures/auth.js';
 
-const BASE      = process.env.PLAYWRIGHT_BASE_URL || 'https://dev.ramboq.com';
-const API_HOST  = BASE.includes('localhost') ? 'https://dev.ramboq.com' : BASE;
-const AUTH_PASS = process.env.PLAYWRIGHT_PASS || 'admin1234';
-
-// Module-level token — one login per worker.
-let _token = /** @type {string|null} */ (null);
-
-async function login(page) {
-  if (!_token) {
-    for (const u of ['ambore', 'rambo', 'admin']) {
-      const r = await page.request.post(`${API_HOST}/api/auth/login`, {
-        data: { username: u, password: AUTH_PASS },
-        timeout: 15_000,
-      }).catch(() => null);
-      if (r?.ok()) { _token = (await r.json()).access_token; break; }
-    }
-    if (!_token) throw new Error(`login failed against ${API_HOST}`);
-  }
-  await page.context().addInitScript((t) => sessionStorage.setItem('ramboq_token', t), _token);
-  await page.context().setExtraHTTPHeaders({ Authorization: `Bearer ${_token}` });
-}
+// Use the canonical loginAsAdmin fixture (frontend/e2e/fixtures/auth.js)
+// instead of an inline helper. Earlier inline helpers iterated
+// ['ambore', 'rambo', 'admin'] and burned rate-limit slots on dev
+// where 'ambore' returns 401, triggering the tier-2 lockout.
+const BASE = process.env.PLAYWRIGHT_BASE_URL || 'https://dev.ramboq.com';
+const login = loginAsAdmin;
 
 // NIFTY 50 is the canonical index — always listed, always returns bars.
 const CHART_URL = `${BASE}/charts?symbol=${encodeURIComponent('NIFTY 50')}&mode=live`;

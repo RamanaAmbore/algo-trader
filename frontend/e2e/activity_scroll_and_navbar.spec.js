@@ -25,27 +25,16 @@
  * Target: dev.ramboq.com
  */
 import { test, expect } from '@playwright/test';
+import { loginAsAdmin } from './fixtures/auth.js';
 
-const BASE      = process.env.PLAYWRIGHT_BASE_URL || 'https://dev.ramboq.com';
-const API_HOST  = BASE.includes('localhost') ? 'https://dev.ramboq.com' : BASE;
-const AUTH_PASS = process.env.PLAYWRIGHT_PASS || 'admin1234';
-
-let _token = /** @type {string|null} */ (null);
-
-async function login(page) {
-  if (!_token) {
-    for (const u of ['ambore', 'rambo', 'admin']) {
-      const r = await page.request.post(`${API_HOST}/api/auth/login`, {
-        data: { username: u, password: AUTH_PASS },
-        timeout: 15_000,
-      }).catch(() => null);
-      if (r?.ok()) { _token = (await r.json()).access_token; break; }
-    }
-    if (!_token) throw new Error(`login failed against ${API_HOST}`);
-  }
-  await page.context().addInitScript((t) => sessionStorage.setItem('ramboq_token', t), _token);
-  await page.context().setExtraHTTPHeaders({ Authorization: `Bearer ${_token}` });
-}
+// Use the canonical loginAsAdmin fixture (frontend/e2e/fixtures/auth.js)
+// instead of an inline helper. The fixture drives the /signin form,
+// retries on 429 with a backoff, and only tries one username — earlier
+// inline helpers that iterated ['ambore', 'rambo', 'admin'] burned
+// rate-limit slots on dev (where 'ambore' returns 401) and triggered
+// the tier-2 30-minute lockout. Reusable-component rule.
+const BASE = process.env.PLAYWRIGHT_BASE_URL || 'https://dev.ramboq.com';
+const login = loginAsAdmin;
 
 test.describe('/activity + ActivityLogModal — scroll + navbar', () => {
 
