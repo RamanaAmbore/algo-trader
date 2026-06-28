@@ -12,9 +12,10 @@
 //   nav chart in dashboard". The firm-NAV chip is no longer a
 //   dedicated `.dash-nav-row` row below the page header. It now
 //   renders as an absolutely-positioned overlay (`.nav-chip-overlay`)
-//   inside <NavTab>, anchored top-right of the chart. The chip is
-//   visible ONLY when the NAV tab on the chart card is active —
-//   Intraday + Performance tabs hide it by design.
+//   inside <NavTab>, anchored top-LEFT of the chart (operator
+//   refinement Jun 2026: "move nav chip to the left of nav chart").
+//   The chip is visible ONLY when the NAV tab on the chart card is
+//   active — Intraday + Performance tabs hide it by design.
 //
 // Five quality dimensions (per feedback_test_dimensions.md):
 //   SSOT        — dashboard activity news tab + /activity news tab
@@ -235,6 +236,25 @@ test.describe('dashboard refactor — news → activity + chart/equity swap + NA
           chipBox.y,
           'NAV chip top sits below page-header bottom',
         ).toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 1);
+      }
+
+      // Placement: chip is LEFT-anchored (operator: "move nav chip
+      // to the left of nav chart"). The chip's left edge sits close
+      // to the chart card's left edge — within clamp() offset budget
+      // (≤32 px after card padding + 0.35-0.75 rem chip inset). And
+      // the right gap must exceed the left gap, proving the anchor.
+      const chartCardBox = await chartCard.boundingBox();
+      if (chartCardBox && chipBox) {
+        const leftGap  = chipBox.x - chartCardBox.x;
+        const rightGap = (chartCardBox.x + chartCardBox.width) - (chipBox.x + chipBox.width);
+        expect(
+          leftGap,
+          `NAV chip left edge should hug chart card's left edge — leftGap=${leftGap}px (≤32 px allowance)`,
+        ).toBeLessThanOrEqual(32);
+        expect(
+          rightGap > leftGap,
+          `NAV chip should be LEFT-anchored — leftGap=${leftGap}px rightGap=${rightGap}px`,
+        ).toBe(true);
       }
 
       // Click Intraday — chip is hidden (NAV panel is `hidden`).
@@ -484,16 +504,33 @@ test.describe('dashboard refactor — news → activity + chart/equity swap + NA
       );
       expect(insideChartCard, 'mobile: NAV chip IS inside .row1-col-chart').toBe(true);
 
-      // Chip's right edge stays within the chart card's right edge —
-      // catches a regression where the overlay's `right` offset
-      // becomes negative on narrow viewports and overflows.
+      // Chip stays inside the chart card on both edges + is LEFT-
+      // anchored (operator placement refinement Jun 2026). On narrow
+      // viewports the clamp() offset for `left` shrinks gracefully so
+      // the chip never overflows past either side of the card.
       const chipBox = await mobileChip.boundingBox();
       const cardBox = await chartCard.boundingBox();
       if (chipBox && cardBox) {
+        // Both edges stay inside the card.
+        expect(
+          chipBox.x,
+          'mobile: NAV chip left edge inside chart card',
+        ).toBeGreaterThanOrEqual(cardBox.x - 1);
         expect(
           chipBox.x + chipBox.width,
           'mobile: NAV chip right edge inside chart card',
         ).toBeLessThanOrEqual(cardBox.x + cardBox.width + 1);
+        // Left-anchor proof — left gap is small, smaller than right gap.
+        const leftGap  = chipBox.x - cardBox.x;
+        const rightGap = (cardBox.x + cardBox.width) - (chipBox.x + chipBox.width);
+        expect(
+          leftGap,
+          `mobile: NAV chip left edge hugs chart card's left edge — leftGap=${leftGap}px (≤24 px allowance on phone)`,
+        ).toBeLessThanOrEqual(24);
+        expect(
+          rightGap > leftGap,
+          `mobile: NAV chip should be LEFT-anchored — leftGap=${leftGap}px rightGap=${rightGap}px`,
+        ).toBe(true);
         // And the chip sits well below the page-header.
         const headerBox = await page.locator('.page-header').first().boundingBox();
         if (headerBox) {

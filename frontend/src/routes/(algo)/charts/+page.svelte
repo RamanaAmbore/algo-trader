@@ -95,20 +95,24 @@
 
 <style>
   /* Charts page fills the full viewport below the sticky navbar.
-     The navbar is h-12 = 3rem; algo-content adds 0.5rem top padding.
-     The page-header itself is roughly 2.2rem. We use flexbox so the
-     chart-body absorbs whatever remains rather than a fixed calc. */
+     Algo-content already applies padding: calc(3rem + 1.8rem) top +
+     calc(1.6rem + 0.4rem) bottom so the page wrapper sits INSIDE the
+     content box. Earlier `height: calc(100vh - 3rem - 2rem)` over-
+     counted the available area by ~3rem and produced a vertical
+     scrollbar on phone viewports — operator: "the entire chart grid
+     should fit in mobile viewport with no scrolling". The flex:1 on
+     .chart-body + min-height:0 chain lets the SVG absorb every
+     residual pixel. Subtracted chrome reflects the actual padding
+     applied by .algo-content. */
   .charts-page-wrap {
     display: flex;
     flex-direction: column;
-    /* Full viewport height minus navbar (3rem) minus content top-pad (0.5rem)
-       minus bottom-pad (1.5rem from algo-content). The flex column + flex:1
-       on chart-body does the real work; this just caps the outer shell. */
-    height: calc(100vh - 3rem - 2rem);
-    min-height: 24rem;
-    gap: 0.4rem;
-    padding: 0 0 0.25rem;
+    height: calc(100vh - 3rem - 1.8rem - 1.6rem - 0.4rem);
+    min-height: 18rem;
+    gap: 0.2rem;
+    padding: 0;
     box-sizing: border-box;
+    overflow: hidden;
   }
 
   .page-error {
@@ -129,7 +133,11 @@
 
   @media (max-width: 600px) {
     .charts-page-wrap {
-      height: calc(100vh - 3rem - 1.5rem);
+      /* Phone — subtract algo-content's padding chain. Same chrome
+         math as desktop, repeated explicit so any future padding
+         shift on either axis updates in one place. */
+      height: calc(100vh - 3rem - 1.8rem - 1.6rem - 0.4rem);
+      gap: 0.15rem;
     }
   }
 </style>

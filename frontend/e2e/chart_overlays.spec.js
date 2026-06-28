@@ -855,4 +855,188 @@ test.describe('chart overlays — all viewports', () => {
       `Both triggers should share border style. MultiSelect=${multiBorder} Select=${selBorder}`,
     ).toBe(selBorder);
   });
+
+  // ── Coherent chart UX polish slice (Jun 2026) ──────────────────────────────
+  //
+  //   1. NAV chip is anchored LEFT (operator: "move nav chip to the
+  //      left of nav chart").
+  //   2. Chart-toolbar element heights match the canonical algo-tab
+  //      strip rendered height on /dashboard within ±2 px (operator:
+  //      "keep the elements above charts height consistent with the
+  //      elements in other page").
+  //   3. Reset button shares the same toolbar height.
+  //   4. Toolbar→chart vertical gap is minimal (≤8 px).
+  //   5. /charts at 393×851 + 360×640 fits without vertical scroll.
+
+  test('NAV chip overlay is anchored LEFT inside its chart card', async ({ page }) => {
+    test.setTimeout(45_000);
+    await injectSession(page, _session);
+    // Visit /dashboard — the NAV chip mounts inside the NavTab on the
+    // chart card. Skip-soft when the chip hasn't been minted yet.
+    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2500);
+    const chip = page.locator('.nav-chip-overlay').first();
+    const chipPresent = await chip.isVisible().catch(() => false);
+    if (!chipPresent) {
+      console.log('[chip-left] firm-NAV chip not minted — skipping left-anchor check');
+      return;
+    }
+    // The chip's left edge should sit near the chart card's left
+    // edge (within ~32 px after clamp() offset + padding). Right edge
+    // should be FURTHER from the card's right edge than its left
+    // edge is from the card's left edge — proves it's left-anchored.
+    const chartCard = page.locator('.row1-col-chart').first();
+    const [chipBox, cardBox] = await Promise.all([
+      chip.boundingBox(),
+      chartCard.boundingBox(),
+    ]);
+    expect(chipBox).not.toBeNull();
+    expect(cardBox).not.toBeNull();
+    if (chipBox && cardBox) {
+      const leftGap  = chipBox.x - cardBox.x;
+      const rightGap = (cardBox.x + cardBox.width) - (chipBox.x + chipBox.width);
+      expect(
+        leftGap,
+        `Chip should hug left edge — leftGap=${leftGap}px (≤32 px)`,
+      ).toBeLessThanOrEqual(32);
+      expect(
+        rightGap > leftGap,
+        `Chip should be left-anchored — leftGap=${leftGap}px rightGap=${rightGap}px`,
+      ).toBe(true);
+    }
+  });
+
+  test('SSOT height: chart toolbar matches dashboard algo-tab strip within ±2 px', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page, _session);
+
+    // 1) Measure /dashboard's chart-card tab strip height — this is
+    //    the cross-page anchor the operator asked for.
+    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2000);
+    const dashTab = page.locator('.row1-col-chart .algo-tab').first();
+    await expect(dashTab).toBeVisible({ timeout: 10_000 });
+    const dashBox = await dashTab.boundingBox();
+    expect(dashBox).not.toBeNull();
+    const dashH = dashBox ? Math.round(dashBox.height) : 0;
+    expect(dashH, 'dashboard tab strip height should be measurable').toBeGreaterThan(0);
+
+    // 2) Visit /charts and measure the canonical toolbar controls.
+    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+    await page.waitForTimeout(500);
+
+    const chartCtrls = [
+      { name: 'range pill',    sel: '.cw-range-group .cw-range-btn >> nth=0' },
+      { name: 'intraday btn',  sel: '.cw-intraday-btn' },
+      { name: 'type select',   sel: '.cw-type-chart-wrap .rbq-select-trigger' },
+      { name: 'overlays trig', sel: '.cw-overlay-panel .rbq-multi-trigger' },
+    ];
+    const chartHeights = [];
+    for (const c of chartCtrls) {
+      const b = await page.locator(c.sel).boundingBox();
+      if (b) chartHeights.push({ name: c.name, h: Math.round(b.height) });
+    }
+    expect(
+      chartHeights.length,
+      'expected ≥3 chart toolbar controls to be measurable',
+    ).toBeGreaterThanOrEqual(3);
+
+    for (const { name, h } of chartHeights) {
+      expect(
+        Math.abs(h - dashH) <= 2,
+        `Cross-page height drift: chart "${name}" = ${h}px vs dashboard algo-tab = ${dashH}px. ` +
+        `All chart heights: ${chartHeights.map(x => `${x.name}=${x.h}`).join(' | ')}`,
+      ).toBe(true);
+    }
+  });
+
+  test('reset button rides the same toolbar height as the other chart controls', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page, _session);
+    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+    await page.waitForTimeout(400);
+
+    // Force the reset button to appear — programmatically scroll-zoom
+    // on the SVG so `isZoomed` flips true and the Reset button renders.
+    // If the gesture doesn't take (dev-flake), soft-skip.
+    const svg = page.locator('.cw-svg');
+    await svg.hover();
+    await page.mouse.wheel(0, -500);
+    await page.waitForTimeout(400);
+    const reset = page.locator('.cw-reset-zoom');
+    const resetVisible = await reset.isVisible().catch(() => false);
+    if (!resetVisible) {
+      console.log('[reset-height] zoom gesture not triggered — skipping height check');
+      return;
+    }
+    const [resetBox, rangeBox] = await Promise.all([
+      reset.boundingBox(),
+      page.locator('.cw-range-group .cw-range-btn').first().boundingBox(),
+    ]);
+    expect(resetBox).not.toBeNull();
+    expect(rangeBox).not.toBeNull();
+    if (resetBox && rangeBox) {
+      const drift = Math.abs(Math.round(resetBox.height) - Math.round(rangeBox.height));
+      expect(
+        drift <= 2,
+        `Reset height ${resetBox.height} vs range pill ${rangeBox.height}px — drift ${drift}px (allow ≤2)`,
+      ).toBe(true);
+    }
+  });
+
+  test('vertical gap between controls row and chart SVG is minimal (≤8 px)', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page, _session);
+    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+    await page.waitForTimeout(500);
+
+    const ctrlBox = await page.locator('.cw-controls').boundingBox();
+    const svgBox  = await page.locator('.cw-svg').boundingBox();
+    expect(ctrlBox).not.toBeNull();
+    expect(svgBox).not.toBeNull();
+    if (ctrlBox && svgBox) {
+      // Optional front-month chip may sit between toolbar and SVG —
+      // measure to the top of whichever element appears first below.
+      const fmBox = await page.locator('.cw-frontmonth-bar').boundingBox().catch(() => null);
+      const nextTop = fmBox ? Math.min(fmBox.y, svgBox.y) : svgBox.y;
+      const ctrlBottom = ctrlBox.y + ctrlBox.height;
+      const gap = nextTop - ctrlBottom;
+      expect(
+        gap,
+        `Toolbar→chart gap = ${gap}px (operator wants minimal ≤8 px). ctrlBottom=${ctrlBottom} nextTop=${nextTop}`,
+      ).toBeLessThanOrEqual(8);
+    }
+  });
+
+  // Mobile-fit: at 393×851 + 360×640 the entire chart workspace must
+  // fit on screen without vertical scroll. We assert against the html
+  // root's scrollHeight vs the window's innerHeight with a 4 px
+  // tolerance — sub-pixel rounding can push the body 1-2 px past the
+  // viewport without producing a visible scrollbar.
+  for (const VP of [{ w: 393, h: 851 }, { w: 360, h: 640 }]) {
+    test(`mobile fit @ ${VP.w}×${VP.h} — no vertical scroll on /charts`, async ({ page }) => {
+      test.setTimeout(60_000);
+      await injectSession(page, _session);
+      await page.setViewportSize({ width: VP.w, height: VP.h });
+      await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+      await waitForChart(page);
+      // Layout-stabilisation beat — the picker + controls rows reflow
+      // on narrow viewports as the symbol input + selects hydrate.
+      await page.waitForTimeout(900);
+
+      const scrollH = await page.evaluate(
+        () => document.documentElement.scrollHeight,
+      );
+      const winH = await page.evaluate(() => window.innerHeight);
+      const overflow = scrollH - winH;
+      expect(
+        overflow,
+        `Document scrolls vertically @ ${VP.w}×${VP.h}: scrollH=${scrollH}, winH=${winH}, overflow=${overflow}px ` +
+        `(operator: "the entire chart grid should fit in mobile viewport with no scrolling").`,
+      ).toBeLessThanOrEqual(4);
+    });
+  }
 });

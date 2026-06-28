@@ -10,11 +10,12 @@
 
   NAV chip overlay (Jun 2026): the firm-NAV chip (last-computed
   firm NAV + day delta) renders as an absolutely-positioned overlay
-  at the top-right of the chart. Replaces the prior dedicated
+  at the top-LEFT of the chart. Replaces the prior dedicated
   `.dash-nav-row` row on the dashboard — operator: "move nav chip
-  as an overlay in nav chart in dashboard". Chip is read-only here
-  (no click handler — we're already inside the NAV tab); the
-  parent owns the data fetch and passes it in via props.
+  as an overlay in nav chart in dashboard" and later "move nav
+  chip to the left of nav chart". Chip is read-only here (no
+  click handler — we're already inside the NAV tab); the parent
+  owns the data fetch and passes it in via props.
 -->
 <script>
   import { onMount, onDestroy } from 'svelte';
@@ -85,7 +86,7 @@
 </script>
 
 <div class="nav-tab-wrap">
-  <!-- NAV chip overlay — top-right of the chart. Self-hides when
+  <!-- NAV chip overlay — top-LEFT of the chart. Self-hides when
        chipLatest is null (operator lacks view_nav cap or no
        snapshot has landed yet). Read-only inside the NAV tab — the
        operator is already viewing the curve, so there's nothing to
@@ -177,9 +178,12 @@
     font-size: 0.72rem;
   }
 
-  /* Overlay chip — anchored top-right INSIDE the chart wrapper.
-     Uses clamp() so the offsets shrink gracefully on phone widths
-     and the chip never collides with the SVG's right margin. The
+  /* Overlay chip — anchored top-LEFT INSIDE the chart wrapper.
+     Operator placement refinement (Jun 2026): "move nav chip to the
+     left of nav chart" — left-anchor reads more naturally beside the
+     y-axis labels and never overlaps the trailing data point on the
+     right edge of the curve. clamp() offsets shrink gracefully on
+     phone widths and keep the chip inside the chart card. The
      z-index keeps the chip above the SVG without forming a stacking
      context that traps the meta label. Cyan-rest palette + green/red
      day-Δ tint mirrors the prior dedicated chip row, so operators
@@ -187,7 +191,7 @@
   .nav-chip-overlay {
     position: absolute;
     top: clamp(0.25rem, 1vw, 0.5rem);
-    right: clamp(0.35rem, 1.5vw, 0.75rem);
+    left: clamp(0.35rem, 1.5vw, 0.75rem);
     z-index: 2;
     display: inline-flex;
     align-items: baseline;

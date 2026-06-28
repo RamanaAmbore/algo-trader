@@ -2170,7 +2170,10 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.5rem 0.75rem 0.4rem;
+    /* Reduced bottom padding (was 0.4rem) so the picker row sits
+       tight against the controls row below — operator: "reduce the
+       wasted vertical gap between button and chart minimal". */
+    padding: 0.35rem 0.75rem 0.2rem;
     border-bottom: 1px solid rgba(255,255,255,0.06);
     flex-wrap: wrap;
     flex-shrink: 0;
@@ -2180,12 +2183,14 @@
      Same layout family as .cw-picker but the row above it carries the
      symbol search; this one always renders, hosted outside the
      compact-mode gate so the date-range pills are present in every
-     embed surface. */
+     embed surface. Bottom padding minimised to 0.15rem so the SVG
+     starts almost flush with the toolbar row — operator: "reduce the
+     wasted vertical gap between button and chart minimal". */
   .cw-controls {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    padding: 0.4rem 0.75rem;
+    padding: 0.2rem 0.75rem 0.15rem;
     border-bottom: 1px solid rgba(255,255,255,0.06);
     flex-wrap: wrap;
     flex-shrink: 0;
@@ -2399,11 +2404,20 @@
   .cw-hp-val.down { color: #f87171; }
 
   .cw-reset-zoom {
+    /* SSOT chart-toolbar height — Reset rides the same --chart-toolbar-h
+       var as range pills, Select triggers, MultiSelect trigger, intraday
+       toggle and symbol input so the whole toolbar row reads as a single
+       baseline (operator: "reset also should have the same height"). */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: var(--chart-toolbar-h);
+    min-height: var(--chart-toolbar-h);
     font-family: monospace;
-    font-size: 0.5rem;
+    font-size: 0.55rem;
     font-weight: 700;
     letter-spacing: 0.04em;
-    padding: 2px 8px;
+    padding: 0 0.55rem;
     border-radius: 3px;
     border: 1px solid rgba(251,191,36,0.50);
     background: rgba(251,191,36,0.12);
@@ -2414,10 +2428,17 @@
   .cw-reset-zoom:hover { background: rgba(251,191,36,0.22); }
 
   /* ── Chart container + SVG ───────────────────────────────── */
-  /* flex:1 makes this absorb all available vertical space */
+  /* flex:1 makes this absorb all available vertical space. The chain
+     `.charts-page-wrap (flex col, height: 100vh - chrome) → .chart-body
+     (flex:1, min-height:0) → .cw-root (flex col, h:100%) → here` lets
+     the SVG claim every residual pixel without overflowing. A 160 px
+     floor keeps the chart visible on the tightest phone (360×640)
+     after the page-header + picker + controls subtract their fixed
+     heights — operator: "the entire chart grid should fit in mobile
+     viewport with no scrolling". */
   .cw-chart-container {
     flex: 1 1 0;
-    min-height: 200px;  /* floor so chart is never invisible */
+    min-height: 160px;
     width: 100%;
     position: relative;
     overflow: hidden;
@@ -2611,7 +2632,9 @@
   .cw-frontmonth-bar {
     display: flex;
     align-items: center;
-    padding: 0.2rem 0.75rem;
+    /* Tightened from 0.2rem to 0.1rem vertical so it adds minimal
+       vertical chrome between the controls row and the chart SVG. */
+    padding: 0.1rem 0.75rem;
     flex-shrink: 0;
     border-bottom: 1px solid rgba(255,255,255,0.04);
   }

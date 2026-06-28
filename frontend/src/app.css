@@ -99,19 +99,26 @@
      but never fighting grid lines, axis labels, or data curves. */
   --chart-bg-tint: rgba(34, 211, 238, 0.04);
 
-  /* Chart toolbar control height — SSOT for every interactive control on
-     the ChartWorkspace toolbar (range pills, Select triggers,
-     MultiSelect trigger, intraday toggle, symbol input). Desktop = 28 px
-     for tight density; mobile = 32 px tap target. Overridden in the
-     @media block below. Operator: "the button and dropdown sizes are
-     inconsistent and increased height which needs to be corrected in
-     charts" — single var keeps every control aligned even when one
-     class's padding/font drifts. */
-  --chart-toolbar-h: 28px;
+  /* Platform-wide toolbar control height — SSOT for every interactive
+     control sitting in a page/card toolbar row (chart toolbar pills,
+     Select / MultiSelect triggers, AlgoTabs strip on dashboards,
+     order-page filter chips, derivatives controls). One var so the
+     chart-toolbar matches the algo-tab strip rendered height on
+     other pages within the canonical ±2 px tolerance. Operator:
+     "keep the elements above charts height consistent with the
+     elements in other page". Desktop = 24 px (matches algo-tab
+     rendered content-box ≈ 22 px + 1 px under-line border); mobile
+     = 28 px tap target. `--chart-toolbar-h` kept as a back-compat
+     alias for any consumer still reading the old name. */
+  --toolbar-h: 24px;
+  --chart-toolbar-h: var(--toolbar-h);
 }
 
 @media (max-width: 600px) {
-  :root { --chart-toolbar-h: 32px; }
+  :root {
+    --toolbar-h: 28px;
+    --chart-toolbar-h: var(--toolbar-h);
+  }
 }
 
 /* ── Global reset — kill browser blue focus rings and tap highlights ──────── */
@@ -1750,7 +1757,15 @@
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  padding: 0.3rem 0.7rem;
+  padding: 0 0.7rem;
+  /* SSOT min-height — pinned to platform --toolbar-h so the dashboard
+     tab strip matches the chart toolbar rendered height within the
+     canonical ±2 px tolerance (operator: "keep the elements above
+     charts height consistent with the elements in other page"). Was
+     `padding: 0.3rem 0.7rem` which produced a natural ~21 px box;
+     using min-height + zeroed vertical padding locks the strip to
+     the platform var without re-flowing the underline. */
+  min-height: var(--toolbar-h);
   background: transparent;
   border: none;
   border-bottom: 2px solid transparent;
@@ -1765,7 +1780,7 @@
   white-space: nowrap;
   transition: color 0.12s, border-color 0.12s, background 0.12s;
 }
-.algo-tab--compact { padding: 0.22rem 0.6rem; }
+.algo-tab--compact { padding: 0 0.6rem; min-height: calc(var(--toolbar-h) - 2px); }
 .algo-tab:hover { color: var(--algo-slate); }
 .algo-tab[aria-selected="true"] { font-weight: 800; }
 .algo-tab[aria-selected="true"].algo-tab-c-amber {
