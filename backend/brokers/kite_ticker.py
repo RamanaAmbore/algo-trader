@@ -728,6 +728,25 @@ class TickerManager:
 _ticker = TickerManager()
 
 
-def get_ticker() -> TickerManager:
-    """Return the process-wide TickerManager singleton."""
+def get_ticker():
+    """Return the per-process ticker handle.
+
+    Two flavours depending on RAMBOQ_USE_CONN_SERVICE:
+
+      • Unset (legacy / conn_service): the in-process `TickerManager`
+        that owns the KiteTicker WebSocket and tick map. conn_service
+        runs with this flag UNSET, so its own get_ticker() returns
+        the real TickerManager.
+
+      • Set (main API after slice 4): a `MmapTickReader` that reads
+        ticks from /dev/shm/ramboq_ticks and forwards subscribes to
+        conn_service over UDS. Same external API; routes/quote.py
+        etc. don't need to know which flavour they got.
+    """
+    import os
+    if os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        from backend.brokers.mmap_ticker import get_mmap_reader
+        return get_mmap_reader()
     return _ticker

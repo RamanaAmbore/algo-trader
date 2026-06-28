@@ -286,6 +286,24 @@ async def _start_kite_ticker() -> None:
             )
             return
 
+        # Slice 4 — when conn_service owns the KiteTicker, main API
+        # doesn't open a WebSocket at all. get_ticker() returns an
+        # MmapTickReader whose `start()` boots the mmap poller (which
+        # tails the shared-memory buffer and feeds the local SSE bus).
+        import os as _os
+        if _os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
+            "1", "true", "yes", "on",
+        ):
+            import asyncio as _asyncio
+            reader = get_ticker()
+            reader.set_loop(_asyncio.get_event_loop())
+            reader.start()
+            logger.info(
+                "MmapTickReader: poller started — KiteTicker WS lives in "
+                "conn_service (slice 4); ticks read from /dev/shm/ramboq_ticks"
+            )
+            return
+
         api_key: str | None = None
         access_token: str | None = None
         _ticker_account: str = ""
