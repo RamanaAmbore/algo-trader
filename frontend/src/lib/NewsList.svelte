@@ -14,6 +14,7 @@
    *   emptyMessage?: string,
    *   refreshKey?: number,
    *   columns?: number,
+   *   showSource?: boolean,
    * }} */
   let {
     limit           = 5,
@@ -33,6 +34,12 @@
     // when the viewport allows; collapses back to 1 below 900 px.
     // Rows are kept intact via break-inside: avoid.
     columns         = 1,
+    // Show the per-row source chip (e.g. "Mint", "Reuters"). Operator
+    // turns this OFF on the Activity surface's News tab — the Activity
+    // header already carries account/level chips and a duplicate
+    // per-row source pill clutters the magazine flow. Defaults to true
+    // so the dashboard's news card keeps the chip visible.
+    showSource      = true,
   } = $props();
 
   /** @type {Array<{title:string, link:string, source:string, timestamp:string}>} */
@@ -82,7 +89,7 @@
       Refreshed at {_newsRefresh}
     </div>
   {/if}
-  <ul class="newslist" style:--newslist-cols={columns}>
+  <ul class="newslist" class:newslist-no-src={!showSource} style:--newslist-cols={columns}>
     {#each _news.slice(0, limit) as item}
       <li class="newslist-row">
         <span class="newslist-time" title={item.timestamp || ''}>
@@ -94,7 +101,7 @@
            rel="noopener">
           {item.title}
         </a>
-        {#if item.source}
+        {#if item.source && showSource}
           <span class="newslist-src" title={item.source}>{item.source}</span>
         {/if}
       </li>
@@ -132,6 +139,12 @@
     grid-template-columns: max-content 1fr max-content;
     align-items: baseline;
     gap: 0.6rem;
+  }
+  /* When the caller suppresses the source chip (Activity News tab),
+     collapse the third grid column so the title can run the full
+     width and the magazine flow doesn't reserve a trailing gap. */
+  .newslist-no-src .newslist-row {
+    grid-template-columns: max-content 1fr;
     padding: 0.4rem 0;
     border-bottom: 1px solid rgba(126, 151, 184, 0.12);
     font-size: 0.72rem;

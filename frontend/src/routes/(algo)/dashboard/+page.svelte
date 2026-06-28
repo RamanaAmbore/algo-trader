@@ -3,6 +3,7 @@
   import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
   import PnlAnalysis from '$lib/PnlAnalysis.svelte';
   import NavTab from '$lib/NavTab.svelte';
+  import NavBreakdown from '$lib/NavBreakdown.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -10,10 +11,15 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
+  import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
+  import ActivityHeaderFilters from '$lib/ActivityHeaderFilters.svelte';
   import { clientTimestamp, nowStamp, visibleInterval, lastRefreshAt, connStatus, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
   import { bookChanged } from '$lib/data/bookChanged';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
-  import NewsList from '$lib/NewsList.svelte';
+  // NewsList retired here — the dashboard's Market News card was
+  // replaced with an ActivityLogSurface mount whose News tab now
+  // serves the same surface (via LogPanel → NewsList) so we only
+  // import the higher-level activity components above.
   import ActionEventsToggle from '$lib/ActionEventsToggle.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import {
@@ -211,22 +217,23 @@
   // existence of the top-10 cap until the operator clicked away.
   let _winTab = $state(/** @type {'underlying'|'midcap'|'smallcap'|'holdings'|'positions'} */ ('holdings'));
   let _losTab = $state(/** @type {'underlying'|'midcap'|'smallcap'|'holdings'|'positions'} */ ('holdings'));
-  // Capital + Equity share ONE tabbed card in the left column of the
-  // row1-split (Bloomberg PRTU's tabbed portfolio sidebar pattern).
-  // Default: Capital — that's the trader's first "can I take risk?"
-  // glance. Operator flips to Equity for the Positions / Holdings
-  // Summary tables. Both panels stay mounted (`hidden`, not {#if})
-  // so ag-Grid instances don't orphan across tab flips.
-  let _capEqTab = $state(/** @type {'capital'|'equity'} */ ('capital'));
+  // NAV + Capital + Equity share ONE tabbed card in the row1-split
+  // (Bloomberg PRTU's tabbed portfolio sidebar pattern). NAV is the
+  // default — it's the "what's the firm worth right now?" glance,
+  // mirroring PerformancePage's NAV grid so the dashboard and the
+  // canonical performance view can't drift. Capital answers "can I
+  // take risk?", Equity drills into Positions / Holdings summaries.
+  // All panels stay mounted (`hidden`, not {#if}) so ag-Grid instances
+  // don't orphan across tab flips.
+  let _capEqTab = $state(/** @type {'nav'|'capital'|'equity'} */ ('nav'));
 
-  // Row 1 right slot — tabbed card: Intraday (SVG curve) vs Performance
-  // (PnlAnalysis component). Default Intraday — that's the live "what
-  // is the book doing right now" view; Performance is the deeper
-  // historical drill-down sitting one click away.
-  // 'nav' first — operator-requested. The /nav standalone page was
-  // retired; the NAV curve now lives here as the first tab so the
-  // headline daily NAV trend is one click away from the Dashboard.
-  let _chartTab = $state(/** @type {'nav'|'intraday'|'performance'} */ ('nav'));
+  // Row 1 OTHER slot — tabbed card: Intraday (SVG curve) vs
+  // Performance (PnlAnalysis component) vs NAV (history curve).
+  // Default Intraday — that's the live "what is the book doing right
+  // now" view; Performance is the deeper historical drill-down.
+  // NAV history (NavTab) trails the daily snapshot landing at 16:00
+  // IST + manual recomputes.
+  let _chartTab = $state(/** @type {'intraday'|'performance'|'nav'} */ ('intraday'));
   // Bindable mirror of PnlAnalysis.hasData — flips to false once
   // /pnl-benchmarks confirms zero dates. Default true so the
   // auto-collapse effect below doesn't fire during the initial
@@ -247,9 +254,12 @@
   let _fsEquityCurve = $state(false);
   let _fsCapital     = $state(false);
   let _fsEquity      = $state(false);
+  let _fsNavBd       = $state(false);   // NAV tab on the equity card
   let _fsWinners     = $state(false);
   let _fsLosers      = $state(false);
-  let _fsNews        = $state(false);
+  // Renamed _fsNews → _fsActivity — the dashboard's News strip was
+  // replaced by an ActivityLogSurface mount whose default tab is News.
+  let _fsActivity    = $state(false);
   // _fsPnl / _colPnl retired with the standalone P&L Analysis card —
   // PnlAnalysis now lives inside the Intraday/Performance tabbed card
   // (shares _fsEquityCurve + _colEquityCurve).
@@ -262,9 +272,11 @@
   let _colEquityCurve = $state(false);
   let _colCapital     = $state(false);
   let _colEquity      = $state(false);
+  let _colNavBd       = $state(false);   // NAV tab on the equity card
   let _colWinners     = $state(false);
   let _colLosers      = $state(false);
-  let _colNews        = $state(false);
+  // Renamed _colNews → _colActivity (see _fsActivity above).
+  let _colActivity    = $state(false);
   // Agent activity is a heavyweight card — start collapsed by default
   // so the dashboard's first paint stays light. CollapseButton overrides
   // from localStorage on mount if the user previously expanded it.
@@ -992,6 +1004,18 @@
     }
   }
 
+  // Activity card filter state — bound to ActivityHeaderFilters in
+  // the activity card's header strip and threaded into
+  // ActivityLogSurface. Same per-surface state pattern /activity and
+  // /orders use; account + level filters persist while the operator
+  // flips tabs inside the activity surface.
+  /** @type {string[]} */
+  let _actAccountFilter     = $state([]);
+  /** @type {string[]} */
+  let _actAvailableAccounts = $state([]);
+  /** @type {'all'|'error'|'warning'|'info'} */
+  let _actLevelFilter       = $state('all');
+
   // NAV header chip — last computed firm NAV + day delta. Gated by
   // view_nav so demo / observer see the chip too; recompute is a
   // separate cap and lives on /nav. Failing fetch leaves _nav at the
@@ -1613,138 +1637,31 @@
   </div>
 {/if}
 
-<!-- Row 1 (split): Capital+Equity tabbed card LEFT half, Intraday
-     Equity Curve RIGHT half. Earlier the chart filled a full-width
-     hero row and Capital+Equity sat below at 1:1. The split layout
-     keeps the operator's three first-glance signals (cash, equity
-     P&L, curve trajectory) on one screen — same as Bloomberg PRTU
-     where the portfolio sidebar lives alongside the chart. Stacks
-     on mobile. -->
+<!-- Row 1 (split): Intraday Equity Curve LEFT half, NAV/Capital/Equity
+     tabbed card RIGHT half. Operator-requested shuffle (Jun 2026): the
+     chart card moves to the left and the portfolio sidebar (NAV +
+     Capital + Equity tabs) moves to the right. NAV is the new default
+     tab on the sidebar — the dashboard's first-glance answer to
+     "what's the firm worth right now?" mirrors PerformancePage's NAV
+     grid. Capital answers "can I take risk?", Equity drills into
+     positions / holdings. The sidebar card flexes its height to fit
+     whichever tab is active. Stacks on mobile. -->
 <div class="dash-row1-split">
 
-  <!-- LEFT: Capital | Equity tabbed card. Both panels stay mounted
-       (hidden, not {#if}) so ag-Grid instances don't orphan when the
-       operator flips tabs. Bloomberg PRTU's tabbed portfolio sidebar
-       pattern — Capital first ("can I take risk?"), Equity behind
-       it for the Positions / Holdings Summary tables. -->
-  <section class="bucket-card cap-eq-tabbed"
-    class:fs-card-on={_fsCapital || _fsEquity}
-    class:is-collapsed={_colCapital && _colEquity}>
-    <div class="bucket-header">
-      <AlgoTabs
-        tabs={[{ id: 'capital', label: 'Capital' }, { id: 'equity', label: 'Equity' }]}
-        bind:value={_capEqTab}
-        compact={true}
-      />
-      <!-- Single shared account picker visible on BOTH tabs (filter
-           applies to whichever tab is active — Margin + Funds on
-           Capital; Positions + Holdings Summary on Equity). Operator
-           intent carries across tab flips without re-picking. -->
-      <AccountMultiSelect
-        bind:value={_eqAccounts}
-        options={_availableAccounts.map(a => ({ value: a, label: a }))} />
-      <!-- Explicit `flex:1` spacer pushes the icon trio to the card's
-           right edge regardless of how wide the AccountMultiSelect
-           grows. Without it, CollapseButton's `margin: 0 0 0 auto`
-           competes with FullscreenButton's identical auto-margin
-           through the AccountMultiSelect's flex behaviour and the
-           trio drifts left, sitting tight against the picker rather
-           than at the card's right edge. -->
-      <span class="cap-eq-spacer"></span>
-      <!-- Buttons bind to the ACTIVE tab's own collapse + fullscreen
-           pair. Svelte 5 doesn't permit ternary expressions inside
-           `bind:`, so we split into two component instances guarded
-           by {#if}. -->
-      {#if _capEqTab === 'capital'}
-        <!-- No cardId → collapse state NOT persisted to localStorage.
-             Both tabs always start expanded on every page load.
-             Matches operator intent: no stale-state confusion. -->
-        <CardControls
-          bind:isCollapsed={_colCapital}
-          bind:isFullscreen={_fsCapital}
-          label="Capital"
-          onRefresh={_refreshAll}
-          bind:refreshLoading={_refreshing}
-          showSearch={false}
-        />
-      {:else}
-        <CardControls
-          bind:isCollapsed={_colEquity}
-          bind:isFullscreen={_fsEquity}
-          label="Equity"
-          onRefresh={_refreshAll}
-          bind:refreshLoading={_refreshing}
-          showSearch={false}
-        />
-      {/if}
-    </div>
-
-    <!-- Capital panel -->
-    <div class="card-body" hidden={_capEqTab !== 'capital' || _colCapital}>
-      {#if _marginRows.length > 0}
-        <div class="bucket-subheader">Margin Utilisation</div>
-      {/if}
-      <div
-        bind:this={_marginEl}
-        class="ag-theme-quartz ag-theme-algo dash-mini-grid"
-        class:is-empty={_marginRows.length === 0}></div>
-
-      {#if _fundsBody.length > 0}
-        <div class="bucket-subheader bucket-subheader-spaced">Funds</div>
-      {/if}
-      <div
-        bind:this={_fundsEl}
-        class="ag-theme-quartz ag-theme-algo dash-mini-grid"
-        class:is-empty={_fundsBody.length === 0}></div>
-
-      {#if _marginRows.length === 0 && _fundsBody.length === 0}
-        <EmptyState message="No accounts connected" />
-      {/if}
-    </div>
-
-    <!-- Equity panel -->
-    <div class="card-body" hidden={_capEqTab !== 'equity' || _colEquity}>
-      {#if _positionsSummary.length > 0}
-        <div class="bucket-subheader">
-          Positions
-          <span class="eq-count">{_positionsCount}</span>
-        </div>
-      {/if}
-      <div
-        bind:this={_eqPosEl}
-        class="ag-theme-quartz ag-theme-algo dash-mini-grid"
-        class:is-empty={_positionsSummary.length === 0}></div>
-
-      {#if _holdingsSummary.length > 0}
-        <div class="bucket-subheader bucket-subheader-spaced">
-          Holdings
-          <span class="eq-count">{_holdingsCount}</span>
-        </div>
-      {/if}
-      <div
-        bind:this={_eqHoldEl}
-        class="ag-theme-quartz ag-theme-algo dash-mini-grid"
-        class:is-empty={_holdingsSummary.length === 0}></div>
-
-      {#if _positionsSummary.length === 0 && _holdingsSummary.length === 0}
-        <EmptyState message="No equity exposure" />
-      {/if}
-    </div>
-  </section>
-
-  <!-- RIGHT: Intraday / Performance tabbed card. Intraday surfaces
+  <!-- LEFT: Intraday / Performance tabbed card. Intraday surfaces
        today's cumulative P&L curve; Performance hosts the historical
        drill-down (PnlAnalysis component) one click away. Both panels
        stay mounted (hidden, not {#if}) so internal state — including
        PnlAnalysis filters + benchmark series — persists across tab
-       flips. -->
+       flips. NAV tab moved OFF this card onto the right sidebar so
+       the NAV breakdown sits next to Capital + Equity instead of
+       fighting the chart for vertical real estate. -->
   <section class="bucket-card row1-col-chart"
     class:fs-card-on={_fsEquityCurve}
     class:is-collapsed={_colEquityCurve}>
     <div class="card-header-row">
       <AlgoTabs
         tabs={[
-          { id: 'nav',         label: 'NAV'         },
           { id: 'intraday',    label: 'Intraday'    },
           { id: 'performance', label: 'Performance' },
         ]}
@@ -1763,13 +1680,6 @@
         bind:refreshLoading={_refreshing}
         showSearch={false}
       />
-    </div>
-
-    <!-- NAV panel — daily firm NAV history. Replaces the standalone
-         /nav page (deleted); the per-account breakdown lives on
-         /performance and the headline number on NavCard. -->
-    <div class="card-body" hidden={_chartTab !== 'nav' || _colEquityCurve}>
-      <NavTab />
     </div>
 
     <!-- Intraday panel — SVG curve of today's cum P&L. -->
@@ -1947,39 +1857,179 @@
       <PnlAnalysis bind:hasData={_pnlHasData} />
     </div>
   </section>
-</div>
 
-<!-- Capital + Equity moved into the split row above as tabs. -->
+  <!-- RIGHT: NAV | Capital | Equity tabbed card (operator-requested
+       shuffle, Jun 2026). NAV is the new default tab — it surfaces
+       the per-account NAV breakdown using the same arithmetic as
+       PerformancePage's NAV grid + backend/api/algo/nav.py:compute_firm_nav
+       so the dashboard's first-glance "what's the firm worth?" can't
+       drift from the canonical /performance view. Capital + Equity
+       sit behind one click each. All three panels stay mounted
+       (hidden, not {#if}) so ag-Grid instances don't orphan when the
+       operator flips tabs. The card uses `flex: 1 1 auto` so its
+       height expands / contracts with the chart card on the left —
+       no more dead space when Capital tab only has 1 row. -->
+  <section class="bucket-card cap-eq-tabbed"
+    class:fs-card-on={_fsNavBd || _fsCapital || _fsEquity}
+    class:is-collapsed={_colNavBd && _colCapital && _colEquity}>
+    <div class="bucket-header">
+      <AlgoTabs
+        tabs={[
+          { id: 'nav',     label: 'NAV'     },
+          { id: 'capital', label: 'Capital' },
+          { id: 'equity',  label: 'Equity'  },
+        ]}
+        bind:value={_capEqTab}
+        compact={true}
+      />
+      <!-- Single shared account picker — applies to whichever tab is
+           active. NAV per-account breakdown, Capital's Margin + Funds
+           rows, Equity's Positions + Holdings summaries all scope by
+           this filter. Operator intent carries across tab flips
+           without re-picking. -->
+      <AccountMultiSelect
+        bind:value={_eqAccounts}
+        options={_availableAccounts.map(a => ({ value: a, label: a }))} />
+      <!-- Explicit `flex:1` spacer pushes the icon trio to the card's
+           right edge regardless of how wide the AccountMultiSelect
+           grows. Same idiom as before the NAV-tab addition. -->
+      <span class="cap-eq-spacer"></span>
+      <!-- Buttons bind to the ACTIVE tab's own collapse + fullscreen
+           pair. Svelte 5 doesn't permit ternary expressions inside
+           `bind:`, so we split into per-tab component instances. -->
+      {#if _capEqTab === 'nav'}
+        <CardControls
+          bind:isCollapsed={_colNavBd}
+          bind:isFullscreen={_fsNavBd}
+          label="NAV"
+          onRefresh={_refreshAll}
+          bind:refreshLoading={_refreshing}
+          showSearch={false}
+        />
+      {:else if _capEqTab === 'capital'}
+        <CardControls
+          bind:isCollapsed={_colCapital}
+          bind:isFullscreen={_fsCapital}
+          label="Capital"
+          onRefresh={_refreshAll}
+          bind:refreshLoading={_refreshing}
+          showSearch={false}
+        />
+      {:else}
+        <CardControls
+          bind:isCollapsed={_colEquity}
+          bind:isFullscreen={_fsEquity}
+          label="Equity"
+          onRefresh={_refreshAll}
+          bind:refreshLoading={_refreshing}
+          showSearch={false}
+        />
+      {/if}
+    </div>
+
+    <!-- NAV panel — per-account breakdown. Same arithmetic as
+         PerformancePage's `navByAcct`; sourced from the same module-
+         level marketDataStores so a single broker fetch warms both
+         surfaces and they can't drift. -->
+    <div class="card-body" hidden={_capEqTab !== 'nav' || _colNavBd}>
+      <NavBreakdown accountFilter={_eqAccounts} />
+    </div>
+
+    <!-- Capital panel -->
+    <div class="card-body" hidden={_capEqTab !== 'capital' || _colCapital}>
+      {#if _marginRows.length > 0}
+        <div class="bucket-subheader">Margin Utilisation</div>
+      {/if}
+      <div
+        bind:this={_marginEl}
+        class="ag-theme-quartz ag-theme-algo dash-mini-grid"
+        class:is-empty={_marginRows.length === 0}></div>
+
+      {#if _fundsBody.length > 0}
+        <div class="bucket-subheader bucket-subheader-spaced">Funds</div>
+      {/if}
+      <div
+        bind:this={_fundsEl}
+        class="ag-theme-quartz ag-theme-algo dash-mini-grid"
+        class:is-empty={_fundsBody.length === 0}></div>
+
+      {#if _marginRows.length === 0 && _fundsBody.length === 0}
+        <EmptyState message="No accounts connected" />
+      {/if}
+    </div>
+
+    <!-- Equity panel -->
+    <div class="card-body" hidden={_capEqTab !== 'equity' || _colEquity}>
+      {#if _positionsSummary.length > 0}
+        <div class="bucket-subheader">
+          Positions
+          <span class="eq-count">{_positionsCount}</span>
+        </div>
+      {/if}
+      <div
+        bind:this={_eqPosEl}
+        class="ag-theme-quartz ag-theme-algo dash-mini-grid"
+        class:is-empty={_positionsSummary.length === 0}></div>
+
+      {#if _holdingsSummary.length > 0}
+        <div class="bucket-subheader bucket-subheader-spaced">
+          Holdings
+          <span class="eq-count">{_holdingsCount}</span>
+        </div>
+      {/if}
+      <div
+        bind:this={_eqHoldEl}
+        class="ag-theme-quartz ag-theme-algo dash-mini-grid"
+        class:is-empty={_holdingsSummary.length === 0}></div>
+
+      {#if _positionsSummary.length === 0 && _holdingsSummary.length === 0}
+        <EmptyState message="No equity exposure" />
+      {/if}
+    </div>
+  </section>
+</div>
 
 
 <!-- Row 2 retired (Top Winners + Top Losers cards moved to /pulse,
      where they sit in the 6-grid layout alongside the rest of the
      monitoring surfaces). Dashboard now jumps straight from the
-     equity card to the news strip. -->
+     equity card to the activity strip. -->
 
-<!-- Row 3: Market news strip — single column. -->
-<div class="bucket-card dash-row3"
-  class:fs-card-on={_fsNews}
-  class:is-collapsed={_colNews}>
+<!-- Row 3: Activity card — replaces the standalone Market News strip
+     per operator (Jun 2026). The Activity surface's News tab is now
+     the default-active tab so the dashboard still lands on the same
+     market headlines flow, but a click switches to Orders / Agents /
+     Terminal / Conn / System / Ticks for the wider operator paper
+     trail without leaving the page. Same composition as /activity +
+     ActivityLogModal + the /orders Activity card — single shared
+     ActivityHeaderFilters + ActivityLogSurface pair, so the four
+     mounts can't drift on filter UI or LogPanel config. -->
+<section class="bucket-card dash-activity"
+  class:fs-card-on={_fsActivity}
+  class:is-collapsed={_colActivity}>
   <div class="row3-header">
-    <span class="mp-section-label mp-section-label--bar">MARKET NEWS</span>
+    <span class="mp-section-label mp-section-label--bar">ACTIVITY</span>
+    <ActivityHeaderFilters
+      bind:accountFilter={_actAccountFilter}
+      bind:levelFilter={_actLevelFilter}
+      availableAccounts={_actAvailableAccounts} />
     <CardControls
-      bind:isCollapsed={_colNews}
-      bind:isFullscreen={_fsNews}
-      label="Market News"
+      bind:isCollapsed={_colActivity}
+      bind:isFullscreen={_fsActivity}
+      label="Activity"
       onRefresh={_refreshAll}
       bind:refreshLoading={_refreshing}
       showSearch={false}
     />
   </div>
-  <div class="card-body" hidden={_colNews}>
-    <!-- Two-column magazine flow on wide viewports (≥900 px) so the
-         news card uses the full dashboard width without leaving a
-         blank right half. Limit bumped to 10 to actually fill both
-         columns; NewsList collapses to 1 column below 900 px. -->
-    <NewsList limit={10} columns={2} showRefreshTime={true} />
+  <div class="card-body" hidden={_colActivity}>
+    <ActivityLogSurface
+      defaultTab="news"
+      bind:accountFilter={_actAccountFilter}
+      bind:availableAccounts={_actAvailableAccounts}
+      bind:levelFilter={_actLevelFilter} />
   </div>
-</div>
+</section>
 
 <!-- P&L Analysis section retired — PnlAnalysis now lives inside the
      row-1 Intraday/Performance tabbed card. Dropping the standalone
@@ -2114,18 +2164,36 @@
     grid-template-columns: 1fr;
     gap: 0.6rem;
     margin-bottom: 0.75rem;
+    /* `align-items: stretch` (grid default) lets each cell's card
+       stretch to the row's max height — so the NAV/Capital/Equity
+       card on the right grows to match the chart card on the left,
+       and shrinks together when both are collapsed. Operator-
+       requested expand/contract behaviour. */
+    align-items: stretch;
   }
   @media (min-width: 1024px) {
     .dash-row1-split {
       grid-template-columns: 1fr 1fr;
     }
   }
+  /* Each grid cell card stretches to the row's height. Internal flex
+     direction lets the tab bodies fill the remaining vertical room
+     when one tab's content is shorter than another. */
+  .dash-row1-split > .bucket-card {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .dash-row1-split > .bucket-card > .card-body {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
   /* .row1-col chrome migrated to canonical .bucket-card (which carries
      the same gradient, border, radius, shadow + the amber 3px left
      accent that every other card now uses). Only the local class is
      kept for `.row1-col-chart .card-body` positioning below. */
-  /* Tabbed Capital | Equity card — tab buttons now rendered by AlgoTabs
-     (global .algo-tab rules in app.css). */
+  /* Tabbed NAV | Capital | Equity card — tab buttons now rendered by
+     AlgoTabs (global .algo-tab rules in app.css). */
   .cap-eq-tabbed { display: flex; flex-direction: column; }
 
   /* Equity curve */
@@ -2662,17 +2730,32 @@
     flex-shrink: 0;
   }
 
-  /* ── Row 3: Market news strip ───────────────────────────────────── */
+  /* ── Row 3: Activity card (replaced standalone Market News) ──────── */
   /* Chrome migrated to canonical .bucket-card; local class kept for
      the bottom-margin only. */
-  .dash-row3 {
+  .dash-activity {
     margin-bottom: 0.6rem;
+    /* Activity surface owns the tail of the dashboard. Min-height
+       caps the empty-state shrink so the operator's eye lands on the
+       card even when News + Orders + Agents tabs are all empty. */
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .dash-activity > .card-body {
+    /* Let the inner LogPanel claim the available height so multi-
+       column flow has enough rows to fill both columns before
+       overflowing. */
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 14rem;
   }
   .row3-header {
     /* align-items: center (not baseline) to match the canonical
-       card-header convention — keeps the title + collapse + fullscreen
-       cluster vertically aligned with the icon midline like every
-       other algo card. */
+       card-header convention — keeps the title + filter chips +
+       collapse + fullscreen cluster vertically aligned with the icon
+       midline like every other algo card. */
     display: flex;
     align-items: center;
     gap: 0.4rem;

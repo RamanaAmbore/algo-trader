@@ -1122,13 +1122,19 @@
 </div>
 
 {#if logTab === 'news'}
-  <!-- News tab — rendered via shared NewsList component in algo palette. -->
+  <!-- News tab — rendered via shared NewsList component in algo palette.
+       Activity surface flavour: 2-column magazine flow (same as dashboard
+       activity card), source chip suppressed since the Activity header
+       already carries the filter chips and a duplicate per-row source
+       pill clutters the flow. Single shared component — no fork. -->
   <div class="log-panel log-news-panel {heightClass}">
     <NewsList
       limit={50}
       showRefreshTime={true}
       pollMs={2 * 60 * 1000}
       emptyMessage="No headlines."
+      columns={2}
+      showSource={false}
     />
   </div>
 {:else if logTab === 'order'}
