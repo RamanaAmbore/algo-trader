@@ -450,8 +450,8 @@ class HistoryController(Controller):
         3. Funds tab re-fetches → historical data appears.
         """
         from datetime import date as _d
-        from backend.shared.helpers.connections import Connections
-        from backend.shared.brokers.registry import get_broker
+        from backend.brokers.connections import Connections
+        from backend.brokers.registry import get_broker
         from backend.shared.helpers.utils import mask_account
 
         account = (data.account or "").strip()
@@ -475,9 +475,9 @@ class HistoryController(Controller):
         loaded = set(conns.conn.keys())
         # Cutover branch — local Connections is empty when conn_service
         # owns sessions; consult /internal/accounts for the canonical list.
-        from backend.conn_client import is_cutover_on
+        from backend.brokers.client import is_cutover_on
         if is_cutover_on() and not loaded:
-            from backend.conn_client.remote_broker import list_remote_accounts
+            from backend.brokers.client.remote_broker import list_remote_accounts
             loaded = {r["account"] for r in list_remote_accounts() if r.get("account")}
         if account not in loaded:
             raise HTTPException(status_code=404,

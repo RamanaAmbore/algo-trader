@@ -31,7 +31,7 @@ from litestar.exceptions import HTTPException
 
 from backend.api.auth_guard import auth_or_demo_guard
 from backend.api.cache import get_or_fetch
-from backend.shared.helpers.connections import Connections
+from backend.brokers.connections import Connections
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -98,7 +98,7 @@ def _fetch_instruments() -> InstrumentsResponse:
 
     Routes through the Broker ABC so the call hops to conn_service when
     RAMBOQ_USE_CONN_SERVICE=1."""
-    from backend.shared.brokers.registry import all_brokers
+    from backend.brokers.registry import all_brokers
     brokers = all_brokers()
     if not brokers:
         return InstrumentsResponse(cycle_date="", count=0, items=[])

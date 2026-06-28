@@ -27,7 +27,7 @@ import re
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
-from backend.shared.brokers.capabilities import BrokerCapabilities
+from backend.brokers.capabilities import BrokerCapabilities
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -424,7 +424,7 @@ async def _pick_wing_by_premium(
     quote_keys = [f"{c['exch']}:{c['ts']}" for c in candidates]
     try:
         import asyncio as _aio
-        from backend.shared.brokers.registry import get_price_broker
+        from backend.brokers.registry import get_price_broker
         broker = get_price_broker()
         quote_data = (
             await _aio.to_thread(broker.quote, quote_keys)
@@ -1216,7 +1216,7 @@ async def apply_template_to_order(
     caps = None
     if apply_path in ("live", "auto"):
         try:
-            from backend.shared.brokers.capabilities import capabilities_for
+            from backend.brokers.capabilities import capabilities_for
             caps = capabilities_for(parent_account)
         except Exception:
             caps = None
@@ -1292,7 +1292,7 @@ async def apply_template_to_order(
 
     if apply_path == "live" or (apply_path == "auto" and not sim_active):
         try:
-            from backend.shared.brokers.registry import get_broker
+            from backend.brokers.registry import get_broker
             broker = get_broker(parent_account)
         except Exception as e:
             result = AttachResult(plan=plan)

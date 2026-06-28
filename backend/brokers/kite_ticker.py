@@ -510,7 +510,7 @@ class TickerManager:
         # Resolve credentials before stopping so we can reconnect against
         # the same account in one move.
         try:
-            from backend.shared.helpers.connections import Connections
+            from backend.brokers.connections import Connections
             conn = Connections().conn.get(prev_account)
             if conn is None:
                 logger.warning(f"KiteTicker: recycle() — no Connections handle for {prev_account}")

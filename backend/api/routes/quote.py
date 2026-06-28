@@ -22,7 +22,7 @@ from litestar.params import Parameter
 from litestar.response import ServerSentEvent
 
 from backend.api.auth_guard import auth_or_demo_guard
-from backend.shared.helpers.connections import Connections
+from backend.brokers.connections import Connections
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -45,7 +45,7 @@ async def _resolve_token_for_sym(tradingsymbol: str, exchange: str) -> int | Non
     failure so callers can treat the subscription as best-effort.
     """
     try:
-        from backend.shared.brokers.registry import get_sparkline_broker
+        from backend.brokers.registry import get_sparkline_broker
         broker = get_sparkline_broker()
     except Exception:
         return None
@@ -99,7 +99,7 @@ def _fetch_ltp(exchange: str, tradingsymbol: str) -> QuoteResponse:
     # the operator's `connections.price_account` setting decides which
     # account's API handle services chart-data calls. Broker-agnostic
     # path; any vendor's adapter will work the same.
-    from backend.shared.brokers.registry import get_price_broker
+    from backend.brokers.registry import get_price_broker
     broker = get_price_broker()
     key = f"{exchange}:{tradingsymbol}"
 
@@ -202,7 +202,7 @@ class QuoteController(Controller):
         without N round-trips."""
         import asyncio
         from datetime import datetime, timezone
-        from backend.shared.brokers.registry import get_price_broker
+        from backend.brokers.registry import get_price_broker
 
         keys = list({k.strip() for k in (data.keys or []) if k and ":" in k})
         # Soft cap — Kite quote() handles ~500 keys but the UI shouldn't
@@ -262,7 +262,7 @@ class QuoteController(Controller):
         # next sparkline endpoint round-trip.
         if seen_pairs:
             try:
-                from backend.shared.brokers.registry import get_sparkline_broker
+                from backend.brokers.registry import get_sparkline_broker
                 _bk = get_sparkline_broker()
                 _full_map = await asyncio.to_thread(_get_today_token_map, _bk)
                 _sub_pairs: list[tuple[int, str]] = []
@@ -274,7 +274,7 @@ class QuoteController(Controller):
                             _sub_pairs.append((tok, sym))
                             break
                 if _sub_pairs:
-                    from backend.shared.helpers.kite_ticker import get_ticker
+                    from backend.brokers.kite_ticker import get_ticker
                     get_ticker().subscribe_with_sym(_sub_pairs)
             except Exception as exc:  # noqa: BLE001
                 logger.debug(f"batch_quote: ticker subscribe skipped: {exc}")
@@ -544,7 +544,7 @@ class SparklineController(Controller):
         #   c) fall back to broker.ltp() for symbols not yet in the tick stream
         token_map: dict[str, int] = {}
         try:
-            from backend.shared.brokers.registry import get_sparkline_broker as _sb
+            from backend.brokers.registry import get_sparkline_broker as _sb
             _bk = _sb()
             _full_map = await asyncio.to_thread(_get_today_token_map, _bk)
             for s in norm_syms:
@@ -560,7 +560,7 @@ class SparklineController(Controller):
             logger.warning(f"sparkline: token lookup failed: {_exc}")
 
         # ── Step 3: LTP for ALL symbols — tick map first, broker.ltp() fallback
-        from backend.shared.helpers.kite_ticker import get_ticker
+        from backend.brokers.kite_ticker import get_ticker
         ticker = get_ticker()
 
         # CRITICAL: use subscribe_with_sym so the ticker's _token_to_sym map
@@ -603,7 +603,7 @@ class SparklineController(Controller):
         # Pass 2 — broker.ltp() for misses only.
         if miss_keys:
             try:
-                from backend.shared.brokers.registry import get_sparkline_broker as _get_sp_broker
+                from backend.brokers.registry import get_sparkline_broker as _get_sp_broker
                 ltp_broker = _get_sp_broker()
                 raw_ltp = await asyncio.to_thread(ltp_broker.ltp, miss_keys) or {}
                 for key, val in raw_ltp.items():
@@ -689,7 +689,7 @@ class SparklineController(Controller):
           users — ticks carry no personally-identifiable information,
           only public market prices.
         """
-        from backend.shared.helpers.kite_ticker import get_ticker
+        from backend.brokers.kite_ticker import get_ticker
 
         ticker = get_ticker()
 
@@ -741,7 +741,7 @@ def _ticker_seed_early(token_map: dict[str, int]) -> None:
     if not token_map:
         return
     try:
-        from backend.shared.helpers.kite_ticker import get_ticker
+        from backend.brokers.kite_ticker import get_ticker
         ticker = get_ticker()
         # Deferred-start safety: the on_startup _start_kite_ticker()
         # hook may have run before Connections() finished restoring
@@ -749,8 +749,8 @@ def _ticker_seed_early(token_map: dict[str, int]) -> None:
         # same eligible Kite account preference order.
         if not ticker.status().get("started"):
             try:
-                from backend.shared.brokers.registry import get_sparkline_broker
-                from backend.conn_client import is_cutover_on
+                from backend.brokers.registry import get_sparkline_broker
+                from backend.brokers.client import is_cutover_on
                 spark_bk = get_sparkline_broker()
                 for b in getattr(spark_bk, "_brokers", []):
                     api_key: str | None = None
@@ -759,7 +759,7 @@ def _ticker_seed_early(token_map: dict[str, int]) -> None:
                     # RemoteBroker with no local KiteConnect handle. Fetch
                     # the live token from conn_service over UDS.
                     if is_cutover_on() and b.broker_id in ("zerodha_kite", "kite"):
-                        from backend.conn_client.remote_broker import fetch_access_token
+                        from backend.brokers.client.remote_broker import fetch_access_token
                         api_key, access_token = fetch_access_token(b.account)
                     else:
                         kc = getattr(b, "_conn", None) or getattr(b, "kite", None)
@@ -823,7 +823,7 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
     # Build the token map so we can seed the KiteTicker BEFORE the fetches.
     token_map: dict[str, int] = {}
     try:
-        from backend.shared.brokers.registry import get_sparkline_broker
+        from backend.brokers.registry import get_sparkline_broker
         broker = get_sparkline_broker()
         _full_map = await asyncio.to_thread(_get_today_token_map, broker)
         for sym_n, exch_n in norm:

@@ -336,7 +336,7 @@ async def _upsert_rows(rows: list[dict]) -> int:
 
 def _get_connections():
     """Thin wrapper so tests can patch this module-level name."""
-    from backend.shared.helpers.connections import Connections
+    from backend.brokers.connections import Connections
     return Connections()
 
 
@@ -367,9 +367,9 @@ async def snapshot_daily_book(target_date: Optional[date] = None) -> dict:
     if not accounts:
         # Cutover branch — Connections is empty when conn_service owns
         # sessions; pull the canonical account list from there.
-        from backend.conn_client import is_cutover_on
+        from backend.brokers.client import is_cutover_on
         if is_cutover_on():
-            from backend.conn_client.remote_broker import list_remote_accounts
+            from backend.brokers.client.remote_broker import list_remote_accounts
             accounts = [r["account"] for r in list_remote_accounts() if r.get("account")]
     if not accounts:
         logger.warning("Snapshot: no loaded broker accounts — nothing to capture")
@@ -382,7 +382,7 @@ async def snapshot_daily_book(target_date: Optional[date] = None) -> dict:
     errors: list[str] = []
     processed: list[str] = []
 
-    from backend.shared.brokers.registry import all_brokers
+    from backend.brokers.registry import all_brokers
     for broker in all_brokers():
         account = broker.account
         try:

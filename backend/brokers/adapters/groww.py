@@ -34,7 +34,7 @@ from __future__ import annotations
 import functools
 from typing import Any, Callable
 
-from backend.shared.brokers.base import Broker
+from backend.brokers.base import Broker
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -75,7 +75,7 @@ def _retry_groww_auth(fn: Callable) -> Callable:
     GrowwAPIAuthenticationException."""
     @functools.wraps(fn)
     def wrapper(self: "GrowwBroker", *args, **kwargs):
-        from backend.shared.helpers.connections import (
+        from backend.brokers.connections import (
             _GROWW_SOURCE_IP_OVERRIDE,
         )
         ip = getattr(self._conn, "_source_ip", None)

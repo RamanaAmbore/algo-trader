@@ -2,7 +2,7 @@ import os
 import pandas as pd
 import time as _time
 
-from backend.shared.helpers.connections import Connections
+from backend.brokers.connections import Connections
 from backend.shared.helpers.decorators import for_all_accounts
 from backend.shared.helpers.ramboq_logger import get_logger
 
@@ -82,7 +82,7 @@ def fetch_health_snapshot() -> dict[str, dict]:
     already reads through this function, so no caller migration."""
     if _use_conn_service():
         try:
-            from backend.conn_client.sync import _get_client
+            from backend.brokers.client.sync import _get_client
             resp = _get_client().get("/internal/health/brokers")
             resp.raise_for_status()
             return (resp.json() or {}).get("health", {}) or {}
@@ -101,7 +101,7 @@ def fetch_holdings(*args, **kwargs):
     Explicit `account=`/`broker=` kwargs fall through to the local
     path so single-account internal use keeps working."""
     if _use_conn_service() and not args and not kwargs:
-        from backend.conn_client import sync as conn_sync
+        from backend.brokers.client import sync as conn_sync
         return conn_sync.fetch_holdings()
     return _fetch_holdings_local(*args, **kwargs)
 
@@ -231,7 +231,7 @@ def fetch_positions(*args, **kwargs):
     """Public entry — proxies to conn_service when the cutover flag
     is on, otherwise runs the local @for_all_accounts path."""
     if _use_conn_service() and not args and not kwargs:
-        from backend.conn_client import sync as conn_sync
+        from backend.brokers.client import sync as conn_sync
         return conn_sync.fetch_positions()
     return _fetch_positions_local(*args, **kwargs)
 
@@ -558,7 +558,7 @@ def backfill_market_data(df) -> int:
         return 0
 
     try:
-        from backend.shared.brokers.registry import get_price_broker
+        from backend.brokers.registry import get_price_broker
         _pb = get_price_broker()
         _q = _pb.quote(_unique_keys) or {}
     except Exception as _e:
@@ -724,7 +724,7 @@ def fetch_margins(*args, **kwargs):
     """Public entry — proxies to conn_service when the cutover flag
     is on, otherwise runs the local @for_all_accounts path."""
     if _use_conn_service() and not args and not kwargs:
-        from backend.conn_client import sync as conn_sync
+        from backend.brokers.client import sync as conn_sync
         return conn_sync.fetch_margins()
     return _fetch_margins_local(*args, **kwargs)
 

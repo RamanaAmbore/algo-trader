@@ -76,9 +76,9 @@ async def test_preflight_happy_path():
     broker = _make_broker_stub()
     conns  = _conns_with("ZG0790")
 
-    with patch("backend.shared.helpers.connections.Connections", return_value=conns), \
-         patch("backend.shared.brokers.registry.get_broker", return_value=broker), \
-         patch("backend.shared.brokers.kite.get_lot_size",
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
                new=AsyncMock(return_value=50)):
         result = await run_preflight("ZG0790", {
             "exchange":      "NFO",
@@ -104,7 +104,7 @@ async def test_preflight_account_unknown():
     conns = MagicMock()
     conns.conn = {}  # empty — no accounts loaded
 
-    with patch("backend.shared.helpers.connections.Connections", return_value=conns):
+    with patch("backend.brokers.connections.Connections", return_value=conns):
         result = await run_preflight("ZG9999", {
             "exchange":      "NFO",
             "tradingsymbol": "NIFTY25APRFUT",
@@ -131,9 +131,9 @@ async def test_preflight_qty_freeze():
     broker = _make_broker_stub()    # default instruments carry freeze_qty=6000
     conns  = _conns_with("ZG0790")
 
-    with patch("backend.shared.helpers.connections.Connections", return_value=conns), \
-         patch("backend.shared.brokers.registry.get_broker", return_value=broker), \
-         patch("backend.shared.brokers.kite.get_lot_size",
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
                new=AsyncMock(return_value=50)):
         result = await run_preflight("ZG0790", {
             "exchange":      "NFO",
@@ -163,9 +163,9 @@ async def test_preflight_margin_shortfall():
     broker = _make_broker_stub(basket_required_total=200000.0, margin_net=50000.0)
     conns  = _conns_with("ZG0790")
 
-    with patch("backend.shared.helpers.connections.Connections", return_value=conns), \
-         patch("backend.shared.brokers.registry.get_broker", return_value=broker), \
-         patch("backend.shared.brokers.kite.get_lot_size",
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker", return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
                new=AsyncMock(return_value=50)):
         result = await run_preflight("ZG0790", {
             "exchange":      "NFO",

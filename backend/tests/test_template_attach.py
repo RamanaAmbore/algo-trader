@@ -199,7 +199,7 @@ def test_buy_side_skips_wing_even_when_offset_set():
 # ── Capability-aware OCO split (Groww emulation) ────────────────────
 
 def test_oco_capable_broker_packs_two_leg():
-    from backend.shared.brokers.capabilities import KITE_CAPS
+    from backend.brokers.capabilities import KITE_CAPS
     template = {
         "id": 1, "slug": "default-bull", "name": "Default Bull",
         "applies_to": "buy_any",
@@ -220,7 +220,7 @@ def test_oco_capable_broker_packs_two_leg():
 def test_oco_unsupported_broker_splits_into_two_singles():
     """Groww has no OCO — emulation path: two single GTTs that the
     sim/live applier links via pair_with."""
-    from backend.shared.brokers.capabilities import GROWW_CAPS
+    from backend.brokers.capabilities import GROWW_CAPS
     template = {
         "id": 1, "slug": "default-bull", "name": "Default Bull",
         "applies_to": "buy_any",

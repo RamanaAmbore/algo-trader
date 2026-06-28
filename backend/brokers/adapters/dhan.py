@@ -39,7 +39,7 @@ import threading
 from typing import Any, Callable
 from urllib.request import urlopen
 
-from backend.shared.brokers.base import Broker
+from backend.brokers.base import Broker
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)

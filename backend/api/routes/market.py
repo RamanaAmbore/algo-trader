@@ -99,7 +99,7 @@ async def _compute_market_status() -> MarketStatusResponse:
     aware via the shared fetch_holidays cache (per (exchange, today's date),
     so a single fetch per day across the whole process). Weekends + holidays
     return False without hitting the broker."""
-    from backend.shared.helpers.broker_apis import fetch_holidays
+    from backend.brokers.broker_apis import fetch_holidays
 
     now = timestamp_indian()
     segments = app_config.get("market_segments", {}) or {}

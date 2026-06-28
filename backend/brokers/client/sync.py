@@ -1,6 +1,6 @@
 """Sync facade over the conn_service `/internal/*` endpoints.
 
-Mirrors `backend.conn_client.api` shape but uses httpx's sync
+Mirrors `backend.brokers.client.api` shape but uses httpx's sync
 client. Needed because a handful of callers (sim/driver.seed_live,
 expiry.OptionPosition._fetch_* class methods) live deep inside
 sync call chains that would be expensive to flip to async.
@@ -17,7 +17,7 @@ from typing import Optional
 import httpx
 import pandas as pd
 
-from backend.conn_client.transport import CONN_SOCK
+from backend.brokers.client.transport import CONN_SOCK
 
 logger = logging.getLogger(__name__)
 

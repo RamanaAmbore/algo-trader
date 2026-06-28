@@ -29,7 +29,7 @@ async def test_holiday_refresh_on_year_change():
 
     # Mock fetch_holidays to return a set of holiday dates
     # fetch_holidays is imported inside background.py, so patch it there
-    with patch("backend.shared.helpers.broker_apis.fetch_holidays") as mock_fetch:
+    with patch("backend.brokers.broker_apis.fetch_holidays") as mock_fetch:
         mock_fetch.return_value = {date(2026, 1, 26), date(2026, 3, 8)}
 
         # Simulate the background task's holiday refresh logic
@@ -55,7 +55,7 @@ async def test_holiday_no_refresh_same_year():
     # Pre-populate the state with the current year
     state["_hol_year"] = current_year
 
-    with patch("backend.shared.helpers.broker_apis.fetch_holidays") as mock_fetch:
+    with patch("backend.brokers.broker_apis.fetch_holidays") as mock_fetch:
         # Simulate the background task's logic: only fetch if year changed
         if not state.get("_hol_year") or state.get("_hol_year") != current_year:
             holiday_set = mock_fetch("NSE")
@@ -74,7 +74,7 @@ async def test_holiday_refresh_first_time():
     """
     state = {}
 
-    with patch("backend.shared.helpers.broker_apis.fetch_holidays") as mock_fetch:
+    with patch("backend.brokers.broker_apis.fetch_holidays") as mock_fetch:
         mock_fetch.return_value = {date(2026, 1, 26)}
 
         today = datetime.now(ZoneInfo("Asia/Kolkata")).date()
@@ -104,7 +104,7 @@ async def test_holiday_multiple_exchanges():
     exchanges = ["NSE", "MCX"]
     holiday_cache = {}
 
-    with patch("backend.shared.helpers.broker_apis.fetch_holidays") as mock_fetch:
+    with patch("backend.brokers.broker_apis.fetch_holidays") as mock_fetch:
         # Simulate fetching for both exchanges
         mock_fetch.side_effect = [
             {date(2026, 1, 26), date(2026, 3, 8)},  # NSE

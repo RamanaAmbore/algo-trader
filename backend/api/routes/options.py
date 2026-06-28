@@ -514,7 +514,7 @@ def _resolve_position(mode: str, symbol: str, qty: Optional[int],
     if not account:
         raise HTTPException(status_code=400,
                             detail="live mode requires `account`.")
-    from backend.shared.brokers.registry import get_broker
+    from backend.brokers.registry import get_broker
     try:
         positions = get_broker(account).positions() or {}
     except Exception as e:
@@ -777,7 +777,7 @@ async def _resolve_spot(underlying: str, override: Optional[float],
     except Exception:
         pass
 
-    from backend.shared.brokers.registry import get_price_broker
+    from backend.brokers.registry import get_price_broker
     broker = get_price_broker()
     is_commodity = is_mcx_underlying(underlying)
 
@@ -974,7 +974,7 @@ async def _resolve_ltp(symbol: str, mode: str, account: Optional[str],
         # outside the sim. Fall through to broker fallbacks (handy when
         # the sim is paused but real-data analytics are still useful).
 
-    from backend.shared.brokers.registry import get_price_broker
+    from backend.brokers.registry import get_price_broker
     key = option_quote_key(symbol)
     try:
         resp = await asyncio.to_thread(get_price_broker().quote, [key]) or {}
@@ -1312,7 +1312,7 @@ class OptionsController(Controller):
                 keys.append(qk)
                 key_meta[qk] = (strike, side)
 
-        from backend.shared.brokers.registry import get_price_broker
+        from backend.brokers.registry import get_price_broker
         quote_resp: dict = {}
         if keys:
             try:
@@ -1474,7 +1474,7 @@ class OptionsController(Controller):
                 keys.append(qk)
                 key_meta[qk] = (strike, side)
 
-        from backend.shared.brokers.registry import get_price_broker
+        from backend.brokers.registry import get_price_broker
         quote_resp: dict = {}
         if keys:
             try:
@@ -1666,7 +1666,7 @@ class OptionsController(Controller):
         # When account A hits "Too many requests", _mark_rate_limited removes
         # it from the list for _RATE_LIMIT_COOLOFF_SECONDS (30 s) and we
         # try account B before giving up.
-        from backend.shared.brokers.registry import (
+        from backend.brokers.registry import (
             get_historical_brokers, _mark_rate_limited,
         )
 
@@ -1835,7 +1835,7 @@ class OptionsController(Controller):
         # name) is derived from this set below.
         roots: set[str] = set()
         expiries: set[str]    = set()
-        from backend.shared.brokers.registry import get_price_broker
+        from backend.brokers.registry import get_price_broker
 
         # Bulk quote fetch — for legs without operator-supplied ltp, hit
         # broker.quote() once (richer than ltp(): includes ohlc.close +

@@ -42,7 +42,7 @@ def _patched_now(ist_dt):
               new=type("FakeDT", (), {
                   "now": staticmethod(lambda tz=None: ist_dt if tz is _IST else ist_dt),
               })),
-        patch("backend.shared.helpers.broker_apis.fetch_holidays",
+        patch("backend.brokers.broker_apis.fetch_holidays",
               return_value=set()),
     ]
 

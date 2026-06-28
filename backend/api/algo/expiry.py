@@ -21,8 +21,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, time as dtime, timedelta
 from typing import Callable, Optional
 
-from backend.shared.helpers import broker_apis
-from backend.shared.helpers.connections import Connections
+from backend.brokers import broker_apis
+from backend.brokers.connections import Connections
 from backend.shared.helpers.date_time_utils import timestamp_indian, timestamp_display, is_market_open
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import config, mask_column
@@ -133,7 +133,7 @@ class ExpiryEngine:
         if exchange in self._instruments_cache:
             return self._instruments_cache[exchange]
 
-        from backend.shared.brokers.registry import get_broker, all_brokers
+        from backend.brokers.registry import get_broker, all_brokers
         # Pick any loaded account — instruments are the same broker-side.
         brokers = all_brokers()
         if not brokers:
@@ -381,7 +381,7 @@ class ExpiryEngine:
 
         Routes through the Broker ABC so the call hops to conn_service
         when RAMBOQ_USE_CONN_SERVICE=1."""
-        from backend.shared.brokers.registry import all_brokers
+        from backend.brokers.registry import all_brokers
         brokers = all_brokers()
         if not brokers:
             return {}

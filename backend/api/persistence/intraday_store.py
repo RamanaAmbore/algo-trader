@@ -253,7 +253,7 @@ _MEM_CACHE: "OrderedDict[_MemKey, _Entry]" = _intraday_store._mem_cache  # type:
 def _broker_fetch_sync(
     symbol: str, exchange: str, on_date: date, interval: str,
 ) -> list[IntradayBar]:
-    from backend.shared.brokers.registry import get_historical_brokers
+    from backend.brokers.registry import get_historical_brokers
     from backend.api.routes.quote import _get_today_token_map
 
     try:

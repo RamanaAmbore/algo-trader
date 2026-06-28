@@ -29,7 +29,7 @@ class LiveQuoteSource(QuoteSource):
         self._cache: dict[str, dict] = {}
 
     def prefetch_for(self, orders: list[dict]) -> None:
-        from backend.shared.brokers import get_broker
+        from backend.brokers import get_broker
         # Bucket orders by account so each broker handle gets exactly
         # one quote call. Within each bucket, collect distinct keys.
         by_account: dict[str, set[str]] = {}
@@ -69,7 +69,7 @@ class LiveQuoteSource(QuoteSource):
             # happen on the engine's hot path (prefetch_for runs first),
             # but action handlers calling bid_ask_for_order ad-hoc need
             # something sensible.
-            from backend.shared.brokers import get_broker
+            from backend.brokers import get_broker
             try:
                 broker = get_broker(account)
                 quote  = broker.quote([key]).get(key) or {}

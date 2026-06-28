@@ -134,7 +134,7 @@ async def test_postback_fallback_account_lookup(async_client, reset_singletons):
     Verifies that the fallback-iteration path works when the account
     is in the middle of the candidate list.
     """
-    from backend.shared.helpers.connections import Connections, KiteConnection
+    from backend.brokers.connections import Connections, KiteConnection
 
     # Create stubs for multiple accounts.
     # Set both _api_secret (legacy) and api_secret (public property mirror)

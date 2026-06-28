@@ -512,7 +512,7 @@ class HedgeProxiesController(Controller):
             if not row:
                 raise HTTPException(status_code=404, detail="Not found.")
             try:
-                from backend.shared.brokers.registry import get_price_broker
+                from backend.brokers.registry import get_price_broker
                 broker = get_price_broker()
             except Exception as exc:
                 raise HTTPException(status_code=503, detail=f"No broker available: {exc}") from exc

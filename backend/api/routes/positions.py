@@ -12,7 +12,7 @@ from backend.api.rbac import (
 )
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.schemas import PositionsResponse, PositionRow, PositionsSummaryRow
-from backend.shared.helpers import broker_apis
+from backend.brokers import broker_apis
 from backend.shared.helpers.date_time_utils import timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import mask_account, mask_column
@@ -166,7 +166,7 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
     if raw.empty or 'tradingsymbol' not in raw.columns:
         return
     try:
-        from backend.shared.helpers.kite_ticker import _ticker
+        from backend.brokers.kite_ticker import _ticker
     except Exception:
         return
     # Track (idx, pre-patch LTP) per row so the pnl additive patch
@@ -372,7 +372,7 @@ def _enrich_position_greeks(rows: list) -> None:
     from backend.api.algo.derivatives import (
         parse_tradingsymbol, implied_vol, greeks, option_underlying_quote_key,
     )
-    from backend.shared.brokers.registry import get_price_broker
+    from backend.brokers.registry import get_price_broker
 
     # Pass 1 — parse + collect unique underlying keys we need spots for.
     # option_underlying_quote_key() returns the right key shape for both

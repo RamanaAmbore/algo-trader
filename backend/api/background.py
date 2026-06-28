@@ -91,7 +91,7 @@ def _fetch_margins_direct() -> pd.DataFrame:
     so masking is unnecessary here. Public `/api/funds` re-applies masking
     on its own output for the marketing site.
     """
-    from backend.shared.helpers import broker_apis
+    from backend.brokers import broker_apis
     df = pd.concat(broker_apis.fetch_margins(), ignore_index=True)
     total_row = df.select_dtypes(include='number').sum()
     total_row['account'] = 'TOTAL'
@@ -100,7 +100,7 @@ def _fetch_margins_direct() -> pd.DataFrame:
 
 def _fetch_holdings_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     """Returns (row_df, summary_df) with real account codes (see _fetch_margins_direct)."""
-    from backend.shared.helpers import broker_apis
+    from backend.brokers import broker_apis
     raw = pd.concat(broker_apis.fetch_holdings(), ignore_index=True)
 
     sum_cols = [c for c in ['inv_val', 'cur_val', 'pnl', 'day_change_val'] if c in raw.columns]
@@ -122,7 +122,7 @@ def _fetch_holdings_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
-    from backend.shared.helpers import broker_apis
+    from backend.brokers import broker_apis
     raw = pd.concat(broker_apis.fetch_positions(), ignore_index=True)
     grouped = raw.groupby('account')[['pnl']].sum().reset_index() if 'pnl' in raw.columns \
               else pd.DataFrame(columns=['account', 'pnl'])
@@ -157,7 +157,7 @@ def _resolve_spot_prices(df_positions: pd.DataFrame) -> dict[str, float]:
     if not underlyings:
         return {}
     try:
-        from backend.shared.brokers.registry import get_price_broker
+        from backend.brokers.registry import get_price_broker
         broker = get_price_broker()
         resp = broker.ltp(list(underlyings.values())) or {}
     except Exception as e:
@@ -331,7 +331,7 @@ def kick_performance() -> bool:
 
 async def _task_performance(state: dict) -> None:
     """Refresh performance data every N minutes during market hours."""
-    from backend.shared.helpers.broker_apis import fetch_holidays
+    from backend.brokers.broker_apis import fetch_holidays
     from backend.shared.helpers.alert_utils import send_summary
     from backend.shared.helpers.summarise import summarise_holdings as _summarise_holdings, summarise_positions as _summarise_positions
     from backend.api.cache import invalidate
@@ -603,7 +603,7 @@ async def _task_performance(state: dict) -> None:
             # subscribe() is idempotent — re-subscribing known tokens is a
             # no-op. We never unsubscribe stale symbols (Phase 2 simplicity).
             try:
-                from backend.shared.helpers.kite_ticker import get_ticker as _get_ticker
+                from backend.brokers.kite_ticker import get_ticker as _get_ticker
                 from backend.api.routes.quote import _resolve_token_for_sym as _rts
                 _ticker = _get_ticker()
                 # Collect tradingsymbol+exchange pairs from both DataFrames.
@@ -670,7 +670,7 @@ async def _task_performance(state: dict) -> None:
 
 async def _task_close(state: dict) -> None:
     """Send close summary for each segment after its close time + offset."""
-    from backend.shared.helpers.broker_apis import fetch_holidays
+    from backend.brokers.broker_apis import fetch_holidays
     from backend.shared.helpers.alert_utils import send_summary
     from backend.shared.helpers.summarise import summarise_holdings as _summarise_holdings, summarise_positions as _summarise_positions
 
@@ -1559,7 +1559,7 @@ async def _task_hedge_proxy_regression() -> None:
         max_age = get_int("hedge_proxies.regression_max_age_days", 7)
         window  = get_int("hedge_proxies.regression_window_days", 60)
         try:
-            from backend.shared.brokers.registry import get_price_broker
+            from backend.brokers.registry import get_price_broker
             broker = get_price_broker()
         except Exception as exc:
             logger.warning(f"hedge-proxy regression: no broker available: {exc}")
@@ -1694,7 +1694,7 @@ async def _task_trail_stop() -> None:
     """
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
-    from backend.shared.brokers.registry import get_broker
+    from backend.brokers.registry import get_broker
     from backend.shared.helpers.settings import get_int
     from sqlalchemy import select as _sel, update as _update
     import json as _json
@@ -2003,7 +2003,7 @@ async def _task_oco_pair_watcher() -> None:
     """
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
-    from backend.shared.brokers.registry import get_broker
+    from backend.brokers.registry import get_broker
     from backend.shared.helpers.settings import get_int
     from sqlalchemy import select as _sel, update as _update
     import json as _json
@@ -2321,7 +2321,7 @@ async def _task_sparkline_warm(state: dict) -> None:
                             seen.add(key)
                             pairs.append(key)
             else:
-                from backend.shared.helpers import broker_apis
+                from backend.brokers import broker_apis
                 import pandas as pd
                 dfs = broker_apis.fetch_holdings()
                 df_h = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
@@ -2351,7 +2351,7 @@ async def _task_sparkline_warm(state: dict) -> None:
                             seen.add(key)
                             pairs.append(key)
             else:
-                from backend.shared.helpers import broker_apis
+                from backend.brokers import broker_apis
                 import pandas as pd
                 dfs = broker_apis.fetch_positions()
                 df_p = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
@@ -2586,9 +2586,9 @@ async def _task_ticker_watchdog(state: dict) -> None:
     FAILOVER_COOLOFF_S  = 300.0  # don't retry a failed account for 5 min
     ALERT_REFIRE_S      = 1800.0  # re-alert after 30 min of sustained degradation
 
-    from backend.shared.helpers.kite_ticker import get_ticker
-    from backend.shared.brokers.registry import get_historical_brokers
-    from backend.shared.helpers.broker_apis import fetch_holidays
+    from backend.brokers.kite_ticker import get_ticker
+    from backend.brokers.registry import get_historical_brokers
+    from backend.brokers.broker_apis import fetch_holidays
 
     # Per-watchdog holiday cache keyed by year so off-hours gating doesn't
     # hammer nseindia.com every 30 s. Refreshes naturally at year rollover.
@@ -2610,7 +2610,7 @@ async def _task_ticker_watchdog(state: dict) -> None:
                     consume_ticker_reset_pending,
                 )
                 if consume_ticker_reset_pending():
-                    from backend.shared.helpers.kite_ticker import get_ticker
+                    from backend.brokers.kite_ticker import get_ticker
                     try:
                         get_ticker().recycle()
                         logger.info("ticker watchdog: ran deferred HARD-mode recycle")

@@ -4,7 +4,7 @@ Each function here returns the SAME shape as the corresponding
 `broker_apis.fetch_*` so caller code (background.py, routes/*.py,
 sim/driver.py, expiry.py) can swap
 
-    from backend.shared.helpers import broker_apis
+    from backend.brokers import broker_apis
     dfs = broker_apis.fetch_holdings()
 
 for
@@ -37,7 +37,7 @@ from typing import Any
 
 import pandas as pd
 
-from backend.conn_client.transport import get_client
+from backend.brokers.client.transport import get_client
 
 logger = logging.getLogger(__name__)
 

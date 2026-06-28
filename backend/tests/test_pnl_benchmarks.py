@@ -109,7 +109,7 @@ async def test_multi_symbol_success():
         side_effect=lambda token, *a, **kw: candle_map.get(token, [])
     )
 
-    with patch("backend.shared.brokers.registry.get_price_broker", return_value=mock_broker), \
+    with patch("backend.brokers.registry.get_price_broker", return_value=mock_broker), \
          patch("backend.api.routes.admin.get_price_broker", return_value=mock_broker, create=True):
         resp = await _call_benchmarks("NIFTY 50,SENSEX", "2026-01-02", "2026-01-04")
 
@@ -143,7 +143,7 @@ async def test_symbol_fetch_failure_is_graceful():
     mock_broker = MagicMock()
     mock_broker.historical_data = MagicMock(side_effect=RuntimeError("Kite down"))
 
-    with patch("backend.shared.brokers.registry.get_price_broker", return_value=mock_broker), \
+    with patch("backend.brokers.registry.get_price_broker", return_value=mock_broker), \
          patch("backend.api.routes.admin.get_price_broker", return_value=mock_broker, create=True):
         resp = await _call_benchmarks("NIFTY 50", "2026-01-02", "2026-01-04")
 

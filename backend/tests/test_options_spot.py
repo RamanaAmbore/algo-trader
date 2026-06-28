@@ -86,7 +86,7 @@ def _patch_broker_quote(ltp_map: dict[str, float]):
     broker = MagicMock()
     broker.quote.side_effect = _quote
     return patch(
-        "backend.shared.brokers.registry.get_price_broker",
+        "backend.brokers.registry.get_price_broker",
         return_value=broker,
     )
 

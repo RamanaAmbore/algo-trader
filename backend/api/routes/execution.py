@@ -263,7 +263,7 @@ def _stop_ticker_if_running() -> None:
     doesn't care about the underlying socket state can request "stop
     if up" without exception bookkeeping."""
     try:
-        from backend.shared.helpers.kite_ticker import get_ticker
+        from backend.brokers.kite_ticker import get_ticker
         ticker = get_ticker()
         if getattr(ticker, "_started", False):
             ticker.stop()
@@ -287,7 +287,7 @@ async def _maybe_rehydrate_ticker() -> None:
     sparkline-broker outage.
     """
     try:
-        from backend.shared.helpers.kite_ticker import get_ticker
+        from backend.brokers.kite_ticker import get_ticker
         ticker = get_ticker()
         if getattr(ticker, "_started", False):
             return  # already up

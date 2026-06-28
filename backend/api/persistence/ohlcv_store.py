@@ -184,7 +184,7 @@ _MEM_CACHE: "OrderedDict[_MemKey, dict[str, OHLCVBar]]" = _ohlcv_store._mem_cach
 def _broker_fetch_sync(
     symbol: str, exchange: str, from_d: date, to_d: date,
 ) -> list[OHLCVBar]:
-    from backend.shared.brokers.registry import get_price_broker
+    from backend.brokers.registry import get_price_broker
     from backend.api.routes.quote import _get_today_token_map
 
     broker = get_price_broker()

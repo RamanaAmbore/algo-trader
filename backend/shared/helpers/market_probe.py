@@ -240,7 +240,7 @@ def probe_market_active(exchange: str, kite: Any = None,
     # definitive True/False wins; None means the adapter doesn't
     # implement the method or the call failed — try the next broker.
     try:
-        from backend.shared.brokers.registry import all_brokers
+        from backend.brokers.registry import all_brokers
         for broker_adapter in all_brokers():
             try:
                 verdict = broker_adapter.market_status(exchange)
@@ -269,7 +269,7 @@ def probe_market_active(exchange: str, kite: Any = None,
     broker = None
     if kite is None:
         try:
-            from backend.shared.helpers.connections import Connections
+            from backend.brokers.connections import Connections
             for acct, c in (Connections().conn or {}).items():
                 if hasattr(c, "get_kite_conn"):
                     try:
@@ -277,7 +277,7 @@ def probe_market_active(exchange: str, kite: Any = None,
                         # Attach a Broker adapter for instruments-dump
                         # lookups (used by MCX dynamic discovery).
                         try:
-                            from backend.shared.brokers.registry import get_broker
+                            from backend.brokers.registry import get_broker
                             broker = get_broker(acct)
                         except Exception:
                             broker = None

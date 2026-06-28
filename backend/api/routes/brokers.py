@@ -141,7 +141,7 @@ async def _reload_connections() -> None:
     pick up the new state. Failures are logged but don't fail the
     request (the row is already persisted; reload can retry later)."""
     try:
-        from backend.shared.helpers.connections import Connections
+        from backend.brokers.connections import Connections
         await Connections().rebuild_from_db()
     except Exception as e:
         logger.warning(f"Connections reload after broker mutation failed: {e}")
@@ -162,15 +162,15 @@ def _loaded_accounts() -> set[str]:
     latest attempt succeeded — failing accounts drop out of the
     navbar count, surfacing the outage at a glance."""
     try:
-        from backend.shared.helpers.connections import Connections
-        from backend.shared.helpers.broker_apis import is_account_healthy
+        from backend.brokers.connections import Connections
+        from backend.brokers.broker_apis import is_account_healthy
         in_conn = set(Connections().conn.keys())
         # Cutover branch — when local Connections is empty (flag-on),
         # pull the loaded-account list from conn_service.
         if not in_conn:
-            from backend.conn_client import is_cutover_on
+            from backend.brokers.client import is_cutover_on
             if is_cutover_on():
-                from backend.conn_client.remote_broker import list_remote_accounts
+                from backend.brokers.client.remote_broker import list_remote_accounts
                 in_conn = {r["account"] for r in list_remote_accounts() if r.get("account")}
         return {a for a in in_conn if is_account_healthy(a)}
     except Exception:
@@ -219,7 +219,7 @@ class BrokersController(Controller):
         emulates OCO — ~15s race window", "Dhan doesn't cover MCX") at
         SUBMIT time, not at fill time. Pure read of the dataclass; no
         broker round-trip."""
-        from backend.shared.brokers.capabilities import capabilities_for
+        from backend.brokers.capabilities import capabilities_for
         from dataclasses import asdict
         caps = capabilities_for(account)
         return asdict(caps)
@@ -328,7 +328,7 @@ class BrokersController(Controller):
         login path so the operator gets immediate feedback."""
         await _reload_connections()
         try:
-            from backend.shared.brokers.registry import get_broker
+            from backend.brokers.registry import get_broker
             broker = get_broker(account)
             prof = broker.profile() or {}
             return TestResult(ok=True, account=account,

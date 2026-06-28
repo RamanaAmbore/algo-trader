@@ -188,7 +188,7 @@ class ReplayDriver:
         interval: str,
     ) -> None:
         """Batch-fetch historical candles for all symbols."""
-        from backend.shared.brokers.registry import get_price_broker
+        from backend.brokers.registry import get_price_broker
 
         try:
             broker = get_price_broker()

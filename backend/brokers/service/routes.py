@@ -147,7 +147,7 @@ class HealthController(Controller):
 
     @get("/health")
     async def health(self) -> dict[str, Any]:
-        from backend.shared.helpers.connections import Connections
+        from backend.brokers.connections import Connections
 
         accts = sorted(Connections().conn.keys())
         return {
@@ -179,7 +179,7 @@ class InternalBrokerController(Controller):
               ...
           ]}
         """
-        from backend.shared.helpers.connections import Connections
+        from backend.brokers.connections import Connections
 
         c = Connections()
         id_map = getattr(c, "_broker_id_map", {}) or {}
@@ -203,7 +203,7 @@ class InternalBrokerController(Controller):
         Idempotent (every call re-reads the broker_accounts table)
         but expensive (touches every account's auth flow). Don't
         call on a hot path."""
-        from backend.shared.helpers.connections import Connections
+        from backend.brokers.connections import Connections
 
         try:
             await Connections().rebuild_from_db()
@@ -222,7 +222,7 @@ class InternalBrokerController(Controller):
 
         Wire shape: { rows: [...], errors: [...] }
         """
-        from backend.shared.helpers.broker_apis import fetch_holdings
+        from backend.brokers.broker_apis import fetch_holdings
 
         try:
             dfs = await asyncio.to_thread(fetch_holdings)
@@ -234,7 +234,7 @@ class InternalBrokerController(Controller):
     @get("/positions")
     async def positions(self) -> dict[str, Any]:
         """Multi-broker positions fetch (Kite + Dhan + Groww)."""
-        from backend.shared.helpers.broker_apis import fetch_positions
+        from backend.brokers.broker_apis import fetch_positions
 
         try:
             dfs = await asyncio.to_thread(fetch_positions)
@@ -249,7 +249,7 @@ class InternalBrokerController(Controller):
         Returns the flattened payload with broker-native column names
         (e.g. 'avail cash', 'util debits' with spaces) — the main API
         applies its _COL_MAP rename downstream."""
-        from backend.shared.helpers.broker_apis import fetch_margins
+        from backend.brokers.broker_apis import fetch_margins
 
         try:
             dfs = await asyncio.to_thread(fetch_margins)
@@ -262,7 +262,7 @@ class InternalBrokerController(Controller):
     async def broker_health(self) -> dict[str, Any]:
         """Per-account fetch-health snapshot. Used by the navbar
         'N of M brokers connected' badge in main API."""
-        from backend.shared.helpers.broker_apis import fetch_health_snapshot
+        from backend.brokers.broker_apis import fetch_health_snapshot
 
         return {"health": fetch_health_snapshot()}
 
@@ -307,7 +307,7 @@ class BrokerDispatchController(Controller):
                 detail=f"method '{method}' not in dispatch whitelist",
             )
 
-        from backend.shared.brokers.registry import get_broker
+        from backend.brokers.registry import get_broker
 
         try:
             broker = get_broker(account)
@@ -351,7 +351,7 @@ class BrokerDispatchController(Controller):
         api_secret). We mirror the existing main-API code path so
         the signature semantics are unchanged.
         """
-        from backend.shared.helpers.connections import Connections
+        from backend.brokers.connections import Connections
 
         conn = Connections().conn.get(account)
         if conn is None:
@@ -383,7 +383,7 @@ class BrokerDispatchController(Controller):
         non-Kite. Treat the token as sensitive: it grants full broker
         access. UDS file-mode is the auth boundary.
         """
-        from backend.shared.helpers.connections import Connections
+        from backend.brokers.connections import Connections
 
         conn = Connections().conn.get(account)
         if conn is None:

@@ -369,7 +369,7 @@ async def _fetch_quotes(items: list[WatchlistItem]) -> list[WatchlistQuote]:
     runs the sync broker call in a thread so the event loop isn't
     blocked on the network round-trip."""
     import asyncio
-    from backend.shared.brokers.registry import get_price_broker
+    from backend.brokers.registry import get_price_broker
 
     key_map: dict[int, tuple[str, str]] = {}
     for it in items:
@@ -896,7 +896,7 @@ class WatchlistController(Controller):
         from backend.api.cache import get_or_fetch
         from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS as _INST_TTL
         from backend.api.algo.derivatives import underlying_ltp_key, is_mcx_underlying
-        from backend.shared.brokers.registry import get_price_broker
+        from backend.brokers.registry import get_price_broker
 
         global _session_movers, _session_date
 
@@ -1130,7 +1130,7 @@ class WatchlistController(Controller):
         # Revisit if subscribed_count approaches 2500.
         try:
             from backend.api.routes.quote import _resolve_token_for_sym
-            from backend.shared.helpers.kite_ticker import get_ticker
+            from backend.brokers.kite_ticker import get_ticker
             tok = await _resolve_token_for_sym(tradingsymbol, exchange)
             if tok is not None:
                 get_ticker().subscribe_with_sym([(tok, tradingsymbol)])

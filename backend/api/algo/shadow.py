@@ -43,7 +43,7 @@ class ShadowTradeEngine:
         """
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
-        from backend.shared.brokers import get_broker
+        from backend.brokers import get_broker
 
         account = str(resolved["account"])
         symbol = str(resolved["symbol"])
@@ -76,7 +76,7 @@ class ShadowTradeEngine:
         ok, reason = True, "shadow — not executed"
         try:
             import asyncio, json as _json
-            from backend.shared.brokers.kite import to_kite_qty, get_lot_size
+            from backend.brokers.adapters.kite import to_kite_qty, get_lot_size
             broker = get_broker(account)
             if qty > 0 and price is not None and symbol and exchange:
                 _ls = await get_lot_size(exchange, symbol)

@@ -131,7 +131,7 @@ def _git_subject() -> str:
 
 async def _fetch_broker_statuses() -> tuple[list[BrokerStatus], list[str]]:
     try:
-        from backend.shared.helpers.connections import Connections
+        from backend.brokers.connections import Connections
         loaded_accounts: set[str] = set(Connections().conn.keys())
     except Exception:
         loaded_accounts = set()
@@ -144,7 +144,7 @@ async def _fetch_broker_statuses() -> tuple[list[BrokerStatus], list[str]]:
         "1", "true", "yes", "on",
     ):
         try:
-            from backend.conn_client.remote_broker import list_remote_accounts
+            from backend.brokers.client.remote_broker import list_remote_accounts
             for r in list_remote_accounts():
                 acct = r.get("account")
                 if acct:
@@ -253,7 +253,7 @@ def _sparkline_warm_status() -> SparklineWarmStatus:
 def _ticker_status() -> TickerStatus:
     """Return a snapshot of the KiteTicker WebSocket state."""
     try:
-        from backend.shared.helpers.kite_ticker import get_ticker
+        from backend.brokers.kite_ticker import get_ticker
         snap = get_ticker().status()
         return TickerStatus(
             started=bool(snap.get("started", False)),

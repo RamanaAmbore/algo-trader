@@ -10,7 +10,7 @@ it" and nothing else changes.
 
 Public API:
 
-    from backend.shared.brokers import Broker, get_broker, all_brokers
+    from backend.brokers import Broker, get_broker, all_brokers
 
     broker = get_broker("ZG0790")       # Broker for that account
     broker.ltp(["NSE:NIFTY 50"])        # broker-agnostic call
@@ -31,7 +31,7 @@ Canonical broker_id values:
   "kite"          — legacy alias for "zerodha_kite" (YAML-seeded rows)
 """
 
-from backend.shared.brokers.base     import Broker
-from backend.shared.brokers.registry import get_broker, all_brokers, get_price_broker
+from backend.brokers.base     import Broker
+from backend.brokers.registry import get_broker, all_brokers, get_price_broker
 
 __all__ = ["Broker", "get_broker", "all_brokers", "get_price_broker"]

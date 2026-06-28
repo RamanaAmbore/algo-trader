@@ -192,7 +192,7 @@ def _market_hours_block_check() -> None:
     if not get_bool("simulator.block_during_market_hours", True):
         return
     from backend.api.background import _build_segments
-    from backend.shared.helpers.broker_apis import fetch_holidays
+    from backend.brokers.broker_apis import fetch_holidays
     from backend.shared.helpers.date_time_utils import (
         is_market_open, timestamp_indian,
     )
@@ -219,7 +219,7 @@ def _markets_currently_open() -> bool:
     /defaults endpoint can surface the state in the UI."""
     try:
         from backend.api.background import _build_segments
-        from backend.shared.helpers.broker_apis import fetch_holidays
+        from backend.brokers.broker_apis import fetch_holidays
         from backend.shared.helpers.date_time_utils import (
             is_market_open, timestamp_indian,
         )
@@ -702,14 +702,14 @@ class SimulatorController(Controller):
         # the choices the operator can scope the sim to. Empty if
         # no broker accounts have been seeded yet.
         try:
-            from backend.shared.helpers.connections import Connections
+            from backend.brokers.connections import Connections
             available_accounts = sorted(Connections().conn.keys())
             if not available_accounts:
                 # Cutover branch — Connections empty when conn_service
                 # owns sessions; pull canonical list.
-                from backend.conn_client import is_cutover_on
+                from backend.brokers.client import is_cutover_on
                 if is_cutover_on():
-                    from backend.conn_client.remote_broker import list_remote_accounts
+                    from backend.brokers.client.remote_broker import list_remote_accounts
                     available_accounts = sorted(
                         r["account"] for r in list_remote_accounts() if r.get("account")
                     )

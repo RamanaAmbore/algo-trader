@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from litestar import Litestar
 
-from backend.conn_service.routes import (
+from backend.brokers.service.routes import (
     BrokerDispatchController,
     HealthController,
     InternalBrokerController,
@@ -48,7 +48,7 @@ def create_app() -> Litestar:
     """Construct the conn_service Litestar app.
 
     Mirrors backend.api.app.create_app() shape so the systemd unit
-    can keep the same uvicorn entrypoint (`backend.conn_service.app:app`).
+    can keep the same uvicorn entrypoint (`backend.brokers.service.app:app`).
     """
     app = Litestar(
         route_handlers=[
@@ -71,7 +71,7 @@ async def _init_connections_on_startup(app: Litestar) -> None:
     can use the loaded singleton.
     """
     import logging
-    from backend.shared.helpers.connections import Connections
+    from backend.brokers.connections import Connections
 
     log = logging.getLogger(__name__)
     log.info("conn_service: rebuilding Connections singleton on startup")

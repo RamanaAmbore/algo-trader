@@ -485,7 +485,7 @@ class PaperTradeEngine:
         # first order if the setting hasn't been set + the pinned
         # account isn't configured.
         try:
-            from backend.shared.brokers.registry import get_price_broker, get_broker
+            from backend.brokers.registry import get_price_broker, get_broker
             try:
                 broker = get_price_broker()
             except Exception:

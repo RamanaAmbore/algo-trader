@@ -19,7 +19,7 @@ Group=www-data
 # UDS removes the TCP overhead and the file mode (0660) acts as the
 # auth boundary — no JWT or shared-secret needed at the HTTP layer.
 ExecStart=/bin/bash -c 'source /opt/ramboq/venv/bin/activate && \
-  uvicorn backend.conn_service.app:app \
+  uvicorn backend.brokers.service.app:app \
     --uds /tmp/ramboq_conn.sock \
     --workers 1 \
     --log-level warning \

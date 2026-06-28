@@ -24,7 +24,7 @@ from sqlalchemy import select as _sql_select
 from backend.api.cache import _store as _cache_store
 from backend.api.database import async_session as _async_session
 from backend.api.models import AlgoOrder as _AlgoOrder
-from backend.shared.brokers.registry import get_broker as _get_broker_registry
+from backend.brokers.registry import get_broker as _get_broker_registry
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -802,7 +802,7 @@ async def chase_order(
             # translate once here so downstream math is in one unit.
             _kite_filled = int(status.get("filled_quantity", 0) or 0)
             if cfg.exchange in ("MCX", "NCO") and _kite_filled > 0:
-                from backend.shared.brokers.kite import from_kite_qty
+                from backend.brokers.adapters.kite import from_kite_qty
                 _lot = _lot_size_sync(cfg.exchange, symbol)
                 filled_qty = from_kite_qty(cfg.exchange, _kite_filled, _lot)
             else:

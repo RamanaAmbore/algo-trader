@@ -207,5 +207,5 @@ def capabilities_for(account: str) -> BrokerCapabilities:
     precedence over YAML defaults."""
     # Local import — keeps circular reference at bay (registry imports
     # from this module too via the Broker.capabilities property).
-    from backend.shared.brokers.registry import _broker_id_for
+    from backend.brokers.registry import _broker_id_for
     return capabilities_for_broker_id(_broker_id_for(account))

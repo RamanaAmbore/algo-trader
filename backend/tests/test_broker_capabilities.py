@@ -1,5 +1,5 @@
 """
-Smoke tests for backend.shared.brokers.capabilities — the per-broker
+Smoke tests for backend.brokers.capabilities — the per-broker
 capability matrix that the OrderTemplate fan-out and GTT tracker consult
 to decide what to send to each broker.
 
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.shared.brokers.capabilities import (
+from backend.brokers.capabilities import (
     BrokerCapabilities,
     CAPS_BY_BROKER_ID,
     DHAN_CAPS,
@@ -115,11 +115,11 @@ def test_broker_base_exposes_capabilities_via_property():
     """The Broker ABC defines a default `capabilities` property that
     reads the matrix. Adapters inherit it without override — this test
     locks the wiring."""
-    from backend.shared.brokers.base import Broker
+    from backend.brokers.base import Broker
 
     # Walk the MRO of an inheriting class — KiteBroker.capabilities
     # should resolve to Broker.capabilities (not overridden).
-    from backend.shared.brokers.kite import KiteBroker
+    from backend.brokers.adapters.kite import KiteBroker
     cap_attr = Broker.__dict__.get("capabilities")
     assert cap_attr is not None, "Broker ABC must declare capabilities property"
     # KiteBroker doesn't override — inherited from Broker.

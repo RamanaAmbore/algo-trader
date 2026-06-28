@@ -1117,7 +1117,7 @@ def _build_context(now, sim_overrides: dict | None = None) -> dict:
     ctx = {"now": now}
 
     # Market state per segment (with holiday awareness)
-    from backend.shared.helpers.broker_apis import fetch_holidays
+    from backend.brokers.broker_apis import fetch_holidays
 
     segments = app_config.get("market_segments", {})
     for seg_name, seg_cfg in segments.items():

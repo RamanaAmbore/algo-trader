@@ -785,7 +785,7 @@ async def _basket_margin_validate(broker, order: dict) -> tuple[bool, str]:
     mirror of what `place_order` would have rejected with.
     """
     try:
-        from backend.shared.brokers.kite import to_kite_qty, get_lot_size
+        from backend.brokers.adapters.kite import to_kite_qty, get_lot_size
         exchange  = order.get("exchange", "NFO")
         symbol    = order.get("symbol") or ""
         raw_qty   = int(order.get("qty") or 0)
@@ -843,7 +843,7 @@ async def run_preflight(
     """
     import asyncio
     import math
-    from backend.shared.helpers.connections import Connections
+    from backend.brokers.connections import Connections
 
     blocked: list[dict] = []
     diagnostics: dict = {
@@ -857,9 +857,9 @@ async def run_preflight(
     loaded_accounts: set[str] = set(conns.conn.keys())
     # Cutover branch — local Connections is empty when conn_service owns
     # the sessions, so consult /internal/accounts for the canonical list.
-    from backend.conn_client import is_cutover_on
+    from backend.brokers.client import is_cutover_on
     if is_cutover_on() and not loaded_accounts:
-        from backend.conn_client.remote_broker import list_remote_accounts
+        from backend.brokers.client.remote_broker import list_remote_accounts
         loaded_accounts = {r["account"] for r in list_remote_accounts() if r.get("account")}
     if account not in loaded_accounts:
         from backend.shared.helpers.utils import mask_account
@@ -876,7 +876,7 @@ async def run_preflight(
     # Broker ABC (profile / instruments / basket_order_margins / margins),
     # so this function is broker-agnostic. When a Groww or Dhan account
     # lands, no further change here is needed.
-    from backend.shared.brokers.registry import get_broker
+    from backend.brokers.registry import get_broker
     broker = get_broker(account)
     loop = asyncio.get_running_loop()
 
@@ -893,7 +893,7 @@ async def run_preflight(
     # Done before the broker-call fan-out so basket_orders is ready when
     # the parallel gather fires. get_lot_size + normalise_qty are
     # cache-hits; no broker network.
-    from backend.shared.brokers.kite import get_lot_size
+    from backend.brokers.adapters.kite import get_lot_size
     _lot_size = await get_lot_size(exchange, symbol)
     _broker_qty = broker.normalise_qty(exchange, qty, _lot_size)
     basket_order = {
@@ -1204,7 +1204,7 @@ async def diagnose_live_failure(broker, order: dict, kite_error: str) -> str:
     `basket_order_margins` method — callers should pass the adapter.
     """
     import asyncio
-    from backend.shared.brokers.kite import get_lot_size
+    from backend.brokers.adapters.kite import get_lot_size
     # Accept either a Broker adapter or a legacy SDK handle.
     basket_margin_fn = (
         broker.basket_order_margins
@@ -1259,7 +1259,7 @@ async def _write_paper_order(agent, action_type: str, resolved: dict, context: d
     import uuid
     from backend.api.database        import async_session
     from backend.api.models          import AlgoOrder
-    from backend.shared.brokers      import get_broker
+    from backend.brokers      import get_broker
     from backend.api.algo.paper      import get_prod_paper_engine
 
     account  = str(resolved["account"])
@@ -1527,7 +1527,7 @@ async def _action_place_order(context: dict, params: dict):
     """
     import asyncio
     from backend.api.algo.chase import chase_order, ChaseConfig
-    from backend.shared.brokers import get_broker
+    from backend.brokers import get_broker
 
     # A sentinel agent object for _write_live_order which expects agent.slug.
     # _action_place_order is called from execute() where `agent` is in scope,
@@ -1733,7 +1733,7 @@ async def _action_live_close_position(agent, context: dict, params: dict):
     """
     import asyncio
     from backend.api.algo.chase import chase_order, ChaseConfig
-    from backend.shared.brokers import get_broker
+    from backend.brokers import get_broker
 
     account  = str(params.get("account") or "")
     symbol   = str(params.get("symbol") or params.get("tradingsymbol") or "")
@@ -1806,7 +1806,7 @@ async def _action_live_modify_order(agent, context: dict, params: dict):
     Updates the matching AlgoOrder row on success.
     """
     import asyncio
-    from backend.shared.brokers import get_broker
+    from backend.brokers import get_broker
 
     account  = str(params.get("account") or "")
     order_id = str(params.get("order_id") or "")
@@ -1873,7 +1873,7 @@ async def _action_live_cancel_order(agent, context: dict, params: dict):
     Marks the matching AlgoOrder row CANCELLED on success.
     """
     import asyncio
-    from backend.shared.brokers import get_broker
+    from backend.brokers import get_broker
     from sqlalchemy import update as sql_update
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
@@ -1919,7 +1919,7 @@ async def _action_live_cancel_all_orders(agent, context: dict, params: dict):
     synchronous.  Returns aggregate cancelled count via log.
     """
     import asyncio
-    from backend.shared.brokers.registry import all_brokers
+    from backend.brokers.registry import all_brokers
 
     loop = asyncio.get_running_loop()
     scope_account = str(params.get("account") or "")
@@ -1983,7 +1983,7 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
     import asyncio
     import pandas as pd
     from backend.api.algo.chase import chase_order, ChaseConfig
-    from backend.shared.brokers import get_broker
+    from backend.brokers import get_broker
 
     scope        = (params.get("scope") or "total").lower()
     scope_acct   = str(params.get("account") or "") if scope == "account" else None

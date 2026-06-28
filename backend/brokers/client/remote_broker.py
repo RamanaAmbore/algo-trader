@@ -1,7 +1,7 @@
 """RemoteBroker — Broker ABC implementation that proxies every call
 to conn_service over UDS.
 
-Lives in `backend.conn_client` so it can be constructed by the main
+Lives in `backend.brokers.client` so it can be constructed by the main
 API's `registry.get_broker(account)` when the cutover flag is on.
 Downstream callers see a normal `Broker` instance; they don't know
 the broker_id-to-adapter dispatch happens inside `conn_service`.
@@ -27,9 +27,9 @@ from typing import Any
 
 import httpx
 
-from backend.conn_client.transport import CONN_SOCK
-from backend.shared.brokers.base import Broker
-from backend.shared.brokers.capabilities import (
+from backend.brokers.client.transport import CONN_SOCK
+from backend.brokers.base import Broker
+from backend.brokers.capabilities import (
     BrokerCapabilities,
     capabilities_for_broker_id,
 )

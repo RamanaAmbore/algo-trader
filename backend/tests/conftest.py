@@ -87,7 +87,7 @@ def stub_kite_connection():
     candidates to Kite-only connections by class, so a plain MagicMock
     would be silently skipped (sig_valid stays False → 401).
     """
-    from backend.shared.helpers.connections import KiteConnection
+    from backend.brokers.connections import KiteConnection
     stub = MagicMock(spec=KiteConnection)
     stub._api_secret = "test_secret_123"
     stub.api_secret = "test_secret_123"   # mirrors the public property on KiteConnection
@@ -101,7 +101,7 @@ def stub_connections(reset_singletons, stub_kite_connection):
     Patch the Connections singleton with stub KiteConnections.
     Tests can use this to avoid hitting real Kite API.
     """
-    from backend.shared.helpers.connections import Connections
+    from backend.brokers.connections import Connections
     conn = Connections()
     conn.conn = stub_kite_connection
     return conn

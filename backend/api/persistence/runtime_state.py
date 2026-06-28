@@ -125,7 +125,7 @@ async def _recycle_ticker_async() -> None:
     """
     global _recycle_pending
     try:
-        from backend.shared.helpers.kite_ticker import get_ticker
+        from backend.brokers.kite_ticker import get_ticker
         ticker = get_ticker()
         ticker.recycle()
         logger.info("persistence: ticker recycled (hard-mode transition)")

@@ -206,14 +206,10 @@ PYEOF
   # is that ramboq_api can restart for backend code changes without
   # tearing down broker auth.
   #
-  # Code paths that affect the connection service:
-  #   • backend/conn_service/                  — the service itself
-  #   • backend/conn_client/                   — shared schema; restart
-  #                                              avoids wire-format drift
-  #   • backend/shared/helpers/connections.py  — Connections singleton
-  #   • backend/shared/helpers/broker_apis.py  — broker_apis surface
-  #   • backend/shared/brokers/                — adapters (Kite/Dhan/Groww)
-  #   • webhook/ramboq_conn.service            — systemd unit changes
+  # Code paths that affect the connection service — everything under
+  # backend/brokers/ (Broker ABC + adapters + connections + the
+  # service + the client + kite_ticker) OR the systemd unit itself.
+  # Post-reorg this collapses to one prefix.
   #
   # When ONLY non-conn backend code changes (routes/, algo/, models, etc.),
   # we restart ramboq_api but leave ramboq_conn alone — broker sessions
@@ -224,7 +220,7 @@ PYEOF
   # restart ramboq_conn — dev shares the prod UDS. conn-related code
   # changes only take effect after merging to main.
   CONN_TOUCHED=false
-  if [ "$ENV" = "prod" ] && echo "$CHANGED" | grep -qE '^(backend/conn_service/|backend/conn_client/|backend/shared/helpers/connections\.py|backend/shared/helpers/broker_apis\.py|backend/shared/brokers/|webhook/ramboq_conn\.service)'; then
+  if [ "$ENV" = "prod" ] && echo "$CHANGED" | grep -qE '^(backend/brokers/|webhook/ramboq_conn\.service)'; then
       CONN_TOUCHED=true
   fi
   echo "[$TS] conn_service restart needed: $CONN_TOUCHED"

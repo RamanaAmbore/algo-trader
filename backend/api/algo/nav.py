@@ -87,11 +87,11 @@ async def compute_firm_nav() -> dict:
     `errors` list surfaces what was excluded; the `accounts` list
     is the inverse (what WAS included).
     """
-    from backend.shared.helpers.broker_apis import (
+    from backend.brokers.broker_apis import (
         fetch_holdings, fetch_positions, fetch_margins,
     )
-    from backend.shared.helpers.connections import Connections
-    from backend.shared.helpers.kite_ticker import _ticker
+    from backend.brokers.connections import Connections
+    from backend.brokers.kite_ticker import _ticker
 
     cash_total = 0.0
     positions_mtm = 0.0
@@ -103,9 +103,9 @@ async def compute_firm_nav() -> dict:
     if not conn_keys:
         # Cutover branch — local Connections is empty when conn_service
         # owns the sessions; fall back to the canonical account list.
-        from backend.conn_client import is_cutover_on
+        from backend.brokers.client import is_cutover_on
         if is_cutover_on():
-            from backend.conn_client.remote_broker import list_remote_accounts
+            from backend.brokers.client.remote_broker import list_remote_accounts
             conn_keys = [r["account"] for r in list_remote_accounts() if r.get("account")]
 
     # ── Funds (cash + locked margin per broker) ───────────────────────

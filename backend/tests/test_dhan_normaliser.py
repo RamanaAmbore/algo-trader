@@ -14,7 +14,7 @@ normaliser now derives both when Dhan omits them.
 
 from __future__ import annotations
 
-from backend.shared.brokers.dhan import _normalise_holdings
+from backend.brokers.adapters.dhan import _normalise_holdings
 
 
 def test_holdings_derives_pnl_when_omitted():

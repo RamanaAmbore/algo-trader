@@ -35,7 +35,7 @@ def _get_portfolio_details():
     """Get portfolio holdings + positions with P&L details for the market report prompt."""
     try:
         import pandas as pd
-        from backend.shared.helpers.broker_apis import fetch_holdings, fetch_positions
+        from backend.brokers.broker_apis import fetch_holdings, fetch_positions
 
         lines = []
         underlyings = set()

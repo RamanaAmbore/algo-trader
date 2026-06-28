@@ -101,9 +101,9 @@ def get_logger(name="app_logger"):
     the parent's handler at parent's level (WARNING by default), and
     every `logger.info(...)` from that module is silently dropped.
 
-    This was the observed prod symptom: `backend.shared.helpers.kite_ticker`
+    This was the observed prod symptom: `backend.brokers.kite_ticker`
     never wrote a single line to api_log_file across every deploy
-    on 2026-06-10/11, while `backend.shared.helpers.connections` (which
+    on 2026-06-10/11, while `backend.brokers.connections` (which
     happens to be imported earlier) wrote lines normally. The fix is to
     check this specific logger's `.handlers` list and add the queue
     handler if not already present.

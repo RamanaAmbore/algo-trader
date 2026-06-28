@@ -60,7 +60,7 @@ from backend.api.schemas import (
     TicketPreviewRequest,
     TicketPreviewResponse,
 )
-from backend.shared.helpers.connections import Connections
+from backend.brokers.connections import Connections
 from backend.shared.helpers.date_time_utils import timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import mask_account, mask_column, secrets
@@ -311,7 +311,7 @@ async def _enforce_capacity_guard(
     if px is None:
         # Ticker first (zero broker quota).
         try:
-            from backend.shared.helpers.kite_ticker import _ticker
+            from backend.brokers.kite_ticker import _ticker
             t = _ticker.get_ltp_by_sym(tradingsymbol.upper())
             if t is not None and t > 0:
                 px = float(t)
@@ -321,7 +321,7 @@ async def _enforce_capacity_guard(
         # Broker fallback. Single batched call; failure → 503 (we
         # cannot risk-check the order without a price).
         try:
-            from backend.shared.brokers.registry import get_price_broker
+            from backend.brokers.registry import get_price_broker
             broker = get_price_broker()
             # Exchange resolution: use NFO as the safe default for F&O
             # symbols; broker.ltp accepts EXCH:SYM keys.
@@ -530,7 +530,7 @@ def _broker_for(account: str):
     modify_order, cancel_order, orders, etc.) so the order routes are
     now broker-agnostic — adding a Groww/Dhan account requires no
     edits here."""
-    from backend.shared.brokers.registry import get_broker
+    from backend.brokers.registry import get_broker
     try:
         return get_broker(account)
     except KeyError:
@@ -672,7 +672,7 @@ def _row_from_dict(d: dict, account: str) -> OrderRow:
 def _fetch_orders() -> OrdersResponse:
     from concurrent.futures import ThreadPoolExecutor
 
-    from backend.shared.brokers.registry import all_brokers
+    from backend.brokers.registry import all_brokers
 
     brokers = list(all_brokers())
     if not brokers:
@@ -1356,7 +1356,7 @@ async def _arm_take_profit(
             # Live TP — fire kite.place_order as a limit order.
             try:
                 broker = _broker_for(parent_account)
-                from backend.shared.brokers.kite import get_lot_size
+                from backend.brokers.adapters.kite import get_lot_size
                 _ls = await get_lot_size(parent_exchange, parent_symbol)
                 _kq = broker.translate_qty(parent_exchange, qty, _ls)
                 kite_order_id = broker.place_order(
@@ -1701,7 +1701,7 @@ class OrdersController(Controller):
                     # Earlier this called Connections().conn.get(account)
                     # directly and silently failed every kill on prod with
                     # "'KiteConnection' object has no attribute 'cancel_order'".
-                    from backend.shared.brokers import get_broker
+                    from backend.brokers import get_broker
                     if not str(row.account or "").strip():
                         err_msg = "no account on row"
                     elif not (row.broker_order_id or "").strip():
@@ -1961,7 +1961,7 @@ class OrdersController(Controller):
         from sqlalchemy import select as _sql_select
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
-        from backend.shared.brokers import get_broker
+        from backend.brokers import get_broker
         from datetime import datetime, timezone
 
         _KITE_TO_ALGO = {
@@ -2081,7 +2081,7 @@ class OrdersController(Controller):
         from sqlalchemy import select as _sql_select
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
-        from backend.shared.brokers import get_broker
+        from backend.brokers import get_broker
         from datetime import datetime, timezone
 
         _KITE_TO_ALGO = {
@@ -2388,7 +2388,7 @@ class OrdersController(Controller):
             f"{data.transaction_type} {data.quantity} {data.tradingsymbol}"
         )
         try:
-            from backend.shared.brokers.kite import get_lot_size
+            from backend.brokers.adapters.kite import get_lot_size
             _ls_dep = await get_lot_size(data.exchange, data.tradingsymbol.upper())
             _kq_dep = broker.translate_qty(data.exchange, data.quantity, _ls_dep)
             order_id = broker.place_order(
@@ -2874,7 +2874,7 @@ class OrdersController(Controller):
                 else:
                     # Single-shot — preserves the existing path for
                     # MARKET / SL-M and explicit chase=False tickets.
-                    from backend.shared.brokers.kite import get_lot_size
+                    from backend.brokers.adapters.kite import get_lot_size
                     _ls_ticket = await get_lot_size(data.exchange or "NFO", sym)
                     broker = _broker_for(account)
                     _kq_ticket = broker.translate_qty(data.exchange or "NFO", qty, _ls_ticket)
@@ -3217,7 +3217,7 @@ class OrdersController(Controller):
             ).strip().lower() in ("1", "true", "yes", "on")
 
             if _use_conn_svc:
-                from backend.conn_client.remote_broker import (
+                from backend.brokers.client.remote_broker import (
                     list_remote_accounts, verify_postback,
                 )
                 kite_candidates = [
@@ -3244,7 +3244,7 @@ class OrdersController(Controller):
                 # Skip non-Kite connections — postbacks only come from
                 # Kite, and Dhan/Groww connections don't expose
                 # `api_secret` so iterating them would AttributeError.
-                from backend.shared.helpers.connections import KiteConnection
+                from backend.brokers.connections import KiteConnection
                 kite_candidates: list[str] = [
                     a for a, c in conns.conn.items() if isinstance(c, KiteConnection)
                 ]
@@ -3665,7 +3665,7 @@ class OrdersController(Controller):
         # carry values that frontend consumers and the chase loop can match.
         raw_seg = str(body.get("exchangeSegment") or "")
         try:
-            from backend.shared.brokers.dhan import (
+            from backend.brokers.adapters.dhan import (
                 _DHAN_STATUS_TO_KITE,
                 _DHAN_SEGMENT_TO_EXCHANGE,
                 _dhan_to_kite_symbol,
@@ -3719,7 +3719,7 @@ class OrdersController(Controller):
         price    = body.get("average_price") or body.get("price") or 0
 
         try:
-            from backend.shared.brokers.groww import _GROWW_STATUS_TO_KITE
+            from backend.brokers.adapters.groww import _GROWW_STATUS_TO_KITE
             kite_status = _GROWW_STATUS_TO_KITE.get(status, status)
         except Exception:
             kite_status = status
@@ -3898,7 +3898,7 @@ class OrdersController(Controller):
                 if eff_mode == "live":
                     try:
                         broker = _broker_for(account)
-                        from backend.shared.brokers.kite import get_lot_size
+                        from backend.brokers.adapters.kite import get_lot_size
                         _ls = await get_lot_size(exch, sym)
                         _kq = broker.translate_qty(exch, qty, _ls)
                         kite_oid = await asyncio.to_thread(

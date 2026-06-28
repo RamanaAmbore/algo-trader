@@ -1093,7 +1093,7 @@ class DhanConnection:
             # Imported lazily to avoid the connections ↔ brokers
             # circular import at module load.
             try:
-                from backend.shared.brokers.dhan import record_dhan_login_event
+                from backend.brokers.adapters.dhan import record_dhan_login_event
                 record_dhan_login_event(self.account)
             except Exception:
                 pass
@@ -1466,7 +1466,7 @@ class Connections(SingletonBase):
             # Cutover flag-on path. Don't touch any broker SDKs in this
             # process. Pull the account list from conn_service so
             # registry / mask_account / navbar surfaces still work.
-            from backend.conn_client.remote_broker import (
+            from backend.brokers.client.remote_broker import (
                 list_remote_accounts, trigger_rebuild,
             )
             try:
@@ -1743,7 +1743,7 @@ class Connections(SingletonBase):
         # Kite/Dhan account first). Best-effort — Groww / no-Kite-accounts
         # operators don't trigger this path.
         try:
-            from backend.shared.helpers.kite_ticker import get_ticker
+            from backend.brokers.kite_ticker import get_ticker
             ticker = get_ticker()
             current = ticker.current_account()
             if current and current not in new_conn:

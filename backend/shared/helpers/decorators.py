@@ -141,7 +141,7 @@ def for_all_accounts(func):
 
     The wrapped function gets three kwargs to choose from:
 
-      * `broker` — a `backend.shared.brokers.Broker` adapter. Prefer
+      * `broker` — a `backend.brokers.Broker` adapter. Prefer
         this in new code; it's vendor-agnostic and keeps callers
         from importing KiteConnect SDK directly.
       * `kite`   — the underlying KiteConnect SDK handle. Legacy,
@@ -179,7 +179,7 @@ def for_all_accounts(func):
         conn = bound.arguments.get("conn", None)
         results = []
 
-        from backend.shared.brokers import get_broker
+        from backend.brokers import get_broker
 
         # Resolve the per-account `kite` kwarg lazily. For Kite accounts
         # this returns the live KiteConnect SDK handle (with test_conn

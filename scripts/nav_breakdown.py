@@ -23,10 +23,10 @@ from collections import defaultdict
 
 
 async def main() -> None:
-    from backend.shared.helpers.broker_apis import (
+    from backend.brokers.broker_apis import (
         fetch_holdings, fetch_positions, fetch_margins,
     )
-    from backend.shared.helpers.kite_ticker import _ticker
+    from backend.brokers.kite_ticker import _ticker
 
     # Per-account accumulators
     cash_by_acct          = defaultdict(float)

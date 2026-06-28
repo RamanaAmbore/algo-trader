@@ -12,7 +12,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from backend.shared.brokers.capabilities import (
+from backend.brokers.capabilities import (
     BrokerCapabilities,
     capabilities_for_broker_id,
 )

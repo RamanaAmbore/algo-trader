@@ -18,11 +18,11 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
-from backend.shared.brokers.base import Broker
-from backend.shared.brokers.dhan import DhanBroker
-from backend.shared.brokers.groww import GrowwBroker
-from backend.shared.brokers.kite import KiteBroker
-from backend.shared.helpers.connections import Connections
+from backend.brokers.base import Broker
+from backend.brokers.adapters.dhan import DhanBroker
+from backend.brokers.adapters.groww import GrowwBroker
+from backend.brokers.adapters.kite import KiteBroker
+from backend.brokers.connections import Connections
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -98,7 +98,7 @@ def _refresh_remote_broker_id_cache() -> None:
     `_REMOTE_BROKER_ID_CACHE`. Best-effort — failures leave the cache
     untouched so a transient UDS hiccup doesn't break `_broker_id_for`."""
     try:
-        from backend.conn_client.remote_broker import list_remote_accounts
+        from backend.brokers.client.remote_broker import list_remote_accounts
         rows = list_remote_accounts()
     except Exception:
         rows = []
@@ -171,7 +171,7 @@ def get_broker(account: str) -> Broker:
     if os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
         "1", "true", "yes", "on",
     ):
-        from backend.conn_client.remote_broker import RemoteBroker
+        from backend.brokers.client.remote_broker import RemoteBroker
         return RemoteBroker(account, broker_id=_broker_id_for(account))
 
     conn = Connections().conn.get(account)
@@ -209,7 +209,7 @@ def _loaded_accounts() -> list[str]:
     if os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
         "1", "true", "yes", "on",
     ):
-        from backend.conn_client.remote_broker import list_remote_accounts
+        from backend.brokers.client.remote_broker import list_remote_accounts
         return [r["account"] for r in list_remote_accounts() if r.get("account")]
     return []
 

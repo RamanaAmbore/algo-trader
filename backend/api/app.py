@@ -232,7 +232,7 @@ async def _rebuild_broker_connections() -> None:
     """Move broker accounts off secrets.yaml onto the DB-backed view.
     Runs once on startup after init_db so the broker_accounts table
     exists. First run also seeds DB from YAML for backwards compat."""
-    from backend.shared.helpers.connections import Connections
+    from backend.brokers.connections import Connections
     try:
         await Connections().rebuild_from_db()
     except Exception as e:
@@ -265,10 +265,10 @@ async def _start_kite_ticker() -> None:
         background performance tick logs in).
     """
     try:
-        from backend.shared.brokers.registry import get_sparkline_broker
-        from backend.shared.helpers.kite_ticker import get_ticker
-        from backend.shared.helpers.connections import Connections
-        from backend.shared.brokers.kite import KiteBroker
+        from backend.brokers.registry import get_sparkline_broker
+        from backend.brokers.kite_ticker import get_ticker
+        from backend.brokers.connections import Connections
+        from backend.brokers.adapters.kite import KiteBroker
         from backend.shared.helpers.utils import is_engine_idle
 
         # Dev-idle gate — on dev, when execution.dev_active=False AND
@@ -303,7 +303,7 @@ async def _start_kite_ticker() -> None:
         ).strip().lower() in ("1", "true", "yes", "on")
 
         if _use_conn_svc:
-            from backend.conn_client.remote_broker import (
+            from backend.brokers.client.remote_broker import (
                 list_remote_accounts, fetch_access_token,
             )
             for r in list_remote_accounts():
@@ -579,7 +579,7 @@ async def _log_visitor(request) -> None:  # type: ignore[no-untyped-def]
 async def _stop_kite_ticker(app) -> None:  # noqa: ARG001
     """Gracefully close the KiteTicker WebSocket on Litestar shutdown."""
     try:
-        from backend.shared.helpers.kite_ticker import get_ticker
+        from backend.brokers.kite_ticker import get_ticker
         get_ticker().stop()
     except Exception:
         pass

@@ -129,7 +129,7 @@ _MEM_CACHE: dict[_MemKey, set[date]] = _holidays_store._mem_cache
 
 def _nse_fetch_sync(exchange: str) -> set[date]:
     """Call the existing fetch_holidays() from broker_apis — keeps NSE logic in one place."""
-    from backend.shared.helpers.broker_apis import fetch_holidays
+    from backend.brokers.broker_apis import fetch_holidays
     return fetch_holidays(exchange)
 
 

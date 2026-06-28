@@ -355,7 +355,7 @@ async def compute_unrealised_marked_to_ltp(
     # the watchdog has subscribed (positions, holdings, watchlist).
     ltp_map: dict[str, float] = {}
     try:
-        from backend.shared.helpers.kite_ticker import _ticker
+        from backend.brokers.kite_ticker import _ticker
         for sym in symbol_exchange:
             t = _ticker.get_ltp_by_sym(sym)
             if t is not None and t > 0:
@@ -370,7 +370,7 @@ async def compute_unrealised_marked_to_ltp(
     missing = [s for s in symbol_exchange if s not in ltp_map]
     if missing:
         try:
-            from backend.shared.brokers.registry import get_price_broker
+            from backend.brokers.registry import get_price_broker
             import asyncio as _asyncio
             broker = get_price_broker()
             keys = [f"{symbol_exchange[s]}:{s}" for s in missing]

@@ -154,7 +154,7 @@ _MEM_CACHE: dict[_MemKey, dict[tuple[str, str], int]] = _instruments_store._mem_
 
 def _broker_fetch_sync(exchange: str) -> list[dict[str, Any]]:
     """Blocking call to broker.instruments(exchange). Run via asyncio.to_thread."""
-    from backend.shared.brokers.registry import get_sparkline_broker
+    from backend.brokers.registry import get_sparkline_broker
     broker = get_sparkline_broker()
     raw = broker.instruments(exchange) or []
     return list(raw)

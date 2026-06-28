@@ -1083,7 +1083,7 @@ class AdminController(Controller):
                        f"Valid: {', '.join(BENCHMARK_TOKENS)}",
             )
 
-        from backend.shared.brokers.registry import get_price_broker
+        from backend.brokers.registry import get_price_broker
 
         def _fetch_one(symbol: str) -> PnlBenchmarkSeries:
             cache_key = _benchmark_cache_key(symbol, from_str, to_str)
