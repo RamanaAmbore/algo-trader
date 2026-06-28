@@ -68,12 +68,14 @@ test.describe('mobile toolbar — single-row layout', () => {
 
   let _session = /** @type {{ token: string }|null} */ (null);
 
+  // 60 s timeout: loginAsAdmin retries up to 3 times on rate-limit
+  // (delays of 0 + 3 + 8 = 11 s) so the default 30 s is too tight.
   test.beforeAll(async ({ browser }) => {
     const page = await browser.newPage();
     const info = await loginAsAdmin(page);
     _session = { token: info.token };
     await page.close();
-  }, 60_000);
+  }, 60000);
 
   test('row 1 (symbol + series) fits on one line', async ({ page }) => {
     await injectSession(page, { ramboq_token: _session?.token ?? '' });
@@ -259,7 +261,7 @@ test.describe('desktop regression — toolbar layout intact', () => {
     const info = await loginAsAdmin(page);
     _session = { token: info.token };
     await page.close();
-  }, 60_000);
+  }, 60000);
 
   test('row 1 type-filter has width ≥ 7rem at desktop (not shrunk)', async ({ page }) => {
     await injectSession(page, { ramboq_token: _session?.token ?? '' });
