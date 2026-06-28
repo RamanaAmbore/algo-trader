@@ -69,10 +69,21 @@ test.describe('chart overlays — all viewports', () => {
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
-  /** Wait for the chart SVG to appear with at least one path. */
+  /** Wait for the chart SVG to appear with at least one drawn shape.
+   *  After the candle-default flip (this slice), .cw-svg path is empty
+   *  on cold-load because candles render as <rect>+<line>, not <path>.
+   *  Use the y-axis tick text as the "chart has data" signal instead —
+   *  it renders once _bars + _yDomain are populated. Falls back to any
+   *  SVG content if the y-tick label heuristic misses (e.g. a transient
+   *  empty range). */
   async function waitForChart(page) {
     await expect(page.locator('.cw-range-group')).toBeVisible({ timeout: 20_000 });
-    await expect(page.locator('.cw-svg path').first()).toBeVisible({ timeout: 20_000 });
+    // y-axis labels (5 of them) render when _bars.length > 0 — present
+    // for every series type. Single waitFor since they share the same
+    // condition (any one visible means the chart has data).
+    await expect(
+      page.locator('.cw-svg text').first(),
+    ).toBeVisible({ timeout: 20_000 });
   }
 
   /**
