@@ -733,16 +733,58 @@ export function closeActivityModal() {
 //   backendOk: true, loaded < tot → red/amber + count    (broker offline)
 //   backendOk: true, loaded === tot → green + count       (all healthy)
 //   total === 0                   → no badge             (demo / no config)
+// Operator: "connection chip is updating last. it should be updated
+// along with the user id and role chip in navbar." The user pill
+// renders synchronously from sessionStorage on initial paint; the
+// conn chip was gated on `$connStatus.total > 0` and waited a full
+// poll round-trip (~200ms cold, up to 15s on login → next-tick),
+// so the chip flashed in late.
+//
+// Fix: persist the last good `connStatus` to localStorage. On
+// store init, restore from that snapshot — chip paints alongside
+// the user pill from the very first frame. The fresh poll still
+// runs from onMount and overwrites once the new data lands.
+const _CONN_LS_KEY = 'rbq.cache.connStatus.v1';
+function _readConnStatusLS() {
+  if (!browser) return null;
+  try {
+    const raw = localStorage.getItem(_CONN_LS_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw);
+    // Validate shape so a stale / malformed entry can't crash the
+    // chip's @const block.
+    if (typeof v?.loaded === 'number' && typeof v?.total === 'number'
+        && typeof v?.backendOk === 'boolean'
+        && Array.isArray(v?.failingAccounts) && Array.isArray(v?.accounts)) {
+      return v;
+    }
+  } catch { /* malformed JSON — ignore, fall through to default */ }
+  return null;
+}
+const _CONN_DEFAULT = { loaded: 0, total: 0, backendOk: true, failingAccounts: [], accounts: [] };
 export const connStatus = writable(/** @type {{
   loaded: number,
   total: number,
   backendOk: boolean,
   failingAccounts: string[],
   accounts: string[],
-}} */ ({ loaded: 0, total: 0, backendOk: true, failingAccounts: [], accounts: [] }));
+}} */ (_readConnStatusLS() ?? _CONN_DEFAULT));
+// Mirror writes back to localStorage. Only persist when we have real
+// data (total > 0) so the cached snapshot survives a hard reload
+// without flashing the empty-state.
+if (browser) {
+  connStatus.subscribe((v) => {
+    try {
+      if (v && v.total > 0) {
+        localStorage.setItem(_CONN_LS_KEY, JSON.stringify(v));
+      }
+    } catch { /* quota / privacy mode — non-fatal */ }
+  });
+}
 
 let _connPollerStarted = false;
 let _connPollerTeardown = null;
+let _connPoll = /** @type {(() => Promise<void>) | null} */ (null);
 export function startConnStatusPoller() {
   if (!browser || _connPollerStarted) return;
   _connPollerStarted = true;
@@ -792,8 +834,27 @@ export function startConnStatusPoller() {
       connStatus.update((v) => ({ ...v, backendOk: false }));
     }
   };
+  _connPoll = poll;
   poll();
   _connPollerTeardown = visibleInterval(poll, 15000);
+  // Re-fire on every authStore transition so the chip updates in
+  // lock-step with the user / role pill on login, impersonation,
+  // and impersonation-end — instead of waiting for the next 15 s
+  // poll tick. The first subscription event fires synchronously
+  // and is skipped (it duplicates the `poll()` call above).
+  let _firstAuthFire = true;
+  authStore.subscribe(() => {
+    if (_firstAuthFire) { _firstAuthFire = false; return; }
+    poll();
+  });
+}
+
+/** Public hook — re-fires the conn poll immediately. Used by the
+ *  /signin form on successful login so the broker chip appears
+ *  alongside the user pill on the post-login navigation, without
+ *  waiting for the (algo)/+layout onMount to remount the poller. */
+export function refreshConnStatusNow() {
+  if (browser && _connPoll) _connPoll();
 }
 
 export function stopConnStatusPoller() {
