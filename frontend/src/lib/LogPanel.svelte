@@ -3,7 +3,7 @@
   import { parseLogLineTime, parseLogLineDate, logTime, formatDualTz, executionMode } from '$lib/stores';
   import {
     fetchRecentAgentEvents, fetchSimEvents,
-    fetchSimTicks, fetchAdminLogs, fetchAlgoOrdersRecent,
+    fetchSimTicks, fetchAdminLogs, fetchAdminConnLogs, fetchAlgoOrdersRecent,
     fetchOrders, cancelOrder, reconcileSingleOrder,
   } from '$lib/api';
   import NewsList from '$lib/NewsList.svelte';
@@ -41,7 +41,7 @@
     // Every LogPanel mount inherits this — drop the explicit `tabs=`
     // prop at callsites unless a page genuinely needs a subset
     // (e.g. /console hiding Order in a future iteration).
-    tabs        = ['order','agent','terminal','simulator','system','news'],
+    tabs        = ['order','agent','terminal','simulator','system','conn','news'],
     defaultTab  = 'order',
     simScope    = false,
     pollMs      = 3000,
@@ -120,6 +120,7 @@
   let orderRows = $state(/** @type {any[]} */ ([]));   // for Terminal tab embedding
   let agentLog  = $state(/** @type {any[]} */ ([]));
   let systemLog = $state(/** @type {string[]} */ ([]));
+  let connLog   = $state(/** @type {string[]} */ ([]));
   let simLog    = $state(/** @type {any[]} */ ([]));
 
   // Derived row arrays for the keyed {#each} renderers below —
@@ -171,6 +172,24 @@
         };
       });
   });
+  // Same shape as _sysRows but sourced from connLog. Keeps the
+  // rendering loop simple — one #each per tab, no shared list with
+  // a filter (which would re-sort + re-key on every poll of either
+  // source).
+  const _connRows = $derived.by(() => {
+    return connLog.slice()
+      .map(l => ({ l, d: parseLogLineDate(l) }))
+      .sort((a, b) => _tsKey(b.d) - _tsKey(a.d))
+      .map(({ l, d }, i) => {
+        const rest = d ? stripTs(l) : l;
+        const levelMatch = String(rest || '').match(/^(ERROR|WARN(?:ING)?|INFO|DEBUG)\b/i);
+        const tag = levelMatch ? levelMatch[1].toUpperCase() : '';
+        return {
+          key: `c${(d ? +d : 0)}-${String(l).length}-${String(l).slice(0, 32)}`,
+          html: _logRow(d || null, rest, tag, sysClass(l)),
+        };
+      });
+  });
 
   /** @type {Array<ReturnType<typeof setInterval>>} */
   const _intervals = [];
@@ -201,6 +220,12 @@
     try {
       const d = await fetchAdminLogs(200);
       systemLog = d?.lines || [];
+    } catch (_) {}
+  }
+  async function _loadConn() {
+    try {
+      const d = await fetchAdminConnLogs(200);
+      connLog = d?.lines || [];
     } catch (_) {}
   }
   async function _loadSim() {
@@ -251,6 +276,7 @@
   // most operators never visit in a session. Don't start their pollers on
   // mount; start them on first tab activation instead.
   let _sysPollStarted  = false;
+  let _connPollStarted = false;
   let _simPollStarted  = false;
 
   onMount(() => {
@@ -269,6 +295,10 @@
     if (logTab === 'system' && !_sysPollStarted && tabs.includes('system')) {
       _sysPollStarted = true;
       _every(_loadSystem);
+    }
+    if (logTab === 'conn' && !_connPollStarted && tabs.includes('conn')) {
+      _connPollStarted = true;
+      _every(_loadConn);
     }
     if (logTab === 'simulator' && !_simPollStarted && tabs.includes('simulator')) {
       _simPollStarted = true;
@@ -379,6 +409,7 @@
     ['terminal',  'Terminal'],
     ['simulator', 'Ticks'],
     ['system',    'System'],
+    ['conn',      'Conn'],
     ['news',      'News'],
   ];
   // Filter to the per-page subset (defaults to all six). Lets /console
@@ -1063,6 +1094,12 @@
       {#each _simRows as r (r.key)}{@html r.html}{/each}
     {:else}
       <div class="log-row log-debug"><span class="log-row-msg">No simulator ticks yet.</span></div>
+    {/if}
+  {:else if logTab === 'conn'}
+    {#if _connRows.length}
+      {#each _connRows as r (r.key)}{@html r.html}{/each}
+    {:else}
+      <div class="log-row log-debug"><span class="log-row-msg">No conn_service entries yet.</span></div>
     {/if}
   {:else}
     {#if _sysRows.length}

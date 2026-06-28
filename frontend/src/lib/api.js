@@ -934,6 +934,11 @@ export const fetchLiveStatus    = () => _get('/live/status', { auth: true });
 export const fetchAdminLogs = (n = 100) =>
   _get(`/admin/logs?n=${n}`, { auth: true });
 
+/** GET /api/admin/logs/conn?n=… — tail conn_service's log file
+ * (KiteTicker, watchdog, broker rebuild events). */
+export const fetchAdminConnLogs = (n = 100) =>
+  _get(`/admin/logs/conn?n=${n}`, { auth: true });
+
 // ── Contact (public) ──────────────────────────────────────────────────
 /** POST /api/contact/ — public contact form submission. */
 export const submitContact = (payload) => _post('/contact/', payload);

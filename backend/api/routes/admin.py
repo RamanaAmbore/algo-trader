@@ -38,10 +38,19 @@ logger = get_logger(__name__)
 _LOG_PREFIX = os.environ.get("RAMBOQ_LOG_PREFIX", "")
 _raw_path = Path(config.get("file_log_file", ".log/log_file"))
 _LOG_FILE = _raw_path.with_name(_LOG_PREFIX + _raw_path.name)
+# conn_service writes its own log alongside the api log under the
+# fixed `conn_` prefix (set in webhook/ramboq_conn.service). The
+# /api/admin/logs/conn endpoint tails this so the operator can see
+# KiteTicker, watchdog and rebuild_from_db lines without ssh'ing.
+_CONN_LOG_FILE = _raw_path.with_name("conn_" + _raw_path.name)
 
 
 def _resolve_log() -> Path:
     return _LOG_FILE if _LOG_FILE.is_absolute() else Path.cwd() / _LOG_FILE
+
+
+def _resolve_conn_log() -> Path:
+    return _CONN_LOG_FILE if _CONN_LOG_FILE.is_absolute() else Path.cwd() / _CONN_LOG_FILE
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +273,28 @@ class AdminController(Controller):
         log_path = _resolve_log()
         if not log_path.exists():
             return LogsResponse(lines=["Log file not found"], path=str(log_path))
+        try:
+            result = subprocess.run(
+                ["tail", f"-{min(n, 2000)}", str(log_path)],
+                capture_output=True, text=True, timeout=10,
+            )
+            return LogsResponse(lines=result.stdout.splitlines(), path=str(log_path))
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @get("/logs/conn")
+    async def get_conn_logs(self, n: int = 200) -> LogsResponse:
+        """Tail conn_service's log file. Same shape as /logs, different
+        source — ramboq_conn writes to .log/conn_log_file (RAMBOQ_LOG_
+        PREFIX=conn_ in its systemd unit). Operators get KiteTicker
+        boot, watchdog recovery and rebuild_from_db events without
+        needing ssh."""
+        log_path = _resolve_conn_log()
+        if not log_path.exists():
+            return LogsResponse(
+                lines=[f"conn_service log not found at {log_path}"],
+                path=str(log_path),
+            )
         try:
             result = subprocess.run(
                 ["tail", f"-{min(n, 2000)}", str(log_path)],
