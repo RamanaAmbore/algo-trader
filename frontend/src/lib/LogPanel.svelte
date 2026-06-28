@@ -123,7 +123,13 @@
     return 'info';
   }
   function _lineMatchesLevel(/** @type {string} */ line) {
-    if (levelFilter === 'all') return true;
+    // Treat anything outside {error, warning, info} as no-filter so a
+    // prop default that didn't propagate (undefined / null / typo)
+    // can't silently drop every conn_service row to a "no entries"
+    // empty state. Operator: "conn tab does not have rows displayed."
+    if (levelFilter !== 'error' && levelFilter !== 'warning' && levelFilter !== 'info') {
+      return true;
+    }
     return _lineLevel(line) === levelFilter;
   }
   // Match Kite/Dhan/Groww account patterns inside free-text logs —
