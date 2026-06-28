@@ -2,16 +2,16 @@
  * pulse_column_order.spec.js
  *
  * Verifies that the pinned/watchlist/movers (left grid, leftColDefs) and
- * the positions/holdings (right grid, rightColDefs) both show `Close`
- * BEFORE `Day %` in the rendered column header sequence.
+ * the positions/holdings (right grid, rightColDefs) both show `Day %`
+ * BEFORE `Close` in the rendered column header sequence.
  *
  * Canonical cluster per CLAUDE.md:
- *   Symbol · 5d · LTP · Avg · Close · Qty · Day P&L · Day % · P&L % · P&L
+ *   Symbol · 5d · LTP · Avg · Day % · Close · Qty · Day P&L · P&L % · P&L
  *
  * Five quality dimensions (per feedback_test_dimensions.md):
  *   1. SSOT       — column header order in rendered DOM matches canonical
  *   2. Performance — cold-load unique API path count on /pulse ≤30
- *   3. Stale code  — old (wrong) header order (Day % before Close) not in any grid
+ *   3. Stale code  — old (wrong) header order (Close before Day %) not in any grid
  *   4. Reusable    — every bucket grid Close header carries col-id="close" (single _prevCol source)
  *   5. UX          — cell-freshness-pulse animation still defined; LTP headers render
  *
@@ -51,7 +51,7 @@ async function acquireToken(request) {
   return null;
 }
 
-test.describe('/pulse — column order: Close before Day %', () => {
+test.describe('/pulse — column order: Day % before Close', () => {
 
   test.beforeAll(async ({ request }) => {
     sharedToken = await acquireToken(request);
@@ -68,8 +68,8 @@ test.describe('/pulse — column order: Close before Day %', () => {
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
   }
 
-  // ── 1. SSOT: Close before Day % in all bucket grids ─────────────────────────
-  test('1. SSOT: all bucket grids show Close before Day %', async ({ page }) => {
+  // ── 1. SSOT: Day % before Close in all bucket grids ─────────────────────────
+  test('1. SSOT: all bucket grids show Day % before Close', async ({ page }) => {
     test.setTimeout(90_000);
     const vp = page.viewportSize();
     if (vp && vp.width < 1000) { test.skip(); return; }
@@ -90,7 +90,7 @@ test.describe('/pulse — column order: Close before Day %', () => {
           .map(h => (h.querySelector('.ag-header-cell-text')?.textContent ?? '').trim())
           .filter(Boolean);
 
-        return { label, texts, closeIdx: texts.indexOf('Close'), dayPctIdx: texts.findIndex(t => t === 'Day %') };
+        return { label, texts, dayPctIdx: texts.findIndex(t => t === 'Day %'), closeIdx: texts.indexOf('Close') };
       }
       return Array.from(document.querySelectorAll('.ag-theme-algo.bucket-grid')).map(readGrid);
     });
@@ -98,21 +98,21 @@ test.describe('/pulse — column order: Close before Day %', () => {
     console.log('--- Column header sequences ---');
     for (const g of result) {
       console.log(`  ${g.label}: [${g.texts.join(', ')}]`);
-      console.log(`    Close @ ${g.closeIdx}, Day % @ ${g.dayPctIdx}`);
+      console.log(`    Day % @ ${g.dayPctIdx}, Close @ ${g.closeIdx}`);
     }
 
     expect(result.length, 'at least one grid must have rendered headers').toBeGreaterThan(0);
 
     let checkedCount = 0;
     for (const g of result) {
-      if (g.closeIdx === -1 || g.dayPctIdx === -1) continue;
+      if (g.dayPctIdx === -1 || g.closeIdx === -1) continue;
       checkedCount++;
-      expect(g.closeIdx,
-        `${g.label}: Close (${g.closeIdx}) must come BEFORE Day % (${g.dayPctIdx})`
-      ).toBeLessThan(g.dayPctIdx);
+      expect(g.dayPctIdx,
+        `${g.label}: Day % (${g.dayPctIdx}) must come BEFORE Close (${g.closeIdx})`
+      ).toBeLessThan(g.closeIdx);
     }
     if (checkedCount === 0) {
-      console.warn('WARN: no grid had both Close and Day % — grid may be empty or positions/holdings unavailable.');
+      console.warn('WARN: no grid had both Day % and Close — grid may be empty or positions/holdings unavailable.');
     }
   });
 
@@ -140,8 +140,8 @@ test.describe('/pulse — column order: Close before Day %', () => {
     expect(uniqueCount, `Unique /api path count ${uniqueCount} should be ≤30`).toBeLessThanOrEqual(30);
   });
 
-  // ── 3. Stale: old wrong order (Day % before Close) absent from all grids ─────
-  test('3. Stale: no bucket grid renders Day % before Close', async ({ page }) => {
+  // ── 3. Stale: old wrong order (Close before Day %) absent from all grids ─────
+  test('3. Stale: no bucket grid renders Close before Day %', async ({ page }) => {
     test.setTimeout(90_000);
     const vp = page.viewportSize();
     if (vp && vp.width < 1000) { test.skip(); return; }
@@ -160,18 +160,18 @@ test.describe('/pulse — column order: Close before Day %', () => {
         const texts = Array.from(grid.querySelectorAll('.ag-header-cell'))
           .map(h => (h.querySelector('.ag-header-cell-text')?.textContent ?? '').trim())
           .filter(Boolean);
-        return { label, texts, closeIdx: texts.indexOf('Close'), dayPctIdx: texts.findIndex(t => t === 'Day %') };
+        return { label, texts, dayPctIdx: texts.findIndex(t => t === 'Day %'), closeIdx: texts.indexOf('Close') };
       }
       return Array.from(document.querySelectorAll('.ag-theme-algo.bucket-grid'))
         .map(readGrid)
-        .filter(g => g.dayPctIdx !== -1 && g.closeIdx !== -1 && g.dayPctIdx < g.closeIdx);
+        .filter(g => g.dayPctIdx !== -1 && g.closeIdx !== -1 && g.closeIdx < g.dayPctIdx);
     });
 
     if (wrongOrderBuckets.length > 0) {
-      console.log('Grids with wrong order:', JSON.stringify(wrongOrderBuckets, null, 2));
+      console.log('Grids with wrong order (Close before Day %):', JSON.stringify(wrongOrderBuckets, null, 2));
     }
     expect(wrongOrderBuckets.length,
-      `${wrongOrderBuckets.length} grid(s) still show Day % before Close: ${wrongOrderBuckets.map(g => g.label).join(', ')}`
+      `${wrongOrderBuckets.length} grid(s) still show Close before Day %: ${wrongOrderBuckets.map(g => g.label).join(', ')}`
     ).toBe(0);
   });
 
@@ -245,8 +245,8 @@ test.describe('/pulse — column order: Close before Day %', () => {
     console.log('cell-freshness-pulse animation defined:', shimmerDefined);
     expect(shimmerDefined, 'cell-freshness-pulse ::after animation must be defined').toBe(true);
 
-    // UX 3: in left-side grids, LTP appears BEFORE Close (canonical visual order).
-    const ltpBeforeClose = await page.evaluate(() => {
+    // UX 3: in left-side grids, LTP appears BEFORE Day % (canonical visual order).
+    const ltpBeforeDayPct = await page.evaluate(() => {
       for (const cls of ['mp-bucket-pinwatch', 'mp-bucket-winners', 'mp-bucket-losers']) {
         const section = document.querySelector(`.${cls}`);
         if (!section) continue;
@@ -255,14 +255,14 @@ test.describe('/pulse — column order: Close before Day %', () => {
         const texts = Array.from(grid.querySelectorAll('.ag-header-cell'))
           .map(h => (h.querySelector('.ag-header-cell-text')?.textContent ?? '').trim())
           .filter(Boolean);
-        const ltpIdx = texts.indexOf('LTP'), closeIdx = texts.indexOf('Close');
-        if (ltpIdx !== -1 && closeIdx !== -1) return { bucket: cls, ltpIdx, closeIdx };
+        const ltpIdx = texts.indexOf('LTP'), dayPctIdx = texts.findIndex(t => t === 'Day %');
+        if (ltpIdx !== -1 && dayPctIdx !== -1) return { bucket: cls, ltpIdx, dayPctIdx };
       }
       return null;
     });
-    if (ltpBeforeClose) {
-      console.log(`Left grid (${ltpBeforeClose.bucket}): LTP@${ltpBeforeClose.ltpIdx} Close@${ltpBeforeClose.closeIdx}`);
-      expect(ltpBeforeClose.ltpIdx, `LTP must precede Close`).toBeLessThan(ltpBeforeClose.closeIdx);
+    if (ltpBeforeDayPct) {
+      console.log(`Left grid (${ltpBeforeDayPct.bucket}): LTP@${ltpBeforeDayPct.ltpIdx} Day %@${ltpBeforeDayPct.dayPctIdx}`);
+      expect(ltpBeforeDayPct.ltpIdx, 'LTP must precede Day %').toBeLessThan(ltpBeforeDayPct.dayPctIdx);
     }
   });
 

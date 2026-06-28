@@ -553,7 +553,7 @@ Unified chart for any symbol kind (underlying / future / option / equity). Reads
 
 **Bucket sort integrity**: `bucketOf` returns pinned (1), watchlist (2), positions (3), holdings (4), movers (5). `postSortRows` keeps sort scoped within bucket.
 
-**Default-visible cluster**: Symbol · 5d · LTP · Avg · Close · Qty · Day P&L · Day % · P&L % · P&L. Deviates from canonical (Avg next to LTP + P&L % before P&L) intentionally.
+**Default-visible cluster**: Symbol · 5d · LTP · Avg · Day % · Close · Qty · Day P&L · P&L % · P&L. Deviates from canonical (Avg next to LTP + Day % before Close) intentionally.
 
 **Directional encoding**:
 - **Background tint**: pos-long green 10%, pos-short red 10%. row-hold-up green 10%, row-hold-down red 10%, row-hold-flat slate 8%. row-watch amber 10%, row-und violet 10%, row-pos slate 8%.

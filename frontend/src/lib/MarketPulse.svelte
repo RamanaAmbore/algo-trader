@@ -3859,12 +3859,12 @@
       _symColLeft,
       _sparkCol,
       _ltpCol,
-      _prevCol,
       { field: 'change_pct', headerName: 'Day %', colId: 'left_change_pct',
         width: 64, type: 'numericColumn', headerClass: numericHdr,
         cellClass: dirCellClass,
         valueFormatter: pctFmtGrid,
         headerTooltip: 'Raw symbol day-change % (no qty).' },
+      _prevCol,
       _openCol,
       _volCol,
       _oiCol,
@@ -3875,8 +3875,8 @@
     // Operator: "i am more interested in ltp, avg, day p&l, p&l, etc
     // for taking action."
     //
-    //   Symbol → Sparkline → LTP → Prev Close → Avg → Day P&L →
-    //   Day % → P&L → P&L % → Qty → Invested → Value → Open → Vol →
+    //   Symbol → Sparkline → LTP → Avg → Day P&L → Day % → Close →
+    //   P&L → P&L % → Qty → Invested → Value → Open → Vol →
     //   OI → Account (trailing)
     //
     // The trailing Account column keeps the lead-account-or-"+N"
@@ -3907,7 +3907,6 @@
       _symColRight,
       _sparkCol,
       _ltpCol,
-      _prevCol,
       // Avg — weighted entry price across positions + holdings on the row.
       { field: 'avg_combined', headerName: 'Avg', colId: 'avg_combined',
         width: 68, minWidth: 60, maxWidth: 90,
@@ -3945,6 +3944,7 @@
         },
         valueFormatter: pctFmtGrid,
         headerTooltip: 'Day P&L as % of yesterday’s market value (close × qty).' },
+      _prevCol,
       { field: 'pnl', headerName: 'P&L', width: 78, minWidth: 60, maxWidth: 96,
         type: 'numericColumn', headerClass: numericHdr,
         cellClass: pnlCellClass,
