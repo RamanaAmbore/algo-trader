@@ -11,13 +11,24 @@ Per-(symbol, exchange) asyncio.Lock deduplicates concurrent in-flight
 fetches: the second coroutine that acquires the lock re-checks tiers 1
 and 2 before calling the broker, so the broker is called at most once
 per cold symbol.
+
+Partial-range fetch (get_or_fetch_daily):
+  When Tier 2 holds bars for part of the requested range, only the
+  missing slice(s) are fetched from the broker — not the full range.
+  Gaps ≤ 6 days are treated as legitimate market closures (weekends +
+  holidays) and do NOT trigger a broker fetch.  The four gap cases
+  handled by _compute_missing_ranges():
+    a. DB range entirely inside requested range → two slices (head + tail)
+    b. DB overlaps tail of requested → fetch missing head
+    c. DB overlaps head of requested → fetch missing tail
+    d. DB disjoint from requested      → fetch full requested range
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, TypedDict
 
 from backend.api.persistence.store_base import PersistentStoreBase
@@ -69,6 +80,64 @@ def _is_complete_range(bars: list[OHLCVBar], from_d: date, to_d: date) -> bool:
             return False
         prev = cur
     return True
+
+
+# ── Missing-range computation ─────────────────────────────────────────────────
+
+_MARKET_GAP_DAYS = 6   # gaps ≤ this many calendar days are legitimate (weekends + holidays)
+
+
+def _compute_missing_ranges(
+    existing_bars: list[OHLCVBar],
+    from_d: date,
+    to_d: date,
+) -> list[tuple[date, date]]:
+    """Return the date ranges that are NOT covered by `existing_bars` within
+    the interval [from_d, to_d].
+
+    Rules:
+    - Gaps ≤ _MARKET_GAP_DAYS (6) calendar days between consecutive existing
+      bars are treated as legitimate market closures and do NOT split the
+      covered range into two separate holes.
+    - The function returns the minimum set of (start, end) pairs that the
+      caller must fetch from the broker to produce a complete [from_d, to_d]
+      series when merged with existing_bars.
+
+    Four structural cases (returned slices):
+      a. existing entirely inside [from_d, to_d] → [(from_d, existing_min-1),
+                                                      (existing_max+1, to_d)]
+      b. existing overlaps tail of requested → [(from_d, existing_min-1)]
+      c. existing overlaps head of requested → [(existing_max+1, to_d)]
+      d. existing disjoint / empty            → [(from_d, to_d)]
+
+    Gaps ≤ _MARKET_GAP_DAYS between the boundary of existing_bars and the
+    requested boundary are absorbed (treated as holidays), so a request for
+    Mon 2026-01-05 where the existing bars end on Fri 2025-12-26 (gap=10 days)
+    would still produce a fetch, but a gap of 4 days (e.g. Easter + Easter
+    Monday) would not.
+    """
+    if not existing_bars:
+        return [(from_d, to_d)]
+
+    existing_dates = sorted({b["date"] for b in existing_bars})
+    db_min = date.fromisoformat(existing_dates[0])
+    db_max = date.fromisoformat(existing_dates[-1])
+
+    missing: list[tuple[date, date]] = []
+
+    # Head gap: from_d .. db_min-1 (if more than _MARKET_GAP_DAYS away)
+    if (db_min - from_d).days > _MARKET_GAP_DAYS:
+        head_to = db_min - timedelta(days=1)
+        if head_to >= from_d:
+            missing.append((from_d, head_to))
+
+    # Tail gap: db_max+1 .. to_d (if more than _MARKET_GAP_DAYS away)
+    if (to_d - db_max).days > _MARKET_GAP_DAYS:
+        tail_from = db_max + timedelta(days=1)
+        if tail_from <= to_d:
+            missing.append((tail_from, to_d))
+
+    return missing
 
 
 # ── OHLCVStore subclass ───────────────────────────────────────────────────────
@@ -170,6 +239,61 @@ class OHLCVStore(PersistentStoreBase):
         sym, exch = key[0], key[1]
         _enqueue_persist_impl(sym, exch, value)
 
+    # ── Partial-range fetch (used by get_or_fetch_daily) ─────────────────────
+
+    async def _db_fetch_existing(self, sym: str, exch: str,
+                                  from_d: date, to_d: date) -> list[OHLCVBar]:
+        """Return whatever bars exist in DB for (sym, exch) in [from_d, to_d].
+        Unlike _db_fetch, this does NOT check completeness — it is used only to
+        learn what the DB already has so the caller can compute missing ranges."""
+        key: _FullKey = (sym, exch, from_d.isoformat(), to_d.isoformat())
+        result = await self._db_fetch(key)
+        return result if result is not None else []
+
+    async def _fetch_slice(self, sym: str, exch: str,
+                            from_d: date, to_d: date,
+                            today: date) -> list[OHLCVBar]:
+        """Fetch [from_d, to_d] from broker (Tier 3) for a single slice.
+        Persists bars up to (but not including) today — today's bar is
+        unsettled while the session is open, so it is excluded from the
+        durable store but still returned to the caller.
+
+        Uses the per-(sym, exch) asyncio.Lock to deduplicate concurrent
+        in-flight slices for the same symbol.
+        """
+        full_key: _FullKey = (sym, exch, from_d.isoformat(), to_d.isoformat())
+        lock = await self._get_lock(full_key)
+        async with lock:
+            # Re-check Tier 1 after acquiring (another coroutine may have
+            # already populated it for this slice).
+            cached = self._mem_get(full_key)
+            if cached is not None and self._is_complete(cached, full_key):
+                self._tier1_hits += 1
+                if isinstance(cached, dict):
+                    return [v for k, v in cached.items()
+                            if from_d.isoformat() <= k <= to_d.isoformat()]
+                return list(cached)
+
+            try:
+                bars = await self._broker_fetch(full_key)
+                self._tier3_fetches += 1
+            except Exception as exc:
+                self._tier3_errors += 1
+                logger.warning(
+                    f"{self._name}: slice broker fetch failed "
+                    f"{sym}/{exch} [{from_d}..{to_d}]: {exc}"
+                )
+                return []
+
+            if bars:
+                self._mem_set(full_key, bars)
+                # Persist only bars strictly before today (immutable-day rule).
+                persist_bars = [b for b in bars if b["date"] < today.isoformat()]
+                if persist_bars:
+                    _enqueue_persist_impl(sym, exch, persist_bars)
+
+            return bars
+
 
 # ── Module-level singleton ────────────────────────────────────────────────────
 
@@ -246,35 +370,113 @@ async def get_or_fetch_daily(
 ) -> list[OHLCVBar]:
     """Return daily OHLCV bars for symbol/exchange in [from_d, to_d].
 
-    Read path: Tier 1 (memory) → Tier 2 (DB) → Tier 3 (broker).
+    Read path (normal): Tier 1 (memory) → Tier 2 (DB) → Tier 3 (broker).
     Write-back to Tier 1 + write queues happens only on Tier 3 hit.
 
+    Partial-range optimisation: when Tier 2 has bars for part of the
+    requested range, only the missing slice(s) are fetched from the
+    broker.  The existing DB bars and the freshly-fetched slices are
+    merged and returned as a single chronologically sorted list.  This
+    avoids the prior behaviour where a 1Y request with 6 months in DB
+    triggered a full 365-day broker fetch.
+
+    Gap rule: gaps ≤ _MARKET_GAP_DAYS (6) calendar days between the
+    boundary of existing DB coverage and the requested boundary are
+    treated as legitimate market closures (weekends + holiday clusters)
+    and do NOT trigger an extra broker slice.
+
+    Today-edge: the bar for today is unsettled while the session is
+    open (the close price is live LTP).  Bars fetched from the broker
+    for today are returned to the caller but NOT persisted to the durable
+    store (immutable-day semantics per CLAUDE.md).
+
     When `bypass_cache=True`, skips Tier 1 + Tier 2 entirely and goes
-    straight to the broker. Used by `?fresh=1` query param and the
-    global `persistence.bypass_db` settings flag. Defect-recovery
-    tool: forces a re-fetch from broker truth and heals the persistent
-    tiers on the write-back pass (the queue writer overwrites with the
-    fresh data). Operator: "switch to use api with no db ... will help
-    refresh cache and db if they are not accurate because code defects".
+    straight to the broker for the full range. Used by `?fresh=1` query
+    param and the global `persistence.bypass_db` settings flag.
+    Defect-recovery tool: forces a re-fetch from broker truth and heals
+    the persistent tiers on the write-back pass.
     """
+    from backend.api.persistence import runtime_state
+
     sym  = symbol.upper().strip()
     exch = exchange.upper().strip()
     full_key: _FullKey = (sym, exch, from_d.isoformat(), to_d.isoformat())
 
-    # get() returns the list of OHLCVBar (Tier 3 result) or None.
-    # After a Tier 1/2 hit it returns the raw dict; after Tier 3 it returns
-    # the list.  We need bars sliced to [from_d, to_d] in all paths.
-    result = await _ohlcv_store.get(full_key, bypass_cache=bypass_cache)
+    if bypass_cache is None:
+        bypass_cache = runtime_state.is_bypass_on()
 
-    if result is None:
+    # ── Bypass: skip all cache tiers, full broker fetch ───────────────────────
+    if bypass_cache:
+        # Delegate to the base get() with bypass_cache=True.  That path
+        # increments _bypass_reads and calls _broker_fetch for the full range.
+        result = await _ohlcv_store.get(full_key, bypass_cache=True)
+        if result is None:
+            return []
+        if isinstance(result, dict):
+            bars = [v for k, v in result.items()
+                    if from_d.isoformat() <= k <= to_d.isoformat()]
+            bars.sort(key=lambda b: b["date"])
+            return bars
+        return list(result)
+
+    # ── Tier 1: in-memory cache ───────────────────────────────────────────────
+    cached = _ohlcv_store._mem_get(full_key)
+    if cached is not None and _ohlcv_store._is_complete(cached, full_key):
+        _ohlcv_store._tier1_hits += 1
+        if isinstance(cached, dict):
+            bars = [v for k, v in cached.items()
+                    if from_d.isoformat() <= k <= to_d.isoformat()]
+            bars.sort(key=lambda b: b["date"])
+            return bars
+        return list(cached)
+
+    # ── Tier 2: DB fetch (unconditional — we need what's there) ───────────────
+    today = date.today()
+    db_bars = await _ohlcv_store._db_fetch_existing(sym, exch, from_d, to_d)
+
+    if db_bars and _is_complete_range(db_bars, from_d, to_d):
+        # DB covers the full range — populate Tier 1 and return.
+        _ohlcv_store._mem_set(full_key, db_bars)
+        _ohlcv_store._tier2_hits += 1
+        return sorted(db_bars, key=lambda b: b["date"])
+
+    # ── Partial-range fetch: compute missing slices ────────────────────────────
+    missing = _compute_missing_ranges(db_bars, from_d, to_d)
+
+    if not missing:
+        # Gaps are all within the holiday/weekend tolerance — DB bars suffice.
+        _ohlcv_store._mem_set(full_key, db_bars)
+        _ohlcv_store._tier2_hits += 1
+        return sorted(db_bars, key=lambda b: b["date"])
+
+    # Fetch each missing slice from the broker (Tier 3).
+    # Slices are independent so we can fire them concurrently.
+    slice_results = await asyncio.gather(
+        *[
+            _ohlcv_store._fetch_slice(sym, exch, s_from, s_to, today)
+            for s_from, s_to in missing
+        ],
+        return_exceptions=True,
+    )
+
+    # Merge: existing DB bars + newly fetched slices.
+    merged: dict[str, OHLCVBar] = {b["date"]: b for b in db_bars}
+    for res in slice_results:
+        if isinstance(res, Exception):
+            logger.warning(
+                f"ohlcv_store: slice fetch raised {res} for {sym}/{exch} — "
+                "returning partial coverage"
+            )
+            continue
+        for bar in res:  # type: ignore[union-attr]
+            merged[bar["date"]] = bar
+
+    if not merged:
         return []
 
-    # result may be list[OHLCVBar] (from Tier 3 / Tier 2 path) or the full
-    # date-keyed dict (from Tier 1 path via _mem_get).  In both cases, slice.
-    if isinstance(result, dict):
-        bars = [v for k, v in result.items() if from_d.isoformat() <= k <= to_d.isoformat()]
-        bars.sort(key=lambda b: b["date"])
-        return bars
+    all_bars = sorted(merged.values(), key=lambda b: b["date"])
 
-    # list from Tier 2 or Tier 3 — already filtered to requested range.
-    return list(result)
+    # Populate Tier 1 with the full merged set for future range queries.
+    _ohlcv_store._mem_set(full_key, all_bars)
+
+    return all_bars
