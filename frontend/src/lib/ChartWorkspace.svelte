@@ -3052,12 +3052,15 @@
 
     /* Reset zoom — on mobile, fill the available trailing space so the
        affordance is easy to tap (operator: "let the reset button use
-       available space on mobile for charts"). margin-left: auto still
-       pushes it past the indicators trigger; flex: 1 1 auto lets it
-       expand into any leftover width. */
+       available space on mobile for charts"). margin-left: auto would
+       consume the free space as margin and starve flex-grow — clear it
+       and use flex: 1 1 auto so the button claims the leftover width.
+       min-width 4rem floors the affordance at a tappable size even when
+       the rest of the toolbar gets greedy. */
     .cw-reset-zoom {
       flex: 1 1 auto;
-      min-width: 0;
+      min-width: 4rem;
+      margin-left: 0;
       padding: 0 0.4rem;
       font-size: 0.6rem;
     }
