@@ -8,6 +8,7 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import CardControls from '$lib/CardControls.svelte';
   import LogPanel from '$lib/LogPanel.svelte';
+  import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import BellIcon from '$lib/icons/BellIcon.svelte';
   import { fetchOrders } from '$lib/api';
   import { bookChanged } from '$lib/data/bookChanged';
@@ -138,6 +139,17 @@
   let _fsEntry     = $state(false);
   let _colActivity = $state(false);
   let _fsActivity  = $state(false);
+
+  // Account dropdown lives in the Activity card header so it's
+  // visible regardless of which tab is active — same UX the
+  // ActivityLogModal uses, keeping inline + modal mounts in sync.
+  // Operator: "the accounts dropdown should be displayed activity
+  // header. the activity card should be in sync across all pages
+  // and modals."
+  /** @type {string[]} */
+  let _actAccountFilter = $state([]);
+  /** @type {string[]} */
+  let _actAvailableAccounts = $state([]);
   /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */
   let _statusFilter = $state('all');
 
@@ -480,6 +492,14 @@
       Activity
     </span>
     <span class="oc-spacer"></span>
+    {#if _actAvailableAccounts.length > 1}
+      <span class="oc-act-acct">
+        <AccountMultiSelect
+          bind:value={_actAccountFilter}
+          options={_actAvailableAccounts.map(a => ({ value: a, label: a }))}
+          placeholder="All accounts" />
+      </span>
+    {/if}
     <CardControls
       bind:isCollapsed={_colActivity}
       bind:isFullscreen={_fsActivity}
@@ -492,7 +512,11 @@
   <div class="card-body oc-act-body" hidden={_colActivity}>
     <LogPanel defaultTab="order" pollMs={3000}
               statusFilter={_statusFilter}
-              symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols} />
+              symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
+              hideInlineAccountFilter={true}
+              bind:accountFilter={_actAccountFilter}
+              bind:availableAccounts={_actAvailableAccounts}
+              multiColumn={true} />
   </div>
 </section>
 
@@ -635,6 +659,19 @@
      header so heading reads identically on both surfaces. */
   .oc-act-title { display: inline-flex; align-items: center; gap: 0.35rem; }
   :global(.oc-act-title-icon) { color: #fbbf24; flex-shrink: 0; transform: translateY(-0.5px); }
+  /* Account multiselect sits in the activity card header (mirrors
+     ActivityLogModal). Operator: "the accounts dropdown should be
+     displayed activity header". 11rem min-width matches the modal's
+     dropdown so the two surfaces look identical. */
+  .oc-act-acct {
+    display: inline-flex;
+    align-items: center;
+    margin-right: 0.6rem;
+    font-size: 0.7rem;
+    min-width: 11rem;
+  }
+  :global(.oc-act-acct .multiselect-trigger),
+  :global(.oc-act-acct .multiselect-control) { min-width: 11rem; }
 
   /* Card chrome — full 1.5px white-10% box-border plus a 3px colored
      left-edge accent stripe per card type. Each card has its own

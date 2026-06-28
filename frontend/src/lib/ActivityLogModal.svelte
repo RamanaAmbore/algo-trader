@@ -139,6 +139,7 @@
         hideInlineAccountFilter={true}
         bind:accountFilter={_accountFilter}
         bind:availableAccounts={_availableAccounts}
+        multiColumn={true}
       />
     </div>
   </div>

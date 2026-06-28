@@ -37,6 +37,7 @@
    *   accountFilter?: string[],
    *   hideInlineAccountFilter?: boolean,
    *   availableAccounts?: string[],
+   *   multiColumn?: boolean,
    * }} */
   let {
     heightClass = 'flex-1 min-h-0',
@@ -89,6 +90,15 @@
      * @type {string[] | undefined}
      */
     availableAccounts = $bindable(/** @type {string[] | undefined} */ (undefined)),
+    /**
+     * Enable CSS multi-column flow for the Agents / Terminal / System /
+     * Conn tabs on wide containers. Operator: "make agents, terminal,
+     * system, conn lines on desktop, I want two lines in a single row
+     * as there is more width available, similar to market news in
+     * dashboard." Same magazine-style `column-count` NewsList uses.
+     * Falls back to 1 column under 900px container width.
+     */
+    multiColumn = false,
   } = $props();
 
   // intentional: defaultTab seeds the active tab; $effect below re-syncs on prop changes
@@ -1141,7 +1151,7 @@
      changed. Audit defect #11 (the old @html-joined-string
      approach destroyed all row DOM identity on every poll,
      killing text selection inside the log). -->
-<div class="log-panel log-rows {heightClass}">
+<div class="log-panel log-rows {heightClass} {multiColumn ? 'lp-multicol' : ''}">
   {#if logTab === 'terminal'}
     {@html _terminalHtmlDerived}
   {:else if logTab === 'agent'}
@@ -1257,6 +1267,32 @@
     white-space: normal;
     padding: 0.25rem 0.55rem;
     line-height: 1.35;
+  }
+  /* Multi-column flow for the agent / terminal / system / conn tabs
+     when the panel sits in a wide container (orders page card, /
+     console). Operator: "make agents, terminal, system, conn lines
+     on desktop, I want two lines in a single row as there is more
+     width available, similar to market news in dashboard." Same
+     CSS pattern as NewsList — magazine-style column flow. */
+  :global(.log-panel.log-rows.lp-multicol) {
+    column-count: 2;
+    column-gap: 1.5rem;
+    column-rule: 1px solid rgba(255, 255, 255, 0.04);
+  }
+  /* Per-row safety so a row's two visual lines (time/tag + msg)
+     don't break across columns mid-row — keeps the metadata strip
+     glued to its message. */
+  :global(.log-panel.log-rows.lp-multicol .log-row) {
+    break-inside: avoid;
+  }
+  /* Below 900px the row text gets too narrow for the two-line
+     timestamp + message layout to be readable; collapse to single
+     column (mirrors NewsList's @media breakpoint). */
+  @media (max-width: 900px) {
+    :global(.log-panel.log-rows.lp-multicol) {
+      column-count: 1;
+      column-rule: none;
+    }
   }
   /* Operator: "for agents, terminal, ticks, and system, the row
      data is indented wasting space. Change the font of timestamp
