@@ -1201,4 +1201,69 @@ test.describe('chart overlays — all viewports', () => {
       ).toBeLessThanOrEqual(4);
     });
   }
+
+  // ── Desktop visible-content smoke (Jun 2026) ──────────────────────
+  //
+  // Operator: "the chart contracted without showing the chart on
+  // desktop. fix it" — slice a398ab81 dropped the `min-height: 160px`
+  // floor on `.cw-chart-container` so when the flex chain residual
+  // resolved to ≤0 (e.g. ResizeObserver fired pre-hydration) the
+  // container collapsed and the SVG had no paint room. The fix
+  // restored a 200 px safety floor while keeping the flex chain.
+  //
+  // This smoke asserts BOTH that the container has non-trivial height
+  // AND that the SVG actually paints visible content — earlier
+  // chart-claim tests only checked the SVG box height (which
+  // boundingBox() reports even when the SVG renders no children at
+  // all, masking a contracted-but-claiming-height regression).
+
+  test('chart shows visible content at 1280×800 desktop (not just claims height)', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page, _session);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+    await page.waitForTimeout(900);
+
+    // Container height — safety floor 200 px (restored after a398ab81
+    // regression). Allow the flex chain to claim more; just guard
+    // against the collapse case.
+    const containerBox = await page.locator('.cw-chart-container').first().boundingBox();
+    expect(containerBox, 'chart container measurable').not.toBeNull();
+    if (containerBox) {
+      expect(
+        containerBox.height,
+        `Chart container collapsed @ 1280×800 — height ${containerBox.height}px ` +
+        `< 200 px floor. Regression slice a398ab81 dropped the min-height ` +
+        `safety floor; restore it on .cw-chart-container.`,
+      ).toBeGreaterThanOrEqual(200);
+    }
+
+    // Visible content — SVG must paint either a series path (line/area)
+    // OR candle rects (≥ 3 candle rects implies a populated chart, not
+    // just the empty-state placeholder). Y-axis text labels are also
+    // a strong signal that the chart has data + drew its scaffold.
+    const counts = await page.evaluate(() => ({
+      paths: document.querySelectorAll('.cw-svg path').length,
+      rects: document.querySelectorAll('.cw-svg rect').length,
+      lines: document.querySelectorAll('.cw-svg line').length,
+      texts: document.querySelectorAll('.cw-svg text').length,
+      firstPathD: document.querySelector('.cw-svg path')?.getAttribute('d') || '',
+    }));
+
+    // Either a non-trivial path (line/area series → d > 20 chars) OR
+    // ≥ 3 candle rects (candle series). Texts > 5 verifies axis labels
+    // rendered (a sanity check that the chart has data, not just
+    // scaffold lines).
+    const hasSeriesPath = counts.paths > 0 && counts.firstPathD.length > 20;
+    const hasCandles    = counts.rects >= 3;
+    const hasAxisText   = counts.texts >= 5;
+    expect(
+      (hasSeriesPath || hasCandles) && hasAxisText,
+      `Chart has no visible content @ 1280×800. paths=${counts.paths} ` +
+      `(first d.length=${counts.firstPathD.length}) rects=${counts.rects} ` +
+      `lines=${counts.lines} texts=${counts.texts}. Expected either ` +
+      `a series path (d > 20 chars) OR ≥ 3 candle rects, AND ≥ 5 axis labels.`,
+    ).toBe(true);
+  });
 });

@@ -2670,14 +2670,23 @@
      rows (.cw-picker / .cw-controls / .cw-frontmonth-bar / .cw-info-
      strip / .cw-greeks-strip) are all flex-shrink:0 so they hold
      their natural height while this container stretches into all the
-     leftover space. Dropped the 160 px floor (operator: "the chart
-     card should take full available height on the screen either on
-     mobile or desktop") — the flex chain alone provides the size, no
-     fixed-pixel min needed. Compact-mode override below still
-     enforces 160 px floor for embedded mounts (e.g. modal preview). */
+     leftover space.
+
+     Safety floor `min-height: 200px` — prevents the chart from
+     collapsing to zero if the flex chain ever resolves residual to a
+     non-positive value (e.g. .algo-card / .algo-viewport using
+     min-height instead of fixed height, parent ancestor with display
+     other than flex, ResizeObserver firing pre-hydration). The flex
+     chain still claims every leftover pixel above this floor; the
+     floor only engages when the chain breaks. Earlier slice
+     (a398ab81) dropped the floor and shipped a desktop regression
+     where the chart card briefly contracted with no visible content.
+     Compact-mode override below still enforces its own 160 px floor
+     for embedded mounts (e.g. modal preview); fullscreen override
+     uses calc(100vh - chrome). */
   .cw-chart-container {
     flex: 1 1 0;
-    min-height: 0;
+    min-height: 200px;
     width: 100%;
     position: relative;
     overflow: hidden;
