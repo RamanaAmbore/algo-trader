@@ -149,13 +149,28 @@ class RemoteBroker(Broker):
                 return d.isoformat()  # date
             return d
 
-        return self._call(
+        bars = self._call(
             "historical_data",
             int(instrument_token),
             _fmt(from_date),
             _fmt(to_date),
             interval=interval,
         )
+
+        # Parse each bar's date string back to a datetime so downstream
+        # callers (ohlcv_store DB upsert, chart bar serializers) see
+        # the same shape they did when this code ran in-process.
+        # Without this the asyncpg writer for ohlcv_daily chokes on
+        # 'str' object has no attribute 'toordinal' for the date column.
+        from datetime import datetime
+        for bar in bars or []:
+            raw = bar.get("date")
+            if isinstance(raw, str):
+                try:
+                    bar["date"] = datetime.fromisoformat(raw)
+                except ValueError:
+                    pass  # Leave as string; downstream raises a clearer error
+        return bars
 
     def holidays(self, exchange: str) -> set[str]:
         result = self._call("holidays", exchange)
