@@ -191,6 +191,47 @@ _INSTRUMENTS_CACHE: dict[tuple[str, str], tuple[float, dict[str, int]]] = {}
 _INSTRUMENTS_LOCK  = _threading.Lock()
 _INSTRUMENTS_TTL   = 21600   # 6 h
 
+# ── MCX futures price cache (Phase 3) ─────────────────────────────────
+# Per-month futures price cache for MCX per-leg scale_ratio computation.
+# Key:   (underlying: str, year: int, month: int)
+# Value: (expires_at_monotonic: float, fut_symbol: str, price: float)
+# TTL:   60s — long enough to survive multiple 5-s re-polls; short enough
+#        to pick up intraday price moves that materially affect σ calibration.
+#
+# Without this cache, every /strategy-analytics POST (even if the strategy-
+# analytics body cache misses due to a spot change) triggers N broker.quote()
+# calls for each distinct MCX contract month in the basket. A 4-leg JUN/JUL
+# spread fired twice = 4 unnecessary round-trips.
+#
+# Convention: single module-level dict (mirrors _TICK_INDEX, _INSTRUMENTS_CACHE).
+# Lock is the same threading.Lock pattern used by the other caches here.
+_MCX_FUT_CACHE: dict[tuple[str, int, int], tuple[float, str, float]] = {}
+_MCX_FUT_CACHE_LOCK = _threading.Lock()
+_MCX_FUT_CACHE_TTL  = 60   # seconds
+
+
+def _mcx_fut_cache_get(underlying: str, year: int,
+                        month: int) -> tuple[str, float] | None:
+    """Return (fut_symbol, price) if a non-expired entry exists, else None."""
+    key = (underlying.upper(), year, month)
+    with _MCX_FUT_CACHE_LOCK:
+        entry = _MCX_FUT_CACHE.get(key)
+        if entry is None:
+            return None
+        expires_at, fut_sym, price = entry
+        if time.monotonic() >= expires_at:
+            _MCX_FUT_CACHE.pop(key, None)
+            return None
+        return (fut_sym, price)
+
+
+def _mcx_fut_cache_put(underlying: str, year: int, month: int,
+                        fut_sym: str, price: float) -> None:
+    """Store a fresh broker-sourced (fut_sym, price) under (underlying, year, month)."""
+    key = (underlying.upper(), year, month)
+    with _MCX_FUT_CACHE_LOCK:
+        _MCX_FUT_CACHE[key] = (time.monotonic() + _MCX_FUT_CACHE_TTL, fut_sym, price)
+
 
 def _instruments_cache_get(account: str, exchange: str) -> dict[str, int] | None:
     """Return cached {tradingsymbol → token} for the (account, exchange)
@@ -1977,9 +2018,13 @@ class OptionsController(Controller):
             # Thursday rule which is wrong for MCX commodities.
             leg_expiry = _leg_expiry_iso(leg, parsed)
             expiries.add(leg_expiry)
-            # Trigger broker fetch when ltp is missing OR explicitly 0
-            # (sim picker that copied a stale last_price=0 would otherwise
-            # bypass the fetch and fall straight to avg_cost).
+            # SIM leg LTP fast path (Phase 3): when the caller supplied an
+            # explicit ltp > 0 (sim positions, draft legs, or operator
+            # overrides), skip the broker quote for this leg entirely.
+            # Only queue legs with ltp=None or ltp<=0 (live-broker path).
+            # Guard is ltp <= 0 (not just None) because a sim picker that
+            # copied a stale last_price=0 would otherwise bypass the fetch
+            # and fall straight to avg_cost, producing a misleading result.
             if leg.ltp is None or leg.ltp <= 0:
                 # Route commodity contracts to MCX, everything else to
                 # NFO. `option_quote_key()` parses the underlying and
@@ -2152,6 +2197,9 @@ class OptionsController(Controller):
         if _is_commodity and S > 0:
             # Collect unique (underlying, expiry_month) pairs across legs;
             # one quote key per distinct contract month suffices.
+            # _month_to_cached: months already resolved from the 60s cache.
+            # _month_to_fut_sym: months that need a fresh broker.quote().
+            _month_to_cached: dict[tuple[int, int], tuple[str, float]] = {}
             _month_to_fut_sym: dict[tuple[int, int], Optional[str]] = {}
             for _leg in data.legs:
                 _lsym = _leg.symbol.upper().strip()
@@ -2160,10 +2208,16 @@ class OptionsController(Controller):
                     continue
                 _leg_exp = date.fromisoformat(_leg_expiry_iso(_leg, _lparsed))
                 _month_key = (_leg_exp.year, _leg_exp.month)
-                if _month_key not in _month_to_fut_sym:
-                    _month_to_fut_sym[_month_key] = None  # placeholder, filled below
+                if _month_key in _month_to_cached or _month_key in _month_to_fut_sym:
+                    continue
+                # Cache-first lookup — 60s TTL per (underlying, year, month).
+                _cached = _mcx_fut_cache_get(underlying, _leg_exp.year, _leg_exp.month)
+                if _cached is not None:
+                    _month_to_cached[_month_key] = _cached
+                else:
+                    _month_to_fut_sym[_month_key] = None   # needs broker fetch
 
-            # Resolve tradingsymbol for each distinct contract month.
+            # Resolve tradingsymbol for each month not in the cache.
             for _mk in list(_month_to_fut_sym.keys()):
                 _hint = date(_mk[0], _mk[1], 1)
                 try:
@@ -2172,7 +2226,7 @@ class OptionsController(Controller):
                 except Exception:
                     pass
 
-            # Batch broker.quote() for all resolved futures symbols.
+            # Batch broker.quote() only for months that missed the cache.
             _fut_quote_keys = [
                 f"MCX:{fs}"
                 for fs in _month_to_fut_sym.values()
@@ -2188,7 +2242,18 @@ class OptionsController(Controller):
                         "falling back to scale_ratio=1 for all legs"
                     )
 
-            # Build per-leg scale_ratio.
+            # Populate cache from fresh broker responses so subsequent
+            # re-polls within the 60s TTL skip the broker.quote() entirely.
+            for _mk, _fut_sym in _month_to_fut_sym.items():
+                if not _fut_sym:
+                    continue
+                _qdict = _fut_quote_resp.get(f"MCX:{_fut_sym}") or {}
+                _s_fresh, _ = _ltp_from_quote(_qdict)
+                if _s_fresh and _s_fresh > 0:
+                    _mcx_fut_cache_put(underlying, _mk[0], _mk[1], _fut_sym, _s_fresh)
+                    _month_to_cached[_mk] = (_fut_sym, _s_fresh)
+
+            # Build per-leg scale_ratio from the unified cached + fresh data.
             for _leg in data.legs:
                 _lsym = _leg.symbol.upper().strip()
                 _lparsed = parsed_by_sym.get(_lsym)
@@ -2197,15 +2262,10 @@ class OptionsController(Controller):
                     continue
                 _leg_exp = date.fromisoformat(_leg_expiry_iso(_leg, _lparsed))
                 _mk = (_leg_exp.year, _leg_exp.month)
-                _fut_sym = _month_to_fut_sym.get(_mk)
-                if _fut_sym:
-                    _qkey = f"MCX:{_fut_sym}"
-                    _qdict = _fut_quote_resp.get(_qkey) or {}
-                    _s_leg, _ = _ltp_from_quote(_qdict)
-                    if _s_leg and _s_leg > 0:
-                        _leg_scale_ratios[_lsym] = _s_leg / S
-                    else:
-                        _leg_scale_ratios[_lsym] = 1.0
+                _month_data = _month_to_cached.get(_mk)
+                if _month_data:
+                    _fut_sym_leg, _s_leg = _month_data
+                    _leg_scale_ratios[_lsym] = _s_leg / S if _s_leg > 0 else 1.0
                 else:
                     _leg_scale_ratios[_lsym] = 1.0
 
