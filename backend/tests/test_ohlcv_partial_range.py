@@ -615,3 +615,163 @@ def test_stale_code_no_full_range_fallback_on_partial():
         "get_or_fetch_daily must use _fetch_slice to fetch each missing range "
         "independently — not a single _broker_fetch call for the full range."
     )
+
+
+# ── BEL race scenario — Tier 2 has bars, broker returns empty: UNION not OVERWRITE
+#
+# Operator-reported intermittent "No data available" for BEL on /charts even
+# though the cache had prior bars. Root-cause hypothesis: the partial-range
+# merge logic could conceivably overwrite db_bars with empty broker results
+# when the broker mid-flight returned zero rows (instruments cache not yet
+# warm, rate-limit cool-off, etc.). This block proves the merge is a UNION:
+# whatever the broker returns is OR-merged with db_bars; an empty broker
+# response can never reduce the result to zero when the DB had coverage.
+
+@pytest.mark.asyncio
+async def test_bel_race_db_bars_preserved_when_broker_returns_empty():
+    """SSOT for the BEL race: DB has 3 bars, broker returns 0 bars for the
+    missing slice → merged result must contain the 3 db_bars (UNION, not
+    OVERWRITE). Regression guard for the worst-case "lost data" pattern."""
+    to_d   = _weekday_boundary(date.today() - timedelta(days=1))
+    from_d = _weekday_boundary(to_d - timedelta(days=30))
+    # DB has only the LAST 3 weekdays of the range — head slice is missing.
+    db_to   = to_d
+    db_from = _prev_weekday(db_to - timedelta(days=4))   # 3 weekdays back
+    db_bars = _make_bars(db_from, db_to)
+    assert len(db_bars) >= 3, (
+        f"Test setup error: expected ≥3 DB bars; got {len(db_bars)}"
+    )
+
+    import backend.api.persistence.ohlcv_store as _mod
+    orig_store = _mod._ohlcv_store
+    store = OHLCVStore()
+    broker_calls: list = []
+
+    async def _mock_db(key):
+        s_from, s_to = date.fromisoformat(key[2]), date.fromisoformat(key[3])
+        return [b for b in db_bars if s_from.isoformat() <= b["date"] <= s_to.isoformat()]
+
+    async def _mock_broker(key):
+        # Simulate BEL-style empty response (instruments map cold / rate
+        # limit / token resolution miss). Returns [] for every slice.
+        broker_calls.append(key)
+        return []
+
+    store._db_fetch     = _mock_db      # type: ignore[method-assign]
+    store._broker_fetch = _mock_broker  # type: ignore[method-assign]
+    _mod._ohlcv_store   = store
+
+    try:
+        with patch("backend.api.persistence.ohlcv_store._enqueue_persist_impl"):
+            with patch(
+                "backend.api.persistence.runtime_state.is_bypass_on",
+                return_value=False,
+            ):
+                merged = await get_or_fetch_daily("BEL", "NSE", from_d, to_d)
+    finally:
+        _mod._ohlcv_store = orig_store
+
+    # The CRITICAL assertion: even though the broker returned zero bars,
+    # the merged result MUST contain the 3 db_bars. An empty broker
+    # response must never reduce a non-empty DB result to zero.
+    assert len(merged) == len(db_bars), (
+        f"BEL race: empty broker response collapsed merged result. "
+        f"Expected {len(db_bars)} db_bars to survive; got {len(merged)}. "
+        f"This proves the merge logic is OVERWRITE, not UNION — "
+        "exactly the bug the operator caught."
+    )
+    merged_dates = sorted(b["date"] for b in merged)
+    db_dates     = sorted(b["date"] for b in db_bars)
+    assert merged_dates == db_dates, (
+        f"BEL race: merged dates {merged_dates} differ from db dates "
+        f"{db_dates}. UNION must preserve every db_bar verbatim."
+    )
+
+
+@pytest.mark.asyncio
+async def test_bel_race_db_bars_preserved_when_broker_raises():
+    """Variant: broker raises an exception (rate-limit, network).
+    db_bars must still survive in the merged result."""
+    to_d   = _weekday_boundary(date.today() - timedelta(days=1))
+    from_d = _weekday_boundary(to_d - timedelta(days=30))
+    db_to   = to_d
+    db_from = _prev_weekday(db_to - timedelta(days=4))
+    db_bars = _make_bars(db_from, db_to)
+    assert len(db_bars) >= 3
+
+    import backend.api.persistence.ohlcv_store as _mod
+    orig_store = _mod._ohlcv_store
+    store = OHLCVStore()
+
+    async def _mock_db(key):
+        s_from, s_to = date.fromisoformat(key[2]), date.fromisoformat(key[3])
+        return [b for b in db_bars if s_from.isoformat() <= b["date"] <= s_to.isoformat()]
+
+    async def _mock_broker(key):
+        raise RuntimeError("BEL: Too many requests")
+
+    store._db_fetch     = _mock_db      # type: ignore[method-assign]
+    store._broker_fetch = _mock_broker  # type: ignore[method-assign]
+    _mod._ohlcv_store   = store
+
+    try:
+        with patch("backend.api.persistence.ohlcv_store._enqueue_persist_impl"):
+            with patch(
+                "backend.api.persistence.runtime_state.is_bypass_on",
+                return_value=False,
+            ):
+                merged = await get_or_fetch_daily("BEL", "NSE", from_d, to_d)
+    finally:
+        _mod._ohlcv_store = orig_store
+
+    # Broker raised. _fetch_slice catches the exception and returns [].
+    # db_bars must still be present in merged.
+    assert len(merged) >= len(db_bars), (
+        f"BEL race (broker raised): expected merged ≥ {len(db_bars)}; "
+        f"got {len(merged)}. The slice-fetch exception path must not "
+        "discard existing DB bars."
+    )
+
+
+def test_stale_code_merge_is_union_not_overwrite():
+    """Source-level guard: the merge loop in get_or_fetch_daily must seed
+    `merged` from `db_bars` (not initialise it empty and then write only
+    broker bars). This guarantees the merge is a UNION even when the
+    broker returns zero bars for every missing slice."""
+    import inspect
+    import backend.api.persistence.ohlcv_store as _mod
+
+    src = inspect.getsource(_mod.get_or_fetch_daily)
+
+    # The fix: merged is initialised from db_bars. Without this, an empty
+    # broker response would yield an empty merged dict.
+    assert 'merged: dict[str, OHLCVBar] = {b["date"]: b for b in db_bars}' in src, (
+        "get_or_fetch_daily must seed `merged` from db_bars to guarantee "
+        "UNION semantics. An empty broker response must not collapse the "
+        "merged result to zero when the DB had partial coverage. "
+        "Operator-caught BEL race."
+    )
+
+
+def test_stale_code_empty_cache_ttl_is_short():
+    """Source-level guard: the historical endpoint's _HIST_CACHE_TTL_EMPTY
+    must be ≤ 5 seconds so a transient empty response (instruments cache
+    cold, rate-limit blip) doesn't poison every subsequent reload with
+    "No data available" for 10 seconds. Operator-caught BEL flicker."""
+    import inspect
+    import backend.api.routes.options as _opts
+
+    src = inspect.getsource(_opts)
+    # Find the assignment line. Format: "_HIST_CACHE_TTL_EMPTY = <int>"
+    import re
+    m = re.search(r"_HIST_CACHE_TTL_EMPTY\s*=\s*(\d+)", src)
+    assert m is not None, (
+        "Could not find _HIST_CACHE_TTL_EMPTY assignment in options.py. "
+        "Has the constant been renamed?"
+    )
+    ttl = int(m.group(1))
+    assert ttl <= 5, (
+        f"_HIST_CACHE_TTL_EMPTY={ttl} is too high. A cold-call empty result "
+        "should re-query within a few seconds, not poison the cache for 10+s. "
+        "Operator-caught BEL race fix: lowered to ≤5."
+    )

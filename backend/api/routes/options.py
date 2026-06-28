@@ -66,6 +66,22 @@ from backend.shared.helpers.ramboq_logger import get_logger
 logger = get_logger(__name__)
 
 
+def _ohlcv_trace_enabled() -> bool:
+    """Settings-gated INFO instrumentation for the historical endpoint.
+
+    Defaults to False on every environment. Operator flips
+    `debug.ohlcv_trace` in `/admin/settings` to surface per-(symbol,
+    exchange, range) telemetry when chasing a BEL-style intermittent
+    "no data available" race. Matches the gate in ohlcv_store so a
+    single flag turns on the full read-path trace.
+    """
+    try:
+        from backend.shared.helpers import settings as _settings
+        return _settings.get_bool("debug.ohlcv_trace", False)
+    except Exception:
+        return False
+
+
 _VALID_MODES = ("live", "sim", "hypothetical")
 
 # ── Strategy-analytics short-circuit cache ────────────────────────────
@@ -164,7 +180,14 @@ _HIST_CACHE: "_OrderedDict[tuple, tuple[float, object]]" = _OrderedDict()
 _HIST_CACHE_LOCK = _threading.Lock()
 
 _HIST_CACHE_TTL_OK    = 60    # seconds — fresh bars
-_HIST_CACHE_TTL_EMPTY = 10    # seconds — empty bars (transient rate-limit failure)
+_HIST_CACHE_TTL_EMPTY = 2     # seconds — empty bars; short TTL so a transient
+                              # cold-call (instruments cache not yet warm for the
+                              # day, or a single rate-limit blip) doesn't poison
+                              # every subsequent reload with "No data available"
+                              # for 10 s. 2 s is long enough to coalesce a tight
+                              # double-click + slow on the few cases where the
+                              # symbol genuinely has no historical bars.
+                              # Operator-caught BEL flicker: lowered from 10 → 2.
 _HIST_CACHE_MAX_SIZE  = 200   # LRU cap — prevent unbounded growth from chain-picker
 
 # Process-wide token-resolution cache for the historical-bars endpoint.
@@ -1755,7 +1778,20 @@ class OptionsController(Controller):
                     result = HistoricalResponse(symbol=sym, instrument_token=None,
                                                 interval=interval, bars=bars)
                     _hist_cache_put(cache_key, result, _HIST_CACHE_TTL_OK)
+                    if _ohlcv_trace_enabled():
+                        logger.info(
+                            f"[ohlcv-route] symbol={sym} exch={resolved_exch} "
+                            f"from={from_d_daily} to={to_d_daily} bars={len(bars)} "
+                            "source=ohlcv_store"
+                        )
                     return result
+                else:
+                    if _ohlcv_trace_enabled():
+                        logger.info(
+                            f"[ohlcv-route] symbol={sym} exch={resolved_exch} "
+                            f"from={from_d_daily} to={to_d_daily} bars=0 "
+                            "source=ohlcv_store — falling through to broker loop"
+                        )
             except Exception as _store_exc:
                 logger.warning(
                     f"options historical: ohlcv_store failed for {sym}/{resolved_exch}: "
@@ -1916,6 +1952,12 @@ class OptionsController(Controller):
                                         interval=interval, bars=bars)
             _hist_cache_put(cache_key, result,
                             _HIST_CACHE_TTL_OK if bars else _HIST_CACHE_TTL_EMPTY)
+            if _ohlcv_trace_enabled():
+                logger.info(
+                    f"[ohlcv-route] symbol={sym} exchange={exchange or 'auto'} "
+                    f"days={days} interval={interval} bars={len(bars)} "
+                    f"source=broker_loop broker={broker.account}"
+                )
             return result
 
         # All brokers tried and none succeeded. If every broker missed the
@@ -1930,6 +1972,12 @@ class OptionsController(Controller):
         result = HistoricalResponse(symbol=sym, instrument_token=None,
                                     interval=interval, bars=[])
         _hist_cache_put(cache_key, result, _HIST_CACHE_TTL_EMPTY)
+        if _ohlcv_trace_enabled():
+            logger.info(
+                f"[ohlcv-route] symbol={sym} exchange={exchange or 'auto'} "
+                f"days={days} interval={interval} bars=0 "
+                "source=broker_loop status=all_brokers_failed"
+            )
         return result
 
     # ── Multi-leg strategy analytics (POST) ────────────────────────────

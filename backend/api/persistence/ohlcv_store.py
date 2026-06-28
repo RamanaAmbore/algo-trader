@@ -37,6 +37,22 @@ from backend.shared.helpers.ramboq_logger import get_logger
 logger = get_logger(__name__)
 
 
+def _trace_enabled() -> bool:
+    """Settings-gated INFO instrumentation for the ohlcv read path.
+
+    Defaults to False on every environment. Operator flips
+    `debug.ohlcv_trace` in `/admin/settings` to surface per-(symbol,
+    exchange, range) telemetry when chasing a BEL-style "no data
+    available" race. Never call this on the hot success path — only
+    when emit decisions need a settings lookup.
+    """
+    try:
+        from backend.shared.helpers import settings as _settings
+        return _settings.get_bool("debug.ohlcv_trace", False)
+    except Exception:
+        return False
+
+
 class OHLCVBar(TypedDict):
     date:   str    # YYYY-MM-DD
     open:   float
@@ -460,7 +476,13 @@ async def get_or_fetch_daily(
     )
 
     # Merge: existing DB bars + newly fetched slices.
+    # This is a UNION (dict-keyed by date) so an empty broker response
+    # for a slice can never clobber bars already returned from the DB.
+    # If the broker returned zero bars (rate-limit, missing instrument
+    # token, or the symbol genuinely has no listing for the requested
+    # range), `merged` retains whatever `db_bars` contributed.
     merged: dict[str, OHLCVBar] = {b["date"]: b for b in db_bars}
+    broker_bar_count = 0
     for res in slice_results:
         if isinstance(res, Exception):
             logger.warning(
@@ -470,6 +492,25 @@ async def get_or_fetch_daily(
             continue
         for bar in res:  # type: ignore[union-attr]
             merged[bar["date"]] = bar
+            broker_bar_count += 1
+
+    # ── Trace: emit per-fetch breakdown for race-condition debugging ─────
+    # Gated by `debug.ohlcv_trace` (Setting, default False) so prod never
+    # sees this line on the hot path. Operator flips the flag to
+    # diagnose intermittent "No data available" reports for individual
+    # symbols (BEL was the trigger). The format is intentionally
+    # grep-friendly: `[ohlcv]` prefix + key=value pairs.
+    #
+    # Emit when:
+    #   - merged is empty (zero bars returned — caller sees "no data")
+    #   - broker returned zero bars but slices were requested (likely
+    #     instruments-map miss OR rate-limit cool-off)
+    if (not merged or (missing and broker_bar_count == 0)) and _trace_enabled():
+        logger.info(
+            f"[ohlcv] symbol={sym} exch={exch} from={from_d} to={to_d} "
+            f"tier2_bars={len(db_bars)} missing_ranges={missing} "
+            f"broker_bars={broker_bar_count} merged_bars={len(merged)}"
+        )
 
     if not merged:
         return []

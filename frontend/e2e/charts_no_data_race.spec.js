@@ -146,6 +146,62 @@ test.describe('Stale-code: ChartWorkspace loading/empty state guards', () => {
     ).toBe(true);
   });
 
+  // ── BEL race regression — empty-overwrite guard ──────────────────────────
+
+  test('BEL race: empty fetch must not overwrite a non-empty _bars', () => {
+    let src;
+    try {
+      src = readFileSync(_CW_SRC, 'utf-8');
+    } catch (e) {
+      throw new Error(`Could not read ChartWorkspace.svelte at ${_CW_SRC}: ${e.message}`);
+    }
+
+    // The empty-overwrite guard: when a fetch returns zero bars BUT we
+    // already have non-empty _bars on screen, the code must early-return
+    // without overwriting. Otherwise a successful first response is
+    // wiped by a later empty response (operator-caught flicker).
+    expect(
+      src.includes('_nextBars.length === 0 && _bars.length > 0'),
+      'ChartWorkspace must guard against empty-overwriting a non-empty ' +
+      '_bars value. Expected: an early-return branch like ' +
+      '`if (_nextBars.length === 0 && _bars.length > 0) return;` ' +
+      'in _loadHistorical after the fetch resolves.',
+    ).toBe(true);
+  });
+
+  test('BEL race: empty first-cold response retries once after a brief delay', () => {
+    let src;
+    try {
+      src = readFileSync(_CW_SRC, 'utf-8');
+    } catch (e) {
+      throw new Error(`Could not read ChartWorkspace.svelte at ${_CW_SRC}: ${e.message}`);
+    }
+
+    // The first-cold-empty path: rather than immediately showing "No
+    // data available", schedule a single delayed retry (just past the
+    // backend's _HIST_CACHE_TTL_EMPTY of 2 s). The latch
+    // `_emptyRetryFired` guards against an infinite loop for symbols
+    // that genuinely have no listing.
+    expect(
+      src.includes('_emptyRetryFired'),
+      'ChartWorkspace must use _emptyRetryFired set to track per-key ' +
+      'empty-retry attempts.',
+    ).toBe(true);
+    expect(
+      src.includes('_emptyRetryTimer'),
+      'ChartWorkspace must use _emptyRetryTimer to schedule the delayed ' +
+      'retry on a first-cold-empty response.',
+    ).toBe(true);
+    // Confirm the timer is cleaned up in both onDestroy AND the
+    // symbol-change effect — so a stale retry can never fire after the
+    // component is destroyed or the user has navigated to a new symbol.
+    const destroyBlock = src.slice(src.indexOf('onDestroy('));
+    expect(
+      destroyBlock.includes('_emptyRetryTimer'),
+      'onDestroy must clear _emptyRetryTimer to prevent stale retries.',
+    ).toBe(true);
+  });
+
   test('Stale code: EmptyState branch is guarded by !_histLoading', () => {
     let src;
     try {
@@ -411,5 +467,145 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
     await expect(page.locator('.cw-fetch-overlay')).not.toBeVisible({ timeout: 3_000 });
     const loadingDiv = page.locator('.cw-state', { hasText: 'Loading' });
     await expect(loadingDiv).not.toBeVisible({ timeout: 2_000 });
+  });
+
+  // ── BEL race — empty-then-success: late empty must NOT clobber data ─────
+  //
+  // Simulates the operator-caught scenario: the user opens /charts?symbol=BEL
+  // when the backend's empty-cache window has poisoned the response for 2 s.
+  // Frontend mocks an empty first response, then a successful second response
+  // (after the retry delay). Final state must be the chart, NOT "No data
+  // available." This protects against the race coming back to life in any
+  // future refactor.
+
+  test('BEL race (desktop): empty first response triggers retry; final state has chart', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page);
+    await page.setViewportSize({ width: 1400, height: 900 });
+
+    // First /api/options/historical?symbol=BEL response → empty bars.
+    // Second response → 30 days of fake bars.
+    let histCallCount = 0;
+    await page.route('**/api/options/historical**', async (route) => {
+      const url = route.request().url();
+      if (!url.includes('symbol=BEL')) {
+        return route.continue();
+      }
+      histCallCount++;
+      if (histCallCount === 1) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            symbol: 'BEL', instrument_token: null,
+            interval: 'day', bars: [],
+          }),
+        });
+      }
+      // Second + subsequent calls: return 30 bars.
+      const bars = [];
+      const today = new Date();
+      for (let i = 30; i >= 1; i--) {
+        const d = new Date(today.getTime() - i * 86400000);
+        bars.push({
+          ts:     d.toISOString().slice(0, 10),
+          open:   100 + i * 0.5,
+          high:   102 + i * 0.5,
+          low:    99  + i * 0.5,
+          close:  101 + i * 0.5,
+          volume: 100_000 + i * 1000,
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          symbol: 'BEL', instrument_token: 1234,
+          interval: 'day', bars,
+        }),
+      });
+    });
+
+    await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
+    await waitForRangeGroup(page);
+
+    // Wait long enough for the 2.5 s retry timer to fire.
+    await page.waitForTimeout(4_500);
+
+    // The retry must have fired — backend call count ≥ 2.
+    expect(
+      histCallCount,
+      `BEL race: frontend must auto-retry on empty first response. ` +
+      `Got ${histCallCount} hist API call(s); expected ≥ 2.`,
+    ).toBeGreaterThanOrEqual(2);
+
+    // Final state: chart visible, NOT "No data available."
+    const errVisible    = await page.locator('text=No data available').isVisible();
+    expect(
+      errVisible,
+      'BEL race: after retry, "No data available" must NOT be visible — ' +
+      'the successful second response must have populated the chart.',
+    ).toBe(false);
+
+    // SVG path with non-trivial d-attribute is the chart.
+    const svgPathCount = await page.locator('svg path[d]').evaluateAll(
+      (els) => els.filter((e) => (e.getAttribute('d') || '').length > 20).length,
+    );
+    expect(
+      svgPathCount,
+      'BEL race: chart SVG paths must be present after the successful retry.',
+    ).toBeGreaterThan(0);
+  });
+
+  test('BEL race (mobile): empty first response triggers retry; final state has chart', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page);
+    await page.setViewportSize({ width: 360, height: 800 });
+
+    let histCallCount = 0;
+    await page.route('**/api/options/historical**', async (route) => {
+      const url = route.request().url();
+      if (!url.includes('symbol=BEL')) return route.continue();
+      histCallCount++;
+      if (histCallCount === 1) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            symbol: 'BEL', instrument_token: null,
+            interval: 'day', bars: [],
+          }),
+        });
+      }
+      const bars = [];
+      const today = new Date();
+      for (let i = 30; i >= 1; i--) {
+        const d = new Date(today.getTime() - i * 86400000);
+        bars.push({
+          ts:     d.toISOString().slice(0, 10),
+          open:   100 + i * 0.5,
+          high:   102 + i * 0.5,
+          low:    99  + i * 0.5,
+          close:  101 + i * 0.5,
+          volume: 100_000 + i * 1000,
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          symbol: 'BEL', instrument_token: 1234,
+          interval: 'day', bars,
+        }),
+      });
+    });
+
+    await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
+    await waitForRangeGroup(page);
+    await page.waitForTimeout(4_500);
+
+    expect(histCallCount).toBeGreaterThanOrEqual(2);
+    const errVisible = await page.locator('text=No data available').isVisible();
+    expect(errVisible, 'Mobile BEL race: error must not show after retry').toBe(false);
   });
 });

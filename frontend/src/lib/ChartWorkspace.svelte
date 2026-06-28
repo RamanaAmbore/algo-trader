@@ -501,6 +501,21 @@
   // errors are silently dropped when the token is no longer current.
   let _loadToken = 0;
 
+  // Empty-response retry latch — operator-caught BEL race: when the
+  // BACKEND ohlcv hierarchy returns zero bars because the instruments
+  // map hasn't warmed yet (process just booted, or post-deploy cold
+  // call lands before the 08:30 IST warm), the response is cached for
+  // _HIST_CACHE_TTL_EMPTY (2 s post-fix, was 10 s) on the server. Every
+  // reload within that window saw empty bars and rendered "No data
+  // available." Frontend now silently re-attempts ONCE 2.5 s after a
+  // first-cold-empty so the server's empty-cache window has elapsed.
+  // Only fires when _bars is still empty AND we haven't already
+  // re-tried for this (symbol, exch, days) key — prevents an infinite
+  // retry loop on symbols that genuinely have no historical data.
+  /** @type {Set<string>} */
+  const _emptyRetryFired = new Set();
+  let _emptyRetryTimer = null;
+
   async function _loadHistorical(/** @type {boolean} */ force = false) {
     if (!symbol) return;
     if (!force && _chartLoaded) return;
@@ -562,9 +577,43 @@
         await Promise.race([Promise.all(promises), timeout])
       );
       if (token !== _loadToken) return;   // a newer call superseded this one
-      _bars     = Array.isArray(hist?.bars) ? hist.bars : [];
+      const _nextBars = Array.isArray(hist?.bars) ? hist.bars : [];
+      // Empty-response guard: if a previous successful fetch on this
+      // component instance populated _bars, do NOT overwrite it with
+      // an empty result. An empty response on retry is almost always
+      // a transient backend miss (empty-cache TTL window post-cold,
+      // rate-limit blip, or instruments map mid-warm). Keeping the
+      // last-known-good bars on screen avoids the "data was there a
+      // second ago, now it's gone" flash the operator reported.
+      if (_nextBars.length === 0 && _bars.length > 0) {
+        // Silently keep current bars + don't surface the empty error.
+        _chartLoaded = true;
+        return;
+      }
+      _bars     = _nextBars;
       _spotBars = spotHist ? (Array.isArray(spotHist.bars) ? spotHist.bars : []) : [];
-      if (!_bars.length) _histError = 'No data available.';
+      if (!_bars.length) {
+        // First-cold-empty path: schedule a single delayed retry
+        // (2.5 s — just past the backend's _HIST_CACHE_TTL_EMPTY of
+        // 2 s) instead of immediately showing "No data available."
+        // The latch _emptyRetryFired guards against an infinite loop
+        // for symbols that genuinely have no listing.
+        if (!_emptyRetryFired.has(cacheKey)) {
+          _emptyRetryFired.add(cacheKey);
+          _histError = '';   // suppress the error message during retry window
+          if (_emptyRetryTimer) clearTimeout(_emptyRetryTimer);
+          _emptyRetryTimer = setTimeout(() => {
+            _emptyRetryTimer = null;
+            if (!_mounted) return;
+            // Only re-fire if _bars is still empty (a concurrent
+            // success would already have flipped it).
+            if (!_bars.length) _loadHistorical(true);
+          }, 2_500);
+          _chartLoaded = true;
+          return;
+        }
+        _histError = 'No data available.';
+      }
       _chartLoaded = true;
 
       // Cache write — only when we got non-empty bars; empty results
@@ -1302,6 +1351,7 @@
   onDestroy(() => {
     _mounted = false;
     if (_statusTimer) { try { _statusTimer(); } catch (_) { clearInterval(_statusTimer); } }
+    if (_emptyRetryTimer) { clearTimeout(_emptyRetryTimer); _emptyRetryTimer = null; }
     _stopTickPoll();
   });
 
@@ -1334,6 +1384,9 @@
     _bars = [];
     _spotBars = [];
     _greeks = null;
+    // Cancel any pending empty-response retry from a previous symbol so
+    // it doesn't fire AFTER the new symbol's fetch has already landed.
+    if (_emptyRetryTimer) { clearTimeout(_emptyRetryTimer); _emptyRetryTimer = null; }
     untrack(() => {
       if (_intradayOn) _intradayOn = false;
     });

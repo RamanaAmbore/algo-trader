@@ -495,6 +495,21 @@ SEEDS: list[tuple] = [
      "(api_error_file). Lowering to WARNING surfaces non-fatal "
      "issues without touching the main log verbosity.",
      None, {"enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]}),
+
+    # ── Debug toggles (per-subsystem instrumentation) ────────────────────
+    # Off by default. Operator flips ON when chasing a specific race or
+    # data-correctness issue, OFF again once root-caused. Each toggle
+    # gates a small set of INFO-level [tag] logs in the relevant
+    # subsystem — see _trace_enabled() / _ohlcv_trace_enabled() at the
+    # call sites.
+    ("logging", "debug.ohlcv_trace", "bool", False,
+     "Emit per-fetch INFO traces from the OHLCV three-tier store + "
+     "/api/options/historical route (symbol, exchange, range, "
+     "tier-2 bars, broker bars, merged bars). Flip on when debugging "
+     "an intermittent 'No data available' chart race (e.g. BEL). "
+     "Leave OFF on prod day-to-day — emits one line per fetch when "
+     "the result is empty or partial.",
+     None, None),
 ]
 
 
