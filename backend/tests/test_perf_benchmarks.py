@@ -6,6 +6,7 @@ These benchmarks verify that key operations stay under budget:
   • _loaded_accounts() < 5ms when populated
   • iter_active() 4000 entries in < 50ms
   • _compute_day_change_val() on 100-row DataFrame < 10ms
+  • compute_firm_nav helpers (polars) < 10ms for 5 accounts × 100 rows
 """
 
 from __future__ import annotations
@@ -218,3 +219,155 @@ class TestTickBufferSnapshot:
         finally:
             if os.path.exists(path):
                 os.remove(path)
+
+
+class TestComputeFirmNavPerf:
+    """Polars-vectorized nav helpers — budget < 10ms for 5 accounts × 100 rows.
+
+    These benchmarks cover the three helper functions extracted from
+    compute_firm_nav: _funds_from_df, _positions_from_df, _holdings_from_df.
+    Each runs against 5 simulated per-account DataFrames with 100 rows each —
+    the realistic upper bound in production (5 accounts, ~20 positions each).
+    """
+
+    def _make_funds_dfs(self, n_accounts: int = 5, rows_per: int = 100) -> list:
+        """Generate n_accounts margins DataFrames, each with rows_per rows."""
+        dfs = []
+        for i in range(n_accounts):
+            import pandas as pd
+            import numpy as np
+
+            df = pd.DataFrame({
+                "avail opening_balance": np.random.uniform(100_000, 500_000, rows_per),
+                "util option_premium": np.random.uniform(0, 50_000, rows_per),
+                "account": [f"ACC{i:04d}"] * rows_per,
+            })
+            dfs.append(df)
+        return dfs
+
+    def _make_positions_dfs(self, n_accounts: int = 5, rows_per: int = 100) -> list:
+        import pandas as pd
+        import numpy as np
+
+        dfs = []
+        for i in range(n_accounts):
+            df = pd.DataFrame({
+                "quantity": np.random.randint(-10, 10, rows_per).astype(float),
+                "unrealised": np.random.uniform(-5000, 5000, rows_per),
+                "account": [f"ACC{i:04d}"] * rows_per,
+            })
+            dfs.append(df)
+        return dfs
+
+    def _make_holdings_dfs(self, n_accounts: int = 5, rows_per: int = 100) -> list:
+        import pandas as pd
+        import numpy as np
+
+        dfs = []
+        for i in range(n_accounts):
+            df = pd.DataFrame({
+                "quantity": np.random.randint(1, 200, rows_per).astype(float),
+                "cur_val": np.random.uniform(10_000, 200_000, rows_per),
+                "tradingsymbol": [f"STOCK{j % 50}" for j in range(rows_per)],
+                "account": [f"ACC{i:04d}"] * rows_per,
+            })
+            dfs.append(df)
+        return dfs
+
+    def test_funds_from_df_5accounts_100rows(self):
+        """_funds_from_df: 5 accounts × 100 rows in < 10ms total."""
+        from backend.api.algo.nav import _funds_from_df
+
+        dfs = self._make_funds_dfs(5, 100)
+
+        # Warm up
+        for df in dfs:
+            _funds_from_df(df)
+
+        start = time.perf_counter_ns()
+        for _ in range(10):
+            total = 0.0
+            for df in dfs:
+                chunk, _ = _funds_from_df(df)
+                total += chunk
+        elapsed_ns = time.perf_counter_ns() - start
+
+        avg_ms = elapsed_ns / 10 / 1_000_000
+        assert avg_ms < 10, f"_funds_from_df (5×100) took {avg_ms:.2f}ms (budget: 10ms)"
+
+    def test_positions_from_df_5accounts_100rows(self):
+        """_positions_from_df: 5 accounts × 100 rows in < 10ms total."""
+        from backend.api.algo.nav import _positions_from_df
+
+        dfs = self._make_positions_dfs(5, 100)
+
+        # Warm up
+        for df in dfs:
+            _positions_from_df(df)
+
+        start = time.perf_counter_ns()
+        for _ in range(10):
+            total = 0.0
+            for df in dfs:
+                chunk, _ = _positions_from_df(df)
+                total += chunk
+        elapsed_ns = time.perf_counter_ns() - start
+
+        avg_ms = elapsed_ns / 10 / 1_000_000
+        assert avg_ms < 10, f"_positions_from_df (5×100) took {avg_ms:.2f}ms (budget: 10ms)"
+
+    def test_holdings_from_df_5accounts_100rows(self):
+        """_holdings_from_df: 5 accounts × 100 rows in < 10ms total (no LTP fallback)."""
+        from backend.api.algo.nav import _holdings_from_df
+        from unittest.mock import MagicMock
+
+        dfs = self._make_holdings_dfs(5, 100)
+        mock_ticker = MagicMock()
+        mock_ticker.get_ltp_by_sym.return_value = 0.0  # force cur_val path
+
+        # Warm up
+        for df in dfs:
+            _holdings_from_df(df, mock_ticker)
+
+        start = time.perf_counter_ns()
+        for _ in range(10):
+            total = 0.0
+            for df in dfs:
+                chunk, _ = _holdings_from_df(df, mock_ticker)
+                total += chunk
+        elapsed_ns = time.perf_counter_ns() - start
+
+        avg_ms = elapsed_ns / 10 / 1_000_000
+        assert avg_ms < 10, f"_holdings_from_df (5×100) took {avg_ms:.2f}ms (budget: 10ms)"
+
+    def test_nav_helpers_combined_5accounts_100rows(self):
+        """All three nav helpers combined: 5 accounts × 100 rows < 10ms."""
+        from backend.api.algo.nav import _funds_from_df, _positions_from_df, _holdings_from_df
+        from unittest.mock import MagicMock
+
+        funds_dfs = self._make_funds_dfs(5, 100)
+        pos_dfs = self._make_positions_dfs(5, 100)
+        hold_dfs = self._make_holdings_dfs(5, 100)
+        mock_ticker = MagicMock()
+        mock_ticker.get_ltp_by_sym.return_value = 0.0
+
+        # Warm up
+        for df in funds_dfs:
+            _funds_from_df(df)
+        for df in pos_dfs:
+            _positions_from_df(df)
+        for df in hold_dfs:
+            _holdings_from_df(df, mock_ticker)
+
+        start = time.perf_counter_ns()
+        for _ in range(10):
+            cash_total = sum(_funds_from_df(df)[0] for df in funds_dfs)
+            pos_mtm = sum(_positions_from_df(df)[0] for df in pos_dfs)
+            hold_mtm = sum(_holdings_from_df(df, mock_ticker)[0] for df in hold_dfs)
+        elapsed_ns = time.perf_counter_ns() - start
+
+        avg_ms = elapsed_ns / 10 / 1_000_000
+        assert avg_ms < 10, f"all nav helpers combined (5×100) took {avg_ms:.2f}ms (budget: 10ms)"
+        # Sanity: sums are positive finite numbers
+        assert cash_total > 0
+        assert isinstance(hold_mtm, float)
