@@ -340,11 +340,15 @@
   // the initial value here is the canonical default (not a fallback).
   const _SERIES_LS_KEY = 'rbq.cache.chart-series.v1';
   let _chartType   = $state(/** @type {'line'|'area'|'candle'|'plot'} */('candle'));
-  let _seriesHydrated = false;
+  // `$state` so flipping the gate re-fires the persist effect — see
+  // _overlaysHydrated below for the long-form rationale.
+  let _seriesHydrated = $state(false);
   // Persist series-type choice whenever it changes (after hydration).
+  // Read _chartType BEFORE the gate so the effect subscribes to it on
+  // first run, independent of the hydration state.
   $effect(() => {
-    if (!_seriesHydrated) return;
     const snap = _chartType;
+    if (!_seriesHydrated) return;
     try {
       if (typeof localStorage !== 'undefined') {
         localStorage.setItem(_SERIES_LS_KEY, JSON.stringify(snap));
@@ -360,11 +364,19 @@
   // Instead, start with [] and hydrate from localStorage in onMount.
   const _OVERLAY_LS_KEY = 'rbq.cache.chart-overlays.v1';
   let _overlays    = $state(/** @type {string[]} */([]));
-  let _overlaysHydrated = false;
+  // `$state` so the gate inside the persist effect re-fires when
+  // hydration completes. A plain `let` would not trigger the effect
+  // to re-evaluate (Svelte 5 only tracks $state reads), and the first
+  // effect run would return early WITHOUT subscribing to _overlays —
+  // so subsequent toggles never wrote to localStorage even though the
+  // array did change. Caught by the multi-select e2e test.
+  let _overlaysHydrated = $state(false);
   // Persist overlay selection whenever it changes (after hydration).
+  // Read _overlays BEFORE the gate so the effect subscribes to it on
+  // first run, independent of the hydration state.
   $effect(() => {
-    if (!_overlaysHydrated) return;
     const snap = _overlays.slice();
+    if (!_overlaysHydrated) return;
     try {
       if (typeof localStorage !== 'undefined') {
         localStorage.setItem(_OVERLAY_LS_KEY, JSON.stringify(snap));
