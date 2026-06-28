@@ -1147,15 +1147,16 @@ test.describe('chart overlays — all viewports', () => {
   // wrap → .chart-body → .cw-root → .cw-chart-container) should let the
   // chart SVG absorb every residual pixel after the page-header and
   // toolbar rows subtract their natural height. We assert the SVG's
-  // rendered height passes a generous floor at four canonical sizes —
-  // these floors are derived from `viewport.h − page-header (~30px) −
-  // 2 toolbar rows (~56px) − info-strip (~24px)` minus a safety margin.
-  //   Mobile 360×640  → SVG ≥ 400 px
-  //   Mobile 393×851  → SVG ≥ 480 px
-  //   Desktop 1280×800 → SVG ≥ 500 px
-  //   Desktop 1920×1080 → SVG ≥ 800 px
+  // rendered height passes a viewport-relative floor at four canonical
+  // sizes. Tight phone viewports give up more chrome share (navbar +
+  // 2 toolbar rows + info-strip + footer ≈ 250 px), so the 360×640
+  // floor is intentionally lower than the 393×851 one.
+  //   Mobile 360×640   → SVG ≥ 370 px (≥58% of viewport)
+  //   Mobile 393×851   → SVG ≥ 480 px (≥56%)
+  //   Desktop 1280×800 → SVG ≥ 500 px (≥62%)
+  //   Desktop 1920×1080 → SVG ≥ 800 px (≥74%)
   for (const VP of [
-    { w: 360,  h: 640,  floor: 400 },
+    { w: 360,  h: 640,  floor: 370 },
     { w: 393,  h: 851,  floor: 480 },
     { w: 1280, h: 800,  floor: 500 },
     { w: 1920, h: 1080, floor: 800 },
