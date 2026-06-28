@@ -775,3 +775,133 @@ def test_stale_code_empty_cache_ttl_is_short():
         "should re-query within a few seconds, not poison the cache for 10+s. "
         "Operator-caught BEL race fix: lowered to ≤5."
     )
+
+
+# ── BEL race v3 — `partial` field signals transient-empty to frontend ─────
+#
+# Operator-caught the prior fix as INCOMPLETE: even though the empty-cache
+# TTL was lowered to 2s + the merge was UNION, the frontend STILL showed
+# "No data available" during the retry window because the retry was timed
+# but the UI gated only on `_histLoading`. The historical handler now
+# returns a `partial: bool` field — True when the empty result is likely
+# transient (broker rate-limit cool-off, instruments map cold, all
+# brokers missed token). Frontend uses partial to decide retry vs. fail.
+
+def test_historical_response_has_partial_field():
+    """The msgspec.Struct HistoricalResponse must declare a `partial`
+    field that defaults to False — the contract the frontend relies on
+    for the retry-on-transient-empty path."""
+    from backend.api.routes.options import HistoricalResponse
+
+    # msgspec stores field info in __struct_fields__ and __struct_defaults__.
+    fields = HistoricalResponse.__struct_fields__
+    assert "partial" in fields, (
+        f"HistoricalResponse must have a `partial` field; got: {fields}"
+    )
+    # Construct one with default; partial should default to False.
+    instance = HistoricalResponse(
+        symbol="TEST", instrument_token=None, interval="day", bars=[],
+    )
+    assert instance.partial is False, (
+        "HistoricalResponse.partial must default to False so existing "
+        "callers (Tier 1 / Tier 2 success path) get partial=False without "
+        "needing to specify it explicitly."
+    )
+
+
+def test_stale_code_partial_set_true_on_broker_empty_paths():
+    """Source-level guard: every return path in the historical handler
+    that emits empty bars from a fallback / cold-broker situation MUST
+    set partial=True. Otherwise the frontend treats the empty as
+    confirmed-no-data and shows the error immediately."""
+    import re
+    from pathlib import Path
+
+    # Read raw source file (the historical method is wrapped by Litestar
+    # @get decorator so inspect.getsource on the bound method may fail).
+    options_path = Path(__file__).parent.parent / "api" / "routes" / "options.py"
+    full_src = options_path.read_text()
+    # Slice to the historical handler body via known anchor strings.
+    start = full_src.index('@get("/historical")')
+    end_anchor = "# ── Multi-leg strategy analytics"
+    end = full_src.index(end_anchor, start)
+    src = full_src[start:end]
+
+    # Three empty-return paths in the historical handler:
+    # 1. No eligible brokers — must have partial=True
+    # 2. Broker returned empty bars — must have partial=not bool(bars)
+    # 3. All brokers failed / not found — must have partial=True
+    # The pattern check: `bars=[]` (or `bars=bars`) accompanied by partial=...
+    partial_true_count = len(re.findall(r"partial\s*=\s*True", src))
+    partial_var_count  = len(re.findall(r"partial\s*=\s*not\s+bool\(bars\)", src))
+    total = partial_true_count + partial_var_count
+    assert total >= 3, (
+        f"Expected at least 3 empty-bars paths in OptionsController.historical "
+        f"to set partial=True (or partial=not bool(bars)). Found {partial_true_count} "
+        f"`partial=True` + {partial_var_count} `partial=not bool(bars)`. "
+        "Operator-caught race: every fallback-empty MUST signal partial=True so "
+        "the frontend retries instead of flashing 'No data available'."
+    )
+
+
+def test_first_cold_empty_counter_recorded_for_empty_responses():
+    """When the historical handler returns empty bars from a fallback
+    path, _record_first_cold_empty(sym) must be called. The counter is
+    exposed via /api/admin/health for operator monitoring of the BEL
+    race ("is this still happening for symbol X?")."""
+    from backend.api.routes import options as _opts
+
+    # Reset counter and record one call.
+    with _opts._FIRST_COLD_EMPTY_LOCK:
+        _opts._FIRST_COLD_EMPTY.clear()
+    _opts._record_first_cold_empty("BEL")
+    counts = _opts.get_first_cold_empty_counts()
+    assert counts.get("BEL") == 1, (
+        f"_record_first_cold_empty('BEL') must increment the counter. "
+        f"Got counts: {counts}"
+    )
+    # Record again — counter increments.
+    _opts._record_first_cold_empty("BEL")
+    counts2 = _opts.get_first_cold_empty_counts()
+    assert counts2.get("BEL") == 2, (
+        f"Second call must bump to 2. Got: {counts2}"
+    )
+
+
+def test_stale_code_record_cold_empty_called_from_empty_paths():
+    """Source-level guard: _record_first_cold_empty(sym) must be called
+    from each empty-bars return path in OptionsController.historical so
+    the operator-facing health metric stays accurate."""
+    from pathlib import Path
+
+    options_path = Path(__file__).parent.parent / "api" / "routes" / "options.py"
+    full_src = options_path.read_text()
+    start = full_src.index('@get("/historical")')
+    end = full_src.index("# ── Multi-leg strategy analytics", start)
+    src = full_src[start:end]
+    # Each of the 3 fallback-empty paths must call _record_first_cold_empty.
+    call_count = src.count("_record_first_cold_empty(sym)")
+    assert call_count >= 2, (
+        f"_record_first_cold_empty(sym) must be called from the empty-bars "
+        f"return paths in OptionsController.historical. Found {call_count} call(s); "
+        "expected ≥2 (no-eligible-brokers path + all-brokers-failed path)."
+    )
+
+
+def test_stale_code_health_exposes_cold_empty_counts():
+    """The /api/admin/health surface must expose the per-symbol cold-empty
+    counter under persistence.ohlcv_first_cold_empty. Operator dashboards
+    poll this to know if a specific symbol is still flaking."""
+    import inspect
+    import backend.api.routes.health as _health
+
+    src = inspect.getsource(_health)
+    assert "ohlcv_first_cold_empty" in src, (
+        "health.py must expose persistence.ohlcv_first_cold_empty so the "
+        "operator can monitor whether BEL (or any other symbol) is still "
+        "triggering the empty-response path."
+    )
+    assert "get_first_cold_empty_counts" in src, (
+        "health.py must import + call get_first_cold_empty_counts to "
+        "populate the metric."
+    )
