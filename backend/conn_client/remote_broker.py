@@ -136,14 +136,24 @@ class RemoteBroker(Broker):
         to_date: Any,
         interval: str = "day",
     ) -> list[dict]:
-        # Coerce date args to ISO strings — datetime objects survive
-        # the JSON hop poorly. Adapters at the other end accept
-        # str or datetime so this is safe.
+        # Coerce datetime → "YYYY-MM-DD HH:MM:SS" (Kite SDK's accepted
+        # string form). Plain `.isoformat()` produces "2026-06-28T00:00:00"
+        # with a T separator — KiteConnect rejects it with "invalid
+        # from date". `isoformat(sep=" ")` matches what the SDK expects
+        # and the Dhan/Groww adapters also parse this form. Date-only
+        # args (no time component) drop to YYYY-MM-DD, also accepted.
+        def _fmt(d: Any) -> Any:
+            if hasattr(d, "isoformat"):
+                if hasattr(d, "hour"):  # datetime
+                    return d.isoformat(sep=" ", timespec="seconds")
+                return d.isoformat()  # date
+            return d
+
         return self._call(
             "historical_data",
             int(instrument_token),
-            from_date.isoformat() if hasattr(from_date, "isoformat") else from_date,
-            to_date.isoformat() if hasattr(to_date, "isoformat") else to_date,
+            _fmt(from_date),
+            _fmt(to_date),
             interval=interval,
         )
 
