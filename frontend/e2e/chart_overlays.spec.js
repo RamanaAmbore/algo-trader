@@ -725,7 +725,18 @@ test.describe('chart overlays — all viewports', () => {
       await page.setViewportSize({ width: W, height: 800 });
       await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
       await waitForChart(page);
-      await page.waitForTimeout(400);
+      // Layout-stabilisation beat — at 375 px the picker row wraps and
+      // controls reflow as the symbol search hydrates. Without this the
+      // first sample can catch a control mid-reflow and read its
+      // pre-CSS-applied content-box height.
+      await page.waitForTimeout(600);
+      // Confirm all four primary controls are visible before sampling —
+      // a control that's not yet visible would yield a null box and
+      // get skipped, potentially leaving a mismatched baseline.
+      await expect(page.locator('.cw-range-group .cw-range-btn').first()).toBeVisible({ timeout: 5_000 });
+      await expect(page.locator('.cw-type-chart-wrap .rbq-select-trigger')).toBeVisible({ timeout: 5_000 });
+      await expect(page.locator('.cw-overlay-panel .rbq-multi-trigger')).toBeVisible({ timeout: 5_000 });
+      await expect(page.locator('.cw-picker .ssi-input')).toBeVisible({ timeout: 5_000 });
 
       // Each entry: { name, locator }. Heights gathered then compared
       // pairwise to a tolerance of ±2 px (rounding + sub-pixel layout).
@@ -777,14 +788,23 @@ test.describe('chart overlays — all viewports', () => {
     await injectSession(page, _session);
     await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
     await waitForChart(page);
+    // Hydration beat — Svelte's $effect that applies the `.active`
+    // class runs on the next microtask after _chartDays initialises.
+    // Without this small wait the computed colour can briefly read
+    // rgb(0, 0, 0) (UA <button> default) on slow dev cold-loads.
+    await page.waitForTimeout(400);
 
-    // 1M is the default range — already active on first load.
-    const active = page.locator('.cw-range-group .cw-range-btn.active').first();
-    await expect(active).toBeVisible({ timeout: 5_000 });
-    const colour = await active.evaluate(el => getComputedStyle(el).color);
-    expect(
-      colour,
-      `Active range pill colour expected rgb(34, 211, 238) cyan-400, got ${colour}`,
+    // 1M is the default range — already active on first load. Poll
+    // for the cyan target so a sub-millisecond hydration race can't
+    // flake the assertion.
+    const activeSel = '.cw-range-group .cw-range-btn.active';
+    await expect(page.locator(activeSel).first()).toBeVisible({ timeout: 5_000 });
+    await expect.poll(
+      async () => page.locator(activeSel).first().evaluate(el => getComputedStyle(el).color),
+      {
+        timeout: 5_000,
+        message: 'Active range pill colour should stabilise on cyan-400 after hydration',
+      },
     ).toBe('rgb(34, 211, 238)');
   });
 
