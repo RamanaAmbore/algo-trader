@@ -3222,7 +3222,7 @@ class OrdersController(Controller):
                 )
                 kite_candidates = [
                     r["account"] for r in list_remote_accounts()
-                    if r.get("broker_id") == "zerodha_kite"
+                    if r.get("broker_id") in ("zerodha_kite", "kite")
                 ]
                 candidates = (
                     [account] + [a for a in kite_candidates if a != account]

@@ -194,22 +194,29 @@ def get_broker(account: str) -> Broker:
     return adapter_cls(conn)
 
 
-def all_brokers() -> list[Broker]:
-    """Every configured broker adapter, one per account.
+def _loaded_accounts() -> list[str]:
+    """Canonical list of currently-loaded broker accounts.
 
     Reads the local Connections singleton when present (status quo);
     falls back to conn_service's /internal/accounts when the cutover
-    flag is on and the local singleton is empty."""
+    flag is on and the local singleton is empty. Used by every helper
+    in this module that needs a "what's available" view — keeps the
+    fallback in one place."""
     accts = list(Connections().conn.keys())
-    if not accts:
-        import os
-        if os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
-            "1", "true", "yes", "on",
-        ):
-            from backend.conn_client.remote_broker import list_remote_accounts
-            rows = list_remote_accounts()
-            accts = [r["account"] for r in rows if r.get("account")]
-    return [get_broker(acct) for acct in accts]
+    if accts:
+        return accts
+    import os
+    if os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        from backend.conn_client.remote_broker import list_remote_accounts
+        return [r["account"] for r in list_remote_accounts() if r.get("account")]
+    return []
+
+
+def all_brokers() -> list[Broker]:
+    """Every configured broker adapter, one per account."""
+    return [get_broker(acct) for acct in _loaded_accounts()]
 
 
 def _quote_has_data(result: Any, symbols: list[str]) -> bool:
@@ -593,7 +600,7 @@ def get_sparkline_broker() -> Broker:
     """
     from backend.shared.helpers.settings import get_string
 
-    accounts = list(Connections().conn.keys())
+    accounts = _loaded_accounts()
     if not accounts:
         raise KeyError("No broker accounts configured.")
 
@@ -655,7 +662,7 @@ def get_price_broker() -> Broker:
     """
     from backend.shared.helpers.settings import get_string
 
-    accounts = list(Connections().conn.keys())
+    accounts = _loaded_accounts()
     if not accounts:
         raise KeyError("No broker accounts configured.")
 

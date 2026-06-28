@@ -307,7 +307,9 @@ async def _start_kite_ticker() -> None:
                 list_remote_accounts, fetch_access_token,
             )
             for r in list_remote_accounts():
-                if r.get("broker_id") != "zerodha_kite":
+                # broker_id can be either canonical ("zerodha_kite") or
+                # legacy ("kite") — both map to the Kite adapter.
+                if r.get("broker_id") not in ("zerodha_kite", "kite"):
                     continue
                 acct = r["account"]
                 ak, tok = fetch_access_token(acct)
