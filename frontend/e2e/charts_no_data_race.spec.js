@@ -164,8 +164,9 @@ test.describe('Stale-code: ChartWorkspace loading/empty state guards', () => {
     ).toBe(true);
 
     // Confirm the ordering: loading guard comes before empty-state guard.
+    // The markup is: <div class="cw-state">No data available.</div>
     const loadingGuardPos = src.indexOf('_histLoading && !_bars.length');
-    const emptyGuardPos   = src.indexOf("cw-state'>No data available");
+    const emptyGuardPos   = src.indexOf("cw-state\">No data available");
     expect(loadingGuardPos).toBeGreaterThan(0);
     expect(emptyGuardPos).toBeGreaterThan(loadingGuardPos);
   });
@@ -188,10 +189,12 @@ test.describe('Stale-code: ChartWorkspace loading/empty state guards', () => {
 
     // The "Loading…" cw-state div must also be present (shown when
     // _histLoading=true && _bars.length===0, before the slow threshold).
+    // The markup is: <div class="cw-state">Loading…</div>
     expect(
-      src.includes("cw-state'>Loading"),
+      src.includes('cw-state">Loading'),
       'ChartWorkspace must have a .cw-state "Loading…" branch for the fast-path ' +
-      '(before _histLoadingSlow fires the full overlay).',
+      '(before _histLoadingSlow fires the full overlay). ' +
+      'Expected to find: cw-state">Loading in source.',
     ).toBe(true);
   });
 });
@@ -201,7 +204,9 @@ test.describe('Stale-code: ChartWorkspace loading/empty state guards', () => {
 test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(90_000);
-    const ctx  = await browser.newContext();
+    // Pass baseURL so loginAsAdmin's page.goto('/signin') resolves correctly.
+    // browser.newContext() does NOT inherit the config's baseURL automatically.
+    const ctx  = await browser.newContext({ baseURL: BASE });
     const page = await ctx.newPage();
     await loginAsAdmin(page);
     _session = await page.evaluate(() => {
