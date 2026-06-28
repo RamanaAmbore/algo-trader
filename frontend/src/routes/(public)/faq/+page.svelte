@@ -78,7 +78,10 @@
     },
   ];
 
-  let open = $state(-1);
+  // First FAQ expanded by default — single-open pattern (clicking any
+  // other entry collapses this one). Operator: "in faq, expand the
+  // first element expanded by default."
+  let open = $state(0);
   let _zoomedDiagram = $state(/** @type {string | null} */ (null));
 
   function _openZoom(svgHtml) {
