@@ -199,7 +199,21 @@ class NavController(Controller):
                   .order_by(desc(NavDaily.as_of_date))
                   .limit(2)
             )).scalars().all()
-            firm_nav = float(rows[0].nav) if rows else 0.0
+            # Live intraday NAV — call compute_firm_nav() so the
+            # investor's slice tracks the same number /performance
+            # NAV grid + NavCard show. Previously read rows[0].nav
+            # (EOD snapshot from yesterday's 16:00 IST cron) which
+            # produced a slice that lagged by up to one full day's
+            # P&L. The prior-day rows[1] still seeds the day-delta
+            # math below (intentional — that's the baseline).
+            try:
+                from backend.api.algo.nav import compute_firm_nav
+                _snap = await compute_firm_nav()
+                firm_nav = float(_snap.get("nav") or 0.0)
+            except Exception:
+                # Fallback to EOD snapshot if live compute fails
+                # (broker outage). Better stale than zero.
+                firm_nav = float(rows[0].nav) if rows else 0.0
             # Fetch events ONCE; compute_slice reuses, day-delta math
             # reuses. Pre-fix this fetched twice. (Slice M4.)
             await ensure_all_bootstrapped(s)

@@ -26,7 +26,12 @@ async def main() -> None:
     from backend.brokers.broker_apis import (
         fetch_holdings, fetch_positions, fetch_margins,
     )
-    from backend.brokers.kite_ticker import _ticker
+    # Use get_ticker() — routes to MmapTickReader when conn_service
+    # owns the WS (RAMBOQ_USE_CONN_SERVICE=1). Direct `_ticker` import
+    # would return the empty in-process TickerManager and every LTP
+    # lookup would miss → 0 holdings_mtm → wrong NAV.
+    from backend.brokers.kite_ticker import get_ticker as _get_ticker
+    _ticker = _get_ticker()
 
     # Per-account accumulators
     cash_by_acct          = defaultdict(float)
@@ -133,7 +138,7 @@ async def main() -> None:
     firm_nav = firm_cash + firm_pos + firm_hold
     print(f"{'TOTAL':<10}{fmt(firm_cash)}{fmt(firm_pos)}{fmt(firm_hold)}{fmt(firm_nav)}")
     print()
-    print(f"firm_nav = Σ (cash + used_margin)  +  Σ position.unrealised  +  Σ holdings.cur_val")
+    print(f"firm_nav = Σ (cash_sod + option_premium)  +  Σ position.unrealised  +  Σ holdings.cur_val")
     print(f"         = {firm_cash:,.2f} + {firm_pos:,.2f} + {firm_hold:,.2f}")
     print(f"         = ₹{firm_nav:,.2f}")
 

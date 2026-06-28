@@ -2594,11 +2594,16 @@ class OrdersController(Controller):
         # market-hours violation (409). Tests exercise this ordering by
         # posting missing/unknown-account payloads outside market hours
         # and asserting 400.
-        conns = Connections()
         account = (data.account or "").strip()
         if not account:
             raise HTTPException(status_code=400, detail="Account is required.")
-        if account not in conns.conn:
+        # Use the canonical _loaded_accounts() from registry — it has the
+        # cutover-flag fallback to list_remote_accounts(), so order placement
+        # works whether broker sessions live in this process or in conn_service.
+        # Previously read Connections().conn directly which is empty under
+        # RAMBOQ_USE_CONN_SERVICE=1, breaking every single-leg order route.
+        from backend.brokers.registry import _loaded_accounts
+        if account not in _loaded_accounts():
             raise HTTPException(status_code=400, detail=f"Unknown account: {account}.")
 
         # Slice 7i — capacity guardrail. When the strategy has a
@@ -3865,8 +3870,10 @@ class OrdersController(Controller):
                              for i in range(len(grp.legs))],
                 )
 
-            conns = Connections()
-            if account not in conns.conn:
+            # Use _loaded_accounts() so the cutover-flag path works
+            # (Connections().conn is empty under RAMBOQ_USE_CONN_SERVICE=1).
+            from backend.brokers.registry import _loaded_accounts
+            if account not in _loaded_accounts():
                 return BasketGroupResult(
                     account=account,
                     basket_id="",

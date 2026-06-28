@@ -148,6 +148,45 @@ async def _fetch() -> PositionsResponse:
     return PositionsResponse(rows=rows, summary=summary, refreshed_at=timestamp_display())
 
 
+# Required columns for the decomposed (intraday-aware) day_change_val
+# formula. When all five are present the formula uses overnight_qty ×
+# (LTP − close) + buy/sell decomposition; otherwise falls back to
+# (LTP − close) × qty (naive overnight-only path).
+_INTRADAY_FIELDS = {
+    'overnight_quantity', 'day_buy_quantity', 'day_sell_quantity',
+    'day_buy_value', 'day_sell_value',
+}
+
+
+def _compute_day_change_val(raw: pd.DataFrame, sel: pd.Index) -> pd.Series:
+    """Decomposed intraday day_change_val for the rows indexed by `sel`.
+
+    Single source of truth — previously inlined inside both
+    `_override_stale_ltp_from_ticker` and `_override_stale_close_from_snapshot`
+    so the formula lived in three places (here + the original in
+    `backend/brokers/broker_apis.py`). A correction in one missed the
+    other two. Extracted here so callers patch via one helper.
+
+    Formula (matches broker_apis.fetch_positions / fetch_holdings):
+        overnight_qty × (LTP − close)        ← drifts with LTP
+      + day_buy_qty   × LTP  −  day_buy_val   ← MTM on today's buys
+      + day_sell_val  −  day_sell_qty × LTP   ← realised on today's sells
+    Naive fallback when the intraday columns aren't all present:
+        (LTP − close) × quantity
+    """
+    _ltp = pd.to_numeric(raw.loc[sel, 'last_price'], errors='coerce').fillna(0)
+    _cls = pd.to_numeric(raw.loc[sel, 'close_price'], errors='coerce').fillna(0)
+    if _INTRADAY_FIELDS.issubset(raw.columns):
+        _oq = pd.to_numeric(raw.loc[sel, 'overnight_quantity'], errors='coerce').fillna(0)
+        _bq = pd.to_numeric(raw.loc[sel, 'day_buy_quantity'],   errors='coerce').fillna(0)
+        _sq = pd.to_numeric(raw.loc[sel, 'day_sell_quantity'],  errors='coerce').fillna(0)
+        _bv = pd.to_numeric(raw.loc[sel, 'day_buy_value'],      errors='coerce').fillna(0)
+        _sv = pd.to_numeric(raw.loc[sel, 'day_sell_value'],     errors='coerce').fillna(0)
+        return (_oq * (_ltp - _cls)) + (_bq * _ltp - _bv) + (_sv - _sq * _ltp)
+    _qty = pd.to_numeric(raw.loc[sel, 'quantity'], errors='coerce').fillna(0)
+    return (_ltp - _cls) * _qty
+
+
 def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
     """Patch `last_price` from the live KiteTicker tick_map for any
     row whose tradingsymbol the ticker is currently subscribed to.
@@ -201,25 +240,11 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
     # formula `broker_apis._patch_day_change_val` uses. Without this
     # the row's day_change_val would still hold Kite's stale value
     # (computed against the pre-patch LTP === close_price, i.e. zero).
-    _intraday_fields = {'overnight_quantity', 'day_buy_quantity',
-                        'day_sell_quantity', 'day_buy_value', 'day_sell_value'}
+    # (Uses module-level _INTRADAY_FIELDS via _compute_day_change_val.)
     _sel = pd.Index(patched_idx)
     _ltp = pd.to_numeric(raw.loc[_sel, 'last_price'], errors='coerce').fillna(0)
     _cls = pd.to_numeric(raw.loc[_sel, 'close_price'], errors='coerce').fillna(0)
-    _qty = pd.to_numeric(raw.loc[_sel, 'quantity'], errors='coerce').fillna(0)
-    if _intraday_fields.issubset(raw.columns):
-        _oq = pd.to_numeric(raw.loc[_sel, 'overnight_quantity'], errors='coerce').fillna(0)
-        _bq = pd.to_numeric(raw.loc[_sel, 'day_buy_quantity'], errors='coerce').fillna(0)
-        _sq = pd.to_numeric(raw.loc[_sel, 'day_sell_quantity'], errors='coerce').fillna(0)
-        _bv = pd.to_numeric(raw.loc[_sel, 'day_buy_value'], errors='coerce').fillna(0)
-        _sv = pd.to_numeric(raw.loc[_sel, 'day_sell_value'], errors='coerce').fillna(0)
-        _dcv_calc = (
-            _oq * (_ltp - _cls)
-            + (_bq * _ltp - _bv)
-            + (_sv - _sq * _ltp)
-        )
-    else:
-        _dcv_calc = (_ltp - _cls) * _qty
+    _dcv_calc = _compute_day_change_val(raw, _sel)
     raw.loc[_sel, 'day_change_val'] = _dcv_calc.where(_ltp > 0, raw.loc[_sel, 'day_change_val'])
     raw.loc[_sel, 'day_change'] = _ltp - _cls
     # Additive pnl patch — preserves broker-side adjustments (fees,
@@ -331,27 +356,12 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     # broker_apis' value untouched so backfilled Dhan rows (where the
     # backfill computes day_chg = (LTP - close) × qty as a fallback for
     # missing intraday fields) stay correct.
-    _intraday_fields = {'overnight_quantity', 'day_buy_quantity',
-                        'day_sell_quantity', 'day_buy_value', 'day_sell_value'}
+    # (Uses module-level _INTRADAY_FIELDS via _compute_day_change_val.)
     _sel = pd.Index(patched_idx)
     _ltp = pd.to_numeric(raw.loc[_sel, 'last_price'], errors='coerce').fillna(0)
     _cls = pd.to_numeric(raw.loc[_sel, 'close_price'], errors='coerce').fillna(0)
-    _qty = pd.to_numeric(raw.loc[_sel, 'quantity'], errors='coerce').fillna(0)
-    if _intraday_fields.issubset(raw.columns):
-        _oq = pd.to_numeric(raw.loc[_sel, 'overnight_quantity'], errors='coerce').fillna(0)
-        _bq = pd.to_numeric(raw.loc[_sel, 'day_buy_quantity'], errors='coerce').fillna(0)
-        _sq = pd.to_numeric(raw.loc[_sel, 'day_sell_quantity'], errors='coerce').fillna(0)
-        _bv = pd.to_numeric(raw.loc[_sel, 'day_buy_value'], errors='coerce').fillna(0)
-        _sv = pd.to_numeric(raw.loc[_sel, 'day_sell_value'], errors='coerce').fillna(0)
-        _dcv_calc = (
-            _oq * (_ltp - _cls)
-            + (_bq * _ltp - _bv)
-            + (_sv - _sq * _ltp)
-        )
-    else:
-        _dcv_calc = (_ltp - _cls) * _qty
-    _dcv_valid = (_ltp > 0)
-    raw.loc[_sel, 'day_change_val'] = _dcv_calc.where(_dcv_valid, raw.loc[_sel, 'day_change_val'])
+    _dcv_calc = _compute_day_change_val(raw, _sel)
+    raw.loc[_sel, 'day_change_val'] = _dcv_calc.where(_ltp > 0, raw.loc[_sel, 'day_change_val'])
     raw.loc[_sel, 'day_change'] = _ltp - _cls
     logger.info(f"positions: close-override patched {len(patched_idx)}/{len(raw)} rows from daily_book")
 

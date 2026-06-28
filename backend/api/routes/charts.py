@@ -206,9 +206,14 @@ class ChartsController(Controller):
         # Mask raw account identifiers (e.g. ZG0790 → ZG####) for
         # non-admin callers (demo visitors). Symbol / price fields stay
         # as-is — they carry no account-identifying information.
+        # Use mask_account() — broker-ordinal aware (DH3747 → D1####
+        # when two Dhan accounts loaded). Previous inline re.sub was
+        # digit-only so it produced 'DH####' for both Dhan codes,
+        # leaking that they're distinct accounts.
         if not is_admin_request(request):
+            from backend.shared.helpers.utils import mask_account
             details = [
-                {**d, "account": re.sub(r'\d', '#', str(d.get("account") or ""))}
+                {**d, "account": mask_account(str(d.get("account") or ""))}
                 for d in details
             ]
         return PaperStatus(

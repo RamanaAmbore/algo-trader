@@ -705,7 +705,17 @@ class InvestorPortalController(Controller):
                   .order_by(desc(NavDaily.as_of_date))
                   .limit(2)
             )).scalars().all()
-            firm_nav = float(rows[0].nav) if rows else 0.0
+            # Live intraday NAV (canonical compute_firm_nav) so the
+            # LP token slice tracks the same number /performance NAV
+            # grid + NavCard show. Previously read the EOD snapshot,
+            # making the LP slice lag by up to one day's P&L. Fall
+            # back to the snapshot on broker outage — stale beats zero.
+            try:
+                from backend.api.algo.nav import compute_firm_nav
+                _snap = await compute_firm_nav()
+                firm_nav = float(_snap.get("nav") or 0.0)
+            except Exception:
+                firm_nav = float(rows[0].nav) if rows else 0.0
             # Fetch events ONCE; reuse for compute_slice + day-delta.
             # (Slice M4.)
             from backend.api.algo.investor_units import ensure_all_bootstrapped as _eab
