@@ -78,9 +78,27 @@ def _maskable(size: int) -> Image.Image:
     return canvas
 
 
+def _quantize(img: Image.Image) -> Image.Image:
+    """Reduce RGBA image to a 256-colour palette via Fast Octree.
+
+    Brand assets (favicons, app-icons, OG cards) are flat-fill graphics
+    rendered from SVG — they trivially compress to <256 distinct colours
+    with avg pixel error <1/255 (visually identical). Skipping this step
+    leaves PNGs 4-5× larger than needed; the prior pipeline emitted a
+    78 KB app-icon-512.png that now lands at ~17 KB.
+
+    FASTOCTREE is the only method Pillow ships that preserves the alpha
+    channel — MEDIANCUT / MAXCOVERAGE bail with a ValueError on RGBA."""
+    if img.mode != "RGBA":
+        img = img.convert("RGBA")
+    return img.quantize(colors=256, method=Image.Quantize.FASTOCTREE)
+
+
 def _save(img: Image.Image, name: str) -> None:
+    """Quantize + write a PNG with max DEFLATE compression. Pairs with
+    `optimize=True` so Pillow does the IDAT/PLTE optimisation pass."""
     out = STATIC / name
-    img.save(out, format="PNG", optimize=True)
+    _quantize(img).save(out, format="PNG", optimize=True, compress_level=9)
     print(f"wrote {out} ({out.stat().st_size:,} bytes)")
 
 
@@ -97,13 +115,23 @@ def main() -> None:
     # from the SVG, no mask padding (iOS doesn't apply adaptive masks).
     _save(_render_svg(180), "apple-touch-icon.png")
 
-    # Browser tab favicon — 256×256 master, plus multi-size .ico.
+    # Browser tab favicon — 256×256 master PNG (alternate-icon link),
+    # plus a slim .ico containing only 16/32/48 sizes.
+    #
+    # Why so few sizes: every modern browser prefers the SVG link first
+    # (`<link rel="icon" type="image/svg+xml">` in app.html) and falls
+    # back to the PNG before ever fetching the ICO. The ICO matters only
+    # for legacy contexts (older Outlook, RSS aggregators, IE-era
+    # bookmark indexes) — and those only request 16×16 or 32×32. The
+    # 48×48 layer stays for Windows desktop shortcut pinning. Anything
+    # bigger inside an .ico is dead weight (the prior build shipped
+    # 64/128/256 in there too, pushing favicon.ico to 66 KB).
     fav_master = _render_svg(256)
     _save(fav_master, "favicon.png")
     fav_ico = STATIC / "favicon.ico"
-    fav_master.save(
+    _quantize(fav_master).save(
         fav_ico, format="ICO",
-        sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+        sizes=[(16, 16), (32, 32), (48, 48)],
     )
     print(f"wrote {fav_ico} ({fav_ico.stat().st_size:,} bytes)")
 

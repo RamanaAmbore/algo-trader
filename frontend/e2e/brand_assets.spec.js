@@ -3,14 +3,14 @@
  *
  * The static brand bundle lives under frontend/static/. Each of the
  * canonical assets must serve 200 with the right MIME, and the
- * navbar's <img src="/bull.png"> on the public site must carry the
+ * navbar's <img src="/bull.webp"> on the public site must carry the
  * champagne drop-shadow (rgba(200,168,75,*)) — NOT the algo-amber
  * variant (rgba(251,191,36,*)).
  *
  * The Svelte route `(public)/+page.svelte` is what renders at `/`,
- * and includes <meta property="og:image"> pointing at og-image.png.
- * After hydration, the (public) layout's nav bar mounts with the
- * bull.png. We assert against the post-hydration DOM.
+ * and includes <meta property="og:image"> pointing at og-image-home.png.
+ * After hydration, the (public) layout's nav bar mounts with bull.webp.
+ * We assert against the post-hydration DOM.
  */
 
 import { test, expect } from '@playwright/test';
@@ -43,13 +43,19 @@ test.describe('Brand assets', () => {
     });
   }
 
-  test('navbar bull.png on / has champagne drop-shadow + og:image meta', async ({ page }) => {
+  test('navbar bull.webp on / has champagne drop-shadow + og:image meta', async ({ page }) => {
     await page.goto('/');
 
     // The home route renders prerendered SSR content first; SvelteKit
     // hydrates the (public) layout after. Wait for the bull image to
-    // mount.
-    const bull = page.locator('img[src="/bull.png"]').first();
+    // mount. The bull asset migrated from .png to .webp in slice F
+    // (2026-06) — same drop-shadow contract, smaller wire footprint.
+    //
+    // The public navbar renders TWO bull <img>s — desktop (md:flex)
+    // and mobile (md:hidden). Exactly one is visible at any viewport,
+    // so we select via the visible-pseudo rather than .first().
+    const bulls = page.locator('img[src="/bull.webp"]');
+    const bull = bulls.locator('visible=true').first();
     await expect(bull).toBeVisible({ timeout: TIMEOUT });
 
     // Read the inline style attribute and assert the champagne hue
@@ -60,9 +66,10 @@ test.describe('Brand assets', () => {
     expect(styleAttr).not.toContain('rgba(251,191,36');
 
     // og:image meta tag — the (public)/+page.svelte head block lands
-    // it pointing at og-image.png (raster — WhatsApp/Twitter previews
-    // don't render SVG OG images reliably).
+    // it pointing at og-image-home.png (raster — WhatsApp/Twitter
+    // previews don't render SVG OG images reliably). Canonical share
+    // image renamed from og-image.png to og-image-home.png in slice AW.
     const og = await page.locator('meta[property="og:image"]').first().getAttribute('content');
-    expect(og || '', 'og:image meta missing').toMatch(/og-image\.png$/);
+    expect(og || '', 'og:image meta missing').toMatch(/og-image-home\.png/);
   });
 });

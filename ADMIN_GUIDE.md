@@ -1393,6 +1393,17 @@ Single forensic surface for every mutating event the platform produces. Cap-gate
 - [SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md) — scenarios, Run-in-Simulator, market-state presets
 - [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md) — Claude Code MCP, 25 tools, audit trail
 
+## Brand assets — regenerate + optimize
+
+Static images under `frontend/static/` (favicons, app-icons, OG cards, bull logo, navbar background) are sources of truth: bytes ship straight to browsers and social-card scrapers.
+
+Two scripts manage the bundle, both run via the `.icon-venv` interpreter (Pillow + resvg-py installed):
+
+- `scripts/build_app_icons.py` — re-renders every PNG and the ICO from the master `app-icon.svg` + the two `og-image-*.svg` files. PNGs are quantized to a 256-colour palette (Fast Octree) on the way out; favicon.ico carries only 16/32/48 layers (the SVG link covers anything modern). Run this after editing any source SVG.
+- `scripts/optimize_images.py` — idempotent sweep over the whole `frontend/static/` directory: re-encodes WebP (bull at q=80, nav_image at q=60, the rest at q=75), strips comments + collapses whitespace inside SVGs, re-slims `favicon.ico`, and re-quantizes any drifted PNGs. Safe to call from a pre-commit hook. Exposed as `npm run optimize:images` (from `frontend/`).
+
+Pre-optimization baseline of the hot-path bundle (every page-load assets) was ~156 KB; post-optimization it lands at ~54 KB (65% smaller). The full static bundle dropped 569 KB → 166 KB (71% smaller). `frontend/e2e/image_perf.spec.js` freezes a 120 KB hot-path budget — exceeding it on any new asset drop fails the spec, forcing a re-run of the optimizer.
+
 ## Troubleshooting
 
 | Problem | Fix |
