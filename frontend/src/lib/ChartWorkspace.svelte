@@ -1338,7 +1338,8 @@
          busy` class still applies the disabled state + opacity dim so
          the controls visibly lock during a fetch. -->
 
-    <!-- Intraday tick stream — single toggle chip -->
+    <!-- Intraday tick stream — single toggle chip.
+         .cw-intraday-full hides on mobile; .cw-intraday-short shows "Intra" -->
     <button type="button"
       class="cw-range-btn cw-intraday-btn"
       class:active={_intradayOn}
@@ -1346,7 +1347,7 @@
       title={_intradayOn ? 'Intraday tick stream ON — click to turn off' : 'Intraday tick stream OFF — click to turn on'}
       aria-pressed={_intradayOn}
       onclick={() => _intradayOn = !_intradayOn}>
-      Intraday
+      <span class="cw-intraday-full">Intraday</span><span class="cw-intraday-short">Intra</span>
     </button>
 
     <!-- Date range — segmented pill row (1D/1W/1M/3M/6M/1Y) -->
@@ -1765,61 +1766,56 @@
     {/if}
   </div>
 
-  <!-- Greeks strip — always rendered for options; reserved height for non-options
-       prevents layout jump when operator switches between option ↔ equity. -->
-  {#if !compact}
-    <div class="cw-greeks-strip" class:cw-greeks-empty={!_isOption}>
-      {#if _isOption}
-        <div class="cw-greeks-label">Greeks</div>
-        {#if _greeksError}
-          <span class="cw-err-text cw-greeks-err">{_greeksError}</span>
-        {:else if _greeks}
-          {@const g = _greeks}
+  <!-- Greeks strip — options only. Omitted for equities/futures/indices. -->
+  {#if !compact && _isOption}
+    <div class="cw-greeks-strip">
+      <div class="cw-greeks-label">Greeks</div>
+      {#if _greeksError}
+        <span class="cw-err-text cw-greeks-err">{_greeksError}</span>
+      {:else if _greeks}
+        {@const g = _greeks}
+        <div class="cw-greek-item">
+          <span class="cw-gk-label">Δ</span>
+          <span class="cw-gk-val">{_gv(g.delta ?? g.greeks?.delta)}</span>
+          <InfoHint popup text="Delta — how much the option price moves per ₹1 move in the underlying. Call Δ is positive; put Δ is negative." />
+        </div>
+        <div class="cw-greek-item">
+          <span class="cw-gk-label">Γ</span>
+          <span class="cw-gk-val">{_gv(g.gamma ?? g.greeks?.gamma)}</span>
+          <InfoHint popup text="Gamma — rate of change of Delta per ₹1 move. High Gamma = Delta changes fast near expiry." />
+        </div>
+        <div class="cw-greek-item">
+          <span class="cw-gk-label">Θ</span>
+          <span class="cw-gk-val">{_gv(g.theta ?? g.greeks?.theta)}</span>
+          <InfoHint popup text="Theta — daily time decay in ₹ (trader units). Long options lose Θ per day; short options gain it." />
+        </div>
+        <div class="cw-greek-item">
+          <span class="cw-gk-label">V</span>
+          <span class="cw-gk-val">{_gv(g.vega ?? g.greeks?.vega)}</span>
+          <InfoHint popup text="Vega — P&amp;L change per 1% move in implied volatility. Long options have positive Vega." />
+        </div>
+        <div class="cw-greek-item">
+          <span class="cw-gk-label">ρ</span>
+          <span class="cw-gk-val">{_gv(g.rho ?? g.greeks?.rho)}</span>
+          <InfoHint popup text="Rho — P&amp;L change per 1% move in interest rate. Usually small compared to other Greeks." />
+        </div>
+        {#if (g.iv ?? g.greeks?.iv) != null}
           <div class="cw-greek-item">
-            <span class="cw-gk-label">Δ</span>
-            <span class="cw-gk-val">{_gv(g.delta ?? g.greeks?.delta)}</span>
-            <InfoHint popup text="Delta — how much the option price moves per ₹1 move in the underlying. Call Δ is positive; put Δ is negative." />
+            <span class="cw-gk-label">IV</span>
+            <span class="cw-gk-val cw-gk-amber">
+              {((g.iv ?? g.greeks?.iv) * 100).toFixed(1)}%
+            </span>
+            <InfoHint popup text="Implied Volatility — the market's consensus forecast of how much the underlying will move. Higher IV = more expensive options." />
           </div>
-          <div class="cw-greek-item">
-            <span class="cw-gk-label">Γ</span>
-            <span class="cw-gk-val">{_gv(g.gamma ?? g.greeks?.gamma)}</span>
-            <InfoHint popup text="Gamma — rate of change of Delta per ₹1 move. High Gamma = Delta changes fast near expiry." />
-          </div>
-          <div class="cw-greek-item">
-            <span class="cw-gk-label">Θ</span>
-            <span class="cw-gk-val">{_gv(g.theta ?? g.greeks?.theta)}</span>
-            <InfoHint popup text="Theta — daily time decay in ₹ (trader units). Long options lose Θ per day; short options gain it." />
-          </div>
-          <div class="cw-greek-item">
-            <span class="cw-gk-label">V</span>
-            <span class="cw-gk-val">{_gv(g.vega ?? g.greeks?.vega)}</span>
-            <InfoHint popup text="Vega — P&amp;L change per 1% move in implied volatility. Long options have positive Vega." />
-          </div>
-          <div class="cw-greek-item">
-            <span class="cw-gk-label">ρ</span>
-            <span class="cw-gk-val">{_gv(g.rho ?? g.greeks?.rho)}</span>
-            <InfoHint popup text="Rho — P&amp;L change per 1% move in interest rate. Usually small compared to other Greeks." />
-          </div>
-          {#if (g.iv ?? g.greeks?.iv) != null}
-            <div class="cw-greek-item">
-              <span class="cw-gk-label">IV</span>
-              <span class="cw-gk-val cw-gk-amber">
-                {((g.iv ?? g.greeks?.iv) * 100).toFixed(1)}%
-              </span>
-              <InfoHint popup text="Implied Volatility — the market's consensus forecast of how much the underlying will move. Higher IV = more expensive options." />
-            </div>
-          {/if}
-          {#if (g.ltp ?? g.pricing?.ltp) != null}
-            <div class="cw-greek-item cw-greek-item-sep">
-              <span class="cw-gk-label">LTP</span>
-              <span class="cw-gk-val cw-gk-sky">₹{priceFmt(g.ltp ?? g.pricing?.ltp)}</span>
-            </div>
-          {/if}
-        {:else}
-          <span class="cw-meta-text">Loading Greeks…</span>
         {/if}
-      {:else if symbol}
-        <span class="cw-greeks-placeholder">Equity — no Greeks</span>
+        {#if (g.ltp ?? g.pricing?.ltp) != null}
+          <div class="cw-greek-item cw-greek-item-sep">
+            <span class="cw-gk-label">LTP</span>
+            <span class="cw-gk-val cw-gk-sky">₹{priceFmt(g.ltp ?? g.pricing?.ltp)}</span>
+          </div>
+        {/if}
+      {:else}
+        <span class="cw-meta-text">Loading Greeks…</span>
       {/if}
     </div>
   {/if}
@@ -2289,14 +2285,6 @@
     background: rgba(0,0,0,0.12);
     flex-wrap: wrap;
     flex-shrink: 0;
-    min-height: 2rem;  /* reserve height even when empty so layout doesn't jump */
-  }
-  /* Non-options placeholder — subtle, doesn't look like an error */
-  .cw-greeks-placeholder {
-    font-family: monospace;
-    font-size: 0.55rem;
-    color: #4a5a7a;
-    font-style: italic;
   }
   .cw-greeks-label {
     font-family: monospace;
