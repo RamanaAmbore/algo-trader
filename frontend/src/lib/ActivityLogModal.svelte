@@ -16,7 +16,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
-  import ActivityAccountSelect from '$lib/ActivityAccountSelect.svelte';
+  import ActivityHeaderFilters from '$lib/ActivityHeaderFilters.svelte';
   import ChaseCard from '$lib/order/ChaseCard.svelte';
   import BellIcon from '$lib/icons/BellIcon.svelte';
   import { portal } from '$lib/portal';
@@ -42,6 +42,10 @@
   let _accountFilter = $state([]);
   /** @type {string[]} */
   let _availableAccounts = $state([]);
+  // Log level filter — operator: "the default is error." Persists
+  // across tab changes inside LogPanel because state lives here.
+  /** @type {'all'|'error'|'warning'|'info'} */
+  let _levelFilter = $state('error');
 
   let _modalEl = $state(/** @type {HTMLElement|null} */ (null));
   let _closeBtnEl = $state(/** @type {HTMLButtonElement|null} */ (null));
@@ -107,12 +111,12 @@
         <BellIcon width="14" height="14" class="alm-title-icon alm-title-icon-3d" />
         Activity
       </span>
-      <!-- Account filter lifted out of LogPanel's tab row. Operator:
-           "the account on the tab line should go to activity header."
-           Shared component — same dropdown chrome the /orders Activity
-           card uses, so the two surfaces stay visually identical. -->
-      <ActivityAccountSelect
-        bind:value={_accountFilter}
+      <!-- Account + level filters lifted out of LogPanel's tab row.
+           Single shared component — same chrome /orders Activity
+           card uses, so all surfaces stay visually identical. -->
+      <ActivityHeaderFilters
+        bind:accountFilter={_accountFilter}
+        bind:levelFilter={_levelFilter}
         availableAccounts={_availableAccounts} />
       <button type="button" class="alm-close" bind:this={_closeBtnEl}
               aria-label="Close activity log">×</button>
@@ -134,7 +138,8 @@
         defaultTab={initialTab}
         symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
         bind:accountFilter={_accountFilter}
-        bind:availableAccounts={_availableAccounts} />
+        bind:availableAccounts={_availableAccounts}
+        bind:levelFilter={_levelFilter} />
     </div>
   </div>
 </div>

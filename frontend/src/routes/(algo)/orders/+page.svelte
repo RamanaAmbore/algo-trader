@@ -8,7 +8,7 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import CardControls from '$lib/CardControls.svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
-  import ActivityAccountSelect from '$lib/ActivityAccountSelect.svelte';
+  import ActivityHeaderFilters from '$lib/ActivityHeaderFilters.svelte';
   import BellIcon from '$lib/icons/BellIcon.svelte';
   import { fetchOrders } from '$lib/api';
   import { bookChanged } from '$lib/data/bookChanged';
@@ -150,6 +150,8 @@
   let _actAccountFilter = $state([]);
   /** @type {string[]} */
   let _actAvailableAccounts = $state([]);
+  /** @type {'all'|'error'|'warning'|'info'} */
+  let _actLevelFilter = $state('error');
   /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */
   let _statusFilter = $state('all');
 
@@ -492,11 +494,12 @@
       Activity
     </span>
     <span class="oc-spacer"></span>
-    <!-- Shared with ActivityLogModal — same dropdown chrome and
-         visibility rule. Operator: "activity should use the same
-         reusable code across all the pages and modals." -->
-    <ActivityAccountSelect
-      bind:value={_actAccountFilter}
+    <!-- Account + level filters — shared component with the modal.
+         Operator: "activity should use the same reusable code across
+         all the pages and modals." -->
+    <ActivityHeaderFilters
+      bind:accountFilter={_actAccountFilter}
+      bind:levelFilter={_actLevelFilter}
       availableAccounts={_actAvailableAccounts} />
     <CardControls
       bind:isCollapsed={_colActivity}
@@ -516,7 +519,8 @@
       statusFilter={_statusFilter}
       symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
       bind:accountFilter={_actAccountFilter}
-      bind:availableAccounts={_actAvailableAccounts} />
+      bind:availableAccounts={_actAvailableAccounts}
+      bind:levelFilter={_actLevelFilter} />
   </div>
 </section>
 

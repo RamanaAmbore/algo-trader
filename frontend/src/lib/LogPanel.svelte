@@ -38,6 +38,7 @@
    *   hideInlineAccountFilter?: boolean,
    *   availableAccounts?: string[],
    *   multiColumn?: boolean,
+   *   levelFilter?: 'all'|'error'|'warning'|'info',
    * }} */
   let {
     heightClass = 'flex-1 min-h-0',
@@ -99,7 +100,49 @@
      * Falls back to 1 column under 900px container width.
      */
     multiColumn = false,
+    /**
+     * Log-level filter applied to the active tab. Default 'all' keeps
+     * pre-filter behaviour for callsites that don't pass the prop;
+     * ActivityLogSurface defaults to 'error' so the Activity surfaces
+     * land on actionable rows. When set, System / Conn rows are
+     * filtered by line-start `(ERROR|WARNING|INFO|DEBUG)` token;
+     * Agent rows by their event_type mapping; Order rows by status.
+     */
+    levelFilter = /** @type {'all'|'error'|'warning'|'info'} */ ('all'),
   } = $props();
+
+  // Line-level helpers shared by every text-log tab (System, Conn).
+  // Reused inside the derived row arrays so the filter runs once per
+  // poll, not per render.
+  function _lineLevel(/** @type {string} */ line) {
+    const m = String(line || '').match(/-\s*(ERROR|WARN(?:ING)?|INFO|DEBUG)\b/i);
+    if (!m) return 'info';
+    const t = m[1].toUpperCase();
+    if (t === 'ERROR') return 'error';
+    if (t.startsWith('WARN')) return 'warning';
+    return 'info';
+  }
+  function _lineMatchesLevel(/** @type {string} */ line) {
+    if (levelFilter === 'all') return true;
+    return _lineLevel(line) === levelFilter;
+  }
+  // Match Kite/Dhan/Groww account patterns inside free-text logs —
+  // e.g. `[ZG0790]`, `'DH3747'`, `account=ZJ6294`, `GR87DF`. Returns
+  // the first match found or null when the line carries no account
+  // context (e.g. a startup/shutdown log).
+  function _lineAccount(/** @type {string} */ line) {
+    const m = String(line || '').match(/\b([A-Z]{2}[0-9A-Z]{4})\b/);
+    return m ? m[1] : null;
+  }
+  function _lineMatchesAccount(/** @type {string} */ line, /** @type {string[]} */ filter) {
+    if (!filter || filter.length === 0) return true;
+    const acct = _lineAccount(line);
+    // No detectable account = broadcast event (e.g. KiteTicker connect
+    // log) — keep visible so the operator doesn't lose context when
+    // the filter is set.
+    if (!acct) return true;
+    return filter.includes(acct);
+  }
 
   // intentional: defaultTab seeds the active tab; $effect below re-syncs on prop changes
   // svelte-ignore state_referenced_locally
@@ -166,8 +209,23 @@
   // DOM identity per row). Each entry carries a stable `key` so
   // Svelte can diff per row; the `html` string is the same as
   // _logRow() output but wrapped one DOM node at a time.
+  // Map an agent event_type → log level so the header level filter
+  // applies the same semantics across tabs. action_failed = error,
+  // cooldown = warning, action_success / fired = info.
+  function _agentLevel(/** @type {any} */ e) {
+    const t = (e?.event_type || '').toLowerCase();
+    if (t.includes('fail') || t.includes('error') || t.includes('reject')) return 'error';
+    if (t.includes('cool') || t.includes('warn') || t.includes('skip'))    return 'warning';
+    return 'info';
+  }
   const _agentRows = $derived.by(() => {
     return agentLog.slice()
+      .filter(e => {
+        if (levelFilter !== 'all' && _agentLevel(e) !== levelFilter) return false;
+        if (orderAccountFilter.length > 0 && e.account
+            && !orderAccountFilter.includes(String(e.account))) return false;
+        return true;
+      })
       .sort((a, b) => _tsKey(b.timestamp) - _tsKey(a.timestamp))
       .map((e, i) => {
         const cls = e.event_type === 'action_failed'  ? 'log-agent-failed'
@@ -191,7 +249,10 @@
       }));
   });
   const _sysRows = $derived.by(() => {
+    // Filter BEFORE the sort+map so the level + account checks run
+    // once per line, not per render.
     return systemLog.slice()
+      .filter(l => _lineMatchesLevel(l) && _lineMatchesAccount(l, orderAccountFilter))
       .map(l => ({ l, d: parseLogLineDate(l) }))
       .sort((a, b) => _tsKey(b.d) - _tsKey(a.d))
       .map(({ l, d }, i) => {
@@ -214,6 +275,7 @@
   // source).
   const _connRows = $derived.by(() => {
     return connLog.slice()
+      .filter(l => _lineMatchesLevel(l) && _lineMatchesAccount(l, orderAccountFilter))
       .map(l => ({ l, d: parseLogLineDate(l) }))
       .sort((a, b) => _tsKey(b.d) - _tsKey(a.d))
       .map(({ l, d }, i) => {
