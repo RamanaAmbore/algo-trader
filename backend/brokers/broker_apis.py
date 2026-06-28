@@ -15,12 +15,18 @@ logger = get_logger(__name__)
 # leaves this UNSET, so its own broker_apis import keeps running the
 # local @for_all_accounts path (no recursion).
 #
-# Single-line cutover lever — operator flips it on after verifying
-# ramboq_conn.service is healthy, no caller-code changes required.
+# Cached at module load — per-call os.environ.get + .strip + .lower
+# was a P2 finding (called on every fetch_holdings/positions/margins
+# invocation, ~5/sec under polling). Module constant gives the same
+# semantics at zero cost. The flag never changes at runtime within a
+# process; service restart is the only way to flip it.
+_USE_CONN_SERVICE: bool = os.environ.get(
+    "RAMBOQ_USE_CONN_SERVICE", "",
+).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _use_conn_service() -> bool:
-    return os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    )
+    return _USE_CONN_SERVICE
 
 # One-shot flag for the Kite MCX value-units diagnostic in
 # fetch_positions. Logs the raw `day_buy_value` vs the two possible

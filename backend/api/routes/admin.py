@@ -13,6 +13,7 @@ All routes require admin JWT via admin_guard.
 
 import io
 import os
+import asyncio
 import subprocess
 from datetime import date as dt_date
 from pathlib import Path
@@ -70,6 +71,33 @@ def _resolve_conn_log() -> Path:
     # Nothing exists — return the prod path so the error message
     # below shows the most useful "where it WOULD have been" location.
     return _CONN_LOG_FALLBACKS[0]
+
+
+async def _tail_log_response(log_path: Path, n: int) -> "LogsResponse":
+    """Async tail of a log file. asyncio.create_subprocess_exec instead
+    of the blocking subprocess.run so the event loop keeps responding
+    while tail runs (single browser polling System / Conn at 3s would
+    otherwise stall every other route for the tail duration)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "tail", f"-{min(n, 2000)}", str(log_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise HTTPException(status_code=504, detail="tail timed out")
+        return LogsResponse(
+            lines=stdout.decode("utf-8", errors="replace").splitlines(),
+            path=str(log_path),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -292,14 +320,7 @@ class AdminController(Controller):
         log_path = _resolve_log()
         if not log_path.exists():
             return LogsResponse(lines=["Log file not found"], path=str(log_path))
-        try:
-            result = subprocess.run(
-                ["tail", f"-{min(n, 2000)}", str(log_path)],
-                capture_output=True, text=True, timeout=10,
-            )
-            return LogsResponse(lines=result.stdout.splitlines(), path=str(log_path))
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+        return await _tail_log_response(log_path, n)
 
     @get("/logs/conn")
     async def get_conn_logs(self, n: int = 200) -> LogsResponse:
@@ -314,35 +335,34 @@ class AdminController(Controller):
                 lines=[f"conn_service log not found at {log_path}"],
                 path=str(log_path),
             )
-        try:
-            result = subprocess.run(
-                ["tail", f"-{min(n, 2000)}", str(log_path)],
-                capture_output=True, text=True, timeout=10,
-            )
-            return LogsResponse(lines=result.stdout.splitlines(), path=str(log_path))
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+        return await _tail_log_response(log_path, n)
 
     @post("/exec")
     async def exec_command(self, data: ExecRequest) -> ExecResponse:
         cmd = data.command.strip()
         if not cmd:
             raise HTTPException(status_code=422, detail="Empty command")
+        # Async subprocess so a long-running operator command (build,
+        # log scan) doesn't block other routes for 30s.
+        proc = await asyncio.create_subprocess_shell(
+            cmd, cwd=str(Path(__file__).parent.parent.parent),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
         try:
-            result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True, timeout=30,
-                cwd=str(Path(__file__).parent.parent.parent),
-            )
-            logger.info(f"Admin exec: {cmd!r} → rc={result.returncode}")
-            return ExecResponse(
-                stdout=result.stdout[-8000:] if len(result.stdout) > 8000 else result.stdout,
-                stderr=result.stderr[-2000:] if len(result.stderr) > 2000 else result.stderr,
-                returncode=result.returncode,
-            )
-        except subprocess.TimeoutExpired:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
             raise HTTPException(status_code=408, detail="Command timed out (30s)")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+        out = stdout.decode("utf-8", errors="replace")
+        err = stderr.decode("utf-8", errors="replace")
+        logger.info(f"Admin exec: {cmd!r} → rc={proc.returncode}")
+        return ExecResponse(
+            stdout=out[-8000:] if len(out) > 8000 else out,
+            stderr=err[-2000:] if len(err) > 2000 else err,
+            returncode=proc.returncode or 0,
+        )
 
     @get("/users")
     async def list_users(self) -> UsersResponse:

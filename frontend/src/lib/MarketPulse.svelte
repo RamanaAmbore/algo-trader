@@ -66,7 +66,7 @@
   import MultiSelect from '$lib/MultiSelect.svelte';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import Select      from '$lib/Select.svelte';
-  import ActivityLogModal from '$lib/ActivityLogModal.svelte';
+  import { openActivityModal } from '$lib/stores';
   import ChartModal from '$lib/ChartModal.svelte';
 
   let {
@@ -4423,10 +4423,12 @@
     const sym = encodeURIComponent(row.tradingsymbol || '');
     window.location.href = `/orders?symbol=${sym}`;
   }
-  let _activityLogOpen = $state(false);
   function ctxOpenLog(/** @type {any} */ _row) {
     closeContextMenu();
-    _activityLogOpen = true;
+    // Open the layout-mounted ActivityLogModal singleton via store
+    // instead of mounting a second instance here that races the
+    // layout's. Duplication-audit P1 fix.
+    openActivityModal('order');
   }
 
   // Chart modal state — opened by the "Chart →" context-menu item.
@@ -4906,9 +4908,9 @@
   </div>
 {/if}
 
-{#if _activityLogOpen}
-  <ActivityLogModal onClose={() => { _activityLogOpen = false; }} />
-{/if}
+<!-- ActivityLogModal singleton lives in the (algo) layout via the
+     activityModal store — ctxOpenLog above opens it via the store. -->
+
 
 {#if _chartModalOpen}
   <ChartModal

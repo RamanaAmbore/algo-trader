@@ -44,7 +44,14 @@ def _is_broker_outage(err: Exception) -> bool:
 
 
 async def _fetch() -> PositionsResponse:
-    per_acct = broker_apis.fetch_positions()
+    # Three sync broker_apis calls below — each holds the event loop
+    # (~50ms each typical, up to 500-1000ms on cold UDS hits). Wrap
+    # in asyncio.to_thread so concurrent SSE heartbeats + other
+    # routes keep responding while the cache misses are in flight.
+    # cache.py awaits this coroutine directly (not via to_thread)
+    # since it's already async — we do the off-loop hop here.
+    import asyncio as _asyncio
+    per_acct = await _asyncio.to_thread(broker_apis.fetch_positions)
     # Outage detection: only raise when every per-account call failed
     # (`fetch_failed` flag set in broker_apis.py). An empty result with
     # the flag UNSET is a legitimate "no positions" state — e.g.
@@ -70,7 +77,7 @@ async def _fetch() -> PositionsResponse:
     # account-specific facts (avg_price, qty, realised); market data
     # routes through Kite. Day_change_val + pnl on patched rows are
     # recomputed inside the helper.
-    broker_apis.backfill_market_data(raw)
+    await _asyncio.to_thread(broker_apis.backfill_market_data, raw)
 
     # Refresh stale last_price from the live KiteTicker tick_map.
     # Kite's /positions REST endpoint sometimes lags behind the WS
@@ -140,7 +147,7 @@ async def _fetch() -> PositionsResponse:
     # Enrich option rows with position-Greeks (Δ × qty, Θ × qty) so the
     # /performance + /dashboard grids can surface them as columns without
     # round-tripping through /api/options/analytics per symbol.
-    _enrich_position_greeks(rows)
+    await _asyncio.to_thread(_enrich_position_greeks, rows)
     summary = [
         PositionsSummaryRow(**{k: (v if v is not None else 0) for k, v in r.items()})
         for r in summary_df.to_dicts()

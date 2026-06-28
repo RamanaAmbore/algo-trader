@@ -224,15 +224,29 @@ class TickBufferReader:
 
     def iter_active(self) -> Iterator[tuple[int, float, float, float, int]]:
         """Yield (token, last_price, prev_close, avg_price, last_ts_ns)
-        for every occupied slot. Used by SSE fan-out + diagnostics."""
-        slot_count_off = _HEADER_SIZE
+        for every occupied slot. Used by SSE fan-out + diagnostics.
+
+        Early-exit on slot_count — header records exactly how many
+        slots are occupied. Without this, every call scans all 4096
+        slots even when ~300 are populated (93% wasted struct.unpacks).
+        SSE poll path is version-gated so cost is bounded by tick rate,
+        but at 10-20 ticks/sec we still spared 41k-82k pointless reads."""
+        # Header layout: version(8) + slot_count(4) at offset 8.
+        slot_count = struct.unpack_from("<I", self._mm, 8)[0]
+        if slot_count == 0:
+            return
+        slot_base = _HEADER_SIZE
+        seen = 0
         for i in range(self.max_slots):
-            off = slot_count_off + i * _SLOT_SIZE
+            off = slot_base + i * _SLOT_SIZE
             cur_token, _pad, lp, pc, av, ts = struct.unpack_from(
                 _SLOT_FMT, self._mm, off,
             )
             if cur_token != 0:
                 yield cur_token, lp, pc, av, ts
+                seen += 1
+                if seen >= slot_count:
+                    return
 
     def close(self) -> None:
         self._mm.close()

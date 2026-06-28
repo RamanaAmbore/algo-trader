@@ -16,7 +16,7 @@
   import ChartModal from '$lib/ChartModal.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
-  import ActivityLogModal from '$lib/ActivityLogModal.svelte';
+  import { openActivityModal } from '$lib/stores';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
 
   // mode (sim/paper/live/shadow/replay): when set, auto-flips logTab to
@@ -1270,7 +1270,16 @@
     onAction={(action, sym, exch) => {
       _ctxSym  = sym;
       _ctxExch = exch;
-      _ctxAction = /** @type {any} */ (action);
+      // 'log' opens the singleton ActivityLogModal via the store
+      // (mounted once in the (algo) layout). 'place-order' / 'chart'
+      // still use local _ctxAction state for their own modal mounts
+      // below.
+      if (action === 'log') {
+        openActivityModal('order');
+        _ctxAction = null;
+      } else {
+        _ctxAction = /** @type {any} */ (action);
+      }
       _ctxMenu = null;
     }}
   />
@@ -1293,9 +1302,11 @@
   />
 {/if}
 
-{#if _ctxAction === 'log'}
-  <ActivityLogModal onClose={() => { _ctxAction = null; }} />
-{/if}
+<!-- ActivityLogModal mounting is layout-owned via the activityModal
+     store — no per-component instance. _ctxAction === 'log' now
+     opens the singleton via openActivityModal() in the context-menu
+     handler. -->
+
 
 <style>
   /* Tab row — another +30% on the previous 0.48rem → 0.62rem. Padding

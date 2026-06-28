@@ -20,6 +20,15 @@ from backend.brokers.client.api import (  # noqa: F401
 )
 
 
+# Cached at module load — the env var never changes within a running
+# process, and is_cutover_on() is called per-account in tight loops
+# (registry.get_broker, _loaded_accounts). Avoids the os.environ +
+# .strip + .lower + tuple-in on every call.
+_CUTOVER_ON: bool = os.environ.get(
+    "RAMBOQ_USE_CONN_SERVICE", "",
+).strip().lower() in ("1", "true", "yes", "on")
+
+
 def is_cutover_on() -> bool:
     """True when RAMBOQ_USE_CONN_SERVICE is set on this process.
 
@@ -28,6 +37,4 @@ def is_cutover_on() -> bool:
     routes/orders.py postback, routes/health.py, app.py
     _start_kite_ticker. Import this helper there so the env-var
     name and accepted values stay in one place."""
-    return os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    )
+    return _CUTOVER_ON

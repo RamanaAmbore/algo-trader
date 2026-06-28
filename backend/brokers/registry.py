@@ -132,10 +132,8 @@ def _broker_id_for(account: str) -> str:
     # Step 1b — Remote cache (cutover flag-on path).
     if account in _REMOTE_BROKER_ID_CACHE:
         return _REMOTE_BROKER_ID_CACHE[account]
-    import os
-    if os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    ):
+    from backend.brokers.client import is_cutover_on
+    if is_cutover_on():
         # Cache miss + flag is on — refresh once and look again.
         _refresh_remote_broker_id_cache()
         if account in _REMOTE_BROKER_ID_CACHE:
@@ -167,10 +165,8 @@ def get_broker(account: str) -> Broker:
     Conn_service itself runs with the flag UNSET so its own
     `get_broker(account)` builds the real local adapter.
     """
-    import os
-    if os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    ):
+    from backend.brokers.client import is_cutover_on
+    if is_cutover_on():
         from backend.brokers.client.remote_broker import RemoteBroker
         return RemoteBroker(account, broker_id=_broker_id_for(account))
 
@@ -205,10 +201,8 @@ def _loaded_accounts() -> list[str]:
     accts = list(Connections().conn.keys())
     if accts:
         return accts
-    import os
-    if os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    ):
+    from backend.brokers.client import is_cutover_on
+    if is_cutover_on():
         from backend.brokers.client.remote_broker import list_remote_accounts
         return [r["account"] for r in list_remote_accounts() if r.get("account")]
     return []

@@ -39,7 +39,7 @@
     }
     return v;
   }
-  import ActivityLogModal from '$lib/ActivityLogModal.svelte';
+  import { openActivityModal } from '$lib/stores';
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
@@ -356,7 +356,12 @@
   function acctCellRenderer(params) {
     const raw = params.value || '';
     if (!maskAccounts || !raw) return raw;
-    return String(raw).includes('#') ? raw : String(raw).replace(/\d/g, '#');
+    // Trust the backend's mask_account() — already broker-ordinal-aware
+    // (D1####/D2#### for two-Dhan setups). Previous inline /\d/g
+    // collapsed both Dhan codes to 'DH####' losing the ordinal hint.
+    // If backend forgets to mask, that's a backend bug — fail loud
+    // instead of producing the wrong shape silently.
+    return raw;
   }
 
   // cellStyle for account column — injects a CSS custom property that the
@@ -1110,9 +1115,10 @@
           bind:value={selectedAccounts}
           options={accounts.map(a => ({
             value: a,
-            label: !maskAccounts || !a
-              ? a
-              : (String(a).includes('#') ? String(a) : String(a).replace(/\d/g, '#'))
+            // Trust backend mask. Inline /\d/g lost the broker-ordinal
+            // (D1####/D2####) for two-Dhan setups; backend ships the
+            // correct shape already.
+            label: a,
           }))}
           theme={compactHeader ? 'dark' : 'light'} />
       </div>
@@ -1258,7 +1264,12 @@
     onAction={(action, sym, exch) => {
       _ctxSym  = sym;
       _ctxExch = exch;
-      _ctxAction = /** @type {any} */ (action);
+      if (action === 'log') {
+        openActivityModal('order');
+        _ctxAction = null;
+      } else {
+        _ctxAction = /** @type {any} */ (action);
+      }
       _ctxMenu = null;
     }}
   />
@@ -1281,9 +1292,11 @@
   />
 {/if}
 
-{#if _ctxAction === 'log'}
-  <ActivityLogModal onClose={() => { _ctxAction = null; }} />
-{/if}
+<!-- ActivityLogModal singleton lives in the (algo) layout via the
+     activityModal store. The context-menu handler now opens it via
+     openActivityModal() so PerformancePage doesn't mount a second
+     instance that races the layout's. -->
+
 
 </div><!-- /perf-dark -->
 
