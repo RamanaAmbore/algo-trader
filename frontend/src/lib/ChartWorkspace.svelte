@@ -1302,6 +1302,17 @@
           }
         }}
         ariaLabel="Symbol — pinned or search" />
+
+      <!-- Chart type — moved to picker row so series toggle lives beside
+           the symbol picker (operator: "move line to first row along
+           with symbol"). -->
+      <div class="cw-toolbar-select cw-type-chart-wrap">
+        <Select
+          options={_CHART_TYPE_OPTS}
+          bind:value={_chartType}
+          disabled={_histLoading}
+          ariaLabel="Chart type" />
+      </div>
     </div>
   {/if}
 
@@ -1326,15 +1337,6 @@
          the loading state across both surfaces. The `.cw-controls-
          busy` class still applies the disabled state + opacity dim so
          the controls visibly lock during a fetch. -->
-
-    <!-- Chart type -->
-    <div class="cw-toolbar-select">
-      <Select
-        options={_CHART_TYPE_OPTS}
-        bind:value={_chartType}
-        disabled={_histLoading}
-        ariaLabel="Chart type" />
-    </div>
 
     <!-- Intraday tick stream — single toggle chip -->
     <button type="button"
@@ -1365,6 +1367,19 @@
          chart and always keep volume on for chart in the modal
          and page"). _overlays['vol'] is hard-coded ON in the
          state init so the bars render unconditionally. -->
+
+    <!-- Overlays — moved here from floating top-right of chart so it
+         lives in the controls row after 1Y (operator: "shift overlay
+         to 2nd row after 1Y"). -->
+    <div class="cw-overlay-panel" role="region" aria-label="Chart overlays">
+      <MultiSelect
+        options={_OVERLAY_OPTS}
+        bind:value={_overlays}
+        bind:open={_overlayOpen}
+        disabled={_histLoading}
+        placeholder="Overlays"
+        ariaLabel="Overlays" />
+    </div>
 
     <!-- Reset zoom action button — trailing edge, only when zoomed -->
     {#if isZoomed}
@@ -1405,17 +1420,6 @@
         <span class="cw-fetch-sub">Cached after first load</span>
       </div>
     {/if}
-
-    <!-- Floating Overlays panel — TradingView-style, anchored top-right -->
-    <div class="cw-overlay-panel" role="region" aria-label="Chart overlays">
-      <MultiSelect
-        options={_OVERLAY_OPTS}
-        bind:value={_overlays}
-        bind:open={_overlayOpen}
-        disabled={_histLoading}
-        placeholder="Overlays"
-        ariaLabel="Overlays" />
-    </div>
 
     <!-- HTML hover popup for OHLCV (replaces the SVG rect+text block).
          Pinned state (after a click) keeps the popup anchored at the
@@ -1920,20 +1924,23 @@
     min-width: 6rem;
     max-width: 9rem;
   }
+  /* Chart-type select lives in the picker row — push to trailing edge
+     with auto margin so it floats right without a spacer element. */
+  .cw-type-chart-wrap {
+    margin-left: auto;
+  }
 
-  /* ── Floating Overlays panel (TradingView-style, top-right of chart) */
+  /* ── Overlays panel — inline in controls row (row 2, after 1Y) ── */
+  /* Previously position:absolute top-right of the chart; now a flex
+     item in .cw-controls so it lives beside the range pill group. */
   .cw-overlay-panel {
-    position: absolute;
-    top: 0.5rem;
-    right: 0.5rem;
-    z-index: 5;
+    position: relative;
+    flex-shrink: 0;
     background: rgba(29, 42, 68, 0.82);
     border: 1px solid rgba(125, 211, 252, 0.32);
     border-radius: 3px;
     padding: 2px;
-    backdrop-filter: blur(4px);
     pointer-events: auto;
-    min-width: 7.5rem;
   }
   /* Compact trigger so it reads as a chart control, not a form field */
   .cw-overlay-panel :global(.rbq-multi-trigger) {
@@ -1952,7 +1959,7 @@
     outline: none;
     border: 0;
   }
-  /* Dropdown panel aligns to the right edge of the floating panel */
+  /* Dropdown panel — keep right-aligned so it doesn't clip viewport */
   .cw-overlay-panel :global(.rbq-multi-panel) {
     left: auto;
     right: 0;
@@ -2333,5 +2340,9 @@
     .cw-intraday-section { height: 30vh; }
     /* Let toolbar dropdowns go full-flex on phone so they wrap cleanly */
     .cw-toolbar-select { min-width: 0; flex: 1 1 auto; }
+    /* Chart-type wrap loses the auto-margin on narrow viewports so it
+       wraps onto a second line of the picker row rather than cramping
+       the symbol search. */
+    .cw-type-chart-wrap { margin-left: 0; }
   }
 </style>
