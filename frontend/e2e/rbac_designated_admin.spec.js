@@ -59,11 +59,14 @@ const DESIGNATED_PASS = process.env.PLAYWRIGHT_DESIGNATED_PASS || '';
 const HAS_DESIGNATED  = !!DESIGNATED_PASS;
 
 // Pages gated by caps that admin (rambo) holds: manage_brokers + view_audit.
+// /admin/alerts uses view_audit which admin holds; /admin/research uses
+// view_lab which admin does NOT hold per backend/api/rbac.py CAPS.
 const ADMIN_ACCESSIBLE_PAGES = [
-  { path: '/admin/brokers', title: 'Brokers', cap: 'manage_brokers' },
-  { path: '/admin/history', title: 'History', cap: 'view_audit'     },
-  { path: '/admin/audit',   title: 'Audit',   cap: 'view_audit'     },
-  { path: '/admin/health',  title: 'Health',  cap: 'view_audit'     },
+  { path: '/admin/brokers',  title: 'Brokers',  cap: 'manage_brokers' },
+  { path: '/admin/history',  title: 'History',  cap: 'view_audit'     },
+  { path: '/admin/audit',    title: 'Audit',    cap: 'view_audit'     },
+  { path: '/admin/health',   title: 'Health',   cap: 'view_audit'     },
+  { path: '/admin/alerts',   title: 'Alerts',   cap: 'view_audit'     },
 ];
 
 // Pages gated by caps that only designated holds.
@@ -71,6 +74,33 @@ const DESIGNATED_ONLY_PAGES = [
   { path: '/admin/settings',   title: 'Settings',   cap: 'manage_settings'        },
   { path: '/admin',            title: 'Users',       cap: 'manage_users'           },
   { path: '/admin/statements', title: 'Statements', cap: 'manage_investor_tokens' },
+];
+
+// Every admin page that renders an "Access denied" EmptyState at top-level.
+// MUST have:
+//   1. userCapsReady imported from '$lib/rbac'
+//   2. _caps/$state + _role/$state bridge with $effect updaters
+//   3. {#if !$userCapsReady} skeleton guard wrapping the !_canView branch
+// New admin pages with access-denied lock MUST be added here.
+//
+// Split into two lists for the slow-/whoami race test:
+//   - admin-accessible: assert NO access-denied flash AT ALL (early + final)
+//   - designated-only: assert NO access-denied flash DURING boot (early only);
+//     after /whoami resolves, admin role will correctly see the lock.
+const ACCESS_LOCKED_PAGES_ADMIN_OK = [
+  'brokers',   // manage_brokers
+  'audit',     // view_audit
+  'history',   // view_audit
+  'health',    // view_audit
+  'alerts',    // view_audit
+];
+const ACCESS_LOCKED_PAGES_DESIGNATED_ONLY = [
+  'settings',  // manage_settings
+  'research',  // view_lab (admit designated/trader/risk/demo — admin not in set)
+];
+const ACCESS_LOCKED_PAGES = [
+  ...ACCESS_LOCKED_PAGES_ADMIN_OK,
+  ...ACCESS_LOCKED_PAGES_DESIGNATED_ONLY,
 ];
 
 // ── Auth helpers ────────────────────────────────────────────────────────────
@@ -129,6 +159,117 @@ async function injectToken(page, tok) {
   await page.context().setExtraHTTPHeaders({ Authorization: `Bearer ${tok}` });
 }
 
+// ── REGRESSION (top priority): slow-/whoami race ────────────────────────────
+//
+// Why this test runs FIRST:
+//   The earlier RBAC fix (commit 71ec944e) passed 11/11 but regressed silently
+//   because the existing assertions all ran AFTER auth resolved. The bug only
+//   reproduces on FIRST PAINT before /whoami returns. Two later refactors
+//   removed the bridge / guard from /admin/research + /admin/alerts and the
+//   spec never caught it because it never simulated the slow-whoami window.
+//
+// What it tests:
+//   1. Delay /api/auth/whoami by 1500ms via route() interception.
+//   2. Navigate to each access-locked admin page.
+//   3. Within ~500ms (well before whoami resolves), assert that:
+//        a. NO "Access denied" EmptyState is visible.
+//        b. A LoadingSkeleton OR page-title-chip IS visible (the page chose
+//           to show a skeleton — the correct branch when caps not ready).
+//   4. After whoami resolves + content settles, assert the page renders
+//      without access-denied AND has the expected title.
+//
+// Without the userCapsReady guard, step 3a fails because $derived(hasCap(...))
+// evaluates with $userCaps=[] → false → !_canView → access-denied EmptyState.
+
+// Boot-window assertion — for EVERY locked page, no access-denied flash
+// while /whoami is in flight. This is the regression-reproducer the previous
+// 11/11-passing spec missed because it never simulated the slow-whoami window.
+for (const slug of ACCESS_LOCKED_PAGES) {
+  test(`[REGRESSION] no access-denied flash during slow /whoami on /admin/${slug} [${BASE}]`, async ({ page }) => {
+    const tok = await getAdminToken(page);
+    await injectToken(page, tok);
+
+    // Intercept /whoami and delay it 1500ms to widen the boot window.
+    // Without this delay the race might not reproduce on a fast network.
+    await page.route('**/api/auth/whoami', async (route) => {
+      await new Promise((res) => setTimeout(res, 1500));
+      await route.continue();
+    });
+
+    const url = `${BASE}/admin/${slug}`;
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+
+    // Wait 500ms — long enough for the page to mount + render its initial
+    // branch, but short enough that /whoami is still in flight.
+    await page.waitForTimeout(500);
+
+    const earlyLockCount = await page.locator('.es-rich')
+      .filter({ hasText: /access denied/i }).count();
+    await page.screenshot({
+      path: `test-results/rbac-slow-whoami-${slug}-early.png`,
+    });
+    expect(
+      earlyLockCount,
+      `/admin/${slug}: access-denied EmptyState must NOT show while /whoami is in flight. Found ${earlyLockCount}.`,
+    ).toBe(0);
+  });
+}
+
+// Post-bootstrap assertion — admin-accessible pages must render without
+// access-denied AFTER /whoami resolves. (designated-only pages are tested
+// separately under [MAIN] designated-only — admin role correctly sees the
+// lock there once auth lands.)
+for (const slug of ACCESS_LOCKED_PAGES_ADMIN_OK) {
+  test(`[REGRESSION] /admin/${slug} renders after slow /whoami resolves [${BASE}]`, async ({ page }) => {
+    const tok = await getAdminToken(page);
+    await injectToken(page, tok);
+    await page.route('**/api/auth/whoami', async (route) => {
+      await new Promise((res) => setTimeout(res, 1500));
+      await route.continue();
+    });
+
+    await page.goto(`${BASE}/admin/${slug}`, { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(2000);
+    const finalLockCount = await page.locator('.es-rich')
+      .filter({ hasText: /access denied/i }).count();
+    await page.screenshot({
+      path: `test-results/rbac-slow-whoami-${slug}-final.png`,
+    });
+    expect(
+      finalLockCount,
+      `/admin/${slug}: access-denied must NOT show after /whoami resolved for admin.`,
+    ).toBe(0);
+  });
+}
+
+// Mobile viewport variant — the regression must NOT depend on viewport
+// width (per feedback_frontend_change_loop.md: assert mobile + desktop).
+test.describe('[REGRESSION] slow-/whoami on mobile viewport', () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  for (const slug of ACCESS_LOCKED_PAGES) {
+    test(`mobile: no access-denied flash on /admin/${slug} [${BASE}]`, async ({ page }) => {
+      const tok = await getAdminToken(page);
+      await injectToken(page, tok);
+      await page.route('**/api/auth/whoami', async (route) => {
+        await new Promise((res) => setTimeout(res, 1500));
+        await route.continue();
+      });
+
+      await page.goto(`${BASE}/admin/${slug}`, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(500);
+
+      const earlyLockCount = await page.locator('.es-rich')
+        .filter({ hasText: /access denied/i }).count();
+      expect(
+        earlyLockCount,
+        `mobile /admin/${slug}: access-denied EmptyState must NOT show while /whoami is in flight.`,
+      ).toBe(0);
+    });
+  }
+});
+
 // ── SSOT: source-level checks ────────────────────────────────────────────────
 
 test(`[SSOT] isAdminClass helper exported from rbac.js`, async () => {
@@ -184,6 +325,8 @@ test(`[STALE] no bare role==='admin' in config page guards`, async () => {
     path.join(routesRoot, 'history',    '+page.svelte'),
     path.join(routesRoot, 'health',     '+page.svelte'),
     path.join(routesRoot, 'statements', '+page.svelte'),
+    path.join(routesRoot, 'alerts',     '+page.svelte'),
+    path.join(routesRoot, 'research',   '+page.svelte'),
   ];
 
   for (const p of pagesUnderTest) {
@@ -215,6 +358,58 @@ test(`[STALE] no bare role==='admin' in config page guards`, async () => {
         .toContain('!$userCapsReady');
     }
   }
+});
+
+// ── Regression-class: discover every "Access denied" page automatically ─────
+//
+// The original spec (commit 71ec944e) hand-listed 6 pages, which let the
+// regression on /admin/alerts + /admin/research slip through unnoticed
+// since they were never in the loop. This auto-discovery walks the entire
+// admin route tree, finds every +page.svelte that renders an "Access denied"
+// EmptyState lock, and asserts the bridge pattern is present on each. Any
+// new page added with the same lock pattern gets covered for free.
+test(`[REGRESSION] every admin page with access-denied lock has bridge+guard`, async () => {
+  const routesRoot = path.resolve(__dirname, '..', 'src', 'routes', '(algo)', 'admin');
+
+  /** @type {string[]} */
+  const offenders = [];
+  /** @type {string[]} */
+  const discovered = [];
+
+  /** @param {string} dir */
+  function walk(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walk(full); continue; }
+      if (entry.name !== '+page.svelte') continue;
+      const src = fs.readFileSync(full, 'utf8');
+      // Only pages with the top-level "Access denied" EmptyState lock —
+      // the regression mode. Pages with inline cap-gated buttons (e.g.,
+      // /admin/statements, /admin/tokens) aren't in scope here.
+      if (!/title="Access denied"/.test(src)) continue;
+      discovered.push(full);
+
+      const rel = path.relative(routesRoot, full);
+      const must = [
+        ['imports userCapsReady',          'userCapsReady'],
+        ['$effect bridge for $userCaps',   '$effect(() => { _caps = $userCaps; })'],
+        ['$effect bridge for $userRole',   '$effect(() => { _role = $userRole; })'],
+        ['{#if !$userCapsReady} guard',    '!$userCapsReady'],
+      ];
+      for (const [label, needle] of must) {
+        if (!src.includes(needle)) {
+          offenders.push(`${rel}: missing ${label} (needle: \`${needle}\`)`);
+        }
+      }
+    }
+  }
+  walk(routesRoot);
+
+  // Sanity — we MUST discover the 7 known pages with the lock. If discovery
+  // returns 0, the regex is broken; if returns < 7, an existing page lost
+  // its access-denied EmptyState (also a regression).
+  expect(discovered.length, 'expected at least 7 admin pages with Access denied lock').toBeGreaterThanOrEqual(7);
+  expect(offenders, `admin pages missing RBAC bridge:\n  - ${offenders.join('\n  - ')}`).toEqual([]);
 });
 
 // ── Reusable: canonical page structure ───────────────────────────────────────

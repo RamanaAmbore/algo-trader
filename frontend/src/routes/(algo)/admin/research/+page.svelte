@@ -17,7 +17,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { authStore, nowStamp, branchLabel, visibleInterval } from '$lib/stores';
-  import { userRole, userCaps, hasCap } from '$lib/rbac';
+  import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import {
     fetchResearchThreads, fetchResearchThread,
@@ -164,7 +164,15 @@
 
   // Canonical $effect-gated auth (slice N4). view_lab admits
   // admin + trader + risk + demo.
-  const _canView = $derived(hasCap('view_lab', $userCaps, $userRole));
+  // Bridge legacy stores into Svelte-5 $state so $derived doesn't
+  // stale-cache the initial [] / 'partner' boot values — without
+  // this the access-denied EmptyState rendered on first paint for
+  // legitimately-authorised operators (designated, admin, etc).
+  let _caps = $state(/** @type {string[]} */ ([]));
+  let _role = $state(/** @type {string} */ ('partner'));
+  $effect(() => { _caps = $userCaps; });
+  $effect(() => { _role = $userRole; });
+  const _canView = $derived(hasCap('view_lab', _caps, _role));
   let _loadedOnce = false;
   $effect(() => {
     if (_canView && !_loadedOnce) {
@@ -431,7 +439,13 @@
   </span>
 </div>
 
-{#if !_canView}
+{#if !$userCapsReady}
+  <!-- /whoami still in flight — show skeleton, NOT access-denied.
+       The bootstrap window is ~50-300ms in practice; without this
+       guard a slow whoami flashes the EmptyState lock panel before
+       caps land, terrifying legitimately-authorised operators. -->
+  <LoadingSkeleton variant="card" rows={3} />
+{:else if !_canView}
   <EmptyState title="Access denied" icon="lock">
     {#snippet hintBody()}
       The research lab requires the <code>view_lab</code> capability

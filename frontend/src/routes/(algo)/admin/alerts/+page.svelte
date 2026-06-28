@@ -8,7 +8,7 @@
 
   import { onDestroy } from 'svelte';
   import { nowStamp, logTime, logTimeIst, logTimeEdt, visibleInterval } from '$lib/stores';
-  import { userRole, userCaps, hasCap } from '$lib/rbac';
+  import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
@@ -81,7 +81,15 @@
   // hard /signin redirect (matches /admin/audit + /admin/history).
   // view_audit covers admin / risk / ops; alerts are essentially the
   // agent-action audit trail so the same cap fits.
-  const _canView = $derived(hasCap('view_audit', $userCaps, $userRole));
+  // Bridge legacy stores into Svelte-5 $state so $derived doesn't
+  // stale-cache the initial [] / 'partner' boot values — without
+  // this the access-denied EmptyState rendered on first paint for
+  // legitimately-authorised operators (designated, admin, etc).
+  let _caps = $state(/** @type {string[]} */ ([]));
+  let _role = $state(/** @type {string} */ ('partner'));
+  $effect(() => { _caps = $userCaps; });
+  $effect(() => { _role = $userRole; });
+  const _canView = $derived(hasCap('view_audit', _caps, _role));
 
   // $effect-gated load — fires when _canView flips true on first
   // /whoami resolution. Pre-fix the page used onMount which ran once
@@ -160,7 +168,13 @@
 
 <AutomationTabs />
 
-{#if !_canView}
+{#if !$userCapsReady}
+  <!-- /whoami still in flight — show skeleton, NOT access-denied.
+       The bootstrap window is ~50-300ms in practice; without this
+       guard a slow whoami flashes the EmptyState lock panel before
+       caps land, terrifying legitimately-authorised operators. -->
+  <LoadingSkeleton variant="card" rows={3} />
+{:else if !_canView}
   <EmptyState title="Access denied" icon="lock">
     {#snippet hintBody()}
       Alert history requires the <code>view_audit</code> capability
