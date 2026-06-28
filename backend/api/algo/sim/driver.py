@@ -2675,7 +2675,7 @@ class SimDriver:
         handlers pass user_id and call seed_live_async() instead.
         """
         assert_enabled()
-        from backend.shared.helpers import broker_apis
+        from backend.brokers import broker_apis
 
         try:
             df_h = pd.concat(broker_apis.fetch_holdings(),  ignore_index=True)
