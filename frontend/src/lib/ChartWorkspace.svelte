@@ -645,7 +645,7 @@
   let _chartW = $state(720);
   let _chartH = $state(320);
 
-  const CPAD_L  = 56;
+  const CPAD_L  = 44;   // reduced from 56 — rotated Y-labels free ~12 px of left margin
   const CPAD_R  = 16;
   const CPAD_T  = 16;
   const CPAD_B  = 30;
@@ -1492,12 +1492,18 @@
         onpointerleave={() => { if (!_chartPinned) _chartHover = null; }}
         onclick={_onChartClick}
       >
-        <!-- Y-axis grid + labels -->
+        <!-- Y-axis baseline (left edge of plot area) -->
+        <line x1={CPAD_L} x2={CPAD_L} y1={CPAD_T} y2={CPAD_T + _innerH}
+              stroke="rgba(200,216,240,0.25)" stroke-width="1"/>
+
+        <!-- Y-axis grid + labels — labels rotated -45° to save horizontal space -->
         {#each _yTicks as tick}
           <line x1={CPAD_L} x2={_chartW - CPAD_R} y1={tick.y} y2={tick.y}
-                stroke="rgba(200,216,240,0.10)" stroke-width="1"/>
-          <text x={CPAD_L - 6} y={tick.y + 3} text-anchor="end"
-                fill="#c8d8f0" font-size="11" font-weight="600" font-family="monospace">
+                stroke="rgba(200,216,240,0.15)" stroke-width="1"/>
+          <text x={CPAD_L - 4} y={tick.y}
+                text-anchor="end" dominant-baseline="middle"
+                transform="rotate(-45 {CPAD_L - 4} {tick.y})"
+                fill="#c8d8f0" font-size="10" font-weight="600" font-family="monospace">
             ₹{priceFmt(tick.v)}
           </text>
         {/each}
@@ -1506,7 +1512,7 @@
         {#each _xLabels as xl, i}
           {#if i > 0}
             <line x1={xl.x} x2={xl.x} y1={CPAD_T} y2={CPAD_T + _innerH}
-                  stroke="rgba(200,216,240,0.07)" stroke-width="1" stroke-dasharray="2 3"/>
+                  stroke="rgba(200,216,240,0.10)" stroke-width="1" stroke-dasharray="2 3"/>
           {/if}
           <text x={xl.x} y={CPAD_T + _innerH + 14}
                 text-anchor={i === 0 ? 'start' : (i === 4 ? 'end' : 'middle')}
@@ -1518,7 +1524,7 @@
         <!-- X-axis baseline — bottom of price area -->
         <line x1={CPAD_L} x2={_chartW - CPAD_R}
               y1={CPAD_T + _innerH} y2={CPAD_T + _innerH}
-              stroke="rgba(255,255,255,0.18)" stroke-width="1"/>
+              stroke="rgba(255,255,255,0.22)" stroke-width="1"/>
 
         <!-- Volume bars (lower band of price area) -->
         {#if _showVol}
@@ -1713,11 +1719,19 @@
              onpointermove={_onIntradayPointerMove}
              onpointerleave={() => { if (!_intradayPinned) _intradayHover = null; }}
              onclick={_onIntradayClick}>
+          <!-- Intraday Y-axis baseline -->
+          <line x1={P2L} x2={P2L} y1={P2T} y2={H2 - P2B}
+                stroke="rgba(200,216,240,0.25)" stroke-width="1"/>
+          <!-- Intraday X-axis baseline -->
+          <line x1={P2L} x2={W2 - P2R} y1={H2 - P2B} y2={H2 - P2B}
+                stroke="rgba(255,255,255,0.22)" stroke-width="1"/>
           {#each _t2YTicks as yt}
             <line x1={P2L} x2={W2 - P2R} y1={yt.y} y2={yt.y}
-                  stroke="rgba(200,216,240,0.10)" stroke-width="1"/>
-            <text x={P2L - 4} y={yt.y + 3} text-anchor="end"
-                  fill="#7e97b8" font-size="10" font-family="monospace">
+                  stroke="rgba(200,216,240,0.15)" stroke-width="1"/>
+            <text x={P2L - 3} y={yt.y}
+                  text-anchor="end" dominant-baseline="middle"
+                  transform="rotate(-45 {P2L - 3} {yt.y})"
+                  fill="#7e97b8" font-size="9" font-family="monospace">
               {priceFmt(yt.v)}
             </text>
           {/each}
@@ -2333,4 +2347,94 @@
        the symbol search. */
     .cw-type-chart-wrap { margin-left: 0; }
   }
+
+  /* ── Mobile toolbar: fit both rows on one line at ≤520px ─────────
+     Row 1: [type filter] [symbol search — flex-grow] [chart type]
+     Row 2: [Intra] [1D 1W 1M 3M 6M 1Y] [Overlays]
+     All controls are kept ≥32px height for tap-target compliance.
+     No flex-wrap on either row at this breakpoint so they stay single-line. */
+  @media (max-width: 520px) {
+    /* Row 1 — prevent wrapping; tighter gaps + padding */
+    .cw-picker {
+      flex-wrap: nowrap;
+      gap: 0.25rem;
+      padding: 0.35rem 0.4rem;
+    }
+
+    /* Type-filter (All/Equity/Futures/Options) — narrow to 4.2rem;
+       text-overflow ellipsis on the trigger label handles "Futures". */
+    .cw-type-wrap {
+      width: 4.2rem;
+      flex-shrink: 0;
+    }
+
+    /* Symbol search — fills remaining space between type filter and
+       chart-type select; min-width 0 lets it compress. */
+    .cw-picker :global(.ssi-wrap) {
+      flex: 1 1 0;
+      min-width: 0;
+    }
+    /* ssi-input: fills wrapper width + 2rem min-height = 32px tap target */
+    .cw-picker :global(.ssi-input) {
+      width: 100%;
+      min-height: 2rem;
+    }
+
+    /* Chart-type select — fixed narrow width; auto-margin removed so
+       the symbol search expands between the two selects. */
+    .cw-type-chart-wrap {
+      width: 4.2rem;
+      flex-shrink: 0;
+      margin-left: 0;
+    }
+    .cw-toolbar-select {
+      min-width: 0;
+    }
+
+    /* Select triggers in picker row — min-height 2rem = 32px tap target */
+    .cw-type-wrap :global(.rbq-select-trigger),
+    .cw-type-chart-wrap :global(.rbq-select-trigger) {
+      min-height: 2rem;
+    }
+
+    /* Row 2 — prevent wrapping; tighter gaps + padding */
+    .cw-controls {
+      flex-wrap: nowrap;
+      gap: 0.22rem;
+      padding: 0.3rem 0.4rem;
+    }
+
+    /* Intraday button — tighter horizontal padding; show short label.
+       min-height: 2rem ensures tap target ≥ 32px on mobile. */
+    .cw-intraday-btn {
+      padding: 0.18rem 0.32rem;
+      font-size: 0.58rem;
+      flex-shrink: 0;
+      min-height: 2rem;
+    }
+    .cw-intraday-full { display: none; }
+    .cw-intraday-short { display: inline; }
+
+    /* Range pills — squeeze horizontal padding while keeping ≥ 32px height
+       (min-height: 2rem = 32px at 16px base). */
+    .cw-range-btn {
+      padding: 0.18rem 0.3rem;
+      font-size: 0.58rem;
+      min-height: 2rem;
+    }
+
+    /* Overlay panel — just enough to show "Overlays" text */
+    .cw-overlay-panel {
+      flex-shrink: 0;
+    }
+    .cw-overlay-panel :global(.rbq-multi-trigger) {
+      padding: 0.18rem 0.28rem;
+      font-size: 0.58rem;
+      white-space: nowrap;
+    }
+  }
+
+  /* Default (≥521px): "Intraday" full label, short label hidden */
+  .cw-intraday-full  { display: inline; }
+  .cw-intraday-short { display: none; }
 </style>
