@@ -25,9 +25,9 @@
   /** @type {Step[]} */
   const STEPS = [
     {
-      tag:   'Multi-broker',
-      title: 'Multi-broker basket dispatch',
-      body:  'Kite + Dhan + Groww integrated under one Broker registry. Basket orders dispatch in parallel via asyncio.gather, one place_order call per account. Each Kite account is pinned to a unique IPv6 source address to work around Kite\'s one-IP-per-app rule.',
+      tag:   'Broker isolation',
+      title: 'Two-process broker layer',
+      body:  'Broker sessions (Kite + Dhan + Groww) live in a separate Litestar service over a Unix domain socket; the main API restarts on every backend push WITHOUT re-authenticating any broker. Ticks cross processes via shared memory (/dev/shm) at byte-read latency. This is exactly the connectivity / strategy separation institutional shops use — same pattern as IB Gateway, Bloomberg BPIPE, internal OMS at quant funds.',
       link:  { label: 'View broker config', href: '/admin/brokers' },
     },
     {

@@ -107,6 +107,7 @@
       <h2 class="fork-title">Explore Rambo Terminal</h2>
       <p class="fork-sub">Production quant infrastructure that executes the strategy end-to-end — stock entries, multi-leg option writes, basket-margin checks, chase fills, risk overlays. Built by one engineer; demo runs against live broker data with accounts masked.</p>
       <ul class="fork-bullets">
+        <li>Broker layer isolated as its own service — strategies hot-deploy without dropping sessions</li>
         <li>5-mode execution ladder — Sim → Replay → Paper → Live → Shadow</li>
         <li>Declarative agent grammar + 24/7 risk engine</li>
         <li>Black-Scholes options analytics with σ-driven payoff</li>
