@@ -932,12 +932,16 @@ export const fetchLiveStatus    = () => _get('/live/status', { auth: true });
 // ── Admin logs ────────────────────────────────────────────────────────
 /** GET /api/admin/logs?n=… — tail the API log file. */
 export const fetchAdminLogs = (n = 100) =>
-  _get(`/admin/logs?n=${n}`, { auth: true });
+  _get(`/admin/logs?n=${n}&_t=${Date.now()}`, { auth: true });
 
 /** GET /api/admin/logs/conn?n=… — tail conn_service's log file
- * (KiteTicker, watchdog, broker rebuild events). */
+ * (KiteTicker, watchdog, broker rebuild events).
+ *
+ * Appends a per-call cache-buster (_t=Date.now()) so browser caches
+ * NEVER hold a stale response. Operator: "conn log is not updated".
+ * Same pattern is now applied to fetchAdminLogs for parity. */
 export const fetchAdminConnLogs = (n = 100) =>
-  _get(`/admin/logs/conn?n=${n}`, { auth: true });
+  _get(`/admin/logs/conn?n=${n}&_t=${Date.now()}`, { auth: true });
 
 // ── Contact (public) ──────────────────────────────────────────────────
 /** POST /api/contact/ — public contact form submission. */

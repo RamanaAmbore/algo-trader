@@ -252,7 +252,14 @@
     try {
       const d = await fetchAdminConnLogs(200);
       connLog = d?.lines || [];
-    } catch (_) {}
+    } catch (e) {
+      // Surface fetch errors as a sentinel row so an operator who
+      // sees an empty Conn tab can diagnose. Previous silent catch
+      // made every failure look like 'no entries yet' — indistinguishable
+      // from a healthy-but-quiet conn_service.
+      const msg = /** @type {any} */ (e)?.message || String(e);
+      connLog = [`CONN_FETCH_ERROR ${new Date().toISOString()} ${msg}`];
+    }
   }
   async function _loadSim() {
     try {
