@@ -252,7 +252,10 @@
   }
 
   // ── Symbol classification ─────────────────────────────────────────
-  const _isOption     = $derived(/(?:CE|PE)$/i.test(symbol));
+  // Require a digit before CE/PE to avoid false-positives on equities
+  // like RELIANCE (which ends in "CE"). Real option tradingsymbols
+  // always have a numeric strike before the CE/PE suffix.
+  const _isOption     = $derived(/\d(?:CE|PE)$/i.test(symbol));
   const _isFuture     = $derived(/FUT$/i.test(symbol));
   const _isDerivative = $derived(_isOption || _isFuture);
   const _underlying   = $derived.by(() => {

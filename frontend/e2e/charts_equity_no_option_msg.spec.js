@@ -131,8 +131,9 @@ test.describe('/charts — equity symbols show no option-only sections', () => {
     // The canonical detection variable must be present (SSOT check).
     expect(src).toContain('_isOption');
 
-    // Detection pattern: CE|PE suffix (canonical, not new ad-hoc logic).
-    expect(src).toContain('/(?:CE|PE)$/i');
+    // Detection pattern: digit-prefixed CE|PE suffix to avoid false-positives
+    // on equities like RELIANCE that end in the letters C+E.
+    expect(src).toContain('/\\d(?:CE|PE)$/i');
   });
 
   // ── 4. Reusable: option path still works for a known option symbol ────────
