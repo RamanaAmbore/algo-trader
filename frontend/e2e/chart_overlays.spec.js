@@ -1202,6 +1202,104 @@ test.describe('chart overlays — all viewports', () => {
     });
   }
 
+  // ── Viewport occupancy — full horizontal + vertical (Jun 2026) ──────
+  //
+  // Operator: "make chart card to occupy full available viewport space".
+  // The chart SVG should fill the viewport width (flush left, ≤10 px from
+  // edge) and most of the viewport height after chrome (navbar + page-header
+  // + toolbars + footer). We assert concrete pixel floors and the left-edge
+  // flush rule at two canonical desktop sizes.
+  //
+  // Width targets (desktops only — mobile already asserted above):
+  //   1280×800  : SVG width ≥ 1200 px AND left ≤ 10 px
+  //   1920×1080 : SVG width ≥ 1800 px AND left ≤ 10 px
+  //
+  // Height targets (≥80% of viewport minus fixed chrome ≈ 3rem navbar +
+  //   1.8rem page-header + two ~1.6rem toolbar rows + 1.6rem footer):
+  //   1280×800  : SVG ≥ 600 px
+  //   1920×1080 : SVG ≥ 800 px
+
+  for (const VP of [
+    { w: 1280, h: 800,  minW: 1200, minH: 600 },
+    { w: 1920, h: 1080, minW: 1800, minH: 800 },
+  ]) {
+    test(`viewport occupancy @ ${VP.w}×${VP.h} — SVG width ≥ ${VP.minW} AND left ≤ 10 AND height ≥ ${VP.minH}`, async ({ page }) => {
+      test.setTimeout(60_000);
+      await injectSession(page, _session);
+      await page.setViewportSize({ width: VP.w, height: VP.h });
+      await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+      await waitForChart(page);
+      await page.waitForTimeout(900);
+
+      const svgBox = await page.locator('.cw-svg').first().boundingBox();
+      expect(svgBox, `chart SVG measurable @ ${VP.w}×${VP.h}`).not.toBeNull();
+      if (svgBox) {
+        expect(
+          svgBox.width,
+          `SVG width @ ${VP.w}×${VP.h} should be ≥ ${VP.minW}px. Got ${svgBox.width}px. ` +
+          `Cause: .algo-content has horizontal padding (0.5rem each side) — ` +
+          `add :has(.charts-page-wrap) override to zero it.`,
+        ).toBeGreaterThanOrEqual(VP.minW);
+
+        expect(
+          svgBox.x,
+          `SVG left edge @ ${VP.w}×${VP.h} should be ≤ 10 px (flush left). Got ${svgBox.x}px. ` +
+          `Horizontal padding on .algo-content or .charts-page-wrap is pushing the card right.`,
+        ).toBeLessThanOrEqual(10);
+
+        expect(
+          svgBox.height,
+          `SVG height @ ${VP.w}×${VP.h} should be ≥ ${VP.minH}px. Got ${svgBox.height}px.`,
+        ).toBeGreaterThanOrEqual(VP.minH);
+      }
+    });
+  }
+
+  // No wasted side margins: chart container's left edge should be flush
+  // with viewport left on both chromium-desktop and mobile viewports.
+  test('chart container flush left (left ≤ 10 px) at 1280 wide', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page, _session);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+    await page.waitForTimeout(900);
+
+    const containerBox = await page.locator('.cw-chart-container').first().boundingBox();
+    expect(containerBox, 'chart container measurable at 1280 wide').not.toBeNull();
+    if (containerBox) {
+      expect(
+        containerBox.x,
+        `Chart container left = ${containerBox.x}px should be ≤ 10 px (flush left). ` +
+        `Horizontal padding on .algo-content is eating viewport width.`,
+      ).toBeLessThanOrEqual(10);
+    }
+  });
+
+  // Mobile 360×640: SVG uses 75%+ of viewport height.
+  // Chrome budget: navbar(48) + page-header(30) + toolbar×2(52) +
+  //   footer(26) + gaps(≈8) ≈ 164 px → 476 px remaining = 74.4%.
+  // 75% floor with a 1% margin accounts for sub-pixel rounding.
+  test('mobile 360×640: SVG height ≥ 75% of viewport height', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page, _session);
+    await page.setViewportSize({ width: 360, height: 640 });
+    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+    await page.waitForTimeout(900);
+
+    const svgBox = await page.locator('.cw-svg').first().boundingBox();
+    expect(svgBox, 'SVG measurable at 360×640').not.toBeNull();
+    if (svgBox) {
+      const pct = svgBox.height / 640;
+      expect(
+        pct,
+        `SVG height ${svgBox.height}px is only ${Math.round(pct * 100)}% of 640px viewport. ` +
+        `Operator wants ≥ 75%. Chrome budget: navbar(48) + page-header(30) + toolbar×2(52) + footer(26) ≈ 156px.`,
+      ).toBeGreaterThanOrEqual(0.75);
+    }
+  });
+
   // ── Desktop visible-content smoke (Jun 2026) ──────────────────────
   //
   // Operator: "the chart contracted without showing the chart on

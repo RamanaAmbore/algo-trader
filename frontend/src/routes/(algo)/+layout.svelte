@@ -1645,6 +1645,18 @@
      double-count it in padding-top. Only the page-header `top`
      offset (rule below) needs to grow when the ps-strip is on. */
 
+  /* Charts page: zero horizontal padding so the chart card
+     spans edge-to-edge. The page-header is position:fixed (left:0,
+     right:0) so it already fills the viewport regardless. Only the
+     content box below the header needs the padding removed.
+     :global() wrapper suppresses the svelte-check "unused selector"
+     warning that fires because .charts-page-wrap is defined in the
+     child route component, invisible to layout-scoped CSS analysis. */
+  :global(.algo-content:has(.charts-page-wrap)) {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
   /* ── Footer ─────────────────────────────────────────────────────────────── */
   .algo-footer {
     /* Fixed-bottom — matches the navbar's fixed pattern. Sticky was
