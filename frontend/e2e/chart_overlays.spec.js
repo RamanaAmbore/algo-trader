@@ -41,7 +41,11 @@ async function injectSession(page, items) {
   }
 }
 
-test.describe.configure({ mode: 'serial' });
+// Mode: 'default' (not 'serial') so a flake in one test doesn't skip the
+// rest of the suite — that hid the new sub-slice cases (multi-select,
+// hide-inactive, 1Y, candle default, alignment) from running.  workers=1
+// is still enforced via the CLI flag in this spec's run command, so the
+// rate-limit avoidance (commit 8ebebd63) still holds.
 test.describe('chart overlays — all viewports', () => {
   /** @type {Record<string, string>} */
   let _session = {};
