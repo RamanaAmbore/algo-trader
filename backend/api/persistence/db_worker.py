@@ -243,7 +243,7 @@ async def _upsert_instruments(rows: list[dict[str, Any]]) -> None:
         INSERT INTO instruments_snapshot
             (exchange, date, payload, row_count, captured_at)
         VALUES
-            (:exchange, :date, :payload::jsonb, :row_count, now())
+            (:exchange, :date, CAST(:payload AS jsonb), :row_count, now())
         ON CONFLICT (exchange, date)
         DO UPDATE SET
             payload     = EXCLUDED.payload,
@@ -274,7 +274,7 @@ async def _upsert_intraday(rows: list[dict[str, Any]]) -> None:
             (symbol, exchange, date, interval, bar_ts,
              open, high, low, close, volume)
         VALUES
-            (:symbol, :exchange, :date, :interval, :bar_ts::timestamptz,
+            (:symbol, :exchange, :date, :interval, CAST(:bar_ts AS timestamptz),
              :open, :high, :low, :close, :volume)
         ON CONFLICT (symbol, exchange, date, interval, bar_ts) DO NOTHING
     """)
@@ -293,7 +293,7 @@ async def _upsert_holidays(rows: list[dict[str, Any]]) -> None:
         INSERT INTO holidays_snapshot
             (exchange, year, dates_json, captured_at)
         VALUES
-            (:exchange, :year, :dates_json::jsonb, now())
+            (:exchange, :year, CAST(:dates_json AS jsonb), now())
         ON CONFLICT (exchange, year)
         DO UPDATE SET
             dates_json  = EXCLUDED.dates_json,
