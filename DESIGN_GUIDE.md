@@ -53,6 +53,7 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 22.12. [#audit workflow + Dhan / Groww postback scaffold](#2212-audit-workflow--dhan--groww-postback-scaffold)
 22.13. [Audit slice D — UX consistency + palette consolidation + 2 defects](#2213-audit-slice-d--ux-consistency--palette-consolidation--2-defects)
 22.14. [Market-status — broker API beats bellwether-quote probe](#2214-market-status--broker-api-beats-bellwether-quote-probe)
+22.15. [Chart indicator system — pure module + overlay persistence](#2215-chart-indicator-system--pure-module--overlay-persistence)
 
 ### Part VII — Operations
 23. [How to add a new template field](#23-how-to-add-a-new-template-field)
@@ -1903,6 +1904,52 @@ def market_status(self, exchange: str) -> bool | None:
 - `backend/brokers/adapters/dhan.py::market_status` — Dhan implementation
 - `backend/brokers/adapters/groww.py::market_status` — Groww implementation
 - `backend/shared/helpers/market_probe.py::probe_market_active` — resolution chain + cache
+
+---
+
+## 22.15. Chart indicator system — pure module + overlay persistence
+
+Technical indicators (SMA, EMA, VWAP, Bollinger Bands, RSI, MACD) live in a single pure module rather than being inlined in ChartWorkspace.
+
+⚙ **TECH — Indicators as a pure stateless module** — `WHY` Inline math inside a 2000-line Svelte component is untestable with `node --test` (no DOM, no Svelte runtime needed). Extracting the math to a pure module means a 32-test suite can verify hand-calculated reference values, edge cases (empty arrays, N=0, constant series), and Wilder-smoothing correctness without a browser. `WHAT` `frontend/src/lib/chart/indicators.js` exports `sma`, `ema`, `vwap`, `bollinger`, `rsi`, `macd`. Each function takes an OHLCV bars array, returns a typed series array. First (n-1) entries are `{ts, value: null}` — warmup convention. `HOW` `_assertN(n)` throws `RangeError` for non-positive or non-integer periods. MACD throws when `fast >= slow`. All functions are pure (no side-effects, no imports). `WHERE` `frontend/src/lib/chart/indicators.js`; tests at `frontend/scripts/indicators.test.js`.
+
+**Overlay palette** (canonical colours, do not vary):
+
+| Overlay | CSS class | Colour | Notes |
+|---|---|---|---|
+| SMA 20 | `overlay-sma` | `#7dd3fc` sky-blue | dashed 4-3 |
+| SMA 50 | `overlay-sma` | `#c084fc` violet | dashed 6-3 |
+| EMA 20 | `overlay-ema` | `#4ade80` green | solid |
+| EMA 50 | `overlay-ema` | `#fb923c` orange | dashed 6-3 |
+| VWAP | `overlay-vwap` | `#7dd3fc` cyan | solid 1.4px |
+| BB mid | `overlay-bb` | `#7dd3fc` cyan | solid 1px |
+| BB upper/lower | `overlay-bb` | `#7dd3fc` cyan | dashed 3-2 |
+| BB fill | `overlay-bb` | `rgba(125,211,252,0.06)` | no stroke |
+| RSI line | `overlay-rsi` | `#fbbf24` amber | solid 1.5px |
+| MACD line | `overlay-macd` | `#fbbf24` amber | solid 1.4px |
+| MACD signal | `overlay-macd` | `#f87171` red | dashed 3-2 |
+| MACD histogram | (line elements) | `rgba(74,222,128,0.55)` / `rgba(248,113,113,0.55)` | green above zero, red below |
+
+**Sub-panel geometry** (SVG user-unit constants in ChartWorkspace.svelte):
+- `RSI_H = 48` — RSI panel height
+- `MACD_H = 56` — MACD panel height
+- `_bandH = (_showRsi ? RSI_H : 0) + (_showMacd ? MACD_H : 0)` — reserved bottom space
+- `_innerH = chartH - CPAD_T - CPAD_B - _bandH` — usable height for the price panel
+
+**Overlay persistence**:
+- LocalStorage key: `rbq.cache.chart-overlays.v1` (JSON array of string keys)
+- Init: `$state([])` — empty server-side. Never `$state(_loadPrefs())` because `$state()` init runs during SSR where `localStorage` is undefined.
+- Hydration: `onMount` reads and validates the stored array against `_OVERLAY_OPTS`. Sets `_overlaysHydrated = true` after reading.
+- Save: `$effect` watches `_overlays` but guards with `if (!_overlaysHydrated) return` to prevent overwriting stored prefs during the first render frame.
+
+**VWAP note** — indices (NIFTY 50, NIFTY BANK etc.) carry `volume=0` on every bar. `calcVwap()` returns `null` for all points when `cumVol=0`. The `{#if _vwapPath}` block in the SVG template silently suppresses the element. This is correct: VWAP is a price/volume metric that has no meaning for non-tradeable indices.
+
+### Source files
+
+- `frontend/src/lib/chart/indicators.js` — pure indicator functions
+- `frontend/src/lib/ChartWorkspace.svelte` — imports `calcEma`, `calcVwap`, `calcMacd`; all overlay paths are `$derived`
+- `frontend/scripts/indicators.test.js` — 32-test unit suite (`node --test`)
+- `frontend/e2e/chart_overlays.spec.js` — 12-test Playwright spec (chromium-desktop + mobile-portrait)
 
 ---
 

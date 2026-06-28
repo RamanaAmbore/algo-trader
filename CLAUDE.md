@@ -542,9 +542,31 @@ effective_cost = investment_value / effective_qty
 Unified chart for any symbol kind (underlying / future / option / equity). Reads `?symbol=…&mode=…` URL params.
 
 **Components**:
-- `ChartWorkspace.svelte` (570 LOC) — OHLCV (line/area/candle, 1D/1W/1M/3M/6M/1Y, SMA20/50, Vol), intraday tick overlay (toggleable), underlying-spot overlay (dashed sky-blue for derivatives), Greeks strip (Δ Γ Θ V ρ IV).
+- `ChartWorkspace.svelte` — OHLCV (line/area/candle, 1D/1W/1M/3M/6M/1Y), intraday tick overlay (toggleable), underlying-spot overlay (dashed sky-blue for derivatives), Greeks strip (Δ Γ Θ V ρ IV).
 - `ChartModal.svelte` — overlay wrapper (Esc / overlay-click closes, scroll-locked).
 - `/charts` page — reads URL params, syncs picks via `goto({replaceState: true})`.
+
+**Indicator overlays** (price panel, toggled via MultiSelect "Overlays" button):
+- `SMA 20` / `SMA 50` — simple moving averages (sky-blue / violet)
+- `EMA 20` / `EMA 50` — exponential moving averages (green `#4ade80` / orange `#fb923c`), Wilder k=2/(n+1) seed from SMA
+- `VWAP` — cumulative volume-weighted average price (solid cyan `#7dd3fc`); returns null for zero-volume bars (indices have no VWAP)
+- `BB` — Bollinger Bands ±2σ, 20-period, population σ (TradingView standard), rendered as three lines + fill ribbon
+
+**Indicator sub-panels** (below price panel, same SVG):
+- `RSI 14` — Wilder-smoothed RSI with 30/70 reference lines (amber line, `RSI_H=48` user-units)
+- `MACD 12/26/9` — histogram (green/red bars) + MACD line (amber) + signal (red-dashed), (`MACD_H=56` user-units). Requires ≥27 bars; signal needs ≥36.
+
+**Indicator module** — `frontend/src/lib/chart/indicators.js` — pure stateless functions (`sma`, `ema`, `vwap`, `bollinger`, `rsi`, `macd`). No DOM/Svelte imports. All throw `RangeError` for invalid periods.
+
+**Overlay persistence** — `localStorage` key `rbq.cache.chart-overlays.v1` (JSON array of overlay keys). Hydrated in `onMount` (not `$state()` init, which would run on the server during SSR). Save guard: `_overlaysHydrated` flag prevents the persist `$effect` from overwriting stored prefs during the brief `[]`-to-hydrated window.
+
+**CSS class selectors** — every overlay `<path>` carries `class="overlay-{type}"` (`overlay-sma`, `overlay-ema`, `overlay-vwap`, `overlay-bb`, `overlay-rsi`, `overlay-macd`) for stable Playwright locators.
+
+**_bandH** — `$derived((_showRsi ? RSI_H : 0) + (_showMacd ? MACD_H : 0))` reserves SVG space at the bottom for sub-panels. `_innerH = chartH - CPAD_T - CPAD_B - _bandH`.
+
+**Unit tests** — `frontend/scripts/indicators.test.js` (32 tests, `node --test`). Five dimensions: SSOT (hand-calculated reference values), Perf (sync-only), Stale (no duplication in ChartWorkspace), Reuse (same import), UX (edge cases: empty, N=0, constant series).
+
+**E2E spec** — `frontend/e2e/chart_overlays.spec.js` (12 tests, chromium-desktop + mobile-portrait). Uses `STOCK_URL` (RELIANCE) for VWAP/MACD tests — NIFTY 50 is an index with zero volume.
 
 **Price history** (`/api/charts/*`) — in-memory rolling per-symbol buffers + lifecycle markers from `AlgoOrder` rows. No new persistent state.
 

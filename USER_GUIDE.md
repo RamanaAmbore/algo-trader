@@ -239,6 +239,31 @@ Order events appear as colored dots on the line:
 
 Hover over any dot to see what side / quantity / price.
 
+### Technical overlays on the price chart
+
+Click the **Overlays** button in the chart toolbar to toggle indicators. Your choices persist in browser storage and restore across reloads and sessions.
+
+**Price panel overlays** (drawn on the main chart):
+
+| Overlay | Description | Colour |
+|---|---|---|
+| SMA 20 / SMA 50 | Simple moving averages | Sky-blue / Violet |
+| EMA 20 / EMA 50 | Exponential moving averages (Wilder smoothing, TradingView-standard seed) | Green / Orange |
+| VWAP | Cumulative volume-weighted average price from the first bar in the selected range | Solid cyan |
+| BB | Bollinger Bands: 20-period SMA ± 2× population σ, same math as TradingView | Cyan lines + fill |
+
+**Sub-panel overlays** (stacked below the price chart in the same SVG):
+
+| Overlay | Description |
+|---|---|
+| RSI 14 | Wilder-smoothed RSI with overbought (70) / oversold (30) reference lines. Requires 15+ bars. |
+| MACD 12/26/9 | Histogram (green above zero / red below) + MACD line (amber) + signal (dashed red). Requires 27+ bars for MACD, 36+ for the signal line. |
+
+**Tips**:
+- VWAP is meaningful only for tradeable instruments with real volume (equities, futures). Index symbols (NIFTY 50, NIFTY BANK) report zero volume, so VWAP will not appear — this is correct behaviour, not a bug.
+- Switch to a longer timeframe (3M / 6M / 1Y) before enabling MACD on a thinly-traded contract; fewer than 27 bars leaves the sub-panel blank.
+- Overlays are computed in the browser from the same OHLCV data the chart already has — no extra network calls.
+
 ### Options analytics — the payoff diagram
 
 `/admin/derivatives` is the dedicated options-research page. Pick an underlying (NIFTY / BANKNIFTY / …) and the page surfaces every option + future you hold on it as **Candidates**. Tick / untick rows to include / exclude legs from the payoff — the chart re-renders on every toggle.

@@ -22,7 +22,10 @@ import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
 
 const BASE = process.env.PLAYWRIGHT_BASE_URL || 'https://dev.ramboq.com';
-const NIFTY_URL = `${BASE}/charts?symbol=${encodeURIComponent('NIFTY 50')}&mode=live`;
+const NIFTY_URL  = `${BASE}/charts?symbol=${encodeURIComponent('NIFTY 50')}&mode=live`;
+// VWAP requires real volume data; NIFTY 50 is an index (volume=0 → VWAP
+// path would be all-null). Use a large-cap equity for volume-dependent tests.
+const STOCK_URL  = `${BASE}/charts?symbol=${encodeURIComponent('RELIANCE')}&mode=live`;
 
 /** Inject saved sessionStorage items before navigation. */
 async function injectSession(page, items) {
@@ -93,7 +96,8 @@ test.describe('chart overlays — all viewports', () => {
   test('SSOT: VWAP overlay renders with non-empty d attribute', async ({ page }) => {
     test.setTimeout(60_000);
     await injectSession(page, _session);
-    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    // Use a tradeable equity — NIFTY 50 is an index (volume=0 → VWAP all-null)
+    await page.goto(STOCK_URL, { waitUntil: 'domcontentloaded' });
     await waitForChart(page);
 
     await setOverlaysViaStorage(page, ['vwap']);
@@ -108,7 +112,8 @@ test.describe('chart overlays — all viewports', () => {
   test('SSOT: MACD overlay renders sub-panel with non-empty d attribute', async ({ page }) => {
     test.setTimeout(90_000);
     await injectSession(page, _session);
-    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    // Use a tradeable equity for MACD too (consistent with VWAP test)
+    await page.goto(STOCK_URL, { waitUntil: 'domcontentloaded' });
     await waitForChart(page);
 
     // Switch to 3M range (90 days) to guarantee enough bars for MACD (needs 27+)
@@ -369,19 +374,19 @@ test.describe('chart overlays — all viewports', () => {
   test('overlay preferences persist in localStorage and restore on reload', async ({ page }) => {
     test.setTimeout(60_000);
     await injectSession(page, _session);
-    // Start clean
-    await page.addInitScript(() => {
-      localStorage.removeItem('rbq.cache.chart-overlays.v1');
-    });
-    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    // Use STOCK_URL because vwap path requires real volume data
+    await page.goto(STOCK_URL, { waitUntil: 'domcontentloaded' });
     await waitForChart(page);
 
-    // Inject EMA20 via storage (simulates user enabling it)
+    // Write overlay prefs via evaluate() — NOT addInitScript().
+    // addInitScript() fires on every navigation (including the reload below),
+    // so it would wipe the key before onMount can read it.
     await page.evaluate(() => {
+      localStorage.removeItem('rbq.cache.chart-overlays.v1');
       localStorage.setItem('rbq.cache.chart-overlays.v1', JSON.stringify(['ema20', 'vwap']));
     });
 
-    // Reload to apply
+    // Reload — onMount reads the key and hydrates _overlays = ['ema20','vwap']
     await page.reload({ waitUntil: 'domcontentloaded' });
     await waitForChart(page);
     await page.waitForTimeout(600);
