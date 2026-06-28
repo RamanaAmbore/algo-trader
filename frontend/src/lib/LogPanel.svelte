@@ -270,7 +270,10 @@
           // per second possible); compose with line content hash via
           // a length+first-32-chars tuple — cheap to compute, stable
           // across polls for the same source line.
-          key: `y${(d ? +d : 0)}-${String(l).length}-${String(l).slice(0, 32)}`,
+          // Same each_key_duplicate guard as _connRows below — same
+          // bug applies to System tab when api_log_file emits multiple
+          // INFO lines in one second from the same logger.
+          key: `y${(d ? +d : 0)}-${String(l).length}-${String(l).slice(0, 32)}-${i}`,
           html: _logRow(d || null, rest, tag, sysClass(l)),
         };
       });
@@ -289,7 +292,16 @@
         const levelMatch = String(rest || '').match(/^(ERROR|WARN(?:ING)?|INFO|DEBUG)\b/i);
         const tag = levelMatch ? levelMatch[1].toUpperCase() : '';
         return {
-          key: `c${(d ? +d : 0)}-${String(l).length}-${String(l).slice(0, 32)}`,
+          // Index appended to break ties — conn_service emits multiple
+          // lines per second from the same logger module (e.g. four
+          // Groww DEBUG calls inside one quote batch), producing the
+          // same (timestamp, length, first-32-chars) tuple for several
+          // rows. Svelte 5's each_key_duplicate guard threw a pageerror
+          // that aborted the entire {#each} block, leaving the Conn tab
+          // showing the empty-state sentinel even with 200 lines in
+          // hand. Index is safe here: rows are sorted append-only by
+          // timestamp; nothing depends on stable cross-poll identity.
+          key: `c${(d ? +d : 0)}-${String(l).length}-${String(l).slice(0, 32)}-${i}`,
           html: _logRow(d || null, rest, tag, sysClass(l)),
         };
       });

@@ -174,6 +174,8 @@ test.describe('Conn tab diagnostic — three surfaces', () => {
         consoleMessages.push(`[${msg.type().toUpperCase()}] ${msg.text()}`);
       }
     });
+    // Ignore pageerror (e.g. each_key_duplicate Svelte error) so the test
+    // keeps running instead of crashing the context. We log it for diagnostics.
     page.on('pageerror', err => {
       consoleMessages.push(`[PAGEERROR] ${err.message}`);
     });
@@ -186,12 +188,20 @@ test.describe('Conn tab diagnostic — three surfaces', () => {
       if (r.url().includes('/api/admin/logs/conn')) connResponses.push(r);
     });
 
-    await page.waitForLoadState('networkidle').catch(() => null);
+    // Don't wait for networkidle on /orders — it may never settle due to
+    // WebSocket + polling cascade. Use a shorter fixed wait after domcontentloaded.
+    await page.waitForTimeout(3000);
 
-    // The Activity card on /orders.
+    // The Activity card on /orders. Scroll to it first since the page
+    // is long and the card may be below the fold.
+    // Try scrolling to the section directly.
+    await page.evaluate(() => {
+      const el = document.querySelector('section.bucket-card-activity');
+      if (el) el.scrollIntoView({ behavior: 'instant', block: 'center' });
+    });
+
     const activityCard = page.locator('section.bucket-card-activity');
-    await expect(activityCard, 'Activity card visible on /orders').toBeVisible({ timeout: 20_000 });
-    await activityCard.scrollIntoViewIfNeeded();
+    await expect(activityCard, 'Activity card visible on /orders').toBeVisible({ timeout: 30_000 });
 
     // Click Conn tab inside the activity card.
     const connTab = activityCard.locator('[role="tab"]:has-text("Conn")').first();
@@ -218,8 +228,11 @@ test.describe('Conn tab diagnostic — three surfaces', () => {
     expect(typeof result.levelFilterValue).toBe('string');
   });
 
-  // ── Surface 3: ActivityLogModal (navbar broker chip) ──────────────────
-  test('surface 3 — ActivityLogModal Conn tab (via navbar broker chip)', async ({ page }) => {
+  // ── Surface 3: broker chip → navigates to /activity?tab=conn ──────────
+  // NOTE: The layout's broker chip uses `onclick={() => goto('/activity?tab=conn')}`
+  // (it navigates, it does NOT open the ActivityLogModal). This test follows
+  // the real navigation path and captures the Conn tab state on /activity.
+  test('surface 3 — broker chip navigates to /activity?tab=conn', async ({ page }) => {
     const consoleMessages = [];
     page.on('console', msg => {
       if (msg.type() === 'error' || msg.type() === 'warning') {
@@ -238,22 +251,34 @@ test.describe('Conn tab diagnostic — three surfaces', () => {
       if (r.url().includes('/api/admin/logs/conn')) connResponses.push(r);
     });
 
-    await page.waitForLoadState('networkidle').catch(() => null);
-
-    // Open modal via broker chip.
+    // Broker chip appears after connStatus first fires (~2-5s after mount).
     const chip = page.locator('button.broker-chip').first();
-    await expect(chip, 'broker chip visible').toBeVisible({ timeout: 25_000 });
+    await expect(chip, 'broker chip visible').toBeVisible({ timeout: 30_000 });
+
+    // broker-chip-partial carries a CSS pulse animation making the element
+    // "not stable" by Playwright's actionability check — force:true bypasses.
+    // The onclick handler calls goto('/activity?tab=conn') which is a SvelteKit
+    // client-side navigation, so waitForURL picks it up without a full page load.
+    const navPromise = page.waitForURL(/\/activity/, { timeout: 10_000 });
     await chip.click({ force: true });
+    await navPromise.catch(() => null);
 
-    const overlay = page.locator('[role="dialog"][aria-label="Activity log"]');
-    await expect(overlay, 'ActivityLogModal overlay opens').toBeVisible({ timeout: 10_000 });
+    const currentUrl = page.url();
+    console.log('\nBroker chip click navigated to:', currentUrl);
+    console.log('URL contains /activity:', currentUrl.includes('/activity') ? 'YES' : 'NO');
+    const hasTabParam = currentUrl.includes('tab=conn');
+    console.log('URL has tab=conn param:', hasTabParam ? 'YES' : 'NO');
 
-    // Modal opens on the Conn tab when chip is clicked (openActivityModal('conn')).
-    // Find and click Conn tab if not already active.
-    const connTab = overlay.locator('[role="tab"]:has-text("Conn")').first();
-    await expect(connTab, 'Conn tab visible in modal').toBeVisible({ timeout: 10_000 });
+    // Wait for the page to settle and for conn tab to auto-activate.
+    await page.waitForTimeout(500);
 
-    const isSelected = await connTab.getAttribute('aria-selected');
+    // Verify Conn tab is active (URL param seeds defaultTab on /activity mount).
+    const connTab = page.locator('[role="tab"]:has-text("Conn")').first();
+    await expect(connTab, 'Conn tab visible after navigation').toBeVisible({ timeout: 15_000 });
+    const isSelected = await connTab.getAttribute('aria-selected').catch(() => null);
+    console.log('Conn tab aria-selected after navigation:', isSelected);
+
+    // If the tab param wasn't picked up, click manually.
     if (isSelected !== 'true') {
       await connTab.click();
     }
@@ -263,17 +288,15 @@ test.describe('Conn tab diagnostic — three surfaces', () => {
       new Promise(res => setTimeout(res, 4000)),
     ]).catch(() => null);
 
-    // Scope to the overlay for the captureDiagnostics screenshot + DOM eval
-    // (the overlay is always the top-most surface; DOM queries still work page-wide).
     const result = await captureDiagnostics(
       page,
-      'Surface 3: ActivityLogModal (broker chip)',
+      'Surface 3: broker chip → /activity?tab=conn',
       path.join(ARTIFACTS_DIR, 'conn-tab-modal.png'),
       connResponses,
     );
 
     if (consoleMessages.length > 0) {
-      console.log('Console messages on /pulse (modal):\n' + consoleMessages.join('\n'));
+      console.log('Console messages (broker chip → /activity):\n' + consoleMessages.join('\n'));
     }
 
     expect(typeof result.rowCount).toBe('number');
