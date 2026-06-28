@@ -1003,9 +1003,16 @@ test.describe('chart overlays — all viewports', () => {
     if (ctrlBox && chartTop) {
       // Optional front-month chip may sit between toolbar and chart —
       // measure to the top of whichever element appears first below.
-      const fmBox = await page.locator('.cw-frontmonth-bar').first()
-        .boundingBox().catch(() => null);
-      const nextTop = fmBox ? Math.min(fmBox.y, chartTop.y) : chartTop.y;
+      // Use count() first so we don't await a non-existent locator (which
+      // would hang on boundingBox() until the test timeout).
+      let fmTop = null;
+      const fmCount = await page.locator('.cw-frontmonth-bar').count();
+      if (fmCount > 0) {
+        const fmBox = await page.locator('.cw-frontmonth-bar').first()
+          .boundingBox().catch(() => null);
+        if (fmBox) fmTop = fmBox.y;
+      }
+      const nextTop = fmTop !== null ? Math.min(fmTop, chartTop.y) : chartTop.y;
       const ctrlBottom = ctrlBox.y + ctrlBox.height;
       const gap = nextTop - ctrlBottom;
       expect(
