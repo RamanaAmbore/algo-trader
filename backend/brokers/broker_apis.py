@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+import polars as pl
 import time as _time
 
 from backend.brokers.connections import Connections
@@ -7,6 +8,16 @@ from backend.shared.helpers.decorators import for_all_accounts
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _col_f64(lf: pl.DataFrame, col: str) -> pl.Expr:
+    """Return a Float64 expression for `col`, coercing nulls/bad values to 0.0."""
+    return pl.col(col).cast(pl.Float64, strict=False).fill_null(0.0)
+
+
+def _col_f64_nullable(lf: pl.DataFrame, col: str) -> pl.Expr:
+    """Like _col_f64 but keeps nulls as nulls (for broker-value trust checks)."""
+    return pl.col(col).cast(pl.Float64, strict=False)
 
 
 # RAMBOQ_USE_CONN_SERVICE — when set on the main API process, the
