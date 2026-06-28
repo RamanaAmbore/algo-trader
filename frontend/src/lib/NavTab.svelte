@@ -7,11 +7,36 @@
   the headline number on NavCard, and the daily snapshot table was
   rarely used. Operator: "not entire nav page. just move the nav
   chart and delete the current nav page."
+
+  NAV chip overlay (Jun 2026): the firm-NAV chip (last-computed
+  firm NAV + day delta) renders as an absolutely-positioned overlay
+  at the top-right of the chart. Replaces the prior dedicated
+  `.dash-nav-row` row on the dashboard — operator: "move nav chip
+  as an overlay in nav chart in dashboard". Chip is read-only here
+  (no click handler — we're already inside the NAV tab); the
+  parent owns the data fetch and passes it in via props.
 -->
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { fetchNavHistory } from '$lib/api';
   import { marketAwareInterval } from '$lib/stores';
+
+  /**
+   * @typedef {Object} Props
+   * @property {{nav:number, as_of_date:string}|null} [chipLatest]
+   *   Last-computed firm NAV (for the overlay chip). null hides the chip.
+   * @property {number|null} [chipDelta]
+   *   Day Δ in INR — drives green/red tint on the chip.
+   * @property {number|null} [chipDeltaPct]
+   *   Day Δ in pct (fraction, e.g. 0.012 for +1.2%) — rendered as the
+   *   second line of the chip when present.
+   */
+  /** @type {Props} */
+  let {
+    chipLatest   = null,
+    chipDelta    = null,
+    chipDeltaPct = null,
+  } = $props();
 
   /** @typedef {{ as_of_date: string, nav: number }} NavPoint */
   /** @type {NavPoint[]} */
@@ -50,52 +75,87 @@
       style: 'currency', currency: 'INR', maximumFractionDigits: 0,
     }).format(n);
   }
+  function _fmtChipInr(/** @type {number|null|undefined} */ v) {
+    if (v == null || !isFinite(v)) return '—';
+    if (Math.abs(v) >= 10000000) return `₹${(v/10000000).toFixed(2)}Cr`;
+    if (Math.abs(v) >= 100000)   return `₹${(v/100000).toFixed(2)}L`;
+    if (Math.abs(v) >= 1000)     return `₹${(v/1000).toFixed(1)}k`;
+    return `₹${Math.round(Number(v))}`;
+  }
 </script>
 
-{#if history.length >= 2}
-  {@const _pad = { l: 60, r: 12, t: 12, b: 24 }}
-  {@const W = 760}
-  {@const H = 260}
-  {@const innerW = W - _pad.l - _pad.r}
-  {@const innerH = H - _pad.t - _pad.b}
-  {@const _navs = history.map(p => p.nav)}
-  {@const _min = Math.min(..._navs)}
-  {@const _max = Math.max(..._navs)}
-  {@const _range = (_max - _min) || Math.max(Math.abs(_max), 1)}
-  {@const yOf = (v) => _pad.t + innerH - ((v - _min) / _range) * innerH}
-  {@const xOf = (i) => _pad.l + (history.length === 1 ? innerW / 2 : (i * innerW) / (history.length - 1))}
-  {@const path = history.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(i)} ${yOf(p.nav)}`).join(' ')}
-  <div class="nav-tab-meta">{history.length} days</div>
-  <svg class="nav-svg" viewBox="0 0 760 260" preserveAspectRatio="none"
-       aria-label="Firm NAV history">
-    {#each [0.0, 0.25, 0.5, 0.75, 1.0] as t}
-      {@const y = _pad.t + innerH * t}
-      {@const v = _max - _range * t}
-      <line x1={_pad.l} y1={y} x2={_pad.l + innerW} y2={y}
-            stroke="rgba(126,151,184,0.10)" stroke-width="1" />
-      <text x={_pad.l - 8} y={y + 3} text-anchor="end"
+<div class="nav-tab-wrap">
+  <!-- NAV chip overlay — top-right of the chart. Self-hides when
+       chipLatest is null (operator lacks view_nav cap or no
+       snapshot has landed yet). Read-only inside the NAV tab — the
+       operator is already viewing the curve, so there's nothing to
+       navigate to. The cyan-rest + green/red day-Δ tint stays
+       consistent with the prior dedicated chip row. -->
+  {#if chipLatest}
+    <div class="nav-chip-overlay"
+         class:nav-chip-pos={(chipDelta ?? 0) > 0}
+         class:nav-chip-neg={(chipDelta ?? 0) < 0}
+         title={`NAV ${_fmtChipInr(chipLatest.nav)} as of ${chipLatest.as_of_date}`}>
+      <span class="nav-chip-lbl">NAV</span>
+      <span class="nav-chip-val">{_fmtChipInr(chipLatest.nav)}</span>
+      {#if chipDeltaPct != null}
+        <span class="nav-chip-delta">
+          {chipDeltaPct >= 0 ? '+' : ''}{(chipDeltaPct * 100).toFixed(2)}%
+        </span>
+      {/if}
+    </div>
+  {/if}
+
+  {#if history.length >= 2}
+    {@const _pad = { l: 60, r: 12, t: 12, b: 24 }}
+    {@const W = 760}
+    {@const H = 260}
+    {@const innerW = W - _pad.l - _pad.r}
+    {@const innerH = H - _pad.t - _pad.b}
+    {@const _navs = history.map(p => p.nav)}
+    {@const _min = Math.min(..._navs)}
+    {@const _max = Math.max(..._navs)}
+    {@const _range = (_max - _min) || Math.max(Math.abs(_max), 1)}
+    {@const yOf = (v) => _pad.t + innerH - ((v - _min) / _range) * innerH}
+    {@const xOf = (i) => _pad.l + (history.length === 1 ? innerW / 2 : (i * innerW) / (history.length - 1))}
+    {@const path = history.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(i)} ${yOf(p.nav)}`).join(' ')}
+    <div class="nav-tab-meta">{history.length} days</div>
+    <svg class="nav-svg" viewBox="0 0 760 260" preserveAspectRatio="none"
+         aria-label="Firm NAV history">
+      {#each [0.0, 0.25, 0.5, 0.75, 1.0] as t}
+        {@const y = _pad.t + innerH * t}
+        {@const v = _max - _range * t}
+        <line x1={_pad.l} y1={y} x2={_pad.l + innerW} y2={y}
+              stroke="rgba(126,151,184,0.10)" stroke-width="1" />
+        <text x={_pad.l - 8} y={y + 3} text-anchor="end"
+              fill="rgba(155,176,208,0.55)" font-size="10"
+              font-family="ui-monospace, monospace">{_fmtInr(v)}</text>
+      {/each}
+      <path d={path} fill="none" stroke="#fbbf24" stroke-width="2" />
+      <circle cx={xOf(history.length - 1)} cy={yOf(_navs[_navs.length - 1])}
+              r="3" fill="#fbbf24" stroke="#0a1020" stroke-width="1" />
+      <text x={xOf(0)} y={H - 6} text-anchor="start"
             fill="rgba(155,176,208,0.55)" font-size="10"
-            font-family="ui-monospace, monospace">{_fmtInr(v)}</text>
-    {/each}
-    <path d={path} fill="none" stroke="#fbbf24" stroke-width="2" />
-    <circle cx={xOf(history.length - 1)} cy={yOf(_navs[_navs.length - 1])}
-            r="3" fill="#fbbf24" stroke="#0a1020" stroke-width="1" />
-    <text x={xOf(0)} y={H - 6} text-anchor="start"
-          fill="rgba(155,176,208,0.55)" font-size="10"
-          font-family="ui-monospace, monospace">{history[0].as_of_date}</text>
-    <text x={xOf(history.length - 1)} y={H - 6} text-anchor="end"
-          fill="rgba(155,176,208,0.55)" font-size="10"
-          font-family="ui-monospace, monospace">{history[history.length - 1].as_of_date}</text>
-  </svg>
-{:else if loading}
-  <div class="nav-tab-empty">Loading NAV history…</div>
-{:else}
-  <div class="nav-tab-empty">
-    No NAV snapshots yet. First snapshot lands at 16:00 IST.
-  </div>
-{/if}
+            font-family="ui-monospace, monospace">{history[0].as_of_date}</text>
+      <text x={xOf(history.length - 1)} y={H - 6} text-anchor="end"
+            fill="rgba(155,176,208,0.55)" font-size="10"
+            font-family="ui-monospace, monospace">{history[history.length - 1].as_of_date}</text>
+    </svg>
+  {:else if loading}
+    <div class="nav-tab-empty">Loading NAV history…</div>
+  {:else}
+    <div class="nav-tab-empty">
+      No NAV snapshots yet. First snapshot lands at 16:00 IST.
+    </div>
+  {/if}
+</div>
 
 <style>
+  /* Wrapper is the positioning context for the overlay chip. */
+  .nav-tab-wrap {
+    position: relative;
+    width: 100%;
+  }
   .nav-tab-meta {
     font-size: 0.55rem;
     color: rgba(155, 176, 208, 0.55);
@@ -116,4 +176,58 @@
     color: rgba(155, 176, 208, 0.55);
     font-size: 0.72rem;
   }
+
+  /* Overlay chip — anchored top-right INSIDE the chart wrapper.
+     Uses clamp() so the offsets shrink gracefully on phone widths
+     and the chip never collides with the SVG's right margin. The
+     z-index keeps the chip above the SVG without forming a stacking
+     context that traps the meta label. Cyan-rest palette + green/red
+     day-Δ tint mirrors the prior dedicated chip row, so operators
+     don't have to relearn the visual language. */
+  .nav-chip-overlay {
+    position: absolute;
+    top: clamp(0.25rem, 1vw, 0.5rem);
+    right: clamp(0.35rem, 1.5vw, 0.75rem);
+    z-index: 2;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    padding: 0.18rem 0.55rem;
+    background: rgba(34, 211, 238, 0.10);
+    border: 1px solid rgba(34, 211, 238, 0.35);
+    border-radius: 4px;
+    font-family: ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+    backdrop-filter: blur(2px);
+  }
+  .nav-chip-lbl {
+    font-size: 0.55rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #7e97b8;
+  }
+  .nav-chip-val {
+    font-size: 0.78rem;
+    font-weight: 800;
+    color: #67e8f9;
+  }
+  .nav-chip-delta {
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: #c8d8f0;
+  }
+  .nav-chip-overlay.nav-chip-pos {
+    background: rgba(74, 222, 128, 0.10);
+    border-color: rgba(74, 222, 128, 0.40);
+  }
+  .nav-chip-overlay.nav-chip-pos .nav-chip-val,
+  .nav-chip-overlay.nav-chip-pos .nav-chip-delta { color: #4ade80; }
+  .nav-chip-overlay.nav-chip-neg {
+    background: rgba(248, 113, 113, 0.10);
+    border-color: rgba(248, 113, 113, 0.40);
+  }
+  .nav-chip-overlay.nav-chip-neg .nav-chip-val,
+  .nav-chip-overlay.nav-chip-neg .nav-chip-delta { color: #f87171; }
 </style>

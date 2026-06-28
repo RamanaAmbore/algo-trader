@@ -6,9 +6,15 @@
 //   NAV tab restored to the LEFT chart card (default tab) so the
 //   chart card now carries [NAV, Intraday, Performance]. The RIGHT
 //   sidebar keeps its own [NAV, Capital, Equity] tabs (NavBreakdown
-//   per-account decomposition). Page-header firm-NAV chip persists
-//   across every chart-card tab so the headline number is on screen
-//   on Intraday + Performance too.
+//   per-account decomposition).
+//
+// Jun 2026 follow-up — operator: "move nav chip as an overlay in
+//   nav chart in dashboard". The firm-NAV chip is no longer a
+//   dedicated `.dash-nav-row` row below the page header. It now
+//   renders as an absolutely-positioned overlay (`.nav-chip-overlay`)
+//   inside <NavTab>, anchored top-right of the chart. The chip is
+//   visible ONLY when the NAV tab on the chart card is active —
+//   Intraday + Performance tabs hide it by design.
 //
 // Five quality dimensions (per feedback_test_dimensions.md):
 //   SSOT        — dashboard activity news tab + /activity news tab
@@ -188,34 +194,40 @@ test.describe('dashboard refactor — news → activity + chart/equity swap + NA
       (await navTabEmpty.isVisible().catch(() => false));
     expect(navTabMounted, 'chart-card NAV panel renders curve or empty-state').toBe(true);
 
-    // ── Firm NAV chip lives on its OWN row below the page-header
-    //    (operator placement refinement Jun 2026). It is no longer a
-    //    child of .page-header; it sits inside .dash-nav-row between
-    //    the heading row and the row1-split. Persists across chart-card
-    //    tab flips so the headline number is visible on Intraday +
-    //    Performance views too. ----
-    const navChip = page.locator('.nav-chip').first();
+    // ── Firm NAV chip is now an OVERLAY inside <NavTab> (operator
+    //    placement refinement Jun 2026: "move nav chip as an overlay
+    //    in nav chart in dashboard"). The chip lives inside the chart
+    //    card's NAV tab panel, NOT as a child of `.page-header` and
+    //    NOT inside the retired `.dash-nav-row`. It is visible ONLY
+    //    while the NAV tab is active — flipping to Intraday or
+    //    Performance hides the entire NAV panel (and thus the chip). -
+    // Stale-code: the old `.dash-nav-row` row is gone.
+    await expect(page.locator('.dash-nav-row')).toHaveCount(0);
+
+    const navChipOverlay = page.locator('.nav-chip-overlay').first();
     // Chip is gated by view_nav cap + a non-null _navLatest fetch.
     // If absent on cold dev (snapshot not yet landed), soft-skip the
-    // cross-tab persistence + placement checks.
-    const chipPresent = await navChip.isVisible().catch(() => false);
+    // overlay placement + tab-flip visibility checks.
+    const chipPresent = await navChipOverlay.isVisible().catch(() => false);
     if (chipPresent) {
       // Placement: chip is NOT a descendant of .page-header.
-      const insideHeader = await navChip.evaluate(
+      const insideHeader = await navChipOverlay.evaluate(
         el => el.closest('.page-header') !== null,
       );
       expect(insideHeader, 'NAV chip is NOT inside .page-header').toBe(false);
 
-      // Placement: chip IS a descendant of .dash-nav-row.
-      const insideNavRow = await navChip.evaluate(
-        el => el.closest('.dash-nav-row') !== null,
+      // Placement: chip IS a descendant of the chart card's NAV panel
+      // (i.e. it sits inside <NavTab>, not in a sibling row).
+      const insideChartCard = await navChipOverlay.evaluate(
+        el => el.closest('.row1-col-chart') !== null,
       );
-      expect(insideNavRow, 'NAV chip IS inside .dash-nav-row').toBe(true);
+      expect(insideChartCard, 'NAV chip IS inside .row1-col-chart').toBe(true);
 
-      // Placement: chip's bounding rect sits BELOW the page-header.
+      // Placement: chip's bounding rect sits BELOW the page-header
+      // (it's overlaying the chart, which is well below the header).
       const pageHeader = page.locator('.page-header').first();
       const headerBox = await pageHeader.boundingBox();
-      const chipBox = await navChip.boundingBox();
+      const chipBox = await navChipOverlay.boundingBox();
       expect(headerBox).not.toBeNull();
       expect(chipBox).not.toBeNull();
       if (headerBox && chipBox) {
@@ -225,22 +237,31 @@ test.describe('dashboard refactor — news → activity + chart/equity swap + NA
         ).toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 1);
       }
 
-      // Click Intraday — chip should still be visible.
+      // Click Intraday — chip is hidden (NAV panel is `hidden`).
       await chartTabs.nth(1).click();
       await page.waitForTimeout(300);
-      await expect(navChip, 'NAV chip visible on Intraday tab').toBeVisible();
+      await expect(
+        navChipOverlay,
+        'NAV chip hidden on Intraday tab',
+      ).not.toBeVisible();
 
-      // Click Performance — chip should still be visible.
+      // Click Performance — chip stays hidden.
       await chartTabs.nth(2).click();
       await page.waitForTimeout(300);
-      await expect(navChip, 'NAV chip visible on Performance tab').toBeVisible();
+      await expect(
+        navChipOverlay,
+        'NAV chip hidden on Performance tab',
+      ).not.toBeVisible();
 
-      // Click chip — flips chart card back to NAV tab.
-      await navChip.click();
-      await page.waitForTimeout(400);
-      await expect(chartTabs.nth(0)).toHaveAttribute('aria-selected', 'true');
+      // Click back to NAV — chip re-appears.
+      await chartTabs.nth(0).click();
+      await page.waitForTimeout(300);
+      await expect(
+        navChipOverlay,
+        'NAV chip re-visible on NAV tab',
+      ).toBeVisible();
     } else {
-      console.log('[desktop] firm-NAV chip not minted yet (no snapshot) — placement + cross-tab persistence skipped');
+      console.log('[desktop] firm-NAV chip not minted yet (no snapshot) — overlay placement skipped');
       // Still verify the tabs themselves switch + NAV stays default.
       await chartTabs.nth(1).click();
       await page.waitForTimeout(200);
@@ -443,27 +464,44 @@ test.describe('dashboard refactor — news → activity + chart/equity swap + NA
       expect(chartNavBox.height).toBeGreaterThanOrEqual(20);
     }
 
-    // ── NAV chip placement on mobile: own row below page-header, not
-    //    nested inside it (operator placement refinement Jun 2026).
+    // ── NAV chip placement on mobile: overlay inside <NavTab>, not
+    //    a dedicated row (operator placement refinement Jun 2026:
+    //    "move nav chip as an overlay in nav chart in dashboard").
+    //    The chip uses clamp() offsets so it doesn't collide with
+    //    the chart on 360-393 px viewports.
     //    Soft-skip when the chip hasn't been minted yet on cold dev. -
-    const mobileChip = page.locator('.nav-chip').first();
+    // Stale-code: the old `.dash-nav-row` row is gone.
+    await expect(page.locator('.dash-nav-row')).toHaveCount(0);
+
+    const mobileChip = page.locator('.nav-chip-overlay').first();
     if (await mobileChip.isVisible().catch(() => false)) {
       const insideHeader = await mobileChip.evaluate(
         el => el.closest('.page-header') !== null,
       );
       expect(insideHeader, 'mobile: NAV chip is NOT inside .page-header').toBe(false);
-      const insideNavRow = await mobileChip.evaluate(
-        el => el.closest('.dash-nav-row') !== null,
+      const insideChartCard = await mobileChip.evaluate(
+        el => el.closest('.row1-col-chart') !== null,
       );
-      expect(insideNavRow, 'mobile: NAV chip IS inside .dash-nav-row').toBe(true);
+      expect(insideChartCard, 'mobile: NAV chip IS inside .row1-col-chart').toBe(true);
 
-      const headerBox = await page.locator('.page-header').first().boundingBox();
+      // Chip's right edge stays within the chart card's right edge —
+      // catches a regression where the overlay's `right` offset
+      // becomes negative on narrow viewports and overflows.
       const chipBox = await mobileChip.boundingBox();
-      if (headerBox && chipBox) {
+      const cardBox = await chartCard.boundingBox();
+      if (chipBox && cardBox) {
         expect(
-          chipBox.y,
-          'mobile: NAV chip sits below page-header bottom',
-        ).toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 1);
+          chipBox.x + chipBox.width,
+          'mobile: NAV chip right edge inside chart card',
+        ).toBeLessThanOrEqual(cardBox.x + cardBox.width + 1);
+        // And the chip sits well below the page-header.
+        const headerBox = await page.locator('.page-header').first().boundingBox();
+        if (headerBox) {
+          expect(
+            chipBox.y,
+            'mobile: NAV chip sits below page-header bottom',
+          ).toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 1);
+        }
       }
     } else {
       console.log('[mobile] NAV chip not minted — placement skipped');

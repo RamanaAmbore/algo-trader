@@ -1039,13 +1039,11 @@
       _navDeltaPct = r?.day_delta_pct ?? null;
     } catch (_) { /* leave at last-good */ }
   }
-  function _fmtNavInr(/** @type {number|null|undefined} */ v) {
-    if (v == null || !isFinite(v)) return '—';
-    if (Math.abs(v) >= 10000000) return `₹${(v/10000000).toFixed(2)}Cr`;
-    if (Math.abs(v) >= 100000)   return `₹${(v/100000).toFixed(2)}L`;
-    if (Math.abs(v) >= 1000)     return `₹${(v/1000).toFixed(1)}k`;
-    return `₹${Math.round(Number(v))}`;
-  }
+  // `_fmtNavInr` formatter retired — its sole caller (the dedicated
+  // .dash-nav-row chip) moved into NavTab as an overlay, and NavTab
+  // owns its own compact formatter (`_fmtChipInr`). The chip data
+  // (`_navLatest` / `_navDelta` / `_navDeltaPct`) is still fetched
+  // here and forwarded into <NavTab> as props.
 
   async function loadHero() {
     try {
@@ -1579,36 +1577,16 @@
   </span>
 </div>
 
-<!-- Firm NAV chip — lives on its OWN row below the page header so it
-     reads as a distinct identity strip rather than crowding the
-     heading. Visible on every chart-card tab (NAV, Intraday,
-     Performance) and every sidebar tab (NAV, Capital, Equity). Day Δ
-     colour-coded. Clicking flips the chart card to its NAV tab and
-     scrolls the card into view — the standalone /nav page was retired
-     Jun 2026, so this chip is the operator's quick path to the curve
-     view. -->
-{#if _canViewNav && _navLatest}
-  <div class="dash-nav-row">
-    <button type="button" class="nav-chip"
-       class:nav-chip-pos={(_navDelta ?? 0) > 0}
-       class:nav-chip-neg={(_navDelta ?? 0) < 0}
-       title={`NAV ${_fmtNavInr(_navLatest.nav)} as of ${_navLatest.as_of_date} — click to open NAV tab`}
-       onclick={() => {
-         _chartTab = 'nav';
-         _colEquityCurve = false;
-         const card = document.querySelector('.row1-col-chart');
-         if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
-       }}>
-      <span class="nav-chip-lbl">NAV</span>
-      <span class="nav-chip-val">{_fmtNavInr(_navLatest.nav)}</span>
-      {#if _navDeltaPct != null}
-        <span class="nav-chip-delta">
-          {_navDeltaPct >= 0 ? '+' : ''}{(_navDeltaPct * 100).toFixed(2)}%
-        </span>
-      {/if}
-    </button>
-  </div>
-{/if}
+<!-- Firm NAV chip moved (Jun 2026): no longer a dedicated row here.
+     The chip now overlays the NAV chart inside the chart card's NAV
+     tab — operator: "move nav chip as an overlay in nav chart in
+     dashboard". `_navLatest` / `_navDelta` / `_navDeltaPct` are
+     still fetched here (gated by view_nav) and forwarded into
+     <NavTab> as props so the overlay self-hides on observer
+     accounts without the cap. The chip is hidden on Intraday +
+     Performance tabs by design — those panels don't carry NAV
+     inline. -->
+
 
 <!-- Hero strip retired. Its six chips lived elsewhere:
        - P&L TODAY / TODAY % / vs NIFTY → stat overlay inside the
@@ -1711,7 +1689,11 @@
          Intraday + Performance panels so the operator's first glance
          on the chart card is the firm's net-liq trajectory. -->
     <div class="card-body" hidden={_chartTab !== 'nav' || _colEquityCurve}>
-      <NavTab />
+      <NavTab
+        chipLatest={_canViewNav ? _navLatest : null}
+        chipDelta={_navDelta}
+        chipDeltaPct={_navDeltaPct}
+      />
     </div>
 
     <!-- Intraday panel — SVG curve of today's cum P&L. -->
@@ -2112,65 +2094,9 @@
 </section>
 
 <style>
-  /* Firm-NAV chip row — lives on its own row below the page header
-     (operator request Jun 2026). The chip itself keeps the cyan-tinted
-     rest palette + green/red day-Δ tint. Element is a <button> — /nav
-     route was retired and the chip jumps to the chart card's NAV tab.
-     Row wraps gracefully at narrow viewports (chip wraps to the next
-     line, never overflows). */
-  .dash-nav-row {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: flex-start;
-    padding: 0.35rem 0;
-  }
-  .nav-chip {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 0.4rem;
-    padding: 0.18rem 0.55rem;
-    background: rgba(34, 211, 238, 0.10);
-    border: 1px solid rgba(34, 211, 238, 0.35);
-    border-radius: 4px;
-    text-decoration: none;
-    font-family: ui-monospace, monospace;
-    font-variant-numeric: tabular-nums;
-    cursor: pointer;
-    transition: background 120ms, border-color 120ms;
-  }
-  .nav-chip:hover {
-    background: rgba(34, 211, 238, 0.18);
-    border-color: rgba(34, 211, 238, 0.60);
-  }
-  .nav-chip-lbl {
-    font-size: 0.55rem;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: #7e97b8;
-  }
-  .nav-chip-val {
-    font-size: 0.78rem;
-    font-weight: 800;
-    color: #67e8f9;
-  }
-  .nav-chip-delta {
-    font-size: 0.65rem;
-    font-weight: 700;
-    color: #c8d8f0;
-  }
-  .nav-chip.nav-chip-pos {
-    background: rgba(74, 222, 128, 0.10);
-    border-color: rgba(74, 222, 128, 0.40);
-  }
-  .nav-chip.nav-chip-pos .nav-chip-val,
-  .nav-chip.nav-chip-pos .nav-chip-delta { color: #4ade80; }
-  .nav-chip.nav-chip-neg {
-    background: rgba(248, 113, 113, 0.10);
-    border-color: rgba(248, 113, 113, 0.40);
-  }
-  .nav-chip.nav-chip-neg .nav-chip-val,
-  .nav-chip.nav-chip-neg .nav-chip-delta { color: #f87171; }
+  /* Firm-NAV chip styles retired here — chip moved into NavTab as an
+     overlay (Jun 2026). See frontend/src/lib/NavTab.svelte for the
+     `.nav-chip-overlay` rules. */
 
   /* .mp-section-label is defined globally in app.css.
      Dashboard uses the --bar modifier for the amber left-edge accent. */
