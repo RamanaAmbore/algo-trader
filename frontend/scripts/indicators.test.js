@@ -14,7 +14,10 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { sma, ema, vwap, bollinger, rsi, macd } from '../src/lib/chart/indicators.js';
+import {
+  sma, ema, vwap, bollinger, rsi, macd,
+  emaSignals, vwapSignals, bollingerSignals, rsiSignals, macdSignals,
+} from '../src/lib/chart/indicators.js';
 
 // ── Shared fixture: 30 bars of synthetic OHLCV ───────────────────────────────
 // Prices are a simple arithmetic sequence 100, 102, 104, … so we can
@@ -269,5 +272,205 @@ describe('macd', () => {
 
   test('throws for negative signal', () => {
     assert.throws(() => macd(LONG_BARS, 12, 26, -1), RangeError);
+  });
+});
+
+// ── Signal detection — emaSignals ───────────────────────────────────────────
+describe('emaSignals', () => {
+  test('detects golden cross when fast rises above slow', () => {
+    // Fixture: fast climbs while slow stays flat — exactly one buy event.
+    const slow = [10, 10, 10, 10, 10];
+    const fast = [ 8,  9, 10, 11, 12];
+    // i=2 fast==slow (not strictly above), i=3 fast(11) > slow(10) → buy
+    const sigs = emaSignals(fast, slow);
+    assert.equal(sigs.length, 1, `expected exactly one signal, got ${sigs.length}`);
+    assert.equal(sigs[0].i, 3);
+    assert.equal(sigs[0].type, 'buy');
+  });
+
+  test('detects death cross when fast falls below slow', () => {
+    const slow = [10, 10, 10, 10, 10];
+    const fast = [12, 11, 10,  9,  8];
+    // i=3 fast(9) < slow(10) → sell
+    const sigs = emaSignals(fast, slow);
+    assert.equal(sigs.length, 1);
+    assert.equal(sigs[0].i, 3);
+    assert.equal(sigs[0].type, 'sell');
+  });
+
+  test('accepts {value} shape (real ema output)', () => {
+    const slow = [{value:10},{value:10},{value:10}];
+    const fast = [{value: 9},{value:10},{value:12}];
+    const sigs = emaSignals(fast, slow);
+    assert.equal(sigs.length, 1);
+    assert.equal(sigs[0].type, 'buy');
+  });
+
+  test('skips bars with null indicators', () => {
+    const slow = [null, 10, 10, 10];
+    const fast = [null,  9, 11, 12];
+    // No cross detected at i=1 (prev=null) — first valid pair is (i=1,i=2).
+    const sigs = emaSignals(fast, slow);
+    assert.equal(sigs.length, 1);
+    assert.equal(sigs[0].i, 2);
+  });
+});
+
+// ── Signal detection — vwapSignals ──────────────────────────────────────────
+describe('vwapSignals', () => {
+  test('buy when close crosses ABOVE vwap from below', () => {
+    const closes = [100, 101, 103];
+    const vwap_  = [102, 102, 102];
+    // i=2 close(103) > vwap(102), prev close(101) <= vwap(102) → buy
+    const sigs = vwapSignals(closes, vwap_);
+    assert.equal(sigs.length, 1);
+    assert.equal(sigs[0].type, 'buy');
+    assert.equal(sigs[0].i, 2);
+  });
+
+  test('sell when close crosses BELOW vwap from above', () => {
+    const closes = [104, 103, 101];
+    const vwap_  = [102, 102, 102];
+    const sigs = vwapSignals(closes, vwap_);
+    assert.equal(sigs.length, 1);
+    assert.equal(sigs[0].type, 'sell');
+  });
+
+  test('accepts {close} bar shape', () => {
+    const bars = [{close:100},{close:101},{close:103}];
+    const v    = [{value:102},{value:102},{value:102}];
+    const sigs = vwapSignals(bars, v);
+    assert.equal(sigs.length, 1);
+    assert.equal(sigs[0].type, 'buy');
+  });
+});
+
+// ── Signal detection — bollingerSignals ─────────────────────────────────────
+describe('bollingerSignals', () => {
+  test('buy when close pierces lower band', () => {
+    const closes = [100, 100, 95];
+    const bb = [
+      { upper: 105, lower: 95 },
+      { upper: 105, lower: 95 },
+      { upper: 105, lower: 95 },
+    ];
+    const sigs = bollingerSignals(closes, bb);
+    assert.equal(sigs.length, 1);
+    assert.equal(sigs[0].type, 'buy');
+    assert.equal(sigs[0].i, 2);
+  });
+
+  test('sell when close pierces upper band', () => {
+    const closes = [100, 100, 106];
+    const bb = [
+      { upper: 105, lower: 95 },
+      { upper: 105, lower: 95 },
+      { upper: 105, lower: 95 },
+    ];
+    const sigs = bollingerSignals(closes, bb);
+    assert.equal(sigs.length, 1);
+    assert.equal(sigs[0].type, 'sell');
+  });
+
+  test('multi-bar lower break only fires once (throttled)', () => {
+    const closes = [100, 95, 94, 93, 100];
+    const bb = Array.from({length: 5}, () => ({ upper: 105, lower: 95 }));
+    const sigs = bollingerSignals(closes, bb);
+    // Single buy at i=1 — multiple consecutive bars below lower don't stack.
+    const buys = sigs.filter(s => s.type === 'buy');
+    assert.equal(buys.length, 1);
+    assert.equal(buys[0].i, 1);
+  });
+
+  test('skips bars with null bands', () => {
+    const closes = [100, 95];
+    const bb = [{ upper: null, lower: null }, { upper: 105, lower: 95 }];
+    const sigs = bollingerSignals(closes, bb);
+    assert.equal(sigs.length, 1);
+    assert.equal(sigs[0].i, 1);
+    assert.equal(sigs[0].type, 'buy');
+  });
+});
+
+// ── Signal detection — rsiSignals ───────────────────────────────────────────
+describe('rsiSignals', () => {
+  test('buy on cross above 30 from oversold', () => {
+    // Sequence 25, 28, 32, 35 — buy when 28 → 32 crosses 30
+    const arr = [25, 28, 32, 35];
+    const sigs = rsiSignals(arr);
+    assert.equal(sigs.length, 1);
+    assert.equal(sigs[0].type, 'buy');
+    assert.equal(sigs[0].i, 2);
+  });
+
+  test('sell on cross below 70 from overbought', () => {
+    const arr = [75, 72, 68, 65];
+    const sigs = rsiSignals(arr);
+    assert.equal(sigs.length, 1);
+    assert.equal(sigs[0].type, 'sell');
+    assert.equal(sigs[0].i, 2);
+  });
+
+  test('accepts {value} shape', () => {
+    const arr = [{value:25},{value:28},{value:32}];
+    const sigs = rsiSignals(arr);
+    assert.equal(sigs.length, 1);
+    assert.equal(sigs[0].type, 'buy');
+  });
+
+  test('no signal when RSI stays in middle zone', () => {
+    const arr = [45, 50, 55, 60, 65];
+    const sigs = rsiSignals(arr);
+    assert.equal(sigs.length, 0);
+  });
+
+  test('custom thresholds (20/80) shift fire points', () => {
+    const arr = [15, 18, 22, 25];
+    const sigsDefault = rsiSignals(arr);  // crosses 30 — buy at i=2 (22>30? no — none)
+    const sigsCustom  = rsiSignals(arr, 20, 80);
+    assert.equal(sigsDefault.length, 0);
+    assert.equal(sigsCustom.length, 1);
+    assert.equal(sigsCustom[0].type, 'buy');
+  });
+});
+
+// ── Signal detection — macdSignals ──────────────────────────────────────────
+describe('macdSignals', () => {
+  test('buy when MACD line crosses ABOVE signal line', () => {
+    const macdLine   = [-1,  0,  1];
+    const signalLine = [ 0,  0,  0];
+    // i=2: prev(0)<=prev_sig(0), cur(1)>cur_sig(0) → buy
+    const sigs = macdSignals(macdLine, signalLine);
+    assert.equal(sigs.length, 1);
+    assert.equal(sigs[0].type, 'buy');
+    assert.equal(sigs[0].i, 2);
+  });
+
+  test('sell when MACD line crosses BELOW signal line', () => {
+    const macdLine   = [ 1,  0, -1];
+    const signalLine = [ 0,  0,  0];
+    const sigs = macdSignals(macdLine, signalLine);
+    assert.equal(sigs.length, 1);
+    assert.equal(sigs[0].type, 'sell');
+  });
+
+  test('accepts macd() output shape ({macd,signal})', () => {
+    // The macd() function returns an array of {ts,macd,signal,histogram}
+    const series = [
+      { ts: 'a', macd: -1, signal: 0, histogram: -1 },
+      { ts: 'b', macd:  0, signal: 0, histogram:  0 },
+      { ts: 'c', macd:  1, signal: 0, histogram:  1 },
+    ];
+    const sigs = macdSignals(series, series);
+    assert.equal(sigs.length, 1);
+    assert.equal(sigs[0].type, 'buy');
+  });
+
+  test('skips bars with null lines', () => {
+    const macdLine   = [null, 0, 1];
+    const signalLine = [null, 0, 0];
+    const sigs = macdSignals(macdLine, signalLine);
+    assert.equal(sigs.length, 1);
+    assert.equal(sigs[0].i, 2);
   });
 });

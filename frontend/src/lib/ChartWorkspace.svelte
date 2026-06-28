@@ -94,7 +94,11 @@
     fetchWatchlists,
     fetchWatchlist,
   } from '$lib/api';
-  import { ema as calcEma, vwap as calcVwap, macd as calcMacd } from '$lib/chart/indicators.js';
+  import {
+    ema as calcEma, vwap as calcVwap, macd as calcMacd,
+    bollinger as calcBollinger, rsi as calcRsi,
+    emaSignals, vwapSignals, bollingerSignals, rsiSignals, macdSignals,
+  } from '$lib/chart/indicators.js';
   import {
     loadInstruments, searchByPrefix, suggestUnderlyings,
     findEquity, findNearestFuture, getInstrument,
@@ -396,6 +400,24 @@
   // Tracks whether the Overlays MultiSelect dropdown is open — used to
   // suppress both hover popups so they don't clash with the open panel.
   let _overlayOpen = $state(false);
+
+  // ── Buy/sell signal markers ──────────────────────────────────────
+  // Operator toggle: show buy/sell triangles for active indicators
+  // (golden cross / death cross / VWAP cross / BB pierce / RSI 30-70 /
+  // MACD cross). Default ON when at least one indicator is selected;
+  // persisted to localStorage so the choice survives reload.
+  const _SIGNALS_LS_KEY = 'rbq.cache.chart-signals.v1';
+  let _signalsOn = $state(true);
+  let _signalsHydrated = $state(false);
+  $effect(() => {
+    const snap = _signalsOn;
+    if (!_signalsHydrated) return;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(_SIGNALS_LS_KEY, JSON.stringify(snap));
+      }
+    } catch (_) { /* quota — silently skip */ }
+  });
   // Intraday tick stream — single boolean, toggled by a chip in the toolbar.
   let _intradayOn = $state(false);
   const _showSma20 = $derived(_overlays.includes('sma20'));
@@ -1118,6 +1140,130 @@
     return calcMacd(_bars, 12, 26, 9);
   });
 
+  // ── Buy/sell signal markers ──────────────────────────────────────
+  // Per indicator, derive a list of {bar, type, indicator, label} that
+  // the SVG layer renders as green-up / red-down triangles with a tag.
+  //
+  // Detection lives in indicators.js (pure functions); this $derived
+  // re-runs only when _bars or _overlays change. Cost is O(N × K) for
+  // N bars and K active indicators — < 2000 ops on 365-bar 1Y range.
+  //
+  // To avoid clutter on dense ranges (≥180 bars), markers from any
+  // single indicator are density-capped to MAX_PER_IND_DENSE. Operator-
+  // facing: a quiet chart stays readable; recent + most-actionable
+  // signals stay visible.
+  const _MAX_PER_IND = 12;            // cap per indicator on long ranges
+  const _DENSE_THRESHOLD = 180;       // bars at which density throttle kicks in
+
+  /**
+   * Returns the signal series the markers layer consumes.
+   * Shape:
+   *   [{ bar: <object>, i: number, type: 'buy'|'sell',
+   *      indicator: 'EMA cross'|'VWAP'|'BB'|'RSI'|'MACD',
+   *      tag: 'EMA↑', tooltip: '…' }]
+   * Throttled so dense charts stay legible.
+   */
+  const _signalMarkers = $derived.by(() => {
+    if (!_signalsOn || !_bars.length) return [];
+    /** @type {Array<{bar:any,i:number,type:'buy'|'sell',indicator:string,tag:string,tooltip:string}>} */
+    const out = [];
+    const dense = _bars.length >= _DENSE_THRESHOLD;
+
+    /** @param {Array<{i:number,type:'buy'|'sell'}>} evts @param {string} ind @param {string} tagBuy @param {string} tagSell */
+    function pushSignals(evts, ind, tagBuy, tagSell) {
+      // Density cap: keep the most-recent N events per indicator.
+      const trimmed = dense && evts.length > _MAX_PER_IND
+        ? evts.slice(-_MAX_PER_IND)
+        : evts;
+      for (const ev of trimmed) {
+        const bar = _bars[ev.i];
+        if (!bar) continue;
+        const tag = ev.type === 'buy' ? tagBuy : tagSell;
+        const verb = ev.type === 'buy' ? 'Buy' : 'Sell';
+        out.push({
+          bar, i: ev.i, type: ev.type, indicator: ind, tag,
+          tooltip: `${verb} signal — ${ind} @ ${bar.ts}`,
+        });
+      }
+    }
+
+    // EMA cross — only when BOTH ema20 and ema50 are selected (golden/death cross is a pair).
+    if (_overlays.includes('ema20') && _overlays.includes('ema50') && _bars.length >= 50) {
+      const fast = calcEma(_bars, 20).map(p => p.value);
+      const slow = calcEma(_bars, 50).map(p => p.value);
+      pushSignals(emaSignals(fast, slow), 'EMA cross', 'EMA↑', 'EMA↓');
+    }
+
+    // VWAP cross — needs volume; skip indices (volume=0 → vwap all-null).
+    if (_overlays.includes('vwap') && _bars.length >= 2) {
+      const v = calcVwap(_bars).map(p => p.value);
+      pushSignals(vwapSignals(_bars, v), 'VWAP', 'VWAP↑', 'VWAP↓');
+    }
+
+    // Bollinger pierce — close touches lower/upper.
+    if (_overlays.includes('bb') && _bars.length >= 20) {
+      const bb = calcBollinger(_bars, 20, 2);
+      pushSignals(bollingerSignals(_bars, bb), 'BB pierce', 'BB↓', 'BB↑');
+    }
+
+    // RSI 14 — 30/70 crossover.
+    if (_overlays.includes('rsi') && _bars.length >= 15) {
+      const r = calcRsi(_bars, 14).map(p => p.value);
+      pushSignals(rsiSignals(r), 'RSI 14', 'RSI↑', 'RSI↓');
+    }
+
+    // MACD line cross signal line.
+    if (_overlays.includes('macd') && _bars.length >= 27) {
+      const series = calcMacd(_bars, 12, 26, 9);
+      pushSignals(macdSignals(series, series), 'MACD', 'MACD↑', 'MACD↓');
+    }
+
+    return out;
+  });
+
+  /**
+   * Layout-ready markers: x/y coords + stack offset for ties.
+   * Same-bar markers stacked vertically so they don't overlap. Buy
+   * triangles sit BELOW the bar's low; sell triangles sit ABOVE the
+   * bar's high.
+   */
+  const _signalLayout = $derived.by(() => {
+    if (!_signalMarkers.length) return [];
+    // Group by bar index so we can stack within a single x.
+    /** @type {Map<number, Array<typeof _signalMarkers[number]>>} */
+    const byBar = new Map();
+    for (const m of _signalMarkers) {
+      const arr = byBar.get(m.i) ?? [];
+      arr.push(m);
+      byBar.set(m.i, arr);
+    }
+    /** @type {Array<{x:number,y:number,type:'buy'|'sell',indicator:string,tag:string,tooltip:string,stack:number}>} */
+    const out = [];
+    const STACK_PX = 16;
+    const PAD_PX   = 8;     // gap between bar high/low and marker tip
+    for (const [i, arr] of byBar) {
+      const bar = _bars[i];
+      if (!bar) continue;
+      const t = Date.parse(bar.ts);
+      if (!Number.isFinite(t)) continue;
+      const x = _xOf(t);
+      const yHigh = _yOf(Number(bar.high));
+      const yLow  = _yOf(Number(bar.low));
+      // Split into buys (below) and sells (above) for stacking.
+      const buys = arr.filter(m => m.type === 'buy');
+      const sells = arr.filter(m => m.type === 'sell');
+      buys.forEach((m, idx) => {
+        out.push({ x, y: yLow + PAD_PX + idx * STACK_PX,
+          type: 'buy', indicator: m.indicator, tag: m.tag, tooltip: m.tooltip, stack: idx });
+      });
+      sells.forEach((m, idx) => {
+        out.push({ x, y: yHigh - PAD_PX - idx * STACK_PX,
+          type: 'sell', indicator: m.indicator, tag: m.tag, tooltip: m.tooltip, stack: idx });
+      });
+    }
+    return out;
+  });
+
   // ── Grid + axis labels ────────────────────────────────────────────
   const _yTicks = $derived.by(() => {
     if (!_bars.length) return [];
@@ -1371,6 +1517,16 @@
     } catch (_) { /* localStorage unavailable — proceed with empty */ }
     _overlaysHydrated = true;
 
+    // Hydrate signals toggle — operator may have turned markers off.
+    try {
+      const raw = localStorage.getItem(_SIGNALS_LS_KEY);
+      if (raw !== null) {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed === 'boolean') _signalsOn = parsed;
+      }
+    } catch (_) { /* localStorage unavailable — keep default ON */ }
+    _signalsHydrated = true;
+
     // Hydrate series-type choice from localStorage. First visit (key
     // absent) keeps the candle default initialized above. Only accept
     // known values to defend against legacy / hand-edited keys.
@@ -1600,6 +1756,22 @@
         placeholder="Indicators"
         ariaLabel="Chart indicators" />
     </div>
+
+    <!-- Signals toggle — surface buy/sell triangles for active indicators.
+         Hidden when no indicator is selected (nothing to signal). Operator:
+         "show buy point or sell point based on each indicator when indicator
+         is selected on the price chart". -->
+    {#if _overlays.length}
+      <button type="button"
+        class="cw-range-btn cw-signals-btn"
+        class:active={_signalsOn}
+        disabled={_histLoading}
+        title={_signalsOn ? 'Buy/sell signal markers ON — click to hide' : 'Buy/sell signal markers OFF — click to show'}
+        aria-pressed={_signalsOn}
+        onclick={() => _signalsOn = !_signalsOn}>
+        <span class="cw-signals-full">Signals</span><span class="cw-signals-short">Sig</span>
+      </button>
+    {/if}
 
     <!-- Reset zoom action button — trailing edge, only when zoomed -->
     {#if isZoomed}
@@ -1936,6 +2108,35 @@
           </text>
         {/if}
 
+        <!-- Buy/sell signal markers — TradingView-style triangles + indicator tag.
+             Green up-arrow below the bar's low for buys; red down-arrow above the
+             bar's high for sells. Stacked vertically when multiple indicators
+             fire on the same bar. Signal-detection lives in indicators.js. -->
+        {#each _signalLayout as sig}
+          <g class="signal-marker signal-{sig.type}">
+            <title>{sig.tooltip}</title>
+            {#if sig.type === 'buy'}
+              <!-- Up-pointing triangle anchored at (x, y) with tip up -->
+              <polygon points="{sig.x},{sig.y} {sig.x - 5},{sig.y + 8} {sig.x + 5},{sig.y + 8}"
+                       fill="#4ade80" stroke="#0a0a0a" stroke-width="0.5"/>
+              <text x={sig.x} y={sig.y + 19}
+                    text-anchor="middle"
+                    font-size="9" font-weight="700"
+                    fill="#4ade80" font-family="monospace"
+                    class="signal-tag">{sig.tag}</text>
+            {:else}
+              <!-- Down-pointing triangle anchored at (x, y) with tip down -->
+              <polygon points="{sig.x},{sig.y} {sig.x - 5},{sig.y - 8} {sig.x + 5},{sig.y - 8}"
+                       fill="#f87171" stroke="#0a0a0a" stroke-width="0.5"/>
+              <text x={sig.x} y={sig.y - 11}
+                    text-anchor="middle"
+                    font-size="9" font-weight="700"
+                    fill="#f87171" font-family="monospace"
+                    class="signal-tag">{sig.tag}</text>
+            {/if}
+          </g>
+        {/each}
+
         <!-- Hover crosshair — vertical line + dot only; OHLCV text is in the HTML popup -->
         {#if _chartHover && !pan}
           <line x1={_chartHover.x} x2={_chartHover.x} y1={CPAD_T} y2={CPAD_T + _innerH}
@@ -2260,6 +2461,38 @@
     background: var(--algo-cyan-bg);
     border-color: var(--algo-cyan-border);
     color: var(--algo-cyan);
+  }
+  /* Signals toggle — same chip shape as intraday button.
+     Active state surfaces buy/sell markers on the chart. */
+  .cw-signals-btn {
+    border: 1px solid var(--algo-cyan-border-soft);
+    border-radius: 4px;
+    flex-shrink: 0;
+  }
+  .cw-signals-btn.active {
+    background: var(--algo-cyan-bg);
+    border-color: var(--algo-cyan-border);
+    color: var(--algo-cyan);
+  }
+
+  /* ── Buy/sell signal markers ──────────────────────────────────
+     Triangles + tag labels rendered on the price panel. The
+     `pointer-events: bounding-box` lets the <title> tooltip fire
+     when the operator hovers anywhere over the marker glyph or its
+     tag (without intercepting the click-to-pin behaviour, which
+     fires on the SVG itself).  Green = BUY (emerald-400), red =
+     SELL (red-400) per CLAUDE.md algo palette. */
+  :global(.signal-marker) {
+    pointer-events: bounding-box;
+    cursor: help;
+  }
+  :global(.signal-marker .signal-tag) {
+    user-select: none;
+    pointer-events: none;
+    paint-order: stroke fill;
+    stroke: rgba(10, 14, 20, 0.85);
+    stroke-width: 2.5px;
+    stroke-linejoin: round;
   }
 
   /* ── Toolbar Select wrappers ─────────────────────────────── */
@@ -2785,6 +3018,15 @@
     }
     .cw-intraday-full { display: none; }
     .cw-intraday-short { display: inline; }
+    .cw-signals-full { display: none; }
+    .cw-signals-short { display: inline; }
+
+    /* Signals button — tighter horizontal padding; show short label. */
+    .cw-signals-btn {
+      padding: 0 0.32rem;
+      font-size: 0.58rem;
+      flex-shrink: 0;
+    }
 
     /* Range pills — squeeze horizontal padding; height stays on SSOT var. */
     .cw-range-btn {
@@ -2820,4 +3062,6 @@
   /* Default (≥521px): "Intraday" full label, short label hidden */
   .cw-intraday-full  { display: inline; }
   .cw-intraday-short { display: none; }
+  .cw-signals-full   { display: inline; }
+  .cw-signals-short  { display: none; }
 </style>
