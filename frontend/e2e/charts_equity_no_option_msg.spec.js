@@ -9,10 +9,9 @@
  *                  RELIANCE, TCS, HDFCBANK, NIFTY 50 (all non-options).
  *  2. Performance — cold-load XHR budget ≤ 25 requests.
  *  3. Stale code  — ChartWorkspace.svelte must NOT contain "Equity — no Greeks"
- *                   or similar placeholder text as a rendered string.
+ *                   as a rendered placeholder string.
  *  4. Reusable    — symbol-kind detection in ChartWorkspace uses `_isOption`
- *                   derived from `/(?:CE|PE)$/i` (canonical pattern), not a new
- *                   ad-hoc regex.
+ *                   derived from `/(?:CE|PE)$/i` (canonical pattern).
  *  5. UX          — chart renders cleanly: `.cw-range-group` is visible and
  *                   `.cw-greeks-strip` is absent for equity symbols.
  *
@@ -52,29 +51,35 @@ test.describe('/charts — equity symbols show no option-only sections', () => {
   let _session = {};
 
   test.beforeAll(async ({ browser }) => {
-    const page = await browser.newPage();
-    page.setDefaultTimeout(30_000);
-    const result = await loginAsAdmin(page, {});
-    _session = result ?? {};
-    await page.close();
+    // 60s: login retries (0s + 3s + 8s backoff) need room for rate-limit recovery.
+    test.setTimeout(60_000);
+    const ctx = await browser.newContext({ baseURL: BASE });
+    const setupPage = await ctx.newPage();
+    await loginAsAdmin(setupPage);
+    // Read sessionStorage keys directly — loginAsAdmin return value gives
+    // {user_id, token} but injectSession needs the actual sessionStorage map.
+    _session = await setupPage.evaluate(() => {
+      /** @type {Record<string, string>} */
+      const out = {};
+      for (const k of ['ramboq_token', 'ramboq_user']) {
+        const v = sessionStorage.getItem(k);
+        if (v) out[k] = v;
+      }
+      return out;
+    });
+    await setupPage.close();
+    await ctx.close();
   });
 
-  // Helper: open /charts for a symbol, wait for range group, return page.
-  async function openChart(browser, symbol) {
-    const page = await browser.newPage();
-    page.setDefaultTimeout(30_000);
-    await injectSession(page, _session);
-    const url = `${BASE}/charts?symbol=${encodeURIComponent(symbol)}&mode=live`;
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
-    // Wait for the range-group pill strip — confirms chart workspace mounted.
-    await expect(page.locator('.cw-range-group')).toBeVisible({ timeout: 20_000 });
-    return page;
-  }
-
-  // ── 1. SSOT: no option-only noise for equity symbols ──────────────────────
+  // ── 1. SSOT: no option-only noise for equity / index symbols ──────────────
   for (const symbol of ['RELIANCE', 'TCS', 'HDFCBANK', 'NIFTY 50']) {
-    test(`SSOT — "${symbol}" has no option-only text or Greeks strip`, async ({ browser }) => {
-      const page = await openChart(browser, symbol);
+    test(`SSOT — "${symbol}" has no option-only text or Greeks strip`, async ({ page }) => {
+      test.setTimeout(45_000);
+      await injectSession(page, _session);
+      const url = `${BASE}/charts?symbol=${encodeURIComponent(symbol)}&mode=live`;
+      await page.goto(url, { waitUntil: 'domcontentloaded' });
+      // Wait for chart workspace to mount (range pill strip confirms it).
+      await expect(page.locator('.cw-range-group')).toBeVisible({ timeout: 25_000 });
 
       // No text matching "not an option" pattern anywhere on the page.
       await expect(page.locator('text=/not an option/i')).toHaveCount(0);
@@ -84,18 +89,17 @@ test.describe('/charts — equity symbols show no option-only sections', () => {
 
       // Greeks strip div must be absent for non-option symbols.
       await expect(page.locator('.cw-greeks-strip')).toHaveCount(0);
-
-      await page.close();
     });
   }
 
   // ── 2. Performance: cold-load XHR budget ≤ 25 ────────────────────────────
   test('Performance — cold-load XHR count ≤ 25 for RELIANCE', async ({ browser }) => {
-    const page = await browser.newPage();
-    page.setDefaultTimeout(30_000);
+    test.setTimeout(45_000);
+    const ctx = await browser.newContext({ baseURL: BASE });
+    const page = await ctx.newPage();
     await injectSession(page, _session);
 
-    const xhrRequests = [];
+    const xhrRequests = /** @type {string[]} */ ([]);
     page.on('request', (req) => {
       if (req.resourceType() === 'xhr' || req.resourceType() === 'fetch') {
         xhrRequests.push(req.url());
@@ -105,13 +109,12 @@ test.describe('/charts — equity symbols show no option-only sections', () => {
     await page.goto(`${BASE}/charts?symbol=RELIANCE&mode=live`, {
       waitUntil: 'domcontentloaded',
     });
-    await expect(page.locator('.cw-range-group')).toBeVisible({ timeout: 20_000 });
-
+    await expect(page.locator('.cw-range-group')).toBeVisible({ timeout: 25_000 });
     // Brief pause to let deferred fetches settle.
     await page.waitForTimeout(2_000);
 
     expect(xhrRequests.length).toBeLessThanOrEqual(25);
-    await page.close();
+    await ctx.close();
   });
 
   // ── 3. Stale code: source-file grep ──────────────────────────────────────
@@ -134,41 +137,37 @@ test.describe('/charts — equity symbols show no option-only sections', () => {
 
   // ── 4. Reusable: option path still works for a known option symbol ────────
   test('Reusable — Greeks strip IS rendered for an option symbol (NIFTY CE)', async ({
-    browser,
+    page,
   }) => {
-    // Use a generic pattern; a real option tradingsymbol ends in CE or PE.
-    // We navigate and check the strip is present. The exact symbol doesn't
-    // matter — the key is that the {#if _isOption} gate is correctly true.
-    const page = await browser.newPage();
-    page.setDefaultTimeout(30_000);
+    test.setTimeout(45_000);
     await injectSession(page, _session);
 
-    // NIFTYBEES is NOT an option. Use a real F&O style symbol name:
-    // NIFTY2560010000CE is a plausible option tradingsymbol.
-    // In test, we only verify the gate logic by checking that a symbol
-    // ending in CE causes the greeks strip to appear (or at least that
-    // the page renders without crashing — Greeks API may return 404 in
-    // test env but the strip container should still mount).
+    // A tradingsymbol ending in CE triggers _isOption = true.
+    // The Greeks API may return 404 in test env but the strip container
+    // must mount (it shows "Loading Greeks…" or an error, but the div
+    // must exist to confirm the {#if _isOption} gate fires correctly).
     const optionSymbol = 'NIFTY2560010000CE';
-    const url = `${BASE}/charts?symbol=${encodeURIComponent(optionSymbol)}&mode=live`;
-    await page.goto(url, { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.cw-range-group')).toBeVisible({ timeout: 20_000 });
+    await page.goto(`${BASE}/charts?symbol=${encodeURIComponent(optionSymbol)}&mode=live`, {
+      waitUntil: 'domcontentloaded',
+    });
+    await expect(page.locator('.cw-range-group')).toBeVisible({ timeout: 25_000 });
 
-    // The greeks strip container must be present for an option symbol.
-    // (It may show "Loading Greeks…" or an error, but the div must exist.)
+    // Greeks strip container must be present for an option symbol.
     await expect(page.locator('.cw-greeks-strip')).toBeVisible({ timeout: 10_000 });
-
-    await page.close();
   });
 
   // ── 5. UX: equity chart renders cleanly, no orphan whitespace ────────────
-  test('UX — RELIANCE chart renders cleanly with range group, no Greeks strip gap', async ({
-    browser,
+  test('UX — RELIANCE chart renders cleanly with range group, no Greeks strip', async ({
+    page,
   }) => {
-    const page = await openChart(browser, 'RELIANCE');
+    test.setTimeout(45_000);
+    await injectSession(page, _session);
+    await page.goto(`${BASE}/charts?symbol=RELIANCE&mode=live`, {
+      waitUntil: 'domcontentloaded',
+    });
 
     // Range group (the 1D/1W/1M/3M/6M/1Y pill row) must be visible.
-    await expect(page.locator('.cw-range-group')).toBeVisible();
+    await expect(page.locator('.cw-range-group')).toBeVisible({ timeout: 25_000 });
 
     // Greeks strip must be absent — no invisible spacer div either.
     const greeksCount = await page.locator('.cw-greeks-strip').count();
@@ -176,7 +175,5 @@ test.describe('/charts — equity symbols show no option-only sections', () => {
 
     // The chart root must still be visible (no layout collapse).
     await expect(page.locator('.cw-root')).toBeVisible();
-
-    await page.close();
   });
 });
