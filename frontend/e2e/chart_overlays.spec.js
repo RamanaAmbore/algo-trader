@@ -404,4 +404,285 @@ test.describe('chart overlays — all viewports', () => {
     expect(parsed).toContain('ema20');
     expect(parsed).toContain('vwap');
   });
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // Sub-slice: multi-select UI, hide-inactive, 1Y regression, candle default,
+  // line/symbol left-alignment. Each operator request gets its own test so a
+  // regression on any one item is localised in the failure report.
+  // ────────────────────────────────────────────────────────────────────────────
+
+  // ── Multi-select Indicators dropdown ──────────────────────────────────────
+
+  test('multi-select: Indicators dropdown opens, multiple checkboxes can be ticked, closes with selections kept', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page, _session);
+    // Clear any stored overlays so the trigger reads "Indicators" placeholder.
+    await page.addInitScript(() => {
+      localStorage.removeItem('rbq.cache.chart-overlays.v1');
+      localStorage.removeItem('rbq.cache.chart-series.v1');
+    });
+    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+
+    // The Indicators trigger is the MultiSelect inside .cw-overlay-panel.
+    const trigger = page.locator('.cw-overlay-panel .rbq-multi-trigger');
+    await expect(trigger).toBeVisible({ timeout: 10_000 });
+
+    // Trigger label should read "Indicators" when nothing is picked.
+    const labelText = await trigger.locator('.rbq-multi-label').innerText();
+    expect(
+      labelText.trim(),
+      'Trigger placeholder should read "Indicators" when no overlays picked',
+    ).toContain('Indicators');
+
+    // Click to open. The panel must be visible AND inside the viewport
+    // (not clipped by the parent's overflow). z-index must lift it above
+    // the chart SVG (path elements paint below the dropdown).
+    await trigger.click();
+    const panel = page.locator('.cw-overlay-panel .rbq-multi-panel');
+    await expect(panel).toBeVisible({ timeout: 3_000 });
+
+    // Click two distinct overlay options. mousedown (not click) per the
+    // MultiSelect component's onmousedown handler — pointer events must
+    // reach the <li> elements (overflow:hidden on .cw-root would block
+    // this; we changed it to overflow:visible to make this work).
+    const opt20 = panel.locator('.rbq-multi-option').filter({ hasText: 'EMA 20' });
+    const optVwap = panel.locator('.rbq-multi-option').filter({ hasText: 'VWAP' });
+    await opt20.dispatchEvent('mousedown');
+    await optVwap.dispatchEvent('mousedown');
+
+    // Both options should show the green check mark.
+    await expect(opt20).toHaveClass(/rbq-multi-option-selected/, { timeout: 2_000 });
+    await expect(optVwap).toHaveClass(/rbq-multi-option-selected/, { timeout: 2_000 });
+
+    // Close by clicking outside (the cw-root background). Selections
+    // persist — re-opening shows them still ticked.
+    await page.locator('.cw-info-strip').click({ position: { x: 5, y: 5 } });
+    await expect(panel).not.toBeVisible({ timeout: 2_000 });
+
+    await trigger.click();
+    await expect(panel).toBeVisible({ timeout: 3_000 });
+    await expect(opt20).toHaveClass(/rbq-multi-option-selected/);
+    await expect(optVwap).toHaveClass(/rbq-multi-option-selected/);
+
+    // localStorage should hold both keys.
+    const stored = await page.evaluate(() =>
+      localStorage.getItem('rbq.cache.chart-overlays.v1'),
+    );
+    expect(stored, 'overlay selections written to localStorage').toBeTruthy();
+    const parsed = JSON.parse(stored);
+    expect(parsed).toContain('ema20');
+    expect(parsed).toContain('vwap');
+  });
+
+  // ── Hide inactive overlays — DOM removal on uncheck ────────────────────────
+
+  test('hide inactive: unchecking an overlay removes its <path class="overlay-X"> from the DOM', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page, _session);
+    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+
+    // Start with EMA20 enabled — path is present.
+    await setOverlaysViaStorage(page, ['ema20']);
+    const emaPath = page.locator('.cw-svg path.overlay-ema');
+    await expect(emaPath).toHaveCount(1, { timeout: 5_000 });
+
+    // Toggle EMA20 off via storage — reload to apply.
+    await page.evaluate(() => {
+      localStorage.setItem('rbq.cache.chart-overlays.v1', JSON.stringify([]));
+    });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+    await page.waitForTimeout(500);
+    // After uncheck the <path class="overlay-ema"> must be gone from DOM
+    // (not just rendered with empty `d`). Operator: "$derived doesn't
+    // stale-cache" — the SVG gating now reads _overlays.includes(...).
+    await expect(emaPath).toHaveCount(0, { timeout: 3_000 });
+
+    // Same test via UI interaction — toggle on, then off, count must
+    // transition 0 → 1 → 0 in the same session.
+    const trigger = page.locator('.cw-overlay-panel .rbq-multi-trigger');
+    await trigger.click();
+    const opt20 = page.locator('.cw-overlay-panel .rbq-multi-panel .rbq-multi-option')
+      .filter({ hasText: 'EMA 20' });
+    await opt20.dispatchEvent('mousedown');
+    await page.waitForTimeout(300);
+    await expect(emaPath).toHaveCount(1, { timeout: 3_000 });
+    // Tick OFF — same option dispatch toggles
+    await opt20.dispatchEvent('mousedown');
+    await page.waitForTimeout(300);
+    await expect(emaPath).toHaveCount(0, { timeout: 3_000 });
+  });
+
+  // ── 1Y regression — partial-range fetch returns > 150 bars ────────────────
+
+  test('1Y regression: clicking 1Y returns > 150 bars from /api/options/historical', async ({ page }) => {
+    test.setTimeout(90_000);
+    await injectSession(page, _session);
+    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+
+    // Capture the 1Y historical response.
+    const histPromise = page.waitForResponse(
+      (r) => {
+        const u = r.url();
+        return u.includes('/api/options/historical') && /days=365/.test(u);
+      },
+      { timeout: 40_000 },
+    ).catch(() => null);
+
+    const btn1Y = page.locator('.cw-range-group .cw-range-btn', { hasText: '1Y' });
+    await expect(btn1Y).toBeVisible({ timeout: 10_000 });
+    await btn1Y.click();
+
+    const resp = await histPromise;
+    expect(resp, '/api/options/historical?days=365 was not requested').not.toBeNull();
+    expect(resp.status(), '1Y response status').toBe(200);
+
+    const body = await resp.json().catch(() => null);
+    expect(body, '1Y response body parseable').toBeTruthy();
+    const bars = Array.isArray(body.bars) ? body.bars : [];
+    expect(
+      bars.length,
+      `Expected > 150 bars for 1Y range, got ${bars.length}. Partial-range fetch ` +
+      `regression (commit f8825b54 / a34936fd) — likely cause: head/tail slice merge ` +
+      `dropped bars, or the resolver mapped NIFTY 50 to a recently-listed contract.`,
+    ).toBeGreaterThan(150);
+  });
+
+  // ── Default candle series + persistence ───────────────────────────────────
+
+  test('default series: first visit (no localStorage) defaults to candle', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page, _session);
+    // Clear series key BEFORE navigation so onMount sees no stored value.
+    await page.addInitScript(() => {
+      localStorage.removeItem('rbq.cache.chart-series.v1');
+    });
+    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+    await page.waitForTimeout(500);
+
+    // Chart-type Select trigger shows the active label. On first visit
+    // (no stored key) the label must read "Candle".
+    const typeTrigger = page.locator('.cw-type-chart-wrap .rbq-select-trigger');
+    await expect(typeTrigger).toBeVisible({ timeout: 5_000 });
+    const label = await typeTrigger.innerText();
+    expect(
+      label.trim(),
+      `Default series should be "Candle" on first visit. Got: "${label.trim()}"`,
+    ).toContain('Candle');
+
+    // localStorage should now hold "candle" (the $effect writes it).
+    await page.waitForTimeout(300);
+    const stored = await page.evaluate(() =>
+      localStorage.getItem('rbq.cache.chart-series.v1'),
+    );
+    expect(stored, 'series-type written to localStorage on first render').toBeTruthy();
+    expect(JSON.parse(stored)).toBe('candle');
+  });
+
+  test('series persistence: operator pick survives reload', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page, _session);
+    // Seed "line" as the operator's prior choice.
+    await page.addInitScript(() => {
+      localStorage.setItem('rbq.cache.chart-series.v1', JSON.stringify('line'));
+    });
+    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+    await page.waitForTimeout(500);
+
+    const typeTrigger = page.locator('.cw-type-chart-wrap .rbq-select-trigger');
+    const label = await typeTrigger.innerText();
+    expect(
+      label.trim(),
+      'Stored "line" should hydrate on mount, overriding the candle default',
+    ).toContain('Line');
+  });
+
+  // ── Line-type + symbol left-alignment (desktop only) ──────────────────────
+
+  test('alignment: line-type picker sits flush-left with symbol picker on desktop', async ({ page, viewport }) => {
+    test.setTimeout(60_000);
+    // Only meaningful on a wide viewport — mobile stacks the row in a
+    // different layout (chart-type wraps under the symbol search).
+    if (!viewport || viewport.width < 1000) {
+      test.skip(true, 'desktop-only alignment test');
+      return;
+    }
+    await injectSession(page, _session);
+    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+    await page.waitForTimeout(400);
+
+    // Find the bounding boxes of the symbol picker (SymbolSearchInput
+    // wrapper) and the chart-type select trigger.
+    const symBox  = await page.locator('.cw-picker .ssi-wrap').boundingBox();
+    const typeBox = await page.locator('.cw-type-chart-wrap .rbq-select-trigger').boundingBox();
+    expect(symBox, 'symbol picker box').not.toBeNull();
+    expect(typeBox, 'chart-type box').not.toBeNull();
+
+    // Chart-type should sit to the RIGHT of the symbol picker (flush-left
+    // cluster, not pushed to the trailing edge). The gap between symbol
+    // right and chart-type left must be small — < 60 px.
+    const gap = typeBox.x - (symBox.x + symBox.width);
+    expect(
+      gap,
+      `Chart-type picker should be flush with symbol picker. Gap=${gap}px (expect <60 px).`,
+    ).toBeLessThan(60);
+    expect(
+      gap,
+      `Chart-type picker should be to the right of symbol picker. Gap=${gap}px (expect ≥0).`,
+    ).toBeGreaterThanOrEqual(0);
+  });
+
+  // ── Fluid width + no-overlap loop at 360 / 768 / 1280 (5-dimension UX) ────
+  //
+  // feedback_frontend_change_loop.md: every frontend change ships with a
+  // fluid-width + no-overlap assertion across the three canonical widths.
+  // We resize the page and assert (a) no horizontal scroll on the page
+  // root, and (b) no bounding-box overlap between the picker row's main
+  // controls (symbol + chart-type) and the controls row (indicators
+  // dropdown trigger).
+
+  for (const W of [360, 768, 1280]) {
+    test(`fluid + no-overlap @ ${W}px wide — controls fit and do not overlap`, async ({ page }) => {
+      test.setTimeout(60_000);
+      await injectSession(page, _session);
+      await page.setViewportSize({ width: W, height: 800 });
+      await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+      await waitForChart(page);
+      await page.waitForTimeout(400);
+
+      // (a) Picker + controls row must not generate horizontal scroll.
+      const pickerOverflow = await page.locator('.cw-picker').evaluate(
+        (el) => el.scrollWidth > el.clientWidth + 2,
+      );
+      expect(pickerOverflow, `picker row overflows at ${W}px`).toBe(false);
+      const controlsOverflow = await page.locator('.cw-controls').evaluate(
+        (el) => el.scrollWidth > el.clientWidth + 2,
+      );
+      expect(controlsOverflow, `controls row overflows at ${W}px`).toBe(false);
+
+      // (b) Page root must not produce a horizontal scrollbar.
+      const docOverflow = await page.evaluate(
+        () => document.documentElement.scrollWidth > document.documentElement.clientWidth + 2,
+      );
+      expect(docOverflow, `document overflows at ${W}px`).toBe(false);
+
+      // (c) No overlap: symbol picker bbox and chart-type bbox must NOT
+      // intersect (they may sit on different visual rows on mobile but
+      // their bboxes still shouldn't share pixels).
+      const symBox  = await page.locator('.cw-picker .ssi-wrap').boundingBox();
+      const typeBox = await page.locator('.cw-type-chart-wrap .rbq-select-trigger').boundingBox();
+      if (symBox && typeBox) {
+        const xOverlap = symBox.x < typeBox.x + typeBox.width && typeBox.x < symBox.x + symBox.width;
+        const yOverlap = symBox.y < typeBox.y + typeBox.height && typeBox.y < symBox.y + symBox.height;
+        const overlapping = xOverlap && yOverlap;
+        expect(overlapping, `symbol picker and chart-type overlap @ ${W}px`).toBe(false);
+      }
+    });
+  }
 });

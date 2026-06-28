@@ -335,7 +335,22 @@
   let _histError   = $state('');
   let _chartLoaded = $state(false);
   let _chartDays   = $state(30);
-  let _chartType   = $state(/** @type {'line'|'area'|'candle'|'plot'} */('line'));
+  // Default to candle on first visit; persisted to localStorage so the
+  // operator's choice is remembered. Hydrated in onMount (SSR-safe), so
+  // the initial value here is the canonical default (not a fallback).
+  const _SERIES_LS_KEY = 'rbq.cache.chart-series.v1';
+  let _chartType   = $state(/** @type {'line'|'area'|'candle'|'plot'} */('candle'));
+  let _seriesHydrated = false;
+  // Persist series-type choice whenever it changes (after hydration).
+  $effect(() => {
+    if (!_seriesHydrated) return;
+    const snap = _chartType;
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(_SERIES_LS_KEY, JSON.stringify(snap));
+      }
+    } catch (_) { /* quota — skip silently */ }
+  });
   // Overlays MultiSelect — drives derived booleans below. Volume
   // is no longer in this list (always-on via _showVol const below).
   // Persisted to localStorage so toggles survive reload.
@@ -1256,6 +1271,21 @@
     } catch (_) { /* localStorage unavailable — proceed with empty */ }
     _overlaysHydrated = true;
 
+    // Hydrate series-type choice from localStorage. First visit (key
+    // absent) keeps the candle default initialized above. Only accept
+    // known values to defend against legacy / hand-edited keys.
+    try {
+      const raw = localStorage.getItem(_SERIES_LS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        const known = new Set(_CHART_TYPE_OPTS.map((o) => o.value));
+        if (typeof parsed === 'string' && known.has(parsed)) {
+          _chartType = /** @type {'line'|'area'|'candle'|'plot'} */ (parsed);
+        }
+      }
+    } catch (_) { /* localStorage unavailable — keep default */ }
+    _seriesHydrated = true;
+
     await loadInstruments().catch(() => {});
     // Pin hydration runs in the background — don't block the historical
     // load. Operator can use DEFAULT_PINS immediately; the full list
@@ -1448,17 +1478,21 @@
          and page"). _overlays['vol'] is hard-coded ON in the
          state init so the bars render unconditionally. -->
 
-    <!-- Overlays — moved here from floating top-right of chart so it
-         lives in the controls row after 1Y (operator: "shift overlay
-         to 2nd row after 1Y"). -->
-    <div class="cw-overlay-panel" role="region" aria-label="Chart overlays">
+    <!-- Indicators dropdown — single MultiSelect control, TradingView-style.
+         Operator: "Convert the current row-2 overlay-toggle strip into a
+         single multi-select control" and "one button opens a list of
+         checkboxes, multiple can be active". The MultiSelect is the
+         canonical pattern (matches AccountMultiSelect / WatchlistMultiSelect).
+         Placeholder reads "Indicators" so the trigger label is self-describing
+         when nothing is picked. -->
+    <div class="cw-overlay-panel" role="region" aria-label="Chart indicators">
       <MultiSelect
         options={_OVERLAY_OPTS}
         bind:value={_overlays}
         bind:open={_overlayOpen}
         disabled={_histLoading}
-        placeholder="Overlays"
-        ariaLabel="Overlays" />
+        placeholder="Indicators"
+        ariaLabel="Chart indicators" />
     </div>
 
     <!-- Reset zoom action button — trailing edge, only when zoomed -->
@@ -1623,14 +1657,17 @@
                 stroke="#7dd3fc" stroke-width="1.2" stroke-dasharray="4 3" stroke-opacity="0.65"/>
         {/if}
 
-        <!-- Bollinger Bands fill (drawn before lines so lines appear on top) -->
-        {#if _showBb && _bbPaths.fill}
-          <path class="overlay-bb" d={_bbPaths.fill} fill="rgba(125,211,252,0.06)" stroke="none"/>
+        <!-- Bollinger Bands fill (drawn before lines so lines appear on top).
+             Gated on the overlays array (not just the derived boolean) to
+             match the SMA/EMA/VWAP pattern — guarantees DOM removal on
+             uncheck even if the $derived bbPaths re-evaluation lags. -->
+        {#if _overlays.includes('bb') && _bbPaths.fill}
+          <path class="overlay-bb overlay-bb-fill" d={_bbPaths.fill} fill="rgba(125,211,252,0.06)" stroke="none"/>
         {/if}
-        {#if _showBb && _bbPaths.upper}
-          <path class="overlay-bb" d={_bbPaths.upper} fill="none" stroke="#7dd3fc" stroke-width="1" stroke-dasharray="3 2"/>
-          <path class="overlay-bb" d={_bbPaths.lower} fill="none" stroke="#7dd3fc" stroke-width="1" stroke-dasharray="3 2"/>
-          <path class="overlay-bb" d={_bbPaths.mid}   fill="none" stroke="#7dd3fc" stroke-width="1"/>
+        {#if _overlays.includes('bb') && _bbPaths.upper}
+          <path class="overlay-bb overlay-bb-upper" d={_bbPaths.upper} fill="none" stroke="#7dd3fc" stroke-width="1" stroke-dasharray="3 2"/>
+          <path class="overlay-bb overlay-bb-lower" d={_bbPaths.lower} fill="none" stroke="#7dd3fc" stroke-width="1" stroke-dasharray="3 2"/>
+          <path class="overlay-bb overlay-bb-mid"   d={_bbPaths.mid}   fill="none" stroke="#7dd3fc" stroke-width="1"/>
         {/if}
 
         <!-- Price layer — line / area / candle / plot -->
@@ -1654,34 +1691,41 @@
                 stroke-linejoin="round" stroke-linecap="round"/>
         {/if}
 
-        <!-- SMA overlays -->
-        {#if _sma20Path}
-          <path class="overlay-sma" d={_sma20Path} fill="none" stroke="#7dd3fc" stroke-width="1.4"
+        <!-- SMA overlays — gate on _overlays array directly so toggle-off
+             removes the <path> from the DOM in the same tick. Operator
+             reported the old gate (`{#if _sma20Path}`) left stale paths
+             rendered after uncheck — `$derived` paths can hold prior
+             content for a tick if the path-builder depends on bar data
+             that hasn't changed. -->
+        {#if _overlays.includes('sma20') && _sma20Path}
+          <path class="overlay-sma overlay-sma20" d={_sma20Path} fill="none" stroke="#7dd3fc" stroke-width="1.4"
                 stroke-dasharray="4 3" stroke-linejoin="round" stroke-linecap="round"/>
         {/if}
-        {#if _sma50Path}
-          <path class="overlay-sma" d={_sma50Path} fill="none" stroke="#c084fc" stroke-width="1.4"
+        {#if _overlays.includes('sma50') && _sma50Path}
+          <path class="overlay-sma overlay-sma50" d={_sma50Path} fill="none" stroke="#c084fc" stroke-width="1.4"
                 stroke-dasharray="6 3" stroke-linejoin="round" stroke-linecap="round"/>
         {/if}
 
-        <!-- EMA overlays -->
-        {#if _ema20Path}
-          <path class="overlay-ema" d={_ema20Path} fill="none" stroke="#4ade80" stroke-width="1"
+        <!-- EMA overlays — same gating pattern as SMA -->
+        {#if _overlays.includes('ema20') && _ema20Path}
+          <path class="overlay-ema overlay-ema20" d={_ema20Path} fill="none" stroke="#4ade80" stroke-width="1"
                 stroke-dasharray="4 3" stroke-linejoin="round" stroke-linecap="round"/>
         {/if}
-        {#if _ema50Path}
-          <path class="overlay-ema" d={_ema50Path} fill="none" stroke="#fb923c" stroke-width="1"
+        {#if _overlays.includes('ema50') && _ema50Path}
+          <path class="overlay-ema overlay-ema50" d={_ema50Path} fill="none" stroke="#fb923c" stroke-width="1"
                 stroke-dasharray="6 3" stroke-linejoin="round" stroke-linecap="round"/>
         {/if}
 
         <!-- VWAP overlay — solid cyan line on the price panel -->
-        {#if _vwapPath}
+        {#if _overlays.includes('vwap') && _vwapPath}
           <path class="overlay-vwap" d={_vwapPath} fill="none" stroke="#7dd3fc"
                 stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/>
         {/if}
 
-        <!-- RSI 14 sub-panel -->
-        {#if _showRsi && _rsiSeries.length}
+        <!-- RSI 14 sub-panel — gate on overlays array directly so
+             the entire panel (background tint, threshold lines, label,
+             path) is removed from DOM on toggle off. -->
+        {#if _overlays.includes('rsi') && _rsiSeries.length}
           {@const rsiTop = _chartH - CPAD_B - RSI_H}
           {@const rsiBot = _chartH - CPAD_B}
           {@const rsiYOf = (/** @type {number} */ val) => rsiTop + ((100 - val) / 100) * (RSI_H - 6)}
@@ -1718,8 +1762,10 @@
           </text>
         {/if}
 
-        <!-- MACD (12/26/9) sub-panel — below RSI when both active -->
-        {#if _showMacd && _macdSeries.length}
+        <!-- MACD (12/26/9) sub-panel — below RSI when both active.
+             Gated on overlays array directly so the entire sub-panel
+             is removed from DOM on toggle off. -->
+        {#if _overlays.includes('macd') && _macdSeries.length}
           {@const macdTop = _chartH - CPAD_B - (_showRsi ? RSI_H : 0) - MACD_H}
           {@const macdBot = _chartH - CPAD_B - (_showRsi ? RSI_H : 0)}
           {@const macdPanelH = MACD_H}
@@ -1999,7 +2045,13 @@
     border: 1px solid var(--algo-amber-border-soft);
     border-radius: 6px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(251, 191, 36, 0.05) inset;
-    overflow: hidden;
+    /* overflow: visible so the Overlays MultiSelect dropdown panel
+       (position:absolute) is not clipped by the rounded card edge.
+       The chart container below has its own `overflow: hidden` so the
+       SVG content still stays inside; only the dropdown panel — which
+       is the operator's "Indicators" picker — escapes downward into
+       the chart area, matching the TradingView pattern. */
+    overflow: visible;
   }
 
   /* ── Picker bar ─────────────────────────────────────────── */
@@ -2086,10 +2138,15 @@
     min-width: 6rem;
     max-width: 9rem;
   }
-  /* Chart-type select lives in the picker row — push to trailing edge
-     with auto margin so it floats right without a spacer element. */
+  /* Chart-type select lives in the picker row, immediately to the right
+     of the symbol search — flush-left layout per the canonical card-
+     header rule (no auto-margin spacer). Operator: "line/area/candle
+     picker should sit flush-left with symbol picker on desktop".
+     Mobile sizing is overridden in the @media block below.
+     `margin-left: 0` is explicit (overriding any inherited auto) so the
+     picker row reads as one left-aligned control cluster. */
   .cw-type-chart-wrap {
-    margin-left: auto;
+    margin-left: 0;
   }
 
   /* ── Overlays panel — inline in controls row (row 2, after 1Y) ── */
@@ -2121,11 +2178,15 @@
     outline: none;
     border: 0;
   }
-  /* Dropdown panel — keep right-aligned so it doesn't clip viewport */
+  /* Dropdown panel — keep right-aligned so it doesn't clip viewport,
+     and lifted above the chart SVG via z-index so the checkbox list is
+     clickable when it overlaps the bars. Higher than the SVG hover
+     popup's z-index (10) so dropdown beats popup on overlap. */
   .cw-overlay-panel :global(.rbq-multi-panel) {
     left: auto;
     right: 0;
     min-width: 9rem;
+    z-index: 80;
   }
 
   /* ── Hover popup (shared by historical and intraday) ─────── */
