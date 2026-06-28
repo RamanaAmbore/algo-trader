@@ -480,11 +480,19 @@ test.describe('chart overlays — all viewports', () => {
     await expect(opt20).toHaveClass(/rbq-multi-option-selected/);
     await expect(optVwap).toHaveClass(/rbq-multi-option-selected/);
 
-    // localStorage should hold both keys.
+    // localStorage should hold both keys.  Poll up to 3 s — the persist
+    // effect runs on a microtask after the bind:value propagation, so
+    // give it a few render frames before asserting.
+    await expect.poll(
+      async () => page.evaluate(() => localStorage.getItem('rbq.cache.chart-overlays.v1')),
+      {
+        message: 'overlay selections written to localStorage',
+        timeout: 3_000,
+      },
+    ).toBeTruthy();
     const stored = await page.evaluate(() =>
       localStorage.getItem('rbq.cache.chart-overlays.v1'),
     );
-    expect(stored, 'overlay selections written to localStorage').toBeTruthy();
     const parsed = JSON.parse(stored);
     expect(parsed).toContain('ema20');
     expect(parsed).toContain('vwap');
@@ -606,14 +614,16 @@ test.describe('chart overlays — all viewports', () => {
       localStorage.setItem('rbq.cache.chart-series.v1', JSON.stringify('line'));
     });
     await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
-    await waitForChart(page);
-    await page.waitForTimeout(500);
-
+    // Only need the chart-type picker to be present (this test doesn't
+    // exercise bars).  Skip the full waitForChart() so a slow backend
+    // can't fail this hydration assertion.
     const typeTrigger = page.locator('.cw-type-chart-wrap .rbq-select-trigger');
-    const label = await typeTrigger.innerText();
-    expect(
-      label.trim(),
-      'Stored "line" should hydrate on mount, overriding the candle default',
+    await expect(typeTrigger).toBeVisible({ timeout: 20_000 });
+    // Hydration runs in onMount after the initial $state init — poll
+    // for the label to flip from "Candle" (default) to "Line" (stored).
+    await expect.poll(
+      async () => (await typeTrigger.innerText()).trim(),
+      { timeout: 5_000, message: 'Stored "line" should hydrate to label' },
     ).toContain('Line');
   });
 
