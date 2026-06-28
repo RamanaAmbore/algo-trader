@@ -294,6 +294,17 @@ PYEOF
       # changed (CONN_TOUCHED). Most backend pushes (route logic, agent
       # rules, etc.) don't touch broker auth and leave ramboq_conn warm.
       if [ "$CONN_TOUCHED" = "true" ]; then
+          # If the systemd unit file itself changed in this push, sync
+          # the installed copy + daemon-reload BEFORE restart so the
+          # new ExecStart / Environment / etc. take effect. Without
+          # this, restart re-launches with the stale unit.
+          if echo "$CHANGED" | grep -q '^webhook/ramboq_conn\.service$'; then
+              echo "[$TS] ramboq_conn.service unit changed — syncing + daemon-reload"
+              sudo cp "$APP_ROOT/webhook/ramboq_conn.service" \
+                      /etc/systemd/system/ramboq_conn.service 2>&1 || \
+                  echo "[$TS] WARN: failed to copy ramboq_conn.service unit"
+              sudo systemctl daemon-reload
+          fi
           # Conn-layer code changed — clear stale Kite tokens BEFORE
           # restart so the fresh process re-auths cleanly.
           rm -f "$APP_ROOT/.log/kite_tokens.json" 2>/dev/null || true
