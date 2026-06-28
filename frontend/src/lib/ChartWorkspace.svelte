@@ -371,19 +371,43 @@
   };
   async function _resolveFetchSymbol(/** @type {string} */ sym) {
     // Resolve any non-tradeable anchor (Kite index quote-key, MCX
-    // commodity root, CDS currency root) to its nearest-month future.
-    // Without this, "CRUDEOIL" / "GOLD" / "USDINR" hit the historical
-    // endpoint literally — the backend walks every exchange and
-    // returns empty bars (the "No data available" first-load bug).
-    // The pinned-dropdown picker already goes through this resolver
-    // via _loadPin, so a second click on the same pin renders the
-    // chart correctly — the fix is making the initial render do the
-    // same translation.
+    // commodity root, CDS currency root) to a symbol Kite's
+    // historical_data API will accept.
+    //
+    // Routing per asset class:
+    //
+    //   • Kite indices (NIFTY 50, NIFTY BANK, NIFTY MIDCAP 100, …)
+    //     → keep the literal index name + route to NSE. Kite's
+    //     historical endpoint accepts the index instrument_token
+    //     (permanent, years of data). Mapping to the front-month
+    //     future broke 1Y / 6M ranges because the future was only
+    //     listed ~30 days ago — the chart silently showed 23 bars
+    //     for what the operator expected to be 250+. Operator
+    //     caught this via the chart_1y_and_overlay Playwright spec.
+    //
+    //   • MCX commodities (CRUDEOIL, GOLD, SILVER, NATURALGAS, …)
+    //     → still map to the front-month future. MCX commodities
+    //     don't have a separate spot/index series in Kite — the
+    //     front-month future IS the de-facto reference. The 1-2
+    //     month rollover limit is intrinsic to the asset class.
+    //
+    //   • CDS currencies (USDINR, EURINR, GBPINR, JPYINR)
+    //     → also front-month future. Same reasoning as MCX.
     const upper = String(sym || '').toUpperCase();
     const indexRoot = _KITE_INDEX_TO_ROOT[upper];        // 'NIFTY 50' → 'NIFTY'
     const isMcx     = MCX_COMMODITIES.has(upper);        // 'CRUDEOIL', 'GOLD', …
     const isCds     = CDS_CURRENCIES.has(upper);         // 'USDINR'
-    const root      = indexRoot || (isMcx || isCds ? upper : null);
+
+    // Index branch — keep the spot string, route to NSE.
+    // This is the path that unlocks 1Y / 6M for NIFTY 50 / BANK
+    // NIFTY / etc. without losing the per-tick live-LTP behaviour
+    // elsewhere (the live ticker is a separate code path inside
+    // ChartWorkspace and isn't routed through _resolveFetchSymbol).
+    if (indexRoot && !(isMcx || isCds)) {
+      return { sym: upper, exch: 'NSE' };
+    }
+
+    const root = indexRoot || (isMcx || isCds ? upper : null);
     if (!root) return { sym, exch: '' };
 
     // Sync first — instruments cache is usually warm by the time the
@@ -405,10 +429,10 @@
       } catch (_) { /* still no instruments — fall through to literal */ }
     }
     if (fut?.s) {
-      // Default exchange: MCX for commodities, CDS for currencies, NFO
-      // for indices. The instruments row's `e` field is the source of
-      // truth when present (handles edge cases like FUT-on-BFO).
-      const defaultExch = isMcx ? 'MCX' : (isCds ? 'CDS' : 'NFO');
+      // Default exchange: MCX for commodities, CDS for currencies.
+      // (Index branch above intercepts before this line — that's why
+      // 'NFO' is no longer in the fallback chain.)
+      const defaultExch = isMcx ? 'MCX' : 'CDS';
       return { sym: String(fut.s), exch: String(fut.e || defaultExch) };
     }
     return { sym, exch: '' };
