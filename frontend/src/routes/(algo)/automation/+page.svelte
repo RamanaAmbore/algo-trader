@@ -574,15 +574,18 @@
     </h1>
   </span>
   <span class="algo-ts">{$nowStamp}</span>
+  <!-- History chip + Ask AI toggle are LEFT-aligned per canonical
+       header rule (only Refresh + Order + Chart + Activity + Collapse
+       + Fullscreen + Default-size icons sit RIGHT of ml-auto). -->
+  <a href="/automation/activity" class="history-pill" title="View agent fire history">
+    🔔 History
+  </a>
+  <button class="ai-pill" onclick={() => aiOpen = !aiOpen}>
+    {aiOpen ? '× Close AI' : '✦ Ask AI'}
+  </button>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={loadAll} loading={loading} label="agents" />
-    <a href="/automation/activity" class="history-pill" title="View agent fire history">
-      🔔 History
-    </a>
-    <button class="ai-pill" onclick={() => aiOpen = !aiOpen}>
-      {aiOpen ? '× Close AI' : '✦ Ask AI'}
-    </button>
     <PageHeaderActions />
   </span>
 </div>

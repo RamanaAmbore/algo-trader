@@ -91,6 +91,8 @@
 
 <div class="page-header">
   <span class="algo-title-group">
+    <a href="/admin/simulator/iterations" class="back-link">← Iterations</a>
+    <a href="/admin/simulator" class="back-link">Simulator</a>
     <h1 class="page-title-chip">Iteration</h1>
     <span class="slug-chip">{slug || '—'}</span>
   </span>
@@ -98,8 +100,6 @@
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} loading={loading} label="iteration" />
-    <a href="/admin/simulator/iterations" class="back-link">← Iterations</a>
-    <a href="/admin/simulator" class="back-link">Simulator</a>
     <PageHeaderActions />
   </span>
 </div>

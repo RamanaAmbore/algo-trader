@@ -63,11 +63,17 @@
     Activity
   </span>
   <span class="algo-ts">{$nowStamp}</span>
-  <span class="ml-auto"></span>
+  <!-- Filter chips are LEFT-aligned per canonical header rule
+       ([Title] [Tabs?] [AccountMultiSelect?] [Chips?] → spacer →
+       [Trio]). Only Refresh + Order + Chart + Activity + Collapse +
+       Fullscreen + Default-size icons sit RIGHT of ml-auto.
+       ActivityHeaderFilters' built-in margin-left:auto is overridden
+       in the <style> block below for this page-header context. -->
   <ActivityHeaderFilters
     bind:accountFilter={_accountFilter}
     bind:levelFilter={_levelFilter}
     availableAccounts={_availableAccounts} />
+  <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={_refresh} loading={_refreshing} label="activity" />
     <PageHeaderActions />
@@ -88,6 +94,16 @@
 
 <style>
   :global(.page-title-icon) { color: #fbbf24; flex-shrink: 0; }
+  /* Neutralize ActivityHeaderFilters' built-in `margin-left: auto`
+     when mounted inside this page-header. The component's auto-margin
+     is designed for card-headers (where it pushes CardControls to the
+     right). In the page-header context, the canonical .ml-auto spacer
+     handles the right-push, so the filters themselves should sit
+     flush-LEFT against the timestamp per the canonical
+     [Title][Chips?] → spacer → [Trio] rule. */
+  :global(.page-header .act-filters) {
+    margin-left: 0;
+  }
   .activity-page-body {
     display: flex;
     flex-direction: column;

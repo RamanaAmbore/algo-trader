@@ -101,13 +101,13 @@
 
 <div class="page-header">
   <span class="algo-title-group">
+    <a href="/admin/simulator" class="back-link">← Simulator</a>
     <h1 class="page-title-chip">Simulator iterations</h1>
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} loading={loading} label="iterations" />
-    <a href="/admin/simulator" class="back-link">← Simulator</a>
     <PageHeaderActions />
   </span>
 </div>

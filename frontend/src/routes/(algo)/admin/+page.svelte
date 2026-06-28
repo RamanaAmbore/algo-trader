@@ -551,13 +551,16 @@
     <h1 class="page-title-chip">Users</h1>
   </span>
   <span class="algo-ts">{$nowStamp}</span>
+  <!-- Content-action button is LEFT-aligned per canonical header rule
+       (only Refresh + Order + Chart + Activity + Collapse + Fullscreen
+       + Default-size icons sit RIGHT of the ml-auto spacer). -->
+  <button onclick={() => showCreate = !showCreate}
+    class="text-[0.65rem] py-1 px-3 rounded border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 font-semibold">
+    {showCreate ? 'Cancel' : '+ Create User'}
+  </button>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={load} {loading} label="users" />
-    <button onclick={() => showCreate = !showCreate}
-      class="text-[0.65rem] py-1 px-3 rounded border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 font-semibold">
-      {showCreate ? 'Cancel' : '+ Create User'}
-    </button>
     <PageHeaderActions />
   </span>
 </div>
