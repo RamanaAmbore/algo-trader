@@ -2663,17 +2663,21 @@
   .cw-reset-zoom:hover { background: rgba(251,191,36,0.22); }
 
   /* ── Chart container + SVG ───────────────────────────────── */
-  /* flex:1 makes this absorb all available vertical space. The chain
-     `.charts-page-wrap (flex col, height: 100vh - chrome) → .chart-body
+  /* flex:1 makes this absorb ALL available vertical space. The chain
+     `.charts-page-wrap (flex col, fills algo-content) → .chart-body
      (flex:1, min-height:0) → .cw-root (flex col, h:100%) → here` lets
-     the SVG claim every residual pixel without overflowing. A 160 px
-     floor keeps the chart visible on the tightest phone (360×640)
-     after the page-header + picker + controls subtract their fixed
-     heights — operator: "the entire chart grid should fit in mobile
-     viewport with no scrolling". */
+     the SVG claim every residual pixel without overflowing. Toolbar
+     rows (.cw-picker / .cw-controls / .cw-frontmonth-bar / .cw-info-
+     strip / .cw-greeks-strip) are all flex-shrink:0 so they hold
+     their natural height while this container stretches into all the
+     leftover space. Dropped the 160 px floor (operator: "the chart
+     card should take full available height on the screen either on
+     mobile or desktop") — the flex chain alone provides the size, no
+     fixed-pixel min needed. Compact-mode override below still
+     enforces 160 px floor for embedded mounts (e.g. modal preview). */
   .cw-chart-container {
     flex: 1 1 0;
-    min-height: 160px;
+    min-height: 0;
     width: 100%;
     position: relative;
     overflow: hidden;

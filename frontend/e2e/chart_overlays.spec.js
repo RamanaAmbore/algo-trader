@@ -1139,4 +1139,65 @@ test.describe('chart overlays — all viewports', () => {
       `Operator: "make it slant if required to reduce the space usage and increase font size".`,
     ).toBe(true);
   });
+
+  // ── Chart card claims FULL available height (mobile + desktop) ────
+  //
+  // Operator: "the chart card should take full available height on the
+  // screen either on mobile or desktop".  The flex chain (.charts-page-
+  // wrap → .chart-body → .cw-root → .cw-chart-container) should let the
+  // chart SVG absorb every residual pixel after the page-header and
+  // toolbar rows subtract their natural height. We assert the SVG's
+  // rendered height passes a generous floor at four canonical sizes —
+  // these floors are derived from `viewport.h − page-header (~30px) −
+  // 2 toolbar rows (~56px) − info-strip (~24px)` minus a safety margin.
+  //   Mobile 360×640  → SVG ≥ 400 px
+  //   Mobile 393×851  → SVG ≥ 480 px
+  //   Desktop 1280×800 → SVG ≥ 500 px
+  //   Desktop 1920×1080 → SVG ≥ 800 px
+  for (const VP of [
+    { w: 360,  h: 640,  floor: 400 },
+    { w: 393,  h: 851,  floor: 480 },
+    { w: 1280, h: 800,  floor: 500 },
+    { w: 1920, h: 1080, floor: 800 },
+  ]) {
+    test(`chart-claim full height @ ${VP.w}×${VP.h} — SVG ≥ ${VP.floor} px`, async ({ page }) => {
+      test.setTimeout(60_000);
+      await injectSession(page, _session);
+      await page.setViewportSize({ width: VP.w, height: VP.h });
+      await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+      await waitForChart(page);
+      // Layout-stabilisation beat — the picker + controls rows reflow
+      // as the symbol input + selects hydrate, and the ResizeObserver
+      // inside ChartWorkspace fires _chartW/_chartH on the next frame.
+      await page.waitForTimeout(900);
+
+      // Measure the chart SVG's rendered box. .cw-svg fills its
+      // .cw-chart-container at width:100%/height:100% — the container
+      // is `flex: 1 1 0` so it absorbs all leftover space below the
+      // toolbars.
+      const svgBox = await page.locator('.cw-svg').first().boundingBox();
+      expect(svgBox, 'chart SVG should be measurable').not.toBeNull();
+      if (svgBox) {
+        expect(
+          svgBox.height,
+          `Chart SVG height @ ${VP.w}×${VP.h} should be ≥ ${VP.floor}px ` +
+          `(operator: "the chart card should take full available height ` +
+          `on the screen either on mobile or desktop"). Got ${svgBox.height}px.`,
+        ).toBeGreaterThanOrEqual(VP.floor);
+      }
+
+      // No vertical scroll on the page (already asserted in mobile-fit
+      // for two viewports; extend the assertion to desktop too so a
+      // future regression that pushes content past viewport.h is
+      // caught everywhere).
+      const scrollH = await page.evaluate(() => document.documentElement.scrollHeight);
+      const winH   = await page.evaluate(() => window.innerHeight);
+      const overflow = scrollH - winH;
+      expect(
+        overflow,
+        `Document scrolls vertically @ ${VP.w}×${VP.h}: ` +
+        `scrollH=${scrollH}, winH=${winH}, overflow=${overflow}px`,
+      ).toBeLessThanOrEqual(4);
+    });
+  }
 });
