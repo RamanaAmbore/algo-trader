@@ -40,7 +40,13 @@
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
 
-const TIMEOUT = 30_000;
+const TIMEOUT = 45_000;
+
+// Raise the per-test timeout so loginAsAdmin (which drives the signin form)
+// has enough budget in a sequential run after preceding tests have warmed up
+// auth state. Default Playwright timeout is 30s which is too tight for the
+// 8th sequential test in --workers=1 mode.
+test.setTimeout(60_000);
 
 // The expected computed fill colour for every chart-bg rect.
 // rgba(34, 211, 238, 0.04) — CSS parses to this exact string in
@@ -85,6 +91,15 @@ async function assertChartBgRect(svgLocator, label) {
  * and reusable dimensions.
  */
 async function assertCssVar(page, label) {
+  // Wait for app.css to be applied — in dev mode Vite injects CSS
+  // asynchronously after DOMContentLoaded, so a bare evaluate() can
+  // fire before the :root custom properties are set.
+  await page.waitForFunction(() => {
+    const v = getComputedStyle(document.documentElement)
+      .getPropertyValue('--chart-bg-tint').trim();
+    return v.length > 0;
+  }, { timeout: 10_000 }).catch(() => {});
+
   const val = await page.evaluate(() =>
     getComputedStyle(document.documentElement)
       .getPropertyValue('--chart-bg-tint').trim()
@@ -98,7 +113,7 @@ async function assertCssVar(page, label) {
 
 test('chart-bg: OptionsPayoff SVG on /admin/derivatives', async ({ page }) => {
   await loginAsAdmin(page);
-  await page.goto('/admin/derivatives', { waitUntil: 'networkidle', timeout: TIMEOUT });
+  await page.goto('/admin/derivatives', { waitUntil: 'load', timeout: TIMEOUT });
 
   // --chart-bg-tint var is defined on :root on every algo page.
   await assertCssVar(page, '/admin/derivatives');
@@ -135,15 +150,22 @@ test('chart-bg: OptionsPayoff SVG on /admin/derivatives', async ({ page }) => {
 
 test('chart-bg: --chart-bg-tint CSS var on /charts page', async ({ page }) => {
   await loginAsAdmin(page);
-  await page.goto('/charts', { waitUntil: 'networkidle', timeout: TIMEOUT });
+  // ChartWorkspace polls continuously; use 'load' not 'networkidle'.
+  await page.goto('/charts', { waitUntil: 'load', timeout: TIMEOUT });
   await assertCssVar(page, '/charts');
 });
 
 test('chart-bg: --chart-bg-tint CSS var on /performance page', async ({ page }) => {
   // /performance is a public page — no login required.
-  await page.goto('/performance', { waitUntil: 'networkidle', timeout: TIMEOUT });
-  // CSS vars are still defined (app.css is global); verify the variable
-  // resolves on the public theme too.
+  await page.goto('/performance', { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+  // Wait for app.css styles to be applied — the CSS var is set on :root
+  // by app.css which SvelteKit injects after DOMContentLoaded in dev mode.
+  // Poll until non-empty or 10s timeout.
+  await page.waitForFunction(() => {
+    const v = getComputedStyle(document.documentElement)
+      .getPropertyValue('--chart-bg-tint').trim();
+    return v.length > 0;
+  }, { timeout: 10_000 }).catch(() => {});
   const val = await page.evaluate(() =>
     getComputedStyle(document.documentElement)
       .getPropertyValue('--chart-bg-tint').trim()
@@ -151,14 +173,13 @@ test('chart-bg: --chart-bg-tint CSS var on /performance page', async ({ page }) 
   expect(val, '/performance: --chart-bg-tint should be defined').toBeTruthy();
 });
 
-// ── 3. PnlAnalysis benchmark SVG (/performance page, algo view) ───────────
+// ── 3. PnlAnalysis benchmark SVG (/dashboard page) ───────────────────────
 
-test('chart-bg: PnlAnalysis perf-svg on /admin/pnl-analysis or dashboard', async ({ page }) => {
+test('chart-bg: PnlAnalysis perf-svg on /dashboard', async ({ page }) => {
   await loginAsAdmin(page);
-  // PnlAnalysis is embedded in /admin/pnl-analysis (direct route) or
-  // /dashboard.  Navigate to the admin P&L range page directly.
-  await page.goto('/admin/pnl-analysis', { waitUntil: 'networkidle', timeout: TIMEOUT });
-  await assertCssVar(page, '/admin/pnl-analysis');
+  // PnlAnalysis is embedded in /dashboard (P&L Analysis card).
+  await page.goto('/dashboard', { waitUntil: 'load', timeout: TIMEOUT });
+  await assertCssVar(page, '/dashboard');
 
   const svgLocator = page.locator('svg.perf-svg').first();
   const cnt = await svgLocator.count();
@@ -173,7 +194,7 @@ test('chart-bg: PnlAnalysis perf-svg on /admin/pnl-analysis or dashboard', async
 
 test('chart-bg: all rects on /admin/derivatives share the same fill attr', async ({ page }) => {
   await loginAsAdmin(page);
-  await page.goto('/admin/derivatives', { waitUntil: 'networkidle', timeout: TIMEOUT });
+  await page.goto('/admin/derivatives', { waitUntil: 'load', timeout: TIMEOUT });
 
   const rects = page.locator('rect.chart-bg');
   const count = await rects.count();
@@ -190,7 +211,16 @@ test('chart-bg: all rects on /admin/derivatives share the same fill attr', async
 
 test('chart-bg: tint discernible but subtle on /charts workspace', async ({ page }) => {
   await loginAsAdmin(page);
-  await page.goto('/charts', { waitUntil: 'networkidle', timeout: TIMEOUT });
+  // ChartWorkspace polls continuously; use 'load' not 'networkidle' so the
+  // test doesn't hang waiting for an inflight poll to settle.
+  await page.goto('/charts', { waitUntil: 'load', timeout: TIMEOUT });
+
+  // Wait for app.css to be applied (Vite dev-mode CSS injection).
+  await page.waitForFunction(() => {
+    const v = getComputedStyle(document.documentElement)
+      .getPropertyValue('--chart-bg-tint').trim();
+    return v.length > 0;
+  }, { timeout: 10_000 }).catch(() => {});
 
   // Alpha of --chart-bg-tint must be in range (0, 0.06].
   // Extract the alpha from the resolved CSS var.
@@ -211,7 +241,7 @@ test('chart-bg: tint discernible but subtle on /charts workspace', async ({ page
 
 test('chart-bg: exactly one chart-bg rect per SVG on /admin/derivatives', async ({ page }) => {
   await loginAsAdmin(page);
-  await page.goto('/admin/derivatives', { waitUntil: 'networkidle', timeout: TIMEOUT });
+  await page.goto('/admin/derivatives', { waitUntil: 'load', timeout: TIMEOUT });
 
   const svgs = page.locator('svg.payoff-svg');
   const svgCount = await svgs.count();
