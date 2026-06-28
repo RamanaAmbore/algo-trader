@@ -161,6 +161,31 @@
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     flex-shrink: 0;
+    /* Mobile: filters cluster (account + level dropdowns) is wider
+       than the available row at <520px and was overlapping the
+       close button. Wrap into a second row so the title + close
+       stay on row 1 and the filters drop below. Operator: "on
+       activity modal, the log level drop down is overlapping x
+       icon... on mobile." */
+    flex-wrap: wrap;
+    row-gap: 0.3rem;
+  }
+  :global(.alm-header .act-filters) {
+    /* On wrap, the filters take the full second row. order=2 keeps
+       them BELOW the title+close pair (which both stay at the
+       natural order=0/auto). */
+    order: 2;
+    flex-basis: 100%;
+    margin-left: 0;
+  }
+  @media (min-width: 520px) {
+    /* Desktop: undo the wrap-row treatment — filters sit inline,
+       margin-left:auto claims the spacer between title and close. */
+    :global(.alm-header .act-filters) {
+      order: 0;
+      flex-basis: auto;
+      margin-left: auto;
+    }
   }
   .alm-title {
     font-family: ui-monospace, monospace;
@@ -183,8 +208,15 @@
   .alm-close {
     /* Standard close — square 1.4rem matches ChartModal +
        SymbolPanel close buttons; glyph 0.95rem is proportional to
-       the 0.72rem header title text. */
+       the 0.72rem header title text.
+       margin-left: auto claims the right edge of row 1 on every
+       viewport. Desktop: filters ALSO have auto so they pack
+       directly to the close's left (both consume right-edge
+       space). Mobile: filters wrap to row 2 (flex-basis:100%
+       below), so the auto on close pushes it to the row-1 right
+       edge with empty space between title and close. */
     margin-left: auto;
+    flex-shrink: 0;
     width: 1.4rem;
     height: 1.4rem;
     display: inline-flex;
