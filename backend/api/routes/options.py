@@ -20,10 +20,14 @@ we hammer for shared market data" in one place.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import math
+import threading as _threading
 import time
+from collections import OrderedDict as _OrderedDict
 from datetime import date, datetime, timedelta
-from typing import Optional
+from typing import Any, Optional
 
 import msgspec
 from litestar import Controller, Request, get, post
@@ -64,6 +68,91 @@ logger = get_logger(__name__)
 
 _VALID_MODES = ("live", "sim", "hypothetical")
 
+# ── Strategy-analytics short-circuit cache ────────────────────────────
+# When the frontend re-polls /strategy-analytics every 5s with the SAME
+# legs + spot + underlying, skip the full broker quote + BS IV calibration
+# path and return the cached response in <20ms.
+#
+# Cache shape: hex_key → (monotonic_ts, StrategyResponse)
+# Eviction: LRU with capacity 64. TTL 5s (matches the frontend poll cadence).
+# Key: blake2b-16 over (sorted_legs_tuple, spot, mode) — same shape used by
+#   backend/api/cache.py for per-key locking (using time.monotonic, not
+#   time.time, so clock-skew / NTP jumps don't create false expiries).
+#
+# Thread-safety: same pattern as _HIST_CACHE — threading.Lock guards the
+# check-then-mutate pair; cache reads/writes happen in the async frame so
+# CPython GIL keeps the dict mutation atomic without the lock, but the Lock
+# ensures the check+mutate is atomic as a unit.
+
+_STRATEGY_ANALYTICS_CACHE: "_OrderedDict[str, tuple[float, Any]]" = _OrderedDict()
+_STRATEGY_ANALYTICS_CACHE_LOCK = _threading.Lock()
+_STRATEGY_ANALYTICS_CACHE_TTL   = 5     # seconds — matches frontend poll cadence
+_STRATEGY_ANALYTICS_CACHE_SIZE  = 64    # LRU cap
+
+
+def _strategy_cache_key(data: "StrategyRequest") -> str:
+    """Compute a blake2b-16 hex key from the request fields that fully
+    determine the response.  The key covers:
+      - canonical sorted leg tuples (symbol, qty, avg_cost, ltp, iv, expiry)
+      - spot override (None → broker resolves)
+      - span_pct, span_sigmas, points, time_slices
+
+    Legs are sorted by (symbol, qty) so leg order doesn't create spurious
+    cache misses for the same basket.
+    """
+    sorted_legs = sorted(
+        [
+            (
+                (leg.symbol or "").upper().strip(),
+                int(leg.qty),
+                round(float(leg.avg_cost), 6) if leg.avg_cost is not None else None,
+                round(float(leg.ltp), 6)      if leg.ltp      is not None else None,
+                round(float(leg.iv),  6)       if leg.iv       is not None else None,
+                leg.expiry,
+            )
+            for leg in data.legs
+        ],
+        key=lambda t: (t[0], t[1]),
+    )
+    payload = json.dumps(
+        {
+            "legs":        sorted_legs,
+            "spot":        round(float(data.spot), 6) if data.spot is not None else None,
+            "span_pct":    round(float(data.span_pct), 6) if data.span_pct is not None else None,
+            "span_sigmas": round(float(data.span_sigmas), 6),
+            "points":      int(data.points),
+            "time_slices": int(data.time_slices),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.blake2b(payload, digest_size=16).hexdigest()
+
+
+def _strategy_cache_get(key: str) -> Any | None:
+    """Return cached StrategyResponse if present and unexpired (TTL=5s),
+    else None. Uses time.monotonic() — immune to clock skew / NTP jumps."""
+    with _STRATEGY_ANALYTICS_CACHE_LOCK:
+        entry = _STRATEGY_ANALYTICS_CACHE.get(key)
+        if entry is None:
+            return None
+        ts, value = entry
+        if time.monotonic() - ts >= _STRATEGY_ANALYTICS_CACHE_TTL:
+            _STRATEGY_ANALYTICS_CACHE.pop(key, None)
+            return None
+        _STRATEGY_ANALYTICS_CACHE.move_to_end(key)
+        return value
+
+
+def _strategy_cache_put(key: str, value: Any) -> None:
+    """Store a StrategyResponse under key.  Evicts oldest when over capacity."""
+    with _STRATEGY_ANALYTICS_CACHE_LOCK:
+        _STRATEGY_ANALYTICS_CACHE[key] = (time.monotonic(), value)
+        _STRATEGY_ANALYTICS_CACHE.move_to_end(key)
+        while len(_STRATEGY_ANALYTICS_CACHE) > _STRATEGY_ANALYTICS_CACHE_SIZE:
+            _STRATEGY_ANALYTICS_CACHE.popitem(last=False)
+
+
 # ── Historical OHLCV in-process cache ─────────────────────────────────
 # Keyed by (symbol, exchange_hint, days, interval) → (expires_at_unix, value).
 # Mirrors the (key → (expires_at, value)) shape used by backend/api/cache.py.
@@ -71,9 +160,6 @@ _VALID_MODES = ("live", "sim", "hypothetical")
 # calls to asyncio.to_thread — the cache reads/writes happen in the async
 # frame which is fine with a sync lock on CPython (GIL protects the dict
 # mutation; the Lock guards the check-then-set pair).
-import threading as _threading
-from collections import OrderedDict as _OrderedDict
-
 _HIST_CACHE: "_OrderedDict[tuple, tuple[float, object]]" = _OrderedDict()
 _HIST_CACHE_LOCK = _threading.Lock()
 
@@ -1794,7 +1880,8 @@ class OptionsController(Controller):
     # ── Multi-leg strategy analytics (POST) ────────────────────────────
 
     @post("/strategy-analytics")
-    async def strategy_analytics(self, data: "StrategyRequest") -> "StrategyResponse":
+    async def strategy_analytics(self, data: "StrategyRequest",
+                                  bypass_cache: bool = False) -> "StrategyResponse":
         """
         Aggregate analytics for a multi-leg single-underlying strategy
         (vertical spread, iron condor, butterfly, strangle, etc.).
@@ -1806,9 +1893,24 @@ class OptionsController(Controller):
         missing, the broker is hit for the current LTP and `avg_cost`
         falls back to the LTP (treats the leg as "what if I open this
         right now").
+
+        Query param `bypass_cache=true` forces a full recompute even if a
+        fresh cached response exists (e.g. after operator changes an override
+        field that isn't structurally different from the previous request).
         """
+        # ── Cache short-circuit ───────────────────────────────────────
+        # Identical re-polls (frontend polls every 5s) skip the broker quote
+        # + BS IV calibration path and return the cached response in <20ms.
+        # bypass_cache=true signals the operator changed something and wants
+        # a fresh compute even if the input hash is identical.
+        cache_key = _strategy_cache_key(data)
+        if not bypass_cache:
+            cached = _strategy_cache_get(cache_key)
+            if cached is not None:
+                return cached
+
         try:
-            return await self._strategy_analytics_impl(data)
+            result = await self._strategy_analytics_impl(data)
         except HTTPException:
             raise
         except Exception:
@@ -1819,6 +1921,8 @@ class OptionsController(Controller):
             logger.exception("Strategy analytics failed (legs=%s)", data.legs)
             raise HTTPException(status_code=500,
                 detail="Strategy analytics failed; see server logs.")
+        _strategy_cache_put(cache_key, result)
+        return result
 
     async def _strategy_analytics_impl(self, data: "StrategyRequest") -> "StrategyResponse":
         if not data.legs:
