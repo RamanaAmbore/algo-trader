@@ -1,6 +1,15 @@
 // Dashboard refactor: chart/equity swap, NAV tab on the right card,
 // news card replaced with activity card whose default tab is News.
 //
+// Jun 2026 amendment — operator complaint "dashboard intraday,
+// performance chart does not have nav. is it removed? fix it":
+//   NAV tab restored to the LEFT chart card (default tab) so the
+//   chart card now carries [NAV, Intraday, Performance]. The RIGHT
+//   sidebar keeps its own [NAV, Capital, Equity] tabs (NavBreakdown
+//   per-account decomposition). Page-header firm-NAV chip persists
+//   across every chart-card tab so the headline number is on screen
+//   on Intraday + Performance too.
+//
 // Five quality dimensions (per feedback_test_dimensions.md):
 //   SSOT        — dashboard activity news tab + /activity news tab
 //                 render the same first-headline text + similar row count.
@@ -11,16 +20,21 @@
 //                 NewsList → /api/news → same endpoint).
 //   Stale-code  — old `.dash-row3` MARKET NEWS card is gone; old
 //                 single-column NewsList chip in LogPanel news tab is
-//                 gone (asserted via `column-count: 2` on activity).
+//                 gone (asserted via `column-count: 2` on activity);
+//                 the dead `/nav` href on the firm-NAV chip is gone
+//                 (chip is now a <button>, not an <a href>).
 //   Reusable    — NewsList is the ONE source for both news mounts
 //                 (asserted by counting `.newslist` instances on the
 //                 dashboard — should be exactly 1, inside the
-//                 activity card).
+//                 activity card). NavTab is the ONE source for the
+//                 firm-NAV curve view (chart-card NAV tab).
 //   UX          — Mobile (360 / 393): cards stack cleanly, NAV tab
 //                 fits, no horizontal overflow on the page body.
 //                 Desktop (1280+): chart card sits LEFT, equity card
 //                 sits RIGHT; activity card spans full width below
-//                 with NEWS as the active tab on first load.
+//                 with NEWS as the active tab on first load. Firm-NAV
+//                 chip stays visible while operator flips chart-card
+//                 tabs (NAV → Intraday → Performance).
 //
 // Run:
 //   npx playwright test dashboard_refactor.spec.js \
@@ -151,14 +165,62 @@ test.describe('dashboard refactor — news → activity + chart/equity swap + NA
       (await navEmpty.isVisible().catch(() => false));
     expect(navVisible, 'NAV breakdown panel renders').toBe(true);
 
-    // ── Chart card now has 2 tabs (Intraday, Performance) — the
-    //    old NAV tab was moved off this card onto the right sidebar.
+    // ── Chart card has 3 tabs (NAV, Intraday, Performance) with NAV
+    //    as the default-active tab. Operator restore (Jun 2026):
+    //    "dashboard intraday, performance chart does not have nav".
     //    Scope to the chart card's HEADER strip so we don't pick up
     //    PnlAnalysis's own nested tabs in the Performance panel. ----
     const chartTabs = chartCard.locator('> .card-header-row .algo-tab');
-    await expect(chartTabs).toHaveCount(2);
-    await expect(chartTabs.nth(0)).toContainText('Intraday');
-    await expect(chartTabs.nth(1)).toContainText('Performance');
+    await expect(chartTabs).toHaveCount(3);
+    await expect(chartTabs.nth(0)).toContainText('NAV');
+    await expect(chartTabs.nth(1)).toContainText('Intraday');
+    await expect(chartTabs.nth(2)).toContainText('Performance');
+    await expect(chartTabs.nth(0)).toHaveAttribute('aria-selected', 'true');
+
+    // ── NAV panel renders the NavTab SVG curve (or empty-state when
+    //    no snapshots exist yet). Either is acceptable; both prove
+    //    the panel is mounted. ----
+    const navTabPanel = chartCard.locator('> .card-body').first();
+    const navTabSvg   = navTabPanel.locator('.nav-svg');
+    const navTabEmpty = navTabPanel.locator('.nav-tab-empty');
+    const navTabMounted =
+      (await navTabSvg.isVisible().catch(() => false)) ||
+      (await navTabEmpty.isVisible().catch(() => false));
+    expect(navTabMounted, 'chart-card NAV panel renders curve or empty-state').toBe(true);
+
+    // ── Firm NAV chip in the page header persists across chart-card
+    //    tab flips so the headline number is visible on Intraday +
+    //    Performance views too. ----
+    const headerNavChip = page.locator('.page-header .nav-chip');
+    // Chip is gated by view_nav cap + a non-null _navLatest fetch.
+    // If absent on cold dev (snapshot not yet landed), soft-skip the
+    // cross-tab persistence check.
+    const chipPresent = await headerNavChip.isVisible().catch(() => false);
+    if (chipPresent) {
+      // Click Intraday — chip should still be visible.
+      await chartTabs.nth(1).click();
+      await page.waitForTimeout(300);
+      await expect(headerNavChip, 'NAV chip visible on Intraday tab').toBeVisible();
+
+      // Click Performance — chip should still be visible.
+      await chartTabs.nth(2).click();
+      await page.waitForTimeout(300);
+      await expect(headerNavChip, 'NAV chip visible on Performance tab').toBeVisible();
+
+      // Click chip — flips chart card back to NAV tab.
+      await headerNavChip.click();
+      await page.waitForTimeout(400);
+      await expect(chartTabs.nth(0)).toHaveAttribute('aria-selected', 'true');
+    } else {
+      console.log('[desktop] firm-NAV chip not minted yet (no snapshot) — cross-tab persistence skipped');
+      // Still verify the tabs themselves switch + NAV stays default.
+      await chartTabs.nth(1).click();
+      await page.waitForTimeout(200);
+      await expect(chartTabs.nth(1)).toHaveAttribute('aria-selected', 'true');
+      await chartTabs.nth(0).click();
+      await page.waitForTimeout(200);
+      await expect(chartTabs.nth(0)).toHaveAttribute('aria-selected', 'true');
+    }
 
     // ── Reusable: NewsList is mounted exactly ONCE on the dashboard
     //    (inside the activity card). Old standalone mount is gone. --
@@ -334,6 +396,23 @@ test.describe('dashboard refactor — news → activity + chart/equity swap + NA
       // operator-default 32 px guideline (compact tabs trade height
       // for horizontal density on the dashboard sidebar).
       expect(navBox.height).toBeGreaterThanOrEqual(20);
+    }
+
+    // ── Chart card NAV tab (LEFT card) is reachable + active-by-default
+    //    on mobile too. Operator restore (Jun 2026). ----
+    const chartCard = page.locator('.row1-col-chart').first();
+    await expect(chartCard).toBeVisible();
+    const chartTabs = chartCard.locator('> .card-header-row .algo-tab');
+    await expect(chartTabs).toHaveCount(3);
+    await expect(chartTabs.nth(0)).toContainText('NAV');
+    await expect(chartTabs.nth(1)).toContainText('Intraday');
+    await expect(chartTabs.nth(2)).toContainText('Performance');
+    await expect(chartTabs.nth(0)).toHaveAttribute('aria-selected', 'true');
+    const chartNavBox = await chartTabs.nth(0).boundingBox();
+    expect(chartNavBox).not.toBeNull();
+    if (chartNavBox) {
+      // Same compact tab guideline as the sidebar NAV tab.
+      expect(chartNavBox.height).toBeGreaterThanOrEqual(20);
     }
 
     // No horizontal overflow on the page body — body width ≤ viewport.

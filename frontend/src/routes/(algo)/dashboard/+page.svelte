@@ -227,13 +227,18 @@
   // don't orphan across tab flips.
   let _capEqTab = $state(/** @type {'nav'|'capital'|'equity'} */ ('nav'));
 
-  // Row 1 OTHER slot — tabbed card: Intraday (SVG curve) vs
-  // Performance (PnlAnalysis component) vs NAV (history curve).
-  // Default Intraday — that's the live "what is the book doing right
-  // now" view; Performance is the deeper historical drill-down.
-  // NAV history (NavTab) trails the daily snapshot landing at 16:00
-  // IST + manual recomputes.
-  let _chartTab = $state(/** @type {'intraday'|'performance'|'nav'} */ ('intraday'));
+  // Row 1 OTHER slot — tabbed card: NAV (history curve) vs Intraday
+  // (today's cum P&L SVG) vs Performance (PnlAnalysis component).
+  // NAV is the DEFAULT — operator complaint Jun 2026 ("intraday,
+  // performance chart does not have nav. is it removed? fix it"):
+  // the NAV history curve is the operator's "what's the firm worth
+  // over time?" glance and must lead the chart card. Intraday is the
+  // live "what's the book doing right now?" view; Performance is the
+  // historical drill-down. NavTab trails the daily snapshot landing at
+  // 16:00 IST + manual recomputes. The sidebar right card keeps its
+  // own NAV tab (NavBreakdown — per-account decomposition) so both
+  // glances (curve + per-account table) are surfaced without a click.
+  let _chartTab = $state(/** @type {'nav'|'intraday'|'performance'} */ ('nav'));
   // Bindable mirror of PnlAnalysis.hasData — flips to false once
   // /pnl-benchmarks confirms zero dates. Default true so the
   // auto-collapse effect below doesn't fire during the initial
@@ -1562,13 +1567,23 @@
   </span>
   <span class="algo-ts">{$nowStamp}</span>
   {#if _canViewNav && _navLatest}
-    <!-- Firm NAV chip — clickable link to /nav for full curve +
-         composition. Day Δ colour-coded. Shows the operator the
-         book's net liq at a glance without leaving the dashboard. -->
-    <a class="nav-chip" href="/nav"
+    <!-- Firm NAV chip — visible on the page header, so it persists
+         across all chart-card tabs (NAV, Intraday, Performance) and
+         the sidebar (NAV, Capital, Equity). Day Δ colour-coded.
+         Clicking flips the chart card to its NAV tab and scrolls
+         the card into view — the standalone /nav page was retired
+         Jun 2026, so this chip is the operator's quick path to the
+         curve view. -->
+    <button type="button" class="nav-chip"
        class:nav-chip-pos={(_navDelta ?? 0) > 0}
        class:nav-chip-neg={(_navDelta ?? 0) < 0}
-       title={`NAV ${_fmtNavInr(_navLatest.nav)} as of ${_navLatest.as_of_date}`}>
+       title={`NAV ${_fmtNavInr(_navLatest.nav)} as of ${_navLatest.as_of_date} — click to open NAV tab`}
+       onclick={() => {
+         _chartTab = 'nav';
+         _colEquityCurve = false;
+         const card = document.querySelector('.row1-col-chart');
+         if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+       }}>
       <span class="nav-chip-lbl">NAV</span>
       <span class="nav-chip-val">{_fmtNavInr(_navLatest.nav)}</span>
       {#if _navDeltaPct != null}
@@ -1576,7 +1591,7 @@
           {_navDeltaPct >= 0 ? '+' : ''}{(_navDeltaPct * 100).toFixed(2)}%
         </span>
       {/if}
-    </a>
+    </button>
   {/if}
   <span class="ml-auto"></span>
   <span class="page-header-actions">
@@ -1648,20 +1663,24 @@
      whichever tab is active. Stacks on mobile. -->
 <div class="dash-row1-split">
 
-  <!-- LEFT: Intraday / Performance tabbed card. Intraday surfaces
-       today's cumulative P&L curve; Performance hosts the historical
-       drill-down (PnlAnalysis component) one click away. Both panels
-       stay mounted (hidden, not {#if}) so internal state — including
-       PnlAnalysis filters + benchmark series — persists across tab
-       flips. NAV tab moved OFF this card onto the right sidebar so
-       the NAV breakdown sits next to Capital + Equity instead of
-       fighting the chart for vertical real estate. -->
+  <!-- LEFT: NAV / Intraday / Performance tabbed card. NAV is the
+       default — operator-driven restore (Jun 2026) after a refactor
+       briefly moved it off this card; the NAV history curve is the
+       chart card's headline view. Intraday surfaces today's cumulative
+       P&L curve; Performance hosts the historical drill-down
+       (PnlAnalysis component) one click away. All three panels stay
+       mounted (hidden, not {#if}) so internal state — including
+       PnlAnalysis filters + benchmark series and NavTab's fetched
+       history — persists across tab flips. The page-header firm-NAV
+       chip is visible from every tab, so the NAV TOTAL number is on
+       screen even when the operator is reading Intraday / Performance. -->
   <section class="bucket-card row1-col-chart"
     class:fs-card-on={_fsEquityCurve}
     class:is-collapsed={_colEquityCurve}>
     <div class="card-header-row">
       <AlgoTabs
         tabs={[
+          { id: 'nav',         label: 'NAV'         },
           { id: 'intraday',    label: 'Intraday'    },
           { id: 'performance', label: 'Performance' },
         ]}
@@ -1680,6 +1699,15 @@
         bind:refreshLoading={_refreshing}
         showSearch={false}
       />
+    </div>
+
+    <!-- NAV panel — firm NAV history curve (NavTab). Default tab.
+         Polls /api/nav/history?days=90 on a market-aware interval;
+         renders the hand-rolled amber SVG line. Lives ABOVE the
+         Intraday + Performance panels so the operator's first glance
+         on the chart card is the firm's net-liq trajectory. -->
+    <div class="card-body" hidden={_chartTab !== 'nav' || _colEquityCurve}>
+      <NavTab />
     </div>
 
     <!-- Intraday panel — SVG curve of today's cum P&L. -->
@@ -2083,7 +2111,9 @@
   /* Page-header NAV chip — slice 7k continuation. Sits between the
      timestamp and the ml-auto spacer so it reads as part of the
      dashboard's identity strip rather than the actions cluster.
-     Cyan-tinted at rest, green/red day-delta tint when known. */
+     Cyan-tinted at rest, green/red day-delta tint when known.
+     Element changed from <a href> to <button> Jun 2026 — /nav route
+     was retired and the chip now jumps to the chart card's NAV tab. */
   .nav-chip {
     display: inline-flex;
     align-items: baseline;
@@ -2096,6 +2126,7 @@
     text-decoration: none;
     font-family: ui-monospace, monospace;
     font-variant-numeric: tabular-nums;
+    cursor: pointer;
     transition: background 120ms, border-color 120ms;
   }
   .nav-chip:hover {
