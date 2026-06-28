@@ -408,7 +408,20 @@
     }
 
     const root = indexRoot || (isMcx || isCds ? upper : null);
-    if (!root) return { sym, exch: '' };
+    if (!root) {
+      // Plain NSE equity (RELIANCE, TCS, HDFCBANK, M&M, …).
+      // Matches symbols that are alphabetic (with optional & or -) and
+      // carry no FUT/CE/PE suffix — i.e. not a derivative, not an index,
+      // not an MCX commodity, not a CDS currency. Route to NSE spot so
+      // the backend can look up the instrument_token and return bars.
+      // Returning an empty exchange here caused "No data available" for
+      // every NSE equity because the historical endpoint couldn't resolve
+      // the symbol without an exchange hint.
+      const _isPlainEquity = /^[A-Z][A-Z0-9&-]*$/.test(upper) &&
+        !/(?:FUT|CE|PE)$/.test(upper);
+      if (_isPlainEquity) return { sym: upper, exch: 'NSE' };
+      return { sym, exch: '' };
+    }
 
     // Sync first — instruments cache is usually warm by the time the
     // operator clicks a chart icon. If null, force a load and retry.
