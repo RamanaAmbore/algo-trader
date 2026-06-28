@@ -319,6 +319,13 @@
   /** @type {Array<{ts:string,open:number,high:number,low:number,close:number,volume:number}>} */
   let _bars        = $state([]);
   let _histLoading = $state(false);
+  // _histLoadingSlow flips true ~150ms after _histLoading starts so
+  // cache-hits (which complete in one frame) don't flash a spinner.
+  // When true, the chart shows a "Fetching from broker…" overlay
+  // because we know we're past the Tier 1/Tier 2 fast paths.
+  let _histLoadingSlow = $state(false);
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _histLoadingTimer = null;
   let _histError   = $state('');
   let _chartLoaded = $state(false);
   let _chartDays   = $state(30);
@@ -422,6 +429,14 @@
     if (!force && _chartLoaded) return;
     const token = ++_loadToken;
     _histLoading = true; _histError = '';
+    // Defer the visible spinner by ~150ms — long enough that warm
+    // cache-hits complete before it flips on (no flash), short
+    // enough that any broker round-trip shows the spinner promptly.
+    if (_histLoadingTimer) clearTimeout(_histLoadingTimer);
+    _histLoadingSlow = false;
+    _histLoadingTimer = setTimeout(() => {
+      if (_histLoading) _histLoadingSlow = true;
+    }, 150);
     // Hard timeout — if a broker call hangs (e.g. Kite rate-limit retry
     // loop on backend), Promise.race ensures _histLoading clears within
     // 25s instead of stranding the page-header RefreshButton spinner
@@ -489,7 +504,14 @@
       // Only the newest call flips loading off; older tokens are no-ops
       // here so the spinner stays visible while the canonical fetch is
       // still in flight.
-      if (token === _loadToken) _histLoading = false;
+      if (token === _loadToken) {
+        _histLoading = false;
+        _histLoadingSlow = false;
+        if (_histLoadingTimer) {
+          clearTimeout(_histLoadingTimer);
+          _histLoadingTimer = null;
+        }
+      }
       // Force a dimension re-measure after load. The ResizeObserver may
       // have fired while the modal/portal was still laying out (container
       // at zero width), leaving _chartW/_chartH stale and all SVG paths
@@ -1333,6 +1355,20 @@
 
   <!-- Historical OHLCV chart — fills available height via flex -->
   <div class="cw-chart-container" bind:this={_chartContainerEl}>
+    <!-- Visible fetch overlay — appears ~150ms after the load starts
+         so warm cache hits (which return in one frame) don't flash.
+         When visible, signals the operator that we're going past the
+         in-memory + DB tiers to the broker. Distinct from cw-empty's
+         text-only state, which renders when the load completes with
+         no bars. -->
+    {#if _histLoadingSlow}
+      <div class="cw-fetch-overlay" role="status" aria-live="polite">
+        <span class="cw-fetch-spinner" aria-hidden="true"></span>
+        <span class="cw-fetch-msg">Fetching from broker…</span>
+        <span class="cw-fetch-sub">Cached after first load</span>
+      </div>
+    {/if}
+
     <!-- Floating Overlays panel — TradingView-style, anchored top-right -->
     <div class="cw-overlay-panel" role="region" aria-label="Chart overlays">
       <MultiSelect
@@ -1978,6 +2014,52 @@
     width: 100%;
     position: relative;
     overflow: hidden;
+  }
+  /* Fetch-from-broker overlay — see template above. Sits ABOVE the
+     chart SVG; pointer-events: none so the operator can still
+     interact with the underlying axis hovers + the Overlays
+     dropdown if they want. */
+  .cw-fetch-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    pointer-events: none;
+    background: linear-gradient(180deg,
+                  rgba(10, 16, 32, 0.35) 0%,
+                  rgba(10, 16, 32, 0.65) 100%);
+    backdrop-filter: blur(2px);
+    animation: cw-fetch-fade-in 0.18s ease-out;
+  }
+  @keyframes cw-fetch-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+  .cw-fetch-spinner {
+    width: 1.4rem;
+    height: 1.4rem;
+    border: 2px solid rgba(251, 191, 36, 0.18);
+    border-top-color: #fbbf24;
+    border-radius: 50%;
+    animation: cw-fetch-spin 0.9s linear infinite;
+  }
+  @keyframes cw-fetch-spin {
+    to { transform: rotate(360deg); }
+  }
+  .cw-fetch-msg {
+    color: #fbbf24;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+  }
+  .cw-fetch-sub {
+    color: rgba(155, 176, 208, 0.65);
+    font-size: 0.62rem;
+    letter-spacing: 0.02em;
   }
   .cw-svg {
     width: 100%;

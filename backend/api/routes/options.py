@@ -1567,7 +1567,15 @@ class OptionsController(Controller):
         if not symbol:
             raise HTTPException(status_code=400, detail="symbol is required")
         sym  = symbol.upper().strip()
-        days = max(1, min(int(days), 90))
+        # Cap raised from 90 to 365 — frontend ChartWorkspace exposes
+        # 6M (180d) and 1Y (365d) range buttons that were SILENTLY
+        # truncated to 90 days, leaving the operator's "1Y" view
+        # showing only the last quarter. The three-tier ohlcv_store
+        # (memory → DB → broker) handles longer ranges cheaply:
+        # cold cycles hit the broker once, warm reads serve from
+        # /opt/ramboq DB. Kite historical_data accepts 2000-day
+        # ranges for daily bars so 365 is well within the SDK limit.
+        days = max(1, min(int(days), 365))
 
         valid_intervals = ("day", "60minute", "30minute", "15minute", "5minute", "minute")
         if interval not in valid_intervals:
