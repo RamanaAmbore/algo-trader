@@ -339,23 +339,16 @@
   // Overlays MultiSelect — drives derived booleans below. Volume
   // is no longer in this list (always-on via _showVol const below).
   // Persisted to localStorage so toggles survive reload.
+  //
+  // NOTE: Cannot call localStorage during $state() init because this
+  // module runs on the server during SSR where localStorage is undefined.
+  // Instead, start with [] and hydrate from localStorage in onMount.
   const _OVERLAY_LS_KEY = 'rbq.cache.chart-overlays.v1';
-  function _loadOverlayPrefs() {
-    try {
-      const raw = typeof localStorage !== 'undefined'
-        ? localStorage.getItem(_OVERLAY_LS_KEY)
-        : null;
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      if (!Array.isArray(parsed)) return [];
-      // Filter to known overlay keys to avoid stale/unknown values
-      const known = new Set(_OVERLAY_OPTS.map((o) => o.value));
-      return parsed.filter((v) => known.has(v));
-    } catch (_) { return []; }
-  }
-  let _overlays    = $state(/** @type {string[]} */(_loadOverlayPrefs()));
-  // Persist overlay selection whenever it changes
+  let _overlays    = $state(/** @type {string[]} */([]));
+  let _overlaysHydrated = false;
+  // Persist overlay selection whenever it changes (after hydration).
   $effect(() => {
+    if (!_overlaysHydrated) return;
     const snap = _overlays.slice();
     try {
       if (typeof localStorage !== 'undefined') {
@@ -1248,6 +1241,21 @@
   let _mounted = true;
 
   onMount(async () => {
+    // Hydrate overlay preferences from localStorage (can't do this at
+    // $state() init because that code runs on the server during SSR).
+    try {
+      const raw = localStorage.getItem(_OVERLAY_LS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          const known = new Set(_OVERLAY_OPTS.map((o) => o.value));
+          const valid = parsed.filter((v) => known.has(v));
+          if (valid.length) _overlays = valid;
+        }
+      }
+    } catch (_) { /* localStorage unavailable — proceed with empty */ }
+    _overlaysHydrated = true;
+
     await loadInstruments().catch(() => {});
     // Pin hydration runs in the background — don't block the historical
     // load. Operator can use DEFAULT_PINS immediately; the full list
@@ -2535,10 +2543,12 @@
       min-width: 0;
     }
 
-    /* Select triggers in picker row — min-height 2rem = 32px tap target */
+    /* Select triggers in picker row — min-height 2rem = 32px tap target.
+       !important: Svelte 5 :where() scoping gives equal specificity, so
+       the component's own min-height:1.55rem may win by source order. */
     .cw-type-wrap :global(.rbq-select-trigger),
     .cw-type-chart-wrap :global(.rbq-select-trigger) {
-      min-height: 2rem;
+      min-height: 2rem !important;
     }
 
     /* Row 2 — prevent wrapping; tighter gaps + padding */
@@ -2568,7 +2578,9 @@
     }
 
     /* Overlay panel — just enough to show "Overlays" text.
-       min-height on trigger wrapper + trigger itself = 32px tap target. */
+       !important on min-height overcomes MultiSelect.svelte's scoped
+       min-height:1.55rem which carries a higher-specificity component
+       hash selector on the same .rbq-multi-trigger element. */
     .cw-overlay-panel {
       flex-shrink: 0;
     }
@@ -2577,7 +2589,8 @@
       padding: 0.18rem 0.28rem;
       font-size: 0.58rem;
       white-space: nowrap;
-      min-height: 2rem;
+      /* !important: MultiSelect scoped rule wins on specificity otherwise */
+      min-height: 2rem !important;
     }
   }
 
