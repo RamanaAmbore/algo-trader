@@ -1303,6 +1303,31 @@ Multi-day forensic surface for the three "book of record" datasets — Orders (e
 
 ---
 
+## Activity logs — system + order + agent runtime
+
+Multi-mount unified log viewer for all three categories (System / Conn / Orders /
+Agents / Terminal). Accessible via:
+- **Navbar Log icon** → ActivityLogModal (full-screen, all tabs)
+- **Execution page** → inline Activity card (Orders only)
+- **`/activity` page** (new, bookmarkable) → defaults to Orders, full tabs available
+
+All three surfaces share reusable components + filter state. Filters (`account`, `level`)
+persist across tab switches.
+
+**Log levels**: All/Error/Warning/Info. Default 'All'. Parsing:
+- System/Conn: extract `[ERROR]`, `[WARNING]`, `[INFO]` tokens from message text
+- Agents: map `event_type` → level (e.g. agent-fired = info, agent-error = error)
+- Orders: no level token (all info by default)
+
+**Multi-column layout** — CSS `column-count: 2` at ≥900px container width
+(magazine-style flow), single column below 900px.
+
+**Conn log endpoint** (`GET /api/admin/logs/conn`) — tails `/opt/ramboq/.log/conn_log_file`.
+Path resolver prefers absolute `/opt/ramboq` over CWD-relative so dev API (running
+from `/opt/ramboq_dev`) accesses the shared prod conn log.
+
+---
+
 ## Audit log — `/admin/audit`
 
 Single forensic surface for every mutating event the platform produces. Cap-gated (`view_audit` — designated / admin / risk); writes happen via [`AuditMiddleware`](backend/api/audit.py) (HTTP) + `write_audit_event()` (non-HTTP). All writes are out-of-band via `asyncio.create_task` so **zero latency cost** on the caller's hot path.

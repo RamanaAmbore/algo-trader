@@ -568,6 +568,49 @@ Unified chart for any symbol kind (underlying / future / option / equity). Reads
 
 ---
 
+## Activity surface architecture
+
+Unified log viewer with multiple mount points (modal, card, page), all sharing
+two reusable components + filter state:
+
+**Components**:
+- `ActivityLogSurface.svelte` — wraps LogPanel with canonical config
+  (`multiColumn=true, hideInlineAccountFilter=true`). Bindable: `accountFilter`,
+  `availableAccounts`, `levelFilter`. Consumers pass their own filter state.
+- `ActivityHeaderFilters.svelte` — bundles ActivityAccountSelect + log-level
+  dropdown (All/Error/Warning/Info, default 'All'). Consumers embed in card header
+  or page header.
+- `LogPanel.svelte` — refined with per-tab level parsing + multi-column layout
+  at ≥900px container width.
+
+**Three mount points**:
+- **ActivityLogModal** — full-screen modal (e.g., from navbar Log icon). Shows
+  all tabs (System / Conn / Agents / Orders / Terminal) with independent filters.
+- **Activity card** (`/admin/execution`, `/dashboard`) — inline card with single
+  tab (Orders), filters live in card state.
+- **`/activity` page** — new bookmarkable route (part of navbar `build` dropdown).
+  Defaults to Orders tab. Filters persist across tab switches via single shared
+  thread.
+
+**Filter persistence** — filters live in parent component state; LogPanel receives
+as bindable props per-tab. Same thread (component instance) keeps filters in sync
+when switching tabs without resetting selections.
+
+**Multi-column layout** — CSS `column-count: 2` at ≥900px container width
+(NewsList-style magazine flow). Single column below 900px. All three contexts
+(modal / card / page) apply same responsive pattern.
+
+**Log-level parsing**:
+- System/Conn lines: extract `[LEVEL]` token from message text (case-insensitive)
+- Agent rows: map `event_type` → level (e.g., agent-fired = info, agent-error = error)
+- Order rows: unchanged (no level token, all info by default)
+
+**Endpoint** — `/api/admin/logs/conn` tails `/opt/ramboq/.log/conn_log_file`.
+Path resolver prefers absolute `/opt/ramboq` over CWD-relative so dev API
+(running from `/opt/ramboq_dev`) still accesses shared prod conn log.
+
+---
+
 ## Canonical card-header rule
 
 Every algo page card follows ONE structure:
@@ -669,6 +712,22 @@ pnl = slice − cost_basis
 - `GET /api/nav/me` — current slice + day delta
 - `GET /api/nav/me/history?days=180` — scaled NAV curve
 - `GET /api/investor/{token}/slice` — same math (no auth required, token in URL)
+
+**NAV v4 formula** — firm NAV computed as:
+```
+firm_nav = cash_sod + option_premium + Σ position.unrealised + Σ holdings.cur_val
+```
+
+Changed post-Sprint E: `option_premium` replaces full `used_margin` term to eliminate
+double-counting. `option_premium` = sum of long-option premiums only (operator-verified
+spec); `used_margin` includes futures SPAN already captured in position.unrealised.
+Implemented in three sites: `backend/api/algo/nav.py:compute_firm_nav`, 
+`frontend/src/lib/PerformancePage.svelte:navByAcct`, `scripts/nav_breakdown.py`.
+
+**NavCard ↔ grid sync** — `/api/auth/firm-nav` and `/api/auth/me/nav` endpoints now
+delegate NAV computation to `backend/api/algo/nav.py:compute_firm_nav`, ensuring
+NavCard headline matches `/performance` TOTAL row exactly. Day-PnL and cum-PnL still
+use intraday_equity deque path (unchanged).
 
 ---
 
