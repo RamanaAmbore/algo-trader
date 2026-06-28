@@ -169,6 +169,10 @@
     <svg viewBox="0 0 {W} {height}" preserveAspectRatio="none"
          class="eq-svg" role="img" aria-label="Equity P&L curve"
          onpointermove={onPointerMove} onpointerleave={onPointerLeave}>
+      <!-- Plot-area background tint — first child so it sits behind
+           all grid lines, paths, and labels. --chart-bg-tint in app.css. -->
+      <rect class="chart-bg" x={PAD_L} y={PAD_T} width={innerW} height={innerH}
+            fill="var(--chart-bg-tint)" rx="0"/>
       <!-- Filled area (green above zero, red below) -->
       <path d={filledArea}
             fill="url(#eq-grad-up)"

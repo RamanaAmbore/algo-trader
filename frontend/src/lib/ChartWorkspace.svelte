@@ -1225,6 +1225,16 @@
     _chartLoaded = false;
     zoom = null;
     _chartHover = null;
+    // Clear bars + prime loading flag atomically before calling
+    // _loadHistorical so no render frame can see (_bars=[] &&
+    // !_histLoading), which would flash "No data available." while
+    // the fetch is actually about to start. Setting _histLoading=true
+    // here (in the same synchronous batch) keeps the component in the
+    // "Loading…" branch (line: _histLoading && !_bars.length) during
+    // the brief window between the effect firing and _loadHistorical
+    // setting its own copy of the flag.
+    _histLoading = true;
+    _histError = '';
     _bars = [];
     _spotBars = [];
     _greeks = null;
@@ -1495,6 +1505,10 @@
         onpointerleave={() => { if (!_chartPinned) _chartHover = null; }}
         onclick={_onChartClick}
       >
+        <!-- Plot-area background tint — first child so it sits behind
+             grid lines, candles, and overlays. --chart-bg-tint in app.css. -->
+        <rect class="chart-bg" x={CPAD_L} y={CPAD_T} width={_innerW} height={_innerH}
+              fill="var(--chart-bg-tint)" rx="0"/>
         <!-- Y-axis baseline (left edge of plot area) -->
         <line x1={CPAD_L} x2={CPAD_L} y1={CPAD_T} y2={CPAD_T + _innerH}
               stroke="rgba(200,216,240,0.25)" stroke-width="1"/>
@@ -1722,6 +1736,9 @@
              onpointermove={_onIntradayPointerMove}
              onpointerleave={() => { if (!_intradayPinned) _intradayHover = null; }}
              onclick={_onIntradayClick}>
+          <!-- Plot-area background tint — first child. --chart-bg-tint in app.css. -->
+          <rect class="chart-bg" x={P2L} y={P2T} width={W2 - P2L - P2R} height={H2 - P2T - P2B}
+                fill="var(--chart-bg-tint)" rx="0"/>
           <!-- Intraday Y-axis baseline -->
           <line x1={P2L} x2={P2L} y1={P2T} y2={H2 - P2B}
                 stroke="rgba(200,216,240,0.25)" stroke-width="1"/>

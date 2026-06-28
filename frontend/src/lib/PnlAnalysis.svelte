@@ -577,6 +577,11 @@
         onmousemove={handleMouseMove}
         onmouseleave={handleMouseLeave}
       >
+        <!-- Plot-area background tint — first child so it sits behind
+             grid lines, series paths, and hover elements.
+             --chart-bg-tint in app.css. -->
+        <rect class="chart-bg" x={PAD_L} y={PAD_T} width={W - PAD_L - PAD_R} height={H - PAD_T - PAD_B}
+              fill="var(--chart-bg-tint)" rx="0"/>
         {#each yGridLines as { pct, y }}
           <line x1={PAD_L} y1={y.toFixed(1)} x2={W - PAD_R} y2={y.toFixed(1)}
                 stroke="rgba(200,216,240,0.18)" stroke-width="1"

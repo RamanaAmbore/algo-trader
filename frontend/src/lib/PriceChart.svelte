@@ -451,6 +451,11 @@
          onpointerup={onPointerUp}
          onpointermove={onPointerMoveSvg}
          onclick={_onChartClick}>
+      <!-- Plot-area background tint — sits behind all other SVG children.
+           Colour defined via --chart-bg-tint in app.css so all chart
+           surfaces share the same subtle cyan fill. -->
+      <rect class="chart-bg" x={PAD_L} y={PAD_T} width={innerW} height={innerH}
+            fill="var(--chart-bg-tint)" rx="0"/>
       <!-- Y-axis grid + labels -->
       {#each yTicks as t}
         <line x1={PAD_L} x2={W - PAD_R} y1={t.y} y2={t.y}

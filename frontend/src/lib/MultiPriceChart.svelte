@@ -242,6 +242,10 @@
     <svg viewBox="0 0 {W} {height}" preserveAspectRatio="none" class="mpc-svg"
          role="img" aria-label="Multi-leg premium chart"
          onpointermove={onPointerMove} onpointerleave={onPointerLeave}>
+      <!-- Plot-area background tint — first child so it sits behind
+           all grid lines, paths, and labels. --chart-bg-tint in app.css. -->
+      <rect class="chart-bg" x={PAD_L} y={PAD_T} width={innerW} height={innerH}
+            fill="var(--chart-bg-tint)" rx="0"/>
       <!-- y-axis grid lines + labels (pct) -->
       {#each yTicks as v}
         <line x1={PAD_L} x2={W - PAD_R} y1={yOf(v)} y2={yOf(v)}

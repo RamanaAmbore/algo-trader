@@ -90,6 +90,14 @@
   --algo-red-bg-strong:    rgba(248, 113, 113, 0.22);
   --algo-red-border-soft:  rgba(248, 113, 113, 0.30);
   --algo-red-border:       rgba(248, 113, 113, 0.55);
+
+  /* Chart plot-area background tint — shared across ALL SVG chart
+     surfaces (PriceChart, MultiPriceChart, EquityCurve, OptionsPayoff,
+     PnlAnalysis benchmark chart). A single source of truth so palette
+     tweaks land in one place. Alpha 0.04 is intentionally faint:
+     visible enough to define the plot region against the card gradient
+     but never fighting grid lines, axis labels, or data curves. */
+  --chart-bg-tint: rgba(34, 211, 238, 0.04);
 }
 
 /* ── Global reset — kill browser blue focus rings and tap highlights ──────── */

@@ -779,6 +779,11 @@
          onpointermove={onPointerMove}
          onpointerleave={onPointerLeave}
          onclick={onClick}>
+      <!-- Plot-area background tint — first child so it sits behind
+           profit/loss shading, grid lines, and payoff curves.
+           --chart-bg-tint in app.css. -->
+      <rect class="chart-bg" x={PAD_L} y={PAD_T} width={innerW} height={innerH}
+            fill="var(--chart-bg-tint)" rx="0"/>
       <!-- Profit / loss shading (under the curves so the lines pop) -->
       <path d={fillProfit} fill="rgba(74,222,128,0.10)" stroke="none"/>
       <path d={fillLoss}   fill="rgba(248,113,113,0.10)" stroke="none"/>
