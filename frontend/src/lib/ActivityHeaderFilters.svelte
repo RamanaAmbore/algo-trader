@@ -77,8 +77,14 @@
      (frontend/src/lib/MultiSelect.svelte .rbq-multi-trigger). Same
      gradient bg, amber border, slate text, font-size, padding,
      min-height, border-radius. Keep these in lockstep when the
-     MultiSelect chrome changes. */
+     MultiSelect chrome changes.
+
+     max-width 5rem so the dropdown shows the longest label
+     ('Warning') without bleeding into adjacent controls; on mobile
+     (≤520px) we shrink the padding so the modal header can fit
+     title + account + level + close without wrap or overlap. */
   .act-level-sel {
+    max-width: 5rem;
     min-height: 1.55rem;
     padding: 0.25rem 1.4rem 0.25rem 0.5rem;
     background-image: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
@@ -111,5 +117,15 @@
   .act-level-sel option {
     background: #1d2a44;
     color: var(--algo-slate);
+  }
+  /* Mobile: tighter padding so the dropdown takes less horizontal
+     space. Caret SVG shifts left correspondingly. */
+  @media (max-width: 520px) {
+    .act-level-sel {
+      max-width: 4.2rem;
+      padding: 0.25rem 1.05rem 0.25rem 0.4rem;
+      background-position: center, right 0.3rem center;
+    }
+    .act-filters { gap: 0.3rem; }
   }
 </style>

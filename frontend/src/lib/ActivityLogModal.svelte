@@ -161,31 +161,16 @@
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     flex-shrink: 0;
-    /* Mobile: filters cluster (account + level dropdowns) is wider
-       than the available row at <520px and was overlapping the
-       close button. Wrap into a second row so the title + close
-       stay on row 1 and the filters drop below. Operator: "on
-       activity modal, the log level drop down is overlapping x
-       icon... on mobile." */
-    flex-wrap: wrap;
-    row-gap: 0.3rem;
+    /* Tight gap on mobile so the [title][filters][close] cluster
+       fits without the level dropdown overlapping the close. Title
+       is intentionally short ("Activity") leaving room for the two
+       compact dropdowns on the same row even at 360px. Operator:
+       "on mobile, there is more space on title. keep the drop
+       downs on header without overlapping or pushing x button on
+       modal on mobile." */
   }
-  :global(.alm-header .act-filters) {
-    /* On wrap, the filters take the full second row. order=2 keeps
-       them BELOW the title+close pair (which both stay at the
-       natural order=0/auto). */
-    order: 2;
-    flex-basis: 100%;
-    margin-left: 0;
-  }
-  @media (min-width: 520px) {
-    /* Desktop: undo the wrap-row treatment — filters sit inline,
-       margin-left:auto claims the spacer between title and close. */
-    :global(.alm-header .act-filters) {
-      order: 0;
-      flex-basis: auto;
-      margin-left: auto;
-    }
+  @media (max-width: 520px) {
+    .alm-header { gap: 0.3rem; padding: 0.35rem 0.55rem; }
   }
   .alm-title {
     font-family: ui-monospace, monospace;

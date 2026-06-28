@@ -38,14 +38,23 @@
      spacer slot so the close-button / CardControls cluster sits
      to the right of the dropdown without needing its own auto.
      Consumers can override via :global if their header wants a
-     different layout. */
+     different layout.
+
+     Mobile: NO min-width override — defer to AccountMultiSelect's
+     internal media query (5.6rem→4.4rem at ≤600px) so the
+     dropdown fits alongside title + level + close in the activity
+     modal header without overlap. Operator: "on mobile, there is
+     more space on title. keep the drop downs on header without
+     overlapping or pushing x button on modal on mobile." */
   .act-acct {
     display: inline-flex;
     align-items: center;
     margin-left: auto;
     font-size: 0.7rem;
-    min-width: 11rem;
   }
-  :global(.act-acct .multiselect-trigger),
-  :global(.act-acct .multiselect-control) { min-width: 11rem; }
+  @media (min-width: 520px) {
+    .act-acct { min-width: 11rem; }
+    :global(.act-acct .multiselect-trigger),
+    :global(.act-acct .multiselect-control) { min-width: 11rem; }
+  }
 </style>
