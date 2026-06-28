@@ -525,4 +525,83 @@ test.describe('dashboard refactor — news → activity + chart/equity swap + NA
       fullPage: true,
     });
   });
+
+  // ── Cross-page palette audit — dashboard vs /charts. Operator:
+  // "check for colour consistency in charts and dashboard". The
+  // .page-title-chip on every algo page shares a single global rule
+  // (color: #fbbf24). Card-header trio buttons (collapse / fullscreen
+  // / refresh) all use the cyan-400 family. If either drifts the test
+  // surfaces the offender's computed colour. Soft-skips when a card
+  // header trio isn't mounted yet (cold dev fetch in flight).
+  test('cross-page palette: page-title color matches between dashboard and /charts', async ({ page }) => {
+    test.setTimeout(60_000);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await signIn(page);
+
+    // 1) Dashboard page title computed colour
+    await page.goto(dashUrl(), { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2000);
+    const dashTitle = page.locator('.page-header .page-title-chip').first();
+    await expect(dashTitle).toBeVisible({ timeout: 5_000 });
+    const dashColour = await dashTitle.evaluate(el => getComputedStyle(el).color);
+
+    // 2) Charts page title computed colour
+    const chartsUrl = BASE
+      ? `${BASE}/charts?symbol=${encodeURIComponent('NIFTY 50')}`
+      : '/charts?symbol=NIFTY%2050';
+    await page.goto(chartsUrl, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2000);
+    const chartTitle = page.locator('.page-header .page-title-chip').first();
+    await expect(chartTitle).toBeVisible({ timeout: 5_000 });
+    const chartColour = await chartTitle.evaluate(el => getComputedStyle(el).color);
+
+    console.log('[palette] dashboard title:', dashColour, '| charts title:', chartColour);
+    expect(
+      chartColour,
+      `page-title color drift: dashboard=${dashColour} charts=${chartColour}. ` +
+      `Both must read amber (rgb(251, 191, 36)) from the .algo-content .page-title-chip global rule.`,
+    ).toBe(dashColour);
+    // Sanity — colour should be the canonical algo amber on both.
+    expect(dashColour).toBe('rgb(251, 191, 36)');
+  });
+
+  test('cross-page palette: card-header trio (refresh) shares cyan-400 between dashboard and /charts', async ({ page }) => {
+    test.setTimeout(60_000);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await signIn(page);
+
+    // The RefreshButton on .page-header is the canonical trio button —
+    // present on BOTH /dashboard and /charts page headers (charts page
+    // doesn't always mount a card-level trio because the chart fills
+    // its own viewport, but the page-header trio is always there).
+    await page.goto(dashUrl(), { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2000);
+    const dashRefresh = page.locator('.page-header .rf-btn').first();
+    let dashColour = '';
+    if (await dashRefresh.isVisible().catch(() => false)) {
+      dashColour = await dashRefresh.evaluate(el => getComputedStyle(el).color);
+    }
+
+    const chartsUrl = BASE
+      ? `${BASE}/charts?symbol=${encodeURIComponent('NIFTY 50')}`
+      : '/charts?symbol=NIFTY%2050';
+    await page.goto(chartsUrl, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(2000);
+    const chartRefresh = page.locator('.page-header .rf-btn').first();
+    let chartColour = '';
+    if (await chartRefresh.isVisible().catch(() => false)) {
+      chartColour = await chartRefresh.evaluate(el => getComputedStyle(el).color);
+    }
+
+    console.log('[palette] dashboard rf-btn:', dashColour, '| charts rf-btn:', chartColour);
+    if (!dashColour || !chartColour) {
+      console.log('[palette] rf-btn not mounted on one surface — skipping equality assertion');
+      return;
+    }
+    expect(
+      chartColour,
+      `RefreshButton color drift: dashboard=${dashColour} charts=${chartColour}. ` +
+      `Both must read cyan-400 (rgb(34, 211, 238)) from the canonical trio palette.`,
+    ).toBe(dashColour);
+  });
 });

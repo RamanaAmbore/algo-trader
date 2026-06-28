@@ -710,4 +710,129 @@ test.describe('chart overlays — all viewports', () => {
       }
     });
   }
+
+  // ── Toolbar height consistency — every interactive control on the
+  // chart toolbar (range pills, Select triggers, MultiSelect trigger,
+  // intraday toggle, symbol input) shares the SSOT --chart-toolbar-h
+  // height. Operator: "the button and dropdown sizes are inconsistent
+  // and increased height which needs to be corrected in charts". A
+  // single mismatched control fails the test with its name + actual
+  // pixel height so the offender is easy to spot in the report.
+  for (const W of [375, 1280]) {
+    test(`height consistency @ ${W}px — every toolbar control shares one height`, async ({ page }) => {
+      test.setTimeout(60_000);
+      await injectSession(page, _session);
+      await page.setViewportSize({ width: W, height: 800 });
+      await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+      await waitForChart(page);
+      await page.waitForTimeout(400);
+
+      // Each entry: { name, locator }. Heights gathered then compared
+      // pairwise to a tolerance of ±2 px (rounding + sub-pixel layout).
+      const controls = [
+        { name: 'range 1D',            sel: '.cw-range-group .cw-range-btn >> nth=0' },
+        { name: 'range 1W',            sel: '.cw-range-group .cw-range-btn >> nth=1' },
+        { name: 'range 1M',            sel: '.cw-range-group .cw-range-btn >> nth=2' },
+        { name: 'intraday toggle',     sel: '.cw-intraday-btn' },
+        { name: 'symbol type select',  sel: '.cw-type-wrap .rbq-select-trigger' },
+        { name: 'chart type select',   sel: '.cw-type-chart-wrap .rbq-select-trigger' },
+        { name: 'indicators trigger',  sel: '.cw-overlay-panel .rbq-multi-trigger' },
+        { name: 'symbol search input', sel: '.cw-picker .ssi-input' },
+      ];
+
+      const heights = [];
+      for (const c of controls) {
+        const box = await page.locator(c.sel).boundingBox();
+        if (!box) {
+          // Controls behind a feature flag (no overlay panel, no
+          // symbol input on compact mount) — skip rather than fail.
+          continue;
+        }
+        heights.push({ name: c.name, h: Math.round(box.height) });
+      }
+      expect(
+        heights.length,
+        'expected at least 4 toolbar controls visible to compare heights',
+      ).toBeGreaterThanOrEqual(4);
+
+      const baseline = heights[0].h;
+      for (const { name, h } of heights) {
+        expect(
+          Math.abs(h - baseline) <= 2,
+          `Toolbar height drift @ ${W}px: "${name}" = ${h}px, baseline "${heights[0].name}" = ${baseline}px. ` +
+          `All heights: ${heights.map(x => `${x.name}=${x.h}`).join(' | ')}`,
+        ).toBe(true);
+      }
+    });
+  }
+
+  // ── Active-state palette — cyan-400 SSOT across active range +
+  // active intraday toggle. Operator: "check for colour consistency in
+  // charts and dashboard". Active state must match
+  // .algo-tab[aria-selected=true].algo-tab-c-cyan in app.css =
+  // rgb(34, 211, 238). Comparison is hex-tolerant (browsers serialise
+  // computed colour as `rgb(R, G, B)`).
+  test('palette: active range pill renders cyan-400 (canonical active state)', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page, _session);
+    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+
+    // 1M is the default range — already active on first load.
+    const active = page.locator('.cw-range-group .cw-range-btn.active').first();
+    await expect(active).toBeVisible({ timeout: 5_000 });
+    const colour = await active.evaluate(el => getComputedStyle(el).color);
+    expect(
+      colour,
+      `Active range pill colour expected rgb(34, 211, 238) cyan-400, got ${colour}`,
+    ).toBe('rgb(34, 211, 238)');
+  });
+
+  test('palette: intraday toggle active state renders cyan-400', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page, _session);
+    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+
+    const intra = page.locator('.cw-intraday-btn');
+    await expect(intra).toBeVisible({ timeout: 5_000 });
+    // Click to activate — toggle starts OFF.
+    await intra.click();
+    await page.waitForTimeout(200);
+    await expect(intra).toHaveClass(/active/, { timeout: 2_000 });
+    const colour = await intra.evaluate(el => getComputedStyle(el).color);
+    expect(
+      colour,
+      `Intraday active colour expected rgb(34, 211, 238) cyan-400, got ${colour}`,
+    ).toBe('rgb(34, 211, 238)');
+  });
+
+  // MultiSelect trigger should not carry its own competing border —
+  // its visual frame is the inherited .rbq-multi-trigger style which
+  // matches Select triggers. Operator: "MultiSelect trigger color
+  // matches Select triggers".
+  test('palette: MultiSelect indicators trigger shares border style with Select triggers', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page, _session);
+    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+
+    const multi = page.locator('.cw-overlay-panel .rbq-multi-trigger');
+    const sel   = page.locator('.cw-type-chart-wrap .rbq-select-trigger');
+    await expect(multi).toBeVisible({ timeout: 5_000 });
+    await expect(sel).toBeVisible({ timeout: 5_000 });
+
+    // Both triggers should share the canonical popup-trigger background
+    // gradient — neither carries a competing sky/cyan border tint on
+    // the wrapper. Pull border-color and assert they're close (both
+    // amber-soft α 0.25 → exact match) or BOTH none/transparent.
+    const [multiBorder, selBorder] = await Promise.all([
+      multi.evaluate(el => getComputedStyle(el).borderColor),
+      sel.evaluate(el => getComputedStyle(el).borderColor),
+    ]);
+    expect(
+      multiBorder,
+      `Both triggers should share border style. MultiSelect=${multiBorder} Select=${selBorder}`,
+    ).toBe(selBorder);
+  });
 });

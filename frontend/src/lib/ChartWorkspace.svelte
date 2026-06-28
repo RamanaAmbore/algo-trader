@@ -2166,7 +2166,16 @@
     flex-shrink: 0;
   }
   .cw-range-btn {
-    padding: 0.18rem 0.55rem;
+    /* SSOT chart-toolbar height — keeps range pills, Select triggers,
+       MultiSelect trigger, symbol input and intraday chip on the same
+       baseline. inline-flex + align-items center so the text glyph
+       sits on the visual midline regardless of font ascent metrics. */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: var(--chart-toolbar-h);
+    min-height: var(--chart-toolbar-h);
+    padding: 0 0.55rem;
     background: transparent;
     border: 0;
     border-right: 1px solid rgba(255, 255, 255, 0.06);
@@ -2178,23 +2187,26 @@
     cursor: pointer;
   }
   .cw-range-btn:last-child { border-right: 0; }
-  .cw-range-btn:hover { background: rgba(125, 211, 252, 0.10); color: var(--algo-slate); }
+  .cw-range-btn:hover { background: var(--algo-cyan-bg-soft); color: var(--algo-slate); }
   .cw-range-btn.active {
-    background: rgba(251, 191, 36, 0.18);
-    color: #fbbf24;
+    /* Active state — cyan-400 (canonical). Operator: "check for colour
+       consistency in charts and dashboard". Matches card-header trio
+       (collapse / fullscreen / refresh) + AlgoTabs `algo-tab-c-cyan`. */
+    background: var(--algo-cyan-bg);
+    color: var(--algo-cyan);
     font-weight: 800;
   }
   /* Standalone intraday chip — same shape as a range pill, but
      rounded on both ends (not in the segmented .cw-range-group). */
   .cw-intraday-btn {
-    border: 1px solid rgba(125, 211, 252, 0.32);
+    border: 1px solid var(--algo-cyan-border-soft);
     border-radius: 4px;
     flex-shrink: 0;
   }
   .cw-intraday-btn.active {
-    background: rgba(125, 211, 252, 0.18);
-    border-color: var(--algo-sky-border);
-    color: #7dd3fc;
+    background: var(--algo-cyan-bg);
+    border-color: var(--algo-cyan-border);
+    color: var(--algo-cyan);
   }
 
   /* ── Toolbar Select wrappers ─────────────────────────────── */
@@ -2202,6 +2214,18 @@
     flex-shrink: 0;
     min-width: 6rem;
     max-width: 9rem;
+  }
+  /* Force every Select trigger inside the toolbar (chart-type, symbol
+     type filter) to the SSOT height. Without this they default to the
+     Select component's own min-height (1.55rem ≈ 25 px) which left
+     them visibly shorter than the 28 px range pills. Operator: "the
+     button and dropdown sizes are inconsistent". */
+  .cw-toolbar-select :global(.rbq-select-trigger),
+  .cw-type-wrap :global(.rbq-select-trigger) {
+    height: var(--chart-toolbar-h);
+    min-height: var(--chart-toolbar-h);
+    padding-top: 0;
+    padding-bottom: 0;
   }
   /* Chart-type select lives in the picker row, immediately to the right
      of the symbol search — flush-left layout per the canonical card-
@@ -2213,35 +2237,40 @@
   .cw-type-chart-wrap {
     margin-left: 0;
   }
+  /* Symbol search input also rides the SSOT toolbar height so it lines
+     up with the chart-type Select beside it. Operator: "the button and
+     dropdown sizes are inconsistent". Scoped to .cw-picker so the
+     override doesn't leak into other surfaces (Pulse / Orders) that
+     mount SymbolSearchInput at its native compact height. */
+  .cw-picker :global(.ssi-input) {
+    height: var(--chart-toolbar-h);
+    min-height: var(--chart-toolbar-h);
+    padding-top: 0;
+    padding-bottom: 0;
+    box-sizing: border-box;
+  }
 
   /* ── Overlays panel — inline in controls row (row 2, after 1Y) ── */
   /* Previously position:absolute top-right of the chart; now a flex
-     item in .cw-controls so it lives beside the range pill group. */
+     item in .cw-controls so it lives beside the range pill group.
+     Wrapper is transparent — the inner .rbq-multi-trigger carries its
+     own border (matches Select trigger palette: amber-soft border on
+     a navy gradient). Operator: "MultiSelect trigger color matches
+     Select triggers". */
   .cw-overlay-panel {
     position: relative;
     flex-shrink: 0;
-    background: rgba(29, 42, 68, 0.82);
-    border: 1px solid rgba(125, 211, 252, 0.32);
-    border-radius: 3px;
-    padding: 2px;
     pointer-events: auto;
   }
-  /* Compact trigger so it reads as a chart control, not a form field */
+  /* Trigger height locked to SSOT var; padding zeroed vertically so the
+     fixed height drives the box. Hover/focus state mirrors Select
+     trigger (amber-soft → amber on intent). */
   .cw-overlay-panel :global(.rbq-multi-trigger) {
-    background: transparent;
-    border: 0;
-    color: var(--algo-slate);
-    font-size: 0.6rem;
-    padding: 0.18rem 0.4rem;
-    min-height: 1.2rem;
-  }
-  .cw-overlay-panel :global(.rbq-multi-trigger:hover:not(:disabled)) {
-    background: rgba(125, 211, 252, 0.10);
-    border: 0;
-  }
-  .cw-overlay-panel :global(.rbq-multi-trigger:focus) {
-    outline: none;
-    border: 0;
+    height: var(--chart-toolbar-h);
+    min-height: var(--chart-toolbar-h);
+    padding-top: 0;
+    padding-bottom: 0;
+    font-size: 0.62rem;
   }
   /* Dropdown panel — keep right-aligned so it doesn't clip viewport,
      and lifted above the chart SVG via z-index so the checkbox list is
@@ -2652,10 +2681,10 @@
       flex: 1 1 0;
       min-width: 0;
     }
-    /* ssi-input: fills wrapper width + 2rem min-height = 32px tap target */
+    /* ssi-input: fills wrapper width. Height comes from the SSOT var
+       (--chart-toolbar-h = 32px on mobile via app.css :root override). */
     .cw-picker :global(.ssi-input) {
       width: 100%;
-      min-height: 2rem;
     }
 
     /* Chart-type select — fixed narrow width; auto-margin removed so
@@ -2669,14 +2698,6 @@
       min-width: 0;
     }
 
-    /* Select triggers in picker row — min-height 2rem = 32px tap target.
-       !important: Svelte 5 :where() scoping gives equal specificity, so
-       the component's own min-height:1.55rem may win by source order. */
-    .cw-type-wrap :global(.rbq-select-trigger),
-    .cw-type-chart-wrap :global(.rbq-select-trigger) {
-      min-height: 2rem !important;
-    }
-
     /* Row 2 — prevent wrapping; tighter gaps + padding */
     .cw-controls {
       flex-wrap: nowrap;
@@ -2685,38 +2706,31 @@
     }
 
     /* Intraday button — tighter horizontal padding; show short label.
-       min-height: 2rem ensures tap target ≥ 32px on mobile. */
+       Height comes from --chart-toolbar-h (32 px at this breakpoint). */
     .cw-intraday-btn {
-      padding: 0.18rem 0.32rem;
+      padding: 0 0.32rem;
       font-size: 0.58rem;
       flex-shrink: 0;
-      min-height: 2rem;
     }
     .cw-intraday-full { display: none; }
     .cw-intraday-short { display: inline; }
 
-    /* Range pills — squeeze horizontal padding while keeping ≥ 32px height
-       (min-height: 2rem = 32px at 16px base). */
+    /* Range pills — squeeze horizontal padding; height stays on SSOT var. */
     .cw-range-btn {
-      padding: 0.18rem 0.3rem;
+      padding: 0 0.3rem;
       font-size: 0.58rem;
-      min-height: 2rem;
     }
 
-    /* Overlay panel — just enough to show "Overlays" text.
-       !important on min-height overcomes MultiSelect.svelte's scoped
-       min-height:1.55rem which carries a higher-specificity component
-       hash selector on the same .rbq-multi-trigger element. */
+    /* Overlay panel — just enough to show "Overlays" text. Height
+       inherited from --chart-toolbar-h. */
     .cw-overlay-panel {
       flex-shrink: 0;
     }
     .cw-overlay-panel :global(.rbq-multi-trigger-wrap),
     .cw-overlay-panel :global(.rbq-multi-trigger) {
-      padding: 0.18rem 0.28rem;
+      padding: 0 0.28rem;
       font-size: 0.58rem;
       white-space: nowrap;
-      /* !important: MultiSelect scoped rule wins on specificity otherwise */
-      min-height: 2rem !important;
     }
   }
 

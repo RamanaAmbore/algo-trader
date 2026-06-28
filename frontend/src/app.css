@@ -98,6 +98,20 @@
      visible enough to define the plot region against the card gradient
      but never fighting grid lines, axis labels, or data curves. */
   --chart-bg-tint: rgba(34, 211, 238, 0.04);
+
+  /* Chart toolbar control height — SSOT for every interactive control on
+     the ChartWorkspace toolbar (range pills, Select triggers,
+     MultiSelect trigger, intraday toggle, symbol input). Desktop = 28 px
+     for tight density; mobile = 32 px tap target. Overridden in the
+     @media block below. Operator: "the button and dropdown sizes are
+     inconsistent and increased height which needs to be corrected in
+     charts" — single var keeps every control aligned even when one
+     class's padding/font drifts. */
+  --chart-toolbar-h: 28px;
+}
+
+@media (max-width: 600px) {
+  :root { --chart-toolbar-h: 32px; }
 }
 
 /* ── Global reset — kill browser blue focus rings and tap highlights ──────── */
