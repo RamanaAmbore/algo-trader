@@ -151,7 +151,7 @@
   /** @type {string[]} */
   let _actAvailableAccounts = $state([]);
   /** @type {'all'|'error'|'warning'|'info'} */
-  let _actLevelFilter = $state('error');
+  let _actLevelFilter = $state('all');
   /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */
   let _statusFilter = $state('all');
 

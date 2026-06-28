@@ -45,7 +45,7 @@
   // Log level filter — operator: "the default is error." Persists
   // across tab changes inside LogPanel because state lives here.
   /** @type {'all'|'error'|'warning'|'info'} */
-  let _levelFilter = $state('error');
+  let _levelFilter = $state('all');
 
   let _modalEl = $state(/** @type {HTMLElement|null} */ (null));
   let _closeBtnEl = $state(/** @type {HTMLButtonElement|null} */ (null));

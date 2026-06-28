@@ -42,7 +42,7 @@
     /** Active log level filter — bindable so parent's ActivityHeaderFilters
      *  drives it. Default 'error' per operator request — only loud
      *  rows by default; 'all' for the full paper trail. */
-    levelFilter         = $bindable(/** @type {'all'|'error'|'warning'|'info'} */ ('error')),
+    levelFilter         = $bindable(/** @type {'all'|'error'|'warning'|'info'} */ ('all')),
   } = $props();
 </script>
 

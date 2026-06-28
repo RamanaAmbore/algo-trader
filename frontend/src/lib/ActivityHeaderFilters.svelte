@@ -27,9 +27,10 @@
   let {
     /** Selected account codes — bindable. */
     accountFilter     = $bindable(/** @type {string[]} */ ([])),
-    /** Active log-level filter — bindable. Default 'error' per
-     *  operator request: "the default is error." */
-    levelFilter       = $bindable(/** @type {'all'|'error'|'warning'|'info'} */ ('error')),
+    /** Active log-level filter — bindable. Default 'all' (operator
+     *  reverted earlier 'error' default to 'all' so the conn / system
+     *  tabs show their INFO paper trail by default). */
+    levelFilter       = $bindable(/** @type {'all'|'error'|'warning'|'info'} */ ('all')),
     /** Account codes present in the currently-loaded rows. */
     availableAccounts = /** @type {string[]} */ ([]),
   } = $props();

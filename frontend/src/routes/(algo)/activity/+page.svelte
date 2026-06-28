@@ -28,7 +28,7 @@
   /** @type {string[]} */
   let _availableAccounts = $state([]);
   /** @type {'all'|'error'|'warning'|'info'} */
-  let _levelFilter       = $state('error');
+  let _levelFilter       = $state('all');
 
   // Manual-refresh bump — clicking the page-header Refresh icon
   // rotates the badge and asks ActivityLogSurface to re-poll
