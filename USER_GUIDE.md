@@ -394,9 +394,22 @@ The **execution-mode banner** at the top is loud on purpose: green = "every brok
 
 ## Brokers — managing accounts
 
-`/admin/brokers` is the CRUD UI for broker credentials. Add a new Kite account with API key / secret / password / TOTP seed; encrypts secrets at rest with a key derived from `cookie_secret`; never returns the secrets back through the API. Every save reloads the platform's connection map so the next broker call uses the new credentials — no service restart.
+`/admin/brokers` is the CRUD UI for broker credentials. Add a new Kite account
+with API key / secret / password / TOTP seed; encrypts secrets at rest with a
+key derived from `cookie_secret`; never returns the secrets back through the API.
+Every save reloads the broker connection map so the next call uses the new
+credentials — no service restart required.
 
-Each row has a **Test** button that hits `broker.profile()` to verify the credentials authenticate. ✓ next to the button means it's working; ✗ shows the broker's error in the tooltip.
+Each row has a **Test** button that hits `broker.profile()` to verify the
+credentials authenticate. ✓ next to the button means it's working; ✗ shows the
+broker's error in the tooltip.
+
+**Behind the scenes**: Broker sessions are managed by a separate background
+service (`ramboq_conn.service`). This service handles Kite WebSocket streaming,
+token lifecycle for all three brokers (Kite / Dhan / Groww), and lives
+independently from the main web API. When you edit credentials here, the service
+picks up the changes automatically within a few seconds. You never need to
+restart it manually — it's designed to be transparent to your workflow.
 
 ---
 

@@ -843,15 +843,125 @@ Rows older than retention policy are purged daily at 03:00 IST:
 
 ---
 
+## Broker connection service (`ramboq_conn.service`)
+
+**Overview**: Separate systemd service that owns all broker sessions (Kite
+WebSocket, Dhan/Groww tokens). Runs on `/tmp/ramboq_conn.sock` (UDS). Main API
+(`ramboq_api`) is client-only when `RAMBOQ_USE_CONN_SERVICE=1` is set.
+
+### Installation + systemd
+
+**File paths**:
+- Service file: `/etc/systemd/system/ramboq_conn.service`
+- Drop-in for main API: `/etc/systemd/system/ramboq_api.service.d/conn.conf`
+- Drop-in for dev API: `/etc/systemd/system/ramboq_dev_api.service.d/conn.conf`
+
+**Check service status**:
+```bash
+systemctl status ramboq_conn
+journalctl -fu ramboq_conn  # tail logs
+```
+
+**Manual restart** (broker state reset):
+```bash
+systemctl restart ramboq_conn
+```
+
+**Reload after broker code changes**:
+`deploy.sh` auto-restarts if files under `backend/brokers/` changed.
+Frontend-only pushes don't touch conn-service.
+
+### Logs and troubleshooting
+
+Conn logs live at `/opt/ramboq/.log/conn_log_file` (same directory as main API
+logs). Same rotation: 5MB × 5 files.
+
+**View logs**:
+```bash
+tail -f /opt/ramboq/.log/conn_log_file
+# Or via navbar: /admin/activity → Conn tab
+```
+
+**Common issues**:
+
+| Symptom | Check |
+|---|---|
+| Main API 500s on broker call | `systemctl status ramboq_conn` — is the service running? Check `/tmp/ramboq_conn.sock` exists. |
+| Ticker stale (no LTP updates) | Conn service health: `curl --unix-socket /tmp/ramboq_conn.sock http://localhost/health` (should be 200 with `{"status": "healthy"}`). Check `/dev/shm/ramboq_ticks` exists (mmap buffer). |
+| "Failed to connect to socket" errors in main API logs | Conn service crashed or didn't start. Check `systemctl start ramboq_conn` manually. |
+| Postback 401 errors | Conn service must restart after broker credentials change (so it reloads API secrets). Automatic via deploy, or manual `systemctl restart ramboq_conn`. |
+
+### Health endpoint
+
+`GET /api/admin/health` (main API) includes conn-service status under `broker_connection`:
+
+```json
+{
+  "broker_connection": {
+    "status": "healthy",
+    "ticker": {
+      "started": true,
+      "connected": true,
+      "stale_count": 0,
+      "max_age_seconds": 42
+    }
+  }
+}
+```
+
+- **status**: "healthy" (all checks pass) / "degraded" (service reachable but ticker down) / "unreachable" (UDS error)
+- **ticker.started**: Kite WebSocket initialized
+- **ticker.connected**: Kite WebSocket actively receiving ticks
+- **stale_count**: # symbols with no tick in last 60s (even if subscribed)
+- **max_age_seconds**: oldest stale symbol age
+
+### Dev shares prod UDS
+
+By design, `ramboq_dev_api` mounts the same `/tmp/ramboq_conn.sock` as prod.
+**No separate dev conn-service instance** — dev API uses prod's broker sessions.
+
+This avoids:
+- Parallel Dhan logins (single IP per token; the same IP source-bound account
+  can't have two Dhan sessions).
+- Operator confusion (two separate ticker streams, duplicate account load).
+- Extra systemd management.
+
+When you run dev:
+1. Prod conn-service must be running (or will fail immediately)
+2. Dev API connects to prod broker sessions over UDS
+3. A broker credential update on prod's `/admin/brokers` is live to dev instantly
+
+**If you need isolated dev testing**:
+- Stop ramboq_conn: `systemctl stop ramboq_conn`
+- Drop `/tmp/ramboq_conn.sock` if stale: `rm /tmp/ramboq_conn.sock`
+- Unset `RAMBOQ_USE_CONN_SERVICE=1` from dev API drop-in, restart dev
+- Dev API will spawn its own local Connections() singleton
+
+---
+
 ## Brokers — `/admin/brokers`
 
-Manage accounts via UI, no SSH/YAML/restart. Page: account table (code | broker | API key | source IP | status pill | notes | Test/Edit/Delete) + **+ New account** button.
+Manage accounts via UI, no SSH/YAML/restart. Page: account table (code | broker
+| API key | source IP | status pill | notes | Test/Edit/Delete) + **+ New
+account** button.
 
-**Add account**: code (unique) · broker (Zerodha Kite / Dhan / Groww) · API key/secret/password/TOTP (encrypted at rest) · source IP (IPv6 for multi-account Kite binding) · notes. Click **Test** to verify.
+**Add account**: code (unique) · broker (Zerodha Kite / Dhan / Groww) · API
+key/secret/password/TOTP (encrypted at rest) · source IP (IPv6 for multi-account
+Kite binding) · notes. Click **Test** to verify.
 
-**Edit**: click Edit → secret fields blank by default (blank = unchanged) → edit + Save.
+**Edit**: click Edit → secret fields blank by default (blank = unchanged) → edit
++ Save. Change takes effect when conn-service picks up the DB update (typically
+within 2–3 seconds).
 
-**Capabilities endpoint** (`GET /api/admin/brokers/{account}/capabilities`): returns `BrokerCapabilities` dataclass (gtt_single / gtt_oco / gtt_modify / etc.) for in-page feature gating (OrderTicket warning chips).
+**How it works**: Credentials are stored encrypted in `broker_accounts` DB table.
+When you save a new account or edit one, the main API signals the conn-service
+via a health-check call (or direct RPC in future versions). The conn-service
+reloads broker credentials and applies them to its live sessions. No main API
+restart required.
+
+**Capabilities endpoint** (`GET /api/admin/brokers/{account}/capabilities`):
+returns `BrokerCapabilities` dataclass (gtt_single / gtt_oco / gtt_modify / etc.)
+for in-page feature gating (OrderTicket warning chips).
 
 ### Market-status resolution
 

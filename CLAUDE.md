@@ -47,18 +47,42 @@ Main coordinator + specialized subagents in `~/.claude/agents/`:
 |---|---|---|---|---|
 | Prod | `main` | `/opt/ramboq` | 8502 | ramboq.com |
 | Dev | other | `/opt/ramboq_dev` | 8503 | dev.ramboq.com |
+| Conn service | both | `/opt/ramboq` (shared data) | UDS | `/tmp/ramboq_conn.sock` |
 
-Push → webhook (`webhook.ramboq.com/hooks/update`) → `dispatch.sh` → `deploy.sh` → restart.
+Push → webhook (`webhook.ramboq.com/hooks/update`) → `dispatch.sh` → `deploy.sh`
+→ restart ramboq_api + ramboq_dev_api. Conn service restarts only if broker-layer
+files changed (via `deploy.sh` `CONN_TOUCHED` flag).
 
-**Note**: `webhook.ramboq.com` and `dev.ramboq.com` must be grey cloud (DNS only) in Cloudflare.
+**Note**: `webhook.ramboq.com` and `dev.ramboq.com` must be grey cloud (DNS only)
+in Cloudflare. Conn service runs under `ramboq_conn.service` (separate systemd
+unit, independent restart cadence).
 
 ---
 
 ## Key File Map
 
+### Broker isolation (`backend/brokers/`)
+Centralized broker layer — all Kite/Dhan/Groww logic lives here. Includes
+adapters, connection management, ticker streaming, and credential encryption.
+
+- **`adapters/{kite,dhan,groww}.py`** — broker-specific implementations
+  (profile, quote, place_order, positions, holdings, margins, etc).
+- **`connections.py`** — `Connections` singleton; 2FA, token refresh, IPv6
+  binding, DB-backed credential encryption (Fernet). On `RAMBOQ_USE_CONN_SERVICE`
+  mode, short-circuits local logins and returns `RemoteBroker` stubs instead.
+- **`broker_apis.py`** — `fetch_holdings / positions / margins` + `@for_all_accounts`.
+  Holiday calendar cached per `(exchange, date)`. When `RAMBOQ_USE_CONN_SERVICE=1`,
+  proxies calls to conn_service via `broker_client`.
+- **`kite_ticker.py`** — `TickerManager` singleton (one Kite WebSocket per
+  process). On `RAMBOQ_USE_CONN_SERVICE=1`, local API reads from shared-memory
+  mmap buffer (`/dev/shm/ramboq_ticks`) via `MmapTickReader` instead.
+- **`service/`** — standalone Litestar app on UDS `/tmp/ramboq_conn.sock`.
+  Owns all broker sessions (Kite WebSocket, token lifecycle for all three
+  brokers). Restart independent of `ramboq_api`.
+- **`client/`** — sync/async clients for service-to-API RPC over UDS + HTTP.
+  Used by main API when `RAMBOQ_USE_CONN_SERVICE=1`.
+
 ### Helpers (`backend/shared/helpers/`)
-- **`broker_apis.py`** — `fetch_holdings / positions / margins` + `@for_all_accounts`. Holiday calendar cached per `(exchange, date)`.
-- **`connections.py`** — `Connections` singleton; 2FA, token refresh, IPv6 binding per account.
 - **`decorators.py`** — `@for_all_accounts`, `@retry_kite_conn()`, `@track_it()`, `@lock_it_for_update`
 - **`utils.py`** — YAML loaders, validators, `get_nearest_time()`, `mask_column()`, `mask_account()`.
 - **`genai_api.py`** — Gemini 2.5 Flash (gated `cap_in_dev.genai`).
@@ -122,7 +146,8 @@ Gate via `is_enabled('<cap>')` in `utils.py`. On main always True; on dev reads 
 - `alert_rate_window_min` (10) — minutes of P&L for rate calculation.
 - Market hours gate: skip `schedule: market_hours` agents outside segment-open hours.
 
-**Deploy notifications**: Telegram-only (May 2026).
+**Deploy notifications**: Telegram-only (May 2026). Conn-service restart status
+also monitored (independent cadence; only logs if file changes detected).
 
 ---
 
@@ -159,17 +184,31 @@ Open/close summaries sent at `open_summary_offset_minutes` / `close_summary_offs
 
 ## KiteTicker / SSE live-LTP pipeline
 
-Persistent Kite WebSocket → BroadcastBus → asyncio.Queue per SSE client → EventSource (browser auto-reconnect) → `liveLtp` store → 250ms throttled Svelte effect → ag-Grid.
+**Before conn-service**: Persistent Kite WebSocket → BroadcastBus → asyncio.Queue
+per SSE client → EventSource (browser auto-reconnect) → `liveLtp` store → 250ms
+throttled Svelte effect → ag-Grid. TickerManager ran in the main API process.
 
-**TickerManager singleton** — one WebSocket per process (`--workers 1` in prod). Twisted reactor thread holds ticks; asyncio route handlers read via `get_ltp()` with brief lock (O(1) hold-time, non-reentrant).
+**After conn-service isolation**: WebSocket lives in conn_service. Ticks written
+to shared-memory buffer (`/dev/shm/ramboq_ticks`, fixed 4096 slots, version-word
+atomic). Main API reads at byte-read latency via `MmapTickReader`. Background
+poller (50ms) tails version word + publishes deltas to local BroadcastBus (so
+SSE + frontend subscriptions stay unchanged).
 
-**Failover**: `_task_ticker_watchdog` detects >60s disconnect, restarts with next eligible account, 60s rate-limit cool-off, Telegram alert >30min.
+**Failover**: 30s watchdog loop in conn_service detects `started=true AND
+connected=true`. On failure, retries `_try_start_ticker()` until success. Handles
+chicken-and-egg at boot when `rebuild_from_db` is still minting Kite tokens.
 
-**Subscriptions**: Watchlist + holdings + positions at startup + dynamic on add. `subscribe()` idempotent.
+**Subscriptions**: Watchlist + holdings + positions at startup + dynamic on add.
+`subscribe()` idempotent. Managed by conn_service.
 
-**Steady-state cost (market hours)**: ~0 REST calls + 1 persistent WS. LTP read from `_tick_map` (zero quota); sparkline historical 1 call on cache miss (3 req/sec budget, pre-warmed).
+**Steady-state cost (market hours)**: ~0 REST calls + 1 persistent WS in conn_service.
+Main API LTP read from mmap (zero quota, zero latency). Sparkline historical 1
+call on cache miss (3 req/sec budget, pre-warmed).
 
-**Health surface** (`GET /api/admin/health`) — `ticker.stale_count`, `ticker.max_age_seconds`, `ticker.stale_top` (up to 20 worst-offender entries formatted `"SYMBOL@<age>s"` or `"SYMBOL@never"`). Distinguishes "subscribed but Kite stopped emitting" from "subscribe call never landed".
+**Health surface** (`GET /api/admin/health`) — `ticker.stale_count`, `ticker.max_age_seconds`,
+`ticker.stale_top` (up to 20 worst-offender entries formatted `"SYMBOL@<age>s"` or
+`"SYMBOL@never"`). Distinguishes "subscribed but Kite stopped emitting" from
+"subscribe call never landed".
 
 ---
 
@@ -233,7 +272,53 @@ Operators manage via `/admin/brokers`, not `secrets.yaml` on server. Credentials
 
 **Account masking**: `mask_account(s: str) -> str` replaces digits with `#`. `mask_column(pd.Series)` for DataFrames. Used in all alerts + summaries.
 
-**Singleton Connections**: Thread-safe, access as `connections.Connections()`. Initialized once at startup.
+**Singleton Connections**: Thread-safe, access as `connections.Connections()`.
+Initialized once at startup. On `RAMBOQ_USE_CONN_SERVICE=1`: short-circuits local
+broker logins; `rebuild_from_db()` queries broker_accounts DB but populates only
+the registry with `RemoteBroker` stubs that proxy over UDS to conn_service.
+
+---
+
+## Broker isolation (slices 1–4)
+
+**Architecture**: Broker code isolated in `backend/brokers/` with separate
+systemd service (`ramboq_conn.service`) that owns all sessions (Kite WebSocket,
+Dhan/Groww tokens). Main API opts in via `RAMBOQ_USE_CONN_SERVICE=1` env flag.
+
+**Four slices**:
+
+1. **File reorganization** — `backend/shared/brokers/` → `backend/brokers/adapters/`;
+   `backend/shared/helpers/{connections,broker_apis,kite_ticker}.py` → `backend/brokers/`;
+   `backend/conn_service/` → `backend/brokers/service/`; `backend/conn_client/` →
+   `backend/brokers/client/`.
+
+2. **Separate UDS service** — `/etc/systemd/system/ramboq_conn.service` (Litestar
+   app on `/tmp/ramboq_conn.sock`) owns broker lifecycle. Restart independent of
+   ramboq_api. Implements `/health`, `/rebuild`, `/ticker/status`, `/ticker/subscribe`,
+   `/postback` endpoints. HMAC-protected for postback route.
+
+3. **Main API changes**: When `RAMBOQ_USE_CONN_SERVICE=1`:
+   - `Connections.rebuild_from_db()` skips local logins; returns RemoteBroker stubs.
+   - `registry.get_broker(account)` proxies calls over UDS via `broker_client`.
+   - `broker_apis.fetch_holdings/positions/margins` → `@for_all_accounts` still works;
+     internally routes through RemoteBroker proxies.
+   - `get_ticker()` returns `MmapTickReader` instead of `TickerManager` (reads
+     `/dev/shm/ramboq_ticks` at byte-read latency).
+   - Postback HMAC verification stays in conn_service (api_secret never leaves).
+
+4. **Shared-memory ticks** — KiteTicker writes to `/dev/shm/ramboq_ticks`
+   (fixed 4096 slots, version-word atomic for lock-free reads). Background poller
+   (50ms) tails version word, publishes deltas to local BroadcastBus. SSE clients
+   unaffected; frontend subscriptions still work.
+
+**Dev setup**: `ramboq_dev_api` uses same `/tmp/ramboq_conn.sock` as prod.
+No parallel Dhan logins (avoids single-IP-token-per-app limits). Set
+`RAMBOQ_USE_CONN_SERVICE=1` on both services via drop-in config files
+(`webhook/ramboq_api.service.d-conn.conf` and `webhook/ramboq_dev_api.service.d-conn.conf`).
+
+**Deploy integration**: `deploy.sh` sets `CONN_TOUCHED=true` only when files under
+`backend/brokers/` or `webhook/ramboq_conn.service` change. Otherwise conn_service
+stays warm across API restarts. Frontend-only pushes touch neither service.
 
 ---
 
@@ -245,6 +330,8 @@ Operators manage via `/admin/brokers`, not `secrets.yaml` on server. Credentials
 - Don't use `2>>&1` in systemd — use `2>&1` (>> causes bash syntax errors)
 - Always `chown www-data -R` after server ops: `/opt/ramboq*/.git /opt/ramboq*/.log`
 - Weekends hardcoded closed — special sessions need explicit override
+- Don't try to run main API without conn-service when `RAMBOQ_USE_CONN_SERVICE=1`
+  is set — service startup will fail with socket connection errors
 
 ---
 
