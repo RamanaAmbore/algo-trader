@@ -254,6 +254,7 @@
     // umbrella (Rambo Terminal). Avoids the visual collision where a
     // first-time visitor sees 'Terminal' in the nav and wonders if it's
     // the whole platform or just one tool.
+    { href: '/activity',         label: 'Activity',  group: 'build' },
     { href: '/console',          label: 'Console',   group: 'build' },
     { href: '/admin/research',   label: 'Research',  adminOnly: true, group: 'build' },
     { href: '/admin/tokens',     label: 'Tokens',    group: 'build' },

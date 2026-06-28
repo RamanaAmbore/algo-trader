@@ -1358,6 +1358,21 @@
     white-space: normal;
     padding: 0.25rem 0.55rem;
     line-height: 1.35;
+    /* Scroll containment — without overflow-y:auto the rows overflow
+       their parent and the wheel events bubble up to the page,
+       scrolling the host instead of the panel. This bit operators
+       inside ActivityLogModal where the modal body has overflow:hidden
+       so the rows extended past the modal frame. overscroll-behavior
+       prevents scroll-chaining once the bottom is reached. */
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  /* News tab uses a different inner component (.log-news-panel) so it
+     needs its own scroll declaration. Same reasoning as .log-rows. */
+  :global(.log-panel.log-news-panel) {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    min-height: 0;
   }
   /* Multi-column flow for the agent / terminal / system / conn tabs
      when the panel sits in a wide container (orders page card, /
