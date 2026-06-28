@@ -121,7 +121,7 @@
        to 1 (single column) so existing callers are unaffected. */
     column-count: var(--newslist-cols, 1);
     column-gap: 1.4rem;
-    column-rule: 1px solid rgba(126, 151, 184, 0.10);
+    column-rule: 1px solid rgba(148, 163, 184, 0.22);
   }
   /* Narrow viewports collapse back to single column regardless of
      the operator-requested column-count — magazine flow only makes

@@ -2,23 +2,34 @@
  * activity_column_divider.spec.js
  *
  * Verifies the multi-column divider (column-rule) is visible on desktop
- * and absent on mobile across all three mount points of the activity surface:
+ * and absent on mobile across all three mount points of the activity
+ * surface AND the sibling NewsList magazine-flow surface:
+ *
  *   1. ActivityLogModal  — opened from /dashboard via the bell button
  *   2. Activity card     — inline card on /orders
  *   3. /activity page    — standalone bookmarkable route
+ *   4. NewsList          — magazine-style column flow used on the
+ *                          dashboard market-news card and Activity News tab
  *
  * Five-dimension quality assertions per feedback_test_dimensions.md:
  *   • SSOT        — the column-rule-color alpha is the SAME value in all
- *                   three mount points (single declaration in LogPanel.svelte)
+ *                   three activity mount points (single declaration in
+ *                   LogPanel.svelte) and matches the NewsList declaration
+ *                   so the two magazine-flow surfaces look consistent.
  *   • Performance — modal open XHR budget <= 20 calls (unchanged from baseline)
- *   • Stale code  — old alpha (0.04 / white-4%) is gone; source bundle must
- *                   NOT contain the string "rgba(255, 255, 255, 0.04)"
- *   • Reusable    — all three surfaces use the SAME .log-panel.log-rows.lp-multicol
- *                   selector (canonical LogPanel, not a hand-rolled clone)
- *   • UX          — desktop: alpha >= 0.12 (visible divider without being loud)
+ *   • Stale code  — old low-alpha values (0.04 white, 0.10 NewsList,
+ *                   prior 0.18 LogPanel) are gone; current value
+ *                   rgba(148, 163, 184, 0.22) is the SSOT.
+ *   • Reusable    — all three activity surfaces use the SAME
+ *                   .log-panel.log-rows.lp-multicol selector (canonical
+ *                   LogPanel, not a hand-rolled clone).
+ *   • UX          — desktop: alpha >= 0.18 (visible divider without
+ *                   being loud).
  *                   mobile (<900px): column-count collapses to 1,
- *                   column-rule is "none" — no divider visible
+ *                   column-rule is "none" — no divider visible.
  *                   Row heights and tap targets unchanged vs desktop baseline.
+ *                   Fluid-width loop at 360/768/1280 — no overlap, no
+ *                   horizontal scroll.
  *
  * Target: https://dev.ramboq.com (NEVER prod/ramboq.com)
  *   PLAYWRIGHT_BASE_URL=https://dev.ramboq.com npx playwright test \
@@ -32,6 +43,11 @@ import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
 
 const BASE = process.env.PLAYWRIGHT_BASE_URL || 'https://dev.ramboq.com';
+
+// The single visible-divider value (slate-400 at 22% alpha). Used as
+// the SSOT reference everywhere in this spec.
+const SSOT_ALPHA = 0.22;
+const MIN_VISIBLE_ALPHA = 0.18;
 
 /**
  * Parse the alpha channel from a computed color string of the form
@@ -105,32 +121,56 @@ test.describe('activity multi-column divider — desktop visible, mobile absent'
     await ctx.close();
   });
 
-  // ── Dimension 3: stale code — old alpha must not appear in source ────────
-  test('stale code: old column-rule alpha (rgba(255,255,255,0.04)) is gone from LogPanel source', async () => {
-    // This is a static source check — no browser needed.
-    // We read the compiled .svelte source file directly (not a bundle, since
-    // Svelte build strips <style> blocks into the CSS bundle; the source file
-    // is the authoritative place the declaration was changed).
+  // ── Dimension 3: stale code — old alpha values must not appear ───────────
+  test('stale code: old low-alpha column-rule values are gone (LogPanel + NewsList)', async () => {
+    // Static source check — no browser needed. The .svelte source file is
+    // the authoritative place the declaration lives (Svelte build strips
+    // <style> blocks into the CSS bundle, but the source is the SSOT).
     const { readFileSync } = await import('fs');
-    const src = readFileSync(
+    const logSrc = readFileSync(
       new URL('../src/lib/LogPanel.svelte', import.meta.url),
       'utf8',
     );
+    const newsSrc = readFileSync(
+      new URL('../src/lib/NewsList.svelte', import.meta.url),
+      'utf8',
+    );
+
+    // Old white-4% value must be gone everywhere.
     expect(
-      src,
-      'Old column-rule color rgba(255, 255, 255, 0.04) must be gone from LogPanel.svelte — was the edit reverted?',
+      logSrc,
+      'Old column-rule color rgba(255, 255, 255, 0.04) must be gone from LogPanel.svelte.',
+    ).not.toContain('rgba(255, 255, 255, 0.04)');
+    expect(
+      newsSrc,
+      'Old column-rule color rgba(255, 255, 255, 0.04) must be gone from NewsList.svelte.',
     ).not.toContain('rgba(255, 255, 255, 0.04)');
 
-    // And the new value must be present exactly once (single declaration = SSOT).
-    const matches = src.match(/rgba\(148,\s*163,\s*184,\s*0\.18\)/g) || [];
+    // Previous interim values must also be gone (we standardise on 0.22).
     expect(
-      matches.length,
-      'New column-rule color rgba(148, 163, 184, 0.18) must appear exactly once in LogPanel.svelte (single SSOT declaration).',
+      logSrc,
+      'Interim column-rule alpha 0.18 must be gone from LogPanel.svelte — bumped to 0.22 for visibility.',
+    ).not.toMatch(/rgba\(148,\s*163,\s*184,\s*0\.18\)/);
+    expect(
+      newsSrc,
+      'NewsList old column-rule alpha 0.10 must be gone.',
+    ).not.toMatch(/rgba\(126,\s*151,\s*184,\s*0\.10\)/);
+
+    // The new SSOT value must be present exactly once per file (single declaration).
+    const logMatches = logSrc.match(/rgba\(148,\s*163,\s*184,\s*0\.22\)/g) || [];
+    expect(
+      logMatches.length,
+      'LogPanel.svelte must declare rgba(148, 163, 184, 0.22) exactly once (SSOT).',
+    ).toBe(1);
+    const newsMatches = newsSrc.match(/rgba\(148,\s*163,\s*184,\s*0\.22\)/g) || [];
+    expect(
+      newsMatches.length,
+      'NewsList.svelte must declare rgba(148, 163, 184, 0.22) exactly once (SSOT, matches LogPanel for consistency).',
     ).toBe(1);
   });
 
   // ── Mount point 1: ActivityLogModal from /dashboard ──────────────────────
-  test('desktop: ActivityLogModal column-rule visible (alpha >= 0.12)', async ({ page }) => {
+  test('desktop: ActivityLogModal column-rule visible (alpha >= 0.18)', async ({ page }) => {
     test.setTimeout(45_000);
     await injectSession(page, _session);
 
@@ -166,13 +206,13 @@ test.describe('activity multi-column divider — desktop visible, mobile absent'
       'ActivityLogModal must use .log-panel.log-rows.lp-multicol (canonical LogPanel)',
     ).toBeVisible({ timeout: 8_000 });
 
-    // ── Dimension 1 (SSOT) + Dimension 5 (UX): column-rule alpha >= 0.12 ─
+    // ── Dimension 1 (SSOT) + Dimension 5 (UX): column-rule alpha >= 0.18 ─
     const ruleColor = await getColumnRuleColor(logRows);
     const alpha = alphaOf(ruleColor);
     expect(
       alpha,
-      `ActivityLogModal column-rule-color alpha must be >= 0.12 (visible divider). Got "${ruleColor}" (alpha=${alpha}). Was the edit reverted?`,
-    ).toBeGreaterThanOrEqual(0.12);
+      `ActivityLogModal column-rule-color alpha must be >= ${MIN_VISIBLE_ALPHA} (visible divider). Got "${ruleColor}" (alpha=${alpha}).`,
+    ).toBeGreaterThanOrEqual(MIN_VISIBLE_ALPHA);
 
     // ── Dimension 2: perf — modal open <= 20 XHRs ───────────────────────
     // Allow a brief settle so async log polls register.
@@ -184,7 +224,7 @@ test.describe('activity multi-column divider — desktop visible, mobile absent'
   });
 
   // ── Mount point 2: Activity card on /orders ───────────────────────────────
-  test('desktop: /orders Activity card column-rule visible (alpha >= 0.12)', async ({ page }) => {
+  test('desktop: /orders Activity card column-rule visible (alpha >= 0.18)', async ({ page }) => {
     test.setTimeout(45_000);
     await injectSession(page, _session);
     await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded' });
@@ -215,12 +255,12 @@ test.describe('activity multi-column divider — desktop visible, mobile absent'
     const alpha = alphaOf(ruleColor);
     expect(
       alpha,
-      `/orders Activity card column-rule-color alpha must be >= 0.12. Got "${ruleColor}" (alpha=${alpha}).`,
-    ).toBeGreaterThanOrEqual(0.12);
+      `/orders Activity card column-rule-color alpha must be >= ${MIN_VISIBLE_ALPHA}. Got "${ruleColor}" (alpha=${alpha}).`,
+    ).toBeGreaterThanOrEqual(MIN_VISIBLE_ALPHA);
   });
 
   // ── Mount point 3: /activity standalone page ──────────────────────────────
-  test('desktop: /activity page column-rule visible (alpha >= 0.12)', async ({ page }) => {
+  test('desktop: /activity page column-rule visible (alpha >= 0.18)', async ({ page }) => {
     test.setTimeout(45_000);
     await injectSession(page, _session);
     await page.goto(`${BASE}/activity`, { waitUntil: 'domcontentloaded' });
@@ -243,8 +283,8 @@ test.describe('activity multi-column divider — desktop visible, mobile absent'
     const alpha = alphaOf(ruleColor);
     expect(
       alpha,
-      `/activity page column-rule-color alpha must be >= 0.12. Got "${ruleColor}" (alpha=${alpha}).`,
-    ).toBeGreaterThanOrEqual(0.12);
+      `/activity page column-rule-color alpha must be >= ${MIN_VISIBLE_ALPHA}. Got "${ruleColor}" (alpha=${alpha}).`,
+    ).toBeGreaterThanOrEqual(MIN_VISIBLE_ALPHA);
   });
 
   // ── Dimension 1 (SSOT): all three mount points return the SAME alpha ──────
@@ -302,7 +342,8 @@ test.describe('activity multi-column divider — desktop visible, mobile absent'
 
     expect(a, `SSOT: all mount points must share the same column-rule alpha.\n${summary}`).toBeCloseTo(b, 2);
     expect(a, `SSOT: all mount points must share the same column-rule alpha.\n${summary}`).toBeCloseTo(c, 2);
-    expect(a, `SSOT: alpha must be >= 0.12 (visible divider).\n${summary}`).toBeGreaterThanOrEqual(0.12);
+    expect(a, `SSOT: alpha must be >= ${MIN_VISIBLE_ALPHA} (visible divider).\n${summary}`).toBeGreaterThanOrEqual(MIN_VISIBLE_ALPHA);
+    expect(a, `SSOT: alpha must equal canonical ${SSOT_ALPHA}.\n${summary}`).toBeCloseTo(SSOT_ALPHA, 2);
   });
 
   // ── Dimension 5 (UX — mobile): column-count collapses, rule is none ───────
@@ -362,5 +403,45 @@ test.describe('activity multi-column divider — desktop visible, mobile absent'
       rowHeight,
       `log-row height must be >= 24px (adequate tap target). Got ${rowHeight}px.`,
     ).toBeGreaterThanOrEqual(24);
+  });
+
+  // ── Dimension 5 (UX — fluid width): 360/768/1280 no-overlap + no h-scroll ──
+  test('fluid: 360 / 768 / 1280 viewports — /activity has no horizontal scroll', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page, _session);
+
+    // Sanity loop: for each viewport, navigate to /activity, switch to a
+    // multicol tab, and assert document scrollWidth <= clientWidth + 2px
+    // (1px sub-pixel slack on either side). At 360/768 the @media kicks in
+    // and we expect column-count:1; at 1280 we expect column-count:2.
+    for (const width of [360, 768, 1280]) {
+      await page.setViewportSize({ width, height: 800 });
+      await page.goto(`${BASE}/activity`, { waitUntil: 'domcontentloaded' });
+
+      const agentsTab = page.locator('[role="tab"]:has-text("Agents")').first();
+      await expect(agentsTab, `Agents tab at ${width}px`).toBeVisible({ timeout: 15_000 });
+      await agentsTab.click();
+      await page.waitForTimeout(300);
+
+      const overflow = await page.evaluate(() => {
+        const doc = document.documentElement;
+        return { scrollWidth: doc.scrollWidth, clientWidth: doc.clientWidth };
+      });
+      expect(
+        overflow.scrollWidth,
+        `${width}px: page must not have horizontal scroll (scrollWidth=${overflow.scrollWidth}, clientWidth=${overflow.clientWidth}).`,
+      ).toBeLessThanOrEqual(overflow.clientWidth + 2);
+
+      // Confirm column-count crosses the @media boundary as expected.
+      const logRows = page.locator('.log-panel.log-rows.lp-multicol').first();
+      if (await logRows.count()) {
+        const cc = await logRows.evaluate((el) => getComputedStyle(el).columnCount);
+        if (width < 900) {
+          expect(cc, `${width}px < 900px: column-count must be 1, got "${cc}".`).toBe('1');
+        } else {
+          expect(cc, `${width}px >= 900px: column-count must be 2, got "${cc}".`).toBe('2');
+        }
+      }
+    }
   });
 });
