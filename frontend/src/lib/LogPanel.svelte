@@ -1383,7 +1383,7 @@
   :global(.log-panel.log-rows.lp-multicol) {
     column-count: 2;
     column-gap: 1.5rem;
-    column-rule: 1px solid rgba(255, 255, 255, 0.04);
+    column-rule: 1px solid rgba(148, 163, 184, 0.18);
   }
   /* Per-row safety so a row's two visual lines (time/tag + msg)
      don't break across columns mid-row — keeps the metadata strip
