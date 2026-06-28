@@ -534,9 +534,15 @@
   // Mirror _availableAccounts into the parent's bindable when one
   // is provided. ActivityLogModal uses this to render its own
   // account dropdown in the modal header.
+  //
+  // Reading `availableAccounts` inside an effect that ALSO writes
+  // to it produced an effect_update_depth_exceeded loop (the bind:
+  // write was treated as a tracked dependency). Untrack the
+  // existence check so the effect only tracks _availableAccounts.
   $effect(() => {
-    if (availableAccounts !== undefined) {
-      availableAccounts = _availableAccounts;
+    const ax = _availableAccounts;
+    if (untrack(() => availableAccounts) !== undefined) {
+      availableAccounts = ax;
     }
   });
   const filteredOrderRows = $derived.by(() => {

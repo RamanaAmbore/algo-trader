@@ -42,7 +42,18 @@ _LOG_FILE = _raw_path.with_name(_LOG_PREFIX + _raw_path.name)
 # fixed `conn_` prefix (set in webhook/ramboq_conn.service). The
 # /api/admin/logs/conn endpoint tails this so the operator can see
 # KiteTicker, watchdog and rebuild_from_db lines without ssh'ing.
-_CONN_LOG_FILE = _raw_path.with_name("conn_" + _raw_path.name)
+#
+# Conn_service ALWAYS runs out of /opt/ramboq (prod path), even when
+# requests originate from the dev API at /opt/ramboq_dev — both
+# instances share the same UDS, and there's only one conn_service
+# process per host. Resolve the conn log absolutely so dev's tail
+# command doesn't look at /opt/ramboq_dev/.log (which conn_service
+# never writes to).
+_CONN_LOG_FILE_RAW = _raw_path.with_name("conn_" + _raw_path.name)
+_CONN_LOG_FALLBACKS = (
+    Path("/opt/ramboq") / _CONN_LOG_FILE_RAW,
+    Path.cwd() / _CONN_LOG_FILE_RAW,
+)
 
 
 def _resolve_log() -> Path:
@@ -50,7 +61,15 @@ def _resolve_log() -> Path:
 
 
 def _resolve_conn_log() -> Path:
-    return _CONN_LOG_FILE if _CONN_LOG_FILE.is_absolute() else Path.cwd() / _CONN_LOG_FILE
+    """Resolve the conn_service log file path. Prefer the prod-host
+    absolute path so the dev API can still display the shared conn
+    log; fall back to CWD-relative for local development."""
+    for candidate in _CONN_LOG_FALLBACKS:
+        if candidate.exists():
+            return candidate
+    # Nothing exists — return the prod path so the error message
+    # below shows the most useful "where it WOULD have been" location.
+    return _CONN_LOG_FALLBACKS[0]
 
 
 # ---------------------------------------------------------------------------
