@@ -95,7 +95,15 @@ def _coalesce(batch: list[dict]) -> dict[str, list[dict[str, Any]]]:
 
 
 def _coalesce_ohlcv(payloads: list[dict]) -> list[dict[str, Any]]:
-    """Merge into unique (symbol, exchange, date) rows, last-write-wins."""
+    """Merge into unique (symbol, exchange, date) rows, last-write-wins.
+
+    `bar['date']` arrives as a "YYYY-MM-DD" string (set by
+    ohlcv_store._materialise_bars). asyncpg now binds the date column
+    strictly — it wants a `datetime.date`, not a string. Convert here
+    so every row hits _upsert_ohlcv with the right type. Strings that
+    fail to parse are dropped (better than a whole batch failing for
+    one malformed row)."""
+    from datetime import date as _date
     seen: dict[tuple[str, str, str], dict[str, Any]] = {}
     for payload in payloads:
         sym  = str(payload.get("symbol", ""))
@@ -103,13 +111,23 @@ def _coalesce_ohlcv(payloads: list[dict]) -> list[dict[str, Any]]:
         if not sym or not exch:
             continue
         for bar in payload.get("bars", []):
-            d = str(bar.get("date", ""))
-            if not d:
+            d_raw = bar.get("date", "")
+            if not d_raw:
                 continue
-            seen[(sym, exch, d)] = {
+            if isinstance(d_raw, _date):
+                d_obj = d_raw
+                d_key = d_obj.isoformat()
+            else:
+                d_str = str(d_raw)[:10]
+                try:
+                    d_obj = _date.fromisoformat(d_str)
+                except ValueError:
+                    continue  # unparseable — drop row, keep batch
+                d_key = d_str
+            seen[(sym, exch, d_key)] = {
                 "symbol":   sym,
                 "exchange": exch,
-                "date":     d,
+                "date":     d_obj,
                 "open":     bar.get("open",   0.0),
                 "high":     bar.get("high",   0.0),
                 "low":      bar.get("low",    0.0),
