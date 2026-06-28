@@ -1919,3 +1919,36 @@ button:not(:disabled):active,
     transition: none;
   }
 }
+
+/* ── Freshness shimmer — Design B ────────────────────────────────────────────
+   Neutral "this cell just got fresh data" signal. A 1px gradient underline
+   sweeps left→right over 700ms via transform:translateX (GPU-composited;
+   no background-color transitions that would trigger paint). Fires on every
+   data-stream update regardless of whether the value changed — semantically
+   distinct from the directional tick-flash (ltp-flash-up/down).
+   Used by MarketPulse LTP column; pilot on /pulse only.
+   The ::after pseudo-element is overflow-clipped by position:relative on the
+   cell wrapper so it doesn't bleed into adjacent columns. */
+@keyframes cell-freshness {
+  0%   { opacity: 0; transform: translateX(-100%); }
+  50%  { opacity: 0.55; }
+  100% { opacity: 0; transform: translateX(100%); }
+}
+.cell-freshness-pulse {
+  position: relative;
+  overflow: hidden;
+}
+.cell-freshness-pulse::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgb(34, 211, 238) 50%, transparent);
+  pointer-events: none;
+  animation: cell-freshness 700ms ease-out forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cell-freshness-pulse::after { animation: none; }
+}

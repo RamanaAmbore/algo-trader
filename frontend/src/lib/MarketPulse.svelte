@@ -49,6 +49,7 @@
   }
   import { fetchSettings } from '$lib/api';
   import { streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
+  import { createFreshnessShimmer } from '$lib/data/tickFlash.svelte.js';
   import { getSnapshot, symbolStore, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { bookChanged } from '$lib/data/bookChanged';
   import {
@@ -656,6 +657,10 @@
   // deleted with this slice.
   let _liveLtpSnap = $state(/** @type {Record<string, number>} */ ({}));
   let _liveLtpFlushTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
+  // Design B: freshness shimmer instance — neutral "data just landed" signal
+  // on the LTP cell. Pilot on /pulse only (this component). Fires on every
+  // SSE tick update, not just on delta, so it fires even on repeat values.
+  const _ltpShimmer = createFreshnessShimmer({ durationMs: 700 });
   /** Build a `{sym: ltp}` map snapshot from symbolStore for fast cell reads. */
   function _buildLtpSnap() {
     /** @type {Record<string, number>} */
@@ -1835,13 +1840,19 @@
       const cur  = _liveLtpSnap;
       const flashedUp   = new Set(/** @type {string[]} */ ([]));
       const flashedDown = new Set(/** @type {string[]} */ ([]));
+      // Design B: freshness shimmer — collect ALL symbols that arrived in this
+      // tick batch (not just those whose value changed). notifyAll fires only
+      // when the tab is visible (guard is inside createFreshnessShimmer).
+      const freshnessKeys = /** @type {string[]} */ ([]);
       for (const k of Object.keys(cur)) {
         const p = prev[k];
         if (p === undefined) continue;
+        freshnessKeys.push(k);
         const c = cur[k];
         if (c > p) flashedUp.add(k);
         else if (c < p) flashedDown.add(k);
       }
+      if (freshnessKeys.length > 0) _ltpShimmer.notifyAll(freshnessKeys);
       if (flashedUp.size > 0 || flashedDown.size > 0) {
         _ltpFlashUp   = flashedUp;
         _ltpFlashDown = flashedDown;
@@ -2068,6 +2079,7 @@
     // — the flush timer is cleaned up by the $effect's own teardown,
     // but the paint + prefetch timers weren't).
     if (_ltpPaintTimer) { clearTimeout(_ltpPaintTimer); _ltpPaintTimer = null; }
+    _ltpShimmer.dispose();
     for (const t of _prefetchTimers) { try { clearTimeout(t); } catch { /* no-op */ } }
     _prefetchTimers.length = 0;
     document.removeEventListener('keydown', handleKeydown);
@@ -3789,6 +3801,10 @@
         // B1 — flash green/red on tick-up/tick-down (slice AS audit fix).
         if      (_ltpFlashUp.has(sym))   cls.push('ltp-flash-up');
         else if (_ltpFlashDown.has(sym)) cls.push('ltp-flash-down');
+        // Design B — freshness shimmer: neutral underline sweep on every data
+        // update from the bus, regardless of direction.
+        const shimmerCls = _ltpShimmer.classOf(sym);
+        if (shimmerCls) cls.push(shimmerCls);
         if (typeof ltp === 'number' && typeof avg === 'number' && avg > 0) {
           cls.push(ltp > avg ? 'ltp-vs-avg-up' : ltp < avg ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat');
         }
