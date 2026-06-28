@@ -16,7 +16,7 @@
   import { goto } from '$app/navigation';
   import { nowStamp, marketAwareInterval, authStore } from '$lib/stores';
   import { fetchAuditLog } from '$lib/api';
-  import { userRole, hasCap, userCaps } from '$lib/rbac';
+  import { userRole, hasCap, userCaps, userCapsReady } from '$lib/rbac';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
@@ -152,7 +152,13 @@
   // Gate by capability — render a friendly "no access" panel rather
   // than redirecting (the route guard 403's anyway; this is the UX
   // for an admin/risk/ops who lacks the cap because of a misconfig).
-  const _canView = $derived(hasCap('view_audit', $userCaps, $userRole));
+  // Bridge legacy stores into Svelte-5 $state so $derived doesn't
+  // stale-cache the initial [] / 'partner' boot values.
+  let _caps = $state(/** @type {string[]} */ ([]));
+  let _role = $state(/** @type {string} */ ('partner'));
+  $effect(() => { _caps = $userCaps; });
+  $effect(() => { _role = $userRole; });
+  const _canView = $derived(hasCap('view_audit', _caps, _role));
 
   /** @type {ReturnType<typeof marketAwareInterval> | null} */
   let _teardown = null;
@@ -227,7 +233,11 @@
   </span>
 </div>
 
-{#if !_canView}
+{#if !$userCapsReady}
+  <!-- RBAC bootstrap still in-flight — show a skeleton so a legitimate
+       operator never sees the access-denied panel as a false-positive. -->
+  <LoadingSkeleton variant="card" rows={3} />
+{:else if !_canView}
   <EmptyState title="Access denied" icon="lock">
     {#snippet hintBody()}
       The audit log requires the <code>view_audit</code> capability

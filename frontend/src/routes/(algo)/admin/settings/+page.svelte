@@ -218,12 +218,18 @@
     return s.value !== s.default_value;
   }
 
-  // Canonical $effect-gated auth (slice N3). manage_settings is
-  // designated-only by design — settings writes affect every operator.
-  // _canView is only evaluated after RBAC bootstrap settles ($userCapsReady)
-  // so the access-denied panel never shows as a false-negative during the
-  // brief /whoami in-flight window on page load.
-  const _canView = $derived(hasCap('manage_settings', $userCaps, $userRole));
+  // Canonical $effect-gated auth. manage_settings is designated-only by
+  // design — settings writes affect every operator.
+  // Bridge legacy stores into Svelte-5 $state so $derived doesn't
+  // stale-cache the initial [] / 'partner' boot values (feedback note:
+  // "$derived reading $store.x can stale-cache; bridge via $effect + $state").
+  // _canView is further guarded by $userCapsReady in the template so the
+  // access-denied panel never shows as a false-positive during boot.
+  let _caps = $state(/** @type {string[]} */ ([]));
+  let _role = $state(/** @type {string} */ ('partner'));
+  $effect(() => { _caps = $userCaps; });
+  $effect(() => { _role = $userRole; });
+  const _canView = $derived(hasCap('manage_settings', _caps, _role));
   let _loadedOnce = false;
   $effect(() => {
     if (_canView && !_loadedOnce) {

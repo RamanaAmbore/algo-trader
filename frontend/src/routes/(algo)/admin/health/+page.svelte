@@ -6,7 +6,7 @@
 
   import { onDestroy } from 'svelte';
   import { nowStamp, branchLabel, visibleInterval } from '$lib/stores';
-  import { userRole, userCaps, hasCap } from '$lib/rbac';
+  import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import { fetchSystemHealth, invalidatePersistence } from '$lib/api';
@@ -33,10 +33,14 @@
     }
   }
 
-  // Canonical $effect-gated auth (slice N2). view_audit admits
-  // admin + risk + ops; pre-fix the page hard-redirected to /signin
-  // before /whoami had a chance to hydrate the role.
-  const _canView = $derived(hasCap('view_audit', $userCaps, $userRole));
+  // Canonical $effect-gated auth. view_audit admits designated + admin + risk.
+  // Bridge legacy stores into Svelte-5 $state so $derived doesn't
+  // stale-cache the initial [] / 'partner' boot values.
+  let _caps = $state(/** @type {string[]} */ ([]));
+  let _role = $state(/** @type {string} */ ('partner'));
+  $effect(() => { _caps = $userCaps; });
+  $effect(() => { _role = $userRole; });
+  const _canView = $derived(hasCap('view_audit', _caps, _role));
   let _loadedOnce = false;
   $effect(() => {
     if (_canView && !_loadedOnce) {
@@ -125,7 +129,11 @@
   </span>
 </div>
 
-{#if !_canView}
+{#if !$userCapsReady}
+  <!-- RBAC bootstrap still in-flight — show a skeleton so a legitimate
+       operator never sees the access-denied panel as a false-positive. -->
+  <LoadingSkeleton variant="card" rows={3} />
+{:else if !_canView}
   <EmptyState title="Access denied" icon="lock">
     {#snippet hintBody()}
       System health requires the <code>view_audit</code> capability

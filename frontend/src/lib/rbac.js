@@ -126,6 +126,20 @@ export const userCapsReady = writable(false);
  *  should use hasCap() instead; this is for marketing-banner predicates. */
 export const isDemo = derived(userRole, $r => normaliseRole($r) === 'demo');
 
+/** Admin-class predicate — returns true for BOTH `admin` (operational
+ *  support) AND `designated` (firm owner). Use this wherever a page or
+ *  action requires admin-tier authority without distinguishing between
+ *  the two tiers. For firm-owner-only gates (impersonate, manage_users,
+ *  manage_settings, etc.) use hasCap() with the specific capability
+ *  instead, since `admin` doesn't hold those caps.
+ *
+ *  Single source of truth: replaces any bare `role === 'admin'` checks
+ *  in page guards and nav filters. */
+export function isAdminClass(/** @type {string | null | undefined} */ role) {
+  const r = normaliseRole(role);
+  return r === 'admin' || r === 'designated';
+}
+
 /** Has-cap predicate. Prefers the freshly-fetched caps list from
  *  /whoami; falls back to the local matrix during the boot window. */
 export function hasCap(/** @type {string} */ cap, /** @type {string[]|null} */ caps, /** @type {string|null} */ role) {

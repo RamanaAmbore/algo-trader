@@ -14,7 +14,7 @@
 <script>
   import { onMount } from 'svelte';
   import { nowStamp } from '$lib/stores';
-  import { userRole, userCaps, hasCap } from '$lib/rbac';
+  import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import {
     fetchHistoryOrders, fetchHistoryTrades, fetchHistoryFunds,
     backfillHistoryFunds,
@@ -123,7 +123,13 @@
   function pageNext() { if (offset + LIMIT < total) { offset += LIMIT; load(); } }
   function pagePrev() { if (offset > 0) { offset = Math.max(0, offset - LIMIT); load(); } }
 
-  const _canView = $derived(hasCap('view_audit', $userCaps, $userRole));
+  // Bridge legacy stores into Svelte-5 $state so $derived doesn't
+  // stale-cache the initial [] / 'partner' boot values.
+  let _caps = $state(/** @type {string[]} */ ([]));
+  let _role = $state(/** @type {string} */ ('partner'));
+  $effect(() => { _caps = $userCaps; });
+  $effect(() => { _role = $userRole; });
+  const _canView = $derived(hasCap('view_audit', _caps, _role));
   // Use $effect not onMount — _canView starts false on first paint
   // (while /whoami resolves, $userCaps is empty so the fallback
   // matrix returns false for 'demo'). onMount runs once and never
@@ -226,7 +232,11 @@
   </span>
 </div>
 
-{#if !_canView}
+{#if !$userCapsReady}
+  <!-- RBAC bootstrap still in-flight — show a skeleton so a legitimate
+       operator never sees the access-denied panel as a false-positive. -->
+  <LoadingSkeleton variant="card" rows={3} />
+{:else if !_canView}
   <EmptyState title="Access denied" icon="lock">
     {#snippet hintBody()}
       Historical orders / trades / funds require the <code>view_audit</code>

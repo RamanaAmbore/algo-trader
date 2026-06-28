@@ -20,7 +20,7 @@
 
   import { onDestroy } from 'svelte';
   import { nowStamp, visibleInterval } from '$lib/stores';
-  import { userRole, userCaps, hasCap } from '$lib/rbac';
+  import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import {
@@ -313,11 +313,15 @@
     }
   }
 
-  // Canonical $effect-gated auth (slice N1). manage_brokers admits
-  // admin + ops; pre-fix the page used onMount + hard goto('/signin')
-  // which raced /whoami and bounced non-admin users out before their
-  // role hydrated.
-  const _canView = $derived(hasCap('manage_brokers', $userCaps, $userRole));
+  // Canonical $effect-gated auth. manage_brokers admits designated + admin.
+  // Bridge legacy stores into Svelte-5 $state so $derived doesn't
+  // stale-cache the initial [] / 'partner' boot values (feedback note:
+  // "$derived reading $store.x can stale-cache; bridge via $effect + $state").
+  let _caps = $state(/** @type {string[]} */ ([]));
+  let _role = $state(/** @type {string} */ ('partner'));
+  $effect(() => { _caps = $userCaps; });
+  $effect(() => { _role = $userRole; });
+  const _canView = $derived(hasCap('manage_brokers', _caps, _role));
   let _loadedOnce = false;
   $effect(() => {
     if (_canView && !_loadedOnce) {
@@ -345,7 +349,11 @@
   </span>
 </div>
 
-{#if !_canView}
+{#if !$userCapsReady}
+  <!-- RBAC bootstrap still in-flight — show a skeleton so a legitimate
+       operator never sees the access-denied panel as a false-positive. -->
+  <LoadingSkeleton variant="card" rows={3} />
+{:else if !_canView}
   <EmptyState title="Access denied" icon="lock">
     {#snippet hintBody()}
       Broker administration requires the <code>manage_brokers</code> capability

@@ -52,7 +52,13 @@
   /** Filter pill — 'all' | 'pending' | 'failed' | 'sent'. */
   let filter = $state(/** @type {'all'|'pending'|'failed'|'sent'} */ ('all'));
 
-  const canManage = $derived(hasCap('manage_investor_tokens', $userCaps, $userRole));
+  // Bridge legacy stores into Svelte-5 $state so $derived doesn't
+  // stale-cache the initial [] / 'partner' boot values.
+  let _caps = $state(/** @type {string[]} */ ([]));
+  let _role = $state(/** @type {string} */ ('partner'));
+  $effect(() => { _caps = $userCaps; });
+  $effect(() => { _role = $userRole; });
+  const canManage = $derived(hasCap('manage_investor_tokens', _caps, _role));
 
   function _recentMonths(/** @type {number} */ n) {
     const out = [];
