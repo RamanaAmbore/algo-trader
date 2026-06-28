@@ -750,11 +750,24 @@ def _ticker_seed_early(token_map: dict[str, int]) -> None:
         if not ticker.status().get("started"):
             try:
                 from backend.shared.brokers.registry import get_sparkline_broker
+                from backend.conn_client import is_cutover_on
                 spark_bk = get_sparkline_broker()
                 for b in getattr(spark_bk, "_brokers", []):
-                    kc = getattr(b, "_conn", None) or getattr(b, "kite", None)
-                    api_key = getattr(kc, "api_key", None)
-                    access_token = getattr(kc, "_access_token", None) or getattr(kc, "access_token", None)
+                    api_key: str | None = None
+                    access_token: str | None = None
+                    # Cutover branch — when flag is on, the broker is a
+                    # RemoteBroker with no local KiteConnect handle. Fetch
+                    # the live token from conn_service over UDS.
+                    if is_cutover_on() and b.broker_id in ("zerodha_kite", "kite"):
+                        from backend.conn_client.remote_broker import fetch_access_token
+                        api_key, access_token = fetch_access_token(b.account)
+                    else:
+                        kc = getattr(b, "_conn", None) or getattr(b, "kite", None)
+                        api_key = getattr(kc, "api_key", None)
+                        access_token = (
+                            getattr(kc, "_access_token", None)
+                            or getattr(kc, "access_token", None)
+                        )
                     if api_key and access_token:
                         if ticker.ensure_started(api_key, access_token):
                             logger.info(
