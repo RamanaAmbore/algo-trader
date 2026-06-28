@@ -333,6 +333,16 @@
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _histLoadingTimer = null;
   let _histError   = $state('');
+  // _histRetrying flips true when the first fetch returned partial-empty
+  // (backend signal `partial=true`) AND we have a delayed retry queued.
+  // While true, the empty-state branch is suppressed — the chart shows
+  // the loading affordance until the retry completes (or the latch
+  // _emptyRetryFired guards against an infinite loop and finally lets
+  // "No data available" render). Operator-caught BEL race fix: the prior
+  // path cleared _histLoading=false BEFORE the retry fired, so the
+  // catchall {:else if !_bars.length} branch rendered "No data available"
+  // for the entire 2.5s retry window.
+  let _histRetrying = $state(false);
   let _chartLoaded = $state(false);
   let _chartDays   = $state(30);
   // Default to candle on first visit; persisted to localStorage so the
@@ -605,26 +615,54 @@
       _bars     = _nextBars;
       _spotBars = spotHist ? (Array.isArray(spotHist.bars) ? spotHist.bars : []) : [];
       if (!_bars.length) {
-        // First-cold-empty path: schedule a single delayed retry
-        // (2.5 s — just past the backend's _HIST_CACHE_TTL_EMPTY of
-        // 2 s) instead of immediately showing "No data available."
-        // The latch _emptyRetryFired guards against an infinite loop
-        // for symbols that genuinely have no listing.
-        if (!_emptyRetryFired.has(cacheKey)) {
+        // Empty response. Two cases:
+        //   1. partial=true → backend says "transient, retry soon".
+        //      Keep loading state up + retry in 800 ms.
+        //   2. partial=false → backend confirmed no data exists for
+        //      this symbol. Show "No data available." immediately.
+        //
+        // partial defaults to false; the backend sets it true for cold
+        // broker_loop misses (instruments map not warm, rate-limit
+        // cool-off, etc.). The latch _emptyRetryFired guards against
+        // an infinite loop — at most ONE retry per (sym, exch, range).
+        const isPartial = !!hist?.partial;
+        const canRetry  = isPartial && !_emptyRetryFired.has(cacheKey);
+        if (canRetry) {
           _emptyRetryFired.add(cacheKey);
-          _histError = '';   // suppress the error message during retry window
+          _histError = '';
+          // Critical: _histRetrying keeps the loading branch active so
+          // the catchall {:else if !_bars.length} (No data available)
+          // is NOT rendered during the retry window. Without this, the
+          // operator sees "No data available" for the full retry delay
+          // and clicks away thinking the chart is broken — only to
+          // come back later and see the second-call data. That was the
+          // operator-reported BEL bug.
+          _histRetrying = true;
           if (_emptyRetryTimer) clearTimeout(_emptyRetryTimer);
+          // 800 ms — well past the backend's _HIST_CACHE_TTL_EMPTY of
+          // 2 s would force a new fetch every time, BUT the partial
+          // entry won't re-cache; the next call retries via the broker
+          // loop. 800 ms is short enough that the operator doesn't
+          // click away (>2 s was the reported pain point) AND covers
+          // typical instruments-map warm latency.
           _emptyRetryTimer = setTimeout(() => {
             _emptyRetryTimer = null;
             if (!_mounted) return;
             // Only re-fire if _bars is still empty (a concurrent
             // success would already have flipped it).
             if (!_bars.length) _loadHistorical(true);
-          }, 2_500);
+            else _histRetrying = false;
+          }, 800);
           _chartLoaded = true;
           return;
         }
+        // Either confirmed-no-data (partial=false) OR retry already
+        // exhausted. Clear retry flag + surface the error.
+        _histRetrying = false;
         _histError = 'No data available.';
+      } else {
+        // Bars arrived — clear any pending retry state.
+        _histRetrying = false;
       }
       _chartLoaded = true;
 
@@ -637,6 +675,7 @@
     } catch (e) {
       if (token !== _loadToken) return;   // newer call already in flight — its result is the canonical one
       _histError = /** @type {any} */ (e)?.message || 'Load failed';
+      _histRetrying = false;
       _bars = [];
     } finally {
       // Only the newest call flips loading off; older tokens are no-ops
@@ -1364,6 +1403,7 @@
     _mounted = false;
     if (_statusTimer) { try { _statusTimer(); } catch (_) { clearInterval(_statusTimer); } }
     if (_emptyRetryTimer) { clearTimeout(_emptyRetryTimer); _emptyRetryTimer = null; }
+    _histRetrying = false;
     _stopTickPoll();
   });
 
@@ -1393,6 +1433,7 @@
     // setting its own copy of the flag.
     _histLoading = true;
     _histError = '';
+    _histRetrying = false;
     _bars = [];
     _spotBars = [];
     _greeks = null;
@@ -1645,7 +1686,12 @@
 
     {#if !symbol}
       <div class="cw-state cw-state-hint">Pick a symbol to chart — type 3+ chars in the box above.</div>
-    {:else if _histLoading && !_bars.length}
+    {:else if (_histLoading || _histRetrying) && !_bars.length}
+      <!-- _histRetrying guard: when a partial-empty response is being
+           re-fetched (operator-caught BEL race), keep the loading branch
+           active so the catchall "No data available" below never renders
+           during the retry window. Without this, the empty state flashes
+           for ~800 ms between the first empty response and the retry. -->
       <div class="cw-state">Loading…</div>
     {:else if _histError && !_bars.length}
       <div class="cw-state cw-err">{_histError}</div>

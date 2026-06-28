@@ -333,6 +333,15 @@ class HealthController(Controller):
                 # Back-compat: dashboards reading `bypass` (slice X surface)
                 # still work — true whenever mode is non-default.
                 persistence["bypass"] = runtime_state.is_bypass_on()
+                # Per-symbol BEL-race monitor — operator-visible. Non-zero
+                # entries mean the historical handler returned empty bars
+                # for that symbol at least N times today. Resets at IST
+                # midnight via key sweep in _record_first_cold_empty.
+                try:
+                    from backend.api.routes.options import get_first_cold_empty_counts
+                    persistence["ohlcv_first_cold_empty"] = get_first_cold_empty_counts()
+                except Exception:
+                    persistence["ohlcv_first_cold_empty"] = {}
             except Exception:
                 pass  # stores block is best-effort; never break the health check
 

@@ -202,7 +202,7 @@ test.describe('Stale-code: ChartWorkspace loading/empty state guards', () => {
     ).toBe(true);
   });
 
-  test('Stale code: EmptyState branch is guarded by !_histLoading', () => {
+  test('Stale code: EmptyState branch is guarded by !_histLoading AND !_histRetrying', () => {
     let src;
     try {
       src = readFileSync(_CW_SRC, 'utf-8');
@@ -210,21 +210,54 @@ test.describe('Stale-code: ChartWorkspace loading/empty state guards', () => {
       throw new Error(`Could not read ChartWorkspace.svelte at ${_CW_SRC}: ${e.message}`);
     }
 
-    // The {:else if !_bars.length} branch must be preceded by a
-    // {:else if _histLoading && !_bars.length} guard so that the plain
-    // "No data available" text only shows AFTER loading completes.
+    // The {:else if !_bars.length} branch must be preceded by a guard
+    // that includes BOTH _histLoading (initial fetch) AND _histRetrying
+    // (post-empty retry window). Without _histRetrying, the catchall
+    // empty-state branch flashes for ~800 ms between the first response
+    // landing (loading=false) and the retry firing. Operator-caught BEL
+    // race regression.
+    const loadingOrRetryingGuard = '(_histLoading || _histRetrying) && !_bars.length';
     expect(
-      src.includes('_histLoading && !_bars.length'),
-      'ChartWorkspace must have a {:else if _histLoading && !_bars.length} guard ' +
-      'before the plain {:else if !_bars.length} (No data available) branch.',
+      src.includes(loadingOrRetryingGuard),
+      'ChartWorkspace must have a {:else if (_histLoading || _histRetrying) && !_bars.length} ' +
+      'guard so the retry-window does not flash "No data available." ' +
+      `Searched for: ${loadingOrRetryingGuard}`,
     ).toBe(true);
 
     // Confirm the ordering: loading guard comes before empty-state guard.
     // The markup is: <div class="cw-state">No data available.</div>
-    const loadingGuardPos = src.indexOf('_histLoading && !_bars.length');
+    const loadingGuardPos = src.indexOf(loadingOrRetryingGuard);
     const emptyGuardPos   = src.indexOf("cw-state\">No data available");
     expect(loadingGuardPos).toBeGreaterThan(0);
     expect(emptyGuardPos).toBeGreaterThan(loadingGuardPos);
+  });
+
+  test('Stale code: _histRetrying state declared + cleared on destroy/error', () => {
+    let src;
+    try {
+      src = readFileSync(_CW_SRC, 'utf-8');
+    } catch (e) {
+      throw new Error(`Could not read ChartWorkspace.svelte: ${e.message}`);
+    }
+
+    // The state declaration uses Svelte 5 $state.
+    expect(
+      src.includes('let _histRetrying = $state('),
+      '_histRetrying must be declared as $state(false) in ChartWorkspace.',
+    ).toBe(true);
+
+    // The retry path sets _histRetrying=true (so the loading branch matches).
+    expect(
+      src.includes('_histRetrying = true'),
+      '_histRetrying must be set true when scheduling the retry.',
+    ).toBe(true);
+
+    // onDestroy / catch / new-symbol all clear it to avoid stale state.
+    const onDestroyBlock = src.slice(src.indexOf('onDestroy('));
+    expect(
+      onDestroyBlock.includes('_histRetrying = false'),
+      'onDestroy must clear _histRetrying.',
+    ).toBe(true);
   });
 
   test('Reuse: cw-fetch-overlay used for loading (not a new overlay element)', () => {
@@ -478,12 +511,34 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
   // available." This protects against the race coming back to life in any
   // future refactor.
 
-  test('BEL race (desktop): empty first response triggers retry; final state has chart', async ({ page }) => {
+  // Helper: 30 fake daily bars covering [today - 30, today - 1].
+  function _fakeBars() {
+    const bars = [];
+    const today = new Date();
+    for (let i = 30; i >= 1; i--) {
+      const d = new Date(today.getTime() - i * 86400000);
+      bars.push({
+        ts:     d.toISOString().slice(0, 10),
+        open:   100 + i * 0.5,
+        high:   102 + i * 0.5,
+        low:    99  + i * 0.5,
+        close:  101 + i * 0.5,
+        volume: 100_000 + i * 1000,
+      });
+    }
+    return bars;
+  }
+
+  // ── partial=true contract: empty first response with partial flag set
+  // triggers the frontend's retry path. Second response (with bars) wins.
+
+  test('BEL race (desktop): partial-empty first response triggers retry; final state has chart', async ({ page }) => {
     test.setTimeout(60_000);
     await injectSession(page);
     await page.setViewportSize({ width: 1400, height: 900 });
 
-    // First /api/options/historical?symbol=BEL response → empty bars.
+    // First /api/options/historical?symbol=BEL response → empty bars +
+    // partial=true (the backend's "transient — retry soon" signal).
     // Second response → 30 days of fake bars.
     let histCallCount = 0;
     await page.route('**/api/options/historical**', async (route) => {
@@ -498,22 +553,8 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
           contentType: 'application/json',
           body: JSON.stringify({
             symbol: 'BEL', instrument_token: null,
-            interval: 'day', bars: [],
+            interval: 'day', bars: [], partial: true,
           }),
-        });
-      }
-      // Second + subsequent calls: return 30 bars.
-      const bars = [];
-      const today = new Date();
-      for (let i = 30; i >= 1; i--) {
-        const d = new Date(today.getTime() - i * 86400000);
-        bars.push({
-          ts:     d.toISOString().slice(0, 10),
-          open:   100 + i * 0.5,
-          high:   102 + i * 0.5,
-          low:    99  + i * 0.5,
-          close:  101 + i * 0.5,
-          volume: 100_000 + i * 1000,
         });
       }
       return route.fulfill({
@@ -521,7 +562,7 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
         contentType: 'application/json',
         body: JSON.stringify({
           symbol: 'BEL', instrument_token: 1234,
-          interval: 'day', bars,
+          interval: 'day', bars: _fakeBars(), partial: false,
         }),
       });
     });
@@ -529,13 +570,13 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
     await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
     await waitForRangeGroup(page);
 
-    // Wait long enough for the 2.5 s retry timer to fire.
-    await page.waitForTimeout(4_500);
+    // Wait long enough for the 800 ms retry timer to fire + second resp.
+    await page.waitForTimeout(2_500);
 
     // The retry must have fired — backend call count ≥ 2.
     expect(
       histCallCount,
-      `BEL race: frontend must auto-retry on empty first response. ` +
+      `BEL race: frontend must auto-retry on partial-empty first response. ` +
       `Got ${histCallCount} hist API call(s); expected ≥ 2.`,
     ).toBeGreaterThanOrEqual(2);
 
@@ -557,7 +598,7 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
     ).toBeGreaterThan(0);
   });
 
-  test('BEL race (mobile): empty first response triggers retry; final state has chart', async ({ page }) => {
+  test('BEL race (mobile): partial-empty first response triggers retry; final state has chart', async ({ page }) => {
     test.setTimeout(60_000);
     await injectSession(page);
     await page.setViewportSize({ width: 360, height: 800 });
@@ -573,21 +614,8 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
           contentType: 'application/json',
           body: JSON.stringify({
             symbol: 'BEL', instrument_token: null,
-            interval: 'day', bars: [],
+            interval: 'day', bars: [], partial: true,
           }),
-        });
-      }
-      const bars = [];
-      const today = new Date();
-      for (let i = 30; i >= 1; i--) {
-        const d = new Date(today.getTime() - i * 86400000);
-        bars.push({
-          ts:     d.toISOString().slice(0, 10),
-          open:   100 + i * 0.5,
-          high:   102 + i * 0.5,
-          low:    99  + i * 0.5,
-          close:  101 + i * 0.5,
-          volume: 100_000 + i * 1000,
         });
       }
       return route.fulfill({
@@ -595,17 +623,131 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
         contentType: 'application/json',
         body: JSON.stringify({
           symbol: 'BEL', instrument_token: 1234,
-          interval: 'day', bars,
+          interval: 'day', bars: _fakeBars(), partial: false,
         }),
       });
     });
 
     await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
     await waitForRangeGroup(page);
-    await page.waitForTimeout(4_500);
+    await page.waitForTimeout(2_500);
 
     expect(histCallCount).toBeGreaterThanOrEqual(2);
     const errVisible = await page.locator('text=No data available').isVisible();
     expect(errVisible, 'Mobile BEL race: error must not show after retry').toBe(false);
+  });
+
+  // ── KEY REGRESSION: during the retry window, "No data available" must
+  // NOT be visible. This is the operator-caught flash the prior fix did
+  // NOT address. The retry was firing but the empty state was visible
+  // for the entire delay because _histLoading=false + _bars=[] + no error
+  // hit the catchall {:else if !_bars.length} branch.
+
+  test('BEL race: retry window does NOT flash "No data available"', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page);
+    await page.setViewportSize({ width: 1400, height: 900 });
+
+    let histCallCount = 0;
+    await page.route('**/api/options/historical**', async (route) => {
+      const url = route.request().url();
+      if (!url.includes('symbol=BEL')) return route.continue();
+      histCallCount++;
+      if (histCallCount === 1) {
+        // First response: partial-empty (triggers retry).
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            symbol: 'BEL', instrument_token: null,
+            interval: 'day', bars: [], partial: true,
+          }),
+        });
+      }
+      // Second response: delay 600 ms so the retry window is wide
+      // enough to catch the "No data available" flash if the guard fails.
+      await new Promise((res) => setTimeout(res, 600));
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          symbol: 'BEL', instrument_token: 1234,
+          interval: 'day', bars: _fakeBars(), partial: false,
+        }),
+      });
+    });
+
+    await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
+    await waitForRangeGroup(page);
+
+    // Sample the empty-state visibility during the retry window — at
+    // intervals shorter than the retry delay (800 ms) + response delay
+    // (600 ms) so we catch any single-frame flash.
+    let flashedNoData = false;
+    for (let i = 0; i < 12; i++) {
+      const visible = await page.locator('.cw-state', { hasText: 'No data available' }).isVisible();
+      if (visible) {
+        flashedNoData = true;
+        break;
+      }
+      await page.waitForTimeout(120);
+    }
+
+    expect(
+      flashedNoData,
+      'BEL race: "No data available" must NOT flash during the retry window. ' +
+      'Operator-caught regression: the prior fix scheduled a retry but cleared ' +
+      '_histLoading=false BEFORE the retry fired, leaving the catchall empty-' +
+      'state branch visible for ~2.5s.',
+    ).toBe(false);
+
+    // Confirm both calls happened and final state is the chart.
+    expect(histCallCount).toBeGreaterThanOrEqual(2);
+    const svgPathCount = await page.locator('svg path[d]').evaluateAll(
+      (els) => els.filter((e) => (e.getAttribute('d') || '').length > 20).length,
+    );
+    expect(svgPathCount).toBeGreaterThan(0);
+  });
+
+  // ── partial=false MUST show "No data available." immediately (no retry).
+  // Symbols genuinely without history (delisted, wrong exchange) should
+  // fail fast rather than wait 800ms before showing the empty state.
+
+  test('BEL race: partial=false empty response shows error immediately (no retry)', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page);
+    await page.setViewportSize({ width: 1400, height: 900 });
+
+    let histCallCount = 0;
+    await page.route('**/api/options/historical**', async (route) => {
+      const url = route.request().url();
+      if (!url.includes('symbol=BEL')) return route.continue();
+      histCallCount++;
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          symbol: 'BEL', instrument_token: null,
+          interval: 'day', bars: [], partial: false,
+        }),
+      });
+    });
+
+    await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
+    await waitForRangeGroup(page);
+    // Wait beyond the 800 ms retry window — confirm NO retry fired.
+    await page.waitForTimeout(2_000);
+
+    expect(
+      histCallCount,
+      'partial=false must not trigger a retry — wasteful for confirmed-empty symbols.',
+    ).toBe(1);
+
+    // "No data available" must be visible by now.
+    const errVisible = await page.locator('text=No data available').isVisible();
+    expect(
+      errVisible,
+      'partial=false empty response must surface "No data available" immediately.',
+    ).toBe(true);
   });
 });

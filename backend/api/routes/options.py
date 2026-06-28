@@ -190,6 +190,49 @@ _HIST_CACHE_TTL_EMPTY = 2     # seconds — empty bars; short TTL so a transient
                               # Operator-caught BEL flicker: lowered from 10 → 2.
 _HIST_CACHE_MAX_SIZE  = 200   # LRU cap — prevent unbounded growth from chain-picker
 
+# Per-symbol counter for first-cold-empty events. Increments when the
+# historical handler returns bars=[] AND the response came back from the
+# fallback broker_loop (i.e. ohlcv_store missed too). Operator-visible
+# under /api/admin/health.ohlcv_first_cold_empty. If a symbol's counter
+# is non-zero AND grows across reloads, the BEL race is still happening
+# for that symbol — operator can investigate (instruments map staleness,
+# broker rate-limit, missing exchange listing).
+# Bucketed by IST date so the counter resets at midnight. Capped at 200
+# distinct symbols to prevent unbounded growth.
+_FIRST_COLD_EMPTY: dict[tuple[str, str], int] = {}     # (date_iso, symbol) → count
+_FIRST_COLD_EMPTY_LOCK = _threading.Lock()
+_FIRST_COLD_EMPTY_MAX  = 200
+
+
+def _record_first_cold_empty(symbol: str) -> None:
+    """Increment the per-symbol counter for today (IST). Best-effort —
+    swallows any error so the historical handler is never blocked."""
+    try:
+        from zoneinfo import ZoneInfo
+        today_ist = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    except Exception:
+        today_ist = datetime.now().date().isoformat()
+    key = (today_ist, symbol.upper().strip())
+    with _FIRST_COLD_EMPTY_LOCK:
+        # Drop any stale-date entries to keep the dict bounded.
+        if len(_FIRST_COLD_EMPTY) >= _FIRST_COLD_EMPTY_MAX:
+            stale = [k for k in _FIRST_COLD_EMPTY if k[0] != today_ist]
+            for k in stale:
+                _FIRST_COLD_EMPTY.pop(k, None)
+        _FIRST_COLD_EMPTY[key] = _FIRST_COLD_EMPTY.get(key, 0) + 1
+
+
+def get_first_cold_empty_counts() -> dict[str, int]:
+    """Return a snapshot of today's per-symbol empty-response counter.
+    Exposed via /api/admin/health for operator monitoring."""
+    try:
+        from zoneinfo import ZoneInfo
+        today_ist = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    except Exception:
+        today_ist = datetime.now().date().isoformat()
+    with _FIRST_COLD_EMPTY_LOCK:
+        return {sym: cnt for (d, sym), cnt in _FIRST_COLD_EMPTY.items() if d == today_ist}
+
 # Process-wide token-resolution cache for the historical-bars endpoint.
 # Key: (broker_account, exchange). Value: dict[tradingsymbol_upper, int_token].
 #
@@ -517,6 +560,14 @@ class HistoricalResponse(msgspec.Struct):
     instrument_token: int | None
     interval:         str
     bars:             list[HistoricalBar]
+    # partial=True signals "empty result is likely transient — instruments
+    # cache cold, broker rate-limited, or token resolution missed". The
+    # frontend treats partial-empty as "keep loading state up + retry soon"
+    # instead of immediately rendering "No data available." Operator-caught
+    # BEL race: cold first call could return bars=[] with the broker still
+    # warming, and the second call (after instruments map populated) had
+    # data — the UI was flashing "No data available" between the two.
+    partial:          bool = False
 
 
 # Multi-leg strategy schemas. Each leg can come from any source — live
@@ -1863,13 +1914,17 @@ class OptionsController(Controller):
         brokers = get_historical_brokers()
         if not brokers:
             # No eligible account (all disabled or all in cool-off).
+            # `partial=True` signals to the frontend that this empty result
+            # is transient (cool-off will lift in 30s) — keep loading state
+            # up and retry instead of showing "No data available."
             logger.warning(
                 f"options historical: no eligible brokers for {sym} "
                 f"(all historical_data_enabled=False or in rate-limit cool-off)"
             )
             result = HistoricalResponse(symbol=sym, instrument_token=None,
-                                        interval=interval, bars=[])
+                                        interval=interval, bars=[], partial=True)
             _hist_cache_put(cache_key, result, _HIST_CACHE_TTL_EMPTY)
+            _record_first_cold_empty(sym)
             return result
 
         to_d   = datetime.now()
@@ -1948,10 +2003,18 @@ class OptionsController(Controller):
                 )
                 for b in raw
             ]
+            # `partial=True` when the broker round-trip returned zero bars —
+            # often a transient instruments-map miss or rate-limit blip on
+            # a single account; the next try (after the empty-cache TTL
+            # expires) usually succeeds. Frontend uses this to keep the
+            # loading state up rather than flash "No data available."
             result = HistoricalResponse(symbol=sym, instrument_token=token,
-                                        interval=interval, bars=bars)
+                                        interval=interval, bars=bars,
+                                        partial=not bool(bars))
             _hist_cache_put(cache_key, result,
                             _HIST_CACHE_TTL_OK if bars else _HIST_CACHE_TTL_EMPTY)
+            if not bars:
+                _record_first_cold_empty(sym)
             if _ohlcv_trace_enabled():
                 logger.info(
                     f"[ohlcv-route] symbol={sym} exchange={exchange or 'auto'} "
@@ -1964,14 +2027,19 @@ class OptionsController(Controller):
         # symbol (no token found on any) vs all errored, the outcome is
         # the same — return graceful empty bars with a short-TTL cache so
         # the next request retries quickly once cool-offs expire.
+        # `partial=True` because this CAN be transient (instruments map
+        # cold across both brokers + the next minute will succeed). The
+        # frontend retries once on partial; if the second response is also
+        # partial-empty, only THEN does it show "No data available."
         _tried = exchange if exchange else "NFO/BFO/NSE/BSE/MCX/CDS"
         logger.info(
             f"options historical: '{sym}' not found or all brokers failed "
             f"(exchanges={_tried}, brokers tried={[b.account for b in brokers]})"
         )
         result = HistoricalResponse(symbol=sym, instrument_token=None,
-                                    interval=interval, bars=[])
+                                    interval=interval, bars=[], partial=True)
         _hist_cache_put(cache_key, result, _HIST_CACHE_TTL_EMPTY)
+        _record_first_cold_empty(sym)
         if _ohlcv_trace_enabled():
             logger.info(
                 f"[ohlcv-route] symbol={sym} exchange={exchange or 'auto'} "
