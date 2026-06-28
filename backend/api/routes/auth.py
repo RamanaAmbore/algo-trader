@@ -332,31 +332,20 @@ _NAV_TTL_SEC = 30.0
 async def _compute_firm_nav() -> tuple[float, float, float, str]:
     """Return (firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso).
 
-    Canonical formula (operator-verified — produces the same number
-    they were used to seeing on the NavCard, ~₹2.28 Cr at time of
-    writing):
+    Delegates to `backend.api.algo.nav.compute_firm_nav` so the NAV
+    number rendered on NavCard stays in sync with the NAV grid TOTAL
+    row on /performance. Operator: "firm nav card should be in sync
+    with nav total in the grid. It should use the same code."
 
-        firm_nav = holdings.cur_val + cash + collateral
+    Single source of truth for the v4 formula:
+        firm_nav = Σ (cash_sod + option_premium)        ← Cash term
+                 + Σ positions.unrealised                ← Pos MTM
+                 + Σ holdings.cur_val                    ← Holdings MTM
 
-    Where:
-        holdings.cur_val — MTM of all stocks held in demat
-                           (Zerodha returns the raw stock value
-                            regardless of pledge state)
-        cash             — free liquid cash in the trading account
-        collateral       — haircut-adjusted margin value of PLEDGED
-                           stocks. NOT a 1:1 subset of cur_val —
-                           Zerodha computes this as
-                           pledged_stock_value × haircut_factor and
-                           treats it as an asset of the firm. Adding
-                           it on top of cur_val matches the
-                           operator's NAV semantics (the firm's
-                           total claim on broker assets).
-
-    Earlier "fix" (cur_val + cash + positions.pnl) was wrong —
-    omitted collateral and produced ~₹0.6 Cr too low.
-
-    day_pnl / cum_pnl come from the live intraday-equity deque when
-    populated; off-hours falls back to holdings.day_change + positions.pnl.
+    day_pnl / cum_pnl come from the live intraday-equity deque
+    when populated; off-hours falls back to the historical pattern
+    (holdings.day_change + positions.pnl) so the NavCard P&L line
+    keeps a useful number even when the live ticker is down.
     """
     import time
     now_ts = time.time()
@@ -364,10 +353,10 @@ async def _compute_firm_nav() -> tuple[float, float, float, str]:
     if cached is not None and (now_ts - _NAV_CACHE["ts"]) < _NAV_TTL_SEC:
         return cached
 
+    from backend.api.algo.nav import compute_firm_nav as _algo_compute_firm_nav
     from backend.api.background import (
         _intraday_equity,
         _fetch_holdings_direct,
-        _fetch_margins_direct,
         _fetch_positions_direct,
     )
     import asyncio as _asyncio
@@ -379,49 +368,32 @@ async def _compute_firm_nav() -> tuple[float, float, float, str]:
     as_of_iso    = datetime.now(timezone.utc).isoformat()
 
     try:
+        # Canonical NAV from algo.nav.compute_firm_nav — same code the
+        # PerformancePage NAV grid uses (v4 formula, validated against
+        # operator-visible per-account breakdown).
+        snap = await _algo_compute_firm_nav()
+        firm_nav = float(snap.get("nav") or 0.0)
+
+        # Day / cum P&L still need the legacy holdings+positions
+        # summary path for the fallback shape (the broker's per-row
+        # day_change_val + pnl). Run holdings/positions only — funds
+        # already consumed inside compute_firm_nav.
         loop = _asyncio.get_running_loop()
-        with _TPE(max_workers=3) as ex:
+        with _TPE(max_workers=2) as ex:
             df_h_fut = loop.run_in_executor(ex, _fetch_holdings_direct)
-            df_m_fut = loop.run_in_executor(ex, _fetch_margins_direct)
             df_p_fut = loop.run_in_executor(ex, _fetch_positions_direct)
-            _, sum_h     = await df_h_fut
-            df_m         = await df_m_fut
-            _, sum_p     = await df_p_fut
+            _, sum_h = await df_h_fut
+            _, sum_p = await df_p_fut
 
         total_h = sum_h[sum_h['account'] == 'TOTAL'] if not sum_h.empty else sum_h
-        total_m = df_m[df_m['account'] == 'TOTAL']
         total_p = sum_p[sum_p['account'] == 'TOTAL'] if not sum_p.empty else sum_p
-
-        cur_val = 0.0
-        if not total_h.empty and 'cur_val' in total_h.columns:
-            cur_val = float(total_h['cur_val'].iloc[0] or 0)
-
-        # Margin total — _fetch_margins_direct returns the RAW broker
-        # dataframe (NOT the canonicalised one funds.py emits via
-        # _COL_MAP). Raw columns are 'net' / 'avail cash' /
-        # 'avail collateral' / etc. The consolidated 'net' field is
-        # Kite's total margin claim (cash + collateral - used_margin)
-        # — adding cur_val + net matches the operator's verified NAV
-        # (~₹2.28 Cr at time of writing).
-        margin_total = 0.0
-        if not total_m.empty:
-            margin_col = next((c for c in [
-                'net',           # raw broker dataframe field
-                'avail_margin',  # canonicalised name (funds.py rewrite)
-            ] if c in total_m.columns), None)
-            if margin_col:
-                margin_total = float(total_m[margin_col].iloc[0] or 0)
-
-        firm_nav = cur_val + max(margin_total, 0.0)
 
         pos_pnl = 0.0
         if not total_p.empty and 'pnl' in total_p.columns:
             pos_pnl = float(total_p['pnl'].iloc[0] or 0)
 
         # Prefer the deque for P&L (already running totals) when alive.
-        # Buffer carries (ts, day, cum, h_pnl, h_day, p_pnl, p_day) per tick
-        # — destructure the two aggregates the showcase needs; ignore the
-        # 4 breakdowns. Tolerate legacy 3-tuples during rolling deploys.
+        # Buffer carries (ts, day, cum, ...) per tick.
         if _intraday_equity:
             _last = _intraday_equity[-1]
             ts, day_pnl, cum_pnl = _last[0], _last[1], _last[2]
