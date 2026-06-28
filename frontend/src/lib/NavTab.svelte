@@ -171,6 +171,18 @@
     background: rgba(15, 23, 42, 0.25);
     border-radius: 4px;
   }
+  /* Mobile NAV card height bump — at ≤600 px the sidebar card collapses
+     so far that the curve has no room to breathe (~113 px tall at 393 px
+     wide via the 760/260 aspect ratio). Override aspect-ratio with a
+     hard min-height so the chart stays readable on phones. Operator:
+     "on mobile increase nav chart card height". */
+  @media (max-width: 600px) {
+    .nav-svg {
+      aspect-ratio: auto;
+      min-height: 240px;
+      height: 240px;
+    }
+  }
   .nav-tab-empty {
     padding: 1.4rem 0.8rem;
     text-align: center;
@@ -182,8 +194,12 @@
      Operator placement refinement (Jun 2026): "move nav chip to the
      left of nav chart" — left-anchor reads more naturally beside the
      y-axis labels and never overlaps the trailing data point on the
-     right edge of the curve. clamp() offsets shrink gracefully on
-     phone widths and keep the chip inside the chart card. The
+     right edge of the curve. Operator follow-up (Jun 2026): "the nav
+     overlay is overlapping the y label in nav chart. start it just
+     right of Y axis" — the SVG uses viewBox 760×260 with pad.l = 60
+     so the Y-axis line sits at 60/760 = 7.89 % of container width.
+     `left: calc(7.9% + 0.4rem)` lands the chip just inside the plot
+     area, clearing the rotated Y-tick labels at every viewport. The
      z-index keeps the chip above the SVG without forming a stacking
      context that traps the meta label. Cyan-rest palette + green/red
      day-Δ tint mirrors the prior dedicated chip row, so operators
@@ -191,7 +207,7 @@
   .nav-chip-overlay {
     position: absolute;
     top: clamp(0.25rem, 1vw, 0.5rem);
-    left: clamp(0.35rem, 1.5vw, 0.75rem);
+    left: calc(7.9% + 0.4rem);
     z-index: 2;
     display: inline-flex;
     align-items: baseline;

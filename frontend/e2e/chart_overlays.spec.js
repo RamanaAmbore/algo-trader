@@ -1050,4 +1050,77 @@ test.describe('chart overlays — all viewports', () => {
       ).toBeLessThanOrEqual(4);
     });
   }
+
+  // ── Chart UX polish bundle (Jun 2026) ──────────────────────────────────
+  //
+  //   1. Reset button fills available width on mobile (operator:
+  //      "let the reset button use available space on mobile").
+  //   3-5. Y-axis labels are readable — font ≥ 11 px after rotation,
+  //        slanted ≥ -45°.
+
+  test('reset button fills available trailing space on mobile (≥60 px wide)', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page, _session);
+    await page.setViewportSize({ width: 360, height: 640 });
+    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+    await page.waitForTimeout(700);
+
+    // Force the reset button to appear — programmatically scroll-zoom
+    // the SVG so `isZoomed` flips true. If gesture doesn't take on the
+    // mobile project (touch routing), soft-skip.
+    const svg = page.locator('.cw-svg');
+    await svg.hover();
+    await page.mouse.wheel(0, -500);
+    await page.waitForTimeout(400);
+    const reset = page.locator('.cw-reset-zoom');
+    const resetVisible = await reset.isVisible().catch(() => false);
+    if (!resetVisible) {
+      console.log('[reset-mobile-fill] zoom gesture not triggered — skipping');
+      return;
+    }
+    const box = await reset.boundingBox();
+    expect(box).not.toBeNull();
+    if (box) {
+      expect(
+        box.width,
+        `Reset width on 360 px wide viewport should fill available space (>60 px). Got ${box.width}px. ` +
+        `Operator: "let the reset button use available space on mobile".`,
+      ).toBeGreaterThan(60);
+    }
+  });
+
+  test('Y-axis labels render at ≥11 px font and rotated for readability', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page, _session);
+    await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+    await waitForChart(page);
+    await page.waitForTimeout(500);
+
+    // The Y-axis labels carry .cw-yaxis-label; pick the first one inside
+    // the historical SVG. The SVG uses viewBox with preserveAspectRatio=
+    // none so font-size attribute maps 1:1 to drawn pixels per
+    // viewBox unit only at the same x-scale — assert via the attribute
+    // since computed style on SVG <text> can be browser-quirky.
+    const label = page.locator('.cw-svg .cw-yaxis-label').first();
+    await expect(label).toBeVisible({ timeout: 5_000 });
+
+    // font-size attribute — readable threshold ≥ 11 px (operator: "y
+    // axis labels are readable. make the text readable").
+    const fontSize = await label.getAttribute('font-size');
+    expect(fontSize, 'Y-axis label has explicit font-size attribute').toBeTruthy();
+    expect(
+      Number(fontSize),
+      `Y-axis label font-size should be ≥ 11. Got ${fontSize}.`,
+    ).toBeGreaterThanOrEqual(11);
+
+    // Transform attribute carries rotate(-45 ...) or rotate(-60 ...).
+    const transform = await label.getAttribute('transform');
+    expect(transform, 'Y-axis label is rotated for slanted layout').toBeTruthy();
+    expect(
+      /rotate\((-45|-60)/.test(transform),
+      `Y-axis label should be slanted at -45° or -60°. transform="${transform}". ` +
+      `Operator: "make it slant if required to reduce the space usage and increase font size".`,
+    ).toBe(true);
+  });
 });

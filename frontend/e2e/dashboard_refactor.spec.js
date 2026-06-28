@@ -602,6 +602,95 @@ test.describe('dashboard refactor — news → activity + chart/equity swap + NA
     expect(dashColour).toBe('rgb(251, 191, 36)');
   });
 
+  // ── Jun 2026 polish bundle ────────────────────────────────────────
+  //  - NAV chip on mobile clears the Y-axis (no overlap with labels)
+  //  - NAV chart card height on mobile is bumped (≥200 px tall)
+  test('mobile: NAV chip clears Y-axis labels (no overlap)', async ({ page }) => {
+    test.setTimeout(60_000);
+    await page.setViewportSize({ width: 393, height: 851 });
+    await signIn(page);
+    await page.goto(dashUrl(), { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(3500);
+
+    const chip = page.locator('.nav-chip-overlay').first();
+    const chipPresent = await chip.isVisible().catch(() => false);
+    if (!chipPresent) {
+      console.log('[mobile/chip-yaxis] firm-NAV chip not minted — skipping');
+      return;
+    }
+
+    // Y-axis labels are the <text> elements inside the NavTab SVG with
+    // text-anchor="end" anchored at viewBox x=_pad.l-8 = 52, but
+    // preserveAspectRatio="none" stretches them — easiest path is to
+    // measure the rightmost label edge and assert chip.left > that edge.
+    const svgLocator = page.locator('.nav-svg').first();
+    const svgPresent = await svgLocator.isVisible().catch(() => false);
+    if (!svgPresent) {
+      console.log('[mobile/chip-yaxis] nav-svg not visible (empty state) — skipping');
+      return;
+    }
+    // Each Y-axis label sits at viewBox x=52 with text-anchor="end".
+    // After rotation in SVG coords, the rendered bounding box on the
+    // browser-side <text> includes the rotation transform — use
+    // getBoundingClientRect() for the actual painted right edge.
+    const labels = svgLocator.locator('text[text-anchor="end"]');
+    const labelCount = await labels.count();
+    if (labelCount === 0) {
+      console.log('[mobile/chip-yaxis] no y-axis labels rendered — skipping');
+      return;
+    }
+    // Find rightmost label edge across all Y-axis label texts.
+    let rightmostLabelEdge = 0;
+    for (let i = 0; i < labelCount; i++) {
+      const b = await labels.nth(i).boundingBox().catch(() => null);
+      if (b) {
+        const r = b.x + b.width;
+        if (r > rightmostLabelEdge) rightmostLabelEdge = r;
+      }
+    }
+    expect(
+      rightmostLabelEdge,
+      'expected at least one Y-axis label to have a measurable bbox',
+    ).toBeGreaterThan(0);
+
+    const chipBox = await chip.boundingBox();
+    expect(chipBox).not.toBeNull();
+    if (chipBox) {
+      expect(
+        chipBox.x,
+        `NAV chip left edge (${chipBox.x}px) should clear Y-axis rightmost label edge ` +
+        `(${rightmostLabelEdge}px). Operator: "the nav overlay is overlapping the y ` +
+        `label in nav chart. start it just right of Y axis".`,
+      ).toBeGreaterThanOrEqual(rightmostLabelEdge - 2);
+    }
+  });
+
+  test('mobile: NAV chart SVG renders ≥200 px tall (taller card)', async ({ page }) => {
+    test.setTimeout(60_000);
+    await page.setViewportSize({ width: 393, height: 851 });
+    await signIn(page);
+    await page.goto(dashUrl(), { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(3500);
+
+    // NAV tab is default-active on the chart card. The NavTab SVG
+    // either renders (history present) or is replaced by .nav-tab-empty.
+    const svg = page.locator('.row1-col-chart .nav-svg').first();
+    const svgVisible = await svg.isVisible().catch(() => false);
+    if (!svgVisible) {
+      console.log('[mobile/nav-height] nav-svg not yet rendered (empty state) — skipping');
+      return;
+    }
+    const box = await svg.boundingBox();
+    expect(box).not.toBeNull();
+    if (box) {
+      expect(
+        box.height,
+        `Mobile NAV chart SVG should render ≥200 px tall. Got ${box.height}px. ` +
+        `Operator: "on mobile increase nav chart card height".`,
+      ).toBeGreaterThanOrEqual(200);
+    }
+  });
+
   test('cross-page palette: card-header trio (refresh) shares cyan-400 between dashboard and /charts', async ({ page }) => {
     test.setTimeout(60_000);
     await page.setViewportSize({ width: 1280, height: 800 });

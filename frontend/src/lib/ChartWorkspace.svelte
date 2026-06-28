@@ -785,7 +785,7 @@
   let _chartW = $state(720);
   let _chartH = $state(320);
 
-  const CPAD_L  = 44;   // reduced from 56 — rotated Y-labels free ~12 px of left margin
+  const CPAD_L  = 52;   // rotated Y-labels (-45°, 12px font) need ~52px after readability bump
   const CPAD_R  = 16;
   const CPAD_T  = 16;
   const CPAD_B  = 30;
@@ -1729,9 +1729,10 @@
           <line x1={CPAD_L} x2={_chartW - CPAD_R} y1={tick.y} y2={tick.y}
                 stroke="rgba(200,216,240,0.15)" stroke-width="1"/>
           <text x={CPAD_L - 4} y={tick.y}
+                class="cw-yaxis-label"
                 text-anchor="end" dominant-baseline="middle"
                 transform="rotate(-45 {CPAD_L - 4} {tick.y})"
-                fill="#c8d8f0" font-size="10" font-weight="600" font-family="monospace">
+                fill="#c8d8f0" font-size="12" font-weight="600" font-family="monospace">
             ₹{priceFmt(tick.v)}
           </text>
         {/each}
@@ -1744,7 +1745,7 @@
           {/if}
           <text x={xl.x} y={CPAD_T + _innerH + 14}
                 text-anchor={i === 0 ? 'start' : (i === 4 ? 'end' : 'middle')}
-                fill="#c8d8f0" font-size="11" font-weight="600">
+                fill="#c8d8f0" font-size="12" font-weight="600">
             {xl.label}
           </text>
         {/each}
@@ -2038,9 +2039,10 @@
             <line x1={P2L} x2={W2 - P2R} y1={yt.y} y2={yt.y}
                   stroke="rgba(200,216,240,0.15)" stroke-width="1"/>
             <text x={P2L - 3} y={yt.y}
+                  class="cw-yaxis-label"
                   text-anchor="end" dominant-baseline="middle"
                   transform="rotate(-45 {P2L - 3} {yt.y})"
-                  fill="#7e97b8" font-size="9" font-family="monospace">
+                  fill="#7e97b8" font-size="11" font-family="monospace">
               {priceFmt(yt.v)}
             </text>
           {/each}
@@ -2800,6 +2802,18 @@
       padding: 0 0.28rem;
       font-size: 0.58rem;
       white-space: nowrap;
+    }
+
+    /* Reset zoom — on mobile, fill the available trailing space so the
+       affordance is easy to tap (operator: "let the reset button use
+       available space on mobile for charts"). margin-left: auto still
+       pushes it past the indicators trigger; flex: 1 1 auto lets it
+       expand into any leftover width. */
+    .cw-reset-zoom {
+      flex: 1 1 auto;
+      min-width: 0;
+      padding: 0 0.4rem;
+      font-size: 0.6rem;
     }
   }
 
