@@ -114,6 +114,14 @@ const _bootRole = (typeof window !== 'undefined'
 export const userRole = writable(/** @type {string} */ (_bootRole));
 export const userCaps = writable(/** @type {string[]} */ ([]));
 
+/** Flips to true once bootstrapRBAC() settles (success or failure). Pages
+ *  that gate on narrow caps (manage_settings, manage_brokers, etc.) should
+ *  wait for this before rendering an access-denied panel — the initial
+ *  userCaps=[] would otherwise trigger a false-negative during the brief
+ *  whoami in-flight window and show a spurious "Access denied" banner to
+ *  legitimately-authorised users. */
+export const userCapsReady = writable(false);
+
 /** Convenience derived — quick "is this demo?" check.  Most call sites
  *  should use hasCap() instead; this is for marketing-banner predicates. */
 export const isDemo = derived(userRole, $r => normaliseRole($r) === 'demo');
@@ -147,5 +155,10 @@ export async function bootstrapRBAC() {
     // /whoami failed — keep boot defaults. The server still enforces
     // the real gate so a wrong UI guess just means a 403 if the
     // operator clicks something they shouldn't see.
+  } finally {
+    // Always mark ready — even on network failure, the fallback matrix
+    // is the best we can do. Pages waiting on userCapsReady can now
+    // render their access-denied panel (or grant) based on that fallback.
+    userCapsReady.set(true);
   }
 }

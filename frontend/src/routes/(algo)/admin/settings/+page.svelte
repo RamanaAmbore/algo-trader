@@ -5,7 +5,7 @@
   // renders it and writes back via PATCH.
 
   import { nowStamp } from '$lib/stores';
-  import { userRole, userCaps, hasCap } from '$lib/rbac';
+  import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -219,7 +219,10 @@
   }
 
   // Canonical $effect-gated auth (slice N3). manage_settings is
-  // admin-only by design — settings writes affect every operator.
+  // designated-only by design — settings writes affect every operator.
+  // _canView is only evaluated after RBAC bootstrap settles ($userCapsReady)
+  // so the access-denied panel never shows as a false-negative during the
+  // brief /whoami in-flight window on page load.
   const _canView = $derived(hasCap('manage_settings', $userCaps, $userRole));
   let _loadedOnce = false;
   $effect(() => {
@@ -245,11 +248,15 @@
   </span>
 </div>
 
-{#if !_canView}
+{#if !$userCapsReady}
+  <!-- RBAC bootstrap still in-flight — show a skeleton so a legitimate
+       operator never sees the access-denied panel as a false-positive. -->
+  <LoadingSkeleton variant="card" rows={3} />
+{:else if !_canView}
   <EmptyState title="Access denied" icon="lock">
     {#snippet hintBody()}
       Editing settings requires the <code>manage_settings</code> capability
-      (admin role). Your current role is <strong>{$userRole}</strong> —
+      (designated role). Your current role is <strong>{$userRole}</strong> —
       contact an admin to request access.
     {/snippet}
   </EmptyState>
