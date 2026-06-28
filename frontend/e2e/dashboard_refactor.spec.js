@@ -188,31 +188,59 @@ test.describe('dashboard refactor — news → activity + chart/equity swap + NA
       (await navTabEmpty.isVisible().catch(() => false));
     expect(navTabMounted, 'chart-card NAV panel renders curve or empty-state').toBe(true);
 
-    // ── Firm NAV chip in the page header persists across chart-card
+    // ── Firm NAV chip lives on its OWN row below the page-header
+    //    (operator placement refinement Jun 2026). It is no longer a
+    //    child of .page-header; it sits inside .dash-nav-row between
+    //    the heading row and the row1-split. Persists across chart-card
     //    tab flips so the headline number is visible on Intraday +
     //    Performance views too. ----
-    const headerNavChip = page.locator('.page-header .nav-chip');
+    const navChip = page.locator('.nav-chip').first();
     // Chip is gated by view_nav cap + a non-null _navLatest fetch.
     // If absent on cold dev (snapshot not yet landed), soft-skip the
-    // cross-tab persistence check.
-    const chipPresent = await headerNavChip.isVisible().catch(() => false);
+    // cross-tab persistence + placement checks.
+    const chipPresent = await navChip.isVisible().catch(() => false);
     if (chipPresent) {
+      // Placement: chip is NOT a descendant of .page-header.
+      const insideHeader = await navChip.evaluate(
+        el => el.closest('.page-header') !== null,
+      );
+      expect(insideHeader, 'NAV chip is NOT inside .page-header').toBe(false);
+
+      // Placement: chip IS a descendant of .dash-nav-row.
+      const insideNavRow = await navChip.evaluate(
+        el => el.closest('.dash-nav-row') !== null,
+      );
+      expect(insideNavRow, 'NAV chip IS inside .dash-nav-row').toBe(true);
+
+      // Placement: chip's bounding rect sits BELOW the page-header.
+      const pageHeader = page.locator('.page-header').first();
+      const headerBox = await pageHeader.boundingBox();
+      const chipBox = await navChip.boundingBox();
+      expect(headerBox).not.toBeNull();
+      expect(chipBox).not.toBeNull();
+      if (headerBox && chipBox) {
+        expect(
+          chipBox.y,
+          'NAV chip top sits below page-header bottom',
+        ).toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 1);
+      }
+
       // Click Intraday — chip should still be visible.
       await chartTabs.nth(1).click();
       await page.waitForTimeout(300);
-      await expect(headerNavChip, 'NAV chip visible on Intraday tab').toBeVisible();
+      await expect(navChip, 'NAV chip visible on Intraday tab').toBeVisible();
 
       // Click Performance — chip should still be visible.
       await chartTabs.nth(2).click();
       await page.waitForTimeout(300);
-      await expect(headerNavChip, 'NAV chip visible on Performance tab').toBeVisible();
+      await expect(navChip, 'NAV chip visible on Performance tab').toBeVisible();
 
       // Click chip — flips chart card back to NAV tab.
-      await headerNavChip.click();
+      await navChip.click();
       await page.waitForTimeout(400);
       await expect(chartTabs.nth(0)).toHaveAttribute('aria-selected', 'true');
     } else {
-      console.log('[desktop] firm-NAV chip not minted yet (no snapshot) — cross-tab persistence skipped');
+      console.log('[desktop] firm-NAV chip not minted yet (no snapshot) — placement + cross-tab persistence skipped');
       // Still verify the tabs themselves switch + NAV stays default.
       await chartTabs.nth(1).click();
       await page.waitForTimeout(200);
@@ -413,6 +441,32 @@ test.describe('dashboard refactor — news → activity + chart/equity swap + NA
     if (chartNavBox) {
       // Same compact tab guideline as the sidebar NAV tab.
       expect(chartNavBox.height).toBeGreaterThanOrEqual(20);
+    }
+
+    // ── NAV chip placement on mobile: own row below page-header, not
+    //    nested inside it (operator placement refinement Jun 2026).
+    //    Soft-skip when the chip hasn't been minted yet on cold dev. -
+    const mobileChip = page.locator('.nav-chip').first();
+    if (await mobileChip.isVisible().catch(() => false)) {
+      const insideHeader = await mobileChip.evaluate(
+        el => el.closest('.page-header') !== null,
+      );
+      expect(insideHeader, 'mobile: NAV chip is NOT inside .page-header').toBe(false);
+      const insideNavRow = await mobileChip.evaluate(
+        el => el.closest('.dash-nav-row') !== null,
+      );
+      expect(insideNavRow, 'mobile: NAV chip IS inside .dash-nav-row').toBe(true);
+
+      const headerBox = await page.locator('.page-header').first().boundingBox();
+      const chipBox = await mobileChip.boundingBox();
+      if (headerBox && chipBox) {
+        expect(
+          chipBox.y,
+          'mobile: NAV chip sits below page-header bottom',
+        ).toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 1);
+      }
+    } else {
+      console.log('[mobile] NAV chip not minted — placement skipped');
     }
 
     // No horizontal overflow on the page body — body width ≤ viewport.

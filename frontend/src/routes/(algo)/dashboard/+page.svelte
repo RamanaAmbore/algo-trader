@@ -1566,14 +1566,29 @@
     <h1 class="page-title-chip">Dashboard</h1>
   </span>
   <span class="algo-ts">{$nowStamp}</span>
-  {#if _canViewNav && _navLatest}
-    <!-- Firm NAV chip — visible on the page header, so it persists
-         across all chart-card tabs (NAV, Intraday, Performance) and
-         the sidebar (NAV, Capital, Equity). Day Δ colour-coded.
-         Clicking flips the chart card to its NAV tab and scrolls
-         the card into view — the standalone /nav page was retired
-         Jun 2026, so this chip is the operator's quick path to the
-         curve view. -->
+  <span class="ml-auto"></span>
+  <span class="page-header-actions">
+    <!-- Slice 7h — strategy filter chip. Same shared store as Pulse,
+         /orders, /admin/derivatives. Active strategy narrows the
+         dashboard's positions / holdings rows (via the _positions /
+         _holdings derivations that override the raw arrays). Hidden
+         when no strategies exist. -->
+    <StrategyPicker label="Strategy" />
+    <RefreshButton onClick={_refreshAll} loading={_refreshing} label="dashboard" />
+    <PageHeaderActions />
+  </span>
+</div>
+
+<!-- Firm NAV chip — lives on its OWN row below the page header so it
+     reads as a distinct identity strip rather than crowding the
+     heading. Visible on every chart-card tab (NAV, Intraday,
+     Performance) and every sidebar tab (NAV, Capital, Equity). Day Δ
+     colour-coded. Clicking flips the chart card to its NAV tab and
+     scrolls the card into view — the standalone /nav page was retired
+     Jun 2026, so this chip is the operator's quick path to the curve
+     view. -->
+{#if _canViewNav && _navLatest}
+  <div class="dash-nav-row">
     <button type="button" class="nav-chip"
        class:nav-chip-pos={(_navDelta ?? 0) > 0}
        class:nav-chip-neg={(_navDelta ?? 0) < 0}
@@ -1592,19 +1607,8 @@
         </span>
       {/if}
     </button>
-  {/if}
-  <span class="ml-auto"></span>
-  <span class="page-header-actions">
-    <!-- Slice 7h — strategy filter chip. Same shared store as Pulse,
-         /orders, /admin/derivatives. Active strategy narrows the
-         dashboard's positions / holdings rows (via the _positions /
-         _holdings derivations that override the raw arrays). Hidden
-         when no strategies exist. -->
-    <StrategyPicker label="Strategy" />
-    <RefreshButton onClick={_refreshAll} loading={_refreshing} label="dashboard" />
-    <PageHeaderActions />
-  </span>
-</div>
+  </div>
+{/if}
 
 <!-- Hero strip retired. Its six chips lived elsewhere:
        - P&L TODAY / TODAY % / vs NIFTY → stat overlay inside the
@@ -2108,18 +2112,23 @@
 </section>
 
 <style>
-  /* Page-header NAV chip — slice 7k continuation. Sits between the
-     timestamp and the ml-auto spacer so it reads as part of the
-     dashboard's identity strip rather than the actions cluster.
-     Cyan-tinted at rest, green/red day-delta tint when known.
-     Element changed from <a href> to <button> Jun 2026 — /nav route
-     was retired and the chip now jumps to the chart card's NAV tab. */
+  /* Firm-NAV chip row — lives on its own row below the page header
+     (operator request Jun 2026). The chip itself keeps the cyan-tinted
+     rest palette + green/red day-Δ tint. Element is a <button> — /nav
+     route was retired and the chip jumps to the chart card's NAV tab.
+     Row wraps gracefully at narrow viewports (chip wraps to the next
+     line, never overflows). */
+  .dash-nav-row {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    padding: 0.35rem 0;
+  }
   .nav-chip {
     display: inline-flex;
     align-items: baseline;
     gap: 0.4rem;
     padding: 0.18rem 0.55rem;
-    margin-left: 0.5rem;
     background: rgba(34, 211, 238, 0.10);
     border: 1px solid rgba(34, 211, 238, 0.35);
     border-radius: 4px;
