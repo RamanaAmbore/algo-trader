@@ -43,20 +43,22 @@ def test_holdings_derives_pnl_when_omitted():
     # which silently masked these rows from the backfill mask. Contract
     # changed Jun 2026 (audit fix); see _normalise_holdings docstring.
     assert r["close_price"] == 0.0
-    # day_change is intentionally a phantom value here (last × qty); the
-    # broker_apis.backfill_market_data pass downstream recomputes it
-    # after patching close_price from a PriceBroker.quote() call. The
-    # normaliser's job is to flag missing close, not to second-guess
-    # day_change in isolation.
-    assert abs(r["day_change"] - 498.3 * 15) < 0.01
+    # day_change is per-share delta (per Kite convention & CLAUDE.md).
+    # When close_price=0, it's computed as (last_price - 0) = last_price
+    # per-share. Downstream: day_change_val = day_change * qty.
+    # The broker_apis.backfill_market_data pass recomputes day_change
+    # after patching close_price from a PriceBroker.quote() call.
+    assert abs(r["day_change"] - 498.3) < 0.01
     # day_change_percentage IS gated on close_price > 0 (avoid div-by-zero)
     # so the operator-facing % column reads 0 until backfill lands.
     assert r["day_change_percentage"] == 0.0
 
 
 def test_holdings_uses_dhan_values_when_present():
-    # When Dhan DOES return computed fields, we trust them — don't
-    # double-compute.
+    # When Dhan returns close_price + pnl + day_pct_raw, use them for
+    # those fields. However, day_change is ALWAYS recomputed from
+    # (last - close) to ensure per-share semantics (never qty-multiplied).
+    # Dhan's dayChange field is TOTAL (qty-scaled) so we ignore it.
     resp = [{
         "tradingSymbol":  "RELIANCE",
         "exchange":       "NSE",
@@ -66,20 +68,22 @@ def test_holdings_uses_dhan_values_when_present():
         "lastTradedPrice": 2500.0,
         "previousClosePrice": 2480.0,
         "unrealisedProfit": 999.99,    # operator-specific, not derived
-        "dayChange":      200.0,
-        "dayChangePerc":  0.81,
+        "dayChange":      200.0,       # IGNORED — we recompute per-share
+        "dayChangePerc":  0.81,        # passed through as-is
     }]
     rows = _normalise_holdings({"data": resp})
     r = rows[0]
     assert r["close_price"] == 2480.0
     assert r["pnl"] == 999.99      # passed through, not derived
-    assert r["day_change"] == 200.0
+    # day_change = last - close = 2500 - 2480 = 20.0 per-share
+    assert r["day_change"] == 20.0
+    # day_change_percentage passed through from Dhan
     assert r["day_change_percentage"] == 0.81
 
 
 def test_holdings_derives_day_change_with_close_price():
     # close_price IS present, day_change isn't. Derive day_change from
-    # (last - close) × qty.
+    # per-share difference (last - close), NOT qty-multiplied.
     resp = [{
         "tradingSymbol":  "TCS",
         "exchange":       "NSE",
@@ -91,8 +95,9 @@ def test_holdings_derives_day_change_with_close_price():
     rows = _normalise_holdings({"data": resp})
     r = rows[0]
     assert r["close_price"] == 3550.0
-    # day_change = (3600 - 3550) × 5 = 250
-    assert abs(r["day_change"] - 250.0) < 0.01
+    # day_change = last - close = 3600 - 3550 = 50 per-share
+    # downstream: day_change_val = 50 × 5 = 250
+    assert abs(r["day_change"] - 50.0) < 0.01
     # day_change_pct = (3600 - 3550) / 3550 × 100 = 1.4084 %
     assert abs(r["day_change_percentage"] - 1.408450) < 0.001
     # pnl = (3600 - 3500) × 5 = 500 (derived since unrealisedProfit absent)

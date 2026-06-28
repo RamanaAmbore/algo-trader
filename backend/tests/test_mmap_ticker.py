@@ -9,6 +9,7 @@ Coverage:
 import tempfile
 import os
 import asyncio
+import warnings
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
@@ -120,8 +121,15 @@ class TestMmapTickReaderBusPassthrough:
 
 
 class TestMmapTickReaderLifecycle:
-    """Lifecycle management."""
+    """Lifecycle management.
 
+    Note: Tests in this class trigger "coroutine never awaited" warnings because
+    they create tasks without running the event loop. This is expected — we're
+    testing task creation and cancellation, not runtime. The warnings are
+    harmless and indicate correct behavior (tasks are cancelled on stop()).
+    """
+
+    @pytest.mark.filterwarnings("ignore:coroutine.*was never awaited:RuntimeWarning")
     def test_start_creates_poller_task(self, tmp_buffer_path):
         """start() creates the polling task."""
         reader = MmapTickReader(path=tmp_buffer_path)
@@ -132,10 +140,15 @@ class TestMmapTickReaderLifecycle:
 
             assert reader._poll_task is not None
 
+            # Note: the task is created but never runs since we don't run the loop.
+            # When stop() cancels it without running the loop, Python warns about
+            # the unawaited coroutine. This is expected test behavior — we're
+            # testing that start() creates the task, not that it runs.
             reader.stop()
         finally:
             loop.close()
 
+    @pytest.mark.filterwarnings("ignore:coroutine.*was never awaited:RuntimeWarning")
     def test_stop_cancels_poller_task(self, tmp_buffer_path):
         """stop() cancels the polling task."""
         reader = MmapTickReader(path=tmp_buffer_path)
@@ -151,6 +164,7 @@ class TestMmapTickReaderLifecycle:
         finally:
             loop.close()
 
+    @pytest.mark.filterwarnings("ignore:coroutine.*was never awaited:RuntimeWarning")
     def test_ensure_started_idempotent(self, tmp_buffer_path):
         """ensure_started() is idempotent — second call doesn't recreate."""
         reader = MmapTickReader(path=tmp_buffer_path)
