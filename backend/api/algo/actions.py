@@ -1981,7 +1981,6 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
     exchange, quantity, last_price, close_price, …
     """
     import asyncio
-    import pandas as pd
     from backend.api.algo.chase import chase_order, ChaseConfig
     from backend.brokers import get_broker
 

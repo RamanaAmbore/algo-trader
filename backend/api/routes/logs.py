@@ -23,8 +23,6 @@ from backend.api.models import Agent, AgentEvent, AlgoOrder, AlgoOrderEvent
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import mask_column
 
-import pandas as pd
-
 logger = get_logger(__name__)
 
 

@@ -28,7 +28,6 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import msgspec
-import pandas as pd
 from litestar import Controller, Request, delete, get, post, put
 from litestar.exceptions import HTTPException
 from litestar.params import Parameter
