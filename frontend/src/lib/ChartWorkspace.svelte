@@ -94,6 +94,7 @@
     fetchWatchlists,
     fetchWatchlist,
   } from '$lib/api';
+  import { ema as calcEma, vwap as calcVwap, macd as calcMacd } from '$lib/chart/indicators.js';
   import {
     loadInstruments, searchByPrefix, suggestUnderlyings,
     findEquity, findNearestFuture, getInstrument,
@@ -168,8 +169,10 @@
     { value: 'sma50',    label: 'SMA 50' },
     { value: 'ema20',    label: 'EMA 20' },
     { value: 'ema50',    label: 'EMA 50' },
+    { value: 'vwap',     label: 'VWAP' },
     { value: 'bb',       label: 'Bollinger' },
     { value: 'rsi',      label: 'RSI 14' },
+    { value: 'macd',     label: 'MACD' },
   ];
   // Volume bars are ALWAYS on — operator: "remove volume chip from
   // chart and always keep volume on for chart in the modal and
@@ -335,7 +338,31 @@
   let _chartType   = $state(/** @type {'line'|'area'|'candle'|'plot'} */('line'));
   // Overlays MultiSelect — drives derived booleans below. Volume
   // is no longer in this list (always-on via _showVol const below).
-  let _overlays    = $state(/** @type {string[]} */([]));
+  // Persisted to localStorage so toggles survive reload.
+  const _OVERLAY_LS_KEY = 'rbq.cache.chart-overlays.v1';
+  function _loadOverlayPrefs() {
+    try {
+      const raw = typeof localStorage !== 'undefined'
+        ? localStorage.getItem(_OVERLAY_LS_KEY)
+        : null;
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      // Filter to known overlay keys to avoid stale/unknown values
+      const known = new Set(_OVERLAY_OPTS.map((o) => o.value));
+      return parsed.filter((v) => known.has(v));
+    } catch (_) { return []; }
+  }
+  let _overlays    = $state(/** @type {string[]} */(_loadOverlayPrefs()));
+  // Persist overlay selection whenever it changes
+  $effect(() => {
+    const snap = _overlays.slice();
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(_OVERLAY_LS_KEY, JSON.stringify(snap));
+      }
+    } catch (_) { /* quota exceeded — silently skip */ }
+  });
   // Tracks whether the Overlays MultiSelect dropdown is open — used to
   // suppress both hover popups so they don't clash with the open panel.
   let _overlayOpen = $state(false);
@@ -347,8 +374,10 @@
   const _showVol   = true;
   const _showEma20 = $derived(_overlays.includes('ema20'));
   const _showEma50 = $derived(_overlays.includes('ema50'));
+  const _showVwap  = $derived(_overlays.includes('vwap'));
   const _showBb    = $derived(_overlays.includes('bb'));
   const _showRsi   = $derived(_overlays.includes('rsi'));
+  const _showMacd  = $derived(_overlays.includes('macd'));
 
   // Expose loading state to parent via $bindable prop.
   $effect(() => { loading = _histLoading; });
@@ -653,12 +682,14 @@
   const CPAD_T  = 16;
   const CPAD_B  = 30;
   const RSI_H   = 56;   // RSI sub-panel height in SVG user units
+  const MACD_H  = 56;   // MACD sub-panel height in SVG user units
   const _innerW = $derived(_chartW - CPAD_L - CPAD_R);
-  // _bandH reserves vertical space at the bottom for sub-panels (volume + RSI).
-  // Volume bars always sit in the bottom VOL_H px of the price area; RSI sits
-  // below that. _innerH is the price-chart's usable height — overlays + price
-  // lines must not draw below CPAD_T + _innerH.
-  const _bandH  = $derived((_showRsi ? RSI_H : 0));
+  // _bandH reserves vertical space at the bottom for sub-panels (RSI + MACD).
+  // Volume bars always sit in the bottom VOL_H px of the price area; sub-panels
+  // stack below that in reservation order (RSI first, MACD below RSI).
+  // _innerH is the price-chart's usable height — overlays + price lines must
+  // not draw below CPAD_T + _innerH.
+  const _bandH  = $derived((_showRsi ? RSI_H : 0) + (_showMacd ? MACD_H : 0));
   const _innerH = $derived(_chartH - CPAD_T - CPAD_B - _bandH);
 
   $effect(() => {
@@ -884,6 +915,24 @@
   const _ema20Path = $derived(_showEma20 ? _emaPath(20) : '');
   const _ema50Path = $derived(_showEma50 ? _emaPath(50) : '');
 
+  // ── VWAP overlay ─────────────────────────────────────────────────
+  // Volume-weighted average price from bar[0] to current bar (cumulative).
+  // Uses the pure calcVwap() from indicators.js. Plotted as a solid cyan
+  // line on the price panel — no separate sub-panel needed.
+  const _vwapPath = $derived.by(() => {
+    if (!_showVwap || !_bars.length) return '';
+    const series = calcVwap(_bars);
+    let d = '';
+    for (const pt of series) {
+      if (pt.value == null) continue;
+      const t = Date.parse(pt.ts);
+      if (!Number.isFinite(t)) continue;
+      const x = _xOf(t), y = _yOf(pt.value);
+      d += (d ? ` L${x.toFixed(2)},${y.toFixed(2)}` : `M${x.toFixed(2)},${y.toFixed(2)}`);
+    }
+    return d;
+  });
+
   // ── Bollinger Bands (20-period, ±2σ) ─────────────────────────────
   // Returns mid / upper / lower path strings + a closed fill path.
   const _bbPaths = $derived.by(() => {
@@ -950,6 +999,15 @@
       out.push({ ts: _bars[i].ts, rsi });
     }
     return out;
+  });
+
+  // ── MACD (12/26/9) ────────────────────────────────────────────────
+  // Rendered in a separate sub-panel below RSI (when both active, MACD
+  // sits below RSI). Uses calcMacd() from indicators.js.
+  const _macdSeries = $derived.by(() => {
+    // Need at least 26+9+1 = 36 bars for signal to appear; check minimum
+    if (!_showMacd || _bars.length < 27) return /** @type {Array<{ts:string,macd:number|null,signal:number|null,histogram:number|null}>} */ ([]);
+    return calcMacd(_bars, 12, 26, 9);
   });
 
   // ── Grid + axis labels ────────────────────────────────────────────
@@ -1559,12 +1617,12 @@
 
         <!-- Bollinger Bands fill (drawn before lines so lines appear on top) -->
         {#if _showBb && _bbPaths.fill}
-          <path d={_bbPaths.fill} fill="rgba(125,211,252,0.06)" stroke="none"/>
+          <path class="overlay-bb" d={_bbPaths.fill} fill="rgba(125,211,252,0.06)" stroke="none"/>
         {/if}
         {#if _showBb && _bbPaths.upper}
-          <path d={_bbPaths.upper} fill="none" stroke="#7dd3fc" stroke-width="1" stroke-dasharray="3 2"/>
-          <path d={_bbPaths.lower} fill="none" stroke="#7dd3fc" stroke-width="1" stroke-dasharray="3 2"/>
-          <path d={_bbPaths.mid}   fill="none" stroke="#7dd3fc" stroke-width="1"/>
+          <path class="overlay-bb" d={_bbPaths.upper} fill="none" stroke="#7dd3fc" stroke-width="1" stroke-dasharray="3 2"/>
+          <path class="overlay-bb" d={_bbPaths.lower} fill="none" stroke="#7dd3fc" stroke-width="1" stroke-dasharray="3 2"/>
+          <path class="overlay-bb" d={_bbPaths.mid}   fill="none" stroke="#7dd3fc" stroke-width="1"/>
         {/if}
 
         <!-- Price layer — line / area / candle / plot -->
@@ -1590,22 +1648,28 @@
 
         <!-- SMA overlays -->
         {#if _sma20Path}
-          <path d={_sma20Path} fill="none" stroke="#7dd3fc" stroke-width="1.4"
+          <path class="overlay-sma" d={_sma20Path} fill="none" stroke="#7dd3fc" stroke-width="1.4"
                 stroke-dasharray="4 3" stroke-linejoin="round" stroke-linecap="round"/>
         {/if}
         {#if _sma50Path}
-          <path d={_sma50Path} fill="none" stroke="#c084fc" stroke-width="1.4"
+          <path class="overlay-sma" d={_sma50Path} fill="none" stroke="#c084fc" stroke-width="1.4"
                 stroke-dasharray="6 3" stroke-linejoin="round" stroke-linecap="round"/>
         {/if}
 
         <!-- EMA overlays -->
         {#if _ema20Path}
-          <path d={_ema20Path} fill="none" stroke="#4ade80" stroke-width="1"
+          <path class="overlay-ema" d={_ema20Path} fill="none" stroke="#4ade80" stroke-width="1"
                 stroke-dasharray="4 3" stroke-linejoin="round" stroke-linecap="round"/>
         {/if}
         {#if _ema50Path}
-          <path d={_ema50Path} fill="none" stroke="#fb923c" stroke-width="1"
+          <path class="overlay-ema" d={_ema50Path} fill="none" stroke="#fb923c" stroke-width="1"
                 stroke-dasharray="6 3" stroke-linejoin="round" stroke-linecap="round"/>
+        {/if}
+
+        <!-- VWAP overlay — solid cyan line on the price panel -->
+        {#if _vwapPath}
+          <path class="overlay-vwap" d={_vwapPath} fill="none" stroke="#7dd3fc"
+                stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/>
         {/if}
 
         <!-- RSI 14 sub-panel -->
@@ -1637,12 +1701,72 @@
               const y = rsiYOf(pt.rsi);
               return acc + (idx === 0 ? `M${x.toFixed(2)},${y.toFixed(2)}` : ` L${x.toFixed(2)},${y.toFixed(2)}`);
             }, '')}
-            <path d={rsiPath} fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-linecap="round"/>
+            <path class="overlay-rsi" d={rsiPath} fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-linecap="round"/>
           {/each}
           <!-- RSI label -->
           <text x={_chartW - CPAD_R - 4} y={rsiTop + 12}
                 text-anchor="end" fill="#fbbf24" font-size="10" font-weight="700" font-family="monospace">
             RSI 14
+          </text>
+        {/if}
+
+        <!-- MACD (12/26/9) sub-panel — below RSI when both active -->
+        {#if _showMacd && _macdSeries.length}
+          {@const macdTop = _chartH - CPAD_B - (_showRsi ? RSI_H : 0) - MACD_H}
+          {@const macdBot = _chartH - CPAD_B - (_showRsi ? RSI_H : 0)}
+          {@const macdPanelH = MACD_H}
+          <!-- Compute y-scale: range = max(|hist|, |macd|, |signal|) values -->
+          {@const macdVals = _macdSeries.flatMap(p => [p.macd, p.signal, p.histogram]).filter(v => v != null)}
+          {@const macdMax = macdVals.length ? Math.max(...macdVals.map(Math.abs)) : 1}
+          {@const macdRange = Math.max(macdMax * 1.15, 0.001)}
+          {@const macdYOf = (/** @type {number} */ val) => macdTop + ((macdRange - val) / (2 * macdRange)) * (macdPanelH - 6)}
+          {@const macdZero = macdTop + (macdPanelH - 6) / 2}
+          <!-- Background tint -->
+          <rect x={CPAD_L} y={macdTop} width={_chartW - CPAD_L - CPAD_R} height={macdPanelH}
+                fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.06)" stroke-width="0.5"/>
+          <!-- Zero line -->
+          <line x1={CPAD_L} x2={_chartW - CPAD_R} y1={macdZero} y2={macdZero}
+                stroke="rgba(200,216,240,0.25)" stroke-width="1" stroke-dasharray="2 4"/>
+          <!-- Histogram bars -->
+          {#each _macdSeries as pt}
+            {#if pt.histogram != null}
+              {@const t = Date.parse(pt.ts)}
+              {#if Number.isFinite(t)}
+                {@const x = _xOf(t)}
+                {@const yH = macdYOf(pt.histogram)}
+                {@const barUp = pt.histogram >= 0}
+                <line x1={x} x2={x} y1={Math.min(yH, macdZero)} y2={Math.max(yH, macdZero)}
+                      stroke={barUp ? 'rgba(74,222,128,0.55)' : 'rgba(248,113,113,0.55)'}
+                      stroke-width="2" stroke-linecap="round"/>
+              {/if}
+            {/if}
+          {/each}
+          <!-- MACD line -->
+          {@const macdLinePath = _macdSeries.reduce((acc, pt, idx) => {
+            if (pt.macd == null) return acc;
+            const t = Date.parse(pt.ts);
+            if (!Number.isFinite(t)) return acc;
+            const x = _xOf(t);
+            const y = macdYOf(pt.macd);
+            return acc + (acc === '' ? `M${x.toFixed(2)},${y.toFixed(2)}` : ` L${x.toFixed(2)},${y.toFixed(2)}`);
+          }, '')}
+          <path class="overlay-macd" d={macdLinePath} fill="none" stroke="#fbbf24"
+                stroke-width="1.4" stroke-linecap="round"/>
+          <!-- Signal line -->
+          {@const macdSignalPath = _macdSeries.reduce((acc, pt) => {
+            if (pt.signal == null) return acc;
+            const t = Date.parse(pt.ts);
+            if (!Number.isFinite(t)) return acc;
+            const x = _xOf(t);
+            const y = macdYOf(pt.signal);
+            return acc + (acc === '' ? `M${x.toFixed(2)},${y.toFixed(2)}` : ` L${x.toFixed(2)},${y.toFixed(2)}`);
+          }, '')}
+          <path class="overlay-macd" d={macdSignalPath} fill="none" stroke="#f87171"
+                stroke-width="1" stroke-dasharray="3 2" stroke-linecap="round"/>
+          <!-- MACD label -->
+          <text x={_chartW - CPAD_R - 4} y={macdTop + 12}
+                text-anchor="end" fill="#fbbf24" font-size="10" font-weight="700" font-family="monospace">
+            MACD
           </text>
         {/if}
 

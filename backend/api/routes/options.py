@@ -1721,8 +1721,22 @@ class OptionsController(Controller):
         if interval == "day":
             from datetime import date as _date
             from backend.api.persistence.ohlcv_store import get_or_fetch_daily
-            to_d_daily   = _date.today()
-            from_d_daily = to_d_daily - __import__("datetime").timedelta(days=days + 5)
+            import datetime as _dt
+            # Use yesterday as the upper-bound for the ohlcv_store lookup.
+            # Today's daily bar is not yet finalized while the session is
+            # open (the close price is still the live LTP), so the
+            # _is_complete_range check requires dates_sorted[-1] == today
+            # which fails during and shortly after market hours, forcing
+            # every request to Tier 3 (broker) instead of Tier 2 (DB).
+            # Equities like BEL showed intermittent "No data available"
+            # because the completeness check always rejected the cached
+            # range and the broker returned empty bars on rate-limit.
+            # Setting to_d = yesterday lets the boundary check pass for
+            # confirmed past bars; today's (live) bar falls through to the
+            # broker path below and is NOT persisted into ohlcv_daily
+            # (immutable-day semantics per CLAUDE.md).
+            to_d_daily   = _date.today() - _dt.timedelta(days=1)
+            from_d_daily = to_d_daily - _dt.timedelta(days=days + 5)
             resolved_exch = (exchange or "NFO").upper()
             try:
                 store_bars = await get_or_fetch_daily(sym, resolved_exch, from_d_daily, to_d_daily)
