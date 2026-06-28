@@ -95,20 +95,21 @@
 
 <style>
   /* Charts page fills the full viewport below the sticky navbar.
-     Algo-content already applies padding: calc(3rem + 1.8rem) top +
-     calc(1.6rem + 0.4rem) bottom so the page wrapper sits INSIDE the
-     content box. Earlier `height: calc(100vh - 3rem - 2rem)` over-
-     counted the available area by ~3rem and produced a vertical
-     scrollbar on phone viewports — operator: "the entire chart grid
-     should fit in mobile viewport with no scrolling". The flex:1 on
-     .chart-body + min-height:0 chain lets the SVG absorb every
-     residual pixel. Subtracted chrome reflects the actual padding
-     applied by .algo-content. */
+     Algo-content is itself a flex column with min-height: 0 + padding
+     calc(3rem + 1.8rem) top + calc(1.6rem + 0.4rem) bottom (or +1.5rem
+     when ps-strip is present via :has() override). We rely on that
+     flex chain rather than a fixed calc — earlier `calc(100vh - 3rem
+     - 2rem)` over-counted by ~3 rem and produced a vertical scrollbar
+     on phone viewports (operator: "the entire chart grid should fit
+     in mobile viewport with no scrolling"). `flex: 1 1 0; min-height:
+     0; overflow: hidden;` chain lets the wrap absorb whatever
+     algo-content offers and the SVG below claims every residual
+     pixel — independent of whether ps-strip is mounted. */
   .charts-page-wrap {
     display: flex;
     flex-direction: column;
-    height: calc(100vh - 3rem - 1.8rem - 1.6rem - 0.4rem);
-    min-height: 18rem;
+    flex: 1 1 0;
+    min-height: 0;
     gap: 0.2rem;
     padding: 0;
     box-sizing: border-box;
@@ -133,10 +134,6 @@
 
   @media (max-width: 600px) {
     .charts-page-wrap {
-      /* Phone — subtract algo-content's padding chain. Same chrome
-         math as desktop, repeated explicit so any future padding
-         shift on either axis updates in one place. */
-      height: calc(100vh - 3rem - 1.8rem - 1.6rem - 0.4rem);
       gap: 0.15rem;
     }
   }

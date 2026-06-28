@@ -993,15 +993,19 @@ test.describe('chart overlays — all viewports', () => {
     await waitForChart(page);
     await page.waitForTimeout(500);
 
-    const ctrlBox = await page.locator('.cw-controls').boundingBox();
-    const svgBox  = await page.locator('.cw-svg').boundingBox();
+    const ctrlBox = await page.locator('.cw-controls').first().boundingBox();
+    // .cw-chart-container holds the SVG; measure its top edge — that's
+    // where the chart area starts. The container `flex: 1 1 0` sits
+    // directly below the toolbar row (or the optional front-month chip).
+    const chartTop = await page.locator('.cw-chart-container').first().boundingBox();
     expect(ctrlBox).not.toBeNull();
-    expect(svgBox).not.toBeNull();
-    if (ctrlBox && svgBox) {
-      // Optional front-month chip may sit between toolbar and SVG —
+    expect(chartTop).not.toBeNull();
+    if (ctrlBox && chartTop) {
+      // Optional front-month chip may sit between toolbar and chart —
       // measure to the top of whichever element appears first below.
-      const fmBox = await page.locator('.cw-frontmonth-bar').boundingBox().catch(() => null);
-      const nextTop = fmBox ? Math.min(fmBox.y, svgBox.y) : svgBox.y;
+      const fmBox = await page.locator('.cw-frontmonth-bar').first()
+        .boundingBox().catch(() => null);
+      const nextTop = fmBox ? Math.min(fmBox.y, chartTop.y) : chartTop.y;
       const ctrlBottom = ctrlBox.y + ctrlBox.height;
       const gap = nextTop - ctrlBottom;
       expect(
