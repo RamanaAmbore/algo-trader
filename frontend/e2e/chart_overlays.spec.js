@@ -868,7 +868,7 @@ test.describe('chart overlays — all viewports', () => {
   //   4. Toolbar→chart vertical gap is minimal (≤8 px).
   //   5. /charts at 393×851 + 360×640 fits without vertical scroll.
 
-  test('NAV chip overlay is anchored LEFT inside its chart card', async ({ page }) => {
+  test('NAV chip overlay is anchored LEFT-of-center, clearing Y-axis', async ({ page }) => {
     test.setTimeout(45_000);
     await injectSession(page, _session);
     // Visit /dashboard — the NAV chip mounts inside the NavTab on the
@@ -881,10 +881,10 @@ test.describe('chart overlays — all viewports', () => {
       console.log('[chip-left] firm-NAV chip not minted — skipping left-anchor check');
       return;
     }
-    // The chip's left edge should sit near the chart card's left
-    // edge (within ~32 px after clamp() offset + padding). Right edge
-    // should be FURTHER from the card's right edge than its left
-    // edge is from the card's left edge — proves it's left-anchored.
+    // Updated Jun 2026: chip is anchored just RIGHT of the Y-axis line
+    // (operator: "the nav overlay is overlapping the y label in nav
+    // chart. start it just right of Y axis"). It is still LEFT-of-center
+    // — right gap > left gap — but it no longer hugs the card edge.
     const chartCard = page.locator('.row1-col-chart').first();
     const [chipBox, cardBox] = await Promise.all([
       chip.boundingBox(),
@@ -896,12 +896,8 @@ test.describe('chart overlays — all viewports', () => {
       const leftGap  = chipBox.x - cardBox.x;
       const rightGap = (cardBox.x + cardBox.width) - (chipBox.x + chipBox.width);
       expect(
-        leftGap,
-        `Chip should hug left edge — leftGap=${leftGap}px (≤32 px)`,
-      ).toBeLessThanOrEqual(32);
-      expect(
         rightGap > leftGap,
-        `Chip should be left-anchored — leftGap=${leftGap}px rightGap=${rightGap}px`,
+        `Chip should be left-of-center — leftGap=${leftGap}px rightGap=${rightGap}px`,
       ).toBe(true);
     }
   });
@@ -1066,15 +1062,35 @@ test.describe('chart overlays — all viewports', () => {
     await waitForChart(page);
     await page.waitForTimeout(700);
 
-    // Force the reset button to appear — programmatically scroll-zoom
-    // the SVG so `isZoomed` flips true. If gesture doesn't take on the
-    // mobile project (touch routing), soft-skip.
+    // Force the reset button to appear — dispatch a wheel event on the
+    // SVG with `cancelable: true` so `e.preventDefault()` in _onWheel
+    // succeeds. Falls back to mouse.wheel + hover if dispatchEvent path
+    // doesn't bind (older builds).  Soft-skip when the gesture has no
+    // effect (data not yet loaded, mid-fetch).
     const svg = page.locator('.cw-svg');
-    await svg.hover();
-    await page.mouse.wheel(0, -500);
-    await page.waitForTimeout(400);
-    const reset = page.locator('.cw-reset-zoom');
-    const resetVisible = await reset.isVisible().catch(() => false);
+    await svg.hover().catch(() => {});
+    // Two attempts — first via native mouse.wheel (works on chromium-
+    // desktop), second via dispatched event (works on isMobile contexts
+    // where mouse.wheel routes through touch).
+    await page.mouse.wheel(0, -500).catch(() => {});
+    await page.waitForTimeout(300);
+    let reset = page.locator('.cw-reset-zoom');
+    let resetVisible = await reset.isVisible().catch(() => false);
+    if (!resetVisible) {
+      await svg.evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        const ev = new WheelEvent('wheel', {
+          deltaY: -500,
+          clientX: r.left + r.width / 2,
+          clientY: r.top + r.height / 2,
+          bubbles: true,
+          cancelable: true,
+        });
+        el.dispatchEvent(ev);
+      }).catch(() => {});
+      await page.waitForTimeout(400);
+      resetVisible = await reset.isVisible().catch(() => false);
+    }
     if (!resetVisible) {
       console.log('[reset-mobile-fill] zoom gesture not triggered — skipping');
       return;

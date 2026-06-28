@@ -128,7 +128,7 @@
         {@const v = _max - _range * t}
         <line x1={_pad.l} y1={y} x2={_pad.l + innerW} y2={y}
               stroke="rgba(126,151,184,0.10)" stroke-width="1" />
-        <text x={_pad.l - 8} y={y + 3} text-anchor="end"
+        <text class="nav-yaxis-label" x={_pad.l - 8} y={y + 3} text-anchor="end"
               fill="rgba(155,176,208,0.55)" font-size="10"
               font-family="ui-monospace, monospace">{_fmtInr(v)}</text>
       {/each}

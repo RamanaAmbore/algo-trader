@@ -238,22 +238,17 @@ test.describe('dashboard refactor — news → activity + chart/equity swap + NA
         ).toBeGreaterThanOrEqual(headerBox.y + headerBox.height - 1);
       }
 
-      // Placement: chip is LEFT-anchored (operator: "move nav chip
-      // to the left of nav chart"). The chip's left edge sits close
-      // to the chart card's left edge — within clamp() offset budget
-      // (≤32 px after card padding + 0.35-0.75 rem chip inset). And
-      // the right gap must exceed the left gap, proving the anchor.
+      // Placement: chip is LEFT-of-center, anchored just right of the
+      // Y-axis (operator Jun 2026: "the nav overlay is overlapping the y
+      // label in nav chart. start it just right of Y axis"). Right gap
+      // must still exceed the left gap, proving the LEFT bias survives.
       const chartCardBox = await chartCard.boundingBox();
       if (chartCardBox && chipBox) {
         const leftGap  = chipBox.x - chartCardBox.x;
         const rightGap = (chartCardBox.x + chartCardBox.width) - (chipBox.x + chipBox.width);
         expect(
-          leftGap,
-          `NAV chip left edge should hug chart card's left edge — leftGap=${leftGap}px (≤32 px allowance)`,
-        ).toBeLessThanOrEqual(32);
-        expect(
           rightGap > leftGap,
-          `NAV chip should be LEFT-anchored — leftGap=${leftGap}px rightGap=${rightGap}px`,
+          `NAV chip should be left-of-center — leftGap=${leftGap}px rightGap=${rightGap}px`,
         ).toBe(true);
       }
 
@@ -520,16 +515,15 @@ test.describe('dashboard refactor — news → activity + chart/equity swap + NA
           chipBox.x + chipBox.width,
           'mobile: NAV chip right edge inside chart card',
         ).toBeLessThanOrEqual(cardBox.x + cardBox.width + 1);
-        // Left-anchor proof — left gap is small, smaller than right gap.
+        // Left-of-center proof — right gap exceeds left gap. The chip
+        // now sits just right of the Y-axis line (operator Jun 2026:
+        // "start it just right of Y axis"), so the leftGap can be 30-80
+        // px on phones — what matters is the LEFT bias survives.
         const leftGap  = chipBox.x - cardBox.x;
         const rightGap = (cardBox.x + cardBox.width) - (chipBox.x + chipBox.width);
         expect(
-          leftGap,
-          `mobile: NAV chip left edge hugs chart card's left edge — leftGap=${leftGap}px (≤24 px allowance on phone)`,
-        ).toBeLessThanOrEqual(24);
-        expect(
           rightGap > leftGap,
-          `mobile: NAV chip should be LEFT-anchored — leftGap=${leftGap}px rightGap=${rightGap}px`,
+          `mobile: NAV chip should be left-of-center — leftGap=${leftGap}px rightGap=${rightGap}px`,
         ).toBe(true);
         // And the chip sits well below the page-header.
         const headerBox = await page.locator('.page-header').first().boundingBox();
@@ -619,27 +613,22 @@ test.describe('dashboard refactor — news → activity + chart/equity swap + NA
       return;
     }
 
-    // Y-axis labels are the <text> elements inside the NavTab SVG with
-    // text-anchor="end" anchored at viewBox x=_pad.l-8 = 52, but
-    // preserveAspectRatio="none" stretches them — easiest path is to
-    // measure the rightmost label edge and assert chip.left > that edge.
+    // Y-axis labels are the <text class="nav-yaxis-label"> elements
+    // inside the NavTab SVG (scoped class added Jun 2026 to disambiguate
+    // from bottom-right date labels which also use text-anchor="end").
     const svgLocator = page.locator('.nav-svg').first();
     const svgPresent = await svgLocator.isVisible().catch(() => false);
     if (!svgPresent) {
       console.log('[mobile/chip-yaxis] nav-svg not visible (empty state) — skipping');
       return;
     }
-    // Each Y-axis label sits at viewBox x=52 with text-anchor="end".
-    // After rotation in SVG coords, the rendered bounding box on the
-    // browser-side <text> includes the rotation transform — use
-    // getBoundingClientRect() for the actual painted right edge.
-    const labels = svgLocator.locator('text[text-anchor="end"]');
+    const labels = svgLocator.locator('text.nav-yaxis-label');
     const labelCount = await labels.count();
     if (labelCount === 0) {
       console.log('[mobile/chip-yaxis] no y-axis labels rendered — skipping');
       return;
     }
-    // Find rightmost label edge across all Y-axis label texts.
+    // Find rightmost Y-axis label edge across all 5 ticks.
     let rightmostLabelEdge = 0;
     for (let i = 0; i < labelCount; i++) {
       const b = await labels.nth(i).boundingBox().catch(() => null);
