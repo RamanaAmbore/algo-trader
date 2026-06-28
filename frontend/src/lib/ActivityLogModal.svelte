@@ -117,7 +117,7 @@
           <AccountMultiSelect
             bind:value={_accountFilter}
             options={_availableAccounts.map(a => ({ value: a, label: a }))}
-            placeholder="All acc." />
+            placeholder="All accounts" />
         </span>
       {/if}
       <button type="button" class="alm-close" bind:this={_closeBtnEl}
@@ -182,11 +182,21 @@
        of the close button. Operator: "the account on the tab line
        should go to activity header." `margin-left: auto` takes
        ownership of the flex spacer so the close button no longer
-       needs it (handled in CSS below). */
+       needs it (handled in CSS below).
+
+       Min-width 11rem so the dropdown is wide enough to show
+       "All accounts" or multi-account chips without truncating
+       (operator: "you can increase width of accounts dropdown on
+       activity header"). */
     display: inline-flex;
     align-items: center;
     margin-left: auto;
     font-size: 0.7rem;
+    min-width: 11rem;
+  }
+  :global(.alm-acct .multiselect-trigger),
+  :global(.alm-acct .multiselect-control) {
+    min-width: 11rem;
   }
   .alm-close {
     /* Standard close — square 1.4rem matches ChartModal +
