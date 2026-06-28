@@ -1944,12 +1944,44 @@ Technical indicators (SMA, EMA, VWAP, Bollinger Bands, RSI, MACD) live in a sing
 
 **VWAP note** — indices (NIFTY 50, NIFTY BANK etc.) carry `volume=0` on every bar. `calcVwap()` returns `null` for all points when `cumVol=0`. The `{#if _vwapPath}` block in the SVG template silently suppresses the element. This is correct: VWAP is a price/volume metric that has no meaning for non-tradeable indices.
 
+### Buy / sell signal markers
+
+⚙ **TECH — Signal detection as pure helpers, render layer pure SVG** — `WHY` Operator brief: surface buy/sell points TradingView-style for each active indicator. Detection logic must be testable (`node --test`) and the marker layer must respect the canonical algo palette so the visual vocabulary matches the rest of the app. `WHAT` Five exports in `indicators.js` — `emaSignals(fast, slow)`, `vwapSignals(closes, vwapArr)`, `bollingerSignals(closes, bb)`, `rsiSignals(arr, oversold=30, overbought=70)`, `macdSignals(macdLine, signalLine)`. Each returns `[{i, type:'buy'|'sell'}]`. Inputs are duck-typed — they accept raw number arrays, `{value}` arrays (real ema output), or `{close}` bars (raw OHLCV). `HOW` In ChartWorkspace, `_signalMarkers` is a `$derived.by` that re-runs only when `_bars` or `_overlays` change; `_signalLayout` translates events to `{x, y, type, tag, tooltip, stack}` records with same-bar stacking. SVG renders one `<g class="signal-marker signal-{type}">` per event with a triangle + 9px monospace tag. `WHERE` `frontend/src/lib/chart/indicators.js::emaSignals|vwapSignals|bollingerSignals|rsiSignals|macdSignals`; `frontend/src/lib/ChartWorkspace.svelte::_signalMarkers|_signalLayout`.
+
+**Marker palette + geometry** (canonical, do not vary):
+
+| Element | Spec |
+|---|---|
+| Buy triangle | filled `#4ade80` emerald-400, 10×8 px, anchored at bar's low + 8 px pad, tip-up |
+| Sell triangle | filled `#f87171` red-400, 10×8 px, anchored at bar's high − 8 px pad, tip-down |
+| Stroke | `#0a0a0a` 0.5 px (subtle outline so triangles read against the chart background tint) |
+| Tag font | 9 px monospace, weight 700, paint-order stroke-then-fill with 2.5 px dark stroke for legibility against bars |
+| Tag colour | matches triangle (`#4ade80` buy, `#f87171` sell) |
+| Stack offset | 16 px vertical between markers on the same bar (split: buys below, sells above) |
+| Indicator tag text | `EMA↑` / `EMA↓` / `VWAP↑` / `VWAP↓` / `BB↓` (buy = lower band) / `BB↑` (sell = upper band) / `RSI↑` / `RSI↓` / `MACD↑` / `MACD↓` |
+| Tooltip (`<title>` element) | `Buy signal — RSI 14 @ 2026-04-15` (verb + indicator + bar timestamp) |
+| Density throttle | per-indicator cap of 12 events on dense ranges (`_bars.length >= 180`); most-recent events kept |
+| Bollinger throttle | first bar of a contiguous lower / upper band run only — prevents 5-marker spam on multi-bar breaks |
+
+**Signal detection rules** (peer-platform standard — TradingView / Sensibull / Streak / Upstox):
+
+| Indicator | Buy | Sell |
+|---|---|---|
+| EMA cross | fast > slow AND prev fast ≤ prev slow (golden cross) | fast < slow AND prev fast ≥ prev slow (death cross) |
+| VWAP | close > vwap AND prev close ≤ prev vwap | close < vwap AND prev close ≥ prev vwap |
+| Bollinger | close ≤ lower band (first bar) | close ≥ upper band (first bar) |
+| RSI 14 | rsi > 30 AND prev rsi ≤ 30 | rsi < 70 AND prev rsi ≥ 70 |
+| MACD 12/26/9 | macd > signal AND prev macd ≤ prev signal | macd < signal AND prev macd ≥ prev signal |
+
+**Toggle UX** — Signals chip in chart toolbar renders only when `_overlays.length > 0` (no markers to show without an indicator). Default ON, persisted to `localStorage` key `rbq.cache.chart-signals.v1`. Same height + active-state palette (cyan-400) as the Intraday chip — toolbar height SSOT (`--chart-toolbar-h`) preserved.
+
 ### Source files
 
-- `frontend/src/lib/chart/indicators.js` — pure indicator functions
-- `frontend/src/lib/ChartWorkspace.svelte` — imports `calcEma`, `calcVwap`, `calcMacd`; all overlay paths are `$derived`
-- `frontend/scripts/indicators.test.js` — 32-test unit suite (`node --test`)
-- `frontend/e2e/chart_overlays.spec.js` — 12-test Playwright spec (chromium-desktop + mobile-portrait)
+- `frontend/src/lib/chart/indicators.js` — pure indicator + signal functions
+- `frontend/src/lib/ChartWorkspace.svelte` — imports `calcEma`, `calcVwap`, `calcMacd`, `calcBollinger`, `calcRsi`, + 5 signal helpers; all overlay paths and `_signalMarkers` / `_signalLayout` are `$derived`
+- `frontend/scripts/indicators.test.js` — 52-test unit suite (`node --test`) covering indicator math + 5 signal helpers
+- `frontend/e2e/chart_overlays.spec.js` — indicator paths Playwright spec
+- `frontend/e2e/chart_signals.spec.js` — buy/sell markers Playwright spec (chromium-desktop + mobile-portrait)
 
 ---
 

@@ -556,17 +556,26 @@ Unified chart for any symbol kind (underlying / future / option / equity). Reads
 - `RSI 14` — Wilder-smoothed RSI with 30/70 reference lines (amber line, `RSI_H=48` user-units)
 - `MACD 12/26/9` — histogram (green/red bars) + MACD line (amber) + signal (red-dashed), (`MACD_H=56` user-units). Requires ≥27 bars; signal needs ≥36.
 
-**Indicator module** — `frontend/src/lib/chart/indicators.js` — pure stateless functions (`sma`, `ema`, `vwap`, `bollinger`, `rsi`, `macd`). No DOM/Svelte imports. All throw `RangeError` for invalid periods.
+**Indicator module** — `frontend/src/lib/chart/indicators.js` — pure stateless functions (`sma`, `ema`, `vwap`, `bollinger`, `rsi`, `macd`) + signal-detection helpers (`emaSignals`, `vwapSignals`, `bollingerSignals`, `rsiSignals`, `macdSignals`). No DOM/Svelte imports. All compute-only; throw `RangeError` for invalid periods.
+
+**Buy/sell signal markers** (TradingView-style triangles on price panel) — for each active overlay the signal-detection function returns `[{i, type: 'buy'|'sell'}]` events; ChartWorkspace renders green-up triangle (`#4ade80`) below the bar low for buys, red-down triangle (`#f87171`) above the bar high for sells, plus a 9px monospace indicator tag (`EMA↑`, `RSI↓`, `MACD↑`, `BB↓`, `VWAP↑`). Same-bar markers stack vertically (16px offset). Density throttle: per-indicator cap of 12 events on dense ranges (≥180 bars). Signal rules per peer platforms:
+- **EMA cross** (needs both EMA 20 + EMA 50) — fast crosses above/below slow (golden / death cross)
+- **VWAP** — close crosses above/below cumulative VWAP
+- **Bollinger** — close pierces lower (buy) / upper (sell) band; throttled to first bar of contiguous run
+- **RSI 14** — crosses 30 from below (buy) / 70 from above (sell)
+- **MACD 12/26/9** — line crosses signal line
+
+**Signals toggle** — toolbar chip (only visible when ≥1 indicator selected), default ON, persisted to `localStorage` key `rbq.cache.chart-signals.v1`.
 
 **Overlay persistence** — `localStorage` key `rbq.cache.chart-overlays.v1` (JSON array of overlay keys). Hydrated in `onMount` (not `$state()` init, which would run on the server during SSR). Save guard: `_overlaysHydrated` flag prevents the persist `$effect` from overwriting stored prefs during the brief `[]`-to-hydrated window.
 
-**CSS class selectors** — every overlay `<path>` carries `class="overlay-{type}"` (`overlay-sma`, `overlay-ema`, `overlay-vwap`, `overlay-bb`, `overlay-rsi`, `overlay-macd`) for stable Playwright locators.
+**CSS class selectors** — every overlay `<path>` carries `class="overlay-{type}"` (`overlay-sma`, `overlay-ema`, `overlay-vwap`, `overlay-bb`, `overlay-rsi`, `overlay-macd`). Signal markers carry `class="signal-marker signal-{type}"` (`signal-buy` / `signal-sell`) for stable Playwright locators.
 
 **_bandH** — `$derived((_showRsi ? RSI_H : 0) + (_showMacd ? MACD_H : 0))` reserves SVG space at the bottom for sub-panels. `_innerH = chartH - CPAD_T - CPAD_B - _bandH`.
 
-**Unit tests** — `frontend/scripts/indicators.test.js` (32 tests, `node --test`). Five dimensions: SSOT (hand-calculated reference values), Perf (sync-only), Stale (no duplication in ChartWorkspace), Reuse (same import), UX (edge cases: empty, N=0, constant series).
+**Unit tests** — `frontend/scripts/indicators.test.js` (52 tests, `node --test`) covering both indicator math and the five signal-detection helpers. Five dimensions: SSOT (hand-calculated reference values + crossover fixtures), Perf (sync-only), Stale (no duplication in ChartWorkspace), Reuse (same import), UX (edge cases: empty, N=0, constant series, null-tolerant).
 
-**E2E spec** — `frontend/e2e/chart_overlays.spec.js` (12 tests, chromium-desktop + mobile-portrait). Uses `STOCK_URL` (RELIANCE) for VWAP/MACD tests — NIFTY 50 is an index with zero volume.
+**E2E spec** — `frontend/e2e/chart_overlays.spec.js` covers indicator paths; `frontend/e2e/chart_signals.spec.js` covers buy/sell markers (chromium-desktop + mobile-portrait, 1Y NIFTY/RELIANCE fixtures). Uses `STOCK_URL` (RELIANCE) for VWAP/MACD tests — NIFTY 50 is an index with zero volume.
 
 **Price history** (`/api/charts/*`) — in-memory rolling per-symbol buffers + lifecycle markers from `AlgoOrder` rows. No new persistent state.
 

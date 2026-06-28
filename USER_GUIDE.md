@@ -264,6 +264,32 @@ Click the **Overlays** button in the chart toolbar to toggle indicators. Your ch
 - Switch to a longer timeframe (3M / 6M / 1Y) before enabling MACD on a thinly-traded contract; fewer than 27 bars leaves the sub-panel blank.
 - Overlays are computed in the browser from the same OHLCV data the chart already has — no extra network calls.
 
+### Buy / sell signal markers
+
+When at least one indicator is selected, a **Signals** chip appears in the chart toolbar (defaults to ON). The chart marks each bar where the selected indicator emits a buy or sell event:
+
+- **Green up-triangle** ▲ below the bar's low = BUY signal (the indicator turned bullish)
+- **Red down-triangle** ▼ above the bar's high = SELL signal (the indicator turned bearish)
+- A small tag (`EMA↑`, `RSI↓`, `MACD↑`, `BB↓`, `VWAP↑`) next to the triangle says which indicator fired
+- Multiple indicators firing on the same bar stack vertically so each one stays readable
+- Hover the marker for the full tooltip (`Buy signal — RSI 14 @ 2026-04-15`)
+
+**Standard signal rules** (same as TradingView / Sensibull / Streak):
+
+| Indicator | Buy signal | Sell signal |
+|---|---|---|
+| **EMA cross** (needs both EMA 20 + EMA 50) | EMA 20 crosses **above** EMA 50 — "golden cross" | EMA 20 crosses **below** EMA 50 — "death cross" |
+| **VWAP** | Close crosses **above** VWAP from below | Close crosses **below** VWAP from above |
+| **Bollinger** | Close **pierces lower** band (oversold) | Close **pierces upper** band (overbought) |
+| **RSI 14** | RSI crosses **above 30** from oversold | RSI crosses **below 70** from overbought |
+| **MACD 12/26/9** | MACD line crosses **above** signal line | MACD line crosses **below** signal line |
+
+**Tips**:
+- Treat markers as **suggestions, not commands** — every textbook signal misfires in real markets. Pair them with broader context (trend, news, position size).
+- The Signals chip persists ON/OFF across reloads (saved in browser storage). Click it to hide the markers while keeping the indicator lines visible.
+- On dense ranges (1Y with 250+ bars), only the most recent 12 signals per indicator are shown so the chart stays readable.
+- Bollinger band-touch signals are throttled to the **first bar** of each run — if price hugs the lower band for 5 bars in a row, you'll see one buy marker, not five.
+
 ### Options analytics — the payoff diagram
 
 `/admin/derivatives` is the dedicated options-research page. Pick an underlying (NIFTY / BANKNIFTY / …) and the page surfaces every option + future you hold on it as **Candidates**. Tick / untick rows to include / exclude legs from the payoff — the chart re-renders on every toggle.
