@@ -2,6 +2,7 @@
   import { onMount, onDestroy, getContext } from 'svelte';
   import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
   import PnlAnalysis from '$lib/PnlAnalysis.svelte';
+  import NavTab from '$lib/NavTab.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -222,7 +223,10 @@
   // (PnlAnalysis component). Default Intraday — that's the live "what
   // is the book doing right now" view; Performance is the deeper
   // historical drill-down sitting one click away.
-  let _chartTab = $state(/** @type {'intraday'|'performance'} */ ('intraday'));
+  // 'nav' first — operator-requested. The /nav standalone page was
+  // retired; the NAV curve now lives here as the first tab so the
+  // headline daily NAV trend is one click away from the Dashboard.
+  let _chartTab = $state(/** @type {'nav'|'intraday'|'performance'} */ ('nav'));
   // Bindable mirror of PnlAnalysis.hasData — flips to false once
   // /pnl-benchmarks confirms zero dates. Default true so the
   // auto-collapse effect below doesn't fire during the initial
@@ -1739,7 +1743,11 @@
     class:is-collapsed={_colEquityCurve}>
     <div class="card-header-row">
       <AlgoTabs
-        tabs={[{ id: 'intraday', label: 'Intraday' }, { id: 'performance', label: 'Performance' }]}
+        tabs={[
+          { id: 'nav',         label: 'NAV'         },
+          { id: 'intraday',    label: 'Intraday'    },
+          { id: 'performance', label: 'Performance' },
+        ]}
         bind:value={_chartTab}
         compact={true}
       />
@@ -1755,6 +1763,13 @@
         bind:refreshLoading={_refreshing}
         showSearch={false}
       />
+    </div>
+
+    <!-- NAV panel — daily firm NAV history. Replaces the standalone
+         /nav page (deleted); the per-account breakdown lives on
+         /performance and the headline number on NavCard. -->
+    <div class="card-body" hidden={_chartTab !== 'nav' || _colEquityCurve}>
+      <NavTab />
     </div>
 
     <!-- Intraday panel — SVG curve of today's cum P&L. -->

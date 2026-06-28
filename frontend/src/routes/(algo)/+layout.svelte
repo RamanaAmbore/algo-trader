@@ -229,7 +229,12 @@
     { href: '/charts',           label: 'Charts',    group: 'monitor' },
     { href: '/automation',       label: 'Automation', group: 'monitor' },
     { href: '/strategies',       label: 'Strategies', group: 'monitor' },
-    { href: '/nav',              label: 'NAV',       group: 'monitor' },
+    // /nav route deleted — NAV curve now lives as the first tab of
+    // the Dashboard equity-curve card. Operator: "remove nav page,
+    // move nav to dashboard as the first tab in with intraday and
+    // performance." Deep links to /nav should redirect via the
+    // SvelteKit 404 — adding a +page.server.ts redirect is overkill
+    // for a removed-feature link the operator only used themselves.
     // /admin/alerts is reachable from the 🔔 History link in the
     // /automation page header. Dropped from the top nav to slim the
     // monitor cluster — alert history naturally lives inside the
