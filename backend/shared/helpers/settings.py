@@ -225,6 +225,37 @@ SEEDS: list[tuple] = [
      "retail default and covers a full quarter of LLM-initiated activity.",
      "days", {"min": 0, "max": 730, "step": 1}),
 
+    # ── Retention horizons — operational tables (Jun 2026 sweep) ─────
+    # These settings drive `_task_purge_persistence_caches` (03:10 IST)
+    # and `_task_purge_audit_log` (03:20 IST).  0 disables the purge for
+    # that table.  Persistence-layer horizons (ohlcv_daily 5y,
+    # instruments_snapshot 7d, intraday_bars 90d) are hard-coded — they
+    # are cache-layer decisions not operator-tunable.
+    ("retention", "retention.algo_events_days", "int", 30,
+     "algo_events rows older than this are purged daily. algo_events is a "
+     "write-only diagnostic journal (agent-state snapshots, ~750 rows/day). "
+     "30 days covers a month of agent-cycle history — ample for any incident "
+     "postmortem. 0 disables.",
+     "days", {"min": 0, "max": 365, "step": 1}),
+    ("retention", "retention.algo_order_events_days", "int", 90,
+     "algo_order_events (per-order chase timeline) rows older than this are "
+     "purged daily. 90 days covers every UI query window on /admin/history. "
+     "0 disables.",
+     "days", {"min": 0, "max": 730, "step": 1}),
+    ("retention", "retention.auth_tokens_days", "int", 7,
+     "Expired auth_tokens (one-time email-verify / password-reset tokens) "
+     "whose expiry is older than this are purged daily. Only expired rows "
+     "are ever touched — active tokens are never dropped regardless of age. "
+     "0 disables.",
+     "days", {"min": 0, "max": 90, "step": 1}),
+    ("retention", "retention.audit_log_days", "int", 365,
+     "audit_log rows older than this are purged daily (03:20 IST). "
+     "audit_log is the forensic trail for operator investigations — "
+     "365 days covers a full calendar year of action history. "
+     "nav_daily + daily_book (the SEBI-relevant financial records) "
+     "are kept forever regardless of this setting. 0 disables.",
+     "days", {"min": 0, "max": 1825, "step": 1}),
+
     # ── Hedge proxies — Stage 4 ──────────────────────────────────────
     # Category matches the CRUD section header on /admin/settings so
     # both surfaces (settings rows + pair table) render inside one

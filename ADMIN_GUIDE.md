@@ -805,14 +805,42 @@ The `persistence` key in `/admin/health` exposes two worker health snapshots:
 
 ### DB tables
 
-Rows older than retention policy are purged daily at 03:00 IST:
+Rows older than retention policy are purged by two daily background tasks:
 
-| Table | Retention | Purpose |
-|---|---|---|
-| `ohlcv_daily` | 5 years | Daily OHLCV bars for every symbol / exchange. |
-| `instruments_snapshot` | 7 days | Per-exchange symbol→token map snapshots. Refreshed daily. |
-| `holidays_snapshot` | Forever | Exchange holiday calendars per year. Immutable. |
-| `intraday_bars` | 90 days | 5/15/30/60-minute bars. Growing window per trading day. |
+**03:10 IST** — `bg-purge-persistence` — persistence-layer tables + operational tables:
+
+| Table | Retention | Setting key | Purpose |
+|---|---|---|---|
+| `ohlcv_daily` | 5 years | hard-coded | Daily OHLCV bars for every symbol / exchange. |
+| `instruments_snapshot` | 7 days | hard-coded | Per-exchange symbol→token map snapshots. Refreshed daily. |
+| `holidays_snapshot` | Forever | no purge | Exchange holiday calendars per year. Immutable. |
+| `intraday_bars` | 90 days | hard-coded | 5/15/30/60-minute bars. Growing window per trading day. |
+| `algo_events` | 30 days | `retention.algo_events_days` | Write-only agent-state diagnostic journal (~750 rows/day). |
+| `algo_order_events` | 90 days | `retention.algo_order_events_days` | Per-order chase timeline. Covers all UI query windows. |
+| `auth_tokens` | 7 days after expiry | `retention.auth_tokens_days` | Expired one-time email-verify / password-reset tokens. Active tokens are never deleted. |
+
+**03:15 IST** — `bg-mcp-audit-cleanup`:
+
+| Table | Retention | Setting key | Purpose |
+|---|---|---|---|
+| `mcp_audit` | 90 days | `mcp.audit_retention_days` | MCP-initiated mutations (Lab / Claude Code actions). |
+
+**03:20 IST** — `bg-purge-audit-log`:
+
+| Table | Retention | Setting key | Purpose |
+|---|---|---|---|
+| `audit_log` | 365 days | `retention.audit_log_days` | Forensic trail for operator investigations. Not the SEBI-compliance ledger (that is `nav_daily` + `daily_book`, kept forever). |
+
+**Financial records — never purged**:
+
+| Table | Reason |
+|---|---|
+| `nav_daily` | SEBI Cat-III 8-year horizon; ~365 rows/year |
+| `daily_book` | P&L record; unique constraint caps growth at ~160 rows/day |
+| `investor_events` | Capital ledger; immutable audit trail per LP |
+| `monthly_statements` | Statement log; 1 row/user/month |
+
+**Tuning retention** — all configurable keys are editable live from `/admin/settings` → Retention section. Set any key to `0` to disable auto-purge for that table.
 
 ---
 
@@ -1352,7 +1380,7 @@ Single forensic surface for every mutating event the platform produces. Cap-gate
 
 **Cross-referencing**: every row carries a `request_id` UUID mirrored in the `X-Request-ID` response header. To trace a specific operator action end-to-end: copy the request_id from the audit row, grep `api_log_file` on the server for that ID.
 
-**Retention**: SEBI Cat-III requires 8-year retention. No auto-cleanup task today; the table is append-only and indexed.
+**Retention**: `audit_log` is the forensic UI trail — rows older than 365 days are purged daily at 03:20 IST (tunable via `retention.audit_log_days`). Note this is NOT the SEBI Cat-III financial record; `nav_daily` + `daily_book` are kept forever for that purpose.
 
 ---
 

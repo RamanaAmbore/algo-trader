@@ -368,9 +368,16 @@ Mode is runtime-only (resets to `off` on process restart).
 - `holidays_snapshot(exchange, year, dates_json)`
 - `intraday_bars(symbol, exchange, date, interval, bar_ts, open, high, low, close, volume)`
 
-**Retention** (daily 03:00 IST cron):
+**Retention** (staggered nightly cron — 03:10 / 03:15 / 03:20 IST):
 - `ohlcv_daily` → 5 years; `instruments_snapshot` → 7 days; `intraday_bars` → 90 days;
-  `holidays_snapshot` → forever.
+  `holidays_snapshot` → forever. (hard-coded; persistence-layer cache decisions)
+- `algo_events` → 30 days (`retention.algo_events_days`); diagnostic agent-state journal.
+- `algo_order_events` → 90 days (`retention.algo_order_events_days`); per-order chase timeline.
+- `auth_tokens` → 7 days after expiry (`retention.auth_tokens_days`); one-time verify/reset tokens only.
+- `mcp_audit` → 90 days (`mcp.audit_retention_days`); MCP-initiated mutations.
+- `audit_log` → 365 days (`retention.audit_log_days`); forensic operator trail. NOT the SEBI record.
+- `nav_daily`, `daily_book`, `investor_events`, `monthly_statements` → forever (financial records).
+- All configurable keys editable live from `/admin/settings` → Retention. Set to `0` to disable.
 
 **Write queues** — `write_queue.py`:
 - `disk_queue` (5K max) → batched JSON to `.log/sparkline_cache.json` (5s throttle)

@@ -1491,25 +1491,19 @@ async def _task_mcp_audit_cleanup() -> None:
     is the lightweight equivalent for an Indian retail setup).
     """
     from backend.api.database import async_session
-    from backend.api.models import McpAudit
     from backend.shared.helpers.settings import get_int
-    from sqlalchemy import delete as sql_delete
 
     async def _purge_once():
         days = get_int("mcp.audit_retention_days", 90)
         if days <= 0:
             logger.info("Background: mcp_audit cleanup disabled (retention_days=0)")
             return
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         try:
             async with async_session() as s:
-                res = await s.execute(
-                    sql_delete(McpAudit).where(McpAudit.created_at < cutoff)
-                )
+                deleted = await _apply_retention(s, "mcp_audit", "created_at", days)
                 await s.commit()
                 logger.info(
-                    f"Background: mcp_audit cleanup purged "
-                    f"{res.rowcount or 0} rows older than {days} days"
+                    f"Background: mcp_audit cleanup purged {deleted} rows older than {days} days"
                 )
         except Exception as e:
             logger.error(f"Background: mcp_audit cleanup failed: {e}")
@@ -2893,43 +2887,126 @@ async def _task_visitor_log_daily() -> None:
         await _run_once()
 
 
+async def _apply_retention(
+    session,
+    table: str,
+    ts_col: str,
+    days: int,
+    extra_where: str = "",
+) -> int:
+    """Single-statement DELETE with a time-based cutoff.
+
+    Canonical helper used by every daily retention task so the
+    pattern stays consistent and adding a new table is one line.
+
+    Args:
+        session:     Active async SQLAlchemy session (already open).
+        table:       Bare table name (e.g. ``"audit_log"``).
+        ts_col:      Timestamp column name (e.g. ``"created_at"``).
+        days:        Rows older than this many days are deleted.
+        extra_where: Optional additional SQL predicate (AND-joined),
+                     e.g. ``"AND sim_mode = true"``.  Caller is
+                     responsible for safe values (no user input here).
+
+    Returns:
+        Number of rows deleted (≥ 0).
+    """
+    from sqlalchemy import text as _text
+    where = f"{ts_col} < now() - interval '{days} days'"
+    if extra_where:
+        where = f"{where} {extra_where}"
+    res = await session.execute(_text(f"DELETE FROM {table} WHERE {where}"))
+    return res.rowcount if res.rowcount >= 0 else 0
+
+
 async def _task_purge_persistence_caches() -> None:
-    """Daily 03:10 IST — purge stale rows from persistence-layer tables.
+    """Daily 03:10 IST — purge stale rows from persistence-layer and
+    operational tables.
 
     Scheduled 10 minutes after `_task_sim_cleanup` (which runs at 03:00 IST)
     so the two DELETE-heavy tasks don't compete for the connection pool at
     the same instant. mcp_audit cleanup at 03:15 stays clear of both.
 
+    Persistence-layer tables
+    ────────────────────────
     ohlcv_daily:          rows older than 5 years (immutable; 5y covers all UI ranges).
     instruments_snapshot: rows older than 7 days (latest snapshot sufficient;
                           anything older can be re-fetched if needed — keeps table tiny).
     holidays_snapshot:    no purge (years are tiny + useful for backtest of any year).
     intraday_bars:        rows older than 90 days (intraday rarely queried beyond 3 months).
+
+    Operational tables added in retention-audit sweep (Jun 2026)
+    ────────────────────────────────────────────────────────────
+    algo_events:          write-only diagnostic journal; rows older than
+                          ``retention.algo_events_days`` (default 30) dropped.
+                          184K rows at audit time → first run reclaims ~25 MB.
+    algo_order_events:    per-order timeline; rows older than
+                          ``retention.algo_order_events_days`` (default 90)
+                          dropped.  Covers every UI query window.
+    auth_tokens:          one-time verify/reset tokens; expired rows older than
+                          ``retention.auth_tokens_days`` (default 7) beyond
+                          their expiry are dropped.  Active tokens are untouched
+                          regardless of created_at.
     """
     from sqlalchemy import text
     from backend.api.database import async_session
+    from backend.shared.helpers.settings import get_int
 
     async def _run_once():
+        # Fixed-horizon persistence tables (not configurable — these are
+        # cache layers with well-understood TTLs that never need operator
+        # adjustment).
+        ohlcv_days    = 5 * 365   # 5 years
+        instr_days    = 7
+        intraday_days = 90
+
+        # Configurable operational tables.
+        algo_events_days       = get_int("retention.algo_events_days",       30)
+        algo_oe_days           = get_int("retention.algo_order_events_days",  90)
+        auth_tokens_days       = get_int("retention.auth_tokens_days",         7)
+
         try:
             async with async_session() as session:
-                ohlcv_res = await session.execute(text(
-                    "DELETE FROM ohlcv_daily WHERE date < now() - interval '5 years'"
-                ))
-                instr_res = await session.execute(text(
-                    "DELETE FROM instruments_snapshot WHERE date < now() - interval '7 days'"
-                ))
-                intraday_res = await session.execute(text(
-                    "DELETE FROM intraday_bars WHERE date < now() - interval '90 days'"
-                ))
+                # ── Persistence-layer ──────────────────────────────────
+                ohlcv_del    = await _apply_retention(
+                    session, "ohlcv_daily",          "date",       ohlcv_days)
+                instr_del    = await _apply_retention(
+                    session, "instruments_snapshot", "date",       instr_days)
+                intraday_del = await _apply_retention(
+                    session, "intraday_bars",        "date",       intraday_days)
+
+                # ── Operational tables ────────────────────────────────
+                ae_del = 0
+                if algo_events_days > 0:
+                    ae_del = await _apply_retention(
+                        session, "algo_events", "timestamp", algo_events_days)
+
+                aoe_del = 0
+                if algo_oe_days > 0:
+                    aoe_del = await _apply_retention(
+                        session, "algo_order_events", "ts", algo_oe_days)
+
+                # auth_tokens: drop only expired rows whose expiry is
+                # older than `auth_tokens_days` so an operator who is
+                # mid-reset doesn't lose their token early.
+                at_del = 0
+                if auth_tokens_days > 0:
+                    res = await session.execute(text(
+                        f"DELETE FROM auth_tokens "
+                        f"WHERE expires_at < now() - interval '{auth_tokens_days} days'"
+                    ))
+                    at_del = res.rowcount if res.rowcount >= 0 else 0
+
                 await session.commit()
-                ohlcv_deleted    = ohlcv_res.rowcount    if ohlcv_res.rowcount    >= 0 else 0
-                instr_deleted    = instr_res.rowcount    if instr_res.rowcount    >= 0 else 0
-                intraday_deleted = intraday_res.rowcount if intraday_res.rowcount >= 0 else 0
+
             logger.info(
                 f"Background: persistence cache purge complete — "
-                f"ohlcv_daily: {ohlcv_deleted} row(s), "
-                f"instruments_snapshot: {instr_deleted} row(s), "
-                f"intraday_bars: {intraday_deleted} row(s)"
+                f"ohlcv_daily: {ohlcv_del} row(s), "
+                f"instruments_snapshot: {instr_del} row(s), "
+                f"intraday_bars: {intraday_del} row(s), "
+                f"algo_events: {ae_del} row(s), "
+                f"algo_order_events: {aoe_del} row(s), "
+                f"auth_tokens: {at_del} row(s)"
             )
         except Exception as exc:
             logger.warning(f"Background: persistence cache purge failed: {exc}")
@@ -2945,6 +3022,56 @@ async def _task_purge_persistence_caches() -> None:
         logger.info(f"Background: persistence cache purge sleeping {sleep_s/3600:.1f}h until 03:10 IST")
         await asyncio.sleep(sleep_s)
         await _run_once()
+
+
+async def _task_purge_audit_log() -> None:
+    """Daily 03:20 IST — purge old audit_log rows.
+
+    Scheduled 5 minutes after `_task_purge_persistence_caches` (03:10)
+    and 5 minutes after `_task_mcp_audit_cleanup` (03:15) so heavy
+    DELETE operations stay staggered across the quiet overnight window.
+
+    audit_log is NOT a compliance log in the SEBI Cat-III sense (that
+    role belongs to nav_daily + daily_book which are kept forever).
+    It IS a forensic trail for operator investigation windows — 365
+    days covers a full calendar year of action history which is more
+    than enough for any incident postmortem. Operator can extend via
+    /admin/settings → retention.audit_log_days.
+
+    Setting ``retention.audit_log_days = 0`` disables the purge so
+    the table can grow indefinitely during extended debugging periods.
+    """
+    from backend.api.database import async_session
+    from backend.shared.helpers.settings import get_int
+
+    async def _purge_once():
+        days = get_int("retention.audit_log_days", 365)
+        if days <= 0:
+            logger.info("Background: audit_log retention disabled (days=0)")
+            return
+        try:
+            async with async_session() as session:
+                deleted = await _apply_retention(session, "audit_log", "created_at", days)
+                await session.commit()
+            logger.info(
+                f"Background: audit_log purged {deleted} row(s) older than {days} days"
+            )
+        except Exception as exc:
+            logger.error(f"Background: audit_log purge failed: {exc}")
+
+    await asyncio.sleep(210)  # startup settle — runs after persistence purge
+
+    await _purge_once()
+
+    while True:
+        now = timestamp_indian()
+        next_run = now.replace(hour=3, minute=20, second=0, microsecond=0)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+        sleep_s = (next_run - now).total_seconds()
+        logger.info(f"Background: audit_log purge sleeping {sleep_s/3600:.1f}h until 03:20 IST")
+        await asyncio.sleep(sleep_s)
+        await _purge_once()
 
 
 async def on_startup(app) -> None:
@@ -2973,6 +3100,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_monthly_statement(),   name="bg-monthly-statement"),
         asyncio.create_task(_task_nav_compute(),         name="bg-nav-compute"),
         asyncio.create_task(_task_purge_persistence_caches(), name="bg-purge-persistence"),
+        asyncio.create_task(_task_purge_audit_log(),           name="bg-purge-audit-log"),
     ]
     # Mode 2 (real-data paper) runs only on main. The PaperTradeEngine
     # singleton processes its open-order book against real Kite quotes
