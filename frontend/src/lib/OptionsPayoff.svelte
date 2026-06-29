@@ -26,6 +26,7 @@
    *   legCount?:    number|null,
    *   realizedPnl?: number,
    *   dayPnl?:      number|null,
+   *   legsExpPnlAtSpot?: number|null,
    *   onRefresh?:   (() => void) | null,
    *   loading?:     boolean,
    *   prevClose?:   number|null,
@@ -67,6 +68,14 @@
     // position in the operator's book, DAY equals P∆ exactly. null /
     // 0 → DAY row hides.
     dayPnl = /** @type {number|null} */ (null),
+    // Expiry P&L at the current spot computed from the legs grid's
+    // canonical _legsExpPnlTotal helper — intrinsic-value formula
+    // applied to the enabled, displayed candidate legs. When provided,
+    // the stat overlay's EXP row shows this value instead of the
+    // backend payoff curve's expiry_value, ensuring the chart overlay
+    // matches the legs grid TOTAL and snapshot row exactly.
+    // null / undefined → fall back to curveAtSpot.expiry_value (prior behaviour).
+    legsExpPnlAtSpot = /** @type {number|null|undefined} */ (null),
     onRefresh  = /** @type {(() => void) | null} */ (null),
     loading    = false,
     prevClose  = /** @type {number|null|undefined} */ (null),
@@ -721,11 +730,16 @@
             </span>
           </div>
         {/if}
+        {@const _expDisplayVal = (legsExpPnlAtSpot != null && Number.isFinite(legsExpPnlAtSpot))
+          ? legsExpPnlAtSpot
+          : curveAtSpot.expiry_value}
         <div class="ps-row"
-             title="Strategy P&L at expiry (intrinsic only) for the current spot — same vertical offset as TDAY.">
+             title={legsExpPnlAtSpot != null
+               ? 'Strategy P&L if every open leg expired RIGHT NOW at the current spot — intrinsic value minus cost basis, summed across the enabled legs. SSOT shared with the legs grid TOTAL and snapshot Exp P&L column.'
+               : 'Strategy P&L at expiry (intrinsic only) for the current spot — same vertical offset as TDAY.'}>
           <span class="ps-k">EXP</span>
-          <span class={'ps-v ' + (curveAtSpot.expiry_value >= 0 ? 'ps-pos' : 'ps-neg')}>
-            {fmtMoney(curveAtSpot.expiry_value)}
+          <span class={'ps-v ' + (_expDisplayVal >= 0 ? 'ps-pos' : 'ps-neg')}>
+            {fmtMoney(_expDisplayVal)}
           </span>
         </div>
       {/if}

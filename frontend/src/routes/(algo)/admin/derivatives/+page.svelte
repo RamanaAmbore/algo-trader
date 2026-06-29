@@ -1254,7 +1254,14 @@
    *  picker doesn't double-list. Gated on `instrumentsReady` because
    *  getOptionUnderlyingLot requires the instruments cache. */
   const _hedgeOpportunities = $derived.by(() => {
-    if (!instrumentsReady) return [];
+    // Gate on positions having loaded at least once so the hedge-opp
+    // tier only appears AFTER we know which underlyings have real F&O
+    // positions. Without this, before positions arrive the picker would
+    // show all F&O-eligible holdings as hedge opportunities, then
+    // replace them with proper option-root entries on the first poll —
+    // the operator saw "sometimes all underlyings, sometimes only
+    // underlyings with option positions."
+    if (!instrumentsReady || !_positionsLoaded) return [];
     const have = new Set(underlyingChoicesFromBook);
     const set = new Set();
     for (const h of holdings) {
@@ -1752,6 +1759,17 @@
       const v = Number(untrack(() => getSnapshot(und)?.ltp));
       if (Number.isFinite(v) && v > 0) return v;
     }
+    // Third fallback: the Snapshot card's batchQuote result for the
+    // selected underlying. Covers the IDFC-style case where the SSE
+    // symbolStore has no live tick yet (first-open, pre-market, or a
+    // symbol whose KiteTicker subscription hasn't landed), so
+    // `getSnapshot` returns null and `strategy.spot` carries a stale
+    // server-poll value. `_underlyingQuotes` is refreshed on every
+    // Snapshot poll (every 30 s) via batchQuote, so it's at most 30 s
+    // stale vs an SSE tick that could be arbitrarily old if the
+    // underlying hasn't printed a tick since page-open.
+    const bqLtp = _underlyingQuotes[selectedUnderlying]?.ltp;
+    if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
     return strategy?.spot;
   });
 
@@ -3104,6 +3122,14 @@
   // Surface a banner when /api/positions fails so the operator sees
   // WHY the page is empty (instead of an opaque "no candidates" hint).
   let positionsLoadErr = $state('');
+  // Latches to true after the first successful positions+holdings load.
+  // Gates `_hedgeOpportunities` so it only appears in the underlying
+  // picker AFTER we know which underlyings have actual derivative
+  // positions — preventing the dropdown from briefly listing all
+  // held stocks (hedge-opp tier) before positions arrive, then
+  // replacing them with the correct option-root tier, which the
+  // operator perceived as "sometimes showing all underlyings."
+  let _positionsLoaded = $state(false);
 
   /**
    * Split a broker-consolidated position into separate display rows
@@ -3406,6 +3432,12 @@
     // Persist excluded-row totals so the Snapshot TOTAL can add them
     // back when reconciling with the navbar PositionStrip.
     _excludedByAccount = _excluded;
+
+    // Latch: positions have been fetched at least once. The
+    // underlying picker's hedge-opportunity tier (tier 4) waits
+    // for this before appearing so the dropdown doesn't momentarily
+    // list all held stocks before F&O positions arrive.
+    _positionsLoaded = true;
 
     _saveCache();
   }
@@ -4169,6 +4201,7 @@
         multiExpiry={strategy.multi_expiry ?? false}
         realizedPnl={chartPnlOffset}
         dayPnl={candidatesDayPnl}
+        legsExpPnlAtSpot={_legsExpPnlTotal}
         legSymbols={strategy.legs.map(/** @param {{symbol:string}} l */ l => l.symbol)}
         spotAnchor={strategy.spot_anchor_contract
           ? { contract: strategy.spot_anchor_contract,

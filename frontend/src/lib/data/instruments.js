@@ -378,12 +378,20 @@ export function findOption(underlying, type, strike, expiry) {
   return rows.find(r => r.k === strike && r.x === expiry) || null;
 }
 
-/** Find the future contract for an underlying (nearest expiry). */
+/** Find the future contract for an underlying (nearest expiry).
+ *  Uses `r.x > today` so the front-month is considered expired on its
+ *  actual expiry date — the page rolls to the next contract immediately
+ *  rather than quoting the expiring contract's last-traded price, which
+ *  diverges from the new front-month (CRUDEOIL: old contract at ₹7000
+ *  vs live front at ₹5800). Falls back to the last row only when all
+ *  rows are expired — instrument-cache lag; caller should show a stale
+ *  warning in that case.
+ */
 export function findNearestFuture(underlying) {
   const rows = listFutures(underlying);
   if (rows.length === 0) return null;
   const today = _todayIST();
-  for (const r of rows) if (r.x >= today) return r;
+  for (const r of rows) if (r.x > today) return r;
   return rows[rows.length - 1];
 }
 
