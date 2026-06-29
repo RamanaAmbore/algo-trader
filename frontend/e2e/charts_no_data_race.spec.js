@@ -309,17 +309,22 @@ test.describe('Stale-code: ChartWorkspace loading/empty state guards', () => {
 
   // ── 3-second gate — operator-approved race fix (option B) ─────────────────
 
-  test('3s gate: _symbolChangeAt declared as $state(0)', () => {
+  test('3s gate: _symbolChangeAt declared as $state initialized to performance.now()', () => {
     let src;
     try {
       src = readFileSync(_CW_SRC, 'utf-8');
     } catch (e) {
       throw new Error(`Could not read ChartWorkspace.svelte: ${e.message}`);
     }
+    // _symbolChangeAt must be initialized to the current timestamp so the
+    // gate is active from the very first render, before onMount fires.
+    // Using $state(0) would leave the gate open (performance.now() > 3000
+    // on a real browser load) during the initial render → onMount gap.
     expect(
-      src.includes('let _symbolChangeAt = $state(0)'),
-      '_symbolChangeAt must be declared as $state(0). ' +
-      'This is the timestamp set synchronously on every symbol change.',
+      src.includes("let _symbolChangeAt = $state(typeof performance !== 'undefined' ? performance.now() : 0)"),
+      '_symbolChangeAt must be declared as $state(performance.now()) with an SSR guard. ' +
+      'This ensures the 3-second gate is active from the initial render, ' +
+      'not just from onMount (which runs after the first paint).',
     ).toBe(true);
   });
 
@@ -357,18 +362,29 @@ test.describe('Stale-code: ChartWorkspace loading/empty state guards', () => {
     ).toBe(true);
   });
 
-  test('3s gate: EmptyState branch gated by performance.now() >= _suppressEmptyUntil', () => {
+  test('3s gate: EmptyState branch gated by !_emptyGateActive', () => {
     let src;
     try {
       src = readFileSync(_CW_SRC, 'utf-8');
     } catch (e) {
       throw new Error(`Could not read ChartWorkspace.svelte: ${e.message}`);
     }
+    // The template EmptyState branch must check !_emptyGateActive, which is
+    // a $derived.by() that returns true while the 3-second window is open.
+    // Using a $derived keeps performance.now() evaluated at reactive re-run
+    // time (not at template snapshot time), and _emptyTick makes it
+    // recompute when the wakeup fires.
     expect(
-      src.includes('performance.now() >= _suppressEmptyUntil'),
-      'The {:else if !_bars.length} template branch must include ' +
-      '`performance.now() >= _suppressEmptyUntil` to implement the 3 s gate. ' +
-      'Without this, the time-based suppression never fires.',
+      src.includes('!_emptyGateActive'),
+      'The EmptyState template branch must be gated by `!_emptyGateActive`. ' +
+      '_emptyGateActive is a $derived.by() that reads _emptyTick + _suppressEmptyUntil ' +
+      'and returns performance.now() < _suppressEmptyUntil. When the wakeup ' +
+      'bumps _emptyTick, _emptyGateActive recomputes and the gate opens.',
+    ).toBe(true);
+    expect(
+      src.includes('_emptyGateActive = $derived.by'),
+      '_emptyGateActive must be declared as a $derived.by() that reads _emptyTick ' +
+      'as a reactive dep so it recomputes when the 3-second wakeup fires.',
     ).toBe(true);
   });
 

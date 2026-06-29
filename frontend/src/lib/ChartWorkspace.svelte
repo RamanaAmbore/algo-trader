@@ -368,9 +368,29 @@
   //   _suppressTimer   — handle so onDestroy can cancel the pending
   //                      wakeup (avoids setting state on an unmounted
   //                      component).
-  let _symbolChangeAt = $state(0);          // set synchronously on symbol change
+  // Initialize to the current timestamp so the gate is active from the
+  // very first render. Using performance.now() here (not 0) prevents a
+  // brief flash of "No data available" during the [initial render →
+  // onMount] gap: with $state(0) the derived deadline would be 3000 ms,
+  // and since performance.now() is typically >3000 ms by the time the
+  // browser renders the page, the gate would be open immediately.
+  // The typeof guard makes this SSR-safe (performance is undefined on the
+  // server; the server-rendered HTML is replaced by the browser anyway).
+  let _symbolChangeAt = $state(typeof performance !== 'undefined' ? performance.now() : 0);
   let _emptyTick      = $state(0);          // bumped when the 3 s window closes
   const _suppressEmptyUntil = $derived(_symbolChangeAt + 3000);
+  // _emptyGateActive is true while the 3-second suppression window is open.
+  // Using $derived.by() here so performance.now() is evaluated at
+  // re-computation time (when _emptyTick or _suppressEmptyUntil changes),
+  // rather than at template read time (where it would be a static snapshot
+  // that never re-evaluates). The `void _emptyTick` forces _emptyTick to
+  // be a reactive dep even though its value is not used in the expression;
+  // when the setTimeout wakeup bumps _emptyTick, this derived recomputes
+  // and returns false, which unblocks the EmptyState branch.
+  const _emptyGateActive = $derived.by(() => {
+    void _emptyTick;           // reactive dep — re-run when wakeup fires
+    return performance.now() < _suppressEmptyUntil;
+  });
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _suppressTimer = null;
   let _chartLoaded = $state(false);
@@ -1583,8 +1603,11 @@
     // swaps in once the watchlist API responds (typically <300ms).
     _hydratePins();
     // Arm the 3-second empty-state suppression gate for the initial load.
+    // _symbolChangeAt was initialized at script-eval time (performance.now()
+    // at module parse). Re-stamp it here so the deadline is anchored to
+    // mount time (not to module-parse time, which could differ by tens of ms).
     // The symbol-change $effect is skipped on mount (_firstSymEffect guard),
-    // so we must set the timestamp here too.
+    // so we must arm the wakeup timer here too.
     _symbolChangeAt = performance.now();
     if (_suppressTimer) { clearTimeout(_suppressTimer); _suppressTimer = null; }
     _suppressTimer = setTimeout(() => {
@@ -1925,15 +1948,13 @@
       <!-- Real fetch errors (timeout, load-failed) surface immediately,
            unaffected by the 3-second suppression gate. -->
       <div class="cw-state cw-err">{_histError}</div>
-    {:else if !_histLoading && !_histRetrying && !_bars.length && performance.now() >= _suppressEmptyUntil + (_emptyTick * 0)}
-      <!-- 3-second gate: _suppressEmptyUntil is derived(_symbolChangeAt + 3000).
-           Covers both the plain "No data available." case AND the
-           _histError === 'No data available.' case (confirmed-empty or
-           exhausted-retry). _emptyTick is read here purely to ensure
-           this branch re-evaluates when the setTimeout wakeup fires
-           (without it, the derived deadline would never trigger a
-           Svelte re-render by itself). The *0 keeps _emptyTick a
-           no-op mathematically while keeping it a reactive dep. -->
+    {:else if !_histLoading && !_histRetrying && !_bars.length && !_emptyGateActive}
+      <!-- 3-second gate: _emptyGateActive is a $derived.by() that returns
+           true while performance.now() < _suppressEmptyUntil. It recomputes
+           when _emptyTick changes (the 3050 ms setTimeout wakeup bumps it),
+           which causes this branch to evaluate with the updated time.
+           Covers both the plain "No data available." case and the
+           _histError === 'No data available.' case. -->
       <div class="cw-state {_histError ? 'cw-err' : ''}">No data available.</div>
     {:else}
       <!-- svelte-ignore a11y_click_events_have_key_events -->
