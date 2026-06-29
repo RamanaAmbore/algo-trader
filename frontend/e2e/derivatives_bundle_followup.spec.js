@@ -70,15 +70,29 @@ test('SSOT: no stale inline P&L formulas in template outside canonical helper', 
   );
 
   // The canonical helper for expiry P&L per leg is _expiryPnl(c, spot).
-  // No raw inline (close - avg) * qty or (intrinsic - cost) * qty pattern
-  // should appear inside the {#each} template or TOTAL row — only function calls.
-  // Count occurrences of the old direct intrinsic formula.
+  // Strip out the _expiryPnl function body itself (where the formula is
+  // legitimately defined) and verify no OTHER locations inline it.
+  const fnStart = src.indexOf('function _expiryPnl(');
+  const fnEnd   = src.indexOf('\n  }', fnStart) + 4;
+  const withoutFn = fnStart >= 0 && fnEnd > fnStart
+    ? src.slice(0, fnStart) + src.slice(fnEnd)
+    : src;
+
+  // After removing the canonical function body, the raw
+  // "(intrinsic - cost) * qty" pattern must not appear anywhere else.
   const inlinePnlPattern = /\(intrinsic\s*-\s*cost\)\s*\*\s*qty/g;
-  const inlineMatches = src.match(inlinePnlPattern) || [];
+  const inlineMatches = withoutFn.match(inlinePnlPattern) || [];
   expect(
     inlineMatches.length,
-    'No raw (intrinsic - cost) * qty inline formula in template'
+    'Raw (intrinsic - cost) * qty formula found outside _expiryPnl — should only exist in the canonical helper'
   ).toBe(0);
+
+  // Also confirm _expiryPnl is actually called from the template
+  // (not bypassed by a direct copy of the formula).
+  expect(
+    src.includes('_expiryPnl(c,'),
+    'Template must call _expiryPnl(c, ...) not inline the formula'
+  ).toBe(true);
 });
 
 test('SSOT: _positionsLoaded gates _hedgeOpportunities', () => {
