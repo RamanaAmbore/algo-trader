@@ -171,24 +171,44 @@ def _coalesce_holidays(payloads: list[dict]) -> list[dict[str, Any]]:
 
 
 def _coalesce_intraday(payloads: list[dict]) -> list[dict[str, Any]]:
-    """Merge into unique (symbol, exchange, date, interval, bar_ts) rows, last-write-wins."""
+    """Merge into unique (symbol, exchange, date, interval, bar_ts) rows, last-write-wins.
+
+    `payload["date"]` arrives as a "YYYY-MM-DD" string (set by
+    intraday_store._enqueue_persist). asyncpg binds the date column
+    strictly — it wants a `datetime.date`, not a string. Convert here
+    so every row hits _upsert_intraday with the right type (same fix
+    already applied to _coalesce_ohlcv). Strings that fail to parse
+    are dropped to keep the rest of the batch healthy.
+    """
+    from datetime import date as _date
     seen: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
     for payload in payloads:
         sym      = str(payload.get("symbol",   ""))
         exch     = str(payload.get("exchange", ""))
-        date_str = str(payload.get("date",     ""))
+        date_raw = payload.get("date", "")
         interval = str(payload.get("interval", "30minute"))
-        if not sym or not exch or not date_str:
+        if not sym or not exch or not date_raw:
             continue
+        # Convert date to datetime.date object — asyncpg rejects plain strings.
+        if isinstance(date_raw, _date):
+            d_obj  = date_raw
+            d_key  = d_obj.isoformat()
+        else:
+            d_str = str(date_raw)[:10]
+            try:
+                d_obj = _date.fromisoformat(d_str)
+            except ValueError:
+                continue  # unparseable — drop payload, keep batch
+            d_key = d_str
         for bar in payload.get("bars", []):
             bar_ts = str(bar.get("bar_ts", ""))
             if not bar_ts:
                 continue
-            pk = (sym, exch, date_str, interval, bar_ts)
+            pk = (sym, exch, d_key, interval, bar_ts)
             seen[pk] = {
                 "symbol":   sym,
                 "exchange": exch,
-                "date":     date_str,
+                "date":     d_obj,
                 "interval": interval,
                 "bar_ts":   bar_ts,
                 "open":     bar.get("open",   0.0),

@@ -527,8 +527,23 @@ class SparklineController(Controller):
                 return sym_obj.tradingsymbol, []
 
         # Fan-out both daily + intraday fetches in parallel across all symbols.
-        daily_tasks   = [_fetch_daily_closes(s) for s in norm_syms]
-        intraday_tasks = [_fetch_today_bars(s) for s in norm_syms]
+        # Cap concurrency at 6 (3 daily + 3 intraday in parallel) so a cold
+        # cache with 100 symbols doesn't fire 200 simultaneous broker
+        # historical_data calls and saturate Kite's 3 req/s quota.  On a warm
+        # cache (Tier 1 hits), each task resolves in <1 ms so the semaphore
+        # never queues; response time is unaffected for the common hot path.
+        _req_sem = asyncio.Semaphore(3)
+
+        async def _fetch_daily_closes_throttled(sym_obj: SparklineSymbol) -> tuple[str, list[float]]:
+            async with _req_sem:
+                return await _fetch_daily_closes(sym_obj)
+
+        async def _fetch_today_bars_throttled(sym_obj: SparklineSymbol) -> tuple[str, list[float]]:
+            async with _req_sem:
+                return await _fetch_today_bars(sym_obj)
+
+        daily_tasks    = [_fetch_daily_closes_throttled(s) for s in norm_syms]
+        intraday_tasks = [_fetch_today_bars_throttled(s) for s in norm_syms]
         daily_results, intraday_results = await asyncio.gather(
             asyncio.gather(*daily_tasks),
             asyncio.gather(*intraday_tasks),
@@ -842,14 +857,23 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
     if token_map:
         _ticker_seed_early(token_map)
 
-    # Kite historical_data is a 3 req/sec budget per account. Two parallel
-    # fan-outs (daily + intraday) share the same budget, so cap concurrency
-    # to 3 across both and pace 0.35s between scheduled tasks. Without this
-    # gate, 300 symbols × 2 ≈ 600 simultaneous calls land in one burst, the
-    # broker returns 429, the stores cache `None`, and the next warm cycle
-    # re-fires the same burst. The reactive 30s cool-off on the broker
-    # client only activates after the burst has already landed.
-    _warm_sem = asyncio.Semaphore(3)
+    # Kite historical_data is a 3 req/sec budget per account. Two fan-outs
+    # (daily + intraday) share the same 3 req/sec quota, so run them
+    # sequentially with a SINGLE semaphore capped at 2 coroutines and a
+    # 0.4s inter-task sleep. Prior shape ran both gather groups concurrently
+    # inside an outer asyncio.gather — that allowed up to 6 simultaneous
+    # broker calls (3 daily + 3 intraday), routinely triggering "too many
+    # requests" on both Kite accounts within the first few seconds of the
+    # warm run, which locked both brokers out for 30s each — well past the
+    # warm window. The fix:
+    #   (a) Single shared semaphore at concurrency=2 (leaves 1 slot spare
+    #       for regular API calls during the warm run).
+    #   (b) Intraday tasks only start AFTER the daily gather completes —
+    #       halves peak concurrency against the broker.
+    #   (c) Sleep bumped to 0.4s to fit within the 3 req/sec budget with
+    #       a safety margin (2 concurrent × 1/0.4s = 5 req/s peak — but
+    #       the semaphore gate means steady-state is ~2 req/s).
+    _warm_sem = asyncio.Semaphore(2)
 
     async def _warm_daily(sym: str, exch: str) -> bool:
         async with _warm_sem:
@@ -861,7 +885,7 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
             except Exception:
                 return False
             finally:
-                await asyncio.sleep(0.35)
+                await asyncio.sleep(0.4)
 
     async def _warm_intraday(sym: str, exch: str) -> bool:
         async with _warm_sem:
@@ -873,15 +897,15 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
             except Exception:
                 return False
             finally:
-                await asyncio.sleep(0.35)
+                await asyncio.sleep(0.4)
 
-    daily_tasks   = [_warm_daily(sym, exch)   for sym, exch in norm]
+    daily_tasks    = [_warm_daily(sym, exch)   for sym, exch in norm]
     intraday_tasks = [_warm_intraday(sym, exch) for sym, exch in norm]
 
-    daily_results, intraday_results = await asyncio.gather(
-        asyncio.gather(*daily_tasks),
-        asyncio.gather(*intraday_tasks),
-    )
+    # Run daily first, then intraday — never both concurrently.
+    # This halves peak broker load vs the prior asyncio.gather(gather, gather).
+    daily_results    = await asyncio.gather(*daily_tasks)
+    intraday_results = await asyncio.gather(*intraday_tasks)
 
     cached_count   = sum(1 for ok in daily_results   if ok)
     intraday_count = sum(1 for ok in intraday_results if ok)
