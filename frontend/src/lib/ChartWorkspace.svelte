@@ -2352,7 +2352,7 @@
     display: flex;
     flex-direction: column;
     width: 100%;
-    height: 100%;
+    flex: 1 1 0;
     min-height: 0;
     box-sizing: border-box;
     background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);

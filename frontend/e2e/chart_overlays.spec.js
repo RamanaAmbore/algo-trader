@@ -1153,13 +1153,13 @@ test.describe('chart overlays — all viewports', () => {
   // floor is intentionally lower than the 393×851 one.
   //   Mobile 360×640   → SVG ≥ 370 px (≥58% of viewport)
   //   Mobile 393×851   → SVG ≥ 480 px (≥56%)
-  //   Desktop 1280×800 → SVG ≥ 500 px (≥62%)
-  //   Desktop 1920×1080 → SVG ≥ 800 px (≥74%)
+  //   Desktop 1280×800 → SVG ≥ 600 px (≥75%) — raised after .cw-root flex fix
+  //   Desktop 1920×1080 → SVG ≥ 900 px (≥83%) — raised after .cw-root flex fix
   for (const VP of [
     { w: 360,  h: 640,  floor: 370 },
     { w: 393,  h: 851,  floor: 480 },
-    { w: 1280, h: 800,  floor: 500 },
-    { w: 1920, h: 1080, floor: 800 },
+    { w: 1280, h: 800,  floor: 600 },
+    { w: 1920, h: 1080, floor: 900 },
   ]) {
     test(`chart-claim full height @ ${VP.w}×${VP.h} — SVG ≥ ${VP.floor} px`, async ({ page }) => {
       test.setTimeout(60_000);
@@ -1199,6 +1199,41 @@ test.describe('chart overlays — all viewports', () => {
         `Document scrolls vertically @ ${VP.w}×${VP.h}: ` +
         `scrollH=${scrollH}, winH=${winH}, overflow=${overflow}px`,
       ).toBeLessThanOrEqual(4);
+    });
+  }
+
+  // ── Viewport ratio assertions — .cw-root flex:1 fix (Jun 2026) ─────
+  //
+  // After replacing `height:100%` with `flex:1 1 0` on `.cw-root`, the
+  // chart SVG should claim a large share of the viewport height on
+  // desktop: >70% at 1280×800, >80% at 1920×1080.  These ratios are
+  // tighter than the floor-pixel tests above and will catch any future
+  // regression that lets chrome bloat push the chart below the fold.
+  for (const VP of [
+    { w: 1280, h: 800,  ratio: 0.70 },
+    { w: 1920, h: 1080, ratio: 0.80 },
+  ]) {
+    test(`viewport-height ratio @ ${VP.w}×${VP.h} — .cw-svg height / innerHeight > ${VP.ratio}`, async ({ page }) => {
+      test.setTimeout(60_000);
+      await injectSession(page, _session);
+      await page.setViewportSize({ width: VP.w, height: VP.h });
+      await page.goto(NIFTY_URL, { waitUntil: 'domcontentloaded' });
+      await waitForChart(page);
+      await page.waitForTimeout(900);
+
+      const { svgH, winH } = await page.evaluate(() => {
+        const svg = document.querySelector('.cw-svg');
+        const r = svg ? svg.getBoundingClientRect() : null;
+        return { svgH: r ? r.height : 0, winH: window.innerHeight };
+      });
+      const ratio = winH > 0 ? svgH / winH : 0;
+      expect(
+        ratio,
+        `SVG height / innerHeight @ ${VP.w}×${VP.h} = ${ratio.toFixed(3)} ` +
+        `(svgH=${svgH}px, winH=${winH}px). Expected > ${VP.ratio}. ` +
+        `Root cause: .cw-root height:100% reverted without a concrete parent height — ` +
+        `check that .cw-root still uses flex:1 1 0, not height:100%.`,
+      ).toBeGreaterThan(VP.ratio);
     });
   }
 
