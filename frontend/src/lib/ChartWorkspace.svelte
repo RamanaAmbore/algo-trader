@@ -347,29 +347,6 @@
   // catchall {:else if !_bars.length} branch rendered "No data available"
   // for the entire 2.5s retry window.
   let _histRetrying = $state(false);
-  // ── 3-second empty-state suppression gate ────────────────────────
-  // Operator-approved race fix (option B): never render "No data
-  // available" within 3 seconds of a symbol change, regardless of
-  // what _histLoading / _histRetrying / _bars are doing in between.
-  // This closes the entire race CLASS (not just the specific sequence
-  // of the BEL bug) because the gate is TIME-based rather than
-  // state-machine-based.  After 3 s, if bars are still empty, the
-  // EmptyState renders normally.
-  //
-  // Implementation:
-  //   _emptyGateSuppressed — $state(true): the gate is ACTIVE (suppressing
-  //     the empty state). A single setTimeout at 3000 ms flips it to false,
-  //     which is a plain $state write that Svelte picks up immediately and
-  //     re-renders the template. On every new symbol the gate is re-armed:
-  //     cancel the old timer, set _emptyGateSuppressed=true, start a new
-  //     3000ms timer. This avoids any derived/performance.now() subtlety.
-  //   _suppressTimer — handle so onDestroy can cancel a pending wakeup.
-  //
-  // Initialized to `true` so the gate is active from the very first render
-  // (before onMount fires and _loadHistorical runs).
-  let _emptyGateSuppressed = $state(true);
-  /** @type {ReturnType<typeof setTimeout> | null} */
-  let _suppressTimer = null;
   let _chartLoaded = $state(false);
   let _chartDays   = $state(30);
   // Default to candle on first visit; persisted to localStorage so the
@@ -1579,16 +1556,6 @@
     // load. Operator can use DEFAULT_PINS immediately; the full list
     // swaps in once the watchlist API responds (typically <300ms).
     _hydratePins();
-    // Arm the 3-second empty-state suppression gate for the initial load.
-    // _emptyGateSuppressed starts true; we schedule a 3000 ms timer that
-    // flips it to false. The symbol-change $effect is skipped on mount
-    // (_firstSymEffect guard), so we arm the timer here too.
-    _emptyGateSuppressed = true;
-    if (_suppressTimer) { clearTimeout(_suppressTimer); _suppressTimer = null; }
-    _suppressTimer = setTimeout(() => {
-      _suppressTimer = null;
-      if (_mounted) _emptyGateSuppressed = false;  // open the gate
-    }, 3000);
     await _loadHistorical();
     if (!_isDemo) {
       await _pollStatus();
@@ -1601,7 +1568,6 @@
     _mounted = false;
     if (_statusTimer) { try { _statusTimer(); } catch (_) { clearInterval(_statusTimer); } }
     if (_emptyRetryTimer) { clearTimeout(_emptyRetryTimer); _emptyRetryTimer = null; }
-    if (_suppressTimer) { clearTimeout(_suppressTimer); _suppressTimer = null; }
     _histRetrying = false;
     _stopTickPoll();
   });
@@ -1639,16 +1605,6 @@
     // Cancel any pending empty-response retry from a previous symbol so
     // it doesn't fire AFTER the new symbol's fetch has already landed.
     if (_emptyRetryTimer) { clearTimeout(_emptyRetryTimer); _emptyRetryTimer = null; }
-    // 3-second gate: re-arm the suppression gate for the new symbol.
-    // Cancel the previous timer, flip the gate active, then schedule
-    // 3000 ms to open it. The template reads _emptyGateSuppressed ($state)
-    // so Svelte re-renders immediately when the setTimeout writes false.
-    _emptyGateSuppressed = true;
-    if (_suppressTimer) { clearTimeout(_suppressTimer); _suppressTimer = null; }
-    _suppressTimer = setTimeout(() => {
-      _suppressTimer = null;
-      if (_mounted) _emptyGateSuppressed = false;  // open the gate
-    }, 3000);
     untrack(() => {
       if (_intradayOn) _intradayOn = false;
     });
@@ -1918,18 +1874,10 @@
            during the retry window. Without this, the empty state flashes
            for ~800 ms between the first empty response and the retry. -->
       <div class="cw-state">Loading…</div>
-    {:else if _histError && _histError !== 'No data available.' && !_bars.length}
-      <!-- Real fetch errors (timeout, load-failed) surface immediately,
-           unaffected by the 3-second suppression gate. -->
+    {:else if _histError && !_bars.length}
       <div class="cw-state cw-err">{_histError}</div>
-    {:else if !_histLoading && !_histRetrying && !_bars.length && !_emptyGateSuppressed}
-      <!-- 3-second gate: _emptyGateSuppressed is $state(true) on symbol
-           change. A 3000 ms setTimeout flips it to false, which is a
-           plain $state write — Svelte picks it up immediately and
-           re-renders this branch. Covers both the plain "No data
-           available." case and the _histError === 'No data available.'
-           variant (confirmed-empty or exhausted-retry path). -->
-      <div class="cw-state {_histError ? 'cw-err' : ''}">No data available.</div>
+    {:else if !_bars.length}
+      <div class="cw-state">No data available.</div>
     {:else}
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
