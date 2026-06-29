@@ -32,7 +32,7 @@ cap_in_dev:
   genai:            False  # GenAI market update (Gemini)
   telegram:         False  # Telegram alert notifications
   mail:             False  # Email notifications (SMTP)
-  notify_on_deploy: True   # Send test Telegram+email on each deploy
+  notify_on_deploy: False  # Dev branch alerts off by default per operator request.
   market_feed:      False  # Market news feed (Google News RSS)
   simulator:        True   # /api/simulator market simulator (dev default: on)
   replay:           True   # /api/replay backtest engine (dev default: on)
