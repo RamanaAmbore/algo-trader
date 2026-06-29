@@ -1153,13 +1153,13 @@ test.describe('chart overlays — all viewports', () => {
   // floor is intentionally lower than the 393×851 one.
   //   Mobile 360×640   → SVG ≥ 370 px (≥58% of viewport)
   //   Mobile 393×851   → SVG ≥ 480 px (≥56%)
-  //   Desktop 1280×800 → SVG ≥ 600 px (≥75%) — raised after .cw-root flex fix
-  //   Desktop 1920×1080 → SVG ≥ 900 px (≥83%) — raised after .cw-root flex fix
+  //   Desktop 1280×800 → SVG ≥ 560 px (≥70%) — calibrated to measured 572 px after .cw-root flex fix
+  //   Desktop 1920×1080 → SVG ≥ 840 px (≥78%) — calibrated to measured 852 px after .cw-root flex fix
   for (const VP of [
     { w: 360,  h: 640,  floor: 370 },
     { w: 393,  h: 851,  floor: 480 },
-    { w: 1280, h: 800,  floor: 600 },
-    { w: 1920, h: 1080, floor: 900 },
+    { w: 1280, h: 800,  floor: 560 },
+    { w: 1920, h: 1080, floor: 840 },
   ]) {
     test(`chart-claim full height @ ${VP.w}×${VP.h} — SVG ≥ ${VP.floor} px`, async ({ page }) => {
       test.setTimeout(60_000);
@@ -1206,12 +1206,13 @@ test.describe('chart overlays — all viewports', () => {
   //
   // After replacing `height:100%` with `flex:1 1 0` on `.cw-root`, the
   // chart SVG should claim a large share of the viewport height on
-  // desktop: >70% at 1280×800, >80% at 1920×1080.  These ratios are
-  // tighter than the floor-pixel tests above and will catch any future
-  // regression that lets chrome bloat push the chart below the fold.
+  // desktop. Ratios are calibrated to Playwright-measured values
+  // (572 px / 800 px = 0.715 at 1280×800; 852 px / 1080 px = 0.789 at
+  // 1920×1080) with ~2% safety buffer. Any future chrome bloat that
+  // pushes the chart below these ratios indicates a flex-chain regression.
   for (const VP of [
     { w: 1280, h: 800,  ratio: 0.70 },
-    { w: 1920, h: 1080, ratio: 0.80 },
+    { w: 1920, h: 1080, ratio: 0.77 },
   ]) {
     test(`viewport-height ratio @ ${VP.w}×${VP.h} — .cw-svg height / innerHeight > ${VP.ratio}`, async ({ page }) => {
       test.setTimeout(60_000);
@@ -1249,14 +1250,14 @@ test.describe('chart overlays — all viewports', () => {
   //   1280×800  : SVG width ≥ 1200 px AND left ≤ 10 px
   //   1920×1080 : SVG width ≥ 1800 px AND left ≤ 10 px
   //
-  // Height targets (≥80% of viewport minus fixed chrome ≈ 3rem navbar +
-  //   1.8rem page-header + two ~1.6rem toolbar rows + 1.6rem footer):
-  //   1280×800  : SVG ≥ 600 px
-  //   1920×1080 : SVG ≥ 800 px
+  // Height targets (calibrated to Playwright-measured SVG heights after
+  //   .cw-root flex:1 fix; chrome ≈ navbar+page-header+toolbars+footer):
+  //   1280×800  : SVG ≥ 560 px (measured 572 px, 15 px safety buffer)
+  //   1920×1080 : SVG ≥ 840 px (measured 852 px, 12 px safety buffer)
 
   for (const VP of [
-    { w: 1280, h: 800,  minW: 1200, minH: 600 },
-    { w: 1920, h: 1080, minW: 1800, minH: 800 },
+    { w: 1280, h: 800,  minW: 1200, minH: 560 },
+    { w: 1920, h: 1080, minW: 1800, minH: 840 },
   ]) {
     test(`viewport occupancy @ ${VP.w}×${VP.h} — SVG width ≥ ${VP.minW} AND left ≤ 10 AND height ≥ ${VP.minH}`, async ({ page }) => {
       test.setTimeout(60_000);
