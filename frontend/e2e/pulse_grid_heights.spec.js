@@ -184,8 +184,8 @@ test.describe('Pulse grid heights — desktop', () => {
     }
   });
 
-  // 5. UX — positions and holdings are proportionally sized.
-  test('positions/holdings bucket heights are proportional to row counts', async ({ page }) => {
+  // 5. UX — positions and holdings are equal height on desktop (right grid).
+  test('positions and holdings buckets are equal height on desktop (±4 px)', async ({ page }) => {
     await goToPulse(page);
     await page.waitForTimeout(2000); // extra wait for row data to settle
 
@@ -194,29 +194,63 @@ test.describe('Pulse grid heights — desktop', () => {
       const hold = document.querySelector('.mp-bucket-holdings');
       if (!pos || !hold) return null;
 
-      const posRows  = Number(getComputedStyle(pos).getPropertyValue('--bucket-rows').trim());
-      const holdRows = Number(getComputedStyle(hold).getPropertyValue('--bucket-rows').trim());
-      const posH  = pos.getBoundingClientRect().height;
-      const holdH = hold.getBoundingClientRect().height;
-
-      return { posRows, holdRows, posH, holdH };
+      return {
+        posH:  pos.getBoundingClientRect().height,
+        holdH: hold.getBoundingClientRect().height,
+      };
     });
 
     if (!result) { test.skip(true, 'positions/holdings buckets not found'); return; }
 
-    const { posRows, holdRows, posH, holdH } = result;
+    const { posH, holdH } = result;
 
     // Both buckets must be visible (≥ 240 px, the 5-row min-height floor).
     expect(posH).toBeGreaterThanOrEqual(240);
     expect(holdH).toBeGreaterThanOrEqual(240);
 
-    // When row counts differ meaningfully, the larger-count bucket takes
-    // more height. 30 px tolerance absorbs header-height differences.
-    if (Math.abs(posRows - holdRows) > 1) {
-      if (posRows > holdRows) {
-        expect(posH).toBeGreaterThanOrEqual(holdH - 30);
-      } else {
-        expect(holdH).toBeGreaterThanOrEqual(posH - 30);
+    // Right grid: positions + holdings should be equal height regardless of
+    // row count. Allow ±4 px for sub-pixel rendering.
+    expect(Math.abs(posH - holdH)).toBeLessThanOrEqual(4);
+  });
+
+  // 5f. UX — left grid buckets (pinned/watchlist/movers) remain proportional.
+  test('left grid bucket heights remain proportional to their row counts', async ({ page }) => {
+    await goToPulse(page);
+    await page.waitForTimeout(2000);
+
+    const result = await page.evaluate(() => {
+      const col = document.querySelector('.mp-col-left');
+      if (!col) return null;
+
+      const buckets = Array.from(col.querySelectorAll('.mp-bucket-wrap'))
+        .filter(el => !el.classList.contains('is-collapsed'))
+        .map(el => ({
+          rows: Number(getComputedStyle(el).getPropertyValue('--bucket-rows').trim()),
+          h:    el.getBoundingClientRect().height,
+        }))
+        .filter(({ h }) => h > 0);
+
+      return buckets;
+    });
+
+    if (!result || result.length < 2) {
+      test.skip(true, 'fewer than 2 visible left-grid buckets — proportionality check skipped');
+      return;
+    }
+
+    // For any two left-grid buckets where row counts differ by > 1, the
+    // one with more rows must be taller (or equal). 30 px slack absorbs
+    // header-height differences between buckets.
+    for (let i = 0; i < result.length; i++) {
+      for (let j = i + 1; j < result.length; j++) {
+        const a = result[i];
+        const b = result[j];
+        if (Math.abs(a.rows - b.rows) <= 1) continue;
+        if (a.rows > b.rows) {
+          expect(a.h).toBeGreaterThanOrEqual(b.h - 30);
+        } else {
+          expect(b.h).toBeGreaterThanOrEqual(a.h - 30);
+        }
       }
     }
   });

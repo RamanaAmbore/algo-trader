@@ -5588,6 +5588,12 @@
       flex: var(--bucket-rows, 1) 0 0;
       min-height: 240px;
     }
+    /* Right grid only: positions + holdings share height equally
+       regardless of row count. Left grid keeps proportional sizing. */
+    .mp-col-right > .mp-bucket-wrap {
+      flex: 1 1 0;
+      min-height: 240px;
+    }
     .mp-col > .mp-bucket-wrap > .bucket-grid {
       height: auto;
       flex: 1 1 0;
