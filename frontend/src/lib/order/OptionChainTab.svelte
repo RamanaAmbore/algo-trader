@@ -317,22 +317,31 @@
   // Auto-default underlying once instruments are ready (when the
   // operator hasn't supplied one via the symbol prop).
   // Root cascade (first hit wins):
-  //   1. sessionStorage 'chain.lastRoot'  — operator's last visit
-  //   2. seedUnderlying (from symbol prop) — context from host page
+  //   1. seedUnderlying (from symbol prop) — explicit host context takes
+  //      priority so clicking BHEL always opens BHEL, not whatever was
+  //      last visited (fixes BHEL→CRUDEOIL stale-sessionStorage bug).
+  //   2. sessionStorage 'chain.lastRoot'  — operator's last visit, only
+  //      used when no specific symbol context was passed by the host.
   //   3. underlyingChoices[0]             — first available (popular list)
   //   4. 'NIFTY'                          — hard fallback
+  //
+  // Note: when instruments aren't ready yet (list is empty) we do NOT
+  // clear chainUnderlying — Effect A (sync-from-seedUnderlying above)
+  // may have already set it from the prop, and clearing it here would
+  // force a sessionStorage read on the next list-ready tick even when
+  // a fresh seed was supplied.
   $effect(() => {
     const list = underlyingChoices;
     untrack(() => {
-      if (!list.length) { if (chainUnderlying) chainUnderlying = ''; return; }
+      if (!list.length) return; // instruments not ready yet — preserve whatever Effect A set
       if (chainUnderlying && list.includes(chainUnderlying)) return; // already valid
-      // Try sessionStorage first.
+      // seedUnderlying takes priority when the host passed an explicit symbol.
+      if (seedUnderlying && list.includes(seedUnderlying)) { chainUnderlying = seedUnderlying; return; }
+      // sessionStorage fallback — only used when opening the chain without
+      // a specific symbol context (e.g. bare "Chain" button in navbar).
       let ssRoot = '';
       try { ssRoot = sessionStorage.getItem(_SS_ROOT) || ''; } catch { /* SSR */ }
       if (ssRoot && list.includes(ssRoot)) { chainUnderlying = ssRoot; return; }
-      // Then seedUnderlying (already tracked via the effect above, but use as
-      // fallback here when instruments warm after the first effect ran empty).
-      if (seedUnderlying && list.includes(seedUnderlying)) { chainUnderlying = seedUnderlying; return; }
       // First popular underlying.
       chainUnderlying = list[0] || 'NIFTY';
     });
