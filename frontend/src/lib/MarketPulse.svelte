@@ -1741,6 +1741,19 @@
   const _effColPositions = $derived(_colPositions);
   const _effColHoldings  = $derived(_colHoldings);
 
+  // Desktop proportional sizing — each bucket's flex-grow is proportional
+  // to its visible row count so taller buckets claim more column height.
+  // Minimum of 1 keeps empty buckets from collapsing to zero; collapsed
+  // buckets intentionally keep their weight (the header stays visible).
+  // PinWatch shows either pinnedRows or watchRows depending on topTab.
+  const _bRowsPinWatch  = $derived(Math.max(1,
+    topTab === 'pinned' ? pinnedRows.length : watchRows.length));
+  const _bRowsWinners   = $derived(Math.max(1, winRows.length));
+  const _bRowsLosers    = $derived(Math.max(1, loseRows.length));
+  // +1 for the pinned TOTAL row at the bottom of each book grid.
+  const _bRowsPositions = $derived(Math.max(1, positionsRows.length + 1));
+  const _bRowsHoldings  = $derived(Math.max(1, holdingsRows.length  + 1));
+
   // One effect per grid — Svelte 5 reactivity tracks the closed-over
   // derivation so any source change automatically pushes fresh row
   // data without us having to re-bundle effects.
@@ -4675,7 +4688,8 @@
         -->
         <section class="mp-bucket-wrap mp-bucket-pinwatch"
                  class:is-collapsed={_effColPinWatch}
-                 class:fs-card-on={_fsPinWatch}>
+                 class:fs-card-on={_fsPinWatch}
+                 style="--bucket-rows:{_bRowsPinWatch}">
           <div class="mp-bucket-head">
             <!-- Top-tab strip. Pinned (Default + Markets merged feed)
                  lives on the left; each operator-created watchlist is
@@ -4751,7 +4765,8 @@
           <section class="mp-bucket-wrap mp-bucket-winners"
                    class:is-collapsed={_effColWinners}
                    class:is-empty={_winnersTotal === 0}
-                   class:fs-card-on={_fsWinners}>
+                   class:fs-card-on={_fsWinners}
+                   style="--bucket-rows:{_bRowsWinners}">
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
               <div class="mp-head-tabs">
@@ -4780,7 +4795,8 @@
           <section class="mp-bucket-wrap mp-bucket-losers"
                    class:is-collapsed={_effColLosers}
                    class:is-empty={_losersTotal === 0}
-                   class:fs-card-on={_fsLosers}>
+                   class:fs-card-on={_fsLosers}
+                   style="--bucket-rows:{_bRowsLosers}">
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
               <div class="mp-head-tabs">
@@ -4810,7 +4826,8 @@
       <div class="mp-col mp-col-right">
         <section class="mp-bucket-wrap mp-bucket-positions"
                  class:is-collapsed={_effColPositions}
-                 class:fs-card-on={_fsPositions}>
+                 class:fs-card-on={_fsPositions}
+                 style="--bucket-rows:{_bRowsPositions}">
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
             {#if accountPicker && availableAccounts.length > 0}
@@ -4841,7 +4858,8 @@
         </section>
         <section class="mp-bucket-wrap mp-bucket-holdings"
                  class:is-collapsed={_effColHoldings}
-                 class:fs-card-on={_fsHoldings}>
+                 class:fs-card-on={_fsHoldings}
+                 style="--bucket-rows:{_bRowsHoldings}">
           <div class="mp-bucket-head">
             <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
             {#if accountPicker && availableAccounts.length > 0}
@@ -5523,6 +5541,11 @@
     flex-direction: column;
     gap: 0.6rem;
     width: 100%;
+    /* Grow to fill .mp-flat-wrap so the two-column buckets claim the
+       full residual viewport height on desktop. min-height: 0 prevents
+       the flex child from sizing to its content (would cause overflow). */
+    flex: 1 1 0;
+    min-height: 0;
   }
   .mp-col {
     display: flex;
@@ -5538,36 +5561,34 @@
          occupy the full available height. */
       align-items: stretch;
     }
+    /* Each column fills the mp-layout row height and stacks its
+       buckets proportionally along the column axis. min-height: 0
+       is required so the column doesn't force its own intrinsic
+       content height onto the layout. */
+    .mp-col {
+      flex: 1 1 0;
+      min-height: 0;
+    }
     /* Left col carries the monitoring grids (leftColDefs: 8
        columns), right col carries the book grids (rightColDefs:
        14 columns). Width ratio mirrors the column-count ratio so
        each row reads at roughly the same px-per-column. */
     .mp-col-left  { flex: 4 1 0; }
     .mp-col-right { flex: 6 1 0; }
-    /* Cards on desktop distribute the column's stretched height
-       evenly — each .mp-bucket-wrap becomes a flex item with the
-       same grow weight, and the .bucket-grid inside flexes too so
-       the ag-Grid body absorbs the full card height. This keeps
-       every card visually aligned (matching footers, matching
-       widths) regardless of whether each bucket has data — empty
-       cards still occupy their column share with their inline
-       empty-state message centered inside the grid body. */
+    /* Proportional bucket sizing — each bucket's flex-grow is driven
+       by --bucket-rows (set inline from the derived row count). More
+       rows = more column space; empty buckets get a floor of 80px so
+       the header + empty-state message remain visible. Collapsed
+       buckets still hold their flex weight (header visible); the
+       bucket-grid itself is zeroed by the is-collapsed rule below. */
     .mp-col > .mp-bucket-wrap {
-      flex: 1 1 0;
-      min-height: 200px;
+      flex: var(--bucket-rows, 1) 0 0;
+      min-height: 80px;
     }
     .mp-col > .mp-bucket-wrap > .bucket-grid {
       height: auto;
       flex: 1 1 0;
       min-height: 0;
-    }
-    /* Holdings keeps its slightly larger floor — operator's book
-       grids carry more rows than monitoring grids. */
-    .mp-col-right .mp-bucket-holdings {
-      min-height: 200px;
-    }
-    .mp-col-right .mp-bucket-holdings .bucket-grid {
-      min-height: 200px;
     }
   }
   .mp-bucket-wrap {
@@ -5767,29 +5788,37 @@
     padding: 0 0.4rem 0.4rem;
     display: flex;
     flex-direction: column;
-    /* 100vh minus navbar (4 rem) + page chrome (~3 rem). Fits inside
-       the algo layout without overflowing the viewport. dvh stacked
-       so iOS Safari rotation doesn't leave a stale vh measurement. */
-    min-height: calc(100vh - 7rem);
-    min-height: calc(100dvh - 7rem);
+    /* Fill the algo-content flex column so the grids claim all
+       available viewport height. `flex: 1 1 0` + `min-height: 0`
+       pairs with algo-content's own `flex: 1; display: flex;
+       flex-direction: column` to make the pulse layout a proper
+       height-constrained flex child (height: 0 is the canonical
+       trick to make a flex child start at zero and grow to fill
+       instead of sizing to its intrinsic content height). */
+    flex: 1 1 0;
+    min-height: 0;
   }
-  /* Flat-mode (used by /pulse) — the 6-bucket grids share the page
-     height naturally. Desktop renders 3 rows × 2 cols, so each
-     .bucket-grid uses its default 260 px height; the .mp-flat-wrap
-     itself doesn't need to constrain the inner heights any more
-     (legacy 2-grid sizing retired). Mobile stacks vertically;
-     overall page scrolls past the 6 grids if the viewport is
-     shorter than the stack. */
+  /* Mobile — reset the viewport-fill behaviour; buckets use fixed
+     heights and the page scrolls naturally through them. */
   @media (max-width: 600px) {
     .mp-flat-wrap {
+      /* Opt out of flex-fill on mobile — the column stacks at
+         natural content height so the page body scrolls. */
+      flex: none;
       min-height: 0;
-      overflow: hidden;
+      overflow: visible;
       /* padding-top zeroed (was 0.3rem all-sides) so the Pinned tab
          strip sits flush below the page-header on mobile, matching
          the desktop rule above. Operator: "the gap between rows
          with pulse and pinned text needs to be reduced a little
          bit in pulse page". */
       padding: 0 0.3rem 0.3rem;
+    }
+    .mp-layout {
+      /* On mobile the layout is a normal column stack — no height
+         constraint so all buckets render at fixed heights and the
+         page scrolls. Reset the flex-fill set for desktop. */
+      flex: none;
     }
     .bucket-grid {
       height: 220px;
