@@ -106,6 +106,126 @@ _STRATEGY_ANALYTICS_CACHE_TTL   = 5     # seconds — matches frontend poll cade
 _STRATEGY_ANALYTICS_CACHE_SIZE  = 64    # LRU cap
 
 
+# ── Phase 4 — Leg-curve cache (spot-INDEPENDENT pieces) ───────────────
+# Splits the strategy-analytics work into two buckets:
+#
+#   SPOT-INDEPENDENT (cached 5 min, keyed on legs+shape only):
+#     • expiry_curve_normalized  — expiry_value per x_ratio in [1-span, 1+span]
+#     • intermediate_curves_norm — per-slice {label, elapsed_pct, days_left,
+#                                   values} where values[i] indexed on same grid
+#     • max_profit, max_loss, rr_ratio  — derived from expiry curve alone
+#
+#   SPOT-DEPENDENT (always recomputed, ~25 ms with NumPy):
+#     • today_value per point (uses current sigma calibrated against live LTP)
+#     • EV, POP (integrate cached expiry curve × current lognormal PDF)
+#     • aggregate_greeks (single-point, current spot)
+#     • spot, iv_proxy, net_cost, leg_details (per-request LTP resolution)
+#
+# Normalized form — x_ratio = x_abs / S is stored rather than absolute spot
+# so the cached values remain valid across spot moves.  At response-build
+# time: spot_i = x_ratio_i * S_current.
+#
+# Cache shape:  hex_key → (last_access_monotonic, payload_dict)
+# LRU: same OrderedDict pattern as _STRATEGY_ANALYTICS_CACHE.
+# TTL: 5 minutes sliding (refreshed on access, not on write).  Long enough
+#      that a 5s frontend re-poll always hits; short enough to pick up σ /
+#      leg changes from operator edits without operator-visible staleness.
+# Capacity: 64 entries (matches _STRATEGY_ANALYTICS_CACHE_SIZE).
+# Thread safety: same threading.Lock pattern — check + mutate atomic.
+#
+# Interaction with Phase 2 cache:
+#   strategy_analytics() checks _STRATEGY_ANALYTICS_CACHE first (TTL 5s,
+#   identical request = 100% skip).  On Phase 2 miss (spot changed), the
+#   impl calls _leg_curve_cache_get() — if hit, skip ~60 ms of NumPy
+#   curve compute and only run today-curve + EV + POP (~25 ms).  On
+#   leg-curve miss too, cold compute runs and populates both caches.
+
+_LEG_CURVE_CACHE: "_OrderedDict[str, tuple[float, dict]]" = _OrderedDict()
+_LEG_CURVE_CACHE_LOCK = _threading.Lock()
+_LEG_CURVE_CACHE_TTL  = 300   # 5 minutes sliding window
+_LEG_CURVE_CACHE_SIZE = 64    # LRU cap
+
+
+def _leg_curve_cache_key(
+    resolved_legs: list[dict],
+    span_pct: float,
+    span_sigmas: float,
+    points: int,
+    time_slices: int,
+) -> str:
+    """Compute a blake2b-16 hex key over the leg-geometry + shape params.
+
+    Uses the same blake2b primitive as _strategy_cache_key — one hash
+    implementation for both caches (SSOT).  The payload encodes the resolved
+    leg geometry (strike, opt_type, qty, entry_price, T_years, sigma,
+    scale_ratio, kind) rather than the raw StrategyRequest fields, because
+    the impl has already resolved LTP → sigma by the time this is called.
+    span_pct here is the *resolved* span (after σ×√T auto-derivation) so
+    the key is stable across re-polls where span_sigmas is identical.
+    """
+    # Normalise leg geometry — sort by (kind, strike, qty) for stable key
+    # regardless of leg submission order.
+    canonical_legs = sorted(
+        [
+            {
+                "kind":        l.get("kind") or "opt",
+                "strike":      round(float(l.get("strike") or 0), 4),
+                "opt_type":    l.get("opt_type") or "",
+                "qty":         int(l.get("qty") or 0),
+                "entry_price": round(float(l.get("entry_price") or 0), 6),
+                "T_years":     round(float(l.get("T_years") or 0), 8),
+                "sigma":       round(float(l.get("sigma") or 0), 8),
+                "scale_ratio": round(float(l.get("scale_ratio") or 1.0), 8),
+            }
+            for l in resolved_legs
+        ],
+        key=lambda d: (d["kind"], d["strike"], d["qty"]),
+    )
+    payload = json.dumps(
+        {
+            "legs":        canonical_legs,
+            "span_pct":    round(float(span_pct), 8),
+            "span_sigmas": round(float(span_sigmas), 6),
+            "points":      int(points),
+            "time_slices": int(time_slices),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return hashlib.blake2b(payload, digest_size=16).hexdigest()
+
+
+def _leg_curve_cache_get(key: str) -> dict | None:
+    """Return the cached leg-curve payload if present and within TTL, else None.
+
+    TTL is *sliding* — every successful hit refreshes `last_access`
+    (move_to_end also promotes the entry for LRU purposes).  This mirrors
+    the access pattern of the Phase 2 cache but uses a 5-minute window
+    instead of 5 seconds.
+    """
+    with _LEG_CURVE_CACHE_LOCK:
+        entry = _LEG_CURVE_CACHE.get(key)
+        if entry is None:
+            return None
+        ts, payload = entry
+        if time.monotonic() - ts >= _LEG_CURVE_CACHE_TTL:
+            _LEG_CURVE_CACHE.pop(key, None)
+            return None
+        # Refresh last-access timestamp for sliding TTL.
+        _LEG_CURVE_CACHE[key] = (time.monotonic(), payload)
+        _LEG_CURVE_CACHE.move_to_end(key)
+        return payload
+
+
+def _leg_curve_cache_put(key: str, payload: dict) -> None:
+    """Store a leg-curve payload.  Evicts oldest (LRU) when over capacity."""
+    with _LEG_CURVE_CACHE_LOCK:
+        _LEG_CURVE_CACHE[key] = (time.monotonic(), payload)
+        _LEG_CURVE_CACHE.move_to_end(key)
+        while len(_LEG_CURVE_CACHE) > _LEG_CURVE_CACHE_SIZE:
+            _LEG_CURVE_CACHE.popitem(last=False)
+
+
 def _strategy_cache_key(data: "StrategyRequest") -> str:
     """Compute a blake2b-16 hex key from the request fields that fully
     determine the response.  The key covers:
@@ -2578,23 +2698,91 @@ class OptionsController(Controller):
         )
 
         pts = max(11, min(int(data.points or 51), 121))
+        _n_slices = max(0, min(int(data.time_slices or 0), 5))
+
+        # ── Phase 4: leg-curve cache ───────────────────────────────────
+        # Key encodes resolved leg geometry + shape params (NOT spot/LTP).
+        # On hit: skip multileg_intermediate_curves + multileg_extremes +
+        #         risk_reward_ratio (spot-independent pieces, ~40 ms).
+        # On miss: compute everything, store normalized form.
+        #
+        # multileg_payoff_curve is called in both paths (today_value
+        # is spot-dependent; running it is the cheapest way to obtain
+        # today_value without a separate helper).  On hit its expiry_value
+        # column is overwritten with the cached (rescaled) values so
+        # find_breakevens / multileg_pop / expected_value all see
+        # consistent data from a single curve list.
+        _lc_key = _leg_curve_cache_key(
+            resolved_legs, span_pct_resolved,
+            float(data.span_sigmas), pts, _n_slices,
+        )
+        _lc_hit = _leg_curve_cache_get(_lc_key)
+
+        # Always compute today_value fresh — it uses current sigma (derived
+        # from live LTP above) and current spot S.
         curve = multileg_payoff_curve(
             resolved_legs, S=S,
             span_pct=span_pct_resolved,
             points=pts,
             eval_T=eval_T,
         )
-        # Time-slice intermediates parallel to `curve` (same spot grid).
-        # Empty list when caller passes time_slices=0 (default).
-        slices = multileg_intermediate_curves(
-            resolved_legs, S=S,
-            span_pct=span_pct_resolved,
-            points=pts,
-            time_slices=max(0, min(int(data.time_slices or 0), 5)),
-        )
+
+        if _lc_hit is not None:
+            # Cache hit — overwrite expiry_value in place from normalized form.
+            # x_ratio_i × S gives the absolute spot at each grid position,
+            # exactly matching multileg_payoff_curve's linspace grid.
+            _ev_norm: list[float] = _lc_hit["expiry_values_norm"]
+            _xr:      list[float] = _lc_hit["x_ratios"]
+            for _i, _pt in enumerate(curve):
+                if _i < len(_ev_norm):
+                    _pt["expiry_value"] = _ev_norm[_i]
+                    _pt["spot"]         = round(_xr[_i] * S, 4)
+
+            # Reconstruct intermediate slices with rescaled spot.
+            # `values[i]` is spot-independent (see Phase 4 comment block);
+            # only the `spot` axis changes — which isn't part of the slice
+            # payload (slices carry values[], label, elapsed_pct, days_left).
+            slices = _lc_hit["slices_norm"]   # already spot-free; reuse as-is
+
+            max_p = _lc_hit["max_profit"]
+            max_l = _lc_hit["max_loss"]
+            agg_rr = _lc_hit["rr_ratio"]
+            logger.debug(
+                "[leg-curve-cache] hit key=%s legs=%d pts=%d slices=%d",
+                _lc_key[:8], len(resolved_legs), pts, _n_slices,
+            )
+        else:
+            # Cache miss — full compute; store normalized form.
+            slices = multileg_intermediate_curves(
+                resolved_legs, S=S,
+                span_pct=span_pct_resolved,
+                points=pts,
+                time_slices=_n_slices,
+            )
+            max_p, max_l = multileg_extremes(curve)
+            agg_rr = risk_reward_ratio(max_p, max_l)
+
+            # Normalise expiry_value and x_ratio for storage.
+            # x_ratio[i] = spot_i / S  →  recoverable as x_ratio[i] * S_future.
+            # expiry_value[i] is already spot-independent (depends only on
+            # leg geometry + T_years + sigma, not on the current spot level).
+            _x_ratios_store  = [round(pt["spot"] / S, 10) for pt in curve] if S > 0 else []
+            _ev_norm_store   = [pt["expiry_value"] for pt in curve]
+            _leg_curve_cache_put(_lc_key, {
+                "expiry_values_norm": _ev_norm_store,
+                "x_ratios":          _x_ratios_store,
+                "slices_norm":       slices,
+                "max_profit":        max_p,
+                "max_loss":          max_l,
+                "rr_ratio":          agg_rr,
+            })
+            logger.debug(
+                "[leg-curve-cache] miss key=%s legs=%d pts=%d slices=%d",
+                _lc_key[:8], len(resolved_legs), pts, _n_slices,
+            )
+
         agg_greeks  = multileg_greeks(resolved_legs, S=S)
         bes         = find_breakevens(curve)
-        max_p, max_l = multileg_extremes(curve)
         pop = multileg_pop(curve, S=S, T_years=T_yrs_shared, sigma=sigma_proxy)
         net_cost = sum(l["entry_price"] * l["qty"] for l in resolved_legs)
 
@@ -2605,7 +2793,6 @@ class OptionsController(Controller):
                                 sigma=sigma_proxy)
         agg_ev_pct = (round(agg_ev / abs(net_cost) * 100.0, 2)
                       if abs(net_cost) > 0 else None)
-        agg_rr = risk_reward_ratio(max_p, max_l)
 
         # Near expiry — the payoff curve evaluates at eval_T (the earliest
         # leg's expiry). Report that date as the strategy's primary expiry.
