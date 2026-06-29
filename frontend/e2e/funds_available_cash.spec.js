@@ -2,8 +2,8 @@
  * funds_available_cash.spec.js
  *
  * Verifies that the Funds grid on /performance exposes two new columns:
- *   - "Available Funds"  (= avail_margin, broker net — free margin for new trades)
- *   - "Available Cash"   (= cash − option_premium, SOD cash net of locked premiums)
+ *   - "Avl.Margin"  (= available_funds / avail_margin, broker net — free margin for new trades)
+ *   - "Avl.Cash"    (= available_cash, SOD cash net of locked premiums)
  *
  * Five quality dimensions:
  *   1. SSOT     — available_cash value comes from /api/funds payload; no inline
@@ -14,11 +14,13 @@
  *                 headerTooltip) used by neighbouring funds columns.
  *   5. UX       — columns are right-aligned, have header tooltips, non-empty values
  *                 render like ₹ numerics (no raw JS object or [object Object]).
+ *                 Mobile (393×851) and desktop (1280×800): headers fully visible
+ *                 as "Avl.Cash" / "Avl.Margin" without truncation.
  *
  * Run:
  *   cd frontend && PLAYWRIGHT_BASE_URL=https://dev.ramboq.com \
  *   npx playwright test e2e/funds_available_cash.spec.js \
- *   --project=chromium-desktop --workers=1
+ *   --project=chromium-desktop --project=chromium-mobile --workers=1
  */
 
 import { test, expect } from '@playwright/test';
@@ -26,6 +28,24 @@ import { loginAsAdmin } from './fixtures/auth.js';
 
 const BASE = process.env.PLAYWRIGHT_BASE_URL || 'https://dev.ramboq.com';
 const TIMEOUT = 30_000;
+
+// ---------------------------------------------------------------------------
+// Helper: navigate to /performance and activate the Funds tab.
+// Returns the funds grid locator.
+// ---------------------------------------------------------------------------
+async function openFundsGrid(page) {
+  await page.goto(`${BASE}/performance`, { waitUntil: 'domcontentloaded' });
+  const fundsTab = page.locator('button[role="tab"]', { hasText: 'Funds' }).first();
+  await expect(fundsTab).toBeVisible({ timeout: TIMEOUT });
+  await fundsTab.click();
+
+  // Locate by the abbreviated "Avl.Margin" header (new canonical label)
+  const fundsGrid = page.locator('.ag-theme-quartz').filter({
+    has: page.locator('.ag-header-cell', { hasText: 'Avl.Margin' }),
+  }).first();
+  await expect(fundsGrid).toBeVisible({ timeout: TIMEOUT });
+  return fundsGrid;
+}
 
 test.describe('Funds grid — Available Funds + Available Cash columns', () => {
   test.beforeEach(async ({ page }) => {
@@ -73,34 +93,77 @@ test.describe('Funds grid — Available Funds + Available Cash columns', () => {
   });
 
   // -------------------------------------------------------------------------
-  // 4 + 5 — Reusable + UX: columns visible in the grid with correct rendering
+  // 4 + 5 — Reusable + UX: abbreviated headers visible at desktop viewport
+  //         Both chromium-desktop and chromium-mobile projects run this test.
   // -------------------------------------------------------------------------
-  test('Funds grid renders Available Funds and Available Cash columns', async ({ page }) => {
-    await page.goto(`${BASE}/performance`, { waitUntil: 'domcontentloaded' });
+  test('Funds grid renders Avl.Margin and Avl.Cash column headers', async ({ page }) => {
+    const fundsGrid = await openFundsGrid(page);
 
-    // Switch to the Funds tab (AlgoTabs strip: NAV / Funds)
-    const fundsTab = page.locator('button[role="tab"]', { hasText: 'Funds' }).first();
-    await expect(fundsTab).toBeVisible({ timeout: TIMEOUT });
-    await fundsTab.click();
+    // Abbreviated headers must be present (not the old long-form labels)
+    const avlMarginHeader = fundsGrid.locator('.ag-header-cell', { hasText: 'Avl.Margin' });
+    const avlCashHeader   = fundsGrid.locator('.ag-header-cell', { hasText: 'Avl.Cash' });
+    await expect(avlMarginHeader).toBeVisible({ timeout: 10_000 });
+    await expect(avlCashHeader).toBeVisible({ timeout: 10_000 });
 
-    // The funds ag-Grid container should now be visible
-    const fundsGrid = page.locator('.ag-theme-quartz').filter({
-      has: page.locator('.ag-header-cell', { hasText: 'Available Funds' }),
-    }).first();
-    await expect(fundsGrid).toBeVisible({ timeout: TIMEOUT });
+    // Old long-form headers must NOT appear
+    await expect(fundsGrid.locator('.ag-header-cell', { hasText: 'Available Funds' })).toHaveCount(0);
+    await expect(fundsGrid.locator('.ag-header-cell', { hasText: 'Available Cash' })).toHaveCount(0);
 
-    // Both column headers must be present
-    const availFundsHeader = fundsGrid.locator('.ag-header-cell', { hasText: 'Available Funds' });
-    const availCashHeader  = fundsGrid.locator('.ag-header-cell', { hasText: 'Available Cash' });
-    await expect(availFundsHeader).toBeVisible({ timeout: 10_000 });
-    await expect(availCashHeader).toBeVisible({ timeout: 10_000 });
+    // UX: columns must be right-aligned (ag-Grid numericColumn sets
+    // .ag-right-aligned-header on the header cell).
+    const avlMarginHeaderClass = await avlMarginHeader.getAttribute('class');
+    const avlCashHeaderClass   = await avlCashHeader.getAttribute('class');
+    expect(avlMarginHeaderClass).toContain('ag-right-aligned-header');
+    expect(avlCashHeaderClass).toContain('ag-right-aligned-header');
+  });
 
-    // UX: columns must be right-aligned (ag-Grid numericColumn sets text-align: right
-    // via .ag-right-aligned-header on the header + right-aligned cells).
-    const availFundsHeaderClass = await availFundsHeader.getAttribute('class');
-    const availCashHeaderClass  = await availCashHeader.getAttribute('class');
-    expect(availFundsHeaderClass).toContain('ag-right-aligned-header');
-    expect(availCashHeaderClass).toContain('ag-right-aligned-header');
+  // -------------------------------------------------------------------------
+  // 5 — UX (mobile-specific): at 393×851 the abbreviated headers fit without
+  //     truncation. This runs on chromium-mobile project (393-wide viewport).
+  // -------------------------------------------------------------------------
+  test('Mobile: Avl.Cash and Avl.Margin headers fully visible without truncation', async ({
+    page,
+  }) => {
+    // Force mobile viewport if the project hasn't already set it (guards against
+    // running this test under chromium-desktop where viewport is wider).
+    const viewport = page.viewportSize();
+    if (!viewport || viewport.width > 600) {
+      await page.setViewportSize({ width: 393, height: 851 });
+    }
+
+    const fundsGrid = await openFundsGrid(page);
+
+    // Both abbreviated headers must be visible
+    const avlMarginHeader = fundsGrid.locator('.ag-header-cell', { hasText: 'Avl.Margin' });
+    const avlCashHeader   = fundsGrid.locator('.ag-header-cell', { hasText: 'Avl.Cash' });
+    await expect(avlMarginHeader).toBeVisible({ timeout: 10_000 });
+    await expect(avlCashHeader).toBeVisible({ timeout: 10_000 });
+
+    // Verify the text content is exactly the abbreviated form (no trailing '…')
+    const avlMarginText = await avlMarginHeader.locator('.ag-header-cell-text').textContent();
+    const avlCashText   = await avlCashHeader.locator('.ag-header-cell-text').textContent();
+    expect(avlMarginText?.trim()).toBe('Avl.Margin');
+    expect(avlCashText?.trim()).toBe('Avl.Cash');
+  });
+
+  // -------------------------------------------------------------------------
+  // 5 — UX: headerTooltip contains the full unabbreviated term for both columns
+  // -------------------------------------------------------------------------
+  test('headerTooltip on Avl.Margin and Avl.Cash contains the full term', async ({ page }) => {
+    const fundsGrid = await openFundsGrid(page);
+
+    const avlMarginHeader = fundsGrid.locator('.ag-header-cell', { hasText: 'Avl.Margin' });
+    const avlCashHeader   = fundsGrid.locator('.ag-header-cell', { hasText: 'Avl.Cash' });
+    await expect(avlMarginHeader).toBeVisible({ timeout: 10_000 });
+    await expect(avlCashHeader).toBeVisible({ timeout: 10_000 });
+
+    // ag-Grid renders headerTooltip as the `title` attribute on the header cell
+    const avlMarginTitle = await avlMarginHeader.getAttribute('title');
+    const avlCashTitle   = await avlCashHeader.getAttribute('title');
+
+    // Full term must appear in the tooltip (case-sensitive, as set in column def)
+    expect(avlMarginTitle ?? '').toContain('Available Margin');
+    expect(avlCashTitle ?? '').toContain('Available Cash');
   });
 
   // -------------------------------------------------------------------------
@@ -119,9 +182,9 @@ test.describe('Funds grid — Available Funds + Available Cash columns', () => {
     const fundsTab = page.locator('button[role="tab"]', { hasText: 'Funds' }).first();
     await fundsTab.click();
 
-    // Wait for the grid to render rows
+    // Wait for the grid to render rows (locate by new abbreviated header)
     const fundsGrid = page.locator('.ag-theme-quartz').filter({
-      has: page.locator('.ag-header-cell', { hasText: 'Available Funds' }),
+      has: page.locator('.ag-header-cell', { hasText: 'Avl.Margin' }),
     }).first();
 
     // Find a data row (non-TOTAL) in the grid
