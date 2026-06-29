@@ -949,7 +949,11 @@
       if (!matchAccount(h.account)) continue;
       const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
-      const qty = Number(h.opening_qty ?? h.opening_quantity ?? h.quantity ?? h.qty) || 0;
+      // Use h.qty (current quantity) to match the legs grid, which reads
+      // c.qty from the same normalised holding row spread via candidatePositions.
+      // h.opening_qty (opening_quantity) diverges from the legs grid when
+      // equity is partially/fully sold intraday — causing snapshot vs grid mismatch.
+      const qty = Number(h.qty ?? h.quantity) || 0;
       const cost = Number(h.average_price ?? h.avg_cost) || 0;
       const _targets = targetsForProxy(sym);
       const credits = _targets.length ? _targets : [sym];
@@ -1812,6 +1816,22 @@
     // futures + equity: P&L tracks spot 1:1 (no time value to strip).
     return (S - cost) * qty;
   }
+
+  /** Exp P&L total for the CURRENTLY SELECTED underlying across all
+   *  enabled, displayed candidate legs — the single source of truth
+   *  shared by the legs grid TOTAL row and the snapshot row whose
+   *  underlying matches `selectedUnderlying`. Both surfaces now read
+   *  this value so they are always identical (same spot, same leg set,
+   *  same enabled-gate). */
+  const _legsExpPnlTotal = $derived.by(() => {
+    const spot = _underlyingQuotes[selectedUnderlying]?.ltp ?? strategy?.spot ?? null;
+    return displayedCandidates
+      .filter(c => _isLegEnabled(c))
+      .reduce((/** @type {number} */ s, c) => {
+        const v = _expiryPnl(c, spot);
+        return v == null ? s : s + v;
+      }, 0);
+  });
 
   // Master "select all" plumbing for the Legs panel header checkbox.
   // allCandidatesOn = true when every candidate is enabled in the
@@ -4618,11 +4638,6 @@
             {@const _selectedCands = displayedCandidates.filter(c => _isLegEnabled(c))}
             {@const _totalPnl = _selectedCands.reduce((s, c) => s + Number(c.pnl ?? 0), 0)}
             {@const _totalDcv = _selectedCands.reduce((s, c) => s + Number(c.day_change_val ?? 0), 0)}
-            {@const _expSpot = _underlyingQuotes[selectedUnderlying]?.ltp ?? strategy?.spot ?? null}
-            {@const _totalExp = _selectedCands.reduce((s, c) => {
-              const v = _expiryPnl(c, _expSpot);
-              return v == null ? s : s + v;
-            }, 0)}
             <div class="cand-row cand-row-total">
               <span></span>
               <span class="cand-total-label">TOTAL</span>
@@ -4640,9 +4655,12 @@
                     title="Σ Day P&L Δ across every visible row = strip's P∆ chip for these accounts">
                 {aggCompact(_totalDcv)}
               </span>
-              <span class="num cand-pnl {_totalExp > 0 ? 'cell-pos' : _totalExp < 0 ? 'cell-neg' : 'cell-flat'}"
+              <!-- _legsExpPnlTotal is the script-level SSOT shared with the
+                   snapshot row for the selected underlying — both surfaces
+                   read the same derived value so they are always identical. -->
+              <span class="num cand-pnl {_legsExpPnlTotal > 0 ? 'cell-pos' : _legsExpPnlTotal < 0 ? 'cell-neg' : 'cell-flat'}"
                     title="Σ Exp P&L across every selected leg — strategy expiry-day P&L at current spot.">
-                {aggCompact(_totalExp)}
+                {aggCompact(_legsExpPnlTotal)}
               </span>
               <span class="num">—</span>
               <span class="num">—</span>
@@ -4752,7 +4770,14 @@
           {@const _close = _q ? Number(_q.prev_close) : null}
           {@const _pct  = _q && _q.day_pct != null ? Number(_q.day_pct) : null}
           {@const _expG = _byUnderlyingExp[g.underlying]}
-          {@const _expVal = _expG ? (_includeHoldings ? _expG.with : _expG.without) : null}
+          {@const _expValOther = _expG ? (_includeHoldings ? _expG.with : _expG.without) : null}
+          <!-- For the selected underlying row use _legsExpPnlTotal (the SSOT
+               shared with the legs grid TOTAL row — same spot, same enabled-gate,
+               same expiry filter). For all other rows use _byUnderlyingExp which
+               is a whole-book rollup (no expiry / enabled filtering). -->
+          {@const _expVal = g.underlying === selectedUnderlying
+            ? _legsExpPnlTotal
+            : _expValOther}
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
             <span class="num {g.day_without > 0 ? 'cell-pos' : g.day_without < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_w`)}">{aggCompact(g.day_without)}</span>
@@ -4782,8 +4807,13 @@
           </div>
         {/each}
         {#if _byUnderlyingTotals.length > 0}
-          {@const _expTotal = Object.values(_byUnderlyingExp).reduce(
-            (s, v) => s + (_includeHoldings ? v.with : v.without), 0)}
+          <!-- Snapshot TOTAL exp P&L: for the selected underlying row we use
+               _legsExpPnlTotal (SSOT shared with legs grid); all other
+               underlyings use _byUnderlyingExp (whole-book rollup). -->
+          {@const _expTotal = Object.entries(_byUnderlyingExp).reduce(
+            (s, [root, v]) => s + (root === selectedUnderlying
+              ? _legsExpPnlTotal
+              : (_includeHoldings ? v.with : v.without)), 0)}
           <div class="byund-row byund-row-total">
             <span class="byund-und">TOTAL</span>
             <span class="num {_byUnderlyingTotal.day_without > 0 ? 'cell-pos' : _byUnderlyingTotal.day_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_without)}</span>
