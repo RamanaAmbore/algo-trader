@@ -357,40 +357,17 @@
   // EmptyState renders normally.
   //
   // Implementation:
-  //   _symbolChangeAt  — performance.now() snapshot set synchronously
-  //                      in the symbol-change $effect (and on mount via
-  //                      the onMount kick). Resets on every new symbol.
-  //   _suppressEmptyUntil — derived deadline (_symbolChangeAt + 3000).
-  //   _emptyTick       — $state counter bumped by a single 3 s
-  //                      setTimeout so the template re-evaluates once
-  //                      the window closes; avoids needing a persistent
-  //                      setInterval when no empty state is expected.
-  //   _suppressTimer   — handle so onDestroy can cancel the pending
-  //                      wakeup (avoids setting state on an unmounted
-  //                      component).
-  // Initialize to the current timestamp so the gate is active from the
-  // very first render. Using performance.now() here (not 0) prevents a
-  // brief flash of "No data available" during the [initial render →
-  // onMount] gap: with $state(0) the derived deadline would be 3000 ms,
-  // and since performance.now() is typically >3000 ms by the time the
-  // browser renders the page, the gate would be open immediately.
-  // The typeof guard makes this SSR-safe (performance is undefined on the
-  // server; the server-rendered HTML is replaced by the browser anyway).
-  let _symbolChangeAt = $state(typeof performance !== 'undefined' ? performance.now() : 0);
-  let _emptyTick      = $state(0);          // bumped when the 3 s window closes
-  const _suppressEmptyUntil = $derived(_symbolChangeAt + 3000);
-  // _emptyGateActive is true while the 3-second suppression window is open.
-  // Using $derived.by() here so performance.now() is evaluated at
-  // re-computation time (when _emptyTick or _suppressEmptyUntil changes),
-  // rather than at template read time (where it would be a static snapshot
-  // that never re-evaluates). The `void _emptyTick` forces _emptyTick to
-  // be a reactive dep even though its value is not used in the expression;
-  // when the setTimeout wakeup bumps _emptyTick, this derived recomputes
-  // and returns false, which unblocks the EmptyState branch.
-  const _emptyGateActive = $derived.by(() => {
-    void _emptyTick;           // reactive dep — re-run when wakeup fires
-    return performance.now() < _suppressEmptyUntil;
-  });
+  //   _emptyGateSuppressed — $state(true): the gate is ACTIVE (suppressing
+  //     the empty state). A single setTimeout at 3000 ms flips it to false,
+  //     which is a plain $state write that Svelte picks up immediately and
+  //     re-renders the template. On every new symbol the gate is re-armed:
+  //     cancel the old timer, set _emptyGateSuppressed=true, start a new
+  //     3000ms timer. This avoids any derived/performance.now() subtlety.
+  //   _suppressTimer — handle so onDestroy can cancel a pending wakeup.
+  //
+  // Initialized to `true` so the gate is active from the very first render
+  // (before onMount fires and _loadHistorical runs).
+  let _emptyGateSuppressed = $state(true);
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _suppressTimer = null;
   let _chartLoaded = $state(false);
@@ -1603,17 +1580,15 @@
     // swaps in once the watchlist API responds (typically <300ms).
     _hydratePins();
     // Arm the 3-second empty-state suppression gate for the initial load.
-    // _symbolChangeAt was initialized at script-eval time (performance.now()
-    // at module parse). Re-stamp it here so the deadline is anchored to
-    // mount time (not to module-parse time, which could differ by tens of ms).
-    // The symbol-change $effect is skipped on mount (_firstSymEffect guard),
-    // so we must arm the wakeup timer here too.
-    _symbolChangeAt = performance.now();
+    // _emptyGateSuppressed starts true; we schedule a 3000 ms timer that
+    // flips it to false. The symbol-change $effect is skipped on mount
+    // (_firstSymEffect guard), so we arm the timer here too.
+    _emptyGateSuppressed = true;
     if (_suppressTimer) { clearTimeout(_suppressTimer); _suppressTimer = null; }
     _suppressTimer = setTimeout(() => {
       _suppressTimer = null;
-      if (_mounted) _emptyTick++;
-    }, 3050);
+      if (_mounted) _emptyGateSuppressed = false;  // open the gate
+    }, 3000);
     await _loadHistorical();
     if (!_isDemo) {
       await _pollStatus();
@@ -1664,17 +1639,16 @@
     // Cancel any pending empty-response retry from a previous symbol so
     // it doesn't fire AFTER the new symbol's fetch has already landed.
     if (_emptyRetryTimer) { clearTimeout(_emptyRetryTimer); _emptyRetryTimer = null; }
-    // 3-second gate: record the change timestamp synchronously so the
-    // derived _suppressEmptyUntil deadline is set before any async work
-    // begins.  Also arm a single wakeup so the template re-evaluates
-    // once the window closes (needed because Svelte won't re-run a
-    // template expression driven by performance.now() spontaneously).
-    _symbolChangeAt = performance.now();
+    // 3-second gate: re-arm the suppression gate for the new symbol.
+    // Cancel the previous timer, flip the gate active, then schedule
+    // 3000 ms to open it. The template reads _emptyGateSuppressed ($state)
+    // so Svelte re-renders immediately when the setTimeout writes false.
+    _emptyGateSuppressed = true;
     if (_suppressTimer) { clearTimeout(_suppressTimer); _suppressTimer = null; }
     _suppressTimer = setTimeout(() => {
       _suppressTimer = null;
-      if (_mounted) _emptyTick++;   // nudge template to re-evaluate
-    }, 3050);   // 50 ms past the 3000 ms window as a safety buffer
+      if (_mounted) _emptyGateSuppressed = false;  // open the gate
+    }, 3000);
     untrack(() => {
       if (_intradayOn) _intradayOn = false;
     });
@@ -1948,13 +1922,13 @@
       <!-- Real fetch errors (timeout, load-failed) surface immediately,
            unaffected by the 3-second suppression gate. -->
       <div class="cw-state cw-err">{_histError}</div>
-    {:else if !_histLoading && !_histRetrying && !_bars.length && !_emptyGateActive}
-      <!-- 3-second gate: _emptyGateActive is a $derived.by() that returns
-           true while performance.now() < _suppressEmptyUntil. It recomputes
-           when _emptyTick changes (the 3050 ms setTimeout wakeup bumps it),
-           which causes this branch to evaluate with the updated time.
-           Covers both the plain "No data available." case and the
-           _histError === 'No data available.' case. -->
+    {:else if !_histLoading && !_histRetrying && !_bars.length && !_emptyGateSuppressed}
+      <!-- 3-second gate: _emptyGateSuppressed is $state(true) on symbol
+           change. A 3000 ms setTimeout flips it to false, which is a
+           plain $state write — Svelte picks it up immediately and
+           re-renders this branch. Covers both the plain "No data
+           available." case and the _histError === 'No data available.'
+           variant (confirmed-empty or exhausted-retry path). -->
       <div class="cw-state {_histError ? 'cw-err' : ''}">No data available.</div>
     {:else}
       <!-- svelte-ignore a11y_click_events_have_key_events -->

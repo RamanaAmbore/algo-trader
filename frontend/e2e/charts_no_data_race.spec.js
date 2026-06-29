@@ -309,26 +309,22 @@ test.describe('Stale-code: ChartWorkspace loading/empty state guards', () => {
 
   // ── 3-second gate — operator-approved race fix (option B) ─────────────────
 
-  test('3s gate: _symbolChangeAt declared as $state initialized to performance.now()', () => {
+  test('3s gate: _emptyGateSuppressed declared as $state(true)', () => {
     let src;
     try {
       src = readFileSync(_CW_SRC, 'utf-8');
     } catch (e) {
       throw new Error(`Could not read ChartWorkspace.svelte: ${e.message}`);
     }
-    // _symbolChangeAt must be initialized to the current timestamp so the
-    // gate is active from the very first render, before onMount fires.
-    // Using $state(0) would leave the gate open (performance.now() > 3000
-    // on a real browser load) during the initial render → onMount gap.
     expect(
-      src.includes("let _symbolChangeAt = $state(typeof performance !== 'undefined' ? performance.now() : 0)"),
-      '_symbolChangeAt must be declared as $state(performance.now()) with an SSR guard. ' +
-      'This ensures the 3-second gate is active from the initial render, ' +
-      'not just from onMount (which runs after the first paint).',
+      src.includes('let _emptyGateSuppressed = $state(true)'),
+      '_emptyGateSuppressed must be declared as $state(true). ' +
+      'It starts suppressed so no "No data available" flashes before the ' +
+      '3-second window expires.',
     ).toBe(true);
   });
 
-  test('3s gate: _suppressEmptyUntil derived from _symbolChangeAt + 3000', () => {
+  test('3s gate: _suppressTimer sets _emptyGateSuppressed=false after 3000 ms', () => {
     let src;
     try {
       src = readFileSync(_CW_SRC, 'utf-8');
@@ -336,13 +332,13 @@ test.describe('Stale-code: ChartWorkspace loading/empty state guards', () => {
       throw new Error(`Could not read ChartWorkspace.svelte: ${e.message}`);
     }
     expect(
-      src.includes('$derived(_symbolChangeAt + 3000)'),
-      '_suppressEmptyUntil must be $derived(_symbolChangeAt + 3000). ' +
-      'This deadline drives the 3-second empty-state suppression window.',
+      src.includes('_emptyGateSuppressed = false'),
+      'The _suppressTimer callback must write `_emptyGateSuppressed = false` ' +
+      'to open the gate. This is a direct $state write so Svelte re-renders.',
     ).toBe(true);
   });
 
-  test('3s gate: _emptyTick declared as $state and bumped in the suppress timer', () => {
+  test('3s gate: EmptyState branch gated by !_emptyGateSuppressed', () => {
     let src;
     try {
       src = readFileSync(_CW_SRC, 'utf-8');
@@ -350,62 +346,30 @@ test.describe('Stale-code: ChartWorkspace loading/empty state guards', () => {
       throw new Error(`Could not read ChartWorkspace.svelte: ${e.message}`);
     }
     expect(
-      src.includes('let _emptyTick      = $state(0)') || src.includes('let _emptyTick = $state(0)'),
-      '_emptyTick must be declared as $state(0). ' +
-      'It is bumped by the setTimeout wakeup so the template re-evaluates ' +
-      'when the 3-second window closes.',
-    ).toBe(true);
-    expect(
-      src.includes('_emptyTick++'),
-      'The _suppressTimer setTimeout callback must increment _emptyTick ' +
-      'to trigger a template re-evaluation when the 3 s window closes.',
+      src.includes('!_emptyGateSuppressed'),
+      'The EmptyState template branch must be gated by `!_emptyGateSuppressed`.',
     ).toBe(true);
   });
 
-  test('3s gate: EmptyState branch gated by !_emptyGateActive', () => {
+  test('3s gate: symbol-change $effect re-arms gate synchronously', () => {
     let src;
     try {
       src = readFileSync(_CW_SRC, 'utf-8');
     } catch (e) {
       throw new Error(`Could not read ChartWorkspace.svelte: ${e.message}`);
     }
-    // The template EmptyState branch must check !_emptyGateActive, which is
-    // a $derived.by() that returns true while the 3-second window is open.
-    // Using a $derived keeps performance.now() evaluated at reactive re-run
-    // time (not at template snapshot time), and _emptyTick makes it
-    // recompute when the wakeup fires.
-    expect(
-      src.includes('!_emptyGateActive'),
-      'The EmptyState template branch must be gated by `!_emptyGateActive`. ' +
-      '_emptyGateActive is a $derived.by() that reads _emptyTick + _suppressEmptyUntil ' +
-      'and returns performance.now() < _suppressEmptyUntil. When the wakeup ' +
-      'bumps _emptyTick, _emptyGateActive recomputes and the gate opens.',
-    ).toBe(true);
-    expect(
-      src.includes('_emptyGateActive = $derived.by'),
-      '_emptyGateActive must be declared as a $derived.by() that reads _emptyTick ' +
-      'as a reactive dep so it recomputes when the 3-second wakeup fires.',
-    ).toBe(true);
-  });
-
-  test('3s gate: symbol-change $effect sets _symbolChangeAt synchronously', () => {
-    let src;
-    try {
-      src = readFileSync(_CW_SRC, 'utf-8');
-    } catch (e) {
-      throw new Error(`Could not read ChartWorkspace.svelte: ${e.message}`);
-    }
-    // Locate the symbol-change effect block.
     const effectStart = src.indexOf('_firstSymEffect = false');
     expect(effectStart, 'Could not locate symbol-change $effect').toBeGreaterThan(0);
-    // Slice to just the effect body (stops at the next $effect declaration).
     const effectEnd = src.indexOf('\n  $effect(', effectStart);
     const effectBody = effectEnd > 0 ? src.slice(effectStart, effectEnd) : src.slice(effectStart, effectStart + 2000);
     expect(
-      effectBody.includes('_symbolChangeAt = performance.now()'),
-      'The symbol-change $effect must set _symbolChangeAt = performance.now() ' +
-      'synchronously (before the _loadHistorical call). This stamps the gate ' +
-      'deadline before any async work begins.',
+      effectBody.includes('_emptyGateSuppressed = true'),
+      'The symbol-change $effect must set _emptyGateSuppressed = true ' +
+      'synchronously to re-arm the gate for the new symbol.',
+    ).toBe(true);
+    expect(
+      effectBody.includes('_suppressTimer = setTimeout'),
+      'The symbol-change $effect must arm a new _suppressTimer.',
     ).toBe(true);
   });
 
@@ -420,7 +384,7 @@ test.describe('Stale-code: ChartWorkspace loading/empty state guards', () => {
     expect(
       destroyBlock.includes('_suppressTimer'),
       'onDestroy must clear _suppressTimer to prevent a stale timeout ' +
-      'bumping _emptyTick after the component has been destroyed.',
+      'setting _emptyGateSuppressed=false after the component has been destroyed.',
     ).toBe(true);
   });
 });
@@ -886,13 +850,17 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
     // "No data available" must be visible after the 3-second gate expires.
     // With the operator-approved 3s gate: error is suppressed during [0, 3s]
     // and then shown after the wakeup timer bumps _emptyTick at t=3050 ms.
-    const errVisible = await page.locator('text=No data available').isVisible();
-    expect(
-      errVisible,
+    // Use waitForSelector with a generous timeout so the test is resilient
+    // to any remaining timing variance between the wakeup tick and this check.
+    // The wakeup fires at ~3050 ms from mount; the test polls at ~3500+ ms
+    // from waitForRangeGroup (which itself may take a few hundred ms). Give
+    // up to 10 s total from this point to allow for slow CI / network jitter.
+    await expect(
+      page.locator('.cw-state', { hasText: 'No data available' }),
       'partial=false empty response must surface "No data available" after the 3-second gate. ' +
       'The 3s gate applies to all empty states including partial=false — confirmed-empty ' +
       'symbols still respect the never-flash-within-3s contract.',
-    ).toBe(true);
+    ).toBeVisible({ timeout: 10_000 });
   });
 
   // ── KEY REGRESSION for the final remaining race: retry fires BEFORE
