@@ -95,3 +95,52 @@ def test_positions_day_change_zero_when_close_is_zero():
     assert val == 0.0, f"Expected 0.0 when close_price=0, got {val}"
     assert not math.isnan(float(val)), "day_change_percentage must not be NaN"
     assert not math.isinf(float(val)), "day_change_percentage must not be Inf"
+
+
+# ---------------------------------------------------------------------------
+# Regression: _override_stale_ltp_from_ticker — NameError on _qty
+# Commit c0355526 introduced the additive pnl patch but dropped the _qty
+# definition in the rewrite.  Calling _override_stale_ltp_from_ticker on a
+# DataFrame whose rows get LTP-patched must NOT raise NameError and MUST
+# update pnl by (new_ltp − old_ltp) × quantity.
+# ---------------------------------------------------------------------------
+
+def test_override_stale_ltp_from_ticker_pnl_patch_no_name_error():
+    """_override_stale_ltp_from_ticker: pnl delta patch must not raise NameError."""
+    from backend.api.routes.positions import _override_stale_ltp_from_ticker
+
+    df = pd.DataFrame([{
+        'tradingsymbol': 'CRUDEOIL26JUL6900PE',
+        'exchange': 'MCX',
+        'last_price': 220.0,   # stale REST LTP (== close → day_change 0)
+        'close_price': 220.0,
+        'quantity': 10,
+        'overnight_quantity': 10,
+        'day_buy_quantity': 0,
+        'day_sell_quantity': 0,
+        'day_buy_value': 0.0,
+        'day_sell_value': 0.0,
+        'average_price': 200.0,
+        'realised': 0.0,
+        'pnl': 200.0,           # broker pnl at stale LTP
+        'day_change_val': 0.0,
+        'day_change': 0.0,
+    }])
+
+    # Patch the ticker to return a fresh LTP of 264.5 for the symbol.
+    mock_ticker = MagicMock()
+    mock_ticker.get_ltp_by_sym.return_value = 264.5
+
+    with patch('backend.brokers.kite_ticker.get_ticker', return_value=mock_ticker):
+        # Must NOT raise NameError on _qty
+        try:
+            _override_stale_ltp_from_ticker(df)
+        except NameError as exc:
+            pytest.fail(f"NameError raised (regression): {exc}")
+
+    # last_price patched to fresh tick
+    assert abs(df.at[0, 'last_price'] - 264.5) < 0.01, "last_price not patched from ticker"
+    # pnl updated by (264.5 - 220.0) * 10 = +445
+    expected_pnl = 200.0 + (264.5 - 220.0) * 10  # 645.0
+    assert abs(df.at[0, 'pnl'] - expected_pnl) < 0.01, \
+        f"pnl additive patch wrong: expected {expected_pnl}, got {df.at[0, 'pnl']}"

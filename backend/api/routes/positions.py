@@ -271,6 +271,7 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
         _old_ltp_s = pd.Series(
             [patched_old_ltp[i] for i in patched_idx], index=_sel, dtype='float64'
         )
+        _qty = pd.to_numeric(raw.loc[_sel, 'quantity'], errors='coerce').fillna(0)
         _pnl_delta = (_ltp - _old_ltp_s) * _qty
         _pnl_current = pd.to_numeric(raw.loc[_sel, 'pnl'], errors='coerce').fillna(0)
         raw.loc[_sel, 'pnl'] = (_pnl_current + _pnl_delta).where(
