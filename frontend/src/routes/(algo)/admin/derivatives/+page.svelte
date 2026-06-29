@@ -95,7 +95,7 @@
     _refreshing = true;
     try {
       await Promise.allSettled([
-        loadPositions(),
+        loadPositions({ fresh: true }),
         loadSimStatus(),
         loadStrategy({ force: true }),
       ]);
@@ -3209,7 +3209,7 @@
     return [closedRow, openRow];
   }
 
-  async function loadPositions() {
+  async function loadPositions({ fresh = false } = {}) {
     // Hydrate the module-level store singletons concurrently with this
     // page's own fetch so PositionStrip / dashboard benefit from the
     // round-trip without doubling network cost. The stores' inflight dedup
@@ -3238,7 +3238,7 @@
 
     // Live broker positions
     try {
-      const r = await fetchPositions();
+      const r = await fetchPositions({ fresh });
       positionsLoadErr = '';
       for (const p of (r?.rows || [])) {
         const sym = p?.tradingsymbol || p?.symbol;
@@ -3693,13 +3693,26 @@
   // (operator's prior pain: "snapshot grid updated two iterations").
   // Bus is debounced 200ms upstream so a basket-order burst coalesces
   // into one refresh.
+  //
+  // Bridge the legacy `bookChanged` writable store through an explicit
+  // subscribe → $state to avoid Svelte 5 runes interop stale-cache.
+  // Reading `$bookChanged` directly inside `$effect` can miss updates
+  // in runes-mode components (same root cause as the auth-badge
+  // dual-render defect fixed via the bridge pattern). The explicit
+  // subscribe fires synchronously on every increment and on initial
+  // subscribe, so the effect below never races the mount lifecycle.
+  let _bookChangedVal = $state(0);
+  const _unsubBook = bookChanged.subscribe(n => { _bookChangedVal = n; });
   let _lastBookCounter = 0;
   $effect(() => {
-    const n = $bookChanged;
+    const n = _bookChangedVal;
     if (n <= _lastBookCounter) return;
     _lastBookCounter = n;
+    // fresh=true bypasses the backend 30s TTL cache so the new
+    // position appears in the underlying dropdown immediately rather
+    // than waiting for the next cache expiry window.
     untrack(() => {
-      loadPositions();
+      loadPositions({ fresh: true });
       try { loadStrategy(); } catch (_) { /* strategy panel not always mounted */ }
     });
   });
@@ -3728,7 +3741,12 @@
         }
       }
     } catch (_) { _seenAccts = new Set(); }
-    loadPositions();
+    // fresh=true bypasses the backend 30s TTL cache on mount so the
+    // underlying dropdown reflects positions that changed while the
+    // operator was on a different page (e.g. just placed an order on
+    // /orders then navigated here). The stale-while-revalidate cache
+    // above still provides an instant paint of the previous state.
+    loadPositions({ fresh: true });
     // Real broker accounts — needed by the OrderTicket so the
     // operator can pick which Kite handle the order routes through.
     // Fetched separately from positions because /positions masks
@@ -3797,10 +3815,13 @@
       const orderId = String(msg.order_id || '');
       const matched = orderId ? _markToastFilled(orderId, Number(msg.fill_price || 0)) : false;
       if (!matched) _pushFillToast(msg);
-      loadPositions();
+      // fresh=true: position_filled means the broker book just changed;
+      // bypass the backend 30s TTL cache to surface the new position
+      // in the underlying dropdown without waiting for cache expiry.
+      loadPositions({ fresh: true });
     });
   });
-  onDestroy(() => { teardown?.(); posTeardown?.(); simTeardown?.(); wsTeardown?.(); quotesTeardown?.(); flash.dispose(); });
+  onDestroy(() => { teardown?.(); posTeardown?.(); simTeardown?.(); wsTeardown?.(); quotesTeardown?.(); flash.dispose(); _unsubBook?.(); });
 
   // Refresh underlying quotes whenever the Snapshot universe changes
   // (a new underlying lands in the book, an old one drops out, the
