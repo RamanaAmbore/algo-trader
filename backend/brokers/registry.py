@@ -39,7 +39,12 @@ logger = get_logger(__name__)
 # PriceBroker._last_used so operators can correlate across surfaces).
 _RATE_LIMIT_COOLOFF: dict[str, float] = {}   # broker_id → expires_at (unix)
 _RATE_LIMIT_LOCK = threading.Lock()
-_RATE_LIMIT_COOLOFF_SECONDS = 30             # tunable here; settings-backed later if needed
+# 60s cool-off (was 30s). Kite's documented rate limit is 3 req/sec with a
+# backoff window of ~60s before the 429 gate reopens. At 30s, the second
+# Kite account (ZG0790 / ZJ6294) was hitting a fresh 429 immediately after
+# the first account's cool-off expired — the backfill burst was still active.
+# 60s gives both brokers time to clear their server-side quota independently.
+_RATE_LIMIT_COOLOFF_SECONDS = 60             # tunable here; settings-backed later if needed
 
 
 def _is_rate_limited(broker_id: str) -> bool:

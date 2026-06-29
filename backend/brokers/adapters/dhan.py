@@ -56,12 +56,51 @@ logger = get_logger(__name__)
 # The CSV download is done with stdlib `urllib.request` — no extra deps.
 # On any network or parse failure the tables stay empty and callers
 # see the "unknown tradingsymbol" error rather than a 500 trace.
+#
+# URL history:
+#   v2 original: https://api.dhan.co/v2/instruments-detailed  (404 since ~Jun 2026)
+#   v2 current:  https://images.dhan.co/api-data/api-scrip-master.csv
+#
+# Schema change (Jun 2026) vs the old /v2/instruments-detailed:
+#   • SEM_EXM_EXCH_ID now carries "NSE" / "BSE" / "MCX" directly (was
+#     "NSE_EQ" / "BSE_EQ" / "NSE_FNO" etc.).
+#   • New SEM_SEGMENT column encodes the sub-segment:
+#       D = derivatives (equity options/futures)
+#       M = commodity derivatives (MCX options/futures on NSE columns too)
+#       E = equity cash
+#       C = currency derivatives
+#       I = index
+#   • Lot-size column renamed: SM_LOT_SIZE → SEM_LOT_UNITS.
+#   Tick-size (SEM_TICK_SIZE) and trading-symbol (SEM_TRADING_SYMBOL)
+#   column names are unchanged.
 
-_DHAN_INSTRUMENTS_URL = "https://api.dhan.co/v2/instruments-detailed"
+_DHAN_INSTRUMENTS_URL = "https://images.dhan.co/api-data/api-scrip-master.csv"
 
-# Map Dhan's exchangeSegment column → Kite-style exchange string.
+# Map (SEM_EXM_EXCH_ID, SEM_SEGMENT) → Kite-style exchange string.
 # Used when building the cache so the rest of the codebase never sees
-# Dhan's opaque strings.
+# Dhan's column values directly.
+#
+# SEM_SEGMENT codes observed in production CSV (Jun 2026):
+#   D  = derivatives (equity F&O) on NSE / BSE
+#   M  = commodity/MCX derivatives (NSE MCX options also land in NSE+M)
+#   E  = equity cash
+#   C  = currency derivatives
+#   I  = index instruments
+_DHAN_EXCH_SEG_TO_EXCHANGE: dict[tuple[str, str], str] = {
+    ("NSE", "E"):  "NSE",     # equity cash
+    ("BSE", "E"):  "BSE",     # equity cash
+    ("NSE", "D"):  "NFO",     # equity derivatives (options + futures)
+    ("BSE", "D"):  "BFO",     # BSE equity derivatives
+    ("NSE", "M"):  "NFO",     # MCX-style derivatives listed on NSE segment
+    ("MCX", "M"):  "MCX",     # commodity derivatives
+    ("NSE", "C"):  "CDS",     # currency derivatives
+    ("BSE", "C"):  "BCD",     # BSE currency derivatives
+    ("NSE", "I"):  "NSE",     # index instruments — treat as NSE
+    ("BSE", "I"):  "BSE",     # BSE index
+}
+
+# Legacy fallback: old CSV had SEM_EXM_EXCH_ID carrying segment-qualified
+# strings. Kept so a future schema revert doesn't silently break things.
 _DHAN_SEGMENT_TO_EXCHANGE: dict[str, str] = {
     "NSE_EQ":      "NSE",
     "BSE_EQ":      "BSE",
@@ -70,7 +109,7 @@ _DHAN_SEGMENT_TO_EXCHANGE: dict[str, str] = {
     "MCX_COMM":    "MCX",
     "NSE_CURRENCY":"CDS",
     "BSE_CURRENCY":"BCD",
-    "IDX_I":       "NSE",   # Index instruments — treat as NSE for lookup
+    "IDX_I":       "NSE",
 }
 
 # Our exchange vocabulary → Dhan's segment codes for the market-status
@@ -102,8 +141,16 @@ def _ist_today() -> str:
 import re as _re
 
 # Dhan F&O tradingsymbol format:
+#
+# Old format (api.dhan.co/v2/instruments-detailed, pre-Jun 2026):
 #   Options:  ROOT-DDmonYYYY-STRIKE-CE|PE   e.g. "CRUDEOIL-16JUL2026-8500-CE"
 #   Futures:  ROOT-DDmonYYYY-FUT            e.g. "CRUDEOIL-19JUN2026-FUT"
+#
+# New format (images.dhan.co/api-data/api-scrip-master.csv, Jun 2026+):
+#   Options:  ROOT-MonYYYY-STRIKE-CE|PE     e.g. "CGPOWER-Jun2026-840-PE"
+#             (no DD day prefix for equity options)
+#   Futures:  ROOT-DDMonYYYY-FUT            e.g. "SILVER-03Jul2026-FUT"
+#             (day prefix retained for futures)
 #
 # Kite F&O tradingsymbol format (what every downstream parser expects):
 #   Options:  ROOTYYmmmSTRIKECE|PE          e.g. "CRUDEOIL26JUL8500CE"
@@ -113,12 +160,28 @@ import re as _re
 # instruments-cache lookup all reject Dhan-format symbols and the
 # /admin/derivatives page shows "isn't a recognised option or
 # futures contract" above the Legs grid, killing the payoff chart.
-_DHAN_OPT_RE = _re.compile(r"^([A-Z]+)-(\d{1,2})([A-Z]{3})(\d{4})-(\d+(?:\.\d+)?)-(CE|PE)$")
+#
+# The regexes below handle BOTH old (with DD) and new (without DD) formats
+# for options; futures still carry the day number in the new CSV.
+#   _DHAN_OPT_RE_DAY  — "ROOT-DDMonYYYY-STRIKE-CE|PE" (old + some new)
+#   _DHAN_OPT_RE_NDAY — "ROOT-MonYYYY-STRIKE-CE|PE"   (new equity options)
+#   _DHAN_FUT_RE      — "ROOT-DDMonYYYY-FUT"           (both old and new)
+_DHAN_OPT_RE = _re.compile(
+    r"^([A-Z]+)-(\d{1,2})([A-Z]{3})(\d{4})-(\d+(?:\.\d+)?)-(CE|PE)$"
+)
+_DHAN_OPT_RE_NDAY = _re.compile(
+    r"^([A-Z]+)-([A-Z]{3})(\d{4})-(\d+(?:\.\d+)?)-(CE|PE)$"
+)
 _DHAN_FUT_RE = _re.compile(r"^([A-Z]+)-(\d{1,2})([A-Z]{3})(\d{4})-FUT$")
+# Futures without day prefix (defensive; not observed but safe to handle)
+_DHAN_FUT_RE_NDAY = _re.compile(r"^([A-Z]+)-([A-Z]{3})(\d{4})-FUT$")
 
 
 def _dhan_to_kite_symbol(raw: str) -> str:
     """Convert a Dhan F&O tradingsymbol to the Kite-style canonical form.
+
+    Handles both the old format (DD prefix, from /v2/instruments-detailed) and
+    the new format (no DD prefix on equity options, from /api-scrip-master.csv).
     Equity / index / unknown shapes fall through unchanged with dashes
     + spaces stripped — same conservative fallback the rest of the
     codebase already uses for non-derivative symbols.
@@ -126,9 +189,10 @@ def _dhan_to_kite_symbol(raw: str) -> str:
     s = (raw or "").upper().strip()
     if not s:
         return ""
+    # Options — old format "ROOT-DDMonYYYY-STRIKE-CE|PE"
     m = _DHAN_OPT_RE.match(s)
     if m:
-        root, dd, mon, yyyy, strike, opt_type = m.groups()
+        root, _dd, mon, yyyy, strike, opt_type = m.groups()
         # Drop trailing .0 on whole-number strikes; preserve halves.
         try:
             strike_f = float(strike)
@@ -137,9 +201,26 @@ def _dhan_to_kite_symbol(raw: str) -> str:
         except ValueError:
             strike_disp = strike
         return f"{root}{yyyy[2:]}{mon}{strike_disp}{opt_type}"
+    # Options — new format "ROOT-MonYYYY-STRIKE-CE|PE" (no day prefix)
+    m = _DHAN_OPT_RE_NDAY.match(s)
+    if m:
+        root, mon, yyyy, strike, opt_type = m.groups()
+        try:
+            strike_f = float(strike)
+            strike_disp = (str(int(strike_f)) if strike_f.is_integer()
+                           else str(strike_f))
+        except ValueError:
+            strike_disp = strike
+        return f"{root}{yyyy[2:]}{mon}{strike_disp}{opt_type}"
+    # Futures — with day prefix "ROOT-DDMonYYYY-FUT"
     m = _DHAN_FUT_RE.match(s)
     if m:
         root, _dd, mon, yyyy = m.groups()
+        return f"{root}{yyyy[2:]}{mon}FUT"
+    # Futures — without day prefix "ROOT-MonYYYY-FUT" (defensive)
+    m = _DHAN_FUT_RE_NDAY.match(s)
+    if m:
+        root, mon, yyyy = m.groups()
         return f"{root}{yyyy[2:]}{mon}FUT"
     # Fallback: just strip dashes + spaces. Equity / index symbols
     # ("RELIANCE", "NIFTY 50") and any Dhan format the regex doesn't
@@ -150,7 +231,22 @@ def _dhan_to_kite_symbol(raw: str) -> str:
 def _load_dhan_instruments() -> None:
     """Fetch Dhan's master CSV and populate the module-level caches.
     Called under _dhan_instruments_lock. Silently no-ops on any failure
-    so a network blip doesn't crash the broker registry."""
+    so a network blip doesn't crash the broker registry.
+
+    The public CSV URL changed in Jun 2026 from
+      api.dhan.co/v2/instruments-detailed  → (HTTP 404)
+    to
+      images.dhan.co/api-data/api-scrip-master.csv
+
+    Schema changes in the new URL (vs old /v2/instruments-detailed):
+      • SEM_EXM_EXCH_ID now carries "NSE" / "BSE" / "MCX" directly
+        instead of "NSE_EQ" / "NSE_FNO" etc. Exchange-to-Kite mapping
+        now requires the companion SEM_SEGMENT column ("D", "M", "E",
+        "C", "I") to determine the Kite exchange string.
+      • Lot-size column renamed: SM_LOT_SIZE → SEM_LOT_UNITS.
+      Both old and new column names are probed so a future schema revert
+      doesn't silently zero lot sizes.
+    """
     global _DHAN_INSTRUMENTS_DATE, _DHAN_BY_EXCHANGE, _DHAN_BY_SYMBOL
     by_exchange: dict[str, list[dict]] = {}
     by_symbol: dict[tuple, str] = {}
@@ -165,20 +261,30 @@ def _load_dhan_instruments() -> None:
         header = [h.strip() for h in lines[0].split(",")]
         # Build column-index lookup for robustness against column reorder
         col = {name: idx for idx, name in enumerate(header)}
-        required = {"SEM_SMST_SECURITY_ID", "SEM_TRADING_SYMBOL", "SEM_EXM_EXCH_ID",
-                    "SM_SYMBOL_NAME"}
+        required = {"SEM_SMST_SECURITY_ID", "SEM_TRADING_SYMBOL", "SEM_EXM_EXCH_ID"}
         if not required.issubset(col):
             logger.warning(f"DhanBroker: instruments CSV missing columns "
                            f"{required - set(col)}; cache aborted")
             return
+        # Detect schema version: new schema has SEM_SEGMENT; old has segment
+        # codes baked into SEM_EXM_EXCH_ID. We handle both.
+        has_seg_col = "SEM_SEGMENT" in col
+
         for line in lines[1:]:
             parts = line.split(",")
-            if len(parts) <= max(col.get("SEM_SMST_SECURITY_ID", 0),
-                                 col.get("SEM_TRADING_SYMBOL", 0),
-                                 col.get("SEM_EXM_EXCH_ID", 0)):
+            min_col = max(col.get("SEM_SMST_SECURITY_ID", 0),
+                          col.get("SEM_TRADING_SYMBOL", 0),
+                          col.get("SEM_EXM_EXCH_ID", 0))
+            if len(parts) <= min_col:
                 continue
-            seg_raw = parts[col["SEM_EXM_EXCH_ID"]].strip()
-            kite_exch = _DHAN_SEGMENT_TO_EXCHANGE.get(seg_raw)
+            exch_raw = parts[col["SEM_EXM_EXCH_ID"]].strip()
+            if has_seg_col and len(parts) > col["SEM_SEGMENT"]:
+                seg_raw = parts[col["SEM_SEGMENT"]].strip()
+                kite_exch = _DHAN_EXCH_SEG_TO_EXCHANGE.get((exch_raw, seg_raw))
+            else:
+                # Old schema: segment code is in SEM_EXM_EXCH_ID itself.
+                kite_exch = _DHAN_SEGMENT_TO_EXCHANGE.get(exch_raw)
+                seg_raw = exch_raw  # for the row dict below
             if not kite_exch:
                 continue
             # Translate Dhan's F&O tradingsymbol to the Kite-style canonical
@@ -196,14 +302,12 @@ def _load_dhan_instruments() -> None:
                 continue
             lot_size = 0
             tick_size = 0.0
-            # Audit fix (L-6) — Dhan's instruments CSV historically used
-            # SM_LOT_SIZE; some forks / future schema revs use the
-            # SEM_-prefixed name to match the other SEM_* columns
-            # (SEM_SMST_SECURITY_ID, SEM_TRADING_SYMBOL, …). Try both so
-            # a schema rev that flips the prefix doesn't silently zero
-            # every lot_size — that would push every MCX qty mismatch
-            # bug back into existence (Sprint D unit-mismatch class).
-            for _lot_col in ("SM_LOT_SIZE", "SEM_LOT_SIZE", "LOT_SIZE"):
+            # Lot-size column: SEM_LOT_UNITS (new schema, Jun 2026) or
+            # SM_LOT_SIZE / SEM_LOT_SIZE (old schema). Try new name first,
+            # then legacy names. A schema rev that changes the column name
+            # would otherwise silently zero every lot_size — triggering the
+            # MCX qty mismatch class (Sprint D).
+            for _lot_col in ("SEM_LOT_UNITS", "SM_LOT_SIZE", "SEM_LOT_SIZE", "LOT_SIZE"):
                 if _lot_col in col and len(parts) > col[_lot_col]:
                     try:
                         lot_size = int(float(parts[col[_lot_col]].strip() or 0))
@@ -245,7 +349,8 @@ def _load_dhan_instruments() -> None:
         _DHAN_INSTRUMENTS_DATE = _ist_today()
         total = sum(len(v) for v in by_exchange.values())
         logger.info(f"DhanBroker: instruments cache loaded — {total} rows "
-                    f"across {len(by_exchange)} exchanges")
+                    f"across {len(by_exchange)} exchanges "
+                    f"({'new' if has_seg_col else 'legacy'} schema)")
     except Exception as e:
         logger.warning(f"DhanBroker: instruments cache load failed: {e}")
 
@@ -830,7 +935,8 @@ class DhanBroker(Broker):
         return {}
 
     def instruments(self, exchange: str | None = None) -> list[dict]:
-        """Load Dhan instruments from the master CSV (api.dhan.co/v2/instruments-detailed).
+        """Load Dhan instruments from the master CSV
+        (images.dhan.co/api-data/api-scrip-master.csv).
         Cached per IST day — first call fetches, subsequent calls read from memory.
         Returns a Kite-shape list (tradingsymbol, security_id, exchange, lot_size,
         tick_size, exchange_segment). Returns [] on network failure so PriceBroker /
