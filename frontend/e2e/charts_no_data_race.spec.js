@@ -826,11 +826,14 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
     expect(svgPathCount).toBeGreaterThan(0);
   });
 
-  // ── partial=false MUST show "No data available." immediately (no retry).
+  // ── partial=false shows "No data available." after the 3-second gate (no retry).
   // Symbols genuinely without history (delisted, wrong exchange) should
-  // fail fast rather than wait 2300ms before showing the empty state.
+  // NOT trigger a retry (no backend thrashing), but the 3-second gate
+  // still applies — the empty state is suppressed for 3 s then shown
+  // via the _emptyTick wakeup. For operator UX: at most 3 s wait, then
+  // fast confirmation that no data exists.
 
-  test('BEL race: partial=false empty response shows error immediately (no retry)', async ({ page }) => {
+  test('BEL race: partial=false empty response shows error after 3-second gate (no retry)', async ({ page }) => {
     test.setTimeout(60_000);
     await injectSession(page);
     await page.setViewportSize({ width: 1400, height: 900 });
@@ -852,9 +855,11 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
 
     await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
     await waitForRangeGroup(page);
-    // Wait well beyond the 2300 ms retry window — confirm NO retry fired.
-    // partial=false means the backend says "confirmed empty", so the
-    // frontend must NOT schedule a retry regardless of the delay.
+    // Wait beyond the 3 s gate window (the wakeup timer fires at t=3050 ms
+    // from mount). partial=false means the backend says "confirmed empty" —
+    // the frontend must NOT schedule a retry regardless of the delay.
+    // The 3s gate still applies: "No data available" is suppressed until
+    // the window closes, then surfaces via _emptyTick wakeup.
     await page.waitForTimeout(3_500);
 
     expect(
@@ -862,11 +867,15 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
       'partial=false must not trigger a retry — wasteful for confirmed-empty symbols.',
     ).toBe(1);
 
-    // "No data available" must be visible by now.
+    // "No data available" must be visible after the 3-second gate expires.
+    // With the operator-approved 3s gate: error is suppressed during [0, 3s]
+    // and then shown after the wakeup timer bumps _emptyTick at t=3050 ms.
     const errVisible = await page.locator('text=No data available').isVisible();
     expect(
       errVisible,
-      'partial=false empty response must surface "No data available" immediately.',
+      'partial=false empty response must surface "No data available" after the 3-second gate. ' +
+      'The 3s gate applies to all empty states including partial=false — confirmed-empty ' +
+      'symbols still respect the never-flash-within-3s contract.',
     ).toBe(true);
   });
 
