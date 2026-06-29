@@ -1153,6 +1153,12 @@
     display: flex;
     flex-direction: column;
     background-color: var(--algo-bg-elev2);
+    /* app.css defines a component-card .algo-card with padding:
+       0.55rem 0.7rem (for health / settings content cards).  This
+       outer page-wrapper div shares the same class name but must
+       have zero padding — its children (navbar, algo-content,
+       footer) do their own internal spacing. */
+    padding: 0;
   }
 
   /* ── Navbar ─────────────────────────────────────────────────────────────── */
