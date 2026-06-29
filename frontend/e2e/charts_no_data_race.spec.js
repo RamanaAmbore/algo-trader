@@ -53,6 +53,25 @@ const BEL_URL = `${BASE}/charts?symbol=BEL&mode=live`;
 const __dir = dirname(fileURLToPath(import.meta.url));
 const _CW_SRC = join(__dir, '../src/lib/ChartWorkspace.svelte');
 
+// Helper: 30 fake daily bars covering [today - 30, today - 1].
+// Defined at module scope so both describe blocks can use it.
+function _fakeBars() {
+  const bars = [];
+  const today = new Date();
+  for (let i = 30; i >= 1; i--) {
+    const d = new Date(today.getTime() - i * 86400000);
+    bars.push({
+      ts:     d.toISOString().slice(0, 10),
+      open:   100 + i * 0.5,
+      high:   102 + i * 0.5,
+      low:    99  + i * 0.5,
+      close:  101 + i * 0.5,
+      volume: 100_000 + i * 1000,
+    });
+  }
+  return bars;
+}
+
 // Run serially: each test logs in and the rate-limit is 5/min on dev.
 test.describe.configure({ mode: 'serial' });
 
@@ -225,9 +244,10 @@ test.describe('Stale-code: ChartWorkspace loading/empty state guards', () => {
     ).toBe(true);
 
     // Confirm the ordering: loading guard comes before empty-state guard.
-    // The markup is: <div class="cw-state">No data available.</div>
+    // The empty-state div now uses a dynamic class expression for the
+    // 3-second gate, so search for the content text only.
     const loadingGuardPos = src.indexOf(loadingOrRetryingGuard);
-    const emptyGuardPos   = src.indexOf("cw-state\">No data available");
+    const emptyGuardPos   = src.indexOf('No data available.</div>');
     expect(loadingGuardPos).toBeGreaterThan(0);
     expect(emptyGuardPos).toBeGreaterThan(loadingGuardPos);
   });
@@ -284,6 +304,107 @@ test.describe('Stale-code: ChartWorkspace loading/empty state guards', () => {
       'ChartWorkspace must have a .cw-state "Loading…" branch for the fast-path ' +
       '(before _histLoadingSlow fires the full overlay). ' +
       'Expected to find: cw-state">Loading in source.',
+    ).toBe(true);
+  });
+
+  // ── 3-second gate — operator-approved race fix (option B) ─────────────────
+
+  test('3s gate: _symbolChangeAt declared as $state(0)', () => {
+    let src;
+    try {
+      src = readFileSync(_CW_SRC, 'utf-8');
+    } catch (e) {
+      throw new Error(`Could not read ChartWorkspace.svelte: ${e.message}`);
+    }
+    expect(
+      src.includes('let _symbolChangeAt = $state(0)'),
+      '_symbolChangeAt must be declared as $state(0). ' +
+      'This is the timestamp set synchronously on every symbol change.',
+    ).toBe(true);
+  });
+
+  test('3s gate: _suppressEmptyUntil derived from _symbolChangeAt + 3000', () => {
+    let src;
+    try {
+      src = readFileSync(_CW_SRC, 'utf-8');
+    } catch (e) {
+      throw new Error(`Could not read ChartWorkspace.svelte: ${e.message}`);
+    }
+    expect(
+      src.includes('$derived(_symbolChangeAt + 3000)'),
+      '_suppressEmptyUntil must be $derived(_symbolChangeAt + 3000). ' +
+      'This deadline drives the 3-second empty-state suppression window.',
+    ).toBe(true);
+  });
+
+  test('3s gate: _emptyTick declared as $state and bumped in the suppress timer', () => {
+    let src;
+    try {
+      src = readFileSync(_CW_SRC, 'utf-8');
+    } catch (e) {
+      throw new Error(`Could not read ChartWorkspace.svelte: ${e.message}`);
+    }
+    expect(
+      src.includes('let _emptyTick      = $state(0)') || src.includes('let _emptyTick = $state(0)'),
+      '_emptyTick must be declared as $state(0). ' +
+      'It is bumped by the setTimeout wakeup so the template re-evaluates ' +
+      'when the 3-second window closes.',
+    ).toBe(true);
+    expect(
+      src.includes('_emptyTick++'),
+      'The _suppressTimer setTimeout callback must increment _emptyTick ' +
+      'to trigger a template re-evaluation when the 3 s window closes.',
+    ).toBe(true);
+  });
+
+  test('3s gate: EmptyState branch gated by performance.now() >= _suppressEmptyUntil', () => {
+    let src;
+    try {
+      src = readFileSync(_CW_SRC, 'utf-8');
+    } catch (e) {
+      throw new Error(`Could not read ChartWorkspace.svelte: ${e.message}`);
+    }
+    expect(
+      src.includes('performance.now() >= _suppressEmptyUntil'),
+      'The {:else if !_bars.length} template branch must include ' +
+      '`performance.now() >= _suppressEmptyUntil` to implement the 3 s gate. ' +
+      'Without this, the time-based suppression never fires.',
+    ).toBe(true);
+  });
+
+  test('3s gate: symbol-change $effect sets _symbolChangeAt synchronously', () => {
+    let src;
+    try {
+      src = readFileSync(_CW_SRC, 'utf-8');
+    } catch (e) {
+      throw new Error(`Could not read ChartWorkspace.svelte: ${e.message}`);
+    }
+    // Locate the symbol-change effect block.
+    const effectStart = src.indexOf('_firstSymEffect = false');
+    expect(effectStart, 'Could not locate symbol-change $effect').toBeGreaterThan(0);
+    // Slice to just the effect body (stops at the next $effect declaration).
+    const effectEnd = src.indexOf('\n  $effect(', effectStart);
+    const effectBody = effectEnd > 0 ? src.slice(effectStart, effectEnd) : src.slice(effectStart, effectStart + 2000);
+    expect(
+      effectBody.includes('_symbolChangeAt = performance.now()'),
+      'The symbol-change $effect must set _symbolChangeAt = performance.now() ' +
+      'synchronously (before the _loadHistorical call). This stamps the gate ' +
+      'deadline before any async work begins.',
+    ).toBe(true);
+  });
+
+  test('3s gate: _suppressTimer cleared in onDestroy', () => {
+    let src;
+    try {
+      src = readFileSync(_CW_SRC, 'utf-8');
+    } catch (e) {
+      throw new Error(`Could not read ChartWorkspace.svelte: ${e.message}`);
+    }
+    const destroyBlock = src.slice(src.indexOf('onDestroy('));
+    expect(
+      destroyBlock.includes('_suppressTimer'),
+      'onDestroy must clear _suppressTimer to prevent a stale timeout ' +
+      'bumping _emptyTick after the component has been destroyed.',
     ).toBe(true);
   });
 });
@@ -510,24 +631,6 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
   // (after the retry delay). Final state must be the chart, NOT "No data
   // available." This protects against the race coming back to life in any
   // future refactor.
-
-  // Helper: 30 fake daily bars covering [today - 30, today - 1].
-  function _fakeBars() {
-    const bars = [];
-    const today = new Date();
-    for (let i = 30; i >= 1; i--) {
-      const d = new Date(today.getTime() - i * 86400000);
-      bars.push({
-        ts:     d.toISOString().slice(0, 10),
-        open:   100 + i * 0.5,
-        high:   102 + i * 0.5,
-        low:    99  + i * 0.5,
-        close:  101 + i * 0.5,
-        volume: 100_000 + i * 1000,
-      });
-    }
-    return bars;
-  }
 
   // ── partial=true contract: empty first response with partial flag set
   // triggers the frontend's retry path. Second response (with bars) wins.
@@ -839,4 +942,170 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
       'After the 2300 ms retry, chart must render — not "No data available".',
     ).toBe(false);
   });
+});
+
+// ── 3-second gate browser tests ───────────────────────────────────────────────
+//
+// These tests verify operator-approved option B: never render "No data
+// available" within 3 seconds of a symbol change, regardless of what
+// _histLoading / _histRetrying / _bars do in between.
+//
+// Test A: endpoint returns {bars:[], partial:true} immediately → "No data"
+//         must NOT appear at t=0.1, 0.5, 1.0, 2.5 s.  At t=3.5 s with
+//         bars still empty it MUST appear.
+//
+// Test B: endpoint returns {bars:[], partial:true} immediately, then real
+//         bars at t=2.0 s → chart renders at ~2.0 s; "No data" never shown.
+
+test.describe('3-second gate: never-show-empty window — desktop + mobile', () => {
+  test.beforeAll(async ({ browser }) => {
+    test.setTimeout(90_000);
+    const ctx  = await browser.newContext({ baseURL: BASE });
+    const page = await ctx.newPage();
+    await loginAsAdmin(page);
+    _session = await page.evaluate(() => {
+      const out = {};
+      for (const k of ['ramboq_token', 'ramboq_user']) {
+        const v = sessionStorage.getItem(k);
+        if (v) out[k] = v;
+      }
+      return out;
+    });
+    await page.close();
+    await ctx.close();
+  });
+
+  /** Helper: immediately returns empty+partial on every call (bars stay empty) */
+  async function routeAlwaysEmpty(page) {
+    await page.route('**/api/options/historical**', async (route) => {
+      const url = route.request().url();
+      if (!url.includes('symbol=BEL')) return route.continue();
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          symbol: 'BEL', instrument_token: null,
+          interval: 'day', bars: [], partial: true,
+        }),
+      });
+    });
+  }
+
+  /**
+   * Helper: returns empty+partial immediately, then real bars after `delayMs`.
+   * Simulates the backend warming up mid-window.
+   */
+  async function routeEmptyThenBars(page, delayMs = 2000) {
+    let callCount = 0;
+    await page.route('**/api/options/historical**', async (route) => {
+      const url = route.request().url();
+      if (!url.includes('symbol=BEL')) return route.continue();
+      callCount++;
+      if (callCount === 1) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            symbol: 'BEL', instrument_token: null,
+            interval: 'day', bars: [], partial: true,
+          }),
+        });
+      }
+      // Subsequent calls (the 2300 ms retry) return bars — but here we
+      // also simulate a call that arrives after `delayMs` by using a
+      // `page.waitForTimeout` equivalent (delay on the route side).
+      await new Promise((res) => setTimeout(res, Math.max(0, delayMs - 2300)));
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          symbol: 'BEL', instrument_token: 1234,
+          interval: 'day', bars: _fakeBars(), partial: false,
+        }),
+      });
+    });
+  }
+
+  // ── Test A: bars stay empty — EmptyState suppressed for 3 s ─────────────
+
+  for (const [label, viewport] of [
+    ['desktop 1400x900', { width: 1400, height: 900 }],
+    ['mobile 360x800',   { width: 360,  height: 800 }],
+  ]) {
+    test(`3s gate (${label}): EmptyState NOT visible at t<3s when bars always empty`, async ({ page }) => {
+      test.setTimeout(90_000);
+      await injectSession(page);
+      await page.setViewportSize(viewport);
+      await routeAlwaysEmpty(page);
+
+      await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
+      await waitForRangeGroup(page);
+
+      // Poll at t=0.1, 0.5, 1.0, 2.5 s — "No data available" must stay hidden.
+      // Each waitForTimeout is incremental (100 ms → 400 ms → 500 ms → 1500 ms).
+      for (const [inc, label_t] of [[100, 't≈0.1s'], [400, 't≈0.5s'], [500, 't≈1.0s'], [1500, 't≈2.5s']]) {
+        await page.waitForTimeout(inc);
+        const visible = await page.locator('.cw-state', { hasText: 'No data available' }).isVisible();
+        expect(
+          visible,
+          `3s gate: "No data available" must NOT be visible at ${label_t} ` +
+          `after symbol load (${label}). The 3-second suppression window must hold.`,
+        ).toBe(false);
+      }
+
+      // At t≈3.7 s the window has expired AND the wakeup tick has fired.
+      // "No data available" MUST appear (bars are still empty because every
+      // call returns empty+partial, and _emptyRetryFired prevents a second
+      // retry; _histError was set to 'No data available.' by the first retry).
+      // 2500 ms elapsed already + 1200 ms = 3700 ms total from page load.
+      await page.waitForTimeout(1200);
+      await expect(
+        page.locator('.cw-state', { hasText: 'No data available' }),
+        `3s gate: "No data available" MUST appear after the 3 s window expires ` +
+        `(${label}) when bars remain empty.`,
+      ).toBeVisible({ timeout: 2_000 });
+    });
+  }
+
+  // ── Test B: bars arrive at t≈2 s — chart renders without ever flashing EmptyState ──
+
+  for (const [label, viewport] of [
+    ['desktop 1400x900', { width: 1400, height: 900 }],
+    ['mobile 360x800',   { width: 360,  height: 800 }],
+  ]) {
+    test(`3s gate (${label}): bars arriving at t≈2s render chart; EmptyState never shown`, async ({ page }) => {
+      test.setTimeout(90_000);
+      await injectSession(page);
+      await page.setViewportSize(viewport);
+      // First call returns empty+partial; the 2300 ms retry returns bars.
+      // Bars land well within the 3 s gate window.
+      await routeEmptyThenBars(page, 2300);
+
+      await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
+      await waitForRangeGroup(page);
+
+      // Poll the full [0, 4] second range: "No data available" must NEVER appear.
+      let flashedNoData = false;
+      for (let i = 0; i < 20; i++) {
+        const visible = await page.locator('.cw-state', { hasText: 'No data available' }).isVisible();
+        if (visible) { flashedNoData = true; break; }
+        await page.waitForTimeout(200);
+      }
+      expect(
+        flashedNoData,
+        `3s gate (${label}): "No data available" must NEVER appear when bars ` +
+        'arrive within the 3 s window. ' +
+        'The time gate and the retry together must keep the empty state hidden.',
+      ).toBe(false);
+
+      // Chart SVG paths must be present after bars land.
+      const svgPathCount = await page.locator('svg path[d]').evaluateAll(
+        (els) => els.filter((e) => (e.getAttribute('d') || '').length > 20).length,
+      );
+      expect(
+        svgPathCount,
+        `3s gate (${label}): chart SVG paths must be present after bars arrive at t≈2.3 s.`,
+      ).toBeGreaterThan(0);
+    });
+  }
 });
