@@ -1,35 +1,39 @@
 """
-Regression guard for webhook/notify_deploy.py dev-branch gate.
+Smoke tests for webhook/notify_deploy.py.
 
-Operator confirmation: dev branch Telegram alerts must NOT fire when
-cap_in_dev.notify_on_deploy is False. Prod (main) must always fire.
-
-Three cases:
-  1. dev  + notify_on_deploy=False  → Telegram NOT called (silent success)
-  2. main                           → Telegram called (prod path unaffected)
-  3. dev  + notify_on_deploy=True   → Telegram called (operator can re-enable)
-
-The script is invoked via its main() entry point to exercise the real
-argument-parsing + gating logic rather than internal helpers.
-
-Note: notify_deploy.py is in webhook/ (not a package) so we import it
-via importlib from its file path. subprocess.run for systemctl is patched
-so tests don't require a systemd environment.
+Covers:
+1. Dev branch + notify_on_deploy=True  → Telegram fires.
+2. Dev branch + notify_on_deploy=False → Telegram skipped silently.
+3. main branch always fires regardless of cap_in_dev.
+4. fail status always fires regardless of cap (operators must know).
+5. Telegram payload contains branch tag and commit hash.
+6. dispatch.sh routes dev ref to ramboq_dev, main to ramboq prod.
+7. deploy.sh calls notify_deploy.py on both success and fail paths.
+8. Repo default backend_config.yaml has notify_on_deploy=True so fresh
+   setups get alerts without manual server-side editing.
 """
 
 import importlib.util
 import sys
-import types
-import unittest.mock
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+_SCRIPT = REPO_ROOT / "webhook" / "notify_deploy.py"
+DISPATCH_SCRIPT = REPO_ROOT / "webhook" / "dispatch.sh"
+DEPLOY_SCRIPT = REPO_ROOT / "webhook" / "deploy.sh"
 
 # ---------------------------------------------------------------------------
-# Load the script as a module without executing __main__.
+# Helpers
 # ---------------------------------------------------------------------------
-_SCRIPT = Path(__file__).parents[2] / "webhook" / "notify_deploy.py"
+
+_SECRETS = {
+    "telegram_bot_token": "fake-token",
+    "telegram_chat_id": "123456",
+}
 
 
 def _load_notify():
@@ -39,33 +43,8 @@ def _load_notify():
     return mod
 
 
-# Fake YAML payloads used across tests
-_BASE_CFG = {
-    "deploy_branch": "dev",
-    "cap_in_dev": {
-        "notify_on_deploy": False,
-    },
-}
-_MAIN_CFG = {
-    "deploy_branch": "main",
-    "cap_in_dev": {
-        "notify_on_deploy": False,  # Irrelevant on main — gate is bypassed
-    },
-}
-_DEV_ON_CFG = {
-    "deploy_branch": "dev",
-    "cap_in_dev": {
-        "notify_on_deploy": True,
-    },
-}
-_SECRETS = {
-    "telegram_bot_token": "fake-token",
-    "telegram_chat_id": "123456",
-}
-
-
-def _run_main(cfg: dict, argv_extra: list[str] | None = None,
-              mock_post_response: MagicMock | None = None):
+def _run_main(cfg: dict, *, branch: str = "dev", status: str = "ok",
+              commit: str = "abc1234", deploy_type: str = "full"):
     """
     Run notify_deploy.main() with patched I/O and return the
     mock requests.post object so callers can assert call_count / args.
@@ -74,22 +53,24 @@ def _run_main(cfg: dict, argv_extra: list[str] | None = None,
 
     def _fake_open(path, *a, **kw):
         import io
-        import yaml
         if "secrets" in str(path):
             return io.StringIO(yaml.dump(_SECRETS))
         return io.StringIO(yaml.dump(cfg))
 
-    resp = mock_post_response or MagicMock()
+    resp = MagicMock()
     resp.ok = True
     resp.status_code = 200
 
-    base_argv = ["notify_deploy.py", "--status", "ok",
-                 "--commit", "abc1234", "--deploy-type", "full"]
-    if argv_extra:
-        base_argv += argv_extra
+    argv = [
+        "notify_deploy.py",
+        "--branch", branch,
+        "--status", status,
+        "--commit", commit,
+        "--deploy-type", deploy_type,
+    ]
 
     with (
-        patch.object(sys, "argv", base_argv),
+        patch.object(sys, "argv", argv),
         patch("builtins.open", side_effect=_fake_open),
         patch("subprocess.run", return_value=MagicMock(stdout="active", returncode=0)),
         patch("requests.post", return_value=resp) as mock_post,
@@ -103,49 +84,122 @@ def _run_main(cfg: dict, argv_extra: list[str] | None = None,
 
 
 # ---------------------------------------------------------------------------
-# Test cases
+# Cap gating
 # ---------------------------------------------------------------------------
 
-def test_dev_notify_off_no_telegram():
-    """Dev branch + notify_on_deploy=False → Telegram is NOT called."""
-    mock_post = _run_main(
-        cfg=_BASE_CFG,
-        argv_extra=["--branch", "dev"],
-    )
-    mock_post.assert_not_called()
+class TestCapGating:
+    """notify_on_deploy capability gate."""
+
+    def test_fires_when_cap_enabled_on_dev(self):
+        """dev + notify_on_deploy=True → Telegram called."""
+        cfg = {"deploy_branch": "dev", "cap_in_dev": {"notify_on_deploy": True}}
+        mock_post = _run_main(cfg, branch="dev")
+        mock_post.assert_called_once()
+
+    def test_skipped_when_cap_disabled_on_dev(self):
+        """dev + notify_on_deploy=False → Telegram NOT called."""
+        cfg = {"deploy_branch": "dev", "cap_in_dev": {"notify_on_deploy": False}}
+        mock_post = _run_main(cfg, branch="dev")
+        mock_post.assert_not_called()
+
+    def test_main_branch_always_fires(self):
+        """main branch always fires regardless of cap_in_dev value."""
+        cfg = {"deploy_branch": "main", "cap_in_dev": {"notify_on_deploy": False}}
+        mock_post = _run_main(cfg, branch="main")
+        mock_post.assert_called_once()
+        url = mock_post.call_args.args[0] if mock_post.call_args.args else ""
+        assert "api.telegram.org" in url
+
+    def test_fail_status_fires_even_when_cap_disabled(self):
+        """fail status always fires so operators know when a deploy breaks."""
+        cfg = {"deploy_branch": "dev", "cap_in_dev": {"notify_on_deploy": False}}
+        mock_post = _run_main(cfg, branch="dev", status="fail")
+        mock_post.assert_called_once()
 
 
-def test_main_branch_always_fires():
-    """Main branch → Telegram is called regardless of cap_in_dev."""
-    mock_post = _run_main(
-        cfg=_MAIN_CFG,
-        argv_extra=["--branch", "main"],
-    )
-    mock_post.assert_called_once()
-    call_kwargs = mock_post.call_args.kwargs or {}
-    call_args = mock_post.call_args.args
-    # Verify the message was sent to Telegram API
-    url = call_args[0] if call_args else call_kwargs.get("url", "")
-    assert "api.telegram.org" in url
+# ---------------------------------------------------------------------------
+# Payload content
+# ---------------------------------------------------------------------------
+
+class TestPayload:
+    """Telegram message content."""
+
+    def test_branch_tag_in_dev_message(self):
+        """Dev deploy message includes [branch-name] tag."""
+        cfg = {"deploy_branch": "dev", "cap_in_dev": {"notify_on_deploy": True}}
+        mock_post = _run_main(cfg, branch="dev")
+        text = mock_post.call_args.kwargs.get("json", {}).get("text", "")
+        assert "[dev]" in text, f"Expected [dev] in Telegram body: {text!r}"
+
+    def test_commit_hash_in_message(self):
+        """Commit hash appears in Telegram body."""
+        cfg = {"deploy_branch": "dev", "cap_in_dev": {"notify_on_deploy": True}}
+        mock_post = _run_main(cfg, branch="dev", commit="deadbeef")
+        text = mock_post.call_args.kwargs.get("json", {}).get("text", "")
+        assert "deadbeef" in text, f"Expected commit hash in Telegram body: {text!r}"
+
+    def test_fe_only_suffix_for_fe_deploy(self):
+        """FE-only deploy appends '· FE-only' suffix in the OK message."""
+        cfg = {"deploy_branch": "dev", "cap_in_dev": {"notify_on_deploy": True}}
+        mock_post = _run_main(cfg, branch="dev", deploy_type="fe-only")
+        text = mock_post.call_args.kwargs.get("json", {}).get("text", "")
+        assert "FE-only" in text, f"Expected FE-only label: {text!r}"
 
 
-def test_dev_notify_on_fires_when_enabled():
-    """Dev branch + notify_on_deploy=True → Telegram IS called (operator override)."""
-    mock_post = _run_main(
-        cfg=_DEV_ON_CFG,
-        argv_extra=["--branch", "dev"],
-    )
-    mock_post.assert_called_once()
+# ---------------------------------------------------------------------------
+# dispatch.sh routing
+# ---------------------------------------------------------------------------
+
+class TestDispatchSh:
+    """dispatch.sh routes correctly."""
+
+    def test_dev_ref_routes_to_ramboq_dev(self):
+        text = DISPATCH_SCRIPT.read_text()
+        assert "ramboq_dev" in text, "dispatch.sh must route non-main to ramboq_dev"
+
+    def test_main_ref_routes_to_prod(self):
+        text = DISPATCH_SCRIPT.read_text()
+        assert "/opt/ramboq/webhook/deploy.sh prod" in text, (
+            "dispatch.sh must route main branch to prod deploy.sh"
+        )
 
 
-def test_dev_fail_always_fires():
-    """Dev branch + notify_on_deploy=False + status=fail → Telegram called.
+# ---------------------------------------------------------------------------
+# deploy.sh structure
+# ---------------------------------------------------------------------------
 
-    Failures always surface even on gated branches so the operator knows
-    the deploy broke.
-    """
-    mock_post = _run_main(
-        cfg=_BASE_CFG,
-        argv_extra=["--branch", "dev", "--status", "fail", "--reason", "exit code 1"],
-    )
-    mock_post.assert_called_once()
+class TestDeploySh:
+    """deploy.sh calls notify_deploy.py on both success and fail paths."""
+
+    def test_notify_called_at_least_twice(self):
+        """deploy.sh must call notify_deploy.py in both the fail trap and success path."""
+        text = DEPLOY_SCRIPT.read_text()
+        count = text.count("notify_deploy.py")
+        assert count >= 2, (
+            f"deploy.sh must call notify_deploy.py >= 2 times (fail trap + success), "
+            f"found {count}"
+        )
+
+    def test_deploy_type_flag_passed(self):
+        text = DEPLOY_SCRIPT.read_text()
+        assert "--deploy-type" in text, (
+            "deploy.sh must pass --deploy-type flag to notify_deploy.py"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Repo default config
+# ---------------------------------------------------------------------------
+
+class TestDefaultConfig:
+    """Repo default backend_config.yaml has notify_on_deploy=True."""
+
+    def test_repo_default_is_true(self):
+        cfg_path = REPO_ROOT / "backend" / "config" / "backend_config.yaml"
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f)
+        cap = cfg.get("cap_in_dev", {})
+        assert cap.get("notify_on_deploy") is True, (
+            f"cap_in_dev.notify_on_deploy should default True in repo config, "
+            f"got {cap.get('notify_on_deploy')!r}"
+        )
