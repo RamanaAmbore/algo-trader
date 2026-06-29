@@ -214,6 +214,51 @@ def is_market_open(now, holiday_set: set, market_start: dtime = dtime(9, 15),
                           exchange=exchange, now=now)
 
 
+def is_any_segment_open(now) -> bool:
+    """Return True if ANY configured market segment is currently open.
+
+    Reads `market_segments` from the app config at call time so live YAML
+    edits (e.g. adding a new exchange segment) land on the next call without a
+    service restart.
+
+    Handles the common MCX-open / NSE-closed window (09:00–09:15 IST) by
+    checking each segment independently with its own hours and holiday
+    calendar, then returning the logical OR.  This is the canonical way for
+    background pollers to decide "should I fetch broker data right now?"
+
+    Callers:
+      - background._task_performance  (controls whether to fetch positions/holdings)
+      - background._task_ticker_watchdog (controls whether to check for WS stalls)
+      - Any new task that should run during MCX *or* NSE hours
+
+    Args:
+        now: timezone-aware IST datetime (from timestamp_indian()).
+
+    Returns:
+        True when at least one segment's session is active right now.
+    """
+    from backend.shared.helpers.utils import config as _cfg
+    from backend.brokers.broker_apis import fetch_holidays
+
+    segments = _cfg.get("market_segments", {}) or {}
+    for seg_name, seg_cfg in segments.items():
+        try:
+            h_s, m_s = map(int, seg_cfg.get("hours_start", "09:15").split(":"))
+            h_e, m_e = map(int, seg_cfg.get("hours_end",   "15:30").split(":"))
+            seg_start = dtime(h_s, m_s)
+            seg_end   = dtime(h_e, m_e)
+            exch      = seg_cfg.get("holiday_exchange", "NSE")
+            try:
+                holidays = fetch_holidays(exch)
+            except Exception:
+                holidays = set()
+            if is_market_open(now, holidays, seg_start, seg_end, exchange=exch):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def convert_to_timezone(date_str, format='%Y-%m-%d', return_date=True, tz=INDIAN_TIMEZONE):
     try:
         dt = datetime.strptime(date_str, format).replace(tzinfo=tz)  # Assign the correct timezone
