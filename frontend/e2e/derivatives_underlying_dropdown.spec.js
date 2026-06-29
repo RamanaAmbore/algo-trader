@@ -14,10 +14,18 @@
  *                     explicit subscribe bridge; observable indirectly by
  *                     verifying the page still uses #opt-und canonical Select.
  *
- *  4. Reusable      — underlying picker is #opt-und (Select), expiry is
- *                     #opt-exp (MultiSelect), account is #opt-acct.
+ *  4. Reusable      — underlying picker is #opt-und (Select button), expiry
+ *                     is #opt-exp (MultiSelect), account is #opt-acct.
  *
  *  5. UX (mobile+desktop) — dropdown trigger visible at 360 and 1400 px.
+ *
+ * DOM structure note:
+ *   Select.svelte renders: <div class="rbq-select"> > <button id="{id}" class="rbq-select-trigger">
+ *   So #opt-und IS the trigger button itself. The panel is a sibling of the
+ *   button inside .rbq-select, not a child of #opt-und.
+ *   Locator helpers use `#opt-und.rbq-select-trigger` for the button and
+ *   `#opt-und ~ .rbq-select-panel, #opt-und + .rbq-select-panel` for the panel
+ *   (or just navigate to the parent .rbq-select wrapper).
  */
 
 import { test, expect } from '@playwright/test';
@@ -51,18 +59,30 @@ async function loginAsAdmin(page) {
   }, _token);
 }
 
-/** Navigate and wait for the underlying picker to be rendered. */
+/**
+ * Navigate to /admin/derivatives and wait for the #opt-und trigger to appear.
+ *
+ * Select.svelte places the `id` prop on the <button class="rbq-select-trigger">
+ * element — so #opt-und IS the trigger button, not a parent wrapper.
+ * Returns the trigger button locator directly.
+ */
 async function gotoDerivatives(page) {
   await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'domcontentloaded' });
-  // Wait for the trigger button inside #opt-und to be visible.
-  // `#opt-und` being attached is not sufficient — the Select component's
-  // inner button is rendered reactively and appears ~200ms after the
-  // parent container. Waiting on the trigger directly avoids a race that
-  // caused desktop and mobile tests to fail with "not found within 10s".
-  const picker = page.locator('#opt-und');
-  const trigger = picker.locator('button.rbq-select-trigger');
+  // #opt-und is the <button class="rbq-select-trigger"> (id lives on the button).
+  const trigger = page.locator('#opt-und');
   await trigger.waitFor({ state: 'visible', timeout: 25_000 });
-  return picker;
+  return trigger;
+}
+
+/**
+ * Return the .rbq-select-panel that belongs to a given trigger button.
+ * The panel is a sibling rendered by the parent <div class="rbq-select">,
+ * so we navigate up to the wrapper then down to the panel.
+ */
+function getPanelForTrigger(triggerLocator) {
+  // triggerLocator is the <button id="opt-und">.
+  // Parent is <div class="rbq-select">, panel is a child of that div.
+  return triggerLocator.locator('xpath=..').locator('.rbq-select-panel');
 }
 
 // ── Dimension 1 + 2: SSOT + fresh=true on mount ──────────────────────────
@@ -70,15 +90,16 @@ test('SSOT — dropdown matches /api/positions roots; mount calls fresh=true', a
   await loginAsAdmin(page);
 
   // Intercept /api/positions calls to verify fresh=true is sent on mount.
+  // Set up BEFORE navigation so no early calls are missed.
   const posRequests = [];
   await page.route(`${BASE}/api/positions/**`, (route) => {
     posRequests.push(route.request().url());
     route.continue();
   });
 
-  const picker = await gotoDerivatives(page);
+  const trigger = await gotoDerivatives(page);
 
-  // Allow the async loadPositions to settle.
+  // Allow the async loadPositions to settle (includes network round-trip).
   await page.waitForTimeout(4000);
 
   // ── Dimension 2 / 3: fresh=true on mount ────────────────────────────
@@ -114,13 +135,11 @@ test('SSOT — dropdown matches /api/positions roots; mount calls fresh=true', a
 
   if (expectedRoots.size > 0) {
     // Open the picker to inspect the rendered option list.
-    const trigger = picker.locator('button.rbq-select-trigger');
-    await trigger.waitFor({ state: 'visible', timeout: 5000 });
     await trigger.click();
-    const panel = picker.locator('.rbq-select-panel');
+    const panel = getPanelForTrigger(trigger);
     await panel.waitFor({ state: 'visible', timeout: 5000 });
 
-    const optTexts = await picker.locator('.rbq-select-option-label').allTextContents();
+    const optTexts = await panel.locator('.rbq-select-option-label').allTextContents();
     const rendered = new Set(optTexts.map(t => t.trim().toUpperCase()).filter(Boolean));
 
     for (const root of expectedRoots) {
@@ -131,10 +150,7 @@ test('SSOT — dropdown matches /api/positions roots; mount calls fresh=true', a
     }
     await page.keyboard.press('Escape');
   } else {
-    // No derivative positions — dropdown shows "No options in book" placeholder.
-    // The trigger button still renders; just verify its text.
-    const trigger = picker.locator('button.rbq-select-trigger');
-    await trigger.waitFor({ state: 'visible', timeout: 5000 });
+    // No derivative positions — trigger shows placeholder text.
     const triggerText = await trigger.textContent();
     expect(triggerText).toMatch(/no options in book|pick underlying/i);
   }
@@ -144,8 +160,8 @@ test('SSOT — dropdown matches /api/positions roots; mount calls fresh=true', a
 test('Canonical picker IDs: #opt-und, #opt-exp, #opt-acct all present', async ({ page }) => {
   await loginAsAdmin(page);
   await gotoDerivatives(page);
-  // #opt-und trigger already visible (gotoDerivatives guarantee).
-  // Wait briefly for #opt-exp and #opt-acct to render their triggers too.
+  // #opt-und is already visible (gotoDerivatives guarantee).
+  // #opt-exp and #opt-acct are MultiSelect buttons — same id-on-button pattern.
   await expect(page.locator('#opt-und')).toBeVisible({ timeout: 5_000 });
   await expect(page.locator('#opt-exp')).toBeVisible({ timeout: 5_000 });
   await expect(page.locator('#opt-acct')).toBeVisible({ timeout: 5_000 });
@@ -155,14 +171,13 @@ test('Canonical picker IDs: #opt-und, #opt-exp, #opt-acct all present', async ({
 test('Desktop 1400×900: underlying trigger visible and openable', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
   await loginAsAdmin(page);
-  const picker = await gotoDerivatives(page);
+  const trigger = await gotoDerivatives(page);
 
   // gotoDerivatives() already confirmed the trigger is visible.
-  const trigger = picker.locator('button.rbq-select-trigger');
   await expect(trigger).toBeVisible();
 
   await trigger.click();
-  const panel = picker.locator('.rbq-select-panel');
+  const panel = getPanelForTrigger(trigger);
   await panel.waitFor({ state: 'visible', timeout: 5000 });
   await expect(panel).toBeVisible();
   await page.keyboard.press('Escape');
@@ -172,9 +187,8 @@ test('Desktop 1400×900: underlying trigger visible and openable', async ({ page
 test('Mobile 360×800: underlying trigger visible', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });
   await loginAsAdmin(page);
-  const picker = await gotoDerivatives(page);
+  const trigger = await gotoDerivatives(page);
 
   // gotoDerivatives() already confirmed the trigger is visible.
-  const trigger = picker.locator('button.rbq-select-trigger');
   await expect(trigger).toBeVisible();
 });
