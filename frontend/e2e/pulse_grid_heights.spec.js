@@ -206,9 +206,9 @@ test.describe('Pulse grid heights — desktop', () => {
 
     const { posRows, holdRows, posH, holdH } = result;
 
-    // Both buckets must be visible (≥ 80 px, the min-height floor).
-    expect(posH).toBeGreaterThan(60);
-    expect(holdH).toBeGreaterThan(60);
+    // Both buckets must be visible (≥ 240 px, the 5-row min-height floor).
+    expect(posH).toBeGreaterThanOrEqual(240);
+    expect(holdH).toBeGreaterThanOrEqual(240);
 
     // When row counts differ meaningfully, the larger-count bucket takes
     // more height. 30 px tolerance absorbs header-height differences.
@@ -237,6 +237,70 @@ test.describe('Pulse grid heights — desktop', () => {
       if (cls.includes('is-collapsed')) continue;
       if (h === 0) continue; // showWinners/showLosers=false → display:none
       expect(h).toBeGreaterThanOrEqual(60);
+    }
+  });
+
+  // 5d. UX — every desktop bucket has a minimum height of 240 px (fits
+  //     5 data rows + ag-Grid header + bucket-header without internal scroll).
+  test('each desktop bucket is at least 240 px tall (5-row floor)', async ({ page }) => {
+    await goToPulse(page);
+
+    const buckets = await page.evaluate(() => {
+      return Array.from(document.querySelectorAll('.mp-col .mp-bucket-wrap'))
+        .map(el => ({
+          cls: el.className,
+          h:   el.getBoundingClientRect().height,
+        }));
+    });
+
+    // Skip this test if no buckets rendered (backend absent).
+    if (!buckets.length) { test.skip(true, 'no buckets rendered'); return; }
+
+    for (const { cls, h } of buckets) {
+      if (cls.includes('is-collapsed')) continue;
+      if (h === 0) continue; // hidden bucket (showWinners/showLosers=false)
+      expect(h).toBeGreaterThanOrEqual(240);
+    }
+  });
+
+  // 5e. UX — when a bucket has >= 5 rows, those rows fit without
+  //     grid-internal vertical scroll (visible .ag-row count >= 5).
+  test('buckets with >= 5 rows show at least 5 visible ag-rows without internal scroll', async ({ page }) => {
+    await goToPulse(page);
+    await page.waitForTimeout(2000); // allow row data to settle
+
+    const result = await page.evaluate(() => {
+      const out = [];
+      for (const wrap of document.querySelectorAll('.mp-col .mp-bucket-wrap')) {
+        if (wrap.classList.contains('is-collapsed')) continue;
+
+        // Count rendered ag-rows (ag-Grid only puts DOM rows for visible rows
+        // when row virtualisation is on; for small grids all rows are in DOM).
+        const allRows     = wrap.querySelectorAll('.ag-row');
+        const totalRows   = allRows.length;
+        if (totalRows < 5) continue; // not enough data to assert
+
+        const wrapRect    = wrap.getBoundingClientRect();
+
+        // Count rows whose top edge sits within the bucket's bounding rect
+        // (i.e. not clipped above/below the bucket chrome).
+        let visibleCount  = 0;
+        for (const row of allRows) {
+          const rr = row.getBoundingClientRect();
+          if (rr.top >= wrapRect.top && rr.bottom <= wrapRect.bottom + 4) {
+            visibleCount++;
+          }
+        }
+        out.push({ totalRows, visibleCount });
+      }
+      return out;
+    });
+
+    // If no bucket had >= 5 rows the check is moot (data-dependent).
+    if (!result.length) { test.skip(true, 'no bucket had >= 5 rows of data'); return; }
+
+    for (const { visibleCount } of result) {
+      expect(visibleCount).toBeGreaterThanOrEqual(5);
     }
   });
 

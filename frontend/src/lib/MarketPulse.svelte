@@ -5577,13 +5577,16 @@
     .mp-col-right { flex: 6 1 0; }
     /* Proportional bucket sizing — each bucket's flex-grow is driven
        by --bucket-rows (set inline from the derived row count). More
-       rows = more column space; empty buckets get a floor of 80px so
-       the header + empty-state message remain visible. Collapsed
-       buckets still hold their flex weight (header visible); the
-       bucket-grid itself is zeroed by the is-collapsed rule below. */
+       rows = more column space; empty buckets get a floor of 240px so
+       5 data rows + ag-Grid header + bucket-header all fit without
+       grid-internal scroll. Breakdown: bucket-head ~32px + ag-Grid
+       header ~32px + 5 rows × 28px = ~204px; 240px adds comfortable
+       breathing room. Collapsed buckets still hold their flex weight
+       (header visible); the bucket-grid itself is zeroed by the
+       is-collapsed rule below. */
     .mp-col > .mp-bucket-wrap {
       flex: var(--bucket-rows, 1) 0 0;
-      min-height: 80px;
+      min-height: 240px;
     }
     .mp-col > .mp-bucket-wrap > .bucket-grid {
       height: auto;
