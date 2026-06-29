@@ -905,3 +905,101 @@ def test_stale_code_health_exposes_cold_empty_counts():
         "health.py must import + call get_first_cold_empty_counts to "
         "populate the metric."
     )
+
+
+# ── BEL race FINAL — frontend retry delay vs. backend empty-cache TTL ─────
+#
+# The remaining race after all prior fixes: the frontend retry delay
+# (800 ms) was LESS than the backend's _HIST_CACHE_TTL_EMPTY (2000 ms).
+# The retry arrived while the server's empty-cache entry was still live,
+# got the same cached empty+partial response, but since _emptyRetryFired
+# was already set in the frontend, canRetry=false → "No data available"
+# rendered immediately. The fix: retry delay = 2300 ms > 2000 ms TTL.
+#
+# These tests guard the timing contract at the source level so a future
+# change to either constant cannot silently re-introduce the race.
+
+def test_frontend_retry_delay_exceeds_backend_empty_cache_ttl():
+    """Source-level contract: the frontend's _emptyRetryTimer delay
+    (in ChartWorkspace.svelte) must be strictly greater than the backend's
+    _HIST_CACHE_TTL_EMPTY (in options.py).
+
+    If the retry fires before the empty-cache entry expires, the server
+    returns the same cached empty+partial response. Since _emptyRetryFired
+    is already set, canRetry=false and the frontend shows "No data
+    available" immediately after the retry — identical to no retry at all.
+
+    This is the root cause of the BEL race that survived all prior fixes.
+    """
+    import re
+    from pathlib import Path
+
+    # ── Backend: read _HIST_CACHE_TTL_EMPTY from options.py ───────────────
+    options_path = Path(__file__).parent.parent / "api" / "routes" / "options.py"
+    opts_src = options_path.read_text()
+    m_ttl = re.search(r"_HIST_CACHE_TTL_EMPTY\s*=\s*(\d+)", opts_src)
+    assert m_ttl is not None, (
+        "Could not find _HIST_CACHE_TTL_EMPTY in options.py. "
+        "Has the constant been renamed?"
+    )
+    backend_ttl_ms = int(m_ttl.group(1)) * 1000   # convert seconds → ms
+
+    # ── Frontend: read the setTimeout delay from ChartWorkspace.svelte ────
+    cw_path = Path(__file__).parent.parent.parent / "frontend" / "src" / "lib" / "ChartWorkspace.svelte"
+    cw_src = cw_path.read_text()
+    # The timer block: `}, <N>);` where N is the ms value for _emptyRetryTimer.
+    # Look for the pattern right after _emptyRetryTimer assignment.
+    idx = cw_src.find("_emptyRetryTimer = setTimeout(")
+    assert idx >= 0, (
+        "Could not find _emptyRetryTimer = setTimeout( in ChartWorkspace.svelte. "
+        "Has the retry timer been renamed or removed?"
+    )
+    # Grab the block from the setTimeout to its closing };
+    block = cw_src[idx : idx + 600]
+    m_delay = re.search(r"}\s*,\s*(\d+)\s*\)", block)
+    assert m_delay is not None, (
+        "Could not parse the setTimeout delay value from ChartWorkspace.svelte. "
+        "Expected pattern: `}, <N>)` at the end of the _emptyRetryTimer block."
+    )
+    frontend_retry_ms = int(m_delay.group(1))
+
+    # ── The timing contract ────────────────────────────────────────────────
+    assert frontend_retry_ms > backend_ttl_ms, (
+        f"BEL race final fix: frontend retry delay ({frontend_retry_ms} ms) "
+        f"must be strictly greater than backend empty-cache TTL ({backend_ttl_ms} ms). "
+        f"When the retry fires before the TTL expires, the server returns the "
+        f"same cached empty+partial, _emptyRetryFired is already set, canRetry=false, "
+        f"and 'No data available' renders immediately — the race re-occurs. "
+        f"Fix: set _emptyRetryTimer to {backend_ttl_ms + 300} ms or higher."
+    )
+
+
+def test_frontend_retry_delay_is_at_least_2300ms():
+    """Specific bound: the retry delay must be ≥ 2300 ms.
+
+    The backend TTL is 2000 ms. 2300 ms provides 300 ms of headroom for
+    network RTT variance (server processing time on the retry call). Values
+    below 2000 ms are guaranteed to hit the cache. Values 2001–2299 ms are
+    theoretically past the TTL but dangerously close — a 100 ms NTP drift
+    or slow async path could tip the balance.
+    """
+    import re
+    from pathlib import Path
+
+    cw_path = Path(__file__).parent.parent.parent / "frontend" / "src" / "lib" / "ChartWorkspace.svelte"
+    cw_src = cw_path.read_text()
+
+    idx = cw_src.find("_emptyRetryTimer = setTimeout(")
+    assert idx >= 0, "Could not find _emptyRetryTimer = setTimeout( in ChartWorkspace.svelte."
+    block = cw_src[idx : idx + 600]
+    m = re.search(r"}\s*,\s*(\d+)\s*\)", block)
+    assert m is not None, "Could not parse setTimeout delay from ChartWorkspace.svelte."
+    delay_ms = int(m.group(1))
+
+    assert delay_ms >= 2300, (
+        f"_emptyRetryTimer delay ({delay_ms} ms) is below the 2300 ms minimum. "
+        "The backend empty-cache TTL is 2000 ms; 300 ms headroom is required to "
+        "ensure the retry always arrives after the TTL has expired. "
+        "Values below 2000 ms are guaranteed to re-hit the cache and re-trigger "
+        "the BEL race. Values 2001–2299 ms risk a race on slow servers."
+    )

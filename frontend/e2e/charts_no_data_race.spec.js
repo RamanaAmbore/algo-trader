@@ -570,8 +570,11 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
     await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
     await waitForRangeGroup(page);
 
-    // Wait long enough for the 800 ms retry timer to fire + second resp.
-    await page.waitForTimeout(2_500);
+    // Wait long enough for the 2300 ms retry timer to fire + second resp.
+    // The retry delay must exceed the server's _HIST_CACHE_TTL_EMPTY (2000 ms)
+    // so the server makes a fresh broker attempt rather than returning the
+    // cached empty+partial response. 2300 ms (retry) + ~200 ms response = 2500 ms.
+    await page.waitForTimeout(4_000);
 
     // The retry must have fired — backend call count ≥ 2.
     expect(
@@ -630,7 +633,7 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
 
     await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
     await waitForRangeGroup(page);
-    await page.waitForTimeout(2_500);
+    await page.waitForTimeout(4_000);
 
     expect(histCallCount).toBeGreaterThanOrEqual(2);
     const errVisible = await page.locator('text=No data available').isVisible();
@@ -664,9 +667,11 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
           }),
         });
       }
-      // Second response: delay 600 ms so the retry window is wide
-      // enough to catch the "No data available" flash if the guard fails.
-      await new Promise((res) => setTimeout(res, 600));
+      // Second response: delay 800 ms so the retry window is wide
+      // enough to catch any "No data available" flash if the guard fails.
+      // The retry fires at 2300 ms; with 800 ms response time the total
+      // wait is ~3100 ms. Polling below covers the full window.
+      await new Promise((res) => setTimeout(res, 800));
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -680,25 +685,34 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
     await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
     await waitForRangeGroup(page);
 
-    // Sample the empty-state visibility during the retry window — at
-    // intervals shorter than the retry delay (800 ms) + response delay
-    // (600 ms) so we catch any single-frame flash.
+    // Sample the empty-state visibility during the full retry window:
+    // retry fires at 2300 ms + 800 ms response = 3100 ms total.
+    // Poll every 200 ms for 4000 ms to catch any single-frame flash.
+    // Root-cause note: the prior 800 ms retry delay was < the server's
+    // _HIST_CACHE_TTL_EMPTY (2000 ms), so the retry returned the same
+    // cached empty+partial. Since _emptyRetryFired was already set,
+    // canRetry=false and "No data available" was rendered immediately
+    // after the retry (at t≈800ms). The guard _histRetrying=true only
+    // helped for that 800ms window — after that it was false again and
+    // the template hit the {:else if !_bars.length} branch. Fixed by
+    // changing the retry delay to 2300 ms (safely past the 2000 ms TTL).
     let flashedNoData = false;
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 20; i++) {
       const visible = await page.locator('.cw-state', { hasText: 'No data available' }).isVisible();
       if (visible) {
         flashedNoData = true;
         break;
       }
-      await page.waitForTimeout(120);
+      await page.waitForTimeout(200);
     }
 
     expect(
       flashedNoData,
       'BEL race: "No data available" must NOT flash during the retry window. ' +
-      'Operator-caught regression: the prior fix scheduled a retry but cleared ' +
-      '_histLoading=false BEFORE the retry fired, leaving the catchall empty-' +
-      'state branch visible for ~2.5s.',
+      'Root cause: prior retry delay (800 ms) < server empty-cache TTL (2000 ms). ' +
+      'Retry returned same cached empty+partial; _emptyRetryFired latch prevented ' +
+      'a second retry, so "No data available" rendered immediately. ' +
+      'Fix: retry delay set to 2300 ms (past the 2000 ms TTL).',
     ).toBe(false);
 
     // Confirm both calls happened and final state is the chart.
@@ -711,7 +725,7 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
 
   // ── partial=false MUST show "No data available." immediately (no retry).
   // Symbols genuinely without history (delisted, wrong exchange) should
-  // fail fast rather than wait 800ms before showing the empty state.
+  // fail fast rather than wait 2300ms before showing the empty state.
 
   test('BEL race: partial=false empty response shows error immediately (no retry)', async ({ page }) => {
     test.setTimeout(60_000);
@@ -735,8 +749,10 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
 
     await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
     await waitForRangeGroup(page);
-    // Wait beyond the 800 ms retry window — confirm NO retry fired.
-    await page.waitForTimeout(2_000);
+    // Wait well beyond the 2300 ms retry window — confirm NO retry fired.
+    // partial=false means the backend says "confirmed empty", so the
+    // frontend must NOT schedule a retry regardless of the delay.
+    await page.waitForTimeout(3_500);
 
     expect(
       histCallCount,
@@ -749,5 +765,78 @@ test.describe('/charts?symbol=BEL — loading vs no-data states', () => {
       errVisible,
       'partial=false empty response must surface "No data available" immediately.',
     ).toBe(true);
+  });
+
+  // ── KEY REGRESSION for the final remaining race: retry fires BEFORE
+  // the server's empty-cache TTL expires (2000 ms). Prior retry delay
+  // was 800 ms — retry hit the cached empty+partial again, and since
+  // _emptyRetryFired was already set, canRetry=false → "No data
+  // available" rendered. Fix: retry delay = 2300 ms > 2000 ms TTL.
+
+  test('BEL race: retry fires AFTER server empty-cache TTL (2300 ms > 2000 ms TTL)', async ({ page }) => {
+    test.setTimeout(60_000);
+    await injectSession(page);
+    await page.setViewportSize({ width: 1400, height: 900 });
+
+    // Track timestamps of each hist call to measure the actual retry gap.
+    /** @type {number[]} */
+    const callTimestamps = [];
+    await page.route('**/api/options/historical**', async (route) => {
+      const url = route.request().url();
+      if (!url.includes('symbol=BEL')) return route.continue();
+      callTimestamps.push(Date.now());
+      const n = callTimestamps.length;
+      if (n === 1) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            symbol: 'BEL', instrument_token: null,
+            interval: 'day', bars: [], partial: true,
+          }),
+        });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          symbol: 'BEL', instrument_token: 1234,
+          interval: 'day', bars: _fakeBars(), partial: false,
+        }),
+      });
+    });
+
+    await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
+    await waitForRangeGroup(page);
+    // Wait beyond retry (2300 ms) + response time (~200 ms) + margin.
+    await page.waitForTimeout(4_000);
+
+    expect(
+      callTimestamps.length,
+      'Expected exactly 2 hist API calls (initial + retry)',
+    ).toBeGreaterThanOrEqual(2);
+
+    if (callTimestamps.length >= 2) {
+      const retryGap = callTimestamps[1] - callTimestamps[0];
+      // The retry gap must be > 2000 ms (the server empty-cache TTL).
+      // If retryGap < 2000 ms, the retry arrived while the cache was
+      // still live and would get the same empty+partial response —
+      // the exact root cause of the recurring race.
+      expect(
+        retryGap,
+        `Retry gap (${retryGap} ms) must be > 2000 ms (server empty-cache TTL). ` +
+        'A shorter gap means the retry arrives while the cached empty response ' +
+        'is still live; the server returns the same empty+partial, and since ' +
+        '_emptyRetryFired is already set, "No data available" renders. ' +
+        'Fix: _emptyRetryTimer set to 2300 ms in ChartWorkspace.svelte.',
+      ).toBeGreaterThan(2000);
+    }
+
+    // Final state: chart must be visible (not error).
+    const errVisible = await page.locator('text=No data available').isVisible();
+    expect(
+      errVisible,
+      'After the 2300 ms retry, chart must render — not "No data available".',
+    ).toBe(false);
   });
 });

@@ -639,7 +639,8 @@
       if (!_bars.length) {
         // Empty response. Two cases:
         //   1. partial=true → backend says "transient, retry soon".
-        //      Keep loading state up + retry in 800 ms.
+        //      Keep loading state up + retry after the server empty-cache
+        //      TTL has expired (_HIST_CACHE_TTL_EMPTY = 2 s on server).
         //   2. partial=false → backend confirmed no data exists for
         //      this symbol. Show "No data available." immediately.
         //
@@ -661,12 +662,20 @@
           // operator-reported BEL bug.
           _histRetrying = true;
           if (_emptyRetryTimer) clearTimeout(_emptyRetryTimer);
-          // 800 ms — well past the backend's _HIST_CACHE_TTL_EMPTY of
-          // 2 s would force a new fetch every time, BUT the partial
-          // entry won't re-cache; the next call retries via the broker
-          // loop. 800 ms is short enough that the operator doesn't
-          // click away (>2 s was the reported pain point) AND covers
-          // typical instruments-map warm latency.
+          // 2300 ms — this MUST be greater than the backend's
+          // _HIST_CACHE_TTL_EMPTY (2000 ms). The prior value of 800 ms
+          // was the root cause of the still-recurring race: the retry
+          // arrived while the server's empty-cache entry was still live
+          // (expires at t+2000 ms), so the server returned the SAME
+          // cached empty+partial response. With _emptyRetryFired already
+          // set for this cacheKey, canRetry was false and "No data
+          // available" rendered immediately — identical to showing it
+          // with no retry at all. By waiting 2300 ms the empty-cache
+          // entry is guaranteed to have expired before the retry fires,
+          // so the server makes a fresh broker attempt. 300 ms headroom
+          // handles network RTT variance without being perceptible to
+          // the operator (the spinner stays visible the whole time via
+          // _histRetrying=true).
           _emptyRetryTimer = setTimeout(() => {
             _emptyRetryTimer = null;
             if (!_mounted) return;
@@ -674,7 +683,7 @@
             // success would already have flipped it).
             if (!_bars.length) _loadHistorical(true);
             else _histRetrying = false;
-          }, 800);
+          }, 2300);
           _chartLoaded = true;
           return;
         }
