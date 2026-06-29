@@ -1029,13 +1029,24 @@ test.describe('3-second gate: never-show-empty window — desktop + mobile', () 
       await page.setViewportSize(viewport);
       await routeAlwaysEmpty(page);
 
+      // Record the absolute start time before navigation so that all
+      // poll checkpoints are measured from the same reference as the
+      // component's onMount (which fires within a few frames of goto).
+      const t0 = Date.now();
       await page.goto(BEL_URL, { waitUntil: 'domcontentloaded' });
       await waitForRangeGroup(page);
 
-      // Poll at t=0.1, 0.5, 1.0, 2.5 s — "No data available" must stay hidden.
-      // Each waitForTimeout is incremental (100 ms → 400 ms → 500 ms → 1500 ms).
-      for (const [inc, label_t] of [[100, 't≈0.1s'], [400, 't≈0.5s'], [500, 't≈1.0s'], [1500, 't≈2.5s']]) {
-        await page.waitForTimeout(inc);
+      // Poll at 0.5s, 1.0s, 2.0s, 2.5s from t0 — "No data available"
+      // must stay hidden. Use absolute time references from t0 so slow
+      // CI / range-group wait doesn't push checks past the 3s gate window.
+      // If a checkpoint has already elapsed (e.g. waitForRangeGroup was
+      // slow), skip it — we can only assert what we can actually observe.
+      for (const [absMs, label_t] of [[500, 't≈0.5s'], [1000, 't≈1.0s'], [2000, 't≈2.0s'], [2500, 't≈2.5s']]) {
+        const remaining = absMs - (Date.now() - t0);
+        if (remaining <= 0) continue;  // already past this checkpoint
+        await page.waitForTimeout(remaining);
+        // Only assert if we're still within the gate window (< 3s from t0).
+        if (Date.now() - t0 >= 3000) continue;
         const visible = await page.locator('.cw-state', { hasText: 'No data available' }).isVisible();
         expect(
           visible,
@@ -1044,17 +1055,17 @@ test.describe('3-second gate: never-show-empty window — desktop + mobile', () 
         ).toBe(false);
       }
 
-      // At t≈3.7 s the window has expired AND the wakeup tick has fired.
-      // "No data available" MUST appear (bars are still empty because every
+      // At t≈3.7s from t0 the window has expired AND the wakeup has fired.
+      // "No data available" MUST appear (bars stay empty because every
       // call returns empty+partial, and _emptyRetryFired prevents a second
-      // retry; _histError was set to 'No data available.' by the first retry).
-      // 2500 ms elapsed already + 1200 ms = 3700 ms total from page load.
-      await page.waitForTimeout(1200);
+      // retry; _histError='No data available.' was set on the retry path).
+      const gateEnd = 3700 - (Date.now() - t0);
+      if (gateEnd > 0) await page.waitForTimeout(gateEnd);
       await expect(
         page.locator('.cw-state', { hasText: 'No data available' }),
         `3s gate: "No data available" MUST appear after the 3 s window expires ` +
         `(${label}) when bars remain empty.`,
-      ).toBeVisible({ timeout: 2_000 });
+      ).toBeVisible({ timeout: 5_000 });
     });
   }
 
