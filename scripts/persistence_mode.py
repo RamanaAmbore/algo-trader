@@ -40,8 +40,11 @@ if str(ROOT) not in sys.path:
 # ── Constants ──────────────────────────────────────────────────────────────
 
 _VALID_ARGS = ("off", "soft", "hard", "status")
-_API_PORT_PROD = 8502
-_API_PORT_DEV  = 8503
+# Uvicorn binds on these local ports.  CLAUDE.md lists 8502/8503 as the
+# nginx-proxied external ports; from inside the server the API is on
+# 8000 (prod/main) and 8001 (dev branch).
+_API_PORT_PROD = 8000
+_API_PORT_DEV  = 8001
 
 
 def _load_secrets() -> dict:

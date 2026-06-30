@@ -66,7 +66,7 @@ def test_correct_admin_endpoint_posted_for_soft() -> None:
     with (
         patch.object(cli, "_load_secrets", return_value=fake_secrets),
         patch.object(cli, "_call_api", side_effect=fake_call_api),
-        patch.object(cli, "_detect_api_base", return_value="http://127.0.0.1:8502"),
+        patch.object(cli, "_detect_api_base", return_value="http://127.0.0.1:8000"),
         patch.object(sys, "argv", ["persistence_mode.py", "soft"]),
     ):
         cli.main()
@@ -91,20 +91,22 @@ def test_correct_endpoint_for_status() -> None:
     with (
         patch.object(cli, "_load_secrets", return_value=fake_secrets),
         patch.object(cli, "_call_api", side_effect=fake_call_api),
-        patch.object(cli, "_detect_api_base", return_value="http://127.0.0.1:8502"),
+        patch.object(cli, "_detect_api_base", return_value="http://127.0.0.1:8000"),
         patch.object(sys, "argv", ["persistence_mode.py", "status"]),
     ):
         cli.main()
 
-    assert calls == [("GET", "http://127.0.0.1:8502/api/admin/persistence/mode")]
+    assert calls == [("GET", "http://127.0.0.1:8000/api/admin/persistence/mode")]
 
 
 # ── 2. Port constants match CLAUDE.md deployment table ─────────────────────
 
 def test_port_constants() -> None:
     cli = _import_cli()
-    assert cli._API_PORT_PROD == 8502, "prod port must be 8502 per CLAUDE.md"
-    assert cli._API_PORT_DEV  == 8503, "dev port must be 8503 per CLAUDE.md"
+    # Uvicorn binds locally on 8000 (prod) / 8001 (dev).
+    # CLAUDE.md 8502/8503 are nginx-proxied external ports.
+    assert cli._API_PORT_PROD == 8000, "prod local port must be 8000"
+    assert cli._API_PORT_DEV  == 8001, "dev local port must be 8001"
 
 
 # ── 3. Error on missing token AND missing credentials ──────────────────────
@@ -115,7 +117,7 @@ def test_error_when_no_token_and_no_credentials() -> None:
     cli = _import_cli()
 
     with pytest.raises(SystemExit):
-        cli._get_token({}, base_url="http://127.0.0.1:8502")
+        cli._get_token({}, base_url="http://127.0.0.1:8000")
 
 
 def test_error_when_token_expired() -> None:
@@ -126,7 +128,7 @@ def test_error_when_token_expired() -> None:
     with pytest.raises(SystemExit):
         cli._get_token(
             {"service_admin_token": expired_token},
-            base_url="http://127.0.0.1:8502",
+            base_url="http://127.0.0.1:8000",
         )
 
 
@@ -144,13 +146,13 @@ def test_warning_on_near_expiry(capsys) -> None:
 
     with (
         patch.object(cli, "_call_api", side_effect=fake_call_api),
-        patch.object(cli, "_detect_api_base", return_value="http://127.0.0.1:8502"),
+        patch.object(cli, "_detect_api_base", return_value="http://127.0.0.1:8000"),
         patch.object(sys, "argv", ["persistence_mode.py", "status"]),
         patch.object(cli, "_warn", side_effect=lambda m: calls.append(m)),
     ):
         token = cli._get_token(
             {"service_admin_token": near_expiry_token},
-            base_url="http://127.0.0.1:8502",
+            base_url="http://127.0.0.1:8000",
         )
 
     assert any("expires" in m.lower() for m in calls), (
@@ -190,7 +192,7 @@ def test_login_fallback_posts_credentials() -> None:
     }
 
     with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-        token = cli._get_token(secrets, base_url="http://127.0.0.1:8502")
+        token = cli._get_token(secrets, base_url="http://127.0.0.1:8000")
 
     assert token == "jwt-from-login"
     assert len(login_calls) == 1
