@@ -81,13 +81,43 @@
     // registered ONCE on mount; the callback firing per tick does not
     // re-run an $effect body and doesn't touch reactive state, so it
     // cannot cascade scheduler work.
+    //
+    // STUCK-SPINNER ROOT CAUSE (Jun 2026 reaudit): the per-tick rotation
+    // animation (`rf-tick-rotate`, 0.25s finite) used to share the SAME
+    // <svg> element with the loading-state animation (`rf-spin`, 0.9s
+    // infinite). The `animation` CSS property is a shorthand — applying
+    // it a second time RESETS the first. Cascade order put the tick-rotate
+    // rule AFTER the rf-spin rule, so on every SSE tick during a refresh
+    // the spinner would briefly do a 180° rotate-then-freeze cycle and
+    // appear stuck. Fix here: SKIP the per-tick toggle entirely while
+    // `loading` is true. The spinner itself is the busy signal — the
+    // tick-pulse cosmetic is meaningless during a manual refresh. The CSS
+    // also gains a defensive `:not(.rf-spinning)` guard on the tick-rotate
+    // selector so even if the class somehow leaked through, the spin
+    // animation would still win.
     _pulseUnsub = symbolTickCount.subscribe(() => {
       if (_pulseTimer) return;
+      // Skip class toggle while spinner is active — see comment above.
+      if (loading) return;
       _pulseTimer = setTimeout(() => {
-        _tickPulseClass = _tickPulseClass === 'rf-tick-a' ? 'rf-tick-b' : 'rf-tick-a';
+        // Re-check at fire time — `loading` may have flipped true between
+        // subscribe and timer fire.
+        if (!loading) {
+          _tickPulseClass = _tickPulseClass === 'rf-tick-a' ? 'rf-tick-b' : 'rf-tick-a';
+        }
         _pulseTimer = null;
       }, 250);
     });
+  });
+
+  // Belt-and-suspenders: when `loading` flips true, immediately clear any
+  // residual tick-pulse class so the in-flight tick animation cannot
+  // override the spin animation via cascade. Tracks the prop transition
+  // and only writes when the value actually changes (no chain re-fires).
+  $effect(() => {
+    if (loading && _tickPulseClass !== '') {
+      _tickPulseClass = '';
+    }
   });
   onDestroy(() => {
     _mktTimer?.();   // visibleInterval teardown (stops the interval + removes listener)
@@ -372,8 +402,15 @@
     cursor: progress;
     opacity: 0.85;
   }
-  .rf-btn.rf-spinning svg {
-    animation: rf-spin 0.9s linear infinite;
+  /* Spinner — bumped to (0,3,1) specificity via the duplicated `.rf-btn`
+     selector so the loading-state animation ALWAYS wins over the
+     tick-pulse rotate below (which is (0,2,1)). Previously the tick-rotate
+     rule was defined later in this stylesheet with equal specificity,
+     so on every SSE tick during a manual refresh the spinner would
+     briefly do a 180° rotate-and-freeze cycle and read as "stuck"
+     mid-animation. Operator-reported root cause (reaudit Jun 2026). */
+  .rf-btn.rf-spinning.rf-spinning svg {
+    animation: rf-spin 0.9s linear infinite !important;
   }
   @keyframes rf-spin {
     from { transform: rotate(0deg); }
@@ -383,11 +420,15 @@
        1. Halo: sky-blue ring fades out over ~250ms (box-shadow)
        2. Rotation: icon rotates 180° smoothly each pulse so the button
           reads as "spinning" continuously during heavy SSE flow.
-     Toggling between rf-tick-a / rf-tick-b restarts both each pulse. */
+     Toggling between rf-tick-a / rf-tick-b restarts both each pulse.
+     The `:not(.rf-spinning)` guard ensures the rotate animation NEVER
+     touches the spinner SVG while the button is in loading state — see
+     rf-spin rule above for the full root-cause story. */
   .rf-btn.rf-tick-a, .rf-btn.rf-tick-b {
     animation: rf-tick-pulse 0.25s ease-out;
   }
-  .rf-btn.rf-tick-a svg, .rf-btn.rf-tick-b svg {
+  .rf-btn.rf-tick-a:not(.rf-spinning) svg,
+  .rf-btn.rf-tick-b:not(.rf-spinning) svg {
     animation: rf-tick-rotate 0.25s ease-in-out;
   }
   @keyframes rf-tick-pulse {

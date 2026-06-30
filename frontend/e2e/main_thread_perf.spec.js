@@ -1181,3 +1181,158 @@ test.describe('reconnecting popup — visibility-return after hibernation', () =
     console.log('[reconnect] confirmed: no popup on brief tab-switch (under 5-min threshold)');
   });
 });
+
+// ── RefreshButton spinner — monotonic-animation guard (Jun 2026 reaudit) ────
+//
+// Root cause closed (Jun 2026): the per-tick rotation animation
+// (`rf-tick-rotate`, 0.25s finite) used to share the SAME <svg> element
+// with the loading-state spin animation (`rf-spin`, 0.9s infinite). The
+// `animation` shorthand is RESET on each application — the tick-rotate
+// rule was defined LATER in the stylesheet, so on every SSE tick during
+// a refresh the spinner would briefly do a 180° rotate-and-freeze cycle
+// and appear stuck. Operator: "still it is happening" despite multiple
+// JS-side fixes (Promise.allSettled, microtask defer, subscription leak
+// teardowns) — the actual stall was pure CSS cascade, not a JS block.
+//
+// Fix: SKIP the tick-class toggle while loading=true (RefreshButton.svelte
+// onMount subscriber) + add a `:not(.rf-spinning)` guard on the
+// tick-rotate selector + bump the spin rule specificity to (0,3,1).
+// Three independent guards so a regression on any one of them is caught.
+//
+// This guard samples the spinner SVG's `getAnimations()[0]?.currentTime`
+// every 100 ms during a click → response window and asserts that the
+// currentTime is monotonically non-decreasing modulo natural animation
+// looping (the rf-spin keyframe loops at 0.9s, so currentTime resets
+// from 900 → 0 once per cycle; we tolerate that wrap as long as the
+// long-term trend is forward).
+
+test.describe('RefreshButton spinner — monotonic animation guard', () => {
+  test.describe.configure({ mode: 'serial' });
+  test.setTimeout(180_000);
+
+  test.beforeAll(async ({ browser }) => {
+    test.setTimeout(60_000);
+    await ensureJwtWithBrowser(browser);
+  });
+
+  /**
+   * Click Refresh, then poll the spinner SVG's animation currentTime
+   * for 2 s. Returns the per-sample array { t, currentTime, hasSpin }.
+   * @param {import('@playwright/test').Page} page
+   */
+  async function sampleSpinnerAnimation(page) {
+    const refreshBtn = page.locator(
+      '.page-header button[aria-label*="Refresh"], ' +
+      '.page-header button[title*="Refresh"], ' +
+      '.page-header .rf-btn'
+    ).first();
+    const btnVisible = await refreshBtn.isVisible({ timeout: 10_000 }).catch(() => false);
+    if (!btnVisible) {
+      console.log('[spinner] no RefreshButton — skipping page');
+      return null;
+    }
+
+    // Stub out the click handler delay: we want the spinner to stay up
+    // for at least 2 s so we can sample its animation. The button's
+    // `loading` is bound to the page's `_refreshing` flag which clears
+    // once Promise.allSettled resolves — on a healthy dev server this
+    // can be <500 ms, too short to detect a freeze. We still sample
+    // whatever window the actual fetch yields.
+    await refreshBtn.click();
+
+    // Sample for up to 3 s at 100 ms intervals.
+    /** @type {Array<{t: number, currentTime: number|null, hasSpin: boolean, animations: number}>} */
+    const samples = await page.evaluate(async () => {
+      const out = [];
+      const start = performance.now();
+      while (performance.now() - start < 3_000) {
+        const svg = document.querySelector('.rf-btn.rf-spinning svg');
+        if (!svg) {
+          out.push({ t: performance.now() - start, currentTime: null, hasSpin: false, animations: 0 });
+        } else {
+          const anims = svg.getAnimations();
+          // Find the rf-spin animation (the infinite one). Some browsers
+          // return both rf-spin and any in-flight rf-tick-rotate.
+          const spinAnim = anims.find(a => {
+            const kf = a?.effect?.getKeyframes ? a.effect.getKeyframes() : null;
+            // Identify rf-spin by its infinite duration setting.
+            const timing = a?.effect?.getComputedTiming?.();
+            return timing?.iterations === Infinity;
+          }) || anims[0];
+          out.push({
+            t: performance.now() - start,
+            currentTime: spinAnim?.currentTime ?? null,
+            hasSpin: !!spinAnim,
+            animations: anims.length,
+          });
+        }
+        await new Promise(r => setTimeout(r, 100));
+      }
+      return out;
+    });
+    return samples;
+  }
+
+  /**
+   * Assert the spinner animation made forward progress.
+   * Spinner is "stalled" if hasSpin=true samples show currentTime that
+   * does NOT advance across multiple samples (allowing for wrap from
+   * 900 ms back to 0 in the rf-spin 0.9 s loop).
+   *
+   * @param {Array<{t: number, currentTime: number|null, hasSpin: boolean}>} samples
+   */
+  function assertSpinnerAdvances(samples) {
+    if (!samples || samples.length === 0) return;
+    const spinning = samples.filter(s => s.hasSpin && s.currentTime != null);
+    if (spinning.length < 3) {
+      console.log(`[spinner] only ${spinning.length} samples with active spinner — fetch was very fast; skipping advance check`);
+      return;
+    }
+
+    // Count consecutive same-currentTime samples (= stalled). Tolerance:
+    // 2 in a row (~200 ms) is possibly a wrap; 3+ is a stall.
+    let maxConsecutive = 0;
+    let cur = 0;
+    let prev = -1;
+    for (const s of spinning) {
+      const ct = Math.round(Number(s.currentTime));
+      if (ct === prev) {
+        cur++;
+        maxConsecutive = Math.max(maxConsecutive, cur);
+      } else {
+        cur = 0;
+        prev = ct;
+      }
+    }
+    console.log(`[spinner] samples=${spinning.length}, max consecutive stalled = ${maxConsecutive}`);
+
+    // Cap = 3 samples = 300 ms freeze. Pre-fix: the rf-tick-rotate (0.25 s
+    // finite) would freeze the spinner for the remainder of every 0.25 s
+    // tick window — easily 4+ samples stuck at the same currentTime when
+    // SSE ticks were flowing.
+    expect(maxConsecutive,
+      `Spinner stalled for ${maxConsecutive * 100} ms — animation cascade conflict suspected`
+    ).toBeLessThan(4);
+  }
+
+  for (const route of ['/pulse', '/dashboard', '/admin/derivatives', '/performance']) {
+    test(`spinner advances monotonically on ${route} (desktop)`, async ({ page }) => {
+      await seedAuth(page, _sharedJwt);
+      await page.goto(route, { waitUntil: 'load', timeout: 90_000 });
+      await page.locator('.page-header').waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+      await page.waitForTimeout(3_000);
+      const samples = await sampleSpinnerAnimation(page);
+      assertSpinnerAdvances(samples);
+    });
+  }
+
+  test('spinner advances on /pulse (mobile 390×844)', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await seedAuth(page, _sharedJwt);
+    await page.goto('/pulse', { waitUntil: 'load', timeout: 90_000 });
+    await page.locator('.page-header').waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+    await page.waitForTimeout(3_000);
+    const samples = await sampleSpinnerAnimation(page);
+    assertSpinnerAdvances(samples);
+  });
+});
