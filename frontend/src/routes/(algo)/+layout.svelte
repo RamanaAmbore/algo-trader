@@ -27,6 +27,7 @@
   import { startBookChangedBus } from '$lib/data/bookChanged';
   import { startBookPollers, setBookPollerInterval } from '$lib/data/marketDataStores.svelte.js';
   import NavigationIndicator from '$lib/NavigationIndicator.svelte';
+  import BrokerHealthBadge from '$lib/BrokerHealthBadge.svelte';
 
   const { children } = $props();
 
@@ -902,6 +903,16 @@
           </button>
         {/if}
 
+        <!-- ── Broker auth health badge (slice AY) ─────────────────────
+             Shows worst auth/freshness state across all broker accounts.
+             Separate from the 5/5 count chip which tracks loaded count.
+             This badge tracks "did the last actual broker API call succeed?"
+             Polls every 30 s (visibleInterval, NOT market-gated).
+             Only shown to authenticated users (admin/designated path). -->
+        {#if $authStore.user && ($authStore.user.role === 'admin' || $authStore.user.role === 'designated')}
+          <BrokerHealthBadge />
+        {/if}
+
         <!-- ── Broker connectivity chip (slice AX) ────────────────────
              Ambient signal — green when every configured broker
              account is loaded, amber on partial, red when none. IBKR
@@ -1020,6 +1031,11 @@
             {/if}
             {#if modeError}<span class="mode-combo-error">{modeError}</span>{/if}
           </div>
+        {/if}
+
+        <!-- Broker auth health badge (mobile mirror of desktop block). -->
+        {#if $authStore.user && ($authStore.user.role === 'admin' || $authStore.user.role === 'designated')}
+          <BrokerHealthBadge />
         {/if}
 
         <!-- Broker connectivity chip (mobile mirror of the desktop block above). -->

@@ -9,6 +9,8 @@ Admin-only. No demo access.
 """
 
 import subprocess
+import time as _time
+from datetime import datetime, timezone
 from typing import Optional
 
 import msgspec
@@ -459,3 +461,151 @@ class PersistenceAdminController(Controller):
                 ),
             )
         return _InvalidateResponse(store=store, rows_deleted=n)
+
+
+# ---------------------------------------------------------------------------
+# Broker auth-health endpoint
+# ---------------------------------------------------------------------------
+
+_BROKER_HEALTH_FRESH_WINDOW_S: float = 300.0   # 5 min — "green" threshold
+
+
+class BrokerAccountHealth(msgspec.Struct):
+    """Per-account auth/freshness state for the navbar badge."""
+    account: str
+    broker: str                   # 'kite' | 'dhan' | 'groww' | 'unknown'
+    state: str                    # 'green' | 'amber' | 'red'
+    reason: str                   # human-readable, IST-stamped
+    last_good_at: Optional[str]   # ISO-8601 UTC, or None
+    last_check_at: Optional[str]  # ISO-8601 UTC, or None
+
+
+class BrokerHealthResponse(msgspec.Struct):
+    accounts: list[BrokerAccountHealth]
+
+
+def _broker_id_to_label(broker_id: str) -> str:
+    if not broker_id:
+        return "unknown"
+    b = broker_id.lower()
+    if "kite" in b or "zerodha" in b:
+        return "kite"
+    if "dhan" in b:
+        return "dhan"
+    if "groww" in b:
+        return "groww"
+    return b
+
+
+def _ts_to_iso(unix_ts: float | None) -> Optional[str]:
+    """Convert a unix timestamp to ISO-8601 UTC string, or None."""
+    if not unix_ts:
+        return None
+    return datetime.fromtimestamp(unix_ts, tz=timezone.utc).isoformat(timespec="seconds")
+
+
+def _ts_to_ist_label(unix_ts: float | None) -> str:
+    """Return a short IST HH:MM stamp for a unix timestamp, or empty string."""
+    if not unix_ts:
+        return ""
+    try:
+        from zoneinfo import ZoneInfo
+        dt = datetime.fromtimestamp(unix_ts, tz=ZoneInfo("Asia/Kolkata"))
+        return dt.strftime("%H:%M IST")
+    except Exception:
+        return ""
+
+
+def _derive_account_health(entry: dict, now: float) -> tuple[str, str]:
+    """Return ``(state, reason)`` for one _FETCH_HEALTH entry.
+
+    State rules:
+      green  — last_ok_at is present AND within the last 5 min
+      amber  — last_ok_at present but > 5 min ago (stale), OR never tried
+      red    — last_fail_at > last_ok_at (most-recent call failed)
+    """
+    last_ok   = entry.get("last_ok_at",   0.0) or 0.0
+    last_fail = entry.get("last_fail_at", 0.0) or 0.0
+    last_msg  = entry.get("last_fail_msg", "") or ""
+
+    if last_ok == 0.0 and last_fail == 0.0:
+        return "amber", "no fetch attempt recorded yet"
+
+    if last_fail > last_ok:
+        label = _ts_to_ist_label(last_fail)
+        reason = f"auth invalid since {label}" if label else "last fetch failed"
+        if last_msg:
+            short_msg = last_msg[:80]
+            reason = f"{reason} — {short_msg}"
+        return "red", reason
+
+    # last_ok >= last_fail — account is currently healthy
+    age = now - last_ok
+    if age <= _BROKER_HEALTH_FRESH_WINDOW_S:
+        label = _ts_to_ist_label(last_ok)
+        return "green", f"healthy, last good at {label}" if label else "healthy"
+    else:
+        label = _ts_to_ist_label(last_ok)
+        mins = int(age // 60)
+        return "amber", f"stale — last good {mins} min ago at {label}" if label else f"stale — {mins} min ago"
+
+
+class BrokerHealthController(Controller):
+    """GET /api/admin/broker-health — per-account auth/freshness badge data.
+
+    Derives state from ``_FETCH_HEALTH`` / ``fetch_health_snapshot()`` so the
+    same plumbing used by the existing navbar count-chip powers the new auth
+    badge.  No new tracking is introduced.
+
+    Poll this every 30 s (visibility-aware).  NOT market-gated — the operator
+    needs to know about auth breaks outside market hours too.
+    """
+    path = "/api/admin/broker-health"
+    guards = [admin_guard]
+
+    @get("")
+    async def get_broker_health(self) -> BrokerHealthResponse:
+        import asyncio as _asyncio
+        from backend.brokers.broker_apis import fetch_health_snapshot as _fhs
+
+        # fetch_health_snapshot() may hit conn_service over UDS (sync).
+        # Off-load to thread so the event loop stays free.
+        health_map: dict[str, dict] = await _asyncio.to_thread(_fhs)
+
+        now = _time.time()
+
+        # Build per-account entries.  Include every account present in
+        # health_map; fall back to BrokerAccount rows for broker label.
+        broker_label_map: dict[str, str] = {}
+        try:
+            async with async_session() as _sess:
+                rows = (await _sess.execute(
+                    select(BrokerAccount).order_by(BrokerAccount.account)
+                )).scalars().all()
+                for row in rows:
+                    broker_label_map[row.account] = _broker_id_to_label(
+                        row.broker_id or ""
+                    )
+        except Exception:
+            pass
+
+        accounts: list[BrokerAccountHealth] = []
+        for acct, entry in health_map.items():
+            state, reason = _derive_account_health(entry, now)
+            last_ok   = entry.get("last_ok_at",   0.0) or 0.0
+            last_fail = entry.get("last_fail_at", 0.0) or 0.0
+            last_check = max(last_ok, last_fail)
+            accounts.append(BrokerAccountHealth(
+                account=acct,
+                broker=broker_label_map.get(acct, "unknown"),
+                state=state,
+                reason=reason,
+                last_good_at=_ts_to_iso(last_ok if last_ok else None),
+                last_check_at=_ts_to_iso(last_check if last_check else None),
+            ))
+
+        # Stable sort: red → amber → green, then account name.
+        _order = {"red": 0, "amber": 1, "green": 2}
+        accounts.sort(key=lambda a: (_order.get(a.state, 9), a.account))
+
+        return BrokerHealthResponse(accounts=accounts)

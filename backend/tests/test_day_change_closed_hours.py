@@ -76,15 +76,19 @@ class TestSourceChecks:
         )
 
     def test_positions_route_snapshot_path_exists(self):
-        """positions.py defines _is_all_markets_closed and _positions_snapshot."""
+        """positions.py imports closed_hours_or_broker and defines _positions_snapshot."""
         src = _src(_POS_SRC)
-        assert "_is_all_markets_closed" in src
+        assert "closed_hours_or_broker" in src, (
+            "positions.py must import closed_hours_or_broker from snapshot_gate"
+        )
         assert "_positions_snapshot" in src
 
     def test_holdings_route_snapshot_path_exists(self):
-        """holdings.py defines _is_all_markets_closed and _holdings_snapshot."""
+        """holdings.py imports closed_hours_or_broker and defines _holdings_snapshot."""
         src = _src(_HOL_SRC)
-        assert "_is_all_markets_closed" in src
+        assert "closed_hours_or_broker" in src, (
+            "holdings.py must import closed_hours_or_broker from snapshot_gate"
+        )
         assert "_holdings_snapshot" in src
 
     def test_marketpulse_imports_is_market_open(self):
@@ -311,8 +315,8 @@ class TestClosedHoursRouteReturnsSnapshot:
         mock_broker_fetch = MagicMock()
 
         with patch(
-            "backend.api.routes.positions._is_all_markets_closed",
-            new=AsyncMock(return_value=True),
+            "backend.api.helpers.snapshot_gate._any_segment_open",
+            return_value=False,
         ), patch(
             "backend.api.routes.positions._positions_snapshot",
             new=AsyncMock(return_value=fake_snapshot),
@@ -380,8 +384,8 @@ class TestClosedHoursRouteReturnsSnapshot:
         mock_broker_fetch = MagicMock()
 
         with patch(
-            "backend.api.routes.holdings._is_all_markets_closed",
-            new=AsyncMock(return_value=True),
+            "backend.api.helpers.snapshot_gate._any_segment_open",
+            return_value=False,
         ), patch(
             "backend.api.routes.holdings._holdings_snapshot",
             new=AsyncMock(return_value=fake_snapshot),
@@ -412,8 +416,8 @@ class TestClosedHoursRouteReturnsSnapshot:
         live_resp = PositionsResponse(rows=[], summary=[], refreshed_at="live-open")
 
         with patch(
-            "backend.api.routes.positions._is_all_markets_closed",
-            new=AsyncMock(return_value=False),
+            "backend.api.helpers.snapshot_gate._any_segment_open",
+            return_value=True,
         ), patch(
             "backend.api.routes.positions.get_or_fetch",
             new=AsyncMock(return_value=live_resp),

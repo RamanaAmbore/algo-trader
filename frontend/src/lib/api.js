@@ -806,6 +806,11 @@ export async function fetchChartBatch(mode, symbols, since = null, limit = 600) 
 
 // ── Broker accounts (admin CRUD) ─────────────────────────────────────
 
+/** GET /api/admin/broker-health — per-account auth/freshness state for the
+ *  broker health badge in the navbar. Returns green/amber/red per account
+ *  derived from _FETCH_HEALTH / fetch_health_snapshot() tracking. */
+export const fetchBrokerHealth = () => _get('/admin/broker-health', { auth: true });
+
 /** GET /api/admin/brokers — list every broker account (no secrets). */
 export const fetchBrokerAccounts = () => _get('/admin/brokers', { auth: true });
 
