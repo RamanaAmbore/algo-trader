@@ -25,6 +25,7 @@
   import ShortcutCheatsheet from '$lib/ShortcutCheatsheet.svelte';
   import { bootstrapRBAC } from '$lib/rbac';
   import { startBookChangedBus } from '$lib/data/bookChanged';
+  import { startBookPollers, setBookPollerInterval } from '$lib/data/marketDataStores.svelte.js';
 
   const { children } = $props();
 
@@ -634,16 +635,34 @@
     startBookChangedBus();
     // Read polling.idle_timeout_min from /api/admin/settings so the
     // hibernation threshold matches the operator's configured value.
-    // Fire-and-forget — failure keeps the in-code default (5 min).
+    // Same fetch lifts `pulse.tick_interval_ms` to drive the cross-page
+    // book poller cadence — operator's stated end-state (2026-06-28):
+    //   "every page should poll when viewport active. only when viewport
+    //    is not active for 5 mins, go into hibernation."
+    // Fire-and-forget — failure keeps the in-code defaults (5 min idle,
+    // 5 s book cadence).
     (async () => {
       try {
         const rows = await fetchSettings();
         const all = Array.isArray(rows) ? rows : (rows?.settings || []);
-        const row = all.find?.(s => s?.key === 'polling.idle_timeout_min');
-        const v = Number(row?.value ?? row?.default_value);
-        if (Number.isFinite(v) && v >= 0) setHibernationIdleMinutes(v);
-      } catch { /* anon/demo — keep default 5 min */ }
+        const idleRow = all.find?.(s => s?.key === 'polling.idle_timeout_min');
+        const idleV = Number(idleRow?.value ?? idleRow?.default_value);
+        if (Number.isFinite(idleV) && idleV >= 0) setHibernationIdleMinutes(idleV);
+        const tickRow = all.find?.(s => s?.key === 'pulse.tick_interval_ms');
+        const tickV = Number(tickRow?.value ?? tickRow?.default_value);
+        if (Number.isFinite(tickV) && tickV >= 500 && tickV <= 60000) {
+          setBookPollerInterval(tickV);
+        }
+      } catch { /* anon/demo — keep defaults */ }
     })();
+    // Cross-page book poller (positions / holdings / funds). Layout-resident
+    // singleton — runs at `pulse.tick_interval_ms` cadence (default 5 s)
+    // regardless of which page is routed. Pages stay consumers (their
+    // existing `*.load()` on mount dedups via createDataStore's in-flight
+    // Promise); nav is instant because the stores are already hot.
+    // Hibernation gates fire for free via `marketAwareInterval` (throttle
+    // to 30 s after 5 min hidden, immediate refire on tab return).
+    startBookPollers();
     // Fire once, then schedule adaptive polls.
     pollSim();
     pollPaper();

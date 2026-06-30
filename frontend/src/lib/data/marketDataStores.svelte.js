@@ -37,6 +37,7 @@ import {
 import { mergeSymbolBatch } from './symbolStore.svelte.js';
 import { cachedDelete } from './persistentCache.js';
 import { browser } from '$app/environment';
+import { marketAwareInterval } from '$lib/stores';
 
 // One-time migration: drop the legacy `md.watchQuotes` localStorage
 // blob that BH4 stopped writing (the wrapper store was deleted in
@@ -468,3 +469,108 @@ export const sparklinesStore = createDataStore({
   /** @param {any} r */
   parse: (r) => r ?? {},
 });
+
+// ── Cross-page book poller (operator-approved final design 2026-06-28) ────
+//
+// Operator's stated end-state: "every page should poll when viewport active.
+// only when viewport is not active for 5 mins, go into hibernation."
+//
+// Before this slice each page that displayed positions / holdings / funds
+// (re-)mounted its own poll cycle. Switching from /pulse (5 s loadPulse) to
+// /dashboard (15 s loadHero) meant positions data went up to 15 s stale on
+// nav, and pages paid a mount-fetch latency on every visit.
+//
+// Now a SINGLE layout-resident poll cycle runs at the unified `pulse.tick_
+// interval_ms` cadence (default 5 s) regardless of which page is routed.
+// Pages stay as consumers: they read `positionsStore.value` /
+// `holdingsStore.value` / `fundsStore.value`, and the data is already hot
+// on first paint. Cross-page nav becomes instant.
+//
+// `marketAwareInterval` adds two gates for free:
+//   1. Market-hours gate — no broker call outside NSE/MCX session.
+//   2. Visibility hibernation — after `polling.idle_timeout_min` (default
+//      5 min) hidden, the inner `visibleInterval` switches to throttle
+//      mode (here 30 s) and on tab-return fires within ~200 ms (refire
+//      contract). Tab visible OR hidden < threshold → normal 5 s cadence.
+//
+// In-flight dedup inside createDataStore means a stray page-mounted
+// `.load()` call landing concurrently with this poller's tick shares one
+// HTTP round-trip — backwards-compatible with surfaces that still call
+// `positionsStore.load()` on mount for the kick-off fetch (PositionStrip,
+// dashboard loadHero, MarketPulse loadPulse — all dedupe transparently).
+//
+// `started` flag makes the call idempotent: the (algo) layout invokes
+// `startBookPollers()` in onMount; if another component also calls it,
+// the second call is a no-op.
+let _bookPollerStarted = false;
+/** @type {(() => void) | null} */
+let _bookPollerTeardown = null;
+
+/** Throttle (hidden / hibernation) cadence in ms. Critical book data —
+ *  keep a slow heartbeat alive across a long backgrounded window so the
+ *  operator returns to current numbers without a cold-start cycle. */
+const _BOOK_HIDDEN_MS = 30_000;
+
+/** Default foreground cadence (overridden by `pulse.tick_interval_ms`
+ *  setting on the layout's onMount). 5 s matches the prior MarketPulse
+ *  cadence so cross-page hotness preserves the previous "live feel". */
+let _bookForegroundMs = 5_000;
+
+async function _tickBookPollers() {
+  // Promise.allSettled so a single broker failure (e.g. /api/funds
+  // 502 mid-session) doesn't stall the next tick's positions refresh.
+  // The stores themselves keep last-good value on error — no UI flash.
+  try {
+    await Promise.allSettled([
+      positionsStore.load(),
+      holdingsStore.load(),
+      fundsStore.load(),
+    ]);
+  } catch (_) { /* defensive — allSettled should never throw, but guard */ }
+}
+
+/**
+ * Start the cross-page book poller. Idempotent — call from any layout/
+ * route. The (algo) layout owns the single invocation today; SSR / non-
+ * browser contexts are no-ops.
+ *
+ * @param {number} [intervalMs]  Foreground cadence (default 5 s). Use the
+ *   `pulse.tick_interval_ms` setting value to align with the prior
+ *   MarketPulse loop.
+ */
+export function startBookPollers(intervalMs) {
+  if (!browser || _bookPollerStarted) return;
+  _bookPollerStarted = true;
+  if (Number.isFinite(intervalMs) && /** @type {number} */ (intervalMs) > 0) {
+    _bookForegroundMs = /** @type {number} */ (intervalMs);
+  }
+  // Kick once immediately so the first paint after a cold load doesn't
+  // wait `intervalMs` for the initial fetch. createDataStore already
+  // dedups against any page-mounted `.load()` racing this on the same
+  // tick.
+  _tickBookPollers();
+  // marketAwareInterval handles both the market-hours gate AND the
+  // hibernation throttle (via the inner visibleInterval). hiddenMs=30s
+  // keeps a heartbeat alive after the 5-min hibernation threshold.
+  _bookPollerTeardown = marketAwareInterval(_tickBookPollers, _bookForegroundMs, _BOOK_HIDDEN_MS);
+}
+
+/** Update the foreground cadence at runtime. Used by the layout when the
+ *  `pulse.tick_interval_ms` setting changes — restarts the underlying
+ *  timer with the new cadence; idempotent on identical input. */
+export function setBookPollerInterval(intervalMs) {
+  if (!browser || !Number.isFinite(intervalMs) || /** @type {number} */ (intervalMs) <= 0) return;
+  if (intervalMs === _bookForegroundMs) return;
+  _bookForegroundMs = /** @type {number} */ (intervalMs);
+  if (_bookPollerStarted && _bookPollerTeardown) {
+    _bookPollerTeardown();
+    _bookPollerTeardown = marketAwareInterval(_tickBookPollers, _bookForegroundMs, _BOOK_HIDDEN_MS);
+  }
+}
+
+/** Teardown — exposed for tests + dev hot-reload. Production layout
+ *  doesn't unmount, so this is rarely called outside the test harness. */
+export function stopBookPollers() {
+  if (_bookPollerTeardown) { _bookPollerTeardown(); _bookPollerTeardown = null; }
+  _bookPollerStarted = false;
+}

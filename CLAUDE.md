@@ -218,6 +218,8 @@ In-memory Map + localStorage (key prefix `rbq.cache.`) for high-churn surfaces. 
 
 **Tick-flash primitive** — `createTickFlash({threshold, durationMs})` from `frontend/src/lib/data/tickFlash.svelte.js`. Canonical 350ms directional pulse (green up / red down) on numeric cell updates. Used by PositionStrip, NavCard, /admin/derivatives by-underlying snapshot.
 
+**Cross-page book poller** (operator-approved final design 2026-06-28) — `startBookPollers()` in `frontend/src/lib/data/marketDataStores.svelte.js`, invoked once from `(algo)/+layout.svelte`. Runs positions / holdings / funds at the unified `pulse.tick_interval_ms` cadence (default 5 s) regardless of which route is mounted. Pages stay as consumers — they read `positionsStore.value` / `holdingsStore.value` / `fundsStore.value`; their existing on-mount `.load()` calls dedup transparently via `createDataStore`'s in-flight Promise. Hibernation gates fire via the inner `marketAwareInterval` (throttle to 30 s after `polling.idle_timeout_min` minutes hidden, immediate refire on tab return; tab visible OR hidden < threshold → full cadence). Operator's stated end-state: "every page should poll when viewport active. only when viewport is not active for 5 mins, go into hibernation." Cross-page nav is instant — the stores are already hot before the next page mounts.
+
 ---
 
 ## Broker accounts (DB-backed CRUD)
