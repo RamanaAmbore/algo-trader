@@ -955,6 +955,12 @@ immediately (within one event-loop tick) before resuming its normal cadence.
 | Add MCP tool | `backend/mcp/kite_server.py` @app.tool() + update `/admin/research` TOOLS const |
 | Tune MCP audit | `/admin/settings` → `mcp.audit_retention_days` (default 90) |
 | Update macro data | `backend/config/backend_config.yaml` `macros:` block (preserved on deploy) |
+| Day P&L formula | `backend/api/algo/pnl_math.py` — `decomposed_intraday_pnl` + `naive_day_pnl`. Both polars (broker_apis) and pandas (positions route) call it. |
+| NAV breakdown (frontend) | `frontend/src/lib/data/nav.js` — `navByAccount` + `navTotalRow`. PerformancePage + NavBreakdown consume. Backend equivalent: `backend/api/algo/nav.py:compute_firm_nav`. |
+| LTP-override scaffold | `backend/api/helpers/ltp_patch.py` — `apply_ltp_patch(df, policy)` shared by positions + holdings routes. Each route passes its own `policy(current, tick_ltp) -> Decision`. |
+| Mask account in text | `backend/shared/helpers/utils.py:mask_account_in_text` — JSON-string scrubber for non-admin viewers. Routes every match through canonical `mask_account()`. |
+| Postback fan-out | `backend/api/routes/orders.py:_postback_broadcast_fanout` — cache-invalidate + WS-broadcast trio (orders/positions/holdings + order_update/position_filled/book_changed). Kite (inline) and Dhan/Groww (via `_process_broker_postback`) both delegate. |
+| Percentage formatters | `frontend/src/lib/format.js` — `fmtPctScaled(v, dp, signed)` for already-percent inputs; `fmtPctFraction(v, dp, signed)` for fractional inputs (e.g. 0.05). |
 
 ---
 
