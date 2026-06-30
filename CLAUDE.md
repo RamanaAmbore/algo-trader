@@ -325,6 +325,26 @@ Initialized once at startup. On `RAMBOQ_USE_CONN_SERVICE=1`: short-circuits loca
 broker logins; `rebuild_from_db()` queries broker_accounts DB but populates only
 the registry with `RemoteBroker` stubs that proxy over UDS to conn_service.
 
+**Closed-hours route gate** (`backend/api/helpers/snapshot_gate.py`):
+`closed_hours_or_broker(exchange, snapshot_fn, broker_fn, *, fallback_to_snapshot_on_broker_error=True) -> tuple[T, str]`
+is the **canonical gate** for all data routes that need a market-closed snapshot fallback.
+Primary invariant: `broker_fn` is NEVER called when the market is closed.
+Source tags returned: `'live'` (market open, broker succeeded), `'snapshot'` (market closed),
+`'snapshot-fallback'` (market open but broker raised, fallback enabled).
+Every new data route (positions, holdings, and any future live-data route) MUST use this
+helper — no inline `is_market_open` checks inside route handlers. Existing routes that
+are exempt (quote.py per-exchange batch, options.py intraday sub-call) have distinct
+semantics documented in the source.
+`_any_segment_open()` (the inner sync predicate) is what tests patch to control the
+market-state path in unit tests.
+
+**Broker auth health badge** (`frontend/src/lib/BrokerHealthBadge.svelte`):
+Admin/designated-only badge in the navbar. Polls `GET /api/admin/broker-health` every 30s
+via `visibleInterval`. State: `green` (last_good < 5 min ago), `amber` (stale or never tried),
+`red` (last_fail > last_ok). Worst state across all accounts drives the badge colour.
+Click opens a per-account modal. The existing broker-count chip (connStatus) is a separate
+signal (loaded/total count) and is unchanged.
+
 ---
 
 ## Broker isolation (slices 1–4)
