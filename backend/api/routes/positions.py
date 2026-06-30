@@ -100,17 +100,31 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
 
         # close_price not stored separately; use avg_cost as a proxy so the
         # row is well-formed (the snapshot's pnl figures are authoritative).
+        qty_i = int(qty) if qty is not None else 0
+        # pnl_percentage: pnl / |avg × qty| × 100
+        inv_val = abs(avg_cost_f * qty_i)
+        pnl_pct = (total_pnl_f / inv_val * 100.0) if inv_val else 0.0
+        # day_change_percentage: day_change_val / |close × qty| × 100
+        # EOD LTP is the closest proxy for prior-session close in the snapshot.
+        # Fall back to |avg × qty| when ltp is zero (opened-today rows).
+        close_notional = abs(ltp_f * qty_i)
+        day_pct = (day_pnl_f / close_notional * 100.0) if close_notional else (
+            day_pnl_f / inv_val * 100.0 if inv_val else 0.0
+        )
         row = PositionRow(
             account=str(account),
             tradingsymbol=str(symbol),
             exchange=str(exchange or ""),
             product="NRML",
-            quantity=int(qty) if qty is not None else 0,
+            quantity=qty_i,
             average_price=avg_cost_f,
             close_price=ltp_f,  # EOD LTP serves as prior-session close
             last_price=ltp_f,
             pnl=total_pnl_f,
+            pnl_percentage=pnl_pct,
             day_change_val=day_pnl_f,
+            day_change_percentage=day_pct,
+            last_price_stale=True,
         )
         rows.append(row)
 

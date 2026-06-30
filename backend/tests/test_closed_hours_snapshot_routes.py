@@ -718,3 +718,126 @@ async def test_positions_fresh_bypasses_closed_hours_guard():
         "snapshot helper must not be called when fresh=True"
     )
     assert resp.refreshed_at == "fresh-live"
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5 — P0 regression: _holdings_snapshot pnl_percentage field
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_holdings_snapshot_pnl_percentage_populated():
+    """_holdings_snapshot() must construct HoldingRow with pnl_percentage set
+    (non-None, non-zero for rows with positive P&L).  Previously this field was
+    omitted → msgspec raised 'Missing required argument pnl_percentage' → 500.
+
+    This test calls the real _holdings_snapshot() with a mocked DB session so
+    the struct-construction code path executes in full — not a mock snapshot.
+    """
+    from datetime import datetime, timezone, timedelta
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    # A fake DB row that represents a holdings snapshot:
+    #   account, symbol, exchange, qty, avg_cost, ltp,
+    #   day_pnl, total_pnl, captured_at
+    captured_ts = datetime.now(timezone.utc) - timedelta(hours=2)
+
+    fake_row = (
+        "ZG0790",   # account
+        "RELIANCE",  # symbol
+        "NSE",       # exchange
+        10,          # qty
+        2800.0,      # avg_cost
+        2900.0,      # ltp (snapshot LTP)
+        100.0,       # day_pnl
+        1000.0,      # total_pnl
+        captured_ts, # captured_at
+    )
+
+    mock_result = MagicMock()
+    mock_result.all.return_value = [fake_row]
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__  = AsyncMock(return_value=False)
+    mock_session.execute    = AsyncMock(return_value=mock_result)
+
+    with patch("backend.api.database.async_session",
+               return_value=mock_session):
+        from backend.api.routes.holdings import _holdings_snapshot
+        resp = await _holdings_snapshot()
+
+    assert resp is not None, "_holdings_snapshot must return a HoldingsResponse when rows exist"
+    assert len(resp.rows) == 1
+    row = resp.rows[0]
+
+    # P0 regression guard — construction must not raise:
+    assert row.pnl_percentage is not None, "pnl_percentage must be set (was missing → 500)"
+    # Numeric sanity: pnl=1000, inv_val=2800*10=28000 → ~3.57 %
+    assert abs(row.pnl_percentage - (1000.0 / 28000.0 * 100.0)) < 0.01, (
+        f"pnl_percentage expected {1000.0/28000.0*100:.4f}, got {row.pnl_percentage}"
+    )
+    # day_change_percentage: day_pnl=100, close_notional=2900*10=29000 → ~0.345 %
+    assert row.day_change_percentage is not None
+    assert abs(row.day_change_percentage - (100.0 / 29000.0 * 100.0)) < 0.01, (
+        f"day_change_percentage expected {100.0/29000.0*100:.4f}, got {row.day_change_percentage}"
+    )
+    # last_price_stale must be True for a snapshot (it's not live broker data)
+    assert row.last_price_stale is True, "snapshot rows must have last_price_stale=True"
+
+
+@pytest.mark.asyncio
+async def test_positions_snapshot_pnl_percentage_populated():
+    """_positions_snapshot() must construct PositionRow with pnl_percentage and
+    day_change_percentage computed from stored values — not left at the 0.0
+    default (which silently hides P&L information from closed-hours callers).
+    """
+    from datetime import datetime, timezone, timedelta
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    captured_ts = datetime.now(timezone.utc) - timedelta(hours=2)
+
+    # account, symbol, exchange, qty, avg_cost, ltp,
+    # day_pnl, total_pnl, payload_json, captured_at
+    fake_row = (
+        "ZG0790",     # account
+        "NIFTY25JUNFUT",  # symbol
+        "NFO",         # exchange
+        50,            # qty
+        23000.0,       # avg_cost
+        23200.0,       # ltp
+        200.0,         # day_pnl
+        10000.0,       # total_pnl
+        "{}",          # payload_json
+        captured_ts,   # captured_at
+    )
+
+    mock_result = MagicMock()
+    mock_result.all.return_value = [fake_row]
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__  = AsyncMock(return_value=False)
+    mock_session.execute    = AsyncMock(return_value=mock_result)
+
+    with patch("backend.api.database.async_session",
+               return_value=mock_session):
+        from backend.api.routes.positions import _positions_snapshot
+        resp = await _positions_snapshot()
+
+    assert resp is not None
+    assert len(resp.rows) == 1
+    row = resp.rows[0]
+
+    # pnl_percentage: pnl=10000, inv_val=|23000*50|=1150000 → ~0.87 %
+    inv_val = abs(23000.0 * 50)
+    expected_pnl_pct = 10000.0 / inv_val * 100.0
+    assert abs(row.pnl_percentage - expected_pnl_pct) < 0.01, (
+        f"pnl_percentage expected {expected_pnl_pct:.4f}, got {row.pnl_percentage}"
+    )
+    # day_change_percentage: day_pnl=200, close_notional=|23200*50|=1160000 → ~0.017 %
+    close_notional = abs(23200.0 * 50)
+    expected_day_pct = 200.0 / close_notional * 100.0
+    assert abs(row.day_change_percentage - expected_day_pct) < 0.01, (
+        f"day_change_percentage expected {expected_day_pct:.4f}, got {row.day_change_percentage}"
+    )
+    assert row.last_price_stale is True, "snapshot rows must have last_price_stale=True"

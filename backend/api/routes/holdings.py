@@ -87,6 +87,16 @@ async def _holdings_snapshot() -> Optional[HoldingsResponse]:
         inv_val     = avg_cost_f * qty_i
         cur_val     = ltp_f      * qty_i
 
+        # pnl_percentage: pnl / |avg × qty| × 100
+        # (inv_val = avg_cost_f × qty_i, so use that directly)
+        pnl_pct = (total_pnl_f / inv_val * 100.0) if inv_val else 0.0
+        # day_change_percentage: day_change_val / |close × qty| × 100
+        # close_price for a holdings snapshot is the last stored LTP.
+        # Use |avg × qty| (inv_val) as the fallback when ltp is zero.
+        close_notional = abs(ltp_f * qty_i)
+        day_pct = (day_pnl_f / close_notional * 100.0) if close_notional else (
+            day_pnl_f / inv_val * 100.0 if inv_val else 0.0
+        )
         row = HoldingRow(
             account=str(account),
             tradingsymbol=str(symbol),
@@ -99,7 +109,10 @@ async def _holdings_snapshot() -> Optional[HoldingsResponse]:
             inv_val=inv_val,
             cur_val=cur_val,
             pnl=total_pnl_f,
+            pnl_percentage=pnl_pct,
             day_change_val=day_pnl_f,
+            day_change_percentage=day_pct,
+            last_price_stale=True,
         )
         rows.append(row)
 

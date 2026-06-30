@@ -81,11 +81,20 @@
                   4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>`,
   };
 
+  // bg values are layered ON TOP of the solid `.rbq-toast` background
+  // via `background-image` (a pseudo-gradient overlay) rather than
+  // replacing the base — avoids the transparent-card bug where the 10%
+  // tint clobbered the opaque base and let page content show through.
+  // Each entry carries a separate `tint` (low-opacity colour overlay)
+  // that is applied as a CSS custom property so the base `background`
+  // in the stylesheet stays solid. The inline `style` only sets the
+  // border-left colour + the tint variable; the base background remains
+  // `rgba(29,42,68,0.97)` from the stylesheet.
   const COLORS = {
-    success: { border: '#4ade80', bg: 'rgba(74,222,128,0.10)',  icon: '#4ade80' },
-    error:   { border: '#f87171', bg: 'rgba(248,113,113,0.12)', icon: '#f87171' },
-    info:    { border: '#7dd3fc', bg: 'rgba(56,189,248,0.10)',  icon: '#7dd3fc' },
-    warning: { border: '#fbbf24', bg: 'rgba(251,191,36,0.10)',  icon: '#fbbf24' },
+    success: { border: '#4ade80', tint: 'rgba(74,222,128,0.08)',  icon: '#4ade80' },
+    error:   { border: '#f87171', tint: 'rgba(248,113,113,0.10)', icon: '#f87171' },
+    info:    { border: '#7dd3fc', tint: 'rgba(56,189,248,0.07)',  icon: '#7dd3fc' },
+    warning: { border: '#fbbf24', tint: 'rgba(251,191,36,0.08)',  icon: '#fbbf24' },
   };
 
   const c = $derived(COLORS[item.kind] || COLORS.info);
@@ -99,7 +108,7 @@
 <div
   class="rbq-toast"
   class:rbq-toast-dismissing={_dismissing}
-  style="border-left-color: {c.border}; background: {c.bg};"
+  style="border-left-color: {c.border}; --toast-tint: {c.tint};"
   role={_ariaRole}
   aria-live={item.kind === 'error' ? 'assertive' : 'polite'}
   aria-atomic="true"
@@ -144,8 +153,13 @@
     border-radius: 4px;
     border: 1px solid rgba(255,255,255,0.09);
     border-left-width: 4px;
-    background: rgba(29,42,68,0.97);
-    box-shadow: 0 6px 20px rgba(0,0,0,0.50);
+    /* Solid opaque base — the per-kind colour tint is layered ON TOP via
+       background-image so the base never becomes transparent (old bug:
+       inline style="background: rgba(...,0.10)" overwrote this rule and
+       let page content show through the nearly-transparent card). */
+    background-color: rgba(29,42,68,0.98);
+    background-image: linear-gradient(var(--toast-tint, transparent), var(--toast-tint, transparent));
+    box-shadow: 0 6px 24px rgba(0,0,0,0.60);
     animation: rbq-toast-in 0.20s ease-out both;
   }
 
