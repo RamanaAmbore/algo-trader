@@ -234,8 +234,13 @@
   $effect(() => {
     if (_canView && !_loadedOnce) {
       _loadedOnce = true;
+      // PRIMARY — the settings list. Operator needs the cards to paint.
       load();
-      _loadPinnedSymbols();
+      // SECONDARY — pinned-watchlist symbols only populate the
+      // orders.default_symbol dropdown (one row, often below the fold).
+      // Defer one event-loop tick so the settings cards paint first;
+      // the dropdown swaps from free-text → Select once symbols land.
+      setTimeout(() => { _loadPinnedSymbols(); }, 0);
     }
   });
 </script>
