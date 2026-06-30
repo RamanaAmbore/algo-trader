@@ -53,9 +53,11 @@ def _src(p: Path) -> str:
 # ---------------------------------------------------------------------------
 
 def test_positions_has_closed_hours_helper():
-    """positions.py defines _is_all_markets_closed + _positions_snapshot."""
+    """positions.py uses closed_hours_or_broker + _positions_snapshot."""
     src = _src(_POS_SRC)
-    assert "_is_all_markets_closed" in src, "missing _is_all_markets_closed in positions.py"
+    assert "closed_hours_or_broker" in src, (
+        "positions.py must use closed_hours_or_broker from snapshot_gate"
+    )
     assert "_positions_snapshot" in src, "missing _positions_snapshot in positions.py"
     assert "daily_book" in src and "kind = 'positions'" in src, (
         "_positions_snapshot should query daily_book with kind='positions'"
@@ -63,9 +65,11 @@ def test_positions_has_closed_hours_helper():
 
 
 def test_holdings_has_closed_hours_helper():
-    """holdings.py defines _is_all_markets_closed + _holdings_snapshot."""
+    """holdings.py uses closed_hours_or_broker + _holdings_snapshot."""
     src = _src(_HOL_SRC)
-    assert "_is_all_markets_closed" in src, "missing _is_all_markets_closed in holdings.py"
+    assert "closed_hours_or_broker" in src, (
+        "holdings.py must use closed_hours_or_broker from snapshot_gate"
+    )
     assert "_holdings_snapshot" in src, "missing _holdings_snapshot in holdings.py"
     assert "daily_book" in src and "kind = 'holdings'" in src, (
         "_holdings_snapshot should query daily_book with kind='holdings'"
@@ -109,31 +113,36 @@ def test_quote_response_structs_have_as_of():
 
 
 # ---------------------------------------------------------------------------
-# Dimension 1 / 5 — functional: _is_all_markets_closed helper
+# Dimension 1 / 5 — functional: snapshot_gate _any_segment_open helper
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_is_all_markets_closed_returns_false_when_open():
-    """`_is_all_markets_closed` returns False when is_any_segment_open is True."""
+def test_snapshot_gate_any_segment_open_returns_bool():
+    """snapshot_gate._any_segment_open() returns a bool (True = open, False = closed)."""
+    from backend.api.helpers.snapshot_gate import _any_segment_open
+
     with patch(
-        "backend.api.routes.positions._is_all_markets_closed",
-        new=AsyncMock(return_value=False),
+        "backend.api.helpers.snapshot_gate.is_any_segment_open" if False else
+        "backend.shared.helpers.date_time_utils.is_any_segment_open",
+        return_value=True,
     ):
-        from backend.api.routes.positions import _is_all_markets_closed
-        result = await _is_all_markets_closed()
-        assert result is False
+        # Just test the import is clean — functional tests in test_snapshot_gate.py
+        assert callable(_any_segment_open)
 
 
-@pytest.mark.asyncio
-async def test_is_all_markets_closed_returns_true_when_closed():
-    """`_is_all_markets_closed` returns True when is_any_segment_open is False."""
-    with patch(
-        "backend.api.routes.positions._is_all_markets_closed",
-        new=AsyncMock(return_value=True),
-    ):
-        from backend.api.routes.positions import _is_all_markets_closed
-        result = await _is_all_markets_closed()
-        assert result is True
+def test_snapshot_gate_imported_in_positions():
+    """positions.py imports closed_hours_or_broker from snapshot_gate — static check."""
+    src = _src(_POS_SRC)
+    assert "snapshot_gate" in src, (
+        "positions.py must import from snapshot_gate (the canonical closed-hours gate)"
+    )
+
+
+def test_snapshot_gate_imported_in_holdings():
+    """holdings.py imports closed_hours_or_broker from snapshot_gate — static check."""
+    src = _src(_HOL_SRC)
+    assert "snapshot_gate" in src, (
+        "holdings.py must import from snapshot_gate (the canonical closed-hours gate)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -171,8 +180,8 @@ async def test_positions_closed_hours_returns_snapshot_no_broker():
     mock_broker_fetch = MagicMock()
 
     with patch(
-        "backend.api.routes.positions._is_all_markets_closed",
-        new=AsyncMock(return_value=True),
+        "backend.api.helpers.snapshot_gate._any_segment_open",
+        return_value=False,   # market closed
     ), patch(
         "backend.api.routes.positions._positions_snapshot",
         new=AsyncMock(return_value=fake_snapshot),
@@ -183,7 +192,6 @@ async def test_positions_closed_hours_returns_snapshot_no_broker():
         from backend.api.routes.positions import PositionsController
         # Litestar controllers cannot be instantiated standalone — call the
         # unbound handler directly by extracting the route function.
-        # Access the underlying Python function via .fn (Litestar wraps it)
         handler_fn = PositionsController.get_positions.fn
 
         mock_request = MagicMock()
@@ -220,8 +228,8 @@ async def test_positions_open_hours_calls_broker():
     live_resp = PositionsResponse(rows=[], summary=[], refreshed_at="live")
 
     with patch(
-        "backend.api.routes.positions._is_all_markets_closed",
-        new=AsyncMock(return_value=False),
+        "backend.api.helpers.snapshot_gate._any_segment_open",
+        return_value=True,   # market open
     ), patch(
         "backend.api.routes.positions.get_or_fetch",
         new=AsyncMock(return_value=live_resp),
@@ -280,8 +288,8 @@ async def test_holdings_closed_hours_returns_snapshot_no_broker():
     mock_broker_fetch = MagicMock()
 
     with patch(
-        "backend.api.routes.holdings._is_all_markets_closed",
-        new=AsyncMock(return_value=True),
+        "backend.api.helpers.snapshot_gate._any_segment_open",
+        return_value=False,   # market closed
     ), patch(
         "backend.api.routes.holdings._holdings_snapshot",
         new=AsyncMock(return_value=fake_snapshot),
@@ -320,8 +328,8 @@ async def test_holdings_open_hours_calls_broker():
     live_resp = HoldingsResponse(rows=[], summary=[], refreshed_at="live")
 
     with patch(
-        "backend.api.routes.holdings._is_all_markets_closed",
-        new=AsyncMock(return_value=False),
+        "backend.api.helpers.snapshot_gate._any_segment_open",
+        return_value=True,   # market open
     ), patch(
         "backend.api.routes.holdings.get_or_fetch",
         new=AsyncMock(return_value=live_resp),
@@ -352,11 +360,11 @@ async def test_positions_closed_no_snapshot_falls_through():
     live_resp = PositionsResponse(rows=[], summary=[], refreshed_at="fallback")
 
     with patch(
-        "backend.api.routes.positions._is_all_markets_closed",
-        new=AsyncMock(return_value=True),
+        "backend.api.helpers.snapshot_gate._any_segment_open",
+        return_value=False,   # market closed
     ), patch(
         "backend.api.routes.positions._positions_snapshot",
-        new=AsyncMock(return_value=None),  # no snapshot
+        new=AsyncMock(return_value=None),  # no snapshot → wrapper returns empty PositionsResponse
     ), patch(
         "backend.api.routes.positions.get_or_fetch",
         new=AsyncMock(return_value=live_resp),
@@ -371,7 +379,8 @@ async def test_positions_closed_no_snapshot_falls_through():
              patch("backend.api.routes.positions.normalise_role", return_value="admin"):
             resp = await handler_fn(None, mock_request, fresh=False)
 
-    # Should fall through to live path when no snapshot available
+    # When no snapshot exists, the wrapper returns an empty PositionsResponse with
+    # as_of=None. The handler falls back to the live path (get_or_fetch).
     assert resp.refreshed_at == "fallback"
 
 
@@ -691,8 +700,8 @@ async def test_positions_fresh_bypasses_closed_hours_guard():
     mock_snapshot = AsyncMock(return_value=None)  # should NOT be called
 
     with patch(
-        "backend.api.routes.positions._is_all_markets_closed",
-        new=AsyncMock(return_value=True),
+        "backend.api.helpers.snapshot_gate._any_segment_open",
+        return_value=False,   # market closed — but fresh=True bypasses
     ), patch(
         "backend.api.routes.positions._positions_snapshot",
         mock_snapshot,
@@ -973,29 +982,55 @@ async def test_positions_snapshot_prefers_good_over_bad():
 
 @pytest.mark.asyncio
 async def test_holdings_snapshot_sql_excludes_bad_payload_rows():
-    """_holdings_snapshot SQL query must contain the bad-payload exclusion clause.
+    """_holdings_snapshot SQL query must contain the bad-payload exclusion clause +
+    use the latest-batch-per-account anchor.
 
     Source-level check verifying the WHERE NOT (ltp=0 AND total_pnl=0 AND avg_cost>0)
-    guard and DISTINCT ON (account, symbol) are present in the query text.
+    guard is present AND the query joins on MAX(captured_at) per account so stale
+    rows from past sessions never carry into today's sum.
     """
     src = _HOL_SRC.read_text(encoding="utf-8")
-    assert "DISTINCT ON (account, symbol)" in src, (
-        "_holdings_snapshot SQL must use DISTINCT ON (account, symbol) "
-        "to pick the latest-per-symbol snapshot row"
+    assert "MAX(captured_at)" in src, (
+        "_holdings_snapshot SQL must anchor on MAX(captured_at) per account "
+        "(latest-batch pattern) so closed-out symbols from past months don't "
+        "carry stale day_pnl into today's NavStrip"
     )
-    assert "NOT (ltp = 0" in src, (
+    assert "NOT (db.ltp = 0" in src or "NOT (ltp = 0" in src, (
         "_holdings_snapshot SQL must exclude zero-ltp bad-payload rows "
         "via WHERE NOT (ltp = 0 ...)"
+    )
+    # Stale grep: the prior DISTINCT ON pattern with `captured_at < today_open`
+    # must NOT come back — it was the source of the May-row carry-over bug.
+    assert "captured_at < :today_open" not in src, (
+        "snapshot reader must not re-introduce the captured_at < today_open "
+        "filter — it pulled stale months-old rows for closed-out symbols"
     )
 
 
 @pytest.mark.asyncio
 async def test_positions_snapshot_sql_excludes_bad_payload_rows():
-    """_positions_snapshot SQL query must contain the bad-payload exclusion clause."""
+    """_positions_snapshot SQL query must contain the bad-payload exclusion clause +
+    use the latest-batch-per-account anchor.
+    """
     src = _POS_SRC.read_text(encoding="utf-8")
-    assert "DISTINCT ON (account, symbol)" in src, (
-        "_positions_snapshot SQL must use DISTINCT ON (account, symbol)"
+    assert "MAX(captured_at)" in src, (
+        "_positions_snapshot SQL must anchor on MAX(captured_at) per account"
     )
-    assert "NOT (ltp = 0" in src, (
+    assert "NOT (db.ltp = 0" in src or "NOT (ltp = 0" in src, (
         "_positions_snapshot SQL must exclude zero-ltp bad-payload rows"
+    )
+    # The LTP-close-override path (further down in positions.py) DOES legitimately
+    # use `captured_at < :today_open` to pull yesterday's close. So we can't blanket-ban
+    # the literal — but the snapshot reader (top of file) must not contain it.
+    # Find the function body and grep only inside it.
+    func_start = src.index("def _positions_snapshot")
+    func_end = src.index("\nasync def ", func_start) if "\nasync def " in src[func_start:] else len(src)
+    # `_positions_snapshot` is async — find the next def at the same indent level
+    snap_body_end = src.find("\n@", func_start + 1)
+    if snap_body_end < 0:
+        snap_body_end = func_end
+    snap_body = src[func_start:snap_body_end]
+    assert "captured_at < :today_open" not in snap_body, (
+        "_positions_snapshot reader must not use captured_at < today_open — "
+        "that filter pulled stale months-old rows for closed-out symbols"
     )

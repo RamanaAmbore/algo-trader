@@ -14,6 +14,7 @@ from backend.api.rbac import (
 from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl, recompute_row_percentages
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.helpers.ltp_patch import apply_ltp_patch, positions_policy
+from backend.api.helpers.snapshot_gate import closed_hours_or_broker
 from backend.api.schemas import PositionsResponse, PositionRow, PositionsSummaryRow
 from backend.brokers import broker_apis
 from backend.shared.helpers.date_time_utils import timestamp_display
@@ -26,20 +27,6 @@ logger = get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Closed-hours snapshot helpers
 # ---------------------------------------------------------------------------
-
-async def _is_all_markets_closed() -> bool:
-    """Return True when every configured market segment is currently closed.
-
-    Used as the fast-path guard at the top of the route: if the market is
-    not open for any exchange, we serve the persisted daily_book snapshot
-    instead of hitting the broker.
-    """
-    try:
-        from backend.shared.helpers.date_time_utils import is_any_segment_open, timestamp_indian
-        return not is_any_segment_open(timestamp_indian())
-    except Exception:
-        return False  # fail-open: assume market is open so live path runs
-
 
 async def _positions_snapshot() -> Optional[PositionsResponse]:
     """Read the most-recent pre-today daily_book[kind='positions'] snapshot
@@ -54,32 +41,35 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
     """
     from backend.api.database import async_session
     from sqlalchemy import text as _sql_text
-    from backend.shared.helpers.date_time_utils import timestamp_indian
 
-    today_ist_midnight = timestamp_indian().replace(
-        hour=0, minute=0, second=0, microsecond=0,
-    )
     try:
         async with async_session() as session:
-            # DISTINCT ON (account, symbol) picks the latest captured_at for
-            # each (account, symbol) pair. Excludes bad/zeroed payload rows
-            # (ltp=0 AND total_pnl=0 with a real avg_cost) — the fingerprint
-            # of an invalid-token outage. Returns the most-recent *good*
-            # snapshot row per symbol so NavStrip P delta is never silenced
-            # by a corrupted capture.
+            # Latest snapshot BATCH per account — pull every (account, symbol)
+            # row written in the most-recent captured_at for that account.
+            # Previous `DISTINCT ON (account, symbol) ORDER BY captured_at DESC`
+            # carried over months-old rows for symbols closed long ago (e.g.
+            # May CRUDEOIL positions resurfacing in today's NavStrip sum).
+            # Batch-anchoring guarantees we only surface the broker's CURRENT
+            # book. Zero-payload guard still applies inside the batch.
             result = await session.execute(_sql_text("""
-                SELECT DISTINCT ON (account, symbol)
-                       account, symbol, exchange, qty, avg_cost, ltp,
-                       day_pnl, total_pnl, payload_json, captured_at
-                FROM daily_book
-                WHERE kind = 'positions'
-                  AND ltp IS NOT NULL
-                  AND captured_at < :today_open
-                  AND NOT (ltp = 0 AND (total_pnl = 0 OR total_pnl IS NULL)
-                           AND avg_cost IS NOT NULL AND avg_cost > 0)
-                ORDER BY account, symbol, captured_at DESC
-                LIMIT 5000
-            """), {"today_open": today_ist_midnight})
+                WITH latest_batch AS (
+                    SELECT account, MAX(captured_at) AS max_at
+                    FROM daily_book
+                    WHERE kind = 'positions' AND ltp IS NOT NULL
+                    GROUP BY account
+                )
+                SELECT db.account, db.symbol, db.exchange, db.qty, db.avg_cost,
+                       db.ltp, db.day_pnl, db.total_pnl, db.payload_json,
+                       db.captured_at
+                FROM daily_book db
+                JOIN latest_batch lb
+                  ON db.account = lb.account AND db.captured_at = lb.max_at
+                WHERE db.kind = 'positions'
+                  AND db.ltp IS NOT NULL
+                  AND NOT (db.ltp = 0 AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
+                           AND db.avg_cost IS NOT NULL AND db.avg_cost > 0)
+                ORDER BY db.account, db.symbol
+            """))
             raw_rows = result.all()
     except Exception as exc:
         logger.warning(f"positions snapshot query failed: {exc}")
@@ -611,30 +601,58 @@ class PositionsController(Controller):
     @get("/")
     async def get_positions(self, request: Request, fresh: bool = False) -> PositionsResponse:
         try:
-            # ── Closed-hours fast-path ──────────────────────────────────────
-            # When every configured market segment is closed, serve the most
-            # recent daily_book[kind='positions'] snapshot instead of hitting
-            # the broker.  This prevents spurious broker calls when the
-            # frontend polls during overnight / weekend hours.  The `as_of`
-            # field in the response lets the frontend show a staleness hint.
-            # `?fresh=1` bypasses this guard so the operator can still force
-            # a live fetch (e.g. after an AMO fill).
-            if not fresh and await _is_all_markets_closed():
+            # ── Closed-hours gate via canonical helper ──────────────────────
+            # closed_hours_or_broker is the single gate for "should I call the
+            # broker or serve the daily_book snapshot?".  `?fresh=1` bypasses
+            # the gate so the operator can force a live fetch (e.g. after an
+            # AMO fill).
+            #
+            # _positions_snapshot() returns None when no DB row exists yet
+            # (first-ever deploy). The snapshot_fn wrapper converts that to
+            # an empty PositionsResponse so the helper can always return T.
+            # The route then checks `as_of` to distinguish "real snapshot" from
+            # "no snapshot exists" and falls through to the live path in the
+            # latter case.
+
+            async def _snapshot_fn() -> PositionsResponse:
                 snap = await _positions_snapshot()
-                if snap is not None:
-                    logger.info("positions: market closed — serving daily_book snapshot")
-                    # Apply masking to the snapshot response for non-admin callers
-                    # using the same copy-not-mutate pattern as the live path.
+                if snap is None:
+                    return PositionsResponse(rows=[], summary=[], refreshed_at=timestamp_display())
+                return snap
+
+            async def _broker_fn() -> PositionsResponse:
+                if fresh:
+                    invalidate("positions")
+                    try:
+                        from backend.brokers.broker_apis import _raw_cache_invalidate
+                        _raw_cache_invalidate("positions")
+                    except Exception:
+                        pass
+                return await get_or_fetch("positions", _fetch, ttl_seconds=_TTL)
+
+            if not fresh:
+                resp, source = await closed_hours_or_broker(
+                    exchange="NSE",
+                    snapshot_fn=_snapshot_fn,
+                    broker_fn=_broker_fn,
+                    fallback_to_snapshot_on_broker_error=True,
+                )
+                # When market is closed and the DB has a genuine snapshot
+                # (as_of is set), return it with masking applied.
+                if source != "live" and getattr(resp, "as_of", None):
+                    logger.info(
+                        f"positions: market closed ({source}) — serving daily_book snapshot"
+                    )
                     role = normalise_role(resolve_role_from_connection(request))
                     if role == "trader":
                         allowed, _ = await user_scope_for_connection(request)
                         allowed_set = {str(a).upper() for a in (allowed or [])}
                         import msgspec
-                        snap = msgspec.structs.replace(
-                            snap,
-                            rows=[r for r in snap.rows
+                        resp = msgspec.structs.replace(
+                            resp,
+                            rows=[r for r in resp.rows
                                   if str(getattr(r, "account", "")).upper() in allowed_set],
-                            summary=[s for s in snap.summary
+                            summary=[s for s in resp.summary
                                      if str(getattr(s, "account", "")).upper() in allowed_set
                                      or str(getattr(s, "account", "")).upper() == "TOTAL"],
                         )
@@ -642,29 +660,22 @@ class PositionsController(Controller):
                         import msgspec
                         def _mask_snap(row):
                             return msgspec.structs.replace(row, account=mask_account(row.account))
-                        snap = msgspec.structs.replace(
-                            snap,
-                            rows=[_mask_snap(r) for r in snap.rows],
-                            summary=[_mask_snap(s) for s in snap.summary],
+                        resp = msgspec.structs.replace(
+                            resp,
+                            rows=[_mask_snap(r) for r in resp.rows],
+                            summary=[_mask_snap(s) for s in resp.summary],
                         )
-                    return snap
-
-            # Demo + public flow share one path: real broker data via
-            # the cached fetch, with accounts masked for non-admin
-            # callers (existing behaviour from the public /performance
-            # page). No synthetic data — demo visitors see real
-            # positions with `ZG####` style masks.
-            if fresh:
-                invalidate("positions")
-                # Also drop the raw-DataFrame cache so the refetch
-                # below sees fresh broker state rather than the
-                # cached list[pd.DataFrame].
-                try:
-                    from backend.brokers.broker_apis import _raw_cache_invalidate
-                    _raw_cache_invalidate("positions")
-                except Exception:
-                    pass
-            resp = await get_or_fetch("positions", _fetch, ttl_seconds=_TTL)
+                    return resp
+                # Market is open, or no snapshot exists yet — continue to live
+                # path (resp already holds the live broker response from _broker_fn).
+                if source == "live":
+                    pass  # resp is already the broker response
+                else:
+                    # Market closed but no snapshot (first deploy) — fall back live.
+                    resp = await _broker_fn()
+            else:
+                # ?fresh=1 — bypass closed-hours gate entirely
+                resp = await _broker_fn()
             # Horizontal scoping. Trader-role callers see only
             # positions on their `assigned_accounts`; firm-wide roles
             # (designated / risk / admin / partner / demo) see every
