@@ -187,14 +187,16 @@ async function settleAndMeasureHeap(page, settleSecs = 20) {
  * @param {string} jwt  JWT string captured from a prior loginAsAdmin call.
  */
 async function seedAuth(page, jwt) {
+  // addInitScript fires before any page scripts; sessionStorage is populated
+  // so the auth store picks up the token on hydration without needing a login
+  // form round-trip.
   await page.addInitScript((tok) => {
-    window.__rbqSeedToken = tok;
-    // Playwright fires addInitScript before any page scripts; sessionStorage
-    // is available at this point on the same origin.
     try { sessionStorage.setItem('ramboq_token', tok); } catch (_) {}
   }, jwt);
-  // Also attach to APIRequestContext so any spec-level page.request calls work.
-  await page.context().setExtraHTTPHeaders({ Authorization: `Bearer ${jwt}` });
+  // NOTE: setExtraHTTPHeaders is intentionally omitted — it triggers a
+  // Playwright trace-write inside the context that can produce ENOENT when the
+  // context was created by the test runner for a beforeAll-scoped beforeAll.
+  // The JWT in sessionStorage is sufficient for all navigations in this spec.
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
