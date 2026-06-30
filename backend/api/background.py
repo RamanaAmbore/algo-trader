@@ -3159,6 +3159,172 @@ async def _task_funds_offhours() -> None:
         await asyncio.sleep(30 * 60)
 
 
+async def _task_warm_backfill() -> None:
+    """One-shot startup backfill for ohlcv_daily and intraday_bars.
+
+    Fires 60 s after process start to give the conn_service time to mint
+    fresh broker tokens.  Runs exactly once per process lifetime.
+
+    OHLCV backfill (historical — broker serves even when markets closed):
+    always runs on startup regardless of market hours.  Checks coverage for
+    every symbol in the warm universe (watchlist + holdings + positions +
+    movers, 300-symbol cap) and force-fetches any symbol with fewer than
+    target_days × 0.7 bars.
+
+    Intraday backfill (today's bars — broker only during open hours):
+    deferred when no segment is open because today's intraday bars are still
+    accumulating during the session.  When markets are closed the intraday
+    bars from the prior session are already in intraday_bars via the
+    persistence pipeline's regular write-back.
+    """
+    # Guard: only fire once per process (idempotent against module reloads).
+    if getattr(_task_warm_backfill, "_fired", False):
+        return
+    _task_warm_backfill._fired = True   # type: ignore[attr-defined]
+
+    # Startup settle — wait for conn_service token mint.
+    await asyncio.sleep(60)
+
+    from backend.api.persistence.backfill import backfill_ohlcv_daily, backfill_intraday_today
+    from backend.shared.helpers.date_time_utils import is_any_segment_open
+
+    # Build the same symbol universe as _task_sparkline_warm (300-symbol cap).
+    # We reuse _collect_symbols defined inside _task_sparkline_warm — but that
+    # is a closure; we duplicate the same DB + broker_apis logic here using the
+    # same helpers so there is no hidden coupling.  A future refactor can lift
+    # _collect_symbols to a module-level helper when more callers need it.
+    symbols: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    # 1. Watchlist.
+    try:
+        from backend.api.database import async_session
+        from backend.api.models import WatchlistItem
+        from sqlalchemy import select as sa_select
+        from backend.api.routes.watchlist import _resolve_mcx_commodity, _resolve_cds_currency
+
+        async with async_session() as sess:
+            rows = (await sess.execute(
+                sa_select(WatchlistItem.tradingsymbol, WatchlistItem.exchange)
+            )).all()
+        for row in rows:
+            sym  = (row.tradingsymbol or "").upper().strip()
+            exch = (row.exchange or "NSE").upper().strip()
+            if not sym:
+                continue
+            if exch == "MCX" and sym.isalpha() and len(sym) <= 12:
+                resolved = await _resolve_mcx_commodity(sym)
+                if resolved:
+                    sym = resolved.upper().strip()
+            elif exch == "CDS" and sym.isalpha() and len(sym) <= 12:
+                resolved = await _resolve_cds_currency(sym)
+                if resolved:
+                    sym = resolved.upper().strip()
+            key = (sym, exch)
+            if key not in seen:
+                seen.add(key)
+                symbols.append(key)
+    except Exception as exc:
+        logger.warning(f"backfill warm: watchlist collect failed: {exc}")
+
+    # 2. Holdings.
+    try:
+        import pandas as pd
+        from backend.brokers import broker_apis
+
+        dfs = broker_apis.fetch_holdings()
+        df_h = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+        if not df_h.empty and "tradingsymbol" in df_h.columns:
+            _h_exch = df_h["exchange"] if "exchange" in df_h.columns else pd.Series(["NSE"] * len(df_h))
+            for sym_raw, exch_raw in zip(df_h["tradingsymbol"], _h_exch):
+                sym  = str(sym_raw or "").upper().strip()
+                exch = str(exch_raw or "NSE").upper().strip()
+                if sym:
+                    key = (sym, exch)
+                    if key not in seen:
+                        seen.add(key)
+                        symbols.append(key)
+    except Exception as exc:
+        logger.warning(f"backfill warm: holdings collect failed: {exc}")
+
+    # 3. Positions.
+    try:
+        import pandas as pd
+        from backend.brokers import broker_apis
+
+        dfs = broker_apis.fetch_positions()
+        df_p = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+        if not df_p.empty and "tradingsymbol" in df_p.columns:
+            _p_exch = df_p["exchange"] if "exchange" in df_p.columns else pd.Series(["NFO"] * len(df_p))
+            for sym_raw, exch_raw in zip(df_p["tradingsymbol"], _p_exch):
+                sym  = str(sym_raw or "").upper().strip()
+                exch = str(exch_raw or "NFO").upper().strip()
+                if sym:
+                    key = (sym, exch)
+                    if key not in seen:
+                        seen.add(key)
+                        symbols.append(key)
+    except Exception as exc:
+        logger.warning(f"backfill warm: positions collect failed: {exc}")
+
+    # 4. Mover universe (fills remaining capacity up to 300-symbol cap).
+    try:
+        from backend.shared.helpers.mover_universe import mover_warm_pairs
+        for key in mover_warm_pairs():
+            if key not in seen:
+                seen.add(key)
+                symbols.append(key)
+    except Exception as exc:
+        logger.warning(f"backfill warm: mover universe collect failed: {exc}")
+
+    # Hard cap — same split logic as _task_sparkline_warm.
+    try:
+        from backend.shared.helpers.mover_universe import mover_warm_pairs as _mwp
+        _mover_set  = set(_mwp())
+        book_pairs  = [p for p in symbols if p not in _mover_set]
+        mover_pairs = [p for p in symbols if p in _mover_set]
+        cap         = 300
+        remaining   = max(0, cap - len(book_pairs))
+        symbols     = book_pairs + mover_pairs[:remaining]
+    except Exception:
+        symbols = symbols[:300]
+
+    if not symbols:
+        logger.warning("backfill warm: empty symbol universe — nothing to backfill")
+        return
+
+    logger.info(f"backfill warm: universe={len(symbols)} symbols")
+
+    # ── OHLCV daily backfill (historical — runs regardless of market hours) ──
+    try:
+        result = await backfill_ohlcv_daily(symbols, target_days=365, max_concurrent=3)
+        logger.info(
+            f"backfill warm: ohlcv_daily done — "
+            f"filled={result['filled']}, skipped_cooloff={result['skipped_cooloff']}, "
+            f"errors={len(result['errors'])}"
+        )
+    except Exception as exc:
+        logger.error(f"backfill warm: ohlcv_daily failed: {exc}")
+
+    # ── Intraday today backfill (defer when markets are closed) ──────────────
+    try:
+        now_ist = timestamp_indian()
+        if is_any_segment_open(now_ist):
+            result2 = await backfill_intraday_today(symbols, interval="30minute", max_concurrent=3)
+            logger.info(
+                f"backfill warm: intraday_today done — "
+                f"filled={result2['filled']}, skipped_cooloff={result2['skipped_cooloff']}, "
+                f"errors={len(result2['errors'])}"
+            )
+        else:
+            logger.info(
+                "backfill warm: intraday_today deferred — no segment open "
+                "(today's bars already in DB from prior session write-back)"
+            )
+    except Exception as exc:
+        logger.error(f"backfill warm: intraday_today failed: {exc}")
+
+
 async def on_startup(app) -> None:
     """Start all background tasks. Called by Litestar on startup."""
     state: dict = {}
@@ -3188,6 +3354,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_purge_audit_log(),           name="bg-purge-audit-log"),
         asyncio.create_task(_task_market_lifecycle(),    name="bg-market-lifecycle"),
         asyncio.create_task(_task_funds_offhours(),      name="bg-funds-offhours"),
+        asyncio.create_task(_task_warm_backfill(),       name="bg-warm-backfill"),
     ]
     # Mode 2 (real-data paper) runs only on main. The PaperTradeEngine
     # singleton processes its open-order book against real Kite quotes

@@ -466,6 +466,13 @@ Mode is runtime-only (resets to `off` on process restart).
 - `get_or_fetch_daily(..., bypass_cache=True)` — defect-recovery escape hatch
 - `runtime_state.is_bypass_on()` checks on every read; soft/hard modes set this True
 
+**Coverage backfill** (`backend/api/persistence/backfill.py`):
+- `backfill_ohlcv_daily(symbols, target_days=365)` — force-fetch 365-day window for symbols with < 70% coverage; skips broker in cooloff.
+- `backfill_intraday_today(symbols, interval="30minute")` — force-fetch today's bars; defers when markets closed.
+- Startup hook `_task_warm_backfill` (60 s delay, once per process) fires both for the 300-symbol universe.
+- On-demand: `POST /api/admin/persistence/backfill?kind=daily|intraday|both` (admin-guarded).
+- CLI: `scripts/backfill_ohlcv.py --daily --intraday` for operator immediate prod fix.
+
 ---
 
 ## API Architecture (Litestar + SvelteKit)
