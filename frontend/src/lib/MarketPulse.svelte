@@ -55,7 +55,7 @@
   import {
     positionsStore, holdingsStore, fundsStore,
     moversStore, activeListsStore, sparklinesStore,
-    publishWatchQuotes, publishPulseQuotes, publishPositionsRows, publishHoldingsRows,
+    publishWatchQuotes, publishPulseQuotes,
   } from '$lib/data/marketDataStores.svelte.js';
   import { resolveUnderlying, INDEX_LTP_KEY, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
   import CardControls from '$lib/CardControls.svelte';
@@ -909,6 +909,11 @@
     if (_refreshing) return;
     _refreshing = true;
     try {
+      // loadPulse() now routes positions + holdings through the shared
+      // stores (force: true bypasses the in-flight dedup window so the
+      // operator's explicit Refresh always fires a fresh HTTP round-trip).
+      // The batchQuote + underlying-anchor pass at the tail of loadPulse
+      // still runs so underlyings and contract quotes stay in sync.
       await Promise.allSettled([
         loadQuotes(),
         loadPulse(),
@@ -2308,40 +2313,48 @@
 
   async function loadPulse() {
     try {
-      // Fetch positions + holdings via the shared three-tier stores (slice AB).
-      // Per-feed error capture still needs the raw fetch result for the
-      // brokerErr banner, so we call the API directly here and push to
-      // the stores via .set() rather than routing through store.load() —
-      // the store's fetcher loses the per-feed error/summary context.
-      let pErr = '', hErr = '';
-      const [p, h] = await Promise.all([
-        fetchPositions().catch((e) => { pErr = e?.message || 'positions unavailable'; return { rows: [], summary: [] }; }),
-        fetchHoldings().catch((e)  => { hErr = e?.message || 'holdings unavailable';  return { rows: [], summary: [] }; }),
+      // Migrate to shared three-tier stores (Part 1 — Jun 2026).
+      // positionsStore.load() / holdingsStore.load() route through
+      // createDataStore which deduplicates concurrent in-flight requests —
+      // so a tick from the layout-resident startBookPollers() racing with
+      // this call shares one HTTP round-trip rather than firing two.
+      // publishPositionsRows / publishHoldingsRows now fire inside each
+      // store's parse hook (see marketDataStores.svelte.js) so we no
+      // longer need to call them explicitly here.
+      // Per-feed brokerErr is sourced from positionsStore.error /
+      // holdingsStore.error after the loads settle.
+      //
+      // showSummary (dashboard mode) needs the raw API response's
+      // `.summary` array which the shared store discards (it stores rows
+      // only). Fetch those separately, conditionally, so the normal
+      // /pulse path pays zero extra cost.
+      const summaryP = showSummary
+        ? Promise.allSettled([
+            fetchPositions().catch(() => null),
+            fetchHoldings().catch(() => null),
+          ])
+        : Promise.resolve(null);
+
+      await Promise.allSettled([
+        positionsStore.load({ force: true }),
+        holdingsStore.load({ force: true }),
       ]);
-      brokerErr = [pErr, hErr].filter(Boolean).join(' · ');
-      const p_rows = (p?.rows || []).slice();
-      const h_rows = (h?.rows || []).slice();
-      // Push to stores (writes Tier 1 + Tier 2). Only write on success
-      // so partial broker errors don't blank whichever side worked.
-      if (!pErr && p_rows.length) {
-        positionsStore.set(p_rows);
-        // .set() bypasses the parse hook; publish to symbolStore
-        // explicitly so the per-row LTPs land in the central store
-        // (audit found this was the primary 10s-poll gap — pinned/
-        // watchlist LTPs went stale because the parse-hook publish
-        // never fired on the .set() path).
-        publishPositionsRows(p_rows);
-      }
-      if (!hErr && h_rows.length) {
-        holdingsStore.set(h_rows);
-        publishHoldingsRows(h_rows);
-      }
+
+      brokerErr = [positionsStore.error, holdingsStore.error]
+        .filter(Boolean).join(' · ');
+
+      const p_rows = positionsStore.value ?? [];
+      const h_rows = holdingsStore.value  ?? [];
+
       // Capture the backend's precomputed per-account summary rows
       // (used by the dashboard's summary grid). Excludes the TOTAL
       // synthetic row — we render that separately as pinnedBottomRowData.
       if (showSummary) {
-        positionsSummary = (p?.summary || []).slice();
-        holdingsSummary  = (h?.summary || []).slice();
+        const summaryResults = await summaryP;
+        const pRaw = summaryResults?.[0]?.status === 'fulfilled' ? summaryResults[0].value : null;
+        const hRaw = summaryResults?.[1]?.status === 'fulfilled' ? summaryResults[1].value : null;
+        positionsSummary = (pRaw?.summary || []).slice();
+        holdingsSummary  = (hRaw?.summary || []).slice();
       }
       // Surface every account id we see across positions + holdings
       // for the account-picker dropdown. Also UNION with the broker

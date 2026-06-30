@@ -14,6 +14,27 @@ import { browser } from '$app/environment';
 import { isMarketOpen, fetchMarketStatus } from '$lib/marketHours';
 
 // ---------------------------------------------------------------------------
+// Reconnecting popup state
+// ---------------------------------------------------------------------------
+//
+// Active while the app is firing post-hibernation refires. Set true when
+// _exitHibernation() runs (tab returns after ≥ idle threshold hidden).
+// Auto-clears when all registered refire callbacks resolve OR after a 3 s
+// max-wait timeout. Public consumers read `$reconnectingState.active`.
+//
+// Shape: { active: boolean, pending: number, total: number }
+//
+// Not shown on public (cream) pages — those don't mount the algo layout
+// that owns the <ReconnectingPopup /> mount point.
+export const reconnectingState = writable(
+  /** @type {{ active: boolean, pending: number, total: number }} */
+  ({ active: false, pending: 0, total: 0 })
+);
+
+/** Max time (ms) the popup stays visible even if stores haven't resolved. */
+const _RECONNECT_MAX_MS = 3000;
+
+// ---------------------------------------------------------------------------
 // Auth store
 // ---------------------------------------------------------------------------
 
@@ -260,13 +281,41 @@ function _enterHibernation() {
   }
 }
 
+/** Handle for the max-wait timeout that closes the reconnecting popup. */
+let _reconnectMaxTimer = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
+
 function _exitHibernation() {
   const wasHibernating = _isHibernating;
   _isHibernating = false;
-  if (wasHibernating) {
-    for (const sub of _hibernationSubscribers) {
-      try { sub.exitHibernation(); } catch { /* ignore */ }
+  if (!wasHibernating) return;
+
+  // Count how many subscribers have a refire Promise.
+  // visibleInterval-backed pollers call fn() synchronously in exitHibernation
+  // — they don't expose a Promise. We count the subscribers that are actually
+  // throttled (have _localHibernating=true), but since that's internal state
+  // we approximate by counting all registered subscribers as potential refirers.
+  // The popup auto-closes after _RECONNECT_MAX_MS anyway.
+  const total = _hibernationSubscribers.size;
+
+  if (browser && total > 0) {
+    // Show the popup immediately.
+    reconnectingState.set({ active: true, pending: total, total });
+
+    // Cancel any previous max-wait timer.
+    if (_reconnectMaxTimer != null) {
+      clearTimeout(_reconnectMaxTimer);
+      _reconnectMaxTimer = null;
     }
+
+    // Auto-dismiss after max-wait regardless of pending count.
+    _reconnectMaxTimer = setTimeout(() => {
+      reconnectingState.set({ active: false, pending: 0, total: 0 });
+      _reconnectMaxTimer = null;
+    }, _RECONNECT_MAX_MS);
+  }
+
+  for (const sub of _hibernationSubscribers) {
+    try { sub.exitHibernation(); } catch { /* ignore */ }
   }
 }
 

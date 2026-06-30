@@ -307,15 +307,16 @@ test.describe('main-thread perf regression guard', () => {
 
     assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin });
 
-    // Steady-state cadence (post cross-page book poller, Jun 2026):
+    // Steady-state cadence (post loadPulse store migration, Jun 2026):
     //   - Layout-resident `startBookPollers` fires positions + holdings + funds
     //     every 5 s = 24 req/min (positions + holdings combined).
-    //   - MarketPulse's own loadPulse fires positions + holdings every 2 ticks
-    //     (~10 s) ≈ 12 req/min — sits on top, doesn't dedup because
-    //     it uses fetchPositions() directly (not positionsStore.load()).
-    //   - Combined steady-state: 36–40 req/min. Reactive-loop regressions fire
-    //     100+/min. Budget = 60/min catches a real reactive loop with 1.5×
-    //     headroom over the new combined steady-state.
+    //   - MarketPulse's loadPulse now routes through positionsStore.load() /
+    //     holdingsStore.load() which deduplicate against the in-flight request
+    //     from startBookPollers — the page-level call shares the layout poller's
+    //     round-trip instead of firing a second parallel request.
+    //   - Combined steady-state: ~24 req/min (down from 36–40 pre-migration).
+    //     Reactive-loop regressions fire 100+/min. Budget = 60/min gives 2.5×
+    //     headroom over the post-migration steady-state.
     expect(pulseRatePerMin,
       `/api/positions+holdings firing at ${pulseRatePerMin.toFixed(1)}/min — reactive loop suspected`
     ).toBeLessThan(60);
@@ -914,5 +915,269 @@ test.describe('cross-page book poller — layout-resident, runs on every route',
     // Allow 0 outside market hours since marketAwareInterval gates the call;
     // the load-bearing assertion is that the STORE is hot above.
     expect(posReqs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+// ── Part 1: loadPulse store migration — request-rate guard (Jun 2026) ──────
+//
+// Before the migration, /pulse fired positions + holdings via both:
+//   • The layout-resident startBookPollers() every 5 s (marketAwareInterval)
+//   • MarketPulse.loadPulse() every 10 s (2 ticks × 5 s cadence)
+// Combined: ~36–40 req/min.
+//
+// After the migration, loadPulse routes through positionsStore.load() which
+// deduplicates against the in-flight request from startBookPollers.
+// Combined: ~24 req/min (one source: the layout poller; loadPulse's call
+// hits the dedup guard and shares the existing round-trip).
+//
+// Tests:
+//   1. 30 s steady-state on /pulse: ≤ 12 combined pos+holdings requests
+//      (24/min × 30 s = 12). Catching 20+ would indicate double-fetching.
+//   2. Single Refresh click fires exactly 1 extra pos + 1 extra holdings
+//      (force: true bypasses dedup; loadPulse's force call + the layout
+//      tick deduped = 1 pair not 2).
+
+test.describe('loadPulse store migration — request-rate guard', () => {
+  test.describe.configure({ mode: 'serial' });
+  test.setTimeout(120_000);
+
+  test.beforeAll(async ({ browser }) => {
+    test.setTimeout(60_000);
+    await ensureJwtWithBrowser(browser);
+  });
+
+  test('/pulse — positions+holdings rate ≤ layout-poller cadence in 30 s window (chromium-desktop)', async ({ page }) => {
+    await seedAuth(page, _sharedJwt);
+    await page.goto('/pulse', { waitUntil: 'load', timeout: 90_000 });
+    // Wait for initial grid rows so the page is fully settled.
+    await page.locator('.ag-row').first()
+      .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+    // Let any cold-start burst settle before we start counting.
+    await page.waitForTimeout(3_000);
+
+    const posReqs = [];
+    const reqHandler = (/** @type {any} */ req) => {
+      const u = req.url();
+      if (u.includes('/api/positions') || u.includes('/api/holdings')) {
+        posReqs.push(u);
+      }
+    };
+    page.on('request', reqHandler);
+    // 30 s observation window — enough for 6 layout-poller ticks at 5 s.
+    await page.waitForTimeout(30_000);
+    page.off('request', reqHandler);
+
+    const ratePerMin = posReqs.length / (30 / 60);
+    console.log(`[loadpulse-rate] 30 s: ${posReqs.length} pos+holdings reqs (${ratePerMin.toFixed(1)}/min)`);
+
+    // Post-migration upper bound: 24 req/min (layout poller only, dedup active).
+    // Budget = 30 req/min (1.25× headroom) to absorb WS-triggered refires
+    // (book_changed / position_filled cause one extra load each).
+    // Pre-migration steady state was 36–40 req/min; a regression to the old
+    // double-fetching path would push this past 36/min.
+    expect(ratePerMin,
+      `/api/positions+holdings firing at ${ratePerMin.toFixed(1)}/min — loadPulse dedup may have regressed`
+    ).toBeLessThan(30);
+  });
+
+  test('/pulse — Refresh click fires ONE extra positions fetch, not multiple (chromium-desktop)', async ({ page }) => {
+    await seedAuth(page, _sharedJwt);
+    await page.goto('/pulse', { waitUntil: 'load', timeout: 90_000 });
+    await page.locator('.ag-row').first()
+      .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+    // Let the initial burst settle.
+    await page.waitForTimeout(4_000);
+
+    // Narrow 3 s window around the Refresh click.
+    const posBeforeReqs = [];
+    const preHandler = (/** @type {any} */ req) => {
+      if (req.url().includes('/api/positions')) posBeforeReqs.push(req.url());
+    };
+    page.on('request', preHandler);
+    await page.waitForTimeout(1_000);
+    page.off('request', preHandler);
+    const preRate = posBeforeReqs.length;
+    console.log(`[loadpulse-refresh] 1 s before Refresh: ${preRate} /api/positions`);
+
+    // Now click Refresh and count positions requests in the 2 s after.
+    const posAfterReqs = [];
+    const postHandler = (/** @type {any} */ req) => {
+      if (req.url().includes('/api/positions')) posAfterReqs.push(req.url());
+    };
+    page.on('request', postHandler);
+
+    const refreshBtn = page.locator(
+      '.page-header button[aria-label*="Refresh"], ' +
+      '.page-header button[title*="Refresh"], ' +
+      '.page-header .rf-btn'
+    ).first();
+    const btnVisible = await refreshBtn.isVisible({ timeout: 5_000 }).catch(() => false);
+    if (btnVisible) {
+      await refreshBtn.click();
+    }
+    await page.waitForTimeout(2_000);
+    page.off('request', postHandler);
+
+    console.log(`[loadpulse-refresh] 2 s after Refresh: ${posAfterReqs.length} /api/positions`);
+    // A forced refresh fires exactly 1 /api/positions (positionsStore.load({force:true})).
+    // The layout poller may also fire within the 2 s window → budget = 3.
+    // A double-fetch regression (old path: fetchPositions() direct + store.load())
+    // would fire ≥ 4 in this window.
+    expect(posAfterReqs.length,
+      `Refresh fired ${posAfterReqs.length} /api/positions — expected 1–3 (1 forced + up to 2 layout ticks)`
+    ).toBeLessThanOrEqual(3);
+  });
+
+  test('/pulse — positions+holdings rate ≤ cadence in 30 s window (chromium-mobile)', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await seedAuth(page, _sharedJwt);
+    await page.goto('/pulse', { waitUntil: 'load', timeout: 90_000 });
+    await page.locator('.ag-row').first()
+      .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+    await page.waitForTimeout(3_000);
+
+    const posReqs = [];
+    const reqHandler = (/** @type {any} */ req) => {
+      const u = req.url();
+      if (u.includes('/api/positions') || u.includes('/api/holdings')) posReqs.push(u);
+    };
+    page.on('request', reqHandler);
+    await page.waitForTimeout(30_000);
+    page.off('request', reqHandler);
+
+    const ratePerMin = posReqs.length / (30 / 60);
+    console.log(`[loadpulse-rate-mobile] 30 s: ${posReqs.length} reqs (${ratePerMin.toFixed(1)}/min)`);
+    expect(ratePerMin).toBeLessThan(30);
+  });
+});
+
+// ── Part 2: Reconnecting popup — visibility-return after hibernation ─────────
+//
+// After ≥ idle threshold hidden, tab becomes visible → _exitHibernation()
+// fires → reconnectingState.active = true → popup (.reconnecting-backdrop)
+// appears within 100 ms → auto-dismisses within 3 s (max-wait timer).
+//
+// Brief tab-switch (< threshold): popup must NOT appear (no hibernation).
+//
+// Tests run at chromium-desktop and chromium-mobile viewports.
+
+test.describe('reconnecting popup — visibility-return after hibernation', () => {
+  test.describe.configure({ mode: 'serial' });
+  test.setTimeout(120_000);
+
+  test.beforeAll(async ({ browser }) => {
+    test.setTimeout(60_000);
+    await ensureJwtWithBrowser(browser);
+  });
+
+  /**
+   * Shared body: verifies popup appears after hibernation + auto-dismisses.
+   * @param {import('@playwright/test').Page} page
+   */
+  async function runReconnectTest(page) {
+    // Use 200 ms hibernation threshold so we don't wait 5 real minutes.
+    await page.clock.install({ time: Date.now() });
+    await page.addInitScript(() => {
+      window.__rbq_hibMs = 200;
+    });
+    await seedAuth(page, _sharedJwt);
+    await page.goto('/pulse', { waitUntil: 'load', timeout: 90_000 });
+    await page.evaluate(() => {
+      if (typeof window.__rbq_setHibMs === 'function') window.__rbq_setHibMs(200);
+    });
+    // Wait for page to settle.
+    await page.locator('.ag-row').first()
+      .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+    await page.clock.runFor(6_000);
+    await page.waitForTimeout(300);
+
+    // Hide the tab.
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true, get: () => 'hidden',
+      });
+      Object.defineProperty(document, 'hidden', {
+        configurable: true, get: () => true,
+      });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    // Advance past hibernation threshold (200 ms).
+    await page.clock.runFor(300);
+    await page.waitForTimeout(100);
+
+    // Return to visible — _exitHibernation() fires.
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true, get: () => 'visible',
+      });
+      Object.defineProperty(document, 'hidden', {
+        configurable: true, get: () => false,
+      });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    // Popup should appear within 100 ms of visibility-return.
+    const popup = page.locator('.reconnecting-backdrop');
+    await expect(popup).toBeVisible({ timeout: 300 });
+    console.log('[reconnect] popup appeared after hibernation-return');
+
+    // Popup must auto-dismiss within 3 s (the max-wait timer in stores.js).
+    await expect(popup).toBeHidden({ timeout: 4_000 });
+    console.log('[reconnect] popup auto-dismissed within 3 s');
+  }
+
+  test('chromium-desktop: popup appears after hibernation, auto-dismisses within 3 s', async ({ page }) => {
+    await runReconnectTest(page);
+  });
+
+  test('chromium-mobile: same popup contract on 390×844 viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await runReconnectTest(page);
+  });
+
+  // Guard: brief tab switch (< threshold) must NOT show the popup.
+  test('brief tab-switch (under threshold) — popup does NOT appear', async ({ page }) => {
+    await page.clock.install({ time: Date.now() });
+    await page.addInitScript(() => {
+      // 5-minute threshold (default — do not override to a tiny value).
+      // We want to test that a 30-second hide does NOT trigger hibernation.
+    });
+    await seedAuth(page, _sharedJwt);
+    await page.goto('/pulse', { waitUntil: 'load', timeout: 90_000 });
+    await page.locator('.ag-row').first()
+      .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+    await page.clock.runFor(3_000);
+    await page.waitForTimeout(200);
+
+    // Hide for 30 s (well under the 5-min threshold).
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true, get: () => 'hidden',
+      });
+      Object.defineProperty(document, 'hidden', {
+        configurable: true, get: () => true,
+      });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await page.clock.runFor(30_000);
+    await page.waitForTimeout(100);
+
+    // Return to visible — hibernation did NOT engage, no popup.
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true, get: () => 'visible',
+      });
+      Object.defineProperty(document, 'hidden', {
+        configurable: true, get: () => false,
+      });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+
+    await page.waitForTimeout(300);
+    // Popup must not be visible.
+    const popup = page.locator('.reconnecting-backdrop');
+    await expect(popup).toBeHidden({ timeout: 500 });
+    console.log('[reconnect] confirmed: no popup on brief tab-switch (under 5-min threshold)');
   });
 });
