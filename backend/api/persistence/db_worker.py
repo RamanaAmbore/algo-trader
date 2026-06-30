@@ -138,16 +138,37 @@ def _coalesce_ohlcv(payloads: list[dict]) -> list[dict[str, Any]]:
 
 
 def _coalesce_instruments(payloads: list[dict]) -> list[dict[str, Any]]:
-    """One row per (exchange, date), last-write-wins."""
+    """One row per (exchange, date), last-write-wins.
+
+    `payload["date"]` arrives as a "YYYY-MM-DD" string from the producer.
+    asyncpg binds the date column strictly — it wants a `datetime.date`,
+    not a string ("'str' object has no attribute 'toordinal'"). Convert
+    here so the upsert succeeds. Same fix already applied to
+    _coalesce_ohlcv and _coalesce_intraday. An unconverted string was
+    poisoning the whole batch upsert (one bad row = batch dropped) which
+    starved intraday_bars + ohlcv_daily of writes — sparklines on the
+    DB-only path returned empty because nothing ever made it to the DB.
+    """
+    from datetime import date as _date
     seen: dict[tuple[str, str], dict[str, Any]] = {}
     for payload in payloads:
         exch = str(payload.get("exchange", ""))
-        date = str(payload.get("date", ""))
-        if not exch or not date:
+        d_raw = payload.get("date", "")
+        if not exch or not d_raw:
             continue
-        seen[(exch, date)] = {
+        if isinstance(d_raw, _date):
+            d_obj = d_raw
+            d_key = d_obj.isoformat()
+        else:
+            d_str = str(d_raw)[:10]
+            try:
+                d_obj = _date.fromisoformat(d_str)
+            except ValueError:
+                continue  # unparseable — drop row, keep batch
+            d_key = d_str
+        seen[(exch, d_key)] = {
             "exchange":  exch,
-            "date":      date,
+            "date":      d_obj,
             "payload":   payload.get("payload", []),
             "row_count": int(payload.get("row_count", 0)),
         }
@@ -223,14 +244,28 @@ def _coalesce_intraday(payloads: list[dict]) -> list[dict[str, Any]]:
 # ── Upsert ────────────────────────────────────────────────────────────────────
 
 async def _upsert(by_kind: dict[str, list[dict[str, Any]]]) -> None:
-    if by_kind["ohlcv_daily"]:
-        await _upsert_ohlcv(by_kind["ohlcv_daily"])
-    if by_kind["instruments_snapshot"]:
-        await _upsert_instruments(by_kind["instruments_snapshot"])
-    if by_kind["holidays_snapshot"]:
-        await _upsert_holidays(by_kind["holidays_snapshot"])
-    if by_kind.get("intraday_bars"):
-        await _upsert_intraday(by_kind["intraday_bars"])
+    """Run each kind's upsert in its own try/except so a malformed row
+    in one kind can't poison the rest of the batch. Earlier a string-date
+    in instruments_snapshot was raising asyncpg.DataError and skipping the
+    intraday_bars + ohlcv_daily writes that came after it in the same call,
+    leaving the sparkline DB-only path with nothing to serve."""
+    kinds = (
+        ("ohlcv_daily",          _upsert_ohlcv),
+        ("instruments_snapshot", _upsert_instruments),
+        ("holidays_snapshot",    _upsert_holidays),
+        ("intraday_bars",        _upsert_intraday),
+    )
+    for kind, fn in kinds:
+        rows = by_kind.get(kind) or []
+        if not rows:
+            continue
+        try:
+            await fn(rows)
+        except Exception as exc:
+            logger.warning(
+                f"db_worker: upsert failed for kind={kind} "
+                f"(rows={len(rows)}, dropped): {exc}"
+            )
 
 
 async def _upsert_ohlcv(rows: list[dict[str, Any]]) -> None:
