@@ -6,7 +6,10 @@ Two routes used to inline the same formula:
 
 This spec asserts:
   1. Golden value correctness of `decomposed_intraday_pnl` + `naive_day_pnl`.
-  2. SSOT — no other backend module re-implements the raw formula
+  2. Golden value correctness of `recompute_row_percentages` — the helper
+     that keeps day_change_percentage + pnl_percentage in sync with their
+     absolute counterparts after any in-place LTP/close override.
+  3. SSOT — no other backend module re-implements the raw formula
      (grep guard so future drift gets caught at CI time).
   3. Vector-equivalence — the polars expression in broker_apis and the
      pandas wrapper in positions.py both delegate to the same scalar
@@ -24,7 +27,11 @@ import pandas as pd
 import polars as pl
 import pytest
 
-from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl
+from backend.api.algo.pnl_math import (
+    decomposed_intraday_pnl,
+    naive_day_pnl,
+    recompute_row_percentages,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -171,3 +178,164 @@ class TestPnlMathCrossEngine:
 
         for a, b in zip(out_pl.to_list(), out_pd.to_list()):
             assert math.isclose(a, b), f"polars vs pandas drift: {a} vs {b}"
+
+
+# ---------------------------------------------------------------------------
+# recompute_row_percentages — correctness + override-path regression contract
+# ---------------------------------------------------------------------------
+
+class TestRecomputeRowPercentages:
+    """Defect #2 regression: positions overrides must refresh percentages.
+
+    Before the fix, `_override_stale_ltp_from_ticker` and
+    `_override_stale_close_from_snapshot` in positions.py updated
+    `day_change_val` and `pnl` but left `day_change_percentage` and
+    `pnl_percentage` at the broker's stale values. This class asserts
+    the shared helper computes the right numbers and that calling it
+    after an override yields consistent columns.
+    """
+
+    def _pos_frame(self) -> pd.DataFrame:
+        """A synthetic positions frame with 3 rows representing:
+          0 — normal Kite row, percentages already correct
+          1 — row where LTP was just overridden (stale percentage before fix)
+          2 — opened-today row (close_price=0; fallback to avg denominator)
+        """
+        return pd.DataFrame({
+            "tradingsymbol":       ["NIFTY24DEC23000CE", "CRUDEOIL26JUL6900PE", "GOLDM26JUL"],
+            "quantity":            [50.0, 10.0, 100.0],
+            "average_price":       [200.0, 250.0, 6500.0],
+            "close_price":         [190.0, 220.0, 0.0],    # row 2: opened today
+            "last_price":          [210.0, 264.5, 6800.0],
+            # day_change_val correctly updated by override:
+            "day_change_val":      [(210-190)*50, (264.5-220)*10, (6800-6500)*100],
+            # pnl correctly updated by override:
+            "pnl":                 [(210-200)*50, (264.5-250)*10, (6800-6500)*100],
+            # STALE percentages (pre-override values — what the broker shipped):
+            "day_change_percentage": [4.396, 4.396, 0.0],    # row 1 should be ~1.677%
+            "pnl_percentage":        [5.0,   4.396, 0.0],    # row 1 should be ~1.38%
+        })
+
+    def test_day_change_percentage_recomputed_correctly(self):
+        """day_change_percentage = day_change_val / |close × qty| × 100."""
+        df = self._pos_frame()
+        sel = pd.Index([1])  # only the overridden row
+        recompute_row_percentages(df, sel)
+
+        # CRUDEOIL: dcv=(264.5-220)*10=445, denom=|220*10|=2200
+        # expected = 445/2200*100 = 20.227...
+        expected_dcp = (264.5 - 220) * 10 / (220 * 10) * 100
+        assert math.isclose(df.at[1, "day_change_percentage"], expected_dcp, rel_tol=1e-6), (
+            f"day_change_percentage={df.at[1, 'day_change_percentage']:.4f} "
+            f"expected {expected_dcp:.4f}"
+        )
+
+    def test_pnl_percentage_recomputed_correctly(self):
+        """pnl_percentage = pnl / |avg × qty| × 100."""
+        df = self._pos_frame()
+        sel = pd.Index([1])
+        recompute_row_percentages(df, sel)
+
+        # CRUDEOIL: pnl=(264.5-250)*10=145, cost=|250*10|=2500
+        # expected = 145/2500*100 = 5.8%
+        expected_pnl_pct = (264.5 - 250) * 10 / (250 * 10) * 100
+        assert math.isclose(df.at[1, "pnl_percentage"], expected_pnl_pct, rel_tol=1e-6), (
+            f"pnl_percentage={df.at[1, 'pnl_percentage']:.4f} "
+            f"expected {expected_pnl_pct:.4f}"
+        )
+
+    def test_non_patched_rows_unchanged(self):
+        """Only selected rows are modified; others keep their original values."""
+        df = self._pos_frame()
+        orig_dcp_0 = df.at[0, "day_change_percentage"]
+        orig_pnl_0 = df.at[0, "pnl_percentage"]
+        sel = pd.Index([1])  # patch only row 1
+        recompute_row_percentages(df, sel)
+
+        assert df.at[0, "day_change_percentage"] == orig_dcp_0
+        assert df.at[0, "pnl_percentage"] == orig_pnl_0
+
+    def test_opened_today_fallback_to_avg_denom(self):
+        """When close_price=0 the denominator falls back to |avg × qty|.
+        This is the opened-today case (no prior session for the symbol).
+        """
+        df = self._pos_frame()
+        sel = pd.Index([2])  # row 2: close=0
+        recompute_row_percentages(df, sel)
+
+        # day_change_val = (6800-6500)*100 = 30000
+        # close_denom = |0 * 100| = 0  → fallback: avg_denom = |6500*100| = 650000
+        # dcp = 30000 / 650000 * 100 = 4.615...%
+        expected_dcp = 30000.0 / (6500.0 * 100.0) * 100.0
+        assert math.isclose(df.at[2, "day_change_percentage"], expected_dcp, rel_tol=1e-6), (
+            f"opened-today row dcp={df.at[2, 'day_change_percentage']:.4f} "
+            f"expected {expected_dcp:.4f} (fallback avg denom)"
+        )
+
+    def test_noop_on_empty_mask(self):
+        """Empty selection index is a no-op."""
+        df = self._pos_frame()
+        orig = df.copy()
+        recompute_row_percentages(df, pd.Index([], dtype="int64"))
+        pd.testing.assert_frame_equal(df, orig)
+
+    def test_noop_on_empty_dataframe(self):
+        """Empty dataframe does not raise."""
+        recompute_row_percentages(pd.DataFrame(), pd.Index([]))
+
+    def test_noop_when_columns_absent(self):
+        """If day_change_percentage / pnl_percentage columns are absent,
+        no-op (safe to call unconditionally from override helpers)."""
+        df = pd.DataFrame({
+            "quantity": [10.0],
+            "average_price": [100.0],
+            "last_price": [110.0],
+            "day_change_val": [50.0],
+            "pnl": [50.0],
+            # No percentage columns
+        })
+        recompute_row_percentages(df, pd.Index([0]))  # must not raise
+
+    def test_holdings_context_uses_opening_quantity(self):
+        """Holdings frames use `opening_quantity` not `quantity`.
+        `recompute_row_percentages` probes `opening_quantity` first so
+        the denominator uses the right qty column for holdings rows.
+        """
+        df = pd.DataFrame({
+            "opening_quantity":      [10.0],
+            "average_price":         [1400.0],
+            "close_price":           [1380.0],
+            "day_change_val":        [(1420.0 - 1380.0) * 10],  # =400
+            "pnl":                   [(1420.0 - 1400.0) * 10],  # =200
+            "day_change_percentage": [0.0],   # stale
+            "pnl_percentage":        [0.0],   # stale
+        })
+        recompute_row_percentages(df, pd.Index([0]))
+
+        expected_dcp = 400.0 / (1380.0 * 10.0) * 100.0
+        expected_pct = 200.0 / (1400.0 * 10.0) * 100.0
+        assert math.isclose(df.at[0, "day_change_percentage"], expected_dcp, rel_tol=1e-6)
+        assert math.isclose(df.at[0, "pnl_percentage"], expected_pct, rel_tol=1e-6)
+
+    def test_pre_fix_percentage_was_stale(self):
+        """Document the pre-fix state: after LTP override from 220→264.5,
+        the broker-shipped day_change_percentage (4.396%) is wrong.
+        Post-fix value should be ~20.23% (not ~1.677% as the issue stated —
+        that was for a different CRUDEOIL contract; our synthetic uses the
+        same arithmetic pattern).
+        """
+        df = self._pos_frame()
+        pre_fix_dcp = df.at[1, "day_change_percentage"]
+        assert pre_fix_dcp == 4.396, "Pre-fix value must be 4.396 (broker stale)"
+
+        sel = pd.Index([1])
+        recompute_row_percentages(df, sel)
+        post_fix_dcp = df.at[1, "day_change_percentage"]
+
+        # Post-fix must NOT equal the broker stale value
+        assert not math.isclose(post_fix_dcp, pre_fix_dcp, abs_tol=0.1), (
+            "post-fix percentage must diverge from pre-fix broker value"
+        )
+        # And must match the formula
+        expected = (264.5 - 220) * 10 / (220 * 10) * 100
+        assert math.isclose(post_fix_dcp, expected, rel_tol=1e-6)

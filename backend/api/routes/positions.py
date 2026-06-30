@@ -10,7 +10,7 @@ from backend.api.rbac import (
     resolve_role_from_connection, user_scope_for_connection,
     normalise_role,
 )
-from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl
+from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl, recompute_row_percentages
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.helpers.ltp_patch import apply_ltp_patch, positions_policy
 from backend.api.schemas import PositionsResponse, PositionRow, PositionsSummaryRow
@@ -254,6 +254,11 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
         raw.loc[_sel, 'pnl'] = (_pnl_current + _pnl_delta).where(
             _ltp > 0, raw.loc[_sel, 'pnl']
         )
+    # Recompute day_change_percentage + pnl_percentage on patched rows.
+    # day_change_val and pnl were updated above; without this step the
+    # percentage columns still carry the pre-override broker values and
+    # will disagree with the absolute columns by a visible margin.
+    recompute_row_percentages(raw, _sel)
     n_stale = len(res.stale_idx)
     logger.info(
         f"positions: ltp-override patched {len(res.patched_idx)}/{len(raw)} rows "
@@ -353,6 +358,11 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     _dcv_calc = _compute_day_change_val(raw, _sel)
     raw.loc[_sel, 'day_change_val'] = _dcv_calc.where(_ltp > 0, raw.loc[_sel, 'day_change_val'])
     raw.loc[_sel, 'day_change'] = _ltp - _cls
+    # Recompute day_change_percentage + pnl_percentage on patched rows.
+    # close_price was replaced above and day_change_val just recomputed;
+    # without this step the percentage columns lag the absolute columns
+    # (same fix applied to _override_stale_ltp_from_ticker above).
+    recompute_row_percentages(raw, _sel)
     logger.info(f"positions: close-override patched {len(patched_idx)}/{len(raw)} rows from daily_book")
 
 

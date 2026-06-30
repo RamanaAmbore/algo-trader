@@ -29,6 +29,71 @@ ship the buy/sell decomposition).
 
 from __future__ import annotations
 
+import pandas as pd
+
+
+def recompute_row_percentages(df: pd.DataFrame, sel_mask: "pd.Index") -> None:
+    """Recompute day_change_percentage + pnl_percentage in-place on selected rows.
+
+    Called after any in-place LTP or close_price override that has already
+    updated day_change_val and pnl on those rows. Without this step the
+    percentage columns still reflect the pre-override values (stale broker
+    numbers), causing visible drift vs the absolute columns.
+
+    Formulas (per the broker convention used throughout the codebase):
+
+        day_change_percentage = day_change_val / |close × qty| × 100
+            fallback denominator: |avg × qty| when close is zero
+            (opened-today rows have close_price = 0; we use avg instead
+            so the row still shows a meaningful Day % since entry)
+
+        pnl_percentage = pnl / |avg × qty| × 100
+
+    qty column: `quantity` for positions, `opening_quantity` for holdings.
+    The function probes `opening_quantity` first and falls back to `quantity`
+    so it works correctly for both route contexts.
+
+    No-op when the required columns are absent (safe to call unconditionally).
+    """
+    if df is None or df.empty or len(sel_mask) == 0:
+        return
+
+    _qty_col = "opening_quantity" if "opening_quantity" in df.columns else "quantity"
+    if _qty_col not in df.columns:
+        return
+
+    _qty = pd.to_numeric(df.loc[sel_mask, _qty_col], errors="coerce").fillna(0)
+
+    if "day_change_percentage" in df.columns and "day_change_val" in df.columns:
+        _dcv = pd.to_numeric(df.loc[sel_mask, "day_change_val"], errors="coerce").fillna(0)
+        _cls = (
+            pd.to_numeric(df.loc[sel_mask, "close_price"], errors="coerce").fillna(0)
+            if "close_price" in df.columns
+            else pd.Series(0.0, index=sel_mask)
+        )
+        _avg = (
+            pd.to_numeric(df.loc[sel_mask, "average_price"], errors="coerce").fillna(0)
+            if "average_price" in df.columns
+            else pd.Series(0.0, index=sel_mask)
+        )
+        _close_denom = (_cls * _qty).abs()
+        _avg_denom = (_avg * _qty).abs()
+        # Primary denominator: |close × qty|; fallback: |avg × qty| for opened-today
+        _denom = _close_denom.where(_close_denom > 0, _avg_denom)
+        _dcp = (_dcv / _denom.replace(0, pd.NA) * 100).fillna(0)
+        df.loc[sel_mask, "day_change_percentage"] = _dcp
+
+    if "pnl_percentage" in df.columns and "pnl" in df.columns:
+        _pnl = pd.to_numeric(df.loc[sel_mask, "pnl"], errors="coerce").fillna(0)
+        _avg = (
+            pd.to_numeric(df.loc[sel_mask, "average_price"], errors="coerce").fillna(0)
+            if "average_price" in df.columns
+            else pd.Series(0.0, index=sel_mask)
+        )
+        _cost_basis = (_avg * _qty).abs()
+        _pct = (_pnl / _cost_basis.replace(0, pd.NA) * 100).fillna(0)
+        df.loc[sel_mask, "pnl_percentage"] = _pct
+
 
 def decomposed_intraday_pnl(
     oq: float,

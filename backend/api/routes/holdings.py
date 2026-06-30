@@ -11,6 +11,7 @@ from backend.api.auth_guard import is_admin_request, is_authenticated_request
 from backend.api.rbac import (
     resolve_role_from_connection, user_scope_for_connection, normalise_role,
 )
+from backend.api.algo.pnl_math import recompute_row_percentages
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.helpers.ltp_patch import apply_ltp_patch, holdings_policy
 from backend.api.schemas import HoldingsResponse, HoldingRow, HoldingsSummaryRow
@@ -77,6 +78,12 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
                                                       raw.loc[_sel, 'day_change_val'])
     if 'day_change' in raw.columns:
         raw.loc[_sel, 'day_change'] = _ltp_p - _cls_p
+    # Recompute day_change_percentage + pnl_percentage on patched rows.
+    # day_change_val and pnl were updated by backfill_market_data for
+    # holdings rows that had last_price patched — but pnl and cur_val
+    # may also have been patched (see backfill_market_data inv_val/cur_val
+    # chain). The percentage columns lag without this step.
+    recompute_row_percentages(raw, _sel)
     n_stale = len(res.stale_idx)
     logger.info(
         f"holdings: ltp-override patched {len(res.patched_idx)}/{len(raw)} "
