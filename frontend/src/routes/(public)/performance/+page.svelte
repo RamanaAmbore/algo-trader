@@ -32,4 +32,6 @@
   <meta name="twitter:image:alt" content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
 </svelte:head>
 
-<PerformancePage />
+<div class="card-theme-cream">
+  <PerformancePage />
+</div>

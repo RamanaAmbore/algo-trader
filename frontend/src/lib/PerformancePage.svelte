@@ -1324,9 +1324,10 @@
   /* Public /performance: no inner cream card. Content sits directly
      on the public layout's <main class="pub-content"> wrapper. The
      only chrome is the hairline divider below the timestamp/Refresh
-     row. */
+     row. Color sourced from --card-ts-divider so the parent wrapper
+     class (.card-theme-cream / .card-theme-dark) controls the tone. */
   .perf-ts-row {
-    border-bottom: 1px solid #d8d4cc;
+    border-bottom: 1px solid var(--card-ts-divider, #d8d4cc);
   }
   /* Tighter heading-to-grid gap on the public side. The .perf-strategy
      marker (always present on the public route, absent on the algo
@@ -1341,20 +1342,23 @@
      prominent .pub-callout (warm #f0ead8 + #d4c89f) for the softer
      palette that NavCard used to carry (#faf7f0 + #e0d9cc). NavCard
      now carries the prominent treatment so the partner's NAV slice
-     reads as the primary card. */
+     reads as the primary card.
+
+     Colors sourced from --card-strategy-* vars so the parent wrapper
+     class (.card-theme-cream / .card-theme-dark) controls the palette. */
   .perf-strategy {
-    background: #faf7f0;
-    border: 1px solid #e0d9cc;
+    background: var(--card-strategy-bg, #faf7f0);
+    border: 1px solid var(--card-strategy-border, #e0d9cc);
     border-radius: 0.3rem;
     padding: 0.45rem 0.75rem;
     margin-bottom: 0.6rem;
     font-size: 0.75rem;
     line-height: 1.4;
-    color: #1e3050;
+    color: var(--card-strategy-text, #1e3050);
   }
   .perf-strategy-lbl {
     font-weight: 700;
-    color: #5a7090;
+    color: var(--card-strategy-lbl, #5a7090);
     text-transform: uppercase;
     font-size: 0.6rem;
     letter-spacing: 0.08em;
@@ -1362,10 +1366,10 @@
   }
   .perf-strategy-val {
     font-weight: 700;
-    color: #0c1830;
+    color: var(--card-strategy-val, #0c1830);
   }
   .perf-strategy-meta {
-    color: #5a7090;
+    color: var(--card-strategy-meta, #5a7090);
     font-size: 0.7rem;
   }
   /* Inline separator dot — explicit baseline alignment so it doesn't
@@ -1376,7 +1380,7 @@
      the meta clauses each break to their own line. */
   .perf-strategy-sep {
     display: inline-block;
-    color: #c8a84b;
+    color: var(--card-strategy-sep, #c8a84b);
     font-weight: 600;
     margin: 0 0.45rem;
     vertical-align: baseline;
@@ -1451,7 +1455,12 @@
     flex: 1 1 auto;
   }
 
-  /* Light (public) theme. */
+  /* Light (cream) theme banners — these only render outside .perf-dark
+     (public /performance). The dark overrides below take over when
+     theme='ag-theme-algo'. Hard-coded here intentionally: banners are
+     semantic (outage = amber, error = red) and the colors don't change
+     between cream and dark themes — only the background opacity does.
+     The .perf-dark overrides below handle the dark variant. */
   .perf-banner-outage {
     background: #fff8e8;
     border-color: #e8c97a;
@@ -1501,13 +1510,15 @@
      ships background: rgba(251,191,36,0.10) on amber). Operator:
      "have nav funds background decoration to other tabs in public
      pages." Same shape across all public-page tabs now — pure
-     underline + 10% color tint on the active label. */
+     underline + 10% color tint on the active label.
+     Colors sourced from --card-active-* vars set by the parent
+     wrapper class (.card-theme-cream / .card-theme-dark). */
   .tabs-row :global(button[class*="border-primary"]) {
-    border-bottom-color: #d4920c !important;
-    background: rgba(212, 146, 12, 0.13) !important;
+    border-bottom-color: var(--card-active-border, rgba(212, 146, 12, 0.5)) !important;
+    background: var(--card-active-row-bg, rgba(212, 146, 12, 0.13)) !important;
   }
   .tabs-row :global(button[class*="text-muted"]:hover) {
-    border-bottom-color: rgba(212, 146, 12, 0.5) !important;
+    border-bottom-color: var(--card-active-border, rgba(212, 146, 12, 0.5)) !important;
     background: rgba(212, 146, 12, 0.07) !important;
   }
   /* Account dropdown wrapper. Theme + colour handled inside
@@ -1542,12 +1553,12 @@
     display: flex;
   }
   .funds-nav-tabs :global(.algo-tab[aria-selected="true"]) {
-    color: #1a2744 !important;
-    border-bottom-color: #d4920c !important;
-    background: rgba(212, 146, 12, 0.13) !important;
+    color: var(--card-active-row-text, #1a2744) !important;
+    border-bottom-color: var(--card-active-border, rgba(212, 146, 12, 0.5)) !important;
+    background: var(--card-active-row-bg, rgba(212, 146, 12, 0.13)) !important;
   }
   .funds-nav-tabs :global(.algo-tab:hover:not([aria-selected="true"])) {
-    border-bottom-color: rgba(212, 146, 12, 0.5) !important;
+    border-bottom-color: var(--card-active-border, rgba(212, 146, 12, 0.5)) !important;
     background: rgba(212, 146, 12, 0.07) !important;
   }
 

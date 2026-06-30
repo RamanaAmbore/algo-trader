@@ -211,10 +211,15 @@
      NAV slice) swapped to the WARMER prominent treatment that was
      on .perf-strategy. Strategy thesis below it gets the softer
      palette in return so the visual hierarchy now reads NAV first,
-     context-blurb second. */
+     context-blurb second.
+
+     Colors are sourced from CSS custom properties set by the parent
+     route wrapper (.card-theme-cream on /performance, .card-theme-dark
+     on /dashboard). Cream values are the defaults when no wrapper is
+     present so legacy callers see no change. */
   .nav-card {
-    background: #f0ead8;
-    border: 1px solid #d4c89f;
+    background: var(--card-bg, #f0ead8);
+    border: 1px solid var(--card-border, #d4c89f);
     border-radius: 6px;
     padding: 0.9rem 1.1rem 0.75rem;
     margin-bottom: 1rem;
@@ -251,7 +256,7 @@
   /* Vertical divider between panels — replaced by padding gap on mobile */
   @media (min-width: 768px) {
     .nav-panel-divider {
-      border-left: 1px solid #e0d9cc;
+      border-left: 1px solid var(--card-divider, #e0d9cc);
       padding-left: 1.25rem;
     }
   }
@@ -277,7 +282,7 @@
     font-size: 0.6rem;
     font-weight: 700;
     letter-spacing: 0.08em;
-    color: #c8a84b;      /* champagne gold */
+    color: var(--card-label-text, #c8a84b);
     text-transform: uppercase;
     margin-bottom: 0.1rem;
   }
@@ -286,14 +291,14 @@
   .nav-big {
     font-size: 1.55rem;
     font-weight: 700;
-    color: #0c1830;
+    color: var(--card-cell-text, #0c1830);
     line-height: 1.1;
     font-variant-numeric: tabular-nums;
   }
   .nav-currency {
     font-size: 0.85rem;
     font-weight: 600;
-    color: #4a5872;
+    color: var(--card-currency-text, #4a5872);
     margin-right: 0.05em;
   }
 
@@ -307,7 +312,7 @@
   /* ── Meta row (contribution · share%) ──────────────────────────── */
   .nav-meta {
     font-size: 0.63rem;
-    color: #7a6b52;
+    color: var(--card-muted-text, #7a6b52);
     margin-top: 0.08rem;
     font-variant-numeric: tabular-nums;
   }
@@ -328,29 +333,30 @@
      off the right edge. */
   .nav-as-of {
     font-size: 0.58rem;
-    color: #a89878;
+    color: var(--card-as-of-text, #a89878);
     margin-top: 0.55rem;
     text-align: center;
   }
 
-  /* ── P&L colour tokens (public palette) ────────────────────────── */
-  .nav-gain { color: #1a6b3a; }
-  .nav-loss { color: #9b1c1c; }
-  .nav-zero { color: #7a6b52; }
+  /* ── P&L colour tokens — sourced from card theme vars ───────────── */
+  .nav-gain { color: var(--card-gain-text, #1a6b3a); }
+  .nav-loss { color: var(--card-loss-text, #9b1c1c); }
+  .nav-zero { color: var(--card-zero-text, #7a6b52); }
 
   /* ── Tick-flash — directional pulse on poll update ───────────────
      Brief green / red background tint that fades over ~550ms when
      the 60s poll lands a different number. Matches the visual
-     vocabulary on PositionStrip + /admin/derivatives, but tuned for
-     the public cream/champagne palette: deeper saturated greens and
-     reds (matching .nav-gain / .nav-loss text colors) instead of the
-     algo dark theme's lighter green-400 / red-400. */
+     vocabulary on PositionStrip + /admin/derivatives. The start color
+     is read from --card-tf-up-start / --card-tf-down-start so the
+     cream variant gets deep saturated tones (matching .nav-gain /
+     .nav-loss) while the dark variant uses the algo green-400 / red-400
+     palette. */
   @keyframes nav-tf-up {
-    0%   { background-color: rgba(26, 107, 58, 0.20); }
+    0%   { background-color: var(--card-tf-up-start, rgba(26, 107, 58, 0.20)); }
     100% { background-color: transparent; }
   }
   @keyframes nav-tf-down {
-    0%   { background-color: rgba(155, 28, 28, 0.20); }
+    0%   { background-color: var(--card-tf-down-start, rgba(155, 28, 28, 0.20)); }
     100% { background-color: transparent; }
   }
   .tf-up   {
@@ -369,7 +375,12 @@
     gap: 0.5rem;
   }
   .nav-skel-bar {
-    background: linear-gradient(90deg, #ede8df 25%, #f5f0e8 50%, #ede8df 75%);
+    background: linear-gradient(
+      90deg,
+      var(--card-skel-from, #ede8df) 25%,
+      var(--card-skel-to,   #f5f0e8) 50%,
+      var(--card-skel-from, #ede8df) 75%
+    );
     background-size: 200% 100%;
     animation: nav-skel-shimmer 1.4s ease-in-out infinite;
     border-radius: 3px;

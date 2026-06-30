@@ -1987,3 +1987,106 @@ button:not(:disabled):active,
 @media (prefers-reduced-motion: reduce) {
   .cell-freshness-pulse::after { animation: none; }
 }
+
+/* ── Card theming — dark/cream variants ─────────────────────────────────────
+   Scope NavCard + PerformancePage color tokens via CSS custom properties so
+   the same component code renders the correct palette in each context.
+
+   cream (default) — public /performance, /investor, landing. Warm champagne
+     palette that reads as a "report" surface for LPs and recruiters.
+
+   dark — operator terminal (/dashboard). Bloomberg-style navy + amber accent
+     that matches .algo-card, MarketPulse, and the rest of the trading desk UI.
+
+   Usage:
+     Public routes:  wrap in <div class="card-theme-cream"> (or rely on default)
+     /dashboard:     wrap embedded NavCard/PerformancePage in <div class="card-theme-dark">
+   ──────────────────────────────────────────────────────────────────────────── */
+
+.card-theme-cream {
+  /* Card shell */
+  --card-bg:                  #f0ead8;
+  --card-border:              #d4c89f;
+  --card-divider:             #e0d9cc;
+
+  /* Text */
+  --card-cell-text:           #0c1830;
+  --card-currency-text:       #4a5872;
+  --card-muted-text:          #7a6b52;
+  --card-label-text:          #c8a84b;   /* champagne gold label */
+  --card-as-of-text:          #a89878;
+
+  /* P&L colours */
+  --card-gain-text:           #1a6b3a;
+  --card-loss-text:           #9b1c1c;
+  --card-zero-text:           #7a6b52;
+
+  /* Active/selected row (tab + period picker) */
+  --card-active-row-bg:       rgba(212, 146, 12, 0.13);
+  --card-active-row-text:     #6b4c0c;
+  --card-active-border:       rgba(212, 146, 12, 0.5);
+
+  /* Skeleton shimmer */
+  --card-skel-from:           #ede8df;
+  --card-skel-to:             #f5f0e8;
+
+  /* Tick-flash — deeper saturated tones for cream bg */
+  --card-tf-up-start:         rgba(26, 107, 58, 0.20);
+  --card-tf-down-start:       rgba(155, 28, 28, 0.20);
+
+  /* Strategy card (public /performance) */
+  --card-strategy-bg:         #faf7f0;
+  --card-strategy-border:     #e0d9cc;
+  --card-strategy-text:       #1e3050;
+  --card-strategy-lbl:        #5a7090;
+  --card-strategy-val:        #0c1830;
+  --card-strategy-meta:       #5a7090;
+  --card-strategy-sep:        #c8a84b;
+
+  /* Timestamp row divider */
+  --card-ts-divider:          #d8d4cc;
+}
+
+.card-theme-dark {
+  /* Card shell */
+  --card-bg:                  linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+  --card-border:              rgba(255, 255, 255, 0.08);
+  --card-divider:             rgba(126, 151, 184, 0.20);
+
+  /* Text */
+  --card-cell-text:           #e2e8f0;   /* slate-200 */
+  --card-currency-text:       #94a3b8;   /* slate-400 */
+  --card-muted-text:          #94a3b8;
+  --card-label-text:          #fbbf24;   /* amber-400 */
+  --card-as-of-text:          #94a3b8;
+
+  /* P&L colours — canonical algo palette (unchanged) */
+  --card-gain-text:           #4ade80;   /* green-400 */
+  --card-loss-text:           #f87171;   /* red-400 */
+  --card-zero-text:           #94a3b8;
+
+  /* Active/selected row */
+  --card-active-row-bg:       rgba(251, 191, 36, 0.13);
+  --card-active-row-text:     #fbbf24;
+  --card-active-border:       rgba(251, 191, 36, 0.55);
+
+  /* Skeleton shimmer — dark variant */
+  --card-skel-from:           rgba(255, 255, 255, 0.06);
+  --card-skel-to:             rgba(255, 255, 255, 0.10);
+
+  /* Tick-flash — algo green/red */
+  --card-tf-up-start:         rgba(74, 222, 128, 0.20);
+  --card-tf-down-start:       rgba(248, 113, 113, 0.20);
+
+  /* Strategy card — not shown on dark theme (hidden via compactHeader=true) */
+  --card-strategy-bg:         rgba(255, 255, 255, 0.04);
+  --card-strategy-border:     rgba(255, 255, 255, 0.08);
+  --card-strategy-text:       #e2e8f0;
+  --card-strategy-lbl:        #94a3b8;
+  --card-strategy-val:        #e2e8f0;
+  --card-strategy-meta:       #94a3b8;
+  --card-strategy-sep:        #fbbf24;
+
+  /* Timestamp row divider */
+  --card-ts-divider:          rgba(255, 255, 255, 0.08);
+}

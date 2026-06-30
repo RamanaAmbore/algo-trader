@@ -785,7 +785,7 @@
   <BrokerHealthBadge bind:open={brokerHealthOpen} />
 {/if}
 
-<div class="algo-viewport">
+<div class="algo-viewport card-theme-dark">
   <div class="algo-card">
     <!-- Top bar -->
     <header class="algo-navbar">

@@ -66,7 +66,7 @@
      reference. -->
 <NavigationIndicator bind:this={_navIndicator} variant="pub" />
 
-<div class="pub-viewport">
+<div class="pub-viewport card-theme-cream">
   <div class="pub-accent-top"></div>
 
   <div class="pub-card">
