@@ -3690,27 +3690,86 @@ class OrdersController(Controller):
                 )
             try:
                 broker = _broker_for(account)
-                orders_payload = [
-                    {
-                        "exchange":         leg.exchange.upper(),
-                        "tradingsymbol":    leg.tradingsymbol.upper(),
+                from backend.brokers.adapters.kite import get_lot_size as _bm_get_lot_size
+                # Build the payload with broker-translated qty per leg.
+                # MCX/NCO: Kite's basket_order_margins expects qty in LOTS,
+                # not contracts. Sending raw contracts (e.g. 100 for 1 CRUDEOIL
+                # lot) causes Kite to treat it as 100 LOTS, returning a ~100×
+                # inflated or nonsensically negative margin. translate_qty() is
+                # the same helper used by /basket live placement.
+                orders_payload = []
+                for leg in grp.legs:
+                    _leg_exch = leg.exchange.upper()
+                    _leg_sym  = leg.tradingsymbol.upper()
+                    _leg_raw  = int(leg.quantity or 0)
+                    _leg_lot  = await _bm_get_lot_size(_leg_exch, _leg_sym)
+                    _leg_bq   = broker.translate_qty(_leg_exch, _leg_raw, _leg_lot)
+                    orders_payload.append({
+                        "exchange":         _leg_exch,
+                        "tradingsymbol":    _leg_sym,
                         "transaction_type": leg.transaction_type.upper(),
                         "variety":          leg.variety or "regular",
                         "product":          leg.product or "NRML",
                         "order_type":       leg.order_type or "LIMIT",
-                        "quantity":         leg.quantity,
+                        "quantity":         _leg_bq,
                         "price":            float(leg.price or 0),
                         "trigger_price":    float(leg.trigger_price or 0),
-                    }
-                    for leg in grp.legs
-                ]
+                    })
+                    if _leg_bq != _leg_raw:
+                        logger.info(
+                            f"[BASKET-MARGIN] qty translated "
+                            f"{_leg_exch}/{_leg_sym}: {_leg_raw} contracts "
+                            f"→ {_leg_bq} lots (lot_size={_leg_lot})"
+                        )
                 result = await asyncio.to_thread(broker.basket_order_margins, orders_payload)
-                # Kite returns {"initial": {...}, "final": {...}}; we surface
-                # "final" as the post-hedge required margin.
-                final  = (result or {}).get("final", {}) or {}
-                avail  = (result or {}).get("initial", {}).get("available", {}) or {}
-                required  = float(final.get("total") or 0)
-                available = float(avail.get("cash") or 0)
+                # Kite's basket_order_margins returns a LIST — one entry per
+                # input leg. Each entry has {"initial": {...}, "final": {...}}.
+                # The NET basket margin is the LAST element's final.total (Kite
+                # accumulates the hedge offset incrementally). The old code tried
+                # result.get("final") on a list → always {}, giving required=0.
+                required: float = 0.0
+                available: float = 0.0
+                if isinstance(result, list) and result:
+                    # Use the last entry — it carries the cumulative basket total.
+                    _last = result[-1]
+                    if isinstance(_last, dict):
+                        _final = (_last.get("final") or {})
+                        _avail_block = (_last.get("initial") or {}).get("available") or {}
+                        for _branch in ("total",):
+                            _v = _final.get(_branch)
+                            if _v is not None:
+                                try:
+                                    required = float(_v)
+                                except (TypeError, ValueError):
+                                    pass
+                                break
+                        _cash = _avail_block.get("cash") or _avail_block.get("adhoc_margin") or 0
+                        try:
+                            available = float(_cash)
+                        except (TypeError, ValueError):
+                            available = 0.0
+                elif isinstance(result, dict):
+                    # Fallback for non-list response shapes (non-Kite adapters).
+                    _final = (result.get("final") or {})
+                    _avail = (result.get("initial") or {}).get("available") or {}
+                    try:
+                        required = float(_final.get("total") or 0)
+                    except (TypeError, ValueError):
+                        required = 0.0
+                    try:
+                        available = float(_avail.get("cash") or 0)
+                    except (TypeError, ValueError):
+                        available = 0.0
+                # Sanity-check: negative required means Kite returned a credit
+                # margin or an error signal — treat as zero for display purposes
+                # but log for diagnostics.
+                if required < 0:
+                    logger.warning(
+                        f"[BASKET-MARGIN] negative margin from broker for "
+                        f"{account}: required={required:.2f} — treating as 0. "
+                        f"Likely anomalous Kite response; check payload qty units."
+                    )
+                    required = 0.0
                 shortfall = max(0.0, required - available)
                 return BasketMarginGroupResult(
                     account=account,
@@ -3724,7 +3783,7 @@ class OrdersController(Controller):
                 logger.warning(f"[BASKET-MARGIN] account={account} error={_e}")
                 return BasketMarginGroupResult(
                     account=account, required=None, available=None,
-                    shortfall=None, error=str(_e)[:200],
+                    shortfall=None, error=str(_e)[:500],
                 )
 
         results = await asyncio.gather(*[_margin_for_group(g) for g in data.groups])
@@ -3874,9 +3933,17 @@ class OrdersController(Controller):
                             leg_index=i, order_id=str(kite_oid), status="OPEN",
                         ))
                     except Exception as _e:
+                        # Use 500 chars so broker messages like "Margin required:
+                        # 29870396.16. Margin available: 9216518.60. Add
+                        # 20653877.56 to place this order." reach the UI in full.
+                        _full_err = str(_e)
+                        logger.error(
+                            f"[BASKET-LIVE] {account} leg {i} {side} {qty} "
+                            f"{sym}@{leg.price} rejected: {_full_err}"
+                        )
                         leg_results.append(BasketLegResult(
                             leg_index=i, order_id=None, status="error",
-                            error=str(_e)[:200],
+                            error=_full_err[:500],
                         ))
 
                 elif eff_mode == "shadow":
@@ -3983,25 +4050,45 @@ class OrdersController(Controller):
             margin_available: float | None = None
             try:
                 broker = _broker_for(account)
-                orders_payload = [
-                    {
-                        "exchange":         (leg.exchange or "NFO").upper(),
-                        "tradingsymbol":    leg.tradingsymbol.upper(),
+                from backend.brokers.adapters.kite import get_lot_size as _disp_get_lot_size
+                # Same qty translation as the /basket-margin endpoint —
+                # MCX qty must be in lots, not contracts. Re-use per-leg
+                # translate_qty so both display paths agree.
+                _disp_payload = []
+                for leg in grp.legs:
+                    _d_exch = (leg.exchange or "NFO").upper()
+                    _d_sym  = leg.tradingsymbol.upper()
+                    _d_raw  = int(leg.quantity or 0)
+                    _d_lot  = await _disp_get_lot_size(_d_exch, _d_sym)
+                    _d_bq   = broker.translate_qty(_d_exch, _d_raw, _d_lot)
+                    _disp_payload.append({
+                        "exchange":         _d_exch,
+                        "tradingsymbol":    _d_sym,
                         "transaction_type": leg.transaction_type.upper(),
                         "variety":          leg.variety or "regular",
                         "product":          leg.product or "NRML",
                         "order_type":       leg.order_type or "LIMIT",
-                        "quantity":         leg.quantity,
+                        "quantity":         _d_bq,
                         "price":            float(leg.price or 0),
                         "trigger_price":    float(leg.trigger_price or 0),
-                    }
-                    for leg in grp.legs
-                ]
-                mr = await asyncio.to_thread(broker.basket_order_margins, orders_payload)
-                final_m = (mr or {}).get("final", {}) or {}
-                avail_m = (mr or {}).get("initial", {}).get("available", {}) or {}
-                margin_required  = float(final_m.get("total") or 0)
-                margin_available = float(avail_m.get("cash") or 0)
+                    })
+                mr = await asyncio.to_thread(broker.basket_order_margins, _disp_payload)
+                # Kite returns a list; use the last entry's final.total.
+                if isinstance(mr, list) and mr:
+                    _mr_last = mr[-1]
+                    final_m = (_mr_last.get("final") or {}) if isinstance(_mr_last, dict) else {}
+                    avail_m = ((_mr_last.get("initial") or {}).get("available") or {}) if isinstance(_mr_last, dict) else {}
+                elif isinstance(mr, dict):
+                    final_m = (mr.get("final") or {})
+                    avail_m = (mr.get("initial") or {}).get("available") or {}
+                else:
+                    final_m, avail_m = {}, {}
+                _mr_req = float(final_m.get("total") or 0)
+                _mr_ava = float(avail_m.get("cash") or avail_m.get("adhoc_margin") or 0)
+                # Negative margin is not displayable — suppress.
+                if _mr_req >= 0:
+                    margin_required  = _mr_req
+                    margin_available = _mr_ava
             except Exception as _me:
                 logger.debug(f"[BASKET] margin lookup failed for {account}: {_me}")
 
