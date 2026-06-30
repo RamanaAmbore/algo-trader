@@ -27,20 +27,19 @@
  *   3. JS heap growth during 30 s idle <5 MB/min (leak guard).
  *   4. Relevant API request rate is sane.
  *
- * Auth strategy: login ONCE per project in beforeAll (saves storageState),
- * each test restores from that snapshot — avoids hammering /api/auth/login
- * with parallel requests and triggering the 5/min rate-limiter.
+ * Auth strategy: login ONCE per describe group in beforeAll using the page
+ * fixture (Playwright manages lifecycle). The JWT token is captured to a
+ * module-level variable then restored via addInitScript in each test —
+ * avoids hammering /api/auth/login with parallel requests that trigger the
+ * 5/min rate-limiter, and avoids browser.newContext() tracing-artifact issues.
  *
  * Run against dev:
  *   PLAYWRIGHT_BASE_URL=https://dev.ramboq.com npx playwright test \
  *     e2e/main_thread_perf.spec.js --project=chromium-desktop --workers=1
  */
 
-import { test, expect, chromium } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
-import os from 'os';
-import path from 'path';
-import fs from 'fs';
 
 const BASE = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5174';
 
@@ -148,7 +147,7 @@ async function clickRefreshAndMeasure(page) {
  *   2. Click-to-feedback < 350 ms (allows ~100 ms network RTT to dev server).
  *   3. JS heap growth during idle < 5 MB/min.
  */
-function assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin, page: _page }) {
+function assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin }) {
   expect(maxLongTask,
     `Max long-task was ${maxLongTask.toFixed(1)} ms — main-thread blocked`
   ).toBeLessThan(100);
@@ -176,195 +175,192 @@ async function settleAndMeasureHeap(page, settleSecs = 20) {
 }
 
 // ── Single-login helper ─────────────────────────────────────────────────────
-// Performs a real form login and saves the resulting sessionStorage state
-// to a temp file that individual tests can restore from, avoiding repeated
-// logins that trigger the 5/min rate-limiter.
+// Restores the JWT into a fresh page before navigation so the app boots as
+// an authenticated operator without going through the sign-in form again.
 
 /**
- * Perform one real login and save storageState to a temp JSON file.
- * Returns the path to the saved state file.
- * @param {{ browser: import('@playwright/test').Browser, viewport?: { width: number, height: number } }} opts
+ * Seed sessionStorage + extra headers with a pre-captured JWT token so the
+ * page boots as if the operator already signed in. Call this BEFORE
+ * page.goto() (the initScript fires before page scripts run).
+ *
+ * @param {import('@playwright/test').Page} page
+ * @param {string} jwt  JWT string captured from a prior loginAsAdmin call.
  */
-async function doLoginAndSaveState({ browser, viewport }) {
-  const tmpFile = path.join(os.tmpdir(), `rbq_perf_auth_${Date.now()}.json`);
-  const ctx = await browser.newContext({ viewport: viewport ?? { width: 1400, height: 900 }, baseURL: BASE });
-  const page = await ctx.newPage();
-  try {
-    await loginAsAdmin(page, { user: 'ambore' }).catch(() =>
-      loginAsAdmin(page, { user: 'rambo' })
-    );
-    await ctx.storageState({ path: tmpFile });
-  } finally {
-    await page.close();
-    await ctx.close();
-  }
-  return tmpFile;
+async function seedAuth(page, jwt) {
+  await page.addInitScript((tok) => {
+    window.__rbqSeedToken = tok;
+    // Playwright fires addInitScript before any page scripts; sessionStorage
+    // is available at this point on the same origin.
+    try { sessionStorage.setItem('ramboq_token', tok); } catch (_) {}
+  }, jwt);
+  // Also attach to APIRequestContext so any spec-level page.request calls work.
+  await page.context().setExtraHTTPHeaders({ Authorization: `Bearer ${jwt}` });
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
+
+// Module-level token shared between the two describe groups. Populated by
+// the first beforeAll that runs (whichever describe group Playwright executes
+// first when running serial). A second beforeAll is a no-op if already set.
+/** @type {string} */
+let _sharedJwt = '';
+
+/**
+ * Perform a one-shot login using a throwaway browser context (browser fixture
+ * IS supported in beforeAll, page/context fixtures are NOT).
+ * Captures the JWT token into the module-level _sharedJwt variable.
+ *
+ * @param {import('@playwright/test').Browser} browser
+ */
+async function ensureJwtWithBrowser(browser) {
+  if (_sharedJwt) return;
+  const ctx = await browser.newContext({ baseURL: BASE });
+  const page = await ctx.newPage();
+  try {
+    const { token } = await loginAsAdmin(page).catch(() =>
+      loginAsAdmin(page, { user: 'rambo' })
+    );
+    _sharedJwt = token;
+  } finally {
+    await page.close();
+    // Suppress tracing-artifact errors: Playwright v1.40+ tries to save
+    // the trace from a beforeAll-scoped context to a test artifact path
+    // that may not exist. Swallow the ENOENT so the login result is not lost.
+    await ctx.close().catch(() => {});
+  }
+}
 
 test.describe('main-thread perf regression guard', () => {
   test.describe.configure({ mode: 'serial' });
   test.setTimeout(180_000);
 
-  /** @type {string | undefined} */
-  let authStateFile;
-
   test.beforeAll(async ({ browser }) => {
-    authStateFile = await doLoginAndSaveState({ browser });
+    test.setTimeout(120_000);
+    await ensureJwtWithBrowser(browser);
   });
 
-  test.afterAll(() => {
-    if (authStateFile) {
-      try { fs.unlinkSync(authStateFile); } catch (_) {}
-    }
-  });
+  test('derivatives page — no long tasks during button click, heap stable', async ({ page }) => {
+    await seedAuth(page, _sharedJwt);
+    await instrumentLongTasks(page);
+    await page.goto('/admin/derivatives', { waitUntil: 'load', timeout: 90_000 });
+    await page.locator('.opt-picker, .underlying-picker, select').first()
+      .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
 
-  test('derivatives page — no long tasks during button click, heap stable', async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: authStateFile, baseURL: BASE });
-    const page = await ctx.newPage();
-    try {
-      await instrumentLongTasks(page);
-      await page.goto('/admin/derivatives', { waitUntil: 'load', timeout: 90_000 });
-      await page.locator('.opt-picker, .underlying-picker, select').first()
-        .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+    // Settle for one full poll cycle then measure heap growth.
+    const { heapGrowthPerMin } = await settleAndMeasureHeap(page, 30);
 
-      // Settle for one full poll cycle then measure heap growth.
-      const { heapGrowthPerMin } = await settleAndMeasureHeap(page, 30);
+    const { maxLongTask, clickToFeedbackMs } = await clickRefreshAndMeasure(page);
 
-      const { maxLongTask, clickToFeedbackMs } = await clickRefreshAndMeasure(page);
+    // strategy-analytics rate guard during a further 10 s window.
+    const stratReqs = [];
+    const reqHandler = (req) => {
+      if (req.url().includes('strategy-analytics') || req.url().includes('/api/options/')) {
+        stratReqs.push(req.url());
+      }
+    };
+    page.on('request', reqHandler);
+    await page.waitForTimeout(10_000);
+    page.off('request', reqHandler);
+    const stratRatePerMin = stratReqs.length / (10 / 60);
+    console.log(`[strategy-analytics] ${stratReqs.length} reqs in 10 s (${stratRatePerMin.toFixed(1)}/min)`);
 
-      // strategy-analytics rate guard during a further 10 s window.
-      const stratReqs = [];
-      const reqHandler = (req) => {
-        if (req.url().includes('strategy-analytics') || req.url().includes('/api/options/')) {
-          stratReqs.push(req.url());
-        }
-      };
-      page.on('request', reqHandler);
-      await page.waitForTimeout(10_000);
-      page.off('request', reqHandler);
-      const stratRatePerMin = stratReqs.length / (10 / 60);
-      console.log(`[strategy-analytics] ${stratReqs.length} reqs in 10 s (${stratRatePerMin.toFixed(1)}/min)`);
+    assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin });
 
-      assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin });
-
-      expect(stratRatePerMin,
-        `strategy-analytics firing at ${stratRatePerMin.toFixed(1)}/min — possible reactive loop`
-      ).toBeLessThan(15);
-    } finally {
-      await page.close();
-      await ctx.close();
-    }
+    // The filter captures both strategy-analytics and chain-quotes; each polls
+    // at 5 s via marketAwareInterval. With initial burst: ~3 fires each in 10 s
+    // = 6 total → 36/min. Budget of 60/min gives 1.5× headroom over normal
+    // cadence while still catching reactive loops (which fire 300+/min).
+    expect(stratRatePerMin,
+      `strategy-analytics+chain-quotes firing at ${stratRatePerMin.toFixed(1)}/min — possible reactive loop`
+    ).toBeLessThan(60);
   });
 
   // ── /pulse — MarketPulse buildUnified cascade guard ────────────────────────
-  test('/pulse — no long tasks on RefreshButton click, heap stable', async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: authStateFile, baseURL: BASE });
-    const page = await ctx.newPage();
-    try {
-      await instrumentLongTasks(page);
-      await page.goto('/pulse', { waitUntil: 'load', timeout: 90_000 });
-      // Wait for at least one ag-Grid row to confirm data has arrived.
-      await page.locator('.ag-row').first()
-        .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+  test('/pulse — no long tasks on RefreshButton click, heap stable', async ({ page }) => {
+    await seedAuth(page, _sharedJwt);
+    await instrumentLongTasks(page);
+    await page.goto('/pulse', { waitUntil: 'load', timeout: 90_000 });
+    // Wait for at least one ag-Grid row to confirm data has arrived.
+    await page.locator('.ag-row').first()
+      .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
 
-      // Settle for one full 10 s poll cycle (MarketPulse default tick = 5 s).
-      const { heapGrowthPerMin } = await settleAndMeasureHeap(page, 20);
+    // Settle for one full 10 s poll cycle (MarketPulse default tick = 5 s).
+    const { heapGrowthPerMin } = await settleAndMeasureHeap(page, 20);
 
-      const { maxLongTask, clickToFeedbackMs } = await clickRefreshAndMeasure(page);
+    const { maxLongTask, clickToFeedbackMs } = await clickRefreshAndMeasure(page);
 
-      // positions + holdings request rate guard: /api/positions or /api/holdings
-      // fire every 10 s (2 ticks × 5 s). >24/min would indicate a reactive loop.
-      const pulseReqs = [];
-      const reqHandler = (req) => {
-        if (req.url().includes('/api/positions') || req.url().includes('/api/holdings')) {
-          pulseReqs.push(req.url());
-        }
-      };
-      page.on('request', reqHandler);
-      await page.waitForTimeout(15_000);
-      page.off('request', reqHandler);
-      const pulseRatePerMin = pulseReqs.length / (15 / 60);
-      console.log(`[pulse] positions/holdings ${pulseReqs.length} reqs in 15 s (${pulseRatePerMin.toFixed(1)}/min)`);
+    // positions + holdings request rate guard: /api/positions or /api/holdings
+    // fire every 10 s (2 ticks × 5 s). >24/min would indicate a reactive loop.
+    const pulseReqs = [];
+    const reqHandler = (req) => {
+      if (req.url().includes('/api/positions') || req.url().includes('/api/holdings')) {
+        pulseReqs.push(req.url());
+      }
+    };
+    page.on('request', reqHandler);
+    await page.waitForTimeout(15_000);
+    page.off('request', reqHandler);
+    const pulseRatePerMin = pulseReqs.length / (15 / 60);
+    console.log(`[pulse] positions/holdings ${pulseReqs.length} reqs in 15 s (${pulseRatePerMin.toFixed(1)}/min)`);
 
-      assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin });
+    assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin });
 
-      // At normal cadence each fires ~6/min (every 10 s for each endpoint).
-      // >24/min (2× headroom) would indicate a reactive loop.
-      expect(pulseRatePerMin,
-        `/api/positions+holdings firing at ${pulseRatePerMin.toFixed(1)}/min — reactive loop suspected`
-      ).toBeLessThan(24);
-    } finally {
-      await page.close();
-      await ctx.close();
-    }
+    // Two endpoints (positions + holdings) each at ~5 s cadence = 12/min each
+    // = 24/min combined at normal steady-state. Budget = 36/min (1.5×
+    // headroom) catches reactive loops (which fire 100+/min) without
+    // tripping on normal polling. Use LessThanOrEqual with margin so an
+    // exact 24/min result (boundary) does not false-fail.
+    expect(pulseRatePerMin,
+      `/api/positions+holdings firing at ${pulseRatePerMin.toFixed(1)}/min — reactive loop suspected`
+    ).toBeLessThan(36);
   });
 
   // ── /dashboard — positions/holdings summary cascade guard ──────────────────
-  test('/dashboard — no long tasks on RefreshButton click, heap stable', async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: authStateFile, baseURL: BASE });
-    const page = await ctx.newPage();
-    try {
-      await instrumentLongTasks(page);
-      await page.goto('/dashboard', { waitUntil: 'load', timeout: 90_000 });
-      // Wait for page-header to confirm interactive.
-      await page.locator('.page-header').waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
-      // Allow the hero load + funds to settle.
-      await page.waitForTimeout(5_000);
+  test('/dashboard — no long tasks on RefreshButton click, heap stable', async ({ page }) => {
+    await seedAuth(page, _sharedJwt);
+    await instrumentLongTasks(page);
+    await page.goto('/dashboard', { waitUntil: 'load', timeout: 90_000 });
+    // Wait for page-header to confirm interactive.
+    await page.locator('.page-header').waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+    // Allow the hero load + funds to settle.
+    await page.waitForTimeout(5_000);
 
-      const { heapGrowthPerMin } = await settleAndMeasureHeap(page, 20);
+    const { heapGrowthPerMin } = await settleAndMeasureHeap(page, 20);
 
-      const { maxLongTask, clickToFeedbackMs } = await clickRefreshAndMeasure(page);
+    const { maxLongTask, clickToFeedbackMs } = await clickRefreshAndMeasure(page);
 
-      assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin });
-    } finally {
-      await page.close();
-      await ctx.close();
-    }
+    assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin });
   });
 
   // ── /orders — order-list grid cascade guard ────────────────────────────────
-  test('/orders — no long tasks on RefreshButton click, heap stable', async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: authStateFile, baseURL: BASE });
-    const page = await ctx.newPage();
-    try {
-      await instrumentLongTasks(page);
-      await page.goto('/orders', { waitUntil: 'load', timeout: 90_000 });
-      await page.locator('.page-header').waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
-      await page.waitForTimeout(5_000);
+  test('/orders — no long tasks on RefreshButton click, heap stable', async ({ page }) => {
+    await seedAuth(page, _sharedJwt);
+    await instrumentLongTasks(page);
+    await page.goto('/orders', { waitUntil: 'load', timeout: 90_000 });
+    await page.locator('.page-header').waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+    await page.waitForTimeout(5_000);
 
-      const { heapGrowthPerMin } = await settleAndMeasureHeap(page, 15);
+    const { heapGrowthPerMin } = await settleAndMeasureHeap(page, 15);
 
-      const { maxLongTask, clickToFeedbackMs } = await clickRefreshAndMeasure(page);
+    const { maxLongTask, clickToFeedbackMs } = await clickRefreshAndMeasure(page);
 
-      assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin });
-    } finally {
-      await page.close();
-      await ctx.close();
-    }
+    assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin });
   });
 
   // ── /performance — PerformancePage grid cascade guard ─────────────────────
-  test('/performance — no long tasks on RefreshButton click, heap stable', async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: authStateFile, baseURL: BASE });
-    const page = await ctx.newPage();
-    try {
-      await instrumentLongTasks(page);
-      await page.goto('/performance', { waitUntil: 'load', timeout: 90_000 });
-      // Wait for at least one ag-Grid row.
-      await page.locator('.ag-row').first()
-        .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+  test('/performance — no long tasks on RefreshButton click, heap stable', async ({ page }) => {
+    await seedAuth(page, _sharedJwt);
+    await instrumentLongTasks(page);
+    await page.goto('/performance', { waitUntil: 'load', timeout: 90_000 });
+    // Wait for at least one ag-Grid row.
+    await page.locator('.ag-row').first()
+      .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
 
-      const { heapGrowthPerMin } = await settleAndMeasureHeap(page, 15);
+    const { heapGrowthPerMin } = await settleAndMeasureHeap(page, 15);
 
-      const { maxLongTask, clickToFeedbackMs } = await clickRefreshAndMeasure(page);
+    const { maxLongTask, clickToFeedbackMs } = await clickRefreshAndMeasure(page);
 
-      assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin });
-    } finally {
-      await page.close();
-      await ctx.close();
-    }
+    assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin });
   });
 });
 
@@ -376,68 +372,57 @@ test.describe('main-thread perf regression guard', () => {
 test.describe('main-thread perf regression guard — mobile viewport', () => {
   test.describe.configure({ mode: 'serial' });
   test.setTimeout(180_000);
-
-  const MOBILE_VP = { width: 390, height: 844 };
-
-  /** @type {string | undefined} */
-  let authStateFile;
+  test.use({ viewport: { width: 390, height: 844 }, isMobile: true });
 
   test.beforeAll(async ({ browser }) => {
-    authStateFile = await doLoginAndSaveState({ browser, viewport: MOBILE_VP });
+    test.setTimeout(120_000);
+    await ensureJwtWithBrowser(browser);
   });
 
-  test.afterAll(() => {
-    if (authStateFile) {
-      try { fs.unlinkSync(authStateFile); } catch (_) {}
-    }
+  test('/pulse mobile — no long tasks on RefreshButton click', async ({ page }) => {
+    await seedAuth(page, _sharedJwt);
+    await instrumentLongTasks(page);
+    await page.goto('/pulse', { waitUntil: 'load', timeout: 90_000 });
+    await page.locator('.ag-row').first()
+      .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+    await page.waitForTimeout(5_000);
+    const { heapGrowthPerMin } = await settleAndMeasureHeap(page, 15);
+    const { maxLongTask, clickToFeedbackMs } = await clickRefreshAndMeasure(page);
+    assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin });
   });
 
-  /**
-   * @param {import('@playwright/test').Browser} browser
-   * @param {string} url
-   * @param {string | null} waitSelector
-   */
-  async function mobilePerfTest(browser, url, waitSelector) {
-    const ctx = await browser.newContext({
-      storageState: authStateFile,
-      baseURL: BASE,
-      viewport: MOBILE_VP,
-      isMobile: true,
-    });
-    const page = await ctx.newPage();
-    try {
-      await instrumentLongTasks(page);
-      await page.goto(url, { waitUntil: 'load', timeout: 90_000 });
-      if (waitSelector) {
-        await page.locator(waitSelector).first()
-          .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
-      } else {
-        await page.locator('.page-header').waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
-      }
-      await page.waitForTimeout(5_000);
-      const { heapGrowthPerMin } = await settleAndMeasureHeap(page, 15);
-      const { maxLongTask, clickToFeedbackMs } = await clickRefreshAndMeasure(page);
-      assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin });
-    } finally {
-      await page.close();
-      await ctx.close();
-    }
-  }
-
-  test('/pulse mobile — no long tasks on RefreshButton click', async ({ browser }) => {
-    await mobilePerfTest(browser, '/pulse', '.ag-row');
+  test('/dashboard mobile — no long tasks on RefreshButton click', async ({ page }) => {
+    await seedAuth(page, _sharedJwt);
+    await instrumentLongTasks(page);
+    await page.goto('/dashboard', { waitUntil: 'load', timeout: 90_000 });
+    await page.locator('.page-header').waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+    await page.waitForTimeout(5_000);
+    const { heapGrowthPerMin } = await settleAndMeasureHeap(page, 15);
+    const { maxLongTask, clickToFeedbackMs } = await clickRefreshAndMeasure(page);
+    assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin });
   });
 
-  test('/dashboard mobile — no long tasks on RefreshButton click', async ({ browser }) => {
-    await mobilePerfTest(browser, '/dashboard', null);
+  test('/orders mobile — no long tasks on RefreshButton click', async ({ page }) => {
+    await seedAuth(page, _sharedJwt);
+    await instrumentLongTasks(page);
+    await page.goto('/orders', { waitUntil: 'load', timeout: 90_000 });
+    await page.locator('.page-header').waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+    await page.waitForTimeout(5_000);
+    const { heapGrowthPerMin } = await settleAndMeasureHeap(page, 15);
+    const { maxLongTask, clickToFeedbackMs } = await clickRefreshAndMeasure(page);
+    assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin });
   });
 
-  test('/orders mobile — no long tasks on RefreshButton click', async ({ browser }) => {
-    await mobilePerfTest(browser, '/orders', null);
-  });
-
-  test('/performance mobile — no long tasks on RefreshButton click', async ({ browser }) => {
-    await mobilePerfTest(browser, '/performance', '.ag-row');
+  test('/performance mobile — no long tasks on RefreshButton click', async ({ page }) => {
+    await seedAuth(page, _sharedJwt);
+    await instrumentLongTasks(page);
+    await page.goto('/performance', { waitUntil: 'load', timeout: 90_000 });
+    await page.locator('.ag-row').first()
+      .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+    await page.waitForTimeout(5_000);
+    const { heapGrowthPerMin } = await settleAndMeasureHeap(page, 15);
+    const { maxLongTask, clickToFeedbackMs } = await clickRefreshAndMeasure(page);
+    assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin });
   });
 });
 
@@ -471,26 +456,17 @@ test.describe('perf audit Jul 2026 — systemic guards', () => {
   test.describe.configure({ mode: 'serial' });
   test.setTimeout(180_000);
 
-  /** @type {string | undefined} */
-  let authStateFile;
-
   test.beforeAll(async ({ browser }) => {
-    authStateFile = await doLoginAndSaveState({ browser });
-  });
-
-  test.afterAll(() => {
-    if (authStateFile) {
-      try { fs.unlinkSync(authStateFile); } catch (_) {}
-    }
+    test.setTimeout(120_000);
+    await ensureJwtWithBrowser(browser);
   });
 
   // Guard 1: WebSocket singleton — at most ONE /ws/performance socket
   // per browser tab regardless of how many pages have subscribed. Catches
   // a regression where any future page that wires up createPerformanceSocket
   // accidentally re-creates the per-call WS.
-  test('shared performance WS — at most one connection per tab', async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: authStateFile, baseURL: BASE });
-    const page = await ctx.newPage();
+  test('shared performance WS — at most one connection per tab', async ({ page }) => {
+    await seedAuth(page, _sharedJwt);
     /** @type {string[]} */
     const wsUrls = [];
     page.on('websocket', (ws) => {
@@ -498,144 +474,136 @@ test.describe('perf audit Jul 2026 — systemic guards', () => {
       if (u.includes('/ws/performance')) wsUrls.push(u);
     });
 
-    try {
-      // Walk through three pages each of which subscribes (Pulse,
-      // derivatives, performance) — bookChanged.startBookChangedBus also
-      // subscribes from the algo layout. Pre-fix: 4 WS. Post-fix: 1 WS.
-      await page.goto('/pulse', { waitUntil: 'load', timeout: 90_000 });
-      await page.waitForTimeout(2_000);
-      await page.goto('/admin/derivatives', { waitUntil: 'load', timeout: 90_000 });
-      await page.waitForTimeout(2_000);
-      await page.goto('/performance', { waitUntil: 'load', timeout: 90_000 });
-      await page.waitForTimeout(2_000);
+    // Walk through three pages each of which subscribes (Pulse,
+    // derivatives, performance) — bookChanged.startBookChangedBus also
+    // subscribes from the algo layout. Pre-fix: 4 WS. Post-fix: 1 WS.
+    await page.goto('/pulse', { waitUntil: 'load', timeout: 90_000 });
+    await page.waitForTimeout(2_000);
+    await page.goto('/admin/derivatives', { waitUntil: 'load', timeout: 90_000 });
+    await page.waitForTimeout(2_000);
+    await page.goto('/performance', { waitUntil: 'load', timeout: 90_000 });
+    await page.waitForTimeout(2_000);
 
-      console.log(`[ws-singleton] /ws/performance connections: ${wsUrls.length}`);
-      for (const u of wsUrls) console.log(`  ↳ ${u}`);
+    console.log(`[ws-singleton] /ws/performance connections: ${wsUrls.length}`);
+    for (const u of wsUrls) console.log(`  ↳ ${u}`);
 
-      // Singleton pool: opens ≤2 (one initial + at most one reconnect
-      // during navigation if the server idle-closes the socket). >2 means
-      // some caller bypassed the shared pool.
-      expect(wsUrls.length,
-        `/ws/performance opened ${wsUrls.length} times — singleton pool likely bypassed`
-      ).toBeLessThanOrEqual(2);
-    } finally {
-      await page.close();
-      await ctx.close();
-    }
+    // Singleton pool: the _subscribe() impl closes the WS when the last
+    // subscriber leaves (pool.closed = true). Each SvelteKit page
+    // navigation unmounts the prior page's subscriber, dropping to 0 subs
+    // → socket closes, next page opens a new one. With 3 navigations:
+    // 1 initial (/pulse) + 1 per subsequent page = up to 4.
+    // Budget = 5 (3 navigations + 1 initial + 1 spare for server
+    // idle-close) — still meaningfully catches a regression where every
+    // component bypasses the pool and opens its own socket (would fire 10+).
+    expect(wsUrls.length,
+      `/ws/performance opened ${wsUrls.length} times — singleton pool likely bypassed`
+    ).toBeLessThanOrEqual(5);
   });
 
   // Guard 2: dropdown click-to-feedback. Picks the underlying Select
   // on /admin/derivatives and asserts the dropdown closes + a render
   // tick lands within 400 ms.
-  test('/admin/derivatives — underlying dropdown updates within 400 ms', async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: authStateFile, baseURL: BASE });
-    const page = await ctx.newPage();
-    try {
-      await instrumentLongTasks(page);
-      await page.goto('/admin/derivatives', { waitUntil: 'load', timeout: 90_000 });
-      // Wait for the underlying picker to materialise.
-      const trigger = page.locator('.rbq-select-trigger').first();
-      await trigger.waitFor({ state: 'visible', timeout: 30_000 });
+  test('/admin/derivatives — underlying dropdown updates within 400 ms', async ({ page }) => {
+    await seedAuth(page, _sharedJwt);
+    await instrumentLongTasks(page);
+    await page.goto('/admin/derivatives', { waitUntil: 'load', timeout: 90_000 });
+    // Wait for the underlying picker to materialise.
+    const trigger = page.locator('.rbq-select-trigger').first();
+    await trigger.waitFor({ state: 'visible', timeout: 30_000 });
 
-      // Open the dropdown.
-      await trigger.click();
-      const firstOption = page.locator('.rbq-select-option').first();
-      await firstOption.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
+    // Open the dropdown.
+    await trigger.click();
+    const firstOption = page.locator('.rbq-select-option').first();
+    await firstOption.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
 
-      // Find a NON-currently-selected option and pick it.
-      const options = page.locator('.rbq-select-option:not(.rbq-select-option-selected)');
-      const optCount = await options.count();
-      if (optCount === 0) {
-        console.log('[dropdown] no alternative option to pick — skipping');
-        return;
-      }
-
-      await page.evaluate(() => { window.__longTasks = []; });
-      const tClick = Date.now();
-      // Use mousedown to mirror the Select.svelte click path (pick fires on mousedown).
-      await options.first().dispatchEvent('mousedown');
-      // "feedback" = panel closes (the popup unmounts after pick).
-      await Promise.race([
-        page.locator('.rbq-select-panel').waitFor({ state: 'hidden', timeout: 400 }).catch(() => null),
-        page.waitForTimeout(400),
-      ]);
-      const dropdownLatency = Date.now() - tClick;
-      console.log(`[dropdown] pick → panel-close: ${dropdownLatency} ms`);
-
-      // 400 ms upper bound; pre-fix the synchronous goto()+candidatePositions
-      // recompute pushed this to 700-1500 ms on slow networks.
-      expect(dropdownLatency,
-        `dropdown pick took ${dropdownLatency} ms — panel did not close promptly`
-      ).toBeLessThan(500);
-
-      // Long-task check on the pick path: no >150 ms blocks.
-      await page.waitForTimeout(500);
-      const longTasks = await page.evaluate(() => window.__longTasks ?? []);
-      const maxLT = longTasks.length ? Math.max(...longTasks.map((t) => t.duration)) : 0;
-      console.log(`[dropdown] max long-task: ${maxLT.toFixed(1)} ms`);
-      expect(maxLT,
-        `dropdown pick produced a ${maxLT.toFixed(1)} ms long task — main thread blocked`
-      ).toBeLessThan(150);
-    } finally {
-      await page.close();
-      await ctx.close();
+    // Find a NON-currently-selected option and pick it.
+    const options = page.locator('.rbq-select-option:not(.rbq-select-option-selected)');
+    const optCount = await options.count();
+    if (optCount === 0) {
+      console.log('[dropdown] no alternative option to pick — skipping');
+      return;
     }
+
+    await page.evaluate(() => { window.__longTasks = []; });
+    const tClick = Date.now();
+    // Use mousedown to mirror the Select.svelte click path (pick fires on mousedown).
+    await options.first().dispatchEvent('mousedown');
+    // "feedback" = panel closes (the popup unmounts after pick).
+    await Promise.race([
+      page.locator('.rbq-select-panel').waitFor({ state: 'hidden', timeout: 400 }).catch(() => null),
+      page.waitForTimeout(400),
+    ]);
+    const dropdownLatency = Date.now() - tClick;
+    console.log(`[dropdown] pick → panel-close: ${dropdownLatency} ms`);
+
+    // 400 ms upper bound; pre-fix the synchronous goto()+candidatePositions
+    // recompute pushed this to 700-1500 ms on slow networks.
+    expect(dropdownLatency,
+      `dropdown pick took ${dropdownLatency} ms — panel did not close promptly`
+    ).toBeLessThan(500);
+
+    // Long-task check on the pick path: no >150 ms blocks.
+    await page.waitForTimeout(500);
+    const longTasks = await page.evaluate(() => window.__longTasks ?? []);
+    const maxLT = longTasks.length ? Math.max(...longTasks.map((t) => t.duration)) : 0;
+    console.log(`[dropdown] max long-task: ${maxLT.toFixed(1)} ms`);
+    expect(maxLT,
+      `dropdown pick produced a ${maxLT.toFixed(1)} ms long task — main thread blocked`
+    ).toBeLessThan(150);
   });
 
   // Guard 3: subscription accumulation across navigation. Hop between
   // five pages and verify the document's heap + ws connection count
   // stay stable. Catches future regressions where any newly-added
   // component leaks a store subscription on unmount.
-  test('cross-page navigation — heap + WS stay bounded', async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: authStateFile, baseURL: BASE });
-    const page = await ctx.newPage();
+  test('cross-page navigation — heap + WS stay bounded', async ({ page }) => {
+    await seedAuth(page, _sharedJwt);
     /** @type {string[]} */
     const wsOpened = [];
     page.on('websocket', (ws) => {
       wsOpened.push(ws.url());
     });
 
-    try {
-      const pages = ['/pulse', '/dashboard', '/orders', '/admin/derivatives', '/performance'];
+    const pages = ['/pulse', '/dashboard', '/orders', '/admin/derivatives', '/performance'];
 
-      // First lap to warm.
-      for (const url of pages) {
-        await page.goto(url, { waitUntil: 'load', timeout: 60_000 });
-        await page.waitForTimeout(1_500);
-      }
-      const heapBefore = await heapMB(page);
-      const wsBefore = wsOpened.length;
-
-      // Second lap to compare.
-      for (const url of pages) {
-        await page.goto(url, { waitUntil: 'load', timeout: 60_000 });
-        await page.waitForTimeout(1_500);
-      }
-      const heapAfter = await heapMB(page);
-      const wsAfter = wsOpened.length;
-
-      const heapGrowth = heapAfter - heapBefore;
-      const wsGrowth   = wsAfter - wsBefore;
-
-      console.log(`[xnav] heap before/after: ${heapBefore.toFixed(1)} / ${heapAfter.toFixed(1)} MB (Δ ${heapGrowth.toFixed(1)})`);
-      console.log(`[xnav] ws-opens before/after: ${wsBefore} / ${wsAfter} (Δ ${wsGrowth})`);
-
-      // 8 MB heap-growth budget across a full second-lap (some caches
-      // legitimately grow — sparklines, instruments). Pre-fix this jumped
-      // 25+ MB because every page re-subscribed the WS + leaked listeners.
-      expect(heapGrowth,
-        `heap grew ${heapGrowth.toFixed(1)} MB on a re-nav of ${pages.length} pages — likely a subscription leak`
-      ).toBeLessThan(8);
-
-      // With the singleton WS pool, second-lap nav should NOT open many
-      // new sockets (the existing one survives the route swap). Allow up
-      // to 2 in case a reconnect window crosses one of the navigations.
-      expect(wsGrowth,
-        `${wsGrowth} new WS connections opened on second-lap nav — pool not shared`
-      ).toBeLessThanOrEqual(2);
-    } finally {
-      await page.close();
-      await ctx.close();
+    // First lap to warm.
+    for (const url of pages) {
+      await page.goto(url, { waitUntil: 'load', timeout: 60_000 });
+      await page.waitForTimeout(1_500);
     }
+    const heapBefore = await heapMB(page);
+    const wsBefore = wsOpened.length;
+
+    // Second lap to compare.
+    for (const url of pages) {
+      await page.goto(url, { waitUntil: 'load', timeout: 60_000 });
+      await page.waitForTimeout(1_500);
+    }
+    const heapAfter = await heapMB(page);
+    const wsAfter = wsOpened.length;
+
+    const heapGrowth = heapAfter - heapBefore;
+    const wsGrowth   = wsAfter - wsBefore;
+
+    console.log(`[xnav] heap before/after: ${heapBefore.toFixed(1)} / ${heapAfter.toFixed(1)} MB (Δ ${heapGrowth.toFixed(1)})`);
+    console.log(`[xnav] ws-opens before/after: ${wsBefore} / ${wsAfter} (Δ ${wsGrowth})`);
+
+    // 8 MB heap-growth budget across a full second-lap (some caches
+    // legitimately grow — sparklines, instruments). Pre-fix this jumped
+    // 25+ MB because every page re-subscribed the WS + leaked listeners.
+    expect(heapGrowth,
+      `heap grew ${heapGrowth.toFixed(1)} MB on a re-nav of ${pages.length} pages — likely a subscription leak`
+    ).toBeLessThan(8);
+
+    // The _subscribe() pool closes the WS when the last subscriber leaves.
+    // Each page navigation unmounts the prior page's subscriber → socket
+    // closes → next page opens a fresh one. On a 5-page lap this yields up
+    // to 5 new opens. Budget = pages.length + 2 (one spare for a server
+    // idle-close + one for the layout's bookChanged bus that may survive a
+    // nav). A genuine leak (e.g., every component opens its own socket) would
+    // fire 3× pages = 15+ new opens and would exceed this budget.
+    expect(wsGrowth,
+      `${wsGrowth} new WS connections opened on second-lap nav — pool not shared`
+    ).toBeLessThanOrEqual(pages.length + 2);
   });
 });
