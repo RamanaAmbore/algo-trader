@@ -236,6 +236,17 @@ def fetch_holdings(*args, **kwargs):
     Zero-arg results are memoised in `_RAW_CACHE` for `_RAW_TTL_S`
     seconds so concurrent consumers (routes + compute_firm_nav +
     investor slice) share one broker round-trip per cache window.
+
+    NAV-consistency guarantee (Approach A): the cached value is a
+    single-element list containing the post-backfill concatenated
+    DataFrame. `backfill_market_data` runs once here — it patches
+    close_price + last_price from PriceBroker.quote(), then
+    recomputes day_change_val, pnl, cur_val, and pnl_percentage.
+    Every consumer (route + compute_firm_nav) then reads the SAME
+    patched cur_val so NavCard and /performance agree. The route's
+    own `backfill_market_data` call becomes a no-op (no zero-LTP
+    rows remain), and `_override_stale_ltp_from_ticker` continues
+    to handle the post-cache KiteTicker tick diff.
     """
     if not args and not kwargs:
         cached = _raw_cache_get("holdings")
@@ -244,10 +255,12 @@ def fetch_holdings(*args, **kwargs):
     if _use_conn_service() and not args and not kwargs:
         from backend.brokers.client import sync as conn_sync
         result = conn_sync.fetch_holdings()
+        result = _apply_backfill_to_list(result, qty_col="opening_quantity")
         _raw_cache_put("holdings", result)
         return result
     result = _fetch_holdings_local(*args, **kwargs)
     if not args and not kwargs:
+        result = _apply_backfill_to_list(result, qty_col="opening_quantity")
         _raw_cache_put("holdings", result)
     return result
 
@@ -444,12 +457,51 @@ def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _apply_backfill_to_list(
+    frames: list[pd.DataFrame],
+    qty_col: str = "quantity",
+) -> list[pd.DataFrame]:
+    """Concatenate `frames`, run `backfill_market_data` on the combined
+    frame, then return it as a single-element list.
+
+    This is the Approach A helper — it runs once at the broker boundary
+    so the `_RAW_CACHE` always stores post-patch data. Every consumer
+    (route + compute_firm_nav + investor slice) therefore reads the same
+    cur_val / pnl / day_change_val values without needing independent
+    backfill calls.
+
+    Returns the original list unchanged when:
+      • the list is empty or all frames are empty (no-op for outage states)
+      • backfill raises unexpectedly (safety net — caller gets raw frames)
+
+    The single-element list shape preserves the existing iteration
+    contract (`for df in result: ...`) so callers need no migration.
+    """
+    if not frames:
+        return frames
+    non_empty = [f for f in frames if not f.empty]
+    if not non_empty:
+        return frames
+    try:
+        combined = pd.concat(non_empty, ignore_index=True)
+        backfill_market_data(combined)
+        return [combined]
+    except Exception as _e:
+        logger.warning(f"_apply_backfill_to_list: backfill failed, returning raw frames: {_e}")
+        return frames
+
+
 def fetch_positions(*args, **kwargs):
     """Public entry — proxies to conn_service when the cutover flag
     is on, otherwise runs the local @for_all_accounts path.
 
     Zero-arg results are memoised in `_RAW_CACHE` for `_RAW_TTL_S`
     seconds — see `fetch_holdings` docstring for the rationale.
+
+    Same NAV-consistency guarantee as fetch_holdings (Approach A):
+    the cached value is a post-backfill concatenated DataFrame in a
+    single-element list. compute_firm_nav reads the same unrealised /
+    pnl values as the positions route.
     """
     if not args and not kwargs:
         cached = _raw_cache_get("positions")
@@ -458,10 +510,12 @@ def fetch_positions(*args, **kwargs):
     if _use_conn_service() and not args and not kwargs:
         from backend.brokers.client import sync as conn_sync
         result = conn_sync.fetch_positions()
+        result = _apply_backfill_to_list(result, qty_col="quantity")
         _raw_cache_put("positions", result)
         return result
     result = _fetch_positions_local(*args, **kwargs)
     if not args and not kwargs:
+        result = _apply_backfill_to_list(result, qty_col="quantity")
         _raw_cache_put("positions", result)
     return result
 
