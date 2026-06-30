@@ -1849,13 +1849,14 @@
     for (const c of candidatePositions) {
       if (!_isLegEnabled(c)) continue;
       if (!_includeHoldings && c.kind === 'eq') continue;
-      const day = Number(c.day_change_val || 0);
+      const day = _dayPnlForLeg(c, liveSpot);
       const pollLtp = Number(c.ltp || 0);
       const qty     = Number(c.qty || 0);
       const liveLtp = Number(untrack(() => getSnapshot(c.symbol)?.ltp || 0));
-      // Only apply the delta when both LTPs are positive — a stale 0
-      // would post a phantom −100% move.
-      const delta = (pollLtp > 0 && liveLtp > 0 && qty !== 0)
+      // Only apply the SSE-tick delta when the leg is still pre-expiry
+      // (post-expiry day = Exp P&L already, no further intraday move).
+      // Both LTPs must be positive — a stale 0 would post a phantom move.
+      const delta = (!_isLegExpired(c) && pollLtp > 0 && liveLtp > 0 && qty !== 0)
         ? (liveLtp - pollLtp) * qty
         : 0;
       s += day + delta;
@@ -1870,6 +1871,44 @@
   // their MTM and expiry P&L converge to the same value. Operator: "in
   // snapshot and legs, show the profit/loss for each on expiration day
   // and updated total for the column".
+  /** True when the candidate's expiry date is today (IST) or earlier.
+   *  Reads expiry from instruments cache (`inst.x`) → falls back to the
+   *  symbol parser's last-Thursday inference for rows without an
+   *  instruments entry. Returns false for futures / equity / undated
+   *  rows — those have no expiry-promotion concept.
+   *  @param {any} c */
+  function _isLegExpired(c) {
+    if (c.kind !== 'opt') return false;
+    const sym = String(c.symbol || '').toUpperCase();
+    const inst = getInstrument(sym);
+    let expISO = inst?.x || null;
+    if (!expISO) return false;
+    try {
+      // Compare expiry date (yyyy-mm-dd) to today's IST date.
+      const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+      return expISO <= today;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /** Day P&L for a leg with expiry-day-promotion. On/after expiry, the
+   *  option's value is realized via settlement — the standard intraday
+   *  formula `(LTP − prev_close) × qty` only captures the residual move,
+   *  hiding the bulk realization that actually occurred today. Operator's
+   *  expectation: Day P&L on expiry-day = Exp P&L (intrinsic-based
+   *  settlement value). We promote to `_expiryPnl(c, spot)` so the
+   *  surface reads the same number on both sides.
+   *  @param {any} c
+   *  @param {number|null} spot */
+  function _dayPnlForLeg(c, spot) {
+    if (_isLegExpired(c)) {
+      const ep = _expiryPnl(c, spot);
+      if (ep != null && isFinite(ep)) return ep;
+    }
+    return Number(c?.day_change_val ?? 0);
+  }
+
   /** @param {any} c - candidate row
    *  @param {number|null} spot - current underlying spot (LTP)
    *  @returns {number|null} P&L if every contract expired now at `spot`
@@ -4482,6 +4521,8 @@
             {@const cost = c.avg_cost != null ? c.avg_cost : (lg ? lg.avg_cost : null)}
             {@const isClosed = Number(c.qty || 0) === 0}
             {@const _expPnlLeg = _expiryPnl(c, liveSpot ?? null)}
+            {@const _dayPnl    = _dayPnlForLeg(c, liveSpot ?? null)}
+            {@const _legExp    = _isLegExpired(c)}
             <!-- displayQty = residual qty (after netting) when the row
                  came from the Close tab's expiry analysis; otherwise
                  the original position qty. Drives the qty cell, the
@@ -4729,8 +4770,9 @@
               <span class="num cand-pnl {pnl == null ? '' : pnl > 0 ? 'cell-pos' : pnl < 0 ? 'cell-neg' : 'cell-flat'}">
                 {pnl == null ? '—' : aggCompact(pnl)}
               </span>
-              <span class="num cand-pnl {c.day_change_val == null ? 'cell-flat' : Number(c.day_change_val) > 0 ? 'cell-pos' : Number(c.day_change_val) < 0 ? 'cell-neg' : 'cell-flat'}">
-                {c.day_change_val == null ? '—' : aggCompact(Number(c.day_change_val))}
+              <span class="num cand-pnl {_dayPnl == null ? 'cell-flat' : _dayPnl > 0 ? 'cell-pos' : _dayPnl < 0 ? 'cell-neg' : 'cell-flat'}"
+                    title={_legExp ? 'Day P&L promoted to Exp P&L on expiry day — settlement realized today.' : 'Day P&L = today’s intraday move × qty'}>
+                {_dayPnl == null ? '—' : aggCompact(Number(_dayPnl))}
               </span>
               <span class="num cand-pnl {_expPnlLeg == null ? '' : _expPnlLeg > 0 ? 'cell-pos' : _expPnlLeg < 0 ? 'cell-neg' : 'cell-flat'}"
                     title="P&L if expired now at spot. Intrinsic value minus cost basis × qty.">
@@ -4783,7 +4825,7 @@
                  TOTAL row now reconciles cell-by-cell with the chart. -->
             {@const _selectedCands = displayedCandidates.filter(c => _isLegEnabled(c))}
             {@const _totalPnl = _selectedCands.reduce((s, c) => s + Number(c.pnl ?? 0), 0)}
-            {@const _totalDcv = _selectedCands.reduce((s, c) => s + Number(c.day_change_val ?? 0), 0)}
+            {@const _totalDcv = _selectedCands.reduce((s, c) => s + Number(_dayPnlForLeg(c, liveSpot) ?? 0), 0)}
             <div class="cand-row cand-row-total">
               <span></span>
               <span class="cand-total-label">TOTAL</span>
