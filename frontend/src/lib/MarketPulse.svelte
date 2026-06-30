@@ -4354,14 +4354,22 @@
           .filter(Boolean);
       } catch (_) { /* leave empty — ticket's self-fetch backstop will fill */ }
     }
+    // Pass currentQty (signed position qty) so SymbolPanel's footer
+    // button shows "CLOSE BUY" / "CLOSE SELL" for position rows and
+    // the ADD/CLOSE verb in _addCloseVerb() activates correctly.
+    // For watchlist/mover/anchor rows (no position), currentQty=0 so
+    // the ticket opens as a plain BUY/SELL without close semantics.
+    const posQty = r.src?.p ? (Number(r.qty_pos) || 0) : 0;
     openTicket({
-      symbol:   r.tradingsymbol,
-      exchange: r.exchange,
+      symbol:     r.tradingsymbol,
+      exchange:   r.exchange,
       side,
-      qty:      Math.abs(Number(r.qty_pos) || lot),
-      lotSize:  lot,
-      accounts: realAccounts,
-      account:  preAccount,
+      qty:        Math.abs(posQty) || lot,
+      lotSize:    lot,
+      accounts:   realAccounts,
+      account:    preAccount,
+      currentQty: posQty,
+      action:     posQty !== 0 ? 'close' : 'open',
     });
   }
 

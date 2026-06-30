@@ -2177,7 +2177,7 @@
             suspended={_activeTab !== 'ticket'}
             symbol={_ticketProps.symbol || _localSymbol}
             exchange={_ticketProps.exchange ?? _pickedExchange ?? exchange}
-            side={_ticketProps.side ?? (showCommonActions ? _modalSide : side)}
+            side={showCommonActions ? _modalSide : (_ticketProps.side ?? side)}
             action={_ticketProps.action ?? action}
             qty={_ticketProps.qty ?? qty}
             product={_ticketProps.product ?? product}
