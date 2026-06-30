@@ -35,6 +35,7 @@
   } from '$lib/api';
   import { loadOrderTemplates, reloadOrderTemplates } from '$lib/data/templates';
   import { toast } from '$lib/data/toastStore.svelte.js';
+  import { fmtPctScaled } from '$lib/format';
 
   let templates = $state(/** @type {any[]} */ ([]));
   let loading = $state(true);
@@ -235,7 +236,11 @@
     }
   }
 
-  function fmtPct(v) { return v == null ? '—' : `${Number(v) >= 0 ? '+' : ''}${Number(v).toFixed(1)}%`; }
+  // Template TP/SL percentages are stored as already-scaled values
+  // (e.g. 1.5 = 1.5%). Use *Scaled with signed=true so positive
+  // values render with a leading `+` — important here because the
+  // template list is monochrome (no color cue for sign).
+  function fmtPct(v) { return fmtPctScaled(v, 1, true); }
   function fmtOffset(v) { return v == null ? '—' : `${Number(v) >= 0 ? '+' : ''}${v}`; }
   function appliesLabel(v) {
     if (v === 'buy_any')     return 'BUY EQ/FUT';

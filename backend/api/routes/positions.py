@@ -12,9 +12,9 @@ from backend.api.rbac import (
 )
 from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl
 from backend.api.cache import get_or_fetch, invalidate
+from backend.api.helpers.ltp_patch import apply_ltp_patch, positions_policy
 from backend.api.schemas import PositionsResponse, PositionRow, PositionsSummaryRow
 from backend.brokers import broker_apis
-from backend.brokers.broker_apis import record_good_ltp, get_last_good_ltp
 from backend.shared.helpers.date_time_utils import timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import mask_account, mask_column
@@ -209,66 +209,22 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
     Idempotent — only writes when the ticker LTP differs from the
     current row value by > 0.005. After patching, recomputes
     `day_change_val` + `day_change` on the affected rows using the
-    same decomposed formula `broker_apis` uses so the value stays in
-    sync with the new LTP.
+    canonical decomposed formula so the value stays in sync with
+    the new LTP.
+
+    Bookkeeping (ticker pull + LKG fallback + stale flag) is owned
+    by `helpers/ltp_patch.apply_ltp_patch`. This route only owns the
+    decomposed pnl recompute (positions-specific).
     """
-    if raw.empty or 'tradingsymbol' not in raw.columns:
+    res = apply_ltp_patch(raw, positions_policy)
+    if res is None or not res.any_patched:
         return
-    try:
-        from backend.brokers.kite_ticker import get_ticker as _get_ticker
 
-        _ticker = _get_ticker()
-    except Exception:
-        return
-    # Track (idx, pre-patch LTP) per row so the pnl additive patch
-    # below can recover the broker's authoritative pnl shift without
-    # losing any Kite-side adjustments (fees, corporate-action P&L
-    # adjustments) that the simple `(LTP − avg) × qty + realised`
-    # reconstruction would drop.
-    patched_idx: list = []
-    patched_old_ltp: dict = {}
-    stale_idx: list = []  # rows rescued from last-known-good cache
-    for idx in raw.index:
-        sym = raw.at[idx, 'tradingsymbol']
-        if not sym:
-            continue
-        try:
-            current = float(raw.at[idx, 'last_price']) if pd.notna(raw.at[idx, 'last_price']) else 0.0
-        except (TypeError, ValueError):
-            current = 0.0
-        tick_ltp = _ticker.get_ltp_by_sym(str(sym))
-        if tick_ltp is not None and tick_ltp > 0:
-            # Record every fresh tick so the cache stays warm.
-            record_good_ltp(str(sym), tick_ltp)
-            if abs(tick_ltp - current) <= 0.005:
-                continue
-            raw.at[idx, 'last_price'] = float(tick_ltp)
-            patched_idx.append(idx)
-            patched_old_ltp[idx] = current
-        elif current <= 0:
-            # Ticker has no data AND broker gave 0 — try last-known-good.
-            cached = get_last_good_ltp(str(sym))
-            if cached is not None and cached > 0:
-                raw.at[idx, 'last_price'] = cached
-                patched_idx.append(idx)
-                patched_old_ltp[idx] = current
-                stale_idx.append(idx)
-
-    # Mark stale rows before early-return so any caller can test the flag.
-    if stale_idx:
-        if 'last_price_stale' not in raw.columns:
-            raw['last_price_stale'] = False
-        for idx in stale_idx:
-            raw.at[idx, 'last_price_stale'] = True
-
-    if not patched_idx:
-        return
     # Recompute day_change_val on patched rows — same decomposed
-    # formula `broker_apis._patch_day_change_val` uses. Without this
+    # formula `broker_apis._enrich_positions` uses. Without this
     # the row's day_change_val would still hold Kite's stale value
     # (computed against the pre-patch LTP === close_price, i.e. zero).
-    # (Uses module-level _INTRADAY_FIELDS via _compute_day_change_val.)
-    _sel = pd.Index(patched_idx)
+    _sel = pd.Index(res.patched_idx)
     _ltp = pd.to_numeric(raw.loc[_sel, 'last_price'], errors='coerce').fillna(0)
     _cls = pd.to_numeric(raw.loc[_sel, 'close_price'], errors='coerce').fillna(0)
     _dcv_calc = _compute_day_change_val(raw, _sel)
@@ -289,7 +245,8 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
     # stuck on yesterday's close in Kite's REST.
     if 'pnl' in raw.columns:
         _old_ltp_s = pd.Series(
-            [patched_old_ltp[i] for i in patched_idx], index=_sel, dtype='float64'
+            [res.patched_old_ltp[i] for i in res.patched_idx],
+            index=_sel, dtype='float64',
         )
         _qty = pd.to_numeric(raw.loc[_sel, 'quantity'], errors='coerce').fillna(0)
         _pnl_delta = (_ltp - _old_ltp_s) * _qty
@@ -297,9 +254,9 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
         raw.loc[_sel, 'pnl'] = (_pnl_current + _pnl_delta).where(
             _ltp > 0, raw.loc[_sel, 'pnl']
         )
-    n_stale = len(stale_idx)
+    n_stale = len(res.stale_idx)
     logger.info(
-        f"positions: ltp-override patched {len(patched_idx)}/{len(raw)} rows "
+        f"positions: ltp-override patched {len(res.patched_idx)}/{len(raw)} rows "
         f"from KiteTicker"
         + (f" ({n_stale} via last-known-good cache)" if n_stale else "")
     )

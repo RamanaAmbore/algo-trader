@@ -43,7 +43,7 @@
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
   import { acctColor } from '$lib/account';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
-  import { priceFmt, pctFmt, aggCompact } from '$lib/format';
+  import { priceFmt, pctFmt, aggCompact, fmtPctFraction } from '$lib/format';
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
   import {
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
@@ -4034,10 +4034,9 @@
     if (Math.abs(ml) < 1) return null;
     return mp / Math.abs(ml);
   });
-  function fmtPct(/** @type {number|null|undefined} */ v) {
-    if (v == null) return '—';
-    return `${pctFmt(v * 100)}%`;
-  }
+  // Strategy R:R, intrinsic ratios, etc are returned by the API as
+  // fractions (0.05 = 5%). Use the canonical *Fraction variant.
+  const fmtPct = fmtPctFraction;
   function fmtNum(/** @type {number|null|undefined} */ v, /** @type {number} */ dp = 4) {
     if (v == null) return '—';
     return v.toFixed(dp);

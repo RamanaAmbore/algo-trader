@@ -356,6 +356,98 @@ async def _enforce_capacity_guard(
         )
 
 
+def _postback_broadcast_fanout(
+    *,
+    status: str,
+    order_id,
+    account: str,
+    masked: str,
+    symbol: str,
+    txn: str,
+    qty,
+    price,
+    exchange: str = "",
+    status_message: str = "",
+) -> None:
+    """Cache invalidation + WS broadcast trio shared by every broker
+    postback handler (Kite inline, Dhan/Groww via _process_broker_postback).
+
+    Steps:
+      1. `invalidate("orders")` always
+      2. On terminal status: also invalidate `positions`, `holdings`,
+         and the raw-DataFrame caches (positions/holdings/margins).
+      3. Broadcast `order_update` with the postback payload.
+      4. On COMPLETE: broadcast `position_filled` with signed qty
+         delta so the frontend can patch its local positions
+         table immediately (no waiting for the 5-min poll).
+      5. On terminal: broadcast `book_changed` so subscribers can
+         refetch their primary loaders in one coordinated pass.
+
+    Best-effort — every step wrapped in try/except so a single
+    broadcast failure can't break the postback ACK. Kite's webhook
+    will retry on a non-2xx response, so swallowing fan-out errors
+    here is safer than propagating.
+    """
+    _terminal = str(status or "").upper() in (
+        "COMPLETE", "CANCELLED", "REJECTED", "EXPIRED",
+    )
+
+    try:
+        invalidate("orders")
+        if _terminal:
+            for _key in ("positions", "holdings"):
+                try:
+                    invalidate(_key)
+                except Exception:
+                    pass
+            # Also drop the raw-DataFrame cache in broker_apis so
+            # compute_firm_nav + investor slice see fresh broker
+            # state on the next call. Without this, NavCard /
+            # /performance NAV row could lag by up to _RAW_TTL_S
+            # (30 s) after a fill.
+            try:
+                from backend.brokers.broker_apis import _raw_cache_invalidate
+                _raw_cache_invalidate("positions")
+                _raw_cache_invalidate("holdings")
+                _raw_cache_invalidate("margins")
+            except Exception:
+                pass
+
+        broadcast(json.dumps({
+            "event": "order_update",
+            "order_id": order_id, "account": masked, "status": status,
+            "tradingsymbol": symbol, "transaction_type": txn,
+            "quantity": qty, "price": price, "status_message": status_message,
+        }))
+
+        if str(status).upper() == "COMPLETE":
+            try:
+                _qty_int = int(qty or 0)
+                if _qty_int > 0:
+                    _side_sign = 1 if (txn or "").upper() == "BUY" else -1
+                    broadcast(json.dumps({
+                        "event": "position_filled",
+                        "account": masked, "exchange": exchange,
+                        "tradingsymbol": symbol,
+                        "qty": _qty_int * _side_sign,
+                        "fill_price": float(price or 0),
+                        "ts": int(_time.time() * 1000),
+                        "order_id": order_id,
+                    }))
+            except Exception as _pe:
+                logger.debug(f"position_filled broadcast skipped: {_pe}")
+
+        if _terminal:
+            broadcast(json.dumps({
+                "event": "book_changed",
+                "account": masked, "exchange": exchange,
+                "tradingsymbol": symbol, "reason": status,
+                "ts": int(_time.time() * 1000),
+            }))
+    except Exception as _be:
+        logger.warning(f"postback fan-out failed: {_be}")
+
+
 async def _process_broker_postback(
     *,
     broker_id: str,
@@ -474,60 +566,14 @@ async def _process_broker_postback(
     except Exception as _aud:
         logger.debug(f"{broker_id} postback audit write skipped: {_aud}")
 
-    # Cache invalidation + WS broadcasts (mirrors the Kite path).
-    try:
-        invalidate("orders")
-        if _terminal:
-            for _key in ("positions", "holdings"):
-                try:
-                    invalidate(_key)
-                except Exception:
-                    pass
-            # Also drop the raw-DataFrame cache in broker_apis so
-            # `compute_firm_nav` + investor slice pick up the post-fill
-            # state on the next call (otherwise NavCard could lag the
-            # /performance grid by up to _RAW_TTL_S = 30 s).
-            try:
-                from backend.brokers.broker_apis import _raw_cache_invalidate
-                _raw_cache_invalidate("positions")
-                _raw_cache_invalidate("holdings")
-                _raw_cache_invalidate("margins")
-            except Exception:
-                pass
-
-        broadcast(json.dumps({
-            "event": "order_update",
-            "order_id": order_id, "account": masked, "status": status,
-            "tradingsymbol": symbol, "transaction_type": txn,
-            "quantity": qty, "price": price, "status_message": status_message,
-        }))
-
-        if status == "COMPLETE":
-            try:
-                _qty_int = int(qty or 0)
-                if _qty_int > 0:
-                    _side_sign = 1 if (txn or "").upper() == "BUY" else -1
-                    broadcast(json.dumps({
-                        "event": "position_filled",
-                        "account": masked, "exchange": exchange,
-                        "tradingsymbol": symbol,
-                        "qty": _qty_int * _side_sign,
-                        "fill_price": float(price or 0),
-                        "ts": int(_time.time() * 1000),
-                        "order_id": order_id,
-                    }))
-            except Exception as _pe:
-                logger.debug(f"position_filled broadcast skipped: {_pe}")
-
-        if _terminal:
-            broadcast(json.dumps({
-                "event": "book_changed",
-                "account": masked, "exchange": exchange,
-                "tradingsymbol": symbol, "reason": status,
-                "ts": int(_time.time() * 1000),
-            }))
-    except Exception as _be:
-        logger.warning(f"{broker_id} postback fan-out failed: {_be}")
+    # Cache invalidation + WS broadcasts — delegated to the shared
+    # `_postback_broadcast_fanout` helper. Mirrors the Kite path
+    # exactly (same canonical statuses + same broadcast payloads).
+    _postback_broadcast_fanout(
+        status=status, order_id=order_id, account=account, masked=masked,
+        symbol=symbol, txn=txn, qty=qty, price=price,
+        exchange=exchange, status_message=status_message,
+    )
 
 
 def _broker_for(account: str):
@@ -3481,103 +3527,20 @@ class OrdersController(Controller):
             except Exception:
                 pass
 
-            # Invalidate the orders cache on EVERY postback so next
-            # fetch gets fresh data regardless of terminal vs partial.
-            invalidate("orders")
-
-            # On a terminal status (COMPLETE / CANCELLED / REJECTED /
-            # EXPIRED) the book itself changes — fan out invalidation
-            # to every dependent cache so the next refetch is
-            # consistent. Without this, /api/positions returns stale
-            # data for up to its TTL (30s), and the snapshot grid
-            # takes a second poll cycle to settle. Operator's report:
-            # "snapshot grid updated two iterations" — root cause was
-            # positions cache lagging by one tick.
-            _terminal = str(status or "").upper() in (
-                "COMPLETE", "CANCELLED", "REJECTED", "EXPIRED",
+            # Cache invalidation + WS broadcasts — delegated to the
+            # shared `_postback_broadcast_fanout`. Same fan-out used by
+            # Dhan/Groww handlers via `_process_broker_postback`.
+            # Without this delegation, the Kite path drifted: the orders
+            # cache was invalidated, positions/holdings were invalidated
+            # on terminal, the raw-DF caches were invalidated, and three
+            # WS events were broadcast — all duplicates of the Dhan path.
+            _postback_broadcast_fanout(
+                status=status, order_id=order_id, account=account,
+                masked=masked, symbol=tradingsymbol, txn=txn,
+                qty=qty, price=price,
+                exchange=body.get("exchange", ""),
+                status_message=status_msg,
             )
-            if _terminal:
-                for _key in ("positions", "holdings"):
-                    try:
-                        invalidate(_key)
-                    except Exception:
-                        pass
-                # Also drop the raw-DataFrame cache in broker_apis so
-                # `compute_firm_nav` + investor slice see fresh broker
-                # state on the next call. Without this the NavCard /
-                # /performance NAV row could lag by up to _RAW_TTL_S
-                # (30 s) after a fill.
-                try:
-                    from backend.brokers.broker_apis import _raw_cache_invalidate
-                    _raw_cache_invalidate("positions")
-                    _raw_cache_invalidate("holdings")
-                    _raw_cache_invalidate("margins")
-                except Exception:
-                    pass
-
-            # Push real-time update to all connected WebSocket clients
-            broadcast(json.dumps({
-                "event": "order_update",
-                "order_id": order_id,
-                "account": masked,
-                "status": status,
-                "tradingsymbol": tradingsymbol,
-                "transaction_type": txn,
-                "quantity": qty,
-                "price": price,
-                "status_message": status_msg,
-            }))
-
-            # On a FILL (Kite status='COMPLETE') broadcast a separate
-            # `position_filled` event with the signed qty delta. The
-            # frontend patches its local sum_positions table immediately
-            # — no waiting for the 5-min performance poll to roll over.
-            # The poll remains the source of truth: if a postback is ever
-            # dropped (Kite delivery is best-effort), the next refresh
-            # reconciles. Optimistic-add is additive and self-correcting.
-            if status == "COMPLETE":
-                try:
-                    _qty_int = int(qty or 0)
-                    if _qty_int > 0:
-                        _side_sign = 1 if (txn or "").upper() == "BUY" else -1
-                        broadcast(json.dumps({
-                            "event": "position_filled",
-                            "account": masked,
-                            "exchange": body.get("exchange", ""),
-                            "tradingsymbol": tradingsymbol,
-                            "qty": _qty_int * _side_sign,
-                            "fill_price": float(price or 0),
-                            "ts": int(_time.time() * 1000),
-                            "order_id": order_id,
-                        }))
-                except Exception as _pe:
-                    # Never let a malformed delta payload break the
-                    # postback ACK — Kite retries on a non-2xx response.
-                    logger.debug(f"position_filled broadcast skipped: {_pe}")
-
-            # Single coordinated `book_changed` broadcast for every
-            # terminal status. Frontend pages subscribe once and
-            # refetch their primary loader (positions / holdings /
-            # strategy analytics / payoff curve) in one synchronized
-            # pass — replaces the prior "wait for next poll tick" UX
-            # where the snapshot grid took 2+ iterations to settle.
-            #
-            # Payload carries the changed (account, symbol, exchange)
-            # tuple so a future surface can do scoped refetch
-            # instead of book-wide. v1 frontend ignores the scope
-            # fields and refetches the visible bucket; v2 can target.
-            if _terminal:
-                try:
-                    broadcast(json.dumps({
-                        "event": "book_changed",
-                        "account": masked,
-                        "exchange": body.get("exchange", ""),
-                        "tradingsymbol": tradingsymbol,
-                        "reason": status,
-                        "ts": int(_time.time() * 1000),
-                    }))
-                except Exception as _bce:
-                    logger.debug(f"book_changed broadcast skipped: {_bce}")
 
             return {"status": "ok"}
         except HTTPException:

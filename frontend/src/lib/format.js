@@ -105,3 +105,64 @@ export function directional(value, netQty) {
   if (value == null || !isFinite(value)) return value;
   return Number(netQty) < 0 ? -Number(value) : Number(value);
 }
+
+
+// ── Percentage helpers ───────────────────────────────────────────────────────
+//
+// Two variants for the two input semantics found across the app:
+//
+//   fmtPctScaled    — input is ALREADY a percentage (5.0 → "5.0%").
+//                     Used by surfaces that consume API fields like
+//                     `pnl_percentage`, `day_change_percentage` —
+//                     backend pre-scales these.
+//   fmtPctFraction  — input is a FRACTION (0.05 → "5.0%"). Used by
+//                     options analytics (`ev_pct`, intrinsic ratios,
+//                     greeks like delta) where the math returns a
+//                     fraction.
+//
+// Both honour the same null-rendering rule as the other helpers
+// (`—` for null/undefined/NaN/Infinity) and respect `decimals` (the
+// `toFixed` precision) so callers can opt into more / fewer digits
+// without re-implementing the formatter.
+//
+// `signed=true` prepends `+` to positive values — used by surfaces
+// where color isn't enough on its own (e.g. small inline chips in
+// templates list).
+//
+// Why not a single helper with a `scaled` flag? Two reasons:
+//   1. Call-site readability — `fmtPctFraction(0.05)` makes it
+//      obvious that the input is a fraction.
+//   2. Lint-able SSOT — a grep for `fmtPct` finds 3 inconsistent
+//      legacy variants; splitting forces the contributor to pick
+//      the right one.
+
+/**
+ * Format an already-percent-scaled value. Examples:
+ *   fmtPctScaled(5.0)         → "5.00%"      (|v| < 100 → 2 decimals)
+ *   fmtPctScaled(5.0, 1)      → "5.0%"
+ *   fmtPctScaled(5.0, 1, true) → "+5.0%"
+ *
+ * Pass `decimals` to override the default decimal-rule formatting
+ * (the same |v| < 100 → 2dp rule used by pctFmt). When omitted, the
+ * default rule applies.
+ */
+export function fmtPctScaled(v, decimals = null, signed = false) {
+  if (v == null || !isFinite(v)) return '—';
+  const n = Number(v);
+  // `+` for non-negative (matches the legacy templates-list formatter
+  // where exactly 0% renders as `+0.0%` to keep the column rigid).
+  const sign = signed && n >= 0 ? '+' : '';
+  if (decimals != null) return `${sign}${n.toFixed(decimals)}%`;
+  return `${sign}${pctFmt(n)}%`;
+}
+
+/**
+ * Format a fractional value as a percentage. Examples:
+ *   fmtPctFraction(0.05)        → "5.00%"
+ *   fmtPctFraction(0.05, 1)     → "5.0%"
+ *   fmtPctFraction(0.05, 1, true) → "+5.0%"
+ */
+export function fmtPctFraction(v, decimals = null, signed = false) {
+  if (v == null || !isFinite(v)) return '—';
+  return fmtPctScaled(Number(v) * 100, decimals, signed);
+}

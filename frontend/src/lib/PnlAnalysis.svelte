@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { aggCompact, pctFmt } from '$lib/format.js';
+  import { aggCompact, fmtPctScaled } from '$lib/format.js';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { fetchPnlBenchmarks } from '$lib/api.js';
   import PnlPanel from '$lib/PnlPanel.svelte';
@@ -101,11 +101,10 @@
   /** @param {number|null} v */
   function fmt(v) { return v == null ? '—' : aggCompact(v); }
 
-  /** @param {number|null|undefined} v */
-  function fmtPct(v) {
-    if (v == null || !isFinite(v)) return '—';
-    return pctFmt(v) + '%';
-  }
+  // Canonical percentage formatter — see `$lib/format.js`. Backend
+  // ships pnl_percentage / day_change_percentage already-scaled to
+  // percent (e.g. 5.0 = 5%), so we use the *Scaled variant.
+  const fmtPct = fmtPctScaled;
 
   // ── Data fetching ──────────────────────────────────────────────────────────
   async function load() {
