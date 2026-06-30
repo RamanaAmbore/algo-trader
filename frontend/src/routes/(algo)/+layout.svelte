@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { onMount, onDestroy, setContext } from 'svelte';
   import { get } from 'svelte/store';
-  import { authStore, visibleInterval, executionMode, connStatus, startConnStatusPoller, startMarketStatusPoller, activityModal, openActivityModal, closeActivityModal } from '$lib/stores';
+  import { authStore, visibleInterval, executionMode, connStatus, startConnStatusPoller, startMarketStatusPoller, activityModal, openActivityModal, closeActivityModal, setHibernationIdleMinutes } from '$lib/stores';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import {
     fetchSimStatus, fetchPaperStatus,
@@ -11,6 +11,7 @@
     fetchExecutionMode, setExecutionMode,
     fetchOrderEvents,
     fetchPersistenceMode, setPersistenceMode,
+    fetchSettings,
   } from '$lib/api';
   import { userRole, hasCap, userCaps } from '$lib/rbac';
   import { toast } from '$lib/data/toastStore.svelte.js';
@@ -631,6 +632,18 @@
     // next poll tick" pattern where a postback took 2+ iterations
     // to settle the snapshot grid.
     startBookChangedBus();
+    // Read polling.idle_timeout_min from /api/admin/settings so the
+    // hibernation threshold matches the operator's configured value.
+    // Fire-and-forget — failure keeps the in-code default (5 min).
+    (async () => {
+      try {
+        const rows = await fetchSettings();
+        const all = Array.isArray(rows) ? rows : (rows?.settings || []);
+        const row = all.find?.(s => s?.key === 'polling.idle_timeout_min');
+        const v = Number(row?.value ?? row?.default_value);
+        if (Number.isFinite(v) && v >= 0) setHibernationIdleMinutes(v);
+      } catch { /* anon/demo — keep default 5 min */ }
+    })();
     // Fire once, then schedule adaptive polls.
     pollSim();
     pollPaper();

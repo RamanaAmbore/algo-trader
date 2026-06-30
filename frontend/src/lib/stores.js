@@ -196,24 +196,133 @@ export const dataCache = {
  * Both date halves repeated so IST/EST day-boundary cases stay
  * unambiguous. Auto-resolves EST/EDT by season.
  */
+
+// ---------------------------------------------------------------------------
+// Hibernation bus
+// ---------------------------------------------------------------------------
+//
+// Policy (operator-confirmed 2026-06-28):
+//   Tab active OR hidden < polling.idle_timeout_min  → NORMAL cadence.
+//       All pollers run exactly as before. No changes.
+//   Tab hidden >= polling.idle_timeout_min            → HIBERNATION:
+//       critical pollers (throttle mode)  → 30 s cadence
+//       non-critical pollers (pause mode) → stopped entirely
+//   Tab becomes visible (out of hibernation) → immediate refire of every
+//       throttled/paused poller within 200 ms, then resume normal cadence.
+//   Tab visible (was never hibernating) → no-op, pollers were running normally.
+//
+// Default threshold: 5 min. Read from /api/admin/settings key
+// `polling.idle_timeout_min` on app boot (algo layout onMount).
+// Can be overridden for tests via window.__rbq_hibMs (ms) before page load.
+//
+// WebSocket connections are intentionally NOT hibernated — WS must remain
+// open so position_filled / book_changed events land during background time.
+
+/** Default idle threshold: 5 minutes in milliseconds. */
+let _hibernationIdleMs = (() => {
+  // Allow Playwright / test harnesses to inject a custom threshold
+  // before the module loads (via addInitScript). The window property
+  // must be set before any page script runs for the override to land.
+  if (typeof window !== 'undefined' && typeof (/** @type {any} */ (window).__rbq_hibMs) === 'number') {
+    return /** @type {any} */ (window).__rbq_hibMs;
+  }
+  return 5 * 60 * 1000;
+})();
+
 /**
- * setInterval variant with visibility-aware behaviour. Two modes:
+ * Override the hibernation idle threshold.
+ * Called after reading polling.idle_timeout_min from /api/admin/settings.
+ * Also exposed as window.__rbq_setHibMs for test-harness late patching.
+ * @param {number} minutes  desired threshold in minutes (clamped to >= 0)
+ */
+export function setHibernationIdleMinutes(minutes) {
+  const m = Number.isFinite(minutes) ? minutes : 5;
+  _hibernationIdleMs = Math.max(0, m) * 60 * 1000;
+}
+
+/** Whether the tab is currently in hibernation mode. */
+let _isHibernating = false;
+
+/** Handle for the pending hibernation timer. */
+let _hibernationTimer = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
+
+/**
+ * Registry of hibernation callbacks from all active visibleInterval instances.
+ * @type {Set<{enterHibernation: () => void, exitHibernation: () => void}>}
+ */
+const _hibernationSubscribers = new Set();
+
+function _enterHibernation() {
+  if (_isHibernating) return;
+  _isHibernating = true;
+  for (const sub of _hibernationSubscribers) {
+    try { sub.enterHibernation(); } catch { /* ignore */ }
+  }
+}
+
+function _exitHibernation() {
+  const wasHibernating = _isHibernating;
+  _isHibernating = false;
+  if (wasHibernating) {
+    for (const sub of _hibernationSubscribers) {
+      try { sub.exitHibernation(); } catch { /* ignore */ }
+    }
+  }
+}
+
+/** Global visibilitychange handler — installed once when the first
+ *  visibleInterval is created in a browser context. */
+let _globalVisHandlerInstalled = false;
+
+function _ensureGlobalVisHandler() {
+  if (_globalVisHandlerInstalled || typeof document === 'undefined') return;
+  _globalVisHandlerInstalled = true;
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      // Start the idle timer. Hibernation doesn't engage until it fires.
+      if (_hibernationTimer != null) { clearTimeout(_hibernationTimer); }
+      _hibernationTimer = setTimeout(_enterHibernation, _hibernationIdleMs);
+    } else {
+      // Tab returned — cancel any pending hibernation timer.
+      if (_hibernationTimer != null) { clearTimeout(_hibernationTimer); _hibernationTimer = null; }
+      // Exit hibernation (no-op if wasn't hibernating; fires refires if was).
+      _exitHibernation();
+    }
+  });
+}
+
+// Expose late-patch hook for test harnesses that load after module init.
+if (typeof window !== 'undefined') {
+  /** @type {any} */ (window).__rbq_setHibMs = setHibernationIdleMinutes;
+}
+
+/**
+ * setInterval variant with visibility-aware behaviour.
+ *
+ * NORMAL OPERATION (tab active, or hidden < polling.idle_timeout_min):
+ *   Interval runs at `ms` cadence regardless of tab visibility.
+ *   This preserves the pre-hibernation behavior — pollers keep running
+ *   for the idle grace period so a brief tab switch doesn't stall data.
+ *
+ * AFTER IDLE THRESHOLD (tab hidden >= polling.idle_timeout_min):
+ *   HIBERNATION engages. Behavior depends on `mode`:
  *
  *   mode: 'pause' (default)
- *     Clears the interval while the tab is hidden; restarts on visible.
- *     Use for non-critical pollers (news, sparkline warm, instruments
- *     refresh, LogPanel lazy tabs) where stale data is acceptable until
- *     the operator returns.
+ *     Poller is stopped. Use for non-critical pollers (news, sparkline
+ *     warm, instruments refresh, LogPanel lazy tabs) where stale data
+ *     is acceptable until the operator returns.
  *
  *   mode: 'throttle:<ms>'  (e.g. 'throttle:30000')
- *     Reduces the interval cadence to <ms> while the tab is hidden.
- *     Use for critical pollers (positions / holdings / funds / NAV /
- *     broker health) that must stay alive but can tolerate a slower
- *     heartbeat — mirrors the industry-standard "hybrid" pattern.
+ *     Reduces the interval cadence to <ms>. Use for critical pollers
+ *     (positions / holdings / funds / NAV / broker health) that must
+ *     stay alive but can tolerate a slower heartbeat.
  *
- * In both modes, on `visibilitychange → visible` the callback fires ONCE
- * within the current event-loop turn (immediate refire) so stale data is
- * cleared without waiting for the next scheduled tick.
+ * On tab return from hibernation:
+ *   Callback fires ONCE immediately (refire), then resumes normal `ms`
+ *   cadence.
+ *
+ * On tab return without hibernation (hidden < idle threshold):
+ *   No refire needed — poller was running normally the whole time.
  *
  * WebSocket subscribers are intentionally NOT passed through this helper —
  * keep the WS connection open unconditionally so `position_filled` /
@@ -240,6 +349,8 @@ export function visibleInterval(fn, ms, mode = 'pause') {
   }
 
   let id = /** @type {ReturnType<typeof setInterval> | null} */ (null);
+  /** Whether this instance is currently hibernating. */
+  let _localHibernating = false;
 
   /** Start (or restart) the interval at the given cadence. */
   const _start = (/** @type {number} */ delay) => {
@@ -250,29 +361,44 @@ export function visibleInterval(fn, ms, mode = 'pause') {
     if (id != null) { clearInterval(id); id = null; }
   };
 
-  const onVis = () => {
-    if (document.hidden) {
-      if (isThrottle) {
-        // Keep the poller alive at the reduced (background) cadence.
-        _start(hiddenMs);
-      } else {
-        _stop();
-      }
+  const enterHibernation = () => {
+    // Only apply hibernation if the tab is actually hidden right now.
+    if (typeof document === 'undefined' || !document.hidden) return;
+    _localHibernating = true;
+    if (isThrottle) {
+      _start(hiddenMs);
     } else {
-      // Tab returned — fire immediately, then resume normal cadence.
-      fn();
-      _start(ms);
+      _stop();
     }
   };
 
+  const exitHibernation = () => {
+    if (!_localHibernating) return;
+    _localHibernating = false;
+    // Immediate refire then resume normal cadence.
+    fn();
+    _start(ms);
+  };
+
+  const sub = { enterHibernation, exitHibernation };
+  _hibernationSubscribers.add(sub);
+
   if (typeof document !== 'undefined') {
     if (!document.hidden) {
+      // Tab is visible — start at normal cadence.
       _start(ms);
-    } else if (isThrottle) {
-      // Tab starts hidden (e.g. pre-rendered background tab): use slow cadence.
-      _start(hiddenMs);
+    } else if (_isHibernating) {
+      // Tab starts hidden AND hibernation already active (late mount after
+      // a long background period): apply hibernation mode immediately.
+      _localHibernating = true;
+      if (isThrottle) { _start(hiddenMs); }
+      // else pause mode: don't start
+    } else {
+      // Tab starts hidden but hibernation not yet active — run at normal
+      // cadence for the remainder of the idle grace period.
+      _start(ms);
     }
-    document.addEventListener('visibilitychange', onVis);
+    _ensureGlobalVisHandler();
   } else {
     // SSR / non-browser — run at normal cadence.
     _start(ms);
@@ -280,9 +406,7 @@ export function visibleInterval(fn, ms, mode = 'pause') {
 
   return () => {
     _stop();
-    if (typeof document !== 'undefined') {
-      document.removeEventListener('visibilitychange', onVis);
-    }
+    _hibernationSubscribers.delete(sub);
   };
 }
 
@@ -638,7 +762,7 @@ export function dualTsHtml(iso) {
  *
  * Color progression:
  *   - 'sky'   — fresh (< 50% used / > 7 days remaining)
- *   - 'amber' — getting low (≥ 50% used / ≤ 7 days remaining)
+ *   - 'amber' — getting low (>= 50% used / <= 7 days remaining)
  *   - 'red'   — 1 fire / 1 day remaining (urgent)
  *   - 'grey'  — exhausted / status=completed
  *

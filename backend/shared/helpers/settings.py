@@ -107,6 +107,24 @@ SEEDS: list[tuple] = [
      "Example: 'MCX:CRUDEOIL26JUNFUT,NSE:NIFTY 50'.",
      None, None),
 
+    # ── Polling / hibernation ────────────────────────────────────────────
+    # After the tab has been hidden for this many minutes the frontend
+    # enters hibernation mode (Option B): critical pollers
+    # (positions/holdings/funds) drop to 30 s cadence; non-critical
+    # pollers (news, sparkline warm, instruments refresh, LogPanel lazy
+    # tabs) pause entirely. On tab return the pollers refire within 200 ms
+    # and resume their normal cadence. Set higher to tolerate longer
+    # background windows; set lower for tighter freshness guarantees.
+    # WebSocket connections are never hibernated — they stay open for
+    # instant position_filled / book_changed delivery. Set 0 to disable
+    # hibernation entirely (all pollers always run at normal cadence).
+    ("polling", "polling.idle_timeout_min", "int", 5,
+     "Minutes the tab must be hidden before hibernation engages. "
+     "Hidden < threshold: pollers run normally. "
+     "Hidden >= threshold: critical pollers throttled to 30 s, "
+     "non-critical pollers paused. 0 disables hibernation.",
+     "min", {"min": 0, "max": 60, "step": 1}),
+
     # ── Performance refresh ─────────────────────────────────────────────
     ("performance", "performance.refresh_interval",        "int", 5,
      "Minutes between live broker refreshes during market hours.",
