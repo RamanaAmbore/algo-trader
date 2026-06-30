@@ -123,10 +123,9 @@
     // quantity then.
     loadInstruments().catch(() => { /* fallback path handles this */ });
     _load();
-    // Option A (operator-approved): fully pause on hidden. Telegram + email
-    // cover fills / losses. WS delivers position_filled on return. Immediate
-    // refire on tab visible ensures fresh numbers within one event-loop tick.
-    teardown = marketAwareInterval(_load, 30000);
+    // Option B hybrid: throttle to 30 s on hidden — positions / holdings
+    // / funds are critical data. WS delivers position_filled immediately.
+    teardown = marketAwareInterval(_load, 30000, 30_000);
     // Watch the market-session boundary so _liveDeltaByRow can drop
     // the stale-tick delta immediately on close (not 30s late).
     // visibleInterval: pauses when hidden, fires immediately on tab return.
