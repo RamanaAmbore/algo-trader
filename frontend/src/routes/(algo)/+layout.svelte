@@ -1,5 +1,5 @@
 <script>
-  import { goto, onNavigate } from '$app/navigation';
+  import { goto, onNavigate, afterNavigate, preloadCode } from '$app/navigation';
   import { page } from '$app/state';
   import { onMount, onDestroy, setContext } from 'svelte';
   import { get } from 'svelte/store';
@@ -27,8 +27,17 @@
   import { startBookChangedBus } from '$lib/data/bookChanged';
   import { startBookPollers, setBookPollerInterval } from '$lib/data/marketDataStores.svelte.js';
   import ReconnectingPopup from '$lib/ReconnectingPopup.svelte';
+  import NavigationIndicator from '$lib/NavigationIndicator.svelte';
 
   const { children } = $props();
+
+  // ── Navigation loading indicator (user-action precedence) ─────────
+  // Show a top-bar progress strip immediately when a navigation starts
+  // so the operator sees instant feedback before the destination page
+  // finishes loading. This is especially important for heavy routes
+  // (/charts, /admin/derivatives) where the first-paint can take 200ms+.
+  /** @type {NavigationIndicator | null} */
+  let _navIndicator = $state(null);
 
   // ── Route transition (slice AY, item 23) ──────────────────────────
   // Use the View Transitions API for a ~120ms cross-fade between algo
@@ -37,7 +46,14 @@
   // Guarded to no-preference only via CSS — the JS hook still fires
   // but the browser respects the CSS animation-duration:0 override when
   // reduce is set, so we don't need a JS-side matchMedia check.
+  //
+  // Also fires the NavigationIndicator start() so the cyan top-bar
+  // appears immediately on click — before any page JS runs — giving
+  // the operator instant feedback that the click registered.
   onNavigate((navigation) => {
+    // Start the top-bar indicator immediately (user-action feedback).
+    _navIndicator?.start();
+
     if (!document.startViewTransition) return;
     return new Promise((resolve) => {
       document.startViewTransition(async () => {
@@ -46,6 +62,25 @@
       });
     });
   });
+
+  // Complete the indicator once the destination page has settled.
+  afterNavigate(() => {
+    _navIndicator?.complete();
+  });
+
+  /**
+   * Preload the JS bundle for `href` on hover.
+   * Buttons (vs <a> tags) don't get SvelteKit's built-in
+   * data-sveltekit-preload-code attribute support, so we call
+   * preloadCode() explicitly. This fetches the route's code chunk
+   * before the click lands, making transitions feel instant on fast
+   * connections. The call is idempotent — subsequent hovers are no-ops
+   * once the chunk is cached.
+   * @param {string} href
+   */
+  function _preloadHover(href) {
+    preloadCode(href).catch(() => { /* network miss — non-fatal */ });
+  }
 
   // Demo "Hire Me" modal open-state. Triggered by the navbar button
   // (visible only when isDemo). Closes via overlay click, × button,
@@ -717,6 +752,13 @@
   });
 </script>
 
+<!-- Navigation loading indicator — top-bar cyan progress strip.
+     Mounted above everything else so it is always the first DOM node
+     rendered and paints before any page-level work begins. bind:this
+     gives the onNavigate / afterNavigate hooks a direct reference to
+     call start() and complete(). -->
+<NavigationIndicator bind:this={_navIndicator} variant="algo" />
+
 <ConfirmModal bind:this={_liveConfirmRef} />
 <ShortcutCheatsheet open={_cheatsheetOpen}
                     onClose={() => { _cheatsheetOpen = false; }} />
@@ -766,6 +808,7 @@
             {/if}
             <button
               onclick={() => goto(link.href)}
+              onmouseenter={() => _preloadHover(link.href)}
               class="algo-nav-btn {isActive(link.href) ? 'algo-nav-btn-active' : ''}"
             >{link.label}</button>
           {/each}
@@ -794,6 +837,7 @@
                     {#each groupedLinks.dropdowns[g] as link}
                       <button role="menuitem"
                         onclick={() => gotoGroupItem(link.href)}
+                        onmouseenter={() => _preloadHover(link.href)}
                         class="algo-group-item {isActive(link.href) ? 'algo-group-item-active' : ''}"
                       >{link.label}</button>
                     {/each}
@@ -1062,6 +1106,7 @@
               {#each items as link (link.href)}
                 <button
                   onclick={() => { goto(link.href); closeMenu(); }}
+                  onmouseenter={() => _preloadHover(link.href)}
                   class="algo-mobile-item {isActive(link.href) ? 'algo-mobile-active' : ''}"
                 >{link.label}</button>
               {/each}

@@ -1,8 +1,9 @@
 <script>
-  import { goto } from '$app/navigation';
+  import { goto, onNavigate, afterNavigate, preloadCode } from '$app/navigation';
   import { page } from '$app/state';
   import { authStore } from '$lib/stores';
   import ImpersonationBanner from '$lib/ImpersonationBanner.svelte';
+  import NavigationIndicator from '$lib/NavigationIndicator.svelte';
 
   const { children } = $props();
 
@@ -27,6 +28,28 @@
   const closeMenu = () => { menuOpen = false; };
 
   const bullSrc = "/bull.webp";
+
+  // ── Navigation loading indicator ───────────────────────────────────
+  /** @type {NavigationIndicator | null} */
+  let _navIndicator = $state(null);
+
+  onNavigate(() => {
+    _navIndicator?.start();
+  });
+
+  afterNavigate(() => {
+    _navIndicator?.complete();
+  });
+
+  /**
+   * Preload the JS bundle for `href` on hover — gives near-instant
+   * transitions on fast connections by fetching the route chunk before
+   * the operator commits to a click.
+   * @param {string} href
+   */
+  function _preloadHover(href) {
+    preloadCode(href).catch(() => {});
+  }
 </script>
 
 <svelte:head>
@@ -36,6 +59,12 @@
        own <svelte:head> blocks. -->
   <link rel="canonical" href="https://ramboq.com{page.url.pathname}" />
 </svelte:head>
+
+<!-- Navigation loading indicator — champagne-gold top-bar progress strip
+     for the public (cream) layout. Same UX contract as the algo layout's
+     cyan variant. bind:this gives onNavigate / afterNavigate a direct
+     reference. -->
+<NavigationIndicator bind:this={_navIndicator} variant="pub" />
 
 <div class="pub-viewport">
   <div class="pub-accent-top"></div>
@@ -58,6 +87,7 @@
           {#each baseLinks as link}
             <a
               href={link.href}
+              onmouseenter={() => _preloadHover(link.href)}
               class="pub-nav-btn {isActive(link.href) ? 'pub-nav-btn-active' : ''}"
             >{link.label}</a>
           {/each}
@@ -140,6 +170,7 @@
             <a
               href={link.href}
               onclick={closeMenu}
+              onmouseenter={() => _preloadHover(link.href)}
               class="pub-mobile-item {isActive(link.href) ? 'pub-mobile-active' : ''}"
             >{link.label}</a>
           {/each}
