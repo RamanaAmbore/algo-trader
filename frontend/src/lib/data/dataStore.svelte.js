@@ -47,9 +47,22 @@ export { TTL };
  *   ttl?: number,
  *   parse?: (raw: any) => T,
  *   equals?: (a: T | null, b: T | null) => boolean,
+ *   keepStaleOnEmpty?: boolean,
  * }} opts
+ *
+ * keepStaleOnEmpty (default false) — stale-while-valid guard. When the
+ * fetcher returns an empty payload (Array length=0, plain-object key
+ * count=0) AND _value already holds a non-empty value, the write is
+ * suppressed so a transient broker hiccup / off-hours empty response
+ * doesn't blank out a populated grid. Hydration-race fix for /pulse:
+ * movers panel was emptying intermittently when the batchQuote call
+ * landed during a moment where every symbol had pct=0 (just-opened
+ * market, broker rate-limit). Operator-visible as "winners/gainers
+ * rows become empty and show data on and off". Keep set() unconditional
+ * — explicit writes (SSE pushes, PerformancePage post-fetch) bypass
+ * this guard intentionally.
  */
-export function createDataStore({ key, fetcher, ttl = TTL.minute, parse = (r) => r, equals }) {
+export function createDataStore({ key, fetcher, ttl = TTL.minute, parse = (r) => r, equals, keepStaleOnEmpty = false }) {
   // Default shallow-equality: primitives compare by ===; for arrays/objects
   // callers should pass a custom equals (e.g. deep-equal or length+first-item).
   const _eq = equals ?? ((a, b) => a === b);
@@ -82,12 +95,34 @@ export function createDataStore({ key, fetcher, ttl = TTL.minute, parse = (r) =>
   })();
 
   // ── Core fetch ───────────────────────────────────────────────────
+  /** Stale-while-valid empty detector. Treats Array(0) and {} as empty.
+   *  Other shapes (primitives, non-empty arrays/objects) are not empty. */
+  function _isEmpty(v) {
+    if (v == null) return true;
+    if (Array.isArray(v)) return v.length === 0;
+    if (typeof v === 'object') return Object.keys(v).length === 0;
+    return false;
+  }
+
   async function _fetch(args) {
     _loading = true;
     _error   = null;
     try {
       const raw  = await fetcher(args);
       const next = parse(raw);
+      // Stale-while-valid guard (hydration races, Jun 2026): when
+      // `keepStaleOnEmpty` is set and the fresh value is empty but the
+      // prior value was populated, KEEP the prior. This stops the
+      // transient broker-empty response from blanking the grid.
+      const dropEmpty = keepStaleOnEmpty
+        && _isEmpty(next)
+        && _value != null
+        && !_isEmpty(_value);
+      if (dropEmpty) {
+        _last  = Date.now();
+        _error = null;
+        return;
+      }
       // Write to Tier 2 before updating state so a hypothetical render
       // during the microtask flush sees both consistent.
       if (next !== undefined && next !== null) {
