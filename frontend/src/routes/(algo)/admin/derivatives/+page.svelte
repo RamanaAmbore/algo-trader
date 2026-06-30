@@ -3867,22 +3867,17 @@
         }
       }
     } catch (_) { _seenAccts = new Set(); }
+    // PRIMARY — position book + instruments cache. The underlying-picker
+    // dropdown and option-chain rendering both depend on these; nothing
+    // useful paints until they land. loadPositions fires immediately
+    // (no await) so it races in parallel with the instruments await below.
+    //
     // fresh=true bypasses the backend 30s TTL cache on mount so the
     // underlying dropdown reflects positions that changed while the
     // operator was on a different page (e.g. just placed an order on
     // /orders then navigated here). The stale-while-revalidate cache
     // above still provides an instant paint of the previous state.
     loadPositions({ fresh: true });
-    // Real broker accounts — needed by the OrderTicket so the
-    // operator can pick which Kite handle the order routes through.
-    // Fetched separately from positions because /positions masks
-    // the account field for non-admin signed-in users; /accounts
-    // returns unmasked account_ids to any authenticated user.
-    loadRealAccounts();
-    // Resolve the user's default watchlist id once, so the chain rows
-    // can drop a "+W" button. Demo / unauthenticated sessions just
-    // leave defaultWatchlistId null and the button hides.
-    loadDefaultWatchlist();
     // Load the instruments cache so the option-chain picker has data.
     // Already cached in IndexedDB after the first /console autocomplete
     // load — most operators will see this resolve from cache instantly.
@@ -3893,12 +3888,31 @@
       await loadInstruments();
       instrumentsReady = true;
     } catch (_) { /* instruments unreachable — chain picker hides */ }
-    // Load the proxy-hedge table once at mount. Failure leaves the
-    // module cache empty — page degrades gracefully (no proxy legs)
-    // rather than crashing. /admin/settings panel forces a reload
-    // after mutations.
-    try { await loadHedgeProxies(); proxyTableReady = true; }
-    catch (_) { /* operator's API may be unreachable — silent */ }
+    // SECONDARY — broker accounts, default watchlist, hedge-proxy table.
+    // None of these gate the primary chain / payoff render:
+    //   • loadRealAccounts is only needed when OrderTicket opens
+    //   • loadDefaultWatchlist drives the +W button on chain rows
+    //   • loadHedgeProxies overlays proxy legs on the payoff (decorative)
+    // Defer one event-loop tick so the primary view paints before these
+    // network requests fire. Pattern mirrors ChartWorkspace._loadGreeks
+    // (Tier 1 reference).
+    setTimeout(() => {
+      // Real broker accounts — needed by the OrderTicket so the
+      // operator can pick which Kite handle the order routes through.
+      // Fetched separately from positions because /positions masks
+      // the account field for non-admin signed-in users; /accounts
+      // returns unmasked account_ids to any authenticated user.
+      loadRealAccounts();
+      // Resolve the user's default watchlist id once, so the chain rows
+      // can drop a "+W" button. Demo / unauthenticated sessions just
+      // leave defaultWatchlistId null and the button hides.
+      loadDefaultWatchlist();
+      // Load the proxy-hedge table once at mount. Failure leaves the
+      // module cache empty — page degrades gracefully (no proxy legs)
+      // rather than crashing. /admin/settings panel forces a reload
+      // after mutations.
+      loadHedgeProxies().then(() => { proxyTableReady = true; }).catch(() => {});
+    }, 0);
     // Two separate cadences:
     //   - hot (5 s): analytics / strategy aggregate — Greeks + IV move
     //     intra-tick so the operator wants this fresh.
