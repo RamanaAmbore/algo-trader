@@ -388,7 +388,7 @@ JSONEOF
           METRICS_TAG="dev-$(git rev-parse --short HEAD)"
       fi
       echo "[$TS] Capturing code metrics under tag $METRICS_TAG..."
-      sudo -u www-data "$APP_ROOT/venv/bin/python" "$APP_ROOT/scripts/capture_metrics.py" \
+      "$APP_ROOT/venv/bin/python" "$APP_ROOT/scripts/capture_metrics.py" \
           --release-tag "$METRICS_TAG" --force --with-test-times \
           && echo "[$TS] Code metrics captured" \
           || echo "[$TS] WARNING: code-metrics capture failed (deploy itself unaffected)"
