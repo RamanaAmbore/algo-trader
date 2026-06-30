@@ -606,6 +606,19 @@ class DhanBroker(Broker):
             _check_dhan_rotation_pattern(self.account, created)
             fresh = self._conn.get_dhan_conn(test_conn=True)
             resp = sdk_call(fresh)
+        # D2 — persistent-auth-failure guard: if the retry still
+        # returns an auth-failure dict, raise so _record_fetch(ok=False)
+        # fires in the per-account broker wrappers (fetch_holdings /
+        # fetch_positions / fetch_margins). Without this, _unwrap() on
+        # the auth-failure dict produces an empty list, the route returns
+        # empty panels, and the navbar badge never learns the account is
+        # unhealthy — it stays "5/5" instead of reflecting the real state.
+        if _looks_like_auth_failure(resp):
+            remarks = resp.get("remarks", "auth failure")
+            raise RuntimeError(
+                f"Dhan auth failure for {self.account!r} persisted after re-login: "
+                f"{remarks!r}"
+            )
         return resp
 
     # ── Account state ─────────────────────────────────────────────────
