@@ -36,6 +36,12 @@ export function createTickFlash({ threshold = 0, durationMs = 350 } = {}) {
     // mount would flash every cell from null → value.
     if (last == null) return;
     if (Math.abs(v - last) < threshold) return;
+    // Tab-hidden guard: state (prev[key]) is always updated above so we
+    // track the latest value even when hidden. But we skip the CSS class
+    // write + timer — the animation won't run in a hidden tab, and setting
+    // classes while hidden leaves orphaned 'tf-up'/'tf-down' markers that
+    // never clear if the tab stays hidden past durationMs.
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     const dir = v > last ? 'up' : 'down';
     // Mutate the $state proxy in place. The earlier `classes = { ...
     // classes, [key]: dir }` form READ `classes` inside the same call-

@@ -36,7 +36,7 @@
   import { aggregateCapWarnings } from '$lib/data/brokerCapWarnings';
   import { placeTicketOrder, placeBasket, fetchBasketMargin, fetchLiveStatus, fetchOrders, fetchAlgoOrdersRecent, previewTicketTemplate } from '$lib/api';
   import ChartModal from '$lib/ChartModal.svelte';
-  import { logTime, executionMode } from '$lib/stores';
+  import { logTime, executionMode, visibleInterval } from '$lib/stores';
   import { priceFmt, aggFmt as aggFmtMargin } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
@@ -1801,7 +1801,7 @@
   // ── Orders tab state ─────────────────────────────────────────────────
   let _orders       = $state(/** @type {any[]} */ ([]));
   let _algoRejected = $state(/** @type {any[]} */ ([]));
-  /** @type {ReturnType<typeof setInterval> | undefined} */
+  /** @type {(() => void) | undefined} */
   let _ordersPoll;
   // Focus-trap anchor — bound to .oes-modal so Tab cycles stay inside.
   let _modalEl      = $state(/** @type {HTMLElement|null} */ (null));
@@ -1898,7 +1898,8 @@
     window.addEventListener('keydown', onKey);
     if (!hideBottomPanel) {
       _loadOrdersData();
-      _ordersPoll = setInterval(_loadOrdersData, 3000);
+      // visibleInterval: pauses when tab hidden, refires immediately on return.
+      _ordersPoll = visibleInterval(_loadOrdersData, 3000);
     }
     // HIGH 1: prevent background page scroll while the modal is open.
     // Only applies in overlay mode (not inline) — inline renders as a
@@ -1909,7 +1910,7 @@
     }
     return () => {
       window.removeEventListener('keydown', onKey);
-      if (_ordersPoll) { clearInterval(_ordersPoll); _ordersPoll = undefined; }
+      if (_ordersPoll) { _ordersPoll(); _ordersPoll = undefined; }
       if (_wlToastTimer) { clearTimeout(_wlToastTimer); _wlToastTimer = null; }
       if (!wasInline) {
         document.body.style.overflow = '';

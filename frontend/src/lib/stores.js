@@ -197,31 +197,89 @@ export const dataCache = {
  * unambiguous. Auto-resolves EST/EDT by season.
  */
 /**
- * setInterval variant that pauses its callback while the browser tab is
- * backgrounded. Use this for every algo-page polling interval — it cuts
- * the per-tab HTTP noise on Dashboard / Agents / Orders / Simulator /
- * Terminal to zero when the user switches away.
+ * setInterval variant with visibility-aware behaviour. Two modes:
+ *
+ *   mode: 'pause' (default)
+ *     Clears the interval while the tab is hidden; restarts on visible.
+ *     Use for non-critical pollers (news, sparkline warm, instruments
+ *     refresh, LogPanel lazy tabs) where stale data is acceptable until
+ *     the operator returns.
+ *
+ *   mode: 'throttle:<ms>'  (e.g. 'throttle:30000')
+ *     Reduces the interval cadence to <ms> while the tab is hidden.
+ *     Use for critical pollers (positions / holdings / funds / NAV /
+ *     broker health) that must stay alive but can tolerate a slower
+ *     heartbeat — mirrors the industry-standard "hybrid" pattern.
+ *
+ * In both modes, on `visibilitychange → visible` the callback fires ONCE
+ * within the current event-loop turn (immediate refire) so stale data is
+ * cleared without waiting for the next scheduled tick.
+ *
+ * WebSocket subscribers are intentionally NOT passed through this helper —
+ * keep the WS connection open unconditionally so `position_filled` /
+ * `book_changed` events land even when the tab is backgrounded.
  *
  * Returns a teardown function: call it from onDestroy (no separate
  * clearInterval needed).
  *
- * @param {() => void} fn   callback to run on each tick
- * @param {number}      ms  interval in milliseconds
- * @returns {() => void}    teardown; clears the interval + removes the listener
+ * @param {() => void} fn     callback to run on each tick
+ * @param {number}     ms     normal (foreground) interval in milliseconds
+ * @param {string}     [mode] 'pause' (default) | 'throttle:<hiddenMs>'
+ * @returns {() => void}      teardown; clears the interval + removes the listener
  */
-export function visibleInterval(fn, ms) {
-  let id = null;
-  const start = () => { if (id == null) id = setInterval(fn, ms); };
-  const stop  = () => { if (id != null) { clearInterval(id); id = null; } };
-  const onVis = () => { document.hidden ? stop() : start(); };
+export function visibleInterval(fn, ms, mode = 'pause') {
+  // Parse throttle delay from 'throttle:<ms>' string.
+  let hiddenMs = 0;
+  let isThrottle = false;
+  if (typeof mode === 'string' && mode.startsWith('throttle:')) {
+    const parsed = Number(mode.slice(9));
+    if (Number.isFinite(parsed) && parsed > 0) {
+      hiddenMs = parsed;
+      isThrottle = true;
+    }
+  }
+
+  let id = /** @type {ReturnType<typeof setInterval> | null} */ (null);
+
+  /** Start (or restart) the interval at the given cadence. */
+  const _start = (/** @type {number} */ delay) => {
+    if (id != null) { clearInterval(id); id = null; }
+    id = setInterval(fn, delay);
+  };
+  const _stop = () => {
+    if (id != null) { clearInterval(id); id = null; }
+  };
+
+  const onVis = () => {
+    if (document.hidden) {
+      if (isThrottle) {
+        // Keep the poller alive at the reduced (background) cadence.
+        _start(hiddenMs);
+      } else {
+        _stop();
+      }
+    } else {
+      // Tab returned — fire immediately, then resume normal cadence.
+      fn();
+      _start(ms);
+    }
+  };
+
   if (typeof document !== 'undefined') {
-    if (!document.hidden) start();
+    if (!document.hidden) {
+      _start(ms);
+    } else if (isThrottle) {
+      // Tab starts hidden (e.g. pre-rendered background tab): use slow cadence.
+      _start(hiddenMs);
+    }
     document.addEventListener('visibilitychange', onVis);
   } else {
-    start();
+    // SSR / non-browser — run at normal cadence.
+    _start(ms);
   }
+
   return () => {
-    stop();
+    _stop();
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', onVis);
     }
@@ -239,15 +297,18 @@ export function visibleInterval(fn, ms) {
  * gate re-engages naturally at the next minute boundary as the market
  * opens — no special cross-boundary scheduling needed.
  *
- * The visibility gate (pause when tab hidden) layers on top, same as
- * `visibleInterval`. Manual refresh buttons keep working always —
- * operators clicking a button are explicitly asking for a fetch.
+ * The visibility gate layers on top via `visibleInterval`. Pass
+ * `hiddenMs` to throttle instead of fully pausing when the tab is
+ * hidden — recommended for critical pollers (positions, holdings,
+ * funds) that must keep a heartbeat alive. When `hiddenMs` is 0
+ * (default) the poller pauses entirely on hidden (original behaviour).
  *
- * @param {() => void} fn   callback to run on each tick
- * @param {number}      ms  interval in milliseconds
- * @returns {() => void}    teardown
+ * @param {() => void} fn          callback to run on each tick
+ * @param {number}     ms          foreground interval in milliseconds
+ * @param {number}     [hiddenMs]  background cadence (0 = pause)
+ * @returns {() => void}           teardown
  */
-export function marketAwareInterval(fn, ms) {
+export function marketAwareInterval(fn, ms, hiddenMs = 0) {
   // Two timers per consumer:
   //   1. Main `ms`-cadence interval (the historical behaviour) — fires
   //      fn while market is open; no-ops outside hours.
@@ -267,10 +328,11 @@ export function marketAwareInterval(fn, ms) {
   // overlapping awaits could mutate `_prevOpen` in non-deterministic
   // order, missing or duplicating the closed→open fire.
   let _edgeRunning = false;
+  const mainMode = hiddenMs > 0 ? `throttle:${hiddenMs}` : 'pause';
   const mainTeardown = visibleInterval(() => {
     if (!isMarketOpen()) return;
     fn();
-  }, ms);
+  }, ms, mainMode);
   const edgeTeardown = visibleInterval(async () => {
     if (_edgeRunning) return;
     _edgeRunning = true;
@@ -341,7 +403,13 @@ export function branchLabel(/** @type {string|null|undefined} */ name) {
 // ---------------------------------------------------------------------------
 const _fmtDualTzCache = new Map();
 const _fmtClientTsCache = new Map();
-if (typeof setInterval !== 'undefined') {
+// Cache cleared every 60 s via visibleInterval so background tabs pay
+// no timer overhead at all (the caches are minute-keyed and stale
+// entries are harmless — they just grow unbounded without the purge).
+if (typeof document !== 'undefined') {
+  visibleInterval(() => { _fmtDualTzCache.clear(); _fmtClientTsCache.clear(); }, 60_000);
+} else if (typeof setInterval !== 'undefined') {
+  // SSR / non-browser: plain setInterval (no document.addEventListener).
   setInterval(() => { _fmtDualTzCache.clear(); _fmtClientTsCache.clear(); }, 60_000);
 }
 
@@ -496,8 +564,12 @@ if (browser) {
     }
   });
 }
+// nowStamp clock: update every 60 s; pauses when tab hidden so the timer
+// doesn't fire needlessly in the background. Immediate refire on tab
+// return ensures the header clock refreshes the moment the operator
+// switches back — no stale timestamp for up to 60 s after return.
 if (browser) {
-  setInterval(() => nowStamp.set(clientTimestamp()), 60_000);
+  visibleInterval(() => nowStamp.set(clientTimestamp()), 60_000);
 }
 
 /** Short DD-MMM HH:MM:SS IST | DD-MMM HH:MM:SS EST/EDT for log entries.
@@ -836,7 +908,11 @@ export function startConnStatusPoller() {
   };
   _connPoll = poll;
   poll();
-  _connPollerTeardown = visibleInterval(poll, 15000);
+  // Throttle to 60 s on hidden (industry-standard hybrid): broker
+  // health must stay monitored even in the background, but a 15 s
+  // cadence when the operator isn't looking is wasteful. On tab
+  // return the immediate refire restores the live chip without lag.
+  _connPollerTeardown = visibleInterval(poll, 15000, 'throttle:60000');
   // Re-fire on every authStore transition so the chip updates in
   // lock-step with the user / role pill on login, impersonation,
   // and impersonation-end — instead of waiting for the next 15 s
@@ -877,7 +953,12 @@ export function startMarketStatusPoller() {
   if (!browser || _mktStatusStarted) return;
   _mktStatusStarted = true;
   fetchMarketStatus();
-  _mktStatusTeardown = visibleInterval(fetchMarketStatus, 5 * 60 * 1000);
+  // Market status is holiday-calendar data that changes at most once a
+  // day. Throttle to 5 min on hidden (same cadence, effectively no-op
+  // reduction) but inherit the immediate-refire-on-return contract so
+  // the RefreshButton "closed" popup is accurate as soon as the
+  // operator switches back to the tab.
+  _mktStatusTeardown = visibleInterval(fetchMarketStatus, 5 * 60 * 1000, 'throttle:300000');
 }
 
 export function stopMarketStatusPoller() {

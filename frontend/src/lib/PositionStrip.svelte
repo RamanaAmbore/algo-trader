@@ -6,7 +6,7 @@
   // Whole strip is a single link to /dashboard.
 
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { marketAwareInterval, executionMode } from '$lib/stores';
+  import { marketAwareInterval, visibleInterval, executionMode } from '$lib/stores';
   import { aggCompact } from '$lib/format';
   import { getInstrument, loadInstruments } from '$lib/data/instruments';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
@@ -26,7 +26,7 @@
   // changed (otherwise we'd wait up to 30s for the next loadOnce poll
   // before clearing the stale-tick delta after market close).
   let _mktTick = $state(0);
-  /** @type {ReturnType<typeof setInterval> | null} */
+  /** @type {(() => void) | null} */
   let _mktTimer = null;
 
   // Monotonic counter incremented after each successful 30s poll
@@ -123,11 +123,15 @@
     // quantity then.
     loadInstruments().catch(() => { /* fallback path handles this */ });
     _load();
+    // Option A (operator-approved): fully pause on hidden. Telegram + email
+    // cover fills / losses. WS delivers position_filled on return. Immediate
+    // refire on tab visible ensures fresh numbers within one event-loop tick.
     teardown = marketAwareInterval(_load, 30000);
     // Watch the market-session boundary so _liveDeltaByRow can drop
     // the stale-tick delta immediately on close (not 30s late).
+    // visibleInterval: pauses when hidden, fires immediately on tab return.
     _mktTick = (isNseOpen() ? 1 : 0) + (isMcxOpen() ? 2 : 0);
-    _mktTimer = setInterval(() => {
+    _mktTimer = visibleInterval(() => {
       const next = (isNseOpen() ? 1 : 0) + (isMcxOpen() ? 2 : 0);
       if (next !== _mktTick) _mktTick = next;
     }, 30_000);
@@ -154,7 +158,7 @@
   onDestroy(() => {
     teardown?.();
     flash.dispose();
-    if (_mktTimer) clearInterval(_mktTimer);
+    _mktTimer?.();   // visibleInterval teardown
     if (_tickThrottleTimer) { clearTimeout(_tickThrottleTimer); _tickThrottleTimer = null; }
     _tickThrottleUnsub?.();
     // _heartbeatTimer is the 450ms pulse decay timer scheduled inside

@@ -327,7 +327,9 @@
     if (_canView && !_loadedOnce) {
       _loadedOnce = true;
       load();
-      refreshTeardown = visibleInterval(load, 15000);
+      // Throttle to 60 s on hidden — broker LOADED/PENDING status is
+      // critical for operator awareness; keep a slow heartbeat alive.
+      refreshTeardown = visibleInterval(load, 15000, 'throttle:60000');
     }
   });
   onDestroy(() => { refreshTeardown?.(); });

@@ -30,7 +30,7 @@
   twice while the first request was still in flight).
 -->
 <script>
-  import { connStatus, startConnStatusPoller, lastRefreshAt, formatDualTz } from '$lib/stores';
+  import { connStatus, startConnStatusPoller, lastRefreshAt, formatDualTz, visibleInterval } from '$lib/stores';
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { onMount, onDestroy } from 'svelte';
@@ -52,16 +52,17 @@
   // the button's palette tracks session boundaries automatically. The
   // three buckets the operator cares about: both open (full hours),
   // only MCX open (commodity-only window), market closed.
+  // Uses visibleInterval: pauses when hidden, fires immediately on return.
   let _nseOpen = $state(isNseOpen());
   let _mcxOpen = $state(isMcxOpen());
-  /** @type {ReturnType<typeof setInterval> | null} */
+  /** @type {(() => void) | null} */
   let _mktTimer = null;
   onMount(() => {
     const tick = () => {
       _nseOpen = isNseOpen();
       _mcxOpen = isMcxOpen();
     };
-    _mktTimer = setInterval(tick, 30_000);
+    _mktTimer = visibleInterval(tick, 30_000);
   });
   // Tick-pulse animation — fires the button's box-shadow halo at ~4Hz
   // whenever SSE ticks land in symbolStore. Operator: "bump refresh
@@ -89,7 +90,7 @@
     });
   });
   onDestroy(() => {
-    if (_mktTimer) clearInterval(_mktTimer);
+    _mktTimer?.();   // visibleInterval teardown (stops the interval + removes listener)
     if (_pulseTimer) clearTimeout(_pulseTimer);
     _pulseUnsub?.();
     _unsubLast?.();

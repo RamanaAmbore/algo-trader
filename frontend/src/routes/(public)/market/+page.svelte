@@ -1,12 +1,13 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { fetchMarket, fetchNews } from '$lib/api';
-  import { dataCache } from '$lib/stores';
+  import { dataCache, visibleInterval } from '$lib/stores';
 
   let content     = $state('');
   let lastRefresh = $state('');
   let loading     = $state(false);
   let error       = $state('');
+  /** @type {(() => void) | undefined} */
   let summaryTimer;
 
   // Tabbed surface for the two cards on this page — Market Summary
@@ -26,6 +27,7 @@
   let newsRefresh  = $state('');
   let newsLoading  = $state(false);
   let newsError    = $state('');
+  /** @type {(() => void) | undefined} */
   let newsTimer;
 
   async function loadNews() {
@@ -96,19 +98,6 @@
     } finally { loading = false; }
   }
 
-  // Visibility-aware reconnect — Mobile Safari kills WebSockets when
-  // the tab is backgrounded. The existing close→reconnect backoff
-  // eventually recovers, but only after the next ping timeout (~25s).
-  // This handler fires immediately on tab foreground restore so the
-  // socket is live within one event-loop tick.
-  function _onVisibilityChange() {
-    if (document.visibilityState === 'visible') {
-      // Reload content — the page may have been backgrounded for
-      // minutes; stale market report is unhelpful.
-      load();
-    }
-  }
-
   onMount(async () => {
     // Show cached data immediately — no empty flash on back-navigation
     if (dataCache.market) {
@@ -116,21 +105,20 @@
       lastRefresh = dataCache.market.refreshed_at ?? '';
     }
     await load();
-    document.addEventListener('visibilitychange', _onVisibilityChange);
-    // Market summary refreshes every 30 min — content updates once daily
-    // so the broker WS cadence (every 5 min) was wasteful.
-    summaryTimer = setInterval(load, 30 * 60 * 1000);
+    // Market summary refreshes every 30 min — content updates once daily.
+    // visibleInterval: pauses when tab hidden, fires load() immediately on
+    // tab return (handles the "backgrounded for minutes" case cleanly).
+    summaryTimer = visibleInterval(load, 30 * 60 * 1000);
     // News refreshes independently — server caps the upstream feed at
     // ~10 min so polling faster wastes calls. First load is immediate;
     // subsequent reloads on a 10-min cadence keep the section live.
     loadNews();
-    newsTimer = setInterval(loadNews, 10 * 60 * 1000);
+    newsTimer = visibleInterval(loadNews, 10 * 60 * 1000);
   });
 
   onDestroy(() => {
-    document.removeEventListener('visibilitychange', _onVisibilityChange);
-    if (summaryTimer) clearInterval(summaryTimer);
-    if (newsTimer) clearInterval(newsTimer);
+    summaryTimer?.();
+    newsTimer?.();
   });
 </script>
 <svelte:head>

@@ -22,7 +22,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { fetchUnifiedLog } from '$lib/api';
-  import { logTimeIst, formatDualTz } from '$lib/stores';
+  import { logTimeIst, formatDualTz, visibleInterval } from '$lib/stores';
 
   /** @type {{
    *   filter?:       { kinds?: string[], accounts?: string[], since?: string, simMode?: boolean | null },
@@ -76,8 +76,8 @@
     if (bump > 0) _fetch();
   });
 
-  /** @type {ReturnType<typeof setInterval> | undefined} */
-  let _interval;
+  /** @type {(() => void) | undefined} */
+  let _intervalTeardown;
 
   async function _fetch() {
     try {
@@ -129,28 +129,20 @@
   }
 
   function _startPoll() {
-    if (pollMs > 0 && typeof setInterval !== 'undefined') {
-      _interval = setInterval(() => {
-        if (typeof document !== 'undefined' && document.hidden) return;
-        _fetch();
-      }, pollMs);
+    if (pollMs > 0 && typeof document !== 'undefined') {
+      // visibleInterval pauses while hidden and fires an immediate _fetch
+      // on tab return — no stale data after switching back.
+      _intervalTeardown = visibleInterval(_fetch, pollMs);
     }
   }
 
   onMount(() => {
     _fetch();
     _startPoll();
-    const _onVisibility = () => {
-      if (!document.hidden) _fetch();
-    };
-    document.addEventListener('visibilitychange', _onVisibility);
-    return () => {
-      document.removeEventListener('visibilitychange', _onVisibility);
-    };
   });
 
   onDestroy(() => {
-    if (_interval) clearInterval(_interval);
+    _intervalTeardown?.();
   });
 </script>
 

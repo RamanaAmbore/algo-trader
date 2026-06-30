@@ -1191,14 +1191,17 @@
     // ticked twice between hero refreshes. Backend cycle is 60 s
     // anyway so 15 s polling is comfortably within the freshness
     // window without hammering the broker.
-    _heroTeardown = visibleInterval(loadHero, 15000);
+    // Throttle to 30 s on hidden (Option B hybrid): funds/NAV/positions
+    // are critical — keep a slow heartbeat so the operator returns to
+    // current numbers without a full cold-start wait.
+    _heroTeardown = visibleInterval(loadHero, 15000, 'throttle:30000');
     // Equity-curve polling — independent of loadHero so an upstream
     // sub-fetch failure (positions / holdings / events) can't stall
     // the chart's refresh cycle. Same 15 s cadence — backend buffer
     // appends a new point every ~1 min and the chart should reflect
     // it within one frame of arrival.
     _fetchEquity();
-    _equityPollStop = visibleInterval(_fetchEquity, 15000);
+    _equityPollStop = visibleInterval(_fetchEquity, 15000, 'throttle:30000');
     // NAV chip — single fetch on mount, no polling. NAV moves on the
     // 16:00 IST snapshot + operator recompute; nothing changes minute-
     // to-minute on the dashboard's cadence.

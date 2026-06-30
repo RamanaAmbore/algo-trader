@@ -8,6 +8,7 @@
   import { onDestroy, onMount } from 'svelte';
   import { fetchChartPriceHistory } from '$lib/api';
   import { priceFmt } from '$lib/format';
+  import { visibleInterval } from '$lib/stores';
   import LegLabel from '$lib/LegLabel.svelte';
 
   let {
@@ -55,7 +56,8 @@
   let underlyingTicks = $state([]);
   let error = $state('');
   let loading = $state(true);
-  let timer = $state(/** @type {any} */ (null));
+  /** @type {(() => void) | null} */
+  let timer = $state(null);
   let mounted = $state(true);
   /** @type {{x:number,y:number,kind:string,side:string,price:number|null,ts:string,detail:string|null,order_id:number,qty:number|null,slippage:number|null}|null} */
   let hover = $state(null);
@@ -114,10 +116,12 @@
     // will re-render us via the `data` prop changing.
     if (externalData || !autoPoll || !pollMs) return;
     stopPolling();
-    timer = setInterval(load, pollMs);
+    // visibleInterval: pauses when hidden, fires load() immediately on
+    // tab return so the chart refreshes as soon as the operator returns.
+    timer = visibleInterval(load, pollMs);
   }
   function stopPolling() {
-    if (timer) { clearInterval(timer); timer = null; }
+    if (timer) { timer(); timer = null; }
   }
 
   onMount(() => { load(); startPolling(); });

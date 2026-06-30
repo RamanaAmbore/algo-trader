@@ -1259,6 +1259,14 @@
     // no UI change. marketAwareInterval keeps the underlying timer alive
     // (so the session-open boundary re-engages naturally) but no-ops the
     // tick body when no segment is open.
+    //
+    // Visibility throttle (Option B hybrid): positions / holdings / funds
+    // are critical data — we keep them alive at 30 s on hidden rather
+    // than pausing entirely, so the operator returns to current numbers
+    // without waiting for a full 5 s warm-up cycle. The WS `position_filled`
+    // channel fires loadPulse() immediately on a fill regardless of this
+    // cadence (that path is not gated by the interval).
+    const _HIDDEN_TICK_MS = 30_000;
     async function _readTickSetting() {
       try {
         const rows = await fetchSettings();
@@ -1270,18 +1278,20 @@
       return _tickMs;
     }
     _tickMs = await _readTickSetting();
-    stopPulseTick = marketAwareInterval(_runTick, _tickMs);
+    stopPulseTick = marketAwareInterval(_runTick, _tickMs, _HIDDEN_TICK_MS);
 
     // Re-read the tick setting every 60s. When the operator changes
     // pulse.tick_interval_ms in /admin/settings, the new value lands on
     // the next 60s read without a page reload — previously the cadence
     // froze at whatever was set on mount.
+    // Non-critical poller — pause entirely on hidden (no need to reload
+    // a UI setting while the operator is not watching).
     stopTickSettingPoll = visibleInterval(async () => {
       const next = await _readTickSetting();
       if (next !== _tickMs) {
         _tickMs = next;
         stopPulseTick?.();
-        stopPulseTick = marketAwareInterval(_runTick, _tickMs);
+        stopPulseTick = marketAwareInterval(_runTick, _tickMs, _HIDDEN_TICK_MS);
       }
     }, 60_000);
 

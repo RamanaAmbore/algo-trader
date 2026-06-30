@@ -3914,14 +3914,18 @@
     // AND no sim is running, there's nothing to refresh. Starting a
     // sim re-enters /admin/simulator (which polls on its own); the
     // status here picks up on the next mount or manual refresh.
+    // Option B hybrid visibility: strategy/sim-status are analysis
+    // pollers — pause on hidden. Positions + underlying-quotes are
+    // critical data — throttle to 30 s on hidden so the operator
+    // returns to current P&L without waiting for a cold-start cycle.
     teardown    = marketAwareInterval(loadStrategy,  5000);
-    posTeardown = marketAwareInterval(loadPositions, 30000);
+    posTeardown = marketAwareInterval(loadPositions, 30000, 30_000);
     // Per-underlying spot / day-% / prev-close for the Snapshot grid.
     // Same 30 s cadence as positions — broker LTPs change every tick
     // but the Snapshot rolls up money quantities that already update
     // off positions; refreshing at the positions cadence keeps the
     // two columns in temporal sync.
-    quotesTeardown = marketAwareInterval(loadUnderlyingQuotes, 30000);
+    quotesTeardown = marketAwareInterval(loadUnderlyingQuotes, 30000, 30_000);
     // Sim status polled at 30 s here (down from 5 s) — the layout-level
     // _adaptiveInterval already polls it every 4 s when a sim is
     // actually active and every 30 s when idle, so 5 s here was double-

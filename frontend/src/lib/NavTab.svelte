@@ -66,7 +66,9 @@
     // 60s — NAV doesn't tick frequently; the headline NavCard polls
     // on its own faster cadence, this chart just trails the daily
     // snapshot landing at 16:00 IST + manual recomputes.
-    _stop = marketAwareInterval(load, 60_000);
+    // Throttle to 60 s on hidden — NAV data doesn't change frequently;
+    // keeping a slow heartbeat ensures the chart is fresh on tab return.
+    _stop = marketAwareInterval(load, 60_000, 60_000);
   });
   onDestroy(() => { _stop(); });
 

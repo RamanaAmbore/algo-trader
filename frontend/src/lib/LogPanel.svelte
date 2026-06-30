@@ -1,6 +1,6 @@
 <script>
   import { onDestroy, onMount, untrack } from 'svelte';
-  import { parseLogLineTime, parseLogLineDate, logTime, formatDualTz, executionMode } from '$lib/stores';
+  import { parseLogLineTime, parseLogLineDate, logTime, formatDualTz, executionMode, visibleInterval } from '$lib/stores';
   import {
     fetchRecentAgentEvents, fetchSimEvents,
     fetchSimTicks, fetchAdminLogs, fetchAdminConnLogs, fetchAlgoOrdersRecent,
@@ -307,16 +307,15 @@
       });
   });
 
-  /** @type {Array<ReturnType<typeof setInterval>>} */
+  /** @type {Array<() => void>} */
   const _intervals = [];
   function _every(/** @type {() => Promise<void> | void} */ fn) {
     fn();
-    if (pollMs > 0) {
-      const id = setInterval(() => {
-        if (typeof document !== 'undefined' && document.hidden) return;
-        fn();
-      }, pollMs);
-      _intervals.push(id);
+    if (pollMs > 0 && typeof document !== 'undefined') {
+      // visibleInterval pauses while hidden and fires fn immediately on
+      // tab return — log tabs stay fresh without background polling.
+      const teardown = visibleInterval(() => { fn(); }, pollMs);
+      _intervals.push(teardown);
     }
   }
 
@@ -411,7 +410,7 @@
     // system + simulator polls are deferred — started in the $effect below
     // on first tab click so idle sessions pay zero cost for tabs never visited.
   });
-  onDestroy(() => { for (const id of _intervals) clearInterval(id); });
+  onDestroy(() => { for (const teardown of _intervals) teardown(); });
 
   // Lazy-start deferred tab pollers on first activation.
   $effect(() => {

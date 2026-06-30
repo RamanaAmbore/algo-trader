@@ -46,7 +46,9 @@
     if (_canView && !_loadedOnce) {
       _loadedOnce = true;
       load();
-      teardown = visibleInterval(load, 15000);
+      // Throttle to 60 s on hidden — system health is critical for
+      // operator awareness; a slow heartbeat beats going dark entirely.
+      teardown = visibleInterval(load, 15000, 'throttle:60000');
     }
   });
   onDestroy(() => teardown?.());
