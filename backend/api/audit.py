@@ -254,8 +254,9 @@ class AuditMiddleware(ASGIMiddleware):
             scope.setdefault("state", {})["request_id"] = request_id
 
         # Wrap `send` so we can capture the response status code.
-        # Buffer the response body for the summary (truncated to 1 KB
+        # Buffer the response body for the summary (truncated to 2 KB
         # so we don't double the response memory cost).
+        _BODY_CAP = 2048
         captured = {"status": 0, "body_chunks": [], "body_len": 0}
 
         async def _send_wrapper(message):
@@ -268,8 +269,8 @@ class AuditMiddleware(ASGIMiddleware):
                 message["headers"] = headers
             elif message.get("type") == "http.response.body":
                 body = message.get("body") or b""
-                if captured["body_len"] < 1024:
-                    captured["body_chunks"].append(body[:1024 - captured["body_len"]])
+                if captured["body_len"] < _BODY_CAP:
+                    captured["body_chunks"].append(body[:_BODY_CAP - captured["body_len"]])
                     captured["body_len"] += len(body)
             await send(message)
 
@@ -324,10 +325,10 @@ class AuditMiddleware(ASGIMiddleware):
         user_agent = headers.get("user-agent", "")[:255]
 
         # Parse summary — most JSON responses include a `detail`
-        # string for status messages. Best-effort: take the first 1 KB
+        # string for status messages. Best-effort: take the first 2 KB
         # of body, try to decode as JSON, pluck `detail` if present;
         # else fall back to the truncated text.
-        body_bytes = b"".join(captured["body_chunks"])[:1024]
+        body_bytes = b"".join(captured["body_chunks"])[:2048]
         summary: Optional[str] = None
         if body_bytes:
             try:
@@ -340,8 +341,8 @@ class AuditMiddleware(ASGIMiddleware):
             if not summary:
                 # Plain-text fallback — drop the JSON wrapping if it
                 # didn't parse, take the first line so the audit UI
-                # row is glanceable.
-                summary = body_bytes.decode("utf-8", errors="replace").splitlines()[0][:200]
+                # row is glanceable (cap 2048 chars to match buffer).
+                summary = body_bytes.decode("utf-8", errors="replace").splitlines()[0][:2048]
 
         # Path → category tag so the audit UI can filter HTTP rows by
         # business surface alongside the explicit category set on

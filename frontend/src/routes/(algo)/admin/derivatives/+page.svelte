@@ -3701,10 +3701,20 @@
     // cleanLegs signature to the last successful fetch; if
     // identical, skip the network round-trip entirely. Same
     // pattern the equity-only synth path already uses.
+    //
+    // NOTE: the `strategy &&` guard was intentionally removed. Previously
+    // a null strategy (from a failed fetch) would bypass the memo even
+    // when legs hadn't changed — causing 20+ redundant POST calls during
+    // closed hours when the broker token was broken. Now we skip the round-
+    // trip if the legs key matches regardless of whether we have a prior
+    // result: if inputs are identical and the last call failed, retrying
+    // immediately won't produce a different outcome. The force=true path
+    // (manual Refresh, position_filled postback, book_changed bus) is
+    // the correct escape hatch when a prior failure should be retried.
     const legsKey = cleanLegs.map(l =>
       `${l.symbol}:${l.qty}:${l.avg_cost ?? ''}:${l.ltp ?? ''}:${l.expiry ?? ''}`
     ).join('|');
-    if (!opts?.force && strategy && legsKey === _stratLastKey) {
+    if (!opts?.force && legsKey === _stratLastKey) {
       strategyErr = ''; _stratFails = 0;
       return;
     }
@@ -3717,6 +3727,14 @@
       _saveCache();
     } catch (e) {
       _stratFails += 1;
+      // Record the attempted key even on failure so that during closed
+      // hours (broken token, broker offline) repeated polls with
+      // IDENTICAL legs don't keep hammering the backend. The force=true
+      // path (manual Refresh, position_filled postback) bypasses this so
+      // legitimate retries still land. The key resets on underlying switch
+      // (line above) and on successful fetch, so an idle-hours key never
+      // stifles a post-open fresh fetch.
+      _stratLastKey = legsKey;
       // Banner shows only when (a) we have no prior chart to fall
       // back on AND (b) we've failed at least twice in a row. A
       // first-load transient — common on tab reopen during a deploy

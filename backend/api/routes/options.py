@@ -1057,6 +1057,63 @@ def _spot_cache_put(underlying: str, px: float, src: str,
         )
 
 
+async def _close_from_db(underlying: str) -> Optional[float]:
+    """Return the best available close price for `underlying` from the DB.
+
+    Two tiers (in order):
+      1. ``daily_book`` where kind='holdings', symbol=underlying, ltp > 0,
+         latest ``captured_at`` — the operator's actual last in-session LTP,
+         more authoritative than broker ohlc.close during the overnight window.
+      2. ``ohlcv_daily`` close for the most recent row where exchange IN
+         ('NSE', 'BSE') — the canonical prior-close once tier 1 is cold.
+
+    Returns the float price, or None when neither tier has data.
+    Performance target: one indexed SQL round-trip (<50 ms).
+    Reuses the same ``async_session`` pattern as other helpers in this module's
+    sibling routes (audit.py, auth.py, metrics.py). UX note: N/A (backend-only).
+    """
+    from sqlalchemy import text as _sa_text
+    from backend.api.database import async_session
+
+    try:
+        async with async_session() as session:
+            # Tier 1: daily_book.ltp for holdings (last in-session value).
+            # The ix_daily_book_kind_acct_sym_captured index (kind, account,
+            # symbol, captured_at) supports this ORDER BY DESC lookup.
+            row = await session.execute(
+                _sa_text(
+                    "SELECT ltp FROM daily_book "
+                    "WHERE kind = 'holdings' AND symbol = :sym AND ltp > 0 "
+                    "ORDER BY captured_at DESC LIMIT 1"
+                ),
+                {"sym": underlying},
+            )
+            result = row.fetchone()
+            if result is not None:
+                val = float(result[0])
+                if val > 0:
+                    return val
+
+            # Tier 2: ohlcv_daily close — prefer NSE over BSE.
+            row2 = await session.execute(
+                _sa_text(
+                    "SELECT close FROM ohlcv_daily "
+                    "WHERE symbol = :sym AND exchange IN ('NSE', 'BSE') "
+                    "ORDER BY exchange ASC, date DESC LIMIT 1"
+                ),
+                {"sym": underlying},
+            )
+            result2 = row2.fetchone()
+            if result2 is not None:
+                val2 = float(result2[0])
+                if val2 > 0:
+                    return val2
+    except Exception as exc:
+        logger.warning("_close_from_db for %s failed: %s", underlying, exc)
+
+    return None
+
+
 async def _resolve_spot(underlying: str, override: Optional[float],
                         *, fallback: Optional[float] = None,
                         expiry_hint: Optional[date] = None,
@@ -1218,11 +1275,39 @@ async def _resolve_spot(underlying: str, override: Optional[float],
     if cached is not None:
         return cached  # (px, "cached", prev_close, anchor)
 
+    # DB-backed close fallback — inserted BEFORE the median-strike synthetic.
+    # During after-hours windows the live quote + futures lookups both return
+    # zero / fail (token broken, exchange closed). Instead of painting the
+    # option's median strike as "spot" (meaningless for stocks like IDFCFIRSTB),
+    # try two DB tiers:
+    #   1. daily_book.holdings ltp where symbol=underlying and kind='holdings'
+    #      and ltp > 0 — this is the operator's actual last in-session LTP,
+    #      more authoritative than broker ohlc.close (which lags overnight).
+    #   2. ohlcv_daily.close for the most recent NSE/BSE date — the prior-close
+    #      that the broker would eventually serve once the overnight window ends.
+    # Source token 'close-db' so telemetry distinguishes from the broker's
+    # 'close' path and the synthetic 'fallback'. UI treats it identically to
+    # 'close' (no special chip rendering needed).
+    db_close = await _close_from_db(underlying)
+    if db_close is not None:
+        logger.info(
+            "options spot for %s resolved via close-db: %.4f", underlying, db_close
+        )
+        # Return db_close as both spot and prev_close — UI will show it
+        # as the close marker. Anchor stays None (stocks have no futures anchor).
+        return (db_close, "close-db", db_close, None)
+
     if fallback is not None and fallback > 0:
         # Last resort: use the option's strike as a degenerate spot. The
         # payoff diagram still draws sensibly (strike-centred); the
         # operator gets a 'fallback' chip so they know the spot is
         # synthetic and shouldn't be trusted for absolute P&L.
+        logger.warning(
+            "strategy spot for %s fell through to source='fallback' "
+            "(spot=%.2f, anchor=None). Live + futures lookups failed; "
+            "UI will suppress the spot marker.",
+            underlying, float(fallback),
+        )
         return (float(fallback), "fallback", None, None)
 
     raise HTTPException(status_code=502,
