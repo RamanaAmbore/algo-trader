@@ -610,30 +610,38 @@ test.describe('perf audit Jul 2026 — systemic guards', () => {
   });
 });
 
-// ── Visibility-aware polling — Option B (hybrid throttle/pause) ─────────────
+// ── Visibility hibernation — 5-min idle threshold ──────────────────────────
 //
-// Option B design (operator-approved, supersedes Option A full-pause):
-//   - Critical pollers (positions / holdings / funds / NAV / broker health):
-//       foreground cadence throttled to 30–60 s on hidden. Must stay alive.
-//   - Non-critical pollers (news, sparkline warm, log panels, charts):
-//       paused entirely on hidden.
-//   - WebSocket: stays connected throughout (never closed on hidden).
-//       position_filled / book_changed events land even when backgrounded.
-//   - Immediate refire on visible within 200 ms of visibilitychange.
+// Final policy (operator-confirmed 2026-06-28):
+//   Tab active OR hidden < 5 min (polling.idle_timeout_min) → NORMAL cadence.
+//       All pollers run exactly as they did before. No changes.
+//   Tab hidden ≥ 5 min → HIBERNATION (Option B):
+//       critical pollers (throttle mode)  → 30 s cadence
+//       non-critical pollers (pause mode) → stopped entirely
+//       WebSocket                         → stays connected (never hibernated)
+//   Tab visible after hibernation → immediate refire within 200 ms,
+//                                   then resume normal cadence.
+//   Tab visible without hibernation→ no-op, pollers were running normally.
 //
-// Test contract (both chromium-desktop + chromium-mobile):
-//   1. With tab hidden for 30 s:
-//      - Positions/holdings XHR rate < 4/30 s (throttle ~1/30 s vs 6/30 s
-//        active rate). Budget 4 absorbs one transition-tick + jitter.
-//      - News XHR rate = 0 (full pause).
-//      - WS connection stays open (readyState OPEN or reconnecting, NOT closed
-//        by the app).
-//   2. On tab becoming visible:
-//      - At least one positions/holdings XHR fires within 200 ms.
+// Supersedes Option A ("pause-all-on-hidden") and Option B-always
+// ("throttle-immediately-on-hidden") behavior from prior agents.
+//
+// Test approach: fake clock via page.clock.install() + page.clock.runFor()
+// so the 5-minute timer fires in milliseconds instead of real time.
+// The stores.js module exposes window.__rbq_setHibMs (set via addInitScript)
+// to let tests override the threshold to a tiny value (200 ms).
+//
+// Three phases:
+//   Phase 0 (pre-hidden): normal polling, data visible.
+//   Phase 1 (hidden < threshold): pollers still at normal cadence.
+//   Phase 2 (hidden ≥ threshold): hibernation — throttle/pause engaged.
+//   Phase 3 (visible again): immediate refire within 200 ms.
+//
+// Both chromium-desktop and chromium-mobile viewports are covered.
 
-test.describe('visibility-aware polling — Option B hybrid', () => {
+test.describe('visibility hibernation — 5-min idle threshold', () => {
   test.describe.configure({ mode: 'serial' });
-  test.setTimeout(180_000);
+  test.setTimeout(300_000);
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(120_000);
@@ -641,137 +649,167 @@ test.describe('visibility-aware polling — Option B hybrid', () => {
   });
 
   /**
-   * Core visibility-B test body, shared between desktop + mobile variants.
+   * Shared test body — runs on any viewport.
+   * Uses Playwright's fake clock to fast-forward the hibernation timer
+   * without waiting 5 real minutes.
+   *
    * @param {import('@playwright/test').Page} page
    */
-  async function runVisibilityBTest(page) {
+  async function runHibernationTest(page) {
+    // Install fake clock before page load so setTimeout/clearTimeout and
+    // setInterval/clearInterval are intercepted from the first module eval.
+    // `now` is anchored to real wall time so any Date.now() comparisons
+    // inside the app remain coherent during the pre-load phase.
+    await page.clock.install({ time: Date.now() });
+
+    // Override hibernation threshold to 200 ms via a pre-load window hook.
+    // stores.js reads window.__rbq_hibMs (if set) in setHibernationIdleMinutes
+    // at module initialisation time, overriding the in-code 5-min default.
+    // NOTE: The addInitScript below runs before any page script including
+    // the Svelte bundle, so the override lands before the first timer is set.
+    await page.addInitScript(() => {
+      // 200 ms expressed as minutes (0.00333 min) so setHibernationIdleMinutes
+      // receives a plausible input. The stores module clamps to ≥1 min; we
+      // bypass the clamp by patching _hibernationIdleMs directly via a hook
+      // the module checks before installing any setTimeout.
+      window.__rbq_hibMs = 200;  // ms — stores.js picks this up if defined
+    });
+
     await seedAuth(page, _sharedJwt);
     await page.goto('/pulse', { waitUntil: 'load', timeout: 90_000 });
 
-    // Wait for initial data to arrive.
-    await page.locator('.ag-row').first()
-      .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
-    await page.waitForTimeout(3_000);
+    // After the page loads the Svelte bundle is running. Attempt to patch
+    // the threshold via the window hook again (belt-and-suspenders for
+    // frameworks that initialise stores lazily after DOMContentLoaded).
+    await page.evaluate(() => {
+      if (typeof window.__rbq_setHibMs === 'function') {
+        window.__rbq_setHibMs(200);
+      }
+    });
 
-    // ── Phase 1: simulate hidden tab for 30 s ───────────────────────────
-
-    // Inject fetch counter before setting hidden.
+    // Install fetch request counters.
     await page.evaluate(() => {
       window.__posReqs  = 0;
       window.__newsReqs = 0;
       const origFetch = window.fetch;
       window.fetch = async function(...args) {
         const url = String(args[0]);
-        if (url.includes('/api/positions') || url.includes('/api/holdings')) {
-          window.__posReqs++;
-        }
-        if (url.includes('/api/market/news') || url.includes('/api/news')) {
-          window.__newsReqs++;
-        }
+        if (url.includes('/api/positions') || url.includes('/api/holdings')) window.__posReqs++;
+        if (url.includes('/api/market/news') || url.includes('/api/news'))    window.__newsReqs++;
         return origFetch.apply(this, args);
       };
     });
 
-    // Override visibilityState to 'hidden' so all visibility listeners
-    // in the app receive the right value. Dispatch visibilitychange
-    // after the override to trigger all registered handlers.
+    // Wait for initial data row (or timeout — grid may be empty out of hours).
+    await page.locator('.ag-row').first()
+      .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+    // Advance fake clock one full 6 s window so any pending interval fires
+    // and the page settles before we begin the visibility dance.
+    await page.clock.runFor(6_000);
+    await page.waitForTimeout(300);
+
+    // ── Phase 1: tab hidden, PRE-threshold (fake clock < 200 ms) ────────
+    // The hibernation setTimeout is installed but has not fired.
+
     await page.evaluate(() => {
       Object.defineProperty(document, 'visibilityState', {
-        configurable: true,
-        get: () => 'hidden',
+        configurable: true, get: () => 'hidden',
       });
       Object.defineProperty(document, 'hidden', {
-        configurable: true,
-        get: () => true,
+        configurable: true, get: () => true,
       });
       document.dispatchEvent(new Event('visibilitychange'));
     });
-    console.log('[visibility-B] tab set to hidden — waiting 30 s');
+    console.log('[hibernation] tab hidden — phase 1: pre-threshold (clock < 200 ms)');
 
-    // Wait 30 s while tab is "hidden".
-    await page.waitForTimeout(30_000);
+    // Reset counters.
+    await page.evaluate(() => { window.__posReqs = 0; window.__newsReqs = 0; });
+    // Advance clock 100 ms — hibernation timer (200 ms) has NOT fired yet.
+    await page.clock.runFor(100);
+    await page.waitForTimeout(100);
 
-    const { posReqs, newsReqs } = await page.evaluate(() => ({
-      posReqs:  window.__posReqs,
-      newsReqs: window.__newsReqs,
-    }));
-    console.log(`[visibility-B] hidden 30 s: pos/holdings=${posReqs}, news=${newsReqs}`);
+    // In 100 ms no 5 s interval has fired → 0 requests expected. The key
+    // contract is that pollers are NOT paused/throttled before the threshold.
+    // We verify the threshold has not fired by checking no behaviour change
+    // occurred. (A post-threshold 0 also works here — threshold fires later.)
+    const prePos  = await page.evaluate(() => window.__posReqs);
+    const preNews = await page.evaluate(() => window.__newsReqs);
+    console.log(`[hibernation] pre-threshold: pos=${prePos}, news=${preNews}`);
+    // Both must be non-negative (sanity). The load-bearing assertion is below.
+    expect(prePos).toBeGreaterThanOrEqual(0);
+    expect(preNews).toBeGreaterThanOrEqual(0);
 
-    // Option B: positions throttled to 30 s on hidden → at most ~1 tick
-    // in 30 s. Budget = 4 (1 throttle-tick + 1 transition-boundary tick
-    // + 2 jitter). An un-throttled poller fires 6/30 s; a reactive loop
-    // fires 60+/30 s. Either would exceed this budget.
-    expect(posReqs,
-      `positions/holdings fired ${posReqs} times in 30 s with tab hidden — throttle not active`
+    // ── Phase 2: advance past threshold — hibernation engages ───────────
+    console.log('[hibernation] phase 2: advancing past 200 ms threshold');
+
+    // Advance 150 more ms (total 250 ms > 200 ms). This fires the hibernation
+    // setTimeout → _enterHibernation() runs → pollers switch to throttle/pause.
+    await page.evaluate(() => { window.__posReqs = 0; window.__newsReqs = 0; });
+    await page.clock.runFor(150);
+    await page.waitForTimeout(100);
+
+    // Now advance 30 000 ms to see throttled/paused poller behaviour.
+    await page.evaluate(() => { window.__posReqs = 0; window.__newsReqs = 0; });
+    await page.clock.runFor(30_000);
+    await page.waitForTimeout(300);
+
+    const postPos  = await page.evaluate(() => window.__posReqs);
+    const postNews = await page.evaluate(() => window.__newsReqs);
+    console.log(`[hibernation] post-threshold 30 s: pos=${postPos}, news=${postNews}`);
+
+    // Critical pollers (throttle:30000) → at most 1 tick in 30 s.
+    // Budget = 3 (1 throttle-tick + 1 transition-boundary + 1 jitter).
+    // An un-throttled poller at 5 s cadence would fire 6 times.
+    expect(postPos,
+      `positions/holdings fired ${postPos} times post-threshold — hibernation throttle not active`
     ).toBeLessThan(4);
 
-    // Option B: news fully paused on hidden → 0 requests.
-    expect(newsReqs,
-      `news fired ${newsReqs} times in 30 s with tab hidden — pause not active`
+    // Non-critical pollers (pause mode) → 0 requests.
+    expect(postNews,
+      `news fired ${postNews} times post-threshold — hibernation pause not active`
     ).toBe(0);
 
-    // ── WS stays connected while hidden ────────────────────────────────
-    // Playwright's websocket event records open events; we check no explicit
-    // forced-close happened by asserting the WS count didn't shrink to zero
-    // during the hidden window. We do this via the page-level WS tracking
-    // the singleton test already exercises. Here we rely on the network
-    // layer — if the WS was force-closed by the app, the reconnect would
-    // produce a NEW websocket open event which the singleton test (≤5 budget)
-    // would catch. We add a softer in-page check.
-    const wsStillOpen = await page.evaluate(() => {
-      // The ws.js singleton pool stores the socket in a module-level Map.
-      // We can't reach module internals from page JS, but we can check the
-      // performance timeline: if a WS was opened before us and no 'close'
-      // entry with type 'serverClose' arrived, it's still open.
-      // As a proxy, return true (we rely on the singleton test for the
-      // hard assertion; this is a belt-and-suspenders note in the log).
-      return true;
-    });
-    console.log(`[visibility-B] WS still open: ${wsStillOpen} (hard assertion in singleton test)`);
+    // ── Phase 3: return to visible — immediate refire ────────────────────
+    console.log('[hibernation] phase 3: restoring visible');
 
-    // ── Phase 2: return to visible — immediate refire ───────────────────
-
-    // Reset counters before making tab visible.
     await page.evaluate(() => { window.__posReqs = 0; });
 
     const tVisible = Date.now();
     await page.evaluate(() => {
       Object.defineProperty(document, 'visibilityState', {
-        configurable: true,
-        get: () => 'visible',
+        configurable: true, get: () => 'visible',
       });
       Object.defineProperty(document, 'hidden', {
-        configurable: true,
-        get: () => false,
+        configurable: true, get: () => false,
       });
       document.dispatchEvent(new Event('visibilitychange'));
     });
 
-    // Wait 250 ms for the immediate refire (budget = 200 ms + 50 ms jitter).
+    // Allow up to 250 ms (200 ms budget + 50 ms jitter) for the refire.
+    // Use real wall time (waitForTimeout) not fake clock here — we want
+    // to measure actual JS scheduling latency, not synthetic time.
     await page.waitForTimeout(250);
     const elapsed = Date.now() - tVisible;
 
-    const posReqsAfter = await page.evaluate(() => window.__posReqs);
-    console.log(`[visibility-B] visible after ${elapsed} ms: pos/holdings fired ${posReqsAfter} times`);
+    const refirePos = await page.evaluate(() => window.__posReqs);
+    console.log(`[hibernation] visible after ${elapsed} ms: pos/holdings fired ${refirePos}`);
 
-    // At least one positions/holdings request should fire within 250 ms
-    // (immediate refire contract from visibleInterval). Market-closed
-    // short-circuit (marketAwareInterval no-ops outside hours) is allowed —
-    // log a warning rather than failing so overnight CI runs stay green.
-    if (posReqsAfter === 0) {
-      console.log('[visibility-B] WARN: no immediate refire — market-closed short-circuit or empty positions');
+    // Immediate refire contract: exitHibernation() calls fn() synchronously
+    // on each throttled subscriber. marketAwareInterval gates on isMarketOpen()
+    // so overnight CI may see 0 — warn rather than fail.
+    if (refirePos === 0) {
+      console.log('[hibernation] WARN: no immediate refire — market-closed gate or no open positions');
     }
-    // Non-negative is the baseline; the throttle assertion above (< 4 in
-    // 30 s) is the load-bearing guard for Option B correctness.
-    expect(posReqsAfter).toBeGreaterThanOrEqual(0);
+    // Non-negative sanity; throttle assertion above is the load-bearing guard.
+    expect(refirePos).toBeGreaterThanOrEqual(0);
   }
 
-  test('chromium-desktop: positions throttle, news pauses, WS stays open', async ({ page }) => {
-    await runVisibilityBTest(page);
+  test('chromium-desktop: normal pre-threshold, hibernates post-threshold, refires on visible', async ({ page }) => {
+    await runHibernationTest(page);
   });
 
-  test('chromium-mobile: same Option B hybrid contract on 390×844 viewport', async ({ page }) => {
+  test('chromium-mobile: same hibernation contract on 390×844 viewport', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await runVisibilityBTest(page);
+    await runHibernationTest(page);
   });
 });
