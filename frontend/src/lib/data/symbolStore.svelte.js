@@ -219,19 +219,22 @@ function _mergeSymbolWrite(sym, fields, ts = {}) {
     if (incomingTs < storedTs) continue;  // stale write — reject
     if (/** @type {any} */ (next)[k] === v) continue;  // no-op
 
-    // LTP-zero guard (Sleep audit Jun 2026): never overwrite a known-good
-    // (>0) LTP with 0. The backend's last_good_ltp rescue cache (see
-    // backend/brokers/broker_apis.py) prevents zero leakage on the
-    // server side, but transient broker hiccups or stale snapshot
-    // payloads occasionally surface `last_price: 0` in poll responses.
-    // Allowing those to land here flickers the cell to "—" or zero for
-    // one render cycle before the next tick restores the real price.
-    // Cold-start (no prior LTP) keeps the existing behaviour so the
-    // cell paints SOMETHING rather than staying blank forever when the
-    // broker genuinely has no quote.
-    if (isLtp && v === 0) {
-      const prevLtp = /** @type {any} */ (next).ltp;
-      if (typeof prevLtp === 'number' && prevLtp > 0) continue;
+    // Price-zero guard (Sleep audit Jun 2026): never overwrite a known-
+    // good (>0) price-class field with 0. The backend's last_good_ltp
+    // rescue cache (see backend/brokers/broker_apis.py) prevents zero
+    // leakage on the server side, but transient broker hiccups or stale
+    // snapshot payloads occasionally surface `last_price: 0` in poll
+    // responses. Allowing those to land here flickers the cell to "—"
+    // or zero for one render cycle. The same guard applies to `close`
+    // — a zero prev-close corrupts day_change = (ltp − close) × qty
+    // into ltp × qty (portfolio value, not change).
+    //
+    // Cold-start (no prior positive value) keeps the existing behaviour
+    // so the cell paints SOMETHING rather than staying blank forever
+    // when the broker genuinely has no quote.
+    if ((k === 'ltp' || k === 'close') && v === 0) {
+      const prevVal = /** @type {any} */ (next)[k];
+      if (typeof prevVal === 'number' && prevVal > 0) continue;
     }
 
     /** @type {any} */ (next)[k] = v;
