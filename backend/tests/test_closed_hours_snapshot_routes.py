@@ -841,3 +841,161 @@ async def test_positions_snapshot_pnl_percentage_populated():
         f"day_change_percentage expected {expected_day_pct:.4f}, got {row.day_change_percentage}"
     )
     assert row.last_price_stale is True, "snapshot rows must have last_price_stale=True"
+
+
+# ---------------------------------------------------------------------------
+# Fix 2 — reader fallback: bad snapshot (zeros) → reader returns good snapshot
+# ---------------------------------------------------------------------------
+#
+# When daily_book contains ONE bad snapshot (all zeros, captured more recently)
+# AND ONE good snapshot (non-zero values, captured earlier) for the same
+# (account, symbol), _holdings_snapshot() and _positions_snapshot() must
+# return the GOOD snapshot values, not the bad ones.
+#
+# The SQL uses DISTINCT ON (account, symbol) with a WHERE clause that excludes
+# rows where ltp=0 AND total_pnl=0 AND avg_cost>0 — the bad-payload fingerprint.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_holdings_snapshot_prefers_good_over_bad():
+    """_holdings_snapshot() returns the most-recent *good* row per (account, symbol),
+    skipping zero-ltp/zero-pnl rows (bad token fingerprint) even if they are newer.
+
+    Scenario:
+      - Captured at T-2h: ltp=2900, total_pnl=1000 (GOOD)
+      - Captured at T-30min: ltp=0, total_pnl=0, avg_cost=2800 (BAD — token failure)
+
+    The bad row is more recent but excluded by the WHERE clause.
+    The good row must be returned.
+    """
+    from datetime import timedelta
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    now_utc = datetime.now(timezone.utc)
+    good_ts = now_utc - timedelta(hours=2)   # older but valid
+    bad_ts  = now_utc - timedelta(minutes=30) # newer but zeroed
+
+    # The SQL query uses DISTINCT ON (account, symbol) with WHERE NOT (ltp=0...)
+    # so the bad row is excluded entirely; only the good row survives.
+    # We return the good row as the only row from the mock DB.
+    good_row = (
+        "ZG0790",   # account
+        "RELIANCE",  # symbol
+        "NSE",       # exchange
+        10,          # qty
+        2800.0,      # avg_cost
+        2900.0,      # ltp  — non-zero: good row
+        100.0,       # day_pnl
+        1000.0,      # total_pnl
+        good_ts,     # captured_at (older timestamp)
+    )
+
+    # The DB layer (after Fix 2 SQL) would exclude the bad row and return only
+    # the good one. Simulate this by returning [good_row] from execute().
+    mock_result = MagicMock()
+    mock_result.all.return_value = [good_row]
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__  = AsyncMock(return_value=False)
+    mock_session.execute    = AsyncMock(return_value=mock_result)
+
+    with patch("backend.api.database.async_session", return_value=mock_session):
+        from backend.api.routes.holdings import _holdings_snapshot
+        resp = await _holdings_snapshot()
+
+    assert resp is not None, "_holdings_snapshot must return a response when good rows exist"
+    assert len(resp.rows) == 1
+    row = resp.rows[0]
+    assert row.last_price == 2900.0, (
+        f"Expected good snapshot ltp=2900.0, got {row.last_price}"
+    )
+    assert row.pnl == 1000.0, (
+        f"Expected good snapshot total_pnl=1000.0, got {row.pnl}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_positions_snapshot_prefers_good_over_bad():
+    """_positions_snapshot() returns the most-recent *good* row per (account, symbol),
+    skipping zero-ltp rows even if they are newer.
+
+    This is the P0 regression that caused NavStrip P delta = 0.0 on 2026-06-30.
+    ZG0790's token was invalid; snapshot wrote ltp=0/pnl=0. NavStrip summed zeros.
+    Fix 2 ensures the previous day's good snapshot is used instead.
+    """
+    from datetime import timedelta
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    now_utc = datetime.now(timezone.utc)
+    good_ts = now_utc - timedelta(hours=26)  # prior session EOD (valid)
+
+    good_row = (
+        "ZG0790",
+        "NIFTY25JUNFUT",
+        "NFO",
+        50,
+        23000.0,    # avg_cost
+        23200.0,    # ltp  — non-zero: good
+        200.0,      # day_pnl
+        10000.0,    # total_pnl
+        "{}",       # payload_json
+        good_ts,    # captured_at
+    )
+
+    mock_result = MagicMock()
+    mock_result.all.return_value = [good_row]
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__  = AsyncMock(return_value=False)
+    mock_session.execute    = AsyncMock(return_value=mock_result)
+
+    with patch("backend.api.database.async_session", return_value=mock_session):
+        from backend.api.routes.positions import _positions_snapshot
+        resp = await _positions_snapshot()
+
+    assert resp is not None
+    assert len(resp.rows) == 1
+    row = resp.rows[0]
+    assert row.last_price == 23200.0, (
+        f"Expected good snapshot ltp=23200.0, got {row.last_price} — "
+        "Fix 2 reader fallback must return the prior good snapshot, not zeros"
+    )
+    assert row.pnl == 10000.0, (
+        f"Expected good snapshot total_pnl=10000.0, got {row.pnl}"
+    )
+    # P delta (day_change_val) must be non-zero — this is the NavStrip P delta fix
+    assert row.day_change_val == 200.0, (
+        f"NavStrip P delta must reflect stored day_pnl=200.0, got {row.day_change_val}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_holdings_snapshot_sql_excludes_bad_payload_rows():
+    """_holdings_snapshot SQL query must contain the bad-payload exclusion clause.
+
+    Source-level check verifying the WHERE NOT (ltp=0 AND total_pnl=0 AND avg_cost>0)
+    guard and DISTINCT ON (account, symbol) are present in the query text.
+    """
+    src = _HOL_SRC.read_text(encoding="utf-8")
+    assert "DISTINCT ON (account, symbol)" in src, (
+        "_holdings_snapshot SQL must use DISTINCT ON (account, symbol) "
+        "to pick the latest-per-symbol snapshot row"
+    )
+    assert "NOT (ltp = 0" in src, (
+        "_holdings_snapshot SQL must exclude zero-ltp bad-payload rows "
+        "via WHERE NOT (ltp = 0 ...)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_positions_snapshot_sql_excludes_bad_payload_rows():
+    """_positions_snapshot SQL query must contain the bad-payload exclusion clause."""
+    src = _POS_SRC.read_text(encoding="utf-8")
+    assert "DISTINCT ON (account, symbol)" in src, (
+        "_positions_snapshot SQL must use DISTINCT ON (account, symbol)"
+    )
+    assert "NOT (ltp = 0" in src, (
+        "_positions_snapshot SQL must exclude zero-ltp bad-payload rows"
+    )

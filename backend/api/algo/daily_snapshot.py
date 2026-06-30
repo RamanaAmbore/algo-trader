@@ -149,10 +149,30 @@ def _fetch_account_data(broker, account: str, target_date: date) -> dict:
 # Row builders
 # ---------------------------------------------------------------------------
 
+def _is_zero_payload_row(row: dict, ltp: Optional[float], day_pnl: Optional[float], total_pnl: Optional[float]) -> bool:
+    """Return True when a broker row looks like a bad/zeroed payload.
+
+    The heuristic: the symbol has a real avg_cost (it exists in the portfolio)
+    but the broker returned ltp=0, day_pnl=0, and total_pnl=0 all at once.
+    This pattern only occurs on auth failures (invalid token) or upstream outages
+    — never on a legitimately flat position. We skip such rows to avoid
+    overwriting a previously-good snapshot with a zeroed-out one.
+    """
+    avg_cost = row.get("average_price")
+    avg_cost_f = float(avg_cost) if avg_cost is not None else 0.0
+    if avg_cost_f <= 0:
+        return False  # no cost basis — could genuinely be zero
+    ltp_f      = ltp      if ltp      is not None else 0.0
+    day_pnl_f  = day_pnl  if day_pnl  is not None else 0.0
+    total_pnl_f = total_pnl if total_pnl is not None else 0.0
+    return ltp_f == 0.0 and day_pnl_f == 0.0 and total_pnl_f == 0.0
+
+
 def _holdings_rows(
     account: str, target_date: date, raw: list[dict], now_ist: datetime,
 ) -> list[dict]:
     rows = []
+    skipped = 0
     for r in raw:
         symbol = r.get("tradingsymbol", "")
         if not symbol:
@@ -161,6 +181,20 @@ def _holdings_rows(
         mid_session = _is_exchange_open_at(exchange, now_ist)
         last_price = r.get("last_price")
         day_change = r.get("day_change")
+        total_pnl_raw = r.get("pnl")
+
+        ltp_val   = None if mid_session else (float(last_price) if last_price is not None else None)
+        day_pnl_v = None if mid_session else (float(day_change) if day_change is not None else None)
+        total_pnl_v = float(total_pnl_raw) if total_pnl_raw is not None else None
+
+        # Bad-payload guard: broker returned all zeros for a real holding.
+        # This is the fingerprint of an invalid/expired token (e.g. ZG0790
+        # auth failure). Skip the row — the existing snapshot (if any) is
+        # preserved untouched, which is far better than overwriting it with zeros.
+        if not mid_session and _is_zero_payload_row(r, ltp_val, day_pnl_v, total_pnl_v):
+            skipped += 1
+            continue
+
         # Holdings are eq-only (no MCX), so this branch matters only on
         # mid-NSE-session snapshots — e.g. an operator triggering a manual
         # snapshot via /admin during market hours. Mid-session ltp/day_pnl
@@ -176,11 +210,16 @@ def _holdings_rows(
             "exchange":     exchange,
             "qty":          int(r.get("opening_quantity") or r.get("quantity") or 0),
             "avg_cost":     float(r["average_price"]) if r.get("average_price") is not None else None,
-            "ltp":          None if mid_session else (float(last_price) if last_price is not None else None),
-            "day_pnl":      None if mid_session else (float(day_change) if day_change is not None else None),
-            "total_pnl":    float(r["pnl"]) if r.get("pnl") is not None else None,
+            "ltp":          ltp_val,
+            "day_pnl":      day_pnl_v,
+            "total_pnl":    total_pnl_v,
             "payload_json": json.dumps(r, default=str),
         })
+    if skipped:
+        logger.warning(
+            f"Snapshot [{account}] holdings: skipped {skipped}/{skipped + len(rows)} rows "
+            f"with ltp=0/day_pnl=0/total_pnl=0 (likely invalid token — prior snapshot preserved)"
+        )
     return rows
 
 
@@ -197,6 +236,7 @@ def _positions_rows(
     }
 
     rows = []
+    skipped = 0
     for r in raw:
         symbol = r.get("tradingsymbol", "")
         if not symbol:
@@ -248,6 +288,16 @@ def _positions_rows(
                         day_pnl = float(naive_day_pnl(ltp_val, float(close_price), float(qty)))
                 else:
                     day_pnl = float(naive_day_pnl(ltp_val, float(close_price), float(qty)))
+
+            # Bad-payload guard: broker returned all zeros for a real position.
+            # Same token-failure fingerprint as holdings — ltp=0, day_pnl=0,
+            # total_pnl=0 when avg_cost > 0. Skip to preserve the prior snapshot.
+            total_pnl_raw = r.get("pnl")
+            total_pnl_v   = float(total_pnl_raw) if total_pnl_raw is not None else None
+            if _is_zero_payload_row(r, ltp_val, day_pnl, total_pnl_v):
+                skipped += 1
+                continue
+
         rows.append({
             "date":         target_date,
             "account":      account,
@@ -262,6 +312,11 @@ def _positions_rows(
             "total_pnl":    float(r["pnl"])           if r.get("pnl")           is not None else None,
             "payload_json": json.dumps(r, default=str),
         })
+    if skipped:
+        logger.warning(
+            f"Snapshot [{account}] positions: skipped {skipped}/{skipped + len(rows)} rows "
+            f"with ltp=0/day_pnl=0/total_pnl=0 (likely invalid token — prior snapshot preserved)"
+        )
     return rows
 
 
@@ -429,6 +484,28 @@ async def snapshot_daily_book(target_date: Optional[date] = None) -> dict:
             p_rows = _positions_rows(account, target_date, raw["positions"], now_ist)
             t_rows = _trades_rows(account,    target_date, raw["trades"])
             f_rows = _funds_rows(account,     target_date, raw["funds"])
+
+            # Account-level bad-payload guard: if the broker returned non-empty
+            # holdings/positions but every row was filtered out (all zeros),
+            # don't upsert the empty set — the prior snapshot is automatically
+            # preserved because _upsert_rows([]) is a no-op. Emit a clear warning
+            # so operators know the snapshot was skipped rather than confused by
+            # silent zero totals.
+            raw_h_count = len(raw["holdings"])
+            raw_p_count = len(raw["positions"])
+            all_filtered = (
+                raw_h_count > 0 and len(h_rows) == 0 and
+                raw_p_count > 0 and len(p_rows) == 0
+            )
+            if all_filtered:
+                logger.warning(
+                    f"Snapshot [{account}] date={target_date} — ALL "
+                    f"{raw_h_count} holdings + {raw_p_count} positions rows "
+                    f"filtered (bad payload / invalid token). "
+                    f"Prior snapshot preserved. No upsert performed."
+                )
+                processed.append(account)
+                continue
 
             totals["holdings_rows"]  += await _upsert_rows(h_rows)
             totals["positions_rows"] += await _upsert_rows(p_rows)

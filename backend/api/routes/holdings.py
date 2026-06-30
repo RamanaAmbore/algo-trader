@@ -52,13 +52,24 @@ async def _holdings_snapshot() -> Optional[HoldingsResponse]:
     )
     try:
         async with async_session() as session:
+            # DISTINCT ON (account, symbol) picks the latest captured_at for
+            # each (account, symbol) pair. The WHERE clause excludes rows where
+            # the broker returned a bad/zeroed payload (ltp=0 AND total_pnl=0
+            # AND avg_cost > 0) — the fingerprint of an invalid-token outage
+            # that slipped past Fix 1 on older snapshots. This ensures the
+            # reader always returns the most-recent *good* snapshot row rather
+            # than silently summing zeros from a corrupted capture.
             result = await session.execute(_sql_text("""
-                SELECT account, symbol, exchange, qty, avg_cost, ltp,
+                SELECT DISTINCT ON (account, symbol)
+                       account, symbol, exchange, qty, avg_cost, ltp,
                        day_pnl, total_pnl, captured_at
                 FROM daily_book
-                WHERE kind = 'holdings' AND ltp IS NOT NULL
+                WHERE kind = 'holdings'
+                  AND ltp IS NOT NULL
                   AND captured_at < :today_open
-                ORDER BY captured_at DESC
+                  AND NOT (ltp = 0 AND (total_pnl = 0 OR total_pnl IS NULL)
+                           AND avg_cost IS NOT NULL AND avg_cost > 0)
+                ORDER BY account, symbol, captured_at DESC
                 LIMIT 5000
             """), {"today_open": today_ist_midnight})
             raw_rows = result.all()

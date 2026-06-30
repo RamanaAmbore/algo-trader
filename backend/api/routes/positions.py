@@ -61,13 +61,23 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
     )
     try:
         async with async_session() as session:
+            # DISTINCT ON (account, symbol) picks the latest captured_at for
+            # each (account, symbol) pair. Excludes bad/zeroed payload rows
+            # (ltp=0 AND total_pnl=0 with a real avg_cost) — the fingerprint
+            # of an invalid-token outage. Returns the most-recent *good*
+            # snapshot row per symbol so NavStrip P delta is never silenced
+            # by a corrupted capture.
             result = await session.execute(_sql_text("""
-                SELECT account, symbol, exchange, qty, avg_cost, ltp,
+                SELECT DISTINCT ON (account, symbol)
+                       account, symbol, exchange, qty, avg_cost, ltp,
                        day_pnl, total_pnl, payload_json, captured_at
                 FROM daily_book
-                WHERE kind = 'positions' AND ltp IS NOT NULL
+                WHERE kind = 'positions'
+                  AND ltp IS NOT NULL
                   AND captured_at < :today_open
-                ORDER BY captured_at DESC
+                  AND NOT (ltp = 0 AND (total_pnl = 0 OR total_pnl IS NULL)
+                           AND avg_cost IS NOT NULL AND avg_cost > 0)
+                ORDER BY account, symbol, captured_at DESC
                 LIMIT 5000
             """), {"today_open": today_ist_midnight})
             raw_rows = result.all()
