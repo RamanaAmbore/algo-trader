@@ -1185,6 +1185,10 @@
       _restore('dash.winAccounts', v => _winAccounts = v);
       _restore('dash.losAccounts', v => _losAccounts = v);
     });
+    // PRIMARY — positions, holdings, funds, agent events. These drive the
+    // dashboard's main snapshot grids; the operator needs them before
+    // anything else paints. Kick off immediately so the first network
+    // round-trip starts in this microtask.
     loadHero();
     // Match the equity-curve cadence (15 s). The earlier 30 s rate
     // left the Capital card visibly stale next to the chart that
@@ -1195,17 +1199,19 @@
     // are critical — keep a slow heartbeat so the operator returns to
     // current numbers without a full cold-start wait.
     _heroTeardown = visibleInterval(loadHero, 15000, 'throttle:30000');
-    // Equity-curve polling — independent of loadHero so an upstream
-    // sub-fetch failure (positions / holdings / events) can't stall
-    // the chart's refresh cycle. Same 15 s cadence — backend buffer
-    // appends a new point every ~1 min and the chart should reflect
-    // it within one frame of arrival.
-    _fetchEquity();
-    _equityPollStop = visibleInterval(_fetchEquity, 15000, 'throttle:30000');
-    // NAV chip — single fetch on mount, no polling. NAV moves on the
-    // 16:00 IST snapshot + operator recompute; nothing changes minute-
-    // to-minute on the dashboard's cadence.
-    _fetchNav();
+    // SECONDARY — equity-curve points + NAV chip. The equity SVG sits
+    // below the snapshot grids (below the fold on mobile); the NAV chip
+    // is supplementary header decoration. Deferring via setTimeout(0)
+    // yields one task to the event loop so the primary loadHero() fetch
+    // gets its network priority before these requests fire. Pattern
+    // mirrors ChartWorkspace._loadGreeks (Tier 1 reference).
+    setTimeout(() => {
+      _fetchEquity();
+      _equityPollStop = visibleInterval(_fetchEquity, 15000, 'throttle:30000');
+      // NAV chip — single fetch, no polling. NAV moves on the 16:00 IST
+      // snapshot + operator recompute; nothing changes minute-to-minute.
+      _fetchNav();
+    }, 0);
     // loadMarketMovers retired — the Top Winners / Top Losers cards
     // moved to /pulse (where MarketPulse owns its own movers fetch).
     // Removing the dashboard poll stops the 60s batchQuote round-trip
