@@ -2016,6 +2016,34 @@ class OptionsController(Controller):
                     f"{interval}: {_store_exc} — falling through to broker"
                 )
 
+        # ── Closed-hours guard — prevent live broker historical_data calls ──
+        # For intraday intervals: if the market for the resolved exchange is
+        # currently closed AND the store already had bars (merged was non-empty),
+        # the caller would have returned above.  If we reach here with an
+        # intraday interval AND the market is closed, there are no bars in the
+        # store (off-session weekend / first deploy).  Return an empty response
+        # rather than hitting the broker — Kite historical_data will return 0
+        # bars for a closed session anyway, and the call consumes quota.
+        # Daily bars are cached in ohlcv_store; reaching the broker loop for
+        # `interval="day"` only happens on store miss, which is legitimate
+        # (e.g. a new symbol).  We only gate intraday here.
+        if interval in ("5minute", "15minute", "30minute", "60minute"):
+            try:
+                from backend.shared.helpers.date_time_utils import (
+                    is_any_segment_open, timestamp_indian,
+                )
+                if not is_any_segment_open(timestamp_indian()):
+                    logger.debug(
+                        f"options historical: market closed — skipping broker "
+                        f"for intraday {sym}/{interval}"
+                    )
+                    result = HistoricalResponse(symbol=sym, instrument_token=None,
+                                                interval=interval, bars=[])
+                    _hist_cache_put(cache_key, result, _HIST_CACHE_TTL_EMPTY)
+                    return result
+            except Exception:
+                pass  # fail-open: proceed to broker loop
+
         # ── Account-fallback loop ─────────────────────────────────────
         # get_historical_brokers() returns the prioritised list of eligible
         # accounts (historical_data_enabled=True, not in rate-limit cool-off).

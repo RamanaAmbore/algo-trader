@@ -28,6 +28,66 @@ from backend.shared.helpers.ramboq_logger import get_logger
 logger = get_logger(__name__)
 
 
+# ── Closed-hours helper ───────────────────────────────────────────────────────
+
+def _exchanges_from_keys(keys: list[str]) -> set[str]:
+    """Extract the set of exchange codes from 'EXCHANGE:SYMBOL' keys."""
+    out: set[str] = set()
+    for k in keys:
+        if ":" in k:
+            out.add(k.split(":", 1)[0].upper())
+    return out
+
+
+def _is_exchange_segment_closed(exchange: str) -> bool:
+    """Return True if the given exchange's segment is currently closed.
+
+    Reads the same `market_segments` config that `is_any_segment_open`
+    uses so a single YAML edit is enough to change the covered segments.
+    Falls back to `is_any_segment_open` for exchanges not listed — safe
+    default that keeps the live path active.
+    """
+    try:
+        from backend.shared.helpers.date_time_utils import (
+            is_market_open, timestamp_indian,
+        )
+        from backend.shared.helpers.utils import config as _cfg
+        from backend.brokers.broker_apis import fetch_holidays
+        from datetime import time as dtime
+
+        now = timestamp_indian()
+        exch_upper = exchange.upper()
+
+        segments = _cfg.get("market_segments", {}) or {}
+        for _seg_name, seg_cfg in segments.items():
+            seg_exch = (seg_cfg.get("holiday_exchange") or "NSE").upper()
+            # Match exchange against both the holiday_exchange key and any
+            # "exchanges" list if present.  A requested NSE or NFO key maps to
+            # the equity segment whose holiday_exchange="NSE".
+            seg_exchanges = [e.upper() for e in (seg_cfg.get("exchanges") or [seg_exch])]
+            if exch_upper not in seg_exchanges and exch_upper != seg_exch:
+                continue
+            h_s, m_s = map(int, seg_cfg.get("hours_start", "09:15").split(":"))
+            h_e, m_e = map(int, seg_cfg.get("hours_end",   "15:30").split(":"))
+            try:
+                holidays = fetch_holidays(seg_exch)
+            except Exception:
+                holidays = set()
+            if is_market_open(now, holidays, dtime(h_s, m_s), dtime(h_e, m_e), exchange=seg_exch):
+                return False  # this segment IS open
+        # No matching segment found open → closed
+        return True
+    except Exception:
+        return False  # fail-open: assume open
+
+
+def _all_exchanges_closed(exchanges: set[str]) -> bool:
+    """Return True when EVERY exchange in the set is currently closed."""
+    if not exchanges:
+        return False
+    return all(_is_exchange_segment_closed(e) for e in exchanges)
+
+
 # ── Instrument-token helper (shared by sparkline + watchlist Phase 2 hook) ───
 
 async def _resolve_token_for_sym(tradingsymbol: str, exchange: str) -> int | None:
@@ -176,6 +236,10 @@ class BatchQuoteRequest(msgspec.Struct):
 class BatchQuoteResponse(msgspec.Struct):
     refreshed_at: str
     items: list[BatchQuoteRow]
+    # ISO-8601 UTC timestamp of the snapshot that was returned.
+    # Non-null only when serving a persisted off-hours snapshot so the
+    # frontend can show a staleness hint instead of a live label.
+    as_of: Optional[str] = None
 
 
 class QuoteController(Controller):
@@ -199,7 +263,14 @@ class QuoteController(Controller):
         """One batched broker.quote() across an arbitrary key list.
         Used by the unified market-pulse view on /watchlist to pull
         live LTP / day-change for positions + holdings + underlyings
-        without N round-trips."""
+        without N round-trips.
+
+        When all requested exchanges are closed the route skips the broker
+        call and returns the last-known-good LTP from the in-process
+        _LAST_GOOD_LTP cache (populated during the last market session).
+        The `as_of` field in the response is set so the frontend can
+        show a staleness hint.
+        """
         import asyncio
         from datetime import datetime, timezone
         from backend.brokers.registry import get_price_broker
@@ -209,7 +280,41 @@ class QuoteController(Controller):
         # ask for more than this in one tab. Trim silently.
         keys = keys[:300]
 
+        # ── Closed-hours fast-path ─────────────────────────────────────────
+        # When every exchange in the requested set is currently closed, skip
+        # the broker.quote() call and serve last-known-good LTPs from the
+        # in-process cache instead.  Ticker + broker calls zero; the cache
+        # already holds EOD values from the prior session.
+        req_exchanges = _exchanges_from_keys(keys)
+        market_closed = _all_exchanges_closed(req_exchanges)
+
+        as_of_str: Optional[str] = None
         quote_data: dict = {}
+
+        if market_closed:
+            # Read last-known-good LTPs; mark all rows as stale.
+            from backend.brokers.broker_apis import get_last_good_ltp
+            logger.debug(f"batch_quote: market closed — serving LKG LTP for {len(keys)} keys")
+            items: list[BatchQuoteRow] = []
+            as_of_str = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            for k in keys:
+                try:
+                    exch, sym = k.split(":", 1)
+                except ValueError:
+                    continue
+                ltp = get_last_good_ltp(sym, max_age_s=86400.0) or 0.0
+                items.append(BatchQuoteRow(
+                    exchange=exch, tradingsymbol=sym,
+                    ltp=ltp,
+                    stale=True,
+                ))
+            return BatchQuoteResponse(
+                refreshed_at=as_of_str,
+                items=items,
+                as_of=as_of_str,
+            )
+
+        # ── Live path (market open) ────────────────────────────────────────
         if keys:
             try:
                 broker = get_price_broker()
@@ -218,7 +323,7 @@ class QuoteController(Controller):
                 logger.warning(f"Batch quote failed: {exc}")
                 quote_data = {}
 
-        items: list[BatchQuoteRow] = []
+        items = []
         # Build (exch, sym) pairs alongside items so we can subscribe the
         # universe to the live ticker below — without this, /pulse's
         # winners/losers sparklines only get an SSE feed AFTER the next
@@ -427,6 +532,11 @@ class SparklineRequest(msgspec.Struct):
 class SparklineResponse(msgspec.Struct):
     data: dict[str, list[float]]   # tradingsymbol → [close1, …, closeN] oldest first
     refreshed_at: str
+    # ISO-8601 UTC timestamp of the snapshot that was returned.
+    # Non-null only when all requested exchanges were closed and no
+    # live LTP was appended — so the frontend can label the data
+    # "as of <time>" instead of showing a live indicator.
+    as_of: Optional[str] = None
 
 
 class SparklineController(Controller):
@@ -615,8 +725,17 @@ class SparklineController(Controller):
                 f"{len(miss_keys)} fallback to broker.ltp()"
             )
 
-        # Pass 2 — broker.ltp() for misses only.
-        if miss_keys:
+        # ── Closed-hours guard: skip broker.ltp() when market is closed ──────
+        # Determine whether all requested exchanges are currently closed.
+        # If so: skip Pass 2 (broker.ltp()); do not append a live-LTP tail;
+        # set `as_of` in the response so the frontend can show a staleness hint.
+        # Daily closes (ohlcv_store) and intraday bars (intraday_store) are
+        # already served from DB — they never triggered a broker call here.
+        req_exchs_spark = {s.exchange.upper() for s in norm_syms}
+        spark_market_closed = _all_exchanges_closed(req_exchs_spark)
+
+        # Pass 2 — broker.ltp() for misses only.  Skipped when market is closed.
+        if miss_keys and not spark_market_closed:
             try:
                 from backend.brokers.registry import get_sparkline_broker as _get_sp_broker
                 ltp_broker = _get_sp_broker()
@@ -632,6 +751,15 @@ class SparklineController(Controller):
                         pass
             except Exception as exc:
                 logger.warning(f"sparkline: ltp fallback batch failed: {exc}")
+        elif miss_keys and spark_market_closed:
+            logger.debug(
+                f"sparkline: market closed — skipping broker.ltp() for {len(miss_keys)} misses"
+            )
+
+        sparkline_as_of: Optional[str] = (
+            datetime.now(timezone.utc).isoformat(timespec="seconds")
+            if spark_market_closed else None
+        )
 
         # ── Step 4: Compose result series ────────────────────────────────────
         result: dict[str, list[float]] = {}
@@ -641,7 +769,10 @@ class SparklineController(Controller):
             today_bars = today_result.get(sym, [])
             ltp_key = f"{sym_obj.exchange}:{sym}"
             ltp_val = ltp_map.get(ltp_key)
-            tail_ltp = ltp_val if (ltp_val and ltp_val > 0) else None
+            # When market is closed, do not append a live LTP tail — the last
+            # close in `past` already represents the EOD value.  Appending a
+            # stale LTP would create a misleading "current" data point.
+            tail_ltp = (ltp_val if (ltp_val and ltp_val > 0) else None) if not spark_market_closed else None
             # Series order: past daily closes (oldest first), then today's
             # 30-min intraday closes, then current LTP. Off-hours today_bars
             # is empty → collapses to past + [ltp] (same as before).
@@ -669,6 +800,7 @@ class SparklineController(Controller):
         return SparklineResponse(
             data=result,
             refreshed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            as_of=sparkline_as_of,
         )
 
     @get("/stream")

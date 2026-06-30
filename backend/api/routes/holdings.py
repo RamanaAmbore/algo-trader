@@ -4,6 +4,7 @@ import pandas as pd
 import polars as pl
 from litestar import Controller, get
 from litestar.exceptions import HTTPException
+from typing import Optional
 
 from litestar import Request
 
@@ -21,6 +22,129 @@ from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import mask_account, mask_column
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Closed-hours snapshot helpers
+# ---------------------------------------------------------------------------
+
+async def _is_all_markets_closed() -> bool:
+    """Return True when every configured market segment is currently closed."""
+    try:
+        from backend.shared.helpers.date_time_utils import is_any_segment_open, timestamp_indian
+        return not is_any_segment_open(timestamp_indian())
+    except Exception:
+        return False  # fail-open: assume market is open so live path runs
+
+
+async def _holdings_snapshot() -> Optional[HoldingsResponse]:
+    """Read the most-recent pre-today daily_book[kind='holdings'] snapshot
+    and reconstruct a HoldingsResponse from it.
+
+    Returns None when no snapshot exists or the DB query fails.
+    """
+    from backend.api.database import async_session
+    from sqlalchemy import text as _sql_text
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+
+    today_ist_midnight = timestamp_indian().replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    try:
+        async with async_session() as session:
+            result = await session.execute(_sql_text("""
+                SELECT account, symbol, exchange, qty, avg_cost, ltp,
+                       day_pnl, total_pnl, captured_at
+                FROM daily_book
+                WHERE kind = 'holdings' AND ltp IS NOT NULL
+                  AND captured_at < :today_open
+                ORDER BY captured_at DESC
+                LIMIT 5000
+            """), {"today_open": today_ist_midnight})
+            raw_rows = result.all()
+    except Exception as exc:
+        logger.warning(f"holdings snapshot query failed: {exc}")
+        return None
+
+    if not raw_rows:
+        return None
+
+    snap_captured_at: str = raw_rows[0][8].isoformat() if raw_rows[0][8] else ""
+
+    inv_by_account: dict[str, float] = {}
+    cur_by_account: dict[str, float] = {}
+    pnl_by_account: dict[str, float] = {}
+    dcv_by_account: dict[str, float] = {}
+
+    rows: list[HoldingRow] = []
+    for (account, symbol, exchange, qty, avg_cost, ltp,
+         day_pnl, total_pnl, captured_at) in raw_rows:
+        avg_cost_f  = float(avg_cost)  if avg_cost  is not None else 0.0
+        ltp_f       = float(ltp)       if ltp        is not None else 0.0
+        total_pnl_f = float(total_pnl) if total_pnl  is not None else 0.0
+        day_pnl_f   = float(day_pnl)   if day_pnl    is not None else 0.0
+        qty_i       = int(qty)         if qty         is not None else 0
+        inv_val     = avg_cost_f * qty_i
+        cur_val     = ltp_f      * qty_i
+
+        row = HoldingRow(
+            account=str(account),
+            tradingsymbol=str(symbol),
+            exchange=str(exchange or ""),
+            quantity=qty_i,
+            opening_quantity=qty_i,
+            average_price=avg_cost_f,
+            close_price=ltp_f,
+            last_price=ltp_f,
+            inv_val=inv_val,
+            cur_val=cur_val,
+            pnl=total_pnl_f,
+            day_change_val=day_pnl_f,
+        )
+        rows.append(row)
+
+        acct = str(account)
+        inv_by_account[acct] = inv_by_account.get(acct, 0.0) + inv_val
+        cur_by_account[acct] = cur_by_account.get(acct, 0.0) + cur_val
+        pnl_by_account[acct] = pnl_by_account.get(acct, 0.0) + total_pnl_f
+        dcv_by_account[acct] = dcv_by_account.get(acct, 0.0) + day_pnl_f
+
+    summary: list[HoldingsSummaryRow] = []
+    total_inv = total_cur = total_pnl_s = total_dcv = 0.0
+    for acct in pnl_by_account:
+        inv  = inv_by_account.get(acct, 0.0)
+        cur  = cur_by_account.get(acct, 0.0)
+        pnl  = pnl_by_account.get(acct, 0.0)
+        dcv  = dcv_by_account.get(acct, 0.0)
+        prev = cur - dcv
+        summary.append(HoldingsSummaryRow(
+            account=acct,
+            inv_val=inv,
+            cur_val=cur,
+            pnl=pnl,
+            pnl_percentage=pnl / inv * 100.0 if inv else 0.0,
+            day_change_val=dcv,
+            day_change_percentage=dcv / prev * 100.0 if prev else 0.0,
+        ))
+        total_inv += inv; total_cur += cur
+        total_pnl_s += pnl; total_dcv += dcv
+    total_prev = total_cur - total_dcv
+    summary.append(HoldingsSummaryRow(
+        account="TOTAL",
+        inv_val=total_inv,
+        cur_val=total_cur,
+        pnl=total_pnl_s,
+        pnl_percentage=total_pnl_s / total_inv * 100.0 if total_inv else 0.0,
+        day_change_val=total_dcv,
+        day_change_percentage=total_dcv / total_prev * 100.0 if total_prev else 0.0,
+    ))
+
+    return HoldingsResponse(
+        rows=rows,
+        summary=summary,
+        refreshed_at=timestamp_display(),
+        as_of=snap_captured_at,
+    )
 
 
 def _is_broker_outage(err: Exception) -> bool:
@@ -165,6 +289,39 @@ class HoldingsController(Controller):
     @get("/")
     async def get_holdings(self, request: Request, fresh: bool = False) -> HoldingsResponse:
         try:
+            # ── Closed-hours fast-path ──────────────────────────────────────
+            # Holdings are long-dated (days–weeks) so their LTP doesn't
+            # change between sessions.  When all segments are closed, return
+            # the persisted daily_book[kind='holdings'] snapshot instead of
+            # calling the broker.  `?fresh=1` bypasses the guard.
+            if not fresh and await _is_all_markets_closed():
+                snap = await _holdings_snapshot()
+                if snap is not None:
+                    logger.info("holdings: market closed — serving daily_book snapshot")
+                    role = normalise_role(resolve_role_from_connection(request))
+                    if role == "trader":
+                        allowed, _ = await user_scope_for_connection(request)
+                        allowed_set = {str(a).upper() for a in (allowed or [])}
+                        import msgspec
+                        snap = msgspec.structs.replace(
+                            snap,
+                            rows=[r for r in snap.rows
+                                  if str(getattr(r, "account", "")).upper() in allowed_set],
+                            summary=[s for s in snap.summary
+                                     if str(getattr(s, "account", "")).upper() in allowed_set
+                                     or str(getattr(s, "account", "")).upper() == "TOTAL"],
+                        )
+                    if not is_admin_request(request):
+                        import msgspec
+                        def _mask_snap(row):
+                            return msgspec.structs.replace(row, account=mask_account(row.account))
+                        snap = msgspec.structs.replace(
+                            snap,
+                            rows=[_mask_snap(r) for r in snap.rows],
+                            summary=[_mask_snap(s) for s in snap.summary],
+                        )
+                    return snap
+
             # `?fresh=1` — Refresh button bypasses the TTL cache and
             # forces a live broker fetch. The cache's per-key lock still
             # coalesces multiple simultaneous refresh clicks into one

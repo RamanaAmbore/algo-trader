@@ -55,6 +55,11 @@ class HoldingsResponse(msgspec.Struct):
     rows: list[HoldingRow]
     summary: list[HoldingsSummaryRow]
     refreshed_at: str
+    # ISO-8601 UTC timestamp of the snapshot that was returned.
+    # Non-null only when serving a persisted off-hours snapshot so the
+    # frontend can show a staleness hint ("as of <time>") instead of a
+    # live label.  Null during market hours (live broker data).
+    as_of: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +118,11 @@ class PositionsResponse(msgspec.Struct):
     rows: list[PositionRow]
     summary: list[PositionsSummaryRow]
     refreshed_at: str
+    # ISO-8601 UTC timestamp of the snapshot that was returned.
+    # Non-null only when serving a persisted off-hours snapshot so the
+    # frontend can show a staleness hint ("as of <time>") instead of a
+    # live label.  Null during market hours (live broker data).
+    as_of: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

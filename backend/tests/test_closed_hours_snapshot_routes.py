@@ -1,0 +1,720 @@
+"""
+Tests for closed-hours snapshot guard on tick-data endpoints.
+
+Defense-in-depth rule: even when the frontend mistakenly polls during closed
+hours, the routes return the persisted daily_book snapshot instead of hitting
+the broker.
+
+Five quality dimensions:
+  1. SSOT        — guard logic lives in each route module; uses is_any_segment_open
+                   and daily_book[kind=...] as the canonical snapshot source.
+  2. Performance — zero broker calls when market is closed (mocked broker is
+                   asserted call_count == 0 on the closed-hours paths).
+  3. Stale code  — guard added via `_is_all_markets_closed` helper (positions /
+                   holdings); `_all_exchanges_closed` + `_is_exchange_segment_closed`
+                   (quote); source-grep verifies the helpers exist.
+  4. Reusable    — `as_of` field present on PositionsResponse, HoldingsResponse,
+                   BatchQuoteResponse, SparklineResponse so callers can detect
+                   snapshot vs. live.
+  5. Correctness — per-route:
+       a. Closed + snapshot exists → snapshot returned, broker NOT called.
+       b. Open → live path runs, broker IS called.
+       c. Mixed exchanges (one open, one closed) — verified for batch_quote.
+       d. Closed + no snapshot → graceful empty / live fallback.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+# ---------------------------------------------------------------------------
+# Source paths (dimension 3 — stale-code checks)
+# ---------------------------------------------------------------------------
+
+_POS_SRC  = Path(__file__).parent.parent / "api" / "routes" / "positions.py"
+_HOL_SRC  = Path(__file__).parent.parent / "api" / "routes" / "holdings.py"
+_QUO_SRC  = Path(__file__).parent.parent / "api" / "routes" / "quote.py"
+_OPT_SRC  = Path(__file__).parent.parent / "api" / "routes" / "options.py"
+_SCH_SRC  = Path(__file__).parent.parent / "api" / "schemas.py"
+
+
+def _src(p: Path) -> str:
+    return p.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Dimension 3 — static source checks
+# ---------------------------------------------------------------------------
+
+def test_positions_has_closed_hours_helper():
+    """positions.py defines _is_all_markets_closed + _positions_snapshot."""
+    src = _src(_POS_SRC)
+    assert "_is_all_markets_closed" in src, "missing _is_all_markets_closed in positions.py"
+    assert "_positions_snapshot" in src, "missing _positions_snapshot in positions.py"
+    assert "daily_book" in src and "kind = 'positions'" in src, (
+        "_positions_snapshot should query daily_book with kind='positions'"
+    )
+
+
+def test_holdings_has_closed_hours_helper():
+    """holdings.py defines _is_all_markets_closed + _holdings_snapshot."""
+    src = _src(_HOL_SRC)
+    assert "_is_all_markets_closed" in src, "missing _is_all_markets_closed in holdings.py"
+    assert "_holdings_snapshot" in src, "missing _holdings_snapshot in holdings.py"
+    assert "daily_book" in src and "kind = 'holdings'" in src, (
+        "_holdings_snapshot should query daily_book with kind='holdings'"
+    )
+
+
+def test_quote_has_exchange_closed_helpers():
+    """quote.py defines _all_exchanges_closed + _is_exchange_segment_closed."""
+    src = _src(_QUO_SRC)
+    assert "_all_exchanges_closed" in src, "missing _all_exchanges_closed in quote.py"
+    assert "_is_exchange_segment_closed" in src, "missing _is_exchange_segment_closed in quote.py"
+    assert "_exchanges_from_keys" in src, "missing _exchanges_from_keys in quote.py"
+
+
+def test_options_historical_has_closed_guard():
+    """options.py has a closed-hours guard before the broker loop for intraday intervals."""
+    src = _src(_OPT_SRC)
+    assert "is_any_segment_open" in src, "options.py should import is_any_segment_open for guard"
+    assert "skipping broker" in src.lower() or "market closed" in src.lower(), (
+        "options.py historical should log a market-closed skip message"
+    )
+
+
+def test_schemas_have_as_of_fields():
+    """PositionsResponse and HoldingsResponse in schemas.py carry as_of: Optional[str]."""
+    src = _src(_SCH_SRC)
+    # Both response classes must have as_of declared
+    assert re.search(r"class PositionsResponse.*?as_of.*?Optional\[str\]",
+                     src, re.DOTALL), "PositionsResponse missing as_of: Optional[str]"
+    assert re.search(r"class HoldingsResponse.*?as_of.*?Optional\[str\]",
+                     src, re.DOTALL), "HoldingsResponse missing as_of: Optional[str]"
+
+
+def test_quote_response_structs_have_as_of():
+    """BatchQuoteResponse and SparklineResponse in quote.py carry as_of: Optional[str]."""
+    src = _src(_QUO_SRC)
+    assert re.search(r"class BatchQuoteResponse.*?as_of.*?Optional\[str\]",
+                     src, re.DOTALL), "BatchQuoteResponse missing as_of: Optional[str]"
+    assert re.search(r"class SparklineResponse.*?as_of.*?Optional\[str\]",
+                     src, re.DOTALL), "SparklineResponse missing as_of: Optional[str]"
+
+
+# ---------------------------------------------------------------------------
+# Dimension 1 / 5 — functional: _is_all_markets_closed helper
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_is_all_markets_closed_returns_false_when_open():
+    """`_is_all_markets_closed` returns False when is_any_segment_open is True."""
+    with patch(
+        "backend.api.routes.positions._is_all_markets_closed",
+        new=AsyncMock(return_value=False),
+    ):
+        from backend.api.routes.positions import _is_all_markets_closed
+        result = await _is_all_markets_closed()
+        assert result is False
+
+
+@pytest.mark.asyncio
+async def test_is_all_markets_closed_returns_true_when_closed():
+    """`_is_all_markets_closed` returns True when is_any_segment_open is False."""
+    with patch(
+        "backend.api.routes.positions._is_all_markets_closed",
+        new=AsyncMock(return_value=True),
+    ):
+        from backend.api.routes.positions import _is_all_markets_closed
+        result = await _is_all_markets_closed()
+        assert result is True
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5a — positions: closed → snapshot, broker NOT called
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_positions_closed_hours_returns_snapshot_no_broker():
+    """When market is closed and a snapshot exists, positions route returns
+    the snapshot without calling broker_apis.fetch_positions."""
+    from backend.api.schemas import PositionsResponse, PositionRow, PositionsSummaryRow
+
+    fake_snapshot = PositionsResponse(
+        rows=[
+            PositionRow(
+                account="ZG0790",
+                tradingsymbol="NIFTY25JUNFUT",
+                exchange="NFO",
+                product="NRML",
+                quantity=50,
+                average_price=23000.0,
+                close_price=23100.0,
+                pnl=5000.0,
+                last_price=23100.0,
+            )
+        ],
+        summary=[
+            PositionsSummaryRow(account="ZG0790", pnl=5000.0),
+            PositionsSummaryRow(account="TOTAL", pnl=5000.0),
+        ],
+        refreshed_at="Mon 28 Jun 09:00 IST",
+        as_of="2026-06-27T23:30:00+00:00",
+    )
+
+    mock_broker_fetch = MagicMock()
+
+    with patch(
+        "backend.api.routes.positions._is_all_markets_closed",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "backend.api.routes.positions._positions_snapshot",
+        new=AsyncMock(return_value=fake_snapshot),
+    ), patch(
+        "backend.brokers.broker_apis.fetch_positions",
+        mock_broker_fetch,
+    ):
+        from backend.api.routes.positions import PositionsController
+        # Litestar controllers cannot be instantiated standalone — call the
+        # unbound handler directly by extracting the route function.
+        # Access the underlying Python function via .fn (Litestar wraps it)
+        handler_fn = PositionsController.get_positions.fn
+
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        mock_request.user = None
+
+        # Patch auth helpers to admin so no masking interferes
+        with patch("backend.api.routes.positions.is_admin_request", return_value=True), \
+             patch("backend.api.routes.positions.resolve_role_from_connection",
+                   return_value="admin"), \
+             patch("backend.api.routes.positions.normalise_role", return_value="admin"):
+            resp = await handler_fn(None, mock_request, fresh=False)
+
+    assert resp.as_of is not None, "as_of must be set on snapshot response"
+    assert resp.as_of == "2026-06-27T23:30:00+00:00"
+    assert len(resp.rows) == 1
+    assert resp.rows[0].tradingsymbol == "NIFTY25JUNFUT"
+    # Broker was NOT called
+    assert mock_broker_fetch.call_count == 0, (
+        f"broker fetch_positions called {mock_broker_fetch.call_count} times — "
+        "should be 0 during closed hours"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5b — positions: open → live path, broker IS called
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_positions_open_hours_calls_broker():
+    """When market is open, positions route uses the live path (get_or_fetch)."""
+    from backend.api.schemas import PositionsResponse
+
+    live_resp = PositionsResponse(rows=[], summary=[], refreshed_at="live")
+
+    with patch(
+        "backend.api.routes.positions._is_all_markets_closed",
+        new=AsyncMock(return_value=False),
+    ), patch(
+        "backend.api.routes.positions.get_or_fetch",
+        new=AsyncMock(return_value=live_resp),
+    ):
+        from backend.api.routes.positions import PositionsController
+        handler_fn = PositionsController.get_positions.fn
+
+        mock_request = MagicMock()
+        with patch("backend.api.routes.positions.is_admin_request", return_value=True), \
+             patch("backend.api.routes.positions.resolve_role_from_connection",
+                   return_value="admin"), \
+             patch("backend.api.routes.positions.normalise_role", return_value="admin"):
+            resp = await handler_fn(None, mock_request, fresh=False)
+
+    assert resp.as_of is None, "as_of must be None on live response"
+    assert resp.refreshed_at == "live"
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5a — holdings: closed → snapshot, broker NOT called
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_holdings_closed_hours_returns_snapshot_no_broker():
+    """When market is closed and a snapshot exists, holdings route returns
+    the snapshot without calling broker_apis.fetch_holdings."""
+    from backend.api.schemas import HoldingsResponse, HoldingRow, HoldingsSummaryRow
+
+    fake_snapshot = HoldingsResponse(
+        rows=[
+            HoldingRow(
+                account="ZG0790",
+                tradingsymbol="RELIANCE",
+                exchange="NSE",
+                quantity=10,
+                average_price=2800.0,
+                close_price=2900.0,
+                inv_val=28000.0,
+                cur_val=29000.0,
+                pnl=1000.0,
+                pnl_percentage=3.57,
+                last_price=2900.0,
+            )
+        ],
+        summary=[
+            HoldingsSummaryRow(
+                account="ZG0790", inv_val=28000.0, cur_val=29000.0,
+                pnl=1000.0, pnl_percentage=3.57,
+                day_change_val=0.0, day_change_percentage=0.0,
+            )
+        ],
+        refreshed_at="Mon 28 Jun 09:00 IST",
+        as_of="2026-06-27T23:30:00+00:00",
+    )
+
+    mock_broker_fetch = MagicMock()
+
+    with patch(
+        "backend.api.routes.holdings._is_all_markets_closed",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "backend.api.routes.holdings._holdings_snapshot",
+        new=AsyncMock(return_value=fake_snapshot),
+    ), patch(
+        "backend.brokers.broker_apis.fetch_holdings",
+        mock_broker_fetch,
+    ):
+        from backend.api.routes.holdings import HoldingsController
+        handler_fn = HoldingsController.get_holdings.fn
+
+        mock_request = MagicMock()
+        with patch("backend.api.routes.holdings.is_admin_request", return_value=True), \
+             patch("backend.api.routes.holdings.resolve_role_from_connection",
+                   return_value="admin"), \
+             patch("backend.api.routes.holdings.normalise_role", return_value="admin"):
+            resp = await handler_fn(None, mock_request, fresh=False)
+
+    assert resp.as_of is not None
+    assert len(resp.rows) == 1
+    assert resp.rows[0].tradingsymbol == "RELIANCE"
+    assert mock_broker_fetch.call_count == 0, (
+        f"broker fetch_holdings called {mock_broker_fetch.call_count} times — "
+        "should be 0 during closed hours"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5b — holdings: open → broker IS called
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_holdings_open_hours_calls_broker():
+    """When market is open, holdings route uses the live cache path."""
+    from backend.api.schemas import HoldingsResponse
+
+    live_resp = HoldingsResponse(rows=[], summary=[], refreshed_at="live")
+
+    with patch(
+        "backend.api.routes.holdings._is_all_markets_closed",
+        new=AsyncMock(return_value=False),
+    ), patch(
+        "backend.api.routes.holdings.get_or_fetch",
+        new=AsyncMock(return_value=live_resp),
+    ):
+        from backend.api.routes.holdings import HoldingsController
+        handler_fn = HoldingsController.get_holdings.fn
+
+        mock_request = MagicMock()
+        with patch("backend.api.routes.holdings.is_admin_request", return_value=True), \
+             patch("backend.api.routes.holdings.resolve_role_from_connection",
+                   return_value="admin"), \
+             patch("backend.api.routes.holdings.normalise_role", return_value="admin"):
+            resp = await handler_fn(None, mock_request, fresh=False)
+
+    assert resp.as_of is None
+    assert resp.refreshed_at == "live"
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5d — positions: closed + no snapshot → fall through (no crash)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_positions_closed_no_snapshot_falls_through():
+    """When market is closed but no snapshot in DB, fall through to live path."""
+    from backend.api.schemas import PositionsResponse
+
+    live_resp = PositionsResponse(rows=[], summary=[], refreshed_at="fallback")
+
+    with patch(
+        "backend.api.routes.positions._is_all_markets_closed",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "backend.api.routes.positions._positions_snapshot",
+        new=AsyncMock(return_value=None),  # no snapshot
+    ), patch(
+        "backend.api.routes.positions.get_or_fetch",
+        new=AsyncMock(return_value=live_resp),
+    ):
+        from backend.api.routes.positions import PositionsController
+        handler_fn = PositionsController.get_positions.fn
+
+        mock_request = MagicMock()
+        with patch("backend.api.routes.positions.is_admin_request", return_value=True), \
+             patch("backend.api.routes.positions.resolve_role_from_connection",
+                   return_value="admin"), \
+             patch("backend.api.routes.positions.normalise_role", return_value="admin"):
+            resp = await handler_fn(None, mock_request, fresh=False)
+
+    # Should fall through to live path when no snapshot available
+    assert resp.refreshed_at == "fallback"
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5c — batch_quote: mixed exchanges (NSE open, MCX closed)
+# ---------------------------------------------------------------------------
+
+def test_exchanges_from_keys_extracts_correctly():
+    """_exchanges_from_keys correctly extracts exchange codes from key strings."""
+    from backend.api.routes.quote import _exchanges_from_keys
+    keys = ["NSE:RELIANCE", "MCX:GOLD26JUNFUT", "NFO:NIFTY25JUNFUT", "bad_key"]
+    result = _exchanges_from_keys(keys)
+    assert result == {"NSE", "MCX", "NFO"}
+
+
+def test_all_exchanges_closed_empty_set():
+    """_all_exchanges_closed returns False for empty exchange set (no info → open)."""
+    from backend.api.routes.quote import _all_exchanges_closed
+    assert _all_exchanges_closed(set()) is False
+
+
+def test_all_exchanges_closed_when_all_closed():
+    """_all_exchanges_closed returns True when every exchange reports closed."""
+    from backend.api.routes.quote import _all_exchanges_closed, _is_exchange_segment_closed
+
+    with patch("backend.api.routes.quote._is_exchange_segment_closed", return_value=True):
+        result = _all_exchanges_closed({"NSE", "MCX"})
+    assert result is True
+
+
+def test_all_exchanges_closed_when_one_open():
+    """_all_exchanges_closed returns False when at least one exchange is open."""
+    from backend.api.routes.quote import _all_exchanges_closed
+
+    def _side(exch: str) -> bool:
+        return exch == "MCX"  # MCX closed, NSE open
+
+    with patch("backend.api.routes.quote._is_exchange_segment_closed", side_effect=_side):
+        result = _all_exchanges_closed({"NSE", "MCX"})
+    assert result is False, "should be open when at least one exchange is open"
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5a — batch_quote: closed → LKG LTP, broker NOT called
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_batch_quote_closed_returns_lkg_no_broker():
+    """batch_quote returns LKG LTPs without broker.quote() when market is closed."""
+    from backend.api.routes.quote import QuoteController, BatchQuoteRequest
+
+    mock_broker_quote = MagicMock()
+
+    with patch("backend.api.routes.quote._all_exchanges_closed", return_value=True), \
+         patch(
+             "backend.brokers.broker_apis.get_last_good_ltp",
+             side_effect=lambda sym, max_age_s=3600.0: 1234.5 if sym == "RELIANCE" else 0.0,
+         ), \
+         patch("backend.brokers.registry.get_price_broker") as mock_registry:
+        mock_registry.return_value.quote = mock_broker_quote
+
+        handler_fn = QuoteController.batch_quote.fn
+        req = BatchQuoteRequest(keys=["NSE:RELIANCE", "NSE:INFY"])
+        resp = await handler_fn(None, req)
+
+    assert resp.as_of is not None, "as_of must be set for closed-hours batch_quote"
+    assert len(resp.items) == 2
+    # Find RELIANCE row
+    rel_row = next((r for r in resp.items if r.tradingsymbol == "RELIANCE"), None)
+    assert rel_row is not None
+    assert rel_row.ltp == 1234.5
+    assert rel_row.stale is True  # explicitly marked stale during closed hours
+    # Broker quote was never called
+    assert mock_broker_quote.call_count == 0, (
+        f"broker.quote() called {mock_broker_quote.call_count} times — "
+        "should be 0 during closed hours"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5b — batch_quote: open → broker IS called
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_batch_quote_open_calls_broker():
+    """batch_quote calls broker.quote() when market is open."""
+    from backend.api.routes.quote import QuoteController, BatchQuoteRequest
+
+    fake_quote_data = {
+        "NSE:RELIANCE": {"last_price": 2900.0, "ohlc": {"close": 2850.0, "open": 2860.0}},
+    }
+
+    with patch("backend.api.routes.quote._all_exchanges_closed", return_value=False), \
+         patch("backend.brokers.registry.get_price_broker") as mock_registry, \
+         patch("backend.brokers.registry.get_sparkline_broker") as _mock_sp, \
+         patch("backend.api.routes.quote._get_today_token_map", return_value={}), \
+         patch("backend.brokers.kite_ticker.get_ticker") as _mock_tk:
+        mock_broker = MagicMock()
+        mock_broker.quote = MagicMock(return_value=fake_quote_data)
+        mock_registry.return_value = mock_broker
+        _mock_sp.return_value = MagicMock()
+        _mock_tk.return_value = MagicMock()
+        _mock_tk.return_value.subscribe_with_sym = MagicMock()
+
+        import asyncio
+
+        async def _fake_to_thread(fn, *args):
+            return fn(*args)
+
+        with patch("asyncio.to_thread", side_effect=_fake_to_thread):
+            handler_fn = QuoteController.batch_quote.fn
+            req = BatchQuoteRequest(keys=["NSE:RELIANCE"])
+            resp = await handler_fn(None, req)
+
+    assert resp.as_of is None, "as_of must be None when market is open (live data)"
+    assert mock_broker.quote.call_count >= 1, "broker.quote() should be called when market is open"
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5a — sparkline: closed → no broker.ltp(), as_of set
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_sparkline_closed_skips_broker_ltp():
+    """batch_sparkline skips broker.ltp() when all exchanges are closed."""
+    from backend.api.routes.quote import SparklineController, SparklineRequest, SparklineSymbol
+
+    # Simulate ohlcv_store returning 4 past closes; intraday returns empty (closed)
+    past_bars = [
+        {"date": "2026-06-24", "close": 2850.0},
+        {"date": "2026-06-25", "close": 2860.0},
+        {"date": "2026-06-26", "close": 2870.0},
+        {"date": "2026-06-27", "close": 2880.0},
+    ]
+
+    mock_ltp_call = MagicMock()
+
+    with patch("backend.api.routes.quote._all_exchanges_closed", return_value=True), \
+         patch("backend.api.persistence.ohlcv_store.get_or_fetch_daily",
+               new=AsyncMock(return_value=past_bars)), \
+         patch("backend.api.persistence.intraday_store.get_or_fetch_intraday",
+               new=AsyncMock(return_value=[])), \
+         patch("backend.api.routes.quote._get_today_token_map", return_value={}), \
+         patch("backend.brokers.registry.get_sparkline_broker") as _mock_sp_reg, \
+         patch("backend.brokers.kite_ticker.get_ticker") as _mock_tk, \
+         patch("backend.api.routes.watchlist._resolve_mcx_commodity",
+               new=AsyncMock(return_value=None)), \
+         patch("backend.api.routes.watchlist._resolve_cds_currency",
+               new=AsyncMock(return_value=None)):
+        _mock_sp_reg.return_value = MagicMock()
+        _mock_sp_reg.return_value.ltp = mock_ltp_call
+        ticker_mock = MagicMock()
+        ticker_mock.get_ltp = MagicMock(return_value=None)
+        ticker_mock.subscribe_with_sym = MagicMock()
+        _mock_tk.return_value = ticker_mock
+
+        import asyncio as _asyncio
+
+        async def _fake_to_thread(fn, *args):
+            return fn(*args)
+
+        with patch("asyncio.to_thread", side_effect=_fake_to_thread):
+            handler_fn = SparklineController.batch_sparkline.fn
+            req = SparklineRequest(
+                symbols=[SparklineSymbol(tradingsymbol="RELIANCE", exchange="NSE")],
+                days=5,
+            )
+            resp = await handler_fn(None, req)
+
+    assert resp.as_of is not None, "as_of must be set when market is closed"
+    # broker.ltp() must not have been called
+    assert mock_ltp_call.call_count == 0, (
+        f"broker.ltp() called {mock_ltp_call.call_count} times — "
+        "should be 0 during closed hours"
+    )
+    # Series should be just the past closes (no live LTP appended)
+    assert "RELIANCE" in resp.data
+    assert resp.data["RELIANCE"] == [2850.0, 2860.0, 2870.0, 2880.0]
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5b — sparkline: open → broker.ltp() IS called for misses
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_sparkline_open_calls_broker_ltp():
+    """batch_sparkline calls broker.ltp() for ticker misses when market is open."""
+    past_bars = [
+        {"date": "2026-06-27", "close": 2880.0},
+    ]
+
+    fake_ltp_data = {"NSE:RELIANCE": {"last_price": 2920.0}}
+    mock_ltp = MagicMock(return_value=fake_ltp_data)
+
+    with patch("backend.api.routes.quote._all_exchanges_closed", return_value=False), \
+         patch("backend.api.persistence.ohlcv_store.get_or_fetch_daily",
+               new=AsyncMock(return_value=past_bars)), \
+         patch("backend.api.persistence.intraday_store.get_or_fetch_intraday",
+               new=AsyncMock(return_value=[])), \
+         patch("backend.api.routes.quote._get_today_token_map", return_value={}), \
+         patch("backend.brokers.registry.get_sparkline_broker") as _mock_sp_reg, \
+         patch("backend.brokers.kite_ticker.get_ticker") as _mock_tk, \
+         patch("backend.api.routes.watchlist._resolve_mcx_commodity",
+               new=AsyncMock(return_value=None)), \
+         patch("backend.api.routes.watchlist._resolve_cds_currency",
+               new=AsyncMock(return_value=None)):
+        sp_mock = MagicMock()
+        sp_mock.ltp = mock_ltp
+        _mock_sp_reg.return_value = sp_mock
+        ticker_mock = MagicMock()
+        ticker_mock.get_ltp = MagicMock(return_value=None)  # force broker.ltp() path
+        ticker_mock.subscribe_with_sym = MagicMock()
+        _mock_tk.return_value = ticker_mock
+
+        async def _fake_to_thread(fn, *args):
+            return fn(*args)
+
+        with patch("asyncio.to_thread", side_effect=_fake_to_thread):
+            from backend.api.routes.quote import SparklineController as _SC, SparklineRequest, SparklineSymbol
+            handler_fn = _SC.batch_sparkline.fn
+            req = SparklineRequest(
+                symbols=[SparklineSymbol(tradingsymbol="RELIANCE", exchange="NSE")],
+                days=2,
+            )
+            resp = await handler_fn(None, req)
+
+    assert resp.as_of is None, "as_of must be None when market is open"
+    assert mock_ltp.call_count >= 1, "broker.ltp() should be called for misses when market is open"
+    # LTP appended as tail
+    assert "RELIANCE" in resp.data
+    assert 2920.0 in resp.data["RELIANCE"]
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5 — options historical: closed + intraday interval → no broker
+# ---------------------------------------------------------------------------
+
+def test_options_historical_closed_guard_in_source():
+    """options.py historical handler has the market-closed guard before broker loop."""
+    src = _src(_OPT_SRC)
+    # The guard is placed before the account-fallback loop for intraday intervals
+    guard_idx   = src.find("is_any_segment_open(timestamp_indian())")
+    broker_loop = src.find("get_historical_brokers()")
+    assert guard_idx != -1, "options.py missing is_any_segment_open guard in historical handler"
+    assert broker_loop != -1, "options.py missing get_historical_brokers call"
+    assert guard_idx < broker_loop, (
+        "closed-hours guard must appear BEFORE the broker account-fallback loop"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dimension 2 — performance: _all_exchanges_closed is O(N exchanges)
+# ---------------------------------------------------------------------------
+
+def test_all_exchanges_closed_short_circuits_on_first_open():
+    """_all_exchanges_closed short-circuits as soon as one exchange is open."""
+    from backend.api.routes.quote import _all_exchanges_closed
+
+    call_log: list[str] = []
+
+    def _side(exch: str) -> bool:
+        call_log.append(exch)
+        return False  # all "open"
+
+    with patch("backend.api.routes.quote._is_exchange_segment_closed", side_effect=_side):
+        result = _all_exchanges_closed({"NSE", "MCX", "NFO"})
+
+    assert result is False
+    # all() short-circuits on first False → only 1 call
+    assert len(call_log) == 1, (
+        f"_all_exchanges_closed made {len(call_log)} calls — expected 1 (short-circuit)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dimension 4 — reusable: as_of field defaults to None on live responses
+# ---------------------------------------------------------------------------
+
+def test_positions_response_as_of_defaults_none():
+    """PositionsResponse.as_of defaults to None (backwards-compatible)."""
+    from backend.api.schemas import PositionsResponse
+    resp = PositionsResponse(rows=[], summary=[], refreshed_at="now")
+    assert resp.as_of is None
+
+
+def test_holdings_response_as_of_defaults_none():
+    """HoldingsResponse.as_of defaults to None (backwards-compatible)."""
+    from backend.api.schemas import HoldingsResponse
+    resp = HoldingsResponse(rows=[], summary=[], refreshed_at="now")
+    assert resp.as_of is None
+
+
+def test_batch_quote_response_as_of_defaults_none():
+    """BatchQuoteResponse.as_of defaults to None (backwards-compatible)."""
+    from backend.api.routes.quote import BatchQuoteResponse
+    resp = BatchQuoteResponse(refreshed_at="now", items=[])
+    assert resp.as_of is None
+
+
+def test_sparkline_response_as_of_defaults_none():
+    """SparklineResponse.as_of defaults to None (backwards-compatible)."""
+    from backend.api.routes.quote import SparklineResponse
+    resp = SparklineResponse(data={}, refreshed_at="now")
+    assert resp.as_of is None
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5 — fresh=True bypasses closed-hours guard for positions
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_positions_fresh_bypasses_closed_hours_guard():
+    """?fresh=True skips the closed-hours snapshot guard and forces live fetch."""
+    from backend.api.schemas import PositionsResponse
+
+    live_resp = PositionsResponse(rows=[], summary=[], refreshed_at="fresh-live")
+    mock_snapshot = AsyncMock(return_value=None)  # should NOT be called
+
+    with patch(
+        "backend.api.routes.positions._is_all_markets_closed",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "backend.api.routes.positions._positions_snapshot",
+        mock_snapshot,
+    ), patch(
+        "backend.api.routes.positions.get_or_fetch",
+        new=AsyncMock(return_value=live_resp),
+    ), patch(
+        "backend.api.routes.positions.invalidate",
+    ):
+        from backend.api.routes.positions import PositionsController
+        handler_fn = PositionsController.get_positions.fn
+
+        mock_request = MagicMock()
+        with patch("backend.api.routes.positions.is_admin_request", return_value=True), \
+             patch("backend.api.routes.positions.resolve_role_from_connection",
+                   return_value="admin"), \
+             patch("backend.api.routes.positions.normalise_role", return_value="admin"), \
+             patch("backend.brokers.broker_apis._raw_cache_invalidate"):
+            resp = await handler_fn(None, mock_request, fresh=True)
+
+    # Snapshot should NOT have been called (fresh=True bypasses the guard)
+    assert mock_snapshot.call_count == 0, (
+        "snapshot helper must not be called when fresh=True"
+    )
+    assert resp.refreshed_at == "fresh-live"

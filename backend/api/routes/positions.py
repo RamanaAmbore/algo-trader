@@ -4,6 +4,7 @@ import pandas as pd
 import polars as pl
 from litestar import Controller, Request, get
 from litestar.exceptions import HTTPException
+from typing import Optional
 
 from backend.api.auth_guard import is_admin_request, is_authenticated_request
 from backend.api.rbac import (
@@ -20,6 +21,137 @@ from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import mask_account, mask_column
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Closed-hours snapshot helpers
+# ---------------------------------------------------------------------------
+
+async def _is_all_markets_closed() -> bool:
+    """Return True when every configured market segment is currently closed.
+
+    Used as the fast-path guard at the top of the route: if the market is
+    not open for any exchange, we serve the persisted daily_book snapshot
+    instead of hitting the broker.
+    """
+    try:
+        from backend.shared.helpers.date_time_utils import is_any_segment_open, timestamp_indian
+        return not is_any_segment_open(timestamp_indian())
+    except Exception:
+        return False  # fail-open: assume market is open so live path runs
+
+
+async def _positions_snapshot() -> Optional[PositionsResponse]:
+    """Read the most-recent pre-today daily_book[kind='positions'] snapshot
+    and reconstruct a PositionsResponse from it.
+
+    Returns None when:
+      - no snapshot exists yet (first ever deploy)
+      - the DB query fails
+
+    The response's `as_of` field carries the UTC ISO-8601 string of the
+    most-recent captured_at so the frontend can surface "as of <time>".
+    """
+    from backend.api.database import async_session
+    from sqlalchemy import text as _sql_text
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+
+    today_ist_midnight = timestamp_indian().replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
+    try:
+        async with async_session() as session:
+            result = await session.execute(_sql_text("""
+                SELECT account, symbol, exchange, qty, avg_cost, ltp,
+                       day_pnl, total_pnl, payload_json, captured_at
+                FROM daily_book
+                WHERE kind = 'positions' AND ltp IS NOT NULL
+                  AND captured_at < :today_open
+                ORDER BY captured_at DESC
+                LIMIT 5000
+            """), {"today_open": today_ist_midnight})
+            raw_rows = result.all()
+    except Exception as exc:
+        logger.warning(f"positions snapshot query failed: {exc}")
+        return None
+
+    if not raw_rows:
+        return None
+
+    # captured_at of the most-recent snapshot row (first row after ORDER DESC)
+    snap_captured_at: str = raw_rows[0][9].isoformat() if raw_rows[0][9] else ""
+
+    # Build per-account sums for the summary
+    pnl_by_account: dict[str, float] = {}
+    dcv_by_account: dict[str, float] = {}
+    prev_by_account: dict[str, float] = {}
+
+    rows: list[PositionRow] = []
+    import json as _json
+    for (account, symbol, exchange, qty, avg_cost, ltp,
+         day_pnl, total_pnl, payload_json, captured_at) in raw_rows:
+        # Reconstruct a minimal PositionRow from the snapshot columns.
+        # The payload_json holds the original broker row for forensics but
+        # we rebuild from the stored aggregates to keep the struct correct.
+        avg_cost_f = float(avg_cost) if avg_cost is not None else 0.0
+        ltp_f      = float(ltp) if ltp is not None else 0.0
+        total_pnl_f = float(total_pnl) if total_pnl is not None else 0.0
+        day_pnl_f   = float(day_pnl) if day_pnl is not None else 0.0
+
+        # close_price not stored separately; use avg_cost as a proxy so the
+        # row is well-formed (the snapshot's pnl figures are authoritative).
+        row = PositionRow(
+            account=str(account),
+            tradingsymbol=str(symbol),
+            exchange=str(exchange or ""),
+            product="NRML",
+            quantity=int(qty) if qty is not None else 0,
+            average_price=avg_cost_f,
+            close_price=ltp_f,  # EOD LTP serves as prior-session close
+            last_price=ltp_f,
+            pnl=total_pnl_f,
+            day_change_val=day_pnl_f,
+        )
+        rows.append(row)
+
+        acct = str(account)
+        pnl_by_account[acct] = pnl_by_account.get(acct, 0.0) + total_pnl_f
+        dcv_by_account[acct]  = dcv_by_account.get(acct, 0.0) + day_pnl_f
+        prev_by_account[acct] = prev_by_account.get(acct, 0.0) + abs(ltp_f * (int(qty) if qty else 0))
+
+    from backend.api.schemas import PositionsSummaryRow
+    summary: list[PositionsSummaryRow] = []
+    total_pnl_sum = 0.0
+    total_dcv_sum = 0.0
+    for acct, pnl_sum in pnl_by_account.items():
+        dcv_sum  = dcv_by_account.get(acct, 0.0)
+        prev_sum = prev_by_account.get(acct, 0.0)
+        pct = dcv_sum / prev_sum * 100.0 if prev_sum else 0.0
+        summary.append(PositionsSummaryRow(
+            account=acct,
+            pnl=pnl_sum,
+            day_change_val=dcv_sum,
+            day_change_percentage=pct,
+            day_prev_val=prev_sum,
+        ))
+        total_pnl_sum += pnl_sum
+        total_dcv_sum += dcv_sum
+    # TOTAL row
+    total_prev = sum(prev_by_account.values())
+    summary.append(PositionsSummaryRow(
+        account="TOTAL",
+        pnl=total_pnl_sum,
+        day_change_val=total_dcv_sum,
+        day_change_percentage=total_dcv_sum / total_prev * 100.0 if total_prev else 0.0,
+        day_prev_val=total_prev,
+    ))
+
+    return PositionsResponse(
+        rows=rows,
+        summary=summary,
+        refreshed_at=timestamp_display(),
+        as_of=snap_captured_at,
+    )
 
 _ROW_COLS = [
     'account', 'tradingsymbol', 'exchange', 'product',
@@ -455,6 +587,44 @@ class PositionsController(Controller):
     @get("/")
     async def get_positions(self, request: Request, fresh: bool = False) -> PositionsResponse:
         try:
+            # ── Closed-hours fast-path ──────────────────────────────────────
+            # When every configured market segment is closed, serve the most
+            # recent daily_book[kind='positions'] snapshot instead of hitting
+            # the broker.  This prevents spurious broker calls when the
+            # frontend polls during overnight / weekend hours.  The `as_of`
+            # field in the response lets the frontend show a staleness hint.
+            # `?fresh=1` bypasses this guard so the operator can still force
+            # a live fetch (e.g. after an AMO fill).
+            if not fresh and await _is_all_markets_closed():
+                snap = await _positions_snapshot()
+                if snap is not None:
+                    logger.info("positions: market closed — serving daily_book snapshot")
+                    # Apply masking to the snapshot response for non-admin callers
+                    # using the same copy-not-mutate pattern as the live path.
+                    role = normalise_role(resolve_role_from_connection(request))
+                    if role == "trader":
+                        allowed, _ = await user_scope_for_connection(request)
+                        allowed_set = {str(a).upper() for a in (allowed or [])}
+                        import msgspec
+                        snap = msgspec.structs.replace(
+                            snap,
+                            rows=[r for r in snap.rows
+                                  if str(getattr(r, "account", "")).upper() in allowed_set],
+                            summary=[s for s in snap.summary
+                                     if str(getattr(s, "account", "")).upper() in allowed_set
+                                     or str(getattr(s, "account", "")).upper() == "TOTAL"],
+                        )
+                    if not is_admin_request(request):
+                        import msgspec
+                        def _mask_snap(row):
+                            return msgspec.structs.replace(row, account=mask_account(row.account))
+                        snap = msgspec.structs.replace(
+                            snap,
+                            rows=[_mask_snap(r) for r in snap.rows],
+                            summary=[_mask_snap(s) for s in snap.summary],
+                        )
+                    return snap
+
             # Demo + public flow share one path: real broker data via
             # the cached fetch, with accounts masked for non-admin
             # callers (existing behaviour from the public /performance
