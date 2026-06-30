@@ -33,6 +33,10 @@ class HoldingRow(msgspec.Struct):
     # in the broker layer, so callers (watchlist) that surface
     # per-symbol qty should prefer this when quantity has gone to 0.
     opening_quantity: int = 0
+    # True when last_price was sourced from the last-known-good cache
+    # (both PriceBroker.quote and KiteTicker returned 0 or raised).
+    # Frontend can surface a small staleness indicator on these rows.
+    last_price_stale: bool = False
 
 
 class HoldingsSummaryRow(msgspec.Struct):
@@ -87,6 +91,10 @@ class PositionRow(msgspec.Struct):
     day_sell_quantity:  int   = 0
     day_buy_value:      float = 0.0
     day_sell_value:     float = 0.0
+    # True when last_price was sourced from the last-known-good cache
+    # (both PriceBroker.quote and KiteTicker returned 0 or raised).
+    # Frontend can surface a small staleness indicator on these rows.
+    last_price_stale: bool = False
 
 
 class PositionsSummaryRow(msgspec.Struct):

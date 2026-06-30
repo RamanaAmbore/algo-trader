@@ -14,6 +14,7 @@ from backend.api.rbac import (
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.schemas import HoldingsResponse, HoldingRow, HoldingsSummaryRow
 from backend.brokers import broker_apis
+from backend.brokers.broker_apis import record_good_ltp, get_last_good_ltp
 from backend.shared.helpers.date_time_utils import timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import mask_account, mask_column
@@ -34,6 +35,9 @@ _ROW_COLS = [
     'account', 'tradingsymbol', 'exchange', 'quantity', 'opening_quantity',
     'average_price', 'close_price', 'last_price', 'inv_val', 'cur_val',
     'pnl', 'pnl_percentage', 'day_change', 'day_change_val', 'day_change_percentage',
+    # Staleness flag — True when last_price came from the last-known-good
+    # cache rather than a live broker or ticker source.
+    'last_price_stale',
 ]
 
 _TTL = 30  # seconds — background task invalidates on each refresh
@@ -66,15 +70,31 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
     except Exception:
         return
     patched_idx: list = []
+    stale_idx: list = []  # rows rescued from last-known-good cache
     for idx in raw.index[_zero_mask]:
         sym = raw.at[idx, 'tradingsymbol']
         if not sym:
             continue
         tick_ltp = _ticker.get_ltp_by_sym(str(sym))
-        if tick_ltp is None or tick_ltp <= 0:
-            continue
-        raw.at[idx, 'last_price'] = float(tick_ltp)
-        patched_idx.append(idx)
+        if tick_ltp is not None and tick_ltp > 0:
+            record_good_ltp(str(sym), tick_ltp)
+            raw.at[idx, 'last_price'] = float(tick_ltp)
+            patched_idx.append(idx)
+        else:
+            # Ticker has no data — try last-known-good cache.
+            cached = get_last_good_ltp(str(sym))
+            if cached is not None and cached > 0:
+                raw.at[idx, 'last_price'] = cached
+                patched_idx.append(idx)
+                stale_idx.append(idx)
+
+    # Mark stale rows before early-return.
+    if stale_idx:
+        if 'last_price_stale' not in raw.columns:
+            raw['last_price_stale'] = False
+        for idx in stale_idx:
+            raw.at[idx, 'last_price_stale'] = True
+
     if not patched_idx:
         return
     _sel = pd.Index(patched_idx)
@@ -89,9 +109,11 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
                                                       raw.loc[_sel, 'day_change_val'])
     if 'day_change' in raw.columns:
         raw.loc[_sel, 'day_change'] = _ltp_p - _cls_p
+    n_stale = len(stale_idx)
     logger.info(
         f"holdings: ltp-override patched {len(patched_idx)}/{len(raw)} "
         f"zero-LTP rows from KiteTicker"
+        + (f" ({n_stale} via last-known-good cache)" if n_stale else "")
     )
 
 

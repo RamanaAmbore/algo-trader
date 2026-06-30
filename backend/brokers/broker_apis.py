@@ -1,4 +1,5 @@
 import os
+import threading
 import pandas as pd
 import polars as pl
 import time as _time
@@ -8,6 +9,52 @@ from backend.shared.helpers.decorators import for_all_accounts
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Last-known-good LTP cache
+# ---------------------------------------------------------------------------
+# Persists the most recent valid (> 0) LTP per symbol across broker calls.
+# When all live sources (PriceBroker.quote + KiteTicker) return 0 or raise,
+# this cache allows the route to return a recent real value instead of
+# propagating a zero to the frontend.
+#
+# Shape: {symbol: (unix_ts, ltp)}
+# Thread-safe via _LAST_GOOD_LTP_LOCK.
+# TTL: entries older than 1 hour are treated as absent so overnight stale
+# values don't bleed into the next session.  Process restart clears the
+# dict (in-memory only by design — next successful fetch repopulates).
+_LAST_GOOD_LTP: dict[str, tuple[float, float]] = {}
+_LAST_GOOD_LTP_LOCK = threading.Lock()
+_LAST_GOOD_LTP_TTL_S: float = 3600.0  # 1 hour
+
+
+def record_good_ltp(symbol: str, ltp: float) -> None:
+    """Record `ltp` as the last-known-good price for `symbol`.
+
+    Only writes when ltp > 0.  Thread-safe."""
+    if not symbol or not (ltp > 0):
+        return
+    now = _time.time()
+    with _LAST_GOOD_LTP_LOCK:
+        _LAST_GOOD_LTP[symbol] = (now, float(ltp))
+
+
+def get_last_good_ltp(symbol: str, max_age_s: float = _LAST_GOOD_LTP_TTL_S) -> float | None:
+    """Return the cached last-known-good LTP for `symbol` if it was
+    recorded within the last `max_age_s` seconds, else None.
+
+    Thread-safe read; returns None when symbol unknown or entry expired."""
+    if not symbol:
+        return None
+    now = _time.time()
+    with _LAST_GOOD_LTP_LOCK:
+        entry = _LAST_GOOD_LTP.get(symbol)
+    if entry is None:
+        return None
+    ts, ltp = entry
+    if now - ts > max_age_s:
+        return None
+    return ltp
 
 
 def _col_f64(lf: pl.DataFrame, col: str) -> pl.Expr:
@@ -665,9 +712,12 @@ def backfill_market_data(df) -> int:
                     # Synthesise a minimal quote-like entry so the
                     # extraction loop below can populate _ltp_lookup.
                     _q[_k] = {"last_price": _ltp_fb}
+                    record_good_ltp(_sym_fb, _ltp_fb)
         except Exception as _te:
             logger.debug(f"PriceBroker backfill: ticker fallback also failed: {_te}")
-            return 0
+            # Both PriceBroker and KiteTicker are unavailable.
+            # last-good-ltp fallback happens below in the patch loop.
+            pass
 
     # Extract two fields per quote: close (from ohlc.close, fallback
     # to top-level close_price) and last_price (from top-level
@@ -696,6 +746,10 @@ def backfill_market_data(df) -> int:
             _f_ltp = 0.0
         if _f_ltp > 0:
             _ltp_lookup[_k] = _f_ltp
+            # Record for last-known-good cache; strip exchange prefix for
+            # the canonical symbol-only key used by get_last_good_ltp().
+            _sym_only = _k.split(":", 1)[-1] if ":" in _k else _k
+            record_good_ltp(_sym_only, _f_ltp)
 
     # Patch close_price + last_price in place, but ONLY on rows
     # where the source broker came back with 0. Never overwrite a
@@ -714,6 +768,7 @@ def backfill_market_data(df) -> int:
     _has_ltp   = 'last_price'  in df.columns
     _row_indices = df.index[_missing].tolist()
     _patched_indices: set = set()
+    _stale_patched_indices: set = set()  # rows rescued by last-good cache
     _unresolved: list[str] = []
     for _idx, _k in zip(_row_indices, _key_per_row):
         if not _k:
@@ -729,10 +784,33 @@ def backfill_market_data(df) -> int:
             if _ltp_p:
                 df.at[_idx, 'last_price'] = _ltp_p
                 _touched = True
+            else:
+                # Last resort: use the last-known-good LTP from the
+                # in-process cache (populated by every previous
+                # successful fetch).  Mark the row as stale so
+                # callers can surface a staleness indicator.
+                _sym_only = _k.split(":", 1)[-1] if ":" in _k else _k
+                _cached_ltp = get_last_good_ltp(_sym_only)
+                if _cached_ltp is not None:
+                    df.at[_idx, 'last_price'] = _cached_ltp
+                    _stale_patched_indices.add(_idx)
+                    _touched = True
         if _touched:
             _patched_indices.add(_idx)
         elif _k not in _close_lookup and _k not in _ltp_lookup:
             _unresolved.append(_k)
+
+    # Mark rows whose LTP came from the last-known-good cache so routes
+    # can propagate the staleness flag to the response schema.
+    if _stale_patched_indices and 'last_price_stale' not in df.columns:
+        df['last_price_stale'] = False
+    for _idx in _stale_patched_indices:
+        df.at[_idx, 'last_price_stale'] = True
+    if _stale_patched_indices:
+        logger.info(
+            f"market-data backfill: {len(_stale_patched_indices)} rows rescued "
+            f"by last-known-good LTP cache (live sources unavailable)"
+        )
 
     # Diagnostic: log symbols where PriceBroker.quote() returned
     # neither close nor LTP. These rows stay at 0 → Day P&L = 0

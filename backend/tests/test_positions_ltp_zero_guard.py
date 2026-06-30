@@ -84,10 +84,19 @@ def _mock_ticker(ltp_value: float | None) -> MagicMock:
 # 1. backfill_market_data — ticker fallback when PriceBroker raises
 # ---------------------------------------------------------------------------
 
+def _clear_ltp_cache():
+    from backend.brokers import broker_apis
+    with broker_apis._LAST_GOOD_LTP_LOCK:
+        broker_apis._LAST_GOOD_LTP.clear()
+
+
 class TestBackfillMarketDataTickerFallback:
     """When PriceBroker.quote() raises (all brokers rate-limited), the
     function must fall back to KiteTicker to populate `last_price`.
     The previously-zero rows must be patched to the ticker's value."""
+
+    def setup_method(self):
+        _clear_ltp_cache()
 
     def test_ticker_fallback_patches_zero_ltp(self):
         from backend.brokers.broker_apis import backfill_market_data
@@ -173,6 +182,9 @@ class TestHoldingsTickerOverride:
     zero-LTP rows from the live KiteTicker. Holdings never had this
     guard before the fix."""
 
+    def setup_method(self):
+        _clear_ltp_cache()
+
     def test_zero_ltp_patched_from_ticker(self):
         from backend.api.routes.holdings import _override_stale_ltp_from_ticker
 
@@ -240,6 +252,9 @@ class TestPositionsTickerOverrideZeroLtp:
     `abs(tick - current) > 0.005`. When current=0 and tick>0 the
     condition fires — verify this guards the zero-LTP case too."""
 
+    def setup_method(self):
+        _clear_ltp_cache()
+
     def test_zero_ltp_patched(self):
         from backend.api.routes.positions import _override_stale_ltp_from_ticker
 
@@ -267,3 +282,102 @@ class TestPositionsTickerOverrideZeroLtp:
             _override_stale_ltp_from_ticker(df)
 
         assert float(df.at[0, 'last_price']) == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# 4. last-known-good LTP rescue via positions + holdings override
+# ---------------------------------------------------------------------------
+
+class TestLastGoodRescueViaPositionsOverride:
+    """Regression: when ALL live sources (broker + ticker) return 0 or raise,
+    the row must use the last-known-good cache value rather than propagating 0."""
+
+    def setup_method(self):
+        """Clear the cache before each test to isolate state."""
+        from backend.brokers import broker_apis
+        with broker_apis._LAST_GOOD_LTP_LOCK:
+            broker_apis._LAST_GOOD_LTP.clear()
+
+    def test_positions_last_good_rescue_when_ticker_none(self):
+        from backend.brokers.broker_apis import record_good_ltp
+        from backend.api.routes.positions import _override_stale_ltp_from_ticker
+
+        # Simulate a prior successful fetch having warmed the cache.
+        record_good_ltp("CRUDEOIL26JUL6900PE", 264.5)
+
+        df = _pos_df(last_price=0.0, close_price=220.0, pnl=0.0)
+        mock_ticker = _mock_ticker(None)  # ticker has no data
+
+        with patch('backend.brokers.kite_ticker.get_ticker',
+                   return_value=mock_ticker):
+            _override_stale_ltp_from_ticker(df)
+
+        assert float(df.at[0, 'last_price']) == pytest.approx(264.5, abs=0.001), \
+            f"Expected last-good 264.5, got {df.at[0, 'last_price']}"
+        assert bool(df.at[0, 'last_price_stale']) is True, \
+            "last_price_stale must be True for cache-rescued rows"
+
+    def test_positions_no_cache_stays_zero(self):
+        """No cache entry: row stays at 0, no crash, no stale flag."""
+        from backend.api.routes.positions import _override_stale_ltp_from_ticker
+
+        df = _pos_df(last_price=0.0, close_price=220.0)
+        mock_ticker = _mock_ticker(None)
+
+        with patch('backend.brokers.kite_ticker.get_ticker',
+                   return_value=mock_ticker):
+            _override_stale_ltp_from_ticker(df)
+
+        assert float(df.at[0, 'last_price']) == pytest.approx(0.0)
+        assert 'last_price_stale' not in df.columns or not bool(df.at[0, 'last_price_stale'])
+
+    def test_positions_ticker_ltp_recorded_as_good(self):
+        """When ticker returns a valid LTP, it must be recorded into the
+        last-known-good cache for future fallback."""
+        from backend.brokers.broker_apis import get_last_good_ltp
+        from backend.api.routes.positions import _override_stale_ltp_from_ticker
+
+        df = _pos_df(last_price=100.0, close_price=220.0)  # existing non-zero LTP
+        # Ticker returns a different value — override fires.
+        mock_ticker = _mock_ticker(264.5)
+
+        with patch('backend.brokers.kite_ticker.get_ticker',
+                   return_value=mock_ticker):
+            _override_stale_ltp_from_ticker(df)
+
+        cached = get_last_good_ltp("CRUDEOIL26JUL6900PE")
+        assert cached == pytest.approx(264.5, abs=0.001), \
+            f"Ticker LTP must be recorded in cache, got {cached}"
+
+    def test_holdings_last_good_rescue_when_ticker_none(self):
+        from backend.brokers.broker_apis import record_good_ltp
+        from backend.api.routes.holdings import _override_stale_ltp_from_ticker as _h_override
+
+        record_good_ltp("GOLDBEES", 1870.0)
+
+        df = _hold_df(last_price=0.0, close_price=1800.0)
+        mock_ticker = _mock_ticker(None)
+
+        with patch('backend.brokers.kite_ticker.get_ticker',
+                   return_value=mock_ticker):
+            _h_override(df)
+
+        assert float(df.at[0, 'last_price']) == pytest.approx(1870.0, abs=0.001), \
+            f"Expected last-good 1870.0, got {df.at[0, 'last_price']}"
+        assert bool(df.at[0, 'last_price_stale']) is True, \
+            "last_price_stale must be True for cache-rescued holdings rows"
+
+    def test_holdings_live_ticker_not_marked_stale(self):
+        """When the ticker provides a live value, the row must NOT be stale."""
+        from backend.api.routes.holdings import _override_stale_ltp_from_ticker as _h_override
+
+        df = _hold_df(last_price=0.0, close_price=1800.0)
+        mock_ticker = _mock_ticker(1870.0)
+
+        with patch('backend.brokers.kite_ticker.get_ticker',
+                   return_value=mock_ticker):
+            _h_override(df)
+
+        assert float(df.at[0, 'last_price']) == pytest.approx(1870.0, abs=0.001)
+        assert 'last_price_stale' not in df.columns or not bool(df.at[0, 'last_price_stale']), \
+            "Live ticker row must not be flagged as stale"
