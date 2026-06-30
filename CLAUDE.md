@@ -819,6 +819,63 @@ use intraday_equity deque path (unchanged).
 
 ---
 
+## Frontend perf budgets + audit (Jul 2026)
+
+Comprehensive frontend perf audit closed three systemic regression classes
+flagged by repeated operator complaints ("dropdown lag", "refresh button
+stuck"). Patches at `frontend/src/lib/ws.js`,
+`frontend/src/lib/RefreshButton.svelte`,
+`frontend/src/lib/CollapseButton.svelte`,
+`frontend/src/routes/(algo)/admin/derivatives/+page.svelte`. Guards in
+`frontend/e2e/main_thread_perf.spec.js`.
+
+**Subscription leak hygiene** — RefreshButton + CollapseButton used to
+`.subscribe()` Svelte stores at module-top-level with no unsub pair.
+With 1-3 RefreshButtons + dozens of CollapseButtons per algo page and
+route transitions never destroying them, the listener lists grew
+unbounded. Every conn-status poll (15 s) + every `lastRefreshAt.set`
+fan-out paid for N dead consumers. Bind subscribes inside onMount + tear
+them down in onDestroy. **Audit rule**: any `.subscribe()` call outside
+a singleton module MUST have a paired unsub in the component's
+onDestroy.
+
+**Singleton WebSocket pool** — `createPerformanceSocket` / `createAlgoSocket`
+previously opened a fresh `new WebSocket()` per call. Algo pages
+routinely had 3-5 parallel `/ws/performance` connections, each with its
+own 25 s heartbeat ping. Replaced with a ref-counted singleton subscriber
+pool — one socket per endpoint, fan-out to all callers, auto-close when
+the last subscriber unsubs. **Operator-facing contract preserved**: each
+caller still gets an `unsub` function from the same factory.
+
+**Dropdown click-to-feedback** — Select pick on `/admin/derivatives`
+fired `goto({replaceState:true})` synchronously inside the `$effect`
+watching `selectedUnderlying`. goto() walks the route tree and fires
+nav lifecycle hooks even on a same-route replace, costing 200-700 ms.
+Now debounced to 150 ms so a flurry of picks queues a single goto.
+
+**RefreshButton click defer** — Click handler queues the parent
+`onClick` via `queueMicrotask`. The button's disabled / spinner state
+paints BEFORE the parent's onClick body begins synchronous bookkeeping
+(Promise.allSettled wiring, legsKey signature compute, etc.). Operator:
+"refresh button getting stuck still is an issue" — the stall was the
+gap between click and next paint when the parent's onClick body did
+tens of ms of work before its first await.
+
+**Perf budgets** (assertions in main_thread_perf.spec.js):
+
+| Dimension | Budget | Guard |
+|---|---|---|
+| Max long-task during interaction | <100 ms | RAIL |
+| Click-to-feedback latency | <350 ms | Per-page |
+| JS heap growth idle | <5 MB/min | Per-page leak check |
+| `/ws/performance` connections per tab | ≤2 | WS singleton |
+| Dropdown pick → panel-close | <400 ms | Derivatives Select |
+| Dropdown pick max long-task | <150 ms | Derivatives Select |
+| Cross-page nav heap growth (5-page lap) | <8 MB | Subscription-leak guard |
+| Cross-page nav new-WS-opens (2nd lap) | ≤2 | WS pool reuse |
+
+---
+
 ## Critical math guards
 
 **Option qty vs lot_size** — Kite ships MCX intraday fields in lots, NSE in contracts. Double-check every multiplication. Has caused multi-lakh P&L distortion + 20× over-orders.

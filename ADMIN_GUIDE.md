@@ -1208,6 +1208,35 @@ Three perf fixes shipped Jun 2026 to address the ticket-path slowdown that accum
 
 ---
 
+## Frontend perf budgets (Jul 2026 audit)
+
+Comprehensive frontend perf audit closed three systemic regression classes flagged by repeated operator complaints ("dropdown lag" on `/admin/derivatives`, "refresh button stuck" mid-animation). Patches at `frontend/src/lib/ws.js`, `frontend/src/lib/RefreshButton.svelte`, `frontend/src/lib/CollapseButton.svelte`, `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`. Regression guards in `frontend/e2e/main_thread_perf.spec.js`.
+
+**Three patches**:
+
+1. **Subscription leaks closed**. RefreshButton + CollapseButton `.subscribe()` calls were module-top-level (no unsub). 1-3 RefreshButtons + dozens of CollapseButtons per page × no route-transition teardown = unbounded listener growth. Bound subscribes inside `onMount` + tear down in `onDestroy`.
+
+2. **Singleton WebSocket pool**. `createPerformanceSocket` / `createAlgoSocket` now share a ref-counted singleton per endpoint. Pre-fix: 3-5 parallel `/ws/performance` connections per tab. Post-fix: ≤1 active connection, fan-out to all subscribers, auto-close when the last unsubs.
+
+3. **Dropdown click debounce + click-defer**. `<Select>` pick on `/admin/derivatives` fired `goto({replaceState:true})` synchronously inside the underlying-change `$effect`. Debounced to 150 ms. RefreshButton click now defers `onClick` via `queueMicrotask` so the disabled/spinner state paints BEFORE the parent's sync prep work begins.
+
+**Perf budgets** (enforced by `main_thread_perf.spec.js`):
+
+| Dimension | Budget |
+|---|---|
+| Max long-task during interaction | < 100 ms |
+| Click-to-feedback latency | < 350 ms |
+| JS heap growth (idle) | < 5 MB/min |
+| `/ws/performance` connections per tab | ≤ 2 (singleton + reconnect) |
+| Dropdown pick → panel-close (derivatives) | < 500 ms |
+| Dropdown pick max long-task | < 150 ms |
+| Heap growth over 5-page nav lap | < 8 MB |
+| New WS opens on second nav lap | ≤ 2 |
+
+**Audit rule**: any `.subscribe()` call outside a singleton module MUST have a paired unsub in the component's `onDestroy`. Any new page that subscribes to `/ws/performance` or `/ws/algo` MUST go through `createPerformanceSocket` / `createAlgoSocket` — never `new WebSocket(...)` directly.
+
+---
+
 ## Postback fan-out — book_changed bus
 
 On every terminal order status from a broker postback (COMPLETE / CANCELLED / REJECTED / EXPIRED), the backend invalidates the orders + positions + holdings caches and broadcasts a `book_changed` WebSocket event. Every algo page subscribes to a shared debounced bus and refetches its primary loader in lockstep — single-iteration UI settle, replaces the prior "wait for the next 5–15 s poll" path.
