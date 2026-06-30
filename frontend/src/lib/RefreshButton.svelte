@@ -99,10 +99,16 @@
       if (_pulseTimer) return;
       // Skip class toggle while spinner is active — see comment above.
       if (loading) return;
+      // Skip class toggle during the post-loading cooldown window (800 ms
+      // after spinner stops). The next SSE tick arriving right after a
+      // manual refresh would otherwise trigger rf-tick-rotate and the
+      // operator would perceive the button as "animating twice".
+      if (_loadingExitAt && performance.now() < _loadingExitAt) return;
       _pulseTimer = setTimeout(() => {
         // Re-check at fire time — `loading` may have flipped true between
-        // subscribe and timer fire.
-        if (!loading) {
+        // subscribe and timer fire. Also re-check the cooldown in case the
+        // 250 ms timer fires while we are still inside the 800 ms window.
+        if (!loading && !(_loadingExitAt && performance.now() < _loadingExitAt)) {
           _tickPulseClass = _tickPulseClass === 'rf-tick-a' ? 'rf-tick-b' : 'rf-tick-a';
         }
         _pulseTimer = null;
@@ -119,9 +125,40 @@
       _tickPulseClass = '';
     }
   });
+
+  // Post-loading cooldown — after the spinner stops (loading true → false),
+  // suppress rf-tick-rotate for 800 ms so the next incoming SSE tick doesn't
+  // trigger a second animation pulse that the operator perceives as the
+  // refresh button "animating twice". The position-strip freshness shimmer
+  // still fires (that's the operator's signal data arrived); only the button
+  // stays calm during the cooldown window.
+  //
+  // Implementation: _loadingExitAt holds performance.now() + 800 while the
+  // cooldown is active, or 0 when idle. The symbolTickCount subscriber checks
+  // this value (not reactive state, just a plain number) to skip the pulse.
+  // A scheduled clearance resets it after the window expires so it doesn't
+  // stay armed across later natural SSE ticks.
+  let _loadingExitAt = 0;
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _cooldownTimer = null;
+  let _prevLoadingForCooldown = false;
+  $effect(() => {
+    const wasLoading = _prevLoadingForCooldown;
+    _prevLoadingForCooldown = loading;
+    if (wasLoading && !loading) {
+      // loading just transitioned true → false; arm the cooldown.
+      if (_cooldownTimer) clearTimeout(_cooldownTimer);
+      _loadingExitAt = performance.now() + 800;
+      _cooldownTimer = setTimeout(() => {
+        _loadingExitAt = 0;
+        _cooldownTimer = null;
+      }, 800);
+    }
+  });
   onDestroy(() => {
     _mktTimer?.();   // visibleInterval teardown (stops the interval + removes listener)
     if (_pulseTimer) clearTimeout(_pulseTimer);
+    if (_cooldownTimer) clearTimeout(_cooldownTimer);
     _pulseUnsub?.();
     _unsubLast?.();
     _unsubConn?.();

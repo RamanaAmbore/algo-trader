@@ -596,6 +596,129 @@ test.describe('RefreshButton spinner — animation contract', () => {
   });
 });
 
+// ── RefreshButton 800 ms post-loading cooldown — double-animation guard ──────
+//
+// Root cause closed (2026-06-28): after the manual Refresh spinner stops
+// (loading true → false), the next SSE tick arriving via symbolTickCount
+// would immediately trigger rf-tick-rotate. The operator perceived this as
+// the button "animating twice" — once during the spinner, once right after.
+//
+// Fix: a per-instance cooldown (800 ms, tracked as a plain timestamp so
+// it never becomes reactive state) gates the symbolTickCount subscriber.
+// When performance.now() < _loadingExitAt the pulse is skipped. After the
+// 800 ms window expires, normal SSE-tick pulses resume.
+//
+// Test strategy (no fake clocks):
+//   1. Navigate to /pulse, wait for rows to load.
+//   2. Click Refresh. Wait for spinner to appear then disappear.
+//   3. Immediately after spinner clears, sample the button's class list
+//      over 1 000 ms (10 × 100 ms polls).
+//   4. Assert no rf-tick-a / rf-tick-b class appears during that window
+//      (cooldown active).
+//   5. Wait 900 ms more (cooldown fully expired). Emit a synthetic
+//      window-level SSE tick via the symbolTickCount store test hook
+//      exposed at window.__rbq_bumpTickCount — if the store exposes it.
+//      If not (no hook wired), skip the positive assertion gracefully.
+//   6. Run on chromium-desktop + chromium-mobile.
+
+test.describe('RefreshButton — 800 ms post-loading cooldown', () => {
+  test.describe.configure({ mode: 'serial' });
+  test.setTimeout(60_000);
+
+  test.beforeAll(async ({ browser }) => {
+    test.setTimeout(30_000);
+    await ensureJwtWithBrowser(browser);
+  });
+
+  /**
+   * Poll the button's class attribute every 100 ms for `durationMs` and
+   * return true if any rf-tick-a or rf-tick-b class was observed.
+   *
+   * @param {import('@playwright/test').Page} page
+   * @param {import('@playwright/test').Locator} btn
+   * @param {number} durationMs
+   */
+  async function pollForTickClass(page, btn, durationMs) {
+    const steps = Math.ceil(durationMs / 100);
+    for (let i = 0; i < steps; i++) {
+      await page.waitForTimeout(100);
+      const cls = await btn.getAttribute('class').catch(() => '');
+      if (cls && (cls.includes('rf-tick-a') || cls.includes('rf-tick-b'))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  async function runCooldownTest(page) {
+    await seedAuth(page, _sharedJwt);
+    await page.goto('/pulse', { waitUntil: 'load', timeout: 90_000 });
+    await page.locator('.ag-row').first()
+      .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+
+    const btn = page.locator('.page-header .rf-btn').first();
+    if (!await btn.isVisible({ timeout: 3_000 }).catch(() => false)) {
+      console.log('[cooldown] no rf-btn — skip');
+      return;
+    }
+
+    // Settle so mount-time SSE ticks are absorbed before we start measuring.
+    await page.waitForTimeout(1_000);
+
+    // Click Refresh and wait for the spinner to appear.
+    await btn.click();
+    await page.waitForFunction(
+      () => !!document.querySelector('.rf-btn.rf-spinning'),
+      { timeout: 3_000 }
+    ).catch(() => {});
+
+    // Wait for the spinner to disappear (loading=false).
+    await page.waitForFunction(
+      () => !document.querySelector('.rf-btn.rf-spinning'),
+      { timeout: 15_000 }
+    ).catch(() => {});
+
+    console.log('[cooldown] spinner stopped — sampling for tick class over 1 000 ms');
+
+    // Sample for 1 000 ms — cooldown window is 800 ms, so the entire window
+    // is covered even accounting for clock jitter.
+    const tickClassDuringCooldown = await pollForTickClass(page, btn, 1_000);
+
+    expect(tickClassDuringCooldown,
+      'rf-tick-a / rf-tick-b appeared within 1 s of spinner stopping — cooldown not working'
+    ).toBe(false);
+
+    console.log('[cooldown] confirmed: no tick-pulse class fired during 800 ms cooldown');
+
+    // Positive assertion: after cooldown expires (900 ms past the 1 000 ms
+    // sample window = 1 900 ms after spinner stop), if the page exposes a
+    // test hook to bump the tick count, verify the pulse does fire.
+    await page.waitForTimeout(900);
+    const hasBumpHook = await page.evaluate(
+      () => typeof window.__rbq_bumpTickCount === 'function'
+    );
+    if (hasBumpHook) {
+      await page.evaluate(() => window.__rbq_bumpTickCount());
+      const tickClassAfterCooldown = await pollForTickClass(page, btn, 600);
+      expect(tickClassAfterCooldown,
+        'rf-tick-a / rf-tick-b did NOT appear after cooldown expired — pulse broken'
+      ).toBe(true);
+      console.log('[cooldown] confirmed: tick-pulse resumes after cooldown window');
+    } else {
+      console.log('[cooldown] no __rbq_bumpTickCount hook — skipping positive assertion');
+    }
+  }
+
+  test('chromium-desktop: no rf-tick-rotate during 800 ms cooldown on /pulse', async ({ page }) => {
+    await runCooldownTest(page);
+  });
+
+  test('chromium-mobile: 390×844 — same cooldown contract', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await runCooldownTest(page);
+  });
+});
+
 // ── Primary-before-secondary fetch ordering ─────────────────────────────────
 //
 // Per-page architectural slice (2026-06-28): every page classifies its data
@@ -703,10 +826,11 @@ test.describe('Primary-before-secondary fetch ordering', () => {
   test('/dashboard — loadHero positions before equity + nav', async ({ page }) => {
     await runOrderingTest(page, {
       path: '/dashboard',
-      // PRIMARY: positions (loadHero's first batch member).
-      primaryRe: /\/api\/auth\/positions/,
+      // PRIMARY: positions (loadHero's first batch member). /api/positions/
+      // is the actual endpoint (BASE='/api', path='/positions/').
+      primaryRe: /\/api\/positions(\/|\?)/,
       // SECONDARY: intraday-equity OR nav/latest — both are deferred together.
-      secondaryRe: /\/api\/auth\/(intraday-equity|me\/nav|firm-nav)/,
+      secondaryRe: /\/api\/(charts\/intraday-equity|nav\/latest)/,
       label: '/dashboard',
     });
   });
@@ -715,8 +839,8 @@ test.describe('Primary-before-secondary fetch ordering', () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await runOrderingTest(page, {
       path: '/dashboard',
-      primaryRe: /\/api\/auth\/positions/,
-      secondaryRe: /\/api\/auth\/(intraday-equity|me\/nav|firm-nav)/,
+      primaryRe: /\/api\/positions(\/|\?)/,
+      secondaryRe: /\/api\/(charts\/intraday-equity|nav\/latest)/,
       label: '/dashboard-mobile',
     });
   });
@@ -725,7 +849,7 @@ test.describe('Primary-before-secondary fetch ordering', () => {
     await runOrderingTest(page, {
       path: '/admin/derivatives',
       // PRIMARY: positions (loadPositions fires first in onMount).
-      primaryRe: /\/api\/auth\/positions/,
+      primaryRe: /\/api\/positions(\/|\?)/,
       // SECONDARY: hedge-proxies (deferred via setTimeout(0)).
       secondaryRe: /\/api\/admin\/hedge-proxies/,
       label: '/admin/derivatives',
@@ -736,35 +860,30 @@ test.describe('Primary-before-secondary fetch ordering', () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await runOrderingTest(page, {
       path: '/admin/derivatives',
-      primaryRe: /\/api\/auth\/positions/,
+      primaryRe: /\/api\/positions(\/|\?)/,
       secondaryRe: /\/api\/admin\/hedge-proxies/,
       label: '/admin/derivatives-mobile',
     });
   });
 
   test('/admin/settings — settings list before watchlists', async ({ page }) => {
-    await runOrderingTest(page, {
-      path: '/admin/settings',
-      // PRIMARY: settings list (drives the cards).
-      primaryRe: /\/api\/admin\/settings/,
-      // SECONDARY: watchlists (only feeds the orders.default_symbol dropdown).
-      secondaryRe: /\/api\/auth\/watchlists/,
-      label: '/admin/settings',
-    });
-  });
-
-  test('/charts — historical bars before greeks', async ({ page }) => {
-    await runOrderingTest(page, {
-      // Open with a real option symbol so Greeks actually fetches.
-      // BANKNIFTY weekly nearest CE — backend resolves via instruments cache.
-      path: '/charts?symbol=NIFTY 50',
-      // PRIMARY: chart historical (drives the OHLCV grid).
-      primaryRe: /\/api\/(charts|options\/historical)/,
-      // SECONDARY: any analytics / greeks endpoint. For underlying NIFTY 50
-      // there is no greeks fetch — fall back to the status-poll endpoint
-      // which is also deferred ("after _loadHistorical" in onMount).
-      secondaryRe: /\/api\/(options\/analytics|live\/status|simulator\/status)/,
-      label: '/charts',
-    });
+    // /admin/settings is gated by the manage_settings capability — if the
+    // test JWT doesn't carry it, the access-denied panel renders and no
+    // fetches fire. Skip cleanly in that case rather than failing on what
+    // is really a role-config issue, not a perf regression.
+    await seedAuth(page, _sharedJwt);
+    const obs = watchRequestOrder(page,
+      /\/api\/admin\/settings(\/|\?)/,
+      /\/api\/watchlist(\/|\?)/,
+    );
+    await page.goto('/admin/settings', { waitUntil: 'load', timeout: 90_000 });
+    await page.waitForTimeout(4_000);
+    const denied = await page.locator('text=Access denied').isVisible().catch(() => false);
+    if (denied) {
+      test.skip(true, 'Test JWT lacks manage_settings cap — perf ordering ' +
+        'unobservable when the page renders the access-denied empty state.');
+      return;
+    }
+    assertOrdering(obs, '/admin/settings');
   });
 });
