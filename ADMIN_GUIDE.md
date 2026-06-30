@@ -1474,6 +1474,7 @@ trend across releases.
 | `frontend_stale_count` | ESLint `no-unused-vars` | Unused JS/Svelte variables |
 | `bug_count_since_last_release` | `git log` heuristic | Commits matching `fix:|fix(|bug:|URGENT|P0` |
 | `per_page_latency_ms` | reads `/tmp/ramboq_perf.json` | DCL/Idle/LCP per page from Playwright spec |
+| `test_response_times` | `pytest-json-report` + Playwright JSON reporter | Per-test durations: total_tests, total_wall_time_s, median_s, max_s, slow_count, top_10_slowest |
 
 Decoupling (afferent/efferent coupling) is **deferred to Phase 2** —
 needs an import-graph build via `pydeps` or a custom AST walker.
@@ -1496,6 +1497,12 @@ Flags:
 - `--with-coverage` — also run `pytest --cov`. **Slow** (5-30 minutes
   depending on suite); skip unless coverage % is the metric you're
   measuring this run.
+- `--with-test-times` — collect per-test execution times. Backend: uses
+  `pytest-json-report` (falls back to `--durations=0` text parsing).
+  Frontend: reads `/tmp/ramboq_pw_report.json` from a prior Playwright
+  JSON run. Deploy pipeline passes this flag automatically (D12 step).
+  Produces `test_response_times` column with `max_s`, `total_wall_time_s`,
+  `slow_count`, `top_10_slowest` per backend/frontend.
 - `--notes "<text>"` — free-text appears on the drill-in modal.
 
 Idempotency: omitting `--force` and re-running with an existing tag
@@ -1510,14 +1517,21 @@ Best-effort: a failed capture never fails the deploy itself.
 
 **Reading the page:**
 
-Top of `/admin/metrics`: ten **trend tiles** (small SVG line charts).
+Top of `/admin/metrics`: twelve **trend tiles** (small SVG line charts).
 Each tile shows the latest value + the historical sparkline + the
 range (min → max). Cyan-400 palette consistent with other admin
-surfaces. The tiles plot oldest-left, newest-right.
+surfaces. The tiles plot oldest-left, newest-right. The last two
+tiles ("Slowest test — backend" and "Backend test wall time") are
+populated once `--with-test-times` starts being passed by the deploy
+pipeline — they show `—` on earlier snapshots.
 
 Below the tiles: the **snapshots table**, newest-first. Headline
 metrics in tabular-nums columns. Click **Detail** on any row to
 open the drill-in modal, which shows:
+- **Test response times** — backend (pytest) and frontend (Playwright)
+  panels with total_tests, wall time, median, slowest, slow_count, and
+  a numbered list of the **top 10 slowest tests** so you can identify
+  which test accumulated the most time across releases.
 - per-page latency JSON (from the Playwright perf spec)
 - `raw_payload` — full radon JSON, vulture stdout, jscpd report,
   coverage summary. Cap'd at 1.5 MB; truncated for storage when
@@ -1529,6 +1543,8 @@ open the drill-in modal, which shows:
 |---|---|
 | Trend tile shows `—` for latest value | The tool couldn't run (radon/vulture/jscpd missing). Drill into the snapshot's raw_payload to see the `_skipped` / `_error` tag. Install the tool, re-run capture with `--force`. |
 | `per_page_latency_ms` is `{}` | No Playwright perf JSON found. Run `npx playwright test e2e/main_thread_perf.spec.js` first (writes `/tmp/ramboq_perf.json`), then capture. |
+| `test_response_times` is `null` | Snapshot was captured without `--with-test-times`. The deploy pipeline now passes the flag automatically; re-run with `--force --with-test-times` to backfill. |
+| Frontend test times show `_skipped` | No `/tmp/ramboq_pw_report.json` found. Run Playwright with `--reporter=json` and save to that path, then re-capture. |
 | Bug count is 0 | Either no previous tag exists (first release) OR no commit since prev tag matches the heuristic. The script falls back to "last 30 days" when no prev tag exists. |
 | `bug_count` looks wrong | The heuristic is intentionally permissive (`fix:|fix(|fix |bug:|URGENT|P0`). Tune for accuracy by editing `_count_bug_commits` in the capture script. |
 | Snapshot row missing from table | Forgot `--force`? Re-running with an existing tag silently skips by design. Check the script's stderr for `already exists`. |

@@ -779,6 +779,13 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS ix_code_metrics_captured_at "
             "ON code_metrics_snapshots (captured_at DESC)"
         ))
+        # Add test_response_times column if it doesn't exist yet
+        # (idempotent — ALTER TABLE ADD COLUMN IF NOT EXISTS is safe to
+        # run on every startup against a pre-existing table).
+        await conn.execute(text(
+            "ALTER TABLE code_metrics_snapshots "
+            "ADD COLUMN IF NOT EXISTS test_response_times JSONB"
+        ))
     logger.info("Database: tables verified")
 
     # Seed grammar tokens (condition / notify / action catalog) BEFORE agents

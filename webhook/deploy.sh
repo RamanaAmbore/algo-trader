@@ -375,5 +375,24 @@ JSONEOF
       && echo "[$TS] Startup notification done" \
       || echo "[$TS] WARNING: startup notification failed"
 
+  # D12 — Capture per-release code metrics. Best-effort; never fails
+  # the deploy. Main branch deploys land under `git describe`, dev
+  # branches use `dev-<short-sha>` so the trend chart doesn't mix
+  # release rows with experimental ones. radon / vulture must be
+  # `pip install`-ed alongside the API venv (already done in
+  # requirements-api.txt as of Jun 2026).
+  if [ "$DEPLOY_TYPE" != "frontend-only" ] && [ "$DEPLOY_STATUS" = "ok" ]; then
+      if [ "$BRANCH" = "main" ]; then
+          METRICS_TAG="$(git describe --tags --abbrev=0 2>/dev/null || echo "main-$(git rev-parse --short HEAD)")"
+      else
+          METRICS_TAG="dev-$(git rev-parse --short HEAD)"
+      fi
+      echo "[$TS] Capturing code metrics under tag $METRICS_TAG..."
+      sudo -u www-data "$APP_ROOT/venv/bin/python" "$APP_ROOT/scripts/capture_metrics.py" \
+          --release-tag "$METRICS_TAG" --force --with-test-times \
+          && echo "[$TS] Code metrics captured" \
+          || echo "[$TS] WARNING: code-metrics capture failed (deploy itself unaffected)"
+  fi
+
   echo "[$TS] Deployment complete (HEAD: $(git rev-parse --short HEAD))"
 } >> "$LOG" 2>&1

@@ -1956,6 +1956,21 @@ class CodeMetricsSnapshot(Base):
     # logs a warning + writes {}).
     per_page_latency_ms: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
+    # Test execution times. Populated when --with-test-times is passed to
+    # the capture script (requires pytest-json-report for backend;
+    # Playwright JSON reporter for frontend). Structure:
+    # {
+    #   "backend":  { "total_tests": N, "total_wall_time_s": F,
+    #                 "median_s": F, "max_s": F,
+    #                 "top_10_slowest": [{"name": "...", "duration_s": F}, ...],
+    #                 "slow_count": N, "slow_threshold_s": 1.0 },
+    #   "frontend": { same shape or {"_skipped": "..."} }
+    # }
+    # NULL when not yet captured (first snapshot, or capture run without
+    # --with-test-times). {} when the flag was passed but the JSON output
+    # was not found.
+    test_response_times: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
     # Operator-facing free-text channel for release notes / context.
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

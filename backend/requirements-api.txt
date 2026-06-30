@@ -34,3 +34,14 @@ mcp>=1.27
 # (no libcairo / libpango). Used only by
 # backend/api/algo/investor_statement.py.
 fpdf2~=2.8
+
+# Code-metrics capture (`scripts/capture_metrics.py`). All are pure-
+# Python CLIs invoked as subprocesses by the capture script; the API
+# itself never imports them.
+#   radon              — cyclomatic complexity + raw LOC
+#   vulture            — stale-code detector
+#   pytest-json-report — per-test duration capture (--with-test-times)
+# Pinned floors; the CLIs are stable.
+radon>=6.0
+vulture>=2.10
+pytest-json-report>=1.5
