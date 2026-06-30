@@ -122,8 +122,23 @@
   // the first selected list; updated when the operator clicks a tab
   // (set focus AND toggle inclusion in one click).
   let focusedListId = $state(/** @type {number | null} */ (null));
-  const positions   = $derived(positionsStore.value ?? []);
-  const holdings    = $derived(holdingsStore.value  ?? []);
+  // Bridge positionsStore / holdingsStore through $effect → $state so that
+  // when loadPulse() calls positionsStore.set(), the downstream unifiedRows
+  // $derived.by (which runs buildUnified — a heavy computation) is scheduled
+  // by Svelte's microtask queue rather than firing synchronously inside the
+  // same long task as the store write. Without this bridge the synchronous
+  // $derived cascade blocks the main thread for >100 ms, freezing the
+  // RefreshButton spinner mid-animation (RAIL long-task violation).
+  let positions = $state(/** @type {any[]} */ (positionsStore.value ?? []));
+  let holdings  = $state(/** @type {any[]} */ (holdingsStore.value  ?? []));
+  $effect(() => {
+    const p = positionsStore.value;
+    const h = holdingsStore.value;
+    untrack(() => {
+      positions = p ?? [];
+      holdings  = h ?? [];
+    });
+  });
   // Pulse quote bag — bundles BOTH option-underlying quotes (keyed
   // by logical underlying name, each value carries a `_resolved`
   // info block from resolveUnderlying) AND contract quotes (keyed

@@ -1,5 +1,5 @@
 <script>
-  import { onMount, onDestroy, getContext } from 'svelte';
+  import { onMount, onDestroy, getContext, untrack } from 'svelte';
   import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
   import PnlAnalysis from '$lib/PnlAnalysis.svelte';
   import NavTab from '$lib/NavTab.svelte';
@@ -138,10 +138,29 @@
   // singletons (three-tier: memory → localStorage → broker fetch).
   // With `selectedStrategyId == null` the derivations below are identity
   // (every row passes), so behaviour with no strategy picked is unchanged.
+  //
+  // Bridge positionsStore / holdingsStore / fundsStore through $effect → $state
+  // to prevent the synchronous $derived cascade
+  //   store write → _positionsRaw → _positions → _positionsSummary →
+  //   _positionsTotal → $effect grid.setGridOption
+  // from running as one long synchronous task that freezes the RefreshButton
+  // spinner mid-animation (RAIL long-task violation).
   /** @type {any[]} */
-  const _positionsRaw = $derived(positionsStore.value ?? []);
+  let _positionsRaw = $state(positionsStore.value ?? []);
   /** @type {any[]} */
-  const _holdingsRaw  = $derived(holdingsStore.value  ?? []);
+  let _holdingsRaw  = $state(holdingsStore.value  ?? []);
+  /** @type {any[]} */
+  let _fundsRaw     = $state(fundsStore.value     ?? []);
+  $effect(() => {
+    const p = positionsStore.value;
+    const h = holdingsStore.value;
+    const f = fundsStore.value;
+    untrack(() => {
+      _positionsRaw = p ?? [];
+      _holdingsRaw  = h ?? [];
+      _fundsRaw     = f ?? [];
+    });
+  });
   const _matchStrategySym = (/** @type {string} */ sym) => {
     if ($selectedStrategyId == null) return true;
     if ($strategyOpenSymbols.size === 0) return false;
@@ -154,11 +173,9 @@
     _holdingsRaw.filter(r => _matchStrategySym(r?.tradingsymbol || r?.symbol))
   );
   // Full funds rows (for the Capital-card Funds table). Sourced from
-  // fundsStore (three-tier cache, TOTAL row pre-stripped by the store's
-  // parse). Kept separate from _margins (gauge input) so the table can
-  // show cash + collateral + net etc.
-  /** @type {any[]} */
-  const _funds = $derived(fundsStore.value ?? []);
+  // _fundsRaw (bridged via $effect above). Kept separate from _margins
+  // (gauge input) so the table can show cash + collateral + net etc.
+  const _funds = $derived(_fundsRaw);
 
   // Equity card stacks Positions Summary on top and Holdings
   // Summary below — no tabs. The tab variant left ~half the card
