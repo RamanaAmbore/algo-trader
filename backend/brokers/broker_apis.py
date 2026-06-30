@@ -684,9 +684,18 @@ def _enrich_positions(df: pd.DataFrame) -> pd.DataFrame:
         _dcv_expr.alias("day_change_val"),
     ])
     # Second pass: percentages that depend on the first pass results.
+    # Contract A note: a position opened TODAY has close_price=0 (no prior
+    # session for this symbol), so |close × qty| collapses to 0 and the
+    # percent would round to 0. Fall back to |avg × qty| (= notional at
+    # entry) so opened-today rows still show a meaningful Day % — the same
+    # number the operator computes mentally as `(LTP − entry)/entry × 100`.
+    _close_denom = (_cls * _col_f64(lf, 'quantity')).abs()
+    _avg_denom   = (_col_f64(lf, 'average_price') * _col_f64(lf, 'quantity')).abs()
     lf = lf.with_columns([
-        pl.when((_cls * _col_f64(lf, 'quantity')).abs() != 0.0)
-        .then(pl.col("day_change_val") / (_cls * _col_f64(lf, 'quantity')).abs() * 100.0)
+        pl.when(_close_denom != 0.0)
+        .then(pl.col("day_change_val") / _close_denom * 100.0)
+        .when(_avg_denom != 0.0)
+        .then(pl.col("day_change_val") / _avg_denom * 100.0)
         .otherwise(pl.lit(0.0))
         .alias("day_change_percentage"),
         pl.when((_col_f64(lf, 'average_price') * _col_f64(lf, 'quantity')).abs() != 0.0)

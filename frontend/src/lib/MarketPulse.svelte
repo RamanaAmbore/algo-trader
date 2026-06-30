@@ -2920,6 +2920,14 @@
         : 0;
       if (livePos != null && closePx > 0 && q !== 0) {
         row.day_pnl = (row.day_pnl ?? 0) + realisedToday + (livePos - closePx) * q;
+      } else if (livePos != null && closePx === 0 && avg > 0 && q !== 0) {
+        // Contract A — position opened TODAY (no prior close_price).
+        // The carry term in the decomposed formula collapses (oq=0), so
+        // Day P&L = (LTP − entry) × buy_qty_today. With current qty
+        // === buy_qty_today on a fresh-opened row, (LTP − avg) × q
+        // gives the right number live. Without this branch the row
+        // froze at the poll-time `brokerDcv` between 30s refreshes.
+        row.day_pnl = (row.day_pnl ?? 0) + (livePos - avg) * q;
       } else {
         row.day_pnl = (row.day_pnl ?? 0) + brokerDcv;
       }

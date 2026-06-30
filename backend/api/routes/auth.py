@@ -401,9 +401,18 @@ async def _compute_firm_nav() -> tuple[float, float, float, str]:
             firm_day_pnl = float(day_pnl)
             firm_cum_pnl = float(cum_pnl)
         else:
-            # Off-hours fallback — synthesize from holdings + positions
+            # Off-hours fallback — synthesize from holdings + positions.
+            # day_pnl must include BOTH legs: the prior `firm_day_pnl =
+            # total_h['day_change_val']` line missed positions' day_change_val
+            # entirely, so the NavCard headline + firm_day_pnl JSON field
+            # under-reported by the positions contribution on every off-hours
+            # render. SSOT alignment: PerformancePage NAV TOTAL row and the
+            # intraday-equity tick both already sum (H + P) day_change_val.
+            firm_day_pnl = 0.0
             if not total_h.empty and 'day_change_val' in total_h.columns:
-                firm_day_pnl = float(total_h['day_change_val'].iloc[0] or 0)
+                firm_day_pnl += float(total_h['day_change_val'].iloc[0] or 0)
+            if not total_p.empty and 'day_change_val' in total_p.columns:
+                firm_day_pnl += float(total_p['day_change_val'].iloc[0] or 0)
             firm_cum_pnl = pos_pnl
             if not total_h.empty and 'pnl' in total_h.columns:
                 firm_cum_pnl += float(total_h['pnl'].iloc[0] or 0)
