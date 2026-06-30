@@ -135,7 +135,18 @@
   // _refiring (post-hibernation flush) is active. Used everywhere the
   // template previously used `loading` to decide which glyph to show
   // and which CSS class to apply.
-  const _showSpinning = $derived(loading || _refiring);
+  //
+  // Closed-hours suppression: during a fully-closed market the click
+  // path fires the snapshot toast and calls onClick (parent's load()
+  // hits the snapshot path — fast DB read, no broker round-trip). The
+  // spinner is misleading in that window: it suggests live fetching when
+  // the surface is just re-reading the static snapshot. Operator: "refresh
+  // button should not rotate even the popup shows up during market
+  // closure." Gate the visual spin off when both segments are closed,
+  // regardless of `loading` state.
+  const _showSpinning = $derived(
+    (loading || _refiring) && (_nseOpen || _mcxOpen)
+  );
 
   // Refire-only flag — true when post-hibernation refire is active but
   // no manual click is in flight. This drives the violet palette on the
