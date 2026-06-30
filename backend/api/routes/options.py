@@ -353,6 +353,41 @@ def get_first_cold_empty_counts() -> dict[str, int]:
     with _FIRST_COLD_EMPTY_LOCK:
         return {sym: cnt for (d, sym), cnt in _FIRST_COLD_EMPTY.items() if d == today_ist}
 
+# ── Chart self-heal constants ─────────────────────────────────────────
+# When ohlcv_store returns fewer bars than _SELF_HEAL_COVERAGE_THRESHOLD
+# fraction of the requested days, the handler retries with bypass_cache=True
+# to force a full broker fetch and heal the persistent tiers.
+#
+# This runs regardless of runtime_state.get_mode() ("off" / "soft" / "hard")
+# so the self-heal fires in the default-off state without operator action.
+#
+# The log is rate-limited (one INFO per _SELF_HEAL_LOG_INTERVAL_S per symbol)
+# so a hot chart page does not flood the log file.
+
+_SELF_HEAL_COVERAGE_THRESHOLD: float = 0.70   # below this fraction → force broker fetch
+_SELF_HEAL_LOG_INTERVAL_S:      float = 60.0   # minimum seconds between self-heal log lines
+
+# (symbol, exchange) → last log emit time (monotonic).  Thread-safe via GIL
+# (float dict mutation is atomic on CPython) + bounded by _FIRST_COLD_EMPTY_MAX.
+_SELF_HEAL_LOG_TS: dict[tuple[str, str], float] = {}
+_SELF_HEAL_LOG_LOCK = _threading.Lock()
+
+
+def _self_heal_log_once(sym: str, exch: str, coverage: int, requested: int) -> None:
+    """Emit one INFO log per (sym, exch) per _SELF_HEAL_LOG_INTERVAL_S.
+    Thread-safe, best-effort."""
+    key = (sym, exch)
+    now = time.monotonic()
+    with _SELF_HEAL_LOG_LOCK:
+        last = _SELF_HEAL_LOG_TS.get(key, 0.0)
+        if now - last < _SELF_HEAL_LOG_INTERVAL_S:
+            return
+        _SELF_HEAL_LOG_TS[key] = now
+    logger.info(
+        f"options historical: self-heal triggered for {sym}/{exch} — "
+        f"coverage {coverage}/{requested} days, forced broker fetch"
+    )
+
 # Process-wide token-resolution cache for the historical-bars endpoint.
 # Key: (broker_account, exchange). Value: dict[tradingsymbol_upper, int_token].
 #
@@ -2019,6 +2054,30 @@ class OptionsController(Controller):
             resolved_exch = (exchange or "NFO").upper()
             try:
                 store_bars = await get_or_fetch_daily(sym, resolved_exch, from_d_daily, to_d_daily)
+
+                # ── Self-heal: force broker fetch when DB coverage is thin ──
+                # If the store returned fewer than _SELF_HEAL_COVERAGE_THRESHOLD
+                # of the requested trading days (e.g. 48 bars for a 365-day
+                # request = 13% coverage), bypass the cache tier and pull the
+                # full range from the broker unconditionally.  This fires in
+                # the default "off" mode — operator does not need to flip
+                # runtime_state manually.
+                #
+                # Cool-off gate: if every historical broker is in rate-limit
+                # cool-off, skip the retry and return what we have with
+                # partial=True so the frontend retries after the TTL.
+                _heal_attempted = False
+                if len(store_bars) < _SELF_HEAL_COVERAGE_THRESHOLD * days:
+                    from backend.brokers.registry import get_historical_brokers as _ghb
+                    _brokers_available = bool(_ghb())
+                    if _brokers_available:
+                        _self_heal_log_once(sym, resolved_exch, len(store_bars), days)
+                        store_bars = await get_or_fetch_daily(
+                            sym, resolved_exch, from_d_daily, to_d_daily,
+                            bypass_cache=True,
+                        )
+                        _heal_attempted = True
+
                 if store_bars:
                     bars = [
                         HistoricalBar(
@@ -2031,14 +2090,23 @@ class OptionsController(Controller):
                         )
                         for b in store_bars
                     ]
+                    # After a self-heal retry that still returned under-coverage,
+                    # surface partial=True so the frontend knows to show a hint.
+                    _still_partial = (
+                        _heal_attempted
+                        and len(store_bars) < _SELF_HEAL_COVERAGE_THRESHOLD * days
+                    )
                     result = HistoricalResponse(symbol=sym, instrument_token=None,
-                                                interval=interval, bars=bars)
-                    _hist_cache_put(cache_key, result, _HIST_CACHE_TTL_OK)
+                                                interval=interval, bars=bars,
+                                                partial=_still_partial)
+                    _hist_cache_put(cache_key, result,
+                                    _HIST_CACHE_TTL_EMPTY if _still_partial
+                                    else _HIST_CACHE_TTL_OK)
                     if _ohlcv_trace_enabled():
                         logger.info(
                             f"[ohlcv-route] symbol={sym} exch={resolved_exch} "
                             f"from={from_d_daily} to={to_d_daily} bars={len(bars)} "
-                            "source=ohlcv_store"
+                            f"source=ohlcv_store heal={_heal_attempted}"
                         )
                     return result
                 else:
@@ -2090,6 +2158,37 @@ class OptionsController(Controller):
                                 volume=int(b.get("volume", 0)),
                             ))
                     cur += _td(days=1)
+
+                # ── Self-heal: retry with bypass_cache when today is empty ─
+                # If the store returned no bars at all (cold deploy, first
+                # open of a new symbol, or stale DB entry for today), check
+                # whether brokers are available and force a fresh fetch.
+                # Applies only when the market for the resolved exchange is
+                # currently open — closed-hours fallback is handled below.
+                if not merged:
+                    from backend.brokers.registry import get_historical_brokers as _ghb
+                    if _ghb():
+                        _self_heal_log_once(sym, resolved_exch, 0, days)
+                        merged_retry: list[HistoricalBar] = []
+                        cur2 = from_d_intra
+                        while cur2 <= to_d_intra:
+                            day_bars2 = await get_or_fetch_intraday(
+                                sym, resolved_exch, cur2, interval=interval,
+                                bypass_cache=True,
+                            )
+                            if day_bars2:
+                                for b in day_bars2:
+                                    merged_retry.append(HistoricalBar(
+                                        ts=str(b["bar_ts"]),
+                                        open=float(b["open"]),
+                                        high=float(b["high"]),
+                                        low=float(b["low"]),
+                                        close=float(b["close"]),
+                                        volume=int(b.get("volume", 0)),
+                                    ))
+                            cur2 += _td(days=1)
+                        merged = merged_retry
+
                 if merged:
                     result = HistoricalResponse(symbol=sym, instrument_token=None,
                                                 interval=interval, bars=merged)
