@@ -27,6 +27,7 @@
 import { writable, get } from 'svelte/store';
 import { browser } from '$app/environment';
 import { mergeSymbolUpdate, mergeSymbolBatch } from './symbolStore.svelte.js';
+import { isNseOpen, isMcxOpen, fetchMarketStatus } from '../marketHours.js';
 
 /**
  * True when the SSE connection has been acknowledged by the server (snapshot
@@ -153,6 +154,69 @@ function _open() {
       _open();
     }, delay);
   };
+}
+
+// ---------------------------------------------------------------------------
+// Per-exchange polling gate (slice Market-Lifecycle).
+//
+// Operator: "when the market is closed, the frontend should not even
+// bother to refresh ticks. broker updates position data, cash, etc. that
+// is the only that needs to be updated. no tick data refresh."
+//
+// Implementation: a separate 30s watcher checks isNseOpen() || isMcxOpen()
+// + fetches the server-side market status every 30s. When NEITHER is open
+// we close the SSE (stop ticks); when transitioning to open we reopen it.
+// SSE auto-reconnect handles re-subscription internally.
+// ---------------------------------------------------------------------------
+
+/** @type {ReturnType<typeof setInterval> | null} */
+let _gateInterval = null;
+let _gateActive = false;
+
+/**
+ * Start the per-exchange gate. Idempotent. Call once from the algo
+ * layout `onMount`. When called, ALSO starts the quote stream if any
+ * market segment is open.
+ */
+export function startMarketGatedQuoteStream() {
+  if (!browser || _gateActive) return;
+  _gateActive = true;
+  // Boot decision: if anything is open right now, start the stream.
+  if (isNseOpen() || isMcxOpen()) {
+    startQuoteStream();
+  }
+  // Watcher — 30s cadence (cheap; just isNseOpen/isMcxOpen reads after
+  // fetchMarketStatus). Re-checks on every tick whether we should be
+  // streaming or paused.
+  let _prevAny = isNseOpen() || isMcxOpen();
+  _gateInterval = setInterval(async () => {
+    try {
+      try { await fetchMarketStatus(); } catch { /* silent */ }
+      const anyOpen = isNseOpen() || isMcxOpen();
+      if (anyOpen && !_prevAny) {
+        // Closed → open transition: reopen the stream.
+        startQuoteStream();
+      } else if (!anyOpen && _prevAny) {
+        // Open → closed transition: stop ticks. Broker fetches for
+        // positions / cash / holdings continue via their own poll
+        // paths; only the live LTP SSE is gated here.
+        stopQuoteStream();
+      }
+      _prevAny = anyOpen;
+    } catch (_) {
+      /* silent — next tick retries */
+    }
+  }, 30_000);
+}
+
+/** Tear down the gate watcher (companion to stopQuoteStream). */
+export function stopMarketGatedQuoteStream() {
+  if (_gateInterval != null) {
+    clearInterval(_gateInterval);
+    _gateInterval = null;
+  }
+  _gateActive = false;
+  stopQuoteStream();
 }
 
 /**

@@ -3079,6 +3079,86 @@ async def _task_purge_audit_log() -> None:
         await _purge_once()
 
 
+async def _task_market_lifecycle() -> None:
+    """Poll the MarketLifecycle singleton every 30s.
+
+    Detects per-exchange open/close transitions (and the 45-min
+    `close_settled` follow-up window) and fires registered handlers.
+    The handlers themselves live in
+    `backend/api/algo/market_lifecycle_handlers.py`; this task is just
+    the heartbeat that drives `market_lifecycle.poll()`.
+
+    Exception-safe: a transient poll failure logs + retries on the
+    next 30s tick. The lifecycle's internal state holds across the
+    error so a one-off broker probe glitch does not turn a real
+    transition into a missed event.
+    """
+    from backend.api.algo.market_lifecycle import market_lifecycle
+    from backend.api.algo.market_lifecycle_handlers import register_default_handlers
+
+    # Wire default handlers once at task start so the singleton is ready
+    # for the very first poll. Idempotent.
+    register_default_handlers()
+
+    # Brief startup settle — give the broker singleton a chance to
+    # rebuild from DB so the first poll's `fetch_holidays` calls hit a
+    # warm cache instead of forcing a cold KiteHTTP fetch.
+    await asyncio.sleep(8)
+
+    while True:
+        try:
+            result = await market_lifecycle.poll()
+            events = result.get("events", [])
+            if events:
+                summary = ", ".join(
+                    f"{e['exchange']}:{e['event_type']}({e['handlers_run']}/{e['handlers_failed']}f)"
+                    for e in events
+                )
+                logger.info(f"Background: market_lifecycle fired — {summary}")
+        except Exception as e:
+            logger.warning(f"Background: market_lifecycle poll failed: {e}")
+        await asyncio.sleep(30)
+
+
+async def _task_funds_offhours() -> None:
+    """Low-cadence funds refresh during closed-market hours.
+
+    Operator may transfer money during off-hours; the funds-cache must
+    still update so /performance + NavCard reflect the new balance
+    without waiting until the next session.
+
+    Runs every 30 min when NO segment is open. When any segment is
+    open this task short-circuits because the regular `_task_performance`
+    is already firing funds fetches at the standard 5-min cadence.
+    """
+    from backend.shared.helpers.date_time_utils import is_any_segment_open
+    from backend.api.cache import invalidate
+
+    # Startup settle.
+    await asyncio.sleep(60)
+
+    while True:
+        try:
+            now_ist = timestamp_indian()
+            if not is_any_segment_open(now_ist):
+                # Off-hours fetch — refresh funds only (cheapest broker
+                # call) so cash/balance moves are reflected for
+                # NAV + /performance. Positions + holdings need no
+                # tick refresh during closed hours; the daily snapshot
+                # task handles their EOD capture.
+                try:
+                    await _run(_fetch_margins_direct)
+                    invalidate("funds")
+                    logger.info("Background: funds refreshed during closed-market window")
+                except Exception as e:
+                    logger.warning(f"Background: off-hours funds refresh failed: {e}")
+            # 30 min cadence — operator transfers are minute-grained
+            # but rare; 30 min is the right balance vs broker quota.
+        except Exception as e:
+            logger.warning(f"Background: _task_funds_offhours iteration failed: {e}")
+        await asyncio.sleep(30 * 60)
+
+
 async def on_startup(app) -> None:
     """Start all background tasks. Called by Litestar on startup."""
     state: dict = {}
@@ -3106,6 +3186,8 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_nav_compute(),         name="bg-nav-compute"),
         asyncio.create_task(_task_purge_persistence_caches(), name="bg-purge-persistence"),
         asyncio.create_task(_task_purge_audit_log(),           name="bg-purge-audit-log"),
+        asyncio.create_task(_task_market_lifecycle(),    name="bg-market-lifecycle"),
+        asyncio.create_task(_task_funds_offhours(),      name="bg-funds-offhours"),
     ]
     # Mode 2 (real-data paper) runs only on main. The PaperTradeEngine
     # singleton processes its open-order book against real Kite quotes

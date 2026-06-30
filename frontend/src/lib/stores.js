@@ -11,7 +11,7 @@
 
 import { writable, derived, get } from 'svelte/store';
 import { browser } from '$app/environment';
-import { isMarketOpen, fetchMarketStatus } from '$lib/marketHours';
+import { isMarketOpen, isNseOpen, isMcxOpen, fetchMarketStatus } from '$lib/marketHours';
 
 // ---------------------------------------------------------------------------
 // Post-hibernation refiring state
@@ -524,6 +524,62 @@ export function marketAwareInterval(fn, ms, hiddenMs = 0) {
       // no-ops on failure — falls back to whichever value was cached.
       try { await fetchMarketStatus(); } catch { /* silent */ }
       const open = isMarketOpen();
+      if (open && !_prevOpen) fn();
+      _prevOpen = open;
+    } finally {
+      _edgeRunning = false;
+    }
+  }, 5000);
+  return () => {
+    mainTeardown();
+    edgeTeardown();
+  };
+}
+
+/**
+ * Per-exchange polling gate.
+ *
+ * Like `marketAwareInterval` but gated to a SPECIFIC exchange. Use this
+ * for pollers whose data only changes during the named exchange's
+ * session (e.g. NSE-equity quote subscriptions that should not waste
+ * cycles during the MCX-only 15:30-23:30 window).
+ *
+ * @param {() => void}    fn         callback to fire on each tick
+ * @param {number}        ms         foreground interval (ms)
+ * @param {'NSE'|'MCX'|null} exchange  gate — when null behaves like marketAwareInterval
+ * @returns {() => void}  teardown
+ *
+ * Semantics:
+ *   - `exchange='NSE'` → fn runs only when isNseOpen() === true.
+ *   - `exchange='MCX'` → fn runs only when isMcxOpen() === true.
+ *   - `exchange=null`  → fn runs while ANY market is open (legacy behaviour).
+ *   - On a closed-to-open transition of the gated exchange, fn fires
+ *     ONCE immediately so the page-data updates the instant the
+ *     session boundary is crossed (rather than waiting for the next
+ *     `ms`-cadence tick).
+ *
+ * The 5s edge-detect clock is shared with `marketAwareInterval` so a
+ * stale `_serverStatus` cache cannot miss a closed→open transition.
+ */
+export function marketOpenInterval(fn, ms, exchange = null) {
+  // Resolve the gate function once. _isOpen() is called on every tick
+  // and edge-check; keep it cheap (a property read on the cached
+  // _serverStatus, no Date allocation).
+  const _isOpen = exchange === 'NSE' ? isNseOpen
+                : exchange === 'MCX' ? isMcxOpen
+                :                      isMarketOpen;
+  let _prevOpen = _isOpen();
+  let _edgeRunning = false;
+  const mainTeardown = visibleInterval(() => {
+    if (!_isOpen()) return;
+    fn();
+  }, ms, 'pause');
+  const edgeTeardown = visibleInterval(async () => {
+    if (_edgeRunning) return;
+    _edgeRunning = true;
+    try {
+      try { await fetchMarketStatus(); } catch { /* silent */ }
+      const open = _isOpen();
       if (open && !_prevOpen) fn();
       _prevOpen = open;
     } finally {

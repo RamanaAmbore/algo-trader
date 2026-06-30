@@ -46,7 +46,7 @@ class Base(DeclarativeBase):
 async def init_db() -> None:
     """Create all tables (idempotent)."""
     async with engine.begin() as conn:
-        from backend.api.models import User, Agent, AgentEvent, AlgoOrderEvent, MarketReport, NewsHeadline, GrammarToken, Setting, DailyBook, Watchlist, WatchlistItem, VisitorLog  # noqa: F401 — ensure model registered
+        from backend.api.models import User, Agent, AgentEvent, AlgoOrderEvent, MarketReport, NewsHeadline, GrammarToken, Setting, DailyBook, Watchlist, WatchlistItem, VisitorLog, CodeMetricsSnapshot, MarketLifecycleEvent  # noqa: F401 — ensure model registered
         await conn.run_sync(Base.metadata.create_all)
 
         # Idempotent column additions for tables that pre-date the column.
@@ -770,6 +770,15 @@ async def init_db() -> None:
             await create_intraday_bars_table(conn)
         except Exception as _intraday_err:
             logger.warning("init_db: intraday_bars migration skipped — %s", _intraday_err)
+
+        # code_metrics_snapshots — captured per release by
+        # scripts/capture_metrics.py. The table itself is created by
+        # Base.metadata.create_all above (the model is registered in
+        # the import list); these extra index DDLs are idempotent.
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_code_metrics_captured_at "
+            "ON code_metrics_snapshots (captured_at DESC)"
+        ))
     logger.info("Database: tables verified")
 
     # Seed grammar tokens (condition / notify / action catalog) BEFORE agents

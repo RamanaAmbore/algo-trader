@@ -1993,3 +1993,33 @@ class MoversSnapshot(Base):
         # One row per date — upsert path replaces on conflict.
         UniqueConstraint("date", name="uq_movers_snapshots_date"),
     )
+
+
+class MarketLifecycleEvent(Base):
+    """Audit row for every per-exchange lifecycle transition fired by
+    `backend.api.algo.market_lifecycle.MarketLifecycle.poll()`.
+
+    One row per (exchange, event_type) transition. Retention is short
+    (~30 days) — the table is informational only, and a missing row
+    does not affect lifecycle dispatch. Used by /admin to surface
+    "which handlers fired this morning at NSE open" + by debug tooling
+    to spot handlers that consistently error.
+    """
+    __tablename__ = "market_lifecycle_events"
+
+    id: Mapped[int]              = mapped_column(primary_key=True, autoincrement=True)
+    exchange: Mapped[str]        = mapped_column(String(8), nullable=False)
+    event_type: Mapped[str]      = mapped_column(String(20), nullable=False)
+    fired_at: Mapped[datetime]   = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    is_holiday: Mapped[bool]     = mapped_column(Boolean, nullable=False, default=False)
+    handlers_run: Mapped[int]    = mapped_column(Integer, nullable=False, default=0)
+    handlers_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        Index("ix_lifecycle_fired_at", "fired_at"),
+        Index("ix_lifecycle_exch_type_fired", "exchange", "event_type", "fired_at"),
+    )
