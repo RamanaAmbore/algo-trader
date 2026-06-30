@@ -844,6 +844,43 @@ Rows older than retention policy are purged by two daily background tasks:
 
 ---
 
+## Market lifecycle events
+
+Per-exchange transition system. Singleton `MarketLifecycle` polled
+every 30s by `_task_market_lifecycle`. Fires registered async
+handlers on session-boundary crossings.
+
+| Event | When |
+|---|---|
+| `nse:open` | NSE equity open (09:15 IST) |
+| `nse:close` | NSE equity close (15:30 IST) |
+| `nse:close_settled` | 45 min after close (catches Kite's late close_price adjustment) |
+| `mcx:open` / `:close` / `:close_settled` | 09:00 / 23:30 / 00:15 IST |
+| `cds:open` / `:close` / `:close_settled` | 09:15 / 15:30 / 16:15 IST |
+
+**Default snapshot handlers** (`market_lifecycle_handlers.py`):
+- `<exch>:close` → `snapshot_daily_book()` — captures positions / holdings / funds / trades
+- `<exch>:close_settled` → same handler runs again; UPSERT overwrites with broker's adjusted close_price + last_price (the values that drive `daily_book.ltp` reads in `positions.py`)
+- `nse:close` → also writes NAV snapshot via `write_nav_snapshot()`
+
+**Tunables** (`/admin/settings`):
+- `market_lifecycle.settled_offset_min` (default 45) — minutes between
+  close and close_settled. Lower it to catch faster brokers; raise it
+  if late-publishing brokers (Dhan / Groww) need more time.
+
+**Debugging failed handlers**:
+1. `SELECT * FROM market_lifecycle_events ORDER BY fired_at DESC LIMIT 20;`
+2. Rows with `handlers_failed > 0` indicate a handler raised — check `.log/api_log_file` for the matching `market_lifecycle: handler ... raised` line.
+3. The dispatcher swallows handler exceptions so a single failure does NOT block other handlers in the chain.
+
+**Off-hours funds refresh** — `_task_funds_offhours` fires the cheap
+`fetch_margins()` broker call every 30 min while no segment is open.
+Catches operator fund transfers (e.g. NEFT after-hours) so NavCard +
+`/performance` reflect new cash balance without waiting for the next
+session.
+
+---
+
 ## Common tasks
 
 **Add custom loss rule** → `/automation` → copy `loss-pos-acct-static-abs` → replace scope with custom account matcher → Validate → Run in Simulator → ON
@@ -1413,6 +1450,88 @@ Single forensic surface for every mutating event the platform produces. Cap-gate
 **Cross-referencing**: every row carries a `request_id` UUID mirrored in the `X-Request-ID` response header. To trace a specific operator action end-to-end: copy the request_id from the audit row, grep `api_log_file` on the server for that ID.
 
 **Retention**: `audit_log` is the forensic UI trail — rows older than 365 days are purged daily at 03:20 IST (tunable via `retention.audit_log_days`). Note this is NOT the SEBI Cat-III financial record; `nav_daily` + `daily_book` are kept forever for that purpose.
+
+---
+
+## Code metrics — `/admin/metrics`
+
+Per-release codebase-health dashboard. Eight metrics captured by
+`scripts/capture_metrics.py` and stored in `code_metrics_snapshots`
+so you can watch complexity / coverage / duplicated-lines / bug-count
+trend across releases.
+
+**Metrics captured per snapshot:**
+
+| Metric | Tool | What it measures |
+|---|---|---|
+| `backend_complexity_avg/max` | `radon cc -j` | Cyclomatic complexity of every Python function |
+| `backend_loc` | `radon raw -j` | Source LOC (excludes comments + blanks) |
+| `backend_stale_count` | `vulture --min-confidence 80` | Unused imports/functions/variables |
+| `backend_coverage_pct` | `pytest --cov=backend` | Statement coverage (off unless `--with-coverage`) |
+| `frontend_loc` | recursive `wc -l` on `.svelte/.js/.ts` | Source LOC, excludes node_modules/.svelte-kit |
+| `frontend_complexity_avg/max` | ESLint `complexity` rule | JS/Svelte function complexity |
+| `frontend_duplicated_lines` | `jscpd` (via npx) | Cut-and-paste detector |
+| `frontend_stale_count` | ESLint `no-unused-vars` | Unused JS/Svelte variables |
+| `bug_count_since_last_release` | `git log` heuristic | Commits matching `fix:|fix(|bug:|URGENT|P0` |
+| `per_page_latency_ms` | reads `/tmp/ramboq_perf.json` | DCL/Idle/LCP per page from Playwright spec |
+
+Decoupling (afferent/efferent coupling) is **deferred to Phase 2** —
+needs an import-graph build via `pydeps` or a custom AST walker.
+
+**Capture a snapshot manually:**
+
+```bash
+ssh ramboq
+cd /opt/ramboq
+sudo -u www-data ./venv/bin/python scripts/capture_metrics.py \
+    --release-tag manual-$(date +%Y-%m-%d) \
+    --notes "post-sprint-G capture"
+```
+
+Flags:
+- `--release-tag` — required. Convention: `v<X.Y.Z>` for release tags,
+  `dev-<sha>` for branch deploys, `manual-YYYY-MM-DD` for ad-hoc runs.
+- `--force` — overwrite an existing same-tag row in place (rather
+  than skipping); keeps the trend chart from accumulating duplicates.
+- `--with-coverage` — also run `pytest --cov`. **Slow** (5-30 minutes
+  depending on suite); skip unless coverage % is the metric you're
+  measuring this run.
+- `--notes "<text>"` — free-text appears on the drill-in modal.
+
+Idempotency: omitting `--force` and re-running with an existing tag
+logs + skips (the deploy pipeline relies on this).
+
+**Auto-capture from deploy:** `webhook/deploy.sh` calls the script after
+every successful non-frontend-only deploy:
+- `main` branch → tag = `git describe --tags --abbrev=0` (e.g. `v2.1.0`)
+- dev branches → tag = `dev-<short-sha>`
+
+Best-effort: a failed capture never fails the deploy itself.
+
+**Reading the page:**
+
+Top of `/admin/metrics`: ten **trend tiles** (small SVG line charts).
+Each tile shows the latest value + the historical sparkline + the
+range (min → max). Cyan-400 palette consistent with other admin
+surfaces. The tiles plot oldest-left, newest-right.
+
+Below the tiles: the **snapshots table**, newest-first. Headline
+metrics in tabular-nums columns. Click **Detail** on any row to
+open the drill-in modal, which shows:
+- per-page latency JSON (from the Playwright perf spec)
+- `raw_payload` — full radon JSON, vulture stdout, jscpd report,
+  coverage summary. Cap'd at 1.5 MB; truncated for storage when
+  raw output is huge.
+
+**Troubleshooting:**
+
+| Symptom | Cause + fix |
+|---|---|
+| Trend tile shows `—` for latest value | The tool couldn't run (radon/vulture/jscpd missing). Drill into the snapshot's raw_payload to see the `_skipped` / `_error` tag. Install the tool, re-run capture with `--force`. |
+| `per_page_latency_ms` is `{}` | No Playwright perf JSON found. Run `npx playwright test e2e/main_thread_perf.spec.js` first (writes `/tmp/ramboq_perf.json`), then capture. |
+| Bug count is 0 | Either no previous tag exists (first release) OR no commit since prev tag matches the heuristic. The script falls back to "last 30 days" when no prev tag exists. |
+| `bug_count` looks wrong | The heuristic is intentionally permissive (`fix:|fix(|fix |bug:|URGENT|P0`). Tune for accuracy by editing `_count_bug_commits` in the capture script. |
+| Snapshot row missing from table | Forgot `--force`? Re-running with an existing tag silently skips by design. Check the script's stderr for `already exists`. |
 
 ---
 

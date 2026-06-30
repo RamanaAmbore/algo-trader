@@ -175,6 +175,43 @@ Open/close summaries sent at `open_summary_offset_minutes` / `close_summary_offs
 | Ticker watchdog | Every 30s |
 | Trail stop / OCO pair-watcher | Every 30s |
 | Hedge proxy regression | Daily 02:30 IST (age > `hedge_proxies.regression_max_age_days`) |
+| Market lifecycle poller | Every 30s (per-exchange open/close transitions) |
+| Funds-off-hours refresh | Every 30 min while no segment open |
+
+## Market lifecycle events
+
+Singleton `MarketLifecycle` in `backend/api/algo/market_lifecycle.py` is
+polled every 30s by `_task_market_lifecycle`. Detects per-exchange
+transitions for `nse` / `mcx` / `cds` and dispatches handlers registered
+via `market_lifecycle.register(event, callback)`.
+
+| Event | Fires |
+|---|---|
+| `<exch>:open` | At session open (calendar-aware, holiday-gated via `fetch_holidays`) |
+| `<exch>:close` | At session close |
+| `<exch>:close_settled` | 45 min AFTER `<exch>:close` — operator-tunable via `market_lifecycle.settled_offset_min`. Captures broker's adjusted close_price (Kite weighted-avg-last-30-min) which lands late. |
+
+**Default handlers** (`backend/api/algo/market_lifecycle_handlers.py`):
+- `nse:close` + `nse:close_settled` → `snapshot_daily_book()` + NAV snapshot
+- `mcx:close` + `mcx:close_settled` → `snapshot_daily_book()`
+- `cds:close` + `cds:close_settled` → `snapshot_daily_book()`
+
+Snapshot is idempotent via UPSERT on `(date, account, kind, symbol)`,
+so `close_settled` overwrites the initial rows with the adjusted broker
+values. Audit rows persisted to `market_lifecycle_events` (indexed on
+fired_at + (exchange, event_type, fired_at)).
+
+**Frontend gating** — `marketOpenInterval(fn, ms, 'NSE'|'MCX'|null)` in
+`stores.js` is the per-exchange equivalent of `marketAwareInterval`.
+`startMarketGatedQuoteStream()` in `quoteStream.js` pauses the SSE LTP
+stream when neither NSE nor MCX is open and resumes it on the next
+open transition; broker fetches for positions / cash / holdings stay
+on their own poll path.
+
+**Closed-hours refresh UX** — `RefreshButton.svelte` no longer blocks
+refresh during closed hours. Click fires the parent's onClick AND
+surfaces a toast "Showing close snapshot — markets reopen at <time>"
+(3s auto-dismiss).
 
 **Sparkline cache** — `_spark_past_cache` (past closes) + `_spark_today_cache` (intraday 30m, 5min TTL) + LTP at response time. Disk-persisted to `.log/sparkline_cache.json` (throttled 5s writes, atomic).
 

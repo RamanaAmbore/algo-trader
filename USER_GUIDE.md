@@ -650,6 +650,18 @@ There's nothing for you to configure — if a broker exposes `market_status` and
 
 ---
 
+## After the market closes — what you're looking at
+
+Markets shut at 15:30 IST (NSE) / 23:30 IST (MCX). After that, your screens keep showing prices — but those are **close snapshots**, not live ticks. Three things change at the boundary:
+
+1. **The live LTP stream pauses.** The page stops listening for tick updates because there are no ticks. Position rows, watchlist rows, and the Day P&L column all freeze at the last value they had when the bell rang.
+2. **Position and cash data keep updating.** If you transferred money in after-hours, or your broker books a late realised P&L, the platform still polls funds every 30 minutes and the next refresh picks up the change. Click the refresh button anytime to pull fresh broker data on demand.
+3. **The "close price" you see settles ~45 min after close.** Kite (and most brokers) use a weighted-average of the last 30 minutes of trades to publish the official close. The platform automatically takes a second snapshot 45 minutes after each exchange closes to capture the adjusted close. That's the value you'll see as "yesterday's close" the next session, and it's what drives the "Day P&L" math on the morning of the next trading day.
+
+When you click Refresh during closed hours, a small toast appears: "Showing close snapshot — markets reopen at 09:00 IST." That's the platform telling you the broker data still refreshed, but the live LTP column will stay frozen until the next session.
+
+---
+
 ## Audit log — what's recorded
 
 Every action that changes state in RamboQuant — placing an order, a broker filling that order, an agent firing, you tweaking a setting, a monthly statement going out to an LP, the daily NAV cron writing a snapshot — lands as one row in an audit log. The log is the platform's memory of "who did what, when, and with what outcome." A SEBI Cat-III audit visit doesn't need a fancy UI; it needs the trail. RamboQuant gives them both.
