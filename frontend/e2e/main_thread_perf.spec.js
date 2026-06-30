@@ -401,13 +401,15 @@ test.describe('loadPulse store migration — request-rate guard', () => {
   });
 });
 
-// ── reconnecting popup — visibility-return after hibernation ─────────────────
+// ── RefreshButton spin — visibility-return after hibernation ──────────────────
 //
 // When the tab returns from hibernation (≥ polling.idle_timeout_min hidden),
-// the `reconnectingState` store sets `active=true` → `<ReconnectingPopup />`
-// appears within 1 s → auto-dismisses within 3 s (max-wait timer).
+// `postHibernationRefiring` flips true → every RefreshButton gains the
+// `rf-spinning` class within 100 ms (Svelte microtask flush). The button stops
+// spinning within 3 s (max-wait timer) OR when all refire callbacks settle
+// (whichever comes first).
 //
-// Brief tab-switch (< threshold): popup must NOT appear (no hibernation).
+// Brief tab-switch (< threshold): button must NOT spin (no hibernation).
 //
 // Test strategy — no fake clocks (page.clock.install is unreliable with
 // cross-context module variable access):
@@ -416,13 +418,13 @@ test.describe('loadPulse store migration — request-rate guard', () => {
 //      queues _enterHibernation() with setTimeout(fn, 0).
 //   2. Hide tab via visibilitychange event.
 //   3. Wait 300 ms real time for the 0 ms timer to fire.
-//   4. Show tab — _exitHibernation() sets reconnectingState.active = true.
-//   5. Popup appears within 1 s (Svelte flush).
-//   6. Popup auto-dismisses in 3 s real time (max-wait timer).
+//   4. Show tab — _exitHibernation() sets postHibernationRefiring = true.
+//   5. RefreshButton has rf-spinning class within 100 ms (Svelte flush).
+//   6. Button stops spinning within 3 s (max-wait timer clears the flag).
 //
 // NOTE: window.__rbq_setHibMs(N) takes MINUTES. setHibMs(0) → 0 ms. ✓
 
-test.describe('reconnecting popup — visibility-return after hibernation', () => {
+test.describe('RefreshButton spin — visibility-return after hibernation', () => {
   test.describe.configure({ mode: 'serial' });
   test.setTimeout(120_000);
 
@@ -432,7 +434,7 @@ test.describe('reconnecting popup — visibility-return after hibernation', () =
   });
 
   /**
-   * Shared body: verifies popup appears after hibernation + auto-dismisses.
+   * Shared body: verifies RefreshButton spins after hibernation + stops spinning.
    * @param {import('@playwright/test').Page} page
    */
   async function runReconnectTest(page) {
@@ -469,7 +471,7 @@ test.describe('reconnecting popup — visibility-return after hibernation', () =
     // setTimeout(fn, 0) fires on the next task; 300 ms is generous.
     await page.waitForTimeout(300);
 
-    // Return to visible — _exitHibernation() fires and sets reconnectingState.active.
+    // Return to visible — _exitHibernation() fires and sets postHibernationRefiring = true.
     await page.evaluate(() => {
       Object.defineProperty(document, 'visibilityState', {
         configurable: true, get: () => 'visible',
@@ -480,31 +482,31 @@ test.describe('reconnecting popup — visibility-return after hibernation', () =
       document.dispatchEvent(new Event('visibilitychange'));
     });
 
-    // Popup should appear within 1 s of visibility-return.
+    // RefreshButton should have rf-spinning class within 100 ms of visibility-return.
     // (Allows for Svelte's microtask-scheduling latency after a store write.)
-    const popup = page.locator('.reconnecting-backdrop');
-    await expect(popup).toBeVisible({ timeout: 1_000 });
-    console.log('[reconnect] popup appeared after hibernation-return');
+    const refreshBtn = page.locator('.page-header .rf-btn').first();
+    await expect(refreshBtn).toHaveClass(/rf-spinning/, { timeout: 1_000 });
+    console.log('[reconnect] RefreshButton has rf-spinning class after hibernation-return');
 
-    // Popup auto-dismisses after _RECONNECT_MAX_MS = 3 s (real timer).
+    // Button stops spinning after _RECONNECT_MAX_MS = 3 s (real timer).
     // No clock advance needed — waitForTimeout lets the real timer fire.
-    await expect(popup).toBeHidden({ timeout: 5_000 });
-    console.log('[reconnect] popup auto-dismissed after 3 s real-time wait');
+    await expect(refreshBtn).not.toHaveClass(/rf-spinning/, { timeout: 5_000 });
+    console.log('[reconnect] RefreshButton stopped spinning within 3 s real-time wait');
   }
 
-  test('chromium-desktop: popup appears after hibernation, auto-dismisses within 3 s', async ({ page }) => {
+  test('chromium-desktop: RefreshButton spins after hibernation, stops within 3 s', async ({ page }) => {
     await runReconnectTest(page);
   });
 
-  test('chromium-mobile: same popup contract on 390×844 viewport', async ({ page }) => {
+  test('chromium-mobile: same RefreshButton spin contract on 390×844 viewport', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await runReconnectTest(page);
   });
 
-  // Guard: brief tab switch (< threshold) must NOT show the popup.
-  test('brief tab-switch (under threshold) — popup does NOT appear', async ({ page }) => {
+  // Guard: brief tab switch (< threshold) must NOT spin the RefreshButton.
+  test('brief tab-switch (under threshold) — RefreshButton does NOT spin', async ({ page }) => {
     // Default threshold is 5 minutes — do NOT override it.
-    // We hide for 2 s real time (well under 5 min) and expect no popup.
+    // We hide for 2 s real time (well under 5 min) and expect no spin.
     await seedAuth(page, _sharedJwt);
     await page.goto('/pulse', { waitUntil: 'load', timeout: 90_000 });
     await page.locator('.ag-row').first()
@@ -535,10 +537,10 @@ test.describe('reconnecting popup — visibility-return after hibernation', () =
     });
 
     await page.waitForTimeout(300);
-    // Popup must not be visible.
-    const popup = page.locator('.reconnecting-backdrop');
-    await expect(popup).toBeHidden({ timeout: 500 });
-    console.log('[reconnect] confirmed: no popup on brief tab-switch (under 5-min threshold)');
+    // RefreshButton must not have rf-spinning class.
+    const refreshBtn = page.locator('.page-header .rf-btn').first();
+    await expect(refreshBtn).not.toHaveClass(/rf-spinning/, { timeout: 500 });
+    console.log('[reconnect] confirmed: no rf-spinning on brief tab-switch (under 5-min threshold)');
   });
 });
 

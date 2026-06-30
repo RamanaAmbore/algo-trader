@@ -26,7 +26,6 @@
   import { bootstrapRBAC } from '$lib/rbac';
   import { startBookChangedBus } from '$lib/data/bookChanged';
   import { startBookPollers, setBookPollerInterval } from '$lib/data/marketDataStores.svelte.js';
-  import ReconnectingPopup from '$lib/ReconnectingPopup.svelte';
   import NavigationIndicator from '$lib/NavigationIndicator.svelte';
 
   const { children } = $props();
@@ -762,12 +761,6 @@
 <ConfirmModal bind:this={_liveConfirmRef} />
 <ShortcutCheatsheet open={_cheatsheetOpen}
                     onClose={() => { _cheatsheetOpen = false; }} />
-<!-- Reconnecting popup — shown briefly when the tab returns from hibernation.
-     Driven by reconnectingState in stores.js. Algo-only: public pages don't
-     have the hibernation bus. Renders at z-9100 so it floats above all cards,
-     modals, and the navbar (z-9000). -->
-<ReconnectingPopup />
-
 <!-- Single ActivityLogModal mount for the entire algo surface — driven
      by the activityModal store. PageHeaderActions's Log button and the
      navbar broker-status chip both write to the store; this is the only

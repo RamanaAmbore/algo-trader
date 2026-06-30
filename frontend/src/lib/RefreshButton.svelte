@@ -30,7 +30,7 @@
   twice while the first request was still in flight).
 -->
 <script>
-  import { connStatus, startConnStatusPoller, lastRefreshAt, formatDualTz, visibleInterval } from '$lib/stores';
+  import { connStatus, startConnStatusPoller, lastRefreshAt, formatDualTz, visibleInterval, postHibernationRefiring } from '$lib/stores';
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { onMount, onDestroy } from 'svelte';
@@ -76,6 +76,18 @@
   let _pulseTimer = null;
   /** @type {(() => void) | null} */
   let _pulseUnsub = null;
+
+  // Post-hibernation refire state — true while _exitHibernation() is running
+  // its subscriber flush. Causes the button to spin via _showSpinning so the
+  // operator sees an ambient signal that stale data is being refreshed.
+  // Completely separate from `loading` (manual click spinner); both can be
+  // active simultaneously without conflict.
+  // Declared here (before any onMount / $derived that reference it) to avoid
+  // the "used before its declaration" compile error in strict lexical order.
+  let _refiring = $state(false);
+  /** @type {(() => void) | null} */
+  let _unsubRefiring = null;
+
   onMount(() => {
     // Subscribe inside onMount (not $effect) so the subscription is
     // registered ONCE on mount; the callback firing per tick does not
@@ -97,18 +109,20 @@
     // animation would still win.
     _pulseUnsub = symbolTickCount.subscribe(() => {
       if (_pulseTimer) return;
-      // Skip class toggle while spinner is active — see comment above.
-      if (loading) return;
+      // Skip class toggle while spinner is active (loading OR refiring) —
+      // see comment above. _refiring is a module-scope $state variable
+      // so the closure captures the live value at the time the tick fires.
+      if (loading || _refiring) return;
       // Skip class toggle during the post-loading cooldown window (800 ms
       // after spinner stops). The next SSE tick arriving right after a
       // manual refresh would otherwise trigger rf-tick-rotate and the
       // operator would perceive the button as "animating twice".
       if (_loadingExitAt && performance.now() < _loadingExitAt) return;
       _pulseTimer = setTimeout(() => {
-        // Re-check at fire time — `loading` may have flipped true between
-        // subscribe and timer fire. Also re-check the cooldown in case the
-        // 250 ms timer fires while we are still inside the 800 ms window.
-        if (!loading && !(_loadingExitAt && performance.now() < _loadingExitAt)) {
+        // Re-check at fire time — loading or _refiring may have flipped
+        // true between subscribe and timer fire. Also re-check the cooldown
+        // in case the 250 ms timer fires inside the 800 ms window.
+        if (!loading && !_refiring && !(_loadingExitAt && performance.now() < _loadingExitAt)) {
           _tickPulseClass = _tickPulseClass === 'rf-tick-a' ? 'rf-tick-b' : 'rf-tick-a';
         }
         _pulseTimer = null;
@@ -116,12 +130,18 @@
     });
   });
 
-  // Belt-and-suspenders: when `loading` flips true, immediately clear any
+  // Combined spinner gate — true when either loading (manual click) OR
+  // _refiring (post-hibernation flush) is active. Used everywhere the
+  // template previously used `loading` to decide which glyph to show
+  // and which CSS class to apply.
+  const _showSpinning = $derived(loading || _refiring);
+
+  // Belt-and-suspenders: when spinner engages (via either source), clear any
   // residual tick-pulse class so the in-flight tick animation cannot
-  // override the spin animation via cascade. Tracks the prop transition
+  // override the spin animation via cascade. Tracks the combined state
   // and only writes when the value actually changes (no chain re-fires).
   $effect(() => {
-    if (loading && _tickPulseClass !== '') {
+    if (_showSpinning && _tickPulseClass !== '') {
       _tickPulseClass = '';
     }
   });
@@ -141,12 +161,14 @@
   let _loadingExitAt = 0;
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _cooldownTimer = null;
-  let _prevLoadingForCooldown = false;
+  let _prevSpinningForCooldown = false;
   $effect(() => {
-    const wasLoading = _prevLoadingForCooldown;
-    _prevLoadingForCooldown = loading;
-    if (wasLoading && !loading) {
-      // loading just transitioned true → false; arm the cooldown.
+    const wasSpinning = _prevSpinningForCooldown;
+    _prevSpinningForCooldown = _showSpinning;
+    if (wasSpinning && !_showSpinning) {
+      // Spinner just stopped (either manual click finished OR hibernation
+      // refire completed); arm the 800 ms cooldown so the very next SSE
+      // tick doesn't immediately trigger rf-tick-rotate.
       if (_cooldownTimer) clearTimeout(_cooldownTimer);
       _loadingExitAt = performance.now() + 800;
       _cooldownTimer = setTimeout(() => {
@@ -162,6 +184,7 @@
     _pulseUnsub?.();
     _unsubLast?.();
     _unsubConn?.();
+    _unsubRefiring?.();
   });
 
   // Palette class — drives the three-bucket colour swap on the button.
@@ -191,7 +214,7 @@
   // intentionally a no-op.
   let _showClosedNotice = $state(false);
   function _handleClick() {
-    if (loading) return;
+    if (_showSpinning) return;
     if (!_nseOpen && !_mcxOpen) {
       _showClosedNotice = true;
       return;
@@ -249,6 +272,7 @@
       _backendOk = v?.backendOk !== false; // default true
       _failingAccounts = Array.isArray(v?.failingAccounts) ? v.failingAccounts : [];
     });
+    _unsubRefiring = postHibernationRefiring.subscribe((v) => { _refiring = v; });
   });
 
   // _showBadge / _badgeText / _badgeClass dropped — count is now in
@@ -269,7 +293,7 @@
   const _connTitle = $derived.by(() => {
     /** @type {string[]} */
     const lines = [];
-    if (loading) {
+    if (_showSpinning) {
       lines.push('Refreshing…');
     } else if (!_backendOk) {
       lines.push('API unreachable — retrying every 15s');
@@ -296,16 +320,17 @@
 <button
   type="button"
   class="rf-btn {_mktClass} {_tickPulseClass}"
-  class:rf-spinning={loading}
+  class:rf-spinning={_showSpinning}
   onclick={(e) => { e.stopPropagation(); _handleClick(); }}
-  disabled={loading}
-  aria-label={loading ? `Refreshing ${label}` : `Refresh ${label}`}
+  disabled={_showSpinning}
+  aria-label={_showSpinning ? `Refreshing ${label}` : `Refresh ${label}`}
   title={_connTitle}>
-  {#if loading}
+  {#if _showSpinning}
     <!-- Loading state — distinct arc-spinner glyph (NOT the same
          refresh-arrow rotated). Reads as "working / fetching" rather
          than "refresh affordance". The arc spins via the rf-spinning
-         keyframe below. -->
+         keyframe below. Shown during both manual click (loading=true)
+         and post-hibernation refire (_refiring=true). -->
     <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
       <circle cx="8" cy="8" r="5.5"
         fill="none" stroke="currentColor" stroke-width="2"

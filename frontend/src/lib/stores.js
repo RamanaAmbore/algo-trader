@@ -14,24 +14,19 @@ import { browser } from '$app/environment';
 import { isMarketOpen, fetchMarketStatus } from '$lib/marketHours';
 
 // ---------------------------------------------------------------------------
-// Reconnecting popup state
+// Post-hibernation refiring state
 // ---------------------------------------------------------------------------
 //
-// Active while the app is firing post-hibernation refires. Set true when
-// _exitHibernation() runs (tab returns after ≥ idle threshold hidden).
-// Auto-clears when all registered refire callbacks resolve OR after a 3 s
-// max-wait timeout. Public consumers read `$reconnectingState.active`.
-//
-// Shape: { active: boolean, pending: number, total: number }
+// Set true when _exitHibernation() runs (tab returns after ≥ idle threshold
+// hidden). While true, every RefreshButton instance on the active page spins
+// to signal that stored data is being refreshed. Auto-clears when all
+// registered refire callbacks complete OR after a 3 s max-wait timeout.
 //
 // Not shown on public (cream) pages — those don't mount the algo layout
-// that owns the <ReconnectingPopup /> mount point.
-export const reconnectingState = writable(
-  /** @type {{ active: boolean, pending: number, total: number }} */
-  ({ active: false, pending: 0, total: 0 })
-);
+// and do not register hibernation subscribers.
+export const postHibernationRefiring = writable(false);
 
-/** Max time (ms) the popup stays visible even if stores haven't resolved. */
+/** Max time (ms) the RefreshButton keeps spinning even if stores haven't resolved. */
 const _RECONNECT_MAX_MS = 3000;
 
 // ---------------------------------------------------------------------------
@@ -281,7 +276,7 @@ function _enterHibernation() {
   }
 }
 
-/** Handle for the max-wait timeout that closes the reconnecting popup. */
+/** Handle for the max-wait timeout that stops the RefreshButton spinner. */
 let _reconnectMaxTimer = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
 
 function _exitHibernation() {
@@ -289,17 +284,9 @@ function _exitHibernation() {
   _isHibernating = false;
   if (!wasHibernating) return;
 
-  // Count how many subscribers have a refire Promise.
-  // visibleInterval-backed pollers call fn() synchronously in exitHibernation
-  // — they don't expose a Promise. We count the subscribers that are actually
-  // throttled (have _localHibernating=true), but since that's internal state
-  // we approximate by counting all registered subscribers as potential refirers.
-  // The popup auto-closes after _RECONNECT_MAX_MS anyway.
-  const total = _hibernationSubscribers.size;
-
-  if (browser && total > 0) {
-    // Show the popup immediately.
-    reconnectingState.set({ active: true, pending: total, total });
+  if (browser && _hibernationSubscribers.size > 0) {
+    // Spin every RefreshButton on the active page immediately.
+    postHibernationRefiring.set(true);
 
     // Cancel any previous max-wait timer.
     if (_reconnectMaxTimer != null) {
@@ -307,11 +294,32 @@ function _exitHibernation() {
       _reconnectMaxTimer = null;
     }
 
-    // Auto-dismiss after max-wait regardless of pending count.
+    // Collect refire results so we can stop spinning as soon as all
+    // pollers have fired (rather than always waiting the full 3 s).
+    // visibleInterval callbacks are synchronous in exitHibernation —
+    // they don't expose Promises. Wrap each in Promise.resolve() so
+    // Promise.allSettled can still await the synchronous flush before
+    // clearing the flag. The max-wait timer is a belt-and-suspenders
+    // guard for any slow / async pollers.
     _reconnectMaxTimer = setTimeout(() => {
-      reconnectingState.set({ active: false, pending: 0, total: 0 });
+      postHibernationRefiring.set(false);
       _reconnectMaxTimer = null;
     }, _RECONNECT_MAX_MS);
+
+    const refirePromises = [];
+    for (const sub of _hibernationSubscribers) {
+      refirePromises.push(Promise.resolve().then(() => {
+        try { sub.exitHibernation(); } catch { /* ignore */ }
+      }));
+    }
+    Promise.allSettled(refirePromises).then(() => {
+      if (_reconnectMaxTimer != null) {
+        clearTimeout(_reconnectMaxTimer);
+        _reconnectMaxTimer = null;
+      }
+      postHibernationRefiring.set(false);
+    });
+    return;
   }
 
   for (const sub of _hibernationSubscribers) {
