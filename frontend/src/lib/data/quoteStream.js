@@ -87,11 +87,19 @@ function _open() {
         // by integer token. Transform to per-sym updates so the central
         // store joins on tradingsymbol like every other consumer.
         for (const v of Object.values(snap)) {
-          if (v && typeof v === 'object' && v.sym && v.ltp != null) {
-            symbolUpdates.push({
-              sym: v.sym, fields: { ltp: Number(v.ltp) }, ts: { ltp_ts: ts },
-            });
-          }
+          if (!v || typeof v !== 'object' || !v.sym || v.ltp == null) continue;
+          // LTP flicker fix (Jun 2026): skip non-positive ltp values
+          // BEFORE they hit symbolStore. The backend's _on_ticks now
+          // filters at the source but this defensive guard protects
+          // against any future SSE payload regression that re-introduces
+          // 0/negative prices. Critical because the ltp_ts arbitration
+          // in symbolStore would otherwise block subsequent positive
+          // polls from overwriting a 0-stamped-fresh entry.
+          const v_ltp = Number(v.ltp);
+          if (!Number.isFinite(v_ltp) || v_ltp <= 0) continue;
+          symbolUpdates.push({
+            sym: v.sym, fields: { ltp: v_ltp }, ts: { ltp_ts: ts },
+          });
         }
         // ltp_ts arbitration means a tick already newer-by-ms can't be
         // clobbered by a re-snapshot landing later.
@@ -106,10 +114,16 @@ function _open() {
     try {
       const t = JSON.parse(e.data);
       if (t && t.sym && t.ltp != null) {
+        // LTP flicker fix (Jun 2026): same zero-guard as snapshot path.
+        // Skip non-positive LTP at SSE intake; the backend already
+        // filters but the frontend is the last line of defence and
+        // cheap to check.
+        const t_ltp = Number(t.ltp);
+        if (!Number.isFinite(t_ltp) || t_ltp <= 0) return;
         // BH3: writes only land in symbolStore. ltp_ts = Date.now() at
         // receive time arbitrates correctly against any poll that
         // lands afterward carrying older broker-side LTP.
-        mergeSymbolUpdate(t.sym, { ltp: Number(t.ltp) }, { ltp_ts: Date.now() });
+        mergeSymbolUpdate(t.sym, { ltp: t_ltp }, { ltp_ts: Date.now() });
         if (!get(streamOpen)) streamOpen.set(true);
         _backoffMs = _BACKOFF_MIN;
       }
