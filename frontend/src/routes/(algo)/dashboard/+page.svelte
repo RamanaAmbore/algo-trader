@@ -1911,11 +1911,11 @@
        operator flips tabs. The card uses `flex: 1 1 auto` so its
        height expands / contracts with the chart card on the left —
        no more dead space when Capital tab only has 1 row. -->
-  <!-- card-theme-dark scopes --card-* CSS variable tokens for any
-       NavCard / PerformancePage embed so they render Bloomberg-dark
-       instead of public-cream. NavBreakdown uses --algo-* vars and
-       is unaffected by this wrapper. -->
-  <section class="bucket-card cap-eq-tabbed card-theme-dark"
+  <!-- card-theme-dark is applied at layout level (.algo-viewport) so
+       NavCard / PerformancePage embeds on any algo route automatically
+       inherit the Bloomberg-dark palette. NavBreakdown uses --algo-*
+       vars and is unaffected. -->
+  <section class="bucket-card cap-eq-tabbed"
     class:fs-card-on={_fsNavBd || _fsCapital || _fsEquity}
     class:is-collapsed={_colNavBd && _colCapital && _colEquity}>
     <div class="bucket-header">

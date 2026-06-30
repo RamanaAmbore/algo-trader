@@ -1,13 +1,14 @@
 /**
  * dashboard_dark_theme.spec.js
  *
- * Validates the Bloomberg-style dark navy + amber-accent theme applied to
- * NavCard + PerformancePage on /dashboard (operator terminal) while the
- * public /performance route keeps the cream palette unchanged.
+ * Validates the Bloomberg-style dark navy + amber-accent theme applied across
+ * ALL (algo)/* routes (operator terminal) while the public /performance route
+ * keeps the cream palette unchanged.
  *
- * Implementation: CSS custom properties set by parent wrapper class
- *   .card-theme-dark  → /dashboard (sec.cap-eq-tabbed)
- *   .card-theme-cream → /performance (root div wrapper)
+ * Implementation: CSS custom properties set by layout wrapper class
+ *   .card-theme-dark  → (algo)/+layout.svelte (.algo-viewport) — all algo routes
+ *   .card-theme-cream → (public)/+layout.svelte (.pub-viewport) — all public routes
+ *                     → (public)/performance/+page.svelte also has local wrap
  *
  * Five quality dimensions (feedback_test_dimensions.md):
  *  1. SSOT       — NavCard + PerformancePage read var(--card-bg) etc.
@@ -16,11 +17,11 @@
  *  3. Stale      — source-grep guard: no bare #faf7f0 / #f0ead8 /
  *                  rgba(212, 146, 12, ... remain in NavCard.svelte or
  *                  PerformancePage.svelte (all migrated to var() reads).
- *  4. Reuse      — dashboard wraps in card-theme-dark; /performance
- *                  wraps in card-theme-cream. Same component code.
- *  5. UX desktop + mobile — /dashboard renders dark bg on the NAV tab
- *                  card; /performance renders cream bg on NavCard.
- *                  Cross-page nav: theme variables switch without bleed.
+ *                  Also verifies card-theme-dark is on algo layout, not
+ *                  the dashboard section directly (lifted to layout level).
+ *  4. Reuse      — same component code, theme controlled by layout wrapper.
+ *  5. UX desktop + mobile — multiple algo routes render dark; public
+ *                  /performance renders cream. Cross-page nav: no bleed.
  *
  * Run:
  *   PLAYWRIGHT_BASE_URL=https://dev.ramboq.com \
@@ -98,6 +99,48 @@ test.describe('Stale: no hard-coded cream colors in migrated components', () => 
   }
 });
 
+/* ── 3b. Stale: layout-level wrapper guard ───────────────────────────
+   Verify the theme class moved from per-route section to the layout
+   so every algo route inherits it automatically.                    */
+test.describe('Stale: card-theme-dark on algo layout, not per-route section', () => {
+  test('algo layout (.algo-viewport) carries card-theme-dark', () => {
+    const layoutPath = path.join(
+      process.cwd(),
+      'src/routes/(algo)/+layout.svelte',
+    );
+    let src;
+    try { src = fs.readFileSync(layoutPath, 'utf-8'); }
+    catch { test.skip(true, 'Cannot read algo layout source'); return; }
+
+    expect(src).toMatch(/class="algo-viewport card-theme-dark"/);
+  });
+
+  test('dashboard page section does NOT carry card-theme-dark directly', () => {
+    const dashPage = path.join(
+      process.cwd(),
+      'src/routes/(algo)/dashboard/+page.svelte',
+    );
+    let src;
+    try { src = fs.readFileSync(dashPage, 'utf-8'); }
+    catch { test.skip(true, 'Cannot read dashboard page source'); return; }
+
+    // cap-eq-tabbed section must NOT carry the class — layout handles it.
+    expect(src).not.toMatch(/cap-eq-tabbed[^"]*card-theme-dark|card-theme-dark[^"]*cap-eq-tabbed/);
+  });
+
+  test('public layout (.pub-viewport) carries card-theme-cream', () => {
+    const pubLayout = path.join(
+      process.cwd(),
+      'src/routes/(public)/+layout.svelte',
+    );
+    let src;
+    try { src = fs.readFileSync(pubLayout, 'utf-8'); }
+    catch { test.skip(true, 'Cannot read public layout source'); return; }
+
+    expect(src).toMatch(/class="pub-viewport card-theme-cream"/);
+  });
+});
+
 /* ── 4. Reuse: wrapper classes present on the right routes ───────────── */
 test.describe('Reuse: wrapper class applied in route HTML', () => {
   test('public /performance page HTML wraps PerformancePage in card-theme-cream', () => {
@@ -110,30 +153,16 @@ test.describe('Reuse: wrapper class applied in route HTML', () => {
     catch { test.skip(true, 'Cannot read performance page source'); return; }
     expect(src).toMatch(/class="card-theme-cream"/);
   });
-
-  test('dashboard page section has card-theme-dark class on cap-eq-tabbed card', () => {
-    const dashPage = path.join(
-      process.cwd(),
-      'src/routes/(algo)/dashboard/+page.svelte',
-    );
-    let src;
-    try { src = fs.readFileSync(dashPage, 'utf-8'); }
-    catch { test.skip(true, 'Cannot read dashboard page source'); return; }
-    // The cap-eq-tabbed section must carry card-theme-dark so that any
-    // NavCard / PerformancePage embed picks up the dark CSS vars.
-    // Match both class names appearing together on the same element.
-    expect(src).toMatch(/class="[^"]*cap-eq-tabbed[^"]*card-theme-dark|class="[^"]*card-theme-dark[^"]*cap-eq-tabbed/);
-  });
 });
 
 /* ── 1 + 5. SSOT + UX: computed styles on real pages ─────────────────── */
 // These tests navigate to live pages and check computed CSS variable values.
 // They require a running dev server and valid credentials.
 
-test.describe('UX desktop: dark theme on /dashboard NAV section', () => {
+test.describe('UX desktop: dark theme on /dashboard', () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
-  test('NAV tab card has card-theme-dark class and dark CSS vars resolve', async ({ page }) => {
+  test('algo-viewport has card-theme-dark and dark CSS vars cascade to section', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
@@ -141,16 +170,15 @@ test.describe('UX desktop: dark theme on /dashboard NAV section', () => {
     const navCard = page.locator('section.cap-eq-tabbed');
     await expect(navCard).toBeVisible({ timeout: 15000 });
 
-    // 4. Reuse guard — the section carries the dark wrapper class.
-    await expect(navCard).toHaveClass(/card-theme-dark/);
+    // 4. Reuse guard — the algo-viewport ancestor carries the dark wrapper class.
+    const algoViewport = page.locator('div.algo-viewport');
+    await expect(algoViewport).toHaveClass(/card-theme-dark/);
 
-    // 1. SSOT — --card-bg resolves to the dark gradient value.
-    // getPropertyValue on the section element itself reads the inherited var.
+    // 1. SSOT — --card-bg cascades from .algo-viewport to the section child.
     const cardBgVar = await navCard.evaluate((el) => {
       return getComputedStyle(el).getPropertyValue('--card-bg').trim();
     });
     // The dark token is "linear-gradient(180deg, #1d2a44 0%, #152033 100%)"
-    // — match on the gradient shape or on either color stop.
     expect(
       cardBgVar.includes('1d2a44') || cardBgVar.includes('152033') || cardBgVar.includes('linear-gradient'),
       `Expected dark gradient for --card-bg on /dashboard, got: "${cardBgVar}"`
@@ -164,22 +192,57 @@ test.describe('UX desktop: dark theme on /dashboard NAV section', () => {
   });
 });
 
-test.describe('UX mobile: dark theme on /dashboard NAV section', () => {
+test.describe('UX mobile: dark theme on /dashboard', () => {
   test.use({ viewport: { width: 393, height: 851 } });
 
-  test('NAV tab card renders dark on mobile viewport', async ({ page }) => {
+  test('algo-viewport renders dark on mobile viewport', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
+    const algoViewport = page.locator('div.algo-viewport');
+    await expect(algoViewport).toHaveClass(/card-theme-dark/);
+
     const navCard = page.locator('section.cap-eq-tabbed');
     await expect(navCard).toBeVisible({ timeout: 15000 });
-    await expect(navCard).toHaveClass(/card-theme-dark/);
-
     const labelVar = await navCard.evaluate((el) => {
       return getComputedStyle(el).getPropertyValue('--card-label-text').trim();
     });
     expect(labelVar.replace(/\s/g, '')).toBe('#fbbf24');
   });
+});
+
+/* ── 1 + 5. Dark theme propagation across algo routes ──────────────────
+   Verifies the layout-level wrapper cascades to at least 5 distinct
+   algo routes beyond /dashboard.                                      */
+test.describe('UX desktop: dark theme propagates to multiple algo routes', () => {
+  test.use({ viewport: { width: 1280, height: 800 } });
+
+  const ALGO_ROUTES = [
+    '/dashboard',
+    '/pulse',
+    '/admin/derivatives',
+    '/orders',
+    '/admin/history',
+  ];
+
+  for (const route of ALGO_ROUTES) {
+    test(`${route} — algo-viewport has card-theme-dark and amber vars cascade`, async ({ page }) => {
+      await loginAsAdmin(page);
+      await page.goto(`${BASE}${route}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+      const algoViewport = page.locator('div.algo-viewport');
+      await expect(algoViewport).toBeVisible({ timeout: 15000 });
+      await expect(algoViewport).toHaveClass(/card-theme-dark/);
+
+      const labelVar = await algoViewport.evaluate((el) => {
+        return getComputedStyle(el).getPropertyValue('--card-label-text').trim();
+      });
+      expect(
+        labelVar.replace(/\s/g, ''),
+        `Expected amber label text on ${route}`,
+      ).toBe('#fbbf24');
+    });
+  }
 });
 
 test.describe('UX desktop: cream theme on public /performance', () => {
@@ -229,23 +292,23 @@ test.describe('UX mobile: cream theme on public /performance', () => {
   });
 });
 
-/* ── 5. Cross-page consistency: /dashboard → /performance → /dashboard ── */
+/* ── 5. Cross-page: algo dark → public cream → different algo dark ────── */
 test.describe('Cross-page: theme vars switch correctly across navigation', () => {
   test.use({ viewport: { width: 1280, height: 800 } });
 
-  test('dark on /dashboard → cream on /performance → dark on /dashboard (no bleed)', async ({ page }) => {
+  test('dark on /dashboard → cream on /performance → dark on /pulse (no bleed)', async ({ page }) => {
     await loginAsAdmin(page);
 
-    // Step 1 — land on dashboard, verify dark.
+    // Step 1 — land on dashboard, verify dark via algo-viewport.
     await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    const dashCard = page.locator('section.cap-eq-tabbed');
-    await expect(dashCard).toBeVisible({ timeout: 15000 });
-    const dashLabelVar1 = await dashCard.evaluate((el) =>
+    const algoViewport1 = page.locator('div.algo-viewport');
+    await expect(algoViewport1).toBeVisible({ timeout: 15000 });
+    const dashLabelVar = await algoViewport1.evaluate((el) =>
       getComputedStyle(el).getPropertyValue('--card-label-text').trim()
     );
-    expect(dashLabelVar1.replace(/\s/g, '')).toBe('#fbbf24');
+    expect(dashLabelVar.replace(/\s/g, '')).toBe('#fbbf24');
 
-    // Step 2 — navigate to /performance, verify cream.
+    // Step 2 — navigate to public /performance, verify cream.
     await page.goto(`${BASE}/performance`, { waitUntil: 'domcontentloaded', timeout: 30000 });
     const perfWrapper = page.locator('div.card-theme-cream').first();
     await expect(perfWrapper).toBeVisible({ timeout: 15000 });
@@ -257,14 +320,14 @@ test.describe('Cross-page: theme vars switch correctly across navigation', () =>
       `Expected cream on /performance after nav from /dashboard, got: "${perfBgVar}"`
     ).toBe(true);
 
-    // Step 3 — navigate back to /dashboard, verify dark restored (no cream bleed).
-    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    const dashCard2 = page.locator('section.cap-eq-tabbed');
-    await expect(dashCard2).toBeVisible({ timeout: 15000 });
-    const dashLabelVar2 = await dashCard2.evaluate((el) =>
+    // Step 3 — navigate to /pulse (different algo route), verify dark (no cream bleed).
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const algoViewport2 = page.locator('div.algo-viewport');
+    await expect(algoViewport2).toBeVisible({ timeout: 15000 });
+    const pulseLabelVar = await algoViewport2.evaluate((el) =>
       getComputedStyle(el).getPropertyValue('--card-label-text').trim()
     );
-    expect(dashLabelVar2.replace(/\s/g, '')).toBe('#fbbf24');
+    expect(pulseLabelVar.replace(/\s/g, '')).toBe('#fbbf24');
   });
 });
 
