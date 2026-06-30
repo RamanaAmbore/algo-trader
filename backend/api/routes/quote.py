@@ -22,10 +22,18 @@ from litestar.params import Parameter
 from litestar.response import ServerSentEvent
 
 from backend.api.auth_guard import auth_or_demo_guard
+from backend.api.helpers.snapshot_gate import _any_segment_open
 from backend.brokers.connections import Connections
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+# Rate-limited "sparkline: db_only active" log — emit at most once per 60 s so
+# the operator can grep the api_log_file without noise during a closed-hours
+# night. Uses a module-level timestamp (float) guarded by the GIL; no Lock
+# needed — worst case two nearly-simultaneous requests both log, which is fine.
+import time as _time_mod
+_spark_db_only_last_log: float = 0.0
 
 
 # ── Closed-hours helper ───────────────────────────────────────────────────────
@@ -610,11 +618,29 @@ class SparklineController(Controller):
         from backend.api.persistence import ohlcv_store as _ohlcv_store
         from backend.api.persistence import intraday_store as _intraday_store
 
+        # Determine db_only mode: when no market segment is open, skip all
+        # broker calls in the store fetchers — the DB already holds today's
+        # bars and yesterday's closes; no new data would arrive from a broker
+        # call during closed hours, so the round-trip only burns rate-limit
+        # budget.  The flag is computed once here and shared by both closures.
+        _mkt_open: bool = await asyncio.to_thread(_any_segment_open)
+        db_only: bool = not _mkt_open
+        if db_only:
+            global _spark_db_only_last_log
+            _now_ts = _time_mod.time()
+            if _now_ts - _spark_db_only_last_log >= 60.0:
+                _spark_db_only_last_log = _now_ts
+                logger.info(
+                    "sparkline: db_only active — market closed, "
+                    "serving Tier 1+2 only (no broker calls)"
+                )
+
         async def _fetch_daily_closes(sym_obj: SparklineSymbol) -> tuple[str, list[float]]:
             try:
                 bars = await _ohlcv_store.get_or_fetch_daily(
                     sym_obj.tradingsymbol, sym_obj.exchange,
                     from_d=from_daily, to_d=yesterday,
+                    db_only=db_only,
                 )
                 closes = [b["close"] for b in bars]
                 if len(closes) > (days - 1):
@@ -629,6 +655,7 @@ class SparklineController(Controller):
                 bars = await _intraday_store.get_or_fetch_intraday(
                     sym_obj.tradingsymbol, sym_obj.exchange,
                     on_date=today_date, interval="30minute",
+                    db_only=db_only,
                 )
                 closes = [b["close"] for b in bars]
                 return sym_obj.tradingsymbol, closes

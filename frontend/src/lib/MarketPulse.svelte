@@ -850,6 +850,12 @@
   // piggy-back every Nth tick.
   let stopPulseTick;
   let stopTickSettingPoll;
+  // Closed-hours sparkline safety net: fires every 5 min regardless of market
+  // state. During open hours it defers to the runTick path (_TICK_SPARK every
+  // 60 s) which is already running — no duplicate call is made. During closed
+  // hours the marketAwareInterval suspends runTick entirely, so without this
+  // poller sparklines would never refresh until next market open.
+  let _stopClosedSparkPoll;
   let _tickMs = 5000;
   let _tickCount = 0;
   // Multipliers (relative to the base tick):
@@ -1340,6 +1346,18 @@
         stopPulseTick = marketAwareInterval(_runTick, _tickMs, _HIDDEN_TICK_MS);
       }
     }, 60_000);
+
+    // Closed-hours sparkline safety net — 5 min cadence, visible-only.
+    // When the market is open, runTick already fires loadSparklines every
+    // 60 s via _TICK_SPARK; bail early to avoid a duplicate fetch.
+    // When the market is closed, marketAwareInterval suspends runTick so
+    // this is the only path that keeps sparklines refreshed from DB.
+    // The backend batch_sparkline endpoint runs in db_only mode during
+    // closed hours (no broker calls), so this is cheap: Tier 1+2 only.
+    _stopClosedSparkPoll = visibleInterval(() => {
+      if (isMarketOpen()) return; // open-hours: runTick handles it
+      loadSparklines();
+    }, 5 * 60 * 1000);
 
     // Real-time order-fill push — Kite postback fires a WS event
     // `position_filled` the moment an order fills. Subscribe so
@@ -2170,7 +2188,7 @@
   });
 
   onDestroy(() => {
-    stopPulseTick?.(); stopTickSettingPoll?.(); stopWS?.();
+    stopPulseTick?.(); stopTickSettingPoll?.(); _stopClosedSparkPoll?.(); stopWS?.();
     stopQuoteStream();
     // Clear any in-flight throttle timers so their setTimeout
     // callbacks don't fire into a destroyed component (audit-flagged

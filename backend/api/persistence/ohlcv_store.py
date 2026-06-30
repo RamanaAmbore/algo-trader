@@ -383,6 +383,7 @@ def _enqueue_persist_impl(symbol: str, exchange: str, bars: list[OHLCVBar]) -> N
 async def get_or_fetch_daily(
     symbol: str, exchange: str, from_d: date, to_d: date,
     bypass_cache: bool | None = None,
+    db_only: bool = False,
 ) -> list[OHLCVBar]:
     """Return daily OHLCV bars for symbol/exchange in [from_d, to_d].
 
@@ -411,6 +412,12 @@ async def get_or_fetch_daily(
     param and the global `persistence.bypass_db` settings flag.
     Defect-recovery tool: forces a re-fetch from broker truth and heals
     the persistent tiers on the write-back pass.
+
+    When `db_only=True`, Tier 3 (broker fetch) is skipped entirely.
+    Whatever Tier 1 + Tier 2 hold is returned; missing slices are not
+    fetched from broker.  Used by batch_sparkline during closed hours to
+    avoid unnecessary broker calls when the daily-close series is already
+    in DB.  Increments _db_only_misses for any remaining gaps.
     """
     from backend.api.persistence import runtime_state
 
@@ -464,6 +471,14 @@ async def get_or_fetch_daily(
         _ohlcv_store._mem_set(full_key, db_bars)
         _ohlcv_store._tier2_hits += 1
         return sorted(db_bars, key=lambda b: b["date"])
+
+    # db_only: skip Tier 3, return whatever DB has (partial is OK).
+    if db_only:
+        _ohlcv_store._db_only_misses += 1
+        if db_bars:
+            _ohlcv_store._mem_set(full_key, db_bars)
+            return sorted(db_bars, key=lambda b: b["date"])
+        return []
 
     # Fetch each missing slice from the broker (Tier 3).
     # Slices are independent so we can fire them concurrently.

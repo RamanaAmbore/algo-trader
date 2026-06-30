@@ -212,7 +212,9 @@ class IntradayStore(PersistentStoreBase):
 
     # ── Override get() to unwrap the stored (cached_at, bars) tuple ──────────
 
-    async def get(self, key: _MemKey, *, bypass_cache: bool | None = None) -> list[IntradayBar]:
+    async def get(
+        self, key: _MemKey, *, bypass_cache: bool | None = None, db_only: bool = False,
+    ) -> list[IntradayBar]:
         """Same three-tier flow as base, but unwraps the (cached_at, bars) entry.
 
         On a Tier 3 miss (broker returned empty / pre-market / holiday), fall
@@ -221,8 +223,11 @@ class IntradayStore(PersistentStoreBase):
         the original behaviour:
             entry2 = _mem_get(key)
             return entry2[1] if entry2 else []
+
+        When db_only=True, Tier 3 is skipped (closed-hours path). On a full
+        Tier 1+2 miss, returns the stale Tier 1 value when available, else [].
         """
-        result = await super().get(key, bypass_cache=bypass_cache)
+        result = await super().get(key, bypass_cache=bypass_cache, db_only=db_only)
         if result is not None:
             # Tier 1 / Tier 2 / Tier 3 hit: unwrap if needed.
             if isinstance(result, tuple):
@@ -312,6 +317,7 @@ async def get_or_fetch_intraday(
     symbol: str, exchange: str, on_date: date,
     interval: str = "30minute",
     bypass_cache: bool | None = None,
+    db_only: bool = False,
 ) -> list[IntradayBar]:
     """Return intraday OHLCV bars for symbol/exchange/date at the given interval.
 
@@ -325,8 +331,13 @@ async def get_or_fetch_intraday(
 
     When `bypass_cache=True`, skips Tier 1 + Tier 2 entirely (defect-recovery
     path — fresh broker data heals the persistent tiers on write-back).
+
+    When `db_only=True`, Tier 3 (broker fetch) is skipped — only Tier 1
+    and Tier 2 are consulted.  Used by batch_sparkline during closed hours
+    to avoid unnecessary broker calls when DB already holds today's bars.
+    On a Tier 1+2 miss, stale Tier 1 bars are served if available, else [].
     """
     sym  = symbol.upper().strip()
     exch = exchange.upper().strip()
     key: _MemKey = (sym, exch, on_date.isoformat(), interval)
-    return await _intraday_store.get(key, bypass_cache=bypass_cache)
+    return await _intraday_store.get(key, bypass_cache=bypass_cache, db_only=db_only)

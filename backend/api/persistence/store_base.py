@@ -64,6 +64,7 @@ class PersistentStoreBase(ABC):
         self._tier3_fetches: int = 0
         self._tier3_errors:  int = 0
         self._bypass_reads:  int = 0
+        self._db_only_misses: int = 0
 
     # ── Abstract hooks ───────────────────────────────────────────────────────────
 
@@ -113,10 +114,17 @@ class PersistentStoreBase(ABC):
 
     # ── Public API ───────────────────────────────────────────────────────────────
 
-    async def get(self, key: Any, *, bypass_cache: bool | None = None) -> Any:
+    async def get(
+        self, key: Any, *, bypass_cache: bool | None = None, db_only: bool = False,
+    ) -> Any:
         """Three-tier read.  Returns None (or empty sentinel) on full miss.
 
         When bypass_cache is None it reads runtime_state.is_bypass_on().
+        When db_only is True, Tier 3 (broker fetch) is skipped entirely —
+        only Tier 1 (memory) and Tier 2 (DB) are consulted.  A cache miss
+        returns None rather than calling the broker.  Useful for closed-hours
+        reads where calling the broker serves nothing new and costs rate-limit
+        budget.  Increments _db_only_misses on a Tier 1+2 miss.
         """
         from backend.api.persistence import runtime_state
         if bypass_cache is None:
@@ -138,6 +146,11 @@ class PersistentStoreBase(ABC):
                 self._mem_set(key, db_value)
                 self._tier2_hits += 1
                 return db_value
+
+        # db_only: skip Tier 3, return None immediately.
+        if db_only:
+            self._db_only_misses += 1
+            return None
 
         # Tier 3 — deduplicated per mem_key
         lock = await self._get_lock(key)
@@ -180,14 +193,15 @@ class PersistentStoreBase(ABC):
         cache_hits = self._tier1_hits + self._tier2_hits
         hit_rate = (cache_hits / total) if total else None
         return {
-            "name":          self._name,
-            "mem_keys":      len(self._mem_cache),
-            "tier1_hits":    self._tier1_hits,
-            "tier2_hits":    self._tier2_hits,
-            "tier3_fetches": self._tier3_fetches,
-            "tier3_errors":  self._tier3_errors,
-            "bypass_reads":  self._bypass_reads,
-            "hit_rate":      round(hit_rate, 3) if hit_rate is not None else None,
+            "name":           self._name,
+            "mem_keys":       len(self._mem_cache),
+            "tier1_hits":     self._tier1_hits,
+            "tier2_hits":     self._tier2_hits,
+            "tier3_fetches":  self._tier3_fetches,
+            "tier3_errors":   self._tier3_errors,
+            "bypass_reads":   self._bypass_reads,
+            "db_only_misses": self._db_only_misses,
+            "hit_rate":       round(hit_rate, 3) if hit_rate is not None else None,
         }
 
     # ── Internal helpers ─────────────────────────────────────────────────────────
