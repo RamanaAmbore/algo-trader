@@ -26,21 +26,45 @@ def to_kite_qty(exchange: str, raw_qty: int, lot_size: int) -> int:
     qty=50 to trade 1 NIFTY lot (lot_size=50). MCX/NCO: quantity =
     LOTS. MCX CRUDEOIL with lot_size=100 wants qty=1 to trade 1 lot.
     Without this translation, a 1-lot MCX order ends up as 100 lots
-    on Kite. lot_size==0 falls through unchanged.
+    on Kite.
 
-    Only translates when raw_qty >= lot_size (operator typed contracts,
-    not an already-translated value). Sub-lot-size values pass through
-    as-is — better to let Kite reject an odd qty than silently divide
-    and send a nonsensical number.
+    SAFETY for MCX/NCO:
+      - lot_size <= 1 (0 or 1) is ALWAYS a cache miss for any real MCX
+        contract (smallest real lot_size is GOLDPETAL at 10g; every
+        liquid MCX contract has lot_size >> 1). Dividing raw_qty by 1
+        (or passing through on 0) sends raw_qty unchanged as LOTS —
+        100× oversize for a 1-lot CRUDEOIL (lot_size=100) order.
+        Raises ValueError so callers surface a safe 503/422 instead of
+        silently sending a catastrophic position to the exchange.
+      - lot_size > 1: translate contracts → lots normally.
+
+    For non-MCX exchanges the function is always a no-op (Kite wants
+    contracts everywhere else, which is what callers already hold).
+
+    Only translates when raw_qty >= lot_size (operator typed contracts).
+    Sub-lot-size values pass through as-is — better to let Kite reject
+    an odd qty than silently divide and send a nonsensical number.
     """
-    if exchange in ("MCX", "NCO") and lot_size > 0 and raw_qty >= lot_size:
-        translated = max(1, raw_qty // lot_size)
-        if translated != raw_qty:
-            logger.info(
-                f"[KITE-QTY] {exchange}: contracts={raw_qty} → lots={translated} "
-                f"(lot_size={lot_size})"
+    if exchange in ("MCX", "NCO"):
+        if lot_size <= 1:
+            # lot_size == 0 or 1 on MCX means instruments cache missed.
+            # No real MCX contract has lot_size ≤ 1. Refuse rather than
+            # sending raw_qty as lots (100× oversize incident on CRUDEOIL).
+            raise ValueError(
+                f"[KITE-QTY-GUARD] {exchange} lot_size={lot_size} for "
+                f"qty={raw_qty} — instruments cache miss (no real MCX "
+                f"contract has lot_size≤1). Refusing order to prevent "
+                f"catastrophic oversize. Retry after cache warms."
             )
-        return translated
+        if raw_qty >= lot_size:
+            translated = max(1, raw_qty // lot_size)
+            if translated != raw_qty:
+                logger.info(
+                    f"[KITE-QTY] {exchange}: contracts={raw_qty} → lots={translated} "
+                    f"(lot_size={lot_size})"
+                )
+            return translated
+        return raw_qty
     return raw_qty
 
 
@@ -91,12 +115,23 @@ def _rebuild_lot_index(items) -> None:
 async def get_lot_size(exchange: str, tradingsymbol: str) -> int:
     """Look up lot_size from the instruments cache via `_LOT_INDEX`
     (O(1) dict lookup; rebuilt only when the cache version stamp
-    flips). Returns 1 (safe no-op for to_kite_qty) when the cache
-    is cold or the symbol isn't found.
+    flips).
 
-    This is intentionally a best-effort read; it must never raise.
+    Return convention:
+      - Found in cache with lot_size > 1: returns actual lot_size.
+      - Found in cache with lot_size == 1 (equity / micro): returns 1.
+      - NOT found / cache cold: returns 0 (sentinel for "unknown").
+
+    Callers must handle 0 for MCX/NCO — to_kite_qty raises ValueError
+    when lot_size == 1 on MCX (likely cache miss); a 0 return lets the
+    route layer raise a clean 503 before invoking to_kite_qty.
+
+    For non-MCX exchanges the fallback was always 1 (no translation),
+    which is still safe — we preserve that by returning 1 for non-MCX
+    misses so existing NSE/NFO paths are unaffected.
     """
     global _LOT_INDEX_STAMP
+    _mcx = exchange in ("MCX", "NCO")
     try:
         from backend.api.cache import get_or_fetch
         from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
@@ -107,8 +142,11 @@ async def get_lot_size(exchange: str, tradingsymbol: str) -> int:
             _LOT_INDEX_STAMP = resp
     except Exception as e:
         logger.debug(f"[KITE-QTY] lot_size lookup failed for {exchange}/{tradingsymbol}: {e}")
-        return 1
-    return _LOT_INDEX.get((exchange, tradingsymbol), 1)
+        # For MCX: return 0 (unknown) so callers can refuse safely.
+        # For non-MCX: return 1 (no-op — same as before).
+        return 0 if _mcx else 1
+    # Cache miss sentinel: 0 for MCX (dangerous to assume), 1 for non-MCX (safe no-op).
+    return _LOT_INDEX.get((exchange, tradingsymbol), 0 if _mcx else 1)
 
 
 # Kite rejects orders with `tag` > 20 chars: "invalid tags - maximum

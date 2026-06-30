@@ -1601,6 +1601,11 @@
           tradingsymbol:    _resolvedSymbol || symbol,
           exchange:         _exchange || _resolvedExchange || exchange || 'NFO',
           quantity:         Number(_qty),
+          // lot_size_hint: the resolved lot_size from the instruments cache.
+          // Backend uses this as a cross-check for MCX/NCO where lot_size
+          // is critical for qty→lots translation. Sending it here prevents
+          // the backend from being blocked when its own cache is cold.
+          lot_size_hint:    _lotSize > 0 ? Number(_lotSize) : null,
           product:          _product,
           order_type:       _type,
           variety:          _variety,

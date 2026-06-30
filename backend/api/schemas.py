@@ -467,6 +467,14 @@ class TicketOrderRequest(msgspec.Struct):
     # frontend starts sending them.
     sl_trail_pct_override:        Optional[float] = None
     tp_scales_json_override:      Optional[str]   = None
+    # Lot-size hint from OrderTicket UI. Frontend already resolved
+    # _lotSize from the instruments cache; shipping it here lets the
+    # backend cross-check against its own cache lookup and use the
+    # frontend value as a fallback when the backend cache is cold.
+    # Only relevant for MCX/NCO where translate_qty divides by lot_size;
+    # ignored (None / 0) for non-derivative symbols. Integer — same units
+    # as instruments.lot_size (barrels for CRUDEOIL, grams for GOLD, etc.)
+    lot_size_hint: Optional[int] = None
 
 
 class TicketOrderResponse(msgspec.Struct):

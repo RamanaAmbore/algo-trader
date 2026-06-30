@@ -415,28 +415,41 @@ def _ensure_instrument_index(resp) -> None:
 
 
 def _instrument_specs(exchange: str, symbol: str) -> tuple[int, float]:
-    """Return (lot_size, tick_size) for a contract in O(1). Falls
-    through to (1, 0.05) — the NSE default — on any miss (cache cold,
-    symbol not in instruments dump, etc.)."""
+    """Return (lot_size, tick_size) for a contract in O(1).
+
+    On cache miss:
+      - MCX/NCO: returns (0, 0.05). lot_size=0 is the "unknown" sentinel;
+        callers (especially to_kite_qty via normalise_qty) must check for
+        0 and refuse to place the order rather than dividing by 1 and
+        sending raw_qty as LOTS — the root cause of the CRUDEOIL 100×
+        oversize incident (lot_size cached as 1 → 100 ÷ 1 = 100 LOTS).
+      - All other exchanges: returns (1, 0.05) — the NSE default; no
+        translation is applied in to_kite_qty for non-MCX symbols, so
+        lot_size=1 is a safe no-op there.
+    """
+    _mcx = exchange in ("MCX", "NCO")
+    _miss = (0 if _mcx else 1, 0.05)
     try:
         entry = _cache_store.get("instruments")
         if entry is None:
-            return (1, 0.05)
+            return _miss
         _expires, resp = entry
         if resp is None or not hasattr(resp, "items"):
-            return (1, 0.05)
+            return _miss
         _ensure_instrument_index(resp)
-        return _INSTRUMENT_INDEX.get((exchange, symbol), (1, 0.05))
+        return _INSTRUMENT_INDEX.get((exchange, symbol), _miss)
     except Exception:
-        return (1, 0.05)
+        return _miss
 
 
 def _lot_size_sync(exchange: str, symbol: str) -> int:
     """O(1) lot_size lookup. See `_instrument_specs` for cache shape.
 
-    Falls through to 1 on a miss — safe default for to_kite_qty (no
-    translation for non-MCX exchanges, and MCX lot_size > 1 so
-    raw_qty // 1 == raw_qty anyway)."""
+    Returns 0 for MCX/NCO on a cache miss — the sentinel that tells
+    normalise_qty (→ to_kite_qty) to raise rather than silently divide
+    by 1 and send raw_qty as lots (100× oversize on CRUDEOIL).
+    Returns 1 for non-MCX misses (safe no-op — to_kite_qty doesn't
+    translate non-MCX symbols)."""
     return _instrument_specs(exchange, symbol)[0]
 
 

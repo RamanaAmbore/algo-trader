@@ -2811,6 +2811,59 @@ class OrdersController(Controller):
                               and data.price is not None
                               and data.price > 0)
 
+            # ── MCX lot-size safety gate ──────────────────────────────
+            # For MCX/NCO, qty is contracts (lots × lot_size). We MUST
+            # know the real lot_size to translate correctly for Kite.
+            # If the cache is cold (get_lot_size returns 0) and the
+            # frontend didn't supply lot_size_hint, refuse rather than
+            # silently dividing by 1 (which would send raw_qty as LOTS
+            # — a 100× oversize on CRUDEOIL).
+            _ticket_exch = (data.exchange or "NFO")
+            # _ls_for_translate: lot_size to use for the qty→lots translation
+            # below. 0 for non-MCX (translate_qty no-ops), positive for MCX.
+            _ls_for_translate: int = 0
+            if _ticket_exch in ("MCX", "NCO"):
+                from backend.brokers.adapters.kite import get_lot_size as _gls
+                _ls_check = await _gls(_ticket_exch, sym)
+                # Use frontend hint as fallback when cache is cold.
+                _ls_hint  = int(data.lot_size_hint or 0)
+                _ls_for_translate = _ls_check if _ls_check > 0 else _ls_hint
+                if _ls_for_translate <= 0:
+                    logger.error(
+                        f"[MCX-LOT-GUARD] lot_size unknown for {_ticket_exch}/{sym} "
+                        f"(cache returned {_ls_check}, no lot_size_hint in request). "
+                        f"Refusing {side} {qty} to prevent oversize order."
+                    )
+                    raise HTTPException(
+                        status_code=503,
+                        detail=(
+                            f"lot_size for {sym} on {_ticket_exch} is not available "
+                            f"(instruments cache cold). Retry in a moment — the cache "
+                            f"warms automatically at startup and market open."
+                        ),
+                    )
+                # Even with a resolved lot_size, cross-check: the order's
+                # translated lot count must be reasonable (≤ _MCX_MAX_LOTS).
+                # This catches any future double-multiplication bugs before
+                # they reach Kite.
+                _MCX_MAX_LOTS = 20   # 20 lots = 2000 barrels CRUDEOIL; very generous
+                _translated_lots = max(1, qty // _ls_for_translate)
+                if _translated_lots > _MCX_MAX_LOTS:
+                    logger.error(
+                        f"[MCX-SIZE-GUARD] {_ticket_exch}/{sym}: translated "
+                        f"{qty} contracts ÷ lot_size={_ls_for_translate} = "
+                        f"{_translated_lots} lots — exceeds {_MCX_MAX_LOTS}-lot "
+                        f"safety cap. Refusing order."
+                    )
+                    raise HTTPException(
+                        status_code=422,
+                        detail=(
+                            f"Order size {_translated_lots} lots for {sym} exceeds "
+                            f"the {_MCX_MAX_LOTS}-lot safety limit. If intentional, "
+                            f"contact support to increase the limit."
+                        ),
+                    )
+
             try:
                 # Phase 0.5 — write the AlgoOrder row BEFORE the chase
                 # spawns so we can plumb its id into chase_order. The
@@ -2880,10 +2933,12 @@ class OrdersController(Controller):
                 else:
                     # Single-shot — preserves the existing path for
                     # MARKET / SL-M and explicit chase=False tickets.
-                    from backend.brokers.adapters.kite import get_lot_size
-                    _ls_ticket = await get_lot_size(data.exchange or "NFO", sym)
+                    # _ls_for_translate was resolved by the MCX gate above
+                    # (positive for MCX, 0 for non-MCX — translate_qty
+                    # no-ops when lot_size=0 for non-MCX symbols).
                     broker = _broker_for(account)
-                    _kq_ticket = broker.translate_qty(data.exchange or "NFO", qty, _ls_ticket)
+                    _kq_ticket = broker.translate_qty(
+                        data.exchange or "NFO", qty, _ls_for_translate)
                     order_id = broker.place_order(
                         variety=(data.variety or "regular"),
                         exchange=(data.exchange or "NFO"),
