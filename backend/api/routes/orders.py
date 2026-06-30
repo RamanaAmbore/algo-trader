@@ -488,6 +488,17 @@ async def _process_broker_postback(
                     invalidate(_key)
                 except Exception:
                     pass
+            # Also drop the raw-DataFrame cache in broker_apis so
+            # `compute_firm_nav` + investor slice pick up the post-fill
+            # state on the next call (otherwise NavCard could lag the
+            # /performance grid by up to _RAW_TTL_S = 30 s).
+            try:
+                from backend.brokers.broker_apis import _raw_cache_invalidate
+                _raw_cache_invalidate("positions")
+                _raw_cache_invalidate("holdings")
+                _raw_cache_invalidate("margins")
+            except Exception:
+                pass
 
         broadcast(json.dumps({
             "event": "order_update",
@@ -3611,6 +3622,18 @@ class OrdersController(Controller):
                         invalidate(_key)
                     except Exception:
                         pass
+                # Also drop the raw-DataFrame cache in broker_apis so
+                # `compute_firm_nav` + investor slice see fresh broker
+                # state on the next call. Without this the NavCard /
+                # /performance NAV row could lag by up to _RAW_TTL_S
+                # (30 s) after a fill.
+                try:
+                    from backend.brokers.broker_apis import _raw_cache_invalidate
+                    _raw_cache_invalidate("positions")
+                    _raw_cache_invalidate("holdings")
+                    _raw_cache_invalidate("margins")
+                except Exception:
+                    pass
 
             # Push real-time update to all connected WebSocket clients
             broadcast(json.dumps({

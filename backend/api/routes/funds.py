@@ -93,6 +93,13 @@ class FundsController(Controller):
         try:
             if fresh:
                 invalidate("funds")
+                # Also drop the raw-DataFrame cache so the refetch below
+                # sees fresh broker state (matches positions / holdings).
+                try:
+                    from backend.brokers.broker_apis import _raw_cache_invalidate
+                    _raw_cache_invalidate("margins")
+                except Exception:
+                    pass
             resp = await get_or_fetch("funds", _fetch, ttl_seconds=_TTL)
             # Horizontal scoping (slice 5) — trader sees only their
             # assigned_accounts. Firm-wide roles untouched. TOTAL row

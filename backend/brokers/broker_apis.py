@@ -156,6 +156,73 @@ def fetch_health_snapshot() -> dict[str, dict]:
     return {k: dict(v) for k, v in _FETCH_HEALTH.items()}
 
 
+# ---------------------------------------------------------------------------
+# Raw broker-DataFrame TTL cache (Tier 1 — shared by routes + algo.nav)
+# ---------------------------------------------------------------------------
+# `fetch_holdings()` / `fetch_positions()` / `fetch_margins()` are the
+# zero-arg public entry points. They run @for_all_accounts → N broker
+# round-trips (or one conn_service UDS hop). Without a cache, every
+# consumer that calls them does that work independently:
+#
+#   • PositionsController / HoldingsController / FundsController
+#     (route-level `get_or_fetch("positions", _fetch, ttl=30)` already
+#      memos the FORMATTED response, but not the raw DF.)
+#   • compute_firm_nav (algo/nav.py) — called by NavCard, /performance,
+#     investor portal, nav_daily snapshot writer. Each call fanned out
+#     fresh broker fetches.
+#   • intraday_equity background poller — wants live data per 5min tick
+#     anyway, so it intentionally bypasses (see _fetch_*_direct below).
+#
+# This module-level TTL cache memos the raw `list[pd.DataFrame]` shape
+# returned by `fetch_*()` so two callers within `_RAW_TTL_S` seconds
+# share one broker round-trip. The route-level `get_or_fetch` cache
+# continues to memo the FORMATTED response (msgspec.Struct), so the
+# fast path stays unchanged; this just plugs the leak where
+# `compute_firm_nav` previously bypassed both layers.
+#
+# Per-key asyncio-style locking would require this whole module to be
+# async; instead we use a threading.Lock since broker_apis is the
+# sync layer (callers offload to threadpool). The race window between
+# cache-miss + broker call is bounded by `_RAW_TTL_S`.
+_RAW_CACHE_LOCK = threading.Lock()
+_RAW_CACHE: dict[str, tuple[float, list[pd.DataFrame]]] = {}
+_RAW_TTL_S: float = 30.0  # matches the route-level cache TTL
+
+
+def _raw_cache_get(key: str) -> list[pd.DataFrame] | None:
+    """Return cached list[DataFrame] for `key` if still fresh, else None."""
+    with _RAW_CACHE_LOCK:
+        entry = _RAW_CACHE.get(key)
+    if entry is None:
+        return None
+    expires_at, value = entry
+    if _time.monotonic() >= expires_at:
+        return None
+    return value
+
+
+def _raw_cache_put(key: str, value: list[pd.DataFrame]) -> None:
+    """Store list[DataFrame] under `key` with the standard TTL.
+
+    Stored value is the caller's reference — DataFrames are NOT deep-copied
+    (would defeat the purpose). Callers that need to mutate must `.copy()`
+    first; the existing route _fetch() handlers already do this via the
+    Polars conversion (`pl.from_pandas(raw)` creates an independent view).
+    """
+    with _RAW_CACHE_LOCK:
+        _RAW_CACHE[key] = (_time.monotonic() + _RAW_TTL_S, value)
+
+
+def _raw_cache_invalidate(key: str | None = None) -> None:
+    """Drop a key (or all keys when key=None). Used by tests + on postback
+    `book_changed` events so the next fetch picks up the fresh broker state."""
+    with _RAW_CACHE_LOCK:
+        if key is None:
+            _RAW_CACHE.clear()
+        else:
+            _RAW_CACHE.pop(key, None)
+
+
 def fetch_holdings(*args, **kwargs):
     """Public entry — proxies to conn_service when the cutover flag
     is on, otherwise runs the local @for_all_accounts path.
@@ -163,11 +230,25 @@ def fetch_holdings(*args, **kwargs):
     The proxy branch only kicks in for the zero-arg shape
     (`fetch_holdings()` — every caller in the codebase uses this).
     Explicit `account=`/`broker=` kwargs fall through to the local
-    path so single-account internal use keeps working."""
+    path so single-account internal use keeps working.
+
+    Zero-arg results are memoised in `_RAW_CACHE` for `_RAW_TTL_S`
+    seconds so concurrent consumers (routes + compute_firm_nav +
+    investor slice) share one broker round-trip per cache window.
+    """
+    if not args and not kwargs:
+        cached = _raw_cache_get("holdings")
+        if cached is not None:
+            return cached
     if _use_conn_service() and not args and not kwargs:
         from backend.brokers.client import sync as conn_sync
-        return conn_sync.fetch_holdings()
-    return _fetch_holdings_local(*args, **kwargs)
+        result = conn_sync.fetch_holdings()
+        _raw_cache_put("holdings", result)
+        return result
+    result = _fetch_holdings_local(*args, **kwargs)
+    if not args and not kwargs:
+        _raw_cache_put("holdings", result)
+    return result
 
 
 @for_all_accounts
@@ -364,11 +445,24 @@ def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
 
 def fetch_positions(*args, **kwargs):
     """Public entry — proxies to conn_service when the cutover flag
-    is on, otherwise runs the local @for_all_accounts path."""
+    is on, otherwise runs the local @for_all_accounts path.
+
+    Zero-arg results are memoised in `_RAW_CACHE` for `_RAW_TTL_S`
+    seconds — see `fetch_holdings` docstring for the rationale.
+    """
+    if not args and not kwargs:
+        cached = _raw_cache_get("positions")
+        if cached is not None:
+            return cached
     if _use_conn_service() and not args and not kwargs:
         from backend.brokers.client import sync as conn_sync
-        return conn_sync.fetch_positions()
-    return _fetch_positions_local(*args, **kwargs)
+        result = conn_sync.fetch_positions()
+        _raw_cache_put("positions", result)
+        return result
+    result = _fetch_positions_local(*args, **kwargs)
+    if not args and not kwargs:
+        _raw_cache_put("positions", result)
+    return result
 
 
 @for_all_accounts
@@ -901,11 +995,24 @@ backfill_close_prices = backfill_market_data
 
 def fetch_margins(*args, **kwargs):
     """Public entry — proxies to conn_service when the cutover flag
-    is on, otherwise runs the local @for_all_accounts path."""
+    is on, otherwise runs the local @for_all_accounts path.
+
+    Zero-arg results are memoised in `_RAW_CACHE` for `_RAW_TTL_S`
+    seconds — see `fetch_holdings` docstring for the rationale.
+    """
+    if not args and not kwargs:
+        cached = _raw_cache_get("margins")
+        if cached is not None:
+            return cached
     if _use_conn_service() and not args and not kwargs:
         from backend.brokers.client import sync as conn_sync
-        return conn_sync.fetch_margins()
-    return _fetch_margins_local(*args, **kwargs)
+        result = conn_sync.fetch_margins()
+        _raw_cache_put("margins", result)
+        return result
+    result = _fetch_margins_local(*args, **kwargs)
+    if not args and not kwargs:
+        _raw_cache_put("margins", result)
+    return result
 
 
 @for_all_accounts

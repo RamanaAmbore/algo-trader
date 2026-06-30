@@ -197,6 +197,13 @@ class HoldingsController(Controller):
             # data, accounts masked for non-admin callers below.
             if fresh:
                 invalidate("holdings")
+                # Also drop the raw-DataFrame cache so the refetch
+                # below sees fresh broker state (matches positions.py).
+                try:
+                    from backend.brokers.broker_apis import _raw_cache_invalidate
+                    _raw_cache_invalidate("holdings")
+                except Exception:
+                    pass
             resp = await get_or_fetch("holdings", _fetch, ttl_seconds=_TTL)
             # Horizontal scoping (slice 5) — trader sees only their
             # assigned_accounts. Firm-wide roles untouched. Filter

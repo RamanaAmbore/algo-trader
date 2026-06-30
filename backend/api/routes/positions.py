@@ -496,6 +496,14 @@ class PositionsController(Controller):
             # positions with `ZG####` style masks.
             if fresh:
                 invalidate("positions")
+                # Also drop the raw-DataFrame cache so the refetch
+                # below sees fresh broker state rather than the
+                # cached list[pd.DataFrame].
+                try:
+                    from backend.brokers.broker_apis import _raw_cache_invalidate
+                    _raw_cache_invalidate("positions")
+                except Exception:
+                    pass
             resp = await get_or_fetch("positions", _fetch, ttl_seconds=_TTL)
             # Horizontal scoping. Trader-role callers see only
             # positions on their `assigned_accounts`; firm-wide roles
