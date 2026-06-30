@@ -442,7 +442,31 @@
     // since the only way bands flip is positions adding/closing.
     const cps = candidatePositions;
     const expFilter = selectedExpiries;
-    const spot = untrack(() => Number(strategy?.spot || 0));
+    // Use the same spot resolution chain as `liveSpot` (SSE tick →
+    // _underlyingQuotes batchQuote → strategy.spot server poll).
+    // Previously read `strategy?.spot` directly which could be a stale
+    // server-poll value while the SSE-ticked liveSpot already showed the
+    // true price — causing wrong ITM/OTM band classification (SUZLON 60
+    // CE shown as ITM when spot had drifted below 60). Both reads are
+    // wrapped in untrack() so this derived doesn't re-fire on every tick;
+    // re-classification happens naturally when candidatePositions changes.
+    const spot = untrack(() => {
+      // Mirror liveSpot's three-tier lookup but without the reactive
+      // dependency on _throttledTick (we're inside untrack already).
+      const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
+      if (anchor) {
+        const v = Number(getSnapshot(anchor)?.ltp);
+        if (Number.isFinite(v) && v > 0) return v;
+      }
+      const und = String(strategy?.underlying || '').toUpperCase();
+      if (und) {
+        const v = Number(getSnapshot(und)?.ltp);
+        if (Number.isFinite(v) && v > 0) return v;
+      }
+      const bqLtp = _underlyingQuotes[selectedUnderlying]?.ltp;
+      if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
+      return Number(strategy?.spot || 0);
+    });
     const legA = untrack(() => legAnalyticsBySymbol);
     void expFilter;
     /** @type {{equity:any[], commodity:any[]}} */
