@@ -1,35 +1,31 @@
 <script>
   /**
-   * BrokerHealthBadge — navbar auth/freshness badge for broker accounts.
+   * BrokerHealthBadge — modal-only broker auth/freshness panel.
    *
-   * Shows the worst state across all accounts:
-   *   red    — any account has an auth failure as its most-recent fetch
-   *   amber  — any account is stale (last good > 5 min ago) but no active failure
-   *   green  — all accounts healthy and fresh
+   * Operator consolidation: the navbar's 5/5 broker-chip is the single
+   * entry point; clicking it sets `open=true` and this component renders
+   * the per-account auth modal. The standalone AUTH badge button was
+   * removed because two chips for adjacent concepts felt redundant.
    *
-   * Separate from the existing 5/5 broker-count chip (connStatus), which
-   * tracks "how many accounts are loaded" (auth+connected). This badge tracks
-   * "is the last actual broker API call per account still healthy?"
+   * State semantics (per account):
+   *   red    — last fetch returned an auth failure
+   *   amber  — last good > 5 min ago (stale) but no active failure
+   *   green  — healthy + fresh
    *
-   * Poll: 30 s via visibleInterval. NOT market-gated — operator needs to
-   * see auth breaks during closed hours too.
-   *
-   * Tap opens an inline modal listing per-account state + timestamps.
+   * Poll: 30 s via visibleInterval. NOT market-gated — auth breaks
+   * happen during closed hours too. Polling pauses when the modal is
+   * closed AND no badge consumer needs the data; restarts on open.
    */
   import { onMount, onDestroy } from 'svelte';
   import { visibleInterval } from '$lib/stores';
   import { fetchBrokerHealth } from '$lib/api';
 
+  /** Bindable: parent (algo layout) toggles this from the 5/5 chip. */
+  let { open = $bindable(false) } = $props();
+
   /** @type {Array<{account:string,broker:string,state:string,reason:string,last_good_at:string|null,last_check_at:string|null}>} */
   let accounts = $state([]);
   let loading  = $state(false);
-  let open     = $state(false);
-
-  /** Derive worst state from all accounts: red > amber > green. */
-  let worstState = $derived(
-    accounts.some(a => a.state === 'red')   ? 'red'   :
-    accounts.some(a => a.state === 'amber') ? 'amber' : 'green'
-  );
 
   let _teardown = () => {};
 
@@ -69,23 +65,6 @@
     }
   }
 </script>
-
-{#if accounts.length > 0}
-  <!-- Badge dot — click opens the per-account modal -->
-  <button
-    class="bh-badge bh-badge-{worstState}"
-    onclick={() => open = !open}
-    title={worstState === 'green'
-      ? 'Broker auth: all accounts healthy'
-      : worstState === 'amber'
-        ? 'Broker auth: one or more accounts stale'
-        : 'Broker auth: one or more accounts have auth failures'}
-    aria-label="Broker auth health: {worstState}"
-  >
-    <span class="bh-dot" aria-hidden="true"></span>
-    <span class="bh-label">AUTH</span>
-  </button>
-{/if}
 
 {#if open}
   <!-- Modal overlay -->

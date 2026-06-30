@@ -407,6 +407,10 @@
     openGroup = null;
   }
 
+  // Broker auth health modal — opened from the 5/5 broker-chip click.
+  // BrokerHealthBadge renders modal-only (no standalone trigger).
+  let brokerHealthOpen  = $state(false);
+
   // ── Execution-mode combobox ────────────────────────────────────────
   let modeOpen          = $state(false);
   let modeError         = $state('');
@@ -774,6 +778,13 @@
     onClose={closeActivityModal} />
 {/if}
 
+<!-- Broker auth health modal (modal-only) — opens from the 5/5 chip
+     in either the desktop or mobile navbar block. Single mount keeps
+     state shared across viewport variants. -->
+{#if $authStore.user && ($authStore.user.role === 'admin' || $authStore.user.role === 'designated')}
+  <BrokerHealthBadge bind:open={brokerHealthOpen} />
+{/if}
+
 <div class="algo-viewport">
   <div class="algo-card">
     <!-- Top bar -->
@@ -903,23 +914,13 @@
           </button>
         {/if}
 
-        <!-- ── Broker auth health badge (slice AY) ─────────────────────
-             Shows worst auth/freshness state across all broker accounts.
-             Separate from the 5/5 count chip which tracks loaded count.
-             This badge tracks "did the last actual broker API call succeed?"
-             Polls every 30 s (visibleInterval, NOT market-gated).
-             Only shown to authenticated users (admin/designated path). -->
-        {#if $authStore.user && ($authStore.user.role === 'admin' || $authStore.user.role === 'designated')}
-          <BrokerHealthBadge />
-        {/if}
-
-        <!-- ── Broker connectivity chip (slice AX) ────────────────────
-             Ambient signal — green when every configured broker
-             account is loaded, amber on partial, red when none. IBKR
-             TWS keeps connection status permanently visible in its
-             status bar; this is the equivalent at the navbar level.
-             Hidden when total=0 (demo / no config). Click → /admin/health
-             for the full broker accounts table + ticker status. -->
+        <!-- ── Broker connectivity chip (slice AX, consolidated AY) ───
+             Single navbar entry point for broker state. Ambient color:
+             green=all loaded, amber=partial, red=none, ?=API unreachable.
+             Click → opens BrokerHealthBadge modal with per-account auth
+             detail (last_good_at + reason). The standalone AUTH badge
+             was removed — operator: two chips for adjacent concerns
+             felt redundant; consolidate into one. -->
         {#if $authStore.user && $connStatus.total > 0}
           {@const _loaded = $connStatus.loaded}
           {@const _total  = $connStatus.total}
@@ -930,10 +931,10 @@
                           : 'broker-chip-ok'}
           {@const _failList = $connStatus.failingAccounts.join(', ')}
           <button class="broker-chip {_cls}"
-                  onclick={() => goto('/activity?tab=conn')}
-                  title={!_ok ? 'Broker status: API unreachable. Open /activity (Conn tab).'
-                       : _loaded === _total ? `Broker status: ${_loaded} / ${_total} accounts loaded. Open /activity (Conn tab).`
-                       : `Broker status: ${_loaded} / ${_total} loaded. Failing: ${_failList}. Open /activity (Conn tab).`}>
+                  onclick={() => brokerHealthOpen = !brokerHealthOpen}
+                  title={!_ok ? 'Broker status: API unreachable. Click for per-account auth detail.'
+                       : _loaded === _total ? `Broker status: ${_loaded} / ${_total} accounts loaded. Click for per-account auth detail.`
+                       : `Broker status: ${_loaded} / ${_total} loaded. Failing: ${_failList}. Click for per-account auth detail.`}>
             <span class="broker-chip-dot" aria-hidden="true"></span>
             {_ok ? `${_loaded}/${_total}` : '?'}
           </button>
@@ -1033,11 +1034,6 @@
           </div>
         {/if}
 
-        <!-- Broker auth health badge (mobile mirror of desktop block). -->
-        {#if $authStore.user && ($authStore.user.role === 'admin' || $authStore.user.role === 'designated')}
-          <BrokerHealthBadge />
-        {/if}
-
         <!-- Broker connectivity chip (mobile mirror of the desktop block above). -->
         {#if $authStore.user && $connStatus.total > 0}
           {@const _loaded = $connStatus.loaded}
@@ -1048,9 +1044,9 @@
                           : _loaded < _total ? 'broker-chip-partial'
                           : 'broker-chip-ok'}
           <button class="broker-chip {_cls}"
-                  onclick={() => goto('/admin/health')}
-                  title={!_ok ? 'Broker status: API unreachable.'
-                       : `Broker status: ${_loaded} / ${_total} loaded.`}>
+                  onclick={() => brokerHealthOpen = !brokerHealthOpen}
+                  title={!_ok ? 'Broker status: API unreachable. Click for per-account auth detail.'
+                       : `Broker status: ${_loaded} / ${_total} loaded. Click for per-account auth detail.`}>
             <span class="broker-chip-dot" aria-hidden="true"></span>
             {_ok ? `${_loaded}/${_total}` : '?'}
           </button>
