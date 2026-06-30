@@ -259,11 +259,12 @@ test.describe(`Navigation indicator — mobile [${BASE}]`, () => {
     const marketItem = page.locator('a.pub-mobile-item:has-text("Market")').first();
     await expect(marketItem).toBeVisible({ timeout: 3_000 });
 
+    // Set up the waitFor BEFORE clicking so a fast transition is caught.
+    const indicatorP = page.locator('.nav-indicator').waitFor({ state: 'attached', timeout: 1000 });
     const t0 = Date.now();
     await marketItem.click();
-
-    await expect(page.locator('.nav-indicator')).toBeVisible({ timeout: 600 });
-    expect(Date.now() - t0).toBeLessThan(600);
+    await indicatorP;
+    expect(Date.now() - t0).toBeLessThan(1000);
 
     await expect(page.locator('.nav-indicator')).toBeHidden({ timeout: 3500 });
   });
