@@ -52,8 +52,23 @@ class SimReplayDriver:
     playback as during the original run."""
 
     _instance: Optional["SimReplayDriver"] = None
+    _initialized: bool = False
+
+    def __new__(cls) -> "SimReplayDriver":
+        # Return the existing instance for every construction call so that
+        # SimReplayDriver() and SimReplayDriver.instance() are interchangeable.
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
 
     def __init__(self) -> None:
+        # Guard: __init__ runs every time SimReplayDriver() is called directly.
+        # The canonical entry point is SimReplayDriver.instance(), but direct
+        # calls must never reset already-initialised replay state mid-run.
+        if self.__class__._initialized:
+            return
+        self.__class__._initialized = True
+
         self.active: bool = False
         self.recording_id: Optional[int] = None
         self.recording_label: str = ""

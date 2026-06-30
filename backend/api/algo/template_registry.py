@@ -27,6 +27,7 @@ backward-compatible aliases (see end of file).
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -151,12 +152,24 @@ SYSTEM_AGENT_TEMPLATES: list[dict] = [
 
 class TemplateRegistry:
     _instance: "TemplateRegistry | None" = None
+    _lock: threading.Lock = threading.Lock()
 
-    def __new__(cls):
+    def __new__(cls) -> "TemplateRegistry":
+        # Double-checked locking so concurrent callers don't race on first
+        # construction. All one-time state is set here inside __new__ so
+        # there is nothing sensitive in __init__ that could be re-run.
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._cache = {"notify": {}, "condition": {}}
+            with cls._lock:
+                if cls._instance is None:
+                    instance = super().__new__(cls)
+                    instance._cache = {"notify": {}, "condition": {}}
+                    cls._instance = instance
         return cls._instance
+
+    def __init__(self) -> None:
+        # __new__ handles all initialisation. __init__ is an explicit no-op
+        # so repeated TemplateRegistry() calls never touch _cache.
+        pass
 
     async def reload(self) -> None:
         """Replace the in-memory cache with the latest active rows from

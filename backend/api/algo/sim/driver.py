@@ -439,8 +439,24 @@ class SimDriver:
     """
 
     _instance: Optional["SimDriver"] = None
+    _initialized: bool = False
+
+    def __new__(cls) -> "SimDriver":
+        # Return the existing instance for every construction call so that
+        # SimDriver() and SimDriver.instance() are interchangeable.
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
 
     def __init__(self) -> None:
+        # Guard against re-initialisation when SimDriver() is called after the
+        # singleton already exists (e.g. from test code or accidental direct
+        # instantiation). Only SimDriver.instance() is the canonical entry
+        # point, but the guard makes direct calls safe too.
+        if self.__class__._initialized:
+            return
+        self.__class__._initialized = True
+
         self.active: bool = False
         self.scenario_slug: Optional[str] = None
         self.scenario: Optional[dict] = None

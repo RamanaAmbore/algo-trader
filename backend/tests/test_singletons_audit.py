@@ -1,18 +1,26 @@
-"""Singleton audit tests — Phase C.
+"""Singleton audit tests — Phase C + D.
 
 Verifies identity, concurrency safety, and O(1) cost for every
 singleton or module-level constant promoted during the audit.
 
 Coverage:
-  1. SingletonBase subclasses (Connections) — same object identity on N calls.
-  2. Module-level lazy singletons (httpx clients in transport/remote_broker/sync).
-  3. Module-level constants promoted from per-call (broker_apis._NSE_SEGMENT_MAP).
-  4. Logger singleton-per-name correctness (service/app module-level logger).
-  5. TickerManager / BroadcastBus module-level instance correctness.
-  6. GrammarRegistry module-level REGISTRY.
-  7. TemplateRegistry __new__ singleton.
-  8. Concurrency: 10 threads all see the same _NSE_SEGMENT_MAP identity.
-  9. Performance: 1000 accesses to _NSE_SEGMENT_MAP are O(1) in memory.
+  1.  SingletonBase subclasses (Connections) — same object identity on N calls.
+  2.  Module-level lazy singletons (httpx clients in transport/remote_broker/sync).
+  3.  Module-level constants promoted from per-call (broker_apis._NSE_SEGMENT_MAP).
+  4.  Logger singleton-per-name correctness (service/app module-level logger).
+  5.  TickerManager / BroadcastBus module-level instance correctness.
+  6.  GrammarRegistry module-level REGISTRY.
+  7.  TemplateRegistry __new__ singleton.
+  8.  Concurrency: 10 threads all see the same _NSE_SEGMENT_MAP identity.
+  9.  Performance: 1000 accesses to _NSE_SEGMENT_MAP are O(1) in memory.
+  10. Phase D — __new__-pattern re-init guards:
+      - SingletonBase: state survives repeated instantiation; 10-thread init
+        runs exactly once.
+      - TemplateRegistry: _cache survives repeated TemplateRegistry() calls;
+        10-thread concurrent construction; explicit no-op __init__.
+      - SimDriver: state survives SimDriver() called twice; 10-thread init
+        once; _initialized class flag prevents re-init.
+      - SimReplayDriver: same guarantees as SimDriver.
 """
 from __future__ import annotations
 
@@ -317,3 +325,254 @@ def test_sync_client_singleton():
     c1 = sync._get_client()
     c2 = sync._get_client()
     assert c1 is c2, "sync._get_client() must return the same httpx.Client"
+
+
+# ---------------------------------------------------------------------------
+# Phase D — __new__-pattern re-init guards
+# ---------------------------------------------------------------------------
+
+# ── SingletonBase ────────────────────────────────────────────────────────────
+
+def test_singleton_base_state_survives_second_instantiation():
+    """Mutate an attribute on the first instance; calling the constructor
+    again must NOT reset it."""
+    from backend.shared.helpers.singleton_base import SingletonBase
+
+    class _StatefulSingleton(SingletonBase):
+        def __init__(self):
+            if getattr(self, "_singleton_initialized", False):
+                return
+            self._singleton_initialized = True
+            self.counter = 0
+
+    a = _StatefulSingleton()
+    a.counter = 99                   # mutate state
+    b = _StatefulSingleton()         # second call — must not re-init
+    assert b is a, "Second instantiation must return the same object"
+    assert b.counter == 99, (
+        f"counter must survive second instantiation; got {b.counter}"
+    )
+
+    SingletonBase._instances.pop(_StatefulSingleton, None)
+
+
+def test_singleton_base_init_runs_exactly_once_under_concurrency():
+    """10 threads calling a SingletonBase subclass concurrently: init body
+    executes exactly once (counter incremented exactly once)."""
+    from backend.shared.helpers.singleton_base import SingletonBase
+
+    init_call_count = [0]
+    count_lock = threading.Lock()
+
+    class _CountedSingleton(SingletonBase):
+        def __init__(self):
+            if getattr(self, "_singleton_initialized", False):
+                return
+            self._singleton_initialized = True
+            with count_lock:
+                init_call_count[0] += 1
+
+    results: list[int] = []
+    id_lock = threading.Lock()
+
+    def worker():
+        inst = _CountedSingleton()
+        with id_lock:
+            results.append(id(inst))
+
+    threads = [threading.Thread(target=worker) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(set(results)) == 1, "All 10 threads must receive the same object"
+    assert init_call_count[0] == 1, (
+        f"__init__ body must run exactly once; ran {init_call_count[0]} times"
+    )
+
+    SingletonBase._instances.pop(_CountedSingleton, None)
+
+
+# ── TemplateRegistry ─────────────────────────────────────────────────────────
+
+def test_template_registry_cache_survives_second_call():
+    """Mutate _cache; calling TemplateRegistry() again must not reset it."""
+    from backend.api.algo.template_registry import TemplateRegistry
+
+    a = TemplateRegistry()
+    original_id = id(a._cache)
+    a._cache["notify"]["_test_key"] = {"channel": "log"}
+
+    b = TemplateRegistry()
+    assert b is a, "TemplateRegistry() must return the same instance"
+    assert "_test_key" in b._cache["notify"], (
+        "_cache must survive a second TemplateRegistry() call"
+    )
+    assert id(b._cache) == original_id, "_cache object must not be replaced"
+
+    # Cleanup sentinel key
+    del a._cache["notify"]["_test_key"]
+
+
+def test_template_registry_init_is_noop():
+    """TemplateRegistry.__init__ is explicitly a no-op — calling it directly
+    must not alter _cache."""
+    from backend.api.algo.template_registry import TemplateRegistry
+
+    reg = TemplateRegistry()
+    reg._cache["condition"]["_sentinel"] = {"metric": "pnl"}
+    cache_id_before = id(reg._cache)
+
+    reg.__init__()   # direct call — must be a no-op
+
+    assert id(reg._cache) == cache_id_before, (
+        "__init__() must not replace _cache"
+    )
+    assert "_sentinel" in reg._cache["condition"], (
+        "_cache contents must survive explicit __init__() call"
+    )
+
+    del reg._cache["condition"]["_sentinel"]
+
+
+def test_template_registry_concurrent_construction():
+    """10 threads calling TemplateRegistry() simultaneously all get the same
+    instance and _cache is initialised exactly once."""
+    from backend.api.algo.template_registry import TemplateRegistry
+
+    # Record the expected _cache identity before spawning threads.
+    expected_cache_id = id(TemplateRegistry()._cache)
+
+    ids: list[int] = []
+    cache_ids: list[int] = []
+    lock = threading.Lock()
+
+    def worker():
+        reg = TemplateRegistry()
+        with lock:
+            ids.append(id(reg))
+            cache_ids.append(id(reg._cache))
+
+    threads = [threading.Thread(target=worker) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(set(ids)) == 1, (
+        f"All threads must get the same TemplateRegistry; "
+        f"got {len(set(ids))} distinct ids"
+    )
+    assert len(set(cache_ids)) == 1, "_cache object must be identical across threads"
+    assert set(cache_ids) == {expected_cache_id}, "_cache must not be re-created"
+
+
+# ── SimDriver ────────────────────────────────────────────────────────────────
+
+def test_sim_driver_state_survives_second_instantiation():
+    """Mutate an attribute on the SimDriver singleton; calling SimDriver()
+    again must not reset the attribute."""
+    from backend.api.algo.sim.driver import SimDriver
+
+    a = SimDriver.instance()
+    a._sentinel_test_attr = "phase_d_marker"
+
+    b = SimDriver()        # direct constructor — triggers __init__
+    assert b is a, "SimDriver() must return the same instance"
+    assert getattr(b, "_sentinel_test_attr", None) == "phase_d_marker", (
+        "_sentinel_test_attr must survive SimDriver() re-call"
+    )
+
+    del a._sentinel_test_attr
+
+
+def test_sim_driver_initialized_flag_set():
+    """SimDriver._initialized must be True after first instantiation."""
+    from backend.api.algo.sim.driver import SimDriver
+
+    SimDriver.instance()   # ensure created
+    assert SimDriver._initialized is True, (
+        "SimDriver._initialized must be True after first creation"
+    )
+
+
+def test_sim_driver_concurrent_init_once():
+    """10 threads calling SimDriver.instance() concurrently: all get the
+    same object and _initialized flips to True exactly once."""
+    from backend.api.algo.sim.driver import SimDriver
+
+    ids: list[int] = []
+    lock = threading.Lock()
+
+    def worker():
+        inst = SimDriver.instance()
+        with lock:
+            ids.append(id(inst))
+
+    threads = [threading.Thread(target=worker) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(set(ids)) == 1, (
+        f"All threads must receive the same SimDriver; "
+        f"got {len(set(ids))} distinct ids"
+    )
+    assert SimDriver._initialized is True
+
+
+# ── SimReplayDriver ──────────────────────────────────────────────────────────
+
+def test_sim_replay_driver_state_survives_second_instantiation():
+    """Mutate an attribute on the SimReplayDriver singleton; calling
+    SimReplayDriver() again must not reset it."""
+    from backend.api.algo.sim.replay_driver import SimReplayDriver
+
+    a = SimReplayDriver.instance()
+    a._sentinel_test_attr = "replay_phase_d"
+
+    b = SimReplayDriver()   # direct constructor — triggers __init__
+    assert b is a, "SimReplayDriver() must return the same instance"
+    assert getattr(b, "_sentinel_test_attr", None) == "replay_phase_d", (
+        "_sentinel_test_attr must survive SimReplayDriver() re-call"
+    )
+
+    del a._sentinel_test_attr
+
+
+def test_sim_replay_driver_initialized_flag_set():
+    """SimReplayDriver._initialized must be True after first instantiation."""
+    from backend.api.algo.sim.replay_driver import SimReplayDriver
+
+    SimReplayDriver.instance()
+    assert SimReplayDriver._initialized is True, (
+        "SimReplayDriver._initialized must be True after first creation"
+    )
+
+
+def test_sim_replay_driver_concurrent_init_once():
+    """10 threads calling SimReplayDriver.instance() concurrently: all get
+    the same object."""
+    from backend.api.algo.sim.replay_driver import SimReplayDriver
+
+    ids: list[int] = []
+    lock = threading.Lock()
+
+    def worker():
+        inst = SimReplayDriver.instance()
+        with lock:
+            ids.append(id(inst))
+
+    threads = [threading.Thread(target=worker) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(set(ids)) == 1, (
+        f"All threads must receive the same SimReplayDriver; "
+        f"got {len(set(ids))} distinct ids"
+    )
+    assert SimReplayDriver._initialized is True
