@@ -28,18 +28,37 @@ const BASE  = process.env.BASE_URL  || 'https://dev.ramboq.com';
 const _PASS = process.env.PLAYWRIGHT_PASS || 'admin1234';
 
 // ── Auth helper ──────────────────────────────────────────────────────────────
+// Token is cached per worker process. Retry with back-off on 429 to
+// handle parallel workers hitting the rate limiter simultaneously.
 let _cachedToken = /** @type {string | null} */ (null);
 
 async function loginAsAdmin(page) {
-  if (!_cachedToken) {
-    for (const u of ['ambore', 'rambo', 'admin']) {
+  if (_cachedToken) {
+    await page.context().addInitScript((t) => {
+      sessionStorage.setItem('ramboq_token', t);
+    }, _cachedToken);
+    return;
+  }
+  // Try each username with up to 3 attempts (back-off on 429).
+  for (const u of ['ambore', 'rambo']) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       const r = await page.request.post(`${BASE}/api/auth/login`, {
         data: { username: u, password: _PASS },
       });
-      if (r.ok()) { _cachedToken = (await r.json()).access_token; break; }
+      if (r.ok()) {
+        _cachedToken = (await r.json()).access_token;
+        break;
+      }
+      if (r.status() === 429 && attempt < 2) {
+        // Back off: 1s then 2s.
+        await new Promise(res => setTimeout(res, (attempt + 1) * 1000));
+        continue;
+      }
+      break;
     }
-    if (!_cachedToken) throw new Error(`loginAsAdmin: login failed against ${BASE}`);
+    if (_cachedToken) break;
   }
+  if (!_cachedToken) throw new Error(`loginAsAdmin: login failed against ${BASE}`);
   await page.context().addInitScript((t) => {
     sessionStorage.setItem('ramboq_token', t);
   }, _cachedToken);
@@ -75,6 +94,7 @@ async function assertIndicatorOnNav(page, from, navSelector, indicatorSelector) 
 // Desktop tests (1366×768)
 // ════════════════════════════════════════════════════════════════════════════
 test.describe(`Navigation indicator — desktop [${BASE}]`, () => {
+  test.describe.configure({ mode: 'serial' });
   test.use({ viewport: { width: 1366, height: 768 } });
 
   test('algo layout: indicator appears + disappears on nav click', async ({ page }) => {
@@ -171,6 +191,7 @@ test.describe(`Navigation indicator — desktop [${BASE}]`, () => {
 // Mobile tests (390×844 — iPhone 14 form factor)
 // ════════════════════════════════════════════════════════════════════════════
 test.describe(`Navigation indicator — mobile [${BASE}]`, () => {
+  test.describe.configure({ mode: 'serial' });
   test.use({ viewport: { width: 390, height: 844 } });
 
   test('algo layout mobile: indicator shows on hamburger-initiated nav', async ({ page }) => {
