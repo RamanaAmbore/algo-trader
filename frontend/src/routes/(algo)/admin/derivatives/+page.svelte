@@ -1768,7 +1768,13 @@
     // Snapshot poll (every 30 s) via batchQuote, so it's at most 30 s
     // stale vs an SSE tick that could be arbitrarily old if the
     // underlying hasn't printed a tick since page-open.
-    const bqLtp = _underlyingQuotes[selectedUnderlying]?.ltp;
+    // ── untrack() here is essential: `_underlyingQuotes` is replaced
+    //    wholesale every 30 s (new object reference). Without untrack,
+    //    liveSpot would re-derive on EVERY snapshot poll in addition to
+    //    the 250 ms _throttledTick gate above — defeating the throttle
+    //    and causing downstream OptionsPayoff SVG re-renders at 30 s
+    //    intervals even with no user interaction.
+    const bqLtp = untrack(() => _underlyingQuotes[selectedUnderlying]?.ltp);
     if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
     return strategy?.spot;
   });
@@ -1840,9 +1846,18 @@
    *  shared by the legs grid TOTAL row and the snapshot row whose
    *  underlying matches `selectedUnderlying`. Both surfaces now read
    *  this value so they are always identical (same spot, same leg set,
-   *  same enabled-gate). */
+   *  same enabled-gate).
+   *
+   *  Uses `liveSpot` (already throttled to 250 ms via _throttledTick)
+   *  rather than reading `_underlyingQuotes[selectedUnderlying]?.ltp`
+   *  directly. The direct read would register a dependency on the whole
+   *  `_underlyingQuotes` object — which is replaced wholesale every 30 s
+   *  — causing this derived AND every downstream ($equityLegs, payoff
+   *  chart, legs-grid TOTAL row) to re-run at the snapshot poll cadence
+   *  on top of the 4 Hz tick rate. With `liveSpot` as the sole spot
+   *  source the cascade is bounded by the _throttledTick gate. */
   const _legsExpPnlTotal = $derived.by(() => {
-    const spot = _underlyingQuotes[selectedUnderlying]?.ltp ?? strategy?.spot ?? null;
+    const spot = liveSpot ?? null;
     return displayedCandidates
       .filter(c => _isLegEnabled(c))
       .reduce((/** @type {number} */ s, c) => {
@@ -4368,7 +4383,7 @@
             {@const ltp = lg && lg.ltp != null ? lg.ltp : c.ltp}
             {@const cost = c.avg_cost != null ? c.avg_cost : (lg ? lg.avg_cost : null)}
             {@const isClosed = Number(c.qty || 0) === 0}
-            {@const _expPnlLeg = _expiryPnl(c, _underlyingQuotes[selectedUnderlying]?.ltp ?? strategy?.spot ?? null)}
+            {@const _expPnlLeg = _expiryPnl(c, liveSpot ?? null)}
             <!-- displayQty = residual qty (after netting) when the row
                  came from the Close tab's expiry analysis; otherwise
                  the original position qty. Drives the qty cell, the
