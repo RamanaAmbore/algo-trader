@@ -240,27 +240,33 @@
     // picked up the holdings-qty-based delta. Operator: "position
     // profit in nav strip is not correct." Fix: prefix the key by
     // kind ('P' vs 'H') so each kind owns its own delta entry.
+    // LTP flicker fix (Jun 2026): treat any non-positive `live` as
+    // "no live tick yet" rather than as a 0 delta. With the new
+    // symbolStore zero-guard a 0 should never be stored at all, but
+    // a `Number()`-coerced edge case (null/NaN) would otherwise pass
+    // the `live == null` test and feed (0 − pollLtp) × qty = a
+    // negative phantom delta into the strip sum.
     for (const row of positions) {
       if (!_appliesToRow(row)) continue;
       const sym  = String(row?.tradingsymbol || '').toUpperCase();
       const live = untrack(() => getSnapshot(sym)?.ltp);
-      if (live == null) continue;
+      if (typeof live !== 'number' || !(live > 0)) continue;
       const pollLtp = Number(row?.last_price || 0);
       const qty     = Number(row?.quantity   || 0);
       if (!pollLtp || !qty) continue;
       const key = 'P\x00' + sym + '\x00' + String(row?.account || '');
-      m.set(key, (Number(live) - pollLtp) * qty);
+      m.set(key, (live - pollLtp) * qty);
     }
     for (const row of holdings) {
       if (!_appliesToRow(row)) continue;
       const sym  = String(row?.tradingsymbol || '').toUpperCase();
       const live = untrack(() => getSnapshot(sym)?.ltp);
-      if (live == null) continue;
+      if (typeof live !== 'number' || !(live > 0)) continue;
       const pollLtp = Number(row?.last_price || 0);
       const qty     = Number(row?.quantity   || 0);
       if (!pollLtp || !qty) continue;
       const key = 'H\x00' + sym + '\x00' + String(row?.account || '');
-      m.set(key, (Number(live) - pollLtp) * qty);
+      m.set(key, (live - pollLtp) * qty);
     }
     return m;
   });

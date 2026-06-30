@@ -219,23 +219,31 @@ function _mergeSymbolWrite(sym, fields, ts = {}) {
     if (incomingTs < storedTs) continue;  // stale write — reject
     if (/** @type {any} */ (next)[k] === v) continue;  // no-op
 
-    // Price-zero guard (Sleep audit Jun 2026): never overwrite a known-
-    // good (>0) price-class field with 0. The backend's last_good_ltp
-    // rescue cache (see backend/brokers/broker_apis.py) prevents zero
-    // leakage on the server side, but transient broker hiccups or stale
-    // snapshot payloads occasionally surface `last_price: 0` in poll
-    // responses. Allowing those to land here flickers the cell to "—"
-    // or zero for one render cycle. The same guard applies to `close`
-    // — a zero prev-close corrupts day_change = (ltp − close) × qty
-    // into ltp × qty (portfolio value, not change).
+    // Price-zero guard (LTP flicker definitive fix Jun 2026):
     //
-    // Cold-start (no prior positive value) keeps the existing behaviour
-    // so the cell paints SOMETHING rather than staying blank forever
-    // when the broker genuinely has no quote.
-    if ((k === 'ltp' || k === 'close') && v === 0) {
-      const prevVal = /** @type {any} */ (next)[k];
-      if (typeof prevVal === 'number' && prevVal > 0) continue;
-    }
+    // Never write a non-positive value to `ltp` or `close` — full stop.
+    // The earlier policy preserved zeros on cold start to let cells
+    // paint SOMETHING, but that turned into the operator's flicker
+    // root cause: a 0-stamped-fresh SSE snapshot would land first
+    // (cold-subscribed but not-yet-traded symbol), claim a fresh
+    // ltp_ts via the timestamp arbitration above, and then REJECT
+    // every subsequent positive poll (which arrives with ltp_ts=0).
+    // The cell would then stay at 0 until another live tick landed,
+    // which on an illiquid contract can be minutes.
+    //
+    // New policy: silently drop the write. The renderer interprets a
+    // missing field as "no quote yet" and paints "—" (a far better
+    // signal than a misleading 0). A subsequent positive value
+    // populates the field cleanly with no ts arbitration loss because
+    // there is no stored ts to compare against.
+    //
+    // Same guard applies to `close` — a zero prev-close corrupts the
+    // day_change = (ltp − close) × qty formula into portfolio-value
+    // territory (10× to 1000× too large).
+    //
+    // Belt + suspenders: backend `kite_ticker._on_ticks` and frontend
+    // `quoteStream.js` both filter `lp <= 0` before this layer.
+    if ((k === 'ltp' || k === 'close') && !(v > 0)) continue;
 
     /** @type {any} */ (next)[k] = v;
     changed = true;

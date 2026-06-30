@@ -676,13 +676,23 @@
   // on the LTP cell. Pilot on /pulse only (this component). Fires on every
   // SSE tick update, not just on delta, so it fires even on repeat values.
   const _ltpShimmer = createFreshnessShimmer({ durationMs: 700 });
-  /** Build a `{sym: ltp}` map snapshot from symbolStore for fast cell reads. */
+  /** Build a `{sym: ltp}` map snapshot from symbolStore for fast cell reads.
+   *
+   * LTP flicker fix (Jun 2026): include only strictly-positive values.
+   * A stored 0 (legacy entry from before the symbolStore zero-guard
+   * tightened up) would otherwise propagate into _liveLtpSnap and the
+   * valueGetter `?? p.data.ltp` chain would render 0 for that cell —
+   * `0 ?? p.data.ltp` is 0 because nullish-coalescing only falls back
+   * on null/undefined. Excluding non-positive values here lets the
+   * valueGetter fall through to the polled `p.data.ltp` (which may be
+   * positive even if symbolStore is cold), then to null (renders "—").
+   */
   function _buildLtpSnap() {
     /** @type {Record<string, number>} */
     const out = {};
     for (const [sym, snap] of symbolStore.entries()) {
       const v = snap?.ltp;
-      if (v != null && Number.isFinite(v)) out[sym] = v;
+      if (v != null && Number.isFinite(v) && v > 0) out[sym] = v;
     }
     return out;
   }
@@ -3648,8 +3658,12 @@
     }
     // Override the last (today's) point with the live SSE LTP when
     // available — sparkline tail tracks the real-time price.
-    const liveTail = _liveLtpSnap[sym] ?? null;
-    const closes = liveTail != null
+    // LTP flicker fix: only override with strictly-positive values.
+    // _buildLtpSnap already excludes <= 0 entries; the explicit check
+    // here is defensive and keeps the sparkline polyline from
+    // collapsing the today-bar to baseline on a transient zero.
+    const liveTail = _liveLtpSnap[sym];
+    const closes = (typeof liveTail === 'number' && liveTail > 0)
       ? [...base.slice(0, -1), liveTail]
       : base;
     // SVG centered inside a flex wrapper that fills the cell, so left
@@ -3831,10 +3845,29 @@
       cellClass: 'spark-cell',
       headerClass: 'ag-header-cell-spark',
     };
+    // LTP flicker fix (Jun 2026): canonical resolver for the LTP a cell
+    // should display. _liveLtpSnap is already filtered to positive
+    // values (see _buildLtpSnap); the polled row.ltp fallback can still
+    // be 0 mid-poll-race (broker returned a stale tick before our
+    // backfill ran). Treat any non-positive numeric value as "no quote"
+    // so the cell renders "—" instead of "0" — never let a 0 propagate
+    // into the visible price column or into the day-change classifier
+    // below. Operator: "flickering LTP is a major issue".
+    const _resolveCellLtp = (/** @type {any} */ p) => {
+      if (!p?.data) return null;
+      const sym = String(p.data.tradingsymbol || '').toUpperCase();
+      const live = _liveLtpSnap[sym];
+      if (typeof live === 'number' && live > 0) return live;
+      const polled = Number(p.data.ltp);
+      if (Number.isFinite(polled) && polled > 0) return polled;
+      return null;
+    };
     const _ltpCol = {
       // valueGetter reads _liveLtpSnap first (real-time SSE tick) and
       // falls back to the polled row.ltp from buildUnified. ag-Grid
       // re-evaluates the getter when refreshCells is called on 'ltp'.
+      // Both sources are filtered to v > 0 by _resolveCellLtp so a
+      // transient 0 NEVER paints on the LTP column — cell renders "—".
       colId: 'ltp', headerName: 'LTP', width: 77, minWidth: 77, maxWidth: 96,
       type: 'numericColumn', headerClass: numericHdr,
       // Heat encoding: bg vs purchase price (avg_pos / avg_hold),
@@ -3844,7 +3877,7 @@
       cellClass: (p) => {
         if (!p.data || p.data._isTotal) return RA;
         const sym = String(p.data.tradingsymbol || '').toUpperCase();
-        const ltp  = _liveLtpSnap[sym] ?? p.data.ltp ?? null;
+        const ltp  = _resolveCellLtp(p);
         const prev = p.data.close ?? null;
         const avg  = (p.data.qty_pos && p.data.avg_pos) ? p.data.avg_pos
                    : (p.data.qty_hold && p.data.avg_hold) ? p.data.avg_hold
@@ -3865,11 +3898,7 @@
         }
         return cls.join(' ');
       },
-      valueGetter: (p) => {
-        if (!p.data) return null;
-        const sym = String(p.data.tradingsymbol || '').toUpperCase();
-        return _liveLtpSnap[sym] ?? p.data.ltp ?? null;
-      },
+      valueGetter: _resolveCellLtp,
       valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
     };
     const _prevCol = {

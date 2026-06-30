@@ -253,11 +253,18 @@ class TickerManager:
         """
         Return a snapshot of all currently-held ticks as
         {token: {ltp, sym}} for the SSE initial-snapshot event.
+
+        Defensive: filters out any non-positive `lp` even though the
+        post-fix `_on_ticks` zero-guard already prevents 0 from entering
+        `_tick_map`. Belt + suspenders for the LTP-flicker fix — if a
+        future code change re-introduces a 0 write path, the snapshot
+        still won't propagate it to new SSE clients.
         """
         with self._lock:
             return {
                 tok: {"ltp": lp, "sym": self._token_to_sym.get(tok, "")}
                 for tok, lp in self._tick_map.items()
+                if isinstance(lp, (int, float)) and lp > 0
             }
 
     def subscribe(self, tokens: Iterable[int]) -> None:
@@ -665,6 +672,17 @@ class TickerManager:
         Bus.publish() is called outside the lock to minimise hold time —
         it acquires its own internal lock briefly to snapshot the queue
         set.
+
+        Zero-LTP guard (Sleep audit Jun 2026 — LTP flicker definitive fix):
+        Kite occasionally sends `last_price: 0` for a freshly-subscribed
+        instrument before the first real trade lands (especially on
+        illiquid MCX contracts and right at market open). Publishing those
+        zeros to the SSE bus poisons the frontend symbolStore — the
+        ltp_ts arbitration there then refuses the next positive poll
+        (`incomingTs(0) < storedTs(NOW)` rejects the write) and the cell
+        stays at 0 until another live tick lands, which on an illiquid
+        contract can be minutes. Filtering at the source (lp > 0) means
+        no zero ever lands in `_tick_map`, the SSE bus, or `/dev/shm`.
         """
         to_publish: list[dict] = []
         ts = int(time.time())
@@ -673,17 +691,25 @@ class TickerManager:
             for t in ticks:
                 tok = t.get("instrument_token")
                 lp  = t.get("last_price")
-                if tok is not None and lp is not None:
-                    tok = int(tok)
-                    lp  = float(lp)
-                    self._tick_map[tok] = lp
-                    self._tick_age[tok] = ts
-                    to_publish.append({
-                        "tok": tok,
-                        "sym": self._token_to_sym.get(tok, ""),
-                        "ltp": lp,
-                        "ts":  ts,
-                    })
+                # Skip ticks with no token, no price, or zero/negative
+                # price (cold-subscription artefact — see docstring).
+                if tok is None or lp is None:
+                    continue
+                try:
+                    lp_f = float(lp)
+                except (TypeError, ValueError):
+                    continue
+                if not (lp_f > 0):
+                    continue
+                tok = int(tok)
+                self._tick_map[tok] = lp_f
+                self._tick_age[tok] = ts
+                to_publish.append({
+                    "tok": tok,
+                    "sym": self._token_to_sym.get(tok, ""),
+                    "ltp": lp_f,
+                    "ts":  ts,
+                })
         # Mirror to the shared-memory buffer outside the lock — the
         # writer's only state is mmap byte positions; safe to call
         # concurrently with reads from other processes (we're the
