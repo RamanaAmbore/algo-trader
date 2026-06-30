@@ -136,16 +136,13 @@
   // template previously used `loading` to decide which glyph to show
   // and which CSS class to apply.
   //
-  // Closed-hours suppression: during a fully-closed market the click
-  // path fires the snapshot toast and calls onClick (parent's load()
-  // hits the snapshot path — fast DB read, no broker round-trip). The
-  // spinner is misleading in that window: it suggests live fetching when
-  // the surface is just re-reading the static snapshot. Operator: "refresh
-  // button should not rotate even the popup shows up during market
-  // closure." Gate the visual spin off when both segments are closed,
-  // regardless of `loading` state.
+  // Closed-hours suppression: manual click during a fully-closed market
+  // hits the snapshot path (fast DB read). Spinning misleads — looks
+  // like live fetching when nothing live is happening. Refire is a
+  // genuine post-hibernation refetch and should still spin so the
+  // operator sees feedback for the real async work.
   const _showSpinning = $derived(
-    (loading || _refiring) && (_nseOpen || _mcxOpen)
+    _refiring || (loading && (_nseOpen || _mcxOpen))
   );
 
   // Refire-only flag — true when post-hibernation refire is active but

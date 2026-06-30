@@ -42,14 +42,21 @@
     }
   }
 
-  onMount(() => {
+  // Lazy polling: load once on mount (so the chip-driven toggle can
+  // open instantly with data); then poll every 30 s ONLY while the modal
+  // is open. Closed-modal background polling would burn ~120 req/hr
+  // forever with no consumer reading the result.
+  onMount(() => { load(); });
+  $effect(() => {
+    if (!open) {
+      _teardown();
+      _teardown = () => {};
+      return;
+    }
     load();
     _teardown = visibleInterval(load, 30_000);
   });
-
-  onDestroy(() => {
-    _teardown();
-  });
+  onDestroy(() => { _teardown(); });
 
   function _fmtIso(iso) {
     if (!iso) return '—';

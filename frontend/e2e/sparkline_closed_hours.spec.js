@@ -280,7 +280,8 @@ test('MarketPulse has no raw setInterval that calls loadSparklines', async ({ pa
     ? join(process.cwd(), 'src/lib/MarketPulse.svelte')
     : join(process.cwd(), 'frontend/src/lib/MarketPulse.svelte');
 
-  const src = require('fs').readFileSync(resolvedSrc, 'utf8');
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(resolvedSrc, 'utf8');
 
   // Grep for raw setInterval that mentions loadSparklines.
   // Pattern: setInterval(...loadSparklines...) or setInterval(() => { ...loadSparklines... })

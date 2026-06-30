@@ -94,16 +94,29 @@ def _coalesce(batch: list[dict]) -> dict[str, list[dict[str, Any]]]:
     }
 
 
-def _coalesce_ohlcv(payloads: list[dict]) -> list[dict[str, Any]]:
-    """Merge into unique (symbol, exchange, date) rows, last-write-wins.
+def _parse_date(raw: Any) -> tuple[Any, str] | None:
+    """Coerce a date payload value into (datetime.date, iso-string).
 
-    `bar['date']` arrives as a "YYYY-MM-DD" string (set by
-    ohlcv_store._materialise_bars). asyncpg now binds the date column
-    strictly — it wants a `datetime.date`, not a string. Convert here
-    so every row hits _upsert_ohlcv with the right type. Strings that
-    fail to parse are dropped (better than a whole batch failing for
-    one malformed row)."""
+    Producers ship dates as either `datetime.date` objects or "YYYY-MM-DD"
+    strings; asyncpg binds strictly to `date` so strings would raise
+    `'str' object has no attribute 'toordinal'`. Returns None for empty
+    or unparseable input so the caller can drop the row without poisoning
+    the rest of the batch.
+    """
     from datetime import date as _date
+    if not raw:
+        return None
+    if isinstance(raw, _date):
+        return raw, raw.isoformat()
+    s = str(raw)[:10]
+    try:
+        return _date.fromisoformat(s), s
+    except ValueError:
+        return None
+
+
+def _coalesce_ohlcv(payloads: list[dict]) -> list[dict[str, Any]]:
+    """Merge into unique (symbol, exchange, date) rows, last-write-wins."""
     seen: dict[tuple[str, str, str], dict[str, Any]] = {}
     for payload in payloads:
         sym  = str(payload.get("symbol", ""))
@@ -111,19 +124,10 @@ def _coalesce_ohlcv(payloads: list[dict]) -> list[dict[str, Any]]:
         if not sym or not exch:
             continue
         for bar in payload.get("bars", []):
-            d_raw = bar.get("date", "")
-            if not d_raw:
+            parsed = _parse_date(bar.get("date"))
+            if parsed is None:
                 continue
-            if isinstance(d_raw, _date):
-                d_obj = d_raw
-                d_key = d_obj.isoformat()
-            else:
-                d_str = str(d_raw)[:10]
-                try:
-                    d_obj = _date.fromisoformat(d_str)
-                except ValueError:
-                    continue  # unparseable — drop row, keep batch
-                d_key = d_str
+            d_obj, d_key = parsed
             seen[(sym, exch, d_key)] = {
                 "symbol":   sym,
                 "exchange": exch,
@@ -138,34 +142,16 @@ def _coalesce_ohlcv(payloads: list[dict]) -> list[dict[str, Any]]:
 
 
 def _coalesce_instruments(payloads: list[dict]) -> list[dict[str, Any]]:
-    """One row per (exchange, date), last-write-wins.
-
-    `payload["date"]` arrives as a "YYYY-MM-DD" string from the producer.
-    asyncpg binds the date column strictly — it wants a `datetime.date`,
-    not a string ("'str' object has no attribute 'toordinal'"). Convert
-    here so the upsert succeeds. Same fix already applied to
-    _coalesce_ohlcv and _coalesce_intraday. An unconverted string was
-    poisoning the whole batch upsert (one bad row = batch dropped) which
-    starved intraday_bars + ohlcv_daily of writes — sparklines on the
-    DB-only path returned empty because nothing ever made it to the DB.
-    """
-    from datetime import date as _date
+    """One row per (exchange, date), last-write-wins."""
     seen: dict[tuple[str, str], dict[str, Any]] = {}
     for payload in payloads:
         exch = str(payload.get("exchange", ""))
-        d_raw = payload.get("date", "")
-        if not exch or not d_raw:
+        if not exch:
             continue
-        if isinstance(d_raw, _date):
-            d_obj = d_raw
-            d_key = d_obj.isoformat()
-        else:
-            d_str = str(d_raw)[:10]
-            try:
-                d_obj = _date.fromisoformat(d_str)
-            except ValueError:
-                continue  # unparseable — drop row, keep batch
-            d_key = d_str
+        parsed = _parse_date(payload.get("date"))
+        if parsed is None:
+            continue
+        d_obj, d_key = parsed
         seen[(exch, d_key)] = {
             "exchange":  exch,
             "date":      d_obj,
@@ -192,35 +178,18 @@ def _coalesce_holidays(payloads: list[dict]) -> list[dict[str, Any]]:
 
 
 def _coalesce_intraday(payloads: list[dict]) -> list[dict[str, Any]]:
-    """Merge into unique (symbol, exchange, date, interval, bar_ts) rows, last-write-wins.
-
-    `payload["date"]` arrives as a "YYYY-MM-DD" string (set by
-    intraday_store._enqueue_persist). asyncpg binds the date column
-    strictly — it wants a `datetime.date`, not a string. Convert here
-    so every row hits _upsert_intraday with the right type (same fix
-    already applied to _coalesce_ohlcv). Strings that fail to parse
-    are dropped to keep the rest of the batch healthy.
-    """
-    from datetime import date as _date
+    """Merge into unique (symbol, exchange, date, interval, bar_ts) rows, last-write-wins."""
     seen: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
     for payload in payloads:
         sym      = str(payload.get("symbol",   ""))
         exch     = str(payload.get("exchange", ""))
-        date_raw = payload.get("date", "")
         interval = str(payload.get("interval", "30minute"))
-        if not sym or not exch or not date_raw:
+        if not sym or not exch:
             continue
-        # Convert date to datetime.date object — asyncpg rejects plain strings.
-        if isinstance(date_raw, _date):
-            d_obj  = date_raw
-            d_key  = d_obj.isoformat()
-        else:
-            d_str = str(date_raw)[:10]
-            try:
-                d_obj = _date.fromisoformat(d_str)
-            except ValueError:
-                continue  # unparseable — drop payload, keep batch
-            d_key = d_str
+        parsed = _parse_date(payload.get("date"))
+        if parsed is None:
+            continue
+        d_obj, d_key = parsed
         for bar in payload.get("bars", []):
             bar_ts = str(bar.get("bar_ts", ""))
             if not bar_ts:
@@ -244,11 +213,8 @@ def _coalesce_intraday(payloads: list[dict]) -> list[dict[str, Any]]:
 # ── Upsert ────────────────────────────────────────────────────────────────────
 
 async def _upsert(by_kind: dict[str, list[dict[str, Any]]]) -> None:
-    """Run each kind's upsert in its own try/except so a malformed row
-    in one kind can't poison the rest of the batch. Earlier a string-date
-    in instruments_snapshot was raising asyncpg.DataError and skipping the
-    intraday_bars + ohlcv_daily writes that came after it in the same call,
-    leaving the sparkline DB-only path with nothing to serve."""
+    """Run each kind in its own try/except so one bad row can't
+    cancel writes for the others."""
     kinds = (
         ("ohlcv_daily",          _upsert_ohlcv),
         ("instruments_snapshot", _upsert_instruments),
