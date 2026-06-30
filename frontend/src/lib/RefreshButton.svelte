@@ -33,6 +33,7 @@
   import { connStatus, startConnStatusPoller, lastRefreshAt, formatDualTz, visibleInterval, postHibernationRefiring } from '$lib/stores';
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { symbolTickCount } from '$lib/data/symbolStore.svelte.js';
+  import { toast } from '$lib/data/toastStore.svelte.js';
   import { onMount, onDestroy } from 'svelte';
 
   /**
@@ -137,9 +138,9 @@
   const _showSpinning = $derived(loading || _refiring);
 
   // Refire-only flag — true when post-hibernation refire is active but
-  // no manual click is in flight. This drives the amber palette on the
+  // no manual click is in flight. This drives the violet palette on the
   // spinner SVG so the operator can distinguish "auto reconnect after
-  // idle" (amber) from "manual Refresh click" (cyan-400).
+  // idle" (violet) from "manual Refresh click" (cyan-400).
   const _refireOnly = $derived(_refiring && !loading);
 
   // Belt-and-suspenders: when spinner engages (via either source), clear any
@@ -209,20 +210,46 @@
     : _mcxOpen            ? 'MCX open · Equity closed'
     :                       'Market closed'
   );
-  // Closed-market notice popup. Operator: "when market is closed and
-  // pressing refresh button should show popup stating market is
-  // closed" — the slate palette during the market-closed state reads
-  // as disabled, so the operator clicks and sees no feedback. Click
-  // during market-closed now opens an informational popup explaining
-  // why. The page-level pollers continue to auto-refresh in the
-  // background ("it refreshes on its own for any data that is fine"
-  // — operator), so manual refresh during a closed session is
-  // intentionally a no-op.
-  let _showClosedNotice = $state(false);
+  // Closed-market UX (slice Market-Lifecycle).
+  //
+  // Previous behaviour: click during closed-market → modal popup,
+  // refresh BLOCKED ("Both NSE and MCX are currently closed. OK").
+  // Operator now wants the refresh to STILL FIRE — broker positions,
+  // cash, holdings still refresh from the daily_book / snapshot path —
+  // and a brief toast surfaces the "you're looking at a close snapshot"
+  // context. No more blocking popup. The toast is auto-dismissed by
+  // toastStore's 3000ms default.
+  //
+  // The toast says when the markets next reopen so the operator knows
+  // when live ticks will resume. Equity opens 09:15 IST, MCX 09:00 IST;
+  // we surface MCX (earlier of the two) as the next-open window.
+  let _showClosedNotice = $state(false); // retained for back-compat popups
+  function _nextOpenLabel() {
+    // Reopen-time hint: which window comes next?
+    //   NSE 09:15-15:30 — equity
+    //   MCX 09:00-23:30 — commodities
+    // Outside both, MCX opens earliest (09:00 IST) on the next trading
+    // day. We don't compute the holiday-aware next-trading-day here —
+    // the server-side market status poller already gates polls; this
+    // toast just gives a quick human cue.
+    return '09:00 IST';
+  }
   function _handleClick() {
     if (_showSpinning) return;
     if (!_nseOpen && !_mcxOpen) {
-      _showClosedNotice = true;
+      // Fire the refresh anyway — broker positions / cash / holdings
+      // come from the snapshot path during closed hours and the
+      // operator may still want fresher numbers (e.g. after a manual
+      // fund transfer). The toast clarifies why ticks stay frozen.
+      try {
+        toast.info(
+          `Showing close snapshot — markets reopen at ${_nextOpenLabel()}`,
+          { timeoutMs: 3000 }
+        );
+      } catch (_) { /* toast store unavailable — silent */ }
+      queueMicrotask(() => {
+        try { onClick?.(); } catch (e) { console.warn('[refresh] onClick threw:', e); }
+      });
       return;
     }
     // CLICK-FEEDBACK FIX (Perf audit Jul 2026): defer the parent's
@@ -488,7 +515,7 @@
      base rf-spinning rule above; the rf-refiring qualifier pushes it
      to (0,4,1) so it wins without !important. */
   .rf-btn.rf-spinning.rf-refiring svg {
-    color: rgb(251, 191, 36); /* amber-400 — post-hibernation refire */
+    color: rgb(139, 92, 246); /* violet-500 — post-hibernation refire (distinct from amber MCX-only resting state) */
   }
   @keyframes rf-spin {
     from { transform: rotate(0deg); }

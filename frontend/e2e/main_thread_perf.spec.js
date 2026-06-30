@@ -492,15 +492,15 @@ test.describe('RefreshButton spin — visibility-return after hibernation', () =
     await expect(refreshBtn).toHaveClass(/rf-refiring/, { timeout: 500 });
     console.log('[reconnect] RefreshButton has rf-refiring class (amber state)');
 
-    // Spinner SVG color should be amber-400 (rgb(251, 191, 36)) during refire.
-    // This validates the CSS rule `.rf-btn.rf-spinning.rf-refiring svg { color: rgb(251, 191, 36) }`.
+    // Spinner SVG color should be violet-500 (rgb(139, 92, 246)) during refire.
+    // This validates the CSS rule `.rf-btn.rf-spinning.rf-refiring svg { color: rgb(139, 92, 246) }`.
     const spinnerColor = await refreshBtn.locator('svg').first().evaluate((el) =>
       window.getComputedStyle(el).color
     );
     console.log(`[reconnect] spinner SVG color during refire: "${spinnerColor}"`);
     expect(spinnerColor,
-      `Spinner SVG color during refire should be amber-400 rgb(251, 191, 36), got "${spinnerColor}"`
-    ).toBe('rgb(251, 191, 36)');
+      `Spinner SVG color during refire should be violet-500 rgb(139, 92, 246), got "${spinnerColor}"`
+    ).toBe('rgb(139, 92, 246)');
 
     // Button stops spinning after _RECONNECT_MAX_MS = 3 s (real timer).
     // No clock advance needed — waitForTimeout lets the real timer fire.
@@ -562,13 +562,13 @@ test.describe('RefreshButton spin — visibility-return after hibernation', () =
   });
 });
 
-// ── RefreshButton color distinction — amber refire vs cyan manual ────────────
+// ── RefreshButton color distinction — violet refire vs cyan manual ────────────
 //
 // Verifies the visual distinction between the two spinner modes:
 //   - Manual Refresh click: rf-spinning WITHOUT rf-refiring → cyan-400
 //     `rgb(34, 211, 238)` on the SVG icon.
-//   - Post-hibernation refire: rf-spinning WITH rf-refiring → amber-400
-//     `rgb(251, 191, 36)` on the SVG icon (asserted in the hibernation block).
+//   - Post-hibernation refire: rf-spinning WITH rf-refiring → violet-500
+//     `rgb(139, 92, 246)` on the SVG icon (asserted in the hibernation block).
 //
 // This block covers only the manual-click path (no rf-refiring class, cyan).
 
