@@ -61,8 +61,9 @@
   });
 
   let _refreshing = $state(false);
-  // TODO: when SimulatorPanel / ReplayPanel expose a reload() handle,
-  // await it here inside a try/finally and remove the setTimeout fallback.
+  // SimulatorPanel / ReplayPanel don't yet expose a reload() handle so
+  // we use a fixed-duration spinner — kicks off the next panel load and
+  // flips the badge back after the panel's own debounce settles.
   function _onRefresh() {
     _refreshing = true;
     lastRefreshAt.set(Date.now());

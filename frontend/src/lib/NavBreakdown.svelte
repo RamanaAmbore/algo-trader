@@ -26,6 +26,7 @@
 <script>
   import { aggCompact } from '$lib/format';
   import { fundsStore, holdingsStore, positionsStore } from '$lib/data/marketDataStores.svelte.js';
+  import { navByAccount, navTotalRow } from '$lib/data/nav';
 
   /** @type {{
    *   accountFilter?: string[],
@@ -64,43 +65,10 @@
     return _allAccounts.filter(a => allow.has(a));
   });
 
-  // Per-account NAV row. Matches PerformancePage `navByAcct`:
-  //   cash    = cash_sod + option_premium      (from funds row)
-  //   pos_m2m = Σ position.unrealised for acct (broker MTM)
-  //   hold    = Σ holdings.cur_val for acct    (broker qty × LTP)
-  //   nav     = cash + pos_m2m + hold
-  function _navRow(acct) {
-    const fundsRow    = _funds.find(r => r.account === acct);
-    const cash_sod    = Number(fundsRow?.cash) || 0;
-    const opt_premium = Number(fundsRow?.option_premium) || 0;
-    const cash_total  = cash_sod + opt_premium;
-    const pos_m2m = _positions
-      .filter(r => r.account === acct)
-      .reduce((s, r) => s + (Number(r.unrealised) || 0), 0);
-    const holdings_mtm = _holdings
-      .filter(r => r.account === acct)
-      .reduce((s, r) => s + (Number(r.cur_val) || 0), 0);
-    return {
-      account: acct,
-      cash:         cash_total,
-      pos_m2m,
-      holdings_mtm,
-      nav:          cash_total + pos_m2m + holdings_mtm,
-    };
-  }
-
-  const _navByAcct = $derived(_scopedAccounts.map(_navRow));
-
-  const _navTotal = $derived.by(() => {
-    if (!_navByAcct.length) return null;
-    return _navByAcct.reduce((acc, r) => ({
-      account:      'TOTAL',
-      cash:         acc.cash         + r.cash,
-      pos_m2m:      acc.pos_m2m      + r.pos_m2m,
-      holdings_mtm: acc.holdings_mtm + r.holdings_mtm,
-      nav:          acc.nav          + r.nav,
-    }), { account: 'TOTAL', cash: 0, pos_m2m: 0, holdings_mtm: 0, nav: 0 });
-  });
+  // Canonical NAV breakdown via `$lib/data/nav`. Same math as
+  // PerformancePage navByAcct + backend nav.py:compute_firm_nav.
+  const _navByAcct = $derived(navByAccount(_scopedAccounts, _funds, _positions, _holdings));
+  const _navTotal  = $derived(navTotalRow(_navByAcct));
 
   function _cls(v) {
     if (v == null || !Number.isFinite(v)) return 'nav-zero';

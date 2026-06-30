@@ -1,50 +1,44 @@
 """
 NAV calculation — firm-level daily aggregate.
 
-NAV (v3) = Σ (cash + used_margin)        across all funded accounts
-         + Σ position.unrealised         across open positions
-         + Σ holding.cur_val             across all holdings
+NAV (v4) = Σ (cash_sod + option_premium)  across all funded accounts
+         + Σ position.unrealised          across open positions
+         + Σ holding.cur_val              across all holdings
 
-Operator framework (v3 replaces v2):
+Why v4 replaces v3:
+
+  • v3 added `used_margin` back to cash to undo broker_funds.net's
+    subtraction. That double-counted any futures SPAN margin that's
+    *already* embedded in position.unrealised (broker's M2M reflects
+    the funded margin requirement; adding the cash form of it again
+    inflates NAV). Audit Sprint E confirmed via account-level
+    reconciliation against `kite.profile().net`.
+  • v4 uses `option_premium` only — the sum of long-option premiums
+    paid (operator-verified spec). Cash side becomes
+    `cash_sod + option_premium`, leaving futures margin to flow
+    purely through position.unrealised.
+
+Operator framework (unchanged across v3 → v4):
 
   • Collateral has zero impact on NAV. Pledged stock is the SAME
     stock already counted in holdings.cur_val — including
     funds.collateral would double-count it.
-  • Used margin has zero impact on NAV. Margin currently locked
-    behind open positions is still YOUR cash; it just isn't free.
-    Subtracting it (as funds.net does) drops it from NAV; the fix
-    is to add it back to cash so total_cash_owned = free_cash +
-    locked_cash.
+  • Cash spent on options is captured by adding `option_premium`
+    back: the broker debits cash when you buy a long option, then
+    surfaces the premium under `util option_premium`. Adding it
+    back means the long-option leg is reflected via
+    position.unrealised (M2M re-valuation) without losing the cost
+    basis.
   • Only M2M unrealized gains/losses move NAV. Positions
     contribute their unrealised field (LTP-avg)×qty — the broker's
     pre-computed open-position P&L. Holdings contribute cur_val
     (qty × LTP). Neither term double-counts the cash spent on
     them; that cash converted into the position/holding at cost,
     and cur_val / unrealised captures the M2M re-valuation.
-  • Cash spent on options or stocks counts the same as cash. The
-    cost basis is automatically captured: for stocks via cur_val
-    (= cost + M2M), for options via the LTP-vs-avg unrealised
-    delta. No separate cash-equivalence term is needed.
-
-v2 used funds.net + cur_val + unrealised which expanded to:
-  (cash + collateral − used_margin) + cur_val + unrealised
-This over-counted pledged stock (+collateral) and dropped locked
-margin (−used_margin). Net error per account ≈ collateral − 2 ×
-used_margin. v3 drops the collateral term and adds used_margin
-back, restoring both errors.
-
-2. position.unrealised — the broker's already-computed unrealized
-   P&L per position. v1 used `qty × LTP` which is the NOTIONAL value
-   of an F&O contract (your obligation), NOT what the position is
-   worth to you. For futures and short options, qty × LTP is the
-   total contract value (lakhs); your actual exposure is just the
-   M2M change since entry. v2 uses the `unrealised` field that
-   broker_apis.fetch_positions surfaces (Kite computes it natively).
-
-3. holdings qty × LTP — kept as v1. You DO own the shares, so the
-   full mark-to-market value is your wealth. Pledged shares are
-   already counted via funds.net (haircut collateral), so non-pledged
-   holdings are what fetch_holdings returns.
+  • Holdings qty × LTP: you DO own the shares, so the full
+    mark-to-market value is your wealth. Pledged shares are
+    already counted via funds.net (haircut collateral), so
+    non-pledged holdings are what fetch_holdings returns.
 
 LTPs come from the same fallback chain the strategy unrealised
 calc uses: KiteTicker tick_map (zero broker quota for subscribed
@@ -57,6 +51,10 @@ Caller responsibility:
 - The daily background task calls this once at 16:00 IST; the
   operator can also trigger via the admin endpoint for ad-hoc
   recompute / backfill.
+
+Frontend equivalent: `frontend/src/lib/data/nav.js` (navByAccount).
+Both surfaces share the same v4 formula; any future revision must
+update both files together.
 """
 
 from __future__ import annotations
@@ -325,9 +323,9 @@ async def compute_firm_nav() -> dict:
     nav = cash_total + positions_mtm + holdings_mtm
     return {
         "nav": round(nav, 2),
-        "cash_total": round(cash_total, 2),           # = Σ funds.net (v2)
-        "positions_mtm": round(positions_mtm, 2),     # = Σ position.unrealised (v2)
-        "holdings_mtm": round(holdings_mtm, 2),       # = Σ qty × LTP per holding
+        "cash_total": round(cash_total, 2),           # = Σ (cash_sod + option_premium)
+        "positions_mtm": round(positions_mtm, 2),     # = Σ position.unrealised
+        "holdings_mtm": round(holdings_mtm, 2),       # = Σ holding.cur_val
         "accounts": sorted(accounts_in),
         "errors": errors,
     }

@@ -107,23 +107,3 @@ def stub_connections(reset_singletons, stub_kite_connection):
     return conn
 
 
-@pytest.fixture
-def demo_request_state():
-    """
-    Create a request.state mock with is_demo=True for testing
-    demo-mode gating in routes.
-    """
-    state = MagicMock()
-    state.is_demo = True
-    return state
-
-
-@pytest.fixture
-def admin_request_state():
-    """
-    Create a request.state mock with is_demo=False for testing
-    admin path routes.
-    """
-    state = MagicMock()
-    state.is_demo = False
-    return state

@@ -10,9 +10,6 @@ POST /api/orders/preflight    — pre-validate an order before it hits the broke
                                 Returns structured blockers (MARGIN_SHORTFALL,
                                 SEGMENT_INACTIVE, QTY_FREEZE, ACCOUNT_UNKNOWN)
                                 with actionable fix text. Does not place an order.
-POST /api/orders/place        — DEPRECATED. Direct-broker placement, kept for
-                                external scripts only. New integrations must
-                                use /ticket. Hits log a deprecation warning.
 PUT  /api/orders/{order_id}   — modify an open order
 DELETE /api/orders/{order_id} — cancel an open order
 POST /api/orders/postback     — Kite postback: real-time order status updates
@@ -51,8 +48,6 @@ from backend.api.schemas import (
     ModifyOrderResponse,
     OrderRow,
     OrdersResponse,
-    PlaceOrderRequest,
-    PlaceOrderResponse,
     ReconcileSingleRequest,
     TicketOrderRequest,
     TicketOrderResponse,
@@ -62,7 +57,7 @@ from backend.api.schemas import (
 from backend.brokers.connections import Connections
 from backend.shared.helpers.date_time_utils import timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import mask_account, mask_column, secrets
+from backend.shared.helpers.utils import mask_account, mask_account_in_text, mask_column, secrets
 
 logger = get_logger(__name__)
 
@@ -631,30 +626,6 @@ async def _start_live_chase(account: str, symbol: str, exchange: str,
     # and fires place_order; even a cold market should land
     # under 5 s. 15 s gives Kite room for a slow first call.
     return await asyncio.wait_for(fut, timeout=15.0)
-
-
-def _validate_place(req: PlaceOrderRequest) -> None:
-    errors = []
-    if req.variety not in _VARIETIES:
-        errors.append(f"variety must be one of {_VARIETIES}")
-    if req.exchange not in _EXCHANGES:
-        errors.append(f"exchange must be one of {_EXCHANGES}")
-    if req.transaction_type not in _TXN_TYPES:
-        errors.append("transaction_type must be BUY or SELL")
-    if req.order_type not in _ORDER_TYPES:
-        errors.append(f"order_type must be one of {_ORDER_TYPES}")
-    if req.product not in _PRODUCTS:
-        errors.append(f"product must be one of {_PRODUCTS}")
-    if req.validity not in _VALIDITIES:
-        errors.append("validity must be DAY or IOC")
-    if req.order_type in ("LIMIT", "SL") and not req.price:
-        errors.append("price is required for LIMIT / SL orders")
-    if req.order_type in ("SL", "SL-M") and not req.trigger_price:
-        errors.append("trigger_price is required for SL / SL-M orders")
-    if req.quantity <= 0:
-        errors.append("quantity must be > 0")
-    if errors:
-        raise HTTPException(status_code=422, detail="; ".join(errors))
 
 
 def _row_from_dict(d: dict, account: str) -> OrderRow:
@@ -2202,7 +2173,6 @@ class OrdersController(Controller):
         account values inside payload_json are masked for non-admin (demo)
         callers so raw account codes are never exposed.
         """
-        import re
         from sqlalchemy import asc, select as _sql_select
         from backend.api.database import async_session as _async_session
         from backend.api.models import AlgoOrderEvent as _AlgoOrderEvent
@@ -2216,12 +2186,7 @@ class OrdersController(Controller):
 
         # Admin/designated only — partners + demo see masked codes.
         do_mask = not is_admin_request(request)
-
-        def _mask_payload(raw: str | None) -> str | None:
-            if raw is None or not do_mask:
-                return raw
-            # Replace bare account codes like ZG0790 → ZG#### in the JSON string.
-            return re.sub(r'\b([A-Z]{2})\d{4,8}\b', r'\1####', raw)
+        _mask = mask_account_in_text if do_mask else (lambda raw: raw)
 
         return [
             AlgoOrderEventInfo(
@@ -2230,7 +2195,7 @@ class OrdersController(Controller):
                 ts=r.ts.isoformat() if r.ts else "",
                 kind=r.kind,
                 message=r.message,
-                payload_json=_mask_payload(r.payload_json),
+                payload_json=_mask(r.payload_json),
             )
             for r in rows
         ]
@@ -2251,7 +2216,6 @@ class OrdersController(Controller):
         status='all'   → every order regardless of status
         status=<other> → exact case-insensitive status match
         """
-        import re
         from sqlalchemy import asc, desc, select as _sql_select, and_
         from backend.api.database import async_session as _async_session
         from backend.api.models import AlgoOrder as _AlgoOrder, AlgoOrderEvent as _AlgoOrderEvent
@@ -2288,11 +2252,7 @@ class OrdersController(Controller):
 
         # Admin/designated only — partners + demo see masked codes.
         do_mask = not is_admin_request(request)
-
-        def _mask_payload(raw: str | None) -> str | None:
-            if raw is None or not do_mask:
-                return raw
-            return re.sub(r'\b([A-Z]{2})\d{4,8}\b', r'\1####', raw)
+        _mask = mask_account_in_text if do_mask else (lambda raw: raw)
 
         return [
             AlgoOrderEventInfo(
@@ -2301,7 +2261,7 @@ class OrdersController(Controller):
                 ts=r.ts.isoformat() if r.ts else "",
                 kind=r.kind,
                 message=r.message,
-                payload_json=_mask_payload(r.payload_json),
+                payload_json=_mask(r.payload_json),
             )
             for r in rows
         ]
@@ -2373,86 +2333,6 @@ class OrdersController(Controller):
             "trigger_price":    trigger_price,
         }, paired_orders=paired_legs)
         return result
-
-    @post("/place")
-    async def place_order(self, data: PlaceOrderRequest, request: Request) -> PlaceOrderResponse:
-        """
-        DEPRECATED — kept only for any external scripts that may still
-        be hitting this endpoint. Every frontend surface now opens the
-        shared <OrderTicket> and submits via POST /api/orders/ticket
-        (TicketOrderRequest), which records an AlgoOrder row, supports
-        chase / chase_aggressiveness, and routes by mode (paper vs
-        live). Direct-broker placement here skips all that bookkeeping.
-        New integrations should use /ticket instead.
-        """
-        if getattr(request.state, "is_demo", False):
-            raise HTTPException(status_code=403,
-                detail="Demo: use OrderTicket → PAPER.")
-        _validate_place(data)
-        broker = _broker_for(data.account)
-        masked = mask_account(data.account)
-        # Surface a deprecation warning every time this path is used
-        # so we can spot any lingering callers in the logs and migrate
-        # them to /ticket.
-        logger.warning(
-            f"[deprecated] POST /api/orders/place hit by [{masked}] — "
-            f"use POST /api/orders/ticket instead. "
-            f"{data.transaction_type} {data.quantity} {data.tradingsymbol}"
-        )
-        try:
-            from backend.brokers.adapters.kite import get_lot_size
-            _ls_dep = await get_lot_size(data.exchange, data.tradingsymbol.upper())
-            _kq_dep = broker.translate_qty(data.exchange, data.quantity, _ls_dep)
-            order_id = broker.place_order(
-                variety=data.variety,
-                exchange=data.exchange,
-                tradingsymbol=data.tradingsymbol.upper(),
-                transaction_type=data.transaction_type,
-                quantity=_kq_dep,
-                product=data.product,
-                order_type=data.order_type,
-                price=data.price,
-                trigger_price=data.trigger_price,
-                validity=data.validity,
-                tag=data.tag or "ramboq",
-            )
-            invalidate("orders")  # force fresh fetch on next request
-            logger.info(f"Order placed: {order_id} [{masked}] {data.transaction_type} "
-                        f"{data.quantity} {data.tradingsymbol}")
-            try:
-                from backend.api.algo.agent_engine import record_manual_event
-                asyncio.create_task(record_manual_event(
-                    outcome="action_success", source="place",
-                    account=data.account, symbol=data.tradingsymbol,
-                    exchange=data.exchange, side=data.transaction_type,
-                    qty=data.quantity, mode="live", order_id=str(order_id),
-                ))
-            except Exception:
-                pass
-            return PlaceOrderResponse(order_id=str(order_id), account=masked)
-        except Exception as e:
-            logger.error(f"Place order failed [{masked}]: {e}")
-            try:
-                from backend.shared.helpers.alert_utils import send_order_failure_alert
-                send_order_failure_alert(
-                    account=data.account, symbol=data.tradingsymbol,
-                    exchange=data.exchange, side=data.transaction_type,
-                    qty=data.quantity, mode="live", source="agent:manual:place",
-                    error=str(e),
-                )
-            except Exception:
-                pass
-            try:
-                from backend.api.algo.agent_engine import record_manual_event
-                asyncio.create_task(record_manual_event(
-                    outcome="action_failure", source="place",
-                    account=data.account, symbol=data.tradingsymbol,
-                    exchange=data.exchange, side=data.transaction_type,
-                    qty=data.quantity, mode="live", error=str(e),
-                ))
-            except Exception:
-                pass
-            raise HTTPException(status_code=400, detail=str(e))
 
     @post("/ticket/preview")
     async def ticket_preview(self, data: TicketPreviewRequest, request: Request) -> TicketPreviewResponse:

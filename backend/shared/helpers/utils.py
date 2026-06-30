@@ -310,6 +310,27 @@ def mask_column(col):
     return col.astype(str).map(mask_account)
 
 
+# Pattern matching the broker-account-code shape used by Zerodha (ZG####,
+# ZJ####), Dhan (DH####), and Groww (GR####) — two uppercase letters
+# followed by 4-8 alphanumerics. Used by `mask_account_in_text` to
+# rewrite account codes embedded inside free-form payload strings.
+_ACCT_IN_TEXT_RE = re.compile(r'\b([A-Z]{2}[A-Z0-9]{4,8})\b')
+
+
+def mask_account_in_text(text: str | None) -> str | None:
+    """Mask every broker-account code embedded inside a free-form text
+    blob (typically a JSON payload string). Each match is rewritten via
+    the canonical `mask_account()` registry so ordinal-aware codes
+    (DH3747 → D1####, DH6847 → D2####) survive the substitution.
+
+    Returns the input unchanged when None, empty, or no account-shaped
+    tokens are present. Used by /orders/events surfaces to scrub
+    payload_json for non-admin viewers."""
+    if not text:
+        return text
+    return _ACCT_IN_TEXT_RE.sub(lambda m: mask_account(m.group(1)), text)
+
+
 def add_comma_to_df_numbers(df):
     # Format numeric cols with Indian commas
     num_cols = df.select_dtypes(include=["number"]).columns.tolist()

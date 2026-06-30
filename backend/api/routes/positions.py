@@ -10,6 +10,7 @@ from backend.api.rbac import (
     resolve_role_from_connection, user_scope_for_connection,
     normalise_role,
 )
+from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.schemas import PositionsResponse, PositionRow, PositionsSummaryRow
 from backend.brokers import broker_apis
@@ -172,18 +173,14 @@ _INTRADAY_FIELDS = {
 def _compute_day_change_val(raw: pd.DataFrame, sel: pd.Index) -> pd.Series:
     """Decomposed intraday day_change_val for the rows indexed by `sel`.
 
-    Single source of truth — previously inlined inside both
-    `_override_stale_ltp_from_ticker` and `_override_stale_close_from_snapshot`
-    so the formula lived in three places (here + the original in
-    `backend/brokers/broker_apis.py`). A correction in one missed the
-    other two. Extracted here so callers patch via one helper.
+    Vectorised pandas wrapper over `pnl_math.decomposed_intraday_pnl`
+    (the scalar canonical formula). Both the polars expression in
+    `broker_apis._enrich_positions` and this pandas path call into the
+    same module so the formula can never drift between routes.
 
-    Formula (matches broker_apis.fetch_positions / fetch_holdings):
-        overnight_qty × (LTP − close)        ← drifts with LTP
-      + day_buy_qty   × LTP  −  day_buy_val   ← MTM on today's buys
-      + day_sell_val  −  day_sell_qty × LTP   ← realised on today's sells
-    Naive fallback when the intraday columns aren't all present:
-        (LTP − close) × quantity
+    See `backend/api/algo/pnl_math.py` for the formula definition +
+    rationale. Naive fallback `(LTP − close) × quantity` is used when
+    the intraday columns aren't all present (Dhan / Groww adapters).
     """
     _ltp = pd.to_numeric(raw.loc[sel, 'last_price'], errors='coerce').fillna(0)
     _cls = pd.to_numeric(raw.loc[sel, 'close_price'], errors='coerce').fillna(0)
@@ -193,9 +190,11 @@ def _compute_day_change_val(raw: pd.DataFrame, sel: pd.Index) -> pd.Series:
         _sq = pd.to_numeric(raw.loc[sel, 'day_sell_quantity'],  errors='coerce').fillna(0)
         _bv = pd.to_numeric(raw.loc[sel, 'day_buy_value'],      errors='coerce').fillna(0)
         _sv = pd.to_numeric(raw.loc[sel, 'day_sell_value'],     errors='coerce').fillna(0)
-        return (_oq * (_ltp - _cls)) + (_bq * _ltp - _bv) + (_sv - _sq * _ltp)
+        # decomposed_intraday_pnl(oq, ltp, cls, bq, bv, sv, sq) on Series — pandas
+        # broadcasts each scalar op across the index, yielding the same Series shape.
+        return decomposed_intraday_pnl(_oq, _ltp, _cls, _bq, _bv, _sv, _sq)
     _qty = pd.to_numeric(raw.loc[sel, 'quantity'], errors='coerce').fillna(0)
-    return (_ltp - _cls) * _qty
+    return naive_day_pnl(_ltp, _cls, _qty)
 
 
 def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:

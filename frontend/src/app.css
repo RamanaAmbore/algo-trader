@@ -1747,9 +1747,7 @@
    color. Be consistent" — collapsed to one amber identity. */
 .bucket-card-entry,
 .bucket-card-activity,
-.bucket-card-chase,
-.bucket-card-info,
-.bucket-card-data { /* no-op — inherits amber from .bucket-card */ }
+.bucket-card-chase { /* no-op — inherits amber from .bucket-card */ }
 
 /* ── AlgoTabs — canonical tab-strip base shared across all algo pages ── */
 /* See frontend/src/lib/AlgoTabs.svelte for the component. */

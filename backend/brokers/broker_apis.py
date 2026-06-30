@@ -4,6 +4,7 @@ import pandas as pd
 import polars as pl
 import time as _time
 
+from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl
 from backend.brokers.connections import Connections
 from backend.shared.helpers.decorators import for_all_accounts
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -608,26 +609,24 @@ def _enrich_positions(df: pd.DataFrame) -> pd.DataFrame:
 
     # ── day_change_val (decomposed intraday formula or fallbacks) ────
     if has_intraday:
-        # Correct decomposition:
-        #   day_pnl = overnight_qty × (LTP − prev_close)        # carried
-        #           + day_buy_qty   × LTP − day_buy_value       # bought today
-        #           + day_sell_value − day_sell_qty × LTP       # sold today
+        # Canonical formula — see `backend/api/algo/pnl_math.py` for the
+        # rationale. `decomposed_intraday_pnl` takes scalars or polars
+        # exprs interchangeably (each op is `+ * −` so polars Expr math
+        # broadcasts the same way pandas Series math does).
         _oq = _col_f64(lf, 'overnight_quantity')
         _bq = _col_f64(lf, 'day_buy_quantity')
         _sq = _col_f64(lf, 'day_sell_quantity')
         _bv = _col_f64(lf, 'day_buy_value')
         _sv = _col_f64(lf, 'day_sell_value')
-        _dcv_calc_expr = (
-            _oq * (_ltp - _cls)
-            + (_bq * _ltp - _bv)
-            + (_sv - _sq * _ltp)
+        _dcv_calc_expr = decomposed_intraday_pnl(
+            _oq, _ltp, _cls, _bq, _bv, _sv, _sq,
         )
         # Validity guard: zero when LTP unhealthy (pre-open warm-up).
         _dcv_expr = pl.when(_ltp > 0).then(_dcv_calc_expr).otherwise(pl.lit(0.0))
     else:
         # Pre-intraday fallback. When close is missing/zero for fresh same-day
         # buys, use (LTP − avg) × qty so the row shows movement since entry.
-        _dcv_naive = (_ltp - _cls) * _qty
+        _dcv_naive = naive_day_pnl(_ltp, _cls, _qty)
         _dcv_entry = (_ltp - _avg) * _qty
         _dcv_calc_expr = pl.when((_cls <= 0) & (_avg > 0) & (_ltp > 0)).then(_dcv_entry).otherwise(_dcv_naive)
         if 'm2m' in cols:

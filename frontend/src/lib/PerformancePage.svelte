@@ -20,6 +20,7 @@
   import GridSearchButton from '$lib/GridSearchButton.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
+  import { navByAccount, navTotalRow } from '$lib/data/nav';
 
   // Module-scope cache for hyphenated display strings. ag-Grid
   // re-runs cellRenderer on every redraw — a Map cache avoids
@@ -811,41 +812,27 @@
       .filter(a => selectedAccounts.length === 0 || selectedAccounts.includes(a))
       .slice()
       .sort();
-    const navByAcct = navAccts.map(acct => {
-      // Operator's NAV framework: per-account NAV is the sum of
-      //   1. total cash owned (free + locked-as-margin), EXCLUDING
-      //      collateral haircut (= pledged stock, already counted
-      //      in holdings_mtm below)
-      //   2. open-position unrealised P&L (broker pre-computed)
-      //   3. holdings cur_val (broker pre-computed qty × LTP)
-      // The /api/funds payload renames the broker's
-      // `avail opening_balance` → `cash` and `util debits` →
-      // `used_margin` (see backend/api/routes/funds.py _COL_MAP).
-      const fundsRow = rawFunds.find(r => r.account === acct);
-      const cash_sod    = Number(fundsRow?.cash) || 0;
-      const opt_premium = Number(fundsRow?.option_premium) || 0;
-      const cash_total  = cash_sod + opt_premium;
-      const pos_m2m = rawPositions
-        .filter(r => r.account === acct)
-        .reduce((s, r) => s + (Number(r.unrealised) || 0), 0);
-      const holdings_mtm = rawHoldings
-        .filter(r => r.account === acct)
-        .reduce((s, r) => s + (Number(r.cur_val) || 0), 0);
-      return {
-        account: acct,
-        net: cash_total,
-        pos_m2m,
-        holdings_mtm,
-        nav: cash_total + pos_m2m + holdings_mtm,
-      };
-    });
-    const navTotal = navByAcct.length === 0 ? null : navByAcct.reduce((acc, r) => ({
+    // Canonical NAV breakdown via `$lib/data/nav` — same math as
+    // NavBreakdown.svelte + backend nav.py:compute_firm_nav. Renames
+    // `cash` → `net` to match this page's pre-existing ag-Grid column
+    // schema (the column header reads "Cash" but the field is `net`,
+    // see colDef around line 612).
+    const _navRaw = navByAccount(navAccts, rawFunds, rawPositions, rawHoldings);
+    const navByAcct = _navRaw.map(r => ({
+      account: r.account,
+      net: r.cash,
+      pos_m2m: r.pos_m2m,
+      holdings_mtm: r.holdings_mtm,
+      nav: r.nav,
+    }));
+    const _totRaw = navTotalRow(_navRaw);
+    const navTotal = _totRaw ? {
       account: 'TOTAL',
-      net: acc.net + r.net,
-      pos_m2m: acc.pos_m2m + r.pos_m2m,
-      holdings_mtm: acc.holdings_mtm + r.holdings_mtm,
-      nav: acc.nav + r.nav,
-    }), { account: 'TOTAL', net: 0, pos_m2m: 0, holdings_mtm: 0, nav: 0 });
+      net: _totRaw.cash,
+      pos_m2m: _totRaw.pos_m2m,
+      holdings_mtm: _totRaw.holdings_mtm,
+      nav: _totRaw.nav,
+    } : null;
     if (navGrid) {
       updateGrid(navGrid, navByAcct);
       navGrid.setGridOption('pinnedBottomRowData', navTotal ? [navTotal] : []);
