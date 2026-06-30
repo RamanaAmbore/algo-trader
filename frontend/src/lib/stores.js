@@ -341,15 +341,11 @@ function _ensureGlobalVisHandler() {
 }
 
 // Expose late-patch hook for test harnesses that load after module init.
+// window.__rbq_setHibMs(minutes) overrides the hibernation idle threshold.
+// Takes MINUTES (same as setHibernationIdleMinutes) so callers can set
+// a 0-minute (= 0 ms) threshold for e2e tests without waiting 5 real minutes.
 if (typeof window !== 'undefined') {
   /** @type {any} */ (window).__rbq_setHibMs = setHibernationIdleMinutes;
-  // Diagnostic snapshot function for Playwright tests. Returns current state.
-  // Use a function (not a getter) to avoid Object.defineProperty quirks.
-  /** @type {any} */ (window).__rbq_getDiagState = () => ({
-    isHibernating: _isHibernating,
-    subscriberCount: _hibernationSubscribers.size,
-    hibMs: _hibernationIdleMs,
-  });
 }
 
 /**
