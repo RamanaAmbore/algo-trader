@@ -685,8 +685,8 @@
              gives the operator a quick read on the day's spot drift
              without comparing the SPOT row to a number stored in their
              head. Bloomberg / TWS / Kite all show this. -->
-        <div class="ps-row" title="Yesterday's close for the underlying — anchor for today's spot drift">
-          <span class="ps-k">PREV</span>
+        <div class="ps-row" title="Previous-session close for the underlying — anchor for today's spot drift">
+          <span class="ps-k">CLOSE</span>
           <span class="ps-v ps-flat">{fmtSpot(prevClose)}</span>
         </div>
       {/if}
