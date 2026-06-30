@@ -447,6 +447,16 @@ export const deleteHedgeProxy    = (id) =>
 export const computeHedgeProxy   = (id) =>
   _post(`/admin/hedge-proxies/${id}/compute`, {}, { auth: true });
 
+// ── Code metrics (admin) ─────────────────────────────────────────────────
+// Per-release snapshot history for `/admin/metrics`. Read-only — rows
+// are produced by `scripts/capture_metrics.py`, never via HTTP.
+export const fetchCodeMetricsList = (limit = 50, offset = 0) =>
+  _get(`/admin/code-metrics/?limit=${limit}&offset=${offset}`, { auth: true });
+export const fetchCodeMetricsDetail = (releaseTag) =>
+  _get(`/admin/code-metrics/${encodeURIComponent(releaseTag)}`, { auth: true });
+export const fetchCodeMetricsTrend = (metric, limit = 50) =>
+  _get(`/admin/code-metrics/trends?metric=${encodeURIComponent(metric)}&limit=${limit}`, { auth: true });
+
 // ── Settings (admin) ────────────────────────────────────────────────────
 export const fetchSettings     = () => _get('/admin/settings/', { auth: true });
 export const updateSetting     = (key, value) =>
