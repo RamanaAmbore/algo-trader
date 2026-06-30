@@ -450,22 +450,42 @@
     // CE shown as ITM when spot had drifted below 60). Both reads are
     // wrapped in untrack() so this derived doesn't re-fire on every tick;
     // re-classification happens naturally when candidatePositions changes.
+    //
+    // Guard: strategy can lag selectedUnderlying. When the operator
+    // switches underlying (e.g. from NIFTY → BHEL), candidatePositions
+    // re-derives immediately on the new position set but strategy may
+    // still carry the previous underlying's response. Reading
+    // strategy.spot_anchor_contract (e.g. NIFTY26JUNFUT) and passing it
+    // to getSnapshot would return NIFTY's LTP (~24 500) as BHEL's spot,
+    // making every BHEL PE appear OTM (24500 ≥ 420 → spot ≥ strike →
+    // OTM). Validate that strategy.underlying matches selectedUnderlying
+    // before using any strategy-derived keys; fall straight to the
+    // _underlyingQuotes / zero path when there is a mismatch.
     const spot = untrack(() => {
-      // Mirror liveSpot's three-tier lookup but without the reactive
-      // dependency on _throttledTick (we're inside untrack already).
-      const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
-      if (anchor) {
-        const v = Number(getSnapshot(anchor)?.ltp);
-        if (Number.isFinite(v) && v > 0) return v;
+      const selUnd  = String(selectedUnderlying    || '').toUpperCase();
+      const stratUnd = String(strategy?.underlying || '').toUpperCase();
+      // strategy is live for this underlying — use its anchor keys.
+      if (selUnd && stratUnd === selUnd) {
+        const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
+        if (anchor) {
+          const v = Number(getSnapshot(anchor)?.ltp);
+          if (Number.isFinite(v) && v > 0) return v;
+        }
+        const v2 = Number(getSnapshot(selUnd)?.ltp);
+        if (Number.isFinite(v2) && v2 > 0) return v2;
+        // strategy.spot is confirmed for this underlying — safe fallback.
+        const bqLtp = _underlyingQuotes[selectedUnderlying]?.ltp;
+        if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
+        return Number(strategy?.spot || 0);
       }
-      const und = String(strategy?.underlying || '').toUpperCase();
-      if (und) {
-        const v = Number(getSnapshot(und)?.ltp);
-        if (Number.isFinite(v) && v > 0) return v;
-      }
+      // strategy is for a different underlying (still loading for selUnd).
+      // Try the SSE tick for selUnd directly; then batchQuote; then 0
+      // (triggers the !spot early-return below — safer than a wrong price).
+      const v3 = Number(getSnapshot(selUnd)?.ltp);
+      if (Number.isFinite(v3) && v3 > 0) return v3;
       const bqLtp = _underlyingQuotes[selectedUnderlying]?.ltp;
       if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
-      return Number(strategy?.spot || 0);
+      return 0;
     });
     const legA = untrack(() => legAnalyticsBySymbol);
     void expFilter;
