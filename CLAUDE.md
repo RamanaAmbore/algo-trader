@@ -876,6 +876,41 @@ tens of ms of work before its first await.
 
 ---
 
+## Visibility-aware polling (Option A, Jun 2026)
+
+**Design (operator-approved)**: ALL pollers + visual updates stop when
+`document.visibilityState === 'hidden'`. WebSocket stays open (ref-counted
+pool — closes only when last subscriber leaves) so `position_filled` /
+`book_changed` events land. Telegram + email cover fills / agent events
+during background periods. On tab return, every poller fires ONCE
+immediately (within one event-loop tick) before resuming its normal cadence.
+
+**Implementation** — `visibleInterval(fn, ms, mode = 'pause')` in `frontend/src/lib/stores.js`:
+- `mode: 'pause'` (default) — clears the interval on hidden, restarts + fires `fn()` immediately on visible.
+- `mode: 'throttle:<ms>'` — reduces cadence while hidden (future use, not active under Option A).
+- `marketAwareInterval(fn, ms)` delegates to `visibleInterval` for the same behaviour inside the market-hours gate.
+
+**Pollers converted to visibleInterval** (raw `setInterval` eliminated):
+- `stores.js` — `nowStamp` 60 s clock + Intl format-cache 60 s purge
+- `UnifiedLog.svelte` — 3 s data poll
+- `LogPanel.svelte` — all tab pollers (agents / orders / system / conn / sim)
+- `RefreshButton.svelte` — 30 s market-state tick (NSE/MCX session boundaries)
+- `PositionStrip.svelte` — 30 s market-boundary watcher
+- `PriceChart.svelte` — configurable price-history poll (was fully ungated)
+- `SymbolPanel.svelte` — 3 s orders poll in bottom panel
+- `market/+page.svelte` — 30 min market-summary + 10 min news polls
+
+**Animations** — `createFreshnessShimmer.notify()` already guards `document.visibilityState === 'hidden'`. `createTickFlash` timers are 350 ms one-shots only triggered by pollers; pausing pollers prevents any new flash calls while hidden.
+
+**WebSocket** — `ws.js` ref-counted pool closes the socket when the last subscriber leaves (page unmount). Tab background with page still mounted keeps the WS alive. Reconnects within 200 ms on tab return via the pool's existing backoff logic.
+
+**Test guard** — `frontend/e2e/main_thread_perf.spec.js` `'visibility hibernation'` describe:
+- Phase hidden 30 s → assert ZERO `/api/positions` + news requests.
+- Phase visible → assert at least one immediate refire within 250 ms.
+- Runs on both chromium-desktop + chromium-mobile.
+
+---
+
 ## Critical math guards
 
 **Option qty vs lot_size** — Kite ships MCX intraday fields in lots, NSE in contracts. Double-check every multiplication. Has caused multi-lakh P&L distortion + 20× over-orders.
