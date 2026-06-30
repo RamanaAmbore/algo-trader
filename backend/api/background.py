@@ -2934,6 +2934,7 @@ async def _task_purge_persistence_caches() -> None:
                           anything older can be re-fetched if needed — keeps table tiny).
     holidays_snapshot:    no purge (years are tiny + useful for backtest of any year).
     intraday_bars:        rows older than 90 days (intraday rarely queried beyond 3 months).
+    movers_snapshots:     rows older than 7 days (off-hours fallback; one row per day).
 
     Operational tables added in retention-audit sweep (Jun 2026)
     ────────────────────────────────────────────────────────────
@@ -2959,6 +2960,7 @@ async def _task_purge_persistence_caches() -> None:
         ohlcv_days    = 5 * 365   # 5 years
         instr_days    = 7
         intraday_days = 90
+        movers_days   = 7         # keep last week of winners/losers snapshots
 
         # Configurable operational tables.
         algo_events_days       = get_int("retention.algo_events_days",       30)
@@ -2974,6 +2976,8 @@ async def _task_purge_persistence_caches() -> None:
                     session, "instruments_snapshot", "date",       instr_days)
                 intraday_del = await _apply_retention(
                     session, "intraday_bars",        "date",       intraday_days)
+                movers_del   = await _apply_retention(
+                    session, "movers_snapshots",     "date",       movers_days)
 
                 # ── Operational tables ────────────────────────────────
                 ae_del = 0
@@ -3004,6 +3008,7 @@ async def _task_purge_persistence_caches() -> None:
                 f"ohlcv_daily: {ohlcv_del} row(s), "
                 f"instruments_snapshot: {instr_del} row(s), "
                 f"intraday_bars: {intraday_del} row(s), "
+                f"movers_snapshots: {movers_del} row(s), "
                 f"algo_events: {ae_del} row(s), "
                 f"algo_order_events: {aoe_del} row(s), "
                 f"auth_tokens: {at_del} row(s)"

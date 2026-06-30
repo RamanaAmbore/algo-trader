@@ -1889,3 +1889,107 @@ class HedgeProxy(Base):
     __table_args__ = (
         UniqueConstraint("proxy_symbol", "target_root", name="uq_hedge_proxy_pair"),
     )
+
+
+class CodeMetricsSnapshot(Base):
+    """Per-release codebase-health snapshot. Captured by
+    `scripts/capture_metrics.py` either manually or from the deploy
+    pipeline so the operator can watch eight cross-cutting health
+    metrics trend across releases.
+
+    Eight metrics — six numeric backend/frontend pairs plus bug_count
+    and per_page_latency_ms — populated from radon, vulture, jscpd,
+    pytest-cov, ESLint, the e2e perf spec, and `git log` heuristics.
+    See `scripts/capture_metrics.py` for the exact tool→column wiring.
+
+    Phase 1 deliberately omits decoupling (afferent/efferent coupling
+    requires an import-graph build via pydeps or a custom AST walker —
+    deferred to Phase 2). The `notes` column is the operator-facing
+    free-text channel; `raw_payload` keeps the full tool stdout JSON
+    for forensics ("why did duplicated_lines spike on v2.4?").
+
+    Idempotency: `release_tag` is UNIQUE — the capture script logs +
+    skips when a row for the same tag already exists unless `--force`
+    is passed (the force path UPDATEs in place rather than INSERTing
+    a second row, so the trend chart stays clean).
+    """
+    __tablename__ = "code_metrics_snapshots"
+
+    id: Mapped[int]               = mapped_column(primary_key=True, autoincrement=True)
+    # Release identifier. Usually `git describe --tags --abbrev=0`
+    # (e.g. 'v2.1.0'); operator-triggered captures use
+    # 'manual-YYYY-MM-DD'; dev-branch captures use 'dev-<short-sha>'.
+    release_tag: Mapped[str]      = mapped_column(String(64), unique=True, nullable=False, index=True)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc), index=True,
+    )
+    # Commit hash captured at run time. Useful for reproducing a
+    # snapshot (`git checkout <git_sha>` then re-run capture).
+    git_sha: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+
+    # ── Backend metrics (Python — radon + vulture + pytest-cov) ────
+    backend_loc:               Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    backend_complexity_avg:    Mapped[Optional[float]] = mapped_column(Float,   nullable=True)
+    backend_complexity_max:    Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    backend_duplicated_lines:  Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    backend_stale_count:       Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    backend_coverage_pct:      Mapped[Optional[float]] = mapped_column(Float,   nullable=True)
+
+    # ── Frontend metrics (JS/Svelte — jscpd + ESLint + wc) ─────────
+    frontend_loc:              Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    frontend_complexity_avg:   Mapped[Optional[float]] = mapped_column(Float,   nullable=True)
+    frontend_complexity_max:   Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    frontend_duplicated_lines: Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    frontend_stale_count:      Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    frontend_coverage_pct:     Mapped[Optional[float]] = mapped_column(Float,   nullable=True)
+
+    # ── Cross-cutting ───────────────────────────────────────────────
+    # Count of commits matching the bug-fix heuristic between the
+    # previous release tag and this one (or the last 30 days for
+    # 'manual-*'). See `_count_bug_commits` in capture script.
+    bug_count_since_last_release: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # Per-page latency dict: { "/pulse": {dcl: 221, idle: 4223, lcp: 2012}, ... }
+    # JSONB so the schema doesn't churn when pages come and go. Empty
+    # dict `{}` when the e2e spec hasn't been run yet (capture script
+    # logs a warning + writes {}).
+    per_page_latency_ms: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
+    # Operator-facing free-text channel for release notes / context.
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Full tool outputs (radon json, vulture text, jscpd report,
+    # coverage json fragments). Saved for forensics — never queried
+    # by routes. Capped at ~1MB by truncating each tool's payload
+    # in the capture script.
+    raw_payload: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
+
+class MoversSnapshot(Base):
+    """Last-good winners/losers snapshot for off-hours display.
+
+    Written at the end of every successful in-market movers fetch.
+    One row per IST calendar date (upserted — the latest intraday
+    call always wins for that date). The route reads the most recent
+    row when the market is closed and the live broker call would return
+    an empty result.
+
+    Retention: 7 days (purged daily by _task_purge_persistence_caches).
+    """
+    __tablename__ = "movers_snapshots"
+
+    id:           Mapped[int]      = mapped_column(primary_key=True, autoincrement=True)
+    date:         Mapped[datetime] = mapped_column(Date, nullable=False, index=True)
+    # JSON-serialised list[dict] — each dict is one MoverRow payload.
+    payload_json: Mapped[str]      = mapped_column(Text, nullable=False)
+    captured_at:  Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        # One row per date — upsert path replaces on conflict.
+        UniqueConstraint("date", name="uq_movers_snapshots_date"),
+    )

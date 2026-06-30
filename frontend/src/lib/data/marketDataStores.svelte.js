@@ -28,11 +28,13 @@ import { createDataStore, TTL } from './dataStore.svelte.js';
 import {
   fetchPositions, fetchHoldings, fetchFunds,
   fetchWatchlist,
+  fetchMovers,
   batchQuote, fetchSparklines,
 } from '$lib/api';
 import {
   FO_QUOTE_KEYS, MIDCAP_QUOTE_KEYS, SMLCAP_QUOTE_KEYS,
   INDICES_QUOTE_KEYS, LARGECAP_QUOTE_KEYS, symbolFromQuoteKey,
+  FO_UNDERLYINGS, NIFTY_MIDCAP_100, NIFTY_SMLCAP_100, FO_LARGECAP_STOCKS,
 } from '$lib/data/indexConstituents';
 import { mergeSymbolBatch } from './symbolStore.svelte.js';
 import { cachedDelete } from './persistentCache.js';
@@ -310,59 +312,81 @@ export const fundsStore = createDataStore({
 // ── Movers ────────────────────────────────────────────────────────────────
 
 /**
- * Top winners/losers across NSE F&O largecap + midcap + smallcap.
- * Fetcher ports the loadMovers body from MarketPulse so any consumer
- * can subscribe. TTL.short matches the prior 2-min cache window.
+ * ISO-8601 UTC timestamp of the last snapshot served by the backend,
+ * set only when the backend returns a persisted off-hours snapshot
+ * (captured_at is non-null in the response). Null during live market
+ * hours (data is real-time, no "as of" caveat needed).
+ * Read by MarketPulse to show "Last updated: <time>" in the Winners /
+ * Losers bucket headers when the market is closed.
+ */
+let _moversSnapshotAt = $state(/** @type {string | null} */ (null));
+export const moversSnapshotAt = {
+  get value() { return _moversSnapshotAt; },
+};
+
+/**
+ * Classify a raw tradingsymbol (no exchange prefix) into the mover group.
+ * Priority: smallcap → midcap → underlying (F&O).
+ * Returns null when the symbol is unknown to all three index sets.
+ * @param {string} sym
+ * @returns {'smallcap'|'midcap'|'underlying'|null}
+ */
+function _classifyMoverSym(sym) {
+  const s = String(sym || '').toUpperCase();
+  if (NIFTY_SMLCAP_100.has(s)) return 'smallcap';
+  if (NIFTY_MIDCAP_100.has(s)) return 'midcap';
+  if (FO_UNDERLYINGS.has(s))   return 'underlying';
+  return null;
+}
+
+/**
+ * Top winners/losers fetched from /api/watchlist/movers.
+ * The backend endpoint handles persistence: during market hours it
+ * fetches live broker quotes and writes a snapshot to DB; when the
+ * market is closed it returns the last good snapshot with a
+ * `captured_at` field so the frontend can show "Last updated: <time>".
+ *
+ * keepStaleOnEmpty retains the prior value if the endpoint returns []
+ * (instruments cache cold or broker hiccup) so the grids stay
+ * populated rather than going blank on a transient error.
  */
 export const moversStore = createDataStore({
   key:     'md.movers',
-  // TTL.week so the winners/losers panel retains the last in-market
-  // snapshot across off-hours instead of going blank on a weekend
-  // page reload (operator: "winners and losers data in pulse should
-  // be retained after market closure until market reopens"). The
-  // marketAwareInterval-driven poll on MarketPulse overwrites with
-  // fresh data the moment market reopens.
+  // TTL.week: the in-memory + localStorage cache retains the last
+  // good snapshot across page reloads so the grids paint instantly
+  // from cache even on a cold weekend reload before the first API
+  // response arrives.
   ttl:     TTL.week,
+  keepStaleOnEmpty: true,
   /** @returns {Promise<any[]>} */
   fetcher: async () => {
-    const idx = new Set(INDICES_QUOTE_KEYS);
-    const lcp = new Set(LARGECAP_QUOTE_KEYS);
-    const fo  = new Set(FO_QUOTE_KEYS);
-    const mid = new Set(MIDCAP_QUOTE_KEYS);
-    const sml = new Set(SMLCAP_QUOTE_KEYS);
-    const allKeys = [...new Set([...fo, ...mid, ...sml])];
-    const r = await batchQuote(allKeys);
-    /** @type {Record<string, any>} */
-    const byKey = {};
-    for (const it of (r?.items ?? [])) {
-      if (!it?.exchange || !it?.tradingsymbol) continue;
-      byKey[`${it.exchange}:${it.tradingsymbol}`] = it;
-    }
-    const _groupFor = (/** @type {string} */ key) =>
-      sml.has(key) ? 'smallcap'
-    : mid.has(key) ? 'midcap'
-    : fo.has(key)  ? 'underlying'
-    : null;
+    const r = await fetchMovers();
+    const raw = r?.movers ?? [];
+    // Capture the snapshot timestamp (non-null only for off-hours
+    // persisted snapshots; null during live market hours).
+    _moversSnapshotAt = r?.captured_at ?? null;
     /** @type {any[]} */
     const rows = [];
-    for (const [key, it] of Object.entries(byKey)) {
-      const group = _groupFor(key);
-      if (!group) continue;
-      const ltp = Number(it.ltp ?? it.last_price ?? 0);
-      let pct = Number(it.change_pct);
-      if (!isFinite(pct) || pct === 0) {
-        const close = Number(it.close ?? it.previous_close ?? 0);
-        if (close > 0 && ltp > 0) pct = ((ltp - close) / close) * 100;
-      }
-      if (!isFinite(pct) || pct === 0) continue;
+    for (const it of raw) {
+      const sym = String(it?.tradingsymbol || '').toUpperCase();
+      if (!sym) continue;
+      const group = _classifyMoverSym(sym);
+      // Symbols unknown to all three index sets are still shown —
+      // the backend may return new F&O additions before the frontend
+      // const list is updated. Default them to 'underlying' so they
+      // appear in the Underlying tab rather than being silently dropped.
+      const effectiveGroup = group ?? 'underlying';
+      const pct = Number(it.change_pct ?? 0);
       rows.push({
-        tradingsymbol: symbolFromQuoteKey(key),
-        exchange:      it.exchange,
-        last_price:    ltp,
-        change_pct:    pct,
-        previous_close: Number(it.close ?? it.previous_close ?? 0) || null,
-        _moverGroup:   group,
-        _isLargeCap:   lcp.has(key) && !mid.has(key) && !sml.has(key),
+        tradingsymbol:  sym,
+        exchange:       it.exchange ?? 'NSE',
+        last_price:     Number(it.last_price ?? 0),
+        change_pct:     pct,
+        peak_pct:       Number(it.peak_pct ?? pct),
+        previous_close: Number(it.previous_close ?? 0) || null,
+        sticky:         Boolean(it.sticky),
+        _moverGroup:    effectiveGroup,
+        _isLargeCap:    FO_LARGECAP_STOCKS.has(sym) && !NIFTY_MIDCAP_100.has(sym) && !NIFTY_SMLCAP_100.has(sym),
         _moverDirection: pct >= 0 ? 'winners' : 'losers',
       });
     }
@@ -433,6 +457,52 @@ export const activeListsStore = createDataStore({
  */
 let _firstSparkFetched = false;
 
+/**
+ * Per-symbol stale-better merge — when a fresh sparkline series is
+ * either degenerate (≤1 unique value, e.g. backend's `[ltp, ltp]` pad
+ * shipped because broker rate-limited the historical_data call) OR
+ * shorter than the cached one, keep the cached series instead. This
+ * was the root cause of the "sparkline briefly showed the graph, then
+ * reset to flat line after reload" symptom — the renderer hydrated
+ * from cache with a real curve, then the post-mount loadSparklines
+ * round-trip overwrote it with a `[ltp, ltp]` pad for a symbol the
+ * broker had just rate-limited.
+ *
+ * Rules (per symbol):
+ *   - fresh non-array / empty → keep cached.
+ *   - cached missing → take fresh unconditionally.
+ *   - cached has variation (max>min) AND fresh is all-same → keep cached.
+ *   - fresh shorter than cached AND fresh has no variation → keep cached.
+ *   - otherwise → take fresh.
+ *
+ * The renderer only needs ≥2 points + variation to look "real". A
+ * single-value flat line is a known fallback shape from the backend.
+ */
+function _hasVariation(arr) {
+  if (!Array.isArray(arr) || arr.length < 2) return false;
+  const first = arr[0];
+  for (let i = 1; i < arr.length; i++) {
+    if (arr[i] !== first) return true;
+  }
+  return false;
+}
+
+function _mergeSparkSeries(cached, fresh) {
+  if (!Array.isArray(fresh) || fresh.length === 0) return cached;
+  if (!Array.isArray(cached) || cached.length === 0) return fresh;
+  const freshVar = _hasVariation(fresh);
+  const cachedVar = _hasVariation(cached);
+  // Strong preference: real curve beats flat line. Discard a fresh
+  // degenerate series if the cache holds a real curve.
+  if (cachedVar && !freshVar) return cached;
+  // Both flat OR both have variation → take the longer one (fresh
+  // wins on ties so live-LTP tail updates still propagate).
+  if (fresh.length >= cached.length) return fresh;
+  // Fresh strictly shorter AND no variation → cache wins.
+  if (!freshVar) return cached;
+  return fresh;
+}
+
 export const sparklinesStore = createDataStore({
   key:     'md.sparklines',
   ttl:     TTL.day,
@@ -449,7 +519,13 @@ export const sparklinesStore = createDataStore({
       try {
         const res = await fetchSparklines(slice, 5);
         if (res?.data && typeof res.data === 'object') {
-          Object.assign(merged, res.data);
+          // Per-symbol stale-better merge instead of blind Object.assign.
+          // See _mergeSparkSeries doc above for the rule set.
+          for (const [sym, fresh] of Object.entries(res.data)) {
+            const cached = merged[sym];
+            const next = _mergeSparkSeries(cached, /** @type {any} */ (fresh));
+            if (next !== undefined) merged[sym] = /** @type {any} */ (next);
+          }
         }
       } catch (_) { /* non-fatal — keep whatever we have */ }
     }
@@ -468,6 +544,11 @@ export const sparklinesStore = createDataStore({
   },
   /** @param {any} r */
   parse: (r) => r ?? {},
+  // Stale-while-valid guard — if a sparkline fetch comes back with
+  // no symbols at all (broker outage, network drop), don't overwrite
+  // the populated map. Per-symbol degenerate-fresh handling lives in
+  // _mergeSparkSeries above; this catches the wholesale-empty case.
+  keepStaleOnEmpty: true,
 });
 
 // ── Cross-page book poller (operator-approved final design 2026-06-28) ────

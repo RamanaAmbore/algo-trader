@@ -54,13 +54,13 @@
   import { bookChanged } from '$lib/data/bookChanged';
   import {
     positionsStore, holdingsStore, fundsStore,
-    moversStore, activeListsStore, sparklinesStore,
+    moversStore, moversSnapshotAt, activeListsStore, sparklinesStore,
     publishWatchQuotes, publishPulseQuotes,
   } from '$lib/data/marketDataStores.svelte.js';
   import { resolveUnderlying, INDEX_LTP_KEY, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
   import CardControls from '$lib/CardControls.svelte';
   import { createPerformanceSocket } from '$lib/ws';
-  import { lastRefreshAt } from '$lib/stores';
+  import { lastRefreshAt, formatDualTz } from '$lib/stores';
   import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
   import { acctColor, leadAccount } from '$lib/account';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -129,14 +129,23 @@
   // same long task as the store write. Without this bridge the synchronous
   // $derived cascade blocks the main thread for >100 ms, freezing the
   // RefreshButton spinner mid-animation (RAIL long-task violation).
+  //
+  // Hydration-race fix (Jun 2026): when the store's `.value` transiently
+  // reverts to `null` (e.g. an invalidate() during a refresh-cycle mode
+  // switch, or a cross-page Performance load that hadn't pushed yet),
+  // the prior `positions = p ?? []` line WIPED the local copy → emptied
+  // the unifiedRows derivation → grid flashed empty for one frame
+  // before the next store update repopulated. Now we explicitly skip
+  // the mirror when the store goes null and keep the prior local
+  // snapshot — stale-while-revalidate at the bridge.
   let positions = $state(/** @type {any[]} */ (positionsStore.value ?? []));
   let holdings  = $state(/** @type {any[]} */ (holdingsStore.value  ?? []));
   $effect(() => {
     const p = positionsStore.value;
     const h = holdingsStore.value;
     untrack(() => {
-      positions = p ?? [];
-      holdings  = h ?? [];
+      if (p != null) positions = p;
+      if (h != null) holdings  = h;
     });
   });
   // Pulse quote bag — bundles BOTH option-underlying quotes (keyed
@@ -3717,12 +3726,25 @@
     const W = 32, H = 14, PAD = 2;
     const min = Math.min(...closes);
     const max = Math.max(...closes);
-    const range = max - min || 1;
+    // Flat-line centering (Jun 2026 hydration races fix): when every
+    // close is identical (backend's [ltp, ltp] pad shipped on a
+    // historical-data rate-limit, OR a genuinely flat-day symbol),
+    // the prior `range = max - min || 1` left the line glued to the
+    // bottom of the cell because `(1 - 0/1) * (H - 2*PAD)` resolved
+    // to the lowest Y. Render the flat line at vertical CENTER so it
+    // reads as a deliberate "no movement" indicator rather than a
+    // rendering bug. Operator: "sparkline shows either dash or flat
+    // line" — this addresses the flat-at-bottom edge of that complaint.
+    const flat  = (max === min);
+    const range = flat ? 1 : (max - min);
     const xStep = (W - PAD * 2) / (closes.length - 1);
-    const yOf   = (v) => PAD + (1 - (v - min) / range) * (H - PAD * 2);
+    const yMid  = H / 2;
+    const yOf   = (v) => flat ? yMid : (PAD + (1 - (v - min) / range) * (H - PAD * 2));
     const pts   = closes.map((v, i) => `${(PAD + i * xStep).toFixed(1)},${yOf(v).toFixed(1)}`).join(' ');
     const up    = closes[closes.length - 1] >= closes[0];
-    const color = up ? 'rgba(91,142,149,0.85)' : 'rgba(196,122,61,0.85)';
+    const color = flat
+      ? 'rgba(126,151,184,0.55)'  // muted slate for the no-movement case
+      : (up ? 'rgba(91,142,149,0.85)' : 'rgba(196,122,61,0.85)');
     return `<span style="display:flex;align-items:center;justify-content:center;height:100%"><svg width="${W}" height="${H}" style="display:block;overflow:visible"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/></svg></span>`;
   }
 
@@ -4888,6 +4910,9 @@
                    style="--bucket-rows:{_bRowsWinners}">
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
+              {#if moversSnapshotAt.value}
+                <span class="mp-snapshot-hint" title="Data from last market session">as of {formatDualTz(new Date(moversSnapshotAt.value))}</span>
+              {/if}
               <div class="mp-head-tabs">
                 <AlgoTabs
                   tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t] }))}
@@ -4918,6 +4943,9 @@
                    style="--bucket-rows:{_bRowsLosers}">
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
+              {#if moversSnapshotAt.value}
+                <span class="mp-snapshot-hint" title="Data from last market session">as of {formatDualTz(new Date(moversSnapshotAt.value))}</span>
+              {/if}
               <div class="mp-head-tabs">
                 <AlgoTabs
                   tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t] }))}
@@ -5769,6 +5797,16 @@
     flex-wrap: nowrap;
   }
   .mp-bucket-head .mp-bucket-label { margin-bottom: 0; }
+  /* Off-hours snapshot hint — appears next to Winners / Losers label
+     when the data is from a persisted last-session snapshot rather
+     than live broker quotes. Small, muted, italic. */
+  .mp-snapshot-hint {
+    font-size: 0.68rem;
+    font-style: italic;
+    color: var(--color-slate-400, #94a3b8);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
   /* Spacer pushes the CollapseButton to the FAR RIGHT of the
      header regardless of card content. Label sits left, spacer
      absorbs the gap, button locks to the right edge. Card width

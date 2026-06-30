@@ -29,7 +29,7 @@ from backend.api.auth_guard import jwt_guard, auth_or_demo_guard
 # _demo_watchlist_items (imported lazily there). The Markets watchlist
 # is no longer seeded for real users — see _ensure_default_watchlists.
 from backend.api.database import async_session
-from backend.api.models import User, Watchlist, WatchlistItem
+from backend.api.models import User, Watchlist, WatchlistItem, MoversSnapshot
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -149,6 +149,10 @@ class MoversResponse(msgspec.Struct):
     movers: list[MoverRow]
     threshold_pct: float
     session_date: str   # ISO date "2026-05-13" — when the sticky set last reset
+    # ISO-8601 UTC string when this snapshot was captured.
+    # Non-null only when serving a persisted off-hours snapshot so the
+    # frontend can show "Last updated: <time>" rather than a live label.
+    captured_at: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +235,65 @@ def _demo_watchlist_items_as_objs() -> list:
 # alongside the session_movers rollover.
 _underlyings_cache: set[str] = set()
 _underlyings_cache_date: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Movers snapshot persistence helpers
+# ---------------------------------------------------------------------------
+
+async def _save_movers_snapshot(rows: list["MoverRow"], date_iso: str) -> None:
+    """Upsert today's movers snapshot to DB (fire-and-forget from the route).
+
+    One row per IST calendar date — repeated saves during market hours
+    overwrite with the latest data via ON CONFLICT DO UPDATE.
+    """
+    import json as _json
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from datetime import date as _date
+
+    if not rows:
+        return
+    payload = _json.dumps([
+        {
+            "tradingsymbol": r.tradingsymbol,
+            "exchange":       r.exchange,
+            "last_price":     r.last_price,
+            "previous_close": r.previous_close,
+            "change_pct":     r.change_pct,
+            "peak_pct":       r.peak_pct,
+            "sticky":         r.sticky,
+        }
+        for r in rows
+    ])
+    now_utc = datetime.now(timezone.utc)
+    try:
+        async with async_session() as s:
+            stmt = (
+                pg_insert(MoversSnapshot)
+                .values(date=_date.fromisoformat(date_iso), payload_json=payload, captured_at=now_utc)
+                .on_conflict_do_update(
+                    constraint="uq_movers_snapshots_date",
+                    set_={"payload_json": payload, "captured_at": now_utc},
+                )
+            )
+            await s.execute(stmt)
+            await s.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Movers snapshot save failed: {exc}")
+
+
+async def _load_latest_movers_snapshot() -> Optional[MoversSnapshot]:
+    """Return the most recent row from movers_snapshots, or None."""
+    from sqlalchemy import desc
+    try:
+        async with async_session() as s:
+            result = await s.execute(
+                select(MoversSnapshot).order_by(desc(MoversSnapshot.captured_at)).limit(1)
+            )
+            return result.scalar_one_or_none()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Movers snapshot load failed: {exc}")
+        return None
 
 
 async def _resolve_mcx_commodity(commodity_name: str) -> Optional[str]:
@@ -889,22 +952,70 @@ class WatchlistController(Controller):
     async def get_movers(self) -> MoversResponse:
         """Session-sticky movers: underlyings that have moved ≥5% intraday.
         Once a name crosses the threshold it stays in the result for the rest
-        of the IST calendar day. One cached broker.quote() batch per 30 s."""
+        of the IST calendar day. One cached broker.quote() batch per 30 s.
+
+        When the market is closed and live quotes yield an empty result, the
+        route falls back to the most recent persisted snapshot so the
+        Winners/Losers panels continue to show the last intraday data rather
+        than going blank overnight and on weekends.  The snapshot is written
+        to `movers_snapshots` DB table at the end of every successful
+        in-market fetch that produces ≥1 row.
+        """
         import asyncio
+        import json as _json
         from datetime import datetime, timezone
         from zoneinfo import ZoneInfo
         from backend.api.cache import get_or_fetch
         from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS as _INST_TTL
         from backend.api.algo.derivatives import underlying_ltp_key, is_mcx_underlying
         from backend.brokers.registry import get_price_broker
+        from backend.shared.helpers.date_time_utils import is_any_segment_open, timestamp_indian
 
         global _session_movers, _session_date
 
         # Session rollover at IST midnight.
-        ist_today = datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+        ist_now = timestamp_indian()
+        ist_today = ist_now.date().isoformat()
         if _session_date != ist_today:
             _session_movers = {}
             _session_date = ist_today
+
+        # ── Market-closed fast-path ────────────────────────────────────
+        # When no segment is open, skip the live broker quote entirely and
+        # serve the last persisted snapshot.  This covers weekends, holidays,
+        # and the overnight window between MCX close (23:30) and NSE pre-open
+        # (09:00 next day).
+        market_is_open = is_any_segment_open(ist_now)
+        if not market_is_open:
+            snap = await _load_latest_movers_snapshot()
+            if snap:
+                try:
+                    snap_rows: list[MoverRow] = [
+                        MoverRow(
+                            tradingsymbol=d["tradingsymbol"],
+                            exchange=d["exchange"],
+                            last_price=float(d["last_price"]),
+                            previous_close=float(d["previous_close"]),
+                            change_pct=float(d["change_pct"]),
+                            peak_pct=float(d["peak_pct"]),
+                            sticky=bool(d.get("sticky", False)),
+                        )
+                        for d in _json.loads(snap.payload_json)
+                    ]
+                    return MoversResponse(
+                        movers=snap_rows,
+                        threshold_pct=MOVER_THRESHOLD_PCT,
+                        session_date=snap.date.isoformat() if hasattr(snap.date, "isoformat") else str(snap.date),
+                        captured_at=snap.captured_at.isoformat(),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(f"Movers snapshot deserialise failed: {exc}")
+            # No snapshot yet (e.g. first deploy) — return empty gracefully.
+            return MoversResponse(
+                movers=[], threshold_pct=MOVER_THRESHOLD_PCT, session_date=ist_today,
+            )
+
+        # ── Live fetch (market open) ───────────────────────────────────
 
         # Build universe: underlyings that have at least one CE/PE row.
         # Per-day cached — the instruments dump only changes when Kite
@@ -1048,6 +1159,12 @@ class WatchlistController(Controller):
             ))
 
         rows.sort(key=lambda r: abs(r.change_pct), reverse=True)
+
+        # Persist last-good snapshot (fire-and-forget) so off-hours
+        # requests can serve it instead of returning an empty list.
+        if rows:
+            asyncio.create_task(_save_movers_snapshot(rows, ist_today))
+
         return MoversResponse(
             movers=rows,
             threshold_pct=MOVER_THRESHOLD_PCT,
