@@ -92,6 +92,8 @@
     if (_mktTimer) clearInterval(_mktTimer);
     if (_pulseTimer) clearTimeout(_pulseTimer);
     _pulseUnsub?.();
+    _unsubLast?.();
+    _unsubConn?.();
   });
 
   // Palette class — drives the three-bucket colour swap on the button.
@@ -126,7 +128,15 @@
       _showClosedNotice = true;
       return;
     }
-    onClick?.();
+    // CLICK-FEEDBACK FIX (Perf audit Jul 2026): defer the parent's
+    // onClick by one microtask so the click handler returns immediately,
+    // letting the browser paint the disabled / spinner state before any
+    // synchronous work the parent kicks off (Promise.allSettled wiring,
+    // legsKey signature compute, etc.). Operator: "refresh button
+    // getting stuck still is an issue" — the stall was the gap between
+    // the click and the next paint when the parent's onClick body did
+    // tens of ms of bookkeeping synchronously before the first await.
+    queueMicrotask(() => { try { onClick?.(); } catch (e) { console.warn('[refresh] onClick threw:', e); } });
   }
 
   // Watch the `loading` prop for true → false transitions and stamp
@@ -143,19 +153,34 @@
   });
 
   // Subscribe for tooltip rendering.
+  // SUBSCRIPTION LEAK FIX (Perf audit Jul 2026): both subscribes used to
+  // be top-level (no cleanup) — every RefreshButton instance leaked one
+  // lastRefreshAt + one connStatus subscriber for the page lifetime.
+  // With 1-3 RefreshButtons per algo page and route transitions never
+  // destroying them, the listener list grew unbounded; each tick of the
+  // 15 s connStatus poller / each manual refresh fanned out work to
+  // every dead consumer. Bind subscribes through onMount/onDestroy so
+  // unmount tears them down.
   let _lastTs = $state(0);
-  lastRefreshAt.subscribe((v) => { _lastTs = v || 0; });
+  /** @type {(() => void) | null} */
+  let _unsubLast = null;
+  /** @type {(() => void) | null} */
+  let _unsubConn = null;
 
   // Badge state derived from the store.
   let _loaded = $state(0);
   let _total  = $state(0);
   let _backendOk = $state(true);
   let _failingAccounts = $state(/** @type {string[]} */ ([]));
-  connStatus.subscribe((v) => {
-    _loaded = Number(v?.loaded) || 0;
-    _total  = Number(v?.total)  || 0;
-    _backendOk = v?.backendOk !== false; // default true
-    _failingAccounts = Array.isArray(v?.failingAccounts) ? v.failingAccounts : [];
+
+  onMount(() => {
+    _unsubLast = lastRefreshAt.subscribe((v) => { _lastTs = v || 0; });
+    _unsubConn = connStatus.subscribe((v) => {
+      _loaded = Number(v?.loaded) || 0;
+      _total  = Number(v?.total)  || 0;
+      _backendOk = v?.backendOk !== false; // default true
+      _failingAccounts = Array.isArray(v?.failingAccounts) ? v.failingAccounts : [];
+    });
   });
 
   // _showBadge / _badgeText / _badgeClass dropped — count is now in

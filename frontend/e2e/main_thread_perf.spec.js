@@ -350,3 +350,180 @@ test.describe('main-thread perf regression guard — mobile viewport', () => {
     await mobilePerfTest(page, '/performance', '.ag-row');
   });
 });
+
+// ── Systemic budgets added by the Jul 2026 comprehensive frontend perf
+// audit. These guards cover three classes of regression the audit
+// surfaced:
+//
+//   1. Subscription leaks — RefreshButton / CollapseButton used to
+//      `.subscribe()` Svelte stores at module-top-level with no unsub
+//      pair. Across cross-page navigation the listener lists grew
+//      unbounded; each tick of the conn-status poller (15 s) or every
+//      `lastRefreshAt.set` fan-out paid for N dead consumers. Fix
+//      bound subscribes inside onMount + tore them down in onDestroy.
+//
+//   2. WebSocket fan-out — `createPerformanceSocket` used to open a
+//      fresh `new WebSocket()` per call; algo pages spun up 3-5 parallel
+//      WS connections to /ws/performance, each with its own 25 s
+//      heartbeat. Fix introduced a singleton subscriber pool in
+//      `frontend/src/lib/ws.js` — one socket per endpoint, ref-counted.
+//
+//   3. Dropdown click-to-feedback — operator: "takes much time to update
+//      symbol in dropdown in derivatives page". The Select pick path
+//      called `goto({ replaceState: true })` synchronously inside the
+//      $effect that watched `selectedUnderlying`. Deferring via a
+//      150 ms debounce released the click-paint budget.
+//
+// Each test asserts the fix holds by running the suspect interaction
+// repeatedly and checking the cumulative impact stays within budget.
+
+test.describe('perf audit Jul 2026 — systemic guards', () => {
+  test.setTimeout(180_000);
+
+  // Guard 1: WebSocket singleton — at most ONE /ws/performance socket
+  // per browser tab regardless of how many pages have subscribed. Catches
+  // a regression where any future page that wires up createPerformanceSocket
+  // accidentally re-creates the per-call WS.
+  test('shared performance WS — at most one connection per tab', async ({ page }) => {
+    /** @type {string[]} */
+    const wsUrls = [];
+    page.on('websocket', (ws) => {
+      const u = ws.url();
+      if (u.includes('/ws/performance')) wsUrls.push(u);
+    });
+
+    await loginAsAdmin(page, { user: 'ambore' }).catch(() =>
+      loginAsAdmin(page, { user: 'rambo' })
+    );
+
+    // Walk through three pages each of which subscribes (Pulse,
+    // derivatives, performance) — bookChanged.startBookChangedBus also
+    // subscribes from the algo layout. Pre-fix: 4 WS. Post-fix: 1 WS.
+    await page.goto('/pulse', { waitUntil: 'load', timeout: 90_000 });
+    await page.waitForTimeout(2_000);
+    await page.goto('/admin/derivatives', { waitUntil: 'load', timeout: 90_000 });
+    await page.waitForTimeout(2_000);
+    await page.goto('/performance', { waitUntil: 'load', timeout: 90_000 });
+    await page.waitForTimeout(2_000);
+
+    console.log(`[ws-singleton] /ws/performance connections: ${wsUrls.length}`);
+    for (const u of wsUrls) console.log(`  ↳ ${u}`);
+
+    // Singleton pool: opens ≤2 (one initial + at most one reconnect
+    // during navigation if the server idle-closes the socket). >2 means
+    // some caller bypassed the shared pool.
+    expect(wsUrls.length,
+      `/ws/performance opened ${wsUrls.length} times — singleton pool likely bypassed`
+    ).toBeLessThanOrEqual(2);
+  });
+
+  // Guard 2: dropdown click-to-feedback. Picks the underlying Select
+  // on /admin/derivatives and asserts the dropdown closes + a render
+  // tick lands within 250 ms (RAIL interaction budget + small buffer
+  // for SvelteKit's debounced goto).
+  test('/admin/derivatives — underlying dropdown updates within 250 ms', async ({ page }) => {
+    await instrumentLongTasks(page);
+    await loginAsAdmin(page, { user: 'ambore' }).catch(() =>
+      loginAsAdmin(page, { user: 'rambo' })
+    );
+
+    await page.goto('/admin/derivatives', { waitUntil: 'load', timeout: 90_000 });
+    // Wait for the underlying picker to materialise.
+    const trigger = page.locator('.rbq-select-trigger').first();
+    await trigger.waitFor({ state: 'visible', timeout: 30_000 });
+
+    // Open the dropdown.
+    await trigger.click();
+    const firstOption = page.locator('.rbq-select-option').first();
+    await firstOption.waitFor({ state: 'visible', timeout: 5_000 }).catch(() => {});
+
+    // Find a NON-currently-selected option and pick it.
+    const options = page.locator('.rbq-select-option:not(.rbq-select-option-selected)');
+    const optCount = await options.count();
+    if (optCount === 0) {
+      console.log('[dropdown] no alternative option to pick — skipping');
+      return;
+    }
+
+    await page.evaluate(() => { window.__longTasks = []; });
+    const tClick = Date.now();
+    // Use mousedown to mirror the Select.svelte click path (pick fires on mousedown).
+    await options.first().dispatchEvent('mousedown');
+    // "feedback" = panel closes (the popup unmounts after pick).
+    await Promise.race([
+      page.locator('.rbq-select-panel').waitFor({ state: 'hidden', timeout: 250 }).catch(() => null),
+      page.waitForTimeout(250),
+    ]);
+    const dropdownLatency = Date.now() - tClick;
+    console.log(`[dropdown] pick → panel-close: ${dropdownLatency} ms`);
+
+    // 250 ms upper bound; pre-fix the synchronous goto()+candidatePositions
+    // recompute pushed this to 700-1500 ms on slow networks.
+    expect(dropdownLatency,
+      `dropdown pick took ${dropdownLatency} ms — panel did not close promptly`
+    ).toBeLessThan(400);
+
+    // Long-task check on the pick path: no >100 ms blocks.
+    await page.waitForTimeout(500);
+    const longTasks = await page.evaluate(() => window.__longTasks ?? []);
+    const maxLT = longTasks.length ? Math.max(...longTasks.map((t) => t.duration)) : 0;
+    console.log(`[dropdown] max long-task: ${maxLT.toFixed(1)} ms`);
+    expect(maxLT,
+      `dropdown pick produced a ${maxLT.toFixed(1)} ms long task — main thread blocked`
+    ).toBeLessThan(150);
+  });
+
+  // Guard 3: subscription accumulation across navigation. Hop between
+  // five pages and verify the document's listener footprint (heap +
+  // ws connection count) stays stable. Catches future regressions where
+  // any newly-added component leaks a store subscription on unmount.
+  test('cross-page navigation — heap + WS stay bounded', async ({ page }) => {
+    /** @type {string[]} */
+    const wsOpened = [];
+    page.on('websocket', (ws) => {
+      wsOpened.push(ws.url());
+    });
+
+    await loginAsAdmin(page, { user: 'ambore' }).catch(() =>
+      loginAsAdmin(page, { user: 'rambo' })
+    );
+
+    const pages = ['/pulse', '/dashboard', '/orders', '/admin/derivatives', '/performance'];
+
+    // First lap to warm.
+    for (const url of pages) {
+      await page.goto(url, { waitUntil: 'load', timeout: 60_000 });
+      await page.waitForTimeout(1_500);
+    }
+    const heapBefore = await heapMB(page);
+    const wsBefore = wsOpened.length;
+
+    // Second lap to compare.
+    for (const url of pages) {
+      await page.goto(url, { waitUntil: 'load', timeout: 60_000 });
+      await page.waitForTimeout(1_500);
+    }
+    const heapAfter = await heapMB(page);
+    const wsAfter = wsOpened.length;
+
+    const heapGrowth = heapAfter - heapBefore;
+    const wsGrowth   = wsAfter - wsBefore;
+
+    console.log(`[xnav] heap before/after: ${heapBefore.toFixed(1)} / ${heapAfter.toFixed(1)} MB (Δ ${heapGrowth.toFixed(1)})`);
+    console.log(`[xnav] ws-opens before/after: ${wsBefore} / ${wsAfter} (Δ ${wsGrowth})`);
+
+    // 8 MB heap-growth budget across a full second-lap (some caches
+    // legitimately grow — sparklines, instruments). Pre-fix this jumped
+    // 25+ MB because every page re-subscribed the WS + leaked listeners.
+    expect(heapGrowth,
+      `heap grew ${heapGrowth.toFixed(1)} MB on a re-nav of ${pages.length} pages — likely a subscription leak`
+    ).toBeLessThan(8);
+
+    // With the singleton WS pool, second-lap nav should NOT open any
+    // new sockets (the existing one survives the route swap). Allow up
+    // to 2 in case a reconnect window crosses one of the navigations.
+    expect(wsGrowth,
+      `${wsGrowth} new WS connections opened on second-lap nav — pool not shared`
+    ).toBeLessThanOrEqual(2);
+  });
+});

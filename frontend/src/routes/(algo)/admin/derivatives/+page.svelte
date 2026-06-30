@@ -256,22 +256,37 @@
     } catch {}
   });
 
+  // URL sync — debounced 150 ms so a flurry of picks doesn't queue N
+  // goto() invocations. goto() with replaceState is still measurably
+  // expensive (SvelteKit walks the route tree, fires nav lifecycle hooks
+  // even when the route is unchanged). Operator: "takes much time to
+  // update symbol in dropdown" — the synchronous goto() inside the pick
+  // path was a multi-frame hit. Deferring releases the click-to-paint
+  // budget so the dropdown closes and downstream candidatePositions /
+  // loadStrategy work scheduled by the same pick proceeds without
+  // racing the navigation.
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _urlSyncTimer = null;
   $effect(() => {
     // Track both pieces of state.
     const u = selectedUnderlying;
     const es = selectedExpiries.slice();
     untrack(() => {
-      try {
-        const url = new URL(window.location.href);
-        if (u) url.searchParams.set('u', u);
-        else   url.searchParams.delete('u');
-        if (es.length) url.searchParams.set('e', es.join(','));
-        else           url.searchParams.delete('e');
-        const next = url.pathname + (url.search ? url.search : '');
-        if (next !== page.url.pathname + page.url.search) {
-          goto(next, { replaceState: true, noScroll: true, keepFocus: true });
-        }
-      } catch {}
+      if (_urlSyncTimer) clearTimeout(_urlSyncTimer);
+      _urlSyncTimer = setTimeout(() => {
+        _urlSyncTimer = null;
+        try {
+          const url = new URL(window.location.href);
+          if (u) url.searchParams.set('u', u);
+          else   url.searchParams.delete('u');
+          if (es.length) url.searchParams.set('e', es.join(','));
+          else           url.searchParams.delete('e');
+          const next = url.pathname + (url.search ? url.search : '');
+          if (next !== page.url.pathname + page.url.search) {
+            goto(next, { replaceState: true, noScroll: true, keepFocus: true });
+          }
+        } catch {}
+      }, 150);
     });
   });
   /** @type {Record<string, boolean>} `${account}|${symbol}` → enabled flag.
@@ -3932,7 +3947,11 @@
       loadPositions({ fresh: true });
     });
   });
-  onDestroy(() => { teardown?.(); posTeardown?.(); simTeardown?.(); wsTeardown?.(); quotesTeardown?.(); flash.dispose(); _unsubBook?.(); });
+  onDestroy(() => {
+    teardown?.(); posTeardown?.(); simTeardown?.(); wsTeardown?.(); quotesTeardown?.();
+    flash.dispose(); _unsubBook?.();
+    if (_urlSyncTimer) { clearTimeout(_urlSyncTimer); _urlSyncTimer = null; }
+  });
 
   // Refresh underlying quotes whenever the Snapshot universe changes
   // (a new underlying lands in the book, an old one drops out, the

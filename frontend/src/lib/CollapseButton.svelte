@@ -35,7 +35,7 @@
   tightly at the right edge of the header.
 -->
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { authStore } from '$lib/stores';
 
   let {
@@ -55,8 +55,19 @@
   // Per-user storage key. Anonymous demo sessions share a 'demo'
   // bucket — fine because demo state isn't sensitive and the
   // recruiter-style visitor doesn't need cross-session persistence.
+  // SUBSCRIPTION LEAK FIX (Perf audit Jul 2026): authStore.subscribe was
+  // module-top-level, never unsubscribed. CollapseButton is instanced on
+  // every card on every algo page (dozens per session) — the unsub
+  // accumulation was a measurable contributor to per-tick scheduler
+  // overhead. Bind into onMount + onDestroy so each instance owns its
+  // subscription lifetime.
   let _username = $state('demo');
-  authStore.subscribe(v => { _username = v?.user?.username || 'demo'; });
+  /** @type {(() => void) | null} */
+  let _unsubAuth = null;
+  onMount(() => {
+    _unsubAuth = authStore.subscribe(v => { _username = v?.user?.username || 'demo'; });
+  });
+  onDestroy(() => { _unsubAuth?.(); _unsubAuth = null; });
   const _storageKey = $derived(`ramboq.collapse.${_username}.${cardId}`);
 
   // Restore on mount — overrides initialCollapsed if a stored value
