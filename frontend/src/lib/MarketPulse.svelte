@@ -1250,14 +1250,36 @@
     // scheduled. The page would otherwise sit frozen with cached data
     // until a manual refresh.
     await Promise.allSettled([instrumentsP, accountsP, listsP, pulseP, fundsP, moversP]);
+    // Sparkline bootstrap — ensure positions + holdings are in the store
+    // before we snapshot unifiedRows for the pairs list.
+    //
+    // After the loadPulse-store-migration (Sprint F+, commit 50ed5e83),
+    // loadPulse(force=false) no longer fetches positions on the initial
+    // mount call — it trusts the book poller to keep positionsStore hot.
+    // On a cold start (empty localStorage) positionsStore.value can still
+    // be null when the Promise.allSettled above resolves, because the book
+    // poller's first _tickBookPollers() is fire-and-forget and may still
+    // be in-flight. Without this wait, loadSparklines() reads unifiedRows
+    // with empty positions → pairs list is watchlist-only → position
+    // sparkline cells show "—" until the 60 s _TICK_SPARK cadence fires.
+    //
+    // positionsStore.load() is safe to call concurrently: createDataStore
+    // deduplicates by args so if the book poller's load() is still in-flight
+    // we join its Promise (zero extra HTTP round-trips). If the poller has
+    // already resolved we short-circuit to the cached value synchronously.
+    // After the allSettled, positionsStore.value + holdingsStore.value are
+    // guaranteed populated (or errored — the store keeps the last-good value).
+    // await tick() flushes the $effect bridge that mirrors store values into
+    // the `positions` / `holdings` $state variables that unifiedRows reads.
+    await Promise.allSettled([positionsStore.load(), holdingsStore.load()]);
+    await tick();
     loadSparklines();
-    // The first loadSparklines call races with `unifiedRows` deriving —
-    // `loadQuotes` finishes loading the watchQuotes map AFTER the
-    // Promise.all above, so the very first call can fire with an empty
-    // or partial pairs list and silently return (no sparklines on any
-    // grid until the 60 s _TICK_SPARK tick). Re-fire 2 s later to cover
-    // the race; the second call dedups by exchange:sym so it's cheap
-    // even when the first call already populated everything.
+    // 2 s retry covers any remaining watchlist-quote race: loadQuotes
+    // finishes its watchlist poll AFTER the Promise.allSettled above,
+    // so watchlist-only symbols that weren't yet in activeLists get their
+    // sparklines without waiting for the 60 s _TICK_SPARK tick.
+    // The second call is cheap — createDataStore deduplicates pairs that
+    // were already fetched by the first call.
     setTimeout(() => { loadSparklines(); }, 2000);
 
     // Unified pulse tick — one marketAwareInterval drives every refresh.
@@ -3641,8 +3663,16 @@
 
   /**
    * Inline SVG sparkline for the last N daily closes.
-   * ~60×18px, no axes/labels, stroke coloured by direction.
-   * Missing data → em-dash placeholder.
+   * ~32×14px, no axes/labels, stroke coloured by direction.
+   *
+   * Render contract (hardened Jun 2026):
+   *   1. "—" only when sparklines[sym] is absent or empty (no historical data).
+   *   2. Historical bars always render when ≥ 1 bar is present.
+   *   3. If liveTail > 0: replace the last bar with the live SSE LTP.
+   *   4. If liveTail = 0 / null: render historical bars unchanged (no override).
+   *
+   * The live-LTP tail is an ENHANCEMENT only — never a gate on rendering.
+   * The body renders regardless of whether SSE LTP is available.
    */
   function sparkRenderer(params) {
     const sym    = String((params.data || {}).tradingsymbol || '').toUpperCase();
@@ -3659,12 +3689,14 @@
     if (base.length === 1) {
       base = [base[0], base[0]];
     }
-    // Override the last (today's) point with the live SSE LTP when
-    // available — sparkline tail tracks the real-time price.
-    // LTP flicker fix: only override with strictly-positive values.
-    // _buildLtpSnap already excludes <= 0 entries; the explicit check
-    // here is defensive and keeps the sparkline polyline from
-    // collapsing the today-bar to baseline on a transient zero.
+    // Live-LTP tail override — ENHANCEMENT only, never gates the render.
+    // Replace the last historical close with the live SSE LTP when strictly
+    // positive. When liveTail is 0 or absent, closes = base and the
+    // historical body renders unchanged. The backend's batch_sparkline already
+    // appends a live LTP; this refreshes it with the SSE tick (sub-second vs
+    // polling interval). _buildLtpSnap excludes non-positive values; the
+    // `liveTail > 0` guard here is belt-and-suspenders against any transient
+    // 0 collapsing the polyline to baseline.
     const liveTail = _liveLtpSnap[sym];
     const closes = (typeof liveTail === 'number' && liveTail > 0)
       ? [...base.slice(0, -1), liveTail]
