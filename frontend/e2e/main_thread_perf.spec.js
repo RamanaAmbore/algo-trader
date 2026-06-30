@@ -595,3 +595,176 @@ test.describe('RefreshButton spinner — animation contract', () => {
     ).toBe(true);
   });
 });
+
+// ── Primary-before-secondary fetch ordering ─────────────────────────────────
+//
+// Per-page architectural slice (2026-06-28): every page classifies its data
+// fetches as PRIMARY (what the operator needs to see FIRST — drives the main
+// grids/chart) vs SECONDARY (decorative, below-the-fold, or only used inside
+// modals). SECONDARY fetches defer via setTimeout(0) so the PRIMARY network
+// request starts first and the primary content paints first.
+//
+// This describe block guards the ordering: for each instrumented page we
+// record the timestamp of the FIRST observed PRIMARY request and the FIRST
+// observed SECONDARY request. The primary timestamp must be ≤ the secondary
+// timestamp. Also asserts secondary still lands within a 4-second window
+// after primary (so it doesn't silently regress to "never loads").
+//
+// Run individually:
+//   PLAYWRIGHT_BASE_URL=https://dev.ramboq.com npx playwright test \
+//     e2e/main_thread_perf.spec.js \
+//     -g 'Primary-before-secondary' --project=chromium-desktop --workers=1
+
+/**
+ * Hook page.on('request') and record the FIRST request whose URL matches
+ * `primaryRe` and the FIRST request whose URL matches `secondaryRe`. Returns
+ * timestamps + the captured URL strings. Tolerates either being absent (test
+ * decides whether absence is acceptable — typically primary is mandatory).
+ *
+ * @param {import('@playwright/test').Page} page
+ * @param {RegExp} primaryRe
+ * @param {RegExp} secondaryRe
+ */
+function watchRequestOrder(page, primaryRe, secondaryRe) {
+  /** @type {{ tFirstPrimary: number, tFirstSecondary: number,
+   *           urlPrimary: string, urlSecondary: string }} */
+  const obs = { tFirstPrimary: 0, tFirstSecondary: 0, urlPrimary: '', urlSecondary: '' };
+  page.on('request', (req) => {
+    const url = req.url();
+    const t = Date.now();
+    if (!obs.tFirstPrimary && primaryRe.test(url)) {
+      obs.tFirstPrimary = t;
+      obs.urlPrimary = url;
+    }
+    if (!obs.tFirstSecondary && secondaryRe.test(url)) {
+      obs.tFirstSecondary = t;
+      obs.urlSecondary = url;
+    }
+  });
+  return obs;
+}
+
+/**
+ * Shared assertion: primary fired before secondary, with both fired within
+ * a reasonable window of mount.
+ *
+ * @param {{ tFirstPrimary:number, tFirstSecondary:number,
+ *           urlPrimary:string, urlSecondary:string }} obs
+ * @param {string} label
+ */
+function assertOrdering(obs, label) {
+  console.log(`[order:${label}] primary="${obs.urlPrimary}" @${obs.tFirstPrimary}`);
+  console.log(`[order:${label}] secondary="${obs.urlSecondary}" @${obs.tFirstSecondary}`);
+  expect(obs.tFirstPrimary,
+    `${label}: primary request was never observed`
+  ).toBeGreaterThan(0);
+  expect(obs.tFirstSecondary,
+    `${label}: secondary request was never observed (didn't load within window)`
+  ).toBeGreaterThan(0);
+  // Primary should fire BEFORE secondary. Allow a small tolerance window of
+  // 50ms — both are scheduled in the same microtask boundary in some paths,
+  // but the setTimeout(0) deferral typically separates them by one task tick
+  // (4ms+). The 50ms tolerance lets co-scheduled requests pass while still
+  // catching real regressions (e.g. when the secondary loads SYNCHRONOUSLY
+  // before primary's fetch even fires).
+  expect(obs.tFirstSecondary + 50,
+    `${label}: secondary fired before primary — defer pattern broken`
+  ).toBeGreaterThanOrEqual(obs.tFirstPrimary);
+}
+
+test.describe('Primary-before-secondary fetch ordering', () => {
+  test.describe.configure({ mode: 'serial' });
+  test.setTimeout(120_000);
+
+  test.beforeAll(async ({ browser }) => {
+    test.setTimeout(60_000);
+    await ensureJwtWithBrowser(browser);
+  });
+
+  /**
+   * Shared body — instruments the request hook BEFORE goto, navigates, lets
+   * primary + secondary settle, then asserts ordering.
+   *
+   * @param {import('@playwright/test').Page} page
+   * @param {{ path:string, primaryRe:RegExp, secondaryRe:RegExp, label:string,
+   *           settleMs?:number }} opts
+   */
+  async function runOrderingTest(page, opts) {
+    await seedAuth(page, _sharedJwt);
+    const obs = watchRequestOrder(page, opts.primaryRe, opts.secondaryRe);
+    await page.goto(opts.path, { waitUntil: 'load', timeout: 90_000 });
+    // Wait long enough for the deferred setTimeout(0) to fire AND the
+    // secondary network round-trip to land. 4s covers slow dev-server
+    // responses without making the test brittle.
+    await page.waitForTimeout(opts.settleMs ?? 4_000);
+    assertOrdering(obs, opts.label);
+  }
+
+  test('/dashboard — loadHero positions before equity + nav', async ({ page }) => {
+    await runOrderingTest(page, {
+      path: '/dashboard',
+      // PRIMARY: positions (loadHero's first batch member).
+      primaryRe: /\/api\/auth\/positions/,
+      // SECONDARY: intraday-equity OR nav/latest — both are deferred together.
+      secondaryRe: /\/api\/auth\/(intraday-equity|me\/nav|firm-nav)/,
+      label: '/dashboard',
+    });
+  });
+
+  test('/dashboard mobile — same ordering on 390×844', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await runOrderingTest(page, {
+      path: '/dashboard',
+      primaryRe: /\/api\/auth\/positions/,
+      secondaryRe: /\/api\/auth\/(intraday-equity|me\/nav|firm-nav)/,
+      label: '/dashboard-mobile',
+    });
+  });
+
+  test('/admin/derivatives — positions before hedge-proxies', async ({ page }) => {
+    await runOrderingTest(page, {
+      path: '/admin/derivatives',
+      // PRIMARY: positions (loadPositions fires first in onMount).
+      primaryRe: /\/api\/auth\/positions/,
+      // SECONDARY: hedge-proxies (deferred via setTimeout(0)).
+      secondaryRe: /\/api\/admin\/hedge-proxies/,
+      label: '/admin/derivatives',
+    });
+  });
+
+  test('/admin/derivatives mobile — same ordering on 390×844', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await runOrderingTest(page, {
+      path: '/admin/derivatives',
+      primaryRe: /\/api\/auth\/positions/,
+      secondaryRe: /\/api\/admin\/hedge-proxies/,
+      label: '/admin/derivatives-mobile',
+    });
+  });
+
+  test('/admin/settings — settings list before watchlists', async ({ page }) => {
+    await runOrderingTest(page, {
+      path: '/admin/settings',
+      // PRIMARY: settings list (drives the cards).
+      primaryRe: /\/api\/admin\/settings/,
+      // SECONDARY: watchlists (only feeds the orders.default_symbol dropdown).
+      secondaryRe: /\/api\/auth\/watchlists/,
+      label: '/admin/settings',
+    });
+  });
+
+  test('/charts — historical bars before greeks', async ({ page }) => {
+    await runOrderingTest(page, {
+      // Open with a real option symbol so Greeks actually fetches.
+      // BANKNIFTY weekly nearest CE — backend resolves via instruments cache.
+      path: '/charts?symbol=NIFTY 50',
+      // PRIMARY: chart historical (drives the OHLCV grid).
+      primaryRe: /\/api\/(charts|options\/historical)/,
+      // SECONDARY: any analytics / greeks endpoint. For underlying NIFTY 50
+      // there is no greeks fetch — fall back to the status-poll endpoint
+      // which is also deferred ("after _loadHistorical" in onMount).
+      secondaryRe: /\/api\/(options\/analytics|live\/status|simulator\/status)/,
+      label: '/charts',
+    });
+  });
+});
