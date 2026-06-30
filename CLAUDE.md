@@ -268,6 +268,15 @@ Operators manage via `/admin/brokers`, not `secrets.yaml` on server. Credentials
 
 **Caching**: In-process TTL in `backend/api/cache.py` with per-key locking. Pre-warm before users hit pages.
 
+**Raw broker-DataFrame cache** (`backend/brokers/broker_apis.py:_RAW_CACHE`, 30s TTL):
+zero-arg `fetch_holdings()` / `fetch_positions()` / `fetch_margins()` memoise their
+`list[pd.DataFrame]` return. Route handlers (positions/holdings/funds), `compute_firm_nav`
+(algo/nav.py), investor slice, and nav_daily writer all share one broker round-trip per
+TTL window. `?fresh=1` and terminal-order postbacks (Kite + Dhan/Groww shared path) call
+`_raw_cache_invalidate(key)` so fills surface immediately. The route-level `get_or_fetch`
+still memoises the FORMATTED `msgspec.Struct` response — both layers cooperate. Single
+canonical layer eliminates the 4× broker fan-out and the NavCard-vs-/performance drift.
+
 **Holiday calendar**: `fetch_holidays(exchange)` cached per `(exchange, today's date)` in `_HOLIDAY_CACHE` module dict. Buster = date rollover. Empty sets also cached (avoid retry-storm on API failure).
 
 **Multi-account broker calls**: `@for_all_accounts` iterates accounts, returns list of DataFrames. Callers use `pd.concat(..., ignore_index=True)`.
