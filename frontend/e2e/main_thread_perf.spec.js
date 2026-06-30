@@ -307,14 +307,18 @@ test.describe('main-thread perf regression guard', () => {
 
     assertPerfDimensions({ maxLongTask, clickToFeedbackMs, heapGrowthPerMin });
 
-    // Two endpoints (positions + holdings) each at ~5 s cadence = 12/min each
-    // = 24/min combined at normal steady-state. Budget = 36/min (1.5×
-    // headroom) catches reactive loops (which fire 100+/min) without
-    // tripping on normal polling. Use LessThanOrEqual with margin so an
-    // exact 24/min result (boundary) does not false-fail.
+    // Steady-state cadence (post cross-page book poller, Jun 2026):
+    //   - Layout-resident `startBookPollers` fires positions + holdings + funds
+    //     every 5 s = 24 req/min (positions + holdings combined).
+    //   - MarketPulse's own loadPulse fires positions + holdings every 2 ticks
+    //     (~10 s) ≈ 12 req/min — sits on top, doesn't dedup because
+    //     it uses fetchPositions() directly (not positionsStore.load()).
+    //   - Combined steady-state: 36–40 req/min. Reactive-loop regressions fire
+    //     100+/min. Budget = 60/min catches a real reactive loop with 1.5×
+    //     headroom over the new combined steady-state.
     expect(pulseRatePerMin,
       `/api/positions+holdings firing at ${pulseRatePerMin.toFixed(1)}/min — reactive loop suspected`
-    ).toBeLessThan(36);
+    ).toBeLessThan(60);
   });
 
   // ── /dashboard — positions/holdings summary cascade guard ──────────────────
@@ -860,15 +864,16 @@ test.describe('cross-page book poller — layout-resident, runs on every route',
     console.log(`[cross-page] /pulse positionsStore size before nav: ${beforeSize}`);
 
     // Install fetch counter so we can verify the layout poller keeps firing.
-    await page.evaluate(() => {
-      window.__crossPagePosReqs = 0;
-      const origFetch = window.fetch;
-      window.fetch = async function(...args) {
-        const url = String(args[0]);
-        if (url.includes('/api/positions')) window.__crossPagePosReqs++;
-        return origFetch.apply(this, args);
-      };
-    });
+    // Sleep audit fix: page.evaluate runs in CURRENT document; after
+    // page.goto() the new document has a fresh `window` object and the
+    // counter would be undefined. Use Playwright's request listener
+    // attached to the BrowserContext — survives navigation, no per-page
+    // setup needed.
+    let posReqs = 0;
+    const _posReqHandler = (/** @type {any} */ req) => {
+      if (req.url().includes('/api/positions')) posReqs++;
+    };
+    page.on('request', _posReqHandler);
 
     // Navigate to /dashboard. The (algo) layout DOES NOT unmount on intra-
     // group nav, so startBookPollers() keeps running through the transition.
@@ -898,7 +903,7 @@ test.describe('cross-page book poller — layout-resident, runs on every route',
     // default 5 s cadence we expect ≥1 /api/positions request in a 7 s
     // window even though dashboard's own loadHero finished earlier.
     await page.waitForTimeout(7_000);
-    const posReqs = await page.evaluate(() => window.__crossPagePosReqs);
+    page.off('request', _posReqHandler);
     console.log(`[cross-page] /api/positions hits in 7 s on /dashboard: ${posReqs}`);
     // Layout-resident poller fires from /dashboard too (NOT just /pulse).
     // Allow 0 outside market hours since marketAwareInterval gates the call;
