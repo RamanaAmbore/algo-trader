@@ -135,25 +135,12 @@
       const next = (isNseOpen() ? 1 : 0) + (isMcxOpen() ? 2 : 0);
       if (next !== _mktTick) _mktTick = next;
     }, 30_000);
-    // Restore frozen values from localStorage when the page mounts
-    // outside market hours. The freeze/reset $effect writes the
-    // current disp$ values to 'strip.frozen' on every live update
-    // during open hours, so the most recent write is always the
-    // last live state before close. On a fresh-tab mount during
-    // overnight / weekend / pre-market window, the operator sees
-    // the same closing P&L view they had at the end of the prior
-    // session. The Closed → Open transition handler clears the
-    // cache (so we don't leak yesterday's frozen values into
-    // today's session).
-    const open = isNseOpen() || isMcxOpen();
-    if (!open) {
-      const cached = cachedRead('strip.frozen');
-      if (cached?.value && typeof cached.value === 'object') {
-        const v = cached.value;
-        dispPositionsToday = Number(v.posToday  || 0);
-        dispHoldingsToday  = Number(v.hldToday  || 0);
-      }
-    }
+    // Closed-hours display now reads from positions / holdings stores
+    // directly (snapshot SSOT). No localStorage restore needed — the
+    // freeze $effect below pulls _liveX = Σ snapshot.day_pnl, which is
+    // the last in-session value persisted via daily_book. The legacy
+    // cache restore went stale during the snapshot-zero-capture outage
+    // and never recovered; SSOT path is robust to that class of bug.
   });
   onDestroy(() => {
     teardown?.();
@@ -373,13 +360,20 @@
     }
     _prevMktOpen  = open;
     _prevExecMode = _execMode;
-    if (!open) return;
-    // Suppress the live-derived assignment until a fresh poll cycle
-    // (one completed AFTER the open transition) lands. Until then
-    // positions[].day_change_val is stale from yesterday's last poll.
-    if (_pollCycleStamp <= _openTransitionStamp) return;
+    // During market open, suppress the live-derived assignment until a
+    // fresh poll cycle (one completed AFTER the open transition) lands —
+    // otherwise positions[].day_change_val is stale from yesterday.
+    if (open && _pollCycleStamp <= _openTransitionStamp) return;
+    // Always mirror the live derived. During open hours it tracks SSE
+    // ticks live; during closed hours it equals Σ snapshot.day_pnl —
+    // the LAST in-session P&L per the market-close-snapshot rule. The
+    // prior localStorage freeze dance went stale when the snapshot
+    // writer logged zeros (auth outage) and never recovered — operator
+    // saw 0.0 instead of the real ₹84k positions P∆. The snapshot is
+    // now the SSOT so we read from it directly.
     dispPositionsToday = _livePositionsToday;
     dispHoldingsToday  = _liveHoldingsToday;
+    if (!open) return;
     // localStorage write throttled to 5s — the effect now runs per
     // SSE tick (so P∆ tracks P live), but persisting every tick would
     // hammer disk + slow the main thread under bursty load. 5s is
@@ -513,13 +507,13 @@
 
 <a class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '')} href="/dashboard"
    aria-label="Open the dashboard — full positions, holdings, and funds grids">
-  <span class="ps-agg" title="Positions: lifetime P&L / today's MTM move (Δ)">
-    <span class="ps-agg-k ps-delta">P∆</span>
-    <span class={'ps-agg-v ' + (_livePositionsPnl > 0 ? 'ps-pos' : _livePositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}
-      >{fmtMoney(_livePositionsPnl)}</span
+  <span class="ps-agg" title="Positions: today's MTM move / lifetime P&L">
+    <span class="ps-agg-k">P</span>
+    <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
+      >{fmtMoney(dispPositionsToday)}</span
     ><span class="ps-agg-sep">/</span
-    ><span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
-      >{fmtMoney(dispPositionsToday)}</span>
+    ><span class={'ps-agg-v ' + (_livePositionsPnl > 0 ? 'ps-pos' : _livePositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}
+      >{fmtMoney(_livePositionsPnl)}</span>
   </span>
   <!-- Combined margin chip: available margin (₹) / utilisation (%).
        Saves a slot vs separate M + U chips. Margin value uses cyan
@@ -553,17 +547,15 @@
     ><span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cash')}
       >{fmtMoney(liveCashTotal)}</span>
   </span>
-  <span class="ps-agg" title="Holdings: lifetime P&L (H∆) / today's MTM move (HD∆)">
-    <span class="ps-agg-k ps-delta">H∆</span>
-    <span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos' : _liveHoldingsTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Hd')}
-      >{fmtMoney(_liveHoldingsTotal)}</span
+  <span class="ps-agg" title="Holdings: current value / today's MTM move / lifetime P&L">
+    <span class="ps-agg-k">H</span>
+    <span class={'ps-agg-v ps-cash ' + flash.classOf('H')}>{fmtMoney(_liveHoldingsValue)}</span
     ><span class="ps-agg-sep">/</span
     ><span class={'ps-agg-v ' + (dispHoldingsToday > 0 ? 'ps-pos' : dispHoldingsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('HDd')}
-      >{fmtMoney(dispHoldingsToday)}</span>
-  </span>
-  <span class="ps-agg" title="Current holding value — sum of cur_val across holdings">
-    <span class="ps-agg-k">H</span>
-    <span class={'ps-agg-v ps-cash ' + flash.classOf('H')}>{fmtMoney(_liveHoldingsValue)}</span>
+      >{fmtMoney(dispHoldingsToday)}</span
+    ><span class="ps-agg-sep">/</span
+    ><span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos' : _liveHoldingsTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Hd')}
+      >{fmtMoney(_liveHoldingsTotal)}</span>
   </span>
 </a>
 
@@ -646,20 +638,12 @@
   .ps-flat { color: var(--algo-slate); }
   /* Negative cash (margin debt) flips to red via .ps-neg. */
   .ps-cash { color: #7dd3fc; }
-  /* Day-delta key labels (P∆ / HD∆ / H∆) — slightly muted + italic so
-     they read as "change since open" vs the plain "P" (lifetime P&L). */
-  .ps-delta {
-    color: rgba(200,216,240,0.7);
-    font-style: italic;
-  }
-
   @media (max-width: 640px) {
-    /* Eight pills (P · M · C · Cl · P∆ · HD∆ · H∆ · H) must fit on a
-       phone. We tighten everything globally; values get a slightly
-       smaller font; the wrapper allows horizontal scroll as a
-       last-resort safety net so nothing clips off-screen on the
-       narrowest devices (~320 px). Horizontal padding matches navbar
-       inner + footer on mobile (0 0.25rem) so the inner content
+    /* Four pills (P · M · C · H) — each carries its own slash-joined
+       trio. Tighten gaps + value font; the wrapper allows horizontal
+       scroll as a last-resort safety net so nothing clips off-screen
+       on the narrowest devices (~320 px). Horizontal padding matches
+       navbar inner + footer on mobile (0 0.25rem) so the inner content
        aligns left/right across the three chrome bands. */
     .ps-strip   { gap: 0.28rem; padding: 0 0.25rem;
                   overflow-x: auto; -webkit-overflow-scrolling: touch;
