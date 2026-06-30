@@ -35,6 +35,8 @@ Process boundary:
 
 from __future__ import annotations
 
+import logging
+
 from litestar import Litestar
 
 from backend.brokers.service.routes import (
@@ -42,6 +44,10 @@ from backend.brokers.service.routes import (
     HealthController,
     InternalBrokerController,
 )
+
+# Module-level logger — getLogger is singleton-per-name; hoisting it here
+# avoids repeated lookups inside each startup/watchdog function body.
+logger = logging.getLogger(__name__)
 
 
 def create_app() -> Litestar:
@@ -87,8 +93,7 @@ def _try_start_ticker() -> bool:
     """Single attempt to start the KiteTicker against the first live
     Kite account. Returns True when the ticker is started (or already
     running). False when no token is available yet; caller should retry."""
-    import logging
-    log = logging.getLogger(__name__)
+    log = logger
     from backend.brokers.kite_ticker import get_ticker
     from backend.brokers.tick_buffer import TickBufferWriter
 
@@ -132,8 +137,7 @@ async def _start_kite_ticker(app: Litestar) -> None:
     when rebuild_from_db just re-minted the token), the watchdog task
     keeps trying every 30s until it succeeds or the process exits.
     """
-    import logging
-    log = logging.getLogger(__name__)
+    log = logger
     try:
         if _try_start_ticker():
             return
@@ -161,8 +165,7 @@ async def _ticker_watchdog() -> None:
     just sleeps; when it isn't, it tries _try_start_ticker() which
     is idempotent."""
     import asyncio
-    import logging
-    log = logging.getLogger(__name__)
+    log = logger
     from backend.brokers.kite_ticker import get_ticker
 
     INTERVAL_S = 30.0
@@ -197,10 +200,9 @@ async def _init_connections_on_startup(app: Litestar) -> None:
     GrowwConnection. After this returns, fetch_* calls in routes.py
     can use the loaded singleton.
     """
-    import logging
     from backend.brokers.connections import Connections
 
-    log = logging.getLogger(__name__)
+    log = logger
     log.info("conn_service: rebuilding Connections singleton on startup")
     try:
         await Connections().rebuild_from_db()

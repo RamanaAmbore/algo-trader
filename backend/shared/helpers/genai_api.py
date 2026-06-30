@@ -1,3 +1,4 @@
+import re
 import socket as _socket
 
 from google import genai
@@ -26,7 +27,6 @@ _socket.getaddrinfo = _getaddrinfo_v4_for_google
 
 def _extract_underlying(tradingsymbol):
     """Extract the underlying from a Kite tradingsymbol (e.g. NIFTY25APR22500CE → NIFTY)."""
-    import re
     m = re.match(r'^([A-Z]+)', tradingsymbol or '')
     return m.group(1) if m else tradingsymbol
 
@@ -149,7 +149,6 @@ def get_market_update(strict: bool = False):
             return fallback
 
         # Strip markdown emphasis markers so the raw report renders cleanly.
-        import re
         resp = re.sub(r'\*\*([^*]+)\*\*', r'\1', resp)           # **bold** → bold
         resp = resp.replace('**', '')                             # drop stray **
         resp = re.sub(r'\*(\S(?:[^*\n]*?\S)?)\*', r'\1', resp)   # *text* → text

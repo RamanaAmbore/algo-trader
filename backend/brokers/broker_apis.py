@@ -954,6 +954,17 @@ def _fetch_margins_local(connections=Connections, account=None, kite=None, broke
 # Format: {exchange: (cached_date, set_of_dates)}
 _HOLIDAY_CACHE: dict[str, tuple] = {}
 
+# Mapping from Kite exchange names to NSE holiday API segment keys.
+# Module-level constant — avoids rebuilding this dict on every cache-miss
+# call to fetch_holidays (which runs inside the agent-engine hot path).
+_NSE_SEGMENT_MAP: dict[str, str] = {
+    "NSE": "CM",
+    "BSE": "CM",
+    "NFO": "FO",
+    "CDS": "CD",
+    "MCX": "COM",
+}
+
 
 def fetch_holidays(exchange="NSE"):
     """
@@ -1003,10 +1014,6 @@ def fetch_holidays(exchange="NSE"):
         return cached[1]
 
     # ── Legacy Tier 3: NSE API fetch ──────────────────────────────────────────
-    # Map Kite exchange names to NSE holiday API segment keys
-    # CM=equity cash, FO=F&O, CD=currency, COM=commodity(MCX)
-    _SEGMENT_MAP = {"NSE": "CM", "BSE": "CM", "NFO": "FO", "CDS": "CD", "MCX": "COM"}
-
     holidays: set = set()
     try:
         resp = requests.get(
@@ -1015,7 +1022,7 @@ def fetch_holidays(exchange="NSE"):
         )
         resp.raise_for_status()
         data = resp.json()
-        segment = _SEGMENT_MAP.get(exchange, "CM")
+        segment = _NSE_SEGMENT_MAP.get(exchange, "CM")
         entries = data.get(segment, [])
 
         for h in entries:
