@@ -909,14 +909,13 @@
     if (_refreshing) return;
     _refreshing = true;
     try {
-      // loadPulse() now routes positions + holdings through the shared
-      // stores (force: true bypasses the in-flight dedup window so the
-      // operator's explicit Refresh always fires a fresh HTTP round-trip).
-      // The batchQuote + underlying-anchor pass at the tail of loadPulse
-      // still runs so underlyings and contract quotes stay in sync.
+      // loadPulse({ force: true }) re-fetches positions + holdings even if
+      // in-flight requests are already running (operator expects fresh data
+      // on explicit Refresh). The batchQuote + underlying-anchor pass at
+      // the tail of loadPulse still runs so underlyings stay in sync.
       await Promise.allSettled([
         loadQuotes(),
-        loadPulse(),
+        loadPulse({ force: true }),
         showFunds ? loadFunds() : Promise.resolve(),
         enableMovers ? loadMovers() : Promise.resolve(),
         loadSparklines(),
@@ -1235,7 +1234,7 @@
     const listsP = enableWatchlists
       ? loadLists().then(() => (activeIds.size > 0 ? loadActive() : null))
       : Promise.resolve();
-    const pulseP  = loadPulse();
+    const pulseP  = loadPulse({ force: true }); // force on mount: ensure fresh data + batchQuote runs
     const fundsP  = showFunds ? loadFunds() : Promise.resolve();
     const moversP = enableMovers ? loadMovers() : Promise.resolve();
 
@@ -2311,51 +2310,42 @@
     return resolveUnderlying(n, findNearestFut);
   }
 
-  async function loadPulse() {
+  // Part 1 — Jun 2026: loadPulse accepts a force flag.
+  // force=true  → operator Refresh or mount: re-fetch positions + holdings.
+  // force=false → background tick: layout poller already fetched; read values.
+  // Rate impact: ~24 req/min (layout poller only) vs ~36/min pre-migration.
+  async function loadPulse(/** @type {{ force?: boolean }} */ { force = false } = {}) {
     try {
-      // Migrate to shared three-tier stores (Part 1 — Jun 2026).
-      // positionsStore.load() / holdingsStore.load() route through
-      // createDataStore which deduplicates concurrent in-flight requests —
-      // so a tick from the layout-resident startBookPollers() racing with
-      // this call shares one HTTP round-trip rather than firing two.
-      // publishPositionsRows / publishHoldingsRows now fire inside each
-      // store's parse hook (see marketDataStores.svelte.js) so we no
-      // longer need to call them explicitly here.
-      // Per-feed brokerErr is sourced from positionsStore.error /
-      // holdingsStore.error after the loads settle.
-      //
-      // showSummary (dashboard mode) needs the raw API response's
-      // `.summary` array which the shared store discards (it stores rows
-      // only). Fetch those separately, conditionally, so the normal
-      // /pulse path pays zero extra cost.
-      const summaryP = showSummary
-        ? Promise.allSettled([
-            fetchPositions().catch(() => null),
-            fetchHoldings().catch(() => null),
-          ])
-        : Promise.resolve(null);
+      if (force) {
+        // showSummary (dashboard mode) needs raw .summary from the API response;
+        // the shared store discards it. Fetch in parallel with the store loads.
+        const summaryP = showSummary
+          ? Promise.allSettled([
+              fetchPositions().catch(() => null),
+              fetchHoldings().catch(() => null),
+            ])
+          : Promise.resolve(null);
 
-      await Promise.allSettled([
-        positionsStore.load({ force: true }),
-        holdingsStore.load({ force: true }),
-      ]);
+        await Promise.allSettled([
+          positionsStore.load({ force: true }),
+          holdingsStore.load({ force: true }),
+        ]);
 
+        if (showSummary) {
+          const summaryResults = await summaryP;
+          const pRaw = summaryResults?.[0]?.status === 'fulfilled' ? summaryResults[0].value : null;
+          const hRaw = summaryResults?.[1]?.status === 'fulfilled' ? summaryResults[1].value : null;
+          positionsSummary = (pRaw?.summary || []).slice();
+          holdingsSummary  = (hRaw?.summary || []).slice();
+        }
+      }
+
+      // brokerErr: surface any error the last store-load cycle captured.
       brokerErr = [positionsStore.error, holdingsStore.error]
         .filter(Boolean).join(' · ');
 
       const p_rows = positionsStore.value ?? [];
       const h_rows = holdingsStore.value  ?? [];
-
-      // Capture the backend's precomputed per-account summary rows
-      // (used by the dashboard's summary grid). Excludes the TOTAL
-      // synthetic row — we render that separately as pinnedBottomRowData.
-      if (showSummary) {
-        const summaryResults = await summaryP;
-        const pRaw = summaryResults?.[0]?.status === 'fulfilled' ? summaryResults[0].value : null;
-        const hRaw = summaryResults?.[1]?.status === 'fulfilled' ? summaryResults[1].value : null;
-        positionsSummary = (pRaw?.summary || []).slice();
-        holdingsSummary  = (hRaw?.summary || []).slice();
-      }
       // Surface every account id we see across positions + holdings
       // for the account-picker dropdown. Also UNION with the broker
       // registry (loaded accounts that may have 0 positions / 0
