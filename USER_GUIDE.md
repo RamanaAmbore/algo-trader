@@ -52,6 +52,34 @@ Backtest against pre-loaded historical candles (past market moves).
 
 ---
 
+## Closed-hours data — snapshots instead of live feeds
+
+When the market is closed (weeknights, weekends, holidays), every data display
+(positions grid, holdings grid, P&L cards) freezes at the last in-session snapshot
+instead of showing blanks or stale values. The platform automatically captured
+snapshots when NSE / MCX closed, and serves them from the database without calling
+the broker.
+
+**What you'll see**:
+- Positions grid, holdings grid, nav cards — all show the last live market-hours snapshot
+- Charts and sparklines — historical data persists (no live quotes, but the past week is there)
+- P&L breakdown pills (P / M / C / H) — frozen snapshot values
+- Live price LTP field — empty or last-known price (no updates)
+- Refresh button — clicking it says "Both NSE and MCX are currently closed" + still fetches
+  the snapshot from DB (fast, no broker round-trip)
+
+**Behind the scenes**:
+When each market closes (via `nse:close`, `mcx:close`, `cds:close` events), the platform
+takes a full snapshot of positions / holdings / cash / margin and writes it to PostgreSQL.
+On the next page load during closed hours, every data read checks "is any segment open?"
+and if not, loads from the snapshot instead of calling Kite / Dhan / Groww.
+
+**Why this matters**: No blank grids, no "connection lost" errors, no stale overnight data.
+Operators see the accurate pre-close state all night, ready for next open. Telegram alerts
+and email still arrive in real-time for any fills / agent events that happen overnight.
+
+---
+
 ## Agents — the rules layer
 
 Open `/agents`. Every row is a rule. Click to expand and read it in plain English.

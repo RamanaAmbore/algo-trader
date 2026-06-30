@@ -881,6 +881,95 @@ session.
 
 ---
 
+## Persistence + chart data backfill
+
+**Problem**: Charts blank ("no data for X symbols"), sparklines stale, or you
+need historical bars urgently. Three-tier persistence layer (memory → DB →
+broker) + auto-backfill solves this.
+
+### Auto-backfill on startup
+
+Process boot runs `_task_warm_backfill` (60 s delay) which:
+1. Inspects 300-symbol universe (watchlist + holdings + positions + movers)
+2. For each symbol with <70% daily coverage (365-day window), calls
+   `backfill_ohlcv_daily()` → forces broker fetch
+3. For today's bars, if any segment open, calls `backfill_intraday_today()` →
+   fetches 30-min candles
+
+Startup backfill respects broker rate-limits and cool-off windows; skips
+accounts in rate-limit cooloff.
+
+### Admin endpoint — on-demand backfill
+
+```
+POST /api/admin/persistence/backfill?kind=daily|intraday|both
+```
+
+Async repair for the 300-symbol universe. Response: `{"message": "…",
+"task_id": "…"}`. Check the activity log to see progress. Admin-guarded.
+
+### CLI — immediate recovery
+
+For production defect (e.g. "all charts are empty"):
+
+```bash
+# Option 1: wrapper that reads secrets from operator login
+python scripts/persistence_mode.py off|soft|hard|status
+
+# Option 2: force-backfill all symbols immediately (blocks until done)
+python scripts/backfill_ohlcv.py --daily --intraday
+```
+
+Both skip broker accounts in rate-limit cooloff (checks `_RATE_LIMIT_COOLOFF`
+set + checks seconds since last rate-limit exception).
+
+### Chart self-heal during live market
+
+When you navigate to a chart mid-session:
+
+1. `/api/options/historical?symbol=RELIANCE&days=30` checks DB coverage
+2. If <70% of requested days present (configurable, tunable via
+   `/admin/settings` → `chart_self_heal_coverage_threshold`)
+3. Auto-triggers broker fetch (if ≥1 broker available + not in cooloff)
+4. Response carries `"partial": bool` → UI renders hint "Partial data — retrying"
+5. One healing per symbol per 60s (throttled logging)
+
+Graceful under rate-limiting: if broker unavailable, returns what's in DB.
+
+### Closed-hours data layer (db_only mode)
+
+When all segments are closed:
+- Every data read (positions, holdings, sparklines, charts) skips broker → reads DB snapshot
+- In-session closed-hours sparkline refresh (5-min cadence) uses `db_only=True` mode
+- DB row must exist; if not, graceful fallback (blank / retry next open)
+
+Eliminates blank grids + "connection lost" errors. Snapshots captured at:
+- `nse:close` / `nse:close_settled` — NSE positions / holdings / cash
+- `mcx:close` / `mcx:close_settled` — MCX positions
+- `cds:close` / `cds:close_settled` — CDS positions + NAV
+
+Closed-hours + open-hours flows use the same `closed_hours_or_broker()` gate in
+`backend/api/helpers/snapshot_gate.py` — single SSOT for the decision.
+
+### Persistence mode tunables
+
+Three modes (runtime-only, reset to `off` on restart):
+
+| Mode | Tier 1 | Tier 2 | Tier 3 | Use case |
+|---|---|---|---|---|
+| **off** (default) | ✓ | ✓ | ✓ | Normal |
+| **soft** | ✗ | ✗ | ✓ | Force broker fetch (bypass cache); write-back heals all tiers |
+| **hard** | ✗ | ✗ | ✓ | soft + unsubscribe/resubscribe KiteTicker (drastic; last resort) |
+
+Flip via:
+```
+POST /api/admin/persistence/mode/soft  (or hard, or off)
+```
+
+Returns current mode + active timestamp. Resets to `off` on process restart.
+
+---
+
 ## Common tasks
 
 **Add custom loss rule** → `/automation` → copy `loss-pos-acct-static-abs` → replace scope with custom account matcher → Validate → Run in Simulator → ON

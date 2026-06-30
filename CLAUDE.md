@@ -466,6 +466,31 @@ Mode is runtime-only (resets to `off` on process restart).
 - `get_or_fetch_daily(..., bypass_cache=True)` — defect-recovery escape hatch
 - `runtime_state.is_bypass_on()` checks on every read; soft/hard modes set this True
 
+**db_only mode** — per-store flag skips Tier 3 (broker) during closed hours.
+Each store (`ohlcv_store`, `intraday_store`) checks `_any_segment_open()` at
+read time; when all markets closed, passes `db_only=True` to completeness checks
+(which skip validation requiring live market data). Frontend sparkline refresh
+uses `db_only=True` when all segments closed (low-priority 5-min poll).
+
+**Chart self-heal** — `/api/options/historical?symbol=…&days=30` detects under-coverage
+(<70% of requested days present in DB) and auto-fetches from broker when ≥1 broker
+available. Response carries `partial: bool` (True if recovery incomplete) so frontend
+can hint "partial data". Cool-off aware: skips broker during rate-limit window.
+Logs one healing per symbol per 60s to avoid spam. Coverage threshold tunable via
+`/admin/settings` → Persistence → `chart_self_heal_coverage_threshold` (default 0.70).
+
+**Coverage backfill** (`backend/api/persistence/backfill.py`):
+- `backfill_ohlcv_daily(symbols, target_days=365)` — force-fetch 365-day window
+  for symbols with <70% coverage; skips broker in cooloff.
+- `backfill_intraday_today(symbols, interval="30minute")` — force-fetch today's bars;
+  defers when markets closed.
+- Startup hook `_task_warm_backfill` (60 s delay, once per process) fires both
+  for the 300-symbol universe.
+- On-demand: `POST /api/admin/persistence/backfill?kind=daily|intraday|both`
+  (admin-guarded).
+- CLI: `scripts/persistence_mode.py off|soft|hard|status` (reads operator login)
+  and `scripts/backfill_ohlcv.py --daily --intraday` for immediate prod fix.
+
 **Coverage backfill** (`backend/api/persistence/backfill.py`):
 - `backfill_ohlcv_daily(symbols, target_days=365)` — force-fetch 365-day window for symbols with < 70% coverage; skips broker in cooloff.
 - `backfill_intraday_today(symbols, interval="30minute")` — force-fetch today's bars; defers when markets closed.
@@ -678,6 +703,17 @@ Unified chart for any symbol kind (underlying / future / option / equity). Reads
 **PerformancePage** — canonical-cluster reference. Public page (cream theme) shows real Kite data even during sim. Admin `/dashboard` = P&L Analysis + MarketPulse summary grids (Funds/Positions/Holdings, single-account scoped) + Agent activity log.
 
 **Dashboard layout (`dash-row1-split`)** — chart card LEFT, tabbed NAV / Capital / Equity sidebar RIGHT (Jun 2026 shuffle). NAV is the default tab on the sidebar; renders `NavBreakdown.svelte` which shares the `cash_sod + option_premium + Σ position.unrealised + Σ holdings.cur_val` arithmetic with `PerformancePage` `navByAcct` and `backend/api/algo/nav.py:compute_firm_nav` (v4 formula). Both surfaces source positions / holdings / funds from the module-level `marketDataStores` singletons so the dashboard NAV tab and the `/performance` NAV grid can't drift. Grid cells stretch vertically via flex so the sidebar height responds to whichever chart tab is active.
+
+**NavStrip pill cluster** — PerformancePage + MarketPulse header shows SSOT snapshot
+data (frozen during closed hours until next market open). Pill layout: P / M / C / H
+(slash-joined trios where applicable):
+- **P** (P&L) — `today / lifetime` (intraday delta / cumulative since inception)
+- **M** (Margin) — `available / total` (used margin as fraction of sanctioned total)
+- **C** (Cash) — `available / total` (same framing as Margin)
+- **H** (Holdings) — `today / value / lifetime` (intraday delta / current market value / cumulative cost).
+Snapshot SSOT replaces localStorage `strip.frozen` cache during closed hours;
+in-session reload restored via disk cache. Latest-batch CTE in positions/holdings
+snapshot readers anchors on `MAX(captured_at) per account` — no stale months-old rows.
 
 **Public-theme row bars** — left + right edges on symbol cell only (`.ag-col-sym`). Background tint extends symbol + account cells (`.ag-col-fill`).
 
@@ -1025,6 +1061,9 @@ immediately (within one event-loop tick) before resuming its normal cadence.
 | Mask account in text | `backend/shared/helpers/utils.py:mask_account_in_text` — JSON-string scrubber for non-admin viewers. Routes every match through canonical `mask_account()`. |
 | Postback fan-out | `backend/api/routes/orders.py:_postback_broadcast_fanout` — cache-invalidate + WS-broadcast trio (orders/positions/holdings + order_update/position_filled/book_changed). Kite (inline) and Dhan/Groww (via `_process_broker_postback`) both delegate. |
 | Percentage formatters | `frontend/src/lib/format.js` — `fmtPctScaled(v, dp, signed)` for already-percent inputs; `fmtPctFraction(v, dp, signed)` for fractional inputs (e.g. 0.05). |
+| Chart self-heal threshold | `/admin/settings` → Persistence → `chart_self_heal_coverage_threshold` (default 0.70). Auto-fetch from broker if <70% of requested days present in DB. |
+| Backfill admin endpoint | `POST /api/admin/persistence/backfill?kind=daily\|intraday\|both` (admin-guarded). Starts async coverage repair for 300-symbol universe. |
+| Backfill CLI (immediate) | `scripts/persistence_mode.py off\|soft\|hard\|status` (reads operator login) + `scripts/backfill_ohlcv.py --daily --intraday` for prod defect-recovery. |
 
 ---
 

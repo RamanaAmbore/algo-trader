@@ -111,6 +111,8 @@
         <li>5-mode execution ladder — Sim → Replay → Paper → Live → Shadow</li>
         <li>Declarative agent grammar + 24/7 risk engine</li>
         <li>Black-Scholes options analytics with σ-driven payoff</li>
+        <li>Persistent OHLCV / intraday data layer with self-healing backfill on under-coverage</li>
+        <li>Closed-hours snapshot continuity — no blank grids, uninterrupted data visibility</li>
       </ul>
       <span class="fork-cta">Open Rambo Terminal →</span>
     </a>

@@ -7,6 +7,7 @@ Archival content extracted from CLAUDE.md. Load this file only when investigatin
 
 ## Index
 
+- Persistence pipeline maturity + chart self-heal + NavStrip rework (Jun 2026)
 - Closed-hours route gate + broker auth health badge (Jun 2026)
 - Broker isolation (slices 1–4)
 - Frontend perf budgets + audit (Jul 2026)
@@ -15,6 +16,61 @@ Archival content extracted from CLAUDE.md. Load this file only when investigatin
 - Performance tuning (multi-wave)
 - Data-layer hardening
 - Refactoring notes
+
+---
+
+## Persistence pipeline maturity + chart self-heal + NavStrip rework (Jun 2026)
+
+**Sprint H scope**: Three orthogonal improvements shipped together.
+
+**Slice 1 — Persistence self-heal layer**
+Instruments snapshot string-date bug (`4e09d6fa`) poisoned every batch upsert,
+causing intraday_bars table to be empty. Fixed via `_parse_date` helper +
+per-kind isolation in `_upsert` (one bad row no longer poisons the batch).
+Added `db_only` mode: per-store flag skips Tier 3 (broker) during closed hours.
+Frontend sparkline refresh uses `db_only=True` when all segments closed
+(low-priority 5-min poll).
+
+Chart self-heal (`/api/options/historical`): detects under-coverage (<70% of
+requested days present in DB) and auto-fetches from broker when ≥1 broker
+available. Response carries `partial: bool` so frontend can hint "partial data".
+Cool-off aware; skips broker during rate-limit window. Logs one healing per
+symbol per 60s to avoid spam. Coverage threshold tunable via `/admin/settings`.
+
+Coverage backfill module (`backend/api/persistence/backfill.py`):
+`backfill_ohlcv_daily(symbols, target_days=365)` force-fetches 365-day window
+for symbols with <70% coverage; skips broker in cooloff. `backfill_intraday_today(symbols, interval="30minute")` force-fetches today's bars; defers when markets closed. Startup hook `_task_warm_backfill` (60 s delay, once per process)
+fires both for the 300-symbol universe. On-demand: `POST /api/admin/persistence/backfill?kind=daily|intraday|both` (admin-guarded). CLI:
+`scripts/persistence_mode.py off|soft|hard|status` + `scripts/backfill_ohlcv.py --daily --intraday` for immediate prod fix.
+
+**Slice 2 — NavStrip pill rework**
+P pill (P&L): `<today>/<lifetime>` (was `<lifetime>/<today>`). M pill
+(Margin): `<avail>/<total>` (was `<avail>/<util%>`). C pill (Cash):
+`<avail>/<total>` (was `<total>/<avail>`). H pill (Holdings):
+`<today>/<value>/<lifetime>` (was three separate pills H∆/HD∆/H standalone).
+Snapshot SSOT replaces the localStorage `strip.frozen` cache — during closed
+hours `dispPositionsToday` = `_livePositionsToday` = Σ snapshot.day_pnl. Cache
+write retained for in-session reload. Latest-batch CTE in `positions.py` +
+`holdings.py` snapshot readers anchors on `MAX(captured_at) per account` — no
+more stale months-old rows for closed positions.
+
+**Slice 3 — UX consolidation**
+Broker AUTH badge folded into the 5/5 broker-chip. Single navbar entry point.
+`BrokerHealthBadge.svelte` is modal-only, `bind:open` driven, polls every 30s
+ONLY while modal is open (avoids 120 req/hr background load). "as of
+<timestamp>" hint removed from Winners/Losers headers. "PREV" → "CLOSE" label
+on OptionsPayoff overlay for terminology consistency. Legs grid Day P&L for
+expired options now displays Exp P&L (intrinsic-based settlement value) instead
+of standard `(LTP − prev_close) × qty`. New helpers `_isLegExpired(c)` +
+`_dayPnlForLeg(c, spot)`. Applies to settled options on expiry day so the bulk
+realization is visible in Day P&L instead of silently sloshing from "unrealized
+lifetime" to "realized lifetime."
+
+RefreshButton behaviour during closed hours: click → toast "Showing close
+snapshot — markets reopen at HH:MM IST" + parent's load() runs (snapshot path =
+fast DB read, no broker round-trip). Spin animates throughout (reverted earlier
+closed-hours suppression — operator wants visible feedback for the real async
+work).
 
 ---
 

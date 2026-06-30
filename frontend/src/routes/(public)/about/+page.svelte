@@ -75,7 +75,7 @@
 
     <p>With a long-term portfolio XIRR exceeding 22%, Rambo's approach blends high-conviction stock picks with strategic covered calls and intelligent derivatives positioning. Every move is grounded in deep analytics, rigorous risk management, and an unwavering commitment to the power of compounding.</p>
 
-    <p>The trading platform itself runs on production-grade infrastructure: broker connectivity isolated as a dedicated UDS service, shared-memory tick distribution between processes, and an end-to-end activity log surface. The same patterns institutional trading floors use, executed at one-operator scale — so what you see on the dashboard is what's actually happening on the broker.</p>
+    <p>The trading platform itself runs on production-grade infrastructure: broker connectivity isolated as a dedicated UDS service, shared-memory tick distribution between processes, three-tier persistence caching (memory → PostgreSQL → broker) with self-healing data backfill on under-coverage, closed-hours snapshot continuity (no blank grids), and an end-to-end activity log surface. The same patterns institutional trading floors use, executed at one-operator scale — so what you see on the dashboard is what's actually happening on the broker.</p>
 
     <div class="closing-statement pub-callout">
       RamboQuant Analytics is not for those content with average, index-like returns. It's built for partners who demand more — smarter strategies, sharper execution, and sustainable wealth creation.
