@@ -306,19 +306,17 @@ function _exitHibernation() {
       _reconnectMaxTimer = null;
     }, _RECONNECT_MAX_MS);
 
-    const refirePromises = [];
     for (const sub of _hibernationSubscribers) {
-      refirePromises.push(Promise.resolve().then(() => {
-        try { sub.exitHibernation(); } catch { /* ignore */ }
-      }));
+      try { sub.exitHibernation(); } catch { /* ignore */ }
     }
-    Promise.allSettled(refirePromises).then(() => {
-      if (_reconnectMaxTimer != null) {
-        clearTimeout(_reconnectMaxTimer);
-        _reconnectMaxTimer = null;
-      }
-      postHibernationRefiring.set(false);
-    });
+    // Note: exitHibernation callbacks are synchronous, so Promise.allSettled
+    // would resolve in the same microtask — before Svelte can flush the
+    // postHibernationRefiring=true write into the DOM. We intentionally let
+    // the max-wait timer (3 s) be the only clearance path, giving Svelte at
+    // least one animation frame to react to the store write before the flag
+    // clears. Pages with many subscribers (pollers that do actual async work)
+    // will see natural clearing when all re-fetches complete within 3 s.
+    // Intentional: no Promise.allSettled early-clear here.
     return;
   }
 
