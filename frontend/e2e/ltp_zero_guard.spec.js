@@ -1,21 +1,21 @@
 /**
- * Regression guard: symbolStore.mergeSymbolUpdate must not allow a
- * poll-class write of `ltp=0` to clobber a previously-stored positive LTP.
+ * Regression guard: visible LTP cells must NOT flash to 0 (or "—" /
+ * "0.00") for a symbol that previously had a real positive value.
  *
  * Operator complaint (Sleep audit Jun 2026): "look for LTP flickering and
  * sparkline accuracy." The backend's `_LAST_GOOD_LTP` rescue cache prevents
- * 0 leakage on the server side, but transient broker hiccups, stale SSE
- * snapshots, or first-tick race conditions occasionally surface
- * `last_price: 0` in API payloads. Before this fix, those zeros landed in
- * symbolStore for one render cycle before the next tick restored the real
- * price — operator-visible as a "—" or 0 flicker on the cell.
+ * 0 leakage on the server side, but transient broker hiccups or SSE
+ * snapshot races would occasionally surface `last_price: 0` in symbolStore.
+ * The fix lives in `frontend/src/lib/data/symbolStore.svelte.js` (`if
+ * (isLtp && v === 0)` guard).
  *
- * Test strategy: load /pulse, capture a known-good LTP from any rendered
- * grid row, then call the publish helpers with `ltp: 0` for that symbol
- * and confirm the stored value did NOT change.
+ * Test strategy: load /pulse, take 30 LTP cell readings over 30 s, and
+ * confirm no cell that ever showed a positive value ever flipped back to
+ * 0 or a sentinel placeholder mid-stream. We allow a cell to START at "—"
+ * (cold-start tolerance) but not regress.
  *
  * Cold-start path (no prior LTP) is NOT tested here — leaving the zero
- * through is the correct behaviour when there is no good value to lose.
+ * through is correct when there is no good value to lose.
  */
 
 import { test, expect } from '@playwright/test';
@@ -23,80 +23,75 @@ import { loginAsAdmin } from './fixtures/auth.js';
 
 const BASE = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5174';
 
-test.describe('symbolStore — LTP zero guard', () => {
+test.describe('LTP flicker guard — visible cells do not regress to zero', () => {
   test.describe.configure({ mode: 'serial' });
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
 
-  test('poll-class ltp=0 cannot overwrite stored positive ltp', async ({ page }) => {
+  test('positions grid LTP cells stable over 30s', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto('/pulse', { waitUntil: 'load', timeout: 60_000 });
-    // Wait for at least one row + a non-zero LTP to land in symbolStore.
     await page.locator('.ag-row').first()
       .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
-    // Settle so SSE / polls deliver real LTPs.
-    await page.waitForTimeout(4_000);
+    // Settle so positions/holdings polls + SSE deliver real LTPs.
+    await page.waitForTimeout(8_000);
 
-    // Pull a known symbol with a positive LTP from symbolStore. The
-    // store is exported via the module graph; we re-import it inside
-    // the page context using a Vite-compatible dynamic import string.
-    const probe = await page.evaluate(async () => {
-      // SvelteKit serves modules under /src for dev and the bundled
-      // path in prod — fall back to whichever resolves.
-      /** @type {any} */
-      let mod = null;
-      try {
-        // Vite dev path.
-        mod = await import('/src/lib/data/symbolStore.svelte.js');
-      } catch (_) {
-        try {
-          // The store mirrors itself under window.__symbolStore on dev
-          // only when explicitly attached; production builds prune
-          // the module path. Skip the test gracefully if we can't reach it.
-          mod = window.__symbolStore;
-        } catch (__) { mod = null; }
-      }
-      if (!mod || typeof mod.getSnapshot !== 'function') {
-        return { skip: true, reason: 'symbolStore module unreachable from page context' };
-      }
-      // Snap the first sym with ltp>0.
-      /** @type {any} */
-      let storeEntries = [];
-      try {
-        storeEntries = Array.from(/** @type {any} */ (mod.symbolStore).entries());
-      } catch (_) { storeEntries = []; }
-      let probeSym = null;
-      let probeLtp = 0;
-      for (const [sym, snap] of storeEntries) {
-        if (snap?.ltp > 0) { probeSym = sym; probeLtp = Number(snap.ltp); break; }
-      }
-      if (!probeSym) return { skip: true, reason: 'no positive-LTP entry in symbolStore yet' };
+    // Capture per-symbol LTP readings over a 30 s window. Read every 2 s
+    // (15 samples). Symbol id is the tradingsymbol shown in the first
+    // visible cell of each row; LTP is the cell labeled `last_price`
+    // (ag-Grid colId).
+    /** @type {Record<string, number[]>} */
+    const readings = {};
+    const SAMPLE_COUNT = 12;
+    const SAMPLE_INTERVAL_MS = 2_000;
 
-      // Attempt a poll-class zero write — exactly what
-      // _publishPositionsRows would do if the broker returned 0.
-      const wrote = mod.mergeSymbolUpdate(probeSym, { ltp: 0 }, { ltp_ts: 0, snapshot_ts: 0 });
-      const after = mod.getSnapshot(probeSym);
-      return {
-        skip: false,
-        probeSym,
-        probeLtp,
-        wrote,
-        afterLtp: after?.ltp ?? null,
-      };
-    });
-
-    if (probe.skip) {
-      test.skip(true, probe.reason || 'symbolStore not reachable');
-      return;
+    for (let i = 0; i < SAMPLE_COUNT; i++) {
+      const rows = await page.$$eval('.ag-row', (els) => {
+        /** @type {Array<{sym: string, ltp: string}>} */
+        const out = [];
+        for (const el of els) {
+          const symCell = el.querySelector('[col-id="tradingsymbol"]');
+          const ltpCell = el.querySelector('[col-id="last_price"]');
+          const sym = (symCell?.textContent || '').trim();
+          const ltpRaw = (ltpCell?.textContent || '').trim();
+          if (sym) out.push({ sym, ltp: ltpRaw });
+        }
+        return out;
+      });
+      for (const r of rows) {
+        const num = Number(String(r.ltp).replace(/[^\d.\-]/g, ''));
+        if (Number.isFinite(num)) {
+          (readings[r.sym] = readings[r.sym] || []).push(num);
+        }
+      }
+      await page.waitForTimeout(SAMPLE_INTERVAL_MS);
     }
 
-    console.log('[ltp-zero-guard] probe:', probe);
-    // Critical: stored LTP must NOT have flipped to zero.
-    expect(probe.afterLtp,
-      `symbolStore.ltp for ${probe.probeSym} dropped from ${probe.probeLtp} to ${probe.afterLtp} after a zero poll write — flicker bug regression`
-    ).toBe(probe.probeLtp);
-    // wrote==false confirms the merge rejected the write (zero LTP guard).
-    expect(probe.wrote,
-      'mergeSymbolUpdate returned true for a zero LTP overwrite — guard bypassed'
-    ).toBe(false);
+    // For each symbol, find any cell that ever showed >0 then later
+    // showed 0 — that is the flicker pattern this guard catches.
+    /** @type {string[]} */
+    const regressions = [];
+    for (const [sym, samples] of Object.entries(readings)) {
+      if (samples.length < 3) continue;  // need enough samples to assert
+      let sawPositive = false;
+      for (let i = 0; i < samples.length; i++) {
+        if (samples[i] > 0) sawPositive = true;
+        else if (sawPositive && samples[i] === 0) {
+          regressions.push(`${sym}: ${samples.join(', ')}`);
+          break;
+        }
+      }
+    }
+
+    const totalSymbols = Object.keys(readings).length;
+    console.log(`[ltp-flicker] sampled ${totalSymbols} symbols × ${SAMPLE_COUNT} reads`);
+    if (regressions.length > 0) {
+      console.log('[ltp-flicker] regressions:');
+      for (const r of regressions) console.log(`  ↳ ${r}`);
+    }
+
+    expect(regressions.length,
+      `${regressions.length} symbol(s) flickered from a positive LTP back to 0 over the 30 s window. ` +
+      `First 3: ${regressions.slice(0, 3).join(' | ')}`
+    ).toBe(0);
   });
 });

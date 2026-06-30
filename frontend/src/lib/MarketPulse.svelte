@@ -1229,7 +1229,13 @@
     // grid without the inline trend column for ≤1 s).
     // Broker accounts are sourced from connStatus (polled every 15 s by
     // the layout's startConnStatusPoller) — no separate fetch needed here.
-    await Promise.all([instrumentsP, accountsP, listsP, pulseP, fundsP, moversP]);
+    //
+    // Sleep audit Jun 2026: Promise.all → Promise.allSettled so a
+    // failed cold-load (e.g. broker hiccup on first connect) doesn't
+    // throw out of onMount and prevent the interval below from being
+    // scheduled. The page would otherwise sit frozen with cached data
+    // until a manual refresh.
+    await Promise.allSettled([instrumentsP, accountsP, listsP, pulseP, fundsP, moversP]);
     loadSparklines();
     // The first loadSparklines call races with `unifiedRows` deriving —
     // `loadQuotes` finishes loading the watchQuotes map AFTER the
