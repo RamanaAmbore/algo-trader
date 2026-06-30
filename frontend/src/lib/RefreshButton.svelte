@@ -136,14 +136,12 @@
   // template previously used `loading` to decide which glyph to show
   // and which CSS class to apply.
   //
-  // Closed-hours suppression: manual click during a fully-closed market
-  // hits the snapshot path (fast DB read). Spinning misleads — looks
-  // like live fetching when nothing live is happening. Refire is a
-  // genuine post-hibernation refetch and should still spin so the
-  // operator sees feedback for the real async work.
-  const _showSpinning = $derived(
-    _refiring || (loading && (_nseOpen || _mcxOpen))
-  );
+  // Spin whenever the parent's load() is in flight OR a refire is
+  // running — applies during closed hours too. Refresh during closure
+  // still refetches positions / holdings / charts from snapshot + DB,
+  // which is real async work and deserves visible feedback. Operator:
+  // "let it animate and update non-tick data."
+  const _showSpinning = $derived(loading || _refiring);
 
   // Refire-only flag — true when post-hibernation refire is active but
   // no manual click is in flight. This drives the violet palette on the
