@@ -30,8 +30,12 @@ import { loginAsAdmin } from './fixtures/auth.js';
 
 const BASE = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5174';
 
+// Serialize all tests in this file: every test calls loginAsAdmin which hits
+// /api/auth/login. Running them in parallel causes 429 rate-limit errors on
+// the login endpoint when the backend enforces 5 req/min per IP.
+test.describe.configure({ mode: 'serial' });
+
 test.describe('Sparkline freshness — last point near live LTP', () => {
-  test.describe.configure({ mode: 'serial' });
   test.setTimeout(120_000);
 
   test('sparkline last-point within 5% of live position LTP', async ({ page }) => {
@@ -96,7 +100,6 @@ test.describe('Sparkline freshness — last point near live LTP', () => {
 });
 
 test.describe('Sparkline /pulse render — dash regression guard', () => {
-  test.describe.configure({ mode: 'serial' });
   test.setTimeout(120_000);
 
   /**
