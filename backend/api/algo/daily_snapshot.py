@@ -187,6 +187,15 @@ def _holdings_rows(
 def _positions_rows(
     account: str, target_date: date, raw: list[dict], now_ist: datetime,
 ) -> list[dict]:
+    from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl
+
+    # Fields the decomposed formula needs — all returned by Kite /positions;
+    # present in Dhan + Groww adapters too (see broker_apis._enrich_positions).
+    _INTRADAY_FIELDS = {
+        "overnight_quantity", "day_buy_quantity", "day_sell_quantity",
+        "day_buy_value", "day_sell_value",
+    }
+
     rows = []
     for r in raw:
         symbol = r.get("tradingsymbol", "")
@@ -197,7 +206,6 @@ def _positions_rows(
         close_price = r.get("close_price")
         qty         = r.get("quantity") or 0
         mid_session = _is_exchange_open_at(exchange, now_ist)
-        # (last - close) × qty is the move from yesterday's EOD to now.
         # Captured AT EOD (after the exchange closes) this is the correct
         # day_pnl. Captured MID-SESSION it's a partial-day value — and
         # positions.py's close-override consumes daily_book.ltp as
@@ -209,10 +217,37 @@ def _positions_rows(
             day_pnl = None
             ltp_val = None
         else:
-            day_pnl = None
-            if last_price is not None and close_price is not None:
-                day_pnl = float((last_price - close_price) * qty)
             ltp_val = float(last_price) if last_price is not None else None
+            day_pnl = None
+            if ltp_val is not None and close_price is not None:
+                # Use the decomposed intraday formula when all intraday
+                # split fields are present in the broker row (Kite returns
+                # them on /positions; Dhan + Groww adapters synthesise them).
+                # This formula captures the realised leg on partially-closed
+                # positions (e.g. overnight 10, sold 4 today, current 6):
+                #
+                #   day_pnl = overnight_qty × (LTP − close)   # carried carry
+                #           + day_buy_qty   × LTP − day_buy_value   # opened
+                #           + day_sell_value − day_sell_qty × LTP   # realised
+                #
+                # Naive fallback (LTP − close) × qty is used for brokers that
+                # don't populate the split fields — the result collapses
+                # correctly when oq == qty and no intraday trades occurred.
+                if _INTRADAY_FIELDS.issubset(r.keys()):
+                    try:
+                        day_pnl = float(decomposed_intraday_pnl(
+                            oq=float(r.get("overnight_quantity") or 0),
+                            ltp=ltp_val,
+                            cls=float(close_price),
+                            bq=float(r.get("day_buy_quantity")  or 0),
+                            bv=float(r.get("day_buy_value")     or 0),
+                            sv=float(r.get("day_sell_value")    or 0),
+                            sq=float(r.get("day_sell_quantity") or 0),
+                        ))
+                    except Exception:
+                        day_pnl = float(naive_day_pnl(ltp_val, float(close_price), float(qty)))
+                else:
+                    day_pnl = float(naive_day_pnl(ltp_val, float(close_price), float(qty)))
         rows.append({
             "date":         target_date,
             "account":      account,

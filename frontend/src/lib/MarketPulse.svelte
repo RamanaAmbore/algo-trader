@@ -25,6 +25,7 @@
     fetchWatchlistQuotes,
   } from '$lib/api';
   import { visibleInterval, marketAwareInterval, connStatus, authStore, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
+  import { isMarketOpen } from '$lib/marketHours';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
@@ -2918,7 +2919,18 @@
       // value that should drive the live recompute. Otherwise a broken
       // quote (pre-open, no trades yet, circuit, broker glitch) would
       // post day_pnl = (0 − close) × qty → a phantom −100% day move.
-      const livePos = Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null;
+      //
+      // CLOSED-HOURS gate: when the market is closed the backend serves
+      // the daily_book snapshot whose day_change_val was recomputed at
+      // close-settled time (decomposed formula, settled close_price).
+      // Live-recompute with `livePos` (SSE close-LTP or symbolStore
+      // value) would override the settled snapshot with a stale or
+      // rolled-back LTP — especially the Contract A branch
+      // ((livePos − avg) × q) which has no reference close and is
+      // meaningless once the session ends. During closed hours, always
+      // render the broker's snapshot value directly.
+      const _mktOpen = isMarketOpen();
+      const livePos = (_mktOpen && Number(liveQ?.ltp) > 0) ? Number(liveQ.ltp) : null;
       const closePx = Number(r.close_price) || 0;
       const pollLtp = Number(r.last_price) || 0;
       const brokerDcv = Number(r.day_change_val) || 0;
@@ -2929,13 +2941,17 @@
         : 0;
       if (livePos != null && closePx > 0 && q !== 0) {
         row.day_pnl = (row.day_pnl ?? 0) + realisedToday + (livePos - closePx) * q;
-      } else if (livePos != null && closePx === 0 && avg > 0 && q !== 0) {
+      } else if (_mktOpen && livePos != null && closePx === 0 && avg > 0 && q !== 0) {
         // Contract A — position opened TODAY (no prior close_price).
         // The carry term in the decomposed formula collapses (oq=0), so
         // Day P&L = (LTP − entry) × buy_qty_today. With current qty
         // === buy_qty_today on a fresh-opened row, (LTP − avg) × q
         // gives the right number live. Without this branch the row
         // froze at the poll-time `brokerDcv` between 30s refreshes.
+        // Gate: market must be open — during closed hours this branch
+        // would override the close_settled snapshot (which may have
+        // day_change_val != 0 even when close_price === 0 on an
+        // opened-and-closed-today leg) with a stale live LTP.
         row.day_pnl = (row.day_pnl ?? 0) + (livePos - avg) * q;
       } else {
         row.day_pnl = (row.day_pnl ?? 0) + brokerDcv;
@@ -3014,12 +3030,22 @@
       // (live_ltp − close_price) × held_qty when LTP is live. avg cost
       // for holdings lives on `r.average_price`; pnl recompute uses
       // (live_ltp − avg) × qty (no realised component on holdings).
+      //
+      // CLOSED-HOURS gate: when the market is closed the backend serves
+      // the daily_book[kind='holdings'] snapshot. Its day_change_val was
+      // captured at NSE close (15:30 IST) or close_settled (16:15 IST)
+      // and is the authoritative settled day P&L. Live-recomputing from
+      // `liveHold` (symbolStore / SSE LTP that hasn't changed since bell)
+      // would match the settled value, but any slight LTP mismatch
+      // (ticker staleness, rollover) would produce a visible drift.
+      // Use the snapshot value directly when the market is closed.
       if (liveQ?.volume != null) row.volume = liveQ.volume;
       if (liveQ?.oi     != null) row.oi     = liveQ.oi;
       // Prefer the snapshot LTP for the day-pnl recompute (cell renderers
       // also read it via _liveLtpSnap; keep the math consistent).
-      const liveHold = (snapLtp != null && Number(snapLtp) > 0) ? Number(snapLtp)
-                     : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null);
+      const _holdMktOpen = isMarketOpen();
+      const liveHold = (_holdMktOpen && (snapLtp != null && Number(snapLtp) > 0)) ? Number(snapLtp)
+                     : (_holdMktOpen && Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null);
       const holdClose = Number(r.close_price) || 0;
       const holdAvg   = Number(r.average_price) || 0;
       if (liveHold != null && holdClose > 0 && heldQty !== 0) {
