@@ -136,6 +136,12 @@
   // and which CSS class to apply.
   const _showSpinning = $derived(loading || _refiring);
 
+  // Refire-only flag — true when post-hibernation refire is active but
+  // no manual click is in flight. This drives the amber palette on the
+  // spinner SVG so the operator can distinguish "auto reconnect after
+  // idle" (amber) from "manual Refresh click" (cyan-400).
+  const _refireOnly = $derived(_refiring && !loading);
+
   // Belt-and-suspenders: when spinner engages (via either source), clear any
   // residual tick-pulse class so the in-flight tick animation cannot
   // override the spin animation via cascade. Tracks the combined state
@@ -321,9 +327,10 @@
   type="button"
   class="rf-btn {_mktClass} {_tickPulseClass}"
   class:rf-spinning={_showSpinning}
+  class:rf-refiring={_refireOnly}
   onclick={(e) => { e.stopPropagation(); _handleClick(); }}
   disabled={_showSpinning}
-  aria-label={_showSpinning ? `Refreshing ${label}` : `Refresh ${label}`}
+  aria-label={_refireOnly ? `Reconnecting ${label} after idle` : _showSpinning ? `Refreshing ${label}` : `Refresh ${label}`}
   title={_connTitle}>
   {#if _showSpinning}
     <!-- Loading state — distinct arc-spinner glyph (NOT the same
@@ -473,6 +480,15 @@
      mid-animation. Operator-reported root cause (reaudit Jun 2026). */
   .rf-btn.rf-spinning.rf-spinning svg {
     animation: rf-spin 0.9s linear infinite !important;
+    color: rgb(34, 211, 238); /* cyan-400 — manual Refresh */
+  }
+  /* Post-hibernation refire — amber-400 overrides the default cyan so
+     the operator can see at a glance "tab is catching up after idle"
+     vs "I clicked Refresh". Selector specificity (0,3,1) matches the
+     base rf-spinning rule above; the rf-refiring qualifier pushes it
+     to (0,4,1) so it wins without !important. */
+  .rf-btn.rf-spinning.rf-refiring svg {
+    color: rgb(251, 191, 36); /* amber-400 — post-hibernation refire */
   }
   @keyframes rf-spin {
     from { transform: rotate(0deg); }
@@ -503,6 +519,7 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .rf-btn.rf-spinning svg { animation: none; }
+    .rf-btn.rf-spinning.rf-refiring svg { animation: none; }
     .rf-btn.rf-tick-a, .rf-btn.rf-tick-b { animation: none; }
     .rf-btn.rf-tick-a svg, .rf-btn.rf-tick-b svg { animation: none; }
   }

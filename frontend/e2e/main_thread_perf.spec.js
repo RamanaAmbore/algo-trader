@@ -488,10 +488,28 @@ test.describe('RefreshButton spin — visibility-return after hibernation', () =
     await expect(refreshBtn).toHaveClass(/rf-spinning/, { timeout: 1_000 });
     console.log('[reconnect] RefreshButton has rf-spinning class after hibernation-return');
 
+    // rf-refiring class must also be present (amber palette path) during refire.
+    await expect(refreshBtn).toHaveClass(/rf-refiring/, { timeout: 500 });
+    console.log('[reconnect] RefreshButton has rf-refiring class (amber state)');
+
+    // Spinner SVG color should be amber-400 (rgb(251, 191, 36)) during refire.
+    // This validates the CSS rule `.rf-btn.rf-spinning.rf-refiring svg { color: rgb(251, 191, 36) }`.
+    const spinnerColor = await refreshBtn.locator('svg').first().evaluate((el) =>
+      window.getComputedStyle(el).color
+    );
+    console.log(`[reconnect] spinner SVG color during refire: "${spinnerColor}"`);
+    expect(spinnerColor,
+      `Spinner SVG color during refire should be amber-400 rgb(251, 191, 36), got "${spinnerColor}"`
+    ).toBe('rgb(251, 191, 36)');
+
     // Button stops spinning after _RECONNECT_MAX_MS = 3 s (real timer).
     // No clock advance needed — waitForTimeout lets the real timer fire.
     await expect(refreshBtn).not.toHaveClass(/rf-spinning/, { timeout: 5_000 });
     console.log('[reconnect] RefreshButton stopped spinning within 3 s real-time wait');
+
+    // After refire completes, rf-refiring class must also be gone.
+    await expect(refreshBtn).not.toHaveClass(/rf-refiring/, { timeout: 500 });
+    console.log('[reconnect] rf-refiring class cleared after refire completed');
   }
 
   test('chromium-desktop: RefreshButton spins after hibernation, stops within 3 s', async ({ page }) => {
@@ -541,6 +559,89 @@ test.describe('RefreshButton spin — visibility-return after hibernation', () =
     const refreshBtn = page.locator('.page-header .rf-btn').first();
     await expect(refreshBtn).not.toHaveClass(/rf-spinning/, { timeout: 500 });
     console.log('[reconnect] confirmed: no rf-spinning on brief tab-switch (under 5-min threshold)');
+  });
+});
+
+// ── RefreshButton color distinction — amber refire vs cyan manual ────────────
+//
+// Verifies the visual distinction between the two spinner modes:
+//   - Manual Refresh click: rf-spinning WITHOUT rf-refiring → cyan-400
+//     `rgb(34, 211, 238)` on the SVG icon.
+//   - Post-hibernation refire: rf-spinning WITH rf-refiring → amber-400
+//     `rgb(251, 191, 36)` on the SVG icon (asserted in the hibernation block).
+//
+// This block covers only the manual-click path (no rf-refiring class, cyan).
+
+test.describe('RefreshButton color — manual click is cyan, not amber', () => {
+  test.describe.configure({ mode: 'serial' });
+  test.setTimeout(60_000);
+
+  test.beforeAll(async ({ browser }) => {
+    test.setTimeout(30_000);
+    await ensureJwtWithBrowser(browser);
+  });
+
+  /**
+   * Shared body: clicks Refresh manually and asserts rf-refiring is absent
+   * and the spinner SVG color is cyan-400.
+   * @param {import('@playwright/test').Page} page
+   */
+  async function runManualColorTest(page) {
+    await seedAuth(page, _sharedJwt);
+    await page.goto('/pulse', { waitUntil: 'load', timeout: 90_000 });
+    await page.locator('.ag-row').first()
+      .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+    await page.waitForTimeout(500);
+
+    const refreshBtn = page.locator('.page-header .rf-btn').first();
+    if (!await refreshBtn.isVisible({ timeout: 3_000 }).catch(() => false)) {
+      console.log('[color] no rf-btn — skip');
+      return;
+    }
+
+    // Click — triggers manual loading, NOT refire.
+    await refreshBtn.click();
+
+    // Wait for rf-spinning to appear.
+    await page.waitForFunction(
+      () => !!document.querySelector('.rf-btn.rf-spinning'),
+      { timeout: 2_000 }
+    ).catch(() => {});
+
+    const isSpinning = await refreshBtn.evaluate(
+      (el) => el.classList.contains('rf-spinning')
+    );
+    if (!isSpinning) {
+      console.log('[color] button did not enter rf-spinning — skip color check');
+      return;
+    }
+
+    // rf-refiring must NOT be present for a manual click.
+    const hasRefiring = await refreshBtn.evaluate(
+      (el) => el.classList.contains('rf-refiring')
+    );
+    expect(hasRefiring,
+      'Manual Refresh click should NOT set rf-refiring class on the button'
+    ).toBe(false);
+    console.log('[color] confirmed: rf-refiring absent during manual Refresh click');
+
+    // SVG color should be cyan-400 rgb(34, 211, 238) — NOT amber.
+    const spinnerColor = await refreshBtn.locator('svg').first().evaluate(
+      (el) => window.getComputedStyle(el).color
+    );
+    console.log(`[color] spinner SVG color during manual Refresh: "${spinnerColor}"`);
+    expect(spinnerColor,
+      `Manual Refresh spinner should be cyan-400 rgb(34, 211, 238), got "${spinnerColor}"`
+    ).toBe('rgb(34, 211, 238)');
+  }
+
+  test('chromium-desktop: manual Refresh has no rf-refiring, SVG is cyan-400', async ({ page }) => {
+    await runManualColorTest(page);
+  });
+
+  test('chromium-mobile: 390×844 — same color contract for manual Refresh', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await runManualColorTest(page);
   });
 });
 
