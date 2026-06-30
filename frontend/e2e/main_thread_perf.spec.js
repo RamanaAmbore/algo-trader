@@ -1075,6 +1075,10 @@ test.describe('reconnecting popup — visibility-return after hibernation', () =
    * @param {import('@playwright/test').Page} page
    */
   async function runReconnectTest(page) {
+    // Capture browser-side console output for diagnostics.
+    const consoleLogs = [];
+    page.on('console', m => consoleLogs.push(`[browser ${m.type()}] ${m.text()}`));
+
     // Use 200 ms hibernation threshold so we don't wait 5 real minutes.
     await page.clock.install({ time: Date.now() });
     await page.addInitScript(() => {
@@ -1089,6 +1093,23 @@ test.describe('reconnecting popup — visibility-return after hibernation', () =
     // Wait for page to settle.
     await page.locator('.ag-row').first()
       .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
+
+    // Diagnostics: print state before hiding.
+    const diagBefore = await page.evaluate(() => {
+      const fn = window.__rbq_getDiagState;
+      const ds = typeof fn === 'function' ? fn() : null;
+      return {
+        hibMs: window.__rbq_hibMs,
+        getDiagStateDefined: typeof window.__rbq_getDiagState !== 'undefined',
+        setHibMsDefined: typeof window.__rbq_setHibMs !== 'undefined',
+        isHibernating: ds ? ds.isHibernating : 'NO_DIAG',
+        subscriberCount: ds ? ds.subscriberCount : 'NO_DIAG',
+        innerHibMs: ds ? ds.hibMs : 'NO_DIAG',
+        reconnectBackdropCount: document.querySelectorAll('.reconnecting-backdrop').length,
+      };
+    });
+    console.log('[reconnect diag] before-hide state:', JSON.stringify(diagBefore));
+
     await page.clock.runFor(6_000);
     await page.waitForTimeout(300);
 
@@ -1107,6 +1128,21 @@ test.describe('reconnecting popup — visibility-return after hibernation', () =
     await page.clock.runFor(300);
     await page.waitForTimeout(100);
 
+    // Diagnostics: after hibernation timer should have fired.
+    const diagAfterHib = await page.evaluate(() => {
+      const fn = window.__rbq_getDiagState;
+      const ds = typeof fn === 'function' ? fn() : null;
+      return {
+        getDiagStateDefined: typeof fn !== 'undefined',
+        isHibernating: ds ? ds.isHibernating : 'NO_DIAG',
+        subscriberCount: ds ? ds.subscriberCount : 'NO_DIAG',
+        backdropCount: document.querySelectorAll('.reconnecting-backdrop').length,
+        visibilityState: document.visibilityState,
+        hiddenProp: document.hidden,
+      };
+    });
+    console.log('[reconnect diag] after-300ms-hidden state:', JSON.stringify(diagAfterHib));
+
     // Return to visible — _exitHibernation() fires.
     await page.evaluate(() => {
       Object.defineProperty(document, 'visibilityState', {
@@ -1122,6 +1158,21 @@ test.describe('reconnecting popup — visibility-return after hibernation', () =
     await page.clock.runFor(50);
     // Real-time wait for Svelte to flush the reactive state update.
     await page.waitForTimeout(200);
+
+    // Diagnostics: after visibility-return.
+    const diagAfterReturn = await page.evaluate(() => {
+      const fn = window.__rbq_getDiagState;
+      const ds = typeof fn === 'function' ? fn() : null;
+      return {
+        getDiagStateDefined: typeof fn !== 'undefined',
+        isHibernating: ds ? ds.isHibernating : 'NO_DIAG',
+        subscriberCount: ds ? ds.subscriberCount : 'NO_DIAG',
+        backdropCount: document.querySelectorAll('.reconnecting-backdrop').length,
+        visibilityState: document.visibilityState,
+      };
+    });
+    console.log('[reconnect diag] after-return state:', JSON.stringify(diagAfterReturn));
+    console.log('[reconnect diag] browser logs:', consoleLogs.slice(-5).join(' | '));
 
     // Popup should appear within 500 ms of visibility-return (allows for
     // Svelte microtask scheduling latency after fake-clock interaction).

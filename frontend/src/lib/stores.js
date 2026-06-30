@@ -343,15 +343,12 @@ function _ensureGlobalVisHandler() {
 // Expose late-patch hook for test harnesses that load after module init.
 if (typeof window !== 'undefined') {
   /** @type {any} */ (window).__rbq_setHibMs = setHibernationIdleMinutes;
-  // Diagnostic state for Playwright tests — live getters so each evaluate()
-  // reads current module-level values rather than a snapshot.
-  Object.defineProperty(/** @type {any} */ (window), '__rbq_diagState', {
-    get: () => ({
-      isHibernating: _isHibernating,
-      subscriberCount: _hibernationSubscribers.size,
-      reconnectActive: false, // read from Svelte store if needed
-    }),
-    configurable: true,
+  // Diagnostic snapshot function for Playwright tests. Returns current state.
+  // Use a function (not a getter) to avoid Object.defineProperty quirks.
+  /** @type {any} */ (window).__rbq_getDiagState = () => ({
+    isHibernating: _isHibernating,
+    subscriberCount: _hibernationSubscribers.size,
+    hibMs: _hibernationIdleMs,
   });
 }
 
