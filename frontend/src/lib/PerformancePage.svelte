@@ -861,11 +861,14 @@
   }
 
   function applyData(h, p, f) {
-    rawHoldings         = h.rows ?? [];
-    rawPositions        = p.rows ?? [];
-    rawHoldingsSummary  = h.summary ?? [];
-    rawPositionsSummary = p.summary ?? [];
-    rawFunds            = f.rows ?? [];
+    // Sleep audit Jun 2026: allSettled in loadAll can land null for
+    // any of the three fetches (transient broker failure); fall back
+    // to previously-stored rows rather than crashing on null.rows.
+    rawHoldings         = h?.rows ?? rawHoldings ?? [];
+    rawPositions        = p?.rows ?? rawPositions ?? [];
+    rawHoldingsSummary  = h?.summary ?? rawHoldingsSummary ?? [];
+    rawPositionsSummary = p?.summary ?? rawPositionsSummary ?? [];
+    rawFunds            = f?.rows ?? rawFunds ?? [];
     // Account picker scope includes funds-only accounts too — a Dhan
     // account holding cash with zero open positions on a given day
     // was silently disappearing from the picker (operator: "the
@@ -882,7 +885,7 @@
     // Symbol-list derivation + reconcileSymbols() retired alongside
     // the dropdown — GridSearchButton handles filtering with no
     // pre-computed picker scope.
-    lastRefresh = h.refreshed_at ?? '';
+    lastRefresh = h?.refreshed_at ?? p?.refreshed_at ?? f?.refreshed_at ?? lastRefresh ?? '';
     applyAccountFilter();
   }
 
@@ -897,11 +900,26 @@
   async function loadAll({ fresh = false } = {}) {
     loading = true; error = '';
     try {
-      const [h, p, f] = await Promise.all([
+      // Sleep audit Jun 2026: Promise.all → Promise.allSettled so a
+      // single hung sub-fetch (holdings, positions, or funds) can't
+      // strand the RefreshButton spinner. Each result is independently
+      // checked below; partial data is better than no data.
+      const results = await Promise.allSettled([
         fetchHoldings({ fresh }),
         fetchPositions({ fresh }),
         fetchFunds({ fresh }),
       ]);
+      const h = results[0].status === 'fulfilled' ? results[0].value : null;
+      const p = results[1].status === 'fulfilled' ? results[1].value : null;
+      const f = results[2].status === 'fulfilled' ? results[2].value : null;
+      // If ALL three failed, surface a single banner error so the
+      // operator knows the page is dark; otherwise carry on with
+      // whichever subset succeeded.
+      if (!h && !p && !f) {
+        const firstErr = results.find(r => r.status === 'rejected');
+        // @ts-ignore — guarded by find above
+        throw firstErr?.reason ?? new Error('fetch failed');
+      }
       // Feed the module-level singletons so PositionStrip / NavCard / dashboard
       // benefit from this fetch without re-hitting the broker. The stores'
       // `parse` strips to `.rows` (and filters TOTAL for funds); we pre-parse

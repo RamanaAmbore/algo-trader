@@ -1015,7 +1015,9 @@
     if (_refreshing) return;
     _refreshing = true;
     try {
-      await Promise.all([
+      // Sleep audit Jun 2026: Promise.all → Promise.allSettled so a
+      // single hung sub-fetch can't strand the RefreshButton spinner.
+      await Promise.allSettled([
         loadHero(),
         _fetchEquity(),
         fundsStore.load({ force: true }),

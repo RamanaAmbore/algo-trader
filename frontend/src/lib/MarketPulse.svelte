@@ -886,12 +886,20 @@
   /** Operator-initiated "refresh everything now" — bound to the
    *  RefreshButton in the toolbar. Drains the spinner state after the
    *  heaviest op (loadPulse) settles so the button reads as busy until
-   *  the grid has new rows, not just until the quote call returns. */
+   *  the grid has new rows, not just until the quote call returns.
+   *
+   *  Sleep audit Jun 2026: switched Promise.all → Promise.allSettled
+   *  so a single hung sub-fetch (network blip, broker timeout, etc.)
+   *  can't strand the spinner. Operator complaint: "even refresh gets
+   *  stuck in the middle" — the spinner was tied to _refreshing, which
+   *  stayed true forever if any one of the 5 awaits never resolved.
+   *  allSettled guarantees `finally` runs once every fetcher has
+   *  either fulfilled OR rejected, so the spinner always drains. */
   async function refreshAllNow() {
     if (_refreshing) return;
     _refreshing = true;
     try {
-      await Promise.all([
+      await Promise.allSettled([
         loadQuotes(),
         loadPulse(),
         showFunds ? loadFunds() : Promise.resolve(),
