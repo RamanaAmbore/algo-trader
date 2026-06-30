@@ -128,12 +128,35 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
 
 
 def is_account_healthy(account: str) -> bool:
-    """True iff the most recent fetch for this account succeeded (or
-    no attempt yet)."""
+    """True iff the most recent fetch for this account succeeded.
+
+    Under RAMBOQ_USE_CONN_SERVICE=1 the local _FETCH_HEALTH dict is
+    always empty (broker calls run in conn_service, not here). Falling
+    back to "never tried = healthy" would silently report every account
+    as 5/5 even during real Groww/Dhan auth failures. Instead we query
+    fetch_health_snapshot() which already has the conn_service-aware
+    code path and returns the canonical health map for the process.
+
+    In the non-cutover path, _FETCH_HEALTH is populated directly, so
+    the fast local dict read still applies — fetch_health_snapshot()
+    is only called when the local dict has no entry for the account.
+    """
     e = _FETCH_HEALTH.get(account)
-    if not e:
-        return True  # never tried — give benefit of the doubt
-    return e["last_ok_at"] >= e["last_fail_at"]
+    if e:
+        return e["last_ok_at"] >= e["last_fail_at"]
+    # No local entry — either the local dict was never populated (cutover
+    # mode) or the account has truly never been fetched yet. Consult the
+    # canonical snapshot (which may hit conn_service over UDS).
+    if _use_conn_service():
+        snapshot = fetch_health_snapshot()
+        remote_e = snapshot.get(account)
+        if not remote_e:
+            # conn_service also has no entry — account has never been
+            # tried; give benefit of the doubt only in this case.
+            return True
+        return remote_e.get("last_ok_at", 0.0) >= remote_e.get("last_fail_at", 0.0)
+    # Non-cutover, no local entry: never tried — healthy.
+    return True
 
 
 def fetch_health_snapshot() -> dict[str, dict]:
