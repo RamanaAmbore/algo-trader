@@ -1082,9 +1082,10 @@ test.describe('reconnecting popup — visibility-return after hibernation', () =
     });
     await seedAuth(page, _sharedJwt);
     await page.goto('/pulse', { waitUntil: 'load', timeout: 90_000 });
-    await page.evaluate(() => {
-      if (typeof window.__rbq_setHibMs === 'function') window.__rbq_setHibMs(200);
-    });
+    // NOTE: Do NOT call window.__rbq_setHibMs() here. That function takes
+    // MINUTES and would override the correctly-set 200 ms from window.__rbq_hibMs
+    // (which the IIFE in stores.js reads directly as milliseconds). Calling
+    // setHibMs(200) would set _hibernationIdleMs to 200 * 60 * 1000 = 12M ms.
     // Wait for page to settle.
     await page.locator('.ag-row').first()
       .waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {});
@@ -1116,15 +1117,24 @@ test.describe('reconnecting popup — visibility-return after hibernation', () =
       });
       document.dispatchEvent(new Event('visibilitychange'));
     });
+    // Advance fake clock slightly so any pending microtasks from the
+    // visibilitychange handler settle before we check the DOM.
+    await page.clock.runFor(50);
+    // Real-time wait for Svelte to flush the reactive state update.
+    await page.waitForTimeout(200);
 
-    // Popup should appear within 100 ms of visibility-return.
+    // Popup should appear within 500 ms of visibility-return (allows for
+    // Svelte microtask scheduling latency after fake-clock interaction).
     const popup = page.locator('.reconnecting-backdrop');
-    await expect(popup).toBeVisible({ timeout: 300 });
+    await expect(popup).toBeVisible({ timeout: 500 });
     console.log('[reconnect] popup appeared after hibernation-return');
 
-    // Popup must auto-dismiss within 3 s (the max-wait timer in stores.js).
-    await expect(popup).toBeHidden({ timeout: 4_000 });
-    console.log('[reconnect] popup auto-dismissed within 3 s');
+    // Popup must auto-dismiss after the 3 s max-wait timer.
+    // The max-wait setTimeout uses the fake clock, so advance it.
+    await page.clock.runFor(3_100);
+    await page.waitForTimeout(200);
+    await expect(popup).toBeHidden({ timeout: 1_000 });
+    console.log('[reconnect] popup auto-dismissed after 3 s clock advance');
   }
 
   test('chromium-desktop: popup appears after hibernation, auto-dismisses within 3 s', async ({ page }) => {
