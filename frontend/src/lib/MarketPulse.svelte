@@ -4954,9 +4954,6 @@
                    style="--bucket-rows:{_bRowsWinners}">
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
-              {#if moversSnapshotAt.value}
-                <span class="mp-snapshot-hint" title="Data from last market session">as of {formatDualTz(new Date(moversSnapshotAt.value))}</span>
-              {/if}
               <div class="mp-head-tabs">
                 <AlgoTabs
                   tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t] }))}
@@ -4987,9 +4984,6 @@
                    style="--bucket-rows:{_bRowsLosers}">
             <div class="mp-bucket-head">
               <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
-              {#if moversSnapshotAt.value}
-                <span class="mp-snapshot-hint" title="Data from last market session">as of {formatDualTz(new Date(moversSnapshotAt.value))}</span>
-              {/if}
               <div class="mp-head-tabs">
                 <AlgoTabs
                   tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t] }))}
@@ -5841,16 +5835,6 @@
     flex-wrap: nowrap;
   }
   .mp-bucket-head .mp-bucket-label { margin-bottom: 0; }
-  /* Off-hours snapshot hint — appears next to Winners / Losers label
-     when the data is from a persisted last-session snapshot rather
-     than live broker quotes. Small, muted, italic. */
-  .mp-snapshot-hint {
-    font-size: 0.68rem;
-    font-style: italic;
-    color: var(--color-slate-400, #94a3b8);
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
   /* Spacer pushes the CollapseButton to the FAR RIGHT of the
      header regardless of card content. Label sits left, spacer
      absorbs the gap, button locks to the right edge. Card width
