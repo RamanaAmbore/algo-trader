@@ -439,21 +439,23 @@
     return s;
   });
   const cashTotal = $derived(liveCashTotal + longOptionsCashPaid);
-  const marginTotal = $derived.by(() => {
+  // Margin: available (what's deployable) and total (used + avail = full
+  // capacity). Pill shows avail / total to match the operator's mental
+  // model "what room do I have, out of what I'd have if everything
+  // unlocked". Util % is no longer surfaced — total clarifies the same
+  // signal without needing a percentage.
+  const marginAvail = $derived.by(() => {
     let s = 0;
     for (const f of funds) s += Number(f?.avail_margin || 0);
     return s;
   });
-  // Margin utilisation — used / (used + avail). Operator glances at
-  // this to know how much room is left to deploy before adding risk.
-  const utilPct = $derived.by(() => {
-    let used = 0, avail = 0;
+  const marginTotal = $derived.by(() => {
+    let s = 0;
     for (const f of funds) {
-      used  += Number(f?.used_margin  || 0);
-      avail += Number(f?.avail_margin || 0);
+      s += Number(f?.used_margin  || 0);
+      s += Number(f?.avail_margin || 0);
     }
-    const denom = used + avail;
-    return denom > 0 ? (used / denom) * 100 : null;
+    return s;
   });
 
   function fmtMoney(/** @type {number} */ v) {
@@ -472,8 +474,8 @@
     _pollCycleStamp;
     untrack(() => {
       flash.update('P',    _livePositionsPnl);
-      flash.update('M',    marginTotal);
-      flash.update('U',    utilPct);
+      flash.update('M',    marginAvail);
+      flash.update('Mt',   marginTotal);
       flash.update('Cp',   cashTotal);
       flash.update('Cash', liveCashTotal);
       flash.update('Pd',   dispPositionsToday);
@@ -515,37 +517,32 @@
     ><span class={'ps-agg-v ' + (_livePositionsPnl > 0 ? 'ps-pos' : _livePositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}
       >{fmtMoney(_livePositionsPnl)}</span>
   </span>
-  <!-- Combined margin chip: available margin (₹) / utilisation (%).
-       Saves a slot vs separate M + U chips. Margin value uses cyan
-       (cash palette) at positive; utilisation flips through cash/flat/
-       neg as the pool fills up (>70% = crowded, 30-70% = mid,
-       <30% = lots of room). -->
-  <span class="ps-agg" title="Margin: available (₹) / utilisation (% used)">
+  <!-- Margin pill: available / total (used + avail). Operator wants the
+       "room I have / full capacity" framing rather than util %. -->
+  <span class="ps-agg" title="Margin: available / total (used + avail)">
     <span class="ps-agg-k">M</span>
-    <span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-cash' : marginTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('M')}
-      >{fmtMoney(marginTotal)}</span
-    >{#if utilPct != null}<span class="ps-agg-sep">/</span
-      ><span class={'ps-agg-v ' + (utilPct > 70 ? 'ps-neg' : utilPct > 30 ? 'ps-flat' : 'ps-cash') + ' ' + flash.classOf('U')}
-      >{utilPct.toFixed(1)}%</span>{/if}
-  </span>
-  <!-- Combined cash chip: total cash (incl. premium tied up in long
-       options) / cash available (deployable now). Canonical labels
-       (Bloomberg PRTU, IBKR Portfolio):
-         C  = Total Cash  = CA + Σ(avg × qty for long CE/PE)
-         CA = Cash Available — what the operator can deploy now,
-              already nets realised P&L, premium debits, blocked
-              margin per the broker's books.
-       Per-broker drift in how realised M2M is folded into avail.cash
-       is documented in the audit memo; if the sum diverges from
-       broker apps, the Dhan/Groww adapter math is the first place to
-       look. -->
-  <span class="ps-agg" title="Cash: total (C, incl. premium tied up in long options) / available (CA, deployable now)">
-    <span class="ps-agg-k">C</span>
-    <span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cp')}
-      >{fmtMoney(cashTotal)}</span
+    <span class={'ps-agg-v ' + (marginAvail > 0 ? 'ps-cash' : marginAvail < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('M')}
+      >{fmtMoney(marginAvail)}</span
     ><span class="ps-agg-sep">/</span
-    ><span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cash')}
-      >{fmtMoney(liveCashTotal)}</span>
+    ><span class={'ps-agg-v ' + (marginTotal > 0 ? 'ps-cash' : marginTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Mt')}
+      >{fmtMoney(marginTotal)}</span>
+  </span>
+  <!-- Cash pill: available (CA, deployable now) / total (incl. premium
+       tied up in long options). Avail-first matches the M pill's
+       framing. Canonical labels (Bloomberg PRTU, IBKR Portfolio):
+         CA = Cash Available — nets realised P&L, premium debits,
+              blocked margin per broker books.
+         C  = Total Cash    = CA + Σ(avg × qty for long CE/PE)
+       Per-broker drift in how realised M2M is folded into avail.cash
+       is documented in the audit memo; if the sum diverges from broker
+       apps, the Dhan/Groww adapter math is the first place to look. -->
+  <span class="ps-agg" title="Cash: available (CA, deployable now) / total (C, incl. premium tied up in long options)">
+    <span class="ps-agg-k">C</span>
+    <span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cash')}
+      >{fmtMoney(liveCashTotal)}</span
+    ><span class="ps-agg-sep">/</span
+    ><span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cp')}
+      >{fmtMoney(cashTotal)}</span>
   </span>
   <span class="ps-agg" title="Holdings: today's MTM move / lifetime P&L / current value">
     <span class="ps-agg-k">H</span>
