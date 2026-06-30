@@ -39,6 +39,62 @@ _ROW_COLS = [
 _TTL = 30  # seconds — background task invalidates on each refresh
 
 
+def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
+    """Patch `last_price` from the live KiteTicker tick_map for any
+    holdings row whose last_price is still zero or missing after
+    `backfill_market_data`. Holdings brokers (Dhan, Groww) sometimes
+    return zero LTP for equity symbols; the ticker always has the
+    freshest streamed value for subscribed holdings.
+
+    Only patches rows where the broker / backfill delivered a zero or
+    missing LTP — never overwrites a valid non-zero broker value (same
+    guard as positions route). Recomputes `day_change_val` + `day_change`
+    on patched rows using (LTP - close) × opening_qty so the Day P&L
+    column reflects the fresh tick immediately."""
+    if raw.empty or 'tradingsymbol' not in raw.columns:
+        return
+    # Only patch rows still at zero LTP — this is the guard that
+    # prevents overwriting valid broker-supplied values.
+    _ltp_s = pd.to_numeric(raw.get('last_price', pd.Series(dtype=float)),
+                           errors='coerce').fillna(0)
+    _zero_mask = _ltp_s <= 0
+    if not _zero_mask.any():
+        return
+    try:
+        from backend.brokers.kite_ticker import get_ticker as _get_ticker
+        _ticker = _get_ticker()
+    except Exception:
+        return
+    patched_idx: list = []
+    for idx in raw.index[_zero_mask]:
+        sym = raw.at[idx, 'tradingsymbol']
+        if not sym:
+            continue
+        tick_ltp = _ticker.get_ltp_by_sym(str(sym))
+        if tick_ltp is None or tick_ltp <= 0:
+            continue
+        raw.at[idx, 'last_price'] = float(tick_ltp)
+        patched_idx.append(idx)
+    if not patched_idx:
+        return
+    _sel = pd.Index(patched_idx)
+    _qty_col = 'opening_quantity' if 'opening_quantity' in raw.columns else 'quantity'
+    _ltp_p = pd.to_numeric(raw.loc[_sel, 'last_price'], errors='coerce').fillna(0)
+    _cls_p = pd.to_numeric(raw.loc[_sel, 'close_price'], errors='coerce').fillna(0) \
+             if 'close_price' in raw.columns else pd.Series(0.0, index=_sel)
+    _qty_p = pd.to_numeric(raw.loc[_sel, _qty_col], errors='coerce').fillna(0)
+    _dcv = (_ltp_p - _cls_p) * _qty_p
+    if 'day_change_val' in raw.columns:
+        raw.loc[_sel, 'day_change_val'] = _dcv.where(_ltp_p > 0,
+                                                      raw.loc[_sel, 'day_change_val'])
+    if 'day_change' in raw.columns:
+        raw.loc[_sel, 'day_change'] = _ltp_p - _cls_p
+    logger.info(
+        f"holdings: ltp-override patched {len(patched_idx)}/{len(raw)} "
+        f"zero-LTP rows from KiteTicker"
+    )
+
+
 def _fetch() -> HoldingsResponse:
     per_acct = broker_apis.fetch_holdings()
     # Outage detection: only raise when every per-account call failed
@@ -61,6 +117,11 @@ def _fetch() -> HoldingsResponse:
     # Dhan + Groww rows match Kite's Day P&L / Day % / Prev Close
     # downstream. Single batched round-trip across every missing row.
     broker_apis.backfill_market_data(raw)
+
+    # Patch any rows that still have last_price=0 after backfill
+    # (PriceBroker rate-limit cool-off, or symbol not in quote cache).
+    # Same live-ticker override pattern used by the positions route.
+    _override_stale_ltp_from_ticker(raw)
 
     numeric = raw.select_dtypes(include='number').columns
     raw[numeric] = raw[numeric].fillna(0)

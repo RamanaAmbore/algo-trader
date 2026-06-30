@@ -637,6 +637,7 @@ def backfill_market_data(df) -> int:
     if not _unique_keys:
         return 0
 
+    _q: dict = {}
     try:
         from backend.brokers.registry import get_price_broker
         _pb = get_price_broker()
@@ -646,7 +647,27 @@ def backfill_market_data(df) -> int:
             f"PriceBroker market-data backfill failed (1 batched call for "
             f"{len(_unique_keys)} symbols): {_e}"
         )
-        return 0
+        # PriceBroker outage (all brokers rate-limited / token expired).
+        # Fall back to KiteTicker for LTP on missing rows so the
+        # alternating-0 symptom is suppressed even during cool-off.
+        # close_price cannot come from the ticker (no OHLC there) —
+        # only last_price is patched here; the day_change_val recompute
+        # below handles the rest.
+        _q = {}  # no REST quotes; ticker fallback below fills _ltp_lookup
+        try:
+            from backend.brokers.kite_ticker import get_ticker as _gt
+            _ticker_fb = _gt()
+            for _k in _unique_keys:
+                # key shape is "EXCHANGE:SYMBOL" — strip exchange prefix.
+                _sym_fb = _k.split(":", 1)[-1] if ":" in _k else _k
+                _ltp_fb = _ticker_fb.get_ltp_by_sym(_sym_fb)
+                if _ltp_fb and _ltp_fb > 0:
+                    # Synthesise a minimal quote-like entry so the
+                    # extraction loop below can populate _ltp_lookup.
+                    _q[_k] = {"last_price": _ltp_fb}
+        except Exception as _te:
+            logger.debug(f"PriceBroker backfill: ticker fallback also failed: {_te}")
+            return 0
 
     # Extract two fields per quote: close (from ohlc.close, fallback
     # to top-level close_price) and last_price (from top-level
