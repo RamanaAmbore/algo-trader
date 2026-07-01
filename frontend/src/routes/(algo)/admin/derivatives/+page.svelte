@@ -1010,14 +1010,39 @@
     );
   });
 
+  /** Multi-source per-root spot resolver — same chain the payoff overlay
+   *  uses. Operator 2026-07-01: "SUZLON, IDFIRSTB, CRUDEOIL are showing
+   *  exp p&l as 0. overlay for symbol shows correct value. use ssot of
+   *  overlay and keep others in sync." Previously _byUnderlyingExp used
+   *  _underlyingQuotes[root]?.ltp alone; when batchQuote missed the root
+   *  (equity delisted from batch response, MCX nearest-future resolution
+   *  failure, or transient response error), the row silently dropped
+   *  every leg and totalled 0. Chain of fallbacks so most roots resolve:
+   *    1. _underlyingQuotes[root]?.ltp — batchQuote-cached snapshot
+   *    2. symbolStore for resolveUnderlying(root)?.tradingsymbol — SSE tick
+   *    3. symbolStore for bare root — bare-name subscription
+   */
+  function _rootSpot(/** @type {string} */ root) {
+    const v0 = _underlyingQuotes[root]?.ltp;
+    if (typeof v0 === 'number' && v0 > 0) return v0;
+    const resolved = resolveUnderlying(root, findNearestFuture);
+    if (resolved?.tradingsymbol) {
+      const v1 = getSnapshot(String(resolved.tradingsymbol).toUpperCase())?.ltp;
+      if (typeof v1 === 'number' && v1 > 0) return v1;
+    }
+    const v2 = getSnapshot(String(root).toUpperCase())?.ltp;
+    if (typeof v2 === 'number' && v2 > 0) return v2;
+    return null;
+  }
+
   /** Per-underlying Exp P&L at current spot — { ROOT: { eq: number, no_eq: number } }.
    *  Walks the same positions + holdings universe the Snapshot uses, but
    *  computes each leg's expiry-day P&L (intrinsic - cost × qty for
    *  options; spot - cost × qty for futures + equity) instead of broker
    *  MTM. Operator request: "in snapshot and legs, show profit/loss
    *  for each on expiration day and updated total for the column".
-   *  Spot per root read from _underlyingQuotes (which is populated by
-   *  loadUnderlyingQuotes()); rows whose spot isn't loaded yet show "—". */
+   *  Spot per root via _rootSpot (multi-source chain); rows whose spot
+   *  can't be resolved from any source show "—". */
   const _byUnderlyingExp = $derived.by(() => {
     /** @type {Record<string, { with: number, without: number }>} */
     const out = {};
@@ -1051,7 +1076,7 @@
       // derived walks every position + every holding on the snapshot cycle
       // AND on the positions cycle, doubling work and cascading OptionsPayoff
       // SVG re-renders that starve the main thread of click events.
-      const spot = untrack(() => _underlyingQuotes[root]?.ltp ?? null);
+      const spot = untrack(() => _rootSpot(root));
       const v = _expiryPnl({
         symbol: sym, qty: p.quantity ?? p.qty,
         avg_cost: p.average_price ?? p.avg_cost,
@@ -1076,7 +1101,7 @@
       const _targets = targetsForProxy(sym);
       const credits = _targets.length ? _targets : [sym];
       for (const root of credits) {
-        const spot = untrack(() => _underlyingQuotes[root]?.ltp ?? null);
+        const spot = untrack(() => _rootSpot(root));
         if (spot == null) continue;
         const v = (Number(spot) - cost) * qty;
         if (!isFinite(v)) continue;
