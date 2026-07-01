@@ -1496,19 +1496,25 @@
   // selectedUnderlying read so operator-driven changes don't re-
   // trigger the fallback logic.
   $effect(() => {
-    // Track the picker's actual options list — it's the union of every
-    // tier (frequent, options, futures, hedge, watchlist, popular) after
-    // dedupe. Picking `underlyingOptionsForPicker[0]` guarantees we auto-
-    // select the first VISIBLE option in the dropdown, regardless of
-    // which tier populated first. Operator: "if symbol context is not
-    // clear, use the first symbol in dropdown as default while loading
-    // the payoff."
-    void underlyingOptionsForPicker;
-    untrack(() => {
-      if (selectedUnderlying) return;  // operator already has a pick
-      const first = underlyingOptionsForPicker[0]?.value;
-      if (first) selectedUnderlying = first;
-    });
+    // Auto-select the first entry in the picker whenever the picker
+    // has options but selectedUnderlying is empty. The picker is the
+    // union of every tier (frequent → options → futures → hedge →
+    // watchlist → popular) after dedupe, so `[0]` is always a sensible
+    // default no matter which data source populated first. Operator:
+    // "if symbol context is not clear, use the first symbol in dropdown
+    // as default while loading the payoff."
+    //
+    // Explicit read into a local var so Svelte 5 reliably registers the
+    // dependency on the derived — the previous `void` shortcut was
+    // getting optimized in some builds, causing the effect not to re-
+    // fire when the picker went from empty (hydration) to populated.
+    // Read selectedUnderlying via untrack so writing to it here doesn't
+    // create a re-fire loop.
+    const opts = underlyingOptionsForPicker;
+    const cur  = untrack(() => selectedUnderlying);
+    if (cur) return;
+    const first = opts[0]?.value;
+    if (first) untrack(() => { selectedUnderlying = first; });
   });
 
   // Auto-check the eq leg when the operator picks a hedge-opportunity
