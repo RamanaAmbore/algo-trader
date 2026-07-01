@@ -5524,7 +5524,12 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
     color: #fbbf24;
-    padding: 0 0.25rem 0.4rem;
+    padding: 0 0.25rem 0.25rem;
+    /* Match .opt-block-h (Greeks heading) — the amber underline
+       anchors the label and makes it read as bright as the Greeks
+       card title on the same page. Operator: "GREEKS is brighter." */
+    border-bottom: 1px solid rgba(251,191,36,0.18);
+    margin-bottom: 0.4rem;
     flex-wrap: wrap;
   }
   /* Two-row variant — title + chips on row 1, meta line on row 2.

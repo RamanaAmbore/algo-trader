@@ -1942,25 +1942,28 @@
 }
 /* ── Card and section heading SSOT ──────────────────────────────────────────
    Two semantic roles — pick the one that matches the nesting level:
-     .algo-card-title   — heading ON a card  (inside .algo-card / .bucket-card)
+     .algo-card-title    — heading ON a card  (inside .algo-card / .bucket-card)
      .algo-section-title — heading ABOVE a group of cards (bare page element)
-   Both share the same slate-400 color, weight, transform, and tracking.
-   Size differs: 0.6rem (on-card) vs 0.65rem (page-level).
-   Amber is reserved for .mp-section-label (canonical card-row labels) and
-   interactive state via .is-active / .is-alerting modifiers. */
+
+   Operator preference (2026-07-01): amber + monospace + uppercase — matches
+   the derivatives "GREEKS" heading's intensity + contrast. Reads bright and
+   sharp against the dark navy card surface. Cream public routes are
+   unaffected (they override .algo-card-title via card-theme-cream vars). */
 .algo-card-title {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.6rem;
   font-weight: 700;
-  color: #94a3b8;
-  letter-spacing: 0.06em;
+  color: #fbbf24;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   margin-bottom: 0.35rem;
 }
 .algo-section-title {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.65rem;
   font-weight: 700;
-  color: #94a3b8;
-  letter-spacing: 0.06em;
+  color: #fbbf24;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   margin-bottom: 0.35rem;
   display: block;
