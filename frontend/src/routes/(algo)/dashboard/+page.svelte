@@ -1317,6 +1317,8 @@
       columnDefs: [
         // Action-first ordering: numeric figures lead, Account trails so the
         // operator's eye lands on cash / margin numbers first (per /pulse rule).
+        { field: 'account', headerName: 'Account', width: 76, minWidth: 60, maxWidth: 92,
+          cellClass: 'ag-col-fill' },
         { field: 'cash', headerName: 'Cash', minWidth: 70, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: 'ag-right-aligned-cell',
@@ -1333,8 +1335,6 @@
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: 'ag-right-aligned-cell',
           valueFormatter: _agAggFmt },
-        { field: 'account', headerName: 'Account', width: 76, minWidth: 60, maxWidth: 92,
-          cellClass: 'ag-col-fill' },
       ],
       rowData: [],
       domLayout: 'autoHeight',
@@ -1352,7 +1352,10 @@
       // amber-accent styling — mirrors the Funds grid pattern.
       getRowClass: (p) => p.node?.rowPinned === 'bottom' ? 'totals-row' : '',
       columnDefs: [
-        // Action-first ordering: util/margin figures lead, Account trails.
+        // Account-first ordering per operator preference — matches Funds
+        // grid + Equity Positions/Holdings grids on the same card.
+        { field: 'account', headerName: 'Account', width: 76, minWidth: 60, maxWidth: 92,
+          cellClass: 'ag-col-fill' },
         { field: 'used', headerName: 'Used Margin', minWidth: 90, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: 'ag-right-aligned-cell',
@@ -1364,10 +1367,6 @@
         { field: 'util_pct', headerName: 'Util %', minWidth: 62, flex: 0.7,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: (p) => {
-            // Util % colour ramp using the algo theme's pnl-* classes
-            // — green when well under-utilised, red when close to a
-            // margin call. Same colour family operators see on every
-            // other algo grid for "is this number good or bad".
             const v = Number(p.value) || 0;
             const cls = v >= 0.85 ? 'pnl-loss'
                       : v >= 0.70 ? 'util-warn'
@@ -1376,8 +1375,6 @@
             return `ag-right-aligned-cell ${cls}`;
           },
           valueFormatter: _agUtilFmt },
-        { field: 'account', headerName: 'Account', width: 76, minWidth: 60, maxWidth: 92,
-          cellClass: 'ag-col-fill' },
       ],
       rowData: [],
       domLayout: 'autoHeight',
@@ -1446,15 +1443,15 @@
       ..._baseGridOpts,
       getRowClass: (p) => p.node?.rowPinned === 'bottom' ? 'totals-row' : '',
       columnDefs: [
-        // Action-first ordering: P&L figures lead, Account trails.
+        // Account-first ordering per operator preference.
+        { field: 'account', headerName: 'Account', width: 76, minWidth: 60, maxWidth: 92,
+          cellClass: 'ag-col-fill' },
         { field: 'day_pnl', headerName: 'Day P&L', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: _agDirCell, valueFormatter: _agNumFmt },
         { field: 'pnl', headerName: 'P&L', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: _agDirCell, valueFormatter: _agNumFmt },
-        { field: 'account', headerName: 'Account', width: 76, minWidth: 60, maxWidth: 92,
-          cellClass: 'ag-col-fill' },
       ],
       rowData: [],
       domLayout: 'autoHeight',
@@ -1470,7 +1467,9 @@
       ..._baseGridOpts,
       getRowClass: (p) => p.node?.rowPinned === 'bottom' ? 'totals-row' : '',
       columnDefs: [
-        // Action-first ordering: P&L + value figures lead, Account trails.
+        // Account-first ordering per operator preference.
+        { field: 'account', headerName: 'Account', width: 76, minWidth: 60, maxWidth: 92,
+          cellClass: 'ag-col-fill' },
         { field: 'day_pnl', headerName: 'Day P&L', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: _agDirCell, valueFormatter: _agNumFmt },
@@ -1480,8 +1479,6 @@
         { field: 'cur_val', headerName: 'Value', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: 'ag-right-aligned-cell', valueFormatter: _agAggFmt },
-        { field: 'account', headerName: 'Account', width: 76, minWidth: 60, maxWidth: 92,
-          cellClass: 'ag-col-fill' },
       ],
       rowData: [],
       domLayout: 'autoHeight',
