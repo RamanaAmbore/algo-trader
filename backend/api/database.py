@@ -45,17 +45,17 @@ def _build_shared_url() -> str:
 
     Used exclusively for the `broker_accounts` table so that both the dev
     API and the prod API read and write the same set of broker credentials.
-    All other tables (users, algo_orders, agents, …) stay on the
+    All other tables (users, algo_orders, agents, ...) stay on the
     branch-local DB via the regular `async_session`.
 
-    NOTE: `broker_accounts` schema changes (ALTER TABLE … IF NOT EXISTS)
+    NOTE: broker_accounts schema changes (ALTER TABLE ... IF NOT EXISTS)
     still run against the branch-local DB via `init_db()` — those are
     idempotent no-ops on `ramboq_dev` and the real effective migration
-    always lands first on `ramboq` (the shared table).  Do NOT move
+    always lands first on `ramboq` (the shared table). Do NOT move
     broker_accounts DDL here; keep it in init_db so the prod DB gets it.
 
     NOTE: `_reload_connections` (brokers.py) calls `Connections.rebuild_from_db()`
-    locally.  When `RAMBOQ_USE_CONN_SERVICE=1` that path short-circuits and
+    locally. When `RAMBOQ_USE_CONN_SERVICE=1` that path short-circuits and
     does NOT ping conn_service's `/rebuild` endpoint — conn_service sees the
     updated shared DB only on its next scheduled poll or manual restart.
     That is a pre-existing gap; surfaced here for operator awareness.
@@ -66,14 +66,14 @@ def _build_shared_url() -> str:
     port     = secrets.get("db_port", 5432)
     # Always `ramboq` — the shared broker-credentials database.
     url = f"postgresql+asyncpg://{user}:{password}@{host}:{port}/ramboq"
-    logger.info("Shared broker DB: PostgreSQL → ramboq on %s:%s", host, port)
+    logger.info("Shared broker DB: PostgreSQL -> ramboq on %s:%s", host, port)
     return url
 
 
 _SHARED_DATABASE_URL = _build_shared_url()
 
 # Separate engine/session for tables shared between dev and prod branches.
-# Currently only `broker_accounts` uses this session.  Sized conservatively
+# Currently only `broker_accounts` uses this session. Sized conservatively
 # (pool_size=3) because the shared DB sees half the write traffic of the
 # main engine even in the worst case.
 _shared_engine = create_async_engine(

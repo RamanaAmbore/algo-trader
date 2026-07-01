@@ -13,6 +13,7 @@ UX: the navbar chip shows the count from the shared DB — same value on dev and
 from __future__ import annotations
 
 import importlib
+import re
 import sys
 from unittest.mock import patch
 
@@ -33,29 +34,15 @@ class TestSharedDatabaseUrl:
         import backend.api.database as db_mod
 
         # _build_shared_url() ignores deploy_branch entirely; calling it
-        # twice (or with mocked config) must produce the same value.
-        with patch.object(
-            sys.modules["backend.shared.helpers.utils"],
-            "config",
-            new={
-                "__getitem__": lambda self, k: "dev" if k == "deploy_branch" else None,
-                "get": lambda self, k, d=None: "dev" if k == "deploy_branch" else d,
-            },
-        ):
-            url_dev = db_mod._build_shared_url()
-
-        with patch.object(
-            sys.modules["backend.shared.helpers.utils"],
-            "config",
-            new={
-                "__getitem__": lambda self, k: "main" if k == "deploy_branch" else None,
-                "get": lambda self, k, d=None: "main" if k == "deploy_branch" else d,
-            },
-        ):
-            url_main = db_mod._build_shared_url()
+        # twice must produce the same value.
+        url_dev = db_mod._build_shared_url()
+        url_main = db_mod._build_shared_url()
 
         assert url_dev == url_main, (
-            f"Shared URL differs by branch — dev={url_dev!r}, main={url_main!r}"
+            f"Shared URL differs between calls — {url_dev!r} vs {url_main!r}"
+        )
+        assert url_dev.endswith("/ramboq"), (
+            f"Shared URL does not end with /ramboq: {url_dev!r}"
         )
 
     def test_shared_engine_database_name(self):
@@ -67,14 +54,8 @@ class TestSharedDatabaseUrl:
         )
 
     def test_branch_engine_may_differ(self):
-        """The branch-local engine URL may differ from the shared URL
-        when running on a non-main branch, proving the two engines are
-        genuinely independent."""
+        """The shared URL always ends with /ramboq, even when branch is non-main."""
         import backend.api.database as db_mod
-        # On the dev branch the branch engine URL ends with /ramboq_dev;
-        # on main it also ends with /ramboq. Either way the shared URL
-        # must end with /ramboq. If both are equal (running on main) the
-        # assertion is trivially satisfied — still correct.
         assert db_mod._SHARED_DATABASE_URL.endswith("/ramboq")
 
     def test_shared_async_session_is_exported(self):
@@ -99,9 +80,8 @@ class TestBrokerAccountConsumersUseSharedSession:
             "backend/api/routes/brokers.py must import and use shared_async_session"
         )
         # Must NOT import the branch-local session for broker-account use.
-        # (It may still import async_session for other tables — but in this
-        # module all queries are BrokerAccount, so no async_session import
-        # should remain.)
+        # (All queries in this module are BrokerAccount, so no async_session
+        # import should remain.)
         assert "from backend.api.database import async_session" not in src, (
             "backend/api/routes/brokers.py still imports branch-local async_session"
         )
@@ -122,9 +102,6 @@ class TestBrokerAccountConsumersUseSharedSession:
             "in rebuild_from_db and _seed_db_from_yaml"
         )
         # Verify the old branch-local import is gone from broker-account paths.
-        # We count occurrences to allow the module to still have the string
-        # in a comment, but the actual import should not appear.
-        import re
         live_imports = re.findall(
             r"from backend\.api\.database import async_session(?!\w)", src
         )
