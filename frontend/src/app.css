@@ -936,7 +936,13 @@
   box-shadow: none !important;
 }
 .ag-theme-algo .ag-header {
-  background-color: rgba(15,23,42,0.65) !important;
+  /* Background aligned with card-header / tab-strip context.
+     Was rgba(15,23,42,0.65) — a visibly darker near-black band that
+     read as a different component from the card surface the tab strip
+     sits on. Reduced to 0.30 so the header sits on the same mid-navy
+     tone as the card; the amber border-bottom still provides the visual
+     separator between header and body rows. */
+  background-color: rgba(15,23,42,0.30) !important;
   color: var(--text-muted) !important;
   border-bottom: 1px solid rgba(251,191,36,0.30) !important;
 }
