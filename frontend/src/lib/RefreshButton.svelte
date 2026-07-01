@@ -136,12 +136,28 @@
   // template previously used `loading` to decide which glyph to show
   // and which CSS class to apply.
   //
-  // Spin whenever the parent's load() is in flight OR a refire is
-  // running — applies during closed hours too. Refresh during closure
-  // still refetches positions / holdings / charts from snapshot + DB,
-  // which is real async work and deserves visible feedback. Operator:
-  // "let it animate and update non-tick data."
-  const _showSpinning = $derived(loading || _refiring);
+  // Max-spin watchdog — if the parent's `loading` prop stays true for
+  // more than 20 s (broker call hanging, no timeout on fetch, etc.),
+  // stop showing spin visually. Prevents the "continuously rotates"
+  // regression when Kite is slow/502-ing. loading itself is not
+  // touched — parent owns that state — only the visible feedback
+  // times out. Operator: "refresh button after click continuously
+  // rotates."
+  const _MAX_SPIN_MS = 20_000;
+  let _spinCapExpired = $state(false);
+  let _spinCapTimer   = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
+  $effect(() => {
+    if ((loading || _refiring) && !_spinCapExpired) {
+      if (_spinCapTimer == null) {
+        _spinCapTimer = setTimeout(() => { _spinCapExpired = true; }, _MAX_SPIN_MS);
+      }
+    } else {
+      // loading cleared (or already expired) — reset for the next click.
+      if (_spinCapTimer != null) { clearTimeout(_spinCapTimer); _spinCapTimer = null; }
+      if (!loading && !_refiring) _spinCapExpired = false;
+    }
+  });
+  const _showSpinning = $derived((loading || _refiring) && !_spinCapExpired);
 
   // Refire-only flag — true when post-hibernation refire is active but
   // no manual click is in flight. This drives the violet palette on the
