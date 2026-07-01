@@ -5792,12 +5792,25 @@
        this, the card can shrink to its (header-only) intrinsic width
        when collapsed — operator sees the card width jump.
        box-sizing: border-box so padding doesn't push the card over
-       the column width. */
+       the column width.
+
+       Outer chrome matches .algo-grid-chrome (Legs, Snapshot, History,
+       strategies) — 1.5px slate border + 4px radius + navy inset
+       shadow + gradient bg. Gives each bucket a sharp card boundary
+       instead of relying only on the inner ag-Grid theme border,
+       which reads softer against the dark surface. Operator:
+       "have sharp border to pulse ag grids like legs ag grid." */
     width: 100%;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
     min-width: 0;
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    overflow: hidden;
   }
   /* Bucket label — small mono caps above each grid, tinted to match
      the per-major palette already used elsewhere on the page so the
