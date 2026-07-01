@@ -192,6 +192,11 @@
   let _eqAccounts  = $state(/** @type {string[]} */ ([]));   // Equity card
   let _winAccounts = $state(/** @type {string[]} */ ([]));   // Top Winners
   let _losAccounts = $state(/** @type {string[]} */ ([]));   // Top Losers
+  // Sentinel: set to true by onMount once the initial sessionStorage
+  // restore has run. The $effect below checks this so it doesn't
+  // attempt re-restore before the first synchronous onMount pass
+  // completes (which would race with the initial setter calls).
+  let _mountRestoreDone = false;
 
   // Broker-registry-loaded accounts — sourced from the connStatus store
   // (polled every 15 s by the layout's startConnStatusPoller). Eliminates
@@ -201,6 +206,35 @@
   $effect(() => { _connStatusSnap = $connStatus; });
   const _conn         = $derived({ loaded: _connStatusSnap.loaded, total: _connStatusSnap.total });
   const _knownBrokerAccounts = $derived(_connStatusSnap.accounts ?? []);
+
+  // Re-run sessionStorage restore once the broker registry transitions
+  // from empty → loaded (_knownBrokerAccounts.length > 0). Hoisted to
+  // script top-level (not inside onMount) so Svelte 5 registers the
+  // effect at component-init time and the reactive dependency on
+  // _knownBrokerAccounts is tracked correctly. The _mountRestoreDone
+  // sentinel gates the first fire: onMount sets it to true after its
+  // own synchronous restore runs, so the effect only re-runs on a
+  // genuine empty→loaded transition that onMount may have missed.
+  $effect(() => {
+    if (!_mountRestoreDone) return;     // wait for onMount to finish first
+    if (_knownBrokerAccounts.length === 0) return;
+    function _restore(key, /** @type {(v:string[])=>void} */ setter) {
+      try {
+        const cached = sessionStorage.getItem(key);
+        if (!cached) return;
+        const stored = JSON.parse(cached);
+        if (!Array.isArray(stored) || stored.length === 0) return;
+        const known = _knownBrokerAccounts;
+        const valid = stored.filter(a => known.includes(a));
+        const missingNew = known.some(a => !stored.includes(a));
+        if (missingNew) { setter([]); sessionStorage.removeItem(key); }
+        else            { setter(valid); }
+      } catch (_) { setter([]); }
+    }
+    _restore('dash.eqAccounts',  v => _eqAccounts  = v);
+    _restore('dash.winAccounts', v => _winAccounts = v);
+    _restore('dash.losAccounts', v => _losAccounts = v);
+  });
 
   // Derived list of distinct accounts seen in current positions +
   // holdings + broker registry. Sorted ascending. Empty fallback when
@@ -1206,15 +1240,9 @@
     _restore('dash.eqAccounts',  v => _eqAccounts  = v);
     _restore('dash.winAccounts', v => _winAccounts = v);
     _restore('dash.losAccounts', v => _losAccounts = v);
-    // Re-run restore once the broker registry lands (_knownBrokerAccounts
-    // starts empty and populates async via _fetchConn). $effect tracks
-    // the dep and fires once the array transitions from empty → loaded.
-    $effect(() => {
-      if (_knownBrokerAccounts.length === 0) return;
-      _restore('dash.eqAccounts',  v => _eqAccounts  = v);
-      _restore('dash.winAccounts', v => _winAccounts = v);
-      _restore('dash.losAccounts', v => _losAccounts = v);
-    });
+    // Signal that onMount's synchronous restore has completed so the
+    // $effect below skips the empty-registry window on first fire.
+    _mountRestoreDone = true;
     // PRIMARY — positions, holdings, funds, agent events. These drive the
     // dashboard's main snapshot grids; the operator needs them before
     // anything else paints. Kick off immediately so the first network

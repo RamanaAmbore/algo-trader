@@ -1056,6 +1056,7 @@
 
   onDestroy(() => {
     unsub?.();
+    if (_fillToastTimer) { clearTimeout(_fillToastTimer); _fillToastTimer = null; }
     [fundsGrid, navGrid, holdingsSummaryGrid, holdingsAllGrid,
      positionsSummaryGrid, positionsAllGrid]
       .forEach(g => g?.destroy());

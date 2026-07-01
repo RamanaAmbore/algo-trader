@@ -26,6 +26,7 @@
   import { bootstrapRBAC } from '$lib/rbac';
   import { startBookChangedBus } from '$lib/data/bookChanged';
   import { startBookPollers, setBookPollerInterval } from '$lib/data/marketDataStores.svelte.js';
+  import { startMarketGatedQuoteStream, stopMarketGatedQuoteStream } from '$lib/data/quoteStream';
   import NavigationIndicator from '$lib/NavigationIndicator.svelte';
   import BrokerHealthBadge from '$lib/BrokerHealthBadge.svelte';
 
@@ -704,6 +705,12 @@
     // Hibernation gates fire for free via `marketAwareInterval` (throttle
     // to 30 s after 5 min hidden, immediate refire on tab return).
     startBookPollers();
+    // Market-gated quote stream gate. Starts the SSE if any segment is
+    // open right now; runs a 30 s visibility-aware watcher that pauses /
+    // resumes the stream on open ↔ close transitions. Idempotent —
+    // MarketPulse also calls startQuoteStream() directly; the singleton
+    // pattern in quoteStream.js deduplicates. Torn down in onDestroy.
+    startMarketGatedQuoteStream();
     // Fire once, then schedule adaptive polls.
     pollSim();
     pollPaper();
@@ -732,6 +739,7 @@
     modeTeardown?.(); chaseTeardown?.(); persistTeardown?.();
     window.removeEventListener('keydown', _onGlobalKeydown);
     _clearG();
+    stopMarketGatedQuoteStream();
   });
 
   // ── Demo / signin redirect ─────────────────────────────────────────

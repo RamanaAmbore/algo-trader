@@ -856,6 +856,8 @@
   // hours the marketAwareInterval suspends runTick entirely, so without this
   // poller sparklines would never refresh until next market open.
   let _stopClosedSparkPoll;
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _deferredSparkTimer = null;
   let _tickMs = 5000;
   let _tickCount = 0;
   // Multipliers (relative to the base tick):
@@ -1296,7 +1298,7 @@
     // sparklines without waiting for the 60 s _TICK_SPARK tick.
     // The second call is cheap — createDataStore deduplicates pairs that
     // were already fetched by the first call.
-    setTimeout(() => { loadSparklines(); }, 2000);
+    _deferredSparkTimer = setTimeout(() => { _deferredSparkTimer = null; loadSparklines(); }, 2000);
 
     // Unified pulse tick — one marketAwareInterval drives every refresh.
     // pulse.tick_interval_ms (default 5000) is the base cadence; heavier
@@ -2189,6 +2191,7 @@
 
   onDestroy(() => {
     stopPulseTick?.(); stopTickSettingPoll?.(); _stopClosedSparkPoll?.(); stopWS?.();
+    if (_deferredSparkTimer) { clearTimeout(_deferredSparkTimer); _deferredSparkTimer = null; }
     stopQuoteStream();
     // Clear any in-flight throttle timers so their setTimeout
     // callbacks don't fire into a destroyed component (audit-flagged

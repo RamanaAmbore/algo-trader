@@ -82,9 +82,13 @@
   // either case.
   /** @type {any} */ let strategy   = $state(null);
   let strategyErr   = $state('');
-  /** @type {ReturnType<typeof setInterval> | null} */
+  /** @type {(() => void) | null} */
   let _autoSelectPollId = null;
-  onDestroy(() => { if (_autoSelectPollId) clearInterval(_autoSelectPollId); });
+  onDestroy(() => {
+    _autoSelectPollId?.();
+    for (const t of _orderToastTimers) clearTimeout(t);
+    _orderToastTimers.clear();
+  });
   let loading       = $state(false);
   // `loading` is toggled by loadStrategy() and short-circuits on
   // its leg-cache shortcut, so RefreshButton wired to `loading`
@@ -138,6 +142,8 @@
   /** @type {Array<{id:number, mode:string, side:string, qty:number, symbol:string, price:string, orderId:string, status:string, ts:number}>} */
   let _orderToasts = $state([]);
   let _orderToastSeq = 0;
+  /** Tracks all live auto-dismiss timer handles so onDestroy can clear them. */
+  const _orderToastTimers = new Set(/** @type {ReturnType<typeof setTimeout>[]} */ ([]));
   function _pushOrderToast(/** @type {any} */ payload) {
     const resp  = payload?.broker_response || {};
     const px    = payload.price != null
@@ -157,9 +163,11 @@
     _orderToasts = [..._orderToasts, toast];
     // Auto-dismiss after 5 s. Identified by toast id rather than
     // index so concurrent dismissals don't fight each other.
-    setTimeout(() => {
+    const tid = setTimeout(() => {
+      _orderToastTimers.delete(tid);
       _orderToasts = _orderToasts.filter(t => t.id !== toast.id);
     }, 5000);
+    _orderToastTimers.add(tid);
   }
   function _dismissOrderToast(/** @type {number} */ id) {
     _orderToasts = _orderToasts.filter(t => t.id !== id);
@@ -179,10 +187,12 @@
       ts: Date.now(),
     };
     _orderToasts = next;
-    const tid = next[idx].id;
-    setTimeout(() => {
-      _orderToasts = _orderToasts.filter(t => t.id !== tid);
+    const toastId = next[idx].id;
+    const tid = setTimeout(() => {
+      _orderToastTimers.delete(tid);
+      _orderToasts = _orderToasts.filter(t => t.id !== toastId);
     }, 5000);
+    _orderToastTimers.add(tid);
     return true;
   }
   /** Push a fresh FILLED toast when the WS reports a fill we don't
@@ -201,9 +211,11 @@
       ts:      Date.now(),
     };
     _orderToasts = [..._orderToasts, toast];
-    setTimeout(() => {
+    const tid = setTimeout(() => {
+      _orderToastTimers.delete(tid);
       _orderToasts = _orderToasts.filter(t => t.id !== toast.id);
     }, 5000);
+    _orderToastTimers.add(tid);
   }
   function addDraft() {
     drafts = [...drafts, { id: ++_draftSeq, symbol: '', qty: '', avg_cost: '', ltp: '' }];
@@ -261,21 +273,29 @@
     // Belt-and-suspenders auto-select: the reactive $effect below
     // sometimes doesn't fire on the initial hydration transition
     // (Svelte 5 derived-dep chains through async store loads).
-    // Poll every 300 ms indefinitely until either:
+    // Poll every 300 ms (visibility-aware) until either:
     //   - the operator manually picks a valid symbol
     //   - the picker populates and we assign the first entry
-    //   - the component unmounts (poll cleared in _autoSelectTeardown)
+    //   - 200 attempts elapsed (~60 s) — systemic broker outage, give up
+    //   - the component unmounts (poll cleared via _autoSelectPollId)
     // Also validates the cached selection: if a stale symbol was
     // restored from sessionStorage but is NOT in the current picker,
     // treat it as invalid and swap to the picker's first entry.
-    _autoSelectPollId = setInterval(() => {
+    let _autoSelectAttempts = 0;
+    _autoSelectPollId = visibleInterval(() => {
+      _autoSelectAttempts++;
       const opts = underlyingOptionsForPicker;
-      if (opts.length === 0) return;  // wait for picker to hydrate
+      if (opts.length === 0) {
+        // Cap: after 200 attempts (~60 s) stop polling regardless.
+        if (_autoSelectAttempts >= 200) { _autoSelectPollId?.(); _autoSelectPollId = null; }
+        return;
+      }
       const cur  = selectedUnderlying;
       const isValid = cur && opts.some(o => o.value === cur);
-      if (isValid) { clearInterval(_autoSelectPollId); return; }
-      selectedUnderlying = opts[0].value;
-      clearInterval(_autoSelectPollId);
+      if (!isValid) selectedUnderlying = opts[0].value;
+      // Picker is populated and selection is valid — stop polling.
+      _autoSelectPollId?.();
+      _autoSelectPollId = null;
     }, 300);
   });
 

@@ -45,10 +45,6 @@
   /** @type {Props} */
   let { onClick, loading = false, label = 'data' } = $props();
 
-  // Ensure the global connection-status poller is running. Idempotent —
-  // safe to call from every mounted RefreshButton.
-  onMount(() => { startConnStatusPoller(); });
-
   // Market-state tick — recomputes isNseOpen / isMcxOpen every 30 s so
   // the button's palette tracks session boundaries automatically. The
   // three buckets the operator cares about: both open (full hours),
@@ -58,13 +54,6 @@
   let _mcxOpen = $state(isMcxOpen());
   /** @type {(() => void) | null} */
   let _mktTimer = null;
-  onMount(() => {
-    const tick = () => {
-      _nseOpen = isNseOpen();
-      _mcxOpen = isMcxOpen();
-    };
-    _mktTimer = visibleInterval(tick, 30_000);
-  });
   // Tick-pulse animation — fires the button's box-shadow halo at ~4Hz
   // whenever SSE ticks land in symbolStore. Operator: "bump refresh
   // to 4hz." Throttle to 250ms so a 100-tick/sec burst doesn't strobe
@@ -90,24 +79,35 @@
   let _unsubRefiring = null;
 
   onMount(() => {
-    // Subscribe inside onMount (not $effect) so the subscription is
-    // registered ONCE on mount; the callback firing per tick does not
-    // re-run an $effect body and doesn't touch reactive state, so it
-    // cannot cascade scheduler work.
+    // 1. Ensure the global connection-status poller is running. Idempotent —
+    //    safe to call from every mounted RefreshButton.
+    startConnStatusPoller();
+
+    // 2. Market-state tick: recomputes isNseOpen / isMcxOpen every 30 s.
+    const tick = () => {
+      _nseOpen = isNseOpen();
+      _mcxOpen = isMcxOpen();
+    };
+    _mktTimer = visibleInterval(tick, 30_000);
+
+    // 3. Subscribe inside onMount (not $effect) so the subscription is
+    //    registered ONCE on mount; the callback firing per tick does not
+    //    re-run an $effect body and doesn't touch reactive state, so it
+    //    cannot cascade scheduler work.
     //
-    // STUCK-SPINNER ROOT CAUSE (Jun 2026 reaudit): the per-tick rotation
-    // animation (`rf-tick-rotate`, 0.25s finite) used to share the SAME
-    // <svg> element with the loading-state animation (`rf-spin`, 0.9s
-    // infinite). The `animation` CSS property is a shorthand — applying
-    // it a second time RESETS the first. Cascade order put the tick-rotate
-    // rule AFTER the rf-spin rule, so on every SSE tick during a refresh
-    // the spinner would briefly do a 180° rotate-then-freeze cycle and
-    // appear stuck. Fix here: SKIP the per-tick toggle entirely while
-    // `loading` is true. The spinner itself is the busy signal — the
-    // tick-pulse cosmetic is meaningless during a manual refresh. The CSS
-    // also gains a defensive `:not(.rf-spinning)` guard on the tick-rotate
-    // selector so even if the class somehow leaked through, the spin
-    // animation would still win.
+    //    STUCK-SPINNER ROOT CAUSE (Jun 2026 reaudit): the per-tick rotation
+    //    animation (`rf-tick-rotate`, 0.25s finite) used to share the SAME
+    //    <svg> element with the loading-state animation (`rf-spin`, 0.9s
+    //    infinite). The `animation` CSS property is a shorthand — applying
+    //    it a second time RESETS the first. Cascade order put the tick-rotate
+    //    rule AFTER the rf-spin rule, so on every SSE tick during a refresh
+    //    the spinner would briefly do a 180° rotate-then-freeze cycle and
+    //    appear stuck. Fix here: SKIP the per-tick toggle entirely while
+    //    `loading` is true. The spinner itself is the busy signal — the
+    //    tick-pulse cosmetic is meaningless during a manual refresh. The CSS
+    //    also gains a defensive `:not(.rf-spinning)` guard on the tick-rotate
+    //    selector so even if the class somehow leaked through, the spin
+    //    animation would still win.
     _pulseUnsub = symbolTickCount.subscribe(() => {
       if (_pulseTimer) return;
       // Skip class toggle while spinner is active (loading OR refiring) —
@@ -129,6 +129,20 @@
         _pulseTimer = null;
       }, 250);
     });
+
+    // 4. Store subscriptions — tooltips, badge counts, refiring state.
+    //    SUBSCRIPTION LEAK FIX (Perf audit Jul 2026): these used to be in a
+    //    separate fourth onMount block; collapsed here so all teardowns and
+    //    subscriptions share a single lifecycle anchor. All unsubs are paired
+    //    in onDestroy below.
+    _unsubLast = lastRefreshAt.subscribe((v) => { _lastTs = v || 0; });
+    _unsubConn = connStatus.subscribe((v) => {
+      _loaded = Number(v?.loaded) || 0;
+      _total  = Number(v?.total)  || 0;
+      _backendOk = v?.backendOk !== false; // default true
+      _failingAccounts = Array.isArray(v?.failingAccounts) ? v.failingAccounts : [];
+    });
+    _unsubRefiring = postHibernationRefiring.subscribe((v) => { _refiring = v; });
   });
 
   // Combined spinner gate — true when either loading (manual click) OR
@@ -318,17 +332,6 @@
   let _total  = $state(0);
   let _backendOk = $state(true);
   let _failingAccounts = $state(/** @type {string[]} */ ([]));
-
-  onMount(() => {
-    _unsubLast = lastRefreshAt.subscribe((v) => { _lastTs = v || 0; });
-    _unsubConn = connStatus.subscribe((v) => {
-      _loaded = Number(v?.loaded) || 0;
-      _total  = Number(v?.total)  || 0;
-      _backendOk = v?.backendOk !== false; // default true
-      _failingAccounts = Array.isArray(v?.failingAccounts) ? v.failingAccounts : [];
-    });
-    _unsubRefiring = postHibernationRefiring.subscribe((v) => { _refiring = v; });
-  });
 
   // _showBadge / _badgeText / _badgeClass dropped — count is now in
   // the navbar broker-chip (slice AX). The tooltip below still

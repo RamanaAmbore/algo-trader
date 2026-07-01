@@ -28,6 +28,7 @@ import { writable, get } from 'svelte/store';
 import { browser } from '$app/environment';
 import { mergeSymbolUpdate, mergeSymbolBatch } from './symbolStore.svelte.js';
 import { isNseOpen, isMcxOpen, fetchMarketStatus } from '../marketHours.js';
+import { visibleInterval } from '../stores.js';
 
 /**
  * True when the SSE connection has been acknowledged by the server (snapshot
@@ -169,7 +170,7 @@ function _open() {
 // SSE auto-reconnect handles re-subscription internally.
 // ---------------------------------------------------------------------------
 
-/** @type {ReturnType<typeof setInterval> | null} */
+/** @type {(() => void) | null} */
 let _gateInterval = null;
 let _gateActive = false;
 
@@ -185,11 +186,10 @@ export function startMarketGatedQuoteStream() {
   if (isNseOpen() || isMcxOpen()) {
     startQuoteStream();
   }
-  // Watcher — 30s cadence (cheap; just isNseOpen/isMcxOpen reads after
-  // fetchMarketStatus). Re-checks on every tick whether we should be
-  // streaming or paused.
+  // Watcher — 30s cadence, visibility-aware (pauses in hidden tabs).
+  // Re-checks on every tick whether we should be streaming or paused.
   let _prevAny = isNseOpen() || isMcxOpen();
-  _gateInterval = setInterval(async () => {
+  _gateInterval = visibleInterval(async () => {
     try {
       try { await fetchMarketStatus(); } catch { /* silent */ }
       const anyOpen = isNseOpen() || isMcxOpen();
@@ -212,7 +212,7 @@ export function startMarketGatedQuoteStream() {
 /** Tear down the gate watcher (companion to stopQuoteStream). */
 export function stopMarketGatedQuoteStream() {
   if (_gateInterval != null) {
-    clearInterval(_gateInterval);
+    _gateInterval();
     _gateInterval = null;
   }
   _gateActive = false;
