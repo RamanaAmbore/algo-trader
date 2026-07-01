@@ -1367,13 +1367,13 @@
     padding-bottom: 0.6rem;
   }
   .ip-modal-title {
-    font-size: 0.78rem; font-weight: 800; letter-spacing: 0.06em;
+    font-size: var(--fs-lg); font-weight: 800; letter-spacing: 0.06em;
     text-transform: uppercase; color: #67e8f9;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .ip-modal-subtitle {
-    font-size: 0.65rem; color: #7e97b8; margin-top: 0.15rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-md); color: #7e97b8; margin-top: 0.15rem;
+    font-family: var(--font-numeric);
   }
   /* Thin wrapper for the AlgoTabs strip inside the portal modal.
      Hand-rolled `.ip-modal-tab` / `.ip-modal-tab.active` retired —
@@ -1396,7 +1396,7 @@
     padding: 0.5rem 0.7rem;
     background: rgba(248,113,113,0.12); border: 1px solid rgba(248,113,113,0.4);
     color: #fca5a5; border-radius: 4px;
-    font-size: 0.7rem; margin-bottom: 0.7rem;
+    font-size: var(--fs-lg); margin-bottom: 0.7rem;
   }
   .ip-modal-fresh {
     background: rgba(74, 222, 128, 0.10);
@@ -1406,7 +1406,7 @@
     margin-bottom: 0.9rem;
   }
   .ip-modal-fresh-lbl {
-    font-size: 0.55rem; font-weight: 800; letter-spacing: 0.06em;
+    font-size: var(--fs-xs); font-weight: 800; letter-spacing: 0.06em;
     text-transform: uppercase; color: #4ade80;
     margin-bottom: 0.35rem;
   }
@@ -1420,19 +1420,19 @@
     border: 1px solid rgba(126, 151, 184, 0.30);
     border-radius: 4px;
     color: #c8d8f0;
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
   }
   .ip-modal-fresh-hint {
     margin-top: 0.4rem;
-    font-size: 0.62rem; color: #7e97b8; line-height: 1.5;
+    font-size: var(--fs-sm); color: #7e97b8; line-height: 1.5;
   }
 
   .ip-modal-section-head {
-    font-size: 0.55rem; font-weight: 800; letter-spacing: 0.06em;
-    text-transform: uppercase; color: #a3b9d0;
+    font-size: var(--fs-xs); font-weight: 800; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text-muted);
     margin-bottom: 0.4rem;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .ip-modal-mint { margin-bottom: 1rem; }
   .ip-modal-mint-row {
@@ -1442,27 +1442,27 @@
   .ip-modal-field.grow { flex: 1 1 12rem; }
   .ip-modal-yr { width: 6rem; }
   .ip-modal-field-lbl {
-    font-size: 0.55rem; color: #7e97b8; letter-spacing: 0.04em;
+    font-size: var(--fs-xs); color: #7e97b8; letter-spacing: 0.04em;
     text-transform: uppercase; font-weight: 700;
   }
   .ip-modal-field-suffix {
-    font-size: 0.6rem; color: #7e97b8;
+    font-size: var(--fs-sm); color: #7e97b8;
   }
 
   .ip-modal-empty {
     padding: 1rem; text-align: center; color: #7e97b8;
-    font-size: 0.7rem; font-style: italic;
+    font-size: var(--fs-lg); font-style: italic;
   }
   .ip-modal-tbl-wrap {
     overflow-x: auto;
     border: 1px solid rgba(126, 151, 184, 0.18);
     border-radius: 4px;
   }
-  .ip-modal-tbl { width: 100%; border-collapse: collapse; font-size: 0.68rem; }
+  .ip-modal-tbl { width: 100%; border-collapse: collapse; font-size: var(--fs-md); }
   .ip-modal-tbl th {
     text-align: left; padding: 0.3rem 0.5rem;
     background: rgba(15, 23, 42, 0.65);
-    color: #a3b9d0; font-size: 0.5rem; letter-spacing: 0.06em;
+    color: var(--text-muted); font-size: var(--fs-2xs); letter-spacing: 0.06em;
     text-transform: uppercase; font-weight: 800;
     border-bottom: 1px solid rgba(126, 151, 184, 0.30);
   }
@@ -1472,7 +1472,7 @@
     border-bottom: 1px solid rgba(126, 151, 184, 0.10);
     color: #c8d8f0;
   }
-  .ip-modal-tbl td.td-mono { font-family: ui-monospace, monospace; font-size: 0.65rem; }
+  .ip-modal-tbl td.td-mono { font-family: var(--font-numeric); font-size: var(--fs-md); }
   .ip-modal-tbl td.td-num  { text-align: right; font-variant-numeric: tabular-nums; }
   .ip-modal-tbl td.td-actions { text-align: right; }
   .ip-modal-tbl tr.revoked td { color: #7e97b8; }
@@ -1480,7 +1480,7 @@
 
   .ip-pill {
     display: inline-block; padding: 0.05rem 0.4rem;
-    font-size: 0.5rem; font-weight: 800; letter-spacing: 0.06em;
+    font-size: var(--fs-2xs); font-weight: 800; letter-spacing: 0.06em;
     text-transform: uppercase; border-radius: 2px;
   }
   .ip-pill-active  { background: rgba(74, 222, 128, 0.15); color: #4ade80; border: 1px solid rgba(74,222,128,0.4); }

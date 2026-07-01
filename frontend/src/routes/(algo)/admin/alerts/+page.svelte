@@ -318,7 +318,7 @@
     background: rgba(248,113,113,0.12);
     border: 1px solid rgba(248,113,113,0.35);
     color: #f87171;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
   }
 
   /* ── Filter bar ─────────────────────────────────────────────────── */
@@ -329,7 +329,7 @@
     align-items: flex-end;
     margin-bottom: 0.75rem;
     padding: 0.5rem 0.65rem;
-    background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+    background: var(--card-bg-gradient);
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 4px;
   }
@@ -349,7 +349,7 @@
     gap: 0.45rem;
   }
   .filter-label {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     color: var(--algo-muted);
     text-transform: uppercase;
@@ -366,7 +366,7 @@
     flex-wrap: wrap;
   }
   .ev-pill {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 600;
     padding: 0.15rem 0.5rem;
     border-radius: 3px;
@@ -386,7 +386,7 @@
 
   /* Sim toggle */
   .toggle-btn {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     padding: 0.15rem 0.5rem;
@@ -413,8 +413,8 @@
   .alerts-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.68rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--fs-md);
+    font-family: var(--font-numeric);
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
   }
   .alerts-table thead tr {
@@ -422,7 +422,7 @@
   }
   .alerts-table th {
     padding: 0.3rem 0.5rem;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     color: #fbbf24;
     text-transform: uppercase;
@@ -450,7 +450,7 @@
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
     color: #fde047;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
   }
   .td-agent {
     white-space: nowrap;
@@ -460,7 +460,7 @@
   }
   .sim-tag {
     display: inline-block;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     font-weight: 700;
     letter-spacing: 0.05em;
     padding: 0 0.3rem;
@@ -474,10 +474,10 @@
   .agent-slug {
     font-weight: 600;
     color: #fbbf24;
-    font-size: 0.66rem;
+    font-size: var(--fs-md);
   }
   .agent-name {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
     font-weight: 400;
   }
@@ -485,7 +485,7 @@
   /* Event-type chips */
   .ev-chip {
     display: inline-block;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     padding: 0.1rem 0.4rem;
     border-radius: 2px;
@@ -500,7 +500,7 @@
   /* Conditions + detail */
   .td-cond {
     max-width: 14rem;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     color: #7dd3fc;
     white-space: nowrap;
     overflow: hidden;
@@ -508,7 +508,7 @@
   }
   .td-detail {
     max-width: 22rem;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     color: #94a3b8;
     white-space: nowrap;
     overflow: hidden;
@@ -519,7 +519,7 @@
   }
   .channel-chip {
     display: inline-block;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     font-weight: 600;
     padding: 0.08rem 0.3rem;
     border-radius: 2px;
@@ -537,9 +537,9 @@
     padding: 2rem;
     text-align: center;
     color: #94a3b8;
-    font-size: 0.7rem;
-    font-family: ui-monospace, monospace;
-    background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+    font-size: var(--fs-lg);
+    font-family: var(--font-numeric);
+    background: var(--card-bg-gradient);
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 4px;
   }

@@ -172,7 +172,7 @@
     border: 1px solid rgba(125,151,184,0.32);
     background: rgba(125,151,184,0.06);
     color: var(--algo-muted);
-    font-size: 0.45rem;
+    font-size: var(--fs-2xs);
     font-style: italic;
     font-weight: 600;
     line-height: 1;
@@ -207,7 +207,7 @@
     border-radius: 0.3rem;
     border: 1px solid rgba(125,211,252,0.18);
     background: rgba(15, 25, 45, 0.95);
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     color: var(--algo-slate);
     line-height: 1.5;
     flex: 1 1 100%;

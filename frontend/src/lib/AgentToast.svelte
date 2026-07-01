@@ -135,7 +135,7 @@
     width: min(20rem, 80vw);
     text-align: left;
     color: var(--algo-slate);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     box-shadow: 0 8px 24px rgba(0,0,0,0.55);
     cursor: pointer;
     animation: atst-slide-in 0.18s ease-out both;
@@ -155,7 +155,7 @@
     padding: 0.05rem 0.4rem;
     border-radius: 3px;
     border: 1px solid;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     font-weight: 800;
     letter-spacing: 0.08em;
   }
@@ -169,13 +169,13 @@
     background: rgba(251,113,133,0.16);
     color: #fb7185;
     border: 1px solid rgba(251,113,133,0.42);
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     font-weight: 800;
   }
   .atst-x {
     margin-left: auto;
     color: rgba(200,216,240,0.55);
-    font-size: 0.9rem;
+    font-size: var(--fs-xl);
     line-height: 1;
     padding: 0 0.18rem;
     cursor: pointer;
@@ -186,7 +186,7 @@
   }
   .atst-x:hover { color: #f87171; background: rgba(255,255,255,0.06); }
   .atst-name {
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     color: #e5edf7;
     line-height: 1.25;
@@ -194,7 +194,7 @@
   }
   .atst-cond {
     margin-top: 0.18rem;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     color: rgba(200,216,240,0.7);
     line-height: 1.3;
     overflow: hidden;

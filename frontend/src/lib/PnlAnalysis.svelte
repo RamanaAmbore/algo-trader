@@ -587,7 +587,7 @@
                 stroke-dasharray="2 3" />
           <text x={PAD_L - 4} y={(y + 3.5).toFixed(1)}
                 font-size="11" fill="#c8d8f0" font-weight="600" text-anchor="end"
-                font-family="ui-monospace,monospace">{fmtPct(pct)}</text>
+                style="font-family: var(--font-numeric)">{fmtPct(pct)}</text>
         {/each}
         {#if chartData.yMin < 0 && chartData.yMax > 0}
           <line x1={PAD_L} y1={yOf(0).toFixed(1)} x2={W - PAD_R} y2={yOf(0).toFixed(1)}
@@ -873,8 +873,8 @@
     background: transparent;
     border: none;
     padding: 0.22rem 0.55rem;
-    font-size: 0.6rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-sm);
+    font-family: var(--font-numeric);
     color: var(--algo-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -890,8 +890,8 @@
     color: #fbbf24;
   }
   .filter-spinner {
-    font-size: 0.6rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-sm);
+    font-family: var(--font-numeric);
     color: var(--algo-muted);
     padding: 0 0.3rem;
   }
@@ -900,8 +900,8 @@
     border: 1px solid rgba(126,151,184,0.25);
     border-radius: 4px;
     color: var(--algo-slate);
-    font-size: 0.65rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-md);
+    font-family: var(--font-numeric);
     padding: 0.45rem 0.7rem;
     margin-bottom: 0.55rem;
     line-height: 1.5;
@@ -924,19 +924,19 @@
     display: flex;
     flex-direction: column;
     gap: 0.18rem;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
-  .fb-date   { width: 8rem;   font-size: 0.7rem; padding: 0.2rem 0.38rem; }
-  .fb-text   { width: 8rem;   font-size: 0.7rem; padding: 0.2rem 0.38rem; }
-  .fb-select { width: 9rem;   font-size: 0.7rem; padding: 0.2rem 0.38rem; }
+  .fb-date   { width: 8rem;   font-size: var(--fs-lg); padding: 0.2rem 0.38rem; }
+  .fb-text   { width: 8rem;   font-size: var(--fs-lg); padding: 0.2rem 0.38rem; }
+  .fb-select { width: 9rem;   font-size: var(--fs-lg); padding: 0.2rem 0.38rem; }
   .fb-sep {
     color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     padding: 0 0.05rem;
   }
   .csv-btn   { margin-left: auto; }
@@ -946,10 +946,10 @@
     border: 1px solid rgba(248,113,113,0.4);
     border-radius: 4px;
     color: #f87171;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     padding: 0.3rem 0.6rem;
     margin-bottom: 0.45rem;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
 
   .card {
@@ -962,16 +962,16 @@
 
   .section-head {
     display: block;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     color: #fbbf24;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     text-transform: uppercase;
     letter-spacing: 0.08em;
     font-weight: 700;
     margin-bottom: 0.45rem;
   }
   .section-sub {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 400;
     color: var(--algo-muted);
     text-transform: none;
@@ -1001,16 +1001,16 @@
      instead of the last .kv element, hence :has(+ .summary-meta). */
   .kv:has(+ .summary-meta) { border-right: none; }
   .kv-lbl {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     font-weight: 700;
     letter-spacing: 0.04em;
   }
   .kv-val {
-    font-size: 0.78rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     color: var(--algo-slate);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
@@ -1019,8 +1019,8 @@
   .kv-val.neg { color: #f87171; }
   .summary-meta {
     margin-left: auto;
-    font-size: 0.55rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-xs);
+    font-family: var(--font-numeric);
     color: var(--algo-muted);
     padding-left: 0.5rem;
     white-space: nowrap;
@@ -1030,7 +1030,7 @@
   @media (max-width: 640px) {
     .summary-row { padding: 0.35rem 0.4rem; }
     .kv { padding: 0 0.32rem; }
-    .kv-val { font-size: 0.7rem; }
+    .kv-val { font-size: var(--fs-lg); }
     .summary-meta { width: 100%; margin-left: 0; padding-left: 0; padding-top: 0.2rem; }
   }
 
@@ -1050,8 +1050,8 @@
     margin-left: auto;
   }
   .bm-chip {
-    font-size: 0.58rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-xs);
+    font-family: var(--font-numeric);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -1080,17 +1080,17 @@
   }
 
   .chart-placeholder {
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     color: #4e6080;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     padding: 1.5rem 0;
     text-align: center;
   }
 
   .no-capital-hint {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     background: rgba(126,151,184,0.06);
     border: 1px solid rgba(126,151,184,0.18);
     border-radius: 3px;
@@ -1103,8 +1103,8 @@
     flex-wrap: wrap;
     gap: 0.2rem 0.75rem;
     align-items: center;
-    font-size: 0.6rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-sm);
+    font-family: var(--font-numeric);
     padding: 0.2rem 0;
   }
   .hov-date {
@@ -1125,8 +1125,8 @@
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
-    font-size: 0.58rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-xs);
+    font-family: var(--font-numeric);
     font-weight: 600;
     padding: 0.1rem 0.4rem;
     border-radius: 3px;
@@ -1150,9 +1150,9 @@
      (LogPanel, SymbolPanel, Dashboard, Derivatives, History,
      Execution, Research, MarketPulse). */
   .tab-hint {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     margin: 0 0 0.35rem;
   }
 
@@ -1160,15 +1160,15 @@
   .pnl-tbl {
     width: 100%;
     border-collapse: collapse;
-    font-family: ui-monospace, monospace;
-    font-size: 0.68rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
   }
   .pnl-tbl th {
     text-align: left;
     padding: 0.22rem 0.45rem;
     color: var(--algo-muted);
     font-weight: 600;
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     border-bottom: 1px solid rgba(255,255,255,0.07);
@@ -1182,16 +1182,16 @@
   }
   .pnl-tbl tr:hover td { background: rgba(255,255,255,0.03); }
   .pnl-tbl .num  { text-align: right; font-variant-numeric: tabular-nums; }
-  .pnl-tbl .mono { font-family: ui-monospace, monospace; }
+  .pnl-tbl .mono { font-family: var(--font-numeric); }
   .pnl-tbl .sym  { font-weight: 600; letter-spacing: 0.02em; }
   .pnl-tbl .muted { color: #4e6080; }
   .pnl-tbl .pos  { color: #4ade80; }
   .pnl-tbl .neg  { color: #f87171; }
 
   .empty-hint {
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     color: #4e6080;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     padding: 0.25rem 0;
     margin: 0;
   }
@@ -1200,7 +1200,7 @@
     display: inline-block;
     padding: 0.08rem 0.35rem;
     border-radius: 3px;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -1209,8 +1209,8 @@
   }
 
   .algo-btn {
-    font-size: 0.65rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-md);
+    font-family: var(--font-numeric);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -1241,7 +1241,7 @@
     padding: 0;
   }
   .chevron {
-    font-size: 0.75rem;
+    font-size: var(--fs-lg);
     color: #fbbf24;
     transition: transform 0.15s;
     margin-left: auto;
@@ -1274,9 +1274,9 @@
     margin-bottom: 0.5rem;
   }
   .modal-title {
-    font-size: 0.75rem;
+    font-size: var(--fs-lg);
     color: #fbbf24;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     text-transform: uppercase;
     letter-spacing: 0.06em;
     font-weight: 700;
@@ -1294,10 +1294,10 @@
   .modal-x:hover { color: #fbbf24; }
 
   .upload-hint {
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
     margin: 0.3rem 0 0.5rem;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .upload-row {
     display: flex;
@@ -1321,9 +1321,9 @@
     padding: 0.65rem 1rem;
     cursor: pointer;
     transition: border-color 0.12s, background 0.12s;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     position: relative;
   }
   .drop-zone:hover  { border-color: rgba(125,211,252,0.5); background: rgba(125,211,252,0.04); }
@@ -1352,8 +1352,8 @@
 
   .upload-result {
     margin-top: 0.4rem;
-    font-size: 0.65rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-md);
+    font-family: var(--font-numeric);
     color: #4ade80;
     background: rgba(74,222,128,0.07);
     border: 1px solid rgba(74,222,128,0.2);

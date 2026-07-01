@@ -255,7 +255,7 @@
 
 <style>
   .eq-shell {
-    background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+    background: var(--card-bg-gradient);
     border: 1px solid var(--algo-amber-border-soft);
     border-left: 3px solid #fbbf24;
     border-radius: 4px;
@@ -271,8 +271,8 @@
     margin-bottom: 0.35rem;
   }
   .eq-header {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: var(--algo-slate);
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -280,8 +280,8 @@
   }
   .eq-final {
     margin-left: auto;
-    font-family: ui-monospace, monospace;
-    font-size: 0.78rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     font-weight: 800;
     font-variant-numeric: tabular-nums;
   }
@@ -295,8 +295,8 @@
   }
   .eq-empty {
     color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     text-align: center;
     padding: 1.2rem 0;
   }

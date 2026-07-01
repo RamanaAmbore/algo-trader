@@ -265,9 +265,9 @@
     border-radius: 3px;
     padding: 0.18rem 0.45rem;
     color: #fbbf24;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     font-weight: 800;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     letter-spacing: 0.04em;
     width: 11rem;
     text-transform: uppercase;
@@ -302,7 +302,7 @@
 
   .ssi-section {
     font-family: monospace;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 800;
     color: var(--algo-muted);
     letter-spacing: 0.08em;
@@ -314,7 +314,7 @@
   .ssi-hint {
     padding: 0.3rem 0.55rem 0.4rem;
     font-family: monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
     border-top: 1px solid rgba(255, 255, 255, 0.05);
   }
@@ -327,8 +327,8 @@
     background: transparent;
     border: 0;
     color: var(--algo-slate);
-    font-size: 0.65rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-md);
+    font-family: var(--font-numeric);
     cursor: pointer;
     text-align: left;
     width: 100%;
@@ -349,7 +349,7 @@
   }
   .ssi-row-meta {
     color: var(--algo-muted);
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     letter-spacing: 0.06em;
   }
 </style>

@@ -223,7 +223,7 @@
     background: rgba(248,113,113,0.12);
     border: 1px solid rgba(248,113,113,0.35);
     color: #f87171;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
   }
 
   /* ── Filter bar ─────────────────────────────────────────────────── */
@@ -234,7 +234,7 @@
     align-items: flex-end;
     margin-bottom: 0.75rem;
     padding: 0.5rem 0.65rem;
-    background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+    background: var(--card-bg-gradient);
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 4px;
   }
@@ -245,7 +245,7 @@
     gap: 0.45rem;
   }
   .filter-label {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     color: var(--algo-muted);
     text-transform: uppercase;
@@ -258,7 +258,7 @@
     flex-wrap: wrap;
   }
   .mode-pill {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 600;
     padding: 0.15rem 0.55rem;
     border-radius: 3px;
@@ -286,14 +286,14 @@
   .pnl-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.68rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--fs-md);
+    font-family: var(--font-numeric);
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
   }
   .pnl-table thead tr { background: #0a1020; }
   .pnl-table th {
     padding: 0.3rem 0.6rem;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     color: #fbbf24;
     text-transform: uppercase;
@@ -323,7 +323,7 @@
   .agent-slug {
     font-weight: 600;
     color: #fbbf24;
-    font-size: 0.66rem;
+    font-size: var(--fs-md);
     display: block;
   }
   .td-num {
@@ -338,18 +338,18 @@
 
   .table-footer {
     margin-top: 0.4rem;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: #4a5a70;
     text-align: right;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .empty-state {
     padding: 2rem;
     text-align: center;
     color: #4a5a70;
-    font-size: 0.7rem;
-    font-family: ui-monospace, monospace;
-    background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+    font-size: var(--fs-lg);
+    font-family: var(--font-numeric);
+    background: var(--card-bg-gradient);
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 4px;
   }

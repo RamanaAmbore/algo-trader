@@ -344,7 +344,7 @@
     cursor: wait;
   }
   :global(.log-chip-retry-note) {
-    color: #a3b9d0;
+    color: var(--text-muted);
     background: rgba(126, 151, 184, 0.10);
     font-style: italic;
   }

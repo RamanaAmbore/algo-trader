@@ -1295,11 +1295,11 @@
     height: 100%;
   }
   .algo-brand-name {
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     font-weight: 800;
     color: #fbbf24;
     letter-spacing: 0.08em;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     /* Match the bull's box height so the text's line-box and the
        image's box have the same height — items-center then lands on
        the same visual centre for both. */
@@ -1326,8 +1326,8 @@
   .algo-vert {
     writing-mode: vertical-lr;
     transform: rotate(180deg);
-    font-family: ui-monospace, 'SF Mono', Menlo, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 500;
     letter-spacing: 0.18em;
     /* Faint amber — reads as a quiet section stamp against the navbar,
@@ -1347,7 +1347,7 @@
     align-items: center;
   }
   .algo-vert-sm {
-    font-size: 0.48rem;
+    font-size: var(--fs-2xs);
     letter-spacing: 0.14em;
     margin-right: 0.3rem;
   }
@@ -1369,7 +1369,7 @@
   /* Nav buttons */
   :global(.algo-nav-btn) {
     padding: 0.22rem 0.6rem 0.22rem calc(0.6rem - 2px);
-    font-size: 0.68rem;
+    font-size: var(--fs-md);
     font-weight: 500;
     border-radius: 0.2rem;
     background: transparent;
@@ -1378,7 +1378,7 @@
     border-left: 2px solid transparent;
     cursor: pointer;
     letter-spacing: 0.03em;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     transition: background-color 0.06s, color 0.06s, border-left-color 0.06s;
     white-space: nowrap;
     outline: none;
@@ -1448,8 +1448,8 @@
     height: 1.4rem;
     padding: 0 0.6rem;
     border-radius: 9999px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     font-weight: 800;
     letter-spacing: 0.10em;
     line-height: 1;
@@ -1482,14 +1482,14 @@
 
   .algo-pub-link {
     padding: 0.2rem 0.65rem;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-weight: 500;
     border-radius: 0.25rem;
     background: rgba(251,191,36,0.10);
     color: #fbbf24;
     border: 1px solid rgba(251,191,36,0.32);
     cursor: pointer;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     letter-spacing: 0.02em;
     transition: color 0.08s, border-color 0.08s, background-color 0.08s;
     outline: none;
@@ -1507,7 +1507,7 @@
     display: flex;
     align-items: center;
     gap: 0.3rem;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-weight: 500;
     color: var(--algo-slate);
     padding: 0.18rem 0.5rem;
@@ -1516,10 +1516,10 @@
     border: 1px solid rgba(255,255,255,0.1);
     margin-right: 0.25rem;
     white-space: nowrap;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .algo-user-role {
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     color: #fbbf24;
     font-weight: 700;
     letter-spacing: 0.08em;
@@ -1583,14 +1583,14 @@
   }
   .algo-group-item {
     padding: 0.32rem 0.7rem;
-    font-size: 0.68rem;
+    font-size: var(--fs-md);
     font-weight: 500;
     color: rgba(180,200,230,0.85);
     background: transparent;
     border: none;
     border-radius: 0.2rem;
     cursor: pointer;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     letter-spacing: 0.03em;
     text-align: left;
     white-space: nowrap;
@@ -1649,14 +1649,14 @@
     width: 100%;
     text-align: left;
     padding: 0.65rem 1.25rem;
-    font-size: 0.85rem;
+    font-size: var(--fs-xl);
     font-weight: 500;
     color: rgba(180,200,230,0.8);
     background: transparent;
     border: none;
     border-bottom: 1px solid rgba(255,255,255,0.05);
     cursor: pointer;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     transition: background-color 0.05s;
     outline: none;
   }
@@ -1668,7 +1668,7 @@
      marks each section (Monitor / Analyze / Modes / Build / Config).
      Subtle amber so it reads as a header, not a clickable item. */
   .algo-mobile-group-label {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     color: rgba(251,191,36,0.55);
     letter-spacing: 0.18em;
@@ -1688,7 +1688,7 @@
      menu's gold-pill algo-site link. */
   .algo-mobile-site {
     color: #fbbf24;
-    font-size: 0.75rem;
+    font-size: var(--fs-lg);
     font-weight: 500;
     background: rgba(251,191,36,0.10);
     border-top: 1px solid rgba(251,191,36,0.32);
@@ -1775,8 +1775,8 @@
     gap: 0;
     padding: 0 0.5rem;
   }
-  .algo-footer-text { font-size: 0.6rem; color: rgba(160,185,220,0.7); font-family: ui-monospace, monospace; }
-  .algo-footer-sep  { font-size: 0.6rem; color: rgba(251,191,36,0.6); margin: 0 0.4rem; }
+  .algo-footer-text { font-size: var(--fs-sm); color: rgba(160,185,220,0.7); font-family: var(--font-numeric); }
+  .algo-footer-sep  { font-size: var(--fs-sm); color: rgba(251,191,36,0.6); margin: 0 0.4rem; }
   .algo-footer-link {
     color: rgba(251,191,36,0.85);
     text-decoration: none;
@@ -1932,9 +1932,9 @@
      inside .page-header OR stand-alone when a page renders it on its
      own row. */
   :global(.algo-ts) {
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     color: #7dd3fc;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
   }
@@ -1944,7 +1944,7 @@
      without sacrificing legibility on a 360 px viewport. */
   @media (max-width: 640px) {
     :global(.algo-ts) {
-      font-size: 0.55rem;
+      font-size: var(--fs-xs);
       letter-spacing: -0.015em;
     }
     /* Mobile chrome — keep all three sticky bands (navbar / ps-strip /
@@ -2164,8 +2164,8 @@
     width: 100%;
     text-align: left;
     padding: 0.28rem 0.65rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 600;
     letter-spacing: 0.07em;
     color: var(--mc, #94a3b8);
@@ -2187,8 +2187,8 @@
     background: rgba(248,113,113,0.12);
     border: 1px solid rgba(248, 113, 113, 0.45);
     color: #f87171;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     padding: 0.2rem 0.5rem;
     border-radius: 4px;
     white-space: nowrap;
@@ -2207,8 +2207,8 @@
     height: 1.4rem;
     padding: 0 0.55rem;
     border-radius: 9999px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.07em;
     cursor: pointer;
@@ -2260,8 +2260,8 @@
     height: 1.4rem;
     padding: 0 0.55rem;
     border-radius: 9999px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.07em;
     color: #fbbf24;
@@ -2292,8 +2292,8 @@
     height: 1.4rem;
     padding: 0 0.55rem;
     border-radius: 9999px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.07em;
     cursor: pointer;

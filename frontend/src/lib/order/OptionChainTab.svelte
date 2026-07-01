@@ -1042,7 +1042,7 @@
 
   .oct-label {
     display: block;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     color: #fbbf24;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -1056,13 +1056,13 @@
     gap: 0.5rem;
     margin-bottom: 0.25rem;
   }
-  .oct-acct-hint { font-size: 0.62rem; color: var(--algo-muted); font-style: italic; }
+  .oct-acct-hint { font-size: var(--fs-sm); color: var(--algo-muted); font-style: italic; }
   /* Subtle inline warn line shown when no broker account is loaded
      and none was supplied via the modal header. The legacy
      .oct-account-row wrapper is gone; this stand-alone div replaces
      the empty-state hint that used to render inside it. */
   .oct-acct-warn {
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     color: #fbbf24;
     background: var(--algo-amber-bg-soft);
     border: 1px solid rgba(251, 191, 36, 0.28);
@@ -1082,8 +1082,8 @@
     flex-wrap: wrap;
   }
   .oct-toolbar-label {
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -1094,8 +1094,8 @@
   /* Days-to-expiry chip — slate-blue resting, amber when ≤ 3 days
      to expiry so the operator sees the imminent roll. */
   .oct-expiry-dte {
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     color: var(--algo-muted);
     background: rgba(125, 145, 184, 0.08);
@@ -1111,7 +1111,7 @@
   }
   .oct-acct-single {
     font-family: monospace;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     color: var(--algo-slate);
     padding: 0.2rem 0.4rem;
@@ -1148,9 +1148,9 @@
     padding: 0.3rem 0.55rem;
     border: none;
     background: transparent;
-    color: #a3b9d0;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    color: var(--text-muted);
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.05em;
     cursor: pointer;
@@ -1169,7 +1169,7 @@
   }
 
   .oct-spot-row { margin-bottom: 0.25rem; }
-  .oct-empty { font-size: 0.6rem; color: #a3b9d0; font-style: italic; margin-top: 0.5rem; }
+  .oct-empty { font-size: var(--fs-sm); color: var(--text-muted); font-style: italic; margin-top: 0.5rem; }
 
   /* ── chain grid (mirrors admin/options styles) ────────────────── */
   .chain-futures {
@@ -1189,7 +1189,7 @@
   }
   .chain-fut-sym {
     font-family: monospace;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-weight: 700;
     color: #7dd3fc;
     display: inline-flex;
@@ -1197,8 +1197,8 @@
     gap: 0.3rem;
   }
   .chain-fut-meta {
-    font-size: 0.58rem;
-    color: #a3b9d0;
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
     font-weight: 500;
   }
   /* Strike-grid height tightened so the basket + chart panels below
@@ -1230,14 +1230,14 @@
     width: 100%;
     border-collapse: collapse;
     font-family: monospace;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
   }
   .chain-col-ce     { width: 42%; }
   .chain-col-strike { width: 16%; }
   .chain-col-pe     { width: 42%; }
-  .chain-th-ce      { text-align: left;   color: #4ade80; padding: 0.2rem 0.5rem; font-weight: 700; font-size: 0.62rem; border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
-  .chain-th-pe      { text-align: right;  color: #f87171; padding: 0.2rem 0.5rem; font-weight: 700; font-size: 0.62rem; border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
-  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.3rem; font-weight: 700; font-size: 0.62rem; border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
+  .chain-th-ce      { text-align: left;   color: #4ade80; padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
+  .chain-th-pe      { text-align: right;  color: #f87171; padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
+  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.3rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
        by half". Vertical padding zeroed (was 0.1rem), button
@@ -1272,7 +1272,7 @@
     align-items: baseline;
     min-width: 3.4rem;
     font-family: monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 600;
     white-space: nowrap;
     text-align: center;
@@ -1329,14 +1329,14 @@
   }
   .chain-spot-pill {
     display: inline-flex; align-items: center; gap: 0.3rem;
-    font-family: monospace; font-size: 0.65rem; font-weight: 700; letter-spacing: 0.05em;
+    font-family: monospace; font-size: var(--fs-md); font-weight: 700; letter-spacing: 0.05em;
     padding: 1px 6px; border-radius: 2px;
     border: 1px solid rgba(251,191,36,0.55);
     background: rgba(251,191,36,0.10);
     color: #fbbf24;
   }
   .chain-btn {
-    font-family: monospace; font-size: 0.55rem; font-weight: 700;
+    font-family: monospace; font-size: var(--fs-xs); font-weight: 700;
     padding: 0 5px; border-radius: 2px;
     border: 1px solid currentColor; background: transparent;
     cursor: pointer; letter-spacing: 0.04em; transition: background 0.12s;
@@ -1350,7 +1350,7 @@
   .chain-quick-toast {
     display: inline-block; padding: 2px 8px; border-radius: 2px;
     background: rgba(74,222,128,0.18); color: #4ade80;
-    font-family: monospace; font-size: 0.6rem; font-weight: 700;
+    font-family: monospace; font-size: var(--fs-sm); font-weight: 700;
     letter-spacing: 0.04em; margin-left: 0.3rem;
     animation: chain-quick-fade 0.9s ease-out forwards;
   }
@@ -1366,7 +1366,7 @@
     display: inline-flex; align-items: center; gap: 0.3rem;
     padding: 1px 6px 1px 4px; border-radius: 3px;
     border: 1px solid currentColor; border-left-width: 4px;
-    font-family: monospace; font-size: 0.6rem; line-height: 1.5;
+    font-family: monospace; font-size: var(--fs-sm); line-height: 1.5;
     cursor: pointer; user-select: none; transition: background 0.12s, transform 0.05s;
   }
   .chain-basket-leg:hover:not(.is-disabled) { background: rgba(248,113,113,0.10); transform: translateY(-1px); }
@@ -1379,23 +1379,23 @@
   .chain-basket-leg-type-eq  { border-left-color: #fbbf24; }
   .chain-basket-side { font-weight: 800; letter-spacing: 0.04em; }
   .chain-basket-sym { color: var(--algo-slate); font-weight: 600; }
-  .chain-basket-qty { color: #a3b9d0; font-size: 0.58rem; opacity: 0.85; font-variant-numeric: tabular-nums; }
+  .chain-basket-qty { color: var(--text-muted); font-size: var(--fs-xs); opacity: 0.85; font-variant-numeric: tabular-nums; }
   .chain-basket-step {
     width: 1.05rem; height: 1.05rem; padding: 0; border-radius: 2px;
     border: 1px solid currentColor; background: transparent; color: currentColor;
-    cursor: pointer; font-family: monospace; font-size: 0.7rem; font-weight: 700;
+    cursor: pointer; font-family: monospace; font-size: var(--fs-lg); font-weight: 700;
     line-height: 1; display: inline-flex; align-items: center; justify-content: center;
   }
   .chain-basket-step:hover:not(:disabled) { background: rgba(255,255,255,0.05); }
   .chain-basket-step:disabled { opacity: 0.4; cursor: not-allowed; }
-  .chain-basket-lots { min-width: 1.1rem; text-align: center; color: #fbbf24; font-family: monospace; font-weight: 700; font-size: 0.62rem; font-variant-numeric: tabular-nums; }
-  .chain-basket-limit-static { color: #fbbf24; font-family: monospace; font-size: 0.62rem; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+  .chain-basket-lots { min-width: 1.1rem; text-align: center; color: #fbbf24; font-family: monospace; font-weight: 700; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+  .chain-basket-limit-static { color: #fbbf24; font-family: monospace; font-size: var(--fs-sm); font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
   .chain-basket-chase { display: inline-flex; align-items: center; gap: 0.15rem; margin-left: 0.15rem; }
   .chain-basket-chase-pill {
     width: 1rem; height: 1rem; padding: 0;
     border: 1px solid rgba(126,151,184,0.35); border-radius: 2px;
-    background: transparent; color: #a3b9d0;
-    font-family: monospace; font-size: 0.55rem; font-weight: 700; line-height: 1;
+    background: transparent; color: var(--text-muted);
+    font-family: monospace; font-size: var(--fs-xs); font-weight: 700; line-height: 1;
     cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
   }
   .chain-basket-chase-pill:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -1416,7 +1416,7 @@
     align-items: center;
     gap: 0.3rem;
     font-family: monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
   }
   .chain-tpl-pick-label {
@@ -1439,7 +1439,7 @@
     border: 1px solid rgba(125, 211, 252, 0.24);
     border-radius: 3px;
     font-family: monospace;
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
     color: #c8d8f0;
     width: 100%;
   }
@@ -1464,19 +1464,19 @@
   .chain-basket-place {
     height: 1.5rem; padding: 0 0.7rem; border-radius: 2px;
     border: 1px solid currentColor; background: transparent;
-    cursor: pointer; font-family: monospace; font-size: 0.62rem; font-weight: 700; letter-spacing: 0.04em;
+    cursor: pointer; font-family: monospace; font-size: var(--fs-sm); font-weight: 700; letter-spacing: 0.04em;
   }
-  .chain-basket-clear { color: #a3b9d0; }
+  .chain-basket-clear { color: var(--text-muted); }
   .chain-basket-clear:hover { background: rgba(163,185,208,0.08); }
   .chain-basket-place { color: #fbbf24; background: rgba(251,191,36,0.10); }
   .chain-basket-place:hover { background: rgba(251,191,36,0.20); }
   .chain-basket-place:disabled,
   .chain-basket-clear:disabled { opacity: 0.55; cursor: progress; }
-  .chain-basket-err { flex: 1 1 100%; color: #f87171; font-family: monospace; font-size: 0.6rem; margin-top: 0.2rem; }
+  .chain-basket-err { flex: 1 1 100%; color: #f87171; font-family: monospace; font-size: var(--fs-sm); margin-top: 0.2rem; }
   .chain-basket-toast {
     margin-top: 0.5rem; padding: 0.3rem 0.5rem; border-radius: 2px;
     background: rgba(74,222,128,0.14); color: #4ade80;
-    font-family: monospace; font-size: 0.65rem; font-weight: 700; text-align: center;
+    font-family: monospace; font-size: var(--fs-md); font-weight: 700; text-align: center;
     animation: chain-quick-fade 2.2s ease-out forwards;
   }
   @keyframes chain-quick-fade {

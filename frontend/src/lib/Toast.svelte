@@ -184,8 +184,8 @@
   }
 
   .rbq-toast-msg {
-    font-size: 0.68rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: var(--fs-md);
+    font-family: var(--font-numeric);
     color: #c8d8f0;
     line-height: 1.35;
     word-break: break-word;
@@ -196,7 +196,7 @@
     background: transparent;
     border: none;
     padding: 0;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 600;
     color: #22d3ee;
     cursor: pointer;
@@ -212,7 +212,7 @@
     margin-left: 0.1rem;
     padding: 0 0.2rem;
     line-height: 1;
-    font-size: 0.9rem;
+    font-size: var(--fs-xl);
     color: rgba(200,216,240,0.45);
     background: transparent;
     border: none;

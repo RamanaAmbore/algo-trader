@@ -131,8 +131,8 @@
     border: 1px solid rgba(34, 211, 238, 0.55);
     border-radius: 3px;
     color: var(--algo-slate);
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     box-sizing: border-box;
     flex-shrink: 0;
   }

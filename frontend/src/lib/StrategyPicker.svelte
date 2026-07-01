@@ -77,11 +77,11 @@
     margin-left: 0.5rem;
   }
   .sp-label {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: #a3b9d0;
-    font-family: ui-monospace, monospace;
+    color: var(--text-muted);
+    font-family: var(--font-numeric);
   }
 </style>

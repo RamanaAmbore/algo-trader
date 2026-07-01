@@ -132,17 +132,17 @@
               stroke="rgba(126,151,184,0.10)" stroke-width="1" />
         <text class="nav-yaxis-label" x={_pad.l - 8} y={y + 3} text-anchor="end"
               fill="rgba(155,176,208,0.55)" font-size="10"
-              font-family="ui-monospace, monospace">{_fmtInr(v)}</text>
+              style="font-family: var(--font-numeric)">{_fmtInr(v)}</text>
       {/each}
       <path d={path} fill="none" stroke="#fbbf24" stroke-width="2" />
       <circle cx={xOf(history.length - 1)} cy={yOf(_navs[_navs.length - 1])}
               r="3" fill="#fbbf24" stroke="#0a1020" stroke-width="1" />
       <text x={xOf(0)} y={H - 6} text-anchor="start"
             fill="rgba(155,176,208,0.55)" font-size="10"
-            font-family="ui-monospace, monospace">{history[0].as_of_date}</text>
+            style="font-family: var(--font-numeric)">{history[0].as_of_date}</text>
       <text x={xOf(history.length - 1)} y={H - 6} text-anchor="end"
             fill="rgba(155,176,208,0.55)" font-size="10"
-            font-family="ui-monospace, monospace">{history[history.length - 1].as_of_date}</text>
+            style="font-family: var(--font-numeric)">{history[history.length - 1].as_of_date}</text>
     </svg>
   {:else if loading}
     <div class="nav-tab-empty">Loading NAV history…</div>
@@ -160,7 +160,7 @@
     width: 100%;
   }
   .nav-tab-meta {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     color: rgba(155, 176, 208, 0.55);
     text-align: right;
     padding-right: 0.4rem;
@@ -189,7 +189,7 @@
     padding: 1.4rem 0.8rem;
     text-align: center;
     color: rgba(155, 176, 208, 0.55);
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
   }
 
   /* Overlay chip — anchored top-LEFT INSIDE the chart wrapper.
@@ -218,25 +218,25 @@
     background: rgba(34, 211, 238, 0.10);
     border: 1px solid rgba(34, 211, 238, 0.35);
     border-radius: 4px;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     font-variant-numeric: tabular-nums;
     pointer-events: none;
     backdrop-filter: blur(2px);
   }
   .nav-chip-lbl {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: #7e97b8;
   }
   .nav-chip-val {
-    font-size: 0.78rem;
+    font-size: var(--fs-lg);
     font-weight: 800;
     color: #67e8f9;
   }
   .nav-chip-delta {
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-weight: 700;
     color: #c8d8f0;
   }

@@ -109,8 +109,8 @@
     align-items: center;
     gap: 0.55rem;
     margin-bottom: 0.25rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
   }
   .rs-title {
     color: var(--algo-slate);
@@ -119,7 +119,7 @@
     font-weight: 700;
   }
   .rs-mode {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 800;
     letter-spacing: 0.06em;
     padding: 0.08rem 0.4rem;
@@ -154,8 +154,8 @@
     border: 1px solid rgba(126, 151, 184, 0.32);
     background: transparent;
     color: var(--algo-slate);
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     cursor: pointer;
     border-radius: 3px;

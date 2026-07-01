@@ -314,9 +314,9 @@
   }
   .ms-field { display: flex; flex-direction: column; gap: 0.2rem; }
   .ms-field-lbl {
-    font-size: 0.55rem; color: #7e97b8; letter-spacing: 0.06em;
+    font-size: var(--fs-xs); color: #7e97b8; letter-spacing: 0.06em;
     text-transform: uppercase; font-weight: 700;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .ms-filter-pills {
     display: flex; gap: 0.4rem; flex-wrap: wrap;
@@ -327,11 +327,11 @@
     border: 1px solid rgba(126, 151, 184, 0.30);
     border-radius: 999px;
     color: #c8d8f0;
-    font-size: 0.65rem; font-weight: 700;
+    font-size: var(--fs-md); font-weight: 700;
     letter-spacing: 0.04em;
     cursor: pointer;
     transition: background 120ms, border-color 120ms;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .ms-pill:hover { background: rgba(34, 211, 238, 0.10); }
   .ms-pill.active { border-color: rgba(34, 211, 238, 0.65); color: #67e8f9; }
@@ -352,32 +352,32 @@
   }
   .ms-table {
     width: 100%; border-collapse: collapse;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     color: #c8d8f0;
   }
   .ms-table th {
     text-align: left;
     padding: 0.3rem 0.55rem;
     background: rgba(15, 23, 42, 0.65);
-    color: #a3b9d0;
-    font-size: 0.55rem;
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
     font-weight: 800;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .ms-table th.th-num { text-align: right; }
   .ms-table td {
     padding: 0.3rem 0.55rem;
     border-bottom: 1px solid rgba(126, 151, 184, 0.10);
   }
-  .ms-table td.td-num    { text-align: right; font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
-  .ms-table td.td-mono   { font-family: ui-monospace, monospace; font-size: 0.65rem; }
+  .ms-table td.td-num    { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-numeric); }
+  .ms-table td.td-mono   { font-family: var(--font-numeric); font-size: var(--fs-md); }
   .ms-table td.td-actions { text-align: right; white-space: nowrap; }
   .ms-table td.td-actions :global(button) { margin-left: 0.25rem; }
   .ms-lp-name { font-weight: 700; }
-  .ms-lp-sub  { font-size: 0.6rem; color: #7e97b8; font-family: ui-monospace, monospace; }
+  .ms-lp-sub  { font-size: var(--fs-sm); color: #7e97b8; font-family: var(--font-numeric); }
 
   .ms-row.row-pending td { background: rgba(251, 191, 36, 0.05); }
   .ms-row.row-failed td  { background: rgba(248, 113, 113, 0.05); }
@@ -389,19 +389,19 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: #fca5a5;
-    font-size: 0.65rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-md);
+    font-family: var(--font-numeric);
   }
 
   .ms-pill-status {
     display: inline-block;
     padding: 0.1rem 0.5rem;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 800;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     border-radius: 3px;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .ms-pill-status.ms-pill-sent {
     background: rgba(74, 222, 128, 0.15); color: #4ade80;

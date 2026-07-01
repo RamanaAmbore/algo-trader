@@ -1526,7 +1526,7 @@
     display: flex;
     align-items: center;
     gap: 0.55rem;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     padding: 0.1rem 0;
     margin-bottom: 0.4rem;
     user-select: none;
@@ -1534,7 +1534,7 @@
   :global(.sim-collapsible-chevron) {
     color: #fbbf24;
     font-weight: 800;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     line-height: 1;
     width: 0.7rem;
   }
@@ -1544,14 +1544,14 @@
     color: #f87171;
     padding: 0.06rem 0.4rem;
     border-radius: 999px;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     font-weight: 800;
     letter-spacing: 0.06em;
   }
   :global(.sim-collapsible-hint) {
     margin-left: auto;
     color: var(--algo-muted);
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     letter-spacing: 0.04em;
   }
   /* When collapsed, hide the now-redundant body's first inner row.
@@ -1566,14 +1566,14 @@
     align-items: flex-end;
     gap: 0.35rem 0.4rem;
     margin-bottom: 0.4rem;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
   }
   .sim-fields-row {
     display: flex;
     flex-wrap: wrap;
     align-items: flex-end;
     gap: 0.35rem 0.4rem;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     margin-bottom: 0.5rem;
   }
   .sim-field {
@@ -1584,7 +1584,7 @@
     gap: 0.15rem;
   }
   :global(.sim-scenario-row .field-label) {
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     margin-bottom: 0;
   }
   :global(.sim-scenario-row .rbq-select-trigger),
@@ -1593,7 +1593,7 @@
     height: 1.7rem !important;
     min-height: 1.7rem !important;
     box-sizing: border-box;
-    font-size: 0.62rem !important;
+    font-size: var(--fs-sm) !important;
   }
   .sim-field-scenario,
   .sim-field-symbol {
@@ -1618,7 +1618,7 @@
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     cursor: pointer;
     color: #c084fc;
     font-weight: 700;
@@ -1630,7 +1630,7 @@
   .sim-record-label-input {
     flex: 1;
     min-width: 0;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
   }
   .sim-field-pcts {
     flex: 3 1 0;
@@ -1654,7 +1654,7 @@
     flex: 1 1 0;
     min-width: 0;
     width: 100%;
-    font-size: 0.62rem !important;
+    font-size: var(--fs-sm) !important;
     padding: 0.25rem 0.4rem !important;
     min-height: 1.55rem !important;
     height: 1.55rem;
@@ -1662,7 +1662,7 @@
     box-sizing: border-box;
   }
   :global(.sim-fields-compact .field-input) {
-    font-size: 0.62rem !important;
+    font-size: var(--fs-sm) !important;
     padding: 0.25rem 0.4rem !important;
     height: 1.7rem !important;
     min-height: 1.7rem !important;
@@ -1673,10 +1673,10 @@
     height: 1.7rem !important;
     min-height: 1.7rem !important;
     box-sizing: border-box;
-    font-size: 0.62rem !important;
+    font-size: var(--fs-sm) !important;
   }
   :global(.sim-fields-compact .field-label) {
-    font-size: 0.5rem !important;
+    font-size: var(--fs-2xs) !important;
     margin-bottom: 0 !important;
   }
   .sim-buttons-row {
@@ -1687,12 +1687,12 @@
   }
   :global(.sim-btn) {
     flex: 0 0 auto;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     line-height: 1;
     padding: 0.35rem 0.5rem;
     border-radius: 3px;
     font-weight: 600;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     border: 1px solid transparent;
     cursor: pointer;
     white-space: nowrap;
@@ -1756,12 +1756,12 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 0.3rem 0.4rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
   }
   .sim-pills-label {
     color: rgba(200,216,240,0.55);
-    font-size: 0.52rem;
+    font-size: var(--fs-2xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -1779,7 +1779,7 @@
   }
   .sim-pill-side {
     font-weight: 700;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     letter-spacing: 0.05em;
     text-transform: uppercase;
     padding: 0 0.25rem;
@@ -1818,14 +1818,14 @@
     align-items: baseline;
     gap: 0.55rem;
     margin-bottom: 0.35rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
   }
   .sim-payoff-name {
     color: #fbbf24;
     font-weight: 700;
     letter-spacing: 0.05em;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
   }
   .sim-payoff-meta { color: var(--algo-muted); }
   .sim-payoff-spot {
@@ -1851,8 +1851,8 @@
     border-radius: 999px;
     background: rgba(251, 191, 36, 0.16);
     color: #fbbf24;
-    font-family: ui-monospace, monospace;
-    font-size: 0.5rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-2xs);
     font-weight: 800;
     letter-spacing: 0.06em;
     vertical-align: middle;
@@ -1864,8 +1864,8 @@
   .sim-payoff-history-label {
     margin-top: 0.4rem;
     margin-bottom: 0.15rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.5rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-2xs);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -1897,12 +1897,12 @@
     align-items: center;
     gap: 0.35rem;
     margin-bottom: 0.2rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
   }
   .sim-empty-leg {
     padding: 0.2rem 0.4rem;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
   }
   .sim-payoff-legend {
     display: flex;
@@ -1916,8 +1916,8 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: var(--algo-slate);
   }
   .sim-leg-swatch {
@@ -1929,7 +1929,7 @@
   }
   .sim-leg-side {
     font-weight: 700;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     letter-spacing: 0.06em;
     padding: 0 0.3rem;
     border-radius: 2px;
@@ -1944,7 +1944,7 @@
     color: var(--algo-muted);
     font-variant-numeric: tabular-nums;
   }
-  .sim-leg-acct   { color: var(--algo-muted); font-size: 0.55rem; }
+  .sim-leg-acct   { color: var(--algo-muted); font-size: var(--fs-xs); }
   .sim-pill-pnl.pos { color: #4ade80; }
   .sim-charts {
     margin-top: 0.4rem;
@@ -2001,8 +2001,8 @@
   .sim-section-label {
     margin-top: 0.85rem;
     margin-bottom: 0.3rem;
-    font-size: 0.6rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-sm);
+    font-family: var(--font-numeric);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -2020,8 +2020,8 @@
     align-items: center;
     gap: 0.4rem;
     padding: 0.25rem 0.5rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     border-radius: 4px;
     background: var(--algo-sky-bg-soft);
     border: 1px solid rgba(125, 211, 252, 0.25);
@@ -2044,8 +2044,8 @@
   .sim-summary-grid {
     width: 100%;
     border-collapse: collapse;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: var(--algo-slate);
   }
   .sim-summary-grid th {
@@ -2056,7 +2056,7 @@
     border-bottom: 1px solid rgba(251,191,36,0.18);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    font-size: 0.54rem;
+    font-size: var(--fs-xs);
   }
   .sim-summary-grid td {
     padding: 0.3rem 0.55rem;
@@ -2077,8 +2077,8 @@
      even when there's no live data — operator sees structure, not a
      missing panel. */
   .sim-empty {
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
     font-style: italic;
     padding: 0.4rem 0.65rem;
@@ -2093,8 +2093,8 @@
   .sim-activity {
     max-height: 14rem;
     overflow-y: auto;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     background: rgba(13, 21, 38, 0.4);
     border: 1px solid rgba(251, 191, 36, 0.15);
     border-radius: 4px;
@@ -2112,14 +2112,14 @@
   .sim-activity-ts {
     color: var(--algo-muted);
     font-variant-numeric: tabular-nums;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     white-space: nowrap;
   }
   .sim-activity-chip {
     display: inline-block;
     padding: 0 0.3rem;
     border-radius: 2px;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     font-weight: 800;
     letter-spacing: 0.05em;
     text-align: center;
@@ -2172,8 +2172,8 @@
     background: var(--algo-green-bg);
     border: 1px solid rgba(74, 222, 128, 0.40);
     color: #4ade80;
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.05em;
     padding: 0.2rem 0.55rem;
@@ -2188,7 +2188,7 @@
   .sim-past-rerun:disabled { opacity: 0.35; cursor: not-allowed; }
   .sim-past-end {
     text-transform: uppercase;
-    font-size: 0.54rem;
+    font-size: var(--fs-xs);
     letter-spacing: 0.05em;
     font-weight: 700;
   }
@@ -2201,8 +2201,8 @@
   .sim-past-all {
     display: inline-block;
     margin-top: 0.35rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: #7dd3fc;
     text-decoration: none;
   }
@@ -2227,7 +2227,7 @@
   }
   .custom-pos-headrow {
     font-family: monospace;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     color: var(--algo-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -2235,7 +2235,7 @@
     border-bottom: 1px solid rgba(251,191,36,0.18);
   }
   :global(.custom-pos-row .field-input) {
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     padding: 0.25rem 0.4rem;
     font-family: monospace;
   }
@@ -2246,7 +2246,7 @@
     border: 1px solid rgba(248,113,113,0.4);
     background: rgba(248,113,113,0.08);
     color: #f87171;
-    font-size: 0.85rem;
+    font-size: var(--fs-xl);
     line-height: 1;
     cursor: pointer;
     transition: background 0.12s, border-color 0.12s;
@@ -2256,14 +2256,14 @@
     border-color: rgba(248,113,113,0.65);
   }
   :global(.sim-fields-row .field-input) {
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     padding: 0.25rem 0.4rem;
     height: auto;
     min-height: 1.55rem;
     width: 100%;
   }
   :global(.sim-fields-row .field-label) {
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     margin-bottom: 0.1rem;
   }
 
@@ -2275,8 +2275,8 @@
     margin-bottom: 0.45rem;
   }
   .iter-title {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     color: #fbbf24;
     text-transform: uppercase;
@@ -2284,8 +2284,8 @@
   }
   .iter-history-link {
     margin-left: auto;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: #7dd3fc;
     text-decoration: none;
   }
@@ -2298,8 +2298,8 @@
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     color: var(--algo-slate);
     background: rgba(124, 58, 237, 0.10);
     border: 1px solid rgba(124, 58, 237, 0.35);
@@ -2328,8 +2328,8 @@
     border: 1px solid rgba(248,113,113,0.35);
     color: #f87171;
     border-radius: 3px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
   }
   .iter-banner-warn code { color: #fde68a; background: rgba(251,191,36,0.10); padding: 0 0.2rem; border-radius: 2px; }
   .iter-banner-warn a { color: #7dd3fc; text-decoration: underline; }
@@ -2357,8 +2357,8 @@
     background: transparent;
     border: none;
     color: #fbbf24;
-    font-family: ui-monospace, monospace;
-    font-size: 0.9rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xl);
     font-weight: 700;
     line-height: 1;
     width: 1.6rem;
@@ -2372,8 +2372,8 @@
   .iter-stepper-val {
     min-width: 2.5rem;
     text-align: center;
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     color: #fde68a;
     font-variant-numeric: tabular-nums;
     border-left: 1px solid var(--algo-amber-border-soft);
@@ -2390,7 +2390,7 @@
     align-items: center;
     gap: 0.35rem;
     cursor: pointer;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
   }
   .iter-field-toggle input[type="checkbox"] {
     accent-color: #fbbf24;

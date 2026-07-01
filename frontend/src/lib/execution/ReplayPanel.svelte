@@ -388,7 +388,7 @@
   .bt-field { min-width: 0; display: flex; flex-direction: column; gap: 0.2rem; }
   .bt-field-wide { grid-column: span 2; }
   .bt-field .field-label {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -400,8 +400,8 @@
     color: var(--algo-slate);
     padding: 0.3rem 0.45rem;
     border-radius: 4px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     width: 100%;
   }
   .bt-field .field-input:focus {
@@ -431,8 +431,8 @@
     background: transparent;
     border: none;
     color: #fbbf24;
-    font-family: ui-monospace, monospace;
-    font-size: 0.9rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xl);
     font-weight: 700;
     line-height: 1;
     width: 1.6rem;
@@ -445,8 +445,8 @@
   .bt-form .iter-stepper-val {
     min-width: 2.5rem;
     text-align: center;
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     color: #fde68a;
     font-variant-numeric: tabular-nums;
     border-left: 1px solid var(--algo-amber-border-soft);
@@ -459,11 +459,11 @@
     .bt-field-wide { grid-column: span 1; }
   }
 
-  .sim-banner        { padding: 0.5rem 0.75rem; border-radius: 0.375rem; font-size: 0.75rem; margin-bottom: 0.75rem; }
+  .sim-banner        { padding: 0.5rem 0.75rem; border-radius: 0.375rem; font-size: var(--fs-lg); margin-bottom: 0.75rem; }
   .sim-banner-warn   { background: rgba(251,191,36,0.10); color: #fbbf24; border: 1px solid rgba(251,191,36,0.20); }
   .sim-banner-error  { background: rgba(248,113,113,0.10); color: #f87171; border: 1px solid rgba(248,113,113,0.20); }
 
-  .sim-btn           { padding: 0.4rem 1rem; border-radius: 0.375rem; font-size: 0.75rem; font-weight: 600;
+  .sim-btn           { padding: 0.4rem 1rem; border-radius: 0.375rem; font-size: var(--fs-lg); font-weight: 600;
                         cursor: pointer; border: 1px solid transparent; transition: all 0.15s; }
   .sim-btn:disabled  { opacity: 0.4; cursor: not-allowed; }
   .sim-btn-start     { background: rgba(74,222,128,0.15); color: #4ade80; border-color: rgba(74,222,128,0.3); }
@@ -474,7 +474,7 @@
   .sim-progress      { margin-bottom: 0; }
   .sim-progress-bar  { height: 6px; background: rgba(148,163,184,0.15); border-radius: 3px; overflow: hidden; }
   .sim-progress-fill { height: 100%; background: #4ade80; border-radius: 3px; transition: width 0.3s; }
-  .sim-progress-label { font-size: 0.65rem; color: #94a3b8; margin-top: 0.25rem; display: block; }
+  .sim-progress-label { font-size: var(--fs-md); color: #94a3b8; margin-top: 0.25rem; display: block; }
 
   .replay-charts {
     display: grid;
@@ -483,24 +483,24 @@
   }
 
   .sim-section       { margin-bottom: 1.5rem; }
-  .sim-section h3    { font-size: 0.85rem; font-weight: 600; color: var(--algo-slate); margin-bottom: 0.5rem; }
+  .sim-section h3    { font-size: var(--fs-xl); font-weight: 600; color: var(--algo-slate); margin-bottom: 0.5rem; }
   .sim-table-wrap    { overflow-x: auto; }
-  .sim-table         { width: 100%; border-collapse: collapse; font-size: 0.72rem; }
-  .sim-table th      { text-align: left; padding: 0.35rem 0.5rem; color: #94a3b8; border-bottom: 1px solid rgba(148,163,184,0.15); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.6rem; }
+  .sim-table         { width: 100%; border-collapse: collapse; font-size: var(--fs-lg); }
+  .sim-table th      { text-align: left; padding: 0.35rem 0.5rem; color: #94a3b8; border-bottom: 1px solid rgba(148,163,184,0.15); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-size: var(--fs-sm); }
   .sim-table td      { padding: 0.3rem 0.5rem; color: var(--algo-slate); border-bottom: 1px solid rgba(148,163,184,0.06); }
-  .sim-td-mono       { font-family: 'JetBrains Mono', monospace; font-size: 0.65rem; }
+  .sim-td-mono       { font-family: 'JetBrains Mono', monospace; font-size: var(--fs-md); }
   .sim-td-detail     { max-width: 24rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sim-buy           { color: #38bdf8; }
   .sim-sell          { color: #fb923c; }
-  .sim-pill          { font-size: 0.6rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 9999px; }
+  .sim-pill          { font-size: var(--fs-sm); font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 9999px; }
   .sim-pill-replay   { color: #4ade80; background: rgba(74,222,128,0.12); }
-  .sim-empty-charts  { font-size: 0.65rem; color: #64748b; font-style: italic; margin-bottom: 0.75rem; }
+  .sim-empty-charts  { font-size: var(--fs-md); color: #64748b; font-style: italic; margin-bottom: 0.75rem; }
 
   @media (max-width: 768px) {
     .replay-charts       { grid-template-columns: 1fr; }
     .sim-table-wrap      { -webkit-overflow-scrolling: touch; }
     .sim-table td,
-    .sim-table th        { padding: 0.25rem 0.35rem; font-size: 0.65rem; }
+    .sim-table th        { padding: 0.25rem 0.35rem; font-size: var(--fs-md); }
     .sim-td-detail       { max-width: 12rem; }
   }
 </style>

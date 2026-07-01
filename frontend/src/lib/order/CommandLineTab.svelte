@@ -468,8 +468,8 @@
     gap: 0.35rem;
     padding: 0.15rem 0.5rem;
     border-radius: 3px;
-    font-size: 0.62rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-sm);
+    font-family: var(--font-numeric);
     letter-spacing: 0.04em;
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.10);
@@ -518,7 +518,7 @@
     border: 1px solid rgba(126, 151, 184, 0.30);
     border-radius: 3px;
     color: #94a3b8;
-    font-size: 0.85rem;
+    font-size: var(--fs-xl);
     font-weight: 700;
     cursor: pointer;
     display: inline-flex;
@@ -560,19 +560,19 @@
   }
   .clt-time {
     font-family: monospace;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     color: var(--algo-muted);
     margin-right: 0.4rem;
   }
   .clt-cmd {
     font-family: monospace;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-weight: 600;
     color: #fbbf24;
   }
   .clt-result {
     font-family: monospace;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     color: var(--algo-slate);
     white-space: pre-wrap;
     word-break: break-all;
@@ -582,7 +582,7 @@
     background: transparent;
   }
   .clt-empty {
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
     font-style: italic;
     margin-top: 0.5rem;

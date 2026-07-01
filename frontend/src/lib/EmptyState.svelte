@@ -132,15 +132,15 @@
     justify-content: center;
     padding: 0.65rem 0.5rem;
     color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
-    font-size: 0.68rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     letter-spacing: 0.05em;
     font-style: italic;
     text-align: center;
   }
   .es-compact {
     padding: 0.35rem 0.5rem;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
   }
 
   /* ── Rich mode ────────────────────────────────────────────────── */
@@ -163,14 +163,14 @@
     margin-bottom: 0.2rem;
   }
   .es-title {
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     font-weight: 600;
     /* Was #64748b (slate-500) — 2.7:1. --algo-slate = #c8d8f0 gives ~9:1, AAA. */
     color: var(--algo-slate);
     letter-spacing: 0.02em;
   }
   .es-hint {
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     /* Was #475569 (slate-600) — 2.4:1. --algo-muted = #94a3b8 gives 4.6:1. */
     color: var(--algo-muted);
     font-style: italic;
@@ -180,7 +180,7 @@
   /* When hintBody is used, embedded code / strong elements need
      readable styling against the muted slate background. */
   .es-hint :global(code) {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: var(--font-numeric);
     font-size: 0.92em;
     padding: 0.05rem 0.25rem;
     background: rgba(148, 163, 184, 0.10);
@@ -202,7 +202,7 @@
   .es-action {
     margin-top: 0.4rem;
     padding: 0.3rem 0.8rem;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-weight: 600;
     color: #fbbf24;
     background: rgba(251, 191, 36, 0.08);

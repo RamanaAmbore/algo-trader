@@ -862,15 +862,14 @@
                 text-anchor="middle"
                 fill={mColor}
                 font-size="10" font-weight="700"
-                font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+                style="font-family: var(--font-numeric)">
             {xt.label}
           </text>
           <text x={xt.x} y={height - PAD_B + 25}
                 text-anchor="middle"
                 fill={mColor}
                 font-size="10" font-weight="600"
-                font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
-                style="font-variant-numeric: tabular-nums">
+                style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
             {Math.round(xt.s).toLocaleString('en-IN')}
           </text>
         {:else if wholeSigma && !isCenter}
@@ -881,8 +880,7 @@
                 text-anchor="middle"
                 fill="#c8d8f0"
                 font-size="11" font-weight="600"
-                font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
-                style="font-variant-numeric: tabular-nums">
+                style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
             {Math.round(xt.s).toLocaleString('en-IN')}
           </text>
         {/if}
@@ -940,7 +938,7 @@
                 stroke-width="3"
                 paint-order="stroke fill"
                 font-size="10" font-weight="700"
-                font-family="ui-monospace, SFMono-Regular, Menlo, monospace">
+                style="font-family: var(--font-numeric)">
             {pin.label}
           </text>
         {/if}
@@ -1028,8 +1026,7 @@
                 text-anchor="end"
                 fill="#c8d8f0"
                 font-size="11" font-weight="600"
-                font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
-                style="font-variant-numeric: tabular-nums">
+                style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
             {_axisFmt(t.v)}
           </text>
         {/if}
@@ -1059,8 +1056,7 @@
               text-anchor="middle"
               fill="#0c1830"
               font-size="12" font-weight="800"
-              font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
-              style="font-variant-numeric: tabular-nums">
+              style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
           {spotLabel}
         </text>
       {/if}
@@ -1244,7 +1240,7 @@
 
 <style>
   .payoff-chart {
-    background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+    background: var(--card-bg-gradient);
     border: 1px solid rgba(251,191,36,0.18);
     border-radius: 4px;
     padding: 6px 8px 8px;
@@ -1277,7 +1273,7 @@
      numerics stay legible at viewport size. Same ratio the chart
      itself grows by — roughly 1.6× the inline font sizes. */
   :global(.fs-card-on) .payoff-stats {
-    font-size: 0.92rem;
+    font-size: var(--fs-xl);
     padding: 0.55rem 0.85rem;
     column-gap: 0.7rem;
     row-gap: 0.15rem;
@@ -1290,7 +1286,7 @@
     :global(.fs-card-on) .payoff-svg-stack {
       height: calc(100vh - 9rem) !important;
     }
-    :global(.fs-card-on) .payoff-stats { font-size: 0.72rem; }
+    :global(.fs-card-on) .payoff-stats { font-size: var(--fs-lg); }
     :global(.fs-card-on) .ps-k         { font-size: 11px; }
     :global(.fs-card-on) .ps-k-hint    { font-size: 10px; }
   }
@@ -1327,7 +1323,7 @@
        (0.6 + 1.4 + 0.3 gap = 2.3 rem). */
     right: 2.3rem;
     font-family: monospace;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     text-transform: uppercase;
     letter-spacing: 0.04em;
     padding: 1px 6px;
@@ -1349,8 +1345,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #a3b9d0;
-    font-size: 0.65rem;
+    color: var(--text-muted);
+    font-size: var(--fs-md);
     font-family: monospace;
   }
   .payoff-legend {
@@ -1363,7 +1359,7 @@
        0.3rem margin + 0.4rem padding + border combination left a
        visible empty band between the labels and the legend. */
     padding-top: 0.15rem;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-family: monospace;
     color: var(--algo-slate);
     margin-top: 0;
@@ -1380,8 +1376,8 @@
     background: transparent;
     border: 1px solid rgba(126, 151, 184, 0.35);
     color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
-    font-size: 0.52rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-2xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     cursor: pointer;
@@ -1405,7 +1401,7 @@
     align-items: baseline;
     flex-wrap: wrap;
     gap: 0.5rem;
-    font-size: 0.63rem;
+    font-size: var(--fs-sm);
   }
   .legend-sep {
     display: inline-block;
@@ -1458,8 +1454,8 @@
     border-radius: 6px;
     background: rgba(15, 23, 42, 0.55);
     border: 1px solid rgba(125,211,252,0.20);
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.65rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     line-height: 1.25;
     /* Sits BETWEEN the bg SVG (z=1, text labels) and the fg SVG
        (z=4, curves). Text labels behind the overlay are covered
@@ -1476,7 +1472,7 @@
        overlay text is at the ~10px legibility floor on default DPI. */
     color: #fbbf24;
     letter-spacing: 0.08em;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     opacity: 0.85;
     align-self: center;
@@ -1513,8 +1509,8 @@
   .ps-v.ps-flat { color: var(--algo-slate); }
   .payoff-multi-expiry-note {
     margin: 0.25rem 0 0;
-    font-size: 0.6rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: var(--fs-sm);
+    font-family: var(--font-numeric);
     font-style: italic;
     /* Contrast raised 0.55 → 0.85 alpha — earlier rendered ~2.5:1
        against the navy chart bg, below the 4.5:1 target for body
@@ -1530,8 +1526,8 @@
     gap: 0.3rem;
     margin: 0.25rem 0 0;
     padding: 1px 6px;
-    font-size: 0.58rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: var(--fs-xs);
+    font-family: var(--font-numeric);
     color: var(--algo-muted);
     background: rgba(125, 145, 184, 0.08);
     border: 1px solid rgba(125, 145, 184, 0.22);
@@ -1545,7 +1541,7 @@
   .payoff-anchor-chip--inline {
     margin: 0 0 0 0.35rem;
     padding: 0 5px;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     line-height: 1.4;
   }
   /* Amber roll-warning state */

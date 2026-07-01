@@ -506,7 +506,7 @@
                 stroke-dasharray="4 3"/>
           <text x={W - PAD_R - 4} y={_pcY - 3}
                 text-anchor="end" font-size="9"
-                fill="rgba(251,191,36,0.85)" font-family="ui-monospace, monospace">
+                fill="rgba(251,191,36,0.85)" style="font-family: var(--font-numeric)">
             prev {prevClose.toFixed(2)}
           </text>
         {/if}
@@ -602,7 +602,7 @@
 
 <style>
   .price-chart {
-    background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+    background: var(--card-bg-gradient);
     border: 1px solid rgba(251,191,36,0.18);
     border-left: 3px solid #fbbf24;
     border-radius: 4px;
@@ -622,7 +622,7 @@
     align-items: center;
     gap: 0.5rem;
     margin-bottom: 4px;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
   }
   .chart-symbol {
     font-family: monospace;
@@ -631,7 +631,7 @@
   }
   .chart-mode {
     font-family: monospace;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     padding: 1px 5px;
     border-radius: 3px;
     font-weight: 700;
@@ -644,7 +644,7 @@
      the mode tag. Subtler than the mode pill so it doesn't dominate. */
   .chart-tag {
     font-family: monospace;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     padding: 1px 4px;
     border-radius: 2px;
     font-weight: 700;
@@ -668,7 +668,7 @@
     align-items: center;
     gap: 0.25rem;
     font-family: monospace;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     color: #7dd3fc;
     padding: 1px 4px;
     border-radius: 2px;
@@ -689,7 +689,7 @@
   .chart-error { color: #f87171; }
   .chart-reset {
     font-family: monospace;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     text-transform: uppercase;
     letter-spacing: 0.04em;
     padding: 1px 6px;
@@ -719,7 +719,7 @@
     align-items: center;
     justify-content: center;
     color: var(--algo-muted);
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-family: monospace;
     text-align: center;
     padding: 0 1rem;

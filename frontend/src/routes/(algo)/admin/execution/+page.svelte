@@ -141,10 +141,10 @@
     padding-left: 0.15rem;
   }
   .exec-tab-subtitle {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 500;
     color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     letter-spacing: 0.02em;
   }
 </style>

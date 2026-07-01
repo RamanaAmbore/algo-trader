@@ -102,7 +102,7 @@
     border-radius: 6px;
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
     color: var(--algo-slate);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: var(--font-numeric);
     animation: sc-pop 140ms ease-out;
   }
   .sc-header {
@@ -114,7 +114,7 @@
   .sc-title {
     flex: 1;
     margin: 0;
-    font-size: 0.75rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -145,7 +145,7 @@
     padding: 0.3rem 0.4rem;
   }
   .sc-section-h {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -159,7 +159,7 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.2rem 0;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
   }
   .sc-kbd {
     display: inline-flex;
@@ -172,7 +172,7 @@
     border: 1px solid var(--algo-cyan-border-soft);
     border-radius: 3px;
     color: #67e8f9;
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.04em;
   }
@@ -181,7 +181,7 @@
   .sc-foot {
     padding: 0.4rem 0.7rem;
     border-top: 1px solid rgba(255,255,255,0.05);
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     color: var(--algo-muted);
     font-style: italic;
     line-height: 1.45;

@@ -478,10 +478,10 @@
   }
   .hist-flbl {
     display: flex; flex-direction: column; gap: 0.18rem;
-    font-size: 0.55rem; font-weight: 700;
+    font-size: var(--fs-xs); font-weight: 700;
     letter-spacing: 0.06em; text-transform: uppercase;
     color: #94a3b8;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .hist-finput {
     width: 9rem;
@@ -490,8 +490,8 @@
     border: 1px solid rgba(126, 151, 184, 0.30);
     border-radius: 4px;
     color: #c8d8f0;
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
   }
 
   .hist-summary {
@@ -502,8 +502,8 @@
     display: inline-block;
     padding: 0.18rem 0.55rem;
     border-radius: 999px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem; font-weight: 700;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm); font-weight: 700;
     letter-spacing: 0.05em;
     background: rgba(15, 23, 42, 0.55);
     border: 1px solid rgba(126, 151, 184, 0.30);
@@ -525,20 +525,20 @@
   }
   .hist-table {
     width: 100%; border-collapse: collapse;
-    font-size: 0.66rem;
+    font-size: var(--fs-md);
     color: #c8d8f0;
   }
   .hist-table th {
     text-align: left;
     padding: 0.42rem 0.6rem;
     background: rgba(15, 23, 42, 0.65);
-    color: #a3b9d0;
-    font-size: 0.52rem;
+    color: var(--text-muted);
+    font-size: var(--fs-2xs);
     font-weight: 800;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     white-space: nowrap;
   }
   .hist-table th.th-num { text-align: right; }
@@ -547,8 +547,8 @@
     border-bottom: 1px solid rgba(126, 151, 184, 0.10);
     white-space: nowrap;
   }
-  .hist-table td.td-num  { text-align: right; font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; }
-  .hist-table td.td-mono { font-family: ui-monospace, monospace; font-size: 0.62rem; }
+  .hist-table td.td-num  { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-numeric); }
+  .hist-table td.td-mono { font-family: var(--font-numeric); font-size: var(--fs-sm); }
   .hist-table tbody tr:hover td { background: rgba(34, 211, 238, 0.05); }
   .hist-empty-row {
     padding: 2rem; text-align: center;
@@ -559,11 +559,11 @@
     display: inline-block;
     padding: 0.05rem 0.4rem;
     border-radius: 3px;
-    font-size: 0.52rem;
+    font-size: var(--fs-2xs);
     font-weight: 800;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .hist-side-buy  { background: rgba(74, 222, 128, 0.15);  color: #4ade80; border: 1px solid rgba(74,222,128,0.45); }
   .hist-side-sell { background: rgba(248, 113, 113, 0.15); color: #fca5a5; border: 1px solid rgba(248,113,113,0.45); }
@@ -576,7 +576,7 @@
   .hist-audit-link {
     display: inline-block;
     padding: 0.1rem 0.45rem;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     color: #67e8f9;
@@ -584,7 +584,7 @@
     border: 1px solid rgba(34, 211, 238, 0.40);
     border-radius: 3px;
     text-decoration: none;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .hist-audit-link:hover {
     background: rgba(34, 211, 238, 0.22);
@@ -592,8 +592,8 @@
     color: #a5f3fc;
   }
   .hist-audit-none {
-    font-size: 0.6rem; color: rgba(126, 151, 184, 0.55);
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-sm); color: rgba(126, 151, 184, 0.55);
+    font-family: var(--font-numeric);
   }
 
   /* Backfill row on Funds tab. */
@@ -607,7 +607,7 @@
   }
   .hist-backfill-btn {
     padding: 0.35rem 0.8rem;
-    font-size: 0.7rem; font-weight: 700;
+    font-size: var(--fs-lg); font-weight: 700;
   }
   .hist-pager {
     display: flex; align-items: center; gap: 0.6rem;

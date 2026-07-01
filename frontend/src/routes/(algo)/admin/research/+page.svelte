@@ -894,8 +894,8 @@
     margin-bottom: 0.3rem;
   }
   .rail-head-label {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.06em;
     color: var(--algo-muted);
@@ -903,7 +903,7 @@
   .rail-empty {
     padding: 0.8rem 0.6rem;
     color: var(--algo-muted);
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     line-height: 1.5;
     display: flex;
     flex-direction: column;
@@ -922,8 +922,8 @@
     color: #38bdf8;
     padding: 0.28rem 0.55rem;
     border-radius: 0.3rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     cursor: pointer;
   }
@@ -949,18 +949,18 @@
   .rail-row-on       { background: rgba(251, 191, 36, 0.10); }
   .rail-sym {
     grid-column: 1; grid-row: 1;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     font-weight: 700;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     color: #fbbf24;
   }
   .rail-conf {
     grid-column: 2; grid-row: 1;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
   }
   .rail-title {
     grid-column: 3; grid-row: 1;
-    font-size: 0.68rem;
+    font-size: var(--fs-md);
     color: var(--algo-slate);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -969,8 +969,8 @@
   .rail-meta {
     grid-column: 1 / -1; grid-row: 2;
     margin-top: 0.1rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     color: rgba(126, 151, 184, 0.85);
   }
 
@@ -992,14 +992,14 @@
     color: var(--algo-muted);
   }
   .lab-empty-title {
-    font-family: ui-monospace, monospace;
-    font-size: 0.85rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xl);
     font-weight: 700;
     color: var(--algo-slate);
     margin-bottom: 0.6rem;
   }
   .lab-empty-hint {
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     line-height: 1.5;
     max-width: 30rem;
   }
@@ -1016,18 +1016,18 @@
   .thr-head-l { display: flex; align-items: center; gap: 0.5rem; }
   .thr-head-r { display: flex; align-items: center; gap: 0.6rem; }
   .thr-sym {
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     font-weight: 700;
     font-size: 1rem;
     color: #fbbf24;
   }
   .thr-title {
     color: var(--algo-slate);
-    font-size: 0.78rem;
+    font-size: var(--fs-lg);
   }
   .thr-time {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
   }
   .thr-del {
@@ -1037,12 +1037,12 @@
     border-radius: 0.35rem;
     padding: 0.1rem 0.5rem;
     cursor: pointer;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
   }
   .thr-del:hover { background: rgba(248, 113, 113, 0.12); }
   .thr-section-label {
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.08em;
     color: var(--algo-muted);
@@ -1054,7 +1054,7 @@
     border-left: 2px solid rgba(251, 191, 36, 0.4);
     padding: 0.6rem 0.7rem;
     color: var(--algo-slate);
-    font-size: 0.74rem;
+    font-size: var(--fs-lg);
     line-height: 1.55;
     white-space: pre-wrap;
     font-family: -apple-system, system-ui, sans-serif;
@@ -1070,8 +1070,8 @@
   .msg-assistant { background: rgba(251, 191, 36, 0.05);  border-color: var(--algo-amber-bg-strong); }
   .msg-tool      { background: rgba(126, 151, 184, 0.06); border-color: rgba(126, 151, 184, 0.22); }
   .msg-role {
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     color: var(--algo-muted);
@@ -1079,7 +1079,7 @@
   }
   .msg-body {
     color: var(--algo-slate);
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     line-height: 1.5;
     white-space: pre-wrap;
   }
@@ -1094,20 +1094,20 @@
   }
   .lab-drafts-hint {
     color: var(--algo-muted);
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     line-height: 1.5;
     margin: 0 0 0.7rem;
   }
   .drafts-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
   }
   .drafts-table th {
     text-align: left;
     padding: 0.34rem 0.5rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     color: var(--algo-muted);
@@ -1119,11 +1119,11 @@
     border-bottom: 1px solid rgba(126, 151, 184, 0.08);
   }
   .drafts-name { display: block; color: #fbbf24; font-weight: 700; }
-  .drafts-slug { display: block; font-family: ui-monospace, monospace; font-size: 0.58rem; color: var(--algo-muted); }
+  .drafts-slug { display: block; font-family: var(--font-numeric); font-size: var(--fs-xs); color: var(--algo-muted); }
   .drafts-edit {
     color: #38bdf8;
     text-decoration: none;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
   }
   .drafts-edit:hover { text-decoration: underline; }
   .drafts-thr {
@@ -1139,13 +1139,13 @@
   }
   .drafts-thr:hover .drafts-thr-title { color: #fbbf24; }
   .drafts-sym {
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     font-weight: 700;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     color: #fbbf24;
   }
   .drafts-thr-title {
-    font-size: 0.68rem;
+    font-size: var(--fs-md);
     color: var(--algo-slate);
     transition: color 0.12s;
     overflow: hidden;
@@ -1160,8 +1160,8 @@
     background: rgba(56, 189, 248, 0.15);
     border: 1px solid rgba(56, 189, 248, 0.35);
     color: #38bdf8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.05em;
   }
@@ -1185,7 +1185,7 @@
   .audit-hint {
     flex: 1 1 320px;
     color: var(--algo-muted);
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     line-height: 1.5;
     margin: 0;
   }
@@ -1200,8 +1200,8 @@
     gap: 0.2rem;
   }
   .audit-filters span {
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     color: var(--algo-muted);
@@ -1217,17 +1217,17 @@
     border: 1px solid rgba(56, 189, 248, 0.35);
     border-radius: 0.35rem;
     color: var(--algo-slate);
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     line-height: 1.45;
     margin-bottom: 0.7rem;
   }
   .audit-deeplink-banner code {
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     background: rgba(0, 0, 0, 0.25);
     padding: 0.05rem 0.35rem;
     border-radius: 0.25rem;
     color: #38bdf8;
-    font-size: 0.66rem;
+    font-size: var(--fs-md);
   }
   .audit-clear-link {
     background: none;
@@ -1235,8 +1235,8 @@
     color: #38bdf8;
     padding: 0.2rem 0.6rem;
     border-radius: 0.3rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     cursor: pointer;
   }
@@ -1244,13 +1244,13 @@
   .audit-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.66rem;
+    font-size: var(--fs-md);
   }
   .audit-table th {
     text-align: left;
     padding: 0.34rem 0.5rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.54rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     color: var(--algo-muted);
@@ -1262,14 +1262,14 @@
     border-bottom: 1px solid rgba(126, 151, 184, 0.08);
     vertical-align: top;
   }
-  .audit-when { font-family: ui-monospace, monospace; font-size: 0.6rem; color: var(--algo-muted); }
-  .audit-tool { color: #fbbf24; font-size: 0.66rem; font-weight: 700; }
+  .audit-when { font-family: var(--font-numeric); font-size: var(--fs-sm); color: var(--algo-muted); }
+  .audit-tool { color: #fbbf24; font-size: var(--fs-md); font-weight: 700; }
   .audit-status {
     display: inline-block;
     padding: 0.05rem 0.4rem;
     border-radius: 0.5rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.05em;
     text-transform: uppercase;
@@ -1279,15 +1279,15 @@
   .audit-status-denied { background: rgba(248, 113, 113, 0.15); border-color: rgba(248, 113, 113, 0.4); color: #f87171; }
   .audit-status-error  { background: rgba(251, 191, 36, 0.15); border-color: rgba(251, 191, 36, 0.4); color: #fbbf24; }
   .audit-args, .audit-rid {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: rgba(200, 216, 240, 0.8);
     word-break: break-all;
     max-width: 24rem;
     display: inline-block;
   }
   .audit-summary {
-    font-size: 0.66rem;
+    font-size: var(--fs-md);
     color: var(--algo-slate);
     word-break: break-word;
     max-width: 24rem;
@@ -1311,22 +1311,22 @@
   .lab-card h2 {
     margin: 0 0 0.5rem;
     color: #fbbf24;
-    font-size: 0.84rem;
+    font-size: var(--fs-xl);
     font-weight: 700;
     letter-spacing: 0.02em;
   }
   .lab-card p {
     margin: 0 0 0.5rem;
     color: var(--algo-slate);
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     line-height: 1.5;
   }
   .lab-card code {
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     background: rgba(126, 151, 184, 0.10);
     padding: 0 0.25rem;
     border-radius: 0.2rem;
-    font-size: 0.68rem;
+    font-size: var(--fs-md);
     color: #fbbf24;
   }
   .code-block {
@@ -1335,8 +1335,8 @@
     border-radius: 0.35rem;
     padding: 0.55rem 0.7rem;
     color: var(--algo-slate);
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     line-height: 1.4;
     overflow-x: auto;
     white-space: pre-wrap;
@@ -1348,8 +1348,8 @@
     border: 1px solid rgba(251, 191, 36, 0.35);
     color: #fbbf24;
     border-radius: 0.35rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     font-weight: 700;
     cursor: pointer;
   }
@@ -1374,7 +1374,7 @@
   }
   .jwt-note {
     color: var(--algo-muted);
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     line-height: 1.4;
   }
   .jwt-empty {
@@ -1383,26 +1383,26 @@
     border: 1px solid var(--algo-red-border-soft);
     border-radius: 0.35rem;
     color: #f87171;
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
   }
   .jwt-or {
     margin-top: 0.9rem !important;
     padding-top: 0.6rem;
     border-top: 1px dashed rgba(126, 151, 184, 0.18);
     color: var(--algo-muted) !important;
-    font-size: 0.66rem !important;
+    font-size: var(--fs-md) !important;
   }
   .tools-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
   }
   .tools-table th {
     text-align: left;
     padding: 0.32rem 0.5rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     color: var(--algo-muted);
@@ -1427,8 +1427,8 @@
     gap: 0.2rem;
   }
   .mint-grid span {
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     color: var(--algo-muted);
@@ -1439,8 +1439,8 @@
     border-radius: 0.25rem;
     padding: 0.32rem 0.45rem;
     color: var(--algo-slate);
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
   }
   .mint-grid input:focus {
     outline: none;
@@ -1458,8 +1458,8 @@
     border-radius: 0.25rem;
     padding: 0.4rem 0.5rem;
     color: var(--algo-slate);
-    font-family: ui-monospace, monospace;
-    font-size: 0.66rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     line-height: 1.45;
     width: 100%;
     resize: vertical;
@@ -1477,8 +1477,8 @@
     border: 1px solid rgba(248, 113, 113, 0.32);
     border-radius: 0.35rem;
     color: #f87171;
-    font-family: ui-monospace, monospace;
-    font-size: 0.68rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
   }
   .mint-result {
     margin-top: 0.6rem;
@@ -1493,8 +1493,8 @@
     opacity: 0.65;
   }
   .mint-purpose {
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     color: var(--algo-slate);
     margin-bottom: 0.4rem;
   }
@@ -1509,15 +1509,15 @@
     border: 1px solid rgba(126, 151, 184, 0.25);
     padding: 0.25rem 0.55rem;
     border-radius: 0.3rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     color: #fbbf24;
     letter-spacing: 0.04em;
     user-select: all;
   }
   .mint-countdown {
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: #fbbf24;
     font-weight: 700;
   }
@@ -1525,13 +1525,13 @@
   .mint-hint {
     margin: 0.4rem 0 0;
     color: var(--algo-muted);
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     line-height: 1.4;
   }
   .safety-list {
     margin: 0; padding: 0 0 0 1.2rem;
     color: var(--algo-slate);
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     line-height: 1.5;
   }
   .safety-list li { margin-bottom: 0.25rem; }
@@ -1543,8 +1543,8 @@
     display: inline-block;
     padding: 0.05rem 0.4rem;
     border-radius: 0.5rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.05em;
     text-transform: uppercase;

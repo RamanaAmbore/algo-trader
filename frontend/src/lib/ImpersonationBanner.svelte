@@ -69,7 +69,7 @@
     display: flex;
     align-items: center;
     gap: 0.6rem;
-    font-size: 0.78rem;
+    font-size: var(--fs-lg);
     font-weight: 600;
     box-shadow: 0 1px 4px rgba(0,0,0,0.12);
   }
@@ -88,7 +88,7 @@
   .imp-banner-error {
     color: #b91c1c;
     font-weight: 700;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
   }
   .imp-banner-end {
     flex-shrink: 0;
@@ -97,7 +97,7 @@
     border: none;
     border-radius: 0.25rem;
     padding: 0.3rem 0.8rem;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     cursor: pointer;
     letter-spacing: 0.02em;
@@ -113,7 +113,7 @@
   @media (max-width: 600px) {
     .imp-banner {
       flex-wrap: wrap;
-      font-size: 0.72rem;
+      font-size: var(--fs-lg);
       padding: 0.4rem 0.7rem;
     }
     .imp-banner-text { flex-basis: 100%; }

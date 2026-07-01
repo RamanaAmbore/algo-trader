@@ -321,8 +321,8 @@
     gap: 0.4rem;
   }
   .cc-label {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -336,19 +336,19 @@
     background: rgba(248, 113, 113, 0.18);
     border: 1px solid rgba(248, 113, 113, 0.45);
     color: #f87171;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 800;
     font-variant-numeric: tabular-nums;
   }
   .cc-spacer { flex: 1 1 0; }
   .cc-err {
     color: #f87171;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-family: monospace;
   }
   .cc-reconcile-msg {
     color: #4ade80;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-family: monospace;
   }
   .cc-reconcile {
@@ -358,7 +358,7 @@
     background: transparent;
     color: #7dd3fc;
     font-family: monospace;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.04em;
     cursor: pointer;
@@ -400,8 +400,8 @@
     align-items: center;
     padding: 0.32rem 0;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-    font-size: 0.62rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-sm);
+    font-family: var(--font-numeric);
     color: var(--algo-slate);
     min-width: 0;
   }
@@ -425,7 +425,7 @@
   }
   .cc-row-h {
     color: var(--algo-muted);
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     font-weight: 700;
@@ -445,13 +445,13 @@
   .cc-limit-moved {
     margin-left: 0.18rem;
     color: rgba(180, 200, 230, 0.5);
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 600;
   }
   .cc-side-buy  { color: #4ade80; font-weight: 700; }
   .cc-side-sell { color: #f87171; font-weight: 700; }
   .cc-mode {
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     font-weight: 800;
     padding: 0 0.32rem;
     border-radius: 2px;
@@ -469,7 +469,7 @@
     background: transparent;
     color: rgba(248, 113, 113, 0.9);
     font-family: monospace;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 800;
     letter-spacing: 0.06em;
     cursor: pointer;

@@ -280,14 +280,14 @@
     background: rgba(248, 113, 113, 0.10);
     border: 1px solid rgba(248, 113, 113, 0.40);
     border-radius: 4px;
-    color: #fca5a5; font-size: 0.7rem;
+    color: #fca5a5; font-size: var(--fs-lg);
     margin-bottom: 0.7rem;
   }
   .strat-section-heading {
-    font-size: 0.65rem; font-weight: 800; letter-spacing: 0.06em;
-    text-transform: uppercase; color: #a3b9d0;
+    font-size: var(--fs-md); font-weight: 800; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text-muted);
     margin: 0 0 0.5rem;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .strat-create {
     padding: 0.8rem 1rem;
@@ -302,13 +302,13 @@
   }
   .strat-flbl {
     display: flex; flex-direction: column; gap: 0.15rem;
-    font-size: 0.55rem; font-weight: 700; letter-spacing: 0.05em;
-    text-transform: uppercase; color: #a3b9d0;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-xs); font-weight: 700; letter-spacing: 0.05em;
+    text-transform: uppercase; color: var(--text-muted);
+    font-family: var(--font-numeric);
   }
   .strat-flbl-wide :global(input) { min-width: 18rem; }
   .strat-flbl :global(input) {
-    font-size: 0.72rem; min-width: 9rem;
+    font-size: var(--fs-lg); min-width: 9rem;
   }
 
   .strat-table-wrap {
@@ -319,18 +319,18 @@
   .strat-table {
     width: 100%; border-collapse: collapse;
     font-family: ui-sans-serif, system-ui, sans-serif;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
   }
   .strat-table th {
     text-align: left;
     padding: 0.45rem 0.6rem;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
-    color: #a3b9d0;
-    font-size: 0.55rem;
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
     font-weight: 800; letter-spacing: 0.06em;
     text-transform: uppercase;
     background: rgba(15, 23, 42, 0.65);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .strat-table th.th-num { text-align: right; }
   .strat-table td {
@@ -340,11 +340,11 @@
   }
   .strat-table td.td-num {
     text-align: right;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     font-variant-numeric: tabular-nums;
   }
   .strat-table td.td-slug {
-    color: #fbbf24; font-weight: 700; font-family: ui-monospace, monospace;
+    color: #fbbf24; font-weight: 700; font-family: var(--font-numeric);
   }
   .strat-slug { color: #fbbf24; font-weight: 600; }
   .strat-table tbody tr:hover td { background: rgba(34, 211, 238, 0.05); }
@@ -360,21 +360,21 @@
   .pill-active   { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
                    background: rgba(74,222,128,0.16); color: #4ade80;
                    border: 1px solid rgba(74,222,128,0.40);
-                   font-size: 0.55rem; font-weight: 700; letter-spacing: 0.04em;
-                   text-transform: uppercase; font-family: ui-monospace, monospace; }
+                   font-size: var(--fs-xs); font-weight: 700; letter-spacing: 0.04em;
+                   text-transform: uppercase; font-family: var(--font-numeric); }
   .pill-inactive { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
                    background: rgba(126,151,184,0.16); color: #7e97b8;
                    border: 1px solid rgba(126,151,184,0.40);
-                   font-size: 0.55rem; font-weight: 700; letter-spacing: 0.04em;
-                   text-transform: uppercase; font-family: ui-monospace, monospace; }
+                   font-size: var(--fs-xs); font-weight: 700; letter-spacing: 0.04em;
+                   text-transform: uppercase; font-family: var(--font-numeric); }
 
-  .btn-sm { font-size: 0.6rem; padding: 0.2rem 0.55rem; }
+  .btn-sm { font-size: var(--fs-sm); padding: 0.2rem 0.55rem; }
   .btn-danger { color: #f87171; border-color: rgba(248,113,113,0.40); }
   .btn-danger:hover { background: rgba(248,113,113,0.15); }
 
-  .field-input-sm { font-size: 0.7rem; padding: 0.18rem 0.4rem; }
+  .field-input-sm { font-size: var(--fs-lg); padding: 0.18rem 0.4rem; }
   .field-input-num { text-align: right; font-variant-numeric: tabular-nums;
-                     font-family: ui-monospace, monospace; }
+                     font-family: var(--font-numeric); }
   .td-actions { white-space: nowrap; }
   .td-actions :global(button + button) { margin-left: 0.3rem; }
 </style>

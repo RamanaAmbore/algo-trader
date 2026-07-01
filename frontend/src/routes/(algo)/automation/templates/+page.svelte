@@ -664,8 +664,8 @@
     border-color: rgba(251, 191, 36, 0.80);
   }
   .tpl-matrix-scope {
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 800;
     letter-spacing: 0.05em;
     color: rgba(200, 216, 240, 0.70);
@@ -676,8 +676,8 @@
   }
   .tpl-matrix-tpl {
     grid-column: 1 / -1;
-    font-family: ui-monospace, monospace;
-    font-size: 0.66rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     font-weight: 600;
     color: #f8fafc;
     overflow: hidden;
@@ -692,8 +692,8 @@
   .tpl-matrix-mark {
     grid-row: 1;
     grid-column: 2;
-    font-family: ui-monospace, monospace;
-    font-size: 0.85rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xl);
     font-weight: 800;
     color: rgba(148, 163, 184, 0.40);
     line-height: 1;
@@ -705,8 +705,8 @@
   /* Filter chips */
   .tpl-chip {
     padding: 0.25rem 0.7rem;
-    font-size: 0.7rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-lg);
+    font-family: var(--font-numeric);
     color: rgba(180,200,230,0.75);
     background: rgba(255,255,255,0.03);
     border: 1px solid rgba(180,200,230,0.20);
@@ -724,7 +724,7 @@
 
   .tpl-create-btn {
     padding: 0.30rem 0.8rem;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     font-weight: 600;
     color: #fbbf24;
     background: rgba(251,191,36,0.10);
@@ -763,7 +763,7 @@
     border: none;
     cursor: pointer;
     color: rgba(220,230,245,0.92);
-    font-size: 0.78rem;
+    font-size: var(--fs-lg);
     text-align: left;
   }
   .tpl-row-head:hover { background: rgba(255,255,255,0.025); }
@@ -771,7 +771,7 @@
 
   .tpl-badge {
     padding: 0.08rem 0.45rem;
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
     font-weight: 800;
     letter-spacing: 0.05em;
     border-radius: 3px;
@@ -795,8 +795,8 @@
   }
 
   .tpl-applies {
-    font-size: 0.65rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-md);
+    font-family: var(--font-numeric);
     color: #67e8f9;
     background: rgba(34,211,238,0.08);
     padding: 0.10rem 0.45rem;
@@ -812,8 +812,8 @@
     flex-wrap: wrap;
   }
   .tpl-num {
-    font-family: ui-monospace, monospace;
-    font-size: 0.66rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     font-weight: 600;
     padding: 0.10rem 0.45rem;
     border-radius: 3px;
@@ -840,7 +840,7 @@
     border-top: 1px solid rgba(180,200,230,0.08);
   }
   .tpl-desc {
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     color: rgba(200,216,240,0.8);
     line-height: 1.45;
     margin-bottom: 0.6rem;
@@ -857,12 +857,12 @@
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     color: rgba(180,200,230,0.85);
   }
   .tpl-field span {
     font-weight: 600;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     letter-spacing: 0.02em;
   }
   .tpl-field-full {
@@ -872,19 +872,19 @@
     grid-column: span 2;
   }
   .tpl-input-mono {
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     line-height: 1.4;
     resize: vertical;
     min-height: 2.6rem;
   }
   .tpl-input {
     padding: 0.32rem 0.55rem;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     color: #e5e7eb;
     background: rgba(15,23,41,0.7);
     border: 1px solid rgba(180,200,230,0.20);
     border-radius: 4px;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .tpl-input:focus {
     outline: none;
@@ -900,7 +900,7 @@
     display: flex;
     align-items: center;
     gap: 0.45rem;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     color: rgba(200,216,240,0.85);
     cursor: pointer;
   }
@@ -908,15 +908,15 @@
   .tpl-form-err {
     grid-column: 1 / -1;
     color: #fca5a5;
-    font-size: 0.7rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-lg);
+    font-family: var(--font-numeric);
   }
   .tpl-json-err {
     display: block;
     margin-top: 0.2rem;
     color: #f87171;
-    font-size: 0.6rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-sm);
+    font-family: var(--font-numeric);
   }
   .tpl-form-actions {
     grid-column: 1 / -1;
@@ -926,7 +926,7 @@
   }
   .tpl-btn {
     padding: 0.35rem 0.85rem;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     font-weight: 600;
     color: rgba(200,216,240,0.85);
     background: rgba(255,255,255,0.04);

@@ -1309,7 +1309,7 @@
       rowData: [],
       domLayout: 'autoHeight',
       overlayNoRowsTemplate:
-        '<span style="font-size:0.65rem;color:#7e97b8">No fund data</span>',
+        '<span style="font-size: var(--fs-md);color:#7e97b8">No fund data</span>',
     });
     _fundsReady = true;
   });
@@ -1352,7 +1352,7 @@
       rowData: [],
       domLayout: 'autoHeight',
       overlayNoRowsTemplate:
-        '<span style="font-size:0.65rem;color:#7e97b8">No accounts connected</span>',
+        '<span style="font-size: var(--fs-md);color:#7e97b8">No accounts connected</span>',
     });
     _marginReady = true;
   });
@@ -1391,7 +1391,7 @@
       getRowStyle: () => ({ cursor: 'pointer' }),
       onRowClicked: (ev) => _openSymbol(ev.data?.symbol),
       overlayNoRowsTemplate:
-        `<span style="font-size:0.65rem;color:#7e97b8">No ${kind === 'win' ? 'winners' : 'losers'} in this bucket</span>`,
+        `<span style="font-size: var(--fs-md);color:#7e97b8">No ${kind === 'win' ? 'winners' : 'losers'} in this bucket</span>`,
     });
   }
 
@@ -1429,7 +1429,7 @@
       rowData: [],
       domLayout: 'autoHeight',
       overlayNoRowsTemplate:
-        '<span style="font-size:0.65rem;color:#7e97b8">No open positions</span>',
+        '<span style="font-size: var(--fs-md);color:#7e97b8">No open positions</span>',
     });
     _eqPosReady = true;
   });
@@ -1456,7 +1456,7 @@
       rowData: [],
       domLayout: 'autoHeight',
       overlayNoRowsTemplate:
-        '<span style="font-size:0.65rem;color:#7e97b8">No holdings</span>',
+        '<span style="font-size: var(--fs-md);color:#7e97b8">No holdings</span>',
     });
     _eqHoldReady = true;
   });
@@ -1841,7 +1841,7 @@
         {#each _eqYLabels as lbl}
           <text
             x={PAD_L + INNER_W + 4} y={parseFloat(lbl.y) + 3.5}
-            font-size="11" font-weight="600" fill="#c8d8f0" font-family="ui-monospace,monospace"
+            font-size="11" font-weight="600" fill="#c8d8f0" style="font-family: var(--font-numeric)"
             text-anchor="start">{lbl.label}</text>
         {/each}
 
@@ -1869,19 +1869,17 @@
             {@const _th = String(_ist.getUTCHours()).padStart(2,'0')}
             {@const _tm = String(_ist.getUTCMinutes()).padStart(2,'0')}
             <text x={_tipX + 6} y={_tipY + 13}
-              font-size="8.5" fill="#7dd3fc" font-family="ui-monospace,monospace">{_th}:{_tm} IST</text>
+              font-size="8.5" fill="#7dd3fc" style="font-family: var(--font-numeric)">{_th}:{_tm} IST</text>
             <text x={_tipX + 6} y={_tipY + 26}
-              font-size="8" fill="#7e97b8" font-family="ui-monospace,monospace">Day P&amp;L</text>
+              font-size="8" fill="#7e97b8" style="font-family: var(--font-numeric)">Day P&amp;L</text>
             <text x={_tipX + 6} y={_tipY + 37}
               font-size="9" font-weight="700" fill={_hoverPt.day_pnl >= 0 ? '#4ade80' : '#f87171'}
-              font-family="ui-monospace,monospace"
-              style="font-variant-numeric:tabular-nums">
+              style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
               {_hoverPt.day_pnl >= 0 ? '+' : ''}₹{priceFmt(_hoverPt.day_pnl)}
             </text>
             <text x={_tipX + 6} y={_tipY + 49}
               font-size="9" font-weight="700" fill={_hoverPt.cum_pnl >= 0 ? '#4ade80' : '#f87171'}
-              font-family="ui-monospace,monospace"
-              style="font-variant-numeric:tabular-nums">
+              style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
               cum {_hoverPt.cum_pnl >= 0 ? '+' : ''}₹{priceFmt(_hoverPt.cum_pnl)}
             </text>
           {/if}
@@ -2216,8 +2214,8 @@
     border: 1px solid rgba(255, 255, 255, 0.10);
     border-radius: 3px;
     padding: 0.22rem 0.55rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.66rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     font-weight: 600;
     color: rgba(200, 216, 240, 0.55);
     cursor: pointer;
@@ -2294,15 +2292,15 @@
     top: 0.6rem;
     left: 0.7rem;
   }
-  .fs-card-on .eq-stat-k { font-size: 0.72rem; margin-bottom: 0.32rem; }
+  .fs-card-on .eq-stat-k { font-size: var(--fs-lg); margin-bottom: 0.32rem; }
   .fs-card-on .eq-stat-v { font-size: 1.4rem; }
   @media (max-width: 600px) {
     .fs-card-on .eq-svg {
       height: calc(100vh - 8rem) !important;
     }
     .fs-card-on .eq-stats { gap: 0.8rem; }
-    .fs-card-on .eq-stat-k { font-size: 0.6rem; }
-    .fs-card-on .eq-stat-v { font-size: 0.95rem; }
+    .fs-card-on .eq-stat-k { font-size: var(--fs-sm); }
+    .fs-card-on .eq-stat-v { font-size: var(--fs-xl); }
   }
   /* Stat overlay — at-a-glance P&L numerics (P&L TODAY · TODAY % ·
      vs NIFTY) anchored top-left inside the chart card body. Same
@@ -2315,7 +2313,7 @@
     left: 0.4rem;
     display: flex;
     gap: 0.65rem;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     pointer-events: none;
     z-index: 2;
   }
@@ -2325,7 +2323,7 @@
     line-height: 1;
   }
   .eq-stat-k {
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -2333,7 +2331,7 @@
     margin-bottom: 0.18rem;
   }
   .eq-stat-v {
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     color: var(--algo-slate);
@@ -2342,7 +2340,7 @@
   .eq-stat-v.hero-pnl-down { color: #f87171; }
   .eq-stat-v.hero-pnl-neutral { color: rgba(200, 216, 240, 0.6); }
   .eq-stat-scope {
-    font-size: 0.45rem;
+    font-size: var(--fs-2xs);
     color: rgba(200,216,240,0.45);
     margin-top: 0.12rem;
     font-variant-numeric: tabular-nums;
@@ -2364,8 +2362,8 @@
        up. The curve grows back to 220 px once data lands. */
     height: 3rem;
     color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     letter-spacing: 0.04em;
   }
 
@@ -2390,8 +2388,8 @@
     margin-bottom: 0.5rem;
   }
   .bucket-subheader {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
     font-weight: 700;
     letter-spacing: 0.06em;
@@ -2430,7 +2428,7 @@
     border-radius: 8px;
     background: rgba(126, 151, 184, 0.18);
     color: var(--algo-slate);
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 800;
     letter-spacing: 0;
     font-variant-numeric: tabular-nums;
@@ -2467,18 +2465,18 @@
     border-left: 2px solid #fbbf24;
     background: rgba(255, 255, 255, 0.02);
     border-radius: 2px;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     line-height: 1;
   }
   .dash-agent-count {
     color: #fbbf24;
-    font-size: 0.85rem;
+    font-size: var(--fs-xl);
     font-weight: 800;
     font-variant-numeric: tabular-nums;
   }
   .dash-agent-label {
     color: var(--algo-muted);
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     letter-spacing: 0.06em;
     text-transform: uppercase;
   }
@@ -2509,8 +2507,8 @@
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     color: #7dd3fc;
     font-weight: 700;
     letter-spacing: 0.06em;
@@ -2542,8 +2540,8 @@
     gap: 0.3rem;
     padding: 0.2rem 0.5rem;
     border-radius: 3px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     text-decoration: none;
     border: 1px solid;
     font-variant-numeric: tabular-nums;
@@ -2561,11 +2559,11 @@
     border-color: var(--algo-red-border-soft);
     color: #fca5a5;
   }
-  .oo-side   { font-weight: 800; font-size: 0.58rem; letter-spacing: 0.06em; }
+  .oo-side   { font-weight: 800; font-size: var(--fs-xs); letter-spacing: 0.06em; }
   .oo-qty    { font-weight: 700; }
   .oo-sym    { font-weight: 700; }
   .oo-price  { color: var(--algo-slate); }
-  .oo-attempts { color: var(--algo-muted); font-size: 0.58rem; }
+  .oo-attempts { color: var(--algo-muted); font-size: var(--fs-xs); }
 
   /* .dash-row2 + .wl-tile* family retired — Winners / Losers cards
      moved to /pulse where they sit in the 6-grid layout alongside
@@ -2700,12 +2698,12 @@
     border: none;
     cursor: pointer;
     text-align: left;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     transition: background 0.1s;
   }
   .wl-row:hover { background: rgba(255, 255, 255, 0.04); }
   .wl-sym {
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     color: #e2ecff;
     flex: 1;
@@ -2715,7 +2713,7 @@
     white-space: nowrap;
   }
   .wl-pnl {
-    font-size: 0.75rem;
+    font-size: var(--fs-lg);
     font-weight: 800;
     font-variant-numeric: tabular-nums;
     flex-shrink: 0;
@@ -2723,7 +2721,7 @@
   .wl-pnl-up   { color: #4ade80; }
   .wl-pnl-down { color: #f87171; }
   .wl-pct {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
     font-variant-numeric: tabular-nums;
     flex-shrink: 0;
@@ -2789,8 +2787,8 @@
   .dash-pnl-toggle {
     margin-left: auto;
     color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     letter-spacing: 0.04em;
   }
   .dash-pnl-body {
@@ -2808,8 +2806,8 @@
     border-radius: 4px;
     background: rgba(168,85,247,0.15);
     border: 1px solid rgba(168,85,247,0.35);
-    font-family: ui-monospace, monospace;
-    font-size: 0.68rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
   }
   .demo-banner-text { color: #d8b4fe; flex: 1; }
   .demo-banner-text strong { color: #e9d5ff; font-weight: 700; }

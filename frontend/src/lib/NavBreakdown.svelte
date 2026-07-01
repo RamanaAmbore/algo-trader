@@ -139,8 +139,8 @@
   .nav-bd-table {
     width: 100%;
     border-collapse: collapse;
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     color: var(--algo-slate);
   }
   .nav-bd-table thead th {
@@ -148,7 +148,7 @@
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    font-size: 0.56rem;
+    font-size: var(--fs-xs);
     color: var(--algo-muted);
     padding: 0.3rem 0.5rem;
     border-bottom: 1px solid rgba(126, 151, 184, 0.20);
@@ -193,8 +193,8 @@
   }
 
   .nav-bd-caption {
-    font-family: ui-monospace, monospace;
-    font-size: 0.56rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     color: var(--algo-muted);
     letter-spacing: 0.04em;
     padding: 0 0.5rem;
@@ -204,16 +204,16 @@
     padding: 1.2rem 0.8rem;
     text-align: center;
     color: rgba(155, 176, 208, 0.55);
-    font-family: ui-monospace, monospace;
-    font-size: 0.72rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
   }
 
   /* Mobile: tighten padding so 5 columns fit comfortably on a
      360px viewport without column wrap or horizontal scroll. */
   @media (max-width: 600px) {
-    .nav-bd-table          { font-size: 0.62rem; }
-    .nav-bd-table thead th { font-size: 0.52rem; padding: 0.25rem 0.3rem; }
+    .nav-bd-table          { font-size: var(--fs-sm); }
+    .nav-bd-table thead th { font-size: var(--fs-2xs); padding: 0.25rem 0.3rem; }
     .nav-bd-table tbody td { padding: 0.3rem 0.3rem; }
-    .nav-bd-caption        { font-size: 0.52rem; }
+    .nav-bd-caption        { font-size: var(--fs-2xs); }
   }
 </style>

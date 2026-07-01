@@ -50,7 +50,7 @@
     display: inline-flex;
     align-items: center;
     margin-left: auto;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
   }
   @media (min-width: 520px) {
     .act-acct { min-width: 11rem; }

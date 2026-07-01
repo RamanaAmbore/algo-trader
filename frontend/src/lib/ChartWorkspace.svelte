@@ -2421,7 +2421,7 @@
     flex: 1 1 0;
     min-height: 0;
     box-sizing: border-box;
-    background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+    background: var(--card-bg-gradient);
     border: 1px solid var(--algo-amber-border-soft);
     border-radius: 6px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(251, 191, 36, 0.05) inset;
@@ -2500,8 +2500,8 @@
     border: 0;
     border-right: 1px solid rgba(255, 255, 255, 0.06);
     color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.04em;
     cursor: pointer;
@@ -2622,7 +2622,7 @@
     min-height: var(--chart-toolbar-h);
     padding-top: 0;
     padding-bottom: 0;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
   }
   /* Dropdown panel — keep right-aligned so it doesn't clip viewport,
      and lifted above the chart SVG via z-index so the checkbox list is
@@ -2643,8 +2643,8 @@
     border: 1px solid rgba(251, 191, 36, 0.45);
     border-radius: 4px;
     padding: 0.3rem 0.45rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: var(--algo-slate);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
     z-index: 10;
@@ -2670,7 +2670,7 @@
     border: 0;
     color: rgba(248, 113, 113, 0.85);
     font-family: monospace;
-    font-size: 0.75rem;
+    font-size: var(--fs-lg);
     line-height: 1;
     cursor: pointer;
     border-radius: 2px;
@@ -2679,7 +2679,7 @@
   .cw-hp-ts {
     color: #fbbf24;
     font-weight: 800;
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
     margin-bottom: 0.2rem;
     padding-bottom: 0.18rem;
     border-bottom: 1px solid rgba(255, 255, 255, 0.08);
@@ -2715,7 +2715,7 @@
     height: var(--chart-toolbar-h);
     min-height: var(--chart-toolbar-h);
     font-family: monospace;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.04em;
     padding: 0 0.55rem;
@@ -2794,13 +2794,13 @@
   }
   .cw-fetch-msg {
     color: #fbbf24;
-    font-size: 0.78rem;
+    font-size: var(--fs-lg);
     font-weight: 600;
     letter-spacing: 0.03em;
   }
   .cw-fetch-sub {
     color: rgba(155, 176, 208, 0.65);
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     letter-spacing: 0.02em;
   }
   .cw-svg {
@@ -2852,14 +2852,14 @@
     align-items: center;
     justify-content: center;
     color: var(--algo-muted);
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-family: monospace;
     padding: 0 1rem;
     text-align: center;
   }
   .cw-state-sm { min-height: 80px; height: auto; }
   .cw-err { color: #f87171; }
-  .cw-err-text { color: #f87171; font-size: 0.55rem; font-family: monospace; }
+  .cw-err-text { color: #f87171; font-size: var(--fs-xs); font-family: monospace; }
 
   /* ── Intraday section ────────────────────────────────────── */
   .cw-intraday-section {
@@ -2877,14 +2877,14 @@
     align-items: center;
     gap: 0.4rem;
     padding: 0.3rem 0.75rem;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
     font-family: monospace;
     flex-shrink: 0;
   }
   .cw-intraday-mode {
     font-weight: 700;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     padding: 1px 5px;
     border-radius: 2px;
     border: 1px solid currentColor;
@@ -2894,7 +2894,7 @@
   .cw-mode-paper { color: #7dd3fc; }
   .cw-intraday-source {
     font-weight: 700;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     padding: 1px 5px;
     border-radius: 2px;
     border: 1px solid var(--algo-amber-border);
@@ -2916,7 +2916,7 @@
     padding: 0.3rem 0.75rem;
     border-top: 1px solid rgba(255,255,255,0.06);
     font-family: monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     flex-wrap: wrap;
     flex-shrink: 0;
   }
@@ -2926,10 +2926,10 @@
   .cw-pos { color: #4ade80; }
   .cw-neg { color: #f87171; }
   .cw-info-meta { color: var(--algo-muted); }
-  .cw-meta-text { color: var(--algo-muted); font-size: 0.55rem; font-family: monospace; }
+  .cw-meta-text { color: var(--algo-muted); font-size: var(--fs-xs); font-family: monospace; }
   .cw-info-root {
     color: #4a5a7a;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-family: monospace;
   }
   .cw-legend-dash {
@@ -2955,8 +2955,8 @@
   .cw-fm-chip {
     display: inline-flex;
     align-items: center;
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 0.02em;
     color: var(--algo-muted);
@@ -2976,7 +2976,7 @@
   }
   @media (max-width: 600px) {
     .cw-frontmonth-bar { padding: 0.2rem 0.5rem; }
-    .cw-fm-chip { font-size: 0.55rem; }
+    .cw-fm-chip { font-size: var(--fs-xs); }
   }
 
   /* ── Greeks strip ────────────────────────────────────────── */
@@ -2992,7 +2992,7 @@
   }
   .cw-greeks-label {
     font-family: monospace;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     color: var(--algo-muted);
     text-transform: uppercase;
@@ -3011,13 +3011,13 @@
   }
   .cw-gk-label {
     font-family: monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     color: var(--algo-muted);
   }
   .cw-gk-val {
     font-family: monospace;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-variant-numeric: tabular-nums;
     color: var(--algo-slate);
   }
@@ -3092,7 +3092,7 @@
        Height comes from --chart-toolbar-h (32 px at this breakpoint). */
     .cw-intraday-btn {
       padding: 0 0.32rem;
-      font-size: 0.58rem;
+      font-size: var(--fs-xs);
       flex-shrink: 0;
     }
     .cw-intraday-full { display: none; }
@@ -3103,14 +3103,14 @@
     /* Signals button — tighter horizontal padding; show short label. */
     .cw-signals-btn {
       padding: 0 0.32rem;
-      font-size: 0.58rem;
+      font-size: var(--fs-xs);
       flex-shrink: 0;
     }
 
     /* Range pills — squeeze horizontal padding; height stays on SSOT var. */
     .cw-range-btn {
       padding: 0 0.3rem;
-      font-size: 0.58rem;
+      font-size: var(--fs-xs);
     }
 
     /* Overlay panel — just enough to show "Overlays" text. Height
@@ -3121,7 +3121,7 @@
     .cw-overlay-panel :global(.rbq-multi-trigger-wrap),
     .cw-overlay-panel :global(.rbq-multi-trigger) {
       padding: 0 0.28rem;
-      font-size: 0.58rem;
+      font-size: var(--fs-xs);
       white-space: nowrap;
     }
 
@@ -3137,7 +3137,7 @@
       min-width: 4rem;
       margin-left: 0;
       padding: 0 0.4rem;
-      font-size: 0.6rem;
+      font-size: var(--fs-sm);
     }
   }
 

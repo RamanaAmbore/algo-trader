@@ -27,7 +27,7 @@
        (RefreshButton, FullscreenButton, DisclosureChevron, agent
        notify icons). Reads as one consistent affordance family. */
     color: #7dd3fc;
-    font-size: 0.95rem;
+    font-size: var(--fs-xl);
     line-height: 1;
     flex-shrink: 0;
     user-select: none;

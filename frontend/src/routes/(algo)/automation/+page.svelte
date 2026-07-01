@@ -1210,8 +1210,8 @@
 
   /* ── Ask-AI form ─────────────────────────────────────────────────── */
   .ai-pill {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -1225,8 +1225,8 @@
   }
   .ai-pill:hover { background: rgba(167,139,250,0.20); }
   .history-pill {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -1251,7 +1251,7 @@
     flex-shrink: 0;
   }
   .agent-notify-ico {
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     line-height: 1;
     opacity: 0.85;
     filter: grayscale(0.4);
@@ -1265,30 +1265,30 @@
   }
   .ai-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; flex-wrap: wrap; }
   .ai-title {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     color: var(--algo-ai);
     text-transform: uppercase;
     letter-spacing: 0.06em;
   }
-  .ai-hint { font-size: 0.55rem; color: var(--algo-muted); font-family: ui-monospace, monospace; }
+  .ai-hint { font-size: var(--fs-xs); color: var(--algo-muted); font-family: var(--font-numeric); }
   .ai-prompt {
     width: 100%;
     background: rgba(0,0,0,0.30);
     border: 1px solid rgba(167,139,250,0.20);
     border-radius: 4px;
     color: var(--algo-slate);
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     padding: 0.4rem 0.55rem;
     resize: vertical;
   }
   .ai-prompt:focus { outline: none; border-color: rgba(167,139,250,0.55); }
   .ai-actions { display: flex; gap: 0.4rem; margin-top: 0.4rem; align-items: center; flex-wrap: wrap; }
   .ai-btn {
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -1312,38 +1312,38 @@
     border: 1px solid rgba(255,255,255,0.10);
     border-radius: 3px;
     color: var(--algo-slate);
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     padding: 0.18rem 0.45rem;
     width: 12rem;
   }
   .ai-why {
     margin-top: 0.45rem;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     color: var(--algo-slate);
     background: rgba(167,139,250,0.06);
     border-left: 2px solid #a78bfa;
     padding: 0.32rem 0.55rem;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .ai-warns, .ai-errs { margin: 0.4rem 0 0; padding-left: 0.4rem; list-style: none; }
   .ai-warns li {
     color: #fbbf24;
-    font-size: 0.6rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-sm);
+    font-family: var(--font-numeric);
     padding: 0.08rem 0;
   }
   .ai-errs li {
     color: #f87171;
-    font-size: 0.6rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-sm);
+    font-family: var(--font-numeric);
     padding: 0.08rem 0;
   }
   .ai-json {
     margin-top: 0.45rem;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .ai-json summary { cursor: pointer; }
   .ai-json pre {
@@ -1366,8 +1366,8 @@
     flex-wrap: wrap;
     gap: 0.4rem;
     margin: 0.4rem 0 0.5rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
   }
   .ai-meta-pill {
     border: 1px solid rgba(167,139,250,0.45);
@@ -1381,7 +1381,7 @@
     flex-shrink: 0;
   }
   .ai-meta-why { color: var(--algo-slate); flex: 1 1 8rem; min-width: 0; }
-  .ai-meta-prompt { font-size: 0.6rem; color: var(--algo-muted); }
+  .ai-meta-prompt { font-size: var(--fs-sm); color: var(--algo-muted); }
   .ai-meta-prompt summary { cursor: pointer; color: #a78bfa; }
   .ai-meta-prompt summary:hover { color: #c4b5fd; }
   .ai-meta-prompt span {
@@ -1397,25 +1397,25 @@
 
   /* Live-preview styling — compact, dense, matches algo dark palette. */
   .agent-preview {
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     color: var(--algo-slate);
     border-left: 1px dashed rgba(255,255,255,0.08);
     padding-left: 0.75rem;
   }
   .preview-heading {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--algo-muted);
     margin-bottom: 0.5rem;
   }
   .preview-header { margin-bottom: 0.5rem; }
-  .preview-title { font-weight: 700; color: #fbbf24; font-size: 0.8rem; }
-  .preview-desc  { font-style: italic; color: var(--algo-slate)aa; font-size: 0.6rem; margin-top: 0.1rem; }
-  .preview-meta  { font-size: 0.55rem; color: var(--algo-muted); margin-top: 0.2rem; }
+  .preview-title { font-weight: 700; color: #fbbf24; font-size: var(--fs-xl); }
+  .preview-desc  { font-style: italic; color: var(--algo-slate)aa; font-size: var(--fs-sm); margin-top: 0.1rem; }
+  .preview-meta  { font-size: var(--fs-xs); color: var(--algo-muted); margin-top: 0.2rem; }
   .preview-sep   { margin: 0 0.35rem; color: var(--algo-muted)40; }
   .preview-section-label {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: #fbbf24;
@@ -1430,10 +1430,10 @@
     border: 1px solid rgba(248,113,113,0.35);
     padding: 0.3rem 0.5rem;
     border-radius: 4px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
   }
-  .preview-tree { font-family: ui-monospace, monospace; }
+  .preview-tree { font-family: var(--font-numeric); }
   /* Nested node pattern — indent on the left, operator badge at top, children below */
   :global(.tree-node) {
     border-left: 2px solid rgba(255,255,255,0.12);
@@ -1444,7 +1444,7 @@
   :global(.tree-node-any) { border-left-color: #fbbf24; }
   :global(.tree-node-not) { border-left-color: #f87171; }
   :global(.tree-op) {
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     letter-spacing: 0.12em;
     text-transform: uppercase;
     font-weight: 700;
@@ -1456,7 +1456,7 @@
   :global(.tree-node-not .tree-op) { color: #f87171; }
   :global(.tree-children) { padding-left: 0.25rem; }
   :global(.tree-leaf) {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     background: rgba(125,211,252,0.08);
     border: 1px solid rgba(125,211,252,0.2);
     color: var(--algo-slate);
@@ -1469,11 +1469,11 @@
     overflow-wrap: anywhere;
   }
   .preview-chip {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     padding: 0.1rem 0.4rem;
     border-radius: 3px;
     border: 1px solid;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .chip-on  { background: rgba(74,222,128,0.15);  color: #4ade80; border-color: rgba(74,222,128,0.4); }
   .chip-off { background: rgba(180,200,230,0.08); color: var(--algo-muted); border-color: rgba(180,200,230,0.2); }
@@ -1483,7 +1483,7 @@
     border-radius: 3px;
     padding: 0.3rem 0.4rem;
   }
-  .preview-action-type { color: #fbbf24; font-weight: 700; font-family: ui-monospace, monospace; font-size: 0.6rem; }
+  .preview-action-type { color: #fbbf24; font-weight: 700; font-family: var(--font-numeric); font-size: var(--fs-sm); }
 
   /* Lifespan chip — shows next to row meta when an agent is non-
      persistent. Uses the sky-blue utility palette so it reads as an
@@ -1496,9 +1496,9 @@
     border: 1px solid var(--btn-sky-border);
     background: var(--btn-sky-bg);
     color: var(--btn-sky);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     font-weight: 700;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     letter-spacing: 0.04em;
   }
   /* New lifespanChip variants — color progresses sky → amber → red as
@@ -1509,9 +1509,9 @@
     padding: 0 0.3rem;
     border-radius: 2px;
     border: 1px solid;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     font-weight: 700;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     letter-spacing: 0.04em;
     cursor: help;
   }
@@ -1520,7 +1520,7 @@
   .lifespan-chip-red   { color: #f87171; border-color: rgba(248,113,113,0.55); background: rgba(248,113,113,0.12); }
   .lifespan-chip-grey  { color: #94a3b8; border-color: rgba(148,163,184,0.40); background: rgba(148,163,184,0.10); }
   .preview-action-params {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     background: rgba(0,0,0,0.25);
     color: var(--algo-slate);
     padding: 0.25rem 0.35rem;
@@ -1568,13 +1568,13 @@
     gap: 0.2rem;
   }
   .tier-pill {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     padding: 0.22rem 0.55rem;
     border-radius: 999px;
     border: 1px solid rgba(255, 255, 255, 0.15);
     background: transparent;
     color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     font-weight: 700;
     letter-spacing: 0.04em;
     cursor: pointer;
@@ -1594,8 +1594,8 @@
      button. Hidden when tier=medium (the default) so default rows stay
      visually quiet. */
   .tier-badge {
-    font-size: 0.55rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-xs);
+    font-family: var(--font-numeric);
     font-weight: 700;
     letter-spacing: 0.05em;
     padding: 0.05rem 0.32rem;
@@ -1611,8 +1611,8 @@
      operator can see grouped agents at a glance ("these three fires are
      all about holdings_loss"). Lower-key palette than the tier badge. */
   .topic-badge {
-    font-size: 0.55rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-xs);
+    font-family: var(--font-numeric);
     padding: 0.05rem 0.35rem;
     border-radius: 3px;
     background: rgba(255,255,255,0.05);
@@ -1638,7 +1638,7 @@
     grid-template-columns: auto auto 1fr;
     align-items: center;
     gap: 0.5rem;
-    font-size: 0.68rem;
+    font-size: var(--fs-md);
     color: var(--algo-slate);
     cursor: pointer;
   }
@@ -1653,18 +1653,18 @@
   }
   .channel-desc {
     color: var(--algo-muted);
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     line-height: 1.25;
   }
 
   /* Quick-add action pills next to the Actions textarea. Compact, colour-
      coded by rough semantic group so they don't visually blend together. */
   .action-add-pill {
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     padding: 0.1rem 0.4rem;
     border-radius: 999px;
     border: 1px solid;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     font-weight: 700;
     letter-spacing: 0.02em;
     cursor: pointer;

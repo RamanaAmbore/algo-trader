@@ -118,7 +118,7 @@
 
   .page-error {
     color: #f87171;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-family: monospace;
     padding: 0 0.25rem;
     flex-shrink: 0;

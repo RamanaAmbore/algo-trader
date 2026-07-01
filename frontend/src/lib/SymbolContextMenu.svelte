@@ -134,7 +134,7 @@
   }
   .scm-header {
     padding: 0.25rem 0.75rem 0.15rem;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.04em;
     color: #fbbf24;

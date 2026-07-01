@@ -576,7 +576,7 @@
     margin-bottom: 0.4rem;
   }
   .brokers-h {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -595,7 +595,7 @@
     min-width: 720px;
     border-collapse: collapse;
     font-family: monospace;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     table-layout: auto;
   }
   .brokers-table td:nth-child(5),
@@ -608,7 +608,7 @@
     font-weight: 700;
     padding: 0.25rem 0.4rem;
     border-bottom: 1px solid rgba(255,255,255,0.06);
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
@@ -641,7 +641,7 @@
 
   .status-pill {
     font-family: monospace;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     font-weight: 700;
     padding: 1px 5px;
     border-radius: 2px;
@@ -657,7 +657,7 @@
     display: inline-block;
     padding: 1px 6px;
     border-radius: 3px;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 800;
     font-family: monospace;
     letter-spacing: 0.06em;
@@ -672,7 +672,7 @@
     border-radius: 3px;
     color: #22d3ee;
     font-family: monospace;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-weight: 700;
     cursor: pointer;
     white-space: nowrap;
@@ -691,7 +691,7 @@
   .test-result {
     font-family: monospace;
     font-weight: 700;
-    font-size: 0.85rem;
+    font-size: var(--fs-xl);
     line-height: 1;
     cursor: help;
   }
@@ -730,13 +730,13 @@
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-family: monospace;
     color: var(--algo-slate);
   }
   .bf-hint {
     color: var(--algo-muted);
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     font-weight: 400;
     margin-left: 0.3rem;
   }

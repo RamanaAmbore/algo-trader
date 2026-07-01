@@ -185,8 +185,8 @@
 
 <style>
   .back-link {
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     color: #7dd3fc;
     text-decoration: none;
     margin-left: 0.75rem;
@@ -198,8 +198,8 @@
     color: #f87171;
     padding: 0.4rem 0.65rem;
     border-radius: 4px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     margin-bottom: 0.5rem;
   }
 
@@ -217,8 +217,8 @@
     padding: 0.4rem 0.65rem;
     background: rgba(251,191,36,0.05);
     border-bottom: 1px solid rgba(251,191,36,0.12);
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
   }
   .run-id { color: #fbbf24; font-weight: 700; letter-spacing: 0.05em; }
   .run-meta { color: var(--algo-slate); }
@@ -237,8 +237,8 @@
     width: 100%;
     min-width: 38rem;       /* prevents column squeeze on mobile */
     border-collapse: collapse;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
   }
   .iter-table th {
     text-align: left;
@@ -248,7 +248,7 @@
     border-bottom: 1px solid rgba(251,191,36,0.10);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
   }
   .iter-table th.numeric, .iter-table td.numeric {
     text-align: right;
@@ -267,7 +267,7 @@
   .slug { color: #fbbf24; }
   .er {
     text-transform: uppercase;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     letter-spacing: 0.04em;
     font-weight: 700;
   }
@@ -275,5 +275,5 @@
   .er-warn    { color: #fbbf24; }
   .er-err     { color: #f87171; }
   .er-pending { color: #7dd3fc; }
-  .er-other   { color: #a3b9d0; }
+  .er-other   { color: var(--text-muted); }
 </style>

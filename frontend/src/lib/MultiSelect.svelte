@@ -152,7 +152,7 @@
     position: relative;
     display: block;
     width: 100%;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     color: var(--algo-slate);
   }
 
@@ -183,7 +183,7 @@
     border: 1px solid rgba(251,191,36,0.25);
     border-radius: 3px;
     color: var(--algo-slate);
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-family: inherit;
     cursor: pointer;
     text-align: left;
@@ -204,7 +204,7 @@
     background: transparent;
     border: none;
     color: rgba(251,191,36,0.7);
-    font-size: 0.8rem;
+    font-size: var(--fs-xl);
     line-height: 1;
     cursor: pointer;
   }
@@ -215,7 +215,7 @@
        weight 700 + smooth rotate transition. Earlier this was 0.55rem
        which made the dropdown affordance read as a stray period. */
     color: #fbbf24;
-    font-size: 0.95rem;
+    font-size: var(--fs-xl);
     line-height: 1;
     font-weight: 700;
     transform: translateY(-1px);
@@ -238,7 +238,7 @@
     box-shadow: 0 10px 28px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.06);
     max-height: 14rem;
     overflow-y: auto;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     color: var(--algo-slate);
   }
 
@@ -261,12 +261,12 @@
     flex: 0 0 0.8rem;
     width: 0.8rem;
     color: #4ade80;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .rbq-multi-option-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rbq-multi-option-hint {
     flex: 0 0 auto;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     color: rgba(180,200,230,0.55);
   }
 

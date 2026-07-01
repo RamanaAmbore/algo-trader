@@ -454,7 +454,7 @@
     border-radius: 0.375rem;
     box-shadow: 0 4px 12px rgba(0,0,0,0.25);
     z-index: 40;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
   }
   .cmd-suggest-item {
     display: block;
@@ -464,7 +464,7 @@
     background: transparent;
     border: none;
     color: var(--algo-slate);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: var(--font-numeric);
     cursor: pointer;
     white-space: nowrap;
   }
@@ -473,8 +473,8 @@
   :global(.text-accent) { color: #fbbf24; }
 
   .symbol-preview {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 600;
     color: #22d3ee;
     background: rgba(34,211,238,0.14);
@@ -485,8 +485,8 @@
     display: inline-flex;
     align-items: center;
     gap: 0.15rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     padding: 0.05rem 0.3rem;
     border-radius: 0.2rem;
     border: 1px solid transparent;
@@ -509,7 +509,7 @@
   .pair-key {
     font-weight: 600;
     text-transform: uppercase;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
   }
   .pair-val {
     color: var(--algo-slate);

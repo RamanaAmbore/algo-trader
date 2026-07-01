@@ -2528,7 +2528,7 @@
     max-height: calc(100vh - 2rem);
     overflow-y: auto;
     color: var(--algo-slate);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     box-shadow: 0 12px 32px rgba(0,0,0,0.6);
   }
   /* Mobile: match the canonical-modal-panel sizing (96vw × 90vh)
@@ -2553,14 +2553,14 @@
     margin-bottom: 0.6rem;
   }
   .ot-symbol-text {
-    font-size: 0.78rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     color: var(--algo-slate);
     display: block;
   }
   .ot-symbol-meta {
-    font-size: 0.6rem;
-    color: #a3b9d0;
+    font-size: var(--fs-sm);
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
@@ -2572,7 +2572,7 @@
     height: 1.55rem;
     border-radius: 3px;
     cursor: pointer;
-    font-size: 0.78rem;
+    font-size: var(--fs-lg);
     line-height: 1;
   }
   .ot-close:hover { border-color: #f87171; color: #f87171; }
@@ -2626,8 +2626,8 @@
     border: 1px solid rgba(251, 191, 36, 0.35);
     border-radius: 3px;
     color: #fbbf24;
-    font-family: ui-monospace, monospace;
-    font-size: 0.68rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     font-weight: 800;
     letter-spacing: 0.03em;
     text-transform: uppercase;
@@ -2650,7 +2650,7 @@
        cards lead with amber. Operator: "make labels look different
        from others in the order window with depth". */
     display: block;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     color: #fbbf24;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -2671,7 +2671,7 @@
     border: 1px solid rgba(125,211,252,0.55);
     background: rgba(125,211,252,0.10);
     color: #7dd3fc;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     cursor: pointer;
     vertical-align: 1px;
@@ -2705,8 +2705,8 @@
     padding: 0 0.75rem;
     background: transparent;
     border: 0;
-    color: #a3b9d0;
-    font-size: 0.72rem;
+    color: var(--text-muted);
+    font-size: var(--fs-lg);
     font-weight: 700;
     cursor: pointer;
     flex: 1 1 0;
@@ -2731,7 +2731,7 @@
     flex: 1 1 0;
     min-width: 0;
   }
-  .ot-meta { font-size: 0.65rem; color: #a3b9d0; }
+  .ot-meta { font-size: var(--fs-md); color: var(--text-muted); }
 
   /* [−] [1 ▼] [+] (× 50 = 50) — lots-driven Qty UI. Sits inline on
      a single row; nowrap so the +/− and the dropdown can never
@@ -2784,7 +2784,7 @@
     background: rgba(251,191,36,0.10);
     color: #fbbf24;
     font-family: monospace;
-    font-size: 0.9rem;
+    font-size: var(--fs-xl);
     font-weight: 700;
     line-height: 1;
     cursor: pointer;
@@ -2822,7 +2822,7 @@
     color: #fbbf24;
     font-family: monospace;
     font-weight: 700;
-    font-size: 0.8rem;
+    font-size: var(--fs-xl);
     font-variant-numeric: tabular-nums;
     text-align: center;
   }
@@ -2834,7 +2834,7 @@
     border-radius: 3px;
     padding: 0.3rem 0.45rem;
     color: var(--algo-slate);
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     font-family: monospace;
   }
   .ot-input:focus { outline: none; border-color: #fbbf24; }
@@ -2848,8 +2848,8 @@
     background: rgba(255,255,255,0.04);
     border: 1px solid rgba(255,255,255,0.12);
     border-radius: 3px;
-    color: #a3b9d0;
-    font-size: 0.55rem;
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
     font-weight: 600;
     cursor: pointer;
     flex: 0 0 auto;
@@ -2872,7 +2872,7 @@
   .ot-pill-disabled:hover,
   .ot-pill[disabled]:hover {
     background: rgba(255,255,255,0.04);
-    color: #a3b9d0;
+    color: var(--text-muted);
     border-color: rgba(255,255,255,0.12);
   }
   /* Inline label + pill row: labels sit next to pills (instead of
@@ -2924,8 +2924,8 @@
     background: rgba(34, 211, 238, 0.14);
     border: 1px solid rgba(34, 211, 238, 0.32);
     color: #67e8f9;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.5rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-2xs);
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: none;
@@ -2948,8 +2948,8 @@
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid rgba(255, 255, 255, 0.10);
     color: rgba(200, 216, 240, 0.80);
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.7rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     font-weight: 600;
     letter-spacing: 0.04em;
     cursor: default;
@@ -2972,8 +2972,8 @@
     background: transparent;
     border: 0;
     color: #94a3b8;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 800;
     letter-spacing: 0.04em;
     line-height: 1;
@@ -3006,9 +3006,9 @@
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     color: rgba(180,200,230,0.7);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     letter-spacing: 0.04em;
   }
   .ot-mode-hint-val {
@@ -3022,7 +3022,7 @@
   .ot-mode-hint-live   { color: #f87171; border-color: rgba(248,113,113,0.55); background: rgba(248,113,113,0.10); }
   .ot-mode-hint-draft  { color: #c084fc; border-color: rgba(192,132,252,0.50); background: rgba(192,132,252,0.10); }
   .ot-mode-hint-shadow { color: #fb923c; border-color: rgba(251,146,60,0.50);  background: rgba(251,146,60,0.10); }
-  .ot-mode-hint-src    { color: rgba(180,200,230,0.45); font-size: 0.55rem; }
+  .ot-mode-hint-src    { color: rgba(180,200,230,0.45); font-size: var(--fs-xs); }
 
   /* Chase toggle — pushed to the row's far right (margin-left: auto)
      so it sits opposite the mode pills. Native checkbox + label
@@ -3044,13 +3044,13 @@
   }
   .ot-chase-label {
     font-family: monospace;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-weight: 700;
     letter-spacing: 0.05em;
     padding: 0.15rem 0.4rem;
     border-radius: 3px;
     border: 1px solid rgba(255,255,255,0.12);
-    color: #a3b9d0;
+    color: var(--text-muted);
     background: rgba(255,255,255,0.04);
   }
   .ot-chase-label.on {
@@ -3078,9 +3078,9 @@
     border: 0;
     border-right: 1px solid rgba(255,255,255,0.12);
     background: rgba(255,255,255,0.04);
-    color: #a3b9d0;
+    color: var(--text-muted);
     font-family: monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     line-height: 1;
     cursor: pointer;
@@ -3105,7 +3105,7 @@
     color: #f87171;
     padding: 0.35rem 0.55rem;
     border-radius: 3px;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     margin: 0.4rem 0;
   }
   /* Margin/cash preview rules retired — the lift-to-shell commit
@@ -3115,13 +3115,13 @@
   /* Preflight blockers (segment inactive, freeze qty, etc.) */
   .ot-margin-blocked {
     color: #f87171;
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
     margin-top: 0.2rem;
     line-height: 1.35;
   }
   .ot-margin-err {
     color: rgba(248,113,113,0.85);
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
   }
   /* Placed-order summary line — lives inside .ot-footer-info, to the
      left of the Exit button. Compact (no vertical margin, smaller pad
@@ -3133,7 +3133,7 @@
     color: #4ade80;
     padding: 0.3rem 0.5rem;
     border-radius: 3px;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-weight: 700;
     line-height: 1.3;
     word-break: break-word;
@@ -3148,7 +3148,7 @@
     cursor: default;
     min-height: 1.55rem;
     padding: 0.25rem 0.5rem 0.25rem 0.4rem;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
   }
 
   /* Funds pill — appears under the Account input. Compact 12px-ish
@@ -3165,13 +3165,13 @@
     border-radius: 3px;
     background: rgba(125,211,252,0.08);
     border: 1px solid rgba(125,211,252,0.25);
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.7rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     line-height: 1.2;
   }
   .ot-funds-k {
-    color: #a3b9d0;
-    font-size: 0.65rem;
+    color: var(--text-muted);
+    font-size: var(--fs-md);
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
@@ -3181,7 +3181,7 @@
     font-variant-numeric: tabular-nums;
   }
   .ot-funds-sep {
-    color: #a3b9d0;
+    color: var(--text-muted);
     opacity: 0.5;
   }
   .ot-funds-low {
@@ -3226,7 +3226,7 @@
   .ot-submit {
     padding: 0.45rem 1rem;
     border-radius: 3px;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     cursor: pointer;
     border: 1px solid transparent;
@@ -3290,7 +3290,7 @@
 
   /* `.ot-label-sub` kept — used by the Template card "(exit rules)"
      hint and other secondary-text spans across the ticket. */
-  .ot-label-sub { opacity: 0.5; font-weight: 400; font-size: 0.55rem; margin-left: 0.2rem; }
+  .ot-label-sub { opacity: 0.5; font-weight: 400; font-size: var(--fs-xs); margin-left: 0.2rem; }
   /* `.ot-target-row` / `.ot-target-input-row` / `.ot-target-mode-pill`
      / `.ot-target-input` / `.ot-target-hint` CSS rules removed in
      audit pass 6 — the Target row markup was replaced by the
@@ -3321,7 +3321,7 @@
     margin-top: 0.2rem;
     padding: 0.18rem 0.42rem;
     border-radius: 3px;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     line-height: 1.25;
     color: #fbbf24;
     background: rgba(251, 191, 36, 0.10);
@@ -3339,19 +3339,19 @@
     background: rgba(34,211,238,0.06);
     border: 1px solid rgba(34,211,238,0.22);
     border-radius: 3px;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     line-height: 1.35;
   }
   .ot-tpl-preview-label {
     color: rgba(180,200,230,0.85);
     font-weight: 600;
     margin-right: 0.15rem;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .ot-tpl-preview-chip {
     padding: 0.1rem 0.4rem;
     border-radius: 3px;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     font-weight: 600;
     color: rgba(220,230,245,0.92);
     background: rgba(255,255,255,0.04);
@@ -3390,13 +3390,13 @@
     font-style: italic;
   }
   .ot-tpl-preview-loading {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: rgba(180,200,230,0.55);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     padding-left: 0.45rem;
   }
   .ot-tpl-preview-err {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: #fca5a5;
     padding: 0.25rem 0.4rem;
     background: rgba(248,113,113,0.08);
@@ -3438,13 +3438,13 @@
   .ot-demo-close:hover { background: rgba(255,255,255,0.10); color: #fbbf24; }
   .ot-demo-title {
     margin: 0 0 0.55rem;
-    font-size: 0.95rem;
+    font-size: var(--fs-xl);
     font-weight: 800;
     color: #fbbf24;
   }
   .ot-demo-body {
     margin: 0 0 0.7rem;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     line-height: 1.5;
     color: #c8d8f0;
   }
@@ -3454,7 +3454,7 @@
     border-radius: 3px;
     padding: 0 0.25rem;
     color: #67e8f9;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
   }
   .ot-demo-cta {
     display: flex; gap: 0.5rem; justify-content: flex-end;
@@ -3465,7 +3465,7 @@
   .ot-demo-btn {
     padding: 0.38rem 0.85rem;
     border-radius: 4px;
-    font-size: 0.68rem;
+    font-size: var(--fs-md);
     font-weight: 700;
     letter-spacing: 0.02em;
     cursor: pointer;

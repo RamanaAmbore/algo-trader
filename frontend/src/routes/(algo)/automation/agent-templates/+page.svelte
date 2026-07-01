@@ -344,23 +344,23 @@
     min-width: 0;
   }
   .filter-label {
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     color: rgba(180,200,230,0.6);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     margin-right: 0.3rem;
   }
   .filter-btn {
     padding: 0.22rem 0.6rem;
-    font-size: 0.66rem;
+    font-size: var(--fs-md);
     font-weight: 500;
     color: rgba(180,200,230,0.75);
     background: rgba(255,255,255,0.04);
     border: 1px solid rgba(255,255,255,0.1);
     border-radius: 0.25rem;
     cursor: pointer;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     letter-spacing: 0.03em;
     text-transform: lowercase;
     transition: background-color 0.06s, color 0.06s, border-color 0.06s;
@@ -377,19 +377,19 @@
     border-color: rgba(251,191,36,0.5);
   }
   .filter-hint {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: rgba(180,200,230,0.5);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
 
   .grp-title {
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-weight: 700;
     color: rgba(251,191,36,0.65);
     letter-spacing: 0.18em;
     text-transform: uppercase;
     margin: 1.1rem 0 0.4rem 0.2rem;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .frag-list {
     list-style: none;
@@ -421,8 +421,8 @@
     border: none;
     color: rgba(200,216,240,0.85);
     cursor: pointer;
-    font-family: ui-monospace, monospace;
-    font-size: 0.72rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     text-align: left;
   }
   .frag-name {
@@ -432,7 +432,7 @@
     flex-shrink: 0;
   }
   .frag-pill {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     padding: 0.1rem 0.45rem;
     border-radius: 999px;
@@ -452,7 +452,7 @@
   }
   .frag-desc {
     color: rgba(180,200,230,0.6);
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -468,7 +468,7 @@
     background: rgba(0,0,0,0.35);
     border: 1px solid rgba(255,255,255,0.06);
     border-radius: 0.25rem;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     color: var(--algo-slate);
     max-height: 18rem;
     overflow: auto;
@@ -481,14 +481,14 @@
 
   .action-btn {
     padding: 0.22rem 0.65rem;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-weight: 500;
     color: rgba(200,216,240,0.85);
     background: rgba(255,255,255,0.04);
     border: 1px solid rgba(255,255,255,0.12);
     border-radius: 0.25rem;
     cursor: pointer;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     letter-spacing: 0.03em;
     transition: background-color 0.06s, color 0.06s, border-color 0.06s;
   }
@@ -506,14 +506,14 @@
 
   .primary-btn {
     padding: 0.32rem 0.95rem;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     color: #fbbf24;
     background: rgba(251,191,36,0.18);
     border: 1px solid rgba(251,191,36,0.5);
     border-radius: 0.25rem;
     cursor: pointer;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     letter-spacing: 0.04em;
     transition: background-color 0.06s;
   }
@@ -524,11 +524,11 @@
     border: 1px solid rgba(251,191,36,0.18);
   }
   .form-title {
-    font-size: 0.8rem;
+    font-size: var(--fs-xl);
     font-weight: 700;
     color: #fbbf24;
     margin: 0 0 0.6rem 0;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
@@ -540,37 +540,37 @@
     margin-bottom: 0.5rem;
   }
   .form-row span {
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     color: rgba(180,200,230,0.7);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     letter-spacing: 0.04em;
   }
   .form-row-body { align-items: start; }
   .form-input {
     padding: 0.3rem 0.55rem;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     color: var(--algo-slate);
     background: rgba(0,0,0,0.3);
     border: 1px solid rgba(255,255,255,0.12);
     border-radius: 0.25rem;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     outline: none;
   }
   .form-input:focus { border-color: rgba(251,191,36,0.5); }
   .form-readonly {
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     color: rgba(180,200,230,0.6);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     padding: 0.3rem 0;
   }
   .form-body-area {
     padding: 0.5rem 0.7rem;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     color: var(--algo-slate);
     background: rgba(0,0,0,0.35);
     border: 1px solid rgba(255,255,255,0.12);
     border-radius: 0.25rem;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     resize: vertical;
     outline: none;
   }
@@ -583,14 +583,14 @@
 
   .muted {
     color: rgba(180,200,230,0.5);
-    font-size: 0.65rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-md);
+    font-family: var(--font-numeric);
   }
   .err {
     color: #fb7185;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     padding: 0.3rem 0;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .mb-2 { margin-bottom: 0.5rem; }
   .mb-3 { margin-bottom: 0.75rem; }

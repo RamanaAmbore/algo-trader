@@ -402,7 +402,7 @@
   <div class="rf-closed-overlay"
        role="presentation"
        onclick={(e) => { e.stopPropagation(); _showClosedNotice = false; }}></div>
-  <div class="rf-closed-popup" role="dialog" aria-modal="true"
+  <div class="rf-closed-popup algo-modal" role="dialog" aria-modal="true"
        aria-label="Market closed notice"
        tabindex="-1"
        onclick={(e) => e.stopPropagation()}
@@ -573,6 +573,15 @@
     z-index: 1000;
   }
   .rf-closed-popup {
+    /* Composes .algo-modal chrome (gradient + amber halo + shadow +
+       flex column + overflow hidden). Overrides:
+       - positioning: absolute right-anchored below the RefreshButton
+         (not centered viewport).
+       - background: elevated navy — pill anchors to the toolbar chip
+         and needs the +1 elevation step so it visually detaches from
+         the navbar row.
+       - border-radius: 5px (slightly tighter than canonical 6px)
+         — matches the pill's own radius. */
     position: absolute;
     top: calc(100% + 0.4rem);
     right: 0;
@@ -581,16 +590,14 @@
     max-width: min(18rem, 92vw);
     padding: 0.7rem 0.85rem 0.65rem;
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
-    border: 1px solid rgba(251, 191, 36, 0.55);
     border-radius: 5px;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
-    color: #c8d8f0;
-    font-size: 0.65rem;
+    color: var(--text-primary);
+    font-size: var(--fs-md);
     line-height: 1.4;
   }
   .rf-closed-title {
     font-weight: 700;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     color: #fbbf24;
     margin-bottom: 0.35rem;
     letter-spacing: 0.03em;
@@ -607,7 +614,7 @@
   .rf-closed-btn {
     padding: 0.3rem 0.65rem;
     border-radius: 3px;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-weight: 600;
     cursor: pointer;
     background: transparent;

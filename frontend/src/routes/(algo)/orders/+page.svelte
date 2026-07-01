@@ -757,8 +757,8 @@
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -814,7 +814,7 @@
       0 1px 0 rgba(255, 255, 255, 0.06) inset,
       0 2px 4px rgba(0, 0, 0, 0.25);
     color: var(--algo-slate);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     cursor: pointer;
     transition: border-color 0.12s, transform 0.12s, box-shadow 0.12s;
   }
@@ -896,7 +896,7 @@
   .oc-filter-card[data-status="cancelled"] .oc-filter-count { color: #fb923c; }
 
   .oc-filter-label {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;

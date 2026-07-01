@@ -71,7 +71,7 @@
     display: inline-flex;
     align-items: baseline;
     gap: 0;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-family: var(--font-numeric);
     font-size: inherit;
     line-height: inherit;
   }

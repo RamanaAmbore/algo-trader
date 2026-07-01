@@ -92,7 +92,7 @@
     border: 1px solid rgba(251, 191, 36, 0.25);
     border-radius: 3px;
     color: var(--algo-slate);
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-family: inherit;
     cursor: pointer;
     line-height: 1.15;

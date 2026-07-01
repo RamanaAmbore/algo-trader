@@ -193,8 +193,8 @@
 <style>
   .ul-wrap {
     overflow-y: auto;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     padding: 0.35rem 0;
   }
 
@@ -241,7 +241,7 @@
   .ul-time {
     color: var(--algo-muted);
     font-variant-numeric: tabular-nums;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     letter-spacing: 0.02em;
   }
   .ul-line {
@@ -254,7 +254,7 @@
     font-weight: 800;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     flex-shrink: 0;
   }
   .ul-msg { color: var(--algo-slate); }
@@ -292,7 +292,7 @@
     border: 1px solid rgba(251, 113, 133, 0.45);
     padding: 0 0.25rem;
     border-radius: 2px;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     font-weight: 800;
     letter-spacing: 0.06em;
     flex-shrink: 0;
@@ -323,13 +323,13 @@
     align-items: center;
     gap: 0.4rem;
     flex-wrap: wrap;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
   }
   .ul-card-kind {
     font-weight: 800;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     flex-shrink: 0;
   }
   .ul-card-sim {
@@ -338,7 +338,7 @@
     border: 1px solid rgba(192, 132, 252, 0.55);
     padding: 0 0.3rem;
     border-radius: 2px;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     font-weight: 800;
     letter-spacing: 0.06em;
     flex-shrink: 0;
@@ -349,20 +349,20 @@
     border: 1px solid rgba(126, 151, 184, 0.25);
     padding: 0 0.35rem;
     border-radius: 2px;
-    font-size: 0.58rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-xs);
+    font-family: var(--font-numeric);
     flex-shrink: 0;
   }
   .ul-card-time {
     margin-left: auto;
     color: var(--algo-muted);
     font-variant-numeric: tabular-nums;
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
     flex-shrink: 0;
   }
   .ul-card-msg {
     color: var(--algo-slate);
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     line-height: 1.4;
     padding-left: 0.1rem;
   }

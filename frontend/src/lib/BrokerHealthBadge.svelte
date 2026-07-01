@@ -76,7 +76,7 @@
 {#if open}
   <!-- Modal overlay -->
   <div class="bh-overlay" role="presentation" onclick={() => open = false}></div>
-  <div class="bh-modal" role="dialog" aria-label="Broker auth health">
+  <div class="bh-modal algo-modal" role="dialog" aria-label="Broker auth health">
     <div class="bh-modal-header">
       <span class="bh-modal-title">Broker Auth Health</span>
       <button class="bh-close" onclick={() => open = false} aria-label="Close">
@@ -118,8 +118,8 @@
     height: 1.4rem;
     padding: 0 0.5rem;
     border-radius: 9999px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.07em;
     cursor: pointer;
@@ -159,7 +159,7 @@
     border-radius: 50%;
     background: currentColor;
   }
-  .bh-label { font-size: 0.58rem; }
+  .bh-label { font-size: var(--fs-xs); }
 
   /* ── Modal overlay ── */
   .bh-overlay {
@@ -169,19 +169,20 @@
     background: transparent;
   }
   .bh-modal {
+    /* Composes .algo-modal chrome (gradient + amber halo + shadow +
+       flex column + overflow hidden). Overrides:
+       - positioning: fixed top-right (not centered) — this is a
+         dropdown-style utility panel anchored to the navbar chip.
+       - border-radius: 0.6rem (slightly softer than canonical 6px)
+         — preserves the pill-drop feel.
+       - dimensions: constrained to 680×480 for a compact status panel. */
     position: fixed;
     top: 3.2rem;
     right: 0.5rem;
     z-index: 9991;
-    background: #0f172a;
-    border: 1px solid rgba(148, 163, 184, 0.18);
     border-radius: 0.6rem;
     width: min(96vw, 680px);
     max-height: min(90vh, 480px);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    box-shadow: 0 8px 32px rgba(0,0,0,0.45);
   }
 
   /* ── Modal header ── */
@@ -193,7 +194,7 @@
     border-bottom: 1px solid rgba(148, 163, 184, 0.12);
   }
   .bh-modal-title {
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     letter-spacing: 0.06em;
     color: #cbd5e1;
@@ -228,8 +229,8 @@
     gap: 0.5rem;
     padding: 0.45rem 1rem;
     border-bottom: 1px solid rgba(148, 163, 184, 0.07);
-    font-size: 0.68rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-md);
+    font-family: var(--font-numeric);
   }
   .bh-row:last-child { border-bottom: none; }
 
@@ -252,10 +253,10 @@
   .bh-row-broker {
     color: #94a3b8;
     text-transform: uppercase;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
   }
   .bh-row-state {
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     border-radius: 9999px;
@@ -271,18 +272,18 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: 0.63rem;
+    font-size: var(--fs-sm);
   }
   .bh-row-ts {
     color: #475569;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     text-align: right;
     white-space: nowrap;
   }
 
   .bh-empty {
     color: #64748b;
-    font-size: 0.68rem;
+    font-size: var(--fs-md);
     text-align: center;
     padding: 1.5rem 1rem;
   }
@@ -293,9 +294,9 @@
     padding: 0.5rem 1rem;
   }
   .bh-footer-note {
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
     color: #475569;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
 
   /* ── Mobile: full-width modal, shift down from top ── */
@@ -310,7 +311,7 @@
     .bh-row {
       grid-template-columns: 0.6rem 4rem 2.5rem 3rem 1fr 4rem;
       gap: 0.35rem;
-      font-size: 0.62rem;
+      font-size: var(--fs-sm);
     }
   }
 </style>

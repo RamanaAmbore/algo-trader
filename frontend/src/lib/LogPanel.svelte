@@ -1426,7 +1426,7 @@
     /* Operator: "agents, terminal, ticks and system text size
        should be equal to news tab text size of the data". News
        row is 0.72rem; matching here. */
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     color: var(--algo-slate);
     border-left: none;
     background: transparent;
@@ -1437,10 +1437,10 @@
   :global(.log-panel.log-rows .log-row-time) {
     flex: 0 0 auto;
     order: 0;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     /* Matches .newslist-time (0.62rem) — same scan-fodder
        proportion as the news tab. */
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     color: #7dd3fc;
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.02em;
@@ -1455,10 +1455,10 @@
   :global(.log-panel.log-rows .log-row-tag) {
     flex: 0 0 auto;
     order: 1;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     /* Bumped with the message size — same proportion as
        .newslist-src on the news tab. */
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
     background: rgba(126, 151, 184, 0.10);
     border: 1px solid rgba(126, 151, 184, 0.25);
@@ -1543,8 +1543,8 @@
     display: inline-block;
     padding: 0 0.3rem;
     margin-right: 0.25rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.5rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-2xs);
     font-weight: 700;
     letter-spacing: 0.05em;
     border-radius: 2px;
@@ -1617,8 +1617,8 @@
     border: 1px solid rgba(255,255,255,0.10);
     border-right-width: 0;
     padding: 0.1rem 0.55rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -1649,8 +1649,8 @@
     display: inline-block;
     margin: 0 0.15rem;
     padding: 0 0.25rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 800;
     border-radius: 2px;
     cursor: help;

@@ -162,7 +162,7 @@
     align-items: baseline;
     justify-content: space-between;
     gap: 0.4rem;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     color: var(--algo-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -171,7 +171,7 @@
   .ot-depth-meta {
     color: var(--algo-muted);
     font-style: italic;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     text-transform: none;
     letter-spacing: 0;
     opacity: 0.7;
@@ -179,7 +179,7 @@
   .ot-depth-ltp {
     color: var(--algo-amber, #fbbf24);
     font-weight: 700;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     text-transform: none;
     letter-spacing: 0;
   }
@@ -189,7 +189,7 @@
   .ot-depth-prev {
     color: var(--algo-sky, #7dd3fc);
     font-weight: 600;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     text-transform: none;
     letter-spacing: 0;
     margin-left: 0.5rem;
@@ -203,10 +203,10 @@
        covers digit-width consistency in most faces, but `tabular-nums`
        is the canonical spec per the CLAUDE.md number-formatting rule. */
     font-variant-numeric: tabular-nums;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
   }
   .ot-depth-label {
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     color: var(--algo-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;

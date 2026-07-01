@@ -582,8 +582,8 @@
     background: linear-gradient(180deg, var(--algo-bg-elev1) 0%, #0f1828 100%);
     border-bottom: 1px solid var(--algo-amber-border-soft);
     color: var(--algo-slate);
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     letter-spacing: 0.04em;
     text-decoration: none;
     user-select: none;
@@ -609,13 +609,13 @@
   }
   .ps-agg-k {
     color: var(--algo-muted);
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
   .ps-agg-v {
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     font-variant-numeric: tabular-nums;
   }
@@ -647,13 +647,13 @@
                   scrollbar-width: none; }
     .ps-strip::-webkit-scrollbar { display: none; }
     .ps-agg     { gap: 0.15rem; flex-shrink: 0; }
-    .ps-agg-k   { font-size: 0.5rem; }
-    .ps-agg-v   { font-size: 0.6rem; }
+    .ps-agg-k   { font-size: var(--fs-2xs); }
+    .ps-agg-v   { font-size: var(--fs-sm); }
   }
   @media (max-width: 380px) {
     /* Narrowest phones — drop one more notch. */
     .ps-strip   { gap: 0.22rem; padding: 0 0.2rem; }
-    .ps-agg-k   { font-size: 0.46rem; }
-    .ps-agg-v   { font-size: 0.55rem; }
+    .ps-agg-k   { font-size: var(--fs-2xs); }
+    .ps-agg-v   { font-size: var(--fs-xs); }
   }
 </style>

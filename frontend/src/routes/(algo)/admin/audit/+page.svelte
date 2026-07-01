@@ -390,13 +390,13 @@
   }
   .audit-flbl {
     display: flex; flex-direction: column; gap: 0.15rem;
-    font-size: 0.55rem; font-weight: 700; letter-spacing: 0.05em;
-    text-transform: uppercase; color: #a3b9d0;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-xs); font-weight: 700; letter-spacing: 0.05em;
+    text-transform: uppercase; color: var(--text-muted);
+    font-family: var(--font-numeric);
   }
   .audit-finput {
     width: 9rem;
-    font-size: 0.7rem; font-family: ui-monospace, monospace;
+    font-size: var(--fs-lg); font-family: var(--font-numeric);
   }
   .audit-finput-wide { width: 14rem; }
   .audit-finput-narrow { width: 5rem; }
@@ -411,15 +411,15 @@
   }
   .audit-table {
     width: 100%; border-collapse: collapse;
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
   }
   .audit-table th {
     text-align: left;
     padding: 0.4rem 0.55rem;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
-    color: #a3b9d0;
-    font-size: 0.55rem;
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
     font-weight: 800; letter-spacing: 0.06em;
     text-transform: uppercase;
     background: rgba(15, 23, 42, 0.65);
@@ -450,14 +450,14 @@
   .audit-target-type { color: #67e8f9; font-weight: 700; margin-right: 0.3rem; }
   .audit-target-id   { color: #c8d8f0; }
   .audit-summary   { max-width: 18rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .audit-req-id    { color: #7e97b8; font-size: 0.6rem; }
-  .audit-ip        { color: #94a3b8; font-size: 0.6rem; white-space: nowrap; }
+  .audit-req-id    { color: #7e97b8; font-size: var(--fs-sm); }
+  .audit-ip        { color: #94a3b8; font-size: var(--fs-sm); white-space: nowrap; }
 
   .audit-status {
     display: inline-block;
     padding: 0.1rem 0.4rem;
     border-radius: 3px;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 800;
   }
   .audit-st-ok    { background: rgba(74, 222, 128, 0.18); color: #4ade80; }
@@ -468,7 +468,7 @@
     display: inline-block;
     padding: 0.05rem 0.35rem;
     border-radius: 3px;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 800;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -496,10 +496,10 @@
     border: 1px solid rgba(126, 151, 184, 0.30);
     border-radius: 999px;
     color: #c8d8f0;
-    font-size: 0.62rem; font-weight: 700;
+    font-size: var(--fs-sm); font-weight: 700;
     letter-spacing: 0.04em;
     cursor: pointer;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .audit-pill:hover { background: rgba(34, 211, 238, 0.10); }
   .audit-pill.active {
@@ -517,12 +517,12 @@
     margin-bottom: 0.55rem;
   }
   .audit-quicklbl {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: #94a3b8;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     margin-right: 0.2rem;
   }
   .audit-quick {
@@ -531,11 +531,11 @@
     border: 1px solid rgba(126, 151, 184, 0.22);
     border-radius: 3px;
     color: #94a3b8;
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 0.04em;
     cursor: pointer;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .audit-quick:hover { background: rgba(34, 211, 238, 0.08); color: #c8d8f0; }
   .audit-quick.active {
@@ -567,13 +567,13 @@
     display: inline-block;
     padding: 0.05rem 0.35rem;
     border-radius: 3px;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.04em;
     color: #c8d8f0;
     background: rgba(126, 151, 184, 0.18);
     border: 1px solid rgba(126, 151, 184, 0.32);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .audit-cat-order   { background: rgba(74, 222, 128, 0.18); border-color: rgba(74, 222, 128, 0.45); color: #4ade80; }
   .audit-cat-agent   { background: rgba(34, 211, 238, 0.16); border-color: rgba(34, 211, 238, 0.45); color: #67e8f9; }
@@ -584,8 +584,8 @@
   .audit-pager {
     display: flex; align-items: center; gap: 0.6rem;
     margin-top: 0.6rem;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     color: #c8d8f0;
   }
-  .audit-pager-info { margin: 0 auto; font-family: ui-monospace, monospace; }
+  .audit-pager-info { margin: 0 auto; font-family: var(--font-numeric); }
 </style>

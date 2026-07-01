@@ -136,7 +136,7 @@
 
   /* ── Card variant ─────────────────────────────────────────────── */
   .skel-card {
-    background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+    background: var(--card-bg-gradient);
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 4px;
     padding: 0.55rem 0.7rem;

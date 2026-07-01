@@ -3739,7 +3739,7 @@
     const sym    = String((params.data || {}).tradingsymbol || '').toUpperCase();
     let base     = sparklines[sym];
     if (!base || base.length === 0) {
-      return '<span style="display:flex;align-items:center;justify-content:center;height:100%;color:#7e97b8;font-size:0.6rem">—</span>';
+      return '<span style="display:flex;align-items:center;justify-content:center;height:100%;color:#7e97b8;font-size: var(--fs-sm)">—</span>';
     }
     // Defensive: when the backend ships only the current LTP (movers
     // entering a fresh universe with no cached history + broker rate-
@@ -4284,7 +4284,7 @@
         },
         sortingOrder: ['asc', 'desc', null],
         overlayNoRowsTemplate:
-          `<span style="font-size:0.65rem;color:#7e97b8">${emptyMsg}</span>`,
+          `<span style="font-size: var(--fs-md);color:#7e97b8">${emptyMsg}</span>`,
         domLayout: 'normal',
         getRowClass,
         // Keep underlyings + their options together as a block during
@@ -5465,7 +5465,7 @@
      positions tells calls from puts at a glance. */
   :global(.sym-main.sym-ce) { color: #4ade80; }
   :global(.sym-main.sym-pe) { color: #f87171; }
-  :global(.sym-alias) { color: var(--algo-muted); font-size: 0.55rem; }
+  :global(.sym-alias) { color: var(--algo-muted); font-size: var(--fs-xs); }
 
   /* Source badges (P / H / W / U) — sit right of the symbol. */
   :global(.sym-badges) {
@@ -5477,7 +5477,7 @@
   :global(.sym-badge) {
     display: inline-block;
     padding: 0 3px;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     font-weight: 700;
     line-height: 12px;
     border-radius: 2px;
@@ -5520,7 +5520,7 @@
     margin-left: 6px;
     padding: 0 4px;
     color: rgba(248,113,113,0.45);
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     line-height: 12px;
     cursor: pointer;
@@ -5551,7 +5551,7 @@
     margin-left: 4px;
     padding: 0 4px;
     color: rgba(126,151,184,0.55);
-    font-size: 0.75rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     line-height: 12px;
     cursor: pointer;
@@ -5577,7 +5577,7 @@
     margin-left: 2px;
     padding: 0 3px;
     color: rgba(126,151,184,0.45);
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     line-height: 12px;
     cursor: pointer;
     user-select: none;
@@ -5802,8 +5802,8 @@
      the per-major palette already used elsewhere on the page so the
      six grids feel like the same family seen from the top. */
   .mp-bucket-label {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -5922,8 +5922,8 @@
   /* Account column on the RIGHT grid — small-caps, account-colour
      foreground, monospace to lock the +N badge alignment. */
   :global(.ag-theme-algo .mp-acct-cell) {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.04em;
   }
@@ -6070,7 +6070,7 @@
     border-radius: 5px;
     box-shadow: 0 4px 20px rgba(0,0,0,0.55);
     padding: 0.25rem 0;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
   }
   :global(.ctx-item) {
     display: block;
@@ -6081,7 +6081,7 @@
     border: none;
     color: rgba(200,216,240,0.85);
     cursor: pointer;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     white-space: nowrap;
     transition: background 0.1s, color 0.1s;
   }
@@ -6148,7 +6148,7 @@
     justify-content: center;
     padding: 0 0.45rem;
     height: 1.5rem;
-    font-size: 0.95rem;
+    font-size: var(--fs-xl);
     line-height: 1;
     font-weight: 700;
     color: #fbbf24;
@@ -6168,7 +6168,7 @@
      read as distinct without needing tabs. Subtle uppercase amber
      header (same palette as the page-section headers). */
   :global(.mp-add-section-label) {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -6210,7 +6210,7 @@
     background: rgba(251, 191, 36, 0.04);
   }
   :global(.search-title) {
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     color: #fbbf24;
     letter-spacing: 0.05em;
@@ -6249,14 +6249,14 @@
     width: 100%;
     text-align: left;
     padding: 0.4rem 0.7rem;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     background: transparent;
     border: none;
     cursor: pointer;
   }
   :global(.search-typeahead-item:hover) { background: rgba(251, 191, 36, 0.1); }
   :global(.search-hint) {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
     line-height: 1.4;
   }

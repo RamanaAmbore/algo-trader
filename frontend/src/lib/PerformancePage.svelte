@@ -646,7 +646,7 @@
       // `numericColumn` (warning #34). The built-in already adds
       // `ag-right-aligned-cell` + `ag-right-aligned-header` classes
       // that our CSS picks up — no override needed.
-      overlayNoRowsTemplate: '<span style="font-size:0.65rem;color:#7e97b8">—</span>',
+      overlayNoRowsTemplate: '<span style="font-size: var(--fs-md);color:#7e97b8">—</span>',
       domLayout: 'autoHeight',
       getRowClass,
       pinnedBottomRowData: [],
@@ -1315,9 +1315,9 @@
      doesn't jump when the real grid paints below it. */
   .perf-grid-loading {
     padding: 0.6rem 0.25rem;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     color: #7e97b8;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     letter-spacing: 0.03em;
   }
 
@@ -1352,7 +1352,7 @@
     border-radius: 0.3rem;
     padding: 0.45rem 0.75rem;
     margin-bottom: 0.6rem;
-    font-size: 0.75rem;
+    font-size: var(--fs-lg);
     line-height: 1.4;
     color: var(--card-strategy-text, #1e3050);
   }
@@ -1360,7 +1360,7 @@
     font-weight: 700;
     color: var(--card-strategy-lbl, #5a7090);
     text-transform: uppercase;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     letter-spacing: 0.08em;
     margin-right: 0.4rem;
   }
@@ -1370,7 +1370,7 @@
   }
   .perf-strategy-meta {
     color: var(--card-strategy-meta, #5a7090);
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
   }
   /* Inline separator dot — explicit baseline alignment so it doesn't
      float relative to the surrounding text the way an inline '·'
@@ -1388,7 +1388,7 @@
     top: -0.05em;
   }
   @media (max-width: 600px) {
-    .perf-strategy-meta { display: block; margin-top: 0.15rem; font-size: 0.65rem; }
+    .perf-strategy-meta { display: block; margin-top: 0.15rem; font-size: var(--fs-md); }
     .perf-strategy-sep  { display: none; }
   }
 
@@ -1414,10 +1414,10 @@
     padding: 0.5rem 0.75rem;
     border-radius: 4px;
     border: 1px solid;
-    font-size: 0.75rem;
+    font-size: var(--fs-lg);
     line-height: 1.25;
     margin-bottom: 0.75rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-family: var(--font-numeric);
   }
   /* Fill toast — momentary confirmation that a Kite postback fired.
      Sticks to the top-right, fades in/out, doesn't push the page
@@ -1433,9 +1433,9 @@
     color: #fbbf24;
     padding: 0.4rem 0.7rem;
     border-radius: 4px;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-family: var(--font-numeric);
     box-shadow: 0 2px 10px rgba(0,0,0,0.35);
     animation: perf-fill-toast-in 0.18s ease-out;
   }
@@ -1447,7 +1447,7 @@
     .perf-fill-toast { animation: none; }
   }
   .perf-banner-icon {
-    font-size: 0.95rem;
+    font-size: var(--fs-xl);
     line-height: 1;
     flex: 0 0 auto;
   }
@@ -1623,7 +1623,7 @@
      theme. Appears as a small "→" arrow after the symbol text. */
   .perf-dark :global(.perf-opts-link) {
     display: inline-block;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 600;
     padding: 0 0.28rem;
     border-radius: 0.18rem;

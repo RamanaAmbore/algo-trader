@@ -252,16 +252,16 @@
     gap: 0.55rem;
   }
   .rec-title {
-    font-family: ui-monospace, monospace;
-    font-size: 0.74rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     font-weight: 700;
     color: #c084fc;
     letter-spacing: 0.04em;
   }
   .rec-count {
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     color: rgba(180,200,230,0.65);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .rec-refresh {
     margin-left: auto;
@@ -270,7 +270,7 @@
     color: rgba(200,216,240,0.85);
     border-radius: 4px;
     padding: 0.18rem 0.5rem;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     cursor: pointer;
   }
   .rec-refresh:hover { background: rgba(255,255,255,0.08); }
@@ -291,8 +291,8 @@
     border-color: rgba(74,222,128,0.40);
   }
   .rec-status {
-    font-family: ui-monospace, monospace;
-    font-size: 0.68rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     color: rgba(200,216,240,0.92);
   }
   .rec-paused {
@@ -304,9 +304,9 @@
     display: flex;
     align-items: center;
     gap: 0.35rem;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     color: rgba(180,200,230,0.85);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .rec-control-btns {
     display: flex;
@@ -315,9 +315,9 @@
   }
   .rec-btn {
     padding: 0.28rem 0.7rem;
-    font-size: 0.68rem;
+    font-size: var(--fs-md);
     font-weight: 600;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     color: rgba(200,216,240,0.9);
     background: rgba(255,255,255,0.05);
     border: 1px solid rgba(180,200,230,0.25);
@@ -345,7 +345,7 @@
   }
 
   .rec-empty {
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     color: rgba(180,200,230,0.6);
     padding: 0.6rem;
     background: rgba(255,255,255,0.02);
@@ -393,14 +393,14 @@
     gap: 0.18rem;
   }
   .rec-row-label {
-    font-size: 0.74rem;
+    font-size: var(--fs-lg);
     font-weight: 600;
     color: rgba(220,230,245,0.92);
   }
   .rec-row-meta {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: rgba(180,200,230,0.65);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     display: flex;
     gap: 0.3rem;
     flex-wrap: wrap;
@@ -412,7 +412,7 @@
     color: rgba(248,113,113,0.65);
     padding: 0 0.7rem;
     cursor: pointer;
-    font-size: 0.78rem;
+    font-size: var(--fs-lg);
   }
   .rec-row-del:hover {
     color: #fca5a5;
@@ -420,7 +420,7 @@
   }
 
   .rec-err {
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     color: #fca5a5;
     padding: 0.3rem 0.5rem;
     background: rgba(248,113,113,0.10);

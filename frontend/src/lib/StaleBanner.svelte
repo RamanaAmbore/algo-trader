@@ -49,7 +49,7 @@
     padding: 0.4rem 0.6rem;
     margin-bottom: 0.5rem;
     border-radius: 3px;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     line-height: 1.3;
     border: 1px solid;
   }
@@ -64,7 +64,7 @@
     color: var(--algo-red-text);
   }
   .stale-banner-icon {
-    font-size: 0.85rem;
+    font-size: var(--fs-xl);
     flex-shrink: 0;
   }
   .stale-banner-text {

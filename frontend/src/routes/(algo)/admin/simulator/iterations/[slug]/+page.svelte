@@ -175,8 +175,8 @@
 
 <style>
   .slug-chip {
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: #fbbf24;
     background: rgba(251,191,36,0.10);
     border: 1px solid rgba(251,191,36,0.35);
@@ -185,8 +185,8 @@
     letter-spacing: 0.04em;
   }
   .back-link {
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     color: #7dd3fc;
     text-decoration: none;
     margin-left: 0.75rem;
@@ -198,13 +198,13 @@
     color: #f87171;
     padding: 0.4rem 0.65rem;
     border-radius: 4px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     margin-bottom: 0.5rem;
   }
   .loading, .empty {
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     color: var(--algo-muted);
     padding: 1rem;
     text-align: center;
@@ -222,8 +222,8 @@
     padding: 0.65rem 0.75rem;
   }
   .card-title {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     color: #fbbf24;
     text-transform: uppercase;
@@ -233,8 +233,8 @@
   .kv {
     width: 100%;
     border-collapse: collapse;
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
   }
   .kv th {
     text-align: left;
@@ -244,7 +244,7 @@
     width: 9rem;
     text-transform: uppercase;
     letter-spacing: 0.03em;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
   }
   .kv td {
     color: var(--algo-slate);
@@ -255,7 +255,7 @@
   .regime  { color: #c084fc; font-weight: 700; }
   .er {
     text-transform: uppercase;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     letter-spacing: 0.04em;
     font-weight: 700;
   }
@@ -263,11 +263,11 @@
   .er-warn    { color: #fbbf24; }
   .er-err     { color: #f87171; }
   .er-pending { color: #7dd3fc; }
-  .er-other   { color: #a3b9d0; }
+  .er-other   { color: var(--text-muted); }
 
   .empty-inline {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
     font-style: italic;
     padding: 0.45rem 0;
@@ -279,8 +279,8 @@
     background: rgba(251,191,36,0.18);
     border: 1px solid rgba(251,191,36,0.55);
     color: #fbbf24;
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     font-weight: 700;
     letter-spacing: 0.05em;
     cursor: pointer;
@@ -293,7 +293,7 @@
   }
   .replay-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .hint {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     color: var(--algo-muted);
     font-style: italic;
     margin-top: 0.35rem;
@@ -306,6 +306,6 @@
     border: 1px solid rgba(248,113,113,0.35);
     padding: 0 0.3rem;
     border-radius: 2px;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
   }
 </style>

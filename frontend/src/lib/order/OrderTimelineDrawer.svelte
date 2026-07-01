@@ -228,8 +228,8 @@
     flex-shrink: 0;
   }
   .otd-title {
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     font-weight: 700;
     color: #fbbf24;
     letter-spacing: 0.06em;
@@ -259,8 +259,8 @@
   }
 
   .otd-empty {
-    font-family: ui-monospace, monospace;
-    font-size: 0.68rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     color: rgba(180, 200, 230, 0.45);
     text-align: center;
     padding: 2rem 1rem;
@@ -289,8 +289,8 @@
     background: rgba(255, 255, 255, 0.03);
   }
   .otd-symbol {
-    font-family: ui-monospace, monospace;
-    font-size: 0.68rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     font-weight: 700;
     color: var(--algo-slate);
     flex: 1;
@@ -299,19 +299,19 @@
     text-overflow: ellipsis;
   }
   .otd-side {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.06em;
   }
   .otd-qty {
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: rgba(200, 216, 240, 0.7);
   }
   .otd-mode-pill {
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     padding: 0.1rem 0.35rem;
@@ -334,16 +334,16 @@
     min-height: 1.3rem;
   }
   .otd-ev-time {
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     color: rgba(180, 200, 230, 0.5);
     flex-shrink: 0;
     width: 5.5rem;
     font-variant-numeric: tabular-nums;
   }
   .otd-ev-kind {
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 0.04em;
     padding: 0.1rem 0.3rem;
@@ -351,8 +351,8 @@
     flex-shrink: 0;
   }
   .otd-ev-price {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: var(--algo-slate);
     font-variant-numeric: tabular-nums;
     margin-left: auto;

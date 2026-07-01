@@ -3030,7 +3030,7 @@
     /* Modal-mode-only: scrollable body inside the fixed-height
        canonical-modal-panel. */
     color: var(--algo-slate);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   /* Inline mode strips the modal chrome — used by /console which hosts
      the shell as the page's primary content. */
@@ -3094,8 +3094,8 @@
      for modal header text". Bold uppercase amber glyphs on the
      navy gradient strip; the gradient itself is the prominence. */
   .oes-modal-name {
-    font-family: ui-monospace, monospace;
-    font-size: 0.72rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     color: #fbbf24;
     font-weight: 800;
     letter-spacing: 0.10em;
@@ -3165,8 +3165,8 @@
   }
   .oes-account-pick :global(.rbq-select-trigger) { width: 100%; }
   .oes-account-single {
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     font-weight: 700;
     color: var(--algo-slate);
     padding: 0.18rem 0.45rem;
@@ -3181,9 +3181,9 @@
     border-radius: 3px;
     padding: 0.18rem 0.45rem;
     color: #fbbf24;
-    font-size: 0.85rem;
+    font-size: var(--fs-xl);
     font-weight: 800;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     letter-spacing: 0.04em;
     width: 11rem;
     text-transform: uppercase;
@@ -3225,8 +3225,8 @@
     background: transparent;
     border: 0;
     color: var(--algo-slate);
-    font-size: 0.65rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-md);
+    font-family: var(--font-numeric);
     cursor: pointer;
     text-align: left;
     width: 100%;
@@ -3241,7 +3241,7 @@
   }
   .oes-sym-row-meta {
     color: var(--algo-muted);
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     letter-spacing: 0.06em;
   }
   /* Exchange tag — small, muted, matches the LogPanel chip palette. */
@@ -3251,9 +3251,9 @@
     border: 1px solid rgba(126, 151, 184, 0.32);
     padding: 0.06rem 0.32rem;
     border-radius: 2px;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     letter-spacing: 0.06em;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   /* Push the close button to the right edge regardless of how many
      header chips render. */
@@ -3271,8 +3271,8 @@
     padding: 0.18rem 0.55rem;
     border-radius: 3px;
     cursor: pointer;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 800;
     letter-spacing: 0.06em;
     line-height: 1;
@@ -3289,8 +3289,8 @@
   .oes-wl-toast {
     padding: 0.18rem 0.45rem;
     border-radius: 3px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.04em;
     white-space: nowrap;
@@ -3346,7 +3346,7 @@
     flex-shrink: 0;
     cursor: pointer;
     font-family: monospace;
-    font-size: 0.95rem;
+    font-size: var(--fs-xl);
     line-height: 1;
     padding: 0;
     display: inline-flex;
@@ -3382,8 +3382,8 @@
     gap: 0.3rem;
     padding: 0.15rem 0.45rem;
     border-radius: 4px;
-    font-size: 0.6rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-sm);
+    font-family: var(--font-numeric);
     border: 1px solid;
   }
   .bms-row-ok    { border-color: rgba(74,222,128,0.35); background: rgba(74,222,128,0.08); color: #4ade80; }
@@ -3442,8 +3442,8 @@
     gap: 0.6rem;
   }
   .oes-basket-tpl-demo-note {
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     color: rgba(180, 200, 230, 0.65);
     font-style: italic;
   }
@@ -3463,7 +3463,7 @@
     align-items: center;
     gap: 0.25rem;
     font-family: monospace;
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
     color: var(--algo-muted);
   }
   .oes-basket-tpl-param > span {
@@ -3485,8 +3485,8 @@
     border: 1px solid rgba(251, 191, 36, 0.70);
     border-radius: 3px;
     color: #f8fafc;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 600;
     text-align: right;
     box-sizing: border-box;
@@ -3513,7 +3513,7 @@
     align-items: center;
     gap: 0.35rem;
     font-family: monospace;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
   }
   .oes-basket-tpl-label {
@@ -3521,7 +3521,7 @@
     letter-spacing: 0.08em;
     font-weight: 800;
     color: var(--algo-amber, #fbbf24);
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
   }
   /* Default / None two-pill toggle — mirrors the Side toggle in
      OrderTicket so the operator's mental model is the same: Default
@@ -3553,8 +3553,8 @@
     background: transparent;
     border: 0;
     color: rgba(200, 216, 240, 0.65);
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 800;
     letter-spacing: 0.05em;
     line-height: 1;
@@ -3593,8 +3593,8 @@
      so the operator sees WHICH default Default resolved to (relevant
      once 4 side-defaults are seeded). */
   .oes-basket-tpl-name {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 600;
     color: #f8fafc;
     background: rgba(251, 191, 36, 0.10);
@@ -3612,7 +3612,7 @@
     margin-top: 0.2rem;
     padding: 0.18rem 0.42rem;
     border-radius: 3px;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     line-height: 1.25;
     color: #fbbf24;
     background: rgba(251, 191, 36, 0.10);
@@ -3629,7 +3629,7 @@
     background: rgba(34, 211, 238, 0.06);
     border: 1px solid rgba(34, 211, 238, 0.22);
     border-radius: 3px;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     line-height: 1.35;
     transition: background 0.12s, border-color 0.12s;
   }
@@ -3651,12 +3651,12 @@
     color: rgba(180, 200, 230, 0.85);
     font-weight: 600;
     margin-right: 0.15rem;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .oes-tpl-preview-chip {
     padding: 0.1rem 0.4rem;
     border-radius: 3px;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     font-weight: 600;
     color: rgba(220, 230, 245, 0.92);
     background: rgba(255, 255, 255, 0.04);
@@ -3694,8 +3694,8 @@
   .oes-tpl-preview-leg-badge {
     padding: 0.05rem 0.38rem;
     border-radius: 3px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -3710,15 +3710,15 @@
   }
   .oes-tpl-preview-loading {
     flex-basis: 100%;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: rgba(180, 200, 230, 0.55);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     padding-left: 0.45rem;
     margin-top: 0.25rem;
   }
   .oes-tpl-preview-err {
     flex-basis: 100%;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: #fca5a5;
     padding: 0.25rem 0.4rem;
     margin-top: 0.25rem;
@@ -3735,7 +3735,7 @@
     border: 1px solid rgba(125, 211, 252, 0.28);
     border-radius: 3px;
     font-family: monospace;
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
     color: #c8d8f0;
   }
   .oes-basket-tpl-note-arrow { color: #7dd3fc; font-weight: 700; }
@@ -3758,7 +3758,7 @@
   }
   .oes-basket-result {
     font-family: monospace;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     color: var(--algo-slate);
     margin-right: 0.4rem;
   }
@@ -3790,7 +3790,7 @@
     border-radius: 2px;
     border: 1px solid;
     font-family: monospace;
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.04em;
     line-height: 1;
@@ -3863,7 +3863,7 @@
     color: #f1f7ff;
   }
   .oes-basket-pill-qty {
-    font-size: 0.52rem;
+    font-size: var(--fs-2xs);
     opacity: 0.7;
     font-weight: 600;
   }
@@ -3874,7 +3874,7 @@
   .oes-basket-pill-acct-wrap {
     margin-left: 0.35rem;
     max-width: 5.5rem;
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
   }
   .oes-basket-pill-acct-wrap :global(.algo-select-btn) {
     height: 1.2rem;
@@ -3883,8 +3883,8 @@
     color: var(--algo-slate);
     border: 1px solid rgba(125,211,252,0.32);
     border-radius: 2px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
   }
   .oes-basket-pill-acct-wrap :global(.algo-select-btn:hover) {
     border-color: rgba(125,211,252,0.65);
@@ -3892,8 +3892,8 @@
   .oes-basket-pill-acct-static {
     margin-left: 0.35rem;
     color: #7dd3fc;
-    font-size: 0.58rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-xs);
+    font-family: var(--font-numeric);
     opacity: 0.85;
   }
   .oes-basket-pill-remove {
@@ -3924,8 +3924,8 @@
     border: 1px solid rgba(192, 132, 252, 0.45);
     border-radius: 3px;
     color: #c084fc;
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 0.02em;
     font-variant-numeric: tabular-nums;
@@ -3951,14 +3951,14 @@
     border: 1px solid rgba(192, 132, 252, 0.55);
     border-radius: 2px;
     color: #c084fc;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     font-weight: 800;
     letter-spacing: 0.08em;
   }
   .oes-basket-pill-wing-note {
     margin-left: 0.35rem;
     color: rgba(192, 132, 252, 0.75);
-    font-size: 0.52rem;
+    font-size: var(--fs-2xs);
     font-style: italic;
     font-weight: 500;
     letter-spacing: 0.02em;
@@ -3976,8 +3976,8 @@
     border: 1px solid rgba(126, 151, 184, 0.40);
     border-radius: 3px;
     color: #c8d8f0;
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 0.02em;
     cursor: pointer;
@@ -4020,8 +4020,8 @@
     border-radius: 4px;
   }
   .oes-leg-editor-label {
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -4032,7 +4032,7 @@
     align-items: center;
     gap: 0.2rem;
     font-family: monospace;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     color: var(--algo-muted);
   }
   .oes-leg-editor-field > span {
@@ -4056,8 +4056,8 @@
     border: 1px solid rgba(34, 211, 238, 0.65);
     border-radius: 3px;
     color: #f8fafc;
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 600;
     box-sizing: border-box;
     font-variant-numeric: tabular-nums;
@@ -4086,8 +4086,8 @@
     border: 1px solid rgba(126, 151, 184, 0.35);
     border-radius: 3px;
     color: rgba(200, 216, 240, 0.75);
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     cursor: pointer;
   }
   .oes-leg-editor-clear:hover:not(:disabled),
@@ -4119,7 +4119,7 @@
     margin-left: 0.3rem;
   }
   .oes-basket-pill-limit-prefix {
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     color: rgba(200,216,240,0.6);
     line-height: 1;
   }
@@ -4131,7 +4131,7 @@
     color: var(--algo-slate);
     font-family: 'Roboto Mono', monospace;
     font-variant-numeric: tabular-nums;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     padding: 0.1rem 0.25rem;
     text-align: right;
     -moz-appearance: textfield;
@@ -4246,8 +4246,8 @@
     max-height: 30rem;
     overflow-y: auto;
     padding: 0.5rem 0.75rem;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
   }
   .oes-orders-section {
     padding: 0.55rem 0;
@@ -4257,7 +4257,7 @@
   }
   .oes-orders-head {
     color: var(--algo-muted);
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     letter-spacing: 0.08em;
     font-weight: 700;
     margin-bottom: 0.35rem;
@@ -4277,7 +4277,7 @@
     background: rgba(192,132,252,0.2);
     border: 1px solid rgba(192,132,252,0.5);
     color: #c084fc;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 800;
     font-variant-numeric: tabular-nums;
   }
@@ -4303,7 +4303,7 @@
   .oes-event-time {
     color: var(--algo-muted);
     font-variant-numeric: tabular-nums;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     letter-spacing: 0.02em;
   }
   .oes-event-line {
@@ -4316,7 +4316,7 @@
     font-weight: 800;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     flex-shrink: 0;
   }
   .oes-event-kind-placed          { color: #38bdf8; }
@@ -4354,12 +4354,12 @@
     align-items: center;
     flex-wrap: wrap;
     gap: 0.3rem 0.5rem;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
   }
   .oes-card-meta {
     margin-top: 0.2rem;
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
     color: var(--algo-muted);
     font-variant-numeric: tabular-nums;
   }
@@ -4367,7 +4367,7 @@
   .oes-card-qty  { color: var(--algo-slate); font-variant-numeric: tabular-nums; }
   .oes-card-px   { color: var(--algo-slate); font-variant-numeric: tabular-nums; }
   .oes-card-chase {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     color: #fbbf24;
     border: 1px solid rgba(251,191,36,0.4);
     padding: 0 0.3rem;
@@ -4376,7 +4376,7 @@
 
   /* Status pills */
   .oes-status {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 800;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -4394,7 +4394,7 @@
   .oes-status-cancelled           { background: rgba(148,163,184,0.1); color: #94a3b8; border: 1px solid rgba(148,163,184,0.3); }
   /* LOCAL chip — marks algo_order rows that never reached Kite (preflight blocks). */
   .oes-local-chip {
-    font-size: 0.52rem;
+    font-size: var(--fs-2xs);
     font-weight: 800;
     letter-spacing: 0.05em;
     text-transform: uppercase;
@@ -4407,7 +4407,7 @@
 
   /* Side pills */
   .oes-side {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 800;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -4471,8 +4471,8 @@
     border-radius: 3px;
     border: 1px solid rgba(180, 200, 230, 0.22);
     background: rgba(15, 25, 45, 0.45);
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: rgba(180, 200, 230, 0.65);
     font-style: italic;
     letter-spacing: 0.02em;
@@ -4542,8 +4542,8 @@
     border-radius: 3px;
     border: 1px solid;
     cursor: pointer;
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 800;
     letter-spacing: 0.04em;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
@@ -4568,13 +4568,13 @@
     text-align: center;
   }
   .oes-footer-side-btn-single.is-stacked .oes-side-line1 {
-    font-size: 0.52rem;
+    font-size: var(--fs-2xs);
     font-weight: 800;
     letter-spacing: 0.08em;
     opacity: 0.85;
   }
   .oes-footer-side-btn-single.is-stacked .oes-side-line2 {
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-weight: 800;
     letter-spacing: 0.04em;
   }
@@ -4613,8 +4613,8 @@
     padding: 0.18rem 0.5rem;
     border: 1px solid currentColor;
     border-radius: 9999px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     font-weight: 800;
     letter-spacing: 0.08em;
   }
@@ -4630,7 +4630,7 @@
      checkbox is gone; visibility is now controlled by {#if _chaseEnabled}. */
   .oes-common-chase-label {
     color: rgba(200,216,240,0.55);
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
   }
@@ -4648,8 +4648,8 @@
     color: rgba(200,216,240,0.65);
     border: 0;
     border-right: 1px solid rgba(251,191,36,0.20);
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     cursor: pointer;
   }
@@ -4675,7 +4675,7 @@
     padding: 0.3rem 0.6rem;
     border-radius: 4px;
     font-family: monospace;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     border: 1px solid transparent;
     white-space: nowrap;
@@ -4697,7 +4697,7 @@
     padding: 0.3rem 0.6rem;
     border-radius: 4px;
     font-family: monospace;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     border: 1px solid transparent;
     white-space: nowrap;
@@ -4736,7 +4736,7 @@
     gap: 0.4rem 0.55rem;
     padding: 0.25rem 0.35rem 0.35rem;
     font-family: monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: var(--algo-slate);
   }
   .oes-funds-line-low { color: #f87171; }
@@ -4764,7 +4764,7 @@
     padding: 0.3rem 0.6rem;
     border-radius: 4px;
     font-family: monospace;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-weight: 600;
     border: 1px solid transparent;
     background: rgba(126, 151, 184, 0.10);
@@ -4807,7 +4807,7 @@
     border-radius: 2px;
     background: rgba(192, 132, 252, 0.18);
     color: #c084fc;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 600;
     font-family: monospace;
     letter-spacing: 0.04em;
@@ -4844,7 +4844,7 @@
     padding: 0 0.85rem;
     border-radius: 4px;
     font-family: monospace;
-    font-size: 0.66rem;
+    font-size: var(--fs-md);
     font-weight: 700;
     letter-spacing: 0.04em;
     cursor: pointer;
@@ -4857,7 +4857,7 @@
      text + slightly smaller font + tighter padding so the cluster
      fits even on narrow viewports. */
   .oes-common-submit-narrow {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     padding-left: 0.55rem;
     padding-right: 0.55rem;
     letter-spacing: 0.02em;
@@ -4866,7 +4866,7 @@
      red so it doesn't compete with the chase pills next to it. */
   .oes-common-clear-inline {
     padding: 0.2rem 0.5rem;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     border-radius: 3px;
     border: 1px solid rgba(248, 113, 113, 0.40);
     background: transparent;
@@ -4914,7 +4914,7 @@
     padding: 0.35rem 0.75rem;
     border-radius: 4px;
     font-family: monospace;
-    font-size: 0.66rem;
+    font-size: var(--fs-md);
     font-weight: 700;
     letter-spacing: 0.04em;
     cursor: pointer;
@@ -4959,8 +4959,8 @@
     padding: 0.3rem 0.6rem 0.5rem;
     overflow: hidden;
     border-top: 1px solid rgba(168, 85, 247, 0.22);
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
   }
   /* Bottom body fills the bottom-panel's fixed slot; LogPanel inside
      manages its own internal scroll for the active tab. */

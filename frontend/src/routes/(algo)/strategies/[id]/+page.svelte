@@ -366,7 +366,7 @@
                 stroke="rgba(126,151,184,0.10)" stroke-width="1" />
           <text x={_pad.l - 8} y={y + 3} text-anchor="end"
                 fill="rgba(155,176,208,0.55)" font-size="10"
-                font-family="ui-monospace, monospace">
+                style="font-family: var(--font-numeric)">
             {Math.abs(v) >= 100000 ? `₹${(v/100000).toFixed(1)}L`
               : Math.abs(v) >= 1000 ? `₹${(v/1000).toFixed(1)}k`
               : `₹${Math.round(v)}`}
@@ -397,18 +397,18 @@
         {#if snapshots.length >= 1}
           <text x={xOf(0)} y={H - 6} text-anchor="start"
                 fill="rgba(155,176,208,0.55)" font-size="10"
-                font-family="ui-monospace, monospace">{snapshots[0].as_of_date}</text>
+                style="font-family: var(--font-numeric)">{snapshots[0].as_of_date}</text>
         {/if}
         {#if snapshots.length >= 3}
           {@const mid = Math.floor(snapshots.length / 2)}
           <text x={xOf(mid)} y={H - 6} text-anchor="middle"
                 fill="rgba(155,176,208,0.55)" font-size="10"
-                font-family="ui-monospace, monospace">{snapshots[mid].as_of_date}</text>
+                style="font-family: var(--font-numeric)">{snapshots[mid].as_of_date}</text>
         {/if}
         {#if snapshots.length >= 2}
           <text x={xOf(snapshots.length - 1)} y={H - 6} text-anchor="end"
                 fill="rgba(155,176,208,0.55)" font-size="10"
-                font-family="ui-monospace, monospace">{snapshots[snapshots.length - 1].as_of_date}</text>
+                style="font-family: var(--font-numeric)">{snapshots[snapshots.length - 1].as_of_date}</text>
         {/if}
       </svg>
 
@@ -427,12 +427,12 @@
     background: rgba(248, 113, 113, 0.10);
     border: 1px solid rgba(248, 113, 113, 0.40);
     border-radius: 4px;
-    color: #fca5a5; font-size: 0.7rem; margin-bottom: 0.7rem;
+    color: #fca5a5; font-size: var(--fs-lg); margin-bottom: 0.7rem;
   }
 
   .back-link {
     margin-right: 0.6rem; color: #7e97b8;
-    text-decoration: none; font-size: 0.7rem;
+    text-decoration: none; font-size: var(--fs-lg);
   }
   .back-link:hover { color: #fbbf24; }
 
@@ -445,11 +445,11 @@
   }
   .strat-head-title-row { display: flex; align-items: center; gap: 0.7rem; }
   .strat-head-name {
-    margin: 0; font-size: 0.95rem; font-weight: 800; color: #fbbf24;
+    margin: 0; font-size: var(--fs-xl); font-weight: 800; color: #fbbf24;
   }
   .strat-head-desc {
     margin: 0.4rem 0 0.8rem;
-    font-size: 0.72rem; color: #c8d8f0; line-height: 1.45;
+    font-size: var(--fs-lg); color: #c8d8f0; line-height: 1.45;
   }
   .strat-stats-grid {
     display: grid;
@@ -463,15 +463,15 @@
     border-radius: 4px;
   }
   .stat-lbl {
-    font-size: 0.5rem; letter-spacing: 0.06em;
+    font-size: var(--fs-2xs); letter-spacing: 0.06em;
     text-transform: uppercase; color: #7e97b8;
-    font-family: ui-monospace, monospace; font-weight: 700;
+    font-family: var(--font-numeric); font-weight: 700;
   }
   .stat-val {
     margin-top: 0.15rem;
-    font-size: 0.85rem; font-weight: 800;
+    font-size: var(--fs-xl); font-weight: 800;
     color: #c8d8f0;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     font-variant-numeric: tabular-nums;
   }
 
@@ -481,12 +481,12 @@
   }
   .strat-section-heading {
     margin: 0;
-    font-size: 0.65rem; font-weight: 800; letter-spacing: 0.06em;
-    text-transform: uppercase; color: #a3b9d0;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-md); font-weight: 800; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text-muted);
+    font-family: var(--font-numeric);
   }
   .show-closed {
-    font-size: 0.65rem; color: #a3b9d0;
+    font-size: var(--fs-md); color: var(--text-muted);
     display: inline-flex; align-items: center; gap: 0.3rem;
   }
 
@@ -497,18 +497,18 @@
   }
   .strat-table {
     width: 100%; border-collapse: collapse;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
   }
   .strat-table th {
     text-align: left;
     padding: 0.4rem 0.6rem;
     border-bottom: 1px solid rgba(251, 191, 36, 0.30);
-    color: #a3b9d0;
-    font-size: 0.55rem;
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
     font-weight: 800; letter-spacing: 0.06em;
     text-transform: uppercase;
     background: rgba(15, 23, 42, 0.65);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .strat-table th.th-num { text-align: right; }
   .strat-table td {
@@ -518,10 +518,10 @@
   }
   .strat-table td.td-num {
     text-align: right;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     font-variant-numeric: tabular-nums;
   }
-  .strat-table td.td-mono { font-family: ui-monospace, monospace; }
+  .strat-table td.td-mono { font-family: var(--font-numeric); }
   .strat-table tbody tr:hover td { background: rgba(34, 211, 238, 0.05); }
   .strat-row-closed td { opacity: 0.65; }
   .strat-empty {
@@ -533,39 +533,39 @@
     display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
     background: rgba(74,222,128,0.18); color: #4ade80;
     border: 1px solid rgba(74,222,128,0.40);
-    font-size: 0.55rem; font-weight: 800; letter-spacing: 0.06em;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-xs); font-weight: 800; letter-spacing: 0.06em;
+    font-family: var(--font-numeric);
   }
   .side-short {
     display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
     background: rgba(248,113,113,0.18); color: #f87171;
     border: 1px solid rgba(248,113,113,0.40);
-    font-size: 0.55rem; font-weight: 800; letter-spacing: 0.06em;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-xs); font-weight: 800; letter-spacing: 0.06em;
+    font-family: var(--font-numeric);
   }
 
-  .qty-rem { color: #fbbf24; font-size: 0.65rem; }
+  .qty-rem { color: #fbbf24; font-size: var(--fs-md); }
   .pnl-pos { color: #4ade80; }
   .pnl-neg { color: #f87171; }
 
   .pill-active   { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 3px;
                    background: rgba(74,222,128,0.16); color: #4ade80;
                    border: 1px solid rgba(74,222,128,0.40);
-                   font-size: 0.6rem; font-weight: 700; letter-spacing: 0.04em;
-                   text-transform: uppercase; font-family: ui-monospace, monospace; }
+                   font-size: var(--fs-sm); font-weight: 700; letter-spacing: 0.04em;
+                   text-transform: uppercase; font-family: var(--font-numeric); }
   .pill-inactive { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 3px;
                    background: rgba(126,151,184,0.16); color: #7e97b8;
                    border: 1px solid rgba(126,151,184,0.40);
-                   font-size: 0.6rem; font-weight: 700; letter-spacing: 0.04em;
-                   text-transform: uppercase; font-family: ui-monospace, monospace; }
+                   font-size: var(--fs-sm); font-weight: 700; letter-spacing: 0.04em;
+                   text-transform: uppercase; font-family: var(--font-numeric); }
 
-  .btn-sm { font-size: 0.6rem; padding: 0.2rem 0.55rem; }
+  .btn-sm { font-size: var(--fs-sm); padding: 0.2rem 0.55rem; }
 
   .strat-detail-metrics { margin-top: 0.9rem; }
   .strat-metrics-meta {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: rgba(155,176,208,0.65);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .strat-metrics-empty {
     padding: 1.1rem;
@@ -575,7 +575,7 @@
     border-radius: 6px;
     color: #7e97b8;
     font-style: italic;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
   }
   .strat-metrics-grid {
     display: grid;
@@ -590,20 +590,20 @@
     border-radius: 4px;
   }
   .metric-lbl {
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: #7e97b8;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     font-weight: 700;
     cursor: help;
   }
   .metric-val {
     margin-top: 0.2rem;
-    font-size: 0.9rem;
+    font-size: var(--fs-xl);
     font-weight: 800;
     color: #c8d8f0;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     font-variant-numeric: tabular-nums;
   }
 
@@ -616,12 +616,12 @@
     border-radius: 6px;
     color: #7e97b8;
     font-style: italic;
-    font-size: 0.75rem;
+    font-size: var(--fs-lg);
   }
   .strat-curve-meta {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: rgba(155,176,208,0.65);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .strat-curve-svg {
     width: 100%;
@@ -634,8 +634,8 @@
   .strat-curve-legend {
     display: flex; gap: 1.2rem; justify-content: flex-end;
     margin-top: 0.4rem;
-    font-size: 0.6rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-sm);
+    font-family: var(--font-numeric);
   }
   .leg-total    { color: #fbbf24; }
   .leg-realised { color: #4ade80; }

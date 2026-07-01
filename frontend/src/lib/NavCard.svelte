@@ -279,7 +279,7 @@
 
   /* ── Labels ─────────────────────────────────────────────────────── */
   .nav-panel-label {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.08em;
     color: var(--card-label-text, #c8a84b);
@@ -296,7 +296,7 @@
     font-variant-numeric: tabular-nums;
   }
   .nav-currency {
-    font-size: 0.85rem;
+    font-size: var(--fs-xl);
     font-weight: 600;
     color: var(--card-currency-text, #4a5872);
     margin-right: 0.05em;
@@ -304,14 +304,14 @@
 
   /* ── Sub-line (day P&L) ─────────────────────────────────────────── */
   .nav-sub {
-    font-size: 0.75rem;
+    font-size: var(--fs-lg);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
   }
 
   /* ── Meta row (contribution · share%) ──────────────────────────── */
   .nav-meta {
-    font-size: 0.63rem;
+    font-size: var(--fs-sm);
     color: var(--card-muted-text, #7a6b52);
     margin-top: 0.08rem;
     font-variant-numeric: tabular-nums;
@@ -319,7 +319,7 @@
 
   /* ── Cumulative P&L ─────────────────────────────────────────────── */
   .nav-cum {
-    font-size: 0.63rem;
+    font-size: var(--fs-sm);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     margin-top: 0.05rem;
@@ -332,7 +332,7 @@
      card sits on the centre axis, the timestamp was alone hanging
      off the right edge. */
   .nav-as-of {
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
     color: var(--card-as-of-text, #a89878);
     margin-top: 0.55rem;
     text-align: center;

@@ -5342,9 +5342,9 @@
     align-items: center;
     padding: 0.05rem 0.5rem;
     border-radius: 999px;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 800;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     letter-spacing: 0.08em;
     text-transform: uppercase;
     line-height: 1.4;
@@ -5404,7 +5404,7 @@
     align-items: center;
     gap: 0.5rem;
     font-family: monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -5429,12 +5429,12 @@
   .opt-section-title {
     color: #fbbf24;
     font-weight: 700;
-    font-size: 0.7rem;          /* slightly larger than meta so the
+    font-size: var(--fs-lg);          /* slightly larger than meta so the
                                    header reads as the section anchor */
     letter-spacing: 0.06em;
   }
   .opt-section-tag {
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     padding: 1px 5px;
     border-radius: 2px;
     border: 1px solid currentColor;
@@ -5446,7 +5446,7 @@
      section gap so the row fits inside a ~360px viewport. */
   @media (max-width: 600px) {
     .opt-section-h { gap: 0.25rem; flex-wrap: nowrap; overflow-x: auto; }
-    .opt-section-tag { font-size: 0.6rem; padding: 1px 3px; letter-spacing: 0.02em; }
+    .opt-section-tag { font-size: var(--fs-sm); padding: 1px 3px; letter-spacing: 0.02em; }
   }
   /* Tight no-wrap cluster for the card-control trio (Collapse +
      DefaultSize + Fullscreen + optional Refresh in fullscreen mode).
@@ -5472,9 +5472,9 @@
   .tag-greek      { color: #c084fc; background: rgba(192,132,252,0.10); }
   .tag-greek-neg  { color: #fda4af; background: rgba(253,164,175,0.10); }
   .opt-section-meta {
-    color: #a3b9d0;
+    color: var(--text-muted);
     font-weight: 400;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     margin-left: auto;
   }
 
@@ -5495,14 +5495,14 @@
     margin-bottom: 0.6rem;
   }
   .opt-block {
-    background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+    background: var(--card-bg-gradient);
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 4px;
     padding: 0.5rem 0.65rem;
   }
   .opt-block-h {
     font-family: monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -5530,17 +5530,17 @@
     min-width: 0;
   }
   .kv-k {
-    color: #a3b9d0;
+    color: var(--text-muted);
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     flex: 0 0 auto;
     flex-wrap: nowrap;
   }
   .kv-v {
     color: var(--algo-slate);
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     font-weight: 600;
     margin-left: auto;          /* push value to the right of pair */
     text-align: right;
@@ -5552,7 +5552,7 @@
      not oversize. The visual identity of each Greek pair without
      overpowering the value next to it. */
   .kv-k-greek {
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     color: var(--algo-slate);
   }
@@ -5572,14 +5572,14 @@
     display: contents;
   }
   .opt-kv-greeks .kv-v {
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     margin-left: 0.15rem;
     margin-right: 0.5rem;
     text-align: left;
   }
   .kv-pos { color: #4ade80; }
   .kv-neg { color: #f87171; }
-  .kv-sub { color: #a3b9d0; font-size: 0.65rem; margin-left: 0.2rem; }
+  .kv-sub { color: var(--text-muted); font-size: var(--fs-md); margin-left: 0.2rem; }
 
   .opt-payoff {
     display: flex;
@@ -5640,24 +5640,24 @@
   }
   .leg-headrow {
     font-family: monospace;
-    font-size: 0.65rem;
-    color: #a3b9d0;
+    font-size: var(--fs-md);
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
     padding-bottom: 0.15rem;
     border-bottom: 1px solid rgba(251,191,36,0.18);
   }
   :global(.leg-row .field-input) {
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     padding: 0.25rem 0.4rem;
     font-family: monospace;
   }
   .leg-source {
     font-family: monospace;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: #a3b9d0;
+    color: var(--text-muted);
     text-align: center;
   }
   .leg-source-live   { color: #4ade80; }
@@ -5671,7 +5671,7 @@
     border: 1px solid rgba(248,113,113,0.4);
     background: rgba(248,113,113,0.08);
     color: #f87171;
-    font-size: 0.85rem;
+    font-size: var(--fs-xl);
     line-height: 1;
     cursor: pointer;
     transition: background 0.12s, border-color 0.12s;
@@ -5694,10 +5694,10 @@
   .cand-hidden-hint {
     margin-top: 0.4rem;
     padding: 0.25rem 0.55rem;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 600;
     letter-spacing: 0.02em;
-    color: #a3b9d0;
+    color: var(--text-muted);
     background: rgba(126,151,184,0.10);
     border: 1px solid rgba(126,151,184,0.30);
     border-radius: 3px;
@@ -5725,7 +5725,7 @@
     grid-column: 1 / -1;
     padding: 0.85rem 0.7rem;
     font-family: monospace;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     color: #7e97b8;
     font-style: italic;
     text-align: center;
@@ -5757,8 +5757,8 @@
       minmax(4rem,   0.6fr)  /* Exp P&L */
       minmax(4rem,   0.6fr); /* EV */
     min-width: 800px;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.62rem;        /* match Pulse Positions ~0.625rem */
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);        /* match Pulse Positions ~0.625rem */
   }
   .byund-headrow,
   .byund-row {
@@ -5769,11 +5769,11 @@
   .byund-headrow > span {
     padding: 0.3rem 0.45rem;
     border-bottom: 1px solid rgba(251,191,36,0.30);
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: #a3b9d0;
+    color: var(--text-muted);
   }
   /* Data cells — no left/right borders (Pulse pattern strips them so
      the row reads as one continuous band). Faint slate bottom border
@@ -5863,8 +5863,8 @@
     background: rgba(126, 151, 184, 0.18);
     border: 1px solid rgba(126, 151, 184, 0.35);
     color: #c8d8f0;
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 600;
     letter-spacing: 0.04em;
     text-transform: none;
@@ -5886,7 +5886,7 @@
     grid-column: 1 / -1;
     padding: 0.85rem 0.7rem;
     font-family: monospace;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     color: #7e97b8;
     font-style: italic;
     text-align: center;
@@ -5947,7 +5947,7 @@
     cursor: pointer;
     color: #fbbf24;
     font-family: monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -5973,8 +5973,8 @@
     background: var(--algo-amber-bg-strong);
     border: 1px solid var(--algo-amber-border);
     color: #fbbf24;
-    font-family: ui-monospace, monospace;
-    font-size: 0.7rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     font-weight: 800;
     letter-spacing: 0.04em;
     text-transform: none;
@@ -6074,24 +6074,24 @@
     gap: 0.4rem;
     padding: 0.32rem 0.7rem 0.32rem 0.55rem;
     border-radius: 9999px;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     line-height: 1;
     border: 1px solid transparent;
   }
   .expiry-band-dot {
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     line-height: 1;
     flex-shrink: 0;
   }
   .expiry-band-label {
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-weight: 800;
     letter-spacing: 0.12em;
     text-transform: uppercase;
   }
   .expiry-band-count {
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     padding: 0.12rem 0.45rem;
     border-radius: 9999px;
@@ -6099,7 +6099,7 @@
     font-variant-numeric: tabular-nums;
   }
   .expiry-band-hint {
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
     opacity: 0.55;
     font-style: italic;
     color: var(--algo-muted);
@@ -6149,8 +6149,8 @@
     align-items: center;
     padding: 0.05rem 0.3rem;
     border-radius: 3px;
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.05em;
     margin-left: 0.25rem;
@@ -6272,11 +6272,11 @@
     display: inline-block;
     margin-left: 0.35rem;
     padding: 0 0.3rem;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     font-weight: 800;
     letter-spacing: 0.06em;
     border-radius: 2px;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     vertical-align: middle;
   }
   .cand-split-closed {
@@ -6358,13 +6358,13 @@
        rows' spacing from the header's. */
     padding: 0.1rem 0.2rem;
     align-items: center;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-family: monospace;
     font-variant-numeric: tabular-nums;
   }
   .cand-headrow {
-    font-size: 0.65rem;
-    color: #a3b9d0;
+    font-size: var(--fs-md);
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
     padding-bottom: 0.15rem;
@@ -6461,7 +6461,7 @@
     background: rgba(240,171,252,0.10);
     color: #f0abfc;
     font-family: monospace;
-    font-size: 0.8rem;
+    font-size: var(--fs-xl);
     font-weight: 700;
     line-height: 1;
     cursor: pointer;
@@ -6558,7 +6558,7 @@
     border-radius: 2px;
     padding: 0 4px;
     font-weight: 700;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
   }
   .leg-type-PE {
     color: #f87171;
@@ -6567,7 +6567,7 @@
     border-radius: 2px;
     padding: 0 4px;
     font-weight: 700;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
   }
 
   /* "Clear" button styled subtly red so the destructive action stands
@@ -6587,7 +6587,7 @@
   .src-chip {
     margin-left: 0.5rem;
     font-family: monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -6602,8 +6602,8 @@
   .src-tag {
     margin-left: 0.3rem;
     font-family: monospace;
-    font-size: 0.6rem;
-    color: #a3b9d0;
+    font-size: var(--fs-sm);
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.03em;
   }
@@ -6618,7 +6618,7 @@
   .leg-src {
     display: inline-block;
     font-family: monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     text-transform: uppercase;
     letter-spacing: 0.04em;
     padding: 1px 5px;
@@ -6653,11 +6653,11 @@
       gap: 0.25rem 0.3rem;
     }
     .chain-controls .field-label {
-      font-size: 0.55rem;
+      font-size: var(--fs-xs);
     }
     .chain-controls :global(.rbq-select-trigger),
     .chain-controls :global(.rbq-multi-trigger) {
-      font-size: 0.62rem;
+      font-size: var(--fs-sm);
       padding-left: 0.4rem;
       padding-right: 0.4rem;
     }
@@ -6689,7 +6689,7 @@
     gap: 0.5rem;
     padding: 1px 0;
     font-family: monospace;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
   }
   .chain-fut-sym {
     color: var(--algo-slate);
@@ -6700,8 +6700,8 @@
   .chain-fut-meta {
     margin-left: 0.4rem;
     font-weight: 400;
-    font-size: 0.55rem;
-    color: #a3b9d0;
+    font-size: var(--fs-xs);
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
@@ -6716,7 +6716,7 @@
     width: 100%;
     border-collapse: collapse;
     font-family: monospace;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     /* Fixed layout + explicit colgroup widths so the CE and PE
        columns are the SAME width on every row. Without this, the
        inner edges (where bid-ask quotes sit) drift across rows
@@ -6760,7 +6760,7 @@
     align-items: baseline;
     min-width: 3.4rem;
     font-family: monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 600;
     white-space: nowrap;
     text-align: center;
@@ -6798,7 +6798,7 @@
     align-items: center;
     gap: 0.3rem;
     font-family: monospace;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-weight: 700;
     letter-spacing: 0.05em;
     padding: 1px 6px;
@@ -6809,7 +6809,7 @@
   }
   .chain-btn {
     font-family: monospace;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-weight: 700;
     padding: 1px 6px;
     border-radius: 2px;
@@ -6858,7 +6858,7 @@
     background: rgba(74,222,128,0.18);
     color: #4ade80;
     font-family: monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.04em;
     margin-left: 0.3rem;
@@ -6902,7 +6902,7 @@
     border: 1px solid currentColor;
     border-left-width: 4px;
     font-family: monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     line-height: 1.5;
     cursor: pointer;
     user-select: none;
@@ -6945,8 +6945,8 @@
     font-weight: 600;
   }
   .chain-basket-qty {
-    color: #a3b9d0;
-    font-size: 0.58rem;
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
     opacity: 0.85;
     font-variant-numeric: tabular-nums;
   }
@@ -6964,7 +6964,7 @@
     color: currentColor;
     cursor: pointer;
     font-family: monospace;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     line-height: 1;
     display: inline-flex;
@@ -6981,7 +6981,7 @@
     color: #fbbf24;
     font-family: monospace;
     font-weight: 700;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-variant-numeric: tabular-nums;
   }
   /* Algo-selected limit price — static, not editable. Auto-seeded
@@ -6990,7 +6990,7 @@
   .chain-basket-limit-static {
     color: #fbbf24;
     font-family: monospace;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.02em;
@@ -7007,9 +7007,9 @@
     margin-left: 0.15rem;
   }
   .chain-basket-chase-label {
-    color: #a3b9d0;
+    color: var(--text-muted);
     font-family: monospace;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.04em;
   }
@@ -7020,9 +7020,9 @@
     border: 1px solid rgba(126,151,184,0.35);
     border-radius: 2px;
     background: transparent;
-    color: #a3b9d0;
+    color: var(--text-muted);
     font-family: monospace;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     line-height: 1;
     cursor: pointer;
@@ -7053,11 +7053,11 @@
     background: transparent;
     cursor: pointer;
     font-family: monospace;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.04em;
   }
-  .chain-basket-clear { color: #a3b9d0; }
+  .chain-basket-clear { color: var(--text-muted); }
   .chain-basket-clear:hover { background: rgba(163,185,208,0.08); }
   .chain-basket-place { color: #fbbf24; background: rgba(251,191,36,0.10); }
   .chain-basket-place:hover    { background: rgba(251,191,36,0.20); }
@@ -7067,7 +7067,7 @@
     flex: 1 1 100%;
     color: #f87171;
     font-family: monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     margin-top: 0.2rem;
   }
   .chain-basket-toast {
@@ -7077,7 +7077,7 @@
     background: rgba(74,222,128,0.14);
     color: #4ade80;
     font-family: monospace;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-weight: 700;
     text-align: center;
     animation: chain-quick-fade 2.2s ease-out forwards;
@@ -7099,7 +7099,7 @@
     background: rgba(13,21,38,0.6);
     color: var(--algo-slate);
     font-family: monospace;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     box-sizing: border-box;
   }
   .chain-lots-input:focus {
@@ -7143,7 +7143,7 @@
     border-radius: 0.35rem;
     padding: 0.45rem 0.65rem 0.4rem;
     box-shadow: 0 6px 18px rgba(0,0,0,0.45);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     color: #e5edf7;
     animation: order-toast-in 180ms ease-out;
   }
@@ -7160,7 +7160,7 @@
 
   .order-toast-head {
     display: flex; align-items: center; gap: 0.45rem;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--algo-slate);
@@ -7190,7 +7190,7 @@
     border: 0;
     color: rgba(200,216,240,0.7);
     cursor: pointer;
-    font-size: 0.85rem;
+    font-size: var(--fs-xl);
     line-height: 1;
     border-radius: 0.2rem;
     padding: 0;
@@ -7199,7 +7199,7 @@
 
   .order-toast-body {
     display: flex; align-items: baseline; gap: 0.4rem;
-    font-size: 0.78rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
   }
   .order-toast-side-buy  { color: #4ade80; }
@@ -7210,10 +7210,10 @@
 
   .order-toast-foot {
     margin-top: 0.2rem;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     color: rgba(200,216,240,0.55);
   }
-  .order-toast-oid { font-family: ui-monospace, monospace; }
+  .order-toast-oid { font-family: var(--font-numeric); }
   @media (prefers-reduced-motion: reduce) {
     .chain-quick-toast { animation: none; }
     .chain-basket-toast { animation: none; }

@@ -472,7 +472,7 @@
      amber underline accent is intentionally distinct from
      .algo-card-title (which is slate, no underline). */
   .hcard-title {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     color: #fbbf24;
     text-transform: uppercase;
@@ -493,13 +493,13 @@
   }
   .kv-row:last-child { border-bottom: none; }
   .kv-key {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
     font-weight: 500;
     flex: 0 0 auto;
   }
   .kv-val {
-    font-size: 0.68rem;
+    font-size: var(--fs-md);
     color: var(--algo-slate);
     text-align: right;
     flex: 1 1 auto;
@@ -507,8 +507,8 @@
   }
   .kv-num { font-variant-numeric: tabular-nums; text-align: right; }
   .kv-amber  { color: #fbbf24 !important; }
-  .kv-mono   { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.65rem; }
-  .kv-muted  { font-size: 0.6rem; color: #4a5a70; font-style: italic; }
+  .kv-mono   { font-family: var(--font-numeric); font-size: var(--fs-md); }
+  .kv-muted  { font-size: var(--fs-sm); color: #4a5a70; font-style: italic; }
 
   /* Broker rows */
   .broker-row {
@@ -517,17 +517,17 @@
     gap: 0.45rem;
     padding: 0.2rem 0;
     border-bottom: 1px solid rgba(255,255,255,0.04);
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
   }
   .broker-row:last-child { border-bottom: none; }
   .broker-key {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
     flex: 1 1 auto;
   }
   .broker-ip {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: #7dd3fc;
     flex: 2 1 auto;
     text-align: right;
@@ -536,7 +536,7 @@
   /* Status pills */
   .status-pill {
     display: inline-block;
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     font-weight: 700;
     letter-spacing: 0.07em;
     padding: 0.1rem 0.45rem;
@@ -557,8 +557,8 @@
     margin-top: 0.35rem;
   }
   .cache-key-chip {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.55rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     padding: 0.08rem 0.35rem;
     border-radius: 2px;
     background: rgba(125,211,252,0.08);
@@ -576,8 +576,8 @@
   }
   .ip-row:last-child { border-bottom: none; }
   .ip-addr {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.65rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     color: #7dd3fc;
   }
 
@@ -596,15 +596,15 @@
     scrollbar-color: rgba(126, 151, 184, 0.4) transparent;
   }
   .ticker-stale-label {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: #94a3b8;
     margin-bottom: 0.3rem;
   }
   .ticker-stale-row {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: #c8d8f0;
     padding: 0.1rem 0;
   }
@@ -620,7 +620,7 @@
     flex: 1 1 0;
     min-width: 4rem;
     padding: 0.32rem 0.55rem;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -644,7 +644,7 @@
   .pm-btn.pm-on.pm-hard  { background: rgba(248, 113, 113, 0.20); color: #f87171; border-color: rgba(248, 113, 113, 0.55); }
   .pm-err {
     color: #f87171;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     padding-top: 0.25rem;
   }
   .kv-section {
@@ -657,13 +657,13 @@
   }
   .kv-muted {
     color: #6e8198;
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-style: italic;
   }
   .pm-inval-btn {
     margin-left: auto;
     padding: 0.18rem 0.45rem;
-    font-size: 0.58rem;
+    font-size: var(--fs-xs);
     font-weight: 600;
     background: rgba(56, 189, 248, 0.10);
     border: 1px solid rgba(56, 189, 248, 0.35);
@@ -693,7 +693,7 @@
   .kv-tier-counts {
     margin-left: 0.4rem;
     color: #94a3b8;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
   }
   .pm-inval-all:hover:not(:disabled) {
     background: rgba(248, 113, 113, 0.20);

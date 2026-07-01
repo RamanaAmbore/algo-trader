@@ -414,7 +414,7 @@
     gap: 0.4rem;
   }
   .metrics-tile-label {
-    font-size: 0.78rem;
+    font-size: var(--fs-lg);
     color: var(--text-soft, #94a3b8);
     line-height: 1.2;
   }
@@ -443,7 +443,7 @@
   .metrics-tile-meta {
     display: flex;
     justify-content: space-between;
-    font-size: 0.68rem;
+    font-size: var(--fs-md);
     color: var(--text-soft, #94a3b8);
     font-variant-numeric: tabular-nums;
   }
@@ -457,7 +457,7 @@
   .metrics-table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.82rem;
+    font-size: var(--fs-xl);
     font-variant-numeric: tabular-nums;
   }
   .metrics-table th, .metrics-table td {
@@ -467,12 +467,12 @@
   }
   .metrics-table th { color: var(--text-soft, #94a3b8); font-weight: 500; }
   .metrics-table td.num, .metrics-table th.num { text-align: right; }
-  .metrics-tag code { font-size: 0.82rem; color: #67e8f9; }
+  .metrics-tag code { font-size: var(--fs-xl); color: #67e8f9; }
   .metrics-sha {
     margin-left: 0.4rem;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     color: var(--text-soft, #94a3b8);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .metrics-ts { color: var(--text-soft, #94a3b8); }
   .metrics-drill {
@@ -482,7 +482,7 @@
     padding: 0.18rem 0.5rem;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 0.78rem;
+    font-size: var(--fs-lg);
   }
   .metrics-drill:hover { background: rgba(34, 211, 238, 0.22); }
 
@@ -515,12 +515,12 @@
   }
   .metrics-modal-head h3 {
     margin: 0;
-    font-size: 0.95rem;
+    font-size: var(--fs-xl);
     display: flex;
     gap: 0.6rem;
     align-items: baseline;
   }
-  .metrics-modal-ts { font-size: 0.75rem; color: var(--text-soft, #94a3b8); font-weight: 400; }
+  .metrics-modal-ts { font-size: var(--fs-lg); color: var(--text-soft, #94a3b8); font-weight: 400; }
   .metrics-modal-close {
     background: transparent;
     border: none;
@@ -536,7 +536,7 @@
   }
   .metrics-modal-body h4 {
     margin: 0.8rem 0 0.3rem;
-    font-size: 0.85rem;
+    font-size: var(--fs-xl);
     color: var(--text-soft, #94a3b8);
     font-weight: 500;
   }
@@ -545,7 +545,7 @@
     border: 1px solid rgba(34, 211, 238, 0.22);
     padding: 0.4rem 0.6rem;
     border-radius: 4px;
-    font-size: 0.85rem;
+    font-size: var(--fs-xl);
     margin-bottom: 0.4rem;
   }
   .metrics-json {
@@ -553,8 +553,8 @@
     border: 1px solid rgba(148, 163, 184, 0.12);
     padding: 0.5rem;
     border-radius: 4px;
-    font-size: 0.74rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-lg);
+    font-family: var(--font-numeric);
     color: var(--text-soft, #e2e8f0);
     overflow-x: auto;
     max-height: 280px;
@@ -579,7 +579,7 @@
     padding: 0.4rem 0.5rem;
   }
   .metrics-test-side-label {
-    font-size: 0.78rem;
+    font-size: var(--fs-lg);
     font-weight: 600;
     color: #22d3ee;
     margin-bottom: 0.3rem;
@@ -588,7 +588,7 @@
     display: grid;
     grid-template-columns: auto 1fr;
     gap: 0.1rem 0.6rem;
-    font-size: 0.78rem;
+    font-size: var(--fs-lg);
   }
   .metrics-test-kv .num {
     text-align: right;
@@ -596,7 +596,7 @@
     color: var(--text, #e2e8f0);
   }
   .metrics-test-slow-label {
-    font-size: 0.74rem;
+    font-size: var(--fs-lg);
     color: var(--text-soft, #94a3b8);
     margin: 0.4rem 0 0.15rem;
     font-weight: 500;
@@ -604,7 +604,7 @@
   .metrics-test-slow-list {
     margin: 0;
     padding-left: 1.2rem;
-    font-size: 0.74rem;
+    font-size: var(--fs-lg);
     color: var(--text-soft, #94a3b8);
   }
   .metrics-test-slow-list li {
@@ -623,14 +623,14 @@
     text-align: right;
   }
   .metrics-test-name {
-    font-family: ui-monospace, monospace;
-    font-size: 0.70rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .metrics-test-skip {
-    font-size: 0.78rem;
+    font-size: var(--fs-lg);
     color: var(--text-soft, #94a3b8);
     margin: 0.2rem 0 0.4rem;
     font-style: italic;

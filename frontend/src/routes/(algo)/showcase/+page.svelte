@@ -378,7 +378,7 @@
     border: 1px solid rgba(251, 191, 36, 0.65);
     border-radius: 5px;
     color: #fbbf24;
-    font-size: 0.85rem;
+    font-size: var(--fs-xl);
     font-weight: 800;
     letter-spacing: 0.03em;
     cursor: pointer;
@@ -401,9 +401,9 @@
     .show-cta-tour { animation: none; }
   }
   .show-cta-hint {
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     color: rgba(155, 176, 208, 0.75);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     letter-spacing: 0.04em;
   }
   @media (max-width: 540px) {
@@ -432,7 +432,7 @@
     font-variant-numeric: tabular-nums;
   }
   .show-fact-lbl {
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-weight: 700;
     color: var(--algo-muted);
     text-transform: uppercase;
@@ -462,7 +462,7 @@
     margin-bottom: 0.5rem;
   }
   .show-card-tag {
-    font-size: 0.66rem;
+    font-size: var(--fs-md);
     font-weight: 700;
     color: var(--accent);
     text-transform: uppercase;
@@ -477,8 +477,8 @@
     border-radius: 999px;
   }
   .show-card-num {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
     letter-spacing: 0.05em;
   }
@@ -490,7 +490,7 @@
     line-height: 1.2;
   }
   .show-card-body {
-    font-size: 0.85rem;
+    font-size: var(--fs-xl);
     color: #9bb0d0;
     line-height: 1.55;
     margin: 0 0 0.6rem;
@@ -502,7 +502,7 @@
     flex: 1;
   }
   .show-card-bullets li {
-    font-size: 0.82rem;
+    font-size: var(--fs-xl);
     color: var(--algo-slate);
     line-height: 1.45;
     padding: 0.18rem 0 0.18rem 1rem;
@@ -511,16 +511,16 @@
   /* Mobile bump — keep card body legible without pinch-to-zoom; tag
      chips also bumped so they don't read as decorative noise. */
   @media (max-width: 600px) {
-    .show-card-body     { font-size: 0.9rem; }
-    .show-card-bullets li { font-size: 0.88rem; }
-    .show-card-tag      { font-size: 0.65rem; }
+    .show-card-body     { font-size: var(--fs-xl); }
+    .show-card-bullets li { font-size: var(--fs-xl); }
+    .show-card-tag      { font-size: var(--fs-md); }
   }
   .show-card-bullets li::before {
     content: '▸';
     position: absolute;
     left: 0;
     color: var(--accent);
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     top: 0.28rem;
   }
   .show-card-link {
@@ -529,7 +529,7 @@
     border: 1px solid rgba(212, 146, 12, 0.45);
     border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
     color: var(--accent);
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     letter-spacing: 0.02em;
     padding: 0.35rem 0.75rem;
@@ -554,7 +554,7 @@
     border-top: 1px solid rgba(126, 151, 184, 0.18);
   }
   .show-footer-line {
-    font-size: 0.85rem;
+    font-size: var(--fs-xl);
     color: #9bb0d0;
     margin: 0 0 0.75rem;
   }
@@ -566,7 +566,7 @@
   }
   .show-footer-btn {
     display: inline-block;
-    font-size: 0.78rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     padding: 0.45rem 1rem;
     border-radius: 0.3rem;

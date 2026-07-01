@@ -147,7 +147,7 @@
     grid-template-columns: max-content 1fr;
     padding: 0.4rem 0;
     border-bottom: 1px solid rgba(126, 151, 184, 0.12);
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     color: var(--algo-slate);
     line-height: 1.45;
     /* Keep each headline row intact inside a column — without this
@@ -160,8 +160,8 @@
   .newslist-row:last-child { border-bottom: none; }
 
   .newslist-time {
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: #7dd3fc;
     font-variant-numeric: tabular-nums;
     min-width: 3rem;
@@ -182,8 +182,8 @@
   }
 
   .newslist-src {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
     background: rgba(126, 151, 184, 0.10);
     border: 1px solid rgba(126, 151, 184, 0.25);
@@ -196,8 +196,8 @@
   }
 
   .newslist-refreshed {
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     color: var(--algo-muted);
     letter-spacing: 0.03em;
     margin-bottom: 0.35rem;
@@ -212,8 +212,8 @@
   }
 
   .newslist-empty {
-    font-family: ui-monospace, monospace;
-    font-size: 0.65rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
     color: var(--algo-muted);
   }
 

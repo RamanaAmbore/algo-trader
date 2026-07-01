@@ -317,7 +317,7 @@
 
 <style>
   .mpc-shell {
-    background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+    background: var(--card-bg-gradient);
     border: 1px solid rgba(251,191,36,0.18);
     border-left: 3px solid #fbbf24;
     border-radius: 4px;
@@ -333,8 +333,8 @@
     margin-bottom: 0.35rem;
   }
   .mpc-header {
-    font-family: ui-monospace, monospace;
-    font-size: 0.6rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     color: var(--algo-slate);
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -351,9 +351,9 @@
     padding: 0.15rem 0.45rem;
     border: none;
     background: transparent;
-    color: #a3b9d0;
-    font-family: ui-monospace, monospace;
-    font-size: 0.55rem;
+    color: var(--text-muted);
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.04em;
     cursor: pointer;
@@ -371,8 +371,8 @@
   }
   .mpc-empty {
     color: var(--algo-muted);
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
     text-align: center;
     padding: 1.2rem 0;
   }
@@ -383,8 +383,8 @@
     margin-top: 0.35rem;
     padding-top: 0.3rem;
     border-top: 1px solid rgba(200,216,240,0.08);
-    font-family: ui-monospace, monospace;
-    font-size: 0.58rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
   }
   .mpc-legend-row {
     display: inline-flex;

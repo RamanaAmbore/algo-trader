@@ -174,8 +174,8 @@
     .alm-header { gap: 0.3rem; padding: 0.35rem 0.55rem; }
   }
   .alm-title {
-    font-family: ui-monospace, monospace;
-    font-size: 0.72rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     color: #fbbf24;
     font-weight: 800;
     letter-spacing: 0.10em;
@@ -212,7 +212,7 @@
     border: 1px solid rgba(248, 113, 113, 0.35);
     border-radius: 3px;
     color: #f87171;
-    font-size: 0.95rem;
+    font-size: var(--fs-xl);
     line-height: 1;
     padding: 0;
     cursor: pointer;
