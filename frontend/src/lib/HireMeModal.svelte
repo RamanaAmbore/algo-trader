@@ -64,7 +64,7 @@
 <div class="hm-overlay" onclick={onClose}
      onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') onClose(); }}
      role="presentation">
-  <div class="hm-modal" role="dialog" aria-modal="true" aria-labelledby="hm-title" tabindex="-1"
+  <div class="hm-modal algo-modal" role="dialog" aria-modal="true" aria-labelledby="hm-title" tabindex="-1"
        onclick={(e) => e.stopPropagation()}
        onkeydown={(e) => e.stopPropagation()}>
     <button type="button" class="hm-close" aria-label="Close" onclick={onClose}>×</button>
@@ -169,43 +169,50 @@
     padding: 1rem;
   }
   .hm-modal {
+    /* Composes .algo-modal chrome. Overrides:
+       - overflow: auto (algo-modal sets hidden) — this dialog scrolls
+         its own body when the highlight list overflows viewport.
+       - background: elevated-dark gradient — intentional deeper contrast
+         for the hire-me splash so it reads as a distinct spotlight
+         moment vs. content-rich modals.
+       - font-family: sans body (numeric monospace default from
+         .algo-modal is wrong for prose). */
     position: relative;
     max-width: 38rem;
     width: 100%;
     max-height: 90vh;
     overflow-y: auto;
     background: linear-gradient(180deg, #0f172a 0%, #131c33 100%);
-    border: 1px solid rgba(251, 191, 36, 0.40);
-    border-radius: 6px;
+    border: 1px solid var(--algo-amber-border-soft);
     padding: 1.5rem 1.6rem 1.3rem;
-    color: #c8d8f0;
-    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+    color: var(--algo-slate);
+    font-family: var(--font-text);
   }
   .hm-close {
     position: absolute; top: 0.6rem; right: 0.8rem;
     width: 1.6rem; height: 1.6rem;
     border: none; background: transparent;
-    color: #94a3b8; font-size: 1.2rem; cursor: pointer; line-height: 1;
+    color: var(--algo-dim); font-size: 1.2rem; cursor: pointer; line-height: 1;
     border-radius: 3px;
   }
-  .hm-close:hover { background: rgba(255,255,255,0.08); color: #fbbf24; }
+  .hm-close:hover { background: rgba(255,255,255,0.08); color: var(--algo-amber); }
 
   .hm-title {
     margin: 0 0 0.2rem;
     font-size: 1.15rem;
     font-weight: 800;
     letter-spacing: 0.02em;
-    color: #fbbf24;
+    color: var(--algo-amber);
   }
   .hm-sub {
-    font-size: 0.7rem; font-weight: 500;
-    color: #94a3b8; margin-left: 0.4rem;
+    font-size: var(--fs-lg); font-weight: 500;
+    color: var(--algo-dim); margin-left: 0.4rem;
   }
   .hm-tagline {
     margin: 0 0 1rem;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     line-height: 1.45;
-    color: #a3b9d0;
+    color: var(--algo-muted);
   }
 
   .hm-highlights {
@@ -223,15 +230,15 @@
     border-radius: 3px;
   }
   .hm-tag {
-    font-size: 0.55rem; font-weight: 800;
+    font-size: var(--fs-xs); font-weight: 800;
     letter-spacing: 0.06em; text-transform: uppercase;
-    color: #fbbf24;
-    font-family: ui-monospace, monospace;
+    color: var(--algo-amber);
+    font-family: var(--font-numeric);
     padding-top: 0.1rem;
   }
   .hm-text {
-    font-size: 0.7rem; line-height: 1.45;
-    color: #c8d8f0;
+    font-size: var(--fs-lg); line-height: 1.45;
+    color: var(--algo-slate);
   }
 
   /* Inline reference links — for rows that point at a live editor
@@ -243,23 +250,23 @@
     align-items: baseline;
   }
   .hm-inline-link {
-    font-size: 0.62rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.03em;
-    color: #67e8f9;
+    color: var(--algo-cyan-text);
     text-decoration: none;
-    border-bottom: 1px dashed rgba(34, 211, 238, 0.45);
+    border-bottom: 1px dashed var(--algo-cyan-border-soft);
     padding-bottom: 1px;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
   }
   .hm-inline-link:hover {
-    color: #a5f3fc;
-    border-bottom-color: rgba(34, 211, 238, 0.80);
+    color: var(--algo-sky-text);
+    border-bottom-color: var(--algo-cyan-border);
   }
   .hm-link-sep {
     color: rgba(126, 151, 184, 0.45);
-    font-family: ui-monospace, monospace;
-    font-size: 0.62rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
   }
 
   .hm-cta {
@@ -270,30 +277,30 @@
   .hm-btn {
     display: inline-flex; align-items: center; gap: 0.35rem;
     padding: 0.4rem 0.8rem;
-    background: rgba(34, 211, 238, 0.14);
-    border: 1px solid rgba(34, 211, 238, 0.45);
+    background: var(--algo-cyan-bg);
+    border: 1px solid var(--algo-cyan-border-soft);
     border-radius: 4px;
-    color: #67e8f9;
-    font-size: 0.7rem;
+    color: var(--algo-cyan-text);
+    font-size: var(--fs-lg);
     font-weight: 700;
     letter-spacing: 0.03em;
     text-decoration: none;
     transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
   .hm-btn:hover {
-    background: rgba(34, 211, 238, 0.20);
-    border-color: rgba(34, 211, 238, 0.75);
-    color: #a5f3fc;
+    background: var(--algo-cyan-bg-strong);
+    border-color: var(--algo-cyan-border);
+    color: var(--algo-sky-text);
   }
   .hm-btn-primary {
-    background: rgba(251, 191, 36, 0.16);
-    border-color: rgba(251, 191, 36, 0.55);
-    color: #fbbf24;
+    background: var(--algo-amber-bg);
+    border-color: var(--algo-amber-border);
+    color: var(--algo-amber);
   }
   .hm-btn-primary:hover {
-    background: rgba(251, 191, 36, 0.30);
+    background: var(--algo-amber-bg-strong);
     border-color: rgba(251, 191, 36, 0.85);
-    color: #fcd34d;
+    color: var(--algo-amber-text);
   }
 
   @media (max-width: 540px) {

@@ -74,7 +74,7 @@
      tabindex="-1"
      onclick={(e) => { if (e.target === e.currentTarget) onClose(); }}
      onkeydown={(e) => { if (e.key === 'Enter' && e.target === e.currentTarget) onClose(); }}>
-  <div class="afm-modal" role="document"
+  <div class="afm-modal algo-modal" role="document"
        style="border-color: {palette.border}">
     <div class="afm-header">
       <div>
@@ -138,6 +138,16 @@
     padding: 1rem;
   }
   .afm-modal {
+    /* Composes .algo-modal chrome. Overrides:
+       - background: elevated navy gradient (lifts above already-dark
+         page surface, matches ConfirmModal elevation).
+       - border: default red placeholder — runtime inline style=
+         `border-color: {palette.border}` swaps to the actual tier
+         colour once the fire tier is known.
+       - border-radius: 8px (chunkier than the 6px canonical — this
+         modal is more emotional so operator wanted softer corners).
+       - overflow: auto (algo-modal sets hidden) — long agent-fire
+         reasoning can scroll. */
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     border: 1px solid rgba(248,113,113,0.45);
     border-radius: 8px;
@@ -146,8 +156,7 @@
     max-height: calc(100vh - 2rem);
     overflow-y: auto;
     color: var(--algo-slate);
-    font-family: ui-monospace, monospace;
-    box-shadow: 0 12px 32px rgba(0,0,0,0.6);
+    font-family: var(--font-numeric);
   }
   .afm-header {
     display: flex;
@@ -169,7 +178,7 @@
     padding: 0.05rem 0.4rem;
     border-radius: 3px;
     border: 1px solid;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 800;
     letter-spacing: 0.08em;
   }
@@ -177,32 +186,32 @@
     padding: 0.05rem 0.35rem;
     border-radius: 3px;
     background: rgba(251,113,133,0.16);
-    color: #fb7185;
+    color: var(--algo-rose);
     border: 1px solid rgba(251,113,133,0.42);
-    font-size: 0.5rem;
+    font-size: var(--fs-2xs);
     font-weight: 800;
     letter-spacing: 0.06em;
   }
   .afm-branch {
-    font-size: 0.55rem;
-    color: #fbbf24;
+    font-size: var(--fs-xs);
+    color: var(--algo-amber);
     font-weight: 700;
   }
   .afm-topic {
-    font-size: 0.55rem;
-    color: #a3b9d0;
+    font-size: var(--fs-xs);
+    color: var(--algo-muted);
     background: rgba(255,255,255,0.06);
     padding: 0.05rem 0.35rem;
     border-radius: 3px;
   }
   .afm-name {
-    font-size: 0.9rem;
+    font-size: var(--fs-xl);
     font-weight: 700;
-    color: #e5edf7;
+    color: var(--algo-slate);
     line-height: 1.2;
   }
   .afm-when {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: rgba(200,216,240,0.65);
     margin-top: 0.2rem;
   }
@@ -218,13 +227,13 @@
     line-height: 1;
     flex-shrink: 0;
   }
-  .afm-close:hover { border-color: #f87171; color: #f87171; }
+  .afm-close:hover { border-color: var(--algo-red); color: var(--algo-red); }
 
   .afm-section {
     margin-bottom: 0.6rem;
   }
   .afm-label {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -232,8 +241,8 @@
     margin-bottom: 0.15rem;
   }
   .afm-body {
-    font-size: 0.7rem;
-    color: #e5edf7;
+    font-size: var(--fs-lg);
+    color: var(--algo-slate);
     line-height: 1.4;
     overflow-wrap: anywhere;
   }
@@ -242,7 +251,7 @@
     border: 1px solid rgba(255,255,255,0.06);
     border-radius: 4px;
     padding: 0.45rem 0.55rem;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
   }
 
   .afm-actions {
@@ -259,7 +268,7 @@
     color: var(--algo-slate);
     padding: 0.35rem 0.7rem;
     border-radius: 3px;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     cursor: pointer;
   }
@@ -274,7 +283,7 @@
   .afm-btn-primary {
     background: var(--algo-amber-bg);
     border-color: var(--algo-amber-border);
-    color: #fbbf24;
+    color: var(--algo-amber);
   }
   .afm-btn-primary:hover {
     background: var(--algo-amber-bg-strong);

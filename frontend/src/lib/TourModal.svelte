@@ -124,7 +124,7 @@
 <div class="tour-overlay" onclick={onClose}
      onkeydown={(e) => { if (e.key === 'Enter') onClose(); }}
      role="presentation">
-  <div class="tour-modal" role="dialog" aria-modal="true" aria-labelledby="tour-title" tabindex="-1"
+  <div class="tour-modal algo-modal" role="dialog" aria-modal="true" aria-labelledby="tour-title" tabindex="-1"
        onclick={(e) => e.stopPropagation()}
        onkeydown={(e) => e.stopPropagation()}>
 
@@ -178,16 +178,20 @@
     padding: 1rem;
   }
   .tour-modal {
+    /* Composes .algo-modal chrome. Overrides:
+       - background: elevated-dark gradient (intentional splash-mode
+         contrast, matches HireMeModal for onboarding surfaces).
+       - border: full amber (not the halo default) — tour needs to
+         demand focus.
+       - font-family: sans body for prose readability. */
     position: relative;
     max-width: 36rem;
     width: 100%;
     background: linear-gradient(180deg, #0f172a 0%, #131c33 100%);
-    border: 1px solid rgba(251, 191, 36, 0.45);
-    border-radius: 6px;
+    border: 1px solid var(--algo-amber-border);
     padding: 0 1.6rem 1.2rem;
-    color: #c8d8f0;
-    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
-    overflow: hidden;
+    color: var(--algo-slate);
+    font-family: var(--font-text);
   }
 
   /* Progress strip — top edge, fills over STEP_MS, key-restart on
@@ -220,29 +224,29 @@
     position: absolute; top: 0.55rem; right: 0.8rem;
     width: 1.6rem; height: 1.6rem;
     border: none; background: transparent;
-    color: #94a3b8; font-size: 1.3rem; cursor: pointer; line-height: 1;
+    color: var(--algo-dim); font-size: 1.3rem; cursor: pointer; line-height: 1;
     border-radius: 3px;
   }
-  .tour-close:hover { background: rgba(255,255,255,0.10); color: #fbbf24; }
+  .tour-close:hover { background: rgba(255,255,255,0.10); color: var(--algo-amber); }
 
   .tour-step-meta {
     display: flex; align-items: center; justify-content: space-between;
     margin: 1.2rem 0 0.45rem;
-    font-size: 0.55rem;
-    font-family: ui-monospace, monospace;
+    font-size: var(--fs-xs);
+    font-family: var(--font-numeric);
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
   .tour-tag {
-    color: #fbbf24;
+    color: var(--algo-amber);
     font-weight: 800;
     padding: 0.15rem 0.5rem;
-    background: rgba(251, 191, 36, 0.16);
-    border: 1px solid rgba(251, 191, 36, 0.40);
+    background: var(--algo-amber-bg);
+    border: 1px solid var(--algo-amber-border-soft);
     border-radius: 3px;
   }
   .tour-step-count {
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-weight: 700;
   }
 
@@ -250,25 +254,25 @@
     margin: 0 0 0.55rem;
     font-size: 1.05rem;
     font-weight: 800;
-    color: #fbbf24;
+    color: var(--algo-amber);
     letter-spacing: 0.01em;
   }
   .tour-body {
     margin: 0 0 1rem;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     line-height: 1.55;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
 
   .tour-link {
     display: inline-flex; align-items: center;
     margin-bottom: 1.1rem;
     padding: 0.4rem 0.9rem;
-    background: rgba(34, 211, 238, 0.12);
-    border: 1px solid rgba(34, 211, 238, 0.50);
+    background: var(--algo-cyan-bg-soft);
+    border: 1px solid var(--algo-cyan-border-soft);
     border-radius: 4px;
-    color: #67e8f9;
-    font-size: 0.68rem;
+    color: var(--algo-cyan-text);
+    font-size: var(--fs-md);
     font-weight: 700;
     letter-spacing: 0.03em;
     cursor: pointer;
@@ -276,9 +280,9 @@
     font-family: inherit;
   }
   .tour-link:hover {
-    background: rgba(34, 211, 238, 0.25);
-    border-color: rgba(34, 211, 238, 0.80);
-    color: #a5f3fc;
+    background: var(--algo-cyan-bg-strong);
+    border-color: var(--algo-cyan-border);
+    color: var(--algo-sky-text);
   }
 
   .tour-controls {
@@ -291,8 +295,8 @@
     background: rgba(126, 151, 184, 0.10);
     border: 1px solid rgba(126, 151, 184, 0.35);
     border-radius: 3px;
-    color: #c8d8f0;
-    font-size: 0.65rem;
+    color: var(--algo-slate);
+    font-size: var(--fs-md);
     font-weight: 700;
     letter-spacing: 0.02em;
     cursor: pointer;
@@ -301,26 +305,26 @@
   }
   .tour-ctrl-btn:hover:not(:disabled) {
     background: rgba(126, 151, 184, 0.22);
-    color: #fbbf24;
-    border-color: rgba(251, 191, 36, 0.45);
+    color: var(--algo-amber);
+    border-color: var(--algo-amber-border-soft);
   }
   .tour-ctrl-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-  .tour-ctrl-pause { font-family: ui-monospace, monospace; }
+  .tour-ctrl-pause { font-family: var(--font-numeric); }
   .tour-ctrl-skip  { margin-left: auto; }
   .tour-ctrl-next  {
-    background: rgba(251, 191, 36, 0.16);
-    border-color: rgba(251, 191, 36, 0.55);
-    color: #fbbf24;
+    background: var(--algo-amber-bg);
+    border-color: var(--algo-amber-border);
+    color: var(--algo-amber);
   }
   .tour-ctrl-next:hover:not(:disabled) {
-    background: rgba(251, 191, 36, 0.30);
+    background: var(--algo-amber-bg-strong);
     border-color: rgba(251, 191, 36, 0.85);
-    color: #fcd34d;
+    color: var(--algo-amber-text);
   }
 
   @media (max-width: 540px) {
     .tour-modal { padding: 0 1rem 0.9rem; }
-    .tour-title { font-size: 0.95rem; }
-    .tour-body  { font-size: 0.68rem; }
+    .tour-title { font-size: var(--fs-xl); }
+    .tour-body  { font-size: var(--fs-md); }
   }
 </style>

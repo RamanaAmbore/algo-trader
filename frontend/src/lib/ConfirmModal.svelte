@@ -115,7 +115,7 @@
        tabindex="-1"
        onclick={() => _resolve_and_close(false)}
        onkeydown={(e) => { if (e.key === 'Escape') _resolve_and_close(false); }}>
-    <div class="cm-modal" role="presentation"
+    <div class="cm-modal algo-modal" role="presentation"
          onclick={(e) => e.stopPropagation()}>
       <div class="cm-title">{_title}</div>
       {#if _message}<div class="cm-message">{@html _message}</div>{/if}
@@ -156,25 +156,30 @@
     padding: 1rem;
   }
   .cm-modal {
+    /* Composes .algo-modal chrome (amber halo + radius + shadow + flex
+       column + overflow hidden). Overrides:
+       - background: elevated navy gradient (lighter than base dark
+         --card-bg-gradient) for modal depth. Confirm dialogs sit ON
+         TOP of already-dark surfaces so we lift them one notch.
+       - border: soft amber to distinguish confirm from content-rich
+         canonical modals which use the full amber-halo border. */
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
-    border: 1px solid rgba(251,191,36,0.35);
-    border-radius: 6px;
+    border: 1px solid var(--algo-amber-border-soft);
     padding: 0.85rem 1rem;
     width: min(22rem, calc(100vw - 2rem));
     color: var(--algo-slate);
-    font-family: ui-monospace, monospace;
-    box-shadow: 0 12px 32px rgba(0,0,0,0.6);
+    font-family: var(--font-numeric);
   }
   .cm-title {
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
-    color: #fbbf24;
+    color: var(--algo-amber);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     margin-bottom: 0.45rem;
   }
   .cm-message {
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     color: rgba(200,216,240,0.85);
     line-height: 1.45;
     margin-bottom: 0.85rem;
@@ -193,28 +198,28 @@
     margin-bottom: 0.85rem;
   }
   .cm-input-label {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: rgba(200,216,240,0.6);
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
   .cm-input {
     background: rgba(10,16,32,0.6);
-    border: 1px solid rgba(251,191,36,0.30);
+    border: 1px solid var(--algo-amber-border-soft);
     border-radius: 3px;
     color: var(--algo-slate);
-    font-family: ui-monospace, monospace;
-    font-size: 0.72rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-lg);
     padding: 0.4rem 0.55rem;
     outline: none;
   }
-  .cm-input:focus { border-color: rgba(251,191,36,0.65); }
+  .cm-input:focus { border-color: var(--algo-amber-border); }
   .cm-cancel,
   .cm-confirm {
     padding: 0.4rem 0.95rem;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-numeric);
     border-radius: 3px;
     cursor: pointer;
     border: 1px solid transparent;
@@ -226,16 +231,16 @@
   }
   .cm-cancel:hover { border-color: rgba(255,255,255,0.35); }
   .cm-confirm {
-    background: rgba(74,222,128,0.12);
-    border-color: rgba(74,222,128,0.55);
-    color: #4ade80;
+    background: var(--algo-green-bg);
+    border-color: var(--algo-green-border);
+    color: var(--algo-green);
   }
-  .cm-confirm:hover { background: rgba(74,222,128,0.20); }
+  .cm-confirm:hover { background: var(--algo-green-bg-strong); }
   /* Danger variant (suspend, terminate, delete, etc.) — red Confirm. */
   .cm-confirm-danger {
-    background: rgba(248,113,113,0.12);
-    border-color: rgba(248,113,113,0.55);
-    color: #f87171;
+    background: var(--algo-red-bg);
+    border-color: var(--algo-red-border);
+    color: var(--algo-red);
   }
-  .cm-confirm-danger:hover { background: rgba(248,113,113,0.22); }
+  .cm-confirm-danger:hover { background: var(--algo-red-bg-strong); }
 </style>
