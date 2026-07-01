@@ -84,6 +84,7 @@
   //   onSymbolChange?  — callback when the operator picks a new symbol
 
   import { onMount, onDestroy, getContext, untrack } from 'svelte';
+  import { readChartPref, writeChartPref } from '$lib/data/chartPrefs';
   import {
     fetchOptionsHistorical,
     fetchChartPriceHistory,
@@ -371,7 +372,17 @@
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _suppressTimer = null;
   let _chartLoaded = $state(false);
+  // Range — persisted to localStorage so the operator's last-picked range
+  // (1D / 1W / 1M / 3M / 6M / 1Y) survives page navigation. Hydrated in
+  // onMount (SSR-safe). Default 30 (1M) on first visit.
+  const _RANGE_LS_KEY = 'rbq.cache.chart-range.v1';
   let _chartDays   = $state(30);
+  let _rangeHydrated = $state(false);
+  $effect(() => {
+    const snap = _chartDays;
+    if (!_rangeHydrated) return;
+    writeChartPref(_RANGE_LS_KEY, snap);
+  });
   // Default to candle on first visit; persisted to localStorage so the
   // operator's choice is remembered. Hydrated in onMount (SSR-safe), so
   // the initial value here is the canonical default (not a fallback).
@@ -441,8 +452,19 @@
       }
     } catch (_) { /* quota — silently skip */ }
   });
-  // Intraday tick stream — single boolean, toggled by a chip in the toolbar.
+  // Intraday tick stream — toggled by a chip in the toolbar. Persisted to
+  // localStorage so the operator's preference survives page navigation.
+  // Note: symbol changes always reset this to false (both _onPickSymbol and
+  // the symbol-change $effect write false) — the pref is the starting state
+  // on mount, not sticky within a session across symbol picks.
+  const _INTRADAY_LS_KEY = 'rbq.cache.chart-intraday.v1';
   let _intradayOn = $state(false);
+  let _intradayHydrated = $state(false);
+  $effect(() => {
+    const snap = _intradayOn;
+    if (!_intradayHydrated) return;
+    writeChartPref(_INTRADAY_LS_KEY, snap);
+  });
   const _showSma20 = $derived(_overlays.includes('sma20'));
   const _showSma50 = $derived(_overlays.includes('sma50'));
   // Always on — volume bars render unconditionally.
@@ -1573,6 +1595,25 @@
       }
     } catch (_) { /* localStorage unavailable — keep default */ }
     _seriesHydrated = true;
+
+    // Hydrate range (days) — operator's last-picked range (1D–1Y).
+    // Only accept values from the _RANGE_OPTS set to guard against
+    // legacy / hand-edited keys.
+    {
+      const knownRanges = new Set(_RANGE_OPTS.map((o) => o.value));
+      const storedRange = readChartPref(_RANGE_LS_KEY, _chartDays,
+        (v) => typeof v === 'number' && knownRanges.has(v));
+      if (storedRange !== _chartDays) _chartDays = storedRange;
+    }
+    _rangeHydrated = true;
+
+    // Hydrate intraday toggle.
+    {
+      const storedIntraday = readChartPref(_INTRADAY_LS_KEY, _intradayOn,
+        (v) => typeof v === 'boolean');
+      if (storedIntraday !== _intradayOn) _intradayOn = storedIntraday;
+    }
+    _intradayHydrated = true;
 
     await loadInstruments().catch(() => {});
     // Pin hydration runs in the background — don't block the historical

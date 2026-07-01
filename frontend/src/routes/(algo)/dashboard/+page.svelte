@@ -37,6 +37,7 @@
     FO_QUOTE_KEYS, MIDCAP_QUOTE_KEYS, SMLCAP_QUOTE_KEYS,
     symbolFromQuoteKey,
   } from '$lib/data/indexConstituents';
+  import { readChartPref, writeChartPref } from '$lib/data/chartPrefs';
 
   // ag-Grid module registration — idempotent across re-mounts.
   ModuleRegistry.registerModules([AllCommunityModule]);
@@ -256,6 +257,24 @@
   // own NAV tab (NavBreakdown — per-account decomposition) so both
   // glances (curve + per-account table) are surfaced without a click.
   let _chartTab = $state(/** @type {'nav'|'intraday'|'performance'} */ ('nav'));
+  // Persist the operator's last-active chart-card tab (NAV / Intraday /
+  // Performance) and sidebar tab (NAV / Capital / Equity) to localStorage
+  // so they survive page navigation. Hydrated in onMount (SSR-safe).
+  const _CHART_TAB_LS_KEY    = 'rbq.cache.dash-chart-tab.v1';
+  const _CAP_EQ_TAB_LS_KEY   = 'rbq.cache.dash-cap-eq-tab.v1';
+  const _CHART_TAB_VALID   = new Set(['nav', 'intraday', 'performance']);
+  const _CAP_EQ_TAB_VALID  = new Set(['nav', 'capital', 'equity']);
+  let _tabsHydrated = $state(false);
+  $effect(() => {
+    const snap = _chartTab;
+    if (!_tabsHydrated) return;
+    writeChartPref(_CHART_TAB_LS_KEY, snap);
+  });
+  $effect(() => {
+    const snap = _capEqTab;
+    if (!_tabsHydrated) return;
+    writeChartPref(_CAP_EQ_TAB_LS_KEY, snap);
+  });
   // Bindable mirror of PnlAnalysis.hasData — flips to false once
   // /pnl-benchmarks confirms zero dates. Default true so the
   // auto-collapse effect below doesn't fire during the initial
@@ -1126,6 +1145,17 @@
 
   onMount(() => {
     bannerDismissed = localStorage.getItem('ramboq.demo_banner_dismissed') === '1';
+
+    // Hydrate tab preferences — chart-card tab + sidebar cap/equity tab.
+    const storedChartTab = readChartPref(_CHART_TAB_LS_KEY, _chartTab,
+      (v) => typeof v === 'string' && _CHART_TAB_VALID.has(v));
+    if (storedChartTab !== _chartTab) _chartTab = /** @type {'nav'|'intraday'|'performance'} */ (storedChartTab);
+
+    const storedCapEqTab = readChartPref(_CAP_EQ_TAB_LS_KEY, _capEqTab,
+      (v) => typeof v === 'string' && _CAP_EQ_TAB_VALID.has(v));
+    if (storedCapEqTab !== _capEqTab) _capEqTab = /** @type {'nav'|'capital'|'equity'} */ (storedCapEqTab);
+
+    _tabsHydrated = true;
     // (P&L + Agent collapse state now owned by CollapseButton via
     // its own per-user localStorage key — the old dash.pnlOpen
     // restore is retired.)

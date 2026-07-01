@@ -3,6 +3,7 @@
   import { aggCompact, fmtPctScaled } from '$lib/format.js';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { fetchPnlBenchmarks } from '$lib/api.js';
+  import { readChartPref, writeChartPref } from '$lib/data/chartPrefs';
   import PnlPanel from '$lib/PnlPanel.svelte';
   import Select   from '$lib/Select.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
@@ -41,6 +42,26 @@
   // Range-breakdown tabs
   /** @type {'segment'|'account'|'symbol'|'daily'} */
   let breakTab = $state('segment');
+
+  // ── Persistence keys for user-selectable chart preferences ──────────────
+  // Both preset and breakTab are persisted to localStorage so they survive
+  // page navigation. Hydration happens in onMount (SSR-safe). Persist
+  // effects are guarded by _mounted so the initial Svelte-fires-on-mount
+  // run doesn't write the default over a previously stored value.
+  const _PRESET_LS_KEY   = 'rbq.cache.pnl-preset.v1';
+  const _BREAKTAB_LS_KEY = 'rbq.cache.pnl-break-tab.v1';
+  const _PRESET_VALID = new Set(['today', '5d', '1m', '3m', '1y', 'ytd', 'custom']);
+  const _BREAKTAB_VALID = new Set(['segment', 'account', 'symbol', 'daily']);
+  $effect(() => {
+    const snap = preset;
+    if (!_mounted) return;
+    writeChartPref(_PRESET_LS_KEY, snap);
+  });
+  $effect(() => {
+    const snap = breakTab;
+    if (!_mounted) return;
+    writeChartPref(_BREAKTAB_LS_KEY, snap);
+  });
 
   // CSV upload modal
   let csvOpen       = $state(false);
@@ -203,10 +224,25 @@
   let _mounted = $state(false);
   onMount(() => {
     const today = todayIST();
-    // Hydrate the default range from the active preset (5d) so the first
-    // fetch covers a multi-day window. The CSV upload modal still defaults
-    // to today since the operator is uploading a single trading day.
-    const r = presetRange(preset);
+
+    // Hydrate persisted preferences from localStorage (SSR-safe: localStorage
+    // is only available in the browser, never during SSR).
+    const storedPreset = readChartPref(_PRESET_LS_KEY, preset,
+      (v) => typeof v === 'string' && _PRESET_VALID.has(v));
+    if (storedPreset !== preset) preset = /** @type {typeof preset} */ (storedPreset);
+
+    const storedBreakTab = readChartPref(_BREAKTAB_LS_KEY, breakTab,
+      (v) => typeof v === 'string' && _BREAKTAB_VALID.has(v));
+    if (storedBreakTab !== breakTab) breakTab = /** @type {typeof breakTab} */ (storedBreakTab);
+
+    // Hydrate the default range from the active preset so the first fetch
+    // covers the operator's last-used window. The CSV upload modal still
+    // defaults to today since the operator is uploading a single trading day.
+    // Skip hydrating from/to for 'custom' — the operator's last custom dates
+    // are stale so fall back to the 5d preset window.
+    const effectivePreset = preset === 'custom' ? '5d' : preset;
+    if (preset === 'custom') preset = '5d';
+    const r = presetRange(effectivePreset);
     fromDate = r.from;
     toDate   = r.to;
     csvDate  = today;
