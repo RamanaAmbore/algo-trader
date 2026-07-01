@@ -3915,19 +3915,22 @@
     // identical, skip the network round-trip entirely. Same
     // pattern the equity-only synth path already uses.
     //
-    // NOTE: the `strategy &&` guard was intentionally removed. Previously
-    // a null strategy (from a failed fetch) would bypass the memo even
-    // when legs hadn't changed — causing 20+ redundant POST calls during
-    // closed hours when the broker token was broken. Now we skip the round-
-    // trip if the legs key matches regardless of whether we have a prior
-    // result: if inputs are identical and the last call failed, retrying
-    // immediately won't produce a different outcome. The force=true path
-    // (manual Refresh, position_filled postback, book_changed bus) is
-    // the correct escape hatch when a prior failure should be retried.
+    // The `strategy &&` guard is critical here: the memo must ONLY
+    // apply when we already have a valid chart (strategy !== null).
+    // Without it, a single transient first-load failure sets
+    // `_stratLastKey = legsKey` (see catch block below) and all
+    // subsequent polls hit the early-return — strategy stays null
+    // forever and the operator sees "No legs selected" permanently
+    // until a manual force=true refresh. With it: null-strategy
+    // path always allows a retry, and the 5 s market-open interval
+    // naturally self-heals on the next successful tick. The
+    // _stratFails >= 2 gate in the catch block still escalates to
+    // the strategyErr banner after two consecutive failures so the
+    // operator knows when the broker is persistently unavailable.
     const legsKey = cleanLegs.map(l =>
       `${l.symbol}:${l.qty}:${l.avg_cost ?? ''}:${l.ltp ?? ''}:${l.expiry ?? ''}`
     ).join('|');
-    if (!opts?.force && legsKey === _stratLastKey) {
+    if (!opts?.force && strategy && legsKey === _stratLastKey) {
       strategyErr = ''; _stratFails = 0;
       return;
     }

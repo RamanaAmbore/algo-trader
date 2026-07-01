@@ -620,4 +620,27 @@ test.describe('Performance — DEFECT-1 qty=0 path never blanks strategy permane
     expect(derivedBlock).toContain('nonEq.every(l => Number(l.qty) === 0)');
     expect(derivedBlock).toContain('if (nonEq.length === 0) return false');
   });
+
+  test('DEFECT-4: legsKey memo requires strategy !== null (not unconditional)', async () => {
+    // Source audit: the strategy-signature memo in loadStrategy must include
+    // `strategy &&` in its guard condition. Without it, a single transient
+    // first-load failure sets _stratLastKey = legsKey and all subsequent polls
+    // return early, leaving strategy=null permanently ("No legs selected" forever).
+    //
+    // Correct guard: `if (!opts?.force && strategy && legsKey === _stratLastKey)`
+    // Wrong guard:   `if (!opts?.force && legsKey === _stratLastKey)`  ← regressed
+    const src = await readSrc();
+
+    // The correct guard must appear.
+    expect(
+      src,
+      'DEFECT-4: memo guard must include `strategy &&` to allow retries when strategy=null',
+    ).toContain('!opts?.force && strategy && legsKey === _stratLastKey');
+
+    // The wrong (unconditional) guard must NOT appear.
+    expect(
+      src,
+      'DEFECT-4: found unconditional memo guard without `strategy &&` — first-load failure stuck forever',
+    ).not.toContain('if (!opts?.force && legsKey === _stratLastKey)');
+  });
 });
