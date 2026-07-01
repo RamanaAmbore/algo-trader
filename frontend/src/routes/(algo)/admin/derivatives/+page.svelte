@@ -4485,6 +4485,8 @@
          with every other card on the page.) -->
     <div class="legs-header-row">
       <div class="legs-header legs-header-static">
+        <span class="algo-card-title" style="margin-bottom:0">Legs</span>
+        <span class="legs-header-sep" aria-hidden="true"></span>
         {#if selectedUnderlying}
           <span class="legs-underlying-chip">{selectedUnderlying}</span>
           <span class="legs-header-sep" aria-hidden="true"></span>
@@ -4985,7 +4987,7 @@
   class:is-collapsed={_colByund}>
   <div class="bucket-header">
     <span class="opt-section-h" style="padding-bottom:0">
-      Snapshot
+      <span class="algo-card-title" style="margin-bottom:0">Snapshot</span>
       <span class="byund-scope" title="Snapshot rows include only positions / holdings in this account scope. Empty = all accounts.">
         {#if selectedAccounts.length === 0}
           all accounts
