@@ -2074,6 +2074,18 @@
     if (!candidatePositions.length) return false;
     return candidatePositions.some(c => _isLegEnabled(c));
   });
+  /** True when every enabled non-eq leg has qty=0 (all positions closed today).
+   *  Distinct from "no legs selected" (operator unchecked rows) — legs ARE
+   *  enabled but there is nothing open to price. Gates the empty-state message
+   *  so the operator sees a meaningful hint rather than "Tick at least one row"
+   *  when the rows are already ticked. Derived off `legs` (already filtered
+   *  to enabled candidates) rather than candidatePositions to avoid reading
+   *  enabledSymbols again (already expressed in legs). */
+  const _allEnabledLegsZeroQty = $derived.by(() => {
+    const nonEq = legs.filter(l => l.kind !== 'eq');
+    if (nonEq.length === 0) return false;
+    return nonEq.every(l => Number(l.qty) === 0);
+  });
   $effect(() => {
     if (!allCandidatesEl) return;
     // Indeterminate iff some-but-not-all are on. Browser doesn't
@@ -3837,7 +3849,17 @@
           strategy = _synthCache.value;
         }
       } else {
-        if (strategy !== null) strategy = null;
+        // Only blank strategy when there are truly NO enabled non-eq legs.
+        // If there are enabled non-eq legs but all have qty=0 (positions
+        // closed today), keep the previous strategy visible — an old chart
+        // is more useful than the blank "no legs selected" state. The
+        // empty-state panel surfaces a "positions closed" hint instead.
+        // Blanking only when legs is genuinely empty (operator unchecked
+        // all rows, or no positions exist at all) is safe and intentional.
+        const _hasEnabledLegs = legs.some(l => l.kind !== 'eq');
+        if (!_hasEnabledLegs && strategy !== null) {
+          strategy = null;
+        }
         _synthCache = null;
       }
       strategyErr = ''; _stratFails = 0;
@@ -4325,6 +4347,9 @@
     {:else if candidatePositions.length === 0}
       No {simActive ? 'sim' : 'live'} positions on <b>{selectedUnderlying}</b> and no drafts yet.
       Click <b>+ Add</b> to drop a draft strike on this underlying.
+    {:else if _allEnabledLegsZeroQty}
+      All {simActive ? 'sim' : 'live'} positions on <b>{selectedUnderlying}</b> are closed — no open payoff to render.
+      Click <b>+ Add</b> to model a hypothetical strike.
     {:else}
       No legs selected. Tick at least one row in the Candidates panel
       below to render the payoff.
@@ -5391,10 +5416,13 @@
 {/if}
 
 {#if _ctxAction === 'place-order'}
+  <!-- Context-action order panel (opened from snapshot row right-click).
+       Routes through onTicketSubmit so it fires the same placement toast
+       as the main SymbolPanel. -->
   <SymbolPanel
     symbol={_ctxSym}
     exchange={_ctxExch}
-    onSubmit={() => {}}
+    onSubmit={onTicketSubmit}
     onClose={() => { _ctxAction = null; }}
   />
 {/if}
