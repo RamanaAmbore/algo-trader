@@ -89,10 +89,27 @@ class Base(DeclarativeBase):
 
 
 async def init_db() -> None:
-    """Create all tables (idempotent)."""
+    """Create all tables (idempotent).
+
+    `broker_accounts` is intentionally EXCLUDED from create_all on the
+    branch-local engine — the table lives in the shared `ramboq` DB
+    (see `_shared_engine`) and reads/writes route there via
+    `shared_async_session`. Excluding it from the branch-local schema
+    prevents re-provisioning dev from recreating an orphan empty table
+    that no code touches. The table itself is created on `_shared_engine`
+    in a separate call below.
+    """
     async with engine.begin() as conn:
-        from backend.api.models import User, Agent, AgentEvent, AlgoOrderEvent, MarketReport, NewsHeadline, GrammarToken, Setting, DailyBook, Watchlist, WatchlistItem, VisitorLog, CodeMetricsSnapshot, MarketLifecycleEvent  # noqa: F401 — ensure model registered
-        await conn.run_sync(Base.metadata.create_all)
+        from backend.api.models import User, Agent, AgentEvent, AlgoOrderEvent, MarketReport, NewsHeadline, GrammarToken, Setting, DailyBook, Watchlist, WatchlistItem, VisitorLog, CodeMetricsSnapshot, MarketLifecycleEvent, BrokerAccount  # noqa: F401 — ensure model registered
+        _branch_local_tables = [
+            t for t in Base.metadata.sorted_tables
+            if t.name != BrokerAccount.__tablename__
+        ]
+        await conn.run_sync(
+            lambda sync_conn: Base.metadata.create_all(
+                sync_conn, tables=_branch_local_tables, checkfirst=True,
+            )
+        )
 
         # Idempotent column additions for tables that pre-date the column.
         # PostgreSQL ADD COLUMN IF NOT EXISTS is supported since 9.6 and is a
@@ -239,35 +256,10 @@ async def init_db() -> None:
         ):
             await conn.execute(text(stmt))
 
-        # Multi-broker extension (May 2026) — broker_accounts gains four
-        # columns so a Dhan / Groww / future-vendor account fits the same
-        # schema as Kite. The api_secret_enc / password_enc / totp_token_enc
-        # columns already exist (Kite-shaped); the new fields supplement
-        # them for brokers that authenticate differently.
-        #   client_id        — plaintext, like api_key. Used by Dhan-style
-        #                       brokers that key on client_id + access_token.
-        #   access_token_enc — Fernet-encrypted access token for Dhan-style
-        #                       brokers (long-lived, pasted from dashboard).
-        #   priority         — INT, fallback order for PriceBroker
-        #                       (lower = tried first). 100 default — every
-        #                       existing account ties; operator can pull
-        #                       a preferred broker forward by setting it
-        #                       to 10, push laggy ones back to 200, etc.
-        #   extra_config     — JSONB, free-form per-broker tuning knobs.
-        for stmt in (
-            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS client_id VARCHAR(64)",
-            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS access_token_enc TEXT",
-            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS priority INTEGER "
-            "NOT NULL DEFAULT 100",
-            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS extra_config JSONB "
-            "NOT NULL DEFAULT '{}'::jsonb",
-            # historical_data_enabled — controls per-account eligibility for the
-            # /api/options/historical fallback loop. TRUE for all existing rows
-            # preserves previous behaviour (every account participates).
-            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
-            "historical_data_enabled BOOLEAN NOT NULL DEFAULT TRUE",
-        ):
-            await conn.execute(text(stmt))
+        # broker_accounts DDL moved to `_ensure_shared_broker_schema()` below.
+        # Table lives in the shared `ramboq` DB (see `_shared_engine`); running
+        # ALTER TABLE against the branch-local engine would fail on dev (table
+        # doesn't exist there — dropped Jul 2026).
         # User-management v2 — super-admin role, email verification,
         # token versioning for force-logout, suspend / terminate stamps.
         # Columns added with explicit defaults so existing rows backfill
@@ -833,6 +825,13 @@ async def init_db() -> None:
         ))
     logger.info("Database: tables verified")
 
+    # broker_accounts schema lives on the SHARED engine (ramboq DB) — always
+    # points at prod's broker_accounts regardless of deploy_branch. Run
+    # create_table + idempotent ALTERs here so both dev and prod agree on
+    # the schema; on prod this is a no-op (columns already exist), on dev
+    # it never touches the branch-local DB (which no longer has the table).
+    await _ensure_shared_broker_schema()
+
     # Seed grammar tokens (condition / notify / action catalog) BEFORE agents
     # so any agent referencing a token can validate against the catalog.
     from backend.api.algo.grammar import seed_grammar_tokens
@@ -875,6 +874,45 @@ async def init_db() -> None:
     # first alert after a restart already routes to the right addresses.
     from backend.shared.helpers.alert_utils import refresh_alert_recipients
     await refresh_alert_recipients()
+
+
+async def _ensure_shared_broker_schema() -> None:
+    """Create + migrate broker_accounts on the shared engine (ramboq DB).
+
+    Runs after `init_db()`'s branch-local block. On prod (which already
+    has broker_accounts + all columns) every statement is a no-op via
+    IF NOT EXISTS. On dev the branch-local DB doesn't have the table
+    at all (dropped Jul 2026); this block writes only to the shared
+    ramboq DB.
+
+    Idempotent — safe to run on every boot.
+    """
+    from sqlalchemy import text
+    from backend.api.models import BrokerAccount  # noqa: F401
+    async with _shared_engine.begin() as conn:
+        # Create the table if it doesn't exist (prod: no-op).
+        await conn.run_sync(
+            lambda sync_conn: Base.metadata.create_all(
+                sync_conn,
+                tables=[BrokerAccount.__table__],
+                checkfirst=True,
+            )
+        )
+        # Multi-broker extension (May 2026) — broker_accounts gains four
+        # columns so a Dhan / Groww / future-vendor account fits the same
+        # schema as Kite. See historical commit notes in git log.
+        for stmt in (
+            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS client_id VARCHAR(64)",
+            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS access_token_enc TEXT",
+            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS priority INTEGER "
+            "NOT NULL DEFAULT 100",
+            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS extra_config JSONB "
+            "NOT NULL DEFAULT '{}'::jsonb",
+            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
+            "historical_data_enabled BOOLEAN NOT NULL DEFAULT TRUE",
+        ):
+            await conn.execute(text(stmt))
+    logger.info("Shared broker schema verified on ramboq")
 
 
 async def get_session() -> AsyncSession:

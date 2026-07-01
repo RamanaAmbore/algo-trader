@@ -259,12 +259,14 @@ test.describe('null-guard: scheduler poison regression', () => {
   // ---- Five quality dimensions (SSOT, perf, stale, reuse, UX) ---------------
 
   // SSOT: the fix pattern is consistent — no mix of X.foo and X?.foo for same var
-  test('SSOT: no unguarded X.foo adjacent to X?.foo for same null-state var', async ({ page }) => {
-    // This is a static check run in Node — no page needed.
-    // We check that patched files do not have old X.foo alongside new X?.foo
-    // for the same identifier within a {#if X} block.
-    // Simple heuristic: no occurrence of '<ident>.symbol' without ? in fixed files.
+  test('SSOT: no unguarded X.foo adjacent to X?.foo for same null-state var', async () => {
+    // Static check run in Node — no page needed.
+    // Verify patched files do not have old X.foo alongside new X?.foo for the same
+    // identifier within a {#if X} block.
     const { readFileSync } = await import('fs');
+    const { resolve } = await import('path');
+    // __dirname is frontend/e2e — project root is two levels up
+    const root = resolve(new URL('.', import.meta.url).pathname, '../..');
     const checks = [
       { file: 'frontend/src/lib/LogPanel.svelte', ident: '_ctxMenu' },
       { file: 'frontend/src/lib/MarketPulse.svelte', ident: 'ctxMenu' },
@@ -274,7 +276,7 @@ test.describe('null-guard: scheduler poison regression', () => {
       { file: 'frontend/src/routes/(algo)/orders/+page.svelte', ident: '_ctxMenu' },
     ];
     for (const { file, ident } of checks) {
-      const content = readFileSync(file, 'utf-8');
+      const content = readFileSync(resolve(root, file), 'utf-8');
       // Extract content inside {#if <ident>} ... {/if} blocks (rough)
       const blockRe = new RegExp(`\\{#if ${ident}\\}([\\s\\S]*?)\\{/if\\}`, 'g');
       let match;
@@ -299,7 +301,12 @@ test.describe('null-guard: scheduler poison regression', () => {
   // scheduler-poison files (static grep).
   test('stale-guard: derivatives _ctxMenu uses only optional-chain in template', async () => {
     const { readFileSync } = await import('fs');
-    const content = readFileSync('frontend/src/routes/(algo)/admin/derivatives/+page.svelte', 'utf-8');
+    const { resolve } = await import('path');
+    const root = resolve(new URL('.', import.meta.url).pathname, '../..');
+    const content = readFileSync(
+      resolve(root, 'frontend/src/routes/(algo)/admin/derivatives/+page.svelte'),
+      'utf-8'
+    );
     // After {#if _ctxMenu}, every _ctxMenu.foo should be _ctxMenu?.foo
     const blockRe = /\{#if _ctxMenu\}([\s\S]*?)\{\/if\}/g;
     let m;
@@ -312,8 +319,10 @@ test.describe('null-guard: scheduler poison regression', () => {
 
   // Reuse: shared lib SymbolContextMenu receives x/y/symbol/exchange from multiple
   // callers — all now via X?. This confirms the component interface is unchanged.
-  test('reuse: SymbolContextMenu props are still passed consistently', async ({ page }) => {
+  test('reuse: SymbolContextMenu props are still passed consistently', async () => {
     const { readFileSync } = await import('fs');
+    const { resolve } = await import('path');
+    const root = resolve(new URL('.', import.meta.url).pathname, '../..');
     const callerFiles = [
       'frontend/src/lib/LogPanel.svelte',
       'frontend/src/lib/PerformancePage.svelte',
@@ -321,7 +330,7 @@ test.describe('null-guard: scheduler poison regression', () => {
       'frontend/src/routes/(algo)/admin/derivatives/+page.svelte',
     ];
     for (const f of callerFiles) {
-      const content = readFileSync(f, 'utf-8');
+      const content = readFileSync(resolve(root, f), 'utf-8');
       // Each file must have SymbolContextMenu with x, y, symbol, exchange props
       expect(content, `${f}: missing SymbolContextMenu usage`).toMatch(/SymbolContextMenu/);
       expect(content, `${f}: missing x prop`).toMatch(/\bx=\{/);

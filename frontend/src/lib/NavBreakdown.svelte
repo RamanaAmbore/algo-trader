@@ -107,10 +107,10 @@
         {#if _navTotal}
           <tr class="nav-bd-total">
             <td class="nav-bd-acct">TOTAL</td>
-            <td class="nav-num {_cls(_navTotal.cash)}">{_fmt(_navTotal.cash)}</td>
-            <td class="nav-num {_cls(_navTotal.pos_m2m)}">{_fmt(_navTotal.pos_m2m)}</td>
-            <td class="nav-num {_cls(_navTotal.holdings_mtm)}">{_fmt(_navTotal.holdings_mtm)}</td>
-            <td class="nav-num nav-bd-nav {_cls(_navTotal.nav)}">{_fmt(_navTotal.nav)}</td>
+            <td class="nav-num {_cls(_navTotal?.cash)}">{_fmt(_navTotal?.cash)}</td>
+            <td class="nav-num {_cls(_navTotal?.pos_m2m)}">{_fmt(_navTotal?.pos_m2m)}</td>
+            <td class="nav-num {_cls(_navTotal?.holdings_mtm)}">{_fmt(_navTotal?.holdings_mtm)}</td>
+            <td class="nav-num nav-bd-nav {_cls(_navTotal?.nav)}">{_fmt(_navTotal?.nav)}</td>
           </tr>
         {/if}
       </tbody>
