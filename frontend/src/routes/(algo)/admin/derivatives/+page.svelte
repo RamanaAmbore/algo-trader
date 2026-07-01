@@ -1496,31 +1496,18 @@
   // selectedUnderlying read so operator-driven changes don't re-
   // trigger the fallback logic.
   $effect(() => {
-    void underlyingChoicesFromBook;
-    void _watchlistSyms;
-    void instrumentsReady;
+    // Track the picker's actual options list — it's the union of every
+    // tier (frequent, options, futures, hedge, watchlist, popular) after
+    // dedupe. Picking `underlyingOptionsForPicker[0]` guarantees we auto-
+    // select the first VISIBLE option in the dropdown, regardless of
+    // which tier populated first. Operator: "if symbol context is not
+    // clear, use the first symbol in dropdown as default while loading
+    // the payoff."
+    void underlyingOptionsForPicker;
     untrack(() => {
       if (selectedUnderlying) return;  // operator already has a pick
-      // Tier A — book (options-first, then futures-only).
-      const bookList = underlyingChoicesFromBook;
-      if (bookList.length) {
-        selectedUnderlying = bookList[0];
-        return;
-      }
-      // Tier B — watchlist underlyings.
-      if (_watchlistSyms.length) {
-        selectedUnderlying = _watchlistSyms[0];
-        return;
-      }
-      // Tier C — first popular underlying in the instruments cache.
-      if (instrumentsReady) {
-        for (const u of POPULAR_UNDERLYINGS) {
-          if (getOptionUnderlyingLot(u) > 0) {
-            selectedUnderlying = u;
-            return;
-          }
-        }
-      }
+      const first = underlyingOptionsForPicker[0]?.value;
+      if (first) selectedUnderlying = first;
     });
   });
 
@@ -4501,7 +4488,11 @@
             { id: 'legs', label: 'Legs',
               badge: candidatePositions.length > 0 ? candidatePositions.length : null },
             { id: 'expiry', label: 'Exp close',
-              color: expiryCloseTotal > 0 ? 'rose' : 'amber',
+              /* Operator (2026-07-01): "active tab text color must be
+                 consistent". Warning cue for unfilled expiry-close
+                 total moves to the badge count only — the tab itself
+                 always renders in canonical amber. */
+              color: /** @type {const} */ ('amber'),
               badge: expiryCloseTotal > 0 ? expiryCloseTotal : null },
           ]}
           value={legsTab}
@@ -5520,8 +5511,11 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    font-family: monospace;
-    font-size: var(--fs-sm);
+    /* Locked to canonical .algo-card-title typography tokens so this
+       header renders identically to Snapshot / Order entry / GREEKS.
+       Operator: "make them consistent and uniform." */
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.6rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -5548,12 +5542,17 @@
     gap: 0.5rem;
     flex-wrap: wrap;
   }
+  /* Larger section anchor for the Strategy Analysis header. Font
+     family + weight + spacing + transform + color locked to canonical
+     .algo-card-title tokens; only the SIZE is bumped to fs-lg so the
+     header out-ranks the smaller sub-titles beneath it. */
   .opt-section-title {
     color: #fbbf24;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-weight: 700;
-    font-size: var(--fs-lg);          /* slightly larger than meta so the
-                                   header reads as the section anchor */
-    letter-spacing: 0.06em;
+    font-size: var(--fs-lg);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
   .opt-section-tag {
     font-size: var(--fs-md);
@@ -5622,9 +5621,12 @@
     border-radius: 4px;
     padding: 0.5rem 0.65rem;
   }
+  /* Canonical .algo-card-title tokens — this is the "GREEKS" heading
+     operator explicitly cited as the reference. Locked size + family
+     + spacing so future edits can't drift. */
   .opt-block-h {
-    font-family: monospace;
-    font-size: var(--fs-sm);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.6rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
