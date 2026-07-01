@@ -503,8 +503,8 @@ test.describe('Stale code audit (source grep)', () => {
   });
 });
 
-// ── Suite 4: UX — empty-state copy consistency ────────────────────────────────
-// Dimension 5 (UX): three empty-state branches present with distinct copy.
+// ── Suite 5: UX — empty-state copy consistency ───────────────────────────────
+// Dimension 5 (UX): five empty-state branches present with distinct copy.
 
 test.describe('UX — empty-state copy consistency', () => {
   async function readSrc() {
@@ -518,7 +518,7 @@ test.describe('UX — empty-state copy consistency', () => {
     );
   }
 
-  test('four empty-state branches present with correct copy', async () => {
+  test('five empty-state branches present with correct copy', async () => {
     const src = await readSrc();
 
     // Branch 1: no underlying selected.
@@ -534,36 +534,42 @@ test.describe('UX — empty-state copy consistency', () => {
       'are closed — no open payoff to render',
     );
 
-    // Branch 4: operator explicitly unchecked all rows.
+    // Branch 4 (DEFECT-3 fix): only equity holdings, no F&O, holdings toggle OFF.
+    expect(src, 'Missing "Only equity holdings" copy for DEFECT-3 fix').toContain(
+      'Only equity holdings for',
+    );
+
+    // Branch 5: operator explicitly unchecked all rows.
     expect(src, 'Missing "No legs selected" copy').toContain(
       'No legs selected. Tick at least one row',
     );
   });
 
-  test('"No legs selected" is branch 4 (not branch 1)', async () => {
-    // The template must list _allEnabledLegsZeroQty branch BEFORE "No legs selected".
-    // We verify by checking their relative position in the source.
+  test('"No legs selected" is the last branch', async () => {
     const src = await readSrc();
     const closedIdx   = src.indexOf('are closed — no open payoff to render');
+    const eqOnlyIdx   = src.indexOf('Only equity holdings for');
     const noLegsIdx   = src.indexOf('No legs selected. Tick at least one row');
     expect(closedIdx, '"positions closed" copy not found in source').toBeGreaterThan(-1);
+    expect(eqOnlyIdx, '"Only equity holdings" copy not found in source').toBeGreaterThan(-1);
     expect(noLegsIdx, '"No legs selected" copy not found in source').toBeGreaterThan(-1);
     expect(
       closedIdx,
-      '"positions closed" branch must appear BEFORE "No legs selected" branch in the template',
+      '"positions closed" branch must appear BEFORE "No legs selected"',
+    ).toBeLessThan(noLegsIdx);
+    expect(
+      eqOnlyIdx,
+      '"Only equity holdings" branch must appear BEFORE "No legs selected"',
     ).toBeLessThan(noLegsIdx);
   });
 });
 
-// ── Suite 5: Performance — qty=0 path never produces "No legs selected" ──────
+// ── Suite 6: Performance — qty=0 path never produces "No legs selected" ──────
 // Dimension 2 (Perf): the specific DEFECT-1 regression path (qty=0 positions)
 // must not produce "No legs selected". We verify this via source code inspection
 // of the _allEnabledLegsZeroQty guard in loadStrategy(), which is the code
 // path that previously blanked strategy on every qty=0 tick.
 //
-// Live-server timing is intentionally NOT tested here — the strategy endpoint
-// may legitimately show "No legs selected" while loading (first 5-10s on cold
-// load) for positions with qty≠0. That transient is expected and not a defect.
 // The defect was: qty=0 positions kept strategy=null PERMANENTLY even after
 // strategy had previously computed successfully. The source-level guard fixes that.
 
