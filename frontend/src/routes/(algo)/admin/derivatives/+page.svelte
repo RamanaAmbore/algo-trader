@@ -5034,13 +5034,13 @@
       <div class="byund-grid">
         <div class="byund-headrow">
           <span>Underlying</span>
-          <span class="num" title="Today's P&L change from F&O legs only.">Day</span>
-          <span class="num" title="Total P&L from F&O legs only — what the derivative book alone is doing.">P&amp;L</span>
+          <span class="num" title="Today's P&L change from F&O legs only (excludes any equity holdings on this underlying).">Day P&amp;L (F&amp;O)</span>
+          <span class="num" title="Total P&L from F&O legs only — what the derivative book alone is doing (excludes any equity holdings on this underlying).">P&amp;L (F&amp;O)</span>
           <span class="num" title="Live underlying LTP. Indices use the spot price; MCX commodities use the nearest-future LTP (no tradeable spot).">Spot</span>
           <span class="num" title="Underlying day-change %, signed (+/-). Computed from broker `change_percent`, else (LTP - prev_close) / prev_close.">Day %</span>
           <span class="num" title="Underlying previous-session close (broker `ohlc.close`).">Close</span>
-          <span class="num" title="Today's P&L change including any equity holding leg (net of the full book — F&O + equity layer).">Day Net</span>
-          <span class="num" title="Total P&L including any equity holding leg's contribution (net of the full book — F&O + equity layer).">P&amp;L Net</span>
+          <span class="num" title="Today's P&L change across the full book — F&O legs + any equity holdings on this underlying. Matches the dashboard's Day P&L convention.">Day P&amp;L</span>
+          <span class="num" title="Total P&L across the full book — F&O legs + any equity holdings on this underlying. Matches the dashboard's P&L convention.">P&amp;L</span>
           <span class="num">Legs</span>
           <span class="num" title="Sum of contract-qty across option + future legs.">F&amp;O qty</span>
           <span class="num" title="Sum of share-qty across equity / proxy holding legs.">Eq qty</span>
