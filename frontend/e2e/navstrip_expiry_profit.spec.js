@@ -297,68 +297,139 @@ test.describe('P pill slots 1 + 2 — F&O-filtered SSOT', () => {
     expect(text, 'slot 2 must not be blank').toBeTruthy();
   });
 
-  test('/pulse — slot 1 excludes equity (no NSE/BSE positions in today sum)', async ({ page }) => {
+  /**
+   * Replicate aggCompact from $lib/format.js (pure deterministic function).
+   * Used to predict the rendered string from the REST-derived sum.
+   * SSE-tick delta may add a small correction on top; we accept a tolerance
+   * band of ±1 aggCompact bucket (i.e. the formatted value may differ by at
+   * most the next boundary: e.g. 99K vs 100K still count as "same bucket").
+   */
+  function aggCompact(v) {
+    if (v == null || !isFinite(v)) return '—';
+    const n = Number(v);
+    const a = Math.abs(n);
+    if (a < 1_000)      return String(Math.round(n * 100) / 100);  // _decFmt approx
+    if (a < 100_000)    return `${Math.round(n / 1_000)}K`;
+    if (a < 10_000_000) return `${(n / 100_000).toFixed(2)}L`;
+    return `${(n / 10_000_000).toFixed(2)}C`;
+  }
+
+  test('/pulse — slot 1 matches F&O-filtered dayTotal (numeric, SSOT)', async ({ page }) => {
     await page.goto('/pulse');
     const strip = page.locator('.ps-strip').first();
     await expect(strip).toBeVisible({ timeout: TIMEOUT });
-    // Allow one poll to complete
-    await page.waitForTimeout(3_000);
+    // Wait for at least one poll cycle to complete so REST data is in the store.
+    await page.waitForTimeout(4_000);
 
     const filtered = await fetchFilteredPositionsPnl(page);
-    if (filtered === null) return; // API unreachable in this env — skip
+    if (filtered === null) return; // API unreachable — skip
 
-    // The rendered slot 1 text must NOT include contributions from equity rows.
-    // We verify by confirming the live fetch of equity-only positions would
-    // produce a different total than an unfiltered sum when equity exists.
-    const allPnl = await page.evaluate(async () => {
+    const todayVal = strip.locator('.ps-agg').first().locator('.ps-agg-v').nth(0);
+    const text = (await todayVal.textContent())?.trim() ?? '';
+    expect(text, 'slot 1 must not be blank').toBeTruthy();
+
+    // Structural guard: pill must still have 3 slots
+    const vals = strip.locator('.ps-agg').first().locator('.ps-agg-v');
+    await expect(vals).toHaveCount(3, { timeout: TIMEOUT });
+
+    // Numeric guard: rendered text must match aggCompact(filtered.dayTotal).
+    // The SSE-tick delta may shift the value slightly; we allow the formatted
+    // string to match either the exact filtered sum OR an adjacent bucket.
+    // The critical regression guard is that the UNFILTERED total's formatted
+    // string does NOT appear when equity positions exist.
+    const allDayTotal = await page.evaluate(async () => {
       const tok = sessionStorage.getItem('ramboq_token');
       if (!tok) return null;
-      try {
-        const res = await fetch('/api/positions', {
-          headers: { Authorization: `Bearer ${tok}` },
-        });
-        const data = await res.json();
-        const rows = data?.positions ?? data?.items ?? [];
-        let dayTotal = 0;
-        for (const p of rows) dayTotal += Number(p?.day_change_val || 0);
-        return dayTotal;
-      } catch { return null; }
+      const res = await fetch('/api/positions', { headers: { Authorization: `Bearer ${tok}` } });
+      const data = await res.json();
+      const rows = data?.positions ?? data?.items ?? [];
+      return rows.reduce((s, p) => s + Number(p?.day_change_val || 0), 0);
     });
 
-    if (allPnl !== null && Math.abs(allPnl - filtered.dayTotal) > 0.01) {
-      // Equity positions exist → the rendered slot 1 must match the
-      // FILTERED total (not the unfiltered total).
-      const todayVal = strip.locator('.ps-agg').first().locator('.ps-agg-v').nth(0);
-      const text = (await todayVal.textContent())?.trim() ?? '';
-      // The unfiltered total would produce a different formatted string.
-      // We can't predict exact formatting (aggCompact), but we can confirm
-      // the element has the ps-agg-v class and slot 3 is ps-exp (slot guard).
-      const expiryVal = strip.locator('.ps-agg').first().locator('.ps-agg-v').nth(2);
-      await expect(expiryVal).toHaveClass(/ps-exp/);
-      // Also verify there are exactly 3 value spans — the filter doesn't
-      // collapse the pill to 2 slots.
-      const vals = strip.locator('.ps-agg').first().locator('.ps-agg-v');
-      await expect(vals).toHaveCount(3, { timeout: TIMEOUT });
+    if (allDayTotal !== null && Math.abs(allDayTotal - filtered.dayTotal) > 1) {
+      // Equity positions exist and differ from filtered sum.
+      // Rendered slot 1 MUST NOT equal what an unfiltered sum would format to.
+      const unfilteredFmt = aggCompact(allDayTotal);
+      expect(
+        text,
+        `slot 1 rendered "${text}" matches unfiltered total "${unfilteredFmt}" — equity not excluded`
+      ).not.toBe(unfilteredFmt);
+    }
+
+    // Positive assertion: rendered text must match the filtered sum's formatted string.
+    // We use a ±1 aggCompact tolerance for the SSE-tick delta on top.
+    const expectedFmt = aggCompact(filtered.dayTotal);
+    // Accept either exact match or a value within ±5% of the filtered sum
+    // (SSE delta is typically <1% for a REST-fresh poll).
+    if (text !== '0' && text !== '—' && text !== expectedFmt) {
+      // Parse suffix back to number and check within 5% tolerance
+      const parseAggCompact = (s) => {
+        if (!s) return NaN;
+        if (s.endsWith('C')) return parseFloat(s) * 10_000_000;
+        if (s.endsWith('L')) return parseFloat(s) * 100_000;
+        if (s.endsWith('K')) return parseFloat(s) * 1_000;
+        return parseFloat(s);
+      };
+      const rendered = parseAggCompact(text);
+      const expected = filtered.dayTotal;
+      if (isFinite(rendered) && isFinite(expected) && Math.abs(expected) > 1) {
+        expect(
+          Math.abs(rendered - expected) / Math.abs(expected),
+          `slot 1 "${text}" is more than 5% away from filtered dayTotal ${expected}`
+        ).toBeLessThan(0.05);
+      }
     }
   });
 
-  test('/pulse — slot 2 uses p.pnl (not unrealised+realised, safe on snapshot)', async ({ page }) => {
+  test('/pulse — slot 2 matches F&O-filtered pnlTotal (numeric, SSOT)', async ({ page }) => {
     await page.goto('/pulse');
     const strip = page.locator('.ps-strip').first();
     await expect(strip).toBeVisible({ timeout: TIMEOUT });
-    await page.waitForTimeout(3_000);
+    await page.waitForTimeout(4_000);
 
     const filtered = await fetchFilteredPositionsPnl(page);
     if (filtered === null) return;
 
-    // When F&O positions exist, slot 2 must be a non-"0" value if pnlTotal != 0.
     const lifetimeVal = strip.locator('.ps-agg').first().locator('.ps-agg-v').nth(1);
     const text = (await lifetimeVal.textContent())?.trim() ?? '';
     expect(text, 'slot 2 must render a value').toBeTruthy();
 
+    // SSOT guard: p.pnl is used (not unrealised+realised which would be 0
+    // on the closed-hours snapshot path). When the filtered pnlTotal is
+    // significant, the rendered slot 2 must not show "0".
     if (Math.abs(filtered.pnlTotal) > 100) {
-      // Large non-zero lifetime P&L should not render as "0".
       expect(text, 'slot 2 must not be "0" when F&O lifetime pnl is significant').not.toBe('0');
+    }
+
+    // Equity exclusion guard: same pattern as slot 1.
+    const allPnlTotal = await page.evaluate(async () => {
+      const tok = sessionStorage.getItem('ramboq_token');
+      if (!tok) return null;
+      const res = await fetch('/api/positions', { headers: { Authorization: `Bearer ${tok}` } });
+      const data = await res.json();
+      const rows = data?.positions ?? data?.items ?? [];
+      return rows.reduce((s, p) => s + Number(p?.pnl || 0), 0);
+    });
+
+    if (allPnlTotal !== null && Math.abs(allPnlTotal - filtered.pnlTotal) > 1) {
+      const parseAggCompact = (s) => {
+        if (!s) return NaN;
+        if (s.endsWith('C')) return parseFloat(s) * 10_000_000;
+        if (s.endsWith('L')) return parseFloat(s) * 100_000;
+        if (s.endsWith('K')) return parseFloat(s) * 1_000;
+        return parseFloat(s);
+      };
+      const unfilteredFmt = (() => {
+        const n = allPnlTotal, a = Math.abs(n);
+        if (a < 1_000)      return String(Math.round(n * 100) / 100);
+        if (a < 100_000)    return `${Math.round(n / 1_000)}K`;
+        if (a < 10_000_000) return `${(n / 100_000).toFixed(2)}L`;
+        return `${(n / 10_000_000).toFixed(2)}C`;
+      })();
+      expect(
+        text,
+        `slot 2 rendered "${text}" matches unfiltered pnlTotal "${unfilteredFmt}" — equity not excluded`
+      ).not.toBe(unfilteredFmt);
     }
   });
 

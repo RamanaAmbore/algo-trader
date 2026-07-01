@@ -63,7 +63,8 @@ export function navByAccount(accounts, funds, positions, holdings) {
 // P pill doesn't double-count with the H pill which covers holdings day MTM.
 // Note: MIS-only equity intraday positions (bought+squared, never in holdings)
 // are also excluded under this filter — acceptable for an F&O-primary book.
-const FO_EXCHANGES = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
+/** Exchanges that carry F&O/derivative positions. Used by P-pill filter in PositionStrip. */
+export const FO_EXCHANGES = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
 
 /**
  * Compute today's day P&L and lifetime P&L for F&O/derivative positions only.

@@ -17,7 +17,7 @@
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
   import { batchQuote } from '$lib/api';
-  import { positionsPnlFiltered } from '$lib/data/nav';
+  import { positionsPnlFiltered, FO_EXCHANGES } from '$lib/data/nav';
 
   // Reactive views into the three-tier stores. The stores pre-populate from
   // localStorage on module init so these are non-empty on first render.
@@ -358,8 +358,7 @@
     const { pnlTotal } = positionsPnlFiltered(positions);
     let delta = 0;
     for (const p of positions) {
-      const exch = String(p?.exchange || '').toUpperCase();
-      if (!['NFO', 'MCX', 'CDS', 'BFO'].includes(exch)) continue;
+      if (!FO_EXCHANGES.has(String(p?.exchange || '').toUpperCase())) continue;
       delta += _delta(p, 'P');
     }
     return pnlTotal + delta;
@@ -368,8 +367,7 @@
     const { dayTotal } = positionsPnlFiltered(positions);
     let delta = 0;
     for (const p of positions) {
-      const exch = String(p?.exchange || '').toUpperCase();
-      if (!['NFO', 'MCX', 'CDS', 'BFO'].includes(exch)) continue;
+      if (!FO_EXCHANGES.has(String(p?.exchange || '').toUpperCase())) continue;
       delta += _delta(p, 'P');
     }
     return dayTotal + delta;
