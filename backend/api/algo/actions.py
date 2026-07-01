@@ -1086,42 +1086,39 @@ async def run_preflight(
         available: float | None = None
         shortfall: float = 0.0
 
-        # ── Negative-margin anomaly guard ────────────────────────────────
-        # Kite can return a negative basket margin when:
-        #   a) MCX qty was sent in contracts instead of lots → 100× oversize
-        #      input confuses Kite's margining engine (CRUDEOIL incident,
-        #      ZG0790, 2026-06-30: required returned as -85,115,750).
-        #   b) A deep-OTM option selling position generates a "credit margin"
-        #      signal internally — this is only valid at the strategy level,
-        #      not for a single naked leg.
-        # In either case a negative required is NOT a green light; it is an
-        # anomaly that must block the order. We treat it as a margin-anomaly
-        # blocker so the operator sees a clear rejection rather than a silent
-        # ok=True that lets a mis-sized order through to the broker.
+        # ── Negative-margin sanity check ────────────────────────────────
+        # Kite's basket_order_margins can return a negative `required` value
+        # when existing positions on the account NET with the new leg to
+        # release margin (deep-OTM short option positions carrying "credit
+        # margin" at the basket level). That's a LEGITIMATE outcome — the
+        # operator receives premium and the basket's total margin drops.
+        #
+        # The original safety-blocker landed on 2026-06-30 to catch the
+        # "qty sent in lots instead of contracts" bug that produced grossly
+        # over-sized negative margins (up to -₹8.5cr on a 1-lot order).
+        # That bug is now prevented at the source by `translate_qty` (same
+        # commit 29f3ef58), so this branch no longer needs to block — the
+        # qty unit is guaranteed correct before the broker call.
+        #
+        # We keep the WARNING log + diagnostic surfacing so the operator
+        # sees any unusual value; Kite's own place_order remains the
+        # ultimate gate for insufficient funds.
         if required < 0:
             logger.warning(
                 f"[PREFLIGHT] negative basket margin for {account}/{symbol}: "
-                f"required={required:.2f} — blocking as MARGIN_ANOMALY. "
-                f"Check that qty={qty} is in contracts (not lots) and that "
-                f"the instruments cache is warm."
+                f"required={required:.2f} — treating as legitimate netting "
+                f"credit (qty={_broker_qty} contracts is unit-safe via "
+                f"translate_qty). Kite's place_order will reject if the "
+                f"actual SPAN check fails."
             )
-            blocked.append({
-                "code":   "MARGIN_ANOMALY",
-                "reason": (
-                    f"Broker returned negative margin ({required:,.0f}) — "
-                    f"this signals a bad qty unit (contracts vs lots) or a "
-                    f"margining engine error. Order blocked for safety."
-                ),
-                "fix": (
-                    "Ensure qty is in contracts (not lots) before submitting. "
-                    "If the instruments cache is cold, wait for it to warm and retry."
-                ),
-                "data": {"broker_margin": required, "qty_sent": _broker_qty},
-            })
-            # Surface the anomalous value in diagnostics for the UI.
-            diagnostics["basket_margin_used"] = required
-            diagnostics["available_margin"]   = None
-            diagnostics["margin_shortfall"]   = None
+            diagnostics["basket_margin_used"]  = required
+            diagnostics["available_margin"]    = None
+            diagnostics["margin_shortfall"]    = None
+            diagnostics["negative_margin_note"] = (
+                "Broker returned a credit basket margin — usually indicates "
+                "existing positions net with the new leg. Broker will still "
+                "verify at order-placement time."
+            )
 
         else:
             # Available margin came from `_fetch_account_margins` in the

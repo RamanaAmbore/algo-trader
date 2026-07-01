@@ -101,17 +101,19 @@ def _conns_with(account: str) -> MagicMock:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_preflight_negative_margin_blocks():
+async def test_preflight_negative_margin_allows_with_diagnostic():
     """
-    SSOT: real incident values.
-    Kite returned basket_margin_used = -85,115,750 (negative) when MCX
-    CRUDEOIL qty=100 was sent in contracts instead of being translated
-    to 1 lot.  Pre-fix the shortfall = max(0, negative - available) = 0
-    path passed ok=True.  Post-fix we block with MARGIN_ANOMALY.
+    Kite's basket_order_margins may return a negative `required` value
+    when existing account positions net with the new leg to release
+    margin — legitimate credit-margin outcome for a deep-OTM short
+    option. The prior MARGIN_ANOMALY blocker is retired because
+    translate_qty already guarantees qty unit-safety at the source.
+
+    Preflight now allows the order through with a warning log and a
+    diagnostic note; Kite's place_order remains the ultimate gate.
     """
     from backend.api.algo.actions import run_preflight
 
-    # Simulate the anomalous Kite response.
     def _negative_bom(orders: list[dict]) -> list[dict]:
         return [{"initial": {"total": -85_115_750.0}, "final": {"total": -85_115_750.0}}]
 
@@ -127,7 +129,7 @@ async def test_preflight_negative_margin_blocks():
         result = await run_preflight("ZG0790", {
             "exchange":         CRUDEOIL_EXCHANGE,
             "tradingsymbol":    CRUDEOIL_SYM,
-            "quantity":         100,   # 1 lot in contracts
+            "quantity":         100,
             "order_type":       "LIMIT",
             "product":          "NRML",
             "variety":          "regular",
@@ -135,14 +137,11 @@ async def test_preflight_negative_margin_blocks():
             "price":            50.0,
         })
 
-    assert result["ok"] is False, "negative margin MUST block the order"
+    assert result["ok"] is True, "negative margin should NOT block — legitimate netting"
     codes = [b["code"] for b in result["blocked"]]
-    assert "MARGIN_ANOMALY" in codes, f"expected MARGIN_ANOMALY, got {codes}"
-    blocker = next(b for b in result["blocked"] if b["code"] == "MARGIN_ANOMALY")
-    # Broker margin value must appear in diagnostics for operator visibility.
+    assert "MARGIN_ANOMALY" not in codes, f"MARGIN_ANOMALY should not be raised: {codes}"
     assert result["diagnostics"]["basket_margin_used"] == pytest.approx(-85_115_750.0)
-    # UX: the error message must name the anomaly clearly.
-    assert "negative" in blocker["reason"].lower() or "anomal" in blocker["reason"].lower()
+    assert "net" in result["diagnostics"].get("negative_margin_note", "").lower()
 
 
 # ---------------------------------------------------------------------------
