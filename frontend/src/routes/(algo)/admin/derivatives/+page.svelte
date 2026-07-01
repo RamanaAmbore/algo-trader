@@ -5445,10 +5445,10 @@
 
 {#if _ctxMenu}
   <SymbolContextMenu
-    symbol={_ctxMenu.symbol}
-    exchange={_ctxMenu.exchange}
-    x={_ctxMenu.x}
-    y={_ctxMenu.y}
+    symbol={_ctxMenu?.symbol}
+    exchange={_ctxMenu?.exchange}
+    x={_ctxMenu?.x}
+    y={_ctxMenu?.y}
     onClose={() => { _ctxMenu = null; }}
     onAction={(action, sym, exch) => {
       _ctxSym  = sym;

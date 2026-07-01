@@ -530,20 +530,20 @@
 {#if orderTicketProps}
   <SymbolPanel
     defaultTab='ticket'
-    symbol={orderTicketProps.symbol}
-    exchange={orderTicketProps.exchange}
-    side={orderTicketProps.side}
-    action={orderTicketProps.action}
-    orderId={orderTicketProps.orderId}
-    qty={orderTicketProps.qty}
-    lotSize={orderTicketProps.lotSize}
-    orderType={orderTicketProps.orderType}
-    price={orderTicketProps.price}
-    trigger={orderTicketProps.trigger}
-    product={orderTicketProps.product}
-    accounts={orderTicketProps.accounts}
-    account={orderTicketProps.account}
-    currentQty={orderTicketProps.currentQty ?? 0}
+    symbol={orderTicketProps?.symbol}
+    exchange={orderTicketProps?.exchange}
+    side={orderTicketProps?.side}
+    action={orderTicketProps?.action}
+    orderId={orderTicketProps?.orderId}
+    qty={orderTicketProps?.qty}
+    lotSize={orderTicketProps?.lotSize}
+    orderType={orderTicketProps?.orderType}
+    price={orderTicketProps?.price}
+    trigger={orderTicketProps?.trigger}
+    product={orderTicketProps?.product}
+    accounts={orderTicketProps?.accounts}
+    account={orderTicketProps?.account}
+    currentQty={orderTicketProps?.currentQty ?? 0}
     onSubmit={(payload) => {
       // Drafts are page-local — no broker write, no refresh needed.
       // Modify and PAPER/LIVE submits hit the backend before this
@@ -558,11 +558,11 @@
 
 {#if _ctxMenu}
   <SymbolContextMenu
-    symbol={_ctxMenu.symbol}
-    exchange={_ctxMenu.exchange}
-    x={_ctxMenu.x}
-    y={_ctxMenu.y}
-    currentQty={_ctxMenu.currentQty ?? 0}
+    symbol={_ctxMenu?.symbol}
+    exchange={_ctxMenu?.exchange}
+    x={_ctxMenu?.x}
+    y={_ctxMenu?.y}
+    currentQty={_ctxMenu?.currentQty ?? 0}
     onClose={() => { _ctxMenu = null; }}
     onAction={(action, sym, exch) => {
       _ctxSym  = sym;

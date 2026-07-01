@@ -1074,7 +1074,7 @@
       <header class="ip-modal-head">
         <div>
           <div class="ip-modal-title">Investor portal</div>
-          <div class="ip-modal-subtitle">{portalUser.username}</div>
+          <div class="ip-modal-subtitle">{portalUser?.username}</div>
         </div>
         <button class="ip-modal-x" onclick={closePortal} aria-label="Close">×</button>
       </header>
@@ -1102,13 +1102,13 @@
           <div class="ip-modal-fresh-lbl">New URL minted — copy now</div>
           <div class="ip-modal-fresh-url-row">
             <input type="text" class="ip-modal-fresh-url"
-                   readonly value={portalFresh.url}
+                   readonly value={portalFresh?.url}
                    onclick={(e) => e.currentTarget.select()} />
             <button class="btn-primary text-[0.65rem] py-1 px-2"
                     onclick={copyPortalUrl}>Copy</button>
           </div>
           <div class="ip-modal-fresh-hint">
-            Expires {portalFresh.expires_at.slice(0, 10)}. This URL is
+            Expires {portalFresh?.expires_at?.slice(0, 10)}. This URL is
             the credential — forward via your trusted channel
             (WhatsApp / email). Shown only once.
           </div>
