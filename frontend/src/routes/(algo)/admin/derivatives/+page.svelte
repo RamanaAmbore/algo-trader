@@ -4968,11 +4968,15 @@
                     title="Σ Exp P&L across every selected leg — strategy expiry-day P&L at current spot.">
                 {aggCompact(_legsExpPnlTotal)}
               </span>
+              {@const _tg = _mergedGreeks ?? strategy.aggregate_greeks}
               <span class="num">—</span>
-              <span class="num">—</span>
-              <span class="num">—</span>
-              <span class="num">—</span>
-              <span class="num">—</span>
+              <span class="num" title="Σ Δ across every selected leg (position-scaled).">{pctFmt(_tg.delta)}</span>
+              <span class="num" title="Σ Γ across every selected leg (position-scaled).">{pctFmt(_tg.gamma)}</span>
+              <span class="num {_tg.theta < 0 ? 'cell-neg' : 'cell-flat'}"
+                    title="Σ Θ across every selected leg (position-scaled). Negative = decay eating value each day.">
+                {aggCompact(_tg.theta)}
+              </span>
+              <span class="num" title="Σ 𝒱 across every selected leg (position-scaled).">{aggCompact(_tg.vega)}</span>
               <span class="num {(_mergedEv ?? 0) > 0 ? 'cell-pos' : (_mergedEv ?? 0) < 0 ? 'cell-neg' : 'cell-flat'}"
                     title="Strategy-level EV across every selected leg.">
                 {_mergedEv != null ? aggCompact(_mergedEv) : '—'}
