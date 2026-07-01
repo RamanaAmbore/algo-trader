@@ -978,7 +978,13 @@
       for (const root of credits) {
         const g = ensure(root);
         g.qty_eq += qty;
-        g.legs_with++;
+        // Equity contributes to leg count in F&O-lot equivalents. Each
+        // holding row adds `qty / lot_size(root)` — a 500-share HDFC
+        // holding with a 550-lot HDFC future counts as ~0.91 legs, not 1.
+        // Operator 2026-07-01: "equity should be converted into lots."
+        // Lot size 0 fallback = 1 (unhedged holding still shows up).
+        const _lot = getOptionUnderlyingLot(root);
+        g.legs_with += _lot > 0 ? (qty / _lot) : 1;
         g.pnl_with += pnl;
         g.day_with += day;
       }
@@ -1220,7 +1226,15 @@
       const pnl = Number(h.pnl) || 0;
       const day = Number(h.day_change_val) || 0;
       t.qty_eq    += qty;
-      t.legs_with++;
+      // TOTAL row: equity legs converted to F&O-lot equivalents. Same
+      // pattern as the per-row loop above — resolve the underlying's
+      // root, look up its F&O lot size, and contribute fractional lots.
+      // Proxy hedges (GOLDBEES → GOLD) use the target root's lot size.
+      const _sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
+      const _tgts = _sym ? targetsForProxy(_sym) : [];
+      const _root = _tgts[0] || _sym;
+      const _lot = _root ? getOptionUnderlyingLot(_root) : 0;
+      t.legs_with += _lot > 0 ? (qty / _lot) : 1;
       t.pnl_with  += pnl;
       t.day_with  += day;
     }
@@ -5203,7 +5217,7 @@
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
             <span class="num {g.day_with > 0 ? 'cell-pos' : g.day_with < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_h`)}">{aggCompact(g.day_with)}</span>
             <span class="num {g.pnl_with > 0 ? 'cell-pos' : g.pnl_with < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pnl_h`)}">{aggCompact(g.pnl_with)}</span>
-            <span class="num cell-muted">{g.legs_with}{g.legs_with !== g.legs_without ? `/${g.legs_without}` : ''}</span>
+            <span class="num cell-muted">{Math.round(g.legs_with)}{Math.round(g.legs_with) !== g.legs_without ? `/${g.legs_without}` : ''}</span>
             <span class="num cell-muted">{g.qty_fno || '—'}</span>
             <span class="num cell-muted">{g.qty_eq || '—'}</span>
             <span class="num {_expVal == null ? 'cell-muted' : _expVal > 0 ? 'cell-pos' : _expVal < 0 ? 'cell-neg' : 'cell-flat'}"
@@ -5239,7 +5253,7 @@
             <span class="num">—</span>
             <span class="num {_byUnderlyingTotal.day_with > 0 ? 'cell-pos' : _byUnderlyingTotal.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_with)}</span>
             <span class="num {_byUnderlyingTotal.pnl_with > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_with)}</span>
-            <span class="num">{_byUnderlyingTotal.legs_with}{_byUnderlyingTotal.legs_with !== _byUnderlyingTotal.legs_without ? `/${_byUnderlyingTotal.legs_without}` : ''}</span>
+            <span class="num">{Math.round(_byUnderlyingTotal.legs_with)}{Math.round(_byUnderlyingTotal.legs_with) !== _byUnderlyingTotal.legs_without ? `/${_byUnderlyingTotal.legs_without}` : ''}</span>
             <span class="num">{_byUnderlyingTotal.qty_fno || '—'}</span>
             <span class="num">{_byUnderlyingTotal.qty_eq || '—'}</span>
             <span class="num {_expTotal > 0 ? 'cell-pos' : _expTotal < 0 ? 'cell-neg' : 'cell-flat'}"
@@ -5445,10 +5459,10 @@
 
 {#if _ctxMenu}
   <SymbolContextMenu
-    symbol={_ctxMenu.symbol}
-    exchange={_ctxMenu.exchange}
-    x={_ctxMenu.x}
-    y={_ctxMenu.y}
+    symbol={_ctxMenu?.symbol}
+    exchange={_ctxMenu?.exchange}
+    x={_ctxMenu?.x}
+    y={_ctxMenu?.y}
     onClose={() => { _ctxMenu = null; }}
     onAction={(action, sym, exch) => {
       _ctxSym  = sym;

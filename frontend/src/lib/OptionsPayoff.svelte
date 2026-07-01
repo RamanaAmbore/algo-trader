@@ -710,8 +710,8 @@
                ? `Position lifetime P&L at the current spot (open + closed legs combined). Adjusted to match the dashboard's per-underlying ₹ exactly. ADJ row shows the offset folded in.`
                : "Position lifetime P&L at the current spot — Black-Scholes value of all open legs minus entry cost. NOT today's delta — use the DAY row above for that."}>
           <span class="ps-k">TDAY</span>
-          <span class={'ps-v ' + (curveAtSpot.today_value >= 0 ? 'ps-pos' : 'ps-neg')}>
-            {fmtMoney(curveAtSpot.today_value)}
+          <span class={'ps-v ' + ((curveAtSpot?.today_value ?? 0) >= 0 ? 'ps-pos' : 'ps-neg')}>
+            {fmtMoney(curveAtSpot?.today_value)}
           </span>
         </div>
         {#if realizedPnl !== 0}
@@ -1072,11 +1072,11 @@
              have ~30 px of breathing room even when the value is
              wide ("-₹1,500,000"). Fonts unchanged from previous
              slimming pass (11 / 14). -->
-        {@const tx = Math.min(W - 165 - PAD_R, Math.max(PAD_L, hover.x + 10))}
-        {@const ty = Math.max(PAD_T, hover.y - 58)}
-        {@const tdCol = hover.today  >= 0 ? '#4ade80' : '#f87171'}
-        {@const expCol = hover.expiry >= 0 ? '#4ade80' : '#f87171'}
-        <line x1={hover.x} x2={hover.x} y1={PAD_T} y2={height - PAD_B}
+        {@const tx = Math.min(W - 165 - PAD_R, Math.max(PAD_L, (hover?.x ?? 0) + 10))}
+        {@const ty = Math.max(PAD_T, (hover?.y ?? 0) - 58)}
+        {@const tdCol = (hover?.today  ?? 0) >= 0 ? '#4ade80' : '#f87171'}
+        {@const expCol = (hover?.expiry ?? 0) >= 0 ? '#4ade80' : '#f87171'}
+        <line x1={hover?.x} x2={hover?.x} y1={PAD_T} y2={height - PAD_B}
               stroke="rgba(255,255,255,0.20)" stroke-width="1"/>
         <g>
           <!-- Click-anywhere-on-tooltip-to-close (operator: "instead
@@ -1112,7 +1112,7 @@
           <text x={tx + 155} y={ty + 16} fill="#7dd3fc"
                 font-size="14" font-weight="700" text-anchor="end"
                 font-family="monospace"
-                pointer-events="none">{fmtSpot(hover.spot)}</text>
+                pointer-events="none">{fmtSpot(hover?.spot)}</text>
           <!-- TDAY / EXP rows — value coloured by sign (green/red). -->
           <text x={tx + 10} y={ty + 33} fill="#fbbf24" fill-opacity="0.85"
                 font-size="11" font-weight="700" font-family="monospace"
@@ -1121,7 +1121,7 @@
           <text x={tx + 155} y={ty + 33} fill={tdCol}
                 font-size="14" font-weight="700" text-anchor="end"
                 font-family="monospace"
-                pointer-events="none">{fmtMoney(hover.today)}</text>
+                pointer-events="none">{fmtMoney(hover?.today)}</text>
           <text x={tx + 10} y={ty + 50} fill="#fbbf24" fill-opacity="0.85"
                 font-size="11" font-weight="700" font-family="monospace"
                 letter-spacing="0.5"
@@ -1129,7 +1129,7 @@
           <text x={tx + 155} y={ty + 50} fill={expCol}
                 font-size="14" font-weight="700" text-anchor="end"
                 font-family="monospace"
-                pointer-events="none">{fmtMoney(hover.expiry)}</text>
+                pointer-events="none">{fmtMoney(hover?.expiry)}</text>
         </g>
       {/if}
     </svg>

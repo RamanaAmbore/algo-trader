@@ -227,23 +227,23 @@
 
       <!-- Hover crosshair + dot + value label -->
       {#if hover}
-        <line x1={hover.x} x2={hover.x} y1={PAD_T} y2={height - PAD_B}
+        <line x1={hover?.x} x2={hover?.x} y1={PAD_T} y2={height - PAD_B}
               stroke="rgba(251,191,36,0.5)" stroke-width="1" stroke-dasharray="3 2" />
-        <circle cx={hover.x} cy={hover.y} r="3"
-                fill={hover.pnl >= 0 ? '#4ade80' : '#f87171'}
+        <circle cx={hover?.x} cy={hover?.y} r="3"
+                fill={(hover?.pnl ?? 0) >= 0 ? '#4ade80' : '#f87171'}
                 stroke="#fff" stroke-width="1" />
-        {@const _tx = Math.min(W - 110 - PAD_R, Math.max(PAD_L, hover.x + 8))}
-        {@const _ty = Math.max(PAD_T + 4, hover.y - 30)}
+        {@const _tx = Math.min(W - 110 - PAD_R, Math.max(PAD_L, (hover?.x ?? 0) + 8))}
+        {@const _ty = Math.max(PAD_T + 4, (hover?.y ?? 0) - 30)}
         <rect x={_tx} y={_ty} width="110" height="26" rx="3"
               fill="#1d2a44" stroke="rgba(251,191,36,0.4)" stroke-width="1" />
         <text x={_tx + 6} y={_ty + 12}
-              fill={hover.pnl >= 0 ? '#4ade80' : '#f87171'}
+              fill={(hover?.pnl ?? 0) >= 0 ? '#4ade80' : '#f87171'}
               font-size="10" font-weight="800" font-family="monospace">
-          {hover.pnl >= 0 ? '+' : ''}₹{priceFmt(hover.pnl)}
+          {(hover?.pnl ?? 0) >= 0 ? '+' : ''}₹{priceFmt(hover?.pnl)}
         </text>
         <text x={_tx + 6} y={_ty + 22} fill="#c8d8f0"
               font-size="9" font-family="monospace">
-          {hover.ts.slice(11, 19)}
+          {hover?.ts?.slice(11, 19)}
         </text>
       {/if}
     </svg>

@@ -762,10 +762,10 @@
       {/if}
       {#if mintedToken}
         <div class="mint-result" class:mint-expired={mintSecondsLeft === 0}>
-          <div class="mint-purpose">{mintedToken.purpose}</div>
+          <div class="mint-purpose">{mintedToken?.purpose}</div>
           <div class="mint-token-row">
-            <code class="mint-token">{mintedToken.token}</code>
-            <button class="copy-btn" type="button" onclick={() => copy(mintedToken.token, 'token')}>Copy</button>
+            <code class="mint-token">{mintedToken?.token}</code>
+            <button class="copy-btn" type="button" onclick={() => copy(mintedToken?.token, 'token')}>Copy</button>
             <span class="mint-countdown">
               {#if mintSecondsLeft > 0}
                 expires in {mintSecondsLeft}s

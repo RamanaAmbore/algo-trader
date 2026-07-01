@@ -284,7 +284,7 @@
 
       <!-- Hover crosshair -->
       {#if hover}
-        <line x1={hover.x} x2={hover.x} y1={PAD_T} y2={height - PAD_B}
+        <line x1={hover?.x} x2={hover?.x} y1={PAD_T} y2={height - PAD_B}
               stroke="rgba(251,191,36,0.6)" stroke-width="1" stroke-dasharray="3 2" />
       {/if}
     </svg>
@@ -298,7 +298,7 @@
           <span class="mpc-sym">{formatSymbol(s.symbol)}</span>
           {#if s.account}<span class="mpc-acct">{s.account}</span>{/if}
           {#if hover}
-            {@const row = hover.rows.find((r) => r.symbol === s.symbol)}
+            {@const row = hover?.rows?.find((r) => r.symbol === s.symbol)}
             {#if row}
               <span class="mpc-val mpc-val-{row.pct >= 0 ? 'up' : 'down'}">
                 {pctFmt(row.pct)}

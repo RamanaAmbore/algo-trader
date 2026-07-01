@@ -145,31 +145,31 @@
   <!-- Header card. Stats grid + active toggle. -->
   <section class="strat-detail-head">
     <div class="strat-head-title-row">
-      <h2 class="strat-head-name">{strat.name}</h2>
-      <span class={strat.is_active ? 'pill-active' : 'pill-inactive'}>
-        {strat.is_active ? 'active' : 'paused'}
+      <h2 class="strat-head-name">{strat?.name}</h2>
+      <span class={strat?.is_active ? 'pill-active' : 'pill-inactive'}>
+        {strat?.is_active ? 'active' : 'paused'}
       </span>
       {#if canEdit}
         <button class="btn-secondary btn-sm" onclick={toggleActive}>
-          {strat.is_active ? 'Pause' : 'Activate'}
+          {strat?.is_active ? 'Pause' : 'Activate'}
         </button>
       {/if}
     </div>
-    {#if strat.description}
-      <p class="strat-head-desc">{strat.description}</p>
+    {#if strat?.description}
+      <p class="strat-head-desc">{strat?.description}</p>
     {/if}
     <div class="strat-stats-grid">
       <div class="stat">
         <div class="stat-lbl">Owner</div>
-        <div class="stat-val">{strat.owner_username ?? '—'}</div>
+        <div class="stat-val">{strat?.owner_username ?? '—'}</div>
       </div>
       <div class="stat">
         <div class="stat-lbl">Realised P&amp;L</div>
-        <div class="stat-val {strat.realised_pnl > 0 ? 'pnl-pos' : strat.realised_pnl < 0 ? 'pnl-neg' : ''}">{_fmtInr(strat.realised_pnl)}</div>
+        <div class="stat-val {(strat?.realised_pnl ?? 0) > 0 ? 'pnl-pos' : (strat?.realised_pnl ?? 0) < 0 ? 'pnl-neg' : ''}">{_fmtInr(strat?.realised_pnl)}</div>
       </div>
       <div class="stat">
         <div class="stat-lbl">Unrealised P&amp;L</div>
-        <div class="stat-val {strat.unrealised_pnl > 0 ? 'pnl-pos' : strat.unrealised_pnl < 0 ? 'pnl-neg' : ''}">{_fmtInr(strat.unrealised_pnl)}</div>
+        <div class="stat-val {(strat?.unrealised_pnl ?? 0) > 0 ? 'pnl-pos' : (strat?.unrealised_pnl ?? 0) < 0 ? 'pnl-neg' : ''}">{_fmtInr(strat?.unrealised_pnl)}</div>
       </div>
       <div class="stat">
         <div class="stat-lbl">Open lots</div>
@@ -181,7 +181,7 @@
       </div>
       <div class="stat">
         <div class="stat-lbl">Capacity cap</div>
-        <div class="stat-val">{_fmtInr(strat.capacity_cap_inr)}</div>
+        <div class="stat-val">{_fmtInr(strat?.capacity_cap_inr)}</div>
       </div>
       <div class="stat">
         <div class="stat-lbl">Cap util</div>
@@ -189,7 +189,7 @@
       </div>
       <div class="stat">
         <div class="stat-lbl">Target σ</div>
-        <div class="stat-val">{_fmtPctOpt(strat.target_volatility)}</div>
+        <div class="stat-val">{_fmtPctOpt(strat?.target_volatility)}</div>
       </div>
     </div>
   </section>
