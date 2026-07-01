@@ -9,10 +9,17 @@
 //
 // Five quality dimensions:
 //   1. SSOT    — color + size asserted against canonical values, not snapshots
-//   2. Perf    — serial mode; tests share login to avoid rate-limit
+//   2. Perf    — serial mode + one login per describe group (storageState reuse)
 //   3. Stale   — no inline color:#fbbf24 on heading-class selectors (grep)
 //   4. Reuse   — shared helpers (getHeadingEls, isAllowedColor)
 //   5. UX      — desktop 1280×800 + mobile 393×851 both exercised
+
+// @playwright/test project: chromium-desktop only
+// CSS layout rendering is viewport-driven; we set the viewport explicitly
+// to MOBILE (393×851) inside each test — no need to re-run on the
+// mobile-portrait / mobile-landscape Playwright projects (which would
+// fire 3 parallel logins and hit the rate limit).
+// To restrict to one project, use: --project=chromium-desktop
 
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
@@ -42,6 +49,10 @@ const MOBILE_LEFT_ROUTES = ['/dashboard', '/automation', '/pulse', '/orders', '/
 
 const DESKTOP = { width: 1280, height: 800 };
 const MOBILE  = { width: 393,  height: 851 };
+
+// Storage path is set per project inside beforeAll (where test.info() is available).
+/** @type {string} */
+let STORAGE_PATH;
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -82,107 +93,116 @@ test('SSOT stale-code: no inline color:#fbbf24 on heading-class selectors in app
   ).toHaveLength(0);
 });
 
-// ── Live browser tests ─────────────────────────────────────────────────────
-// Serial mode: prevents all N tests from logging in simultaneously and
-// hitting the 5/min rate limit on /api/auth/login.
+// ── Live tests: one login, all routes, desktop then mobile ────────────────
+// Single describe.serial block: beforeAll logs in once, each test navigates
+// to a route and checks multiple dimensions (color + size + left-gap on
+// mobile). This keeps total login count = 1 regardless of how many routes.
 
-test.describe('heading color + size — desktop', () => {
-  test.describe.configure({ mode: 'serial' });
+test.describe.serial('live heading checks', () => {
+  test.setTimeout(90000);
 
+  // Skip on mobile-portrait and mobile-landscape projects — this spec
+  // sets viewport explicitly and doesn't benefit from re-running on
+  // non-desktop projects (3 parallel logins would hit the rate limit).
+  test.skip(
+    ({ browserName, isMobile }) => isMobile === true,
+    'viewport set explicitly in test body; run with --project=chromium-desktop only'
+  );
+
+  test.beforeAll(async ({ browser }, testInfo) => {
+    // Skip setup on mobile projects — their tests are skipped anyway
+    // (isMobile guard below). Checking project name avoids a login
+    // that would race with the chromium-desktop login and hit the
+    // 5-req/min rate limit.
+    if (testInfo.project.name !== 'chromium-desktop') return;
+
+    STORAGE_PATH = path.join(process.cwd(), 'test-results', '.ch-auth.json');
+    fs.mkdirSync(path.dirname(STORAGE_PATH), { recursive: true });
+    const ctx = await browser.newContext({ viewport: DESKTOP });
+    const pg  = await ctx.newPage();
+    await loginAsAdmin(pg);
+    await ctx.storageState({ path: STORAGE_PATH });
+    await ctx.close();
+  });
+
+  // afterAll intentionally omitted — the storage file is temporary and
+  // small; leaving it avoids deleting it before mobile-skipped workers
+  // might reference it.
+
+  // ── Desktop: color + font-size ─────────────────────────────────────────
   for (const route of ROUTES) {
-    test(`${route}`, async ({ page }) => {
-      page.setViewportSize(DESKTOP);
-      await loginAsAdmin(page);
-      await page.goto(route, { waitUntil: 'domcontentloaded', timeout: 25000 });
-      await page.waitForTimeout(800);
+    test(`desktop color+size — ${route}`, async ({ browser }) => {
+      const ctx  = await browser.newContext({ viewport: DESKTOP, storageState: STORAGE_PATH });
+      const page = await ctx.newPage();
+      try {
+        await page.goto(route, { waitUntil: 'domcontentloaded', timeout: 25000 });
+        await page.waitForTimeout(800);
 
-      const headings = await getHeadingEls(page);
-      const count    = await headings.count();
-      for (let i = 0; i < count; i++) {
-        const el    = headings.nth(i);
-        const color = await el.evaluate(n => getComputedStyle(n).color);
-        const cls   = await el.evaluate(n => n.className);
-        expect(
-          isAllowedColor(color, cls),
-          `[desktop ${route}] "${cls.trim()}" color="${color}" — expected slate-400 or canonical amber`
-        ).toBe(true);
+        const headings = await getHeadingEls(page);
+        const count    = await headings.count();
+        for (let i = 0; i < count; i++) {
+          const el    = headings.nth(i);
+          const color = await el.evaluate(n => getComputedStyle(n).color);
+          const cls   = await el.evaluate(n => n.className);
+          expect(
+            isAllowedColor(color, cls),
+            `[desktop ${route}] "${cls.trim()}" color="${color}" — expected slate-400 or canonical amber`
+          ).toBe(true);
+        }
+
+        // Font-size check for SSOT classes only
+        const fsHeadings = await page.locator(
+          '.algo-content .algo-card-title, .algo-content .algo-section-title'
+        ).filter({ visible: true });
+        const fsCount = await fsHeadings.count();
+        for (let i = 0; i < fsCount; i++) {
+          const el   = fsHeadings.nth(i);
+          const fsPx = await el.evaluate(n => parseFloat(getComputedStyle(n).fontSize));
+          const cls  = await el.evaluate(n => n.className);
+          // 0.6rem × 16 = 9.6px (algo-card-title), 0.65rem × 16 = 10.4px (algo-section-title)
+          const ok = [9.6, 10.4].some(s => Math.abs(fsPx - s) <= 0.5);
+          expect(ok, `[desktop ${route}] "${cls.trim()}" font-size=${fsPx}px — expected 9.6 or 10.4px`).toBe(true);
+        }
+      } finally {
+        await ctx.close();
       }
     });
   }
-});
 
-test.describe('heading color + size — mobile', () => {
-  test.describe.configure({ mode: 'serial' });
-
+  // ── Mobile: color + left-gap ───────────────────────────────────────────
   for (const route of ROUTES) {
-    test(`${route}`, async ({ page }) => {
-      page.setViewportSize(MOBILE);
-      await loginAsAdmin(page);
-      await page.goto(route, { waitUntil: 'domcontentloaded', timeout: 25000 });
-      await page.waitForTimeout(800);
+    const isLeftRoute = MOBILE_LEFT_ROUTES.includes(route);
+    test(`mobile color${isLeftRoute ? '+left-gap' : ''} — ${route}`, async ({ browser }) => {
+      const ctx  = await browser.newContext({ viewport: MOBILE, storageState: STORAGE_PATH });
+      const page = await ctx.newPage();
+      try {
+        await page.goto(route, { waitUntil: 'domcontentloaded', timeout: 25000 });
+        await page.waitForTimeout(800);
 
-      const headings = await getHeadingEls(page);
-      const count    = await headings.count();
-      for (let i = 0; i < count; i++) {
-        const el    = headings.nth(i);
-        const color = await el.evaluate(n => getComputedStyle(n).color);
-        const cls   = await el.evaluate(n => n.className);
-        expect(
-          isAllowedColor(color, cls),
-          `[mobile ${route}] "${cls.trim()}" color="${color}" — expected slate-400 or canonical amber`
-        ).toBe(true);
-      }
-    });
-  }
-});
+        const headings = await getHeadingEls(page);
+        const count    = await headings.count();
+        for (let i = 0; i < count; i++) {
+          const el    = headings.nth(i);
+          const color = await el.evaluate(n => getComputedStyle(n).color);
+          const cls   = await el.evaluate(n => n.className);
+          expect(
+            isAllowedColor(color, cls),
+            `[mobile ${route}] "${cls.trim()}" color="${color}" — expected slate-400 or canonical amber`
+          ).toBe(true);
 
-test.describe('heading font-size — desktop', () => {
-  test.describe.configure({ mode: 'serial' });
-
-  for (const route of ROUTES) {
-    test(`${route}`, async ({ page }) => {
-      page.setViewportSize(DESKTOP);
-      await loginAsAdmin(page);
-      await page.goto(route, { waitUntil: 'domcontentloaded', timeout: 25000 });
-      await page.waitForTimeout(800);
-
-      const headings = await page.locator(
-        '.algo-content .algo-card-title, .algo-content .algo-section-title'
-      ).filter({ visible: true });
-      const count = await headings.count();
-      for (let i = 0; i < count; i++) {
-        const el   = headings.nth(i);
-        const fsPx = await el.evaluate(n => parseFloat(getComputedStyle(n).fontSize));
-        const cls  = await el.evaluate(n => n.className);
-        // 0.6rem × 16 = 9.6px (algo-card-title), 0.65rem × 16 = 10.4px (algo-section-title)
-        const ok = [9.6, 10.4].some(s => Math.abs(fsPx - s) <= 0.5);
-        expect(ok, `[desktop ${route}] "${cls.trim()}" font-size=${fsPx}px — expected 9.6 or 10.4px`).toBe(true);
-      }
-    });
-  }
-});
-
-test.describe('mobile heading left gap', () => {
-  test.describe.configure({ mode: 'serial' });
-
-  for (const route of MOBILE_LEFT_ROUTES) {
-    test(`≥ ${MIN_LEFT_PX}px — ${route}`, async ({ page }) => {
-      page.setViewportSize(MOBILE);
-      await loginAsAdmin(page);
-      await page.goto(route, { waitUntil: 'domcontentloaded', timeout: 25000 });
-      await page.waitForTimeout(800);
-
-      const headings = await getHeadingEls(page);
-      const count    = await headings.count();
-      for (let i = 0; i < count; i++) {
-        const el   = headings.nth(i);
-        const rect = await el.boundingBox();
-        const cls  = await el.evaluate(n => n.className);
-        if (!rect) continue;
-        expect(
-          rect.x,
-          `[mobile ${route}] "${cls.trim()}" x=${rect.x.toFixed(1)}px — must be ≥ ${MIN_LEFT_PX}px`
-        ).toBeGreaterThanOrEqual(MIN_LEFT_PX);
+          // Left-gap check for priority routes
+          if (isLeftRoute) {
+            const rect = await el.boundingBox();
+            if (rect) {
+              expect(
+                rect.x,
+                `[mobile ${route}] "${cls.trim()}" x=${rect.x.toFixed(1)}px — must be ≥ ${MIN_LEFT_PX}px`
+              ).toBeGreaterThanOrEqual(MIN_LEFT_PX);
+            }
+          }
+        }
+      } finally {
+        await ctx.close();
       }
     });
   }

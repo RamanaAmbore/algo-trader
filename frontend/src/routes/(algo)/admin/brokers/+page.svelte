@@ -576,7 +576,7 @@
     margin-bottom: 0.4rem;
   }
   .brokers-h {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.06em;
