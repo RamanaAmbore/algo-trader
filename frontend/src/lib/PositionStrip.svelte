@@ -164,12 +164,25 @@
   const flash = createTickFlash({ threshold: 0, durationMs: 350 });
 
   onMount(() => {
-    // Instruments cache feeds the long-options premium derivation
-    // (we read lot_size off each option to compute lots × lot_size
-    // explicitly). Silent on failure — derivation falls back to raw
-    // quantity then.
-    loadInstruments().catch(() => { /* fallback path handles this */ });
+    // Instruments cache feeds both the long-options premium derivation
+    // (lot_size for the C pill) and the expiry profit (slot 3) which
+    // needs findNearestFuture to resolve MCX option underlyings.
+    //
+    // _load() fires immediately so positions/holdings/funds paint from
+    // broker without waiting for instruments. After instruments resolve,
+    // _loadUnderlyingSpots() is re-run with the now-warm findNearestFuture
+    // so MCX option spots (CRUDEOIL26JUNFUT etc.) land in symbolStore and
+    // _expiryProfit picks them up on the next _throttledTick.
+    //
+    // Without this, the cold-cache first load calls findNearestFuture while
+    // the instruments map is empty → MCX options fall back to synthetic
+    // "MCX:CRUDEOIL" keys → batchQuote returns no LTP → those legs are
+    // skipped by `if (!(spot > 0)) continue` → slot 3 shows only the
+    // NIFTY-family contribution (~78k) instead of the full book (~300k+).
     _load();
+    loadInstruments()
+      .catch(() => { /* fallback — per-leg spot resolution handles misses */ })
+      .then(() => _loadUnderlyingSpots().catch(() => {}));
     // Option A (operator-approved, supersedes Option B): fully pause on hidden.
     // Telegram + email cover fills / losses; WS delivers position_filled on return.
     // Immediate refire on tab visible ensures fresh numbers within one tick.
@@ -365,6 +378,14 @@
   });
   const _livePositionsToday = $derived.by(() => {
     const { dayTotal } = positionsPnlFiltered(positions);
+    // Gate the SSE-tick delta on market-open. During closed hours the
+    // snapshot's day_change_val IS the authoritative last-session
+    // value; adding a delta computed against symbolStore's LTP (which
+    // can carry stale live values, or values from a different session
+    // vs poll_ltp) was inflating the slot vs the operator's expected
+    // reading. Operator 2026-07-01: "slot 1 is inflated. fix it."
+    const _mktOpen = isNseOpen() || isMcxOpen();
+    if (!_mktOpen) return dayTotal;
     let delta = 0;
     for (const p of positions) {
       if (!FO_EXCHANGES.has(String(p?.exchange || '').toUpperCase())) continue;
@@ -556,10 +577,19 @@
         const inst = getInstrument(sym);
         const root = decomp.root || inst?.u || null;
         if (!root) continue;                              // can't resolve underlying
+        // Multi-source spot resolution — operator 2026-07-01: "slot 3 is
+        // deflated." Options were being skipped whenever the resolveUnderlying
+        // key wasn't in symbolStore. Chain of fallbacks so most options resolve:
+        //   1. resolveUnderlying (canonical: NIFTY → NIFTY 50 tradingsymbol)
+        //   2. bare root (NIFTY, GOLD, CRUDEOIL)
+        //   3. inst.u from instruments cache
         const resolved = resolveUnderlying(root, findNearestFuture);
-        if (!resolved?.tradingsymbol) continue;
-        const spot = untrack(() => getSnapshot(resolved.tradingsymbol)?.ltp);
-        if (!(spot > 0)) continue;                        // no live quote → skip
+        let spot = 0;
+        for (const key of [resolved?.tradingsymbol, root, inst?.u].filter(Boolean)) {
+          const v = untrack(() => getSnapshot(String(key).toUpperCase())?.ltp);
+          if (typeof v === 'number' && v > 0) { spot = v; break; }
+        }
+        if (!(spot > 0)) continue;                        // no spot from any source → skip
         // Strike: decomposeSymbol parses the numeric token directly from
         // the tradingsymbol regex; fall back to the instruments-cache
         // field inst.k when the parse misses (e.g. edge-case formats).
