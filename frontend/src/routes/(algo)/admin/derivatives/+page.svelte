@@ -1035,7 +1035,12 @@
       if (!isFut && !isOpt) continue;
       const root = (decomposeSymbol(sym).root || sym).toUpperCase();
       if (!root) continue;
-      const spot = _underlyingQuotes[root]?.ltp ?? null;
+      // untrack — same pattern as bbe2d9b3 for liveSpot. `_underlyingQuotes`
+      // is replaced wholesale every 30 s snapshot poll; without untrack this
+      // derived walks every position + every holding on the snapshot cycle
+      // AND on the positions cycle, doubling work and cascading OptionsPayoff
+      // SVG re-renders that starve the main thread of click events.
+      const spot = untrack(() => _underlyingQuotes[root]?.ltp ?? null);
       const v = _expiryPnl({
         symbol: sym, qty: p.quantity ?? p.qty,
         avg_cost: p.average_price ?? p.avg_cost,
@@ -1060,7 +1065,7 @@
       const _targets = targetsForProxy(sym);
       const credits = _targets.length ? _targets : [sym];
       for (const root of credits) {
-        const spot = _underlyingQuotes[root]?.ltp ?? null;
+        const spot = untrack(() => _underlyingQuotes[root]?.ltp ?? null);
         if (spot == null) continue;
         const v = (Number(spot) - cost) * qty;
         if (!isFinite(v)) continue;
