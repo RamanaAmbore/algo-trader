@@ -272,7 +272,12 @@ test('no inline --ag-header-font-size overrides on algo pages (stale guard)', as
 // On /admin/derivatives all three chrome families are visible together.
 // Asserts they share the same computed font-size (9.6px) and a monospace
 // font-family — operator requirement 2026-07-01: "card header, tabs, ag grid
-// headers should have consistent font attributes and background attributes".
+// headers should have consistent font attributes AND background attributes".
+//
+// Background assertion: .ag-theme-algo .ag-header must NOT use the old
+// rgba(15,23,42,0.65) which renders as a near-black band visibly distinct
+// from the card surface that tab strips sit on. The corrected value is
+// rgba(15,23,42,0.30) — a subtle wash that reads as the same mid-navy family.
 
 test('cross-family parity: ag-Grid header = card-title = tab (font-size + monospace)', async ({ page }) => {
   await page.goto('/admin/derivatives', { waitUntil: 'domcontentloaded', timeout: 60_000 });
@@ -335,5 +340,24 @@ test('cross-family parity: ag-Grid header = card-title = tab (font-size + monosp
         `Cross-family parity: ${label} font-size ${data.fontSizePx}px ≠ ${refLabel} ${refData.fontSizePx}px`
       ).toBeCloseTo(refData.fontSizePx, 1);
     }
+  }
+
+  // Background parity: ag-header must not use the old high-opacity near-black
+  // (rgba(15,23,42,0.65)) that visually separates it from the card/tab surface.
+  const agHeaderBg = await page.evaluate(() => {
+    const header = document.querySelector('.ag-theme-algo .ag-header');
+    if (!header) return null;
+    return getComputedStyle(header).backgroundColor;
+  });
+
+  if (agHeaderBg) {
+    // rgb(15,23,42) at 0.65 alpha → rgba(15,23,42,0.65)
+    // Playwright's getComputedStyle returns rgba() for partial-alpha values.
+    // Parse the alpha component — must be ≤ 0.40 (well clear of the old 0.65).
+    const alphaMatch = agHeaderBg.match(/rgba?\s*\([\d\s,]+,\s*([\d.]+)\s*\)/i);
+    const alpha = alphaMatch ? parseFloat(alphaMatch[1]) : 1;
+    expect(alpha,
+      `ag-header background alpha ${alpha} — must be ≤ 0.40 to read as same surface as card/tab; was 0.65 before fix`
+    ).toBeLessThanOrEqual(0.40);
   }
 });
