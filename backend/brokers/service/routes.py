@@ -349,32 +349,41 @@ class InternalBrokerController(Controller):
             return TickerSubscribeResp(ok=False, error=str(e)[:300])
 
     @post("/ticker/force-unhealthy")
-    async def ticker_force_unhealthy(self) -> dict[str, Any]:
-        """Operator escape hatch — inject an artificial unhealthy signal
-        so the watchdog fires its failover path within one cycle.
+    async def ticker_force_unhealthy(
+        self, data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Operator escape hatch — flag the ticker unhealthy for a
+        bounded window so the watchdog fires its failover path within
+        one cycle.
 
         Used for prod verification of the auto-failover state machine.
-        Does NOT actually kill the WebSocket (that would take a Kite-side
-        action or a network drop). Instead it forces the unhealthy
-        counter past the swap threshold; the next watchdog tick will
-        elect the next Kite account and call restart_with_account().
+        Does NOT actually kill the WebSocket (that would take a Kite-
+        side action or a network drop). Instead it sets a deadline
+        during which `is_active_ticker_healthy()` returns False; the
+        watchdog then bumps the unhealthy counter across the threshold
+        and calls `restart_with_account()` on the next cycle.
 
-        Body: none. Returns {ok, consecutive_unhealthy, forced_from}.
+        The deadline auto-clears past `duration_s` seconds (default
+        120 s — long enough for one 30 s watchdog cycle + swap),
+        so a forgotten force-unhealthy never leaves the ticker broken.
+
+        Body: {"duration_s": 120} (optional). Returns
+        {ok, deadline_unix, forced_from}.
         """
         from backend.brokers.kite_ticker import get_ticker
-        from backend.shared.helpers.settings import get_int
 
         try:
             ticker = get_ticker()
-            threshold = max(1, get_int("kite_ticker.unhealthy_threshold", 2))
-            # Bump N times so the next watchdog tick is guaranteed to
-            # cross the threshold. `bump_unhealthy()` is O(1) under lock.
-            current = 0
-            for _ in range(threshold):
-                current = ticker.bump_unhealthy()
+            duration_s = 120.0
+            if data and "duration_s" in data:
+                try:
+                    duration_s = float(data["duration_s"])
+                except (TypeError, ValueError):
+                    duration_s = 120.0
+            deadline = ticker.force_unhealthy(duration_s)
             return {
                 "ok": True,
-                "consecutive_unhealthy": current,
+                "deadline_unix": deadline,
                 "forced_from": ticker.current_account() or "",
             }
         except Exception as e:

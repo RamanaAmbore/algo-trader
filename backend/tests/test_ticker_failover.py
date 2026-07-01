@@ -135,6 +135,37 @@ class TestTickerManagerFailoverHelpers:
         assert t.swaps_since(60.0) == 1
         assert t.status()["consecutive_unhealthy"] == 0
 
+    def test_force_unhealthy_flips_health_check(self):
+        """Operator-forced unhealthy window makes
+        is_active_ticker_healthy() return False even when the socket
+        is otherwise healthy — powers the /internal/ticker/force-
+        unhealthy verification endpoint."""
+        t = self._fresh_ticker()
+        # Establish a "healthy" ticker state.
+        t._started = True
+        t._connected = True
+        t._last_connected_at = time.time()
+        assert t.is_active_ticker_healthy() is True
+        # Now force-unhealthy for a short window.
+        deadline = t.force_unhealthy(duration_s=30.0)
+        assert deadline > time.time()
+        assert t.is_active_ticker_healthy() is False
+        # Manually rewind the deadline to simulate auto-expiry.
+        t._force_unhealthy_until = time.time() - 1.0
+        assert t.is_active_ticker_healthy() is True
+
+    def test_clear_force_unhealthy_restores_health(self):
+        """clear_force_unhealthy() ends the operator-forced window
+        without waiting for the deadline."""
+        t = self._fresh_ticker()
+        t._started = True
+        t._connected = True
+        t._last_connected_at = time.time()
+        t.force_unhealthy(duration_s=600.0)
+        assert t.is_active_ticker_healthy() is False
+        t.clear_force_unhealthy()
+        assert t.is_active_ticker_healthy() is True
+
     def test_status_swap_decision_under_100ms(self):
         """Perf budget: the swap-decision inputs (status + swaps_since +
         current_account) execute in < 100 ms even with a full history."""

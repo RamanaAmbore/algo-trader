@@ -194,6 +194,13 @@ class TickerManager:
         # so a swap can never fire while rebuild_from_db is still minting
         # Kite tokens.
         self._supervisor_started_at: float = 0.0
+        # Operator-force-unhealthy deadline (unix ts). When set to a
+        # future timestamp, `is_active_ticker_healthy()` returns False
+        # regardless of actual WS state — the watchdog then progresses
+        # through bump_unhealthy → threshold → swap. Auto-expires so a
+        # forgotten force-unhealthy doesn't leave the ticker permanently
+        # broken. Set via POST /internal/ticker/force-unhealthy.
+        self._force_unhealthy_until: float = 0.0
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -550,7 +557,8 @@ class TickerManager:
           • the WebSocket is open (`_connected`) AND
           • at least one tick has landed within the last `tick_heartbeat_s`
             (falls back to _last_connected_at when no tick has ever fired —
-            covers the first-connect grace window).
+            covers the first-connect grace window) AND
+          • no operator force-unhealthy window is active.
 
         Market-closed hours: the caller (watchdog) applies its own
         market-hours gate BEFORE checking health. When markets are
@@ -558,7 +566,12 @@ class TickerManager:
         returns False during the closed window but the watchdog
         ignores the signal.
         """
+        now = time.time()
         with self._lock:
+            # Operator-forced unhealthy window (verification path). Trumps
+            # every other signal; auto-clears past the deadline.
+            if 0 < self._force_unhealthy_until and now < self._force_unhealthy_until:
+                return False
             if not self._started or not self._connected:
                 return False
             # Take the max of last tick + last connect so a freshly-
@@ -568,7 +581,31 @@ class TickerManager:
             newest = max(newest_tick_ts, self._last_connected_at)
         if not newest:
             return False
-        return (time.time() - newest) <= tick_heartbeat_s
+        return (now - newest) <= tick_heartbeat_s
+
+    def force_unhealthy(self, duration_s: float = 120.0) -> float:
+        """Operator escape hatch — mark the ticker unhealthy for
+        `duration_s` seconds so the watchdog progresses through
+        bump_unhealthy → threshold → swap. Returns the deadline
+        (unix ts). Called by POST /internal/ticker/force-unhealthy.
+
+        Auto-clears past the deadline so a forgotten call doesn't
+        permanently break the ticker.
+        """
+        deadline = time.time() + max(1.0, float(duration_s))
+        with self._lock:
+            self._force_unhealthy_until = deadline
+        logger.warning(
+            "KiteTicker: operator-forced unhealthy for %.0f s "
+            "(deadline unix=%.0f) — watchdog will fire failover path",
+            duration_s, deadline,
+        )
+        return deadline
+
+    def clear_force_unhealthy(self) -> None:
+        """Cancel an in-flight force_unhealthy window."""
+        with self._lock:
+            self._force_unhealthy_until = 0.0
 
     def bump_unhealthy(self) -> int:
         """Watchdog reports one more consecutive unhealthy cycle.
