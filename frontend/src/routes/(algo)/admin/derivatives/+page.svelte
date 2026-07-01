@@ -1196,13 +1196,17 @@
                 legs_with: 0, legs_without: 0,
                 pnl_with: 0, pnl_without: 0,
                 day_with: 0, day_without: 0 };
-    // F&O positions — same opt/fut filter as the per-row derivation.
+    // First pass — F&O positions. Track the set of roots that carry an
+    // active option/future in the snapshot; the holdings pass below only
+    // credits equities whose root is in this set.
     // No frontend day-P&L fallback: backend's broker_apis.fetch_positions
     // already handles the close-price=0 / fresh-buy edge case (commit
     // 87c30f39). Adding a second fallback here over-counted closed-
     // today round trips (day_change_val=0 + non-zero realised pnl)
     // and de-synced the snapshot TOTAL from the navbar PositionStrip,
     // which sums `p.day_change_val` faithfully without a fallback.
+    /** @type {Set<string>} */
+    const _rootsWithFnO = new Set();
     for (const _p of positions) {
       const p = /** @type {any} */ (_p);
       if (p.source !== wantedSource) continue;
@@ -1219,11 +1223,14 @@
       t.pnl_without  += pnl;
       t.day_with     += day;
       t.day_without  += day;
+      const _root = (decomposeSymbol(sym).root || sym).toUpperCase();
+      if (_root) _rootsWithFnO.add(_root);
     }
-    // Holdings — every filtered holding contributes, even when its
-    // root has no F&O exposure. Display rows still drop those
-    // underlyings via the legs_without===0 gate, but the TOTAL keeps
-    // them so the Net columns reconcile to PositionStrip's HD∆+Hld.
+    // Holdings — credit only when the underlying root has an F&O position
+    // in the snapshot AND that root has an F&O lot size. Operator 2026-07-01:
+    // "should include equities underlying for which option positions
+    // present in snapshot." Non-F&O equities and equities without a
+    // snapshot F&O position are excluded from the pill count entirely.
     for (const _h of holdings) {
       const h = /** @type {any} */ (_h);
       if (!matchAccount(h.account)) continue;
@@ -1231,14 +1238,11 @@
       const pnl = Number(h.pnl) || 0;
       const day = Number(h.day_change_val) || 0;
       t.qty_eq    += qty;
-      // TOTAL row: equity legs converted to F&O-lot equivalents only.
-      // Non-F&O equities (lot_size 0) are excluded from the leg count —
-      // the pill reflects F&O-equivalent exposure, not row counts.
-      // Proxy hedges (GOLDBEES → GOLD) use the target root's lot size.
       const _sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
       const _tgts = _sym ? targetsForProxy(_sym) : [];
       const _root = _tgts[0] || _sym;
-      const _lot = _root ? getOptionUnderlyingLot(_root) : 0;
+      if (!_root || !_rootsWithFnO.has(_root)) continue;
+      const _lot = getOptionUnderlyingLot(_root);
       if (_lot > 0) {
         t.legs_with += qty / _lot;
         t.pnl_with  += pnl;
