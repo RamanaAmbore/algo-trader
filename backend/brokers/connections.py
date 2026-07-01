@@ -1495,13 +1495,13 @@ class Connections(SingletonBase):
                 pass
             return
 
-        from backend.api.database import async_session
+        from backend.api.database import shared_async_session
         from backend.api.models    import BrokerAccount
         from backend.shared.helpers.broker_creds import decrypt
         from sqlalchemy            import select
 
         try:
-            async with async_session() as s:
+            async with shared_async_session() as s:
                 rows = (await s.execute(
                     select(BrokerAccount).where(BrokerAccount.is_active.is_(True))
                 )).scalars().all()
@@ -1514,7 +1514,7 @@ class Connections(SingletonBase):
             seeded = await self._seed_db_from_yaml()
             if seeded:
                 # Re-query so subsequent reloads see DB rows immediately.
-                async with async_session() as s:
+                async with shared_async_session() as s:
                     rows = (await s.execute(
                         select(BrokerAccount).where(BrokerAccount.is_active.is_(True))
                     )).scalars().all()
@@ -1788,12 +1788,12 @@ class Connections(SingletonBase):
         if not accts:
             return 0
 
-        from backend.api.database import async_session
+        from backend.api.database import shared_async_session
         from backend.api.models    import BrokerAccount
         from backend.shared.helpers.broker_creds import encrypt
 
         n = 0
-        async with async_session() as s:
+        async with shared_async_session() as s:
             for code, blob in accts.items():
                 row = BrokerAccount(
                     account=code,

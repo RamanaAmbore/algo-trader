@@ -29,7 +29,7 @@ from litestar.exceptions import HTTPException
 from sqlalchemy import select
 
 from backend.api.rbac import cap_guard
-from backend.api.database import async_session
+from backend.api.database import shared_async_session
 from backend.api.models import BrokerAccount
 from backend.shared.helpers.broker_creds import encrypt
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -194,7 +194,7 @@ class BrokersController(Controller):
 
     @get("/", guards=[cap_guard("view_brokers")])
     async def list_accounts(self) -> list[BrokerAccountInfo]:
-        async with async_session() as s:
+        async with shared_async_session() as s:
             rows = (await s.execute(
                 select(BrokerAccount).order_by(BrokerAccount.account)
             )).scalars().all()
@@ -203,7 +203,7 @@ class BrokersController(Controller):
 
     @get("/{account:str}", guards=[cap_guard("view_brokers")])
     async def get_account(self, account: str) -> BrokerAccountInfo:
-        async with async_session() as s:
+        async with shared_async_session() as s:
             row = (await s.execute(
                 select(BrokerAccount).where(BrokerAccount.account == account)
             )).scalar_one_or_none()
@@ -230,7 +230,7 @@ class BrokersController(Controller):
     async def create_account(self, data: BrokerAccountCreate) -> BrokerAccountInfo:
         if not data.account:
             raise HTTPException(status_code=400, detail="account is required")
-        async with async_session() as s:
+        async with shared_async_session() as s:
             existing = (await s.execute(
                 select(BrokerAccount).where(BrokerAccount.account == data.account)
             )).scalar_one_or_none()
@@ -266,7 +266,7 @@ class BrokersController(Controller):
     @patch("/{account:str}", guards=[cap_guard("manage_brokers")])
     async def update_account(self, account: str,
                              data: BrokerAccountUpdate) -> BrokerAccountInfo:
-        async with async_session() as s:
+        async with shared_async_session() as s:
             row = (await s.execute(
                 select(BrokerAccount).where(BrokerAccount.account == account)
             )).scalar_one_or_none()
@@ -306,7 +306,7 @@ class BrokersController(Controller):
 
     @delete("/{account:str}", status_code=200, guards=[cap_guard("manage_brokers")])
     async def delete_account(self, account: str) -> dict:
-        async with async_session() as s:
+        async with shared_async_session() as s:
             row = (await s.execute(
                 select(BrokerAccount).where(BrokerAccount.account == account)
             )).scalar_one_or_none()
