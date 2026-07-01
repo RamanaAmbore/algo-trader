@@ -77,6 +77,7 @@
    *   hostManagesEsc?: boolean,
    *   onMarginUpdate?: ((preview:any, loading:boolean, meta?: {isCashMode:boolean, cash:number|null, availMargin:number|null, usedMargin:number|null, fundsAccount:string, kind:string, side:string}) => void) | null,
    *   onPreviewPlanUpdate?: ((plan:any, loading:boolean, error:string, capWarning:string) => void) | null,
+   *   onValidationChange?: ((err: string) => void) | null,
    *   fundsHidden?: boolean,
    *   symbolHidden?: boolean,
    *   symType?: 'ALL' | 'EQ' | 'FUT' | 'OPT',
@@ -175,6 +176,12 @@
     // render it inside the Template container — visible on BOTH tabs
     // instead of only on Ticket. Mirrors the onMarginUpdate plumbing.
     onPreviewPlanUpdate = /** @type {((plan:any, loading:boolean, error:string, capWarning:string) => void) | null} */ (null),
+    // Fires whenever the current validation error changes. Host
+    // (SymbolPanel) uses this to surface the error as a toast when
+    // its common-action Submit button is clicked and the ticket form
+    // has a validation block that would otherwise silently prevent
+    // placement (e.g. limit price not yet filled by the depth ladder).
+    onValidationChange = /** @type {((err: string) => void) | null} */ (null),
     // When true, the in-ticket per-account funds line is suppressed.
     // The order modal sets this so the funds row only renders once in
     // the common action footer (visible on every tab).
@@ -1255,6 +1262,15 @@
       return 'Pick an account';
     }
     return '';
+  });
+
+  // Pipe validation state to the host (SymbolPanel) so its common-action
+  // footer can surface the error as a toast when Submit is clicked while
+  // a validation block is active (e.g. limit price not yet filled by the
+  // depth ladder poll). Without this the host has no way to know why the
+  // silent early-return in submit() fired.
+  $effect(() => {
+    onValidationChange?.(validationErr);
   });
 
   // True when no symbol has been resolved yet — disables all form

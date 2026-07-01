@@ -1000,7 +1000,11 @@
   // doesn't re-select default)" — restored via this effect.
   let _lastSideScope = '';
   $effect(() => {
-    if (action !== 'open') return;
+    // action='modify' and 'cancel' don't need template auto-swap —
+    // the template is irrelevant for those actions. All other actions
+    // ('open', 'close', 'repeat') need it so e.g. a SELL close on a
+    // long option gets a sell_option template, not the stale BUY default.
+    if (action === 'modify' || action === 'cancel') return;
     if (_templates.length === 0) return;
     // Mirror the symbol-fallback rule in `_sideAwareDefault` so the
     // auto-swap on side-flip also picks the right scope when the
@@ -1030,6 +1034,16 @@
       );
       if (next && next.id !== _sharedTemplateId) {
         _sharedTemplateId = next.id;
+      } else if (!next) {
+        // No default template matches the new scope (e.g. operator has
+        // only a buy_option default and flipped to SELL). Clear the
+        // stale BUY template so the preview fires with templateId=null
+        // rather than carrying the wrong-direction template. The
+        // OrderTicket's re-validation effect will call _autoSelectTemplate
+        // which will also find no match and leave templateId null, so
+        // both paths agree. Fixes: audit shows parent_side:'BUY' when
+        // operator intends SELL because the BUY template was never cleared.
+        _sharedTemplateId = null;
       }
     });
   });
@@ -1227,6 +1241,12 @@
   });
   let _modalTriggerSubmit = $state(0);
   let _modalTriggerBasket = $state(0);
+  // Latest validation error from the Ticket form — updated whenever
+  // OrderTicket's validationErr changes via the onValidationChange
+  // callback. Used to surface a toast when the common-action Submit
+  // fires but the form is blocking placement silently (e.g. depth
+  // ladder hasn't loaded the limit price yet after a 2s poll delay).
+  let _ticketValidationErr = $state('');
   function _modalFireBasket() { if (_activeTab === 'ticket') _modalTriggerBasket++; }
   function _modalFireSubmit() {
     if (_activeTab !== 'ticket') {
@@ -1244,6 +1264,18 @@
       // nothing happen and assumes the button is broken. Block here
       // with an explicit affordance.
       toast.warning('Pick BUY or SELL before submitting');
+      return;
+    }
+    // Surface OrderTicket's validation error BEFORE incrementing the
+    // trigger counter. Without this, submit() fires → validationErr
+    // trips the silent `if (validationErr) return;` guard → no order
+    // POST, no visible feedback (the .ot-err div renders inside the
+    // ticket form body but is not visually prominent enough when the
+    // common footer Submit is clicked). The operator clicks repeatedly,
+    // generating 20+ preview/preflight calls with no basket/ticket POST
+    // — exactly the audit pattern seen for CRUDEOIL 6500PE SELL.
+    if (_ticketValidationErr) {
+      toast.warning(_ticketValidationErr);
       return;
     }
     _modalTriggerSubmit++;
@@ -1614,7 +1646,9 @@
     // Validate that every leg has a limit price before going to the backend.
     const missingQuote = basketLegs.find(leg => !(Number(leg.limit) > 0));
     if (missingQuote) {
-      basketResultMsg = `${missingQuote.side} ${missingQuote.sym}: no quote yet — re-open chain so bid/ask loads.`;
+      const msg = `${missingQuote.side} ${missingQuote.sym}: no quote yet — wait for bid/ask to load`;
+      basketResultMsg = msg;
+      toast.warning(msg);
       basketSubmitting = false;
       return;
     }
@@ -2229,6 +2263,7 @@
               _modalPreviewError   = err;
               _modalCapWarning     = capW;
             }}
+            onValidationChange={(err) => { _ticketValidationErr = err; }}
             {onSubmit}
             {onClose} />
       </div>
