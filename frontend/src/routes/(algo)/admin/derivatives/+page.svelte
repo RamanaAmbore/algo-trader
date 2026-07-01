@@ -82,6 +82,9 @@
   // either case.
   /** @type {any} */ let strategy   = $state(null);
   let strategyErr   = $state('');
+  /** @type {ReturnType<typeof setInterval> | null} */
+  let _autoSelectPollId = null;
+  onDestroy(() => { if (_autoSelectPollId) clearInterval(_autoSelectPollId); });
   let loading       = $state(false);
   // `loading` is toggled by loadStrategy() and short-circuits on
   // its leg-cache shortcut, so RefreshButton wired to `loading`
@@ -258,16 +261,22 @@
     // Belt-and-suspenders auto-select: the reactive $effect below
     // sometimes doesn't fire on the initial hydration transition
     // (Svelte 5 derived-dep chains through async store loads).
-    // Poll the picker every 150 ms for up to 5 s until the first
-    // entry lands OR the operator picks manually; then stop.
-    let _tries = 0;
-    const _pollId = setInterval(() => {
-      _tries += 1;
-      if (selectedUnderlying) { clearInterval(_pollId); return; }
-      const first = underlyingOptionsForPicker[0]?.value;
-      if (first) { selectedUnderlying = first; clearInterval(_pollId); return; }
-      if (_tries >= 33) clearInterval(_pollId);  // 5 s cap
-    }, 150);
+    // Poll every 300 ms indefinitely until either:
+    //   - the operator manually picks a valid symbol
+    //   - the picker populates and we assign the first entry
+    //   - the component unmounts (poll cleared in _autoSelectTeardown)
+    // Also validates the cached selection: if a stale symbol was
+    // restored from sessionStorage but is NOT in the current picker,
+    // treat it as invalid and swap to the picker's first entry.
+    _autoSelectPollId = setInterval(() => {
+      const opts = underlyingOptionsForPicker;
+      if (opts.length === 0) return;  // wait for picker to hydrate
+      const cur  = selectedUnderlying;
+      const isValid = cur && opts.some(o => o.value === cur);
+      if (isValid) { clearInterval(_autoSelectPollId); return; }
+      selectedUnderlying = opts[0].value;
+      clearInterval(_autoSelectPollId);
+    }, 300);
   });
 
   // URL sync — debounced 150 ms so a flurry of picks doesn't queue N
