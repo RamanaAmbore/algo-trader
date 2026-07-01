@@ -51,14 +51,36 @@ test.describe('chart selection persistence', () => {
       return out;
     });
     await pg.close();
-    await ctx.close();
+    // Wrap ctx.close() — Playwright may fail to write stale trace artifacts
+    // from a previous failed run. The auth token is already captured; the
+    // close error is non-fatal for the test suite.
+    await ctx.close().catch(() => {});
   });
 
-  /** Inject session + clear chart-prefs localStorage before each test. */
+  /** Clear chart-pref keys from localStorage on the current page. */
+  const PREF_KEYS = [
+    'rbq.cache.chart-range.v1',
+    'rbq.cache.chart-series.v1',
+    'rbq.cache.chart-overlays.v1',
+    'rbq.cache.chart-signals.v1',
+    'rbq.cache.chart-intraday.v1',
+    'rbq.cache.pnl-preset.v1',
+    'rbq.cache.pnl-break-tab.v1',
+    'rbq.cache.dash-chart-tab.v1',
+    'rbq.cache.dash-cap-eq-tab.v1',
+  ];
+
+  async function clearPrefs(page) {
+    await page.evaluate((keys) => {
+      for (const k of keys) localStorage.removeItem(k);
+    }, PREF_KEYS);
+  }
+
+  /** Create a fresh browser page with auth injected. */
   async function freshPage(browser) {
     const ctx  = await browser.newContext();
     const page = await ctx.newPage();
-    // Inject auth before navigating.
+    // Inject auth on every new document (addInitScript runs on every full page load).
     if (_session.ramboq_token) {
       await page.addInitScript((tok) => {
         sessionStorage.setItem('ramboq_token', tok);
@@ -67,21 +89,6 @@ test.describe('chart selection persistence', () => {
         Authorization: `Bearer ${_session.ramboq_token}`,
       });
     }
-    // Clear all chart-pref keys so each test starts from the default state.
-    await page.addInitScript(() => {
-      const KEYS = [
-        'rbq.cache.chart-range.v1',
-        'rbq.cache.chart-series.v1',
-        'rbq.cache.chart-overlays.v1',
-        'rbq.cache.chart-signals.v1',
-        'rbq.cache.chart-intraday.v1',
-        'rbq.cache.pnl-preset.v1',
-        'rbq.cache.pnl-break-tab.v1',
-        'rbq.cache.dash-chart-tab.v1',
-        'rbq.cache.dash-cap-eq-tab.v1',
-      ];
-      for (const k of KEYS) localStorage.removeItem(k);
-    });
     return { page, ctx };
   }
 
@@ -117,6 +124,7 @@ test.describe('chart selection persistence', () => {
     try {
       await page.goto(CHARTS_URL, { waitUntil: 'domcontentloaded' });
       await waitForChart(page);
+      await clearPrefs(page);
 
       // Click the 1Y range button.
       const btn1Y = page.locator('.cw-range-btn', { hasText: '1Y' });
@@ -136,7 +144,7 @@ test.describe('chart selection persistence', () => {
         timeout: 10_000,
       });
     } finally {
-      await ctx.close();
+      await ctx.close().catch(() => {});
     }
   });
 
@@ -148,6 +156,7 @@ test.describe('chart selection persistence', () => {
     try {
       await page.goto(CHARTS_URL, { waitUntil: 'domcontentloaded' });
       await waitForChart(page);
+      await clearPrefs(page);
 
       // The chart-type Select in ChartWorkspace is a custom Select component —
       // not a native <select>. It renders as a div with role=combobox or similar.
@@ -180,7 +189,7 @@ test.describe('chart selection persistence', () => {
       // The exact value depends on whether the series picker click landed.
       expect(typeof restoredSeries === 'string' || restoredSeries === null).toBe(true);
     } finally {
-      await ctx.close();
+      await ctx.close().catch(() => {});
     }
   });
 
@@ -192,6 +201,7 @@ test.describe('chart selection persistence', () => {
     try {
       await page.goto(CHARTS_URL, { waitUntil: 'domcontentloaded' });
       await waitForChart(page);
+      await clearPrefs(page);
 
       // Pick 1Y and wait for localStorage to settle.
       await page.locator('.cw-range-btn', { hasText: '1Y' }).click();
@@ -215,7 +225,7 @@ test.describe('chart selection persistence', () => {
         timeout: 10_000,
       });
     } finally {
-      await ctx.close();
+      await ctx.close().catch(() => {});
     }
   });
 
@@ -227,24 +237,23 @@ test.describe('chart selection persistence', () => {
     try {
       await page.goto(CHARTS_URL, { waitUntil: 'domcontentloaded' });
       await waitForChart(page);
+      // Do NOT clear prefs here — the overlays $effect writes the key as
+      // part of the hydration cycle in onMount. Clearing AFTER mount would
+      // remove the key that was just written and the $effect won't re-fire.
+      // The test validates the key is present and an array (not its contents).
 
-      // The overlays key starts empty ([]) on first mount (default).
-      // After the $effect hydration write, it should be present.
+      // After mount+hydration, the overlays key should be present and hold
+      // an array value. Poll until the $effect writes it.
       await expect.poll(
         async () => {
           const raw = await page.evaluate(() =>
             localStorage.getItem('rbq.cache.chart-overlays.v1')
           );
-          return raw !== null;
+          if (raw === null) return false;
+          try { return Array.isArray(JSON.parse(raw)); } catch { return false; }
         },
-        { timeout: 8_000 },
+        { timeout: 8_000, message: 'rbq.cache.chart-overlays.v1 should be an array in localStorage' },
       ).toBe(true);
-
-      // Verify it's an array value.
-      const stored = await page.evaluate(() =>
-        JSON.parse(localStorage.getItem('rbq.cache.chart-overlays.v1') ?? 'null')
-      );
-      expect(Array.isArray(stored)).toBe(true);
 
       // Navigate away and back — key still an array.
       await page.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded' });
@@ -256,7 +265,7 @@ test.describe('chart selection persistence', () => {
       );
       expect(Array.isArray(restored)).toBe(true);
     } finally {
-      await ctx.close();
+      await ctx.close().catch(() => {});
     }
   });
 
@@ -268,6 +277,7 @@ test.describe('chart selection persistence', () => {
     try {
       await page.goto(CHARTS_URL, { waitUntil: 'domcontentloaded' });
       await waitForChart(page);
+      await clearPrefs(page);
 
       // Click 3M range to trigger the range persist effect.
       await page.locator('.cw-range-btn', { hasText: '3M' }).click();
@@ -293,7 +303,7 @@ test.describe('chart selection persistence', () => {
       );
       expect(rangeVal).toBe(90);
     } finally {
-      await ctx.close();
+      await ctx.close().catch(() => {});
     }
   });
 
@@ -306,6 +316,8 @@ test.describe('chart selection persistence', () => {
       await page.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded' });
       // Wait for the dashboard card tabs to render.
       await expect(page.locator('[role="tablist"]').first()).toBeVisible({ timeout: 25_000 });
+      // Clear prefs after first load so we start from a known state.
+      await clearPrefs(page);
 
       // Click the "Intraday" tab in the row-1 chart card.
       const intradayTab = page.getByRole('tab', { name: /Intraday/i }).first();
@@ -319,17 +331,15 @@ test.describe('chart selection persistence', () => {
         await page.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded' });
         await expect(page.locator('[role="tablist"]').first()).toBeVisible({ timeout: 20_000 });
 
-        // The stored value should still be 'intraday'.
-        const restored = await page.evaluate(() =>
-          JSON.parse(localStorage.getItem('rbq.cache.dash-chart-tab.v1') ?? 'null')
-        );
-        expect(restored).toBe('intraday');
+        // The stored value should be restored to 'intraday' once the $effect
+        // runs the hydration write-back. Poll to avoid a synchronous race.
+        await waitForLsPref(page, 'rbq.cache.dash-chart-tab.v1', 'intraday', 8_000);
       } else {
         // Tab not found in this viewport — skip gracefully.
         test.skip(true, 'Intraday tab not visible on this viewport');
       }
     } finally {
-      await ctx.close();
+      await ctx.close().catch(() => {});
     }
   });
 
@@ -339,7 +349,11 @@ test.describe('chart selection persistence', () => {
     test.setTimeout(60_000);
     const { page, ctx } = await freshPage(browser);
     try {
+      // Navigate first, then clear prefs so we start with no stored range.
       await page.goto(CHARTS_URL, { waitUntil: 'domcontentloaded' });
+      await clearPrefs(page);
+      // Reload the page so ChartWorkspace mounts with the cleared prefs.
+      await page.reload({ waitUntil: 'domcontentloaded' });
       await waitForChart(page);
 
       // 1M should be visually active on first visit (no stored pref).
@@ -350,7 +364,7 @@ test.describe('chart selection persistence', () => {
       // After hydration the key should be written with the default value (30).
       await waitForLsPref(page, 'rbq.cache.chart-range.v1', 30);
     } finally {
-      await ctx.close();
+      await ctx.close().catch(() => {});
     }
   });
 });
