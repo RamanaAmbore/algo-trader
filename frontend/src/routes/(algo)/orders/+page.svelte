@@ -516,7 +516,7 @@
          account list. Modal renders this same component. -->
     <ActivityLogSurface
       defaultTab="order"
-      context="card"
+      context="card-wide"
       statusFilter={_statusFilter}
       symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
       bind:accountFilter={_actAccountFilter}

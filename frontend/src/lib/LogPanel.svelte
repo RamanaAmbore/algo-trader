@@ -1372,12 +1372,17 @@
     overflow-y: auto;
     overscroll-behavior: contain;
   }
-  /* News tab uses a different inner component (.log-news-panel) so it
-     needs its own scroll declaration. Same reasoning as .log-rows. */
+  /* News tab uses a different inner component (.log-news-panel) but
+     must match .log-rows visually — same padding + same background
+     inheritance so switching tabs feels like moving inside one panel,
+     not jumping to a different surface. Operator: "news tab background
+     should be changed to conn background." */
   :global(.log-panel.log-news-panel) {
     overflow-y: auto;
     overscroll-behavior: contain;
     min-height: 0;
+    padding: 0.25rem 0.55rem;
+    background: transparent;
   }
   /* Multi-column flow for the agent / terminal / system / conn tabs
      when the panel sits in a wide container (orders page card, /
