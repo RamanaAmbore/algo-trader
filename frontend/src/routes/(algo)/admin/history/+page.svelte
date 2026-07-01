@@ -299,7 +299,7 @@
   {#if !loading && orderRows.length === 0}
     <EmptyState title="No orders match" hint="Try adjusting the date range or clearing filters." icon="search" />
   {/if}
-  <div class="hist-table-wrap" style:display={!loading && orderRows.length === 0 ? 'none' : undefined}>
+  <div class="hist-table-wrap algo-grid-chrome" style:display={!loading && orderRows.length === 0 ? 'none' : undefined}>
     <table class="hist-table">
       <thead>
         <tr>
@@ -518,9 +518,15 @@
 
   .hist-table-wrap {
     overflow-x: auto;
-    border: 1px solid rgba(126, 151, 184, 0.18);
+    /* Canonical outer chrome — matches .algo-grid-chrome / ag-theme-algo /
+       NavBreakdown so the History tables read as the same visual family.
+       Upgraded from 1px muted border + no shadow to 1.5px slate + navy
+       inset shadow + gradient bg. */
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
     border-radius: 4px;
-    background: rgba(15, 23, 42, 0.30);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     margin-bottom: 0.6rem;
   }
   .hist-table {

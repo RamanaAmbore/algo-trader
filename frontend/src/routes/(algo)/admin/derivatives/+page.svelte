@@ -4521,7 +4521,7 @@
           Hiding {hiddenByAccount.rows} position{hiddenByAccount.rows === 1 ? '' : 's'} on {hiddenByAccount.accts} other account{hiddenByAccount.accts === 1 ? '' : 's'}
         </div>
       {/if}
-      <div class="cand-scroll">
+      <div class="cand-scroll algo-grid-chrome">
         <div class="cand-grid">
           <!-- Header row checkbox = master toggle. Checked when
                EVERY candidate is on; unchecked when none; the
@@ -5006,7 +5006,7 @@
     </span>
   </div>
   {#if !_colByund}
-    <div class="byund-scroll">
+    <div class="byund-scroll algo-grid-chrome">
       <div class="byund-grid">
         <div class="byund-headrow">
           <span>Underlying</span>
@@ -6032,6 +6032,16 @@
     overflow-y: auto;
     max-height: 22rem;
     margin-top: 0.4rem;
+    /* Outer chrome — matches .algo-grid-chrome in app.css + .byund-scroll so
+       the Legs candidates grid reads as the same visual family as the Snapshot
+       grid, NavBreakdown, and dashboard mini-grids. Inlined here because the
+       class is applied directly on the scroll wrapper (which already owns
+       overflow/height), avoiding an extra wrapping div. */
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     /* Scrollbar styling — operator: "add scroll bars so that newly
        added columns get the space required in legs". Bumped from
        6 px to 10 px so the horizontal track reads as a clear

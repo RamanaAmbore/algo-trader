@@ -387,7 +387,7 @@
       action={{ label: '+ New account', onClick: () => resetForm(NEW_SENTINEL) }}
     />
   {:else}
-    <div class="brokers-scroll content-fade-in">
+    <div class="brokers-scroll algo-grid-chrome content-fade-in">
     <table class="brokers-table">
       <thead>
         <tr>
@@ -590,10 +590,17 @@
   }
 
   /* Horizontal scroll wrapper — narrow viewports otherwise push the
-     status pill (and the action buttons) out past the card edge. */
+     status pill (and the action buttons) out past the card edge.
+     Outer chrome mirrors .algo-grid-chrome so the brokers table reads
+     as the same visual family as dashboard grids and NavBreakdown. */
   .brokers-scroll {
     width: 100%;
     overflow-x: auto;
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
   }
   .brokers-table {
     width: 100%;

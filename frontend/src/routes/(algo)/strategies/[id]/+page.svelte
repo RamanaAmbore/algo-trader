@@ -203,7 +203,7 @@
         Show closed
       </label>
     </div>
-    <div class="strat-table-wrap">
+    <div class="strat-table-wrap algo-grid-chrome">
       <table class="strat-table">
         <thead>
           <tr>
@@ -495,8 +495,13 @@
 
   .strat-table-wrap {
     overflow-x: auto;
-    border: 1px solid rgba(126, 151, 184, 0.18);
-    border-radius: 6px;
+    /* Canonical outer chrome — upgraded from 1px muted border to
+       1.5px slate + inset shadow + gradient bg to match .algo-grid-chrome. */
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
   }
   .strat-table {
     width: 100%; border-collapse: collapse;
