@@ -8,12 +8,14 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { marketAwareInterval, visibleInterval, executionMode } from '$lib/stores';
   import { aggCompact } from '$lib/format';
-  import { getInstrument, loadInstruments } from '$lib/data/instruments';
+  import { getInstrument, loadInstruments, findNearestFuture } from '$lib/data/instruments';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { cachedRead, cachedWrite, cachedDelete, TTL } from '$lib/data/persistentCache';
   import { getSnapshot, symbolStore, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
-  import { positionsStore, holdingsStore, fundsStore } from '$lib/data/marketDataStores.svelte.js';
+  import { positionsStore, holdingsStore, fundsStore, publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
+  import { resolveUnderlying } from '$lib/data/resolveUnderlying';
+  import { batchQuote } from '$lib/api';
 
   // Reactive views into the three-tier stores. The stores pre-populate from
   // localStorage on module init so these are non-empty on first render.
@@ -59,11 +61,51 @@
         holdingsStore.load(),
         fundsStore.load(),
       ]);
+      // After positions are fresh, refresh underlying spot quotes so
+      // _expiryProfit can compute intrinsic values with current spots.
+      // Runs fire-and-forget in parallel with _pollCycleStamp increment
+      // (a batchQuote failure should not delay the strip paint).
+      _loadUnderlyingSpots().catch(() => { /* silent */ });
       // Signal that a poll cycle completed. The flash $effect watches
       // this counter, not the live-LTP-derived sums, so flash fires
       // at most once per 30s poll rather than on every SSE tick.
       _pollCycleStamp += 1;
     } catch (_) { /* silent — strip stays at last-good values */ }
+  }
+
+  // Fetch underlying spot quotes for every F&O option position.
+  // Mirrors derivatives/+page.svelte `loadUnderlyingQuotes()`:
+  //   resolveUnderlying(inst.u, findNearestFuture) → quoteKey → batchQuote
+  //   → publishPulseQuotes → symbolStore
+  // After this call, getSnapshot("NIFTY 50")?.ltp etc. will return the
+  // current spot so _expiryProfit can compute intrinsic correctly.
+  // If the derivatives page is also mounted it publishes the same symbols
+  // independently — mergeSymbolBatch(ltp_ts=0) handles the collision
+  // without conflict; the most recent snapshot_ts wins.
+  async function _loadUnderlyingSpots() {
+    // Collect unique quote keys for all F&O option positions only
+    // (futures use their own tradingsymbol as the spot key — already
+    // in symbolStore from _publishPositionsRows — so they don't need
+    // a separate batchQuote here).
+    /** @type {Set<string>} */
+    const keys = new Set();
+    const snap = untrack(() => positionsStore.value ?? []);
+    for (const p of snap) {
+      const sym  = String(p?.tradingsymbol || '').toUpperCase();
+      const exch = String(p?.exchange || '').toUpperCase();
+      if (!['NFO', 'MCX', 'CDS', 'BFO'].includes(exch)) continue;
+      const isOpt = sym.endsWith('CE') || sym.endsWith('PE');
+      if (!isOpt) continue;
+      const inst = getInstrument(sym);
+      const root = inst?.u;
+      if (!root) continue;
+      const resolved = resolveUnderlying(root, findNearestFuture);
+      if (!resolved?.quoteKey) continue;
+      keys.add(resolved.quoteKey);
+    }
+    if (keys.size === 0) return;
+    const res = await batchQuote([...keys]);
+    publishPulseQuotes(res?.items ?? []);
   }
 
   // BH2: live LTP reads come from symbolStore.get(sym) via getSnapshot.
@@ -451,11 +493,15 @@
   //   PE symmetric.  [qty is signed: positive = long, negative = short;
   //                   formula (intrinsic − avg) × qty handles both signs]
   //
-  // Spot source: symbolStore snapshot for the underlying name (inst.u),
-  // e.g. "NIFTY 50" for NIFTY26JUN22000CE. If no live snapshot exists
-  // for an option's underlying we skip that leg (contribute 0) rather than
-  // feeding the option's own LTP as a proxy — doing so would compute
-  // max(300 − 22000, 0) = 0 (wrong for deep ITM) or huge phantom intrinsic.
+  // Spot source: symbolStore snapshot keyed by the RESOLVED tradingsymbol
+  // (e.g. "NIFTY 50" for NIFTY options, "GOLD26JUNFUT" for MCX GOLD options).
+  // inst.u gives the underlying root name ("NIFTY", "GOLD") — resolveUnderlying
+  // translates that to the correct tradeable tradingsymbol stored in symbolStore.
+  // Spots are pre-fetched by _loadUnderlyingSpots() on each poll cycle.
+  // If no live snapshot exists for an option's underlying we skip that leg
+  // (contribute 0) rather than feeding the option's own LTP as a proxy —
+  // doing so would compute max(300 − 22000, 0) = 0 (wrong for deep ITM)
+  // or huge phantom intrinsic.
   //
   // Gated by _throttledTick (4 Hz) not per-SSE-tick to avoid scheduler
   // pressure; matches the same throttle already used by _liveDeltaByRow.
@@ -478,10 +524,17 @@
 
       if (isCE || isPE) {
         // Option — need underlying spot; instruments cache gives inst.u
+        // (e.g. "NIFTY"), which must be resolved to the tradeable
+        // tradingsymbol ("NIFTY 50") before looking up symbolStore.
+        // getSnapshot("NIFTY") returns null because SSE and batchQuote
+        // publish by tradingsymbol — the key mismatch was causing every
+        // NIFTY/BANKNIFTY index option to contribute 0 to the total.
         const inst = getInstrument(sym);
-        const undSym = inst?.u || null;
-        if (!undSym) continue;                            // can't resolve underlying
-        const spot = untrack(() => getSnapshot(undSym)?.ltp);
+        const root = inst?.u || null;
+        if (!root) continue;                              // can't resolve underlying
+        const resolved = resolveUnderlying(root, findNearestFuture);
+        if (!resolved?.tradingsymbol) continue;
+        const spot = untrack(() => getSnapshot(resolved.tradingsymbol)?.ltp);
         if (!(spot > 0)) continue;                        // no live quote → skip
         const strike = Number(inst?.k || 0);
         if (!strike) continue;

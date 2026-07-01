@@ -2086,6 +2086,19 @@
     if (nonEq.length === 0) return false;
     return nonEq.every(l => Number(l.qty) === 0);
   });
+  /** True when the only enabled candidates are equity holdings (kind==='eq')
+   *  and the "Include Holdings" toggle is OFF. In this case cleanLegs is
+   *  empty (backend only accepts opt/fut) and strategy stays null — not
+   *  because rows are unchecked but because the master toggle hides them.
+   *  Gates a dedicated empty-state branch so the operator sees an actionable
+   *  hint ("flip the toggle or add F&O legs") instead of the generic
+   *  "No legs selected" message that implies they need to tick checkboxes. */
+  const _legsAreEqOnly = $derived.by(() => {
+    if (_includeHoldings) return false;
+    if (!candidatePositions.length) return false;
+    // Every candidate must be eq — no opt/fut in the book for this underlying.
+    return candidatePositions.every(c => c.kind === 'eq');
+  });
   $effect(() => {
     if (!allCandidatesEl) return;
     // Indeterminate iff some-but-not-all are on. Browser doesn't
@@ -3695,7 +3708,12 @@
     // list all held stocks before F&O positions arrive.
     _positionsLoaded = true;
 
-    _saveCache();
+    // Do NOT include enabledSymbols in the positions-poll snapshot.
+    // If the operator has unchecked rows, a 30 s poll would overwrite
+    // the prior (all-checked) sessionStorage entry with the unchecked
+    // state, causing the next page-visit to open with all rows unchecked.
+    // enabledSymbols is correctly persisted by the strategy-success path.
+    _saveCache({ includeSelections: false });
   }
 
   // Consecutive-failure counter for loadStrategy. Suppresses the
@@ -3960,15 +3978,28 @@
   // a wildly stale chart.
   const _CACHE_KEY = 'ramboq:options-state';
   const _CACHE_MAX_AGE_MS = 5 * 60 * 1000;
-  function _saveCache() {
+  /** Persist the page snapshot to sessionStorage for stale-while-revalidate.
+   *  @param {object} [opts]
+   *  @param {boolean} [opts.includeSelections=true]  When false, omits
+   *    `enabledSymbols` from the payload. The positions-poll path sets this
+   *    false so a mid-session poll (where the operator may have unchecked rows)
+   *    never overwrites a working checked state with an all-false map. The
+   *    strategy-success path always includes selections so the full state is
+   *    persisted after a confirmed working fetch. */
+  function _saveCache(opts = { includeSelections: true }) {
     if (typeof sessionStorage === 'undefined') return;
     try {
-      sessionStorage.setItem(_CACHE_KEY, JSON.stringify({
+      /** @type {Record<string, any>} */
+      const payload = {
         ts: Date.now(),
         positions, strategy, drafts,
         selectedAccounts, selectedUnderlying, selectedExpiries,
-        enabledSymbols, _includeHoldings,
-      }));
+        _includeHoldings,
+      };
+      if (opts.includeSelections !== false) {
+        payload.enabledSymbols = enabledSymbols;
+      }
+      sessionStorage.setItem(_CACHE_KEY, JSON.stringify(payload));
     } catch (_) { /* quota / private mode — silent */ }
   }
   function _loadCache() {
@@ -4350,6 +4381,10 @@
     {:else if _allEnabledLegsZeroQty}
       All {simActive ? 'sim' : 'live'} positions on <b>{selectedUnderlying}</b> are closed — no open payoff to render.
       Click <b>+ Add</b> to model a hypothetical strike.
+    {:else if _legsAreEqOnly}
+      Only equity holdings for <b>{selectedUnderlying}</b> — no F&amp;O legs in book.
+      Enable <b>Include Holdings</b> above to plot the linear stock payoff, or click
+      <b>+ Add</b> to drop a derivative strike.
     {:else}
       No legs selected. Tick at least one row in the Candidates panel
       below to render the payoff.
