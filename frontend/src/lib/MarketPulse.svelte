@@ -5910,16 +5910,13 @@
     border-right: 0 !important;
     border-left: 0 !important;
   }
-  /* Column-header bottom border — same amber 30 % as every other
-     horizontal divider on the page (pin-divider, major-divider,
-     mover-direction-divider). Earlier ag-Grid's default header-row
-     border was too faint to read against the navy bucket-grid
-     background; making it match the section-divider colour means
-     the header row sits visually consistent with the section
-     stripes below it. */
-  :global(.mp-bucket-wrap .ag-theme-algo .ag-header-row) {
-    border-bottom: 1px solid var(--algo-amber-border-soft) !important;
-  }
+  /* Header underline retired — `.ag-theme-algo .ag-header` (app.css)
+     already applies `border-bottom: 1px solid rgba(251,191,36,0.30)`
+     from the History-parity treatment. Adding a second border on
+     .ag-header-row stacked at the same pixel, darkening the line via
+     alpha compositing so Pulse's underline read heavier than every
+     other grid on the platform. Operator: "in pulse the grid header
+     underline is not consistent with other grids." */
   /* Winners / Losers ROW background tint — completes the "every
      section has a row-tint" rhythm. Same 0.06 alpha as Holdings
      row-hold-up / row-hold-down so the bucket reads as part of the
