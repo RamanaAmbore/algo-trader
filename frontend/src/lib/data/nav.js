@@ -58,6 +58,36 @@ export function navByAccount(accounts, funds, positions, holdings) {
   return (accounts ?? []).map(a => navRowForAccount(a, funds, positions, holdings));
 }
 
+// Exchanges that carry derivatives positions (F&O, commodity, currency).
+// Equity CNC/MIS positions (exchange = "NSE" / "BSE") are excluded so the
+// P pill doesn't double-count with the H pill which covers holdings day MTM.
+// Note: MIS-only equity intraday positions (bought+squared, never in holdings)
+// are also excluded under this filter — acceptable for an F&O-primary book.
+const FO_EXCHANGES = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
+
+/**
+ * Compute today's day P&L and lifetime P&L for F&O/derivative positions only.
+ * Excludes equity (NSE/BSE) positions to avoid double-counting with the H pill.
+ *
+ * Fields used: `p.pnl` for lifetime (works on both live and closed-hours
+ * snapshot — `unrealised + realised` would return 0 on snapshots where those
+ * fields default to 0.0). `p.day_change_val` for intraday.
+ *
+ * @param {Array<{exchange?: string, pnl?: number, day_change_val?: number}>} positions
+ * @returns {{ pnlTotal: number, dayTotal: number }}
+ */
+export function positionsPnlFiltered(positions) {
+  let pnlTotal = 0;
+  let dayTotal  = 0;
+  for (const p of (positions ?? [])) {
+    const exch = String(p?.exchange || '').toUpperCase();
+    if (!FO_EXCHANGES.has(exch)) continue;
+    pnlTotal += Number(p?.pnl || 0);
+    dayTotal  += Number(p?.day_change_val || 0);
+  }
+  return { pnlTotal, dayTotal };
+}
+
 /**
  * Sum a list of nav rows into a TOTAL row. Returns null on empty.
  * @param {Array<ReturnType<typeof navRowForAccount>>} rows

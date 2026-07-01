@@ -17,6 +17,7 @@
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
   import { batchQuote } from '$lib/api';
+  import { positionsPnlFiltered } from '$lib/data/nav';
 
   // Reactive views into the three-tier stores. The stores pre-populate from
   // localStorage on module init so these are non-empty on first render.
@@ -344,14 +345,28 @@
   // throttle every tick would synchronously hit disk.
   let _stripFrozenLastWrite = 0;
 
+  // P pill slots 1 + 2: F&O-only positions, excluding equity (NSE/BSE).
+  // The H pill covers holdings day MTM separately; including equity here
+  // would double-count same-day CNC equity buys that Kite surfaces in
+  // both the positions and holdings endpoints.
+  // SSE-tick delta (_delta) applied per-row for live LTP correction;
+  // only filtered rows get the delta to stay consistent with the PnL sum.
   const _livePositionsPnl = $derived.by(() => {
     let s = 0;
-    for (const p of positions) s += Number(p?.pnl || 0) + _delta(p, 'P');
+    for (const p of positions) {
+      const exch = String(p?.exchange || '').toUpperCase();
+      if (!['NFO', 'MCX', 'CDS', 'BFO'].includes(exch)) continue;
+      s += Number(p?.pnl || 0) + _delta(p, 'P');
+    }
     return s;
   });
   const _livePositionsToday = $derived.by(() => {
     let s = 0;
-    for (const p of positions) s += Number(p?.day_change_val || 0) + _delta(p, 'P');
+    for (const p of positions) {
+      const exch = String(p?.exchange || '').toUpperCase();
+      if (!['NFO', 'MCX', 'CDS', 'BFO'].includes(exch)) continue;
+      s += Number(p?.day_change_val || 0) + _delta(p, 'P');
+    }
     return s;
   });
   const _liveHoldingsToday = $derived.by(() => {
