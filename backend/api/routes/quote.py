@@ -35,6 +35,12 @@ logger = get_logger(__name__)
 import time as _time_mod
 _spark_db_only_last_log: float = 0.0
 
+# Per-symbol rate-limited "empty series" diagnostic log.  Maps (sym, exch) →
+# last-logged epoch.  Emitted at most once per 3600 s per symbol so the
+# operator can grep "sparkline: no data" to identify the failing symbols
+# without log flooding on every 60 s poll.
+_spark_empty_last_log: dict[tuple[str, str], float] = {}
+
 
 # ── Closed-hours helper ───────────────────────────────────────────────────────
 
@@ -598,17 +604,26 @@ class SparklineController(Controller):
             _resolve_cds_currency,
         )
         norm_syms: list[SparklineSymbol] = []
+        # orig_to_resolved maps bare watchlist name → resolved contract name
+        # e.g. "CRUDEOIL" → "CRUDEOIL26JUNFUT". Used in Step 4 to also store
+        # the result under the original bare key so the frontend renderer can
+        # look up sparklines[row.tradingsymbol] and find the series even when
+        # the row carries the bare commodity/currency name from the watchlist.
+        orig_to_resolved: dict[str, str] = {}
         for sym_obj in syms:
             sym  = sym_obj.tradingsymbol.upper().strip()
             exch = (sym_obj.exchange or "NSE").upper().strip()
+            original_sym = sym
             if exch == "MCX" and sym.isalpha() and len(sym) <= 12:
                 resolved = await _resolve_mcx_commodity(sym)
                 if resolved:
                     sym = resolved.upper().strip()
+                    orig_to_resolved[original_sym] = sym
             elif exch == "CDS" and sym.isalpha() and len(sym) <= 12:
                 resolved = await _resolve_cds_currency(sym)
                 if resolved:
                     sym = resolved.upper().strip()
+                    orig_to_resolved[original_sym] = sym
             norm_syms.append(SparklineSymbol(tradingsymbol=sym, exchange=exch))
 
         # ── Step 1: Past daily closes via ohlcv_store ────────────────────────
@@ -920,8 +935,35 @@ class SparklineController(Controller):
             # task to repopulate the cache.
             if len(series) == 1:
                 series = series + series
+            if not series:
+                # Diagnostic: log symbols with truly empty series (past=[], today=[],
+                # ltp=None/0) at most once per hour per (sym, exch) so the operator
+                # can grep "sparkline: no data" to identify the failing symbols.
+                _now = _time_mod.monotonic()
+                _key = (sym, sym_obj.exchange)
+                if _now - _spark_empty_last_log.get(_key, 0.0) >= 3600:
+                    _spark_empty_last_log[_key] = _now
+                    logger.info(
+                        f"sparkline: no data for {sym_obj.exchange}:{sym} "
+                        f"(past={len(past)}, today={len(today_bars)}, "
+                        f"ltp={ltp_val}, market_closed={spark_market_closed})"
+                    )
             if series:
                 result[sym] = series
+                # Dual-write: also store under the original bare watchlist name
+                # (e.g. "CRUDEOIL") so the frontend renderer's
+                # sparklines[row.tradingsymbol] lookup hits for MCX/CDS symbols
+                # whose tradingsymbol on the grid row is the bare commodity/
+                # currency name, not the resolved front-month contract.
+                # Without this, sparklines["CRUDEOIL"] is always undefined while
+                # sparklines["CRUDEOIL26JUNFUT"] is populated — causing the
+                # sparkline cell to show "—" for every MCX/CDS watchlist row.
+                # The frontend prune (active Set built from pairs.tradingsymbol)
+                # also correctly retains the bare-name entry on subsequent calls
+                # because pairs carry the original bare name from unifiedRows.
+                for bare, resolved_name in orig_to_resolved.items():
+                    if resolved_name == sym:
+                        result[bare] = series
 
         return SparklineResponse(
             data=result,
