@@ -254,6 +254,20 @@
       const e = (sp.get('e') || '').trim();
       if (e) selectedExpiries = e.split(',').map(x => x.trim()).filter(Boolean);
     } catch {}
+
+    // Belt-and-suspenders auto-select: the reactive $effect below
+    // sometimes doesn't fire on the initial hydration transition
+    // (Svelte 5 derived-dep chains through async store loads).
+    // Poll the picker every 150 ms for up to 5 s until the first
+    // entry lands OR the operator picks manually; then stop.
+    let _tries = 0;
+    const _pollId = setInterval(() => {
+      _tries += 1;
+      if (selectedUnderlying) { clearInterval(_pollId); return; }
+      const first = underlyingOptionsForPicker[0]?.value;
+      if (first) { selectedUnderlying = first; clearInterval(_pollId); return; }
+      if (_tries >= 33) clearInterval(_pollId);  // 5 s cap
+    }, 150);
   });
 
   // URL sync — debounced 150 ms so a flurry of picks doesn't queue N
