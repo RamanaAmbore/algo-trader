@@ -4472,8 +4472,6 @@
          with every other card on the page.) -->
     <div class="legs-header-row">
       <div class="legs-header legs-header-static">
-        <span class="algo-card-title" style="margin-bottom:0">Legs</span>
-        <span class="legs-header-sep" aria-hidden="true"></span>
         {#if selectedUnderlying}
           <span class="legs-underlying-chip">{selectedUnderlying}</span>
           <span class="legs-header-sep" aria-hidden="true"></span>
