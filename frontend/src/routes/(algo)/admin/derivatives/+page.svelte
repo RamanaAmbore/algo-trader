@@ -4495,25 +4495,34 @@
              read as distinct from the amber Net / Max chips. Sign-tinted
              variants on theta / vega / rho since those flip sign with
              credit vs debit structures. -->
+        <!-- Null-safe access — Svelte 5 can evaluate template expressions
+             inside `{#if strategy}` blocks in the same reactive flush as
+             the guard's own update. When `strategy` transitions to null
+             (during loadStrategy underlying-change), the inner `.delta`
+             etc. access threw TypeError, poisoning the scheduler and
+             freezing all downstream $state writes (instrumentsReady,
+             etc.) — causing the page-wide hang. `?.` throughout so the
+             expression returns undefined instead of throwing; pctFmt
+             renders '—' for undefined. -->
         <span class="opt-section-tag tag-greek"
           title="Delta — net directional exposure (₹ per ₹1 spot move). Includes +qty for enabled equity-holding legs.">
-          Δ {pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).delta)}
+          Δ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}
         </span>
         <span class="opt-section-tag tag-greek"
           title="Gamma — convexity, rate of change of Δ as spot moves">
-          Γ {pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).gamma)}
+          Γ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}
         </span>
-        <span class="opt-section-tag tag-greek {(_mergedGreeks ?? strategy.aggregate_greeks).theta < 0 ? 'tag-greek-neg' : ''}"
+        <span class="opt-section-tag tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta ?? 0) < 0 ? 'tag-greek-neg' : ''}"
           title="Theta — daily decay (₹/day, positive when net short premium)">
-          Θ {pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).theta)}
+          Θ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}
         </span>
-        <span class="opt-section-tag tag-greek {(_mergedGreeks ?? strategy.aggregate_greeks).vega < 0 ? 'tag-greek-neg' : ''}"
+        <span class="opt-section-tag tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega ?? 0) < 0 ? 'tag-greek-neg' : ''}"
           title="Vega — P&L per 1% IV move (positive = long volatility)">
-          𝒱 {pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).vega)}
+          𝒱 {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}
         </span>
-        <span class="opt-section-tag tag-greek {(_mergedGreeks ?? strategy.aggregate_greeks).rho < 0 ? 'tag-greek-neg' : ''}"
+        <span class="opt-section-tag tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho ?? 0) < 0 ? 'tag-greek-neg' : ''}"
           title="Rho — P&L per 1% interest-rate move (typically small for short-DTE)">
-          ρ {pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).rho)}
+          ρ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}
         </span>
         <!-- Card-control trio kept in a tight no-wrap cluster so the
              three icons sit on the same row even on a narrow viewport.
