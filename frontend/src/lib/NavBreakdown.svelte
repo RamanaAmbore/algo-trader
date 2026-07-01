@@ -160,12 +160,12 @@
   /* Header — deep-dark bg + muted-slate text + amber bottom border:
      mirrors the .hist-table reference (History page). */
   .nav-bd-table thead th {
-    height: 26px;              /* matches _baseGridOpts headerHeight: 26 */
+    height: 28px;              /* matches --ag-header-height: 28px in ag-theme-algo */
     text-align: right;
     font-weight: 800;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    font-size: 0.5625rem;      /* matches ag-theme-algo .ag-header-cell */
+    font-size: 0.65rem;        /* matches --ag-header-font-size in ag-theme-algo */
     color: #7e97b8;            /* --text-muted / var(--algo-muted) */
     background: rgba(15,23,42,0.65); /* matches ag-theme-algo header bg */
     padding: 0 3px;            /* matches ag-theme-algo cell padding */

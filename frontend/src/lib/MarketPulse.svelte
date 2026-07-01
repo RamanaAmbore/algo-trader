@@ -4293,7 +4293,6 @@
         // (not in the sortable body).
         postSortRows: postSortGroups,
         rowHeight: 28,
-        headerHeight: 28,
         onRowClicked: handleRowClick,
         onCellContextMenu: (ev) => {
           if (ev.data) openContextMenu(ev.event, ev.data);
@@ -4366,7 +4365,6 @@
         sortingOrder: ['asc', 'desc', null],
         domLayout: 'autoHeight',
         rowHeight: 26,
-        headerHeight: 26,
       });
       positionsSummaryReady = true;
     }
@@ -4408,7 +4406,6 @@
         sortingOrder: ['asc', 'desc', null],
         domLayout: 'autoHeight',
         rowHeight: 26,
-        headerHeight: 26,
       });
       holdingsSummaryReady = true;
     }
@@ -4468,7 +4465,6 @@
         sortingOrder: ['asc', 'desc', null],
         domLayout: 'autoHeight',
         rowHeight: 26,
-        headerHeight: 26,
       });
       fundsReady = true;
     }

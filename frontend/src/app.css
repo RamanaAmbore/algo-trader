@@ -903,7 +903,7 @@
   --ag-header-background-color: rgba(15,23,42,0.65);
   --ag-header-foreground-color: var(--text-muted);
   --ag-header-font-weight: 800;
-  --ag-header-font-size: 0.5625rem;
+  --ag-header-font-size: 0.65rem;
   --ag-foreground-color: var(--algo-slate);
   --ag-background-color: #1d2a44;
   --ag-odd-row-background-color: rgba(13,22,42,0.30);
