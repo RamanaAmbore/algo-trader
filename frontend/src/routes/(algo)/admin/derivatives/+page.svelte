@@ -1604,9 +1604,12 @@
   $effect(() => {
     const u = selectedUnderlying;
     untrack(() => {
-      if (u && _lastUnderlyingForChart && u !== _lastUnderlyingForChart) {
-        strategy = null;
-      }
+      // Do NOT null out `strategy` on underlying change — the next
+      // successful loadStrategy() overwrites atomically. Blanking here
+      // caused the payoff card to unmount + remount on every pick,
+      // which the operator flagged as "disappearing payoff chart."
+      // The brief visual mismatch (old spot marker on new-labeled card)
+      // is far less disruptive than the full-card unmount.
       _lastUnderlyingForChart = u;
     });
   });
@@ -3827,7 +3830,10 @@
     const newU = decomposeSymbol(cleanLegs[0].symbol).root;
     const oldU = strategy?.legs?.length ? decomposeSymbol(strategy.legs[0].symbol).root : '';
     if (newU && oldU && newU !== oldU) {
-      strategy = null;
+      // Reset the last-key so the fetch actually fires (identity guard).
+      // We do NOT clear `strategy` here — the next successful loadStrategy
+      // overwrites atomically, and blanking causes the payoff card to
+      // unmount ("disappearing payoff chart" defect).
       _stratLastKey = '';
     }
     // Legs-signature memo — the 5 s `marketAwareInterval` polls
