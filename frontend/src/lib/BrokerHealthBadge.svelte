@@ -97,10 +97,15 @@
              }}
              title="View connection log for {acct.account}">
           <span class="bh-row-dot bh-row-dot-{acct.state}" aria-hidden="true"></span>
-          <span class="bh-row-account {acct.is_active_ticker ? 'bh-row-account-active' : ''}"
-                title={acct.is_active_ticker
-                  ? `${acct.account} — currently running the KiteTicker WebSocket`
-                  : acct.account}>
+          {@const _accCls = acct.state === 'red'   ? 'bh-row-account-red'
+                          : acct.state === 'amber' ? 'bh-row-account-amber'
+                          : acct.is_active_ticker  ? 'bh-row-account-active'
+                          : 'bh-row-account-spare'}
+          <span class="bh-row-account {_accCls}"
+                title={acct.state === 'red'   ? `${acct.account} — connection problem (${acct.reason})`
+                     : acct.state === 'amber' ? `${acct.account} — stale (${acct.reason})`
+                     : acct.is_active_ticker  ? `${acct.account} — active (running the KiteTicker WebSocket)`
+                     : `${acct.account} — warm spare (healthy, not currently active)`}>
             {acct.account}
           </span>
           <span class="bh-row-broker">{acct.broker}</span>
@@ -274,12 +279,17 @@
     align-items: center;
     gap: 0.35rem;
   }
-  /* Active-ticker: color-code the account name itself with the canonical
-     cyan (matches broker-chip-ok / cyan chip family) instead of a
-     separate 'active' chip. Cleaner row; absence of cyan = warm spare. */
-  .bh-row-account-active {
-    color: #22d3ee;
-  }
+  /* Account name is COLOR-CODED by state so the operator sees at a glance:
+     - red   → has a connection problem (state=red trumps everything)
+     - amber → stale (state=amber, no active failure but > 5 min old)
+     - cyan  → currently running the KiteTicker WebSocket
+     - slate → warm spare (healthy, not active)
+     No separate "active" chip needed. Operator: "color code the account
+     which is active or having problems in connection etc." */
+  .bh-row-account-red    { color: #f87171; font-weight: 700; }
+  .bh-row-account-amber  { color: #fbbf24; font-weight: 700; }
+  .bh-row-account-active { color: #22d3ee; font-weight: 700; }
+  .bh-row-account-spare  { color: #e2e8f0; font-weight: 600; }
   .bh-row-broker {
     color: #94a3b8;
     text-transform: uppercase;
