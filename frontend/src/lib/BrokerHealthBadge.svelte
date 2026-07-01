@@ -17,7 +17,7 @@
    * closed AND no badge consumer needs the data; restarts on open.
    */
   import { onMount, onDestroy } from 'svelte';
-  import { visibleInterval } from '$lib/stores';
+  import { visibleInterval, openActivityModal } from '$lib/stores';
   import { fetchBrokerHealth } from '$lib/api';
 
   /** Bindable: parent (algo layout) toggles this from the 5/5 chip. */
@@ -88,7 +88,14 @@
     </div>
     <div class="bh-modal-body">
       {#each accounts as acct (acct.account)}
-        <div class="bh-row">
+        <div class="bh-row" role="button" tabindex="0"
+             onclick={() => { open = false; openActivityModal('conn'); }}
+             onkeydown={(e) => {
+               if (e.key === 'Enter' || e.key === ' ') {
+                 e.preventDefault(); open = false; openActivityModal('conn');
+               }
+             }}
+             title="View connection log for {acct.account}">
           <span class="bh-row-dot bh-row-dot-{acct.state}" aria-hidden="true"></span>
           <span class="bh-row-account">
             {acct.account}
@@ -240,6 +247,15 @@
     font-family: var(--font-numeric);
   }
   .bh-row:last-child { border-bottom: none; }
+  .bh-row {
+    cursor: pointer;
+    transition: background-color 0.1s;
+  }
+  .bh-row:hover,
+  .bh-row:focus-visible {
+    background-color: rgba(34, 211, 238, 0.05);
+    outline: none;
+  }
 
   .bh-row-dot {
     width: 0.45rem;

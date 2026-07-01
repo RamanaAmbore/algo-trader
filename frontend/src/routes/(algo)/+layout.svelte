@@ -936,7 +936,7 @@
                        : _loaded === _total ? `Broker status: ${_loaded} / ${_total} accounts loaded. Click for per-account auth detail.`
                        : `Broker status: ${_loaded} / ${_total} loaded. Failing: ${_failList}. Click for per-account auth detail.`}>
             <span class="broker-chip-dot" aria-hidden="true"></span>
-            {_ok ? `${_loaded}/${_total}` : '?'}
+            {_loaded}/{_total}
           </button>
         {/if}
 
@@ -1048,7 +1048,7 @@
                   title={!_ok ? 'Broker status: API unreachable. Click for per-account auth detail.'
                        : `Broker status: ${_loaded} / ${_total} loaded. Click for per-account auth detail.`}>
             <span class="broker-chip-dot" aria-hidden="true"></span>
-            {_ok ? `${_loaded}/${_total}` : '?'}
+            {_loaded}/{_total}
           </button>
         {/if}
 
