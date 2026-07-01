@@ -15,7 +15,7 @@
     fetchSimOrders, fetchSimIterations, replaySimIteration,
     fetchStrategyAnalytics,
   } from '$lib/api';
-  import LogPanel      from '$lib/LogPanel.svelte';
+  import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import Select        from '$lib/Select.svelte';
   import MultiSelect   from '$lib/MultiSelect.svelte';
   import PriceChart    from '$lib/PriceChart.svelte';
@@ -1454,11 +1454,13 @@
 </aside>  <!-- /.sim-grid-side-col — controls strip (rendered first via CSS order) -->
 </div>    <!-- /.sim-stack — single-column wrapper before LogPanel -->
 
-<LogPanel
+<ActivityLogSurface
+  context="card"
   heightClass="h-[40vh]"
   mode="sim"
   defaultTab={logTab}
-  simScope
+  simScope={true}
+  hideInlineAccountFilter={false}
   onTabChange={(id) => { logTab = id; }}
 />
 

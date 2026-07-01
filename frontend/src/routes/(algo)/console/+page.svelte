@@ -11,7 +11,7 @@
   import { authStore, nowStamp } from '$lib/stores';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
-  import LogPanel from '$lib/LogPanel.svelte';
+  import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import CommandLineTab from '$lib/order/CommandLineTab.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
 
@@ -85,9 +85,11 @@
          surface (Activity modal, Order modal bottom panel, this
          /console mount, /automation) in sync without duplicating the
          array per callsite. -->
-    <LogPanel
+    <ActivityLogSurface
+      context="page"
       heightClass="flex-1 min-h-0"
       defaultTab={logTab}
+      hideInlineAccountFilter={false}
       onTabChange={(id) => { logTab = id; }}
     />
   </div>

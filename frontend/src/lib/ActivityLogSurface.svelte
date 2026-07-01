@@ -1,23 +1,23 @@
 <!--
-  ActivityLogSurface — the configured LogPanel used by every
-  activity-card surface (ActivityLogModal, /orders Activity card,
-  future /console surfaces). Encapsulates the canonical config
-  so callers don't repeat the same 6-prop dance:
+  ActivityLogSurface — the SSOT LogPanel wrapper used by every
+  activity surface in the algo app (ActivityLogModal, /orders activity
+  card, /automation, /console, SymbolPanel bottom panel,
+  ReplayPanel, SimulatorPanel, and the /activity page).
 
-      hideInlineAccountFilter = true     (header dropdown lives in the parent)
+  Encapsulates the canonical config so callers don't repeat the same
+  prop dance:
+
+      hideInlineAccountFilter = true     (header dropdown lives in the parent,
+                                          override to false for inline-filter mounts)
       bind:accountFilter                 (state owned by parent)
       bind:availableAccounts             (state mirrored to parent)
-      multiColumn = (context === 'page') (2-col only on the full-width
-                                          /activity page; modal + card
-                                          surfaces stay single-column
-                                          because their container is
-                                          narrower than the 900px @media
-                                          threshold even at 1280px+ viewport)
+      multiColumn = (context-derived)    (2-col only on wide containers;
+                                          override with `multiColumn` prop)
 
   Pair with `ActivityAccountSelect` for the header dropdown — same
   bindable state is threaded through both.
 
-  Usage:
+  Usage (header-driven):
     <ActivityLogSurface
       bind:accountFilter={_accountFilter}
       bind:availableAccounts={_availableAccounts}
@@ -25,6 +25,13 @@
       context="page"
       statusFilter={_statusFilter}
       symbolFilter={symFilter} />
+
+  Usage (inline-filter, no parent header):
+    <ActivityLogSurface
+      context="card"
+      hideInlineAccountFilter={false}
+      defaultTab="terminal"
+      onTabChange={(id) => { logTab = id; }} />
 -->
 <script>
   import LogPanel from '$lib/LogPanel.svelte';
@@ -46,12 +53,66 @@
     /** Account codes from current order rows — bindable so parent renders the dropdown. */
     availableAccounts   = $bindable(/** @type {string[]} */ ([])),
     /** Active log level filter — bindable so parent's ActivityHeaderFilters
-     *  drives it. Default 'error' per operator request — only loud
-     *  rows by default; 'all' for the full paper trail. */
+     *  drives it. Default 'all' keeps pre-filter behaviour; surfaces that
+     *  want loud-rows-only pass 'error'. */
     levelFilter         = $bindable(/** @type {'all'|'error'|'warning'|'info'} */ ('all')),
-    /** Surface context — gates the 2-column magazine flow.
+    /** Surface context — gates the context-derived 2-column magazine flow.
+     *  Overridden entirely when `multiColumn` is provided explicitly.
      *  @type {'page'|'card'|'card-wide'|'modal'} */
     context             = 'page',
+    /**
+     * Explicit multiColumn override. When provided (true or false), this
+     * value is used directly and ignores the context-derived default.
+     * When omitted (undefined), the context determines the value:
+     *   - 'page' | 'modal' | 'card-wide' → true
+     *   - 'card' → false
+     * @type {boolean | undefined}
+     */
+    multiColumn         = /** @type {boolean | undefined} */ (undefined),
+    /**
+     * Scope the sim/agent log view to the running simulation only.
+     * Passed through to LogPanel unchanged.
+     */
+    simScope            = false,
+    /**
+     * Callback fired when the operator switches the active log tab.
+     * @type {(tab: string) => void}
+     */
+    onTabChange         = /** @type {(tab: string) => void} */ (() => {}),
+    /**
+     * Execution mode string (sim / paper / live / shadow / replay).
+     * When set, LogPanel auto-flips the tab and applies the matching
+     * order filter. Passed through unchanged.
+     * @type {string | null}
+     */
+    mode                = /** @type {string | null} */ (null),
+    /**
+     * Whether to gate all activity tabs by the current executionMode
+     * from the global store. Default true; set false on surfaces that
+     * want a cross-mode view.
+     */
+    gateByMode          = true,
+    /**
+     * Command history entries fed into the Terminal tab
+     * (CommandLineTab integration).
+     * @type {Array<{status: string, message: string, fields?: Record<string,string>, time: string}>}
+     */
+    cmdHistory          = /** @type {Array<{status: string, message: string, fields?: Record<string,string>, time: string}>} */ ([]),
+    /**
+     * Subset of tabs to display. Defaults to the canonical full set
+     * inherited from LogPanel. Only override when a page genuinely
+     * needs a reduced tab strip.
+     * @type {string[] | undefined}
+     */
+    tabs                = /** @type {string[] | undefined} */ (undefined),
+    /**
+     * Hide the inline account dropdown in the tab row.
+     * Default true — callers that provide their own header dropdown
+     * (ActivityLogModal, /activity page) pass no value or true.
+     * Simple mounts that want the inline filter (SymbolPanel bottom
+     * panel, execution panels) pass false.
+     */
+    hideInlineAccountFilter = true,
   } = $props();
 
   // Two-column magazine flow on wider containers. Enabled for:
@@ -62,8 +123,12 @@
   // column since their visible container is under the 900px threshold
   // regardless of viewport width. LogPanel's @media (max-width: 900px)
   // handles responsive collapse to single column when viewport shrinks.
+  //
+  // Explicit `multiColumn` prop overrides context entirely.
   const _multiColumn = $derived(
-    context === 'page' || context === 'modal' || context === 'card-wide'
+    multiColumn !== undefined
+      ? multiColumn
+      : (context === 'page' || context === 'modal' || context === 'card-wide')
   );
 </script>
 
@@ -73,8 +138,14 @@
   {statusFilter}
   {symbolFilter}
   {pollMs}
-  hideInlineAccountFilter={true}
+  {hideInlineAccountFilter}
   bind:accountFilter
   bind:availableAccounts
   {levelFilter}
-  multiColumn={_multiColumn} />
+  multiColumn={_multiColumn}
+  {simScope}
+  {onTabChange}
+  {mode}
+  {gateByMode}
+  {cmdHistory}
+  {tabs} />

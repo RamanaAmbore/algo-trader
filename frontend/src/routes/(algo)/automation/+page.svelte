@@ -11,7 +11,7 @@
     fetchSimStatus,
     startSimForAgent, aiDraftAgent,
   } from '$lib/api';
-  import LogPanel from '$lib/LogPanel.svelte';
+  import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import Select   from '$lib/Select.svelte';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
@@ -1687,10 +1687,12 @@
 
 </style>
 
-<LogPanel
+<ActivityLogSurface
+  context="page"
   heightClass="h-[50vh]"
   defaultTab={logTab}
   simScope={simActive}
   multiColumn={true}
+  hideInlineAccountFilter={false}
   onTabChange={(id) => { logTab = id; }}
 />

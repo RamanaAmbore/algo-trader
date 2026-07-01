@@ -11,7 +11,7 @@
     fetchChartSymbols, fetchChartBatch,
     fetchAgents,
   } from '$lib/api';
-  import LogPanel       from '$lib/LogPanel.svelte';
+  import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import ConfirmModal   from '$lib/ConfirmModal.svelte';
   import PriceChart  from '$lib/PriceChart.svelte';
@@ -363,10 +363,12 @@
   </div>
 {/if}
 
-<LogPanel
+<ActivityLogSurface
+  context="card"
   heightClass="h-[40vh]"
   defaultTab="order"
   mode="replay"
+  hideInlineAccountFilter={false}
 />
 
 <style>

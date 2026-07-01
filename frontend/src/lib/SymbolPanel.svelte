@@ -41,7 +41,7 @@
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
   import ChaseCard       from '$lib/order/ChaseCard.svelte';
-  import LogPanel        from '$lib/LogPanel.svelte';
+  import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
   import Select            from '$lib/Select.svelte';
@@ -2997,9 +2997,11 @@
            pinned the inner scroll cap to a fixed max-height that hid
            the card list and prevented other tabs from rendering. -->
       <div class="oes-bottom-panel">
-        <LogPanel
+        <ActivityLogSurface
+          context="card"
           heightClass="flex-1 min-h-0"
           defaultTab="order"
+          hideInlineAccountFilter={false}
         />
       </div>
     {/if}
