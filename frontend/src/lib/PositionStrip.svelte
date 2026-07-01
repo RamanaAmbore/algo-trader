@@ -345,29 +345,34 @@
   // throttle every tick would synchronously hit disk.
   let _stripFrozenLastWrite = 0;
 
-  // P pill slots 1 + 2: F&O-only positions, excluding equity (NSE/BSE).
-  // The H pill covers holdings day MTM separately; including equity here
-  // would double-count same-day CNC equity buys that Kite surfaces in
-  // both the positions and holdings endpoints.
-  // SSE-tick delta (_delta) applied per-row for live LTP correction;
-  // only filtered rows get the delta to stay consistent with the PnL sum.
+  // P pill slots 1 + 2: F&O-only positions (NFO/MCX/CDS/BFO), excluding
+  // equity (NSE/BSE). Same exchange filter as _expiryProfit (slot 3).
+  // The H pill covers holdings day MTM separately; including equity would
+  // double-count same-day CNC buys that Kite surfaces in both the positions
+  // and holdings endpoints.
+  //
+  // positionsPnlFiltered (SSOT in $lib/data/nav) provides the REST-based
+  // pnl/dayTotal sums. We add the SSE-tick delta on top in a filtered loop
+  // so only F&O rows contribute to both the REST sum and the live correction.
   const _livePositionsPnl = $derived.by(() => {
-    let s = 0;
+    const { pnlTotal } = positionsPnlFiltered(positions);
+    let delta = 0;
     for (const p of positions) {
       const exch = String(p?.exchange || '').toUpperCase();
       if (!['NFO', 'MCX', 'CDS', 'BFO'].includes(exch)) continue;
-      s += Number(p?.pnl || 0) + _delta(p, 'P');
+      delta += _delta(p, 'P');
     }
-    return s;
+    return pnlTotal + delta;
   });
   const _livePositionsToday = $derived.by(() => {
-    let s = 0;
+    const { dayTotal } = positionsPnlFiltered(positions);
+    let delta = 0;
     for (const p of positions) {
       const exch = String(p?.exchange || '').toUpperCase();
       if (!['NFO', 'MCX', 'CDS', 'BFO'].includes(exch)) continue;
-      s += Number(p?.day_change_val || 0) + _delta(p, 'P');
+      delta += _delta(p, 'P');
     }
-    return s;
+    return dayTotal + delta;
   });
   const _liveHoldingsToday = $derived.by(() => {
     let s = 0;
