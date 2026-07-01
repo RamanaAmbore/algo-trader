@@ -1991,7 +1991,7 @@
 }
 .algo-section-title {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.65rem;
+  font-size: 0.6rem;
   font-weight: 700;
   color: #fbbf24;
   letter-spacing: 0.04em;
@@ -2091,7 +2091,7 @@
 }
 .algo-tab--compact { padding: 0 0.6rem; min-height: calc(var(--toolbar-h) - 2px); }
 .algo-tab:hover { color: var(--algo-slate); }
-.algo-tab[aria-selected="true"] { font-weight: 800; }
+.algo-tab[aria-selected="true"] { font-weight: 700; }
 .algo-tab[aria-selected="true"].algo-tab-c-amber {
   color: #fbbf24; border-bottom-color: #fbbf24;
   background: rgba(251,191,36,0.10);

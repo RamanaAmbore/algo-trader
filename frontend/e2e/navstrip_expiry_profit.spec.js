@@ -67,8 +67,10 @@ test.describe('P pill — three values present', () => {
     await assertPPillThreeValues(page, '/pulse');
   });
 
-  test('/performance — P pill has three slash-joined values', async ({ page }) => {
-    await assertPPillThreeValues(page, '/performance');
+  test('/dashboard — P pill has three slash-joined values', async ({ page }) => {
+    // /performance is the public investor page without an algo layout;
+    // /dashboard is the operator algo page that carries the ps-strip.
+    await assertPPillThreeValues(page, '/dashboard');
   });
 });
 

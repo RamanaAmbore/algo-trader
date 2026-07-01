@@ -24,7 +24,7 @@
 // heading to canonical .algo-card-title tokens:
 //     color:      #fbbf24
 //     font-family: ui-monospace stack
-//     font-size:  0.6rem (title) / 0.65rem (section)
+//     font-size:  0.6rem (title AND section — both unified 2026-07-01)
 //     font-weight: 700
 //     letter-spacing: 0.04em
 //     text-transform: uppercase
@@ -53,6 +53,7 @@ const ROUTES = [
   '/automation',
   '/pulse',
   '/orders',
+  '/admin/derivatives',
   '/admin/history',
   '/admin/settings',
   '/admin/brokers',
@@ -90,18 +91,19 @@ function isCanonicalAmber(color) {
 
 // ── Stale grep — no browser needed ────────────────────────────────────────
 
-test('SSOT stale-code: heading selectors in app.css resolve to canonical amber', () => {
+test('SSOT stale-code: heading selectors in app.css resolve to canonical amber + 0.6rem', () => {
   const cssPath = path.resolve(process.cwd(), 'src/app.css');
   const css = fs.readFileSync(cssPath, 'utf8');
-  // For each canonical heading class in app.css, the color declaration
-  // MUST be #fbbf24 (canonical amber). Any other hex is a regression.
+  // For each canonical heading class in app.css:
+  //   color     MUST be #fbbf24 (canonical amber)
+  //   font-size MUST be 0.6rem  (unified 2026-07-01 — section-title was 0.65rem)
   const CANONICAL_SELECTORS = [
     'algo-card-title',
     'algo-section-title',
     'mp-section-label',
   ];
   for (const sel of CANONICAL_SELECTORS) {
-    // Match `.selector { ... }` block (non-nested) and pull the color line.
+    // Match `.selector { ... }` block (non-nested) and pull declarations.
     const re = new RegExp(String.raw`\.${sel}\s*\{([^}]*)\}`, 'g');
     const matches = [...css.matchAll(re)];
     for (const m of matches) {
@@ -112,6 +114,14 @@ test('SSOT stale-code: heading selectors in app.css resolve to canonical amber',
         expect(
           val === '#fbbf24',
           `.${sel} color="${val}" — must be #fbbf24 (canonical amber)`
+        ).toBe(true);
+      }
+      const fsMatch = body.match(/font-size\s*:\s*([^;]+);/);
+      if (fsMatch) {
+        const val = fsMatch[1].trim().toLowerCase();
+        expect(
+          val === '0.6rem',
+          `.${sel} font-size="${val}" — must be 0.6rem (canonical, unified 2026-07-01)`
         ).toBe(true);
       }
     }
@@ -229,9 +239,10 @@ test.describe.serial('live heading checks', () => {
           const el   = fsHeadings.nth(i);
           const fsPx = await el.evaluate(n => parseFloat(getComputedStyle(n).fontSize));
           const cls  = await el.evaluate(n => n.className);
-          // 0.6rem × 16 = 9.6px (algo-card-title), 0.65rem × 16 = 10.4px (algo-section-title)
-          const ok = [9.6, 10.4].some(s => Math.abs(fsPx - s) <= 0.5);
-          expect(ok, `[desktop ${route}] "${cls.trim()}" font-size=${fsPx}px — expected 9.6 or 10.4px`).toBe(true);
+          // 0.6rem × 16 = 9.6px — unified canonical for both .algo-card-title
+          // and .algo-section-title (aligned 2026-07-01, was 0.65rem for section).
+          const ok = Math.abs(fsPx - 9.6) <= 0.5;
+          expect(ok, `[desktop ${route}] "${cls.trim()}" font-size=${fsPx}px — expected 9.6px (0.6rem canonical)`).toBe(true);
         }
 
         // Active tab check — every aria-selected="true" .algo-tab must
@@ -246,6 +257,31 @@ test.describe.serial('live heading checks', () => {
           expect(
             isCanonicalAmber(color),
             `[desktop ${route}] active tab "${cls.trim()}" color="${color}" — expected canonical amber ${AMBER_400}`
+          ).toBe(true);
+        }
+
+        // Cross-family parity — when BOTH a card-title AND an active tab
+        // are visible on the same page, their color + font-size must be
+        // identical (the operator's core ask: "consistent in amber color
+        // and font size"). This is the canonical invariant.
+        const firstCardTitle = await page.locator('.algo-content .algo-card-title')
+                                         .filter({ visible: true }).first();
+        const firstActiveTab = await page.locator('.algo-content .algo-tab[aria-selected="true"]')
+                                         .filter({ visible: true }).first();
+        const hasCardTitle = await firstCardTitle.count() > 0;
+        const hasActiveTab = await firstActiveTab.count() > 0;
+        if (hasCardTitle && hasActiveTab) {
+          const ctColor  = await firstCardTitle.evaluate(n => getComputedStyle(n).color);
+          const tabColor = await firstActiveTab.evaluate(n => getComputedStyle(n).color);
+          const ctFs     = await firstCardTitle.evaluate(n => parseFloat(getComputedStyle(n).fontSize));
+          const tabFs    = await firstActiveTab.evaluate(n => parseFloat(getComputedStyle(n).fontSize));
+          expect(
+            ctColor === tabColor,
+            `[desktop ${route}] card-title color="${ctColor}" ≠ active-tab color="${tabColor}" — must match`
+          ).toBe(true);
+          expect(
+            Math.abs(ctFs - tabFs) <= 0.5,
+            `[desktop ${route}] card-title font-size=${ctFs}px ≠ active-tab font-size=${tabFs}px — must match`
           ).toBe(true);
         }
       } finally {
