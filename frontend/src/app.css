@@ -947,10 +947,17 @@
   background-color: transparent !important;
 }
 .ag-theme-algo .ag-header-cell {
-  letter-spacing: 0.06em;
+  /* Typography tokens unified with .algo-card-title + .algo-tab:
+     font-family  ui-monospace stack (not AG Grid's default sans)
+     font-size    0.6rem  (was 0.5625rem — too small vs card/tab headers)
+     font-weight  700     (was 800 — now matches card-title; tab bumps to 800 on active)
+     letter-spacing 0.04em (was 0.06em — tighter, matches card-title / tab)
+     text-transform uppercase (unchanged) */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  font-size: 0.6rem !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.04em !important;
   text-transform: uppercase;
-  font-size: 0.5625rem !important;
-  font-weight: 800;
   color: var(--text-muted) !important;
   background-color: transparent !important;
   padding-left: 4px !important;
