@@ -49,25 +49,22 @@
      *  drives it. Default 'error' per operator request — only loud
      *  rows by default; 'all' for the full paper trail. */
     levelFilter         = $bindable(/** @type {'all'|'error'|'warning'|'info'} */ ('all')),
-    /** Surface context — gates the 2-column magazine flow. Operator:
-     *  "on smaller modal pages, and mobiles, show one element per row
-     *  in activity tabs. only activity shows full width on desktop,
-     *  the two column format." Only the /activity page passes 'page';
-     *  ActivityLogModal passes 'modal' and the dashboard / orders cards
-     *  pass 'card', both of which suppress multiColumn so rows always
-     *  render single-column regardless of viewport width.
-     *  @type {'page'|'card'|'modal'} */
+    /** Surface context — gates the 2-column magazine flow.
+     *  @type {'page'|'card'|'card-wide'|'modal'} */
     context             = 'page',
   } = $props();
 
-  // Two-column magazine flow on wider containers — /activity page and
-  // the ActivityLogModal (which spans up to 96vw when opened, easily
-  // clearing the 900px threshold). Card contexts (dashboard / orders
-  // inline cards) stay single-column because their visual container
-  // is narrower than the 900px @media breakpoint LogPanel enforces.
-  // Operator: "agents, terminal, system, conn tabs should be like news
-  // with magazine format in wider screens on desktop."
-  const _multiColumn = $derived(context === 'page' || context === 'modal');
+  // Two-column magazine flow on wider containers. Enabled for:
+  //   - 'page'      — the full-width /activity route
+  //   - 'modal'     — ActivityLogModal spans up to 96vw
+  //   - 'card-wide' — dashboard's activity card (row-wide on desktop)
+  // Narrow 'card' contexts (orders inline sidebar card) stay single
+  // column since their visible container is under the 900px threshold
+  // regardless of viewport width. LogPanel's @media (max-width: 900px)
+  // handles responsive collapse to single column when viewport shrinks.
+  const _multiColumn = $derived(
+    context === 'page' || context === 'modal' || context === 'card-wide'
+  );
 </script>
 
 <LogPanel

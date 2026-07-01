@@ -1290,7 +1290,6 @@
       suppressHeaderMenuButton: true,
     },
     sortingOrder: ['asc', 'desc', null],
-    headerHeight: 26,
     rowHeight: 26,
     // Row identity for in-place updates. Without this, each
     // setGridOption('rowData') call tears down every row's DOM and
@@ -2090,7 +2089,7 @@
   <div class="card-body" hidden={_colActivity}>
     <ActivityLogSurface
       defaultTab="news"
-      context="card"
+      context="card-wide"
       bind:accountFilter={_actAccountFilter}
       bind:availableAccounts={_actAvailableAccounts}
       bind:levelFilter={_actLevelFilter} />
