@@ -1497,19 +1497,22 @@
   // trigger the fallback logic.
   $effect(() => {
     // Auto-select the first entry in the picker whenever the picker
-    // has options but selectedUnderlying is empty. The picker is the
-    // union of every tier (frequent → options → futures → hedge →
-    // watchlist → popular) after dedupe, so `[0]` is always a sensible
-    // default no matter which data source populated first. Operator:
-    // "if symbol context is not clear, use the first symbol in dropdown
-    // as default while loading the payoff."
+    // has options but selectedUnderlying is empty. Operator: "if symbol
+    // context is not clear, use the first symbol in dropdown as default
+    // while loading the payoff."
     //
-    // Explicit read into a local var so Svelte 5 reliably registers the
-    // dependency on the derived — the previous `void` shortcut was
-    // getting optimized in some builds, causing the effect not to re-
-    // fire when the picker went from empty (hydration) to populated.
-    // Read selectedUnderlying via untrack so writing to it here doesn't
-    // create a re-fire loop.
+    // Track EVERY upstream source explicitly. The picker's `$derived.by`
+    // recomputes when any of these change, but reading only the derived
+    // wasn't reliably propagating in production builds — the effect
+    // fired once on mount (opts empty) and never re-fired when the
+    // stores hydrated. Belt + suspenders: touch each source AND the
+    // picker itself so any of them re-firing wakes the effect.
+    void positions;
+    void holdings;
+    void _watchlistSyms;
+    void instrumentsReady;
+    void _rootsWithOptions;
+    void _rootsWithFuturesOnly;
     const opts = underlyingOptionsForPicker;
     const cur  = untrack(() => selectedUnderlying);
     if (cur) return;
