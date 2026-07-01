@@ -60,11 +60,14 @@
     context             = 'page',
   } = $props();
 
-  // Two-column magazine flow only on the full-width /activity page.
-  // Modal + card surfaces stay single-column even on wide viewports
-  // because their visual container is narrower than the 900px @media
-  // threshold the LogPanel uses to gate readable line lengths.
-  const _multiColumn = $derived(context === 'page');
+  // Two-column magazine flow on wider containers — /activity page and
+  // the ActivityLogModal (which spans up to 96vw when opened, easily
+  // clearing the 900px threshold). Card contexts (dashboard / orders
+  // inline cards) stay single-column because their visual container
+  // is narrower than the 900px @media breakpoint LogPanel enforces.
+  // Operator: "agents, terminal, system, conn tabs should be like news
+  // with magazine format in wider screens on desktop."
+  const _multiColumn = $derived(context === 'page' || context === 'modal');
 </script>
 
 <LogPanel
