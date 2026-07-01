@@ -361,32 +361,15 @@ def get_first_cold_empty_counts() -> dict[str, int]:
 # This runs regardless of runtime_state.get_mode() ("off" / "soft" / "hard")
 # so the self-heal fires in the default-off state without operator action.
 #
-# The log is rate-limited (one INFO per _SELF_HEAL_LOG_INTERVAL_S per symbol)
-# so a hot chart page does not flood the log file.
+# The log is rate-limited via the shared _self_heal_log_once helper
+# (one INFO per symbol per 60 s) so a hot chart page does not flood the log.
 
 _SELF_HEAL_COVERAGE_THRESHOLD: float = 0.70   # below this fraction → force broker fetch
-_SELF_HEAL_LOG_INTERVAL_S:      float = 60.0   # minimum seconds between self-heal log lines
 
-# (symbol, exchange) → last log emit time (monotonic).  Thread-safe via GIL
-# (float dict mutation is atomic on CPython) + bounded by _FIRST_COLD_EMPTY_MAX.
-_SELF_HEAL_LOG_TS: dict[tuple[str, str], float] = {}
-_SELF_HEAL_LOG_LOCK = _threading.Lock()
-
-
-def _self_heal_log_once(sym: str, exch: str, coverage: int, requested: int) -> None:
-    """Emit one INFO log per (sym, exch) per _SELF_HEAL_LOG_INTERVAL_S.
-    Thread-safe, best-effort."""
-    key = (sym, exch)
-    now = time.monotonic()
-    with _SELF_HEAL_LOG_LOCK:
-        last = _SELF_HEAL_LOG_TS.get(key, 0.0)
-        if now - last < _SELF_HEAL_LOG_INTERVAL_S:
-            return
-        _SELF_HEAL_LOG_TS[key] = now
-    logger.info(
-        f"options historical: self-heal triggered for {sym}/{exch} — "
-        f"coverage {coverage}/{requested} days, forced broker fetch"
-    )
+# Shared throttled logger — imported from canonical SSOT in helpers/.
+# Both quote.py (sparkline self-heal) and options.py use the SAME symbol
+# so the per-(sym, exch) 60-second throttle table is shared process-wide.
+from backend.api.helpers.self_heal_log import _self_heal_log_once
 
 # Process-wide token-resolution cache for the historical-bars endpoint.
 # Key: (broker_account, exchange). Value: dict[tradingsymbol_upper, int_token].

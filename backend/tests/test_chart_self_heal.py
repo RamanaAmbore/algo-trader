@@ -272,18 +272,25 @@ async def test_self_heal_sets_partial_when_retry_still_short() -> None:
 # ── Bonus: _self_heal_log_once throttle ────────────────────────────────────
 
 def test_self_heal_log_once_throttles() -> None:
-    """Two rapid calls for the same symbol/exchange emit only ONE log line."""
-    from backend.api.routes import options as mod
+    """Two rapid calls for the same symbol/exchange emit only ONE log line.
+
+    After the refactor, _self_heal_log_once + its state (_SELF_HEAL_LOG_TS,
+    _SELF_HEAL_LOG_LOCK) live in backend.api.helpers.self_heal_log (SSOT).
+    options.py re-exports the function but the state belongs to the helper
+    module — so we patch the helper's logger, not options.logger.
+    """
+    import backend.api.helpers.self_heal_log as helper_mod
+    from backend.api.routes.options import _self_heal_log_once
 
     logged: list[str] = []
 
-    with patch.object(mod.logger, "info", side_effect=lambda msg: logged.append(msg)):
+    with patch.object(helper_mod.logger, "info", side_effect=lambda msg: logged.append(msg)):
         key = ("TESTXYZ", "NFO")
-        with mod._SELF_HEAL_LOG_LOCK:
-            mod._SELF_HEAL_LOG_TS.pop(key, None)
+        with helper_mod._SELF_HEAL_LOG_LOCK:
+            helper_mod._SELF_HEAL_LOG_TS.pop(key, None)
 
-        mod._self_heal_log_once("TESTXYZ", "NFO", 5, 365)
-        mod._self_heal_log_once("TESTXYZ", "NFO", 5, 365)   # within interval — throttled
+        _self_heal_log_once("TESTXYZ", "NFO", 5, 365)
+        _self_heal_log_once("TESTXYZ", "NFO", 5, 365)   # within interval — throttled
 
     assert len(logged) == 1, (
         f"Expected 1 log emit (throttled), got {len(logged)}"

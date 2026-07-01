@@ -689,6 +689,89 @@ class SparklineController(Controller):
         past_result:  dict[str, list[float]] = dict(daily_results)
         today_result: dict[str, list[float]] = dict(intraday_results)
 
+        # ── Step 1b: Self-heal — Tier 1+2 empty AND closed hours ─────────────
+        # During closed hours `db_only=True` prevents broker calls in the store
+        # fetchers.  When BOTH past closes AND today's intraday bars are empty
+        # for a symbol (fresh install, cleared DB, prior db_worker write bug)
+        # the db_only guard is counter-productive: the sparkline stays blank
+        # forever.  Self-heal: retry those symbols with `bypass_cache=True`
+        # (full 3-tier: Tier 1 → Tier 2 → Tier 3/broker) so the broker fills
+        # both stores and the write-back queue heals the DB.
+        #
+        # Guard: only fire when broker is NOT in rate-limit cool-off so we
+        # don't amplify a throttle event.  If the broker call fails (Kite 502
+        # etc.) we fall through silently — the symbol stays empty this request
+        # and the next request retries.
+        if db_only:
+            from backend.api.helpers.self_heal_log import _self_heal_log_once
+            from backend.api.persistence.backfill import _price_broker_in_cooloff
+
+            _broker_in_cooloff: bool = await asyncio.to_thread(_price_broker_in_cooloff)
+
+            if not _broker_in_cooloff:
+                _heal_syms = [
+                    s for s in norm_syms
+                    if not past_result.get(s.tradingsymbol)
+                    and not today_result.get(s.tradingsymbol)
+                ]
+
+                if _heal_syms:
+                    async def _self_heal_daily(sym_obj: SparklineSymbol) -> tuple[str, list[float]]:
+                        try:
+                            bars = await _ohlcv_store.get_or_fetch_daily(
+                                sym_obj.tradingsymbol, sym_obj.exchange,
+                                from_d=from_daily, to_d=yesterday,
+                                bypass_cache=True,
+                            )
+                            closes = [b["close"] for b in bars]
+                            if len(closes) > (days - 1):
+                                closes = closes[-(days - 1):]
+                            return sym_obj.tradingsymbol, closes
+                        except Exception as exc:
+                            logger.debug(f"sparkline self-heal: ohlcv miss for {sym_obj.tradingsymbol}: {exc}")
+                            return sym_obj.tradingsymbol, []
+
+                    async def _self_heal_intraday(sym_obj: SparklineSymbol) -> tuple[str, list[float]]:
+                        try:
+                            bars = await _intraday_store.get_or_fetch_intraday(
+                                sym_obj.tradingsymbol, sym_obj.exchange,
+                                on_date=today_date, interval="30minute",
+                                bypass_cache=True,
+                            )
+                            closes = [b["close"] for b in bars]
+                            return sym_obj.tradingsymbol, closes
+                        except Exception as exc:
+                            logger.debug(f"sparkline self-heal: intraday miss for {sym_obj.tradingsymbol}: {exc}")
+                            return sym_obj.tradingsymbol, []
+
+                    # Rate-limit guard: cap at 2 concurrent heals.
+                    _heal_sem = asyncio.Semaphore(2)
+
+                    async def _heal_daily_throttled(s: SparklineSymbol) -> tuple[str, list[float]]:
+                        async with _heal_sem:
+                            return await _self_heal_daily(s)
+
+                    async def _heal_intraday_throttled(s: SparklineSymbol) -> tuple[str, list[float]]:
+                        async with _heal_sem:
+                            return await _self_heal_intraday(s)
+
+                    _heal_daily_res, _heal_intraday_res = await asyncio.gather(
+                        asyncio.gather(*[_heal_daily_throttled(s) for s in _heal_syms]),
+                        asyncio.gather(*[_heal_intraday_throttled(s) for s in _heal_syms]),
+                    )
+
+                    for sym_str, closes in _heal_daily_res:
+                        if closes:
+                            past_result[sym_str] = closes
+                    for sym_str, closes in _heal_intraday_res:
+                        if closes:
+                            today_result[sym_str] = closes
+
+                    # Log once per (sym, exch) per 60 s — throttled by shared helper.
+                    for s in _heal_syms:
+                        combined = len(past_result.get(s.tradingsymbol, [])) + len(today_result.get(s.tradingsymbol, []))
+                        _self_heal_log_once(s.tradingsymbol, s.exchange, 0, days)
+
         # ── Step 2: Build token_map for LTP lookup + ticker subscription ─────
         # We need the instrument_token for every normalised symbol to:
         #   a) read live LTP from the ticker's _tick_map (zero quota)
