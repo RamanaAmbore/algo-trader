@@ -164,12 +164,25 @@
   const flash = createTickFlash({ threshold: 0, durationMs: 350 });
 
   onMount(() => {
-    // Instruments cache feeds the long-options premium derivation
-    // (we read lot_size off each option to compute lots × lot_size
-    // explicitly). Silent on failure — derivation falls back to raw
-    // quantity then.
-    loadInstruments().catch(() => { /* fallback path handles this */ });
+    // Instruments cache feeds both the long-options premium derivation
+    // (lot_size for the C pill) and the expiry profit (slot 3) which
+    // needs findNearestFuture to resolve MCX option underlyings.
+    //
+    // _load() fires immediately so positions/holdings/funds paint from
+    // broker without waiting for instruments. After instruments resolve,
+    // _loadUnderlyingSpots() is re-run with the now-warm findNearestFuture
+    // so MCX option spots (CRUDEOIL26JUNFUT etc.) land in symbolStore and
+    // _expiryProfit picks them up on the next _throttledTick.
+    //
+    // Without this, the cold-cache first load calls findNearestFuture while
+    // the instruments map is empty → MCX options fall back to synthetic
+    // "MCX:CRUDEOIL" keys → batchQuote returns no LTP → those legs are
+    // skipped by `if (!(spot > 0)) continue` → slot 3 shows only the
+    // NIFTY-family contribution (~78k) instead of the full book (~300k+).
     _load();
+    loadInstruments()
+      .catch(() => { /* fallback — per-leg spot resolution handles misses */ })
+      .then(() => _loadUnderlyingSpots().catch(() => {}));
     // Option A (operator-approved, supersedes Option B): fully pause on hidden.
     // Telegram + email cover fills / losses; WS delivers position_filled on return.
     // Immediate refire on tab visible ensures fresh numbers within one tick.
