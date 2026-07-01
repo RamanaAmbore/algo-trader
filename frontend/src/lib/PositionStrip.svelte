@@ -15,6 +15,7 @@
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { positionsStore, holdingsStore, fundsStore, publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
+  import { decomposeSymbol } from '$lib/data/decomposeSymbol';
   import { batchQuote } from '$lib/api';
 
   // Reactive views into the three-tier stores. The stores pre-populate from
@@ -96,8 +97,11 @@
       if (!['NFO', 'MCX', 'CDS', 'BFO'].includes(exch)) continue;
       const isOpt = sym.endsWith('CE') || sym.endsWith('PE');
       if (!isOpt) continue;
-      const inst = getInstrument(sym);
-      const root = inst?.u;
+      // Use decomposeSymbol (pure regex, no cache) as primary so spots
+      // are fetched even when the instruments cache is cold. Fall back
+      // to getInstrument(sym)?.u only as a secondary resolution path.
+      const decomp = decomposeSymbol(sym);
+      const root = decomp.root || getInstrument(sym)?.u;
       if (!root) continue;
       const resolved = resolveUnderlying(root, findNearestFuture);
       if (!resolved?.quoteKey) continue;
@@ -523,20 +527,25 @@
       const isFut = sym.endsWith('FUT') || (!isCE && !isPE && exch !== 'CDS');
 
       if (isCE || isPE) {
-        // Option — need underlying spot; instruments cache gives inst.u
-        // (e.g. "NIFTY"), which must be resolved to the tradeable
-        // tradingsymbol ("NIFTY 50") before looking up symbolStore.
-        // getSnapshot("NIFTY") returns null because SSE and batchQuote
-        // publish by tradingsymbol — the key mismatch was causing every
-        // NIFTY/BANKNIFTY index option to contribute 0 to the total.
+        // Option — need underlying spot + strike.
+        // Use decomposeSymbol (pure regex, no cache) as primary so the
+        // expiry P&L can be computed even when the instruments cache is
+        // cold. getInstrument provides fallback values only.
+        const decomp = decomposeSymbol(sym);
+        // Root: decomposeSymbol gives the clean F&O root (e.g. "NIFTY"
+        // from "NIFTY26JUN22000CE"); fall back to inst.u if the parse
+        // produced an empty root (should not happen for valid Kite syms).
         const inst = getInstrument(sym);
-        const root = inst?.u || null;
+        const root = decomp.root || inst?.u || null;
         if (!root) continue;                              // can't resolve underlying
         const resolved = resolveUnderlying(root, findNearestFuture);
         if (!resolved?.tradingsymbol) continue;
         const spot = untrack(() => getSnapshot(resolved.tradingsymbol)?.ltp);
         if (!(spot > 0)) continue;                        // no live quote → skip
-        const strike = Number(inst?.k || 0);
+        // Strike: decomposeSymbol parses the numeric token directly from
+        // the tradingsymbol regex; fall back to the instruments-cache
+        // field inst.k when the parse misses (e.g. edge-case formats).
+        const strike = Number(decomp.strike ?? inst?.k ?? 0);
         if (!strike) continue;
         const intrinsic = isCE ? Math.max(0, spot - strike) : Math.max(0, strike - spot);
         total += (intrinsic - avg) * qty;
