@@ -5515,7 +5515,7 @@
        header renders identically to Snapshot / Order entry / GREEKS.
        Operator: "make them consistent and uniform." */
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -5626,7 +5626,7 @@
      + spacing so future edits can't drift. */
   .opt-block-h {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -5863,6 +5863,16 @@
   .byund-scroll {
     overflow-x: auto;
     margin-top: 0.4rem;
+    /* Outer chrome matches ag-theme-algo — 1.5px slate border + 4px
+       radius + navy inset shadow — so the Snapshot grid reads as the
+       same visual family as NavBreakdown, dashboard grids, History
+       grid. Operator: "dashboard NAV grid has better border color
+       scheme compared to Snapshot grid." */
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
   }
   .byund-grid {
     display: grid;
