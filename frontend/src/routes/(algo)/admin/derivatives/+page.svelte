@@ -276,20 +276,21 @@
     // Poll every 300 ms (visibility-aware) until either:
     //   - the operator manually picks a valid symbol
     //   - the picker populates and we assign the first entry
-    //   - 200 attempts elapsed (~60 s) — systemic broker outage, give up
     //   - the component unmounts (poll cleared via _autoSelectPollId)
-    // Also validates the cached selection: if a stale symbol was
-    // restored from sessionStorage but is NOT in the current picker,
-    // treat it as invalid and swap to the picker's first entry.
-    let _autoSelectAttempts = 0;
+    //
+    // Operator 2026-07-01: "no default symbol on fresh login." Root cause
+    // was a 200-attempt (~60 s) cap that gave up before slow-broker /
+    // cold-cache logins could populate the picker. The cap is REMOVED —
+    // polling continues indefinitely until options materialise or the
+    // page is torn down (onDestroy nulls _autoSelectPollId). 300 ms
+    // interval keeps CPU cost trivial (~0.1 %) and visibleInterval
+    // pauses when the tab is hidden. Also validates the cached
+    // selection: if a stale symbol was restored from sessionStorage but
+    // is NOT in the current picker, treat it as invalid and swap to
+    // the picker's first entry.
     _autoSelectPollId = visibleInterval(() => {
-      _autoSelectAttempts++;
       const opts = underlyingOptionsForPicker;
-      if (opts.length === 0) {
-        // Cap: after 200 attempts (~60 s) stop polling regardless.
-        if (_autoSelectAttempts >= 200) { _autoSelectPollId?.(); _autoSelectPollId = null; }
-        return;
-      }
+      if (opts.length === 0) return;
       const cur  = selectedUnderlying;
       const isValid = cur && opts.some(o => o.value === cur);
       if (!isValid) selectedUnderlying = opts[0].value;
