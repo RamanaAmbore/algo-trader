@@ -1691,5 +1691,6 @@
   heightClass="h-[50vh]"
   defaultTab={logTab}
   simScope={simActive}
+  multiColumn={true}
   onTabChange={(id) => { logTab = id; }}
 />
