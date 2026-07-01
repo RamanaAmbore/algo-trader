@@ -980,13 +980,18 @@
         g.qty_eq += qty;
         // Equity contributes to leg count in F&O-lot equivalents. Each
         // holding row adds `qty / lot_size(root)` — a 500-share HDFC
-        // holding with a 550-lot HDFC future counts as ~0.91 legs, not 1.
-        // Operator 2026-07-01: "equity should be converted into lots."
-        // Lot size 0 fallback = 1 (unhedged holding still shows up).
+        // holding with a 550-lot HDFC future counts as ~0.91 legs.
+        // Non-F&O equities (lot_size 0) contribute ZERO to the leg count —
+        // they have no lot-equivalent representation and inflate the count
+        // meaninglessly. Operator 2026-07-01: "129 derivation is not
+        // correct. I think it should show lots" — the pill has to reflect
+        // F&O-equivalent exposure, not row counts.
         const _lot = getOptionUnderlyingLot(root);
-        g.legs_with += _lot > 0 ? (qty / _lot) : 1;
-        g.pnl_with += pnl;
-        g.day_with += day;
+        if (_lot > 0) {
+          g.legs_with += qty / _lot;
+          g.pnl_with += pnl;
+          g.day_with += day;
+        }
       }
     }
     if (_filterByund) {
@@ -1226,17 +1231,19 @@
       const pnl = Number(h.pnl) || 0;
       const day = Number(h.day_change_val) || 0;
       t.qty_eq    += qty;
-      // TOTAL row: equity legs converted to F&O-lot equivalents. Same
-      // pattern as the per-row loop above — resolve the underlying's
-      // root, look up its F&O lot size, and contribute fractional lots.
+      // TOTAL row: equity legs converted to F&O-lot equivalents only.
+      // Non-F&O equities (lot_size 0) are excluded from the leg count —
+      // the pill reflects F&O-equivalent exposure, not row counts.
       // Proxy hedges (GOLDBEES → GOLD) use the target root's lot size.
       const _sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
       const _tgts = _sym ? targetsForProxy(_sym) : [];
       const _root = _tgts[0] || _sym;
       const _lot = _root ? getOptionUnderlyingLot(_root) : 0;
-      t.legs_with += _lot > 0 ? (qty / _lot) : 1;
-      t.pnl_with  += pnl;
-      t.day_with  += day;
+      if (_lot > 0) {
+        t.legs_with += qty / _lot;
+        t.pnl_with  += pnl;
+        t.day_with  += day;
+      }
     }
     // Operator: "still snapshot totals not in sync with nav strip numbers."
     // Add back the rows the page filtered out at load time — equity
