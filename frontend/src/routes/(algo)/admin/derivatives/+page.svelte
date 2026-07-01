@@ -2786,13 +2786,16 @@
   let chainQuotesMap = $state(null);
   let chainQuotesKey = '';
   let chainQuotesPoll = /** @type {any} */ (null);
-  function _refreshChainQuotes() {
+  function _refreshChainQuotes({ force = false } = {}) {
     if (!showAddPanel || !chainUnderlying || !chainExpiry) return;
     // Bid/ask quotes are static when both NSE + MCX are closed —
-    // skip the poll outside market hours so the chain panel doesn't
-    // hammer /api/options/chain-quotes overnight. The first call on
-    // panel-open still runs (good for end-of-day book inspection).
-    if (!isMarketOpen()) return;
+    // the marketAwareInterval below only fires the periodic poll during
+    // market hours. But the FIRST call on panel-open must fire even
+    // during closed hours so operators see the last-known bid/ask
+    // snapshot; the backend serves the ohlc close from cache. The
+    // `force` flag from that first invocation bypasses the market-open
+    // gate; the periodic interval calls with no arg → gates as normal.
+    if (!force && !isMarketOpen()) return;
     const u = chainUnderlying.toUpperCase();
     const e = chainExpiry;
     fetchChainQuotes(u, e).then((r) => {
@@ -2831,7 +2834,7 @@
         chainQuotesMap = null;       // clear stale rows on pivot
         chainQuotesKey = key;
       }
-      _refreshChainQuotes();
+      _refreshChainQuotes({ force: true });
       // marketAwareInterval — same self-pausing as visibleInterval but
       // also short-circuits outside trading hours, so the chain poll
       // stops calling isMarketOpen() + new Date() per tick when the
