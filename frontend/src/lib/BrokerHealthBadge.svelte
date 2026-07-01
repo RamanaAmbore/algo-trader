@@ -88,6 +88,10 @@
     </div>
     <div class="bh-modal-body">
       {#each accounts as acct (acct.account)}
+        {@const _accCls = acct.state === 'red'   ? 'bh-row-account-red'
+                        : acct.state === 'amber' ? 'bh-row-account-amber'
+                        : acct.is_active_ticker  ? 'bh-row-account-active'
+                        : 'bh-row-account-spare'}
         <div class="bh-row" role="button" tabindex="0"
              onclick={() => { open = false; openActivityModal('conn'); }}
              onkeydown={(e) => {
@@ -97,10 +101,6 @@
              }}
              title="View connection log for {acct.account}">
           <span class="bh-row-dot bh-row-dot-{acct.state}" aria-hidden="true"></span>
-          {@const _accCls = acct.state === 'red'   ? 'bh-row-account-red'
-                          : acct.state === 'amber' ? 'bh-row-account-amber'
-                          : acct.is_active_ticker  ? 'bh-row-account-active'
-                          : 'bh-row-account-spare'}
           <span class="bh-row-account {_accCls}"
                 title={acct.state === 'red'   ? `${acct.account} — connection problem (${acct.reason})`
                      : acct.state === 'amber' ? `${acct.account} — stale (${acct.reason})`
