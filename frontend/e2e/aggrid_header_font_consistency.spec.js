@@ -6,6 +6,18 @@
  *   - Numeric headers match string headers in font-size
  *   - Uniform header row height across all grids on a page
  *
+ * Cross-family parity (2026-07-01): ag-Grid header cells must share the same
+ * font-size (9.6px = 0.6rem) and font-family (ui-monospace stack) as
+ * .algo-card-title and .algo-tab — so card headers, tab strips, and grid
+ * column headers read as the same component library in a side-by-side view.
+ *
+ * Canonical spec chosen from .algo-card-title (operator: "GREEKS is good"):
+ *   font-family  ui-monospace, SFMono-Regular, Menlo, Consolas, monospace
+ *   font-size    0.6rem  → 9.6px at 16px base
+ *   font-weight  700     (ag-grid was 800; tabs go to 800 only on active)
+ *   letter-spacing 0.04em (ag-grid was 0.06em)
+ *   text-transform uppercase
+ *
  * Desktop and mobile viewports run independently. Mobile is allowed to
  * have a different canonical size from desktop, but every mobile grid
  * must be identical among themselves (and likewise for desktop).
@@ -34,8 +46,8 @@ const ALGO_ROUTES = [
  */
 
 /**
- * Collect font-size + header-row height for every ag-Grid on the current page.
- * Returns an array of { gridIndex, fontSizePx, numericFontSizePx, headerHeightPx }.
+ * Collect font-size + font-family + header-row height for every ag-Grid on the current page.
+ * Returns an array of { gridIndex, fontSizePx, numericFontSizePx, fontFamily, headerHeightPx }.
  *
  * headerHeightPx is the height of a SINGLE ag-header-row element (not the full
  * header section). Grids with column-group headers have multiple stacked rows
@@ -48,14 +60,15 @@ async function collectHeaderMetrics(page) {
     .catch(() => {});
 
   return page.evaluate(() => {
-    /** @type {{gridIndex:number,fontSizePx:number|null,numericFontSizePx:number|null,headerHeightPx:number|null}[]} */
+    /** @type {{gridIndex:number,fontSizePx:number|null,numericFontSizePx:number|null,fontFamily:string|null,headerHeightPx:number|null}[]} */
     const results = [];
     const grids = document.querySelectorAll('.ag-theme-algo');
     grids.forEach((grid, i) => {
-      // String-header cell text (non-numeric)
+      // String-header cell (not numeric) — used for font-family + font-size
       const stringCell = grid.querySelector(
-        '.ag-header-cell:not(.ag-numeric-header):not(.ag-right-aligned-header) .ag-header-cell-text'
+        '.ag-header-cell:not(.ag-numeric-header):not(.ag-right-aligned-header)'
       );
+      const stringCellText = stringCell?.querySelector('.ag-header-cell-text') ?? null;
       // Numeric-header cell text
       const numericCell = grid.querySelector(
         '.ag-numeric-header .ag-header-cell-text, .ag-right-aligned-header .ag-header-cell-text'
@@ -78,9 +91,14 @@ async function collectHeaderMetrics(page) {
         ? visibleHeaderRows[visibleHeaderRows.length - 1]
         : null;
 
-      const fontSizePx = stringCell
-        ? parseFloat(getComputedStyle(stringCell).fontSize)
-        : null;
+      // font-size read from the text node; font-family from the cell itself
+      // (which is where our !important declaration lives)
+      const cellStyle = stringCell ? getComputedStyle(stringCell) : null;
+      const textStyle = stringCellText ? getComputedStyle(stringCellText) : null;
+      const fontSizePx = textStyle
+        ? parseFloat(textStyle.fontSize)
+        : (cellStyle ? parseFloat(cellStyle.fontSize) : null);
+      const fontFamily = cellStyle ? cellStyle.fontFamily : null;
       const numericFontSizePx = numericCell
         ? parseFloat(getComputedStyle(numericCell).fontSize)
         : null;
@@ -88,15 +106,30 @@ async function collectHeaderMetrics(page) {
         ? parseFloat(getComputedStyle(lastHeaderRow).height)
         : null;
 
-      results.push({ gridIndex: i, fontSizePx, numericFontSizePx, headerHeightPx });
+      results.push({ gridIndex: i, fontSizePx, numericFontSizePx, fontFamily, headerHeightPx });
     });
     return results;
   });
 }
 
+/**
+ * Canonical chrome-token values — must match .algo-card-title in app.css.
+ * 0.6rem × 16px base = 9.6px.
+ */
+const CANONICAL_FONT_SIZE_PX = 9.6;
+/** Monospace stack first token. ui-monospace resolves differently per OS but
+ *  the returned fontFamily string always starts with a monospace family name.
+ *  We just assert it does NOT contain a proportional family. */
+const MONOSPACE_FAMILIES = ['monospace', 'Menlo', 'Consolas', 'SFMono', 'ui-monospace', 'Monaco', 'Courier'];
+function isMonospaceStack(fontFamily) {
+  if (!fontFamily) return false;
+  return MONOSPACE_FAMILIES.some(f => fontFamily.toLowerCase().includes(f.toLowerCase()));
+}
+
 // ── Five quality dimensions ───────────────────────────────────────────────────
 
-// 1. SSOT: every algo-page grid uses the SAME font-size (no per-grid overrides)
+// 1. SSOT: every algo-page grid uses the SAME font-size (9.6px) AND a monospace
+//    font-family — matching .algo-card-title and .algo-tab exactly
 // 2. Perf: grid header metrics are collected synchronously (no heavy re-layout)
 // 3. Stale: no per-page <style> block overrides --ag-header-font-size for algo theme
 // 4. Reuse: all grids share the single .ag-theme-algo CSS-variable definition
@@ -130,6 +163,22 @@ for (const route of ALGO_ROUTES) {
         expect(m.fontSizePx,
           `Grid ${m.gridIndex} on ${route.label}: font-size ${m.fontSizePx}px ≠ canonical ${canonicalSize}px`
         ).toBeCloseTo(canonicalSize, 1);
+      }
+    }
+
+    // 1. SSOT (canonical value): font-size must be the SSOT value 9.6px (0.6rem)
+    // — same as .algo-card-title and .algo-tab so all three families read identically.
+    expect(canonicalSize,
+      `${route.label}: ag-Grid header font-size ${canonicalSize}px ≠ canonical 9.6px (0.6rem × 16px base)`
+    ).toBeCloseTo(CANONICAL_FONT_SIZE_PX, 1);
+
+    // 1. SSOT (font-family): every grid header cell must resolve to a monospace stack
+    for (const m of metrics) {
+      if (m.fontFamily !== null) {
+        expect(
+          isMonospaceStack(m.fontFamily),
+          `Grid ${m.gridIndex} on ${route.label}: fontFamily "${m.fontFamily}" — expected ui-monospace stack (matches .algo-card-title)`
+        ).toBe(true);
       }
     }
 
@@ -217,4 +266,74 @@ test('no inline --ag-header-font-size overrides on algo pages (stale guard)', as
   expect(overrides,
     `Unexpected --ag-header-font-size overrides found: ${overrides.join(', ')}`
   ).toHaveLength(0);
+});
+
+// ── Cross-family parity: grid header ↔ card title ↔ tab strip ────────────────
+// On /admin/derivatives all three chrome families are visible together.
+// Asserts they share the same computed font-size (9.6px) and a monospace
+// font-family — operator requirement 2026-07-01: "card header, tabs, ag grid
+// headers should have consistent font attributes and background attributes".
+
+test('cross-family parity: ag-Grid header = card-title = tab (font-size + monospace)', async ({ page }) => {
+  await page.goto('/admin/derivatives', { waitUntil: 'domcontentloaded', timeout: 60_000 });
+
+  // Wait for all three chrome families to render
+  await Promise.all([
+    page.waitForSelector('.ag-theme-algo .ag-header-cell', { timeout: 15_000 }).catch(() => {}),
+    page.waitForSelector('.algo-card-title',               { timeout: 15_000 }).catch(() => {}),
+    page.waitForSelector('.algo-tab',                      { timeout: 15_000 }).catch(() => {}),
+  ]);
+
+  const families = await page.evaluate(() => {
+    // ag-Grid header cell
+    const gridCell = document.querySelector('.ag-theme-algo .ag-header-cell');
+    // card title
+    const cardTitle = document.querySelector('.algo-card-title');
+    // tab (any, inactive state)
+    const tab = document.querySelector('.algo-tab');
+
+    function collect(el) {
+      if (!el) return null;
+      const s = getComputedStyle(el);
+      return {
+        fontSizePx: parseFloat(s.fontSize),
+        fontFamily: s.fontFamily,
+      };
+    }
+
+    return {
+      gridCell:  collect(gridCell),
+      cardTitle: collect(cardTitle),
+      tab:       collect(tab),
+    };
+  });
+
+  const MONOSPACE_FAMILIES_INNER = ['monospace', 'Menlo', 'Consolas', 'SFMono', 'ui-monospace', 'Monaco', 'Courier'];
+  function isMono(ff) {
+    if (!ff) return false;
+    return MONOSPACE_FAMILIES_INNER.some(f => ff.toLowerCase().includes(f.toLowerCase()));
+  }
+
+  // Each present family must equal the canonical 9.6px
+  for (const [label, data] of Object.entries(families)) {
+    if (!data) continue; // element not on page in this env
+    expect(data.fontSizePx,
+      `Cross-family parity: ${label} font-size ${data.fontSizePx}px ≠ canonical 9.6px`
+    ).toBeCloseTo(CANONICAL_FONT_SIZE_PX, 1);
+
+    expect(isMono(data.fontFamily),
+      `Cross-family parity: ${label} fontFamily "${data.fontFamily}" — expected monospace stack`
+    ).toBe(true);
+  }
+
+  // Pair-wise: all three that are present must be equal to each other
+  const present = Object.entries(families).filter(([, v]) => v !== null);
+  if (present.length >= 2) {
+    const [[refLabel, refData]] = present;
+    for (const [label, data] of present.slice(1)) {
+      expect(data.fontSizePx,
+        `Cross-family parity: ${label} font-size ${data.fontSizePx}px ≠ ${refLabel} ${refData.fontSizePx}px`
+      ).toBeCloseTo(refData.fontSizePx, 1);
+    }
+  }
 });
