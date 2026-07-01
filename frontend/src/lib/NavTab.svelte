@@ -128,8 +128,7 @@
       {#each [0.0, 0.25, 0.5, 0.75, 1.0] as t}
         {@const y = _pad.t + innerH * t}
         {@const v = _max - _range * t}
-        <line x1={_pad.l} y1={y} x2={_pad.l + innerW} y2={y}
-              stroke="rgba(126,151,184,0.10)" stroke-width="1" />
+        <line class="chart-grid-line" x1={_pad.l} y1={y} x2={_pad.l + innerW} y2={y} />
         <text class="nav-yaxis-label" x={_pad.l - 8} y={y + 3} text-anchor="end"
               fill="rgba(155,176,208,0.55)" font-size="10"
               style="font-family: var(--font-numeric)">{_fmtInr(v)}</text>

@@ -129,39 +129,70 @@
 {/if}
 
 <style>
+  /* NavBreakdown — visual rhythm matches the Capital / Equity ag-Grid
+     tabs on the same card (ag-theme-algo: 26px rows, dark navy header,
+     amber header text, monospace numerics, slate cell text). Plain HTML
+     table avoids ag-Grid overhead for 2–4 rows, but LOOKS the same. */
+
   .nav-bd-wrap {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
-    padding: 0.2rem 0 0.4rem;
+    gap: 0;
+    padding: 0;
+    /* Same rounded-corner + border as ag-theme-algo wrapper. */
+    border-radius: 4px;
+    overflow: hidden;
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
 
   .nav-bd-table {
     width: 100%;
     border-collapse: collapse;
-    font-family: var(--font-numeric);
-    font-size: var(--fs-lg);
+    /* ag-theme-algo uses ui-monospace / SFMono stack */
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.72rem;        /* matches --ag-font-size in ag-theme-algo */
     color: var(--algo-slate);
   }
+
+  /* Header — dark navy bg + amber text: mirrors ag-theme-algo header */
   .nav-bd-table thead th {
+    height: 26px;              /* matches _baseGridOpts headerHeight: 26 */
     text-align: right;
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    font-size: var(--fs-xs);
-    color: var(--algo-muted);
-    padding: 0.3rem 0.5rem;
-    border-bottom: 1px solid rgba(126, 151, 184, 0.20);
+    font-size: 0.6875rem;      /* matches --ag-header-font-size */
+    color: #fbbf24;            /* --ag-header-foreground-color */
+    background: #0a1020;       /* --ag-header-background-color */
+    padding: 0 3px;            /* matches ag-theme-algo cell padding */
+    border-right: 1px solid rgba(251, 191, 36, 0.20);
     white-space: nowrap;
+    vertical-align: middle;
   }
+  .nav-bd-table thead th:last-child { border-right: none; }
   .nav-bd-table thead th.nav-bd-acct {
     text-align: left;
   }
-  .nav-bd-table tbody td {
-    padding: 0.35rem 0.5rem;
-    border-bottom: 1px solid rgba(126, 151, 184, 0.08);
-    white-space: nowrap;
+
+  /* Body rows — alternating dark navy / slightly-lighter: mirrors
+     --ag-background-color / --ag-odd-row-background-color */
+  .nav-bd-table tbody tr:nth-child(odd) td {
+    background: #273552;       /* --ag-odd-row-background-color */
   }
+  .nav-bd-table tbody tr:nth-child(even) td {
+    background: #1d2a44;       /* --ag-background-color */
+  }
+  .nav-bd-table tbody td {
+    height: 26px;              /* matches _baseGridOpts rowHeight: 26 */
+    padding: 0 3px;            /* matches ag-theme-algo cell padding */
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-right: 1px solid rgba(255, 255, 255, 0.06);
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+  .nav-bd-table tbody td:last-child { border-right: none; }
   .nav-bd-table tbody tr:last-child td { border-bottom: none; }
 
   .nav-bd-acct {
@@ -178,42 +209,53 @@
   }
 
   /* Direction palette matches the algo theme tokens used across
-     PerformancePage / MarketPulse. */
+     PerformancePage / MarketPulse / ag-theme-algo pnl-gain/pnl-loss. */
   .nav-up   { color: #4ade80; }
   .nav-down { color: #f87171; }
   .nav-zero { color: var(--algo-slate); }
 
-  /* TOTAL row — same amber tint convention every algo-page summary
-     uses (Funds, Margin, Positions Summary, Holdings Summary). */
+  /* TOTAL row — amber tint mirrors ag-theme-algo totals-row rule.
+     border-top 2px amber matches the ag-Grid TOTAL row treatment. */
   .nav-bd-total td {
-    background: rgba(251, 191, 36, 0.10);
-    border-top: 2px solid rgba(251, 191, 36, 0.40);
-    border-bottom: 1px solid rgba(251, 191, 36, 0.25);
+    background: rgba(251, 191, 36, 0.22) !important;
+    color: #fbbf24 !important;
+    border-top: 2px solid rgba(251, 191, 36, 0.70) !important;
+    border-bottom: 1px solid rgba(251, 191, 36, 0.55) !important;
     font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .nav-bd-total .nav-up,
+  .nav-bd-total .nav-down,
+  .nav-bd-total .nav-zero {
+    color: #fbbf24 !important;
   }
 
   .nav-bd-caption {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.6rem;
     color: var(--algo-muted);
     letter-spacing: 0.04em;
-    padding: 0 0.5rem;
+    padding: 0.25rem 0.5rem;
+    background: #1d2a44;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
   }
 
   .nav-bd-empty {
     padding: 1.2rem 0.8rem;
     text-align: center;
     color: rgba(155, 176, 208, 0.55);
-    font-family: var(--font-numeric);
-    font-size: var(--fs-lg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.72rem;
+    background: #1d2a44;
   }
 
   /* Mobile: tighten padding so 5 columns fit comfortably on a
      360px viewport without column wrap or horizontal scroll. */
   @media (max-width: 600px) {
-    .nav-bd-table          { font-size: var(--fs-sm); }
-    .nav-bd-table thead th { font-size: var(--fs-2xs); padding: 0.25rem 0.3rem; }
-    .nav-bd-table tbody td { padding: 0.3rem 0.3rem; }
-    .nav-bd-caption        { font-size: var(--fs-2xs); }
+    .nav-bd-table          { font-size: 0.65rem; }
+    .nav-bd-table thead th { font-size: 0.6rem; padding: 0 2px; }
+    .nav-bd-table tbody td { padding: 0 2px; }
+    .nav-bd-caption        { font-size: 0.55rem; }
   }
 </style>

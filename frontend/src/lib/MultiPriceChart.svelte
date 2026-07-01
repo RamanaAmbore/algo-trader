@@ -249,17 +249,14 @@
       <!-- y-axis grid lines + labels (pct) -->
       {#each yTicks as v}
         <line x1={PAD_L} x2={W - PAD_R} y1={yOf(v)} y2={yOf(v)}
-              stroke={v === 0 ? 'rgba(200,216,240,0.45)' : 'rgba(200,216,240,0.18)'}
-              stroke-width="1"
-              stroke-dasharray={v === 0 ? '' : '2 3'} />
+              class={v === 0 ? 'chart-grid-zero' : 'chart-grid-line'} />
         <text x={PAD_L - 6} y={yOf(v) + 3} text-anchor="end"
               fill="#c8d8f0" font-size="11" font-weight="600">{pctFmt(v)}</text>
       {/each}
 
       <!-- x-axis labels -->
       {#each xLabels as l}
-        <line x1={l.x} x2={l.x} y1={PAD_T} y2={height - PAD_B}
-              stroke="rgba(200,216,240,0.10)" stroke-width="1" stroke-dasharray="2 3" />
+        <line class="chart-grid-line-minor" x1={l.x} x2={l.x} y1={PAD_T} y2={height - PAD_B} />
         <text x={l.x} y={height - PAD_B + 14} text-anchor="middle"
               fill="#c8d8f0" font-size="11" font-weight="600">{l.label}</text>
       {/each}

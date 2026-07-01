@@ -1794,26 +1794,20 @@
         <!-- Grid lines (horizontal) -->
         {#each [0.0, 0.25, 0.5, 0.75, 1.0] as frac}
           {@const gy = PAD_T + frac * INNER_H}
-          <line
-            x1={PAD_L} y1={gy} x2={PAD_L + INNER_W} y2={gy}
-            stroke="rgba(200,216,240,0.18)" stroke-width="1"
-            stroke-dasharray={frac === 0.0 || frac === 1.0 ? '' : '2 3'} />
+          <line class="chart-grid-line" x1={PAD_L} y1={gy} x2={PAD_L + INNER_W} y2={gy} />
         {/each}
 
         <!-- Grid lines (vertical) — at x-axis label positions, behind data -->
         {#each _eqXLabels as lbl}
-          <line
+          <line class="chart-grid-line-minor"
             x1={parseFloat(lbl.x)} y1={PAD_T}
-            x2={parseFloat(lbl.x)} y2={PAD_T + INNER_H}
-            stroke="rgba(200,216,240,0.10)" stroke-width="1" stroke-dasharray="2 3" />
+            x2={parseFloat(lbl.x)} y2={PAD_T + INNER_H} />
         {/each}
 
         <!-- Zero baseline (dotted) -->
         {#if _eqZeroY != null}
-          <line
-            x1={PAD_L} y1={_eqZeroY} x2={PAD_L + INNER_W} y2={_eqZeroY}
-            stroke="rgba(200,216,240,0.45)" stroke-width="1"
-            stroke-dasharray="4 3" />
+          <line class="chart-grid-zero"
+            x1={PAD_L} y1={_eqZeroY} x2={PAD_L + INNER_W} y2={_eqZeroY} />
         {/if}
 
         <!-- Filled area — only when a single series is enabled. Multi-

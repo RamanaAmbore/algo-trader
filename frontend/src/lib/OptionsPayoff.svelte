@@ -808,9 +808,7 @@
            the chart uses the recovered horizontal space. -->
       {#each yTicks as t}
         <line x1={PAD_L} x2={W - PAD_R} y1={t.y} y2={t.y}
-              stroke={Math.abs(t.v) < 0.5 ? 'rgba(200,216,240,0.45)' : 'rgba(200,216,240,0.18)'}
-              stroke-width="1"
-              stroke-dasharray={Math.abs(t.v) < 0.5 ? '' : '2 3'}/>
+              class={Math.abs(t.v) < 0.5 ? 'chart-grid-zero' : 'chart-grid-line'}/>
       {/each}
 
       <!-- X-axis grid — sigma tick lines at every 0.5σ across ±spanSigmas.
