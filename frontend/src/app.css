@@ -2020,10 +2020,15 @@
   border: none;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
-  font-family: ui-monospace, monospace;
+  /* Font tokens match .algo-card-title exactly — an active tab reads as
+     a continuation of the card heading. Same monospace stack, size,
+     letter-spacing, transform. Only COLOR distinguishes active vs
+     inactive state (per operator: "active tab shares GREEKS treatment,
+     inactive stays muted"). */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.6rem;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: #94a3b8;
   cursor: pointer;
