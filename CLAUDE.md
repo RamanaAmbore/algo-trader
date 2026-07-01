@@ -712,9 +712,9 @@ data (frozen during closed hours until next market open). Pill layout: P / M / C
 - **C** (Cash) — `available / total` (same framing as Margin)
 - **H** (Holdings) — `today / value / lifetime` (intraday delta / current market value / cumulative cost).
 
-**P expiry value** — computed client-side in `PositionStrip.svelte` from `positionsStore` rows. Futures + options only (exchange in NFO/MCX/CDS/BFO); equity excluded. Math per leg:
+**P expiry value** — computed client-side in `PositionStrip.svelte` from `positionsStore` rows. Identical math to `_byUnderlyingExp` rollup in `/admin/derivatives` (parity with the TOTAL row when no account/strategy filter applied). Futures + options only (exchange in NFO/MCX/CDS/BFO); equity excluded. Math per leg:
 - Futures: `(live_ltp − avg) × qty` (qty in contracts; multiplied by `broker_apis.py` before positionsStore)
-- Options: `(intrinsic(underlying_spot, strike, opt_type) − avg) × qty` where `intrinsic = max(spot−strike,0)` (CE) or `max(strike−spot,0)` (PE), and `underlying_spot = symbolStore.get(inst.u)?.ltp`. If underlying spot unavailable, leg contributes 0 (no phantom intrinsic). Renders amber (#fbbf24, `.ps-exp` class). Gated by `_throttledTick` (4 Hz) like other live deriveds.
+- Options: `(intrinsic(underlying_spot, strike, opt_type) − avg) × qty` where `intrinsic = max(spot−strike,0)` (CE) or `max(strike−spot,0)` (PE). `underlying_spot` resolved via `resolveUnderlying(inst.u, findNearestFuture)?.tradingsymbol` → `symbolStore.get(tradingsymbol)?.ltp` (e.g. `"NIFTY"` → `"NIFTY 50"`). Spots pre-fetched by `_loadUnderlyingSpots()` via `batchQuote` + `publishPulseQuotes` on each 30s poll. If underlying spot unavailable, leg contributes 0 (no phantom intrinsic). Renders amber (#fbbf24, `.ps-exp` class). Gated by `_throttledTick` (4 Hz) like other live deriveds.
 
 Snapshot SSOT replaces localStorage `strip.frozen` cache during closed hours;
 in-session reload restored via disk cache. Latest-batch CTE in positions/holdings

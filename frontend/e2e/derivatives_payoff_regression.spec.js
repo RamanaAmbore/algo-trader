@@ -1,10 +1,9 @@
 /**
  * derivatives_payoff_regression.spec.js
  *
- * Regression guards for two P0 defects introduced in fe24c8c4 and
- * subsequently fixed:
+ * Regression guards for three P0 defects:
  *
- *   DEFECT 1 — "No legs selected" as the DEFAULT page state.
+ *   DEFECT 1 — "No legs selected" as the DEFAULT page state (qty=0 path).
  *   Root cause: loadStrategy() called `strategy = null` whenever
  *   cleanLegs was empty. cleanLegs filters qty=0 rows, so closed
  *   intraday positions (qty=0 returned by Kite) always produced an
@@ -26,6 +25,21 @@
  *   left over from a placeholder.
  *   Fix: route through `onTicketSubmit`, the same handler used by the
  *   page-header Order button.
+ *
+ *   DEFECT 3 — "No legs selected" when only equity holdings exist for
+ *   the auto-selected underlying and "Include Holdings" toggle is OFF.
+ *   Root cause: candidatePositions included kind='eq' rows; legs built
+ *   from them but cleanLegs filtered them out (backend only accepts
+ *   opt/fut); _allEnabledLegsZeroQty returned false (nonEq.length===0);
+ *   template fell through to the generic "No legs selected" catch-all.
+ *   Fix:
+ *     (a) New `_legsAreEqOnly` derived detects the pure-eq-candidates
+ *         + _includeHoldings=false case.
+ *     (b) New 4th template branch shows "Only equity holdings — enable
+ *         Include Holdings or add F&O legs via + Add".
+ *     (c) _saveCache() in loadPositions no longer persists enabledSymbols
+ *         (prevents the sessionStorage leak where a 30s poll during an
+ *         all-unchecked session overwrites the correct all-checked state).
  *
  * Five quality dimensions (feedback_test_dimensions.md):
  *  1. SSOT     — single source: payoff SVG derived from candidatePositions
