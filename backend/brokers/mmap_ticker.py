@@ -219,7 +219,13 @@ class MmapTickReader:
 
     def current_account(self) -> str:
         try:
-            return (self.status() or {}).get("current_account", "")
+            s = self.status() or {}
+            # `active_account` is the canonical key (TickerManager.status
+            # from Jun 2026 onwards). Accept the legacy `current_account`
+            # as fallback for one deploy cycle so a rolling restart of
+            # ramboq_conn + ramboq_api can't briefly report ""
+            # depending on which end deployed first.
+            return s.get("active_account") or s.get("current_account", "")
         except Exception:
             return ""
 

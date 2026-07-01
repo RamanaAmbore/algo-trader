@@ -23,7 +23,7 @@
   /** Bindable: parent (algo layout) toggles this from the 5/5 chip. */
   let { open = $bindable(false) } = $props();
 
-  /** @type {Array<{account:string,broker:string,state:string,reason:string,last_good_at:string|null,last_check_at:string|null}>} */
+  /** @type {Array<{account:string,broker:string,state:string,reason:string,last_good_at:string|null,last_check_at:string|null,is_active_ticker?:boolean}>} */
   let accounts = $state([]);
   let loading  = $state(false);
 
@@ -90,7 +90,14 @@
       {#each accounts as acct (acct.account)}
         <div class="bh-row">
           <span class="bh-row-dot bh-row-dot-{acct.state}" aria-hidden="true"></span>
-          <span class="bh-row-account">{acct.account}</span>
+          <span class="bh-row-account">
+            {acct.account}
+            {#if acct.is_active_ticker}
+              <span class="bh-active-ticker" title="Currently running the KiteTicker WebSocket">
+                active
+              </span>
+            {/if}
+          </span>
           <span class="bh-row-broker">{acct.broker}</span>
           <span class="bh-row-state bh-row-state-{acct.state}">{acct.state.toUpperCase()}</span>
           <span class="bh-row-reason">{acct.reason}</span>
@@ -249,6 +256,26 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+  /* Active-ticker chip — canonical cyan-400 palette. Matches the
+     header-trio button family so the two operator surfaces read as
+     one visual system. Rendered only when is_active_ticker=true so
+     the absence itself is a signal ("this Kite account is a warm
+     spare"). */
+  .bh-active-ticker {
+    color: #22d3ee;
+    background: rgba(34, 211, 238, 0.14);
+    border: 1px solid rgba(34, 211, 238, 0.55);
+    border-radius: 9999px;
+    font-size: var(--fs-xxs, 0.62rem);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.02rem 0.35rem;
+    line-height: 1.05;
   }
   .bh-row-broker {
     color: #94a3b8;

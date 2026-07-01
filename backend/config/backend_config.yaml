@@ -87,6 +87,34 @@ market_segments:
 #   algo.expiry_rescan_minutes
 # Tune all of these from /admin/settings without a redeploy.
 
+# KiteTicker auto-failover state machine (conn_service watchdog).
+#
+# When the primary Kite account's WebSocket dies (auth revoked, socket
+# won't reconnect after N cycles, token invalidated by another login),
+# conn_service auto-swaps to the next Kite account in priority order.
+# The main API's mmap tick reader is source-agnostic, so the failover
+# is invisible to /api/positions, /api/quotes/sparkline, and every
+# downstream LTP consumer.
+#
+# unhealthy_threshold      — Consecutive watchdog cycles (30 s each) the
+#                            active account must fail before a swap is
+#                            attempted. Default 2 ⇒ ~60 s of degraded
+#                            state before swap. Raising trades faster
+#                            recovery for more ping-pong resistance.
+# swap_cooldown_seconds    — Minimum window between two consecutive
+#                            swaps. Prevents bouncing between two
+#                            simultaneously-broken accounts. Default 300
+#                            (5 min); reduce for aggressive recovery,
+#                            increase for extra ping-pong safety.
+# all_down_watchdog_seconds — Slowed watchdog cadence when every Kite
+#                            account has been tried and failed. Default
+#                            60 s (vs 30 s normal) — halves CPU while
+#                            still attempting recovery.
+kite_ticker:
+  unhealthy_threshold:        2
+  swap_cooldown_seconds:      300
+  all_down_watchdog_seconds:  60
+
 # Macro snapshot — fed to the MCP get_economic_snapshot tool so the
 # LLM has India-specific context (rates, inflation, growth) without
 # any external API key. Updated by hand when RBI / MoSPI announce —

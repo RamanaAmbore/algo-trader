@@ -150,11 +150,43 @@ class HealthController(Controller):
         from backend.brokers.connections import Connections
 
         accts = sorted(Connections().conn.keys())
+
+        # Ticker snapshot including auto-failover state. The watchdog is
+        # the writer; this is a read-only view. Failure is non-fatal — a
+        # newly-booted process before the ticker has ever started should
+        # still return ok=True from /health so systemd probes pass.
+        ticker_snap: dict | None = None
+        try:
+            from backend.brokers.kite_ticker import get_ticker
+            from backend.brokers.service.app import _kite_failover_list
+
+            ts = get_ticker().status()
+            # Recompute the failover-list snapshot here so the health probe
+            # reflects the CURRENT priority ordering, not whatever the
+            # watchdog last saw (operator may have edited priority via
+            # /admin/brokers between watchdog cycles).
+            fo_list = _kite_failover_list()
+            ticker_snap = {
+                "active_account":        ts.get("active_account", ""),
+                "failover_list":         fo_list,
+                "consecutive_unhealthy": int(ts.get("consecutive_unhealthy", 0)),
+                "swaps_last_hour":       int(ts.get("swaps_last_hour", 0)),
+                "last_swap_at":          float(ts.get("last_swap_at", 0.0)),
+                "started":               bool(ts.get("started", False)),
+                "connected":             bool(ts.get("connected", False)),
+                "subscribed_count":      int(ts.get("subscribed_count", 0)),
+                "stale_count":           int(ts.get("stale_count", 0)),
+                "max_age_seconds":       float(ts.get("max_age_seconds", 0.0)),
+            }
+        except Exception:
+            logger.exception("conn_service: /health ticker snapshot failed")
+
         return InternalHealthResp(
             ok=True,
             service="ramboq_conn",
             accounts_loaded=len(accts),
             accounts=accts,
+            ticker=ticker_snap,
         )
 
 
@@ -316,13 +348,61 @@ class InternalBrokerController(Controller):
             logger.exception("conn_service: ticker subscribe failed")
             return TickerSubscribeResp(ok=False, error=str(e)[:300])
 
+    @post("/ticker/force-unhealthy")
+    async def ticker_force_unhealthy(self) -> dict[str, Any]:
+        """Operator escape hatch — inject an artificial unhealthy signal
+        so the watchdog fires its failover path within one cycle.
+
+        Used for prod verification of the auto-failover state machine.
+        Does NOT actually kill the WebSocket (that would take a Kite-side
+        action or a network drop). Instead it forces the unhealthy
+        counter past the swap threshold; the next watchdog tick will
+        elect the next Kite account and call restart_with_account().
+
+        Body: none. Returns {ok, consecutive_unhealthy, forced_from}.
+        """
+        from backend.brokers.kite_ticker import get_ticker
+        from backend.shared.helpers.settings import get_int
+
+        try:
+            ticker = get_ticker()
+            threshold = max(1, get_int("kite_ticker.unhealthy_threshold", 2))
+            # Bump N times so the next watchdog tick is guaranteed to
+            # cross the threshold. `bump_unhealthy()` is O(1) under lock.
+            current = 0
+            for _ in range(threshold):
+                current = ticker.bump_unhealthy()
+            return {
+                "ok": True,
+                "consecutive_unhealthy": current,
+                "forced_from": ticker.current_account() or "",
+            }
+        except Exception as e:
+            logger.exception("conn_service: force-unhealthy failed")
+            return {"ok": False, "error": str(e)[:300]}
+
     @get("/ticker/status")
     async def ticker_status(self) -> dict[str, Any]:
         """KiteTicker health snapshot. Used by /admin/health badge and
-        the watchdog in main API."""
+        the watchdog in main API.
+
+        Includes the auto-failover state machine fields
+        (`active_account`, `consecutive_unhealthy`, `swaps_last_hour`,
+        `last_swap_at`, `failover_list`) alongside the legacy `started`
+        / `connected` / `subscribed_count` fields.
+        """
         from backend.brokers.kite_ticker import get_ticker
         try:
-            return {"ok": True, "status": get_ticker().status()}
+            snap = get_ticker().status()
+            # Enrich with the priority-ordered failover list — computed
+            # here (not stored on the ticker) so an operator's live
+            # priority edit surfaces without waiting for a swap.
+            try:
+                from backend.brokers.service.app import _kite_failover_list
+                snap["failover_list"] = _kite_failover_list()
+            except Exception:
+                snap["failover_list"] = []
+            return {"ok": True, "status": snap}
         except Exception as e:
             return {"ok": False, "error": str(e)[:300]}
 

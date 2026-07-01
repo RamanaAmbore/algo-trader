@@ -23,12 +23,23 @@ import msgspec
 
 
 class InternalHealthResp(msgspec.Struct):
-    """Response shape for GET /internal/health."""
+    """Response shape for GET /internal/health.
+
+    `ticker` is populated when the ticker singleton has been touched
+    at least once (i.e., always in normal operation). Fields:
+      * active_account       — Kite account currently bound to the WS
+      * failover_list        — priority-ordered eligible Kite accounts
+      * consecutive_unhealthy — bad watchdog cycles on active account
+      * swaps_last_hour      — auto-failover swaps within the last 3600s
+      * last_swap_at         — unix ts of most recent swap (0 if none)
+      * started / connected / subscribed_count — legacy fields
+    """
 
     ok: bool
     service: str
     accounts_loaded: int
     accounts: list[str]
+    ticker: dict | None = None
 
 
 class InternalAccountRow(msgspec.Struct):

@@ -174,6 +174,26 @@ class TickerManager:
         # The watchdog skips an account for 5 min after a failed attempt
         # so we never bounce between two simultaneously-broken Kite accounts.
         self._failover_cooloff: dict[str, float] = {}
+        # Auto-failover state machine bookkeeping (June 2026).
+        #
+        # `_consecutive_unhealthy` counts how many watchdog cycles in a row
+        # judged the CURRENT account unhealthy (via _is_active_ticker_healthy).
+        # The watchdog swaps to the next failover account only after the
+        # count crosses `unhealthy_threshold` — a single blip is not enough,
+        # otherwise a 30 s network hiccup would burn a 5 min swap cool-off.
+        # Reset to 0 on any healthy tick.
+        self._consecutive_unhealthy: int = 0
+        # Rolling in-memory history of swap timestamps (unix seconds). The
+        # `status()` payload derives `swaps_last_hour` from this list so
+        # the health surface can distinguish "auto-failover fired once
+        # today" from "we are ping-ponging between accounts". Bounded at
+        # 128 entries; older ones dropped on append.
+        self._swap_history: list[float] = []
+        # Instant when this process's watchdog started supervising — used
+        # by conn_service to defer failover during the boot grace period
+        # so a swap can never fire while rebuild_from_db is still minting
+        # Kite tokens.
+        self._supervisor_started_at: float = 0.0
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -399,6 +419,16 @@ class TickerManager:
             (age for _, age in ages if age is not None),
             default=0.0,
         )
+        # Failover state — safe to read outside the lock (small ints /
+        # floats / lists all backed by Python's atomic assignment on
+        # CPython; `list(...)` snapshot is defensive).
+        with self._lock:
+            active_account = self._current_account
+            consecutive_unhealthy = self._consecutive_unhealthy
+            swap_history_snap = list(self._swap_history)
+        cutoff_1h = now - 3600.0
+        swaps_last_hour = sum(1 for ts in swap_history_snap if ts >= cutoff_1h)
+        last_swap = swap_history_snap[-1] if swap_history_snap else 0.0
         return {
             "started":          started,
             "connected":        connected,
@@ -407,6 +437,12 @@ class TickerManager:
             "stale_count":      len(stale),
             "max_age_seconds":  float(max_age),
             "stale_top":        stale_top,
+            # Failover surface — same keys published by conn_service
+            # `/ticker/status` and mirrored into main API `/api/admin/health`.
+            "active_account":       active_account,
+            "consecutive_unhealthy": int(consecutive_unhealthy),
+            "swaps_last_hour":       int(swaps_last_hour),
+            "last_swap_at":          float(last_swap),
         }
 
     def stop(self) -> None:
@@ -486,6 +522,100 @@ class TickerManager:
     def current_account(self) -> str:
         """Which Kite account this ticker is currently bound to."""
         return self._current_account
+
+    def mark_supervisor_started(self) -> None:
+        """Record when this process's watchdog began supervising.
+
+        The conn_service watchdog reads `supervisor_uptime_seconds()`
+        to gate swap decisions during boot — a Kite token that hasn't
+        yet been minted by `rebuild_from_db()` should not trigger a
+        failover on a cold start. Called once from the watchdog's
+        first iteration.
+        """
+        if not self._supervisor_started_at:
+            self._supervisor_started_at = time.time()
+
+    def supervisor_uptime_seconds(self) -> float:
+        """0 when the supervisor has never started; else elapsed seconds."""
+        return (
+            time.time() - self._supervisor_started_at
+            if self._supervisor_started_at else 0.0
+        )
+
+    def is_active_ticker_healthy(self, tick_heartbeat_s: float = 60.0) -> bool:
+        """Composite health check invoked once per watchdog cycle.
+
+        Healthy when:
+          • start() has been called (`_started`) AND
+          • the WebSocket is open (`_connected`) AND
+          • at least one tick has landed within the last `tick_heartbeat_s`
+            (falls back to _last_connected_at when no tick has ever fired —
+            covers the first-connect grace window).
+
+        Market-closed hours: the caller (watchdog) applies its own
+        market-hours gate BEFORE checking health. When markets are
+        closed Kite legitimately closes the WS; this helper always
+        returns False during the closed window but the watchdog
+        ignores the signal.
+        """
+        with self._lock:
+            if not self._started or not self._connected:
+                return False
+            # Take the max of last tick + last connect so a freshly-
+            # connected socket that hasn't seen its first tick yet
+            # doesn't get flagged unhealthy immediately.
+            newest_tick_ts = max(self._tick_age.values(), default=0.0)
+            newest = max(newest_tick_ts, self._last_connected_at)
+        if not newest:
+            return False
+        return (time.time() - newest) <= tick_heartbeat_s
+
+    def bump_unhealthy(self) -> int:
+        """Watchdog reports one more consecutive unhealthy cycle.
+        Returns the current count. Reset via `reset_unhealthy()`."""
+        with self._lock:
+            self._consecutive_unhealthy += 1
+            return self._consecutive_unhealthy
+
+    def reset_unhealthy(self) -> None:
+        """Watchdog: mark active account healthy this cycle. Zeroes the
+        `_consecutive_unhealthy` counter so a subsequent blip has to
+        cross `unhealthy_threshold` on its own."""
+        with self._lock:
+            self._consecutive_unhealthy = 0
+
+    def record_swap(self, prev_account: str, next_account: str) -> None:
+        """Append a swap event to `_swap_history`. Called from
+        restart_with_account() so `swaps_last_hour` in status() reflects
+        every failover cycle without an external tracker."""
+        now = time.time()
+        with self._lock:
+            self._swap_history.append(now)
+            # Cap growth — 128 swaps is 42 hours of ping-pong at the
+            # 5-min cool-off floor. Well past the point where the
+            # operator would have intervened.
+            if len(self._swap_history) > 128:
+                self._swap_history = self._swap_history[-128:]
+        # Log-side signal — historian + tail-grep friendly.
+        logger.info(
+            "KiteTicker: recorded auto-failover swap %s → %s (total_swaps=%d)",
+            prev_account or "?", next_account, len(self._swap_history),
+        )
+
+    def swaps_since(self, seconds: float) -> int:
+        """Count swap events within the last `seconds` window. Watchdog
+        uses this for its cooldown ("no swap allowed within N minutes
+        of the last") — cheaper than tracking a separate `last_swap_at`
+        and correct across restart_with_account failure/retry cycles.
+        """
+        cutoff = time.time() - seconds
+        with self._lock:
+            return sum(1 for ts in self._swap_history if ts >= cutoff)
+
+    def last_swap_at(self) -> float:
+        """0 when no swap has fired yet; else unix ts of most recent."""
+        with self._lock:
+            return self._swap_history[-1] if self._swap_history else 0.0
 
     def seconds_since_connect(self) -> float:
         """0 if never connected; else elapsed since last connect."""
@@ -602,6 +732,13 @@ class TickerManager:
             f"KiteTicker: failover {prev_account or '?'} → {account} "
             f"(re-subscribing {len(prev_subs)} token(s))"
         )
+        # Record the swap BEFORE tearing down so status() reflects the
+        # attempt even when the new start() fails (audit trail wants
+        # every attempt, not just successes). reset the unhealthy
+        # counter so the next watchdog cycle starts fresh against the
+        # incoming account.
+        self.record_swap(prev_account, account)
+        self.reset_unhealthy()
         # Clean shutdown of the old socket (idempotent if already closed).
         self.stop()
         # Re-init state (stop() resets _started; reuse __init__-style defaults).

@@ -86,6 +86,15 @@ class TickerStatus(msgspec.Struct):
     stale_count: int = 0          # number of subscribed tokens with stale ticks
     max_age_seconds: float = 0.0  # oldest tick age across all subscribed tokens
     stale_top: list[str] = []     # up to 20 worst offenders: "SYMBOL@<age>s" or "SYMBOL@never"
+    # Auto-failover state machine surface (added Jun 2026 with the
+    # conn_service ticker-swap watchdog). Additive — all default 0/""
+    # so pre-cutover deployments (where the watchdog isn't populating
+    # these) still deserialize cleanly.
+    active_account: str = ""          # Kite account currently bound to the WS
+    failover_list: list[str] = []     # priority-ordered eligible Kite accounts
+    consecutive_unhealthy: int = 0    # bad watchdog cycles on active account
+    swaps_last_hour: int = 0          # auto-failover swaps within the last 3600s
+    last_swap_at: float = 0.0         # unix ts of most recent swap (0 = never)
 
 
 class HealthResponse(msgspec.Struct):
@@ -253,7 +262,15 @@ def _sparkline_warm_status() -> SparklineWarmStatus:
 
 
 def _ticker_status() -> TickerStatus:
-    """Return a snapshot of the KiteTicker WebSocket state."""
+    """Return a snapshot of the KiteTicker WebSocket state.
+
+    Under cutover (RAMBOQ_USE_CONN_SERVICE=1), this reads from
+    conn_service via `MmapTickReader.status()` which round-trips the
+    `/internal/ticker/status` endpoint. Auto-failover fields
+    (`active_account`, `failover_list`, `consecutive_unhealthy`,
+    `swaps_last_hour`, `last_swap_at`) originate in conn_service's
+    TickerManager and flow through unchanged.
+    """
     try:
         from backend.brokers.kite_ticker import get_ticker
         snap = get_ticker().status()
@@ -265,6 +282,11 @@ def _ticker_status() -> TickerStatus:
             stale_count=int(snap.get("stale_count", 0)),
             max_age_seconds=float(snap.get("max_age_seconds", 0.0)),
             stale_top=list(snap.get("stale_top", [])),
+            active_account=str(snap.get("active_account", "") or ""),
+            failover_list=list(snap.get("failover_list", []) or []),
+            consecutive_unhealthy=int(snap.get("consecutive_unhealthy", 0)),
+            swaps_last_hour=int(snap.get("swaps_last_hour", 0)),
+            last_swap_at=float(snap.get("last_swap_at", 0.0)),
         )
     except Exception:
         return TickerStatus(started=False, connected=False,
@@ -601,13 +623,19 @@ _BROKER_HEALTH_FRESH_WINDOW_S: float = 300.0   # 5 min — "green" threshold
 
 
 class BrokerAccountHealth(msgspec.Struct):
-    """Per-account auth/freshness state for the navbar badge."""
+    """Per-account auth/freshness state for the navbar badge.
+
+    `is_active_ticker` is True only for the ONE Kite account currently
+    running the ticker WebSocket in conn_service. Displayed as a small
+    'active' chip next to the account row in BrokerHealthBadge.
+    """
     account: str
     broker: str                   # 'kite' | 'dhan' | 'groww' | 'unknown'
     state: str                    # 'green' | 'amber' | 'red'
     reason: str                   # human-readable, IST-stamped
     last_good_at: Optional[str]   # ISO-8601 UTC, or None
     last_check_at: Optional[str]  # ISO-8601 UTC, or None
+    is_active_ticker: bool = False  # True only for the Kite account bound to the WS
 
 
 class BrokerHealthResponse(msgspec.Struct):
@@ -719,6 +747,17 @@ class BrokerHealthController(Controller):
         except Exception:
             pass
 
+        # Resolve which Kite account is currently the active ticker so
+        # the frontend can render a chip next to that row. Non-fatal:
+        # a conn_service outage leaves every row is_active_ticker=False
+        # (chip absent) rather than blocking the whole endpoint.
+        active_ticker_acct = ""
+        try:
+            from backend.brokers.kite_ticker import get_ticker as _gt
+            active_ticker_acct = str(_gt().current_account() or "")
+        except Exception:
+            pass
+
         accounts: list[BrokerAccountHealth] = []
         for acct, entry in health_map.items():
             state, reason = _derive_account_health(entry, now)
@@ -732,6 +771,9 @@ class BrokerHealthController(Controller):
                 reason=reason,
                 last_good_at=_ts_to_iso(last_ok if last_ok else None),
                 last_check_at=_ts_to_iso(last_check if last_check else None),
+                is_active_ticker=bool(
+                    active_ticker_acct and acct == active_ticker_acct
+                ),
             ))
 
         # Stable sort: red → amber → green, then account name.
