@@ -4468,15 +4468,15 @@
     <div class="opt-section-h opt-section-h-grid">
       <div class="opt-section-row">
         <span class="opt-section-title">Payoff</span>
-        <span class="opt-section-tag tag-{strategy.net_cost > 0 ? 'long' : strategy.net_cost < 0 ? 'short' : 'long'}">
-          {strategy.net_cost > 0 ? 'Net Dr' : strategy.net_cost < 0 ? 'Net Cr' : 'Free'}
-          {fmtMoney(Math.abs(strategy.net_cost), false)}
+        <span class="opt-section-tag tag-{(strategy?.net_cost ?? 0) > 0 ? 'long' : (strategy?.net_cost ?? 0) < 0 ? 'short' : 'long'}">
+          {(strategy?.net_cost ?? 0) > 0 ? 'Net Dr' : (strategy?.net_cost ?? 0) < 0 ? 'Net Cr' : 'Free'}
+          {fmtMoney(Math.abs(strategy?.net_cost ?? 0), false)}
         </span>
         <span class="opt-section-tag tag-long" title="Max profit (merged curve when an eq holding is layered on the strategy)">
-          MAX P {fmtUnbounded(_mergedRisk?.max_profit ?? strategy.risk.max_profit, false)}
+          MAX P {fmtUnbounded(_mergedRisk?.max_profit ?? strategy?.risk?.max_profit, false)}
         </span>
         <span class="opt-section-tag tag-short" title="Max loss (merged curve when an eq holding is layered on the strategy)">
-          MAX L {fmtUnbounded(_mergedRisk?.max_loss ?? strategy.risk.max_loss, false)}
+          MAX L {fmtUnbounded(_mergedRisk?.max_loss ?? strategy?.risk?.max_loss, false)}
         </span>
         <!-- Expected value chip — probability-weighted average payoff
              under the lognormal distribution. Positive = positive
@@ -4562,20 +4562,20 @@
       <OptionsPayoff
         payoff={_mergedPayoff}
         spot={liveSpot}
-        prevClose={strategy.spot_prev_close}
-        breakevens={_mergedRisk?.breakevens ?? strategy.risk.breakevens}
-        intermediateCurves={strategy.intermediate_curves || []}
-        spanSigmas={strategy.span_sigmas}
-        spanPct={strategy.span_pct}
-        dte={strategy.days_to_expiry}
-        ivProxy={strategy.iv_proxy}
-        legCount={strategy.legs.length + _equityLegs.length}
-        multiExpiry={strategy.multi_expiry ?? false}
+        prevClose={strategy?.spot_prev_close}
+        breakevens={_mergedRisk?.breakevens ?? strategy?.risk?.breakevens}
+        intermediateCurves={strategy?.intermediate_curves || []}
+        spanSigmas={strategy?.span_sigmas}
+        spanPct={strategy?.span_pct}
+        dte={strategy?.days_to_expiry}
+        ivProxy={strategy?.iv_proxy}
+        legCount={(strategy?.legs?.length ?? 0) + _equityLegs.length}
+        multiExpiry={strategy?.multi_expiry ?? false}
         realizedPnl={chartPnlOffset}
         dayPnl={candidatesDayPnl}
         legsExpPnlAtSpot={_legsExpPnlTotal}
-        legSymbols={strategy.legs.map(/** @param {{symbol:string}} l */ l => l.symbol)}
-        spotAnchor={strategy.spot_anchor_contract
+        legSymbols={(strategy?.legs ?? []).map(/** @param {{symbol:string}} l */ l => l.symbol)}
+        spotAnchor={strategy?.spot_anchor_contract
           ? { contract: strategy.spot_anchor_contract,
               source: strategy.spot_source || 'futures',
               expiryISO: strategy.expiry ?? '' }
@@ -5050,7 +5050,7 @@
             {@const _selectedCands = displayedCandidates.filter(c => _isLegEnabled(c))}
             {@const _totalPnl = _selectedCands.reduce((s, c) => s + Number(c.pnl ?? 0), 0)}
             {@const _totalDcv = _selectedCands.reduce((s, c) => s + Number(_dayPnlForLeg(c, liveSpot) ?? 0), 0)}
-            {@const _tg = _mergedGreeks ?? strategy.aggregate_greeks ?? { delta: 0, gamma: 0, theta: 0, vega: 0, rho: 0 }}
+            {@const _tg = _mergedGreeks ?? strategy?.aggregate_greeks ?? { delta: 0, gamma: 0, theta: 0, vega: 0, rho: 0 }}
             <div class="cand-row cand-row-total">
               <span></span>
               <span class="cand-total-label">TOTAL</span>
@@ -5270,23 +5270,23 @@
           <div class="opt-kv opt-kv-greeks">
             <div class="kv-pair" title="Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise. Includes +qty for enabled equity-holding legs.">
               <span class="kv-k kv-k-greek">Δ</span>
-              <span class="kv-v">{pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).delta)}</span>
+              <span class="kv-v">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}</span>
             </div>
             <div class="kv-pair" title="Gamma — rate-of-change of delta as spot moves.">
               <span class="kv-k kv-k-greek">Γ</span>
-              <span class="kv-v">{pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).gamma)}</span>
+              <span class="kv-v">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}</span>
             </div>
             <div class="kv-pair" title="Theta — daily decay in rupees. Positive when net short premium.">
               <span class="kv-k kv-k-greek">Θ</span>
-              <span class="kv-v {(_mergedGreeks ?? strategy.aggregate_greeks).theta < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).theta)}</span>
+              <span class="kv-v {(_mergedGreeks ?? strategy?.aggregate_greeks)?.theta < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}</span>
             </div>
             <div class="kv-pair" title="Vega — P&L change per 1 % IV move. Positive = long volatility.">
               <span class="kv-k kv-k-greek">𝒱</span>
-              <span class="kv-v {(_mergedGreeks ?? strategy.aggregate_greeks).vega < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).vega)}</span>
+              <span class="kv-v {(_mergedGreeks ?? strategy?.aggregate_greeks)?.vega < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}</span>
             </div>
             <div class="kv-pair" title="Rho — sensitivity to a 1 % rate change. Mostly cosmetic for short-dated index options.">
               <span class="kv-k kv-k-greek">ρ</span>
-              <span class="kv-v">{pctFmt((_mergedGreeks ?? strategy.aggregate_greeks).rho)}</span>
+              <span class="kv-v">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}</span>
             </div>
           </div>
         </div>
@@ -5317,36 +5317,36 @@
             <div class="kv-pair">
               <span class="kv-k">Breakevens <InfoHint popup text={'<b>Breakevens</b> — spot prices at expiry where the strategy\'s P&L crosses zero. Iron condors and butterflies have 2; verticals have 1; fully ITM/OTM 0.'} /></span>
               <span class="kv-v">
-                {#if (_mergedRisk?.breakevens ?? strategy.risk.breakevens).length}
-                  {(_mergedRisk?.breakevens ?? strategy.risk.breakevens).map(/** @param {number} b */ (b) => priceFmt(b)).join(' / ')}
+                {#if ((_mergedRisk?.breakevens ?? strategy?.risk?.breakevens) ?? []).length}
+                  {((_mergedRisk?.breakevens ?? strategy?.risk?.breakevens) ?? []).map(/** @param {number} b */ (b) => priceFmt(b)).join(' / ')}
                 {:else}—{/if}
               </span>
             </div>
             <div class="kv-pair">
               <span class="kv-k">POP <InfoHint popup text={'<b>Probability of profit</b> at expiry — sum of lognormal mass over every contiguous profitable region of the payoff curve. For range strategies (iron condors), this measures "P(spot ends inside the wings)".'} /></span>
-              <span class="kv-v {(_mergedPop ?? strategy.risk.pop) > 0.6 ? 'kv-pos' : (_mergedPop ?? strategy.risk.pop) < 0.4 ? 'kv-neg' : ''}">{fmtPct(_mergedPop ?? strategy.risk.pop)}</span>
+              <span class="kv-v {(_mergedPop ?? strategy?.risk?.pop) > 0.6 ? 'kv-pos' : (_mergedPop ?? strategy?.risk?.pop) < 0.4 ? 'kv-neg' : ''}">{fmtPct(_mergedPop ?? strategy?.risk?.pop)}</span>
             </div>
             <div class="kv-pair">
               <span class="kv-k">EV <InfoHint popup text={'<b>Expected value</b> — POP × win-magnitude − (1−POP) × loss-magnitude, integrated against the lognormal pdf of the underlying. Positive EV = edge in expectation; negative EV = no edge, even if POP is high.'} /></span>
-              <span class="kv-v {(_mergedEv ?? strategy.risk.ev) > 0 ? 'kv-pos' : (_mergedEv ?? strategy.risk.ev) < 0 ? 'kv-neg' : ''}">{fmtMoney(_mergedEv ?? strategy.risk.ev)}</span>
+              <span class="kv-v {(_mergedEv ?? strategy?.risk?.ev) > 0 ? 'kv-pos' : (_mergedEv ?? strategy?.risk?.ev) < 0 ? 'kv-neg' : ''}">{fmtMoney(_mergedEv ?? strategy?.risk?.ev)}</span>
             </div>
-            {#if strategy.risk.ev_pct != null}
+            {#if strategy?.risk?.ev_pct != null}
               <div class="kv-pair">
                 <span class="kv-k">EV / cost <InfoHint popup text={'<b>EV / cost</b> — EV as a percentage of |net cost|. Return-on-capital expectation. +5 % = "on average, my outlay returns 5 % of itself per cycle".'} /></span>
-                <span class="kv-v {(_mergedEvPct ?? strategy.risk.ev_pct) > 0 ? 'kv-pos' : (_mergedEvPct ?? strategy.risk.ev_pct) < 0 ? 'kv-neg' : ''}">
-                  {pctFmt(_mergedEvPct ?? strategy.risk.ev_pct)}%
+                <span class="kv-v {(_mergedEvPct ?? strategy?.risk?.ev_pct) > 0 ? 'kv-pos' : (_mergedEvPct ?? strategy?.risk?.ev_pct) < 0 ? 'kv-neg' : ''}">
+                  {pctFmt(_mergedEvPct ?? strategy?.risk?.ev_pct)}%
                 </span>
               </div>
             {/if}
           </div>
           <div class="text-[0.5rem] text-[#7e97b8] mt-1 italic">
             * numerical max/min within
-            {#if strategy.span_sigmas > 0}
-              ±{strategy.span_sigmas.toFixed(1)}σ
-              ({(strategy.span_pct * 100).toFixed(1)}%)
+            {#if (strategy?.span_sigmas ?? 0) > 0}
+              ±{(strategy?.span_sigmas ?? 0).toFixed(1)}σ
+              ({((strategy?.span_pct ?? 0) * 100).toFixed(1)}%)
               spot range at expiry
             {:else}
-              ±{(strategy.span_pct * 100).toFixed(1)}% spot range
+              ±{((strategy?.span_pct ?? 0) * 100).toFixed(1)}% spot range
             {/if}
           </div>
         </div>
