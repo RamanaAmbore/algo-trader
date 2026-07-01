@@ -447,11 +447,17 @@
     color: var(--text-soft, #94a3b8);
     font-variant-numeric: tabular-nums;
   }
+  /* Canonical .algo-section-title typography — operator: "header text
+     color is not consistent. GREEKS is good." Was sans-serif 1rem grey
+     which read as a page sub-title instead of a card heading. */
   .metrics-h2 {
-    font-size: 1rem;
-    font-weight: 600;
+    font-size: var(--fs-md);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
     margin: 1.2rem 0 0.4rem;
-    color: var(--text, #e2e8f0);
+    color: #fbbf24;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   .metrics-table-wrap { overflow-x: auto; }
   .metrics-table {

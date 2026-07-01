@@ -1,18 +1,33 @@
 // card_heading_consistency.spec.js
 //
-// Verifies two invariants across the operator (algo) route set:
-//   1. Card and section headings use SSOT color: slate-400 (#94a3b8)
-//      or amber (#fbbf24) only when an interactive/alerting semantic
-//      class is present (.is-active, .is-alerting, .mp-section-label).
-//   2. On mobile (393×851) card heading left-edge offset ≥ 11.2px
+// Verifies three invariants across the operator (algo) route set:
+//   1. Every card / section heading resolves to the canonical amber
+//      (#fbbf24) palette — operator (2026-07-01): "header text color
+//      is not consistent. Snapshot vs Greeks. Order entry vs Greeks.
+//      GREEKS is good. Make them consistent and uniform."
+//   2. Every active tab resolves to the same amber #fbbf24 — the
+//      inactive slate default lives on .algo-tab, active state
+//      overrides via .algo-tab[aria-selected="true"].algo-tab-c-amber.
+//   3. On mobile (393×851) card heading left-edge offset ≥ 11.2px
 //      (= 0.7rem × 16px) — headings must not touch the viewport edge.
 //
 // Five quality dimensions:
-//   1. SSOT    — color + size asserted against canonical values, not snapshots
-//   2. Perf    — serial mode + one login per describe group (storageState reuse)
-//   3. Stale   — no inline color:#fbbf24 on heading-class selectors (grep)
-//   4. Reuse   — shared helpers (getHeadingEls, isAllowedColor)
+//   1. SSOT    — color + size + font-family asserted against canonical
+//                values, not snapshots
+//   2. Perf    — serial mode + one login per describe group
+//   3. Stale   — grep app.css + every algo route/lib .svelte for
+//                heading-class selectors that pin a non-amber color
+//   4. Reuse   — shared helpers (getHeadingEls, isCanonicalAmber)
 //   5. UX      — desktop 1280×800 + mobile 393×851 both exercised
+//
+// The Phase 2 migrations (2026-07-01) locked every card / section
+// heading to canonical .algo-card-title tokens:
+//     color:      #fbbf24
+//     font-family: ui-monospace stack
+//     font-size:  0.6rem (title) / 0.65rem (section)
+//     font-weight: 700
+//     letter-spacing: 0.04em
+//     text-transform: uppercase
 
 // @playwright/test project: chromium-desktop only
 // CSS layout rendering is viewport-driven; we set the viewport explicitly
@@ -29,9 +44,8 @@ import * as path from 'node:path';
 test.setTimeout(60000);
 
 // ── Constants ─────────────────────────────────────────────────────────────
-const SLATE_400   = 'rgb(148, 163, 184)';   // #94a3b8 — canonical slate
-const AMBER_400   = 'rgb(251, 191, 36)';    // #fbbf24 — canonical amber (active)
-const AMBER_MUTED = 'rgba(251, 191, 36, 0.698)'; // mp-section-label (0.7 opacity)
+const AMBER_400   = 'rgb(251, 191, 36)';    // #fbbf24 — canonical amber
+const SLATE_400   = 'rgb(148, 163, 184)';   // #94a3b8 — inactive tab / muted labels only
 const MIN_LEFT_PX = 11.2;  // 0.7rem × 16px minimum safe left edge on mobile
 
 const ROUTES = [
@@ -62,35 +76,91 @@ async function getHeadingEls(page) {
     '.algo-content .algo-section-title, ' +
     '.algo-content .mp-section-label, ' +
     '.algo-content .section-heading, ' +
-    '.algo-content .bucket-subheader, ' +
-    '.algo-content .hcard-title'
+    '.algo-content .strat-section-heading, ' +
+    '.algo-content .brokers-h, ' +
+    '.algo-content .opt-block-h, ' +
+    '.algo-content .oes-modal-name, ' +
+    '.algo-content .mp-add-section-label'
   ).filter({ visible: true });
 }
 
-function isAllowedColor(color, classes) {
-  if (color === SLATE_400) return true;
-  // Canonical amber role — mp-section-label is always amber
-  if (classes.includes('mp-section-label')) return true;
-  // Interactive / alerting state amber
-  if (
-    (color === AMBER_400 || color === AMBER_MUTED) &&
-    (classes.includes('is-active') || classes.includes('is-alerting'))
-  ) return true;
-  return false;
+function isCanonicalAmber(color) {
+  return color === AMBER_400;
 }
 
 // ── Stale grep — no browser needed ────────────────────────────────────────
 
-test('SSOT stale-code: no inline color:#fbbf24 on heading-class selectors in app.css', () => {
+test('SSOT stale-code: heading selectors in app.css resolve to canonical amber', () => {
   const cssPath = path.resolve(process.cwd(), 'src/app.css');
   const css = fs.readFileSync(cssPath, 'utf8');
-  const pat =
-    /\.(algo-card-title|algo-section-title|section-heading|brokers-h|hcard-title)\s*\{[^}]*color\s*:\s*#fbbf24[^}]*\}/gs;
-  const violations = [...css.matchAll(pat)].map(m => m[0].trim());
-  expect(
-    violations,
-    `amber color still set on heading class selectors:\n${violations.join('\n')}`
-  ).toHaveLength(0);
+  // For each canonical heading class in app.css, the color declaration
+  // MUST be #fbbf24 (canonical amber). Any other hex is a regression.
+  const CANONICAL_SELECTORS = [
+    'algo-card-title',
+    'algo-section-title',
+    'mp-section-label',
+  ];
+  for (const sel of CANONICAL_SELECTORS) {
+    // Match `.selector { ... }` block (non-nested) and pull the color line.
+    const re = new RegExp(String.raw`\.${sel}\s*\{([^}]*)\}`, 'g');
+    const matches = [...css.matchAll(re)];
+    for (const m of matches) {
+      const body = m[1];
+      const colorMatch = body.match(/color\s*:\s*([^;]+);/);
+      if (colorMatch) {
+        const val = colorMatch[1].trim().toLowerCase();
+        expect(
+          val === '#fbbf24',
+          `.${sel} color="${val}" — must be #fbbf24 (canonical amber)`
+        ).toBe(true);
+      }
+    }
+  }
+});
+
+test('SSOT stale-code: bespoke heading classes in algo routes/lib use canonical amber', () => {
+  // Every heading-like class defined inline in an algo route or lib
+  // component must pin color:#fbbf24 (not slate, not muted amber,
+  // not var(--text-muted), etc). Bespoke classes are anything with
+  // -title / -header / -heading / -h suffix.
+  //
+  // The list below is manually curated per Phase 2 migration
+  // (2026-07-01) — additions should be reviewed against this spec.
+  const CANDIDATES = [
+    // [file, selector]
+    ['src/routes/(algo)/admin/brokers/+page.svelte', 'brokers-h'],
+    ['src/routes/(algo)/admin/metrics/+page.svelte', 'metrics-h2'],
+    ['src/routes/(algo)/strategies/+page.svelte', 'strat-section-heading'],
+    ['src/routes/(algo)/strategies/[id]/+page.svelte', 'strat-section-heading'],
+    ['src/routes/(algo)/admin/derivatives/+page.svelte', 'opt-block-h'],
+    ['src/routes/(algo)/admin/derivatives/+page.svelte', 'opt-section-h'],
+    ['src/routes/(algo)/admin/derivatives/+page.svelte', 'opt-section-title'],
+    ['src/lib/SymbolPanel.svelte', 'oes-modal-name'],
+    // .mp-bucket-label is INTENTIONALLY tinted per-bucket (semantic
+    // — positions / holdings / winners / losers / watch). Its
+    // TYPOGRAPHY is locked to canonical; color is variant-driven.
+    ['src/lib/NavCard.svelte', 'nav-panel-label'],
+  ];
+  for (const [rel, sel] of CANDIDATES) {
+    const p = path.resolve(process.cwd(), rel);
+    if (!fs.existsSync(p)) continue;
+    const src = fs.readFileSync(p, 'utf8');
+    // Match `.selector { ... }` — non-nested body only.
+    const re = new RegExp(String.raw`\.${sel}\s*\{([^}]*)\}`);
+    const m = src.match(re);
+    if (!m) continue;
+    const body = m[1];
+    const colorMatch = body.match(/color\s*:\s*([^;]+);/);
+    if (!colorMatch) continue;
+    const val = colorMatch[1].trim().toLowerCase();
+    // Allow #fbbf24 or var(--card-label-text, #fbbf24) fallback token.
+    const ok = val === '#fbbf24'
+            || /var\(--card-label-text,\s*#fbbf24\)/.test(val);
+    expect(
+      ok,
+      `${rel}: .${sel} color="${val}" — expected #fbbf24 (canonical amber)`
+    ).toBe(true);
+  }
 });
 
 // ── Live tests: one login, all routes, desktop then mobile ────────────────
@@ -145,12 +215,12 @@ test.describe.serial('live heading checks', () => {
           const color = await el.evaluate(n => getComputedStyle(n).color);
           const cls   = await el.evaluate(n => n.className);
           expect(
-            isAllowedColor(color, cls),
-            `[desktop ${route}] "${cls.trim()}" color="${color}" — expected slate-400 or canonical amber`
+            isCanonicalAmber(color),
+            `[desktop ${route}] "${cls.trim()}" color="${color}" — expected canonical amber ${AMBER_400}`
           ).toBe(true);
         }
 
-        // Font-size check for SSOT classes only
+        // Font-size check for canonical SSOT classes only
         const fsHeadings = await page.locator(
           '.algo-content .algo-card-title, .algo-content .algo-section-title'
         ).filter({ visible: true });
@@ -162,6 +232,21 @@ test.describe.serial('live heading checks', () => {
           // 0.6rem × 16 = 9.6px (algo-card-title), 0.65rem × 16 = 10.4px (algo-section-title)
           const ok = [9.6, 10.4].some(s => Math.abs(fsPx - s) <= 0.5);
           expect(ok, `[desktop ${route}] "${cls.trim()}" font-size=${fsPx}px — expected 9.6 or 10.4px`).toBe(true);
+        }
+
+        // Active tab check — every aria-selected="true" .algo-tab must
+        // resolve to canonical amber. Inactive tabs stay slate.
+        const activeTabs = await page.locator('.algo-content .algo-tab[aria-selected="true"]')
+                                     .filter({ visible: true });
+        const atCount = await activeTabs.count();
+        for (let i = 0; i < atCount; i++) {
+          const el = activeTabs.nth(i);
+          const color = await el.evaluate(n => getComputedStyle(n).color);
+          const cls   = await el.evaluate(n => n.className);
+          expect(
+            isCanonicalAmber(color),
+            `[desktop ${route}] active tab "${cls.trim()}" color="${color}" — expected canonical amber ${AMBER_400}`
+          ).toBe(true);
         }
       } finally {
         await ctx.close();
@@ -186,8 +271,8 @@ test.describe.serial('live heading checks', () => {
           const color = await el.evaluate(n => getComputedStyle(n).color);
           const cls   = await el.evaluate(n => n.className);
           expect(
-            isAllowedColor(color, cls),
-            `[mobile ${route}] "${cls.trim()}" color="${color}" — expected slate-400 or canonical amber`
+            isCanonicalAmber(color),
+            `[mobile ${route}] "${cls.trim()}" color="${color}" — expected canonical amber ${AMBER_400}`
           ).toBe(true);
 
           // Left-gap check for priority routes
@@ -200,6 +285,23 @@ test.describe.serial('live heading checks', () => {
               ).toBeGreaterThanOrEqual(MIN_LEFT_PX);
             }
           }
+        }
+
+        // Inactive tab colour check — slate-400 by default. Prevents
+        // future regressions that flip inactive tabs amber (which
+        // would defeat the active-state signal).
+        const inactiveTabs = await page.locator('.algo-content .algo-tab[aria-selected="false"]')
+                                       .filter({ visible: true });
+        const itCount = Math.min(await inactiveTabs.count(), 4); // cap noise
+        for (let i = 0; i < itCount; i++) {
+          const el = inactiveTabs.nth(i);
+          const color = await el.evaluate(n => getComputedStyle(n).color);
+          const cls   = await el.evaluate(n => n.className);
+          // Inactive can be slate (default) or hover-slate; MUST not be amber.
+          expect(
+            color !== AMBER_400,
+            `[mobile ${route}] inactive tab "${cls.trim()}" color="${color}" — expected slate, got amber`
+          ).toBe(true);
         }
       } finally {
         await ctx.close();

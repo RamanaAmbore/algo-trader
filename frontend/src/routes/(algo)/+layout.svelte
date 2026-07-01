@@ -2087,10 +2087,15 @@
     background-color: rgba(251,191,36,0.15);
     color: #fbbf24;
   }
-  /* section-heading in algo context: slate-400 (same as .algo-card-title).
-     Amber was applied globally here but section headings are structural
-     labels (Personal, Address, Investment…) not interactive or alerting. */
-  :global(.algo-content .section-heading) { color: #94a3b8; }
+  /* section-heading in algo context: align to canonical .algo-card-title
+     typography so every card / section header reads with the same amber
+     intensity + monospace stack. Operator (2026-07-01): "header text
+     color is not consistent. GREEKS is good — make them uniform." */
+  :global(.algo-content .section-heading) {
+    color: #fbbf24;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.04em;
+  }
   :global(.algo-content .page-title-chip) {
     color: #fbbf24;
     border-bottom: none;

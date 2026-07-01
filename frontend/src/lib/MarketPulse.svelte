@@ -4889,7 +4889,12 @@
             <AlgoTabs
               tabs={[
                 { id: 'pinned', label: 'Pinned', color: /** @type {const} */ ('amber') },
-                ..._userLists.map(l => ({ id: `wl:${l.id}`, label: l.name, color: /** @type {const} */ ('sky') }))
+                /* Operator (2026-07-01): "active tab text color must be
+                   consistent". User-created watchlists previously took
+                   the sky variant to distinguish them from Pinned; now
+                   every tab shares the canonical amber palette so the
+                   active state reads uniform across the platform. */
+                ..._userLists.map(l => ({ id: `wl:${l.id}`, label: l.name, color: /** @type {const} */ ('amber') }))
               ]}
               value={topTab === 'pinned' ? 'pinned' : `wl:${topTab}`}
               onChange={(id) => { topTab = id === 'pinned' ? 'pinned' : Number(id.slice(3)); }}
@@ -5796,12 +5801,14 @@
   }
   /* Bucket label — small mono caps above each grid, tinted to match
      the per-major palette already used elsewhere on the page so the
-     six grids feel like the same family seen from the top. */
+     six grids feel like the same family seen from the top. Typography
+     tokens locked to canonical .algo-card-title; only COLOR varies
+     per bucket (semantic — positions/holdings/winners/losers/watch). */
   .mp-bucket-label {
-    font-family: var(--font-numeric);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: var(--fs-sm);
     font-weight: 700;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
     padding: 0.15rem 0.35rem;
     margin-bottom: 0.2rem;
@@ -6175,13 +6182,14 @@
 
   /* Section label inside the unified Add popup — separates the
      "Add symbol" and "New watchlist" sections so the two actions
-     read as distinct without needing tabs. Subtle uppercase amber
-     header (same palette as the page-section headers). */
+     read as distinct without needing tabs. Canonical .algo-card-title
+     tokens (operator 2026-07-01: "GREEKS is good, make uniform"). */
   :global(.mp-add-section-label) {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: var(--fs-sm);
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.04em;
     color: #fbbf24;
     margin-bottom: 0.35rem;
   }
@@ -6219,11 +6227,16 @@
     border-bottom: 1px solid rgba(251, 191, 36, 0.18);
     background: rgba(251, 191, 36, 0.04);
   }
+  /* Modal title inside the Add / option-picker popup — canonical
+     .algo-card-title tokens so it reads at the same intensity as the
+     card headings behind it (operator: "GREEKS is good"). Was fs-lg
+     with 0.05em spacing — slightly heavier than the platform default. */
   :global(.search-title) {
-    font-size: var(--fs-lg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: var(--fs-md);
     font-weight: 700;
     color: #fbbf24;
-    letter-spacing: 0.05em;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
   }
   :global(.search-close) {

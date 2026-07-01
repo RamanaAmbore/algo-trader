@@ -278,13 +278,28 @@
   }
 
   /* ── Labels ─────────────────────────────────────────────────────── */
+  /* Canonical .algo-card-title tokens for the dark-theme mount
+     (/dashboard). Cream mount (/performance) keeps its champagne
+     palette + heavier letter-spacing via the parent theme wrapper
+     — those overrides live in .card-theme-cream. Operator
+     (2026-07-01): "make header text color uniform across cards.
+     GREEKS is good." */
   .nav-panel-label {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: var(--fs-sm);
     font-weight: 700;
-    letter-spacing: 0.08em;
-    color: var(--card-label-text, #c8a84b);
+    letter-spacing: 0.04em;
+    color: var(--card-label-text, #fbbf24);
     text-transform: uppercase;
     margin-bottom: 0.1rem;
+  }
+  /* Cream mount (/performance) — restore heavier tracking + slightly
+     larger label so it reads correctly at the higher card contrast
+     ratio. Palette still driven by --card-label-text. */
+  :global(.card-theme-cream) .nav-panel-label {
+    font-family: inherit;
+    font-size: var(--fs-sm);
+    letter-spacing: 0.08em;
   }
 
   /* ── Big NAV number ─────────────────────────────────────────────── */

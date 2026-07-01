@@ -479,11 +479,14 @@
     display: flex; align-items: center; justify-content: space-between;
     margin-bottom: 0.5rem;
   }
+  /* Canonical .algo-card-title palette + typography — operator: "GREEKS
+     is good, make every header uniform". Was: fs-md / 800 / slate-muted
+     which drifted from every other card heading on the page. */
   .strat-section-heading {
     margin: 0;
-    font-size: var(--fs-md); font-weight: 800; letter-spacing: 0.06em;
-    text-transform: uppercase; color: var(--text-muted);
-    font-family: var(--font-numeric);
+    font-size: var(--fs-md); font-weight: 700; letter-spacing: 0.04em;
+    text-transform: uppercase; color: #fbbf24;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   .show-closed {
     font-size: var(--fs-md); color: var(--text-muted);

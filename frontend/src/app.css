@@ -1858,19 +1858,22 @@
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
+  /* Canonical .algo-card-title typography tokens — operator: "make
+     header text color consistent. GREEKS is good." mp-section-label
+     is the row-separator variant of the same amber family; every
+     token except display+gap matches .algo-card-title exactly so
+     the two read as the same intensity. */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.6rem;
-  font-family: ui-monospace, monospace;
   font-weight: 700;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: rgba(251, 191, 36, 0.7);
+  color: #fbbf24;
   margin-bottom: 0.25rem;
 }
 /* Bespoke dashboard decoration — amber left-edge bar. Opt-in via modifier
    so other surfaces (MarketPulse · orders) stay flat. */
 .mp-section-label--bar {
-  color: #fbbf24;
-  letter-spacing: 0.1em;
   margin-bottom: 0.45rem;
   padding: 0.05rem 0;
 }

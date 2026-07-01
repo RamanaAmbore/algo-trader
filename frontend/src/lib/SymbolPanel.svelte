@@ -2116,7 +2116,13 @@
           id: t.id,
           label: t.label,
           badge: t.id === 'chain' && basketLegs.length > 0 ? basketLegs.length : undefined,
-          color: t.id === 'chain' ? 'green' : t.id === 'ticket' ? 'amber' : 'sky',
+          /* Operator (2026-07-01): "active tab text color must be
+             consistent". Ticket / chain / panel previously took
+             amber / green / sky variants to distinguish flow; now
+             every tab is amber. Chain still carries a badge for the
+             leg count, which conveys the semantic distinction
+             without breaking the uniform active state. */
+          color: /** @type {const} */ ('amber'),
           disabled: t.id === 'chain' ? chainDisabled : false,
           disabledTitle: t.id === 'chain' && chainDisabled
             ? 'No F&O for this root — chain unavailable'
@@ -3094,13 +3100,17 @@
   }
   /* Plain title text — operator: "remove pill kind of decoration
      for modal header text". Bold uppercase amber glyphs on the
-     navy gradient strip; the gradient itself is the prominence. */
+     navy gradient strip; the gradient itself is the prominence.
+     Typography tokens locked to canonical .algo-card-title so
+     "Order entry" reads at the same intensity as "Greeks" / "Snapshot"
+     — operator (2026-07-01): "Order entry vs Greeks — many examples
+     like that. GREEKS is good. Make them consistent and uniform." */
   .oes-modal-name {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-lg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: var(--fs-sm);
     color: #fbbf24;
-    font-weight: 800;
-    letter-spacing: 0.10em;
+    font-weight: 700;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
     flex-shrink: 0;
     display: inline-flex;

@@ -283,11 +283,14 @@
     color: #fca5a5; font-size: var(--fs-lg);
     margin-bottom: 0.7rem;
   }
+  /* Canonical .algo-card-title palette + typography — operator: "GREEKS
+     is good, make every header uniform". Was: fs-md / 800 / slate-muted
+     which drifted from every other card heading on the page. */
   .strat-section-heading {
-    font-size: var(--fs-md); font-weight: 800; letter-spacing: 0.06em;
-    text-transform: uppercase; color: var(--text-muted);
+    font-size: var(--fs-md); font-weight: 700; letter-spacing: 0.04em;
+    text-transform: uppercase; color: #fbbf24;
     margin: 0 0 0.5rem;
-    font-family: var(--font-numeric);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   .strat-create {
     padding: 0.8rem 1rem;

@@ -575,12 +575,17 @@
     border-bottom: 1px solid rgba(251,191,36,0.18);
     margin-bottom: 0.4rem;
   }
+  /* Canonical .algo-card-title palette + typography — operator: "header
+     text color is not consistent. GREEKS is good." Was slate-400 which
+     read as muted next to the amber Snapshot / Order Entry headings on
+     the same nav level. */
   .brokers-h {
-    font-size: var(--fs-sm);
+    font-size: var(--fs-md);
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: #94a3b8;
+    letter-spacing: 0.04em;
+    color: #fbbf24;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     margin: 0;
   }
 
