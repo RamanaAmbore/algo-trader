@@ -4475,23 +4475,15 @@
   <div class="opt-payoff opt-payoff-full algo-status-card cmd-surface p-3"
     class:fs-card-on={_fsPayoff}
     class:is-collapsed={_colPayoff}>
-    <!-- Single-row header — title + Net debit/credit + Max profit /
-         Max loss + Greeks chips, plus the global collapse +
-         fullscreen toggles. SPOT / TDAY / EXP / DTE / σ / LEGS live
-         in the on-chart stat overlay. -->
+    <!-- Single-row header — title + EV + Greeks chips, plus the global
+         collapse + fullscreen toggles. Net Dr/Cr / MAX P / MAX L chips
+         removed 2026-07-01 per operator ("on payoff line show ev and
+         greeks. remove other chips"); the same numbers are still available
+         in the Aggregate / Risk kv-block below the chart. SPOT / TDAY /
+         EXP / DTE / σ / LEGS live in the on-chart stat overlay. -->
     <div class="opt-section-h opt-section-h-grid">
       <div class="opt-section-row">
         <span class="opt-section-title">Payoff</span>
-        <span class="opt-section-tag tag-{(strategy?.net_cost ?? 0) > 0 ? 'long' : (strategy?.net_cost ?? 0) < 0 ? 'short' : 'long'}">
-          {(strategy?.net_cost ?? 0) > 0 ? 'Net Dr' : (strategy?.net_cost ?? 0) < 0 ? 'Net Cr' : 'Free'}
-          {fmtMoney(Math.abs(strategy?.net_cost ?? 0), false)}
-        </span>
-        <span class="opt-section-tag tag-long" title="Max profit (merged curve when an eq holding is layered on the strategy)">
-          MAX P {fmtUnbounded(_mergedRisk?.max_profit ?? strategy?.risk?.max_profit, false)}
-        </span>
-        <span class="opt-section-tag tag-short" title="Max loss (merged curve when an eq holding is layered on the strategy)">
-          MAX L {fmtUnbounded(_mergedRisk?.max_loss ?? strategy?.risk?.max_loss, false)}
-        </span>
         <!-- Expected value chip — probability-weighted average payoff
              under the lognormal distribution. Positive = positive
              expectancy; negative = lose money on average. Companion
