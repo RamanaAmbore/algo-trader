@@ -2760,13 +2760,16 @@
     min-height: 0;
   }
   .dash-activity > .card-body {
-    /* Let the inner LogPanel claim the available height so multi-
-       column flow has enough rows to fill both columns before
-       overflowing. */
+    /* Cap the tail height so the activity card doesn't dominate the
+       dashboard — the log scrolls beyond the cap. min-height keeps
+       enough rows visible to fill both magazine columns before
+       overflow (~5-6 rows per column). Operator: "reduce the height
+       of activity card." */
     display: flex;
     flex-direction: column;
     flex: 1 1 auto;
-    min-height: 14rem;
+    min-height: 8rem;
+    max-height: 15rem;
   }
   .row3-header {
     /* align-items: center (not baseline) to match the canonical
