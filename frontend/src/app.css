@@ -1397,6 +1397,21 @@
   .btn-primary:hover:not(:disabled) { background-color: #c8b878; }
   .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 
+  /* Algo-page override — the cream champagne palette clashes with the
+     dark-navy + amber scheme. Under .card-theme-dark (scoped at
+     (algo)/+layout.svelte's .algo-viewport), the primary button reads
+     as an amber pill matching PageHeaderActions + heading tokens.
+     Public cream routes keep the champagne treatment above. */
+  .card-theme-dark .btn-primary {
+    background-color: rgba(251, 191, 36, 0.14);
+    color: #fbbf24;
+    border: 1px solid rgba(251, 191, 36, 0.55);
+  }
+  .card-theme-dark .btn-primary:hover:not(:disabled) {
+    background-color: rgba(251, 191, 36, 0.24);
+    color: #fde047;
+  }
+
   .btn-secondary {
     padding: 0.3rem 0.85rem;
     font-size: 0.75rem;
@@ -2003,6 +2018,29 @@
 .bucket-card-entry,
 .bucket-card-activity,
 .bucket-card-chase { /* no-op — inherits amber from .bucket-card */ }
+
+/* ── Canonical outer chrome for bespoke data grids / tables ─────────────────
+   Applied via .algo-grid-chrome so hand-rolled grids (byund-scroll,
+   cand-scroll, hist-table-wrap, strat-table-wrap, brokers-scroll,
+   dash-mini-grid wrapper) read as the same visual family as ag-theme-algo.
+
+   Usage:
+     <div class="algo-grid-chrome …">
+       <div class="cand-scroll"> … </div>   ← horizontal-scroll wrapper inside
+     </div>
+   OR directly on the scroll/overflow wrapper when it IS the outermost frame:
+     <div class="algo-grid-chrome cand-scroll"> … </div>
+
+   The class only sets the four chrome properties — it does not set width,
+   height, display, overflow, or padding so callers keep full layout control.
+   ─────────────────────────────────────────────────────────────────────────── */
+.algo-grid-chrome {
+  border: 1.5px solid rgba(255, 255, 255, 0.10);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+              inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+}
 
 /* ── AlgoTabs — canonical tab-strip base shared across all algo pages ── */
 /* See frontend/src/lib/AlgoTabs.svelte for the component. */
