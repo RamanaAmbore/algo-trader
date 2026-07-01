@@ -121,6 +121,189 @@
   }
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+   ### Algo design tokens — SSOT (2026-06-30)
+   Phase 2 of the algo-page consistency audit. Every literal colour, font,
+   font-size, and modal/card/chip recipe used inside `(algo)/**` and lib
+   components opened on algo routes resolves through ONE of the tokens below.
+   The Playwright spec `frontend/e2e/algo_consistency.spec.js` greps for
+   hard-coded hexes / font sizes outside this block as a stale-code guard.
+
+   Naming convention mirrors the existing --algo-* palette above.
+   ───────────────────────────────────────────────────────────────────────── */
+:root {
+  /* Text colour tokens — every text colour on an algo surface routes
+     through one of these. The original --algo-slate / --algo-muted /
+     --algo-dim values are aliased so we do not break any existing
+     consumer. Adding semantic aliases makes consumer intent legible
+     at the call site. */
+  --text-primary: var(--algo-slate);     /* #c8d8f0 — body text on dark */
+  --text-muted:   var(--algo-muted);     /* #7e97b8 — labels, captions, secondary text */
+  --text-faint:   var(--algo-dim);       /* #94a3b8 — tertiary / disabled */
+  --text-accent:  var(--algo-amber);     /* #fbbf24 — card titles, key labels */
+  --text-pos:     var(--algo-green);     /* #4ade80 — P&L positive */
+  --text-neg:     var(--algo-red);       /* #f87171 — P&L negative */
+  --text-cash:    var(--algo-sky);       /* #7dd3fc — cash / info accents */
+  --text-violet:  #c084fc;               /* AI / strategy accents */
+
+  /* New violet token (operator-approved — was missing as a first-class
+     algo colour). Soft alpha variant for backgrounds matches the
+     amber/cyan/sky/green/red recipe above. */
+  --algo-violet:           #c084fc;
+  --algo-violet-text:      #d8b4fe;
+  --algo-violet-bg-soft:   rgba(192, 132, 252, 0.08);
+  --algo-violet-bg:        rgba(192, 132, 252, 0.14);
+  --algo-violet-bg-strong: rgba(192, 132, 252, 0.22);
+  --algo-violet-border-soft: rgba(192, 132, 252, 0.30);
+  --algo-violet-border:    rgba(192, 132, 252, 0.55);
+
+  /* Font stacks. `--font-numeric` is the canonical monospace family for
+     P&L cells, prices, qty fields, timestamps. `--font-text` matches
+     the body stack. Bake at the root so palette tweaks land in one
+     place rather than 390+ inline declarations. */
+  --font-numeric: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-text:    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  /* Font-size scale — six steps collapsing the prior 16 distinct sizes.
+     Mapping (rounded toward the bucket centre):
+       --fs-2xs   was 0.45 / 0.5 / 0.52         (≤0.52rem cluster)
+       --fs-xs    was 0.54 / 0.55 / 0.56 / 0.58 (mid-tiny cluster)
+       --fs-sm    was 0.6  / 0.62 / 0.63        (small cluster)
+       --fs-md    was 0.65 / 0.66 / 0.68        (default body cluster)
+       --fs-lg    was 0.7  / 0.72 / 0.74 / 0.75 / 0.78 (large cluster)
+       --fs-xl    was 0.8  / 0.82 / 0.85 / 0.9  / 0.95 (title cluster)
+     ≤2 px reflow on dense tables is acceptable — operator-approved. */
+  --fs-2xs: 0.5rem;
+  --fs-xs:  0.55rem;
+  --fs-sm:  0.6rem;
+  --fs-md:  0.65rem;
+  --fs-lg:  0.7rem;
+  --fs-xl:  0.85rem;
+
+  /* Canonical card-bg gradient — single source for every .algo-card,
+     .bucket-card, and chart-wrapper surface that uses the dark navy
+     gradient look. The 15 inline `linear-gradient(180deg, #1d2a44 …)`
+     declarations across lib/ + routes/ all resolve to this. */
+  --card-bg-gradient: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+}
+
+/* ── Canonical .algo-modal recipe ─────────────────────────────────────────
+   Phase 2 SSOT for every floating modal on the algo side. The 4 existing
+   `.canonical-modal-panel` consumers (ChartModal, ActivityLogModal,
+   SymbolPanel, OrderTicket) keep working — `.canonical-modal-panel` now
+   composes `.algo-modal` chrome + its content-rich 78vw/82vh dimensions.
+
+   Bespoke modals (ConfirmModal, RefreshButton closed-hours popup, TourModal,
+   AgentFireModal, HireMeModal, BrokerHealthBadge, OptionsPayoff zoom)
+   adopt `.algo-modal` for visual chrome (gradient + amber halo + radius +
+   shadow + flex column + overflow hidden) and keep their own width/height
+   so a confirm dialog still sits at 22rem, not 78vw.
+   ─────────────────────────────────────────────────────────────────────── */
+.algo-modal {
+  pointer-events: auto;
+  background: var(--card-bg-gradient);
+  border: 1px solid rgba(251, 191, 36, 0.40);
+  border-radius: 6px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55),
+              0 0 0 1px var(--algo-amber-bg-soft);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* ── Canonical chip recipes ────────────────────────────────────────────────
+   `.algo-chip-shape` — geometry-only mixin (no palette opinion).
+       Interactive chips (RefreshButton, broker-chip, mode pill) compose
+       this + their own behaviour CSS.
+   `.algo-chip` — static labels (status / category / count badges).
+       Default = slate. Variant classes layer palette only.
+   `.algo-tag` — smaller variant of `.algo-chip` (sub-label / inline tag).
+   ─────────────────────────────────────────────────────────────────────── */
+.algo-chip-shape {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  line-height: 1;
+  box-sizing: border-box;
+  white-space: nowrap;
+}
+
+.algo-chip {
+  /* Composes .algo-chip-shape, repeated inline so consumers only need
+     one class. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  line-height: 1;
+  box-sizing: border-box;
+  white-space: nowrap;
+  font-family: var(--font-numeric);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  /* Default = slate */
+  background: rgba(126, 151, 184, 0.14);
+  border: 1px solid rgba(126, 151, 184, 0.35);
+  color: var(--text-faint);
+}
+.algo-chip-amber {
+  background: var(--algo-amber-bg);
+  border-color: var(--algo-amber-border-soft);
+  color: var(--algo-amber);
+}
+.algo-chip-cash {
+  background: var(--algo-sky-bg);
+  border-color: var(--algo-sky-border-soft);
+  color: var(--algo-sky);
+}
+.algo-chip-violet {
+  background: var(--algo-violet-bg);
+  border-color: var(--algo-violet-border-soft);
+  color: var(--algo-violet);
+}
+.algo-chip-slate {
+  background: rgba(126, 151, 184, 0.14);
+  border-color: rgba(126, 151, 184, 0.35);
+  color: var(--text-faint);
+}
+.algo-chip-pos {
+  background: var(--algo-green-bg);
+  border-color: var(--algo-green-border-soft);
+  color: var(--algo-green);
+}
+.algo-chip-neg {
+  background: var(--algo-red-bg);
+  border-color: var(--algo-red-border-soft);
+  color: var(--algo-red);
+}
+
+/* Smaller cousin — sub-labels, inline tags, dense compact strips */
+.algo-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.35rem;
+  border-radius: 3px;
+  line-height: 1.2;
+  font-family: var(--font-numeric);
+  font-size: var(--fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: rgba(126, 151, 184, 0.14);
+  border: 1px solid rgba(126, 151, 184, 0.30);
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
 /* ── Global reset — kill browser blue focus rings and tap highlights ──────── */
 @layer base {
   *,
@@ -181,9 +364,15 @@
   padding: 1rem;
   box-sizing: border-box;
 }
+/* Composes .algo-modal chrome + content-rich dimensions for the four
+   canonical full-screen-ish modals (ChartModal, ActivityLogModal,
+   SymbolPanel, OrderTicket). Phase 2 SSOT — the bg / border / shadow
+   chrome now lives on `.algo-modal` above; this rule only contributes
+   the dimensions. Consumers keep `class="canonical-modal-panel"` for
+   backwards compat. */
 .canonical-modal-panel {
   pointer-events: auto;
-  background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+  background: var(--card-bg-gradient);
   border: 1px solid rgba(251, 191, 36, 0.40);
   border-radius: 6px;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px var(--algo-amber-bg-soft);
@@ -407,7 +596,7 @@
 
 /* P&L cell colors — theme-aware, applied via cellClass in PerformancePage */
 .ag-theme-ramboq .pnl-loss { color: #dc2626; background-color: rgba(220,38,38,0.05); }
-.ag-theme-ramboq .pnl-gain { color: #059669; background-color: rgba(5,150,105,0.05); }
+.ag-theme-ramboq .pnl-gain { color: #047a56; background-color: rgba(4,122,86,0.05); }
 .ag-theme-ramboq .pnl-zero { color: #3c4660; }
 /* Brighter red/green tuned for the dark navy body — 500-range colours
    read as "black text" on the old light theme, so switched to 400-range
@@ -997,7 +1186,7 @@
 .log-panel .log-agent-alert       { color: #fbbf24; background: rgba(251,191,36,0.08); display: block; padding: 0 4px; border-radius: 2px; }
 .log-panel .log-agent-success     { color: #4ade80; background: rgba(74,222,128,0.08); display: block; padding: 0 4px; border-radius: 2px; }
 .log-panel .log-agent-failed      { color: #f87171; background: rgba(248,113,113,0.12); display: block; padding: 0 4px; border-radius: 2px; }
-.log-panel .log-agent-cooldown    { color: #64748b; display: block; padding: 0 4px; border-radius: 2px; }
+.log-panel .log-agent-cooldown    { color: #7d8fa6; display: block; padding: 0 4px; border-radius: 2px; }
 .log-panel .log-agent-default     { color: #9ca3af; }
 /* `.log-ts` is the global dual-zone stacked timestamp (defined above).
    Inside the log panel, give it some right margin so the row text
@@ -1243,7 +1432,7 @@
     box-shadow: inset 0 1px 2px rgba(0,0,0,0.3);
     caret-color: #fbbf24;
   }
-  .cmd-input::placeholder { color: #64748b; font-weight: 400; }
+  .cmd-input::placeholder { color: #7d8fa6; font-weight: 400; }
 
   .page-title-chip {
     display: block;
@@ -1262,7 +1451,7 @@
   .section-heading {
     font-size: 0.6rem;
     font-weight: 700;
-    color: #9a7e38;
+    color: #8a6e28;
     text-transform: uppercase;
     letter-spacing: 0.12em;
     margin-bottom: 0.5rem;
@@ -1690,7 +1879,7 @@
 }
 .act-events-hint {
   font-size: 0.56rem;
-  color: rgba(180, 200, 230, 0.55);
+  color: rgba(180, 200, 230, 0.65);
   font-family: ui-monospace, monospace;
   letter-spacing: 0.02em;
 }
@@ -1700,7 +1889,7 @@
    reverted the amber 3px left-border that was briefly added in 098b4de2;
    every card across the workspace now reads as a flat panel. */
 .algo-card {
-  background: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+  background: var(--card-bg-gradient);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 4px;
   padding: 0.55rem 0.7rem;
@@ -1863,7 +2052,7 @@
 .oes-common-chase-toggle.is-disabled { cursor: not-allowed; opacity: 0.45; }
 .oes-common-chase-toggle.is-disabled input { cursor: not-allowed; }
 .oes-common-chase-label {
-  color: rgba(200,216,240,0.55);
+  color: rgba(200,216,240,0.70);
   font-size: 0.55rem;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -2012,9 +2201,9 @@ button:not(:disabled):active,
   /* Text */
   --card-cell-text:           #0c1830;
   --card-currency-text:       #4a5872;
-  --card-muted-text:          #7a6b52;
-  --card-label-text:          #c8a84b;   /* champagne gold label */
-  --card-as-of-text:          #a89878;
+  --card-muted-text:          #736448;
+  --card-label-text:          #7a5e1e;   /* champagne gold label — darkened for AA contrast */
+  --card-as-of-text:          #7a6650;
 
   /* P&L colours */
   --card-gain-text:           #1a6b3a;
@@ -2049,7 +2238,7 @@ button:not(:disabled):active,
 
 .card-theme-dark {
   /* Card shell */
-  --card-bg:                  linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+  --card-bg:                  var(--card-bg-gradient);
   --card-border:              rgba(255, 255, 255, 0.08);
   --card-divider:             rgba(126, 151, 184, 0.20);
 
