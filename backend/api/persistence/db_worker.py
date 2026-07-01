@@ -177,6 +177,38 @@ def _coalesce_holidays(payloads: list[dict]) -> list[dict[str, Any]]:
     return list(seen.values())
 
 
+def _parse_bar_ts(raw: Any) -> tuple[Any, str] | None:
+    """Coerce a bar_ts value into (datetime-with-tzinfo, iso-string).
+
+    Producers store bar_ts as ISO-8601 UTC strings
+    (e.g. '2026-07-01T03:45:00+00:00').  asyncpg needs a timezone-aware
+    datetime object for the `timestamptz` column — passing a bare string
+    causes:
+        'expected a datetime.date or datetime.datetime instance, got str'
+    even when the SQL has CAST(:bar_ts AS timestamptz), because asyncpg
+    type-validates the Python bind value BEFORE the SQL CAST runs.
+
+    Returns None for empty or unparseable input so the caller can drop
+    the bar without poisoning the rest of the batch.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    if not raw:
+        return None
+    if isinstance(raw, _dt):
+        # Ensure timezone-aware; assume UTC if naive.
+        if raw.tzinfo is None:
+            raw = raw.replace(tzinfo=_tz.utc)
+        return raw, raw.isoformat(timespec="seconds")
+    s = str(raw)
+    try:
+        parsed = _dt.fromisoformat(s)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=_tz.utc)
+        return parsed, parsed.isoformat(timespec="seconds")
+    except ValueError:
+        return None
+
+
 def _coalesce_intraday(payloads: list[dict]) -> list[dict[str, Any]]:
     """Merge into unique (symbol, exchange, date, interval, bar_ts) rows, last-write-wins."""
     seen: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
@@ -191,16 +223,17 @@ def _coalesce_intraday(payloads: list[dict]) -> list[dict[str, Any]]:
             continue
         d_obj, d_key = parsed
         for bar in payload.get("bars", []):
-            bar_ts = str(bar.get("bar_ts", ""))
-            if not bar_ts:
+            ts_parsed = _parse_bar_ts(bar.get("bar_ts"))
+            if ts_parsed is None:
                 continue
-            pk = (sym, exch, d_key, interval, bar_ts)
+            bar_ts_obj, bar_ts_key = ts_parsed
+            pk = (sym, exch, d_key, interval, bar_ts_key)
             seen[pk] = {
                 "symbol":   sym,
                 "exchange": exch,
                 "date":     d_obj,
                 "interval": interval,
-                "bar_ts":   bar_ts,
+                "bar_ts":   bar_ts_obj,   # datetime with tzinfo — asyncpg binds to timestamptz natively
                 "open":     bar.get("open",   0.0),
                 "high":     bar.get("high",   0.0),
                 "low":      bar.get("low",    0.0),
@@ -295,7 +328,7 @@ async def _upsert_intraday(rows: list[dict[str, Any]]) -> None:
             (symbol, exchange, date, interval, bar_ts,
              open, high, low, close, volume)
         VALUES
-            (:symbol, :exchange, :date, :interval, CAST(:bar_ts AS timestamptz),
+            (:symbol, :exchange, :date, :interval, :bar_ts,
              :open, :high, :low, :close, :volume)
         ON CONFLICT (symbol, exchange, date, interval, bar_ts) DO NOTHING
     """)

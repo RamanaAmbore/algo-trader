@@ -830,6 +830,7 @@ class SparklineController(Controller):
         ltp_map: dict[str, float] = {}
 
         # Pass 1 — tick map (zero Kite quota).
+        from backend.brokers.broker_apis import record_good_ltp as _record_ltp, get_last_good_ltp as _get_last_ltp
         ticker_hits: list[str] = []
         miss_keys: list[str] = []
         for qk in quote_keys:
@@ -839,6 +840,9 @@ class SparklineController(Controller):
                 if ltp_val is not None:
                     ltp_map[qk] = ltp_val
                     ticker_hits.append(qk)
+                    # Persist so closed-hours / cold-cache path can use last-known price.
+                    sym_only = qk.split(":", 1)[-1]
+                    _record_ltp(sym_only, ltp_val)
                 else:
                     miss_keys.append(qk)
             else:
@@ -871,7 +875,12 @@ class SparklineController(Controller):
                     else:
                         lp = val
                     try:
-                        ltp_map[key] = float(lp) if lp is not None else 0.0
+                        lp_f = float(lp) if lp is not None else 0.0
+                        ltp_map[key] = lp_f
+                        if lp_f > 0:
+                            # Persist so closed-hours / cold-cache path can use last-known price.
+                            sym_only = key.split(":", 1)[-1]
+                            _record_ltp(sym_only, lp_f)
                     except (TypeError, ValueError):
                         pass
             except Exception as exc:
@@ -894,6 +903,14 @@ class SparklineController(Controller):
             today_bars = today_result.get(sym, [])
             ltp_key = f"{sym_obj.exchange}:{sym}"
             ltp_val = ltp_map.get(ltp_key)
+            # Closed-hours: if ltp_map has no entry (ticker not subscribed,
+            # broker.ltp() skipped) try the 24-hour last-good-LTP cache.
+            # This covers pure mover symbols that never pass through
+            # positions/holdings enrichment and thus never get recorded there.
+            if (ltp_val is None or ltp_val == 0) and spark_market_closed:
+                _cached_ltp = _get_last_ltp(sym, max_age_s=86400.0)
+                if _cached_ltp and _cached_ltp > 0:
+                    ltp_val = _cached_ltp
             # When market is closed, do not append a live LTP tail to an
             # existing series — the last close in `past` already represents
             # the EOD value. Appending a stale LTP would create a
