@@ -636,13 +636,14 @@
   /* Negative cash (margin debt) flips to red via .ps-neg. */
   .ps-cash { color: #7dd3fc; }
   @media (max-width: 640px) {
-    /* Four pills (P · M · C · H) — each carries its own slash-joined
-       trio. Tighten gaps + value font; the wrapper allows horizontal
-       scroll as a last-resort safety net so nothing clips off-screen
-       on the narrowest devices (~320 px). Horizontal padding matches
-       navbar inner + footer on mobile (0 0.25rem) so the inner content
-       aligns left/right across the three chrome bands. */
-    .ps-strip   { gap: 0.28rem; padding: 0 0.25rem;
+    /* Four pills (P · M · C · H) fill the mobile viewport width:
+       P locks to the left edge; M / C / H distribute across the
+       remaining width via `justify-content: space-between`. The
+       inter-pill gap expands / contracts as the viewport resizes.
+       Horizontal scroll retained as a last-resort safety net if a
+       pill's trio grows past its column (long lifetime P&L numbers). */
+    .ps-strip   { justify-content: space-between;
+                  gap: 0.15rem; padding: 0 0.25rem;
                   overflow-x: auto; -webkit-overflow-scrolling: touch;
                   scrollbar-width: none; }
     .ps-strip::-webkit-scrollbar { display: none; }
@@ -652,7 +653,7 @@
   }
   @media (max-width: 380px) {
     /* Narrowest phones — drop one more notch. */
-    .ps-strip   { gap: 0.22rem; padding: 0 0.2rem; }
+    .ps-strip   { padding: 0 0.2rem; }
     .ps-agg-k   { font-size: var(--fs-2xs); }
     .ps-agg-v   { font-size: var(--fs-xs); }
   }
