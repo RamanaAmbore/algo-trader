@@ -20,7 +20,7 @@ from litestar.exceptions import HTTPException
 from sqlalchemy import func, select
 
 from backend.api.auth_guard import admin_guard
-from backend.api.database import async_session
+from backend.api.database import async_session, shared_async_session
 from backend.api.models import (
     Agent,
     AgentEvent,
@@ -167,7 +167,7 @@ async def _fetch_broker_statuses() -> tuple[list[BrokerStatus], list[str]]:
     ipv6_list: list[str] = []
 
     try:
-        async with async_session() as session:
+        async with shared_async_session() as session:
             rows = (await session.execute(
                 select(BrokerAccount).order_by(BrokerAccount.account)
             )).scalars().all()
@@ -736,7 +736,7 @@ class BrokerHealthController(Controller):
         # health_map; fall back to BrokerAccount rows for broker label.
         broker_label_map: dict[str, str] = {}
         try:
-            async with async_session() as _sess:
+            async with shared_async_session() as _sess:
                 rows = (await _sess.execute(
                     select(BrokerAccount).order_by(BrokerAccount.account)
                 )).scalars().all()
