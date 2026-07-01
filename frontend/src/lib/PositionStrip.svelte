@@ -378,6 +378,14 @@
   });
   const _livePositionsToday = $derived.by(() => {
     const { dayTotal } = positionsPnlFiltered(positions);
+    // Gate the SSE-tick delta on market-open. During closed hours the
+    // snapshot's day_change_val IS the authoritative last-session
+    // value; adding a delta computed against symbolStore's LTP (which
+    // can carry stale live values, or values from a different session
+    // vs poll_ltp) was inflating the slot vs the operator's expected
+    // reading. Operator 2026-07-01: "slot 1 is inflated. fix it."
+    const _mktOpen = isNseOpen() || isMcxOpen();
+    if (!_mktOpen) return dayTotal;
     let delta = 0;
     for (const p of positions) {
       if (!FO_EXCHANGES.has(String(p?.exchange || '').toUpperCase())) continue;
@@ -569,10 +577,19 @@
         const inst = getInstrument(sym);
         const root = decomp.root || inst?.u || null;
         if (!root) continue;                              // can't resolve underlying
+        // Multi-source spot resolution — operator 2026-07-01: "slot 3 is
+        // deflated." Options were being skipped whenever the resolveUnderlying
+        // key wasn't in symbolStore. Chain of fallbacks so most options resolve:
+        //   1. resolveUnderlying (canonical: NIFTY → NIFTY 50 tradingsymbol)
+        //   2. bare root (NIFTY, GOLD, CRUDEOIL)
+        //   3. inst.u from instruments cache
         const resolved = resolveUnderlying(root, findNearestFuture);
-        if (!resolved?.tradingsymbol) continue;
-        const spot = untrack(() => getSnapshot(resolved.tradingsymbol)?.ltp);
-        if (!(spot > 0)) continue;                        // no live quote → skip
+        let spot = 0;
+        for (const key of [resolved?.tradingsymbol, root, inst?.u].filter(Boolean)) {
+          const v = untrack(() => getSnapshot(String(key).toUpperCase())?.ltp);
+          if (typeof v === 'number' && v > 0) { spot = v; break; }
+        }
+        if (!(spot > 0)) continue;                        // no spot from any source → skip
         // Strike: decomposeSymbol parses the numeric token directly from
         // the tradingsymbol regex; fall back to the instruments-cache
         // field inst.k when the parse misses (e.g. edge-case formats).
