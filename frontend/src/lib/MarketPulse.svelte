@@ -6005,14 +6005,28 @@
          strip sits flush below the page-header on mobile, matching
          the desktop rule above. Operator: "the gap between rows
          with pulse and pinned text needs to be reduced a little
-         bit in pulse page". */
-      padding: 0 0.3rem 0.3rem;
+         bit in pulse page".
+         Side padding zeroed so cards fill the full viewport width
+         edge-to-edge on mobile — operator: "Pulse cards should take
+         full width mobile." The bucket-label has its own 0.35rem
+         horizontal padding so text never touches the screen edge. */
+      padding: 0 0 0.3rem;
     }
     .mp-layout {
       /* On mobile the layout is a normal column stack — no height
          constraint so all buckets render at fixed heights and the
-         page scrolls. Reset the flex-fill set for desktop. */
+         page scrolls. Reset the flex-fill set for desktop.
+         Reduce gap from 0.6rem to 0.3rem so the between-column
+         spacing matches the tighter cadence other algo pages use
+         on mobile (operator: "I see gaps in pulse which is not
+         there in other pages on mobile"). */
       flex: none;
+      gap: 0.3rem;
+    }
+    .mp-col {
+      /* Mirror the reduced gap inside each column so all inter-bucket
+         spacing is uniform at 0.3rem on mobile. */
+      gap: 0.3rem;
     }
     .bucket-grid {
       height: 220px;

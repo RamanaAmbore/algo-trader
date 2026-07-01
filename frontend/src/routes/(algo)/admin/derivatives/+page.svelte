@@ -18,7 +18,7 @@
     fetchPositions, fetchHoldings, fetchSimStatus, fetchStrategyAnalytics,
     fetchAccounts, fetchOptionsSpot, fetchChainQuotes,
     placeTicketOrder, fetchLiveStatus,
-    fetchWatchlists, addWatchlistItem,
+    fetchWatchlists, fetchWatchlist, addWatchlistItem,
     batchQuote,
   } from '$lib/api';
   import { positionsStore, holdingsStore, publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
@@ -1453,20 +1453,73 @@
       seen.add(u);
       out.push({ value: u, label: u, hint: 'hedge' });
     }
+    // Tier 5 — Watchlist underlyings that are F&O-eligible but have
+    // no current derivative position in the book. Shown only when the
+    // book (Tiers 1-4) is empty — i.e., no F&O positions AND no
+    // F&O-eligible holdings. This gives the operator a context-aware
+    // fallback without cluttering the picker when the book is live.
+    const _bookIsEmpty = out.length === 0;
+    if (_bookIsEmpty) {
+      for (const u of _watchlistSyms) {
+        if (!u || seen.has(u)) continue;
+        seen.add(u);
+        out.push({ value: u, label: u, hint: 'watchlist' });
+      }
+    }
+    // Tier 6 — Popular/liquid F&O underlyings (NIFTY, BANKNIFTY,
+    // RELIANCE, …). Only surfaced when both the book AND the watchlist
+    // contribute nothing — ensures the picker never lands on an empty
+    // list. Gated on instrumentsReady so getOptionUnderlyingLot is
+    // available (and we don't emit stale zeroes). Dedupe against
+    // everything above.
+    if (out.length === 0 && instrumentsReady) {
+      for (const u of POPULAR_UNDERLYINGS) {
+        if (!u || seen.has(u)) continue;
+        if (getOptionUnderlyingLot(u) === 0) continue;
+        seen.add(u);
+        out.push({ value: u, label: u, hint: 'popular' });
+      }
+    }
     return out;
   });
 
-  // Auto-select the first underlying from the loaded book when the
-  // page lands without a cached selection. Saves the operator a click;
-  // the page is essentially useless without an underlying picked, so
-  // defaulting feels right. Untrack the read of selectedUnderlying so
-  // operator-driven changes don't re-trigger this.
+  // Auto-select the best underlying when the page lands without a
+  // cached selection. Three-tier fallback so the picker is never
+  // blank as long as ANY data source is available:
+  //   Tier A — first entry from the operator's live book
+  //             (_rootsWithOptions > _rootsWithFuturesOnly)
+  //   Tier B — first F&O-eligible symbol from the watchlist
+  //   Tier C — NIFTY (first entry from POPULAR_UNDERLYINGS that
+  //             is in the instruments cache)
+  // The effect re-runs whenever underlyingChoicesFromBook /
+  // _watchlistSyms / instrumentsReady change. Untrack the
+  // selectedUnderlying read so operator-driven changes don't re-
+  // trigger the fallback logic.
   $effect(() => {
     void underlyingChoicesFromBook;
+    void _watchlistSyms;
+    void instrumentsReady;
     untrack(() => {
-      const list = underlyingChoicesFromBook;
-      if (!selectedUnderlying && list.length) {
-        selectedUnderlying = list[0];
+      if (selectedUnderlying) return;  // operator already has a pick
+      // Tier A — book (options-first, then futures-only).
+      const bookList = underlyingChoicesFromBook;
+      if (bookList.length) {
+        selectedUnderlying = bookList[0];
+        return;
+      }
+      // Tier B — watchlist underlyings.
+      if (_watchlistSyms.length) {
+        selectedUnderlying = _watchlistSyms[0];
+        return;
+      }
+      // Tier C — first popular underlying in the instruments cache.
+      if (instrumentsReady) {
+        for (const u of POPULAR_UNDERLYINGS) {
+          if (getOptionUnderlyingLot(u) > 0) {
+            selectedUnderlying = u;
+            return;
+          }
+        }
       }
     });
   });
@@ -3158,6 +3211,14 @@
    *  list with zero extra clicks. Stays null on demo / unauthenticated
    *  sessions and the button hides. */
   let defaultWatchlistId = $state(/** @type {number | null} */ (null));
+  /** F&O-eligible underlying roots extracted from the operator's default
+   *  watchlist. Drives the Tier-2 (Watchlist) group in the underlying
+   *  picker so the page has a sensible pre-selected default even when
+   *  the operator's book is empty (pre-market, weekend, broker down).
+   *  Stays [] until instruments are ready (getOptionUnderlyingLot needs
+   *  the instruments cache). */
+  /** @type {string[]} */
+  let _watchlistSyms = $state([]);
   /** Per-strike|optType toast confirming the watchlist add. Keyed
    *  by `${strike}|${CE|PE}` so each chain row tracks its own. */
   let watchToast = $state(/** @type {{ key: string, msg: string } | null} */ (null));
@@ -3181,7 +3242,32 @@
       const lists = await fetchWatchlists();
       const def = (lists || []).find(/** @param {any} l */ (l) => l?.is_default)
                 ?? (lists || [])[0];
-      if (def) defaultWatchlistId = Number(def.id);
+      if (def) {
+        defaultWatchlistId = Number(def.id);
+        // Extract F&O-eligible underlying roots from the default watchlist's
+        // items so the picker has a Tier-2 fallback even when the book is
+        // empty. Requires instruments cache (getOptionUnderlyingLot) — we
+        // call this after loadInstruments() has already resolved on mount,
+        // so the cache is warm. Each item's tradingsymbol may be a bare
+        // equity (RELIANCE), an expanded future (CRUDEOIL26JUNFUT), an
+        // index (NIFTY 50), or an option — extract the root via
+        // decomposeSymbol and keep only roots with lot-size > 0.
+        try {
+          const wl = await fetchWatchlist(def.id);
+          const roots = new Set();
+          for (const it of (wl?.items || [])) {
+            const sym = String(it.tradingsymbol || '').toUpperCase().replace(/\s+/g, '');
+            if (!sym) continue;
+            // Equity-style symbol (no digits after first char cluster) or
+            // index stripped of spaces: try the bare sym first.
+            if (getOptionUnderlyingLot(sym) > 0) { roots.add(sym); continue; }
+            // Derivative symbol: extract root (CRUDEOIL26JUNFUT → CRUDEOIL).
+            const d = decomposeSymbol(sym);
+            if (d?.root && getOptionUnderlyingLot(d.root) > 0) roots.add(d.root);
+          }
+          _watchlistSyms = Array.from(roots).sort();
+        } catch (_) { /* watchlist items unreachable — leave _watchlistSyms [] */ }
+      }
     } catch (_) {
       // Demo / unauthenticated — leave null; the "+W" button hides.
       defaultWatchlistId = null;
@@ -4144,8 +4230,17 @@
         bind:value={selectedUnderlying}
         options={underlyingOptionsForPicker}
         onValueChange={_bumpUnderlyingUsage}
-        placeholder={underlyingChoicesFromBook.length ? 'Pick underlying…' : 'No options in book'} />
+        placeholder={instrumentsReady ? 'Pick underlying…' : 'Loading underlyings…'} />
     </div>
+    {#if _positionsLoaded && !underlyingChoicesFromBook.length}
+      <div class="opt-und-hint">
+        {#if _watchlistSyms.length || instrumentsReady}
+          No F&O positions — showing watchlist + popular.
+        {:else}
+          Loading underlyings…
+        {/if}
+      </div>
+    {/if}
   </div>
   <div class="opt-field">
     <label class="field-label" for="opt-exp">Expiry</label>
@@ -4796,8 +4891,8 @@
             <div class="cand-empty">
               {#if !selectedUnderlying}
                 <EmptyState
-                  title="No underlying selected"
-                  hint="Pick an underlying to surface candidates."
+                  title={instrumentsReady ? 'No underlying selected' : 'Loading underlyings…'}
+                  hint={instrumentsReady ? 'Pick an underlying to surface candidates.' : 'Instruments cache is warming up.'}
                   icon="search"
                 />
               {:else if loading}
@@ -5282,11 +5377,13 @@
      colour alone communicates the tier so the dropdown rows read as
      clean monosymbol entries instead of label-plus-chip pairs.
 
-     Four tiers, top → bottom:
-       Tier 1  data-hint='frequent'  amber-400   (operator's top-N picks)
-       Tier 2  data-hint='options'   cyan-400    (has CE/PE position)
-       Tier 3  (no data-hint)        default     (has FUT-only position)
-       Tier 4  data-hint='hedge'     dimmed      (held, no derivative)
+     Six tiers, top → bottom:
+       Tier 1  data-hint='frequent'   amber-400   (operator's top-N picks)
+       Tier 2  data-hint='options'    cyan-400    (has CE/PE position)
+       Tier 3  (no data-hint)         default     (has FUT-only position)
+       Tier 4  data-hint='hedge'      dimmed      (held, no derivative)
+       Tier 5  data-hint='watchlist'  sky-300     (watchlist, book empty)
+       Tier 6  data-hint='popular'    muted       (popular fallback, book + watchlist empty)
 
      The `hint` field still rides on the option object purely as the
      CSS marker that wires up `data-hint` on the label — the
@@ -5305,6 +5402,24 @@
   }
   .opt-und-row :global(.rbq-select-option-label[data-hint='hedge']) {
     opacity: 0.78;
+  }
+  /* Watchlist fallback tier — sky-blue, slightly dimmed vs 'options'
+     cyan to signal "from watchlist, no live position yet". */
+  .opt-und-row :global(.rbq-select-option-label[data-hint='watchlist']) {
+    color: #7dd3fc;            /* sky-300 */
+  }
+  /* Popular/liquid tier — default colour, muted opacity so they read
+     as "generic fallback, not your book". */
+  .opt-und-row :global(.rbq-select-option-label[data-hint='popular']) {
+    opacity: 0.72;
+  }
+  /* Hint shown below the underlying picker when book is empty. */
+  .opt-und-hint {
+    font-size: var(--fs-xs, 0.65rem);
+    color: #7e97b8;
+    font-style: italic;
+    margin-top: 0.2rem;
+    line-height: 1.3;
   }
 
   .opt-picker {
@@ -5764,13 +5879,14 @@
   .byund-row {
     display: contents;
   }
-  /* Header row — amber underline + uppercase slate label, matching the
-     Pulse ag-theme-algo .ag-header-row + .ag-header-cell treatment. */
+  /* Header row — deep-dark bg + muted-slate text + amber bottom border,
+     matching .hist-table (History page) canonical header treatment. */
   .byund-headrow > span {
     padding: 0.3rem 0.45rem;
+    background: rgba(15,23,42,0.65);  /* matches History / ag-theme-algo */
     border-bottom: 1px solid rgba(251,191,36,0.30);
-    font-size: var(--fs-xs);
-    font-weight: 700;
+    font-size: var(--fs-2xs);
+    font-weight: 800;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--text-muted);
@@ -5792,17 +5908,13 @@
   .byund-headrow > span.num {
     text-align: right;
   }
-  /* Alternating row background — subtle navy stripe that matches the
-     algo card chrome below the row borders. Same idiom Pulse uses
-     via the bucket-row + bucket-bg-soft alternation. */
-  .byund-row:nth-of-type(even) > span {
-    background-color: rgba(34, 47, 75, 0.35);
+  /* Alternating row background — matches ag-theme-algo .ag-row-odd */
+  .byund-row:nth-of-type(odd) > span {
+    background-color: rgba(13,22,42,0.30);
   }
-  /* Row hover — cyan tint, same as ag-theme-algo .ag-row-hover. The
-     `display:contents` row means hover has to apply to every child
-     `span` via the parent selector. */
+  /* Row hover — cyan tint, matching History hover rgba(34,211,238,0.05). */
   .byund-row:hover > span {
-    background-color: rgba(34, 211, 238, 0.10) !important;
+    background-color: rgba(34,211,238,0.05) !important;
   }
   .byund-und {
     font-weight: 700;
@@ -6363,12 +6475,13 @@
     font-variant-numeric: tabular-nums;
   }
   .cand-headrow {
-    font-size: var(--fs-md);
+    font-size: var(--fs-2xs);
+    font-weight: 800;
     color: var(--text-muted);
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.06em;
     padding-bottom: 0.15rem;
-    border-bottom: 1px solid rgba(251,191,36,0.18);
+    border-bottom: 1px solid rgba(251,191,36,0.30);  /* amber — matches History */
     /* Sticky header — operator scrolls data rows under it instead of
        the whole grid sliding up. Pinned to top of .cand-scroll (the
        overflow-y container); the card-bottom navy of the parent card
@@ -6377,7 +6490,7 @@
     position: sticky;
     top: 0;
     z-index: 2;
-    background: #1d2a44;
+    background: rgba(15,23,42,0.65);  /* matches History / ag-theme-algo */
   }
   /* Numeric column cells — right-aligned (industry-standard for
      trade panels) so digits in different rows line up cleanly under
@@ -6395,7 +6508,7 @@
     cursor: pointer;
     transition: background 0.1s;
   }
-  .cand-row:hover { background: rgba(251,191,36,0.05); }
+  .cand-row:hover { background: rgba(34,211,238,0.05); }  /* cyan — matches History hover */
   /* Closed positions (qty=0) — sorted to end of list, kept
      visible for context. Dim them so live rows pop, and disable
      the click-to-close affordance (no exposure to close). */

@@ -317,7 +317,7 @@
   {/if}
   {#each grouped as [category, rows]}
     <section class="algo-card mb-2" data-status="inactive">
-      <h2 class="text-[0.6rem] font-bold uppercase tracking-wider text-[#fbbf24] mb-1 pb-1 border-b border-[#fbbf24]/25">
+      <h2 class="algo-card-title mb-1 pb-1 border-b border-white/10">
         {category} <span class="opacity-60 font-normal ml-1">({rows.length})</span>
       </h2>
       <div>

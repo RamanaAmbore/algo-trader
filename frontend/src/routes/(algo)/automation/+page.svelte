@@ -679,7 +679,7 @@
      down (true CSS-columns behaviour, unlike a 2-col Grid where
      row siblings would equalise heights). Single column on mobile. -->
 {#each groupedAgents() as group}
-  <h2 class="text-[0.6rem] font-bold uppercase tracking-wider text-[#fbbf24] mt-3 mb-1.5 border-b border-[#fbbf24]/25 pb-0.5">
+  <h2 class="algo-section-title mt-3 mb-1.5 border-b border-white/10 pb-0.5">
     {group.name}
     <span class="opacity-60 font-normal ml-1">({group.agents.length})</span>
   </h2>

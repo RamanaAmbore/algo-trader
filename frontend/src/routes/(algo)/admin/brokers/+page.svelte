@@ -457,7 +457,7 @@
 <!-- Create / Edit form -->
 {#if editing !== '' || !accounts.length}
   <div class="algo-status-card cmd-surface p-3 mb-3" data-status="inactive">
-    <h2 class="brokers-h" style="border-bottom:1px solid rgba(251,191,36,0.18); padding-bottom:0.3rem; margin-bottom:0.5rem;">
+    <h2 class="brokers-h" style="border-bottom:1px solid rgba(255,255,255,0.10); padding-bottom:0.3rem; margin-bottom:0.5rem;">
       {isEditing ? `Edit ${editing}` : 'New account'}
     </h2>
     <div class="brokers-form">
@@ -576,11 +576,11 @@
     margin-bottom: 0.4rem;
   }
   .brokers-h {
-    font-size: var(--fs-sm);
+    font-size: 0.6rem;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: #fbbf24;
+    letter-spacing: 0.06em;
+    color: #94a3b8;
     margin: 0;
   }
 

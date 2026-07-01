@@ -935,7 +935,7 @@
 <section class="email-panel algo-card mt-3" data-status="inactive">
   <!-- Header -->
   <div class="flex items-center justify-between mb-1 gap-2 flex-wrap">
-    <h2 class="text-sm font-bold uppercase tracking-wider text-[#fbbf24] mb-0">Email Partners</h2>
+    <h2 class="algo-card-title mb-0">Email Partners</h2>
     <button
       onclick={() => { showEmailHistory = !showEmailHistory; if (showEmailHistory) loadEmailEvents(); }}
       class="text-[0.62rem] text-[#7dd3fc] hover:text-[#bae6fd] font-mono flex items-center gap-1 transition-colors">

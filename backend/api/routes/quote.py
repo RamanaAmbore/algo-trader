@@ -796,9 +796,16 @@ class SparklineController(Controller):
             today_bars = today_result.get(sym, [])
             ltp_key = f"{sym_obj.exchange}:{sym}"
             ltp_val = ltp_map.get(ltp_key)
-            # When market is closed, do not append a live LTP tail — the last
-            # close in `past` already represents the EOD value.  Appending a
-            # stale LTP would create a misleading "current" data point.
+            # When market is closed, do not append a live LTP tail to an
+            # existing series — the last close in `past` already represents
+            # the EOD value. Appending a stale LTP would create a
+            # misleading "current" data point on top of good history.
+            # However, if BOTH past AND today_bars are empty (cold-cache
+            # scenario: new deploy + db_only skipped broker), the ticker
+            # snapshot (ltp_val from mmap/last-known-good) is the only
+            # price we have. In that case, use it as a 2-point flat
+            # baseline rather than returning nothing — "flat but priced"
+            # is more useful than a "—" em-dash for every symbol.
             tail_ltp = (ltp_val if (ltp_val and ltp_val > 0) else None) if not spark_market_closed else None
             # Series order: past daily closes (oldest first), then today's
             # 30-min intraday closes, then current LTP. Off-hours today_bars
@@ -806,6 +813,15 @@ class SparklineController(Controller):
             series = past + today_bars
             if tail_ltp is not None:
                 series = series + [tail_ltp]
+            # Cold-cache fallback: when series is still empty but the ticker
+            # snapshot has a last-known price (from mmap buffer / prior
+            # session), emit [ltp, ltp] so the sparkline cell shows a flat
+            # line instead of an em-dash.  This covers "new deploy, market
+            # closed, ohlcv_store Tier 1+2 cold, broker call skipped
+            # (db_only)".  A flat line communicates "priced but no trend
+            # visible yet" — much better than a blank cell.
+            if not series and ltp_val and ltp_val > 0:
+                series = [ltp_val, ltp_val]
             # Frontend sparkline renderer needs ≥ 2 points (it draws a
             # polyline between consecutive closes; 1 point can't make a
             # line). When the operator's universe rotates a new mover in

@@ -893,21 +893,22 @@
 
 /* ── AG Grid — Algo theme (dark amber terminal) ───────────────────────────── */
 /*
- * AG Grid theme for the algo console. Mirrors the Tokens / algo-status-card
- * palette: navy gradient body, amber headers + totals, muted-slate text,
- * amber-tinted borders. Stops the grid from looking like a transplanted
- * light-mode widget inside the dark algo layout.
+ * AG Grid theme for the algo console. Header: muted-slate text + amber
+ * bottom-border (matches the .hist-table reference). Body: navy gradient
+ * with slate row borders. Row hover: cyan tint (matches History hover).
+ * TOTAL row: amber stratum (preserved). Stops the grid from looking like
+ * a transplanted light-mode widget inside the dark algo layout.
  */
 .ag-theme-algo {
-  --ag-header-background-color: #0a1020;
-  --ag-header-foreground-color: #fbbf24;
-  --ag-header-font-weight: 700;
-  --ag-header-font-size: 0.6875rem;
+  --ag-header-background-color: rgba(15,23,42,0.65);
+  --ag-header-foreground-color: var(--text-muted);
+  --ag-header-font-weight: 800;
+  --ag-header-font-size: 0.5625rem;
   --ag-foreground-color: var(--algo-slate);
   --ag-background-color: #1d2a44;
-  --ag-odd-row-background-color: #273552;
-  --ag-row-hover-color: rgba(251,191,36,0.14);
-  --ag-selected-row-background-color: rgba(251,191,36,0.25);
+  --ag-odd-row-background-color: rgba(13,22,42,0.30);
+  --ag-row-hover-color: rgba(34,211,238,0.05);
+  --ag-selected-row-background-color: rgba(34,211,238,0.12);
   --ag-border-color: rgba(255,255,255,0.08);
   --ag-font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   --ag-font-size: 0.72rem;
@@ -935,9 +936,9 @@
   box-shadow: none !important;
 }
 .ag-theme-algo .ag-header {
-  background-color: #0a1020 !important;
-  color: #fbbf24 !important;
-  border-bottom: 1px solid rgba(251,191,36,0.35) !important;
+  background-color: rgba(15,23,42,0.65) !important;
+  color: var(--text-muted) !important;
+  border-bottom: 1px solid rgba(251,191,36,0.30) !important;
 }
 .ag-theme-algo .ag-body,
 .ag-theme-algo .ag-body-viewport,
@@ -946,15 +947,15 @@
   background-color: transparent !important;
 }
 .ag-theme-algo .ag-header-cell {
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
   font-size: 0.5625rem !important;
-  font-weight: 700;
-  color: #fbbf24 !important;
+  font-weight: 800;
+  color: var(--text-muted) !important;
   background-color: transparent !important;
   padding-left: 4px !important;
   padding-right: 4px !important;
-  border-right: 1px solid rgba(251,191,36,0.18) !important;
+  border-right: 1px solid rgba(126,151,184,0.18) !important;
 }
 .ag-theme-algo .ag-header-cell-menu-button,
 .ag-theme-algo .ag-header-cell-filter-button {
@@ -969,7 +970,7 @@
 }
 .ag-theme-algo .ag-sort-indicator-icon {
   font-size: 9px;
-  color: #fbbf24;          /* amber-400 — matches the header foreground */
+  color: var(--text-muted);   /* slate — matches the header foreground */
 }
 .ag-theme-algo .ag-sort-indicator-icon svg,
 .ag-theme-algo .ag-sort-ascending-icon svg,
@@ -987,7 +988,7 @@
   padding-left: 4px !important;
   padding-right: 4px !important;
   color: var(--algo-slate) !important;
-  border-right: 1px solid rgba(255,255,255,0.06) !important;
+  border-right: 1px solid rgba(126,151,184,0.10) !important;
   /* Tabular figures so digit widths don't jitter as values update —
      applied at the cell level so every numeric column on every algo
      grid (PerformancePage + watchlist) inherits it without per-column
@@ -999,14 +1000,14 @@
   font-weight: 500;
   color: var(--algo-slate) !important;
   letter-spacing: 0.01em;
-  border-bottom: 1px solid rgba(255,255,255,0.06) !important;
+  border-bottom: 1px solid rgba(126,151,184,0.10) !important;
   background-color: transparent !important;
 }
 .ag-theme-algo .ag-row-odd {
-  background-color: rgba(13,22,42,0.45) !important;
+  background-color: rgba(13,22,42,0.30) !important;
 }
 .ag-theme-algo .ag-row-hover {
-  background-color: rgba(251,191,36,0.08) !important;
+  background-color: rgba(34,211,238,0.05) !important;
 }
 .ag-theme-algo .ag-cell.ag-col-fill {
   background-color: rgba(251,191,36,0.08) !important;
@@ -1018,9 +1019,9 @@
    aligned with the dark theme instead of the default white chrome. */
 .ag-theme-algo .ag-paging-panel,
 .ag-theme-algo .ag-status-bar {
-  background-color: #0a1020 !important;
+  background-color: rgba(15,23,42,0.65) !important;
   color: var(--algo-slate) !important;
-  border-top: 1px solid rgba(251,191,36,0.25) !important;
+  border-top: 1px solid rgba(126,151,184,0.18) !important;
 }
 .ag-theme-algo .ag-overlay-no-rows-wrapper { padding: 8px; }
 .ag-theme-algo .ag-overlay-no-rows-center {
@@ -1939,13 +1940,30 @@
 .algo-card-wide {
   grid-column: 1 / -1;
 }
+/* ── Card and section heading SSOT ──────────────────────────────────────────
+   Two semantic roles — pick the one that matches the nesting level:
+     .algo-card-title   — heading ON a card  (inside .algo-card / .bucket-card)
+     .algo-section-title — heading ABOVE a group of cards (bare page element)
+   Both share the same slate-400 color, weight, transform, and tracking.
+   Size differs: 0.6rem (on-card) vs 0.65rem (page-level).
+   Amber is reserved for .mp-section-label (canonical card-row labels) and
+   interactive state via .is-active / .is-alerting modifiers. */
 .algo-card-title {
-  font-size: 0.62rem;
+  font-size: 0.6rem;
   font-weight: 700;
   color: #94a3b8;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   margin-bottom: 0.35rem;
+}
+.algo-section-title {
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: #94a3b8;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 0.35rem;
+  display: block;
 }
 
 /* ── Canonical .bucket-card chrome ───────────────────────────────────────── */

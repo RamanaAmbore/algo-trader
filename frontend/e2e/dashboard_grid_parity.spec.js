@@ -79,7 +79,7 @@ test('dashboard grid parity: NAV tab row height matches Capital/Equity grids', a
   ).toBeLessThanOrEqual(28);
 });
 
-// ── 2. NAV tab: header matches ag-Grid algo dark style ───────────────────────
+// ── 2. NAV tab: header matches updated ag-theme-algo (muted slate text) ────────
 
 test('dashboard grid parity: NAV tab header background + text color', async ({ page }) => {
   await openDashboard(page);
@@ -91,22 +91,32 @@ test('dashboard grid parity: NAV tab header background + text color', async ({ p
 
   await table.locator('thead th').first().waitFor({ state: 'visible', timeout: 20_000 });
 
-  // Header background: matches --ag-header-background-color (#0a1020).
+  // Header background: deep dark rgba(15,23,42,0.65) — Chromium blends with parent.
+  // Accept any very-dark bg (R≤40, G≤50, B≤70).
   const headerBg = await table.locator('thead th').first().evaluate(el => {
     return getComputedStyle(el).backgroundColor;
   });
-  // Chromium serialises #0a1020 → rgb(10, 16, 32)
-  expect(headerBg,
-    'NavBreakdown header bg should match ag-theme-algo header #0a1020'
-  ).toBe('rgb(10, 16, 32)');
+  const bgM = headerBg.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+  if (bgM) {
+    expect(+bgM[1], 'NavBreakdown header bg R should be deep dark (≤40)').toBeLessThanOrEqual(40);
+    expect(+bgM[2], 'NavBreakdown header bg G should be deep dark (≤50)').toBeLessThanOrEqual(50);
+    expect(+bgM[3], 'NavBreakdown header bg B should be deep dark (≤70)').toBeLessThanOrEqual(70);
+  }
 
-  // Header text: amber #fbbf24 → rgb(251, 191, 36).
+  // Header text: muted slate #7e97b8 → rgb(126, 151, 184).
   const headerColor = await table.locator('thead th').first().evaluate(el => {
     return getComputedStyle(el).color;
   });
-  expect(headerColor,
-    'NavBreakdown header text should be amber rgb(251, 191, 36)'
-  ).toBe('rgb(251, 191, 36)');
+  const colM = headerColor.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+  if (colM) {
+    // #7e97b8 = rgb(126, 151, 184). Allow ±8.
+    expect(+colM[1], 'NavBreakdown header text R should be ~126 (muted slate)').toBeGreaterThanOrEqual(118);
+    expect(+colM[1], 'NavBreakdown header text R should be ~126 (muted slate)').toBeLessThanOrEqual(134);
+    expect(+colM[2], 'NavBreakdown header text G should be ~151 (muted slate)').toBeGreaterThanOrEqual(143);
+    expect(+colM[2], 'NavBreakdown header text G should be ~151 (muted slate)').toBeLessThanOrEqual(159);
+    expect(+colM[3], 'NavBreakdown header text B should be ~184 (muted slate)').toBeGreaterThanOrEqual(176);
+    expect(+colM[3], 'NavBreakdown header text B should be ~184 (muted slate)').toBeLessThanOrEqual(192);
+  }
 });
 
 // ── 3. Capital tab: ag-Grid uses ag-theme-algo ───────────────────────────────

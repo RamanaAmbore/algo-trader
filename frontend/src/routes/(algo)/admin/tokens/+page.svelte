@@ -259,7 +259,7 @@
 {#if showForm}
   <div class="algo-status-card p-3 mb-3" data-status="running">
     <div class="flex items-center justify-between mb-2">
-      <h3 class="text-xs font-bold uppercase tracking-wider text-[#fbbf24]">
+      <h3 class="algo-card-title mb-0">
         {editingId == null ? 'New token' : `Edit token #${editingId}`}
       </h3>
       <button onclick={closeForm} class="text-xs text-[#7e97b8] hover:text-[#fbbf24]">Cancel</button>

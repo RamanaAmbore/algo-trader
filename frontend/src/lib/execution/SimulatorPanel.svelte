@@ -1397,7 +1397,7 @@
          bind:open={_customPosOpen}>
   <summary class="sim-collapsible-summary">
     <span class="sim-collapsible-chevron">{_customPosOpen ? '▾' : '▸'}</span>
-    <h3 class="text-[0.65rem] font-bold uppercase tracking-wider text-[#fbbf24] m-0">
+    <h3 class="algo-card-title m-0">
       Custom positions
       {#if customRows.length}<span class="opacity-60 font-normal ml-1">({customRows.length})</span>{/if}
     </h3>

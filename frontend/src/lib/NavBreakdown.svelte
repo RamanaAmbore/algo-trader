@@ -129,10 +129,11 @@
 {/if}
 
 <style>
-  /* NavBreakdown — visual rhythm matches the Capital / Equity ag-Grid
-     tabs on the same card (ag-theme-algo: 26px rows, dark navy header,
-     amber header text, monospace numerics, slate cell text). Plain HTML
-     table avoids ag-Grid overhead for 2–4 rows, but LOOKS the same. */
+  /* NavBreakdown — visual rhythm matches .hist-table (History page)
+     and the updated ag-theme-algo: 26px rows, deep-dark header with
+     muted-slate text + amber bottom border, slate cell borders, cyan
+     row-hover tint, monospace numerics. Plain HTML table avoids ag-Grid
+     overhead for 2–4 rows but is visually indistinguishable. */
 
   .nav-bd-wrap {
     display: flex;
@@ -156,18 +157,20 @@
     color: var(--algo-slate);
   }
 
-  /* Header — dark navy bg + amber text: mirrors ag-theme-algo header */
+  /* Header — deep-dark bg + muted-slate text + amber bottom border:
+     mirrors the .hist-table reference (History page). */
   .nav-bd-table thead th {
     height: 26px;              /* matches _baseGridOpts headerHeight: 26 */
     text-align: right;
-    font-weight: 700;
-    letter-spacing: 0.04em;
+    font-weight: 800;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
-    font-size: 0.6875rem;      /* matches --ag-header-font-size */
-    color: #fbbf24;            /* --ag-header-foreground-color */
-    background: #0a1020;       /* --ag-header-background-color */
+    font-size: 0.5625rem;      /* matches ag-theme-algo .ag-header-cell */
+    color: #7e97b8;            /* --text-muted / var(--algo-muted) */
+    background: rgba(15,23,42,0.65); /* matches ag-theme-algo header bg */
     padding: 0 3px;            /* matches ag-theme-algo cell padding */
-    border-right: 1px solid rgba(251, 191, 36, 0.20);
+    border-right: 1px solid rgba(126,151,184,0.18);
+    border-bottom: 1px solid rgba(251,191,36,0.30); /* amber accent */
     white-space: nowrap;
     vertical-align: middle;
   }
@@ -176,19 +179,21 @@
     text-align: left;
   }
 
-  /* Body rows — alternating dark navy / slightly-lighter: mirrors
-     --ag-background-color / --ag-odd-row-background-color */
+  /* Body rows — subtle alternating tint matching updated ag-theme-algo */
   .nav-bd-table tbody tr:nth-child(odd) td {
-    background: #273552;       /* --ag-odd-row-background-color */
+    background: rgba(13,22,42,0.30);  /* --ag-odd-row-background-color */
   }
   .nav-bd-table tbody tr:nth-child(even) td {
     background: #1d2a44;       /* --ag-background-color */
   }
+  .nav-bd-table tbody tr:hover td {
+    background: rgba(34,211,238,0.05) !important; /* cyan hover — matches History */
+  }
   .nav-bd-table tbody td {
     height: 26px;              /* matches _baseGridOpts rowHeight: 26 */
     padding: 0 3px;            /* matches ag-theme-algo cell padding */
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-    border-right: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid rgba(126,151,184,0.10); /* slate row divider */
+    border-right: 1px solid rgba(126,151,184,0.10);  /* slate col divider */
     white-space: nowrap;
     vertical-align: middle;
   }
@@ -238,7 +243,7 @@
     letter-spacing: 0.04em;
     padding: 0.25rem 0.5rem;
     background: #1d2a44;
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    border-top: 1px solid rgba(126,151,184,0.10);
   }
 
   .nav-bd-empty {

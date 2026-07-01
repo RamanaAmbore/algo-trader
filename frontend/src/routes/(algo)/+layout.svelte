@@ -1965,11 +1965,20 @@
     :global(.algo-status-card) {
       padding: 0.35rem;
     }
+    /* Keep 0.7rem left padding so card headings (.mp-section-label,
+       .algo-card-title) are at least 11.2px from the viewport edge
+       on narrow screens (operator brief: heading touches left edge). */
     :global(.algo-card) {
-      padding: 0.35rem 0.4rem;
+      padding: 0.35rem 0.4rem 0.35rem 0.7rem;
     }
     :global(.bucket-card) {
-      padding: 0.35rem 0.4rem;
+      padding: 0.35rem 0.4rem 0.35rem 0.7rem;
+    }
+    /* Bare page-level section headings (.algo-section-title) sit
+       directly in .algo-content (padding-left: 0 on mobile) — give
+       them the same 0.7rem left indent as the cards beside them. */
+    :global(.algo-section-title) {
+      padding-left: 0.7rem;
     }
     /* Tighter page-header on mobile — saves ~0.5rem of vertical
        chrome between the ps-strip and the page's first content
@@ -2078,7 +2087,10 @@
     background-color: rgba(251,191,36,0.15);
     color: #fbbf24;
   }
-  :global(.algo-content .section-heading) { color: #fbbf24; }
+  /* section-heading in algo context: slate-400 (same as .algo-card-title).
+     Amber was applied globally here but section headings are structural
+     labels (Personal, Address, Investment…) not interactive or alerting. */
+  :global(.algo-content .section-heading) { color: #94a3b8; }
   :global(.algo-content .page-title-chip) {
     color: #fbbf24;
     border-bottom: none;
