@@ -2031,8 +2031,8 @@
         Order entry
       </span>
       {#if _wlToast}
-        <span class="oes-wl-toast" class:ok={_wlToast.ok} class:err={!_wlToast.ok}>
-          {_wlToast.msg}
+        <span class="oes-wl-toast" class:ok={_wlToast?.ok} class:err={!_wlToast?.ok}>
+          {_wlToast?.msg}
         </span>
       {/if}
       <!-- Operator: "mode and chase should be left aligned. chase value

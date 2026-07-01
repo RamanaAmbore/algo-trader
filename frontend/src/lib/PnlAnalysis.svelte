@@ -557,7 +557,7 @@
     <div class="kv" title={bestDay ? `Best day · ${bestDay.date}` : 'Best day'}>
       <span class="kv-lbl">B↑</span>
       {#if bestDay}
-        <span class="kv-val {pnlClass(bestDay.day_pnl)}">{fmt(bestDay.day_pnl)}</span>
+        <span class="kv-val {pnlClass(bestDay?.day_pnl)}">{fmt(bestDay?.day_pnl)}</span>
       {:else}
         <span class="kv-val muted">—</span>
       {/if}
@@ -565,7 +565,7 @@
     <div class="kv" title={worstDay ? `Worst day · ${worstDay.date}` : 'Worst day'}>
       <span class="kv-lbl">W↓</span>
       {#if worstDay}
-        <span class="kv-val {pnlClass(worstDay.day_pnl)}">{fmt(worstDay.day_pnl)}</span>
+        <span class="kv-val {pnlClass(worstDay?.day_pnl)}">{fmt(worstDay?.day_pnl)}</span>
       {:else}
         <span class="kv-val muted">—</span>
       {/if}
@@ -839,7 +839,7 @@
       onkeydown={(e) => { if (e.key === 'Enter') document.getElementById('csv-file-input')?.click(); }}
     >
       {#if csvFile}
-        <span class="drop-filename">{csvFile.name}</span>
+        <span class="drop-filename">{csvFile?.name}</span>
         <button class="drop-clear" onclick={(e) => { e.stopPropagation(); csvFile = null; }}
                 aria-label="Clear file">×</button>
       {:else}

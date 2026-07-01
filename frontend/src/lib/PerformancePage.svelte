@@ -1244,15 +1244,15 @@
        auto-disabled for equity symbols by the shell. -->
   <SymbolPanel
     defaultTab="ticket"
-    symbol={orderTicketProps.symbol}
-    exchange={orderTicketProps.exchange}
-    side={orderTicketProps.side}
-    action={orderTicketProps.action}
-    qty={orderTicketProps.qty}
-    lotSize={orderTicketProps.lotSize}
-    accounts={orderTicketProps.accounts}
-    account={orderTicketProps.account}
-    currentQty={orderTicketProps.currentQty ?? 0}
+    symbol={orderTicketProps?.symbol}
+    exchange={orderTicketProps?.exchange}
+    side={orderTicketProps?.side}
+    action={orderTicketProps?.action}
+    qty={orderTicketProps?.qty}
+    lotSize={orderTicketProps?.lotSize}
+    accounts={orderTicketProps?.accounts}
+    account={orderTicketProps?.account}
+    currentQty={orderTicketProps?.currentQty ?? 0}
     onSubmit={(payload) => {
       // PAPER + LIVE submissions already hit the backend before
       // onSubmit fires (the ticket awaits placeTicketOrder). Refresh
@@ -1266,10 +1266,10 @@
 
 {#if _ctxMenu}
   <SymbolContextMenu
-    symbol={_ctxMenu.symbol}
-    exchange={_ctxMenu.exchange}
-    x={_ctxMenu.x}
-    y={_ctxMenu.y}
+    symbol={_ctxMenu?.symbol}
+    exchange={_ctxMenu?.exchange}
+    x={_ctxMenu?.x}
+    y={_ctxMenu?.y}
     onClose={() => { _ctxMenu = null; }}
     onAction={(action, sym, exch) => {
       _ctxSym  = sym;

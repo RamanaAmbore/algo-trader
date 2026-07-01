@@ -1885,12 +1885,12 @@
        root. Amber roll-warning when expiry is ≤ 3 days away. -->
   {#if _frontMonthInfo}
     <div class="cw-frontmonth-bar">
-      <span class="cw-fm-chip" class:cw-fm-rolling={_frontMonthInfo.rolling}
-            title="Instrument cache resolved {symbol} → {_frontMonthInfo.contract} (exchange: {_frontMonthInfo.exchange})">
-        {#if _frontMonthInfo.rolling}
-          Front-month: {_frontMonthInfo.contract} · rolls in {_frontMonthInfo.daysLeft} {_frontMonthInfo.daysLeft === 1 ? 'day' : 'days'}
+      <span class="cw-fm-chip" class:cw-fm-rolling={_frontMonthInfo?.rolling}
+            title="Instrument cache resolved {symbol} → {_frontMonthInfo?.contract} (exchange: {_frontMonthInfo?.exchange})">
+        {#if _frontMonthInfo?.rolling}
+          Front-month: {_frontMonthInfo?.contract} · rolls in {_frontMonthInfo?.daysLeft} {_frontMonthInfo?.daysLeft === 1 ? 'day' : 'days'}
         {:else}
-          Front-month: {_frontMonthInfo.contract} · expiry {_frontMonthInfo.expLabel}
+          Front-month: {_frontMonthInfo?.contract} · expiry {_frontMonthInfo?.expLabel}
         {/if}
       </span>
     </div>

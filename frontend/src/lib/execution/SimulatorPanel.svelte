@@ -672,7 +672,7 @@
 
 {#if armedAgent}
   <div class="mb-3 p-2 rounded bg-[#fbbf24]/15 text-[#fbbf24] text-[0.65rem] border border-[#fbbf24]/50">
-    Isolated run armed — will dry-fire <b>#{armedAgent.id} {armedAgent.name}</b>
+    Isolated run armed — will dry-fire <b>#{armedAgent?.id} {armedAgent?.name}</b>
     (bypasses schedule / cooldown / baseline gates).
     <button type="button" onclick={() => { agentId = ''; }}
       class="ml-2 text-[0.6rem] underline">Clear</button>
@@ -718,9 +718,9 @@
   </div>
   {#if liveSnap}
     <div class="text-[0.6rem] text-[#c8d8f0]/70 mt-1">
-      Live snapshot: {liveSnap.snapshot_at?.slice(11, 19)} ·
-      {liveSnap.positions_count}P / {liveSnap.margins_count}M
-      · accounts=[{liveSnap.accounts.join(', ')}]
+      Live snapshot: {liveSnap?.snapshot_at?.slice(11, 19)} ·
+      {liveSnap?.positions_count}P / {liveSnap?.margins_count}M
+      · accounts=[{(liveSnap?.accounts ?? []).join(', ')}]
     </div>
   {/if}
 </div>
