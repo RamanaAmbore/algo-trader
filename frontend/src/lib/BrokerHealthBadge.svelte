@@ -97,13 +97,11 @@
              }}
              title="View connection log for {acct.account}">
           <span class="bh-row-dot bh-row-dot-{acct.state}" aria-hidden="true"></span>
-          <span class="bh-row-account">
+          <span class="bh-row-account {acct.is_active_ticker ? 'bh-row-account-active' : ''}"
+                title={acct.is_active_ticker
+                  ? `${acct.account} — currently running the KiteTicker WebSocket`
+                  : acct.account}>
             {acct.account}
-            {#if acct.is_active_ticker}
-              <span class="bh-active-ticker" title="Currently running the KiteTicker WebSocket">
-                active
-              </span>
-            {/if}
           </span>
           <span class="bh-row-broker">{acct.broker}</span>
           <span class="bh-row-state bh-row-state-{acct.state}">{acct.state.toUpperCase()}</span>
@@ -276,22 +274,11 @@
     align-items: center;
     gap: 0.35rem;
   }
-  /* Active-ticker chip — canonical cyan-400 palette. Matches the
-     header-trio button family so the two operator surfaces read as
-     one visual system. Rendered only when is_active_ticker=true so
-     the absence itself is a signal ("this Kite account is a warm
-     spare"). */
-  .bh-active-ticker {
+  /* Active-ticker: color-code the account name itself with the canonical
+     cyan (matches broker-chip-ok / cyan chip family) instead of a
+     separate 'active' chip. Cleaner row; absence of cyan = warm spare. */
+  .bh-row-account-active {
     color: #22d3ee;
-    background: rgba(34, 211, 238, 0.14);
-    border: 1px solid rgba(34, 211, 238, 0.55);
-    border-radius: 9999px;
-    font-size: var(--fs-xxs, 0.62rem);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    padding: 0.02rem 0.35rem;
-    line-height: 1.05;
   }
   .bh-row-broker {
     color: #94a3b8;
