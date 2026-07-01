@@ -439,6 +439,63 @@
     return s;
   });
   const cashTotal = $derived(liveCashTotal + longOptionsCashPaid);
+
+  // Expiry profit — F&O positions only (futures + options), excludes equity.
+  // "What would I make/lose if every open derivative position expired RIGHT NOW
+  //  at the current spot?" — useful for understanding max-risk at expiry.
+  //
+  // Math:
+  //   Futures:      (live_ltp − avg_cost) × qty
+  //   Long CE:      max(spot − strike, 0) × qty − avg × qty
+  //   Short CE:     avg × |qty| − max(spot − strike, 0) × |qty|
+  //   PE symmetric.  [qty is signed: positive = long, negative = short;
+  //                   formula (intrinsic − avg) × qty handles both signs]
+  //
+  // Spot source: symbolStore snapshot for the underlying name (inst.u),
+  // e.g. "NIFTY 50" for NIFTY26JUN22000CE. If no live snapshot exists
+  // for an option's underlying we skip that leg (contribute 0) rather than
+  // feeding the option's own LTP as a proxy — doing so would compute
+  // max(300 − 22000, 0) = 0 (wrong for deep ITM) or huge phantom intrinsic.
+  //
+  // Gated by _throttledTick (4 Hz) not per-SSE-tick to avoid scheduler
+  // pressure; matches the same throttle already used by _liveDeltaByRow.
+  const _expiryProfit = $derived.by(() => {
+    void _throttledTick;
+    void _mktTick;
+    let total = 0;
+    for (const p of positions) {
+      const sym  = String(p?.tradingsymbol || '').toUpperCase();
+      const qty  = Number(p?.quantity) || 0;
+      const avg  = Number(p?.average_price) || 0;
+      if (!qty) continue;
+      // Derivative exchanges only (exclude equity CNC holdings in positions)
+      const exch = String(p?.exchange || '').toUpperCase();
+      if (!['NFO', 'MCX', 'CDS', 'BFO'].includes(exch)) continue;
+
+      const isCE  = sym.endsWith('CE');
+      const isPE  = sym.endsWith('PE');
+      const isFut = sym.endsWith('FUT') || (!isCE && !isPE && exch !== 'CDS');
+
+      if (isCE || isPE) {
+        // Option — need underlying spot; instruments cache gives inst.u
+        const inst = getInstrument(sym);
+        const undSym = inst?.u || null;
+        if (!undSym) continue;                            // can't resolve underlying
+        const spot = untrack(() => getSnapshot(undSym)?.ltp);
+        if (!(spot > 0)) continue;                        // no live quote → skip
+        const strike = Number(inst?.k || 0);
+        if (!strike) continue;
+        const intrinsic = isCE ? Math.max(0, spot - strike) : Math.max(0, strike - spot);
+        total += (intrinsic - avg) * qty;
+      } else if (isFut) {
+        // Future — settles at spot = its own LTP
+        const live = untrack(() => getSnapshot(sym)?.ltp) || Number(p?.last_price || 0);
+        if (!(live > 0)) continue;
+        total += (live - avg) * qty;
+      }
+    }
+    return total;
+  });
   // Margin: available (what's deployable) and total (used + avail = full
   // capacity). Pill shows avail / total to match the operator's mental
   // model "what room do I have, out of what I'd have if everything
@@ -474,6 +531,7 @@
     _pollCycleStamp;
     untrack(() => {
       flash.update('P',    _livePositionsPnl);
+      flash.update('PE',   _expiryProfit);
       flash.update('M',    marginAvail);
       flash.update('Mt',   marginTotal);
       flash.update('Cp',   cashTotal);
@@ -509,13 +567,16 @@
 
 <a class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '')} href="/dashboard"
    aria-label="Open the dashboard — full positions, holdings, and funds grids">
-  <span class="ps-agg" title="Positions: today's MTM move / lifetime P&L">
+  <span class="ps-agg" title="Positions: today's MTM move / lifetime P&L / F&O expiry profit at current spot">
     <span class="ps-agg-k">P</span>
     <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
       >{fmtMoney(dispPositionsToday)}</span
     ><span class="ps-agg-sep">/</span
     ><span class={'ps-agg-v ' + (_livePositionsPnl > 0 ? 'ps-pos' : _livePositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}
-      >{fmtMoney(_livePositionsPnl)}</span>
+      >{fmtMoney(_livePositionsPnl)}</span
+    ><span class="ps-agg-sep">/</span
+    ><span class={'ps-agg-v ps-exp ' + flash.classOf('PE')}
+      >{fmtMoney(_expiryProfit)}</span>
   </span>
   <!-- Margin pill: available / total (used + avail). Operator wants the
        "room I have / full capacity" framing rather than util %. -->
@@ -572,7 +633,7 @@
     display: flex;
     align-items: center;
     justify-content: flex-start;
-    gap: 0.9rem;
+    gap: 0.6rem;
     height: 1.5rem;
     box-sizing: border-box;
     padding: 0 0.5rem;
@@ -584,7 +645,7 @@
     color: var(--algo-slate);
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
-    letter-spacing: 0.04em;
+    letter-spacing: 0.02em;
     text-decoration: none;
     user-select: none;
     transition: background 0.08s, border-bottom-color 0.18s;
@@ -605,14 +666,14 @@
   .ps-agg {
     display: inline-flex;
     align-items: baseline;
-    gap: 0.3rem;
+    gap: 0.2rem;
   }
   .ps-agg-k {
     color: var(--algo-muted);
     font-size: var(--fs-xs);
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.02em;
   }
   .ps-agg-v {
     font-size: var(--fs-lg);
@@ -635,6 +696,8 @@
   .ps-flat { color: var(--algo-slate); }
   /* Negative cash (margin debt) flips to red via .ps-neg. */
   .ps-cash { color: #7dd3fc; }
+  /* Expiry profit — amber action palette; signals a time-bound outcome. */
+  .ps-exp  { color: #fbbf24; }
   @media (max-width: 640px) {
     /* Four pills (P · M · C · H) fill the mobile viewport width:
        P locks to the left edge; M / C / H distribute across the
