@@ -24,9 +24,31 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { loginAsAdmin } from './fixtures/auth.js';
 
 const BASE = process.env.BASE_URL || process.env.PLAYWRIGHT_BASE_URL || 'https://dev.ramboq.com';
+const _PASS = process.env.PLAYWRIGHT_PASS || 'admin1234';
+
+// Module-level cached token — one login per spec run. Retries up to 3x
+// with back-off to handle rate-limit 429s that prior test runs can cause.
+let _token = null;
+async function injectSession(page) {
+  if (!_token) {
+    for (const delay of [0, 6000, 15000]) {
+      if (delay) await new Promise((res) => setTimeout(res, delay));
+      for (const u of ['ambore', 'rambo']) {
+        const r = await page.request.post(`${BASE}/api/auth/login`, {
+          data: { username: u, password: _PASS },
+        });
+        if (r.ok()) { _token = (await r.json()).access_token; break; }
+      }
+      if (_token) break;
+    }
+    if (!_token) throw new Error(`login failed against ${BASE}`);
+  }
+  await page.context().addInitScript((t) => {
+    sessionStorage.setItem('ramboq_token', t);
+  }, _token);
+}
 
 const INACTIVE_SLATE = 'rgb(148, 163, 184)'; // #94a3b8
 
@@ -89,6 +111,11 @@ async function collectTabMetrics(page) {
   }, INACTIVE_SLATE);
 }
 
+// Outer wrapper ensures desktop + mobile suites run serially so they
+// don't compete for the same login session concurrently.
+test.describe('tab text consistency', () => {
+test.describe.configure({ mode: 'serial' });
+
 // ── desktop ──────────────────────────────────────────────────────────────
 test.describe('tab text consistency — desktop 1366×768', () => {
   test.use({ viewport: { width: 1366, height: 768 } });
@@ -96,8 +123,8 @@ test.describe('tab text consistency — desktop 1366×768', () => {
 
   for (const route of ALGO_ROUTES) {
     test(`${route.label}: all .algo-tab styles consistent`, async ({ page }) => {
-      test.setTimeout(120_000); // algo pages make many broker calls; covers lazy-panel loads too
-      await loginAsAdmin(page);
+      test.setTimeout(90_000); // allows 45 s selector wait + page load
+      await injectSession(page);
       await page.goto(`${BASE}${route.path}`, { waitUntil: 'load' });
 
       // Wait for at least one .algo-tab — may arrive after async mount.
@@ -140,7 +167,7 @@ test.describe('tab text consistency — mobile 390×844', () => {
   for (const route of ALGO_ROUTES) {
     test(`${route.label}: tabs consistent on mobile`, async ({ page }) => {
       test.setTimeout(120_000);
-      await loginAsAdmin(page);
+      await injectSession(page);
       await page.goto(`${BASE}${route.path}`, { waitUntil: 'load' });
 
       // Some routes may not show a tab strip at mobile width (e.g. collapsed to
@@ -157,3 +184,5 @@ test.describe('tab text consistency — mobile 390×844', () => {
     });
   }
 });
+
+}); // end outer 'tab text consistency' serial wrapper

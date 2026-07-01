@@ -17,9 +17,30 @@
  */
 
 import { test, expect } from '@playwright/test';
-import { loginAsAdmin } from './fixtures/auth.js';
 
 const BASE = process.env.BASE_URL || process.env.PLAYWRIGHT_BASE_URL || 'https://dev.ramboq.com';
+const _PASS = process.env.PLAYWRIGHT_PASS || 'admin1234';
+
+// Module-level cached token — one login per spec run, retried on 429.
+let _token = null;
+async function injectSession(page) {
+  if (!_token) {
+    for (const delay of [0, 6000, 15000]) {
+      if (delay) await new Promise((res) => setTimeout(res, delay));
+      for (const u of ['ambore', 'rambo']) {
+        const r = await page.request.post(`${BASE}/api/auth/login`, {
+          data: { username: u, password: _PASS },
+        });
+        if (r.ok()) { _token = (await r.json()).access_token; break; }
+      }
+      if (_token) break;
+    }
+    if (!_token) throw new Error(`login failed against ${BASE}`);
+  }
+  await page.context().addInitScript((t) => {
+    sessionStorage.setItem('ramboq_token', t);
+  }, _token);
+}
 
 /**
  * Collect computed style for all .algo-card-title elements inside a given
@@ -42,14 +63,14 @@ async function cardTitleStyles(page, cardSelector) {
 }
 
 test.describe('derivatives heading parity', () => {
-  test.describe.configure({ mode: 'serial' });
+  test.describe.configure({ mode: 'serial' }); // all inner describes run serially
 
   // ── desktop ──────────────────────────────────────────────────────────
   test.describe('desktop 1366×768', () => {
     test.use({ viewport: { width: 1366, height: 768 } });
 
     test('Snapshot heading uses .algo-card-title', async ({ page }) => {
-      await loginAsAdmin(page);
+      await injectSession(page);
       await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'load' });
 
       // The snapshot card has data-status + opt-byund-card identifiers.
@@ -65,7 +86,7 @@ test.describe('derivatives heading parity', () => {
     });
 
     test('Legs heading uses .algo-card-title', async ({ page }) => {
-      await loginAsAdmin(page);
+      await injectSession(page);
       await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'load' });
 
       // The legs card is inside .opt-payoff-legs-row; the legs panel has
@@ -81,7 +102,7 @@ test.describe('derivatives heading parity', () => {
     });
 
     test('Snapshot and Legs algo-card-title share identical computed style', async ({ page }) => {
-      await loginAsAdmin(page);
+      await injectSession(page);
       await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'load' });
 
       await expect(page.locator('.opt-byund-card .algo-card-title').first()).toBeVisible({ timeout: 25_000 });
@@ -111,7 +132,7 @@ test.describe('derivatives heading parity', () => {
     });
 
     test('underlying chip sits after the title label inside legs header', async ({ page }) => {
-      await loginAsAdmin(page);
+      await injectSession(page);
       await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'load' });
 
       await expect(page.locator('.legs-header-static')).toBeVisible({ timeout: 25_000 });
@@ -139,7 +160,7 @@ test.describe('derivatives heading parity', () => {
     test.use({ viewport: { width: 390, height: 844 } });
 
     test('Snapshot + Legs headings both visible and carry algo-card-title on mobile', async ({ page }) => {
-      await loginAsAdmin(page);
+      await injectSession(page);
       await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'load' });
 
       await expect(page.locator('.opt-byund-card .algo-card-title').first()).toBeVisible({ timeout: 25_000 });
