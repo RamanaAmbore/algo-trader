@@ -31,6 +31,7 @@
   import { positionsStore, holdingsStore, fundsStore } from '$lib/data/marketDataStores.svelte.js';
   import { userCaps, userRole, hasCap } from '$lib/rbac';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
+  import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import {
     classifyByIndex,
@@ -60,6 +61,24 @@
   // visual treatment matches across every algo page.
   const _agDirCell = (p) =>
     `ag-right-aligned-cell ${p.value > 0 ? 'pnl-gain' : p.value < 0 ? 'pnl-loss' : 'pnl-zero'}`;
+
+  // Tick-flash — subtle 350ms directional background pulse on the Equity
+  // card's Day P&L and P&L cells. Keyed as `account:field`. TOTAL rows
+  // (account === 'TOTAL') excluded. Alpha 0.13 via global .tf-up/.tf-down.
+  const _dashFlash = createTickFlash({ threshold: 0.001, durationMs: 350 });
+
+  // Flash-augmented cellClass for the equity summary grids.
+  // `field` is the column field name used as part of the per-cell key.
+  function _dashDirCell(field) {
+    return (p) => {
+      const base = `ag-right-aligned-cell ${p.value > 0 ? 'pnl-gain' : p.value < 0 ? 'pnl-loss' : 'pnl-zero'}`;
+      if (!p.data || p.data.account === 'TOTAL') return base;
+      // Pinned rows also excluded.
+      if (p.node?.rowPinned === 'bottom') return base;
+      const fc = _dashFlash.classOf(`${p.data.account}:${field}`);
+      return fc ? `${base} ${fc}` : base;
+    };
+  }
 
   // IST-midnight-as-UTC for "today" date-window filters. Indian markets
   // (and operators) live in Asia/Kolkata; using the browser's local
@@ -1475,10 +1494,10 @@
           cellClass: 'ag-col-fill' },
         { field: 'day_pnl', headerName: 'Day P&L', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
-          cellClass: _agDirCell, valueFormatter: _agNumFmt },
+          cellClass: _dashDirCell('day_pnl'), valueFormatter: _agNumFmt },
         { field: 'pnl', headerName: 'P&L', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
-          cellClass: _agDirCell, valueFormatter: _agNumFmt },
+          cellClass: _dashDirCell('pnl'), valueFormatter: _agNumFmt },
       ],
       rowData: [],
       domLayout: 'autoHeight',
@@ -1499,10 +1518,10 @@
           cellClass: 'ag-col-fill' },
         { field: 'day_pnl', headerName: 'Day P&L', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
-          cellClass: _agDirCell, valueFormatter: _agNumFmt },
+          cellClass: _dashDirCell('day_pnl'), valueFormatter: _agNumFmt },
         { field: 'pnl', headerName: 'P&L', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
-          cellClass: _agDirCell, valueFormatter: _agNumFmt },
+          cellClass: _dashDirCell('pnl'), valueFormatter: _agNumFmt },
         { field: 'cur_val', headerName: 'Value', minWidth: 80, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: 'ag-right-aligned-cell', valueFormatter: _agAggFmt },
@@ -1592,13 +1611,34 @@
   // _positionsTotal / _holdingsTotal is pinned at bottom.
   $effect(() => {
     if (!_eqPosReady || !_eqPosGrid) return;
+    // Tick-flash: seed flash.update() for each per-account row before
+    // pushing rowData. TOTAL rows excluded. Threshold 0.001 prevents
+    // false flashes on identical values.
+    for (const r of _positionsSummary) {
+      if (r.account === 'TOTAL') continue;
+      _dashFlash.update(`${r.account}:day_pnl`, Number(r.day_pnl));
+      _dashFlash.update(`${r.account}:pnl`,     Number(r.pnl));
+    }
     _eqPosGrid.setGridOption('rowData', _positionsSummary);
     _eqPosGrid.setGridOption('pinnedBottomRowData', [_positionsTotal]);
+    try { _eqPosGrid.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
+    setTimeout(() => {
+      try { _eqPosGrid.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
+    }, 400);
   });
   $effect(() => {
     if (!_eqHoldReady || !_eqHoldGrid) return;
+    for (const r of _holdingsSummary) {
+      if (r.account === 'TOTAL') continue;
+      _dashFlash.update(`${r.account}:day_pnl`, Number(r.day_pnl));
+      _dashFlash.update(`${r.account}:pnl`,     Number(r.pnl));
+    }
     _eqHoldGrid.setGridOption('rowData', _holdingsSummary);
     _eqHoldGrid.setGridOption('pinnedBottomRowData', [_holdingsTotal]);
+    try { _eqHoldGrid.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
+    setTimeout(() => {
+      try { _eqHoldGrid.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
+    }, 400);
   });
 
   // ── Account-multiselect scope predicate ───────────────────────────
@@ -1613,6 +1653,7 @@
 
   onDestroy(() => {
     _heroTeardown?.(); _equityPollStop?.();
+    _dashFlash.dispose();
     _fundsGrid?.destroy();  _marginGrid?.destroy();
     _eqPosGrid?.destroy();  _eqHoldGrid?.destroy();
     _winGrid?.destroy();    _losGrid?.destroy();
