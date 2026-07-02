@@ -11,6 +11,7 @@
   // glance. X-axis: timestamps from each captured tick.
 
   import { priceFmt } from '$lib/format';
+  import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
 
   /** @type {{
    *   ticks?:      Array<{ts: string, pnl: number}>,
@@ -20,6 +21,11 @@
    * }} */
   const { ticks = [], height = 180, title = 'Equity curve',
           scrubbedTs = null } = $props();
+
+  const _pulse = createChartRefreshPulse();
+  $effect(() => {
+    if (ticks.length) _pulse.notify('equity');
+  });
 
   const W       = 720;
   const PAD_L   = 56;
@@ -151,7 +157,7 @@
   );
 </script>
 
-<div class="eq-shell">
+<div class="eq-shell {_pulse.classOf('equity')}">
   <div class="eq-header-row">
     {#if title}
       <div class="eq-header">{title}</div>
@@ -176,7 +182,7 @@
       <!-- Filled area (green above zero, red below) -->
       <path d={filledArea}
             fill="url(#eq-grad-up)"
-            opacity="0.18" />
+            opacity="0.18" class="data-path"/>
       <defs>
         <linearGradient id="eq-grad-up" x1="0" y1="0" x2="0" y2={height}
                         gradientUnits="userSpaceOnUse">
@@ -209,7 +215,8 @@
       <!-- Line -->
       <path d={linePath} fill="none"
             stroke="#fbbf24" stroke-width="1.8"
-            stroke-linejoin="round" stroke-linecap="round" />
+            stroke-linejoin="round" stroke-linecap="round"
+            class="data-path"/>
 
       <!-- Replay-scrubber anchor (shared across all Lab charts via
            the scrubbedTs prop). When set and not over-ridden by a

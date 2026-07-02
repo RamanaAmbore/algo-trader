@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import msgspec
-from litestar import Controller, delete, get, patch, post
+from litestar import Controller, delete, get, patch, post, put
 from litestar.exceptions import HTTPException
 from sqlalchemy import select
 
@@ -68,6 +68,22 @@ class BrokerAccountInfo(msgspec.Struct):
     has_password:     bool = False
     has_totp_token:   bool = False
     has_access_token: bool = False
+    # Per-account poll priority (Dhan-only, Jul 2026).
+    # 'hot' | 'warm' | 'cold' — controls background poll cadence.
+    # Kite/Groww accounts carry this field but the gate is never applied.
+    poll_priority: str = "hot"
+    auto_downgrade_enabled:  bool = False
+    auto_downgraded_at:      str | None = None  # ISO-8601 UTC or None
+    auto_downgrade_reason:   str | None = None
+    # Circuit-breaker opt-in (Jul 2026). When True the 3-fail / 5-min
+    # OPEN state machine is active for this account. Default False so
+    # the breaker is disabled for all accounts except DH6847 (seeded
+    # by the startup migration in _ensure_shared_broker_schema).
+    circuit_breaker_enabled: bool = False
+    # Display ordering (Jul 2026) — canonical position in UI dropdowns,
+    # health-badge chip popup, performance grids. Lower = shown earlier.
+    # Default 500 (mid-tier) so new accounts land in the middle.
+    display_order: int = 500
 
 
 class BrokerAccountCreate(msgspec.Struct):
@@ -105,6 +121,12 @@ class BrokerAccountUpdate(msgspec.Struct):
     priority:    Optional[int]  = None
     extra_config: Optional[dict] = None
     historical_data_enabled: Optional[bool] = None
+    # Per-account poll priority (Dhan-only, Jul 2026).
+    poll_priority:          Optional[str]  = None   # 'hot' | 'warm' | 'cold'
+    auto_downgrade_enabled:  Optional[bool] = None
+    circuit_breaker_enabled: Optional[bool] = None  # opt-in per-account breaker
+    # Display ordering (Jul 2026) — canonical UI position across all surfaces.
+    display_order:           Optional[int]  = None
 
 
 class TestResult(msgspec.Struct):
@@ -116,6 +138,7 @@ class TestResult(msgspec.Struct):
 # ── Helpers ───────────────────────────────────────────────────────────
 
 def _to_info(row: BrokerAccount, *, loaded: bool = False) -> BrokerAccountInfo:
+    auto_downgraded_at = getattr(row, "auto_downgraded_at", None)
     return BrokerAccountInfo(
         id=row.id, account=row.account, broker_id=row.broker_id,
         api_key=row.api_key,
@@ -133,6 +156,14 @@ def _to_info(row: BrokerAccount, *, loaded: bool = False) -> BrokerAccountInfo:
         created_at=row.created_at.isoformat() if row.created_at else "",
         updated_at=row.updated_at.isoformat() if row.updated_at else "",
         loaded=loaded,
+        poll_priority=str(getattr(row, "poll_priority", "hot") or "hot"),
+        auto_downgrade_enabled=bool(getattr(row, "auto_downgrade_enabled", False)),
+        auto_downgraded_at=(
+            auto_downgraded_at.isoformat() if auto_downgraded_at else None
+        ),
+        auto_downgrade_reason=getattr(row, "auto_downgrade_reason", None),
+        circuit_breaker_enabled=bool(getattr(row, "circuit_breaker_enabled", False)),
+        display_order=int(getattr(row, "display_order", 500) or 500),
     )
 
 
@@ -196,7 +227,9 @@ class BrokersController(Controller):
     async def list_accounts(self) -> list[BrokerAccountInfo]:
         async with shared_async_session() as s:
             rows = (await s.execute(
-                select(BrokerAccount).order_by(BrokerAccount.account)
+                select(BrokerAccount).order_by(
+                    BrokerAccount.display_order, BrokerAccount.account
+                )
             )).scalars().all()
         loaded = _loaded_accounts()
         return [_to_info(r, loaded=(r.account in loaded)) for r in rows]
@@ -223,6 +256,23 @@ class BrokersController(Controller):
         from dataclasses import asdict
         caps = capabilities_for(account)
         return asdict(caps)
+
+    @get("/order", guards=[cap_guard("view_brokers")])
+    async def get_display_order(self) -> dict[str, int]:
+        """GET /api/admin/brokers/order — returns {account_id: display_order}
+        map for every active broker account.
+
+        Frontend hydrates this once at boot into an `accountDisplayOrder`
+        store and uses `sortAccountsBy(accounts, orderMap)` on every UI
+        surface that lists accounts. Cached on the backend for 60 s;
+        invalidated immediately by PATCH display_order changes.
+        """
+        async with shared_async_session() as s:
+            rows = (await s.execute(
+                select(BrokerAccount.account, BrokerAccount.display_order)
+                .order_by(BrokerAccount.display_order, BrokerAccount.account)
+            )).all()
+        return {str(r.account): int(r.display_order) for r in rows}
 
     # ── Create (manage_brokers — admin / ops only) ────────────────────
 
@@ -285,6 +335,25 @@ class BrokersController(Controller):
             if data.extra_config is not None: row.extra_config = dict(data.extra_config or {})
             if data.historical_data_enabled is not None:
                 row.historical_data_enabled = bool(data.historical_data_enabled)
+            if data.poll_priority is not None:
+                valid_priorities = {"hot", "warm", "cold"}
+                if data.poll_priority not in valid_priorities:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"poll_priority must be one of: {sorted(valid_priorities)}"
+                    )
+                row.poll_priority = data.poll_priority
+                # Manual priority change clears auto-downgrade stamps so
+                # the UI can distinguish manual vs auto priority changes.
+                if data.poll_priority != getattr(row, "auto_downgrade_reason", None):
+                    row.auto_downgraded_at = None
+                    row.auto_downgrade_reason = None
+            if data.auto_downgrade_enabled is not None:
+                row.auto_downgrade_enabled = bool(data.auto_downgrade_enabled)
+            if data.circuit_breaker_enabled is not None:
+                row.circuit_breaker_enabled = bool(data.circuit_breaker_enabled)
+            if data.display_order is not None:
+                row.display_order = int(data.display_order)
 
             # Secret fields — only update when the operator passed a
             # NON-EMPTY string. Empty / None means "leave unchanged" so
@@ -297,6 +366,30 @@ class BrokersController(Controller):
             row.updated_at = datetime.now(timezone.utc)
             await s.commit()
             await s.refresh(row)
+
+        # Immediately update the in-process caches so the interval gate and
+        # circuit-breaker opt-in check see the new value even before
+        # rebuild_from_db completes (it will also update the caches).
+        if data.poll_priority is not None or data.circuit_breaker_enabled is not None:
+            try:
+                from backend.brokers.broker_apis import (
+                    set_dhan_priority_cache,
+                    set_breaker_optin_cache,
+                )
+                if data.poll_priority is not None:
+                    set_dhan_priority_cache(account, row.poll_priority or "hot")
+                if data.circuit_breaker_enabled is not None:
+                    set_breaker_optin_cache(account, bool(row.circuit_breaker_enabled))
+            except Exception:
+                pass
+        # Invalidate the display_order cache so the next sort_accounts() call
+        # re-reads fresh values from the DB.
+        if data.display_order is not None:
+            try:
+                from backend.brokers.broker_apis import invalidate_account_order_cache
+                invalidate_account_order_cache()
+            except Exception:
+                pass
 
         await _reload_connections()
         logger.warning(f"broker_accounts: updated {account!r} via /admin/brokers")
@@ -318,6 +411,44 @@ class BrokersController(Controller):
         await _reload_connections()
         logger.warning(f"broker_accounts: deleted {account!r} via /admin/brokers")
         return {"ok": True, "account": account}
+
+    # ── Restore poll priority (manage_brokers) ───────────────────────
+
+    @post("/{account:str}/restore-priority", guards=[cap_guard("manage_brokers")])
+    async def restore_priority(self, account: str) -> BrokerAccountInfo:
+        """Reset poll_priority to 'hot', clear auto-downgrade stamps,
+        and set next_poll_at to now so the account is polled on the
+        next background cycle.
+
+        Operator action after investigating a wave of Dhan errors that
+        triggered auto-downgrade. Does not restart the Connections
+        singleton (no credentials changed).
+        """
+        from backend.brokers.broker_apis import _dhan_next_poll, set_dhan_priority_cache
+        async with shared_async_session() as s:
+            row = (await s.execute(
+                select(BrokerAccount).where(BrokerAccount.account == account)
+            )).scalar_one_or_none()
+            if not row:
+                raise HTTPException(status_code=404,
+                    detail=f"Broker account {account!r} not found")
+            row.poll_priority = "hot"
+            row.auto_downgraded_at = None
+            row.auto_downgrade_reason = None
+            row.updated_at = datetime.now(timezone.utc)
+            await s.commit()
+            await s.refresh(row)
+
+        # Update in-process cache immediately so the interval gate
+        # sees 'hot' before the next rebuild_from_db completes.
+        set_dhan_priority_cache(account, "hot")
+        # Reset next_poll so the account is polled on the very next cycle.
+        _dhan_next_poll[account] = 0.0
+
+        logger.warning(
+            f"broker_accounts: poll priority restored to hot for {account!r}"
+        )
+        return _to_info(row, loaded=(account in _loaded_accounts()))
 
     # ── Test connection (test_broker_connection cap — admin / ops) ───
 

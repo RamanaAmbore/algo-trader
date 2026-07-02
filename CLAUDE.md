@@ -284,6 +284,26 @@ Operators manage via `/admin/brokers`, not `secrets.yaml` on server. Credentials
 
 **Status pill** (LOADED / PENDING / DISABLED) polls every 15s.
 
+**Canonical display order** — `broker_accounts.display_order` (INTEGER, default 500, operator-editable). Determines the canonical sort across every UI surface (BrokerHealthBadge popup, AccountMultiSelect dropdowns, PerformancePage, MarketPulse, OrderTicket, dashboard, derivatives).
+
+Seeded on first startup via one-shot migration guarded by settings key `migrations.display_order_seeded_v1`:
+
+| Account type | display_order |
+|---|---|
+| Kite accounts (ZG0790, ZJ6294, …) | 10, 20, … (ascending) |
+| Dhan DH3747 (primary Dhan) | 100 |
+| Groww accounts (GR87DF, …) | 200, 210, … |
+| Other Dhan accounts | 500 (column default) |
+| Dhan DH6847 (always last) | 999 |
+
+**Backend sort helper** (`backend/brokers/broker_apis.py`): `sort_accounts(accounts: list[str]) -> list[str]` — reads `get_account_order_map()` (60s TTL cache, ThreadPoolExecutor for sync callers), sorts by `(display_order ASC, account_id ASC)`. Unknown accounts treated as 999. `invalidate_account_order_cache()` called on PATCH.
+
+**REST endpoint**: `GET /api/admin/brokers/order` — returns `{account_id: display_order}` map (guarded by `view_brokers` cap). PATCH `/api/admin/brokers/{account}` accepts `display_order`.
+
+**Frontend**: `frontend/src/lib/data/accountSort.js` — `accountDisplayOrder` Svelte-store-compatible singleton (module-level, survives re-mounts). `sortAccountsBy(accounts, orderMap)` pure function. Loaded once at boot from `(algo)/+layout.svelte:loadAccountOrder()`. All UI surfaces subscribe via `$accountDisplayOrder` and call `sortAccountsBy(rawList, $orderMap)`. Do NOT sort inline by `localeCompare`. After PATCH, call `accountDisplayOrder.refresh()`.
+
+**Rule**: `@for_all_accounts` iteration order is NOT changed (pd.concat callers rely on stable fan-out). Only the display layer sorts.
+
 ---
 
 ## Multi-Account IPv6 Source Binding (Kite + Dhan)
@@ -357,7 +377,18 @@ signal (loaded/total count) and is unchanged.
 ## Broker resilience
 
 **Circuit breaker (Jul 2026 — P0 DH6847 rotation-loop fix)**:
-Per-account, per-broker state machine in `backend/brokers/broker_apis.py` (`_record_fetch` + `_is_circuit_open`).
+Per-account opt-in state machine in `backend/brokers/broker_apis.py` (`_record_fetch` + `_is_circuit_open`).
+
+**Opt-in gate** (`circuit_breaker_enabled` column on `broker_accounts`, default FALSE):
+Only accounts with `circuit_breaker_enabled=True` enter the OPEN/HALF-OPEN state machine.
+All other accounts still receive `last_ok_at` / `last_fail_at` health stamps for the admin badge
+but their fetch path is NEVER short-circuited. This prevents a 3-fail blip on one Dhan account
+from freezing all accounts for 5 minutes.
+
+**Currently opt-in**: DH6847 only. Startup migration in `_ensure_shared_broker_schema` sets
+`circuit_breaker_enabled=TRUE` for DH6847; idempotency guard uses a `Setting` row key
+`migrations.breaker_dh6847_seeded` so the UPDATE never re-fires if the operator later toggles
+the flag off.
 
 - **CLOSED** (normal): every fetch runs; `consecutive_fail_count` increments on each failure.
 - **OPEN** (after 3 consecutive failures): `circuit_open_until = now + cool-off`. All `_fetch_*_local` functions short-circuit immediately — the SDK is never called. One `[BREAKER]` warning logged. Cool-off is exponential: 5m → 10m → 20m → 30m (cap). Returns empty DataFrame with `attrs['circuit_open'] = True`.
@@ -365,9 +396,37 @@ Per-account, per-broker state machine in `backend/brokers/broker_apis.py` (`_rec
 
 State is stored as extra fields in `_FETCH_HEALTH[account]`: `consecutive_fail_count`, `circuit_open_until`, `circuit_last_opened_at`, `open_cycle_count`. No separate state store.
 
-`/api/admin/broker-health` surfaces `circuit_state`, `consecutive_fail_count`, `circuit_open_until` per account. `BrokerHealthBadge.svelte` renders OPEN/PROBE chips + tooltip with retry time. Tests: `backend/tests/broker/test_circuit_breaker.py` (17 tests).
+**In-process opt-in cache** (`_breaker_optin_cache` dict): populated by `Connections.rebuild_from_db()` for all accounts. `set_breaker_optin_cache(account, enabled)` invalidated immediately on PATCH. `get_breaker_optin_cache(account)` is an O(1) dict lookup (no DB I/O on the hot path). `_is_circuit_open()` returns False immediately for non-opt-in accounts.
 
-**Prod effect**: DH6847 hammering DH-906 every 30s stops after 3 consecutive failures (~90s of prod log noise) vs the observed ~50 failures/hour before the fix.
+`/api/admin/broker-health` surfaces `circuit_state`, `consecutive_fail_count`, `circuit_open_until`, and `circuit_breaker_enabled` per account. `BrokerHealthBadge.svelte`:
+- Opt-in + OPEN: shows OPEN chip + "circuit open until HH:MM" tooltip.
+- Non-opt-in + red: OPEN/PROBE chips hidden; tooltip says "retrying every poll".
+
+Tests: `backend/tests/broker/test_circuit_breaker.py` (24 tests). E2E: `frontend/e2e/broker_breaker_optin.spec.js`.
+
+**Prod effect**: DH6847 hammering DH-906 every 30s stops after 3 consecutive failures (~90s of prod log noise) vs the observed ~50 failures/hour before the fix. DH3747, Kite, Groww are unaffected by DH6847 failures.
+
+**Per-account Dhan poll priority (Jul 2026)**:
+Column `poll_priority VARCHAR(8)` on `broker_accounts` controls background poll cadence for Dhan accounts. Kite + Groww are unaffected.
+
+- `'hot'` (default) — poll every 30s (same as Kite/Groww)
+- `'warm'` — poll every 120s
+- `'cold'` — poll every 600s
+
+**Integration order** (inside each `_fetch_*_local`):
+1. Circuit-breaker check (`_is_circuit_open`) — highest precedence; returns empty DataFrame immediately. No-op for non-opt-in accounts.
+2. Interval-gate check (`_is_dhan_interval_due`) — Dhan-only; skips if `now < _dhan_next_poll[account]`; non-Dhan always passes.
+3. Normal fetch.
+
+`_dhan_next_poll[account]` is advanced to `now + interval` before the fetch (not after) so a crash/exception doesn't cause a tight retry loop. Manual `?fresh=1` bypasses the gate by calling `fetch_*()` directly which hits the broker immediately regardless of `_dhan_next_poll`.
+
+**Auto-downgrade**: When BOTH `circuit_breaker_enabled=True` AND `auto_downgrade_enabled=True` on a Dhan account row AND ≥5 breaker-OPEN events occur within a 15-min sliding window, the account is automatically set to `poll_priority='cold'`. A 5-min cooloff prevents re-firing. Emits WS event `broker_priority_changed` for the frontend toast. Operator restores via `POST /api/admin/brokers/{id}/restore-priority` (resets to 'hot', clears stamps, bumps next_poll=0). If `circuit_breaker_enabled=False`, auto-downgrade never fires even if `auto_downgrade_enabled=True`.
+
+**REST**: `PATCH /api/admin/brokers/{id}` accepts `poll_priority`, `auto_downgrade_enabled`, and `circuit_breaker_enabled`. `GET /api/admin/broker-health` includes all three plus `auto_downgraded_at`, `auto_downgrade_reason` per account.
+
+**Frontend** (`/admin/brokers`): Dhan rows show HOT/WARM/COLD chip with 400ms bg-color CSS transition (omitted under prefers-reduced-motion). Red 4px dot on chip when circuit breaker is OPEN (only for opt-in accounts). Chip click → dropdown. Two checkboxes: "breaker" (circuit_breaker_enabled) + "auto" (auto_downgrade_enabled). `auto_downgraded_at` shows `"auto @ HH:MM IST"` + restore link.
+
+Tests: `backend/tests/test_broker_priority.py` (12 tests). E2E: `frontend/e2e/broker_priority_chip.spec.js`.
 
 ---
 

@@ -21,6 +21,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { fetchNavHistory } from '$lib/api';
   import { marketAwareInterval } from '$lib/stores';
+  import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
 
   /**
    * @typedef {Object} Props
@@ -45,11 +46,14 @@
   let lookback = $state(90);
   let loading = $state(false);
 
+  const _pulse = createChartRefreshPulse();
+
   async function load() {
     loading = true;
     try {
       const data = await fetchNavHistory({ days: lookback });
       history = Array.isArray(data?.rows) ? data.rows : [];
+      if (history.length) _pulse.notify('nav');
     } catch (_) {
       // Demo / anon hits 401 — leave history empty so the empty
       // state below renders. No toast — this is a passive chart.
@@ -87,7 +91,7 @@
   }
 </script>
 
-<div class="nav-tab-wrap">
+<div class="nav-tab-wrap {_pulse.classOf('nav')}">
   <!-- NAV chip overlay — top-LEFT of the chart. Self-hides when
        chipLatest is null (operator lacks view_nav cap or no
        snapshot has landed yet). Read-only inside the NAV tab — the
@@ -133,7 +137,7 @@
               fill="rgba(155,176,208,0.55)" font-size="10"
               style="font-family: var(--font-numeric)">{_fmtInr(v)}</text>
       {/each}
-      <path d={path} fill="none" stroke="#fbbf24" stroke-width="2" />
+      <path d={path} fill="none" stroke="#fbbf24" stroke-width="2" class="data-path"/>
       <circle cx={xOf(history.length - 1)} cy={yOf(_navs[_navs.length - 1])}
               r="3" fill="#fbbf24" stroke="#0a1020" stroke-width="1" />
       <text x={xOf(0)} y={H - 6} text-anchor="start"

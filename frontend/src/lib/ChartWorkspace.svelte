@@ -85,6 +85,7 @@
 
   import { onMount, onDestroy, getContext, untrack } from 'svelte';
   import { readChartPref, writeChartPref } from '$lib/data/chartPrefs';
+  import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
   import {
     fetchOptionsHistorical,
     fetchChartPriceHistory,
@@ -326,9 +327,18 @@
     } catch (_) { /* silent */ }
   }
 
+  // ── Chart-refresh pulse ───────────────────────────────────────────
+  const _pulse = createChartRefreshPulse();
+
   // ── Historical OHLCV ──────────────────────────────────────────────
   /** @type {Array<{ts:string,open:number,high:number,low:number,close:number,volume:number}>} */
   let _bars        = $state([]);
+  // Fire when _bars changes to a non-empty array (new data landed from
+  // broker/cache). Skip on symbol-change blanks (length === 0) and on
+  // zoom/pan/overlay changes (those don't touch _bars).
+  $effect(() => {
+    if (_bars.length) _pulse.notify('chart');
+  });
   let _histLoading = $state(false);
   // _histLoadingSlow flips true ~150ms after _histLoading starts so
   // cache-hits (which complete in one frame) don't flash a spinner.
@@ -1729,7 +1739,7 @@
   });
 </script>
 
-<div class="cw-root">
+<div class="cw-root {_pulse.classOf('chart')}">
   <!-- Picker bar — type filter (1st) sets the instrument-kind scope,
        then the combined pinned+search combo box (2nd) lets the
        operator either click a pin OR type to search from a single
@@ -2045,7 +2055,8 @@
         <!-- Spot overlay (derivatives) — sky dashed line -->
         {#if _spotOverlayPath}
           <path d={_spotOverlayPath} fill="none"
-                stroke="#7dd3fc" stroke-width="1.2" stroke-dasharray="4 3" stroke-opacity="0.65"/>
+                stroke="#7dd3fc" stroke-width="1.2" stroke-dasharray="4 3" stroke-opacity="0.65"
+                class="data-path"/>
         {/if}
 
         <!-- Bollinger Bands fill (drawn before lines so lines appear on top).
@@ -2053,19 +2064,19 @@
              match the SMA/EMA/VWAP pattern — guarantees DOM removal on
              uncheck even if the $derived bbPaths re-evaluation lags. -->
         {#if _overlays.includes('bb') && _bbPaths.fill}
-          <path class="overlay-bb overlay-bb-fill" d={_bbPaths.fill} fill="rgba(125,211,252,0.06)" stroke="none"/>
+          <path class="overlay-bb overlay-bb-fill data-path" d={_bbPaths.fill} fill="rgba(125,211,252,0.06)" stroke="none"/>
         {/if}
         {#if _overlays.includes('bb') && _bbPaths.upper}
-          <path class="overlay-bb overlay-bb-upper" d={_bbPaths.upper} fill="none" stroke="#7dd3fc" stroke-width="1" stroke-dasharray="3 2"/>
-          <path class="overlay-bb overlay-bb-lower" d={_bbPaths.lower} fill="none" stroke="#7dd3fc" stroke-width="1" stroke-dasharray="3 2"/>
-          <path class="overlay-bb overlay-bb-mid"   d={_bbPaths.mid}   fill="none" stroke="#7dd3fc" stroke-width="1"/>
+          <path class="overlay-bb overlay-bb-upper data-path" d={_bbPaths.upper} fill="none" stroke="#7dd3fc" stroke-width="1" stroke-dasharray="3 2"/>
+          <path class="overlay-bb overlay-bb-lower data-path" d={_bbPaths.lower} fill="none" stroke="#7dd3fc" stroke-width="1" stroke-dasharray="3 2"/>
+          <path class="overlay-bb overlay-bb-mid data-path"   d={_bbPaths.mid}   fill="none" stroke="#7dd3fc" stroke-width="1"/>
         {/if}
 
         <!-- Price layer — line / area / candle / plot -->
         {#if _chartType === 'area'}
-          <path d={_areaPath} fill="rgba(251,191,36,0.14)" stroke="none"/>
+          <path d={_areaPath} fill="rgba(251,191,36,0.14)" stroke="none" class="data-path"/>
           <path d={_linePath} fill="none" stroke="#fbbf24" stroke-width="1.8"
-                stroke-linejoin="round" stroke-linecap="round"/>
+                stroke-linejoin="round" stroke-linecap="round" class="data-path"/>
         {:else if _chartType === 'candle'}
           {#each _candles as c}
             <line x1={c.x} x2={c.x} y1={c.wickTop} y2={c.wickBot}
@@ -2079,7 +2090,7 @@
           {/each}
         {:else}
           <path d={_linePath} fill="none" stroke="#fbbf24" stroke-width="1.8"
-                stroke-linejoin="round" stroke-linecap="round"/>
+                stroke-linejoin="round" stroke-linecap="round" class="data-path"/>
         {/if}
 
         <!-- SMA overlays — gate on _overlays array directly so toggle-off
@@ -2089,27 +2100,27 @@
              content for a tick if the path-builder depends on bar data
              that hasn't changed. -->
         {#if _overlays.includes('sma20') && _sma20Path}
-          <path class="overlay-sma overlay-sma20" d={_sma20Path} fill="none" stroke="#7dd3fc" stroke-width="1.4"
+          <path class="overlay-sma overlay-sma20 data-path" d={_sma20Path} fill="none" stroke="#7dd3fc" stroke-width="1.4"
                 stroke-dasharray="4 3" stroke-linejoin="round" stroke-linecap="round"/>
         {/if}
         {#if _overlays.includes('sma50') && _sma50Path}
-          <path class="overlay-sma overlay-sma50" d={_sma50Path} fill="none" stroke="#c084fc" stroke-width="1.4"
+          <path class="overlay-sma overlay-sma50 data-path" d={_sma50Path} fill="none" stroke="#c084fc" stroke-width="1.4"
                 stroke-dasharray="6 3" stroke-linejoin="round" stroke-linecap="round"/>
         {/if}
 
         <!-- EMA overlays — same gating pattern as SMA -->
         {#if _overlays.includes('ema20') && _ema20Path}
-          <path class="overlay-ema overlay-ema20" d={_ema20Path} fill="none" stroke="#4ade80" stroke-width="1"
+          <path class="overlay-ema overlay-ema20 data-path" d={_ema20Path} fill="none" stroke="#4ade80" stroke-width="1"
                 stroke-dasharray="4 3" stroke-linejoin="round" stroke-linecap="round"/>
         {/if}
         {#if _overlays.includes('ema50') && _ema50Path}
-          <path class="overlay-ema overlay-ema50" d={_ema50Path} fill="none" stroke="#fb923c" stroke-width="1"
+          <path class="overlay-ema overlay-ema50 data-path" d={_ema50Path} fill="none" stroke="#fb923c" stroke-width="1"
                 stroke-dasharray="6 3" stroke-linejoin="round" stroke-linecap="round"/>
         {/if}
 
         <!-- VWAP overlay — solid cyan line on the price panel -->
         {#if _overlays.includes('vwap') && _vwapPath}
-          <path class="overlay-vwap" d={_vwapPath} fill="none" stroke="#7dd3fc"
+          <path class="overlay-vwap data-path" d={_vwapPath} fill="none" stroke="#7dd3fc"
                 stroke-width="1.4" stroke-linejoin="round" stroke-linecap="round"/>
         {/if}
 
@@ -2144,7 +2155,7 @@
               const y = rsiYOf(pt.rsi);
               return acc + (idx === 0 ? `M${x.toFixed(2)},${y.toFixed(2)}` : ` L${x.toFixed(2)},${y.toFixed(2)}`);
             }, '')}
-            <path class="overlay-rsi" d={rsiPath} fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-linecap="round"/>
+            <path class="overlay-rsi data-path" d={rsiPath} fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-linecap="round"/>
           {/each}
           <!-- RSI label -->
           <text x={_chartW - CPAD_R - 4} y={rsiTop + 12}
@@ -2195,7 +2206,7 @@
             const y = macdYOf(pt.macd);
             return acc + (acc === '' ? `M${x.toFixed(2)},${y.toFixed(2)}` : ` L${x.toFixed(2)},${y.toFixed(2)}`);
           }, '')}
-          <path class="overlay-macd" d={macdLinePath} fill="none" stroke="#fbbf24"
+          <path class="overlay-macd data-path" d={macdLinePath} fill="none" stroke="#fbbf24"
                 stroke-width="1.4" stroke-linecap="round"/>
           <!-- Signal line -->
           {@const macdSignalPath = _macdSeries.reduce((acc, pt) => {
@@ -2206,7 +2217,7 @@
             const y = macdYOf(pt.signal);
             return acc + (acc === '' ? `M${x.toFixed(2)},${y.toFixed(2)}` : ` L${x.toFixed(2)},${y.toFixed(2)}`);
           }, '')}
-          <path class="overlay-macd" d={macdSignalPath} fill="none" stroke="#f87171"
+          <path class="overlay-macd data-path" d={macdSignalPath} fill="none" stroke="#f87171"
                 stroke-width="1" stroke-dasharray="3 2" stroke-linecap="round"/>
           <!-- MACD label -->
           <text x={_chartW - CPAD_R - 4} y={macdTop + 12}

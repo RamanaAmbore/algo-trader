@@ -27,6 +27,7 @@
   import { bootstrapRBAC } from '$lib/rbac';
   import { startBookChangedBus } from '$lib/data/bookChanged';
   import { startBookPollers, setBookPollerInterval } from '$lib/data/marketDataStores.svelte.js';
+  import { loadAccountOrder } from '$lib/data/accountSort.js';
   import { startMarketGatedQuoteStream, stopMarketGatedQuoteStream } from '$lib/data/quoteStream';
   import { tickBus } from '$lib/data/symbolStore.svelte.js';
   import NavigationIndicator from '$lib/NavigationIndicator.svelte';
@@ -732,6 +733,10 @@
     // Hibernation gates fire for free via `marketAwareInterval` (throttle
     // to 30 s after 5 min hidden, immediate refire on tab return).
     startBookPollers();
+    // Canonical account display ordering (Jul 2026). Loaded once at boot;
+    // refreshed on demand via accountDisplayOrder.refresh() after PATCH.
+    // Non-fatal: UI falls back to insertion order when API unreachable.
+    loadAccountOrder().catch(() => {});
     // Expose tickBus on window.__stores for Playwright specs (dev only).
     // Lets specs call window.__stores.tickBus.emit(sym, dir) to inject
     // synthetic ticks and assert flash class synchrony without needing

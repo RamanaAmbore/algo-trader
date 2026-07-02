@@ -1610,6 +1610,53 @@ class BrokerAccount(Base):
     historical_data_enabled: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False, server_default="true"
     )
+    # ── Per-account poll priority (Dhan-only, Jul 2026) ───────────────────
+    # poll_priority — controls how often the background 30s poller
+    #   re-fetches positions/holdings/margins for THIS account.
+    #   hot (default) = every 30s, warm = every 120s, cold = every 600s.
+    #   Kite + Groww accounts ignore this field; it gates ONLY the Dhan
+    #   background poll path.  Values: 'hot' | 'warm' | 'cold'.
+    # auto_downgrade_enabled — when True the breaker-open history watcher
+    #   will automatically drop this account to 'cold' after ≥5 breaker
+    #   opens within a 15-min window.
+    # auto_downgraded_at — epoch when the last auto-downgrade fired;
+    #   NULL means the current poll_priority was set manually.
+    # auto_downgrade_reason — human-readable cause string stamped at
+    #   auto-downgrade time, e.g. "5 breaker opens in 15 min".
+    poll_priority: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="hot", server_default="hot"
+    )
+    auto_downgrade_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    auto_downgraded_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    auto_downgrade_reason: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True
+    )
+    # ── Per-account circuit breaker opt-in (Jul 2026) ────────────────────
+    # circuit_breaker_enabled — when True, the 3-fail / 5-min open-circuit
+    #   breaker is fully active for this account.  When False (the default)
+    #   the account still gets its last_ok_at / last_fail_at health stamps
+    #   for the admin badge but the OPEN / HALF-OPEN state machine is
+    #   bypassed so transient blips on one account never freeze the others.
+    #   Currently opt-in only for DH6847; all other accounts stay at False
+    #   unless the operator explicitly toggles via PATCH /api/admin/brokers/{id}.
+    circuit_breaker_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    # ── Display ordering (Jul 2026) ───────────────────────────────────────
+    # display_order — canonical position for UI surfaces: dropdowns,
+    #   health-badge chip popup, PerformancePage rows, dashboard tables,
+    #   order-ticket pickers. Lower = shown earlier.
+    #   Seeded at startup via _ensure_shared_broker_schema() one-shot
+    #   migration (settings marker 'migrations.display_order_seeded_v1').
+    #   Operator can adjust live via PATCH /api/admin/brokers/{id}.
+    #   Default 500 so new/unknown accounts land in the middle, not last.
+    display_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=500, server_default="500"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),

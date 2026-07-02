@@ -53,6 +53,18 @@ def _circuit_state(account: str) -> str:
     return _cs(account)
 
 
+def _set_optin(account: str, enabled: bool = True) -> None:
+    """Set the in-process breaker opt-in cache so tests can enable/disable
+    the state machine without a DB row or rebuild_from_db call."""
+    from backend.brokers.broker_apis import set_breaker_optin_cache
+    set_breaker_optin_cache(account, enabled)
+
+
+def _clear_optin(account: str) -> None:
+    from backend.brokers.broker_apis import _breaker_optin_cache
+    _breaker_optin_cache.pop(account, None)
+
+
 # ---------------------------------------------------------------------------
 # 1–3: Open after threshold
 # ---------------------------------------------------------------------------
@@ -64,6 +76,10 @@ class TestBreakerOpens:
 
     def setup_method(self):
         _reset_health(self.ACCOUNT)
+        _set_optin(self.ACCOUNT)  # opt-in so the state machine is active
+
+    def teardown_method(self):
+        _clear_optin(self.ACCOUNT)
 
     def test_state_closed_initially(self):
         assert _circuit_state(self.ACCOUNT) == "closed"
@@ -147,6 +163,10 @@ class TestHalfOpen:
 
     def setup_method(self):
         _reset_health(self.ACCOUNT)
+        _set_optin(self.ACCOUNT)
+
+    def teardown_method(self):
+        _clear_optin(self.ACCOUNT)
 
     def test_halfopen_after_cooloff_then_success_closes(self):
         """Advance time past cool-off → half-open; success → closed."""
@@ -194,6 +214,10 @@ class TestExponentialBackoff:
 
     def setup_method(self):
         _reset_health(self.ACCOUNT)
+        _set_optin(self.ACCOUNT)
+
+    def teardown_method(self):
+        _clear_optin(self.ACCOUNT)
 
     def test_second_open_cycle_10_min(self):
         """3 fails → open (5m). Expire. 3 more → re-open (10m)."""
@@ -245,6 +269,10 @@ class TestCooloffCap:
 
     def setup_method(self):
         _reset_health(self.ACCOUNT)
+        _set_optin(self.ACCOUNT)
+
+    def teardown_method(self):
+        _clear_optin(self.ACCOUNT)
 
     def test_cap_at_1800s_after_5_cycles(self):
         """After 5 open cycles, cool-off must not exceed 1800 s.
@@ -295,6 +323,10 @@ class TestResetOnSuccess:
 
     def setup_method(self):
         _reset_health(self.ACCOUNT)
+        _set_optin(self.ACCOUNT)
+
+    def teardown_method(self):
+        _clear_optin(self.ACCOUNT)
 
     def test_success_resets_fail_count(self):
         _record(self.ACCOUNT, ok=False, error="fail1")
@@ -335,6 +367,12 @@ class TestForAllAccountsSkip:
     def setup_method(self):
         _reset_health(self.OPEN_ACCOUNT)
         _reset_health(self.GOOD_ACCOUNT)
+        _set_optin(self.OPEN_ACCOUNT)
+        _set_optin(self.GOOD_ACCOUNT)
+
+    def teardown_method(self):
+        _clear_optin(self.OPEN_ACCOUNT)
+        _clear_optin(self.GOOD_ACCOUNT)
 
     def test_open_account_returns_empty_failed_df(self):
         """Manually invoke _fetch_holdings_local for the open account."""
@@ -393,6 +431,10 @@ class TestGrowwBreakerTrigger:
 
     def setup_method(self):
         _reset_health(self.ACCOUNT)
+        _set_optin(self.ACCOUNT)
+
+    def teardown_method(self):
+        _clear_optin(self.ACCOUNT)
 
     def _simulate_groww_auth_error(self, n: int) -> None:
         """Simulate n consecutive Groww auth failures via the actual
@@ -452,6 +494,10 @@ class TestConcurrentProbeRace:
 
     def setup_method(self):
         _reset_health(self.ACCOUNT)
+        _set_optin(self.ACCOUNT)
+
+    def teardown_method(self):
+        _clear_optin(self.ACCOUNT)
 
     def test_three_parallel_halfopen_failures_bump_cycle_once(self):
         import time as _t
@@ -483,4 +529,205 @@ class TestConcurrentProbeRace:
         until = e["circuit_open_until"]
         assert abs(until - _time2.time() - 600.0) < 5.0, (
             f"Expected ~600s 2nd-cycle cooloff, got {until - _time2.time():.1f}s"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 11: Per-account opt-in — non-opt-in accounts never enter OPEN state
+# ---------------------------------------------------------------------------
+
+class TestBreakerOptIn:
+    """circuit_breaker_enabled gates the state machine.
+
+    When an account is NOT in _breaker_optin_cache (defaults to False),
+    _record_fetch must update health stamps but NEVER open the circuit.
+    _is_circuit_open must return False regardless of consecutive fail count.
+    """
+
+    OPT_OUT_ACCOUNT = "DH3747_test_optout"
+    OPT_IN_ACCOUNT  = "DH6847_test_optin"
+
+    def setup_method(self):
+        _reset_health(self.OPT_OUT_ACCOUNT)
+        _reset_health(self.OPT_IN_ACCOUNT)
+        from backend.brokers.broker_apis import _breaker_optin_cache
+        # Ensure clean slate for both accounts in the in-process cache.
+        _breaker_optin_cache.pop(self.OPT_OUT_ACCOUNT, None)
+        _breaker_optin_cache.pop(self.OPT_IN_ACCOUNT, None)
+
+    def teardown_method(self):
+        from backend.brokers.broker_apis import _breaker_optin_cache
+        _breaker_optin_cache.pop(self.OPT_OUT_ACCOUNT, None)
+        _breaker_optin_cache.pop(self.OPT_IN_ACCOUNT, None)
+
+    def test_non_optin_never_opens_after_10_failures(self):
+        """Non-opt-in account stays CLOSED after 10 consecutive failures."""
+        for i in range(10):
+            _record(self.OPT_OUT_ACCOUNT, ok=False, error=f"fail {i}")
+        assert _circuit_state(self.OPT_OUT_ACCOUNT) == "closed", (
+            "Non-opt-in account must never enter OPEN state"
+        )
+
+    def test_non_optin_is_circuit_open_returns_false(self):
+        """_is_circuit_open must return False for non-opt-in accounts
+        regardless of the underlying _circuit_state value."""
+        from backend.brokers.broker_apis import _is_circuit_open
+        # Manually force an 'open' entry to verify the gate overrides it.
+        from backend.brokers import broker_apis
+        e = broker_apis._FETCH_HEALTH.setdefault(
+            self.OPT_OUT_ACCOUNT, broker_apis._default_health_entry()
+        )
+        e["circuit_open_until"] = _time.time() + 300.0
+        # Opt-in cache has no entry → defaults to False.
+        assert not _is_circuit_open(self.OPT_OUT_ACCOUNT), (
+            "_is_circuit_open must be False for non-opt-in even with open_until set"
+        )
+
+    def test_non_optin_record_fetch_updates_health_stamps(self):
+        """_record_fetch for non-opt-in accounts must still update
+        last_ok_at / last_fail_at for the health badge."""
+        before = _time.time()
+        _record(self.OPT_OUT_ACCOUNT, ok=False, error="transient error")
+        e = _get_entry(self.OPT_OUT_ACCOUNT)
+        assert e.get("last_fail_at", 0) >= before, (
+            "last_fail_at must be updated for non-opt-in accounts"
+        )
+        # Breaker fields must stay at defaults.
+        assert e.get("consecutive_fail_count", 0) == 0, (
+            "consecutive_fail_count must not be incremented for non-opt-in"
+        )
+        assert e.get("circuit_open_until") is None, (
+            "circuit_open_until must remain None for non-opt-in"
+        )
+
+        # Success also updates last_ok_at
+        _record(self.OPT_OUT_ACCOUNT, ok=True)
+        e2 = _get_entry(self.OPT_OUT_ACCOUNT)
+        assert e2.get("last_ok_at", 0) >= before
+
+    def test_optin_account_opens_normally(self):
+        """An opt-in account obeys the full state machine."""
+        from backend.brokers.broker_apis import set_breaker_optin_cache
+        set_breaker_optin_cache(self.OPT_IN_ACCOUNT, True)
+
+        for i in range(3):
+            _record(self.OPT_IN_ACCOUNT, ok=False, error=f"DH-906 fail {i}")
+        assert _circuit_state(self.OPT_IN_ACCOUNT) == "open", (
+            "Opt-in account must enter OPEN after 3 consecutive failures"
+        )
+        e = _get_entry(self.OPT_IN_ACCOUNT)
+        assert e["consecutive_fail_count"] >= 3
+        assert e["circuit_open_until"] is not None
+
+    def test_set_breaker_optin_cache_toggles_gate(self):
+        """set_breaker_optin_cache wires the in-process cache; toggling OFF
+        must cause _is_circuit_open to return False again."""
+        from backend.brokers.broker_apis import (
+            set_breaker_optin_cache,
+            get_breaker_optin_cache,
+            _is_circuit_open,
+        )
+        # Opt in.
+        set_breaker_optin_cache(self.OPT_IN_ACCOUNT, True)
+        assert get_breaker_optin_cache(self.OPT_IN_ACCOUNT) is True
+
+        # Open the breaker.
+        for i in range(3):
+            _record(self.OPT_IN_ACCOUNT, ok=False, error=f"fail {i}")
+        assert _is_circuit_open(self.OPT_IN_ACCOUNT), (
+            "Opt-in + open state must return True from _is_circuit_open"
+        )
+
+        # Operator disables circuit breaker via PATCH → cache updated immediately.
+        set_breaker_optin_cache(self.OPT_IN_ACCOUNT, False)
+        assert get_breaker_optin_cache(self.OPT_IN_ACCOUNT) is False
+        assert not _is_circuit_open(self.OPT_IN_ACCOUNT), (
+            "After disabling opt-in, _is_circuit_open must return False"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 12: Auto-downgrade requires BOTH circuit_breaker_enabled AND auto_downgrade_enabled
+# ---------------------------------------------------------------------------
+
+class TestAutoDowngradeRequiresBothFlags:
+    """_maybe_auto_downgrade must be a no-op when circuit_breaker_enabled=False.
+
+    This is enforced in the DB check inside _check_and_update(). We patch
+    the async DB read to return a mock row and verify the early-return fires.
+    """
+
+    ACCOUNT = "DH3747_test_adg_guard"
+
+    def setup_method(self):
+        _reset_health(self.ACCOUNT)
+        from backend.brokers.broker_apis import _breaker_optin_cache, _breaker_open_history
+        _breaker_optin_cache.pop(self.ACCOUNT, None)
+        _breaker_open_history.pop(self.ACCOUNT, None)
+
+    def teardown_method(self):
+        from backend.brokers.broker_apis import _breaker_optin_cache, _breaker_open_history
+        _breaker_optin_cache.pop(self.ACCOUNT, None)
+        _breaker_open_history.pop(self.ACCOUNT, None)
+
+    def test_auto_downgrade_skipped_when_breaker_disabled(self):
+        """Simulate 5 opens in history; verify _maybe_auto_downgrade short-circuits
+        when circuit_breaker_enabled=False on the mock DB row.
+
+        Strategy: we run _check_and_update on a real event loop via asyncio.run()
+        so no coroutine is left dangling (eliminating the RuntimeWarning). We patch
+        the DB session to return a mock row with circuit_breaker_enabled=False and
+        assert poll_priority is never mutated.
+        """
+        import asyncio
+        from unittest.mock import MagicMock, AsyncMock, patch
+        from backend.brokers import broker_apis
+
+        # Simulate 5 open events in the breaker_open_history.
+        import time as _t
+        broker_apis._breaker_open_history[self.ACCOUNT] = [
+            _t.time() - i * 30 for i in range(5)
+        ]
+
+        # Mock row with circuit_breaker_enabled=False, auto_downgrade_enabled=True.
+        mock_row = MagicMock()
+        mock_row.circuit_breaker_enabled = False
+        mock_row.auto_downgrade_enabled = True
+        mock_row.poll_priority = "hot"
+
+        # Patch the shared_async_session to return the mock row and set
+        # get_main_loop to return a real running loop so run_coroutine_threadsafe
+        # can schedule and execute the inner coroutine without leaking it.
+        mock_session = MagicMock()
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_row
+        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        from backend.brokers.broker_apis import _maybe_auto_downgrade
+
+        # Run the event loop in a background thread so run_coroutine_threadsafe
+        # can actually schedule and drain the coroutine. This avoids any
+        # RuntimeWarning about unawaited coroutines.
+        loop = asyncio.new_event_loop()
+        import threading
+
+        def _run_loop():
+            loop.run_forever()
+
+        t = threading.Thread(target=_run_loop, daemon=True)
+        t.start()
+        try:
+            with patch("backend.api.database.shared_async_session", return_value=mock_session), \
+                 patch("backend.api.persistence.write_queue.get_main_loop", return_value=loop):
+                _maybe_auto_downgrade(self.ACCOUNT)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            t.join(timeout=2.0)
+            loop.close()
+
+        # poll_priority must NOT have been set on the mock row.
+        assert mock_row.poll_priority == "hot", (
+            "poll_priority must not change when circuit_breaker_enabled=False"
         )

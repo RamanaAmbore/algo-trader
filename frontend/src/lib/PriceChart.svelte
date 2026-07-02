@@ -10,6 +10,9 @@
   import { priceFmt } from '$lib/format';
   import { visibleInterval } from '$lib/stores';
   import LegLabel from '$lib/LegLabel.svelte';
+  import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
+
+  const _pulse = createChartRefreshPulse();
 
   let {
     /** @type {'sim'|'paper'|'live'} */ mode,
@@ -74,6 +77,7 @@
     underlying = r?.underlying || null;
     error      = '';
     loading    = false;
+    if (ticks.length) _pulse.notify('chart');
   }
 
   async function load() {
@@ -407,7 +411,7 @@
   });
 </script>
 
-<div class="price-chart" style="--chart-h: {height}px">
+<div class="price-chart {_pulse.classOf('chart')}" style="--chart-h: {height}px">
   <div class="chart-header">
     <span class="chart-symbol">{symbol || '—'}</span>
     {#if kind === 'underlying'}
@@ -488,7 +492,7 @@
 
       <!-- Bid/ask band -->
       {#if bandPath}
-        <path d={bandPath} fill="rgba(125,211,252,0.10)" stroke="none"/>
+        <path d={bandPath} fill="rgba(125,211,252,0.10)" stroke="none" class="data-path"/>
       {/if}
 
       <!-- Previous close reference line — dashed amber across the chart
@@ -516,14 +520,14 @@
       {#if underlyingPath}
         <path d={underlyingPath} fill="none"
               stroke="#7dd3fc" stroke-width="1" stroke-dasharray="3 3"
-              stroke-opacity="0.7"/>
+              stroke-opacity="0.7" class="data-path"/>
       {/if}
 
       <!-- LTP line — sky-blue for underlyings (so it matches the index
            palette used elsewhere) and amber for derivatives / equities. -->
       <path d={ltpPath} fill="none"
             stroke={kind === 'underlying' ? '#7dd3fc' : '#fbbf24'}
-            stroke-width="1.5"/>
+            stroke-width="1.5" class="data-path"/>
 
       <!-- Order event markers -->
       {#each events as ev}

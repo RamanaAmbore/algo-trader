@@ -20,9 +20,15 @@
    *   scrubbedTs?: string | null,
    * }} */
   import { formatSymbol } from '$lib/data/decomposeSymbol';
+  import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
   const { series = [], height = 240, title = '',
           emptyMsg = 'No ticks captured yet for any leg.',
           scrubbedTs = null } = $props();
+
+  // ── Chart-refresh pulse ───────────────────────────────────────────
+  // Fires whenever normSeries gains new data so the Lab operator
+  // gets a subtle cyan flash confirming a new tick batch landed.
+  const _pulse = createChartRefreshPulse();
 
   // Y-axis scale toggle — linear (default) vs symmetric-log. Log
   // makes a +400 % long-call and a +5 % short-strangle both readable
@@ -97,6 +103,11 @@
     }
     return out;
   });
+
+  // Fire pulse when normSeries becomes non-empty (new tick batch landed
+  // from the simulator or replay). Skips empty resets so the pulse is
+  // only a positive signal ("data arrived").
+  $effect(() => { if (normSeries.length) _pulse.notify('mpc'); });
 
   // Unified x-domain (min/max timestamp across every series). When
   // every captured tick collapses to the same timestamp (sub-second
@@ -217,7 +228,7 @@
   function onPointerLeave() { hover = null; }
 </script>
 
-<div class="mpc-shell">
+<div class="mpc-shell {_pulse.classOf('mpc')}">
   <div class="mpc-header-row">
     {#if title}
       <div class="mpc-header">{title}</div>
@@ -263,7 +274,7 @@
 
       <!-- One path per series -->
       {#each normSeries as s}
-        <path d={buildPath(s.pctTicks)} fill="none"
+        <path d={buildPath(s.pctTicks)} fill="none" class="data-path"
               stroke={s.color} stroke-width="1.8"
               stroke-linejoin="round" stroke-linecap="round" />
       {/each}

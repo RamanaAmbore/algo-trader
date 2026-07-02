@@ -326,8 +326,13 @@ class HoldingsController(Controller):
                 if fresh:
                     invalidate("holdings")
                     try:
-                        from backend.brokers.broker_apis import _raw_cache_invalidate
+                        from backend.brokers.broker_apis import (
+                            _raw_cache_invalidate, dhan_next_poll_clear,
+                        )
                         _raw_cache_invalidate("holdings")
+                        # Reset the Dhan interval gate so ?fresh=1 bypasses
+                        # cold/warm cadence and always hits the broker.
+                        dhan_next_poll_clear()
                     except Exception:
                         pass
                 return await get_or_fetch("holdings", _fetch, ttl_seconds=_TTL)

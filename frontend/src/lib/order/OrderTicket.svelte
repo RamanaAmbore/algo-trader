@@ -35,6 +35,7 @@
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import { capWarningFor } from '$lib/data/brokerCapWarnings';
   import { getDefaultAccount } from '$lib/data/accounts';
+  import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { aggFmt } from '$lib/format';
   import { executionMode } from '$lib/stores';
   import {
@@ -1124,10 +1125,15 @@
   function _isRealAcct(/** @type {string|null|undefined} */ a) {
     return !!(a && !String(a).includes('#'));
   }
+  // Current canonical order map (module-level singleton, kept in sync by
+  // accountDisplayOrder.subscribe below).
+  let _otOrderMap = $state(/** @type {Record<string,number>} */ ({}));
+  const _unsubOtOrder = accountDisplayOrder.subscribe(m => { _otOrderMap = m; });
+
   const _accounts = $derived.by(() => {
     const fromProp = (accounts || []).filter(_isRealAcct);
-    if (fromProp.length) return fromProp;
-    return _selfAccounts.filter(_isRealAcct);
+    const raw = fromProp.length ? fromProp : _selfAccounts.filter(_isRealAcct);
+    return sortAccountsBy(raw, _otOrderMap);
   });
 
   // Account — explicit operator choice for which Kite handle the
@@ -1787,6 +1793,7 @@
   // destroyed component. The $effects that own these timers also
   // clear them on re-run, but they don't run on unmount.
   onDestroy(() => {
+    _unsubOtOrder();
     if (_marginTimer)  { clearTimeout(_marginTimer);  _marginTimer  = null; }
     if (_previewTimer) { clearTimeout(_previewTimer); _previewTimer = null; }
   });

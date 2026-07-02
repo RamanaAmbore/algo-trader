@@ -19,13 +19,28 @@
   import { onMount, onDestroy } from 'svelte';
   import { visibleInterval, openActivityModal } from '$lib/stores';
   import { fetchBrokerHealth } from '$lib/api';
+  import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
   /** Bindable: parent (algo layout) toggles this from the 5/5 chip. */
   let { open = $bindable(false) } = $props();
 
-  /** @type {Array<{account:string,broker:string,state:string,reason:string,last_good_at:string|null,last_check_at:string|null,is_active_ticker?:boolean,circuit_state?:string,consecutive_fail_count?:number,circuit_open_until?:string|null}>} */
-  let accounts = $state([]);
+  /** @type {Array<{account:string,broker:string,state:string,reason:string,last_good_at:string|null,last_check_at:string|null,is_active_ticker?:boolean,circuit_state?:string,consecutive_fail_count?:number,circuit_open_until?:string|null,circuit_breaker_enabled?:boolean}>} */
+  let _rawAccounts = $state([]);
   let loading  = $state(false);
+
+  // Subscribe to the canonical order map so the chip popup re-sorts
+  // immediately when the operator patches display_order in /admin/brokers.
+  let _orderMap = $state(/** @type {Record<string,number>} */ ({}));
+  const _unsubOrder = accountDisplayOrder.subscribe(m => { _orderMap = m; });
+  onDestroy(() => _unsubOrder());
+
+  // Client-side sort mirrors the backend sort so even a stale API
+  // response renders in the right order.
+  const accounts = $derived(
+    sortAccountsBy(_rawAccounts.map(a => a.account), _orderMap)
+      .map(id => _rawAccounts.find(a => a.account === id))
+      .filter(Boolean)
+  );
 
   let _teardown = () => {};
 
@@ -34,7 +49,7 @@
     loading = true;
     try {
       const data = await fetchBrokerHealth();
-      accounts = data?.accounts ?? [];
+      _rawAccounts = data?.accounts ?? [];
     } catch (_) {
       // Silently suppress — badge disappears when API unreachable.
     } finally {
@@ -92,6 +107,15 @@
                         : acct.state === 'amber' ? 'bh-row-account-amber'
                         : acct.is_active_ticker  ? 'bh-row-account-active'
                         : 'bh-row-account-spare'}
+        {@const _cbOptIn = !!acct.circuit_breaker_enabled}
+        {@const _circuitTitle = (_cbOptIn && acct.circuit_state === 'open')
+            ? `${acct.account} — circuit open until ${_fmtIso(acct.circuit_open_until)} — auto retry then`
+            : null}
+        {@const _redTitle = acct.state === 'red'
+            ? (_cbOptIn
+                ? `${acct.account} — connection problem (${acct.reason})`
+                : `${acct.account} — connection problem (${acct.reason}) — retrying every poll`)
+            : null}
         <div class="bh-row" role="button" tabindex="0"
              onclick={() => { open = false; openActivityModal('conn'); }}
              onkeydown={(e) => {
@@ -101,20 +125,18 @@
              }}
              title="View connection log for {acct.account}">
           <span class="bh-row-dot bh-row-dot-{acct.state}" aria-hidden="true"></span>
-          {@const _circuitTitle = acct.circuit_state === 'open'
-              ? `${acct.account} — circuit open until ${_fmtIso(acct.circuit_open_until)} — auto retry then`
-              : null}
           <span class="bh-row-account {_accCls}"
                 title={_circuitTitle
                      ? _circuitTitle
-                     : acct.state === 'red'   ? `${acct.account} — connection problem (${acct.reason})`
+                     : _redTitle
+                     ? _redTitle
                      : acct.state === 'amber' ? `${acct.account} — stale (${acct.reason})`
                      : acct.is_active_ticker  ? `${acct.account} — active (running the KiteTicker WebSocket)`
                      : `${acct.account} — warm spare (healthy, not currently active)`}>
             {acct.account}
-            {#if acct.circuit_state === 'open'}
+            {#if _cbOptIn && acct.circuit_state === 'open'}
               <span class="bh-circuit-chip" title="Circuit breaker open — SDK calls paused">OPEN</span>
-            {:else if acct.circuit_state === 'half-open'}
+            {:else if _cbOptIn && acct.circuit_state === 'half-open'}
               <span class="bh-circuit-chip bh-circuit-half" title="Circuit half-open — probing on next fetch">PROBE</span>
             {/if}
           </span>

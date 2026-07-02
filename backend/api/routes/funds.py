@@ -96,8 +96,13 @@ class FundsController(Controller):
                 # Also drop the raw-DataFrame cache so the refetch below
                 # sees fresh broker state (matches positions / holdings).
                 try:
-                    from backend.brokers.broker_apis import _raw_cache_invalidate
+                    from backend.brokers.broker_apis import (
+                        _raw_cache_invalidate, dhan_next_poll_clear,
+                    )
                     _raw_cache_invalidate("margins")
+                    # Reset the Dhan interval gate so ?fresh=1 bypasses
+                    # cold/warm cadence and always hits the broker.
+                    dhan_next_poll_clear()
                 except Exception:
                     pass
             resp = await get_or_fetch("funds", _fetch, ttl_seconds=_TTL)

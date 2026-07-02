@@ -56,6 +56,7 @@
   import LegLabel from '$lib/LegLabel.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
   import { longPress } from '$lib/actions/longPress.js';
+  import { accountDisplayOrder, sortAccountsBy, getAccountOrderMap } from '$lib/data/accountSort.js';
 
   // Row-level chart modal for Candidates panel rows.
   let _chartModalSym  = $state('');
@@ -3675,7 +3676,7 @@
       const list = (r?.accounts || [])
         .map(/** @param {any} a */ (a) => String(a?.account_id || ''))
         .filter(Boolean);
-      realAccounts = list;
+      realAccounts = sortAccountsBy(list, getAccountOrderMap());
     } catch (_) {
       // 401 / 403 (anonymous demo on prod) — keep realAccounts
       // empty; the ticket falls back to the masked accountChoices.

@@ -70,6 +70,7 @@
   import Select      from '$lib/Select.svelte';
   import { openActivityModal } from '$lib/stores';
   import ChartModal from '$lib/ChartModal.svelte';
+  import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
   let {
     title              = 'Pulse',
@@ -583,6 +584,9 @@
     return (/** @type {any} */ acct) => allow.has(String(acct || ''));
   });
   let availableAccounts = $state(/** @type {string[]} */ ([]));
+  // Canonical account display order — sorted union of broker accounts.
+  let _mpOrderMap = $state(/** @type {Record<string,number>} */ ({}));
+  const _unsubMpOrder = accountDisplayOrder.subscribe(m => { _mpOrderMap = m; });
   // Prune stale account selections that aren't in availableAccounts.
   // Without this, a persisted selection from a PRIOR session can
   // survive a role / mask-mode change — e.g., an admin session
@@ -2277,6 +2281,7 @@
   });
 
   onDestroy(() => {
+    _unsubMpOrder();
     stopPulseTick?.(); stopTickSettingPoll?.(); _stopClosedSparkPoll?.(); stopWS?.();
     if (_deferredSparkTimer) { clearTimeout(_deferredSparkTimer); _deferredSparkTimer = null; }
     stopQuoteStream();
@@ -2503,7 +2508,7 @@
         for (const r of p_rows) if (r.account) accts.add(String(r.account));
         for (const r of h_rows) if (r.account) accts.add(String(r.account));
         for (const a of _knownBrokerAccounts) accts.add(String(a));
-        const sorted = [...accts].sort();
+        const sorted = sortAccountsBy([...accts], _mpOrderMap);
         availableAccounts = sorted;
         // Two-stage seeding:
         //   (a) FIRST-LOAD seed (latched by `_seededFromBrokers`) — when
@@ -2557,12 +2562,12 @@
               if (hasPersistedP || positionsAccounts.length > 0) {
                 const cur = new Set(positionsAccounts);
                 for (const a of newAccts) cur.add(a);
-                positionsAccounts = [...cur].sort();
+                positionsAccounts = sortAccountsBy([...cur], _mpOrderMap);
               }
               if (hasPersistedH || holdingsAccounts.length > 0) {
                 const cur = new Set(holdingsAccounts);
                 for (const a of newAccts) cur.add(a);
-                holdingsAccounts = [...cur].sort();
+                holdingsAccounts = sortAccountsBy([...cur], _mpOrderMap);
               }
             }
             // Mark every account in `sorted` (incl. the new arrivals)

@@ -32,6 +32,7 @@
   import { userCaps, userRole, hasCap } from '$lib/rbac';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
+  import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import {
     classifyByIndex,
@@ -39,6 +40,7 @@
     symbolFromQuoteKey,
   } from '$lib/data/indexConstituents';
   import { readChartPref, writeChartPref } from '$lib/data/chartPrefs';
+  import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
   // ag-Grid module registration — idempotent across re-mounts.
   ModuleRegistry.registerModules([AllCommunityModule]);
@@ -256,15 +258,19 @@
   });
 
   // Derived list of distinct accounts seen in current positions +
-  // holdings + broker registry. Sorted ascending. Empty fallback when
-  // fetchBrokerAccounts 403s (non-admin session) — picker still works
-  // off the rows-derived set.
+  // holdings + broker registry. Sorted by canonical display_order.
+  // Empty fallback when fetchBrokerAccounts 403s (non-admin session) —
+  // picker still works off the rows-derived set.
+  let _orderMap = $state(/** @type {Record<string,number>} */ ({}));
+  const _unsubDashOrder = accountDisplayOrder.subscribe(m => { _orderMap = m; });
+  onDestroy(() => _unsubDashOrder());
+
   const _availableAccounts = $derived.by(() => {
     const set = new Set();
     for (const r of _positions) if (r.account) set.add(String(r.account));
     for (const r of _holdings)  if (r.account) set.add(String(r.account));
     for (const a of _knownBrokerAccounts) set.add(String(a));
-    return [...set].sort();
+    return sortAccountsBy([...set], _orderMap);
   });
 
   // Apply a per-card account filter to a row list. Empty filter
@@ -453,7 +459,9 @@
       byAcct[a].day_pnl += Number(r.day_change_val) || 0;
       byAcct[a].pnl     += Number(r.pnl) || 0;
     }
-    return Object.values(byAcct).sort((a, b) => a.account.localeCompare(b.account));
+    const rows = Object.values(byAcct);
+    return sortAccountsBy(rows.map(r => r.account), _orderMap)
+      .map(id => rows.find(r => r.account === id)).filter(Boolean);
   });
 
   const _holdingsSummary = $derived.by(() => {
@@ -467,7 +475,9 @@
       byAcct[a].inv_val += Number(r.inv_val) || 0;
       byAcct[a].cur_val += Number(r.cur_val) || 0;
     }
-    return Object.values(byAcct).sort((a, b) => a.account.localeCompare(b.account));
+    const rows = Object.values(byAcct);
+    return sortAccountsBy(rows.map(r => r.account), _orderMap)
+      .map(id => rows.find(r => r.account === id)).filter(Boolean);
   });
 
   // Per-account TOTAL rows (sum across accounts) — pinned at the
@@ -505,6 +515,10 @@
   // ── Row 1: Intraday equity curve ───────────────────────────────────
   /** @type {{ ts: string, day_pnl: number, cum_pnl: number }[]} */
   let _equityPoints = $state([]);
+  const _eqPulse = createChartRefreshPulse();
+  $effect(() => {
+    if (_equityPoints.length) _eqPulse.notify('eq');
+  });
 
   // ── Row 1: Margin utilisation gauges ──────────────────────────────
   // Derived from _funds (which itself derives from fundsStore) so the
@@ -1851,7 +1865,7 @@
       <!-- Chart frame — wraps SVG + stat overlay so .eq-stats anchors
            to the chart area (not the card-body); the legend strip above
            stays clear of any stat-overlay overlap. -->
-      <div class="eq-chart-frame">
+      <div class="eq-chart-frame {_eqPulse.classOf('eq')}">
       <!-- Stat overlay — at-a-glance P&L numerics so the operator
            doesn't need a separate hero strip. Pointer-events: none
            so SVG hover / zoom never blocks. Same pattern OptionsPayoff
@@ -1908,7 +1922,7 @@
         <!-- Filled area — only when a single series is enabled. Multi-
              series mode skips the fill so the lines stay readable. -->
         {#if _eqAreaPath}
-          <path d={_eqAreaPath} fill={_eqFillColor ?? 'none'} />
+          <path d={_eqAreaPath} fill={_eqFillColor ?? 'none'} class="data-path"/>
         {/if}
 
         <!-- Lines — one polyline per active series. Order in the SVG
@@ -1922,7 +1936,8 @@
               stroke-width={s.width}
               stroke-dasharray={s.dash || ''}
               stroke-linejoin="round"
-              stroke-linecap="round" />
+              stroke-linecap="round"
+              class="data-path" />
           {/if}
         {/each}
 

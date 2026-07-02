@@ -353,6 +353,15 @@
   import { untrack } from 'svelte';
   import { priceFmt, aggFmt, aggCompact } from '$lib/format';
   import LegLabel from '$lib/LegLabel.svelte';
+  import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
+
+  const _pulse = createChartRefreshPulse();
+  // Fire when payoff data changes — but NOT on hover / zoom / pan (those
+  // don't change the payoff prop identity). `payoff` is the canonical
+  // data prop; spot changes are derived display, not new data.
+  $effect(() => {
+    if (payoff.length) _pulse.notify('payoff');
+  });
 
   // Compact axis label for the Y axis — e.g. "+50K", "0", "-10K".
   // Keeps left-edge labels short enough to fit in PAD_L budget.
@@ -778,7 +787,7 @@
       different effective widths — the garble the operator was
       seeing was the fg curve drifting off the bg coordinate grid.
     -->
-    <div class="payoff-svg-stack">
+    <div class="payoff-svg-stack {_pulse.classOf('payoff')}">
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <!-- Payoff SVG: wheel-zoom + drag-pan + click-pin are pointer-native.
@@ -799,8 +808,8 @@
       <rect class="chart-bg" x={PAD_L} y={PAD_T} width={innerW} height={innerH}
             fill="var(--chart-bg-tint)" rx="0"/>
       <!-- Profit / loss shading (under the curves so the lines pop) -->
-      <path d={fillProfit} fill="rgba(74,222,128,0.10)" stroke="none"/>
-      <path d={fillLoss}   fill="rgba(248,113,113,0.10)" stroke="none"/>
+      <path d={fillProfit} fill="rgba(74,222,128,0.10)" stroke="none" class="data-path"/>
+      <path d={fillLoss}   fill="rgba(248,113,113,0.10)" stroke="none" class="data-path"/>
 
       <!-- Y-axis grid lines only — left-edge tick marks and faint
            numeric labels are gone; the spot-vertical chip column is
@@ -950,13 +959,15 @@
       {#each intermediatePaths as ip (ip.elapsed)}
         <path d={ip.d} fill="none" stroke={ip.color}
               stroke-width="1" stroke-dasharray="2 2"
-              stroke-opacity="0.65"/>
+              stroke-opacity="0.65" class="data-path"/>
       {/each}
       <!-- Expiry curve (dashed sky) -->
       <path d={pathExpiry} fill="none" stroke="#7dd3fc"
-            stroke-width="1.25" stroke-dasharray="4 3" stroke-opacity="0.85"/>
+            stroke-width="1.25" stroke-dasharray="4 3" stroke-opacity="0.85"
+            class="data-path"/>
       <!-- Today curve (solid amber, primary) -->
-      <path d={pathToday}  fill="none" stroke="#fbbf24" stroke-width="1.75"/>
+      <path d={pathToday}  fill="none" stroke="#fbbf24" stroke-width="1.75"
+            class="data-path"/>
 
       <!-- Spot × today-curve dart — operator: "The one intersection
            point between the spot price line and today's payoff line
@@ -1147,11 +1158,13 @@
       {#each intermediatePaths as ip (ip.elapsed)}
         <path d={ip.d} fill="none" stroke={ip.color}
               stroke-width="1" stroke-dasharray="2 2"
-              stroke-opacity="0.65"/>
+              stroke-opacity="0.65" class="data-path"/>
       {/each}
       <path d={pathExpiry} fill="none" stroke="#7dd3fc"
-            stroke-width="1.25" stroke-dasharray="4 3" stroke-opacity="0.85"/>
-      <path d={pathToday}  fill="none" stroke="#fbbf24" stroke-width="1.75"/>
+            stroke-width="1.25" stroke-dasharray="4 3" stroke-opacity="0.85"
+            class="data-path"/>
+      <path d={pathToday}  fill="none" stroke="#fbbf24" stroke-width="1.75"
+            class="data-path"/>
       <!-- Foreground spot × today-curve dart — amber (today curve hue).
            Re-painted on the fg layer so the marker sits cleanly on
            top of the curves regardless of paint order. -->
