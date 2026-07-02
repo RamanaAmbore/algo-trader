@@ -70,6 +70,8 @@ from backend.brokers.service.schemas import (
     BrokerCallResp,
     VerifyPostbackResp,
     TickerSubscribeResp,
+    PollResetRequest,
+    PollResetResp,
 )
 
 logger = logging.getLogger(__name__)
@@ -303,6 +305,34 @@ class InternalBrokerController(Controller):
         from backend.brokers.broker_apis import fetch_health_snapshot
 
         return {"health": fetch_health_snapshot()}
+
+    @post("/dhan/poll_reset")
+    async def dhan_poll_reset(
+        self, data: PollResetRequest | None = None,
+    ) -> PollResetResp:
+        """Clear the Dhan next-poll interval gate for one or all accounts.
+
+        Called by the main API when ``?fresh=1`` is requested under
+        ``RAMBOQ_USE_CONN_SERVICE=1``.  The _dhan_next_poll dict lives in
+        this process (conn_service owns all broker calls), so the main API
+        cannot clear it locally — it proxies the reset through this endpoint.
+
+        Auth boundary: UDS file mode 0660 www-data (same as every other
+        /internal/* endpoint — no extra HMAC needed).
+
+        Body: {"accounts": ["DH6847"]} or {} / omitted (clear all).
+        """
+        from backend.brokers.broker_apis import dhan_next_poll_clear
+
+        try:
+            accounts = (data.accounts if data is not None else None)
+            dhan_next_poll_clear(accounts)
+            label = ",".join(accounts) if accounts else "all"
+            logger.debug("conn_service: dhan_poll_reset cleared=%s", label)
+            return PollResetResp(ok=True, cleared=label)
+        except Exception as e:
+            logger.warning("conn_service: dhan_poll_reset failed: %s", e)
+            return PollResetResp(ok=False, cleared="", error=str(e)[:300])
 
     @post("/ticker/subscribe")
     async def ticker_subscribe(self, data: dict[str, Any]) -> TickerSubscribeResp:
