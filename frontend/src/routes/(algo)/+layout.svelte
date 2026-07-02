@@ -737,11 +737,12 @@
     // synthetic ticks and assert flash class synchrony without needing
     // a real SSE stream. Kept out of the store module so the prod bundle
     // has no window reference from the data layer.
-    if (import.meta.env.DEV) {
-      if (typeof window !== 'undefined') {
-        /** @type {any} */ (window).__stores = /** @type {any} */ (window).__stores || {};
-        /** @type {any} */ (window).__stores.tickBus = tickBus;
-      }
+    if (typeof window !== 'undefined' &&
+        (window.location.hostname === 'dev.ramboq.com' ||
+         window.location.hostname === 'localhost' ||
+         window.location.hostname === '127.0.0.1')) {
+      /** @type {any} */ (window).__stores = /** @type {any} */ (window).__stores || {};
+      /** @type {any} */ (window).__stores.tickBus = tickBus;
     }
     // Market-gated quote stream gate. Starts the SSE if any segment is
     // open right now; runs a 30 s visibility-aware watcher that pauses /

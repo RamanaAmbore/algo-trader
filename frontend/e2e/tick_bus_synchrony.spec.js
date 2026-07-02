@@ -20,8 +20,8 @@
  *   PLAYWRIGHT_BASE_URL=https://dev.ramboq.com \
  *   npx playwright test e2e/tick_bus_synchrony.spec.js --workers=1
  *
- * Prerequisites: dev server running with import.meta.env.DEV = true
- * so window.__stores.tickBus is populated in +layout.svelte onMount.
+ * Prerequisites: running against dev.ramboq.com (or localhost) so the
+ * hostname gate in +layout.svelte exposes window.__stores.tickBus.
  */
 
 import { test, expect } from '@playwright/test';
@@ -122,7 +122,9 @@ test.describe('tick-bus flash synchrony', () => {
       await emitTick(page, TEST_SYM, 'up');
 
       // 1. RefreshButton gains rf-tick-a or rf-tick-b within 50ms.
-      const rfBtn = page.locator('.rf-btn');
+      //    Scope to .page-header so we don't accidentally target a secondary
+      //    refresh button inside a card header (same fix as e045c04c).
+      const rfBtn = page.locator('.page-header .rf-btn');
       await expect(rfBtn.first()).toHaveClass(/rf-tick-[ab]/, { timeout: 50 });
       // 2. LTP cell for TEST_SYM gains ltp-flash-up.
       //    MarketPulse's tickBus subscriber fires per-sym clearance timers.
@@ -134,9 +136,10 @@ test.describe('tick-bus flash synchrony', () => {
       if (ltpCount > 0) {
         await expect(ltpCell).toHaveClass(/ltp-flash-up/, { timeout: 50 });
       }
-      // 3. NavStrip bottom border gains ps-tick-border.
+      // 3. NavStrip bottom border gains ps-tick-border-a or ps-tick-border-b
+      //    (a/b toggle pattern mirrors RefreshButton rf-tick-a/b).
       const strip = page.locator('.ps-strip');
-      await expect(strip).toHaveClass(/ps-tick-border/, { timeout: 50 });
+      await expect(strip).toHaveClass(/ps-tick-border-[ab]/, { timeout: 50 });
       const elapsed = Date.now() - t0;
       expect(elapsed).toBeLessThan(300);
     });
@@ -147,10 +150,10 @@ test.describe('tick-bus flash synchrony', () => {
       await page.waitForTimeout(50);
       // Wait 400ms from emit; all classes should be gone.
       await page.waitForTimeout(370);
-      const rfBtn = page.locator('.rf-btn').first();
+      const rfBtn = page.locator('.page-header .rf-btn').first();
       await expect(rfBtn).not.toHaveClass(/rf-tick-[ab]/);
       const strip = page.locator('.ps-strip');
-      await expect(strip).not.toHaveClass(/ps-tick-border/);
+      await expect(strip).not.toHaveClass(/ps-tick-border-[ab]/);
     });
 
     test('direction reverses: down tick yields ltp-flash-down', async () => {
@@ -190,9 +193,10 @@ test.describe('tick-bus flash synchrony', () => {
 
     test('NavStrip border ps-tick-border uses sky-300 palette', async () => {
       await emitTick(page, TEST_SYM, 'up');
-      await expect(page.locator('.ps-strip')).toHaveClass(/ps-tick-border/, { timeout: 100 });
-      // The CSS class ps-tick-border sets border-bottom-color to sky-300.
-      // Verify the computed border color is sky-ish (channel R < 150, G > 190).
+      await expect(page.locator('.ps-strip')).toHaveClass(/ps-tick-border-[ab]/, { timeout: 100 });
+      // The CSS keyframes ps-tick-border-kf-a/b start at sky-300. Check the
+      // computed border color at the moment the class has just been applied
+      // (animation start frame — browser paints start value immediately).
       const borderColor = await page.evaluate(() => {
         const el = document.querySelector('.ps-strip');
         if (!el) return null;
@@ -229,13 +233,13 @@ test.describe('tick-bus flash synchrony', () => {
 
     test('mobile: strip gains ps-tick-border on emit', async () => {
       await emitTick(page, TEST_SYM, 'up');
-      await expect(page.locator('.ps-strip')).toHaveClass(/ps-tick-border/, { timeout: 50 });
+      await expect(page.locator('.ps-strip')).toHaveClass(/ps-tick-border-[ab]/, { timeout: 50 });
     });
 
     test('mobile: NavStrip tick-border decays within 400ms', async () => {
       await emitTick(page, TEST_SYM, 'up');
       await page.waitForTimeout(420);
-      await expect(page.locator('.ps-strip')).not.toHaveClass(/ps-tick-border/);
+      await expect(page.locator('.ps-strip')).not.toHaveClass(/ps-tick-border-[ab]/);
     });
   });
 
@@ -259,7 +263,7 @@ test.describe('tick-bus flash synchrony', () => {
     test('reduced-motion: RefreshButton animation disabled', async () => {
       await emitTick(page, TEST_SYM, 'up');
       // Class may still be set (JS still runs); animation CSS is none.
-      const rfBtn = page.locator('.rf-btn').first();
+      const rfBtn = page.locator('.page-header .rf-btn').first();
       // Wait a moment for JS to set the class if it does.
       await page.waitForTimeout(50);
       // Under reduced-motion the animation is disabled via @media.
@@ -274,25 +278,20 @@ test.describe('tick-bus flash synchrony', () => {
       expect(ok).toBe(true);
     });
 
-    test('reduced-motion: NavStrip tick-border uses base border (no flash)', async () => {
+    test('reduced-motion: NavStrip tick-border animation disabled', async () => {
       await emitTick(page, TEST_SYM, 'up');
       await page.waitForTimeout(50);
-      // Under reduced-motion, .ps-tick-border border-bottom-color is
-      // overridden to var(--algo-amber-border-soft) — the base value.
-      const borderColor = await page.evaluate(() => {
-        const el = document.querySelector('.ps-strip');
-        if (!el) return null;
-        return window.getComputedStyle(el).borderBottomColor;
+      // Under reduced-motion, .ps-tick-border-a/b have animation: none via
+      // @media (prefers-reduced-motion: reduce). The JS class may still be
+      // toggled but the keyframe animation must not play.
+      const animValue = await page.evaluate(() => {
+        const el = document.querySelector('.ps-strip.ps-tick-border-a, .ps-strip.ps-tick-border-b');
+        if (!el) return 'no-class';
+        return window.getComputedStyle(el).animationName;
       });
-      if (borderColor) {
-        // Should NOT be sky-300 blue (r≈125, g≈211, b≈252).
-        const match = borderColor.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-        if (match) {
-          const b = Number(match[3]);
-          // Sky-300 has b=252; amber + base tones have b < 100.
-          expect(b).toBeLessThan(180);
-        }
-      }
+      // 'none' or 'no-class' are both acceptable — no keyframe animation playing.
+      const ok = animValue === 'no-class' || animValue === 'none';
+      expect(ok).toBe(true);
     });
   });
 

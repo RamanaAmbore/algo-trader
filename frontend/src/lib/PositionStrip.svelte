@@ -209,10 +209,12 @@
     // continuous tick flow keeps the border lit; clears 300ms after the
     // last tick in any burst.
     _tickBusUnsub = tickBus.subscribe(() => {
-      _tickBorderOn = true;
+      // Toggle a↔b so the browser sees a new animation-name and restarts
+      // the keyframe on every tick (same pattern as RefreshButton rf-tick-a/b).
+      _tickBorderClass = _tickBorderClass === 'ps-tick-border-a' ? 'ps-tick-border-b' : 'ps-tick-border-a';
       if (_tickBorderTimer) clearTimeout(_tickBorderTimer);
       _tickBorderTimer = setTimeout(() => {
-        _tickBorderOn = false;
+        _tickBorderClass = '';
         _tickBorderTimer = null;
       }, 300);
     });
@@ -715,14 +717,18 @@
   // Direction not applicable on this surface; sky (neutral) palette per
   // the unified spec. 300ms + cubic-bezier(0.4,0,0.2,1) — same as all
   // other flash surfaces.
-  let _tickBorderOn = $state(false);
+  // Uses the same a/b class-toggle pattern as RefreshButton: each emit
+  // alternates between ps-tick-border-a and ps-tick-border-b (distinct
+  // @keyframes names) so the browser restarts the animation on every
+  // tick even during continuous bursts, rather than sitting static.
+  let _tickBorderClass = $state(/** @type {'' | 'ps-tick-border-a' | 'ps-tick-border-b'} */ (''));
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _tickBorderTimer = null;
   /** @type {(() => void) | null} */
   let _tickBusUnsub = null;
 </script>
 
-<a class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_tickBorderOn ? ' ps-tick-border' : '')} href="/dashboard"
+<a class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_tickBorderClass ? ' ' + _tickBorderClass : '')} href="/dashboard"
    aria-label="Open the dashboard — full positions, holdings, and funds grids">
   <!-- SSOT: read the three P slots from snapshotTotals when the
        derivatives page has published (single source of truth shared
@@ -825,16 +831,30 @@
   }
   /* Tick-border shimmer — per-SSE-tick sky-300 border flash driven by
      tickBus. Neutral (no direction). 300ms cubic-bezier(0.4,0,0.2,1)
-     easing matches the unified animation spec. Animates the
-     border-bottom-color from ambient to sky-300 and back. The transition
-     defined on .ps-strip (0.18s border-bottom-color) is overridden here
-     so the keyframe animation plays instead. */
-  .ps-strip.ps-tick-border {
-    border-bottom-color: rgba(125, 211, 252, 0.70);
+     easing matches the unified animation spec.
+     Uses the same a/b name-toggle pattern as RefreshButton: each emit
+     alternates between ps-tick-border-a and ps-tick-border-b, which have
+     DISTINCT @keyframes names. The browser sees an animation-name change
+     and restarts the animation even during continuous tick bursts, giving
+     a per-tick pulse rather than a static lit border. */
+  .ps-strip.ps-tick-border-a {
+    animation: ps-tick-border-kf-a 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .ps-strip.ps-tick-border-b {
+    animation: ps-tick-border-kf-b 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  @keyframes ps-tick-border-kf-a {
+    0%   { border-bottom-color: rgba(125, 211, 252, 0.70); }
+    100% { border-bottom-color: rgba(125, 211, 252, 0); }
+  }
+  @keyframes ps-tick-border-kf-b {
+    0%   { border-bottom-color: rgba(125, 211, 252, 0.70); }
+    100% { border-bottom-color: rgba(125, 211, 252, 0); }
   }
   @media (prefers-reduced-motion: reduce) {
     .ps-strip.ps-heartbeat { transition: none; }
-    .ps-strip.ps-tick-border { border-bottom-color: var(--algo-amber-border-soft); }
+    .ps-strip.ps-tick-border-a,
+    .ps-strip.ps-tick-border-b { animation: none; }
   }
   .ps-strip:hover {
     background: linear-gradient(180deg, #0a1020 0%, #1a2746 100%);
