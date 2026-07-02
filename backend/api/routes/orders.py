@@ -2542,6 +2542,41 @@ class OrdersController(Controller):
         if account not in _loaded_accounts():
             raise HTTPException(status_code=400, detail=f"Unknown account: {account}.")
 
+        # ── Fat-finger safety cap — reject F&O orders larger than 5 lots ──
+        # Operator 2026-07-01: "the code by mistake ordered 100 lots instead
+        # of 1 lot. qty vs lot issue exists in order placement. add
+        # additional guard to reject before placing any order if the lot
+        # size is more 5 before reaching broker."
+        #
+        # Guard fires BEFORE the market-hours gate + broker dispatch. Only
+        # applies to F&O exchanges (NFO/MCX/CDS/BFO); equity qty is shares,
+        # no lot concept. lot_size == 0 (unknown) OR == 1 (share-scale)
+        # falls through — the underlying qty/lot arithmetic isn't a
+        # meaningful multiplier there.
+        if data.exchange in ("NFO", "MCX", "CDS", "BFO"):
+            from backend.brokers.adapters.kite import get_lot_size as _get_lot_size
+            try:
+                _lot = int(await _get_lot_size(data.exchange, sym) or 0)
+            except Exception:
+                _lot = 0
+            if _lot > 1:
+                _lots = qty / _lot
+                if _lots > 5:
+                    logger.warning(
+                        "[FAT-FINGER-GUARD] rejected: acct=%s sym=%s qty=%s "
+                        "lot_size=%s → %.1f lots (cap: 5)",
+                        account, sym, qty, _lot, _lots,
+                    )
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Refusing order — {_lots:.1f} lots exceeds the "
+                            f"5-lot safety cap (qty={qty}, lot_size={_lot}). "
+                            "Split into ≤5-lot orders or contact ops to raise "
+                            "the cap."
+                        ),
+                    )
+
         # Slice 7i — capacity guardrail. When the strategy has a
         # capacity_cap_inr ceiling set, refuse the order if it would
         # push the strategy's open notional over the cap. Skips when:
@@ -3882,6 +3917,29 @@ class OrdersController(Controller):
                         error=f"invalid leg: sym={sym} qty={qty} side={side} exch={exch}",
                     ))
                     continue
+
+                # Fat-finger safety cap — reject F&O legs > 5 lots (same
+                # guard as /ticket).
+                if exch in ("NFO", "MCX", "CDS", "BFO"):
+                    from backend.brokers.adapters.kite import get_lot_size as _ls_lookup
+                    try:
+                        _lot = int(await _ls_lookup(exch, sym) or 0)
+                    except Exception:
+                        _lot = 0
+                    if _lot > 1:
+                        _lots = qty / _lot
+                        if _lots > 5:
+                            logger.warning(
+                                "[FAT-FINGER-GUARD] basket leg rejected: "
+                                "acct=%s sym=%s qty=%s lot_size=%s → %.1f lots",
+                                account, sym, qty, _lot, _lots,
+                            )
+                            leg_results.append(BasketLegResult(
+                                leg_index=i, order_id=None, status="error",
+                                error=(f"{_lots:.1f} lots exceeds 5-lot safety cap "
+                                       f"(qty={qty}, lot_size={_lot})"),
+                            ))
+                            continue
 
                 if eff_mode == "live":
                     try:
