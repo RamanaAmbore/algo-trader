@@ -1438,6 +1438,17 @@
   // F&O rollup (Day / P&L / Day Net / P&L Net) and one for the live
   // quote map (Spot / Day %). Prev Close skipped: doesn't change
   // intraday, so a flash would be a false signal of "fresh data".
+  //
+  // NOTE — intentional deviation from the LTP-cascade pattern used on
+  // PerformancePage and MarketPulse: those pages have one LTP source
+  // per position row, so the cascade rule "LTP direction drives all
+  // derived cells" is unambiguous. Here each by-underlying rollup
+  // aggregates N legs across multiple instruments — there is no single
+  // LTP event that dominates the row. Per-field poll-diff flash is
+  // therefore the semantically correct choice; cascade would require an
+  // arbitrary tie-break and would mislead the operator. Spot / Day %
+  // cells DO use the `${root}:ltp` key, so the underlying quote flash
+  // is still independent and accurate.
   $effect(() => {
     for (const g of _byUnderlyingTotals) {
       flash.update(`${g.underlying}:day_w`,  g.day_without);
