@@ -551,21 +551,50 @@
        2. Rotation: icon rotates 180° smoothly each pulse so the button
           reads as "spinning" continuously during heavy SSE flow.
      Toggling between rf-tick-a / rf-tick-b restarts both each pulse.
+
+     ANIMATION-RESTART BUG FIX (Jul 2026):
+     The original rule used a SHARED animation name for both classes:
+       .rf-btn.rf-tick-a, .rf-btn.rf-tick-b { animation: rf-tick-pulse ... }
+     Per the CSS Animations spec, a running animation only restarts when
+     the computed `animation-name` changes. Toggling a↔b while both
+     point to the same keyframes name leaves the `animation-name` computed
+     value UNCHANGED — so the browser never restarts the animation. The
+     very first pulse fires (class '' → 'rf-tick-a' is a name change),
+     but every subsequent a↔b toggle is a no-op. Operator sees: one pulse
+     on page load, then nothing during continuous SSE tick flow.
+     Fix: give each class a DISTINCT keyframes name (rf-tick-pulse-a /
+     rf-tick-pulse-b, rf-tick-rotate-a / rf-tick-rotate-b). The a↔b
+     toggle now changes the computed animation-name each cycle, which
+     forces the browser to start a fresh animation sequence.
+
      The `:not(.rf-spinning)` guard ensures the rotate animation NEVER
      touches the spinner SVG while the button is in loading state — see
      rf-spin rule above for the full root-cause story. */
-  .rf-btn.rf-tick-a, .rf-btn.rf-tick-b {
-    animation: rf-tick-pulse 0.25s ease-out;
+  .rf-btn.rf-tick-a {
+    animation: rf-tick-pulse-a 0.25s ease-out;
   }
-  .rf-btn.rf-tick-a:not(.rf-spinning) svg,
+  .rf-btn.rf-tick-b {
+    animation: rf-tick-pulse-b 0.25s ease-out;
+  }
+  .rf-btn.rf-tick-a:not(.rf-spinning) svg {
+    animation: rf-tick-rotate-a 0.25s ease-in-out;
+  }
   .rf-btn.rf-tick-b:not(.rf-spinning) svg {
-    animation: rf-tick-rotate 0.25s ease-in-out;
+    animation: rf-tick-rotate-b 0.25s ease-in-out;
   }
-  @keyframes rf-tick-pulse {
+  @keyframes rf-tick-pulse-a {
     0%   { box-shadow: 0 0 0 0 rgba(125, 211, 252, 0.55); }
     100% { box-shadow: 0 0 8px 2px rgba(125, 211, 252, 0); }
   }
-  @keyframes rf-tick-rotate {
+  @keyframes rf-tick-pulse-b {
+    0%   { box-shadow: 0 0 0 0 rgba(125, 211, 252, 0.55); }
+    100% { box-shadow: 0 0 8px 2px rgba(125, 211, 252, 0); }
+  }
+  @keyframes rf-tick-rotate-a {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(180deg); }
+  }
+  @keyframes rf-tick-rotate-b {
     from { transform: rotate(0deg); }
     to   { transform: rotate(180deg); }
   }
