@@ -5489,10 +5489,13 @@
           {@const _expVal = _expPnlByRootMap[g.underlying] ?? 0}
           {@const _hDay   = _hDayByRoot[g.underlying] || 0}
           {@const _hPnl   = _hPnlByRoot[g.underlying] || 0}
-          {@const _hExp   = _hExpByRoot[g.underlying] || 0}
           {@const _dayNet = _dayVal + _hDay}
           {@const _pnlNet = _pnlVal + _hPnl}
-          {@const _expNet = _expVal + _hExp}
+          <!-- Exp P&L Net = Exp P&L (F&O) + holdings' P&L. Operator
+               2026-07-01: "expiry p & l net should include profit/loss
+               from underlying holding p & l net." Equity tracks spot
+               1:1 so holdings' current P&L is the expiry-day value. -->
+          {@const _expNet = _expVal + _hPnl}
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
             <span class="num {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
@@ -5531,10 +5534,11 @@
           {@const _expTotalNet = Object.values(_byUnderlyingExp).reduce((s, v) => s + v.with, 0)}
           {@const _hDayTotal = Object.values(_hDayByRoot).reduce((s, v) => s + v, 0)}
           {@const _hPnlTotal = Object.values(_hPnlByRoot).reduce((s, v) => s + v, 0)}
-          {@const _hExpTotal = Object.values(_hExpByRoot).reduce((s, v) => s + v, 0)}
           {@const _hDayNetTotal = _snapshotTotalDay + _hDayTotal}
           {@const _hPnlNetTotal = _snapshotTotalPnl + _hPnlTotal}
-          {@const _hExpNetTotal = _snapshotTotalExp + _hExpTotal}
+          <!-- Exp P&L Net TOTAL uses holdings' P&L (same as P&L Net's H
+               component) per operator: equity tracks spot 1:1. -->
+          {@const _hExpNetTotal = _snapshotTotalExp + _hPnlTotal}
           <div class="byund-row byund-row-total">
             <span class="byund-und">TOTAL</span>
             <span class="num">—</span>
