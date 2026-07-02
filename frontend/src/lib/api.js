@@ -811,6 +811,10 @@ export async function fetchChartBatch(mode, symbols, since = null, limit = 600) 
  *  derived from _FETCH_HEALTH / fetch_health_snapshot() tracking. */
 export const fetchBrokerHealth = () => _get('/admin/broker-health', { auth: true });
 
+/** GET /api/admin/brokers/order — {account_id: display_order} map for
+ *  canonical UI ordering (accountSort.js / accountDisplayOrder store). */
+export const fetchBrokerOrder = () => _get('/admin/brokers/order', { auth: true });
+
 /** GET /api/admin/brokers — list every broker account (no secrets). */
 export const fetchBrokerAccounts = () => _get('/admin/brokers', { auth: true });
 
