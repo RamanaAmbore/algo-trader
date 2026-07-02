@@ -172,43 +172,66 @@ class TestNonDhanBypass:
 
 class TestFreshBypass:
     def test_force_refresh_bypasses_interval(self):
-        """Test 6: ?fresh=1 invalidates _RAW_CACHE; next fetch is unbounded.
+        """Test 6: ?fresh=1 clears the Dhan interval gate via dhan_next_poll_clear.
 
-        The interval gate only fires inside @for_all_accounts path.
-        When the route calls _raw_cache_invalidate('positions'), the
-        next fetch_positions() call goes straight to _fetch_positions_local.
-        At that point _is_dhan_interval_due is called — but since the
-        operator explicitly refreshed, we EXPECT the gate to be bypassed.
+        Route handlers (positions / holdings / funds) call dhan_next_poll_clear()
+        alongside _raw_cache_invalidate() when ?fresh=1 is set. This removes the
+        cold/warm account's future next_poll timestamp so the next
+        @for_all_accounts cycle hits the broker unconditionally.
 
-        Implementation: the route sets ?fresh=1 which calls
-        _raw_cache_invalidate(), dropping the cached result.  The next
-        call to fetch_positions() is a cache miss → re-enters
-        _fetch_positions_local → gate checked.  To simulate that the
-        operator clicked Refresh, we set next_poll to now (i.e., gate
-        passes) and assert the fetch proceeds.
+        This test verifies:
+          (a) A cold account with a future next_poll is NOT due under normal ops.
+          (b) dhan_next_poll_clear() removes the entry from _dhan_next_poll.
+          (c) After the clear, _is_dhan_interval_due returns True (due immediately).
         """
         from backend.brokers.broker_apis import (
-            _raw_cache_invalidate, _dhan_next_poll, _is_dhan_interval_due,
+            _dhan_next_poll, _is_dhan_interval_due, dhan_next_poll_clear,
         )
         acct = "DH_FRESH_TEST"
         _reset_state(acct)
         broker = _make_dhan_broker()
 
-        # Simulate a 'cold' account that hasn't had its interval reset.
-        _dhan_next_poll[acct] = _time.time() - 1  # just expired → due
-        assert _is_dhan_interval_due(acct, broker)
+        # Simulate a cold account not yet due (600s remaining).
+        _dhan_next_poll[acct] = _time.time() + 500
+        assert not _is_dhan_interval_due(acct, broker), (
+            "cold account should NOT be due when interval hasn't elapsed"
+        )
 
-        # Cache invalidation itself doesn't touch the interval gate —
-        # the gate is entirely independent of the cache.  After cache
-        # invalidation, the NEXT poll call will check the gate at that
-        # instant (which may or may not be due). The key invariant is
-        # that _raw_cache_invalidate does NOT set next_poll to 0 (which
-        # would un-gate a cold account). Verify no side-effect on gate.
-        _dhan_next_poll[acct] = _time.time() + 500  # cold, not due
-        _raw_cache_invalidate("positions")
-        # Gate still respects the interval — raw cache invalidation
-        # does NOT bypass the background poll cadence for Dhan.
-        assert not _is_dhan_interval_due(acct, broker)
+        # Route handler action — dhan_next_poll_clear() called on ?fresh=1.
+        dhan_next_poll_clear()
+
+        # After clear: entry removed → next_poll defaults to 0.0 → due.
+        assert acct not in _dhan_next_poll, (
+            "dhan_next_poll_clear() should remove the account entry"
+        )
+        assert _is_dhan_interval_due(acct, broker), (
+            "after dhan_next_poll_clear(), gate should immediately pass"
+        )
+
+    def test_dhan_next_poll_clear_account_list(self):
+        """Test 6b: dhan_next_poll_clear with explicit account list only clears those."""
+        from backend.brokers.broker_apis import (
+            _dhan_next_poll, _is_dhan_interval_due, dhan_next_poll_clear,
+        )
+        acct1 = "DH_FRESH_A"
+        acct2 = "DH_FRESH_B"
+        for a in (acct1, acct2):
+            _reset_state(a)
+
+        # Both cold and not due.
+        future = _time.time() + 500
+        _dhan_next_poll[acct1] = future
+        _dhan_next_poll[acct2] = future
+        broker = _make_dhan_broker()
+
+        # Clear only acct1.
+        dhan_next_poll_clear([acct1])
+        assert acct1 not in _dhan_next_poll, "acct1 should be cleared"
+        assert acct2 in _dhan_next_poll, "acct2 should be untouched"
+
+        broker2 = _make_dhan_broker()
+        assert _is_dhan_interval_due(acct1, broker), "acct1 should now be due"
+        assert not _is_dhan_interval_due(acct2, broker2), "acct2 still not due"
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +239,14 @@ class TestFreshBypass:
 # ---------------------------------------------------------------------------
 
 class TestAutoDowngrade:
+    def _opt_in_breaker(self, account: str) -> None:
+        """Opt the test account into the circuit breaker (required for the
+        full state machine and _maybe_auto_downgrade to fire).
+        The circuit_breaker_enabled per-account opt-in landed in Jul 2026;
+        the default is False so tests must explicitly opt in."""
+        from backend.brokers.broker_apis import set_breaker_optin_cache
+        set_breaker_optin_cache(account, True)
+
     def _fire_opens(self, account: str, n: int) -> None:
         """Fire n consecutive breaker opens in rapid succession."""
         from backend.brokers.broker_apis import _record_fetch, _CB_FAIL_THRESHOLD
@@ -237,13 +268,7 @@ class TestAutoDowngrade:
         from backend.brokers import broker_apis as _ba
         acct = "DH_AUTODOWN_ON"
         _reset_state(acct)
-
-        called_args = []
-
-        async def _fake_check_and_update():
-            # Simulate an account row with auto_downgrade_enabled=True,
-            # poll_priority='hot'.
-            return ("hot", "5 breaker opens in 15 min")
+        self._opt_in_breaker(acct)
 
         with patch.object(_ba, "_maybe_auto_downgrade") as mock_adg:
             # Fire 5 opens.
@@ -263,6 +288,7 @@ class TestAutoDowngrade:
         from backend.brokers import broker_apis as _ba
         acct = "DH_AUTODOWN_OFF"
         _reset_state(acct)
+        self._opt_in_breaker(acct)
 
         # Patch _maybe_auto_downgrade to verify it reads auto_downgrade_enabled.
         with patch.object(_ba, "_maybe_auto_downgrade") as mock_adg:
@@ -334,3 +360,63 @@ class TestRestorePriority:
         assert _PRIORITY_INTERVALS_SEC["hot"]  == 30.0
         assert _PRIORITY_INTERVALS_SEC["warm"] == 120.0
         assert _PRIORITY_INTERVALS_SEC["cold"] == 600.0
+
+
+# ---------------------------------------------------------------------------
+# 11: In-process priority cache (set_dhan_priority_cache / _get_dhan_poll_priority)
+# ---------------------------------------------------------------------------
+
+class TestPriorityCache:
+    def test_cache_miss_returns_hot(self):
+        """Test 11a: unknown account defaults to 'hot' (safe default)."""
+        from backend.brokers import broker_apis as _ba
+        acct = "DH_CACHE_MISS"
+        _ba._dhan_poll_priority_cache.pop(acct, None)
+        assert _ba._get_dhan_poll_priority(acct) == "hot"
+
+    def test_set_and_get_round_trip(self):
+        """Test 11b: set_dhan_priority_cache + _get_dhan_poll_priority round-trip."""
+        from backend.brokers import broker_apis as _ba
+        from backend.brokers.broker_apis import set_dhan_priority_cache
+        acct = "DH_CACHE_WARM"
+        _ba._dhan_poll_priority_cache.pop(acct, None)
+        set_dhan_priority_cache(acct, "warm")
+        assert _ba._get_dhan_poll_priority(acct) == "warm"
+
+    def test_invalid_priority_coerced_to_hot(self):
+        """Test 11c: invalid priority value coerced to 'hot'."""
+        from backend.brokers.broker_apis import set_dhan_priority_cache, _get_dhan_poll_priority
+        acct = "DH_CACHE_INVALID"
+        set_dhan_priority_cache(acct, "ultra")
+        assert _get_dhan_poll_priority(acct) == "hot"
+
+    def test_set_overwrites_previous(self):
+        """Test 11d: repeated set_dhan_priority_cache overwrites prior value."""
+        from backend.brokers.broker_apis import set_dhan_priority_cache, _get_dhan_poll_priority
+        acct = "DH_CACHE_OVERWRITE"
+        set_dhan_priority_cache(acct, "cold")
+        assert _get_dhan_poll_priority(acct) == "cold"
+        set_dhan_priority_cache(acct, "hot")
+        assert _get_dhan_poll_priority(acct) == "hot"
+
+    def test_interval_gate_uses_cache(self):
+        """Test 11e: _update_dhan_next_poll reads priority from cache, not DB."""
+        from backend.brokers.broker_apis import (
+            _is_dhan_interval_due, _update_dhan_next_poll,
+            _dhan_next_poll, set_dhan_priority_cache,
+        )
+        acct = "DH_CACHE_GATE"
+        _reset_state(acct)
+        broker = _make_dhan_broker()
+
+        # Set priority to 'cold' in cache — no DB needed.
+        set_dhan_priority_cache(acct, "cold")
+        _update_dhan_next_poll(acct, broker)
+        # next_poll should be ~600s from now (cold interval).
+        import time as _t
+        next_due = _dhan_next_poll.get(acct, 0.0)
+        assert next_due > _t.time() + 595, (
+            f"cold interval should set next_poll ~600s ahead, got delta={next_due - _t.time():.1f}s"
+        )
+        # Gate should now be NOT due.
+        assert not _is_dhan_interval_due(acct, broker)
