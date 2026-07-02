@@ -30,7 +30,7 @@
   import Select from '$lib/Select.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
-  import { placeTicketOrder, previewOrderMargin, fetchAccounts, modifyOrder, previewTicketTemplate, fetchStrategies } from '$lib/api';
+  import { placeTicketOrder, previewOrderMargin, fetchAccounts, modifyOrder, previewTicketTemplate, fetchStrategies, setExecutionMode } from '$lib/api';
   import { fundsStore } from '$lib/data/marketDataStores.svelte.js';
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import { capWarningFor } from '$lib/data/brokerCapWarnings';
@@ -1932,6 +1932,31 @@
          WHAT contract, HOW MUCH — then the side pill flips BUY/SELL.
          When _lotSize > 0, Qty becomes the Lots stepper. -->
     <div class="ot-row ot-row-quick">
+      <!-- Execution mode chip — mirror of the navbar chip so the
+           operator can flip PAPER ↔ LIVE without closing the modal.
+           Bindable via the global executionMode store (setExecutionMode
+           persists to backend, matching the navbar's pickMode behavior).
+           Operator 2026-07-01: "duplicate mode somewhere in order modal.
+           in regular order page, i can always change mode on navbar." -->
+      {#if !_isDemo}
+        <div class="ot-quick-block ot-mode-block">
+          <span class="ot-label">Mode</span>
+          <button type="button"
+                  class="ot-mode-chip ot-mode-chip-{$executionMode ?? 'live'}"
+                  onclick={async () => {
+                    const next = ($executionMode === 'paper') ? 'live' : 'paper';
+                    try {
+                      executionMode.set(/** @type {any} */ (next));
+                      await setExecutionMode(next);
+                    } catch (e) { /* revert on failure */
+                      executionMode.set(/** @type {any} */ ($executionMode));
+                    }
+                  }}
+                  title="Click to toggle between PAPER and LIVE. Persisted via backend, same as the navbar chip.">
+            {($executionMode ?? 'live').toUpperCase()}
+          </button>
+        </div>
+      {/if}
       <!-- Account picker — hidden when the host page (e.g. /orders'
            Order Entry card header) already exposes a shared account
            picker, so the operator doesn't see two of them. _account
@@ -2679,6 +2704,43 @@
     background: rgba(248, 113, 113, 0.08);
     border-color: rgba(248, 113, 113, 0.35);
     color: #f87171;
+  }
+  /* Mode chip inside OrderTicket header — mirrors the navbar mode chip
+     palette (sky for PAPER, red for LIVE) so the operator's cue for
+     "am I about to place a real order?" is consistent between surfaces. */
+  .ot-mode-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.22rem 0.55rem;
+    border-radius: 3px;
+    border: 1px solid transparent;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    cursor: pointer;
+    background: transparent;
+    transition: filter 0.08s;
+  }
+  .ot-mode-chip:hover { filter: brightness(1.15); }
+  .ot-mode-chip-paper {
+    background: rgba(56, 189, 248, 0.12);
+    border-color: rgba(56, 189, 248, 0.45);
+    color: #38bdf8;
+  }
+  .ot-mode-chip-live {
+    background: rgba(248, 113, 113, 0.10);
+    border-color: rgba(248, 113, 113, 0.45);
+    color: #f87171;
+  }
+  .ot-mode-chip-sim,
+  .ot-mode-chip-replay,
+  .ot-mode-chip-shadow,
+  .ot-mode-chip-idle {
+    background: rgba(148, 163, 184, 0.10);
+    border-color: rgba(148, 163, 184, 0.45);
+    color: #94a3b8;
   }
   .ot-label {
     /* Section-header treatment so labels read as form structure
