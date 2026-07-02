@@ -23,7 +23,7 @@
   /** Bindable: parent (algo layout) toggles this from the 5/5 chip. */
   let { open = $bindable(false) } = $props();
 
-  /** @type {Array<{account:string,broker:string,state:string,reason:string,last_good_at:string|null,last_check_at:string|null,is_active_ticker?:boolean}>} */
+  /** @type {Array<{account:string,broker:string,state:string,reason:string,last_good_at:string|null,last_check_at:string|null,is_active_ticker?:boolean,circuit_state?:string,consecutive_fail_count?:number,circuit_open_until?:string|null}>} */
   let accounts = $state([]);
   let loading  = $state(false);
 
@@ -101,12 +101,22 @@
              }}
              title="View connection log for {acct.account}">
           <span class="bh-row-dot bh-row-dot-{acct.state}" aria-hidden="true"></span>
+          {@const _circuitTitle = acct.circuit_state === 'open'
+              ? `${acct.account} — circuit open until ${_fmtIso(acct.circuit_open_until)} — auto retry then`
+              : null}
           <span class="bh-row-account {_accCls}"
-                title={acct.state === 'red'   ? `${acct.account} — connection problem (${acct.reason})`
+                title={_circuitTitle
+                     ? _circuitTitle
+                     : acct.state === 'red'   ? `${acct.account} — connection problem (${acct.reason})`
                      : acct.state === 'amber' ? `${acct.account} — stale (${acct.reason})`
                      : acct.is_active_ticker  ? `${acct.account} — active (running the KiteTicker WebSocket)`
                      : `${acct.account} — warm spare (healthy, not currently active)`}>
             {acct.account}
+            {#if acct.circuit_state === 'open'}
+              <span class="bh-circuit-chip" title="Circuit breaker open — SDK calls paused">OPEN</span>
+            {:else if acct.circuit_state === 'half-open'}
+              <span class="bh-circuit-chip bh-circuit-half" title="Circuit half-open — probing on next fetch">PROBE</span>
+            {/if}
           </span>
           <span class="bh-row-broker">{acct.broker}</span>
           <span class="bh-row-state bh-row-state-{acct.state}">{acct.state.toUpperCase()}</span>
@@ -290,6 +300,25 @@
   .bh-row-account-amber  { color: #fbbf24; font-weight: 700; }
   .bh-row-account-active { color: #22d3ee; font-weight: 700; }
   .bh-row-account-spare  { color: #e2e8f0; font-weight: 600; }
+  /* Circuit-breaker state chips inside the account cell */
+  .bh-circuit-chip {
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    padding: 0.05rem 0.3rem;
+    border-radius: 9999px;
+    color: #f87171;
+    background: rgba(248, 113, 113, 0.15);
+    border: 1px solid rgba(248, 113, 113, 0.4);
+    vertical-align: middle;
+    flex-shrink: 0;
+  }
+  .bh-circuit-half {
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.12);
+    border-color: rgba(251, 191, 36, 0.4);
+  }
+
   .bh-row-broker {
     color: #94a3b8;
     text-transform: uppercase;
