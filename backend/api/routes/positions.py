@@ -631,11 +631,18 @@ class PositionsController(Controller):
                     try:
                         from backend.brokers.broker_apis import (
                             _raw_cache_invalidate, dhan_next_poll_clear,
+                            _use_conn_service,
                         )
                         _raw_cache_invalidate("positions")
                         # Reset the Dhan interval gate so ?fresh=1 bypasses
                         # cold/warm cadence and always hits the broker.
-                        dhan_next_poll_clear()
+                        # Under conn-service the _dhan_next_poll dict lives in
+                        # conn_service's process — proxy the reset over UDS.
+                        if _use_conn_service():
+                            from backend.brokers.client.api import dhan_poll_reset_remote
+                            await dhan_poll_reset_remote()
+                        else:
+                            dhan_next_poll_clear()
                     except Exception:
                         pass
                 return await get_or_fetch("positions", _fetch, ttl_seconds=_TTL)
