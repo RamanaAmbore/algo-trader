@@ -656,6 +656,93 @@ def fetch_health_snapshot() -> dict[str, dict]:
 
 
 # ---------------------------------------------------------------------------
+# Canonical account display ordering (Jul 2026)
+# ---------------------------------------------------------------------------
+# sort_accounts() returns account IDs in the operator-specified display order
+# (ascending display_order, then account_id as tiebreaker). Used by log
+# surfaces, health badge, and the /api/admin/broker-accounts/order endpoint.
+#
+# The order map is lazily loaded from the DB on first call and cached for
+# up to 60 s.  PATCH /api/admin/brokers/{id} must call
+# invalidate_account_order_cache() so the next call re-reads fresh values.
+# ---------------------------------------------------------------------------
+
+_ACCOUNT_ORDER_CACHE: dict[str, int] = {}
+_ACCOUNT_ORDER_CACHE_AT: float = 0.0
+_ACCOUNT_ORDER_CACHE_TTL: float = 60.0
+_ACCOUNT_ORDER_LOCK = threading.Lock()
+
+
+def invalidate_account_order_cache() -> None:
+    """Drop the in-process display_order cache (call after PATCH display_order)."""
+    global _ACCOUNT_ORDER_CACHE_AT
+    with _ACCOUNT_ORDER_LOCK:
+        _ACCOUNT_ORDER_CACHE_AT = 0.0
+
+
+def get_account_order_map() -> dict[str, int]:
+    """Return {account_id: display_order} map, cached for 60 s.
+
+    Falls back to an empty dict (callers treat missing keys as 999) when the
+    DB is unreachable (e.g. during test startup).
+    """
+    global _ACCOUNT_ORDER_CACHE, _ACCOUNT_ORDER_CACHE_AT
+    now = _time.time()
+    with _ACCOUNT_ORDER_LOCK:
+        if now - _ACCOUNT_ORDER_CACHE_AT < _ACCOUNT_ORDER_CACHE_TTL:
+            return dict(_ACCOUNT_ORDER_CACHE)
+    # Cache expired — reload from DB synchronously (called from sync context).
+    try:
+        import asyncio
+        from backend.api.database import shared_async_session
+        from sqlalchemy import select as _sa_select
+        from backend.api.models import BrokerAccount as _BA
+
+        async def _load() -> dict[str, int]:
+            async with shared_async_session() as sess:
+                rows = (await sess.execute(
+                    _sa_select(_BA.account, _BA.display_order)
+                )).all()
+                return {str(r.account): int(r.display_order) for r in rows}
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # In an async context — use a ThreadPoolExecutor to run a
+                # fresh event loop without blocking the current one.
+                import concurrent.futures as _cf
+                with _cf.ThreadPoolExecutor(max_workers=1) as pool:
+                    order_map = pool.submit(
+                        lambda: asyncio.run(_load())
+                    ).result(timeout=5)
+            else:
+                order_map = loop.run_until_complete(_load())
+        except RuntimeError:
+            order_map = asyncio.run(_load())
+    except Exception as _e:
+        logger.debug("get_account_order_map: DB load failed (%s), using empty map", _e)
+        return {}
+    with _ACCOUNT_ORDER_LOCK:
+        _ACCOUNT_ORDER_CACHE = order_map
+        _ACCOUNT_ORDER_CACHE_AT = _time.time()
+    return dict(order_map)
+
+
+def sort_accounts(accounts: list[str]) -> list[str]:
+    """Return `accounts` sorted by display_order (asc), then account_id (asc).
+
+    Unknown accounts (not in DB) are treated as display_order=999 and fall
+    to the end. Order is stable within the same display_order bucket.
+
+    Example (after startup migration):
+        sort_accounts(['DH6847', 'ZG0790', 'DH3747', 'GR87DF'])
+        → ['ZG0790', 'DH3747', 'GR87DF', 'DH6847']
+    """
+    order_map = get_account_order_map()
+    return sorted(accounts, key=lambda a: (order_map.get(a, 999), a))
+
+
+# ---------------------------------------------------------------------------
 # Raw broker-DataFrame TTL cache (Tier 1 — shared by routes + algo.nav)
 # ---------------------------------------------------------------------------
 # `fetch_holdings()` / `fetch_positions()` / `fetch_margins()` are the
