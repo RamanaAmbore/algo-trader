@@ -16,8 +16,16 @@
  *   Reuse — suppression guards (loading, reduced-motion) are preserved
  *   UX    — loading=true suppresses the pulse; prefers-reduced-motion disables animation
  *
+ * IMPORTANT: CSS in RefreshButton.svelte is scoped by Svelte (selector gains
+ * .svelte-<hash>). Tests that need to read animation-name MUST operate on a
+ * REAL .rf-btn element already in the DOM (which carries the scoping class),
+ * not on freshly-injected raw elements. This is unlike global app.css classes
+ * (e.g. .cell-freshness-pulse in freshness_shimmer.spec.js).
+ *
  * Run:
- *   npx playwright test e2e/refresh_button_pulse.spec.js
+ *   cd frontend
+ *   PLAYWRIGHT_BASE_URL=https://dev.ramboq.com \
+ *   npx playwright test e2e/refresh_button_pulse.spec.js --project=chromium-desktop
  */
 
 import { test, expect } from '@playwright/test';
@@ -25,198 +33,178 @@ import { loginAsAdmin } from './fixtures/auth.js';
 
 test.use({ viewport: { width: 1400, height: 900 } });
 
+/** Navigate to /pulse and wait until the page header (and a RefreshButton within it) is visible. */
+async function gotoAndWaitForRefreshBtn(page) {
+  await loginAsAdmin(page);
+  // Use domcontentloaded — /pulse keeps SSE connections alive, so networkidle never fires.
+  await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
+  // Wait for the page header which always contains a RefreshButton.
+  await page.locator('.page-header .rf-btn').first().waitFor({ state: 'visible', timeout: 30000 });
+}
+
 test.describe('RefreshButton tick-pulse animation', () => {
 
-  // ── 1. SSOT — rf-tick-a/rf-tick-b classes are defined in the stylesheet ──
-  test('1. SSOT: rf-tick-pulse-a and rf-tick-pulse-b keyframes are defined', async ({ page }) => {
-    test.setTimeout(45000);
-    await loginAsAdmin(page);
-    await page.goto('/pulse');
-    await page.waitForLoadState('networkidle');
+  // ── 1. SSOT — animation-name is defined on a real .rf-btn for rf-tick-a/b ──
+  test('1. SSOT: rf-tick-pulse-a and rf-tick-pulse-b keyframes produce distinct animation-names', async ({ page }) => {
+    test.setTimeout(60000);
+    await gotoAndWaitForRefreshBtn(page);
 
-    // Inject a test button with both classes and verify each triggers a distinct
-    // animation-name — confirming the CSS fix (distinct keyframe names per class).
+    // Operate on a real .rf-btn element (carries Svelte scoping class so the
+    // component's scoped CSS rules match). Temporarily add then remove tick
+    // classes and read the computed animationName at each state.
     const result = await page.evaluate(() => {
-      const btnA = document.createElement('button');
-      btnA.className = 'rf-btn rf-tick-a';
-      btnA.style.cssText = 'position:absolute;top:-9999px;width:1.4rem;height:1.4rem;';
-      document.body.appendChild(btnA);
-      const animA = window.getComputedStyle(btnA).animationName;
-      document.body.removeChild(btnA);
+      const btn = document.querySelector('.page-header .rf-btn');
+      if (!btn) return { found: false, animA: '', animB: '' };
 
-      const btnB = document.createElement('button');
-      btnB.className = 'rf-btn rf-tick-b';
-      btnB.style.cssText = 'position:absolute;top:-9999px;width:1.4rem;height:1.4rem;';
-      document.body.appendChild(btnB);
-      const animB = window.getComputedStyle(btnB).animationName;
-      document.body.removeChild(btnB);
+      // Save original class list so we restore it cleanly.
+      const origClass = btn.className;
 
-      return { animA, animB };
+      // Remove any existing tick class, add rf-tick-a, read animation-name.
+      btn.className = origClass.replace(/\brf-tick-[ab]\b/g, '').trim() + ' rf-tick-a';
+      const animA = window.getComputedStyle(btn).animationName;
+
+      // Swap to rf-tick-b, read again.
+      btn.className = origClass.replace(/\brf-tick-[ab]\b/g, '').trim() + ' rf-tick-b';
+      const animB = window.getComputedStyle(btn).animationName;
+
+      // Restore original state.
+      btn.className = origClass;
+
+      return { found: true, animA, animB };
     });
 
-    // Both animation names must be non-empty (keyframes defined)
-    expect(result.animA).not.toBe('none');
+    expect(result.found, 'Expected to find a .rf-btn inside .page-header').toBe(true);
+
+    // Both animation names must be non-empty (keyframes defined and matched).
+    expect(result.animA, 'rf-tick-a should have a defined animation-name').not.toBe('none');
     expect(result.animA).not.toBe('');
-    expect(result.animB).not.toBe('none');
+    expect(result.animB, 'rf-tick-b should have a defined animation-name').not.toBe('none');
     expect(result.animB).not.toBe('');
 
     // THE REGRESSION GUARD: the two classes must produce DIFFERENT animation-name
-    // values. If they share the same name, toggling a↔b won't restart the animation.
-    expect(result.animA).not.toBe(result.animB);
+    // computed values. If they share the same name, the a↔b toggle won't restart
+    // the CSS animation after the first pulse.
+    expect(result.animA, 'rf-tick-a and rf-tick-b must map to different animation-names').not.toBe(result.animB);
   });
 
-  // ── 2. Perf — class alternates within 300ms of synthetic tick bumps ─────────
-  test('2. Perf: rf-tick-a/rf-tick-b alternates within 300ms of tick bump', async ({ page }) => {
-    test.setTimeout(45000);
-    await loginAsAdmin(page);
-    await page.goto('/pulse');
-    await page.waitForLoadState('networkidle');
+  // ── 2. Perf — class alternates with each synthetic tick bump ────────────────
+  test('2. Perf: class alternates rf-tick-a↔rf-tick-b on consecutive ticks', async ({ page }) => {
+    test.setTimeout(90000);
+    await gotoAndWaitForRefreshBtn(page);
 
-    // Wait for at least one RefreshButton to be present.
-    const btn = page.locator('.rf-btn').first();
-    await btn.waitFor({ state: 'visible', timeout: 10000 });
+    const storeReady = await page.evaluate(() => typeof window.__stores !== 'undefined');
 
-    // Expose the symbolTickCount store to the test via window.__rbqTickCount.
-    // We need to call update() on it — check if the store is accessible.
-    const storeReady = await page.evaluate(() => {
-      // Check if Svelte stores are exposed (they may not be in production builds).
-      // Fall back to dispatching a custom event that the component listens for.
-      return typeof window.__stores !== 'undefined';
-    });
-
-    // Bump the symbolTickCount store 10 times and check the button class toggles.
-    // We do this by evaluating in-page if the store is reachable, otherwise
-    // we rely on the CSS animation-name regression guard above.
-    if (storeReady) {
-      const observed = await page.evaluate(async () => {
-        const classes = [];
-        const btn = document.querySelector('.rf-btn');
-        if (!btn) return classes;
-        const observer = new MutationObserver(() => {
-          const cls = btn.className;
-          if (cls.includes('rf-tick-a') || cls.includes('rf-tick-b')) {
-            classes.push(cls.includes('rf-tick-a') ? 'a' : 'b');
-          }
-        });
-        observer.observe(btn, { attributes: true, attributeFilter: ['class'] });
-
-        for (let i = 0; i < 10; i++) {
-          window.__stores.symbolTickCount.update(v => v + 1);
-          await new Promise(r => setTimeout(r, 350)); // wait > 250ms throttle
-        }
-        observer.disconnect();
-        return classes;
-      });
-
-      // Should have seen at least 5 class changes in 10 ticks.
-      expect(observed.length).toBeGreaterThanOrEqual(5);
-
-      // Classes must alternate (never same consecutive value).
-      for (let i = 1; i < observed.length; i++) {
-        expect(observed[i]).not.toBe(observed[i - 1]);
-      }
-    } else {
-      // Store not directly accessible — confirm the CSS animation-name fix is
-      // sufficient (covered by test 1 above). Mark this path explicitly.
+    if (!storeReady) {
+      // Store not exposed in this build — CSS regression guard in test 1 is the
+      // primary protection.
       test.info().annotations.push({
         type: 'note',
-        description: 'window.__stores not exposed in prod build; animation-name guard in test 1 covers regression.',
+        description: 'window.__stores not exposed — JS toggle path covered by test 1 CSS regression guard.',
       });
+      return;
+    }
+
+    const observed = await page.evaluate(async () => {
+      const btn = document.querySelector('.page-header .rf-btn');
+      if (!btn) return [];
+      const classes = [];
+      const observer = new MutationObserver(() => {
+        if (btn.classList.contains('rf-tick-a')) classes.push('a');
+        else if (btn.classList.contains('rf-tick-b')) classes.push('b');
+      });
+      observer.observe(btn, { attributes: true, attributeFilter: ['class'] });
+      for (let i = 0; i < 10; i++) {
+        window.__stores.symbolTickCount.update(v => v + 1);
+        await new Promise(r => setTimeout(r, 350));
+      }
+      observer.disconnect();
+      return classes;
+    });
+
+    expect(observed.length).toBeGreaterThanOrEqual(5);
+    for (let i = 1; i < observed.length; i++) {
+      expect(observed[i]).not.toBe(observed[i - 1]);
     }
   });
 
-  // ── 3. Stale — animation-name changes on EVERY a↔b toggle ──────────────────
-  test('3. Stale: animation-name differs between rf-tick-a and rf-tick-b (regression guard)', async ({ page }) => {
-    test.setTimeout(30000);
-    await loginAsAdmin(page);
-    await page.goto('/pulse');
-    await page.waitForLoadState('networkidle');
+  // ── 3. Stale — animation-name CHANGES between rf-tick-a and rf-tick-b ───────
+  test('3. Stale: animation-name is different for each class (regression guard via DOM cycle)', async ({ page }) => {
+    test.setTimeout(60000);
+    await gotoAndWaitForRefreshBtn(page);
 
-    // Simulate the toggle the JS does: '' → 'rf-tick-a' → 'rf-tick-b' → 'rf-tick-a'.
-    // At each step read getComputedStyle(btn).animationName and assert it changed.
-    const animNames = await page.evaluate(() => {
-      const btn = document.createElement('button');
-      btn.className = 'rf-btn rf-mkt-closed';
-      btn.style.cssText = 'position:absolute;top:-9999px;width:1.4rem;height:1.4rem;';
-      document.body.appendChild(btn);
-
+    // Cycle through '' → 'rf-tick-a' → 'rf-tick-b' → 'rf-tick-a' on a real
+    // button and record the animationName at each step.
+    const names = await page.evaluate(() => {
+      const btn = document.querySelector('.page-header .rf-btn');
+      if (!btn) return null;
+      const orig = btn.className;
+      const base = orig.replace(/\brf-tick-[ab]\b/g, '').trim();
       const read = () => window.getComputedStyle(btn).animationName;
 
-      // Initial state — no pulse class
+      // State 0: no tick class
+      btn.className = base;
       const n0 = read();
 
-      btn.classList.add('rf-tick-a');
+      // State 1: rf-tick-a
+      btn.className = base + ' rf-tick-a';
       const n1 = read();
 
-      btn.classList.remove('rf-tick-a');
-      btn.classList.add('rf-tick-b');
+      // State 2: rf-tick-b
+      btn.className = base + ' rf-tick-b';
       const n2 = read();
 
-      btn.classList.remove('rf-tick-b');
-      btn.classList.add('rf-tick-a');
+      // State 3: back to rf-tick-a
+      btn.className = base + ' rf-tick-a';
       const n3 = read();
 
-      document.body.removeChild(btn);
-      return [n0, n1, n2, n3];
+      btn.className = orig;
+      return { n0, n1, n2, n3 };
     });
 
-    const [n0, n1, n2, n3] = animNames;
+    expect(names, 'Expected to find a real .rf-btn in .page-header').not.toBeNull();
+    const { n0, n1, n2, n3 } = names;
 
-    // After adding rf-tick-a: animation-name should be non-none
-    expect(n1).not.toBe('none');
-    expect(n1).not.toBe('');
-
-    // n1 (rf-tick-a) must differ from n2 (rf-tick-b) — the CSS regression
-    expect(n1).not.toBe(n2);
-
-    // n3 should match n1 (back to rf-tick-a)
-    expect(n3).toBe(n1);
-
-    // n0 (no class) should be 'none' or empty
+    // n0 should be 'none' or empty (no pulse class active)
     expect(n0 === 'none' || n0 === '').toBe(true);
+
+    // n1 and n2 must be defined (keyframes block loaded)
+    expect(n1, 'rf-tick-a animation-name must be defined').not.toBe('none');
+    expect(n1).not.toBe('');
+    expect(n2, 'rf-tick-b animation-name must be defined').not.toBe('none');
+    expect(n2).not.toBe('');
+
+    // THE CORE REGRESSION GUARD — different names force browser to restart animation
+    expect(n1, 'rf-tick-a and rf-tick-b must use different keyframe names so browser restarts').not.toBe(n2);
+
+    // n3 should match n1 (same class, same keyframes name)
+    expect(n3).toBe(n1);
   });
 
-  // ── 4. Reuse — loading=true suppresses the pulse class ──────────────────────
-  test('4. UX: loading state suppresses rf-tick-a/rf-tick-b class', async ({ page }) => {
-    test.setTimeout(30000);
-    await loginAsAdmin(page);
-    await page.goto('/pulse');
-    await page.waitForLoadState('networkidle');
+  // ── 4. Reuse — loading=true suppresses the pulse ─────────────────────────────
+  test('4. UX: loading state (rf-spinning + disabled) suppresses rf-tick class', async ({ page }) => {
+    test.setTimeout(60000);
+    await gotoAndWaitForRefreshBtn(page);
 
-    const btn = page.locator('.rf-btn').first();
-    await btn.waitFor({ state: 'visible', timeout: 10000 });
-
-    // When loading=true, the button gains rf-spinning and the disabled attribute.
-    // Under that condition the subscribe callback skips the toggle.
-    // We verify: while disabled (spinning), neither rf-tick-a nor rf-tick-b appears.
     const storeReady = await page.evaluate(() => typeof window.__stores !== 'undefined');
     if (!storeReady) {
-      test.skip(true, 'window.__stores not exposed in prod build');
+      test.skip(true, 'window.__stores not exposed in this build');
       return;
     }
 
     const result = await page.evaluate(async () => {
-      // Find a RefreshButton that is NOT currently disabled.
-      const btn = Array.from(document.querySelectorAll('.rf-btn'))
-        .find(b => !b.disabled);
+      const btn = Array.from(document.querySelectorAll('.page-header .rf-btn')).find(b => !b.disabled);
       if (!btn) return { found: false };
-
-      // Simulate the loading=true state by temporarily adding rf-spinning + disabled.
+      const orig = btn.className;
       btn.classList.add('rf-spinning');
       btn.setAttribute('disabled', '');
-
-      // Fire 3 tick bumps during "loading" — none should toggle a tick class.
       for (let i = 0; i < 3; i++) {
         window.__stores.symbolTickCount.update(v => v + 1);
         await new Promise(r => setTimeout(r, 350));
       }
-
       const hasPulse = btn.classList.contains('rf-tick-a') || btn.classList.contains('rf-tick-b');
-
-      // Clean up.
       btn.classList.remove('rf-spinning');
       btn.removeAttribute('disabled');
-
+      btn.className = orig;
       return { found: true, hasPulse };
     });
 
@@ -225,27 +213,27 @@ test.describe('RefreshButton tick-pulse animation', () => {
     }
   });
 
-  // ── 5. UX — prefers-reduced-motion disables animation ───────────────────────
+  // ── 5. UX — prefers-reduced-motion disables animation on rf-tick-a ──────────
   test('5. UX: prefers-reduced-motion disables rf-tick-pulse animation', async ({ page }) => {
-    test.setTimeout(30000);
-    await loginAsAdmin(page);
-    await page.goto('/pulse');
-    await page.waitForLoadState('networkidle');
-
-    // Override media feature.
+    test.setTimeout(60000);
+    // Emulate reduced-motion BEFORE navigation so the media query is in effect
+    // when the page and its stylesheets load.
     await page.emulateMedia({ reducedMotion: 'reduce' });
+    await loginAsAdmin(page);
+    await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
+    await page.locator('.page-header .rf-btn').first().waitFor({ state: 'visible', timeout: 30000 });
 
     const animName = await page.evaluate(() => {
-      const btn = document.createElement('button');
-      btn.className = 'rf-btn rf-tick-a';
-      btn.style.cssText = 'position:absolute;top:-9999px;width:1.4rem;height:1.4rem;';
-      document.body.appendChild(btn);
-      const anim = window.getComputedStyle(btn).animationName;
-      document.body.removeChild(btn);
-      return anim;
+      const btn = document.querySelector('.page-header .rf-btn');
+      if (!btn) return 'no-btn';
+      const orig = btn.className;
+      btn.className = orig.replace(/\brf-tick-[ab]\b/g, '').trim() + ' rf-tick-a';
+      const name = window.getComputedStyle(btn).animationName;
+      btn.className = orig;
+      return name;
     });
 
-    // Under reduced-motion the @media rule sets animation:none
+    // Under @media (prefers-reduced-motion: reduce) the rule sets animation:none
     expect(animName === 'none' || animName === '').toBe(true);
   });
 });
