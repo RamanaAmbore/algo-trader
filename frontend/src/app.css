@@ -2299,6 +2299,29 @@ button:not(:disabled):active,
   .cell-freshness-pulse::after { animation: none; }
 }
 
+/* ── LTP directional flash (global) ─────────────────────────────────────────
+   Green pulse on tick-up, red pulse on tick-down. Used by LTP cells and
+   their derived counterparts (Day P&L, P&L, Day %, P&L %) across all pages
+   (MarketPulse, PerformancePage, derivatives snapshot). Classes emitted by
+   the _ltpFlashUp/_ltpFlashDown sets in MarketPulse and the _perfLtpFlash
+   state in PerformancePage. Keyframes declared here (not per-component) so
+   pages that don't mount MarketPulse still get the animation.
+   alpha 0.35 — higher than tf-up/down (0.13) so the LTP-source pulse reads
+   as the causal event. */
+@keyframes ltp-flash-up {
+  0%   { background-color: rgba(74, 222, 128, 0.35); }
+  100% { background-color: transparent; }
+}
+@keyframes ltp-flash-down {
+  0%   { background-color: rgba(248, 113, 113, 0.35); }
+  100% { background-color: transparent; }
+}
+.ltp-flash-up   { animation: ltp-flash-up   600ms ease-out; }
+.ltp-flash-down { animation: ltp-flash-down 600ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .ltp-flash-up, .ltp-flash-down { animation: none; }
+}
+
 /* ── Card theming — dark/cream variants ─────────────────────────────────────
    Scope NavCard + PerformancePage color tokens via CSS custom properties so
    the same component code renders the correct palette in each context.

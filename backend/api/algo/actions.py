@@ -1896,6 +1896,40 @@ async def _action_live_close_position(agent, context: dict, params: dict):
     except Exception as e:
         logger.warning(f"[LIVE] close_position LTP fetch failed, proceeding with None price: {e}")
 
+    # ── Preflight (G1 lot-multiple; G2 5-lot cap bypassed for closes) ────
+    pf = await run_preflight(account, {
+        "exchange": exchange, "tradingsymbol": symbol,
+        "quantity": qty, "order_type": "LIMIT",
+        "product": str(params.get("product") or "NRML"),
+        "price": price or 0, "variety": "regular",
+        "intent": "close",   # signals G2 bypass inside run_preflight
+    })
+    if not pf["ok"]:
+        reasons = "; ".join(b["reason"] for b in pf["blocked"])
+        codes   = ", ".join(b["code"] for b in pf["blocked"])
+        logger.error(
+            f"[LIVE] close_position BLOCKED for {account} {exchange}/{symbol} "
+            f"{side} {qty}: [{codes}] {reasons}"
+        )
+        await _write_live_order(
+            agent, "close_position",
+            {"account": account, "symbol": symbol, "exchange": exchange,
+             "side": side, "qty": qty, "price": price},
+            status="REJECTED",
+            detail_suffix=f"PREFLIGHT BLOCKED: {reasons[:200]}",
+        )
+        try:
+            from backend.shared.helpers.alert_utils import send_order_failure_alert
+            send_order_failure_alert(
+                account=account, symbol=symbol, exchange=exchange,
+                side=side, qty=qty, mode="live",
+                source=f"agent:{getattr(agent, 'slug', 'close_position')}",
+                error=f"PREFLIGHT BLOCKED [{codes}]: {reasons}",
+            )
+        except Exception:
+            pass
+        return  # abort — do not reach chase_order
+
     # Persist the intent row before touching the broker.
     await _write_live_order(agent, "close_position", {
         "account": account, "symbol": symbol, "exchange": exchange,
@@ -2160,6 +2194,40 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
         # Best effort initial limit price from LTP in context row.
         ltp = p.get("last_price") or p.get("close_price")
         price = float(ltp) if ltp is not None else None
+
+        # ── Preflight (G1 lot-multiple; G2 5-lot cap bypassed for closes) ─
+        pf = await run_preflight(acct, {
+            "exchange": exchange, "tradingsymbol": symbol,
+            "quantity": qty, "order_type": "LIMIT",
+            "product": "NRML",
+            "price": price or 0, "variety": "regular",
+            "intent": "close",   # signals G2 bypass inside run_preflight
+        })
+        if not pf["ok"]:
+            reasons = "; ".join(b["reason"] for b in pf["blocked"])
+            codes   = ", ".join(b["code"] for b in pf["blocked"])
+            logger.error(
+                f"[LIVE] chase_close_positions BLOCKED for {acct} "
+                f"{exchange}/{symbol} {side} {qty}: [{codes}] {reasons}"
+            )
+            await _write_live_order(
+                agent, "chase_close_positions",
+                {"account": acct, "symbol": symbol, "exchange": exchange,
+                 "side": side, "qty": qty, "price": price},
+                status="REJECTED",
+                detail_suffix=f"PREFLIGHT BLOCKED: {reasons[:200]}",
+            )
+            try:
+                from backend.shared.helpers.alert_utils import send_order_failure_alert
+                send_order_failure_alert(
+                    account=acct, symbol=symbol, exchange=exchange,
+                    side=side, qty=qty, mode="live",
+                    source=f"agent:{getattr(agent, 'slug', 'chase_close_positions')}",
+                    error=f"PREFLIGHT BLOCKED [{codes}]: {reasons}",
+                )
+            except Exception:
+                pass
+            continue  # skip this position; other positions in the loop proceed
 
         # Persist intent row before broker call.
         await _write_live_order(agent, "chase_close_positions", {

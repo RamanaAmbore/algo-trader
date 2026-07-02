@@ -2042,13 +2042,23 @@
       // is idle so clicks always jump the queue. The flash class
       // assignments above already happened synchronously — only the
       // expensive grid work runs on idle.
+      // Part B cascade: when any symbol's LTP changed, also repaint
+      // derived columns whose cellClass callbacks check _ltpFlashUp/Down.
+      // Includes left-grid Day % (dirCellClass reads no flash, so skip)
+      // and right-grid Day P&L / Day % / P&L / P&L % (pnlCellClass checks
+      // both _mpFlash and the LTP flash sets).
+      const hasCascade = flashedUp.size > 0 || flashedDown.size > 0;
       _scheduleIdle(() => {
-        if (gridPinnedReady    && gridPinned    && topTab === 'pinned')    gridPinned.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
-        if (gridWatchReady     && gridWatch     && typeof topTab === 'number') gridWatch.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
-        if (gridPositionsReady && gridPositions && showPositions)          gridPositions.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
-        if (gridHoldingsReady  && gridHoldings  && showHoldings)           gridHoldings.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
-        if (gridWinReady       && gridWin       && showWinners)            gridWin.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
-        if (gridLoseReady      && gridLose      && showLosers)             gridLose.refreshCells({ columns: ['ltp', 'sparkline'], force: true });
+        const _ltpCols = ['ltp', 'sparkline'];
+        const _cascadeCols = hasCascade
+          ? ['ltp', 'sparkline', 'day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct']
+          : _ltpCols;
+        if (gridPinnedReady    && gridPinned    && topTab === 'pinned')    gridPinned.refreshCells({ columns: _ltpCols, force: true });
+        if (gridWatchReady     && gridWatch     && typeof topTab === 'number') gridWatch.refreshCells({ columns: _ltpCols, force: true });
+        if (gridPositionsReady && gridPositions && showPositions)          gridPositions.refreshCells({ columns: _cascadeCols, force: true });
+        if (gridHoldingsReady  && gridHoldings  && showHoldings)           gridHoldings.refreshCells({ columns: _cascadeCols, force: true });
+        if (gridWinReady       && gridWin       && showWinners)            gridWin.refreshCells({ columns: _ltpCols, force: true });
+        if (gridLoseReady      && gridLose      && showLosers)             gridLose.refreshCells({ columns: _ltpCols, force: true });
       });
     }, _LTP_PAINT_MS);
   });
@@ -3974,11 +3984,19 @@
     // used as the per-cell flash key (tradingsymbol + ':' + field).
     // The global .tf-up / .tf-down CSS in app.css carries alpha 0.13 —
     // subtle enough to signal liveness without competing with text colour.
+    // Cascade dominance: if the row's symbol has an active LTP flash (source
+    // event), emit ltp-flash-up/down instead of the poll-diff tf-up/down so
+    // the eye tracks cause (LTP tick) rather than effect (derived delta).
+    // One pulse per row per tick; _mpFlash is suppressed while LTP flash runs.
     const pnlCellClass = (p, field) => {
       const base = `${RA} ${dirCls(p.value)} mp-pnl-cell`;
       if (p.data?._isTotal) return base;
       const sym = p.data?.tradingsymbol;
       if (!sym || !field) return base;
+      // LTP cascade takes precedence over poll-diff flash.
+      const symUpper = String(sym).toUpperCase();
+      if (_ltpFlashUp.has(symUpper))   return `${base} ltp-flash-up`;
+      if (_ltpFlashDown.has(symUpper)) return `${base} ltp-flash-down`;
       const fc = _mpFlash.classOf(`${sym}:${field}`);
       return fc ? `${base} ${fc}` : base;
     };
@@ -6388,27 +6406,13 @@
     line-height: 1.4;
   }
 
-  /* B1 — LTP flash: directional (green up / red down). Slice AS audit
-     fix — the prior single amber animation lost direction information
-     on the product's highest-frequency cell. */
-  :global(.ltp-flash-up) {
-    animation: ltp-flash-up 600ms ease-out;
-  }
-  :global(.ltp-flash-down) {
-    animation: ltp-flash-down 600ms ease-out;
-  }
-  @keyframes ltp-flash-up {
-    0%   { background-color: rgba(74, 222, 128, 0.35); }
-    100% { background-color: transparent; }
-  }
-  @keyframes ltp-flash-down {
-    0%   { background-color: rgba(248, 113, 113, 0.35); }
-    100% { background-color: transparent; }
-  }
-  /* Respect prefers-reduced-motion (audit fix 15). */
-  @media (prefers-reduced-motion: reduce) {
-    :global(.ltp-flash-up), :global(.ltp-flash-down) { animation: none; }
-  }
+  /* B1 — LTP flash: keyframes + class rules promoted to app.css so every
+     page (PerformancePage, derivatives, etc.) gets the animation even when
+     MarketPulse is not mounted. The :global wrappers are kept here as
+     documentation anchors and to force Svelte to leave the selector names
+     untouched for ag-Grid's externally-applied class strings. */
+  :global(.ltp-flash-up)   { /* animation defined in app.css */ }
+  :global(.ltp-flash-down) { /* animation defined in app.css */ }
 
   /* B2 — visually-hidden a11y helper */
   :global(.sr-only) {
