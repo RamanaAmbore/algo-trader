@@ -985,9 +985,7 @@
   }
 
   .card {
-    background: linear-gradient(180deg, #0a1020 0%, #131c33 100%);
-    border: 1px solid var(--algo-amber-border-soft);
-    border-radius: 5px;
+    background: transparent;
     padding: 0.5rem 0.75rem;
     margin-bottom: 0.55rem;
   }
