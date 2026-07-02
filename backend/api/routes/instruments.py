@@ -55,22 +55,32 @@ _EXCHANGES   = ("NSE", "NFO", "BSE", "MCX", "CDS")
 #   https://www.mcxindia.com/products/bullion/mcx-products
 _MCX_LOT_OVERRIDES = {
     'CRUDEOIL':   100,     # 100 barrels per lot
+    'CRUDE OIL':  100,     # space-variant alias (Kite `name` field may differ)
     'CRUDEOILM':  10,      # mini: 10 barrels
+    'CRUDE OIL M': 10,     # space-variant alias
     'NATURALGAS': 1250,    # 1250 mmBtu per lot
+    'NATURAL GAS': 1250,   # space-variant alias
     'NATGASMINI': 250,     # mini: 250 mmBtu
+    'NAT GAS MINI': 250,   # space-variant alias
     'GOLD':       100,     # 100 grams per lot
     'GOLDM':      10,      # mini: 10 grams
+    'GOLD M':     10,      # space-variant alias
     'GOLDGUINEA': 8,       # 8 grams
+    'GOLD GUINEA': 8,      # space-variant alias
     'GOLDPETAL':  1,       # 1 gram
+    'GOLD PETAL': 1,       # space-variant alias
     'SILVER':     30,      # 30 kg per lot
     'SILVERM':    5,       # 5 kg
+    'SILVER M':   5,       # space-variant alias
     'SILVERMIC':  1,       # 1 kg
+    'SILVER MIC': 1,       # space-variant alias
     'COPPER':     2500,    # 2500 kg
     'ZINC':       5000,    # 5000 kg
     'LEAD':       5000,    # 5000 kg
     'ALUMINIUM':  5000,    # 5000 kg
     'NICKEL':     1500,    # 1500 kg
     'MENTHAOIL':  360,     # 360 kg
+    'MENTHA OIL': 360,     # space-variant alias
     'COTTON':     185,     # 185 bales (verify per contract)
     'CPO':        10,      # 10 mt
 }

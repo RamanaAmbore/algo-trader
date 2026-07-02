@@ -1031,6 +1031,8 @@ immediately (within one event-loop tick) before resuming its normal cadence.
 
 **Option qty vs lot_size** — Kite ships MCX intraday fields in lots, NSE in contracts. Double-check every multiplication. Has caused multi-lakh P&L distortion + 20× over-orders.
 
+**GTT layer also enforces translate_qty** — `apply_plan_live` in `template_attach.py` must call `broker.translate_qty(exchange, raw_qty, lot_size)` for EVERY GTT leg AND for the wing order before calling `broker.place_gtt` / `broker.place_order`. `place_gtt` in `kite.py` does NOT auto-translate and has no adapter guard unless the qty is > 50 lots (ceiling). Incident (2026-07-02, audit aad6e8cb): 1-lot MCX CRUDEOIL position (qty=100 contracts) sent `quantity=100` to GTT → Kite read it as 100 lots. Fix: `parent_lot_size` baked into `TemplatePlan` at resolve-time via `await get_lot_size()` in the async `apply_template_to_order`; `apply_plan_live` calls `broker.translate_qty` per leg then the adapter ceiling in `place_gtt` provides last-line defense. Never pass raw contract qty from `parent_qty` directly to `place_gtt`.
+
 **Kite close_price stale overnight** — positions.close_price + quote.ohlc.close lag prior-session EOD between MCX close and next open. Use `daily_book.ltp` instead.
 
 **Day P&L formula** — Decomposed intraday (not naive `(LTP−close)×qty`). Positions: `overnight_qty × (LTP − prev_close) + day_buy/sell legs`. Holdings: `broker.pnl − (close − cost) × opening_qty`. MCX guard: apply lot_size to intraday qty too.
