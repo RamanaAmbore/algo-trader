@@ -170,16 +170,26 @@ async function _request(/** @type {string} */ method,
     headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(body);
   }
-  if (signal) init.signal = signal;
+  // Apply default 15 s timeout when the caller did not supply their own signal.
+  // Prevents any single hung fetch from stranding the page indefinitely.
+  // Callers that supply their own AbortController (e.g. NavTab with per-fetch
+  // cancel) keep full control — their signal takes precedence.
+  const _defaultAc = signal ? null : new AbortController();
+  const _timeoutId = _defaultAc
+    ? setTimeout(() => _defaultAc.abort(), 15_000)
+    : null;
+  init.signal = signal ?? _defaultAc?.signal;
   let res;
   try {
     res = await fetch(`${BASE}${path}`, init);
   } catch (e) {
+    if (_timeoutId != null) clearTimeout(_timeoutId);
     // Re-throw AbortError so callers can detect intentional cancellation.
     if (/** @type {any} */ (e)?.name === 'AbortError') throw e;
     _logApiError(path, null, /** @type {any} */ (e)?.message || e);
     throw new Error(_friendlyError(null, null));
   }
+  if (_timeoutId != null) clearTimeout(_timeoutId);
   if (res.status === 401) {
     _handle401();
     const friendly = _friendlyError(401, null);
