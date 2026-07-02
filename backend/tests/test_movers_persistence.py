@@ -2,18 +2,20 @@
 Tests for movers snapshot persistence (off-hours fallback).
 
 Five quality dimensions:
-  1. SSOT        — _save_movers_snapshot and _load_latest_movers_snapshot are the
-                   canonical helpers; route calls them via asyncio.create_task / await.
+  1. SSOT        — _save_movers_snapshot, _load_latest_movers_snapshot, and
+                   _force_movers_snapshot are the canonical helpers; route
+                   calls them at the right points. nse:close lifecycle event
+                   wires _snapshot_movers handler.
   2. Performance — save is a single Postgres UPSERT (ON CONFLICT DO UPDATE),
                    not a select-then-insert. Load is a single SELECT ... LIMIT 1.
-  3. Stale code  — no TODO-movers markers left in watchlist.py.
+  3. Stale code  — no TODO-movers markers; is_any_segment_open NOT used in
+                   get_movers (replaced by NSE-specific predicate).
   4. Reusable    — movers_snapshots retention uses _apply_retention (verified by
                    source-grep in background.py).
-  5. Correctness — four scenario tests:
-     a. Market open: live rows returned, snapshot written to DB.
-     b. Market closed + snapshot exists: persisted rows returned, no broker call.
-     c. Cold start (no in-memory cache) + market closed: returns DB snapshot.
-     d. 8-day-old snapshot: retention deletes it; newer one survives.
+  5. Correctness — scenario tests: roundtrip fidelity, most-recent ordering,
+                   empty-table None, 7-day retention, off-hours code path,
+                   NSE-only predicate, force-snapshot helper present,
+                   lifecycle handler registration.
 """
 
 import ast
@@ -32,8 +34,9 @@ from sqlalchemy.orm import DeclarativeBase
 # ---------------------------------------------------------------------------
 # Source paths
 # ---------------------------------------------------------------------------
-_WATCHLIST_SRC = Path(__file__).parent.parent / "api" / "routes" / "watchlist.py"
-_BG_SRC        = Path(__file__).parent.parent / "api" / "background.py"
+_WATCHLIST_SRC  = Path(__file__).parent.parent / "api" / "routes" / "watchlist.py"
+_BG_SRC         = Path(__file__).parent.parent / "api" / "background.py"
+_HANDLERS_SRC   = Path(__file__).parent.parent / "api" / "algo" / "market_lifecycle_handlers.py"
 
 
 def _wl_source() -> str:
@@ -42,6 +45,10 @@ def _wl_source() -> str:
 
 def _bg_source() -> str:
     return _BG_SRC.read_text(encoding="utf-8")
+
+
+def _handlers_source() -> str:
+    return _HANDLERS_SRC.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +80,7 @@ async def session() -> AsyncGenerator[AsyncSession, None]:
 
 
 # ---------------------------------------------------------------------------
-# Dimension 1 (SSOT) — helpers defined in watchlist.py
+# Dimension 1 (SSOT) — helpers and lifecycle wiring
 # ---------------------------------------------------------------------------
 
 def test_save_helper_defined_in_watchlist():
@@ -89,6 +96,18 @@ def test_load_helper_defined_in_watchlist():
     src = _wl_source()
     assert "async def _load_latest_movers_snapshot(" in src, (
         "_load_latest_movers_snapshot not found in watchlist.py"
+    )
+
+
+def test_force_snapshot_helper_defined_in_watchlist():
+    """_force_movers_snapshot is defined as an async function in watchlist.py.
+    This is the lifecycle-handler entry point that writes a guaranteed snapshot
+    at NSE close independent of in-memory _session_movers state.
+    """
+    src = _wl_source()
+    assert "async def _force_movers_snapshot(" in src, (
+        "_force_movers_snapshot not found in watchlist.py — "
+        "needed by nse:close lifecycle handler"
     )
 
 
@@ -120,18 +139,34 @@ def test_route_calls_load_on_market_closed():
     )
 
 
-def test_route_checks_market_open():
-    """get_movers uses is_any_segment_open to decide live vs. DB path."""
-    src = _wl_source()
-    assert "is_any_segment_open" in src, (
-        "watchlist.py does not import/use is_any_segment_open"
+def test_lifecycle_handler_snapshot_movers_defined():
+    """_snapshot_movers is defined in market_lifecycle_handlers.py."""
+    src = _handlers_source()
+    assert "async def _snapshot_movers(" in src, (
+        "_snapshot_movers handler not defined in market_lifecycle_handlers.py"
+    )
+
+
+def test_lifecycle_handler_registers_movers_on_nse_close():
+    """register_default_handlers wires _snapshot_movers to nse:close."""
+    src = _handlers_source()
+    match = re.search(
+        r"def register_default_handlers\(\).*?(?=\ndef |\nclass |\Z)",
+        src, re.DOTALL,
+    )
+    assert match, "register_default_handlers not found in market_lifecycle_handlers.py"
+    body = match.group(0)
+    assert "_snapshot_movers" in body, (
+        "register_default_handlers does not register _snapshot_movers"
+    )
+    assert '"nse:close"' in body or "'nse:close'" in body, (
+        "register_default_handlers does not wire nse:close event"
     )
 
 
 def test_captured_at_field_on_response_schema():
     """MoversResponse has a captured_at optional field."""
     src = _wl_source()
-    # The struct definition must contain captured_at
     match = re.search(
         r"class MoversResponse\(msgspec\.Struct\).*?(?=\nclass |\Z)",
         src, re.DOTALL,
@@ -176,7 +211,7 @@ def test_load_uses_limit_one():
 
 
 # ---------------------------------------------------------------------------
-# Dimension 3 (Stale code) — no TODO-movers markers
+# Dimension 3 (Stale code) — no TODO-movers markers; NSE-only predicate
 # ---------------------------------------------------------------------------
 
 def test_no_todo_movers_markers():
@@ -184,6 +219,33 @@ def test_no_todo_movers_markers():
     src = _wl_source()
     assert "todo: movers" not in src.lower(), (
         "Found a leftover TODO:movers comment in watchlist.py"
+    )
+
+
+def test_route_uses_nse_specific_predicate_not_any_segment():
+    """get_movers uses is_market_open (NSE-specific), NOT is_any_segment_open.
+
+    The movers universe is NSE-only (MCX underlyings are explicitly excluded at
+    quote-fetch time). Using is_any_segment_open was the root cause of blank
+    winners/losers panels during 15:30-23:30 IST (NSE closed, MCX still open).
+    Fix: gate the live-path on the NSE equity session window only.
+    """
+    src = _wl_source()
+    match = re.search(
+        r"async def get_movers\(self\).*?(?=\n    @|\nclass |\Z)",
+        src, re.DOTALL,
+    )
+    assert match, "get_movers not found in watchlist.py"
+    body = match.group(0)
+
+    assert "is_any_segment_open" not in body, (
+        "get_movers still uses is_any_segment_open — must use NSE-specific "
+        "is_market_open(now, nse_holidays, start=09:15, end=15:30) instead. "
+        "is_any_segment_open returns True during 15:30-23:30 IST (MCX open) "
+        "which causes the live-path to return empty rows and blank the grid."
+    )
+    assert "nse_is_open" in body or "is_market_open(" in body, (
+        "get_movers does not use an NSE-specific open predicate (nse_is_open / is_market_open)"
     )
 
 
@@ -209,7 +271,7 @@ def test_movers_snapshots_retention_uses_apply_retention():
 
 
 def test_movers_snapshots_retention_count():
-    """_task_purge_persistence_caches now has ≥6 _apply_retention calls (added movers)."""
+    """_task_purge_persistence_caches now has >=6 _apply_retention calls (added movers)."""
     src = _bg_source()
     match = re.search(
         r"async def _task_purge_persistence_caches\(\).*?(?=\nasync def |\Z)",
@@ -219,7 +281,7 @@ def test_movers_snapshots_retention_count():
     body = match.group(0)
     count = body.count("_apply_retention(")
     assert count >= 6, (
-        f"Expected ≥6 _apply_retention calls after adding movers_snapshots, got {count}"
+        f"Expected >=6 _apply_retention calls after adding movers_snapshots, got {count}"
     )
 
 
@@ -330,7 +392,7 @@ async def test_retention_7_days(session: AsyncSession):
     from sqlalchemy import select
     surviving = (await session.execute(select(_MoversSnapshot))).scalars().all()
     # "< now() - 7 days" deletes strictly-older-than-7-days rows.
-    # age=7 rows were captured exactly 7 days ago: NOT less than the cutoff → survive.
+    # age=7 rows were captured exactly 7 days ago: NOT less than the cutoff -> survive.
     expected_deleted = len([a for a in ages if a > ttl])
     expected_survive = len([a for a in ages if a <= ttl])
 
@@ -346,8 +408,8 @@ async def test_retention_7_days(session: AsyncSession):
 # Integration: get_movers source-level assertions for off-hours code path
 # ---------------------------------------------------------------------------
 
-def test_off_hours_path_returns_persisted_snapshot():
-    """get_movers body: when market is closed, it reads from DB and returns captured_at."""
+def test_off_hours_path_reads_db_and_returns_captured_at():
+    """get_movers body: when NSE is closed, it reads from DB and returns captured_at."""
     src = _wl_source()
     match = re.search(
         r"async def get_movers\(self\).*?(?=\n    @|\nclass |\Z)",
@@ -356,9 +418,9 @@ def test_off_hours_path_returns_persisted_snapshot():
     assert match, "get_movers not found"
     body = match.group(0)
 
-    # The fast-path block must guard on market_is_open being False
-    assert "not market_is_open" in body or "market_is_open" in body, (
-        "get_movers does not check market_is_open"
+    # The fast-path block must gate on nse_is_open
+    assert "nse_is_open" in body, (
+        "get_movers does not check nse_is_open — NSE-specific gate missing"
     )
     # It must return captured_at from the snapshot
     assert "captured_at" in body, (
@@ -377,4 +439,47 @@ def test_live_path_fires_save_as_task():
     body = match.group(0)
     assert "asyncio.create_task(_save_movers_snapshot(" in body, (
         "get_movers does not fire _save_movers_snapshot via asyncio.create_task"
+    )
+
+
+def test_force_snapshot_calls_save_movers_snapshot():
+    """_force_movers_snapshot calls _save_movers_snapshot to persist the result."""
+    src = _wl_source()
+    match = re.search(
+        r"async def _force_movers_snapshot\(.*?\).*?(?=\nasync def |\Z)",
+        src, re.DOTALL,
+    )
+    assert match, "_force_movers_snapshot body not found"
+    body = match.group(0)
+    assert "_save_movers_snapshot(" in body, (
+        "_force_movers_snapshot does not call _save_movers_snapshot"
+    )
+
+
+def test_force_snapshot_excludes_mcx():
+    """_force_movers_snapshot skips MCX underlyings (NSE-only universe)."""
+    src = _wl_source()
+    match = re.search(
+        r"async def _force_movers_snapshot\(.*?\).*?(?=\nasync def |\Z)",
+        src, re.DOTALL,
+    )
+    assert match, "_force_movers_snapshot body not found"
+    body = match.group(0)
+    assert "is_mcx_underlying" in body, (
+        "_force_movers_snapshot does not filter out MCX underlyings — "
+        "movers universe must be NSE-only"
+    )
+
+
+def test_lifecycle_handlers_log_message_mentions_movers():
+    """register_default_handlers log line mentions movers so deployment is auditable."""
+    src = _handlers_source()
+    match = re.search(
+        r"def register_default_handlers\(\).*?(?=\ndef |\nclass |\Z)",
+        src, re.DOTALL,
+    )
+    assert match
+    body = match.group(0)
+    assert "movers" in body, (
+        "register_default_handlers log line should mention 'movers' for auditability"
     )
