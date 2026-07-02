@@ -102,7 +102,7 @@ test.describe('Payoff + Legs card height parity — desktop', () => {
     const fs = await import('fs');
     const src = fs.readFileSync(
       new URL(
-        '../../src/routes/(algo)/admin/derivatives/+page.svelte',
+        '../src/routes/(algo)/admin/derivatives/+page.svelte',
         import.meta.url,
       ).pathname,
       'utf8',
