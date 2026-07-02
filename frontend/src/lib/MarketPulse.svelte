@@ -1562,15 +1562,15 @@
     const _ugKey = (r) => String(r.underlying || r.tradingsymbol || '').toUpperCase();
     const _tier  = (r) => (r.kind === 'spot' ? 0 : r.kind === 'fut' ? 1 : r.kind === 'mcx' ? 1 : r.kind === 'opt' ? 2 : 3);
     // Sub-group order WITHIN the Movers major — underlying first
-    // (most-actively-traded, F&O-eligible names), then midcap, then
-    // smallcap. Unknown / null sub-groups go last (defensive — every
-    // row from loadMovers carries one of the three tags).
-    const MOVER_GROUP_ORDER = { underlying: 0, midcap: 1, smallcap: 2 };
+    // (most-actively-traded, F&O-eligible names), then large_cap, then
+    // midcap, then smallcap. Unknown / null sub-groups go last (defensive
+    // — every row from loadMovers carries one of the four tags).
+    const MOVER_GROUP_ORDER = { underlying: 0, large_cap: 1, midcap: 2, smallcap: 3 };
     // Direction order: Winners first, Losers second. Within each
-    // direction the underlying → midcap → smallcap sub-grouping
+    // direction the underlying → large_cap → midcap → smallcap sub-grouping
     // applies. Result inside Movers:
-    //   Winners → Underlyings, Midcap, Smallcap
-    //   Losers  → Underlyings, Midcap, Smallcap
+    //   Winners → Underlyings, Large Cap, Midcap, Smallcap
+    //   Losers  → Underlyings, Large Cap, Midcap, Smallcap
     const MOVER_DIRECTION_ORDER = { winners: 0, losers: 1 };
     const _mgOrder = (r) =>
       r._majorGroup === 'movers' ? (MOVER_GROUP_ORDER[r._moverGroup] ?? 9) : -1;
@@ -1739,11 +1739,13 @@
     for (const r of mainRows) {
       if (r._majorGroup !== 'movers') continue;
       if (r._moverDirection !== direction) continue;
-      const g = /** @type {string} */ (r._moverGroup);
-      // Each symbol lands in exactly one bucket — _moverGroup is the
-      // canonical source (set by _classifyMoverSym in marketDataStores).
-      if (g === 'underlying' || g === 'large_cap' || g === 'midcap' || g === 'smallcap') {
-        out[g]++;
+      // A symbol may belong to multiple tabs (_moverGroups is an array).
+      // Increment every tab it belongs to so counts reflect true coverage.
+      const gs = /** @type {string[]} */ (r._moverGroups ?? [r._moverGroup].filter(Boolean));
+      for (const g of gs) {
+        if (g === 'underlying' || g === 'large_cap' || g === 'midcap' || g === 'smallcap') {
+          out[g]++;
+        }
       }
     }
     return out;
@@ -1777,13 +1779,14 @@
   /** @param {'winners'|'losers'} direction
    *  @param {MoverTab} tab */
   function _topRowsFor(direction, tab) {
-    // All four tabs (underlying / large_cap / midcap / smallcap) use the
-    // same straight _moverGroup match — _classifyMoverSym now assigns
-    // 'large_cap' directly, so no separate _isLargeCap flag is needed.
+    // A symbol may belong to multiple tabs. Use _moverGroups (array)
+    // when available; fall back to legacy _moverGroup for old cached rows.
     const pool = mainRows.filter(r =>
       r._majorGroup === 'movers'
       && r._moverDirection === direction
-      && r._moverGroup === tab);
+      && (r._moverGroups
+          ? r._moverGroups.includes(tab)
+          : r._moverGroup === tab));
     return pool
       .slice()
       .sort((a, b) => Math.abs(Number(b.change_pct) || 0)
@@ -3325,9 +3328,11 @@
         row.change = row.ltp - liveClose;
       row._mover_sticky    = m.sticky ?? false;
       row._mover_change_pct = liveChangePct ?? null;
-      // Sub-group tag carried over from loadMovers() — drives the
+      // Sub-group tags carried over from loadMovers() — drive the
       // underlying / large_cap / midcap / smallcap tab classification.
-      // _moverGroup is the canonical source; _isLargeCap is no longer used.
+      // _moverGroups (array) is canonical; _moverGroup is the legacy first-
+      // membership field kept for backward-compat (CSS classes, sort key).
+      if (m._moverGroups)    row._moverGroups    = m._moverGroups;
       if (m._moverGroup)     row._moverGroup     = m._moverGroup;
       if (m._moverDirection) row._moverDirection = m._moverDirection;
     }
