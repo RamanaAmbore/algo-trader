@@ -6668,36 +6668,34 @@
     box-shadow: inset 2px 0 0 rgba(251, 191, 36, 0.65);
   }
   .cand-row.expiry-band-netted {
-    background-color: rgba(125, 145, 184, 0.08);
-    box-shadow: inset 2px 0 0 rgba(125, 145, 184, 0.35);
+    background-color: transparent;
+    box-shadow: inset 2px 0 0 rgba(125, 145, 184, 0.55);
   }
   /* Per-pair tint — each pair of opposite positions inside the
-     NETTED band gets one of 5 alternating background tints so the
+     NETTED band gets one of 5 alternating LEFT inset bars so the
      operator can visually map "this row cancels that one".
-     Cycle-of-5 means two adjacent pairs are always visually distinct.
-     Operator: "in netted, show the opposite positions together color
-     coded · you can alternate color for each netted opposite positions".
-     Alpha reduced from 0.10 → 0.06 so the pair identity tints read as
-     a subtle hint rather than competing with the band chrome. */
+     Background-color removed: text reads against transparent row bg.
+     Bar alpha raised to 0.75 so the colour cue is legible without
+     a background fill. */
   .cand-row.expiry-band-netted[data-pair-tint="0"] {
-    background-color: rgba(125, 211, 252, 0.06);  /* sky */
-    box-shadow: inset 2px 0 0 rgba(125, 211, 252, 0.55);
+    background-color: transparent;
+    box-shadow: inset 2px 0 0 rgba(125, 211, 252, 0.75);  /* sky */
   }
   .cand-row.expiry-band-netted[data-pair-tint="1"] {
-    background-color: rgba(168, 85, 247, 0.06);   /* violet */
-    box-shadow: inset 2px 0 0 rgba(168, 85, 247, 0.55);
+    background-color: transparent;
+    box-shadow: inset 2px 0 0 rgba(168, 85, 247, 0.75);   /* violet */
   }
   .cand-row.expiry-band-netted[data-pair-tint="2"] {
-    background-color: rgba(45, 212, 191, 0.06);   /* teal */
-    box-shadow: inset 2px 0 0 rgba(45, 212, 191, 0.55);
+    background-color: transparent;
+    box-shadow: inset 2px 0 0 rgba(45, 212, 191, 0.75);   /* teal */
   }
   .cand-row.expiry-band-netted[data-pair-tint="3"] {
-    background-color: rgba(244, 114, 182, 0.06);  /* pink */
-    box-shadow: inset 2px 0 0 rgba(244, 114, 182, 0.55);
+    background-color: transparent;
+    box-shadow: inset 2px 0 0 rgba(244, 114, 182, 0.75);  /* pink */
   }
   .cand-row.expiry-band-netted[data-pair-tint="4"] {
-    background-color: rgba(132, 204, 22, 0.06);   /* lime */
-    box-shadow: inset 2px 0 0 rgba(132, 204, 22, 0.55);
+    background-color: transparent;
+    box-shadow: inset 2px 0 0 rgba(132, 204, 22, 0.75);   /* lime */
   }
   .cand-row.expiry-band-otm {
     background-color: transparent;
@@ -6718,8 +6716,8 @@
   }
   .cand-row.expiry-band-netted.cand-row-long,
   .cand-row.expiry-band-netted.cand-row-short {
-    background-color: rgba(125, 145, 184, 0.08);
-    box-shadow: inset 2px 0 0 rgba(125, 145, 184, 0.35);
+    background-color: transparent;
+    box-shadow: inset 2px 0 0 rgba(125, 145, 184, 0.55);
   }
   .cand-row.expiry-band-otm.cand-row-long,
   .cand-row.expiry-band-otm.cand-row-short {
@@ -6727,10 +6725,12 @@
     box-shadow: none;
   }
   .cand-row.expiry-band-close.cand-row-long:hover,
-  .cand-row.expiry-band-close.cand-row-short:hover,
+  .cand-row.expiry-band-close.cand-row-short:hover {
+    background-color: var(--algo-amber-bg-soft);
+  }
   .cand-row.expiry-band-netted.cand-row-long:hover,
   .cand-row.expiry-band-netted.cand-row-short:hover {
-    background-color: inherit;
+    background-color: rgba(34,211,238,0.05);
   }
   /* Legacy band aliases — keep while _expiryStatus still references them. */
   .cand-row.cand-row-equity-close {
@@ -7100,22 +7100,15 @@
   }
   .cand-row.cand-closed:hover { background: transparent; }
 
-  /* Long / short row tint — mirrors the /dashboard ag-theme-algo
-     palette: sky-cyan for long positions, warm-orange for short.
-     Faint left + right inset bars on the row scope the direction
-     cue to the row body without flooding the whole table. */
-  .cand-row-long {
-    background-color: rgba(56,189,248,0.08);
-    box-shadow: inset 2px 0 0 rgba(56,189,248,0.75),
-                inset -3px 0 0 rgba(56,189,248,0.75);
-  }
-  .cand-row-short {
-    background-color: rgba(251,146,60,0.08);
-    box-shadow: inset 2px 0 0 rgba(251,146,60,0.75),
-                inset -3px 0 0 rgba(251,146,60,0.75);
-  }
-  .cand-row-long:hover  { background-color: rgba(56,189,248,0.16); }
-  .cand-row-short:hover { background-color: rgba(251,146,60,0.16); }
+  /* Long / short direction cue — encoded solely via the
+     .cand-sym-acct::after right-border (green/red 2px). No row
+     background-color or inset bars so the band-tint (expiry-band-*)
+     and account tint on the symbol cell are the only background
+     layers on the row. Hover falls through to the neutral .cand-row:hover. */
+  .cand-row-long  { background-color: transparent; }
+  .cand-row-short { background-color: transparent; }
+  .cand-row-long:hover  { background: rgba(34,211,238,0.05); }
+  .cand-row-short:hover { background: rgba(34,211,238,0.05); }
 
   /* Draft rows — distinct from live / sim positions: dashed
      magenta inset bar on the LEFT only (not both edges like
@@ -7188,9 +7181,9 @@
   }
   /* Background tint for P&L cells in the Candidates grid (colour comes
      from the global cell-pos / cell-neg / cell-flat rules in MarketPulse). */
-  :global(.cand-pnl.cell-pos)  { background-color: rgba(74,222,128,0.10); }
-  :global(.cand-pnl.cell-neg)  { background-color: rgba(248,113,113,0.10); }
-  :global(.cand-pnl.cell-flat) { background-color: rgba(148,163,184,0.08); }
+  :global(.cand-pnl.cell-pos)  { background-color: rgba(74,222,128,0.08); }
+  :global(.cand-pnl.cell-neg)  { background-color: rgba(248,113,113,0.08); }
+  :global(.cand-pnl.cell-flat) { background-color: rgba(148,163,184,0.06); }
 
   /* Symbol-cell treatment ported from the Pulse Positions grid so the
      two surfaces look identical at a glance — flat hyphenated symbol
