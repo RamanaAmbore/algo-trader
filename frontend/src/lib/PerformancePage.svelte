@@ -1275,15 +1275,15 @@
 <!-- Tabs — Positions / Holdings. No account picker here; the page-
      level picker above scopes both tabs uniformly. -->
 <div class="tabs-row mb-2">
-  <div class="flex gap-0.5">
-    {#each [['positions','Positions'],['holdings','Holdings']] as [id, label]}
-      <button
-        class="px-3 py-1 text-xs font-medium border-b-2 transition-colors
-               {activeTab === id ? 'border-primary text-primary' : 'border-transparent text-muted hover:text-text'}"
-        onclick={() => switchTab(id)}
-      >{label}</button>
-    {/each}
-  </div>
+  <AlgoTabs
+    tabs={[
+      { id: 'positions', label: 'Positions' },
+      { id: 'holdings',  label: 'Holdings'  },
+    ]}
+    value={activeTab}
+    onChange={(id) => switchTab(id)}
+    compact={true}
+  />
 </div>
 
 <!-- Operator: "fund balances should be the second element. summary,
@@ -1692,24 +1692,6 @@
      section heading light blue) read as distinct strata. Previously
      all three tiers rendered in #fbbf24 and the hierarchy collapsed. */
   .perf-dark :global(.section-heading) { color: var(--algo-slate); }
-
-  /* Tabs — active gets an amber tint + slight top-corner round so the
-     selected tab reads as a panel header, not just an underlined word.
-     Hover on inactive lifts text + adds the faintest tint. */
-  .perf-dark :global(button[class*="border-primary"])    {
-    border-color: #d97706 !important;
-    color: #fbbf24 !important;
-    background: rgba(251,191,36,0.12) !important;
-    border-top-left-radius: 4px !important;
-    border-top-right-radius: 4px !important;
-  }
-  .perf-dark :global(button[class*="text-muted"])        { color: rgba(180,200,230,0.6) !important; }
-  .perf-dark :global(button[class*="text-muted"]:hover)  {
-    color: rgba(210,225,250,0.9) !important;
-    background: rgba(251,191,36,0.05) !important;
-    border-top-left-radius: 4px !important;
-    border-top-right-radius: 4px !important;
-  }
 
   /* Refresh button */
   .perf-dark :global(.btn-secondary) {
