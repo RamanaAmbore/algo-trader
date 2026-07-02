@@ -369,6 +369,28 @@ State is stored as extra fields in `_FETCH_HEALTH[account]`: `consecutive_fail_c
 
 **Prod effect**: DH6847 hammering DH-906 every 30s stops after 3 consecutive failures (~90s of prod log noise) vs the observed ~50 failures/hour before the fix.
 
+**Per-account Dhan poll priority (Jul 2026)**:
+Column `poll_priority VARCHAR(8)` on `broker_accounts` controls background poll cadence for Dhan accounts. Kite + Groww are unaffected.
+
+- `'hot'` (default) — poll every 30s (same as Kite/Groww)
+- `'warm'` — poll every 120s
+- `'cold'` — poll every 600s
+
+**Integration order** (inside each `_fetch_*_local`):
+1. Circuit-breaker check (`_is_circuit_open`) — highest precedence; returns empty DataFrame immediately.
+2. Interval-gate check (`_is_dhan_interval_due`) — Dhan-only; skips if `now < _dhan_next_poll[account]`; non-Dhan always passes.
+3. Normal fetch.
+
+`_dhan_next_poll[account]` is advanced to `now + interval` before the fetch (not after) so a crash/exception doesn't cause a tight retry loop. Manual `?fresh=1` bypasses the gate by calling `fetch_*()` directly which hits the broker immediately regardless of `_dhan_next_poll`.
+
+**Auto-downgrade**: When `auto_downgrade_enabled=True` on a Dhan account row AND ≥5 breaker-OPEN events occur within a 15-min sliding window, the account is automatically set to `poll_priority='cold'`. A 5-min cooloff prevents re-firing. Emits WS event `broker_priority_changed` for the frontend toast. Operator restores via `POST /api/admin/brokers/{id}/restore-priority` (resets to 'hot', clears stamps, bumps next_poll=0).
+
+**REST**: `PATCH /api/admin/brokers/{id}` accepts `poll_priority` + `auto_downgrade_enabled`. `GET /api/admin/broker-health` includes `poll_priority`, `auto_downgrade_enabled`, `auto_downgraded_at`, `auto_downgrade_reason` per account.
+
+**Frontend** (`/admin/brokers`): Dhan rows show HOT/WARM/COLD chip with 400ms bg-color CSS transition (omitted under prefers-reduced-motion). Red 4px dot on chip when circuit breaker is OPEN. Chip click → dropdown. Auto-downgrade checkbox. `auto_downgraded_at` shows `"auto @ HH:MM IST"` + restore link.
+
+Tests: `backend/tests/test_broker_priority.py` (12 tests). E2E: `frontend/e2e/broker_priority_chip.spec.js`.
+
 ---
 
 ## Broker isolation (slices 1–4)
