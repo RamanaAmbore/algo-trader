@@ -1387,6 +1387,18 @@ async def _arm_take_profit(
                 broker = _broker_for(parent_account)
                 from backend.brokers.adapters.kite import get_lot_size
                 _ls = await get_lot_size(parent_exchange, parent_symbol)
+                # G1 — lot-multiple guard. TP mirrors the parent's already-
+                # guarded size, but a corrupt parent quantity must not reach
+                # Kite as a sub-lot order. G2 (5-lot cap) is intentionally
+                # skipped — the parent's size was already capped at entry.
+                if _ls and _ls > 1 and qty % _ls != 0:
+                    logger.error(
+                        f"[TP-G1] BLOCKED auto-TP for parent #{parent_row_id}: "
+                        f"qty={qty} is not a multiple of lot_size={_ls} "
+                        f"({parent_exchange}/{parent_symbol}). "
+                        f"Refusing to arm TP to avoid sub-lot order."
+                    )
+                    return
                 _kq = broker.translate_qty(parent_exchange, qty, _ls)
                 kite_order_id = broker.place_order(
                     variety="regular",
