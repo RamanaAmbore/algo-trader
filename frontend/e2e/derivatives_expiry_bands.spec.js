@@ -505,26 +505,27 @@ for (const vp of VIEWPORTS) {
         '!important on background-color must be removed from expiry band block (use specificity instead)'
       ).toBe(0);
 
-      // 3. cand-row-long/short box-shadow must still carry the left+right
-      //    inset bars on the LEGS tab rows (only expiry tab suppresses them).
-      //    Verify the direction class rules still define both left and right bars.
-      const longRuleIdx  = src.indexOf('.cand-row-long {');
-      const shortRuleIdx = src.indexOf('.cand-row-short {');
-      expect(longRuleIdx,  '.cand-row-long must still be defined').toBeGreaterThan(0);
-      expect(shortRuleIdx, '.cand-row-short must still be defined').toBeGreaterThan(0);
+      // 3. Standalone cand-row-long/short rules must still carry the
+      //    left+right inset bars for the LEGS tab (only expiry tab suppresses
+      //    them via combined selectors). Search for the standalone rule text
+      //    precisely — indexOf finds the first occurrence of exactly
+      //    '.cand-row-long {' (one class, no combinators).
+      const longStandaloneIdx  = src.indexOf('\n  .cand-row-long {');
+      const shortStandaloneIdx = src.indexOf('\n  .cand-row-short {');
+      expect(longStandaloneIdx,  'standalone .cand-row-long rule must be present').toBeGreaterThan(0);
+      expect(shortStandaloneIdx, 'standalone .cand-row-short rule must be present').toBeGreaterThan(0);
 
-      // Extract the two rules (up to their closing brace).
-      const longRuleSnip  = src.slice(longRuleIdx,  src.indexOf('}', longRuleIdx)  + 1);
-      const shortRuleSnip = src.slice(shortRuleIdx, src.indexOf('}', shortRuleIdx) + 1);
+      const longRuleSnip  = src.slice(longStandaloneIdx,  src.indexOf('}', longStandaloneIdx)  + 1);
+      const shortRuleSnip = src.slice(shortStandaloneIdx, src.indexOf('}', shortStandaloneIdx) + 1);
 
       // Both must still include 'inset -' (the right-side bar) for non-expiry rows.
       expect(
         longRuleSnip.includes('inset -'),
-        '.cand-row-long must still have a right inset bar (for non-expiry tab)'
+        '.cand-row-long must still have a right inset bar (for non-expiry Legs tab)'
       ).toBe(true);
       expect(
         shortRuleSnip.includes('inset -'),
-        '.cand-row-short must still have a right inset bar (for non-expiry tab)'
+        '.cand-row-short must still have a right inset bar (for non-expiry Legs tab)'
       ).toBe(true);
 
       // 4. Pair-tint alpha must be ≤ 0.07 (reduced from 0.10 for less clutter).
