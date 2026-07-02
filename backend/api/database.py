@@ -922,8 +922,47 @@ async def _ensure_shared_broker_schema() -> None:
             "auto_downgraded_at TIMESTAMPTZ",
             "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
             "auto_downgrade_reason TEXT",
+            # Per-account circuit-breaker opt-in (Jul 2026). Default FALSE so
+            # the opt-in is explicit; the startup migration below seeds DH6847.
+            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
+            "circuit_breaker_enabled BOOLEAN NOT NULL DEFAULT FALSE",
         ):
             await conn.execute(text(stmt))
+
+    # One-shot startup migration: seed circuit_breaker_enabled=TRUE for DH6847.
+    # Idempotency: guarded by a Setting row marker so the UPDATE only fires
+    # once even if the operator later manually turns the flag OFF again.
+    _MIGRATION_KEY = "migrations.breaker_dh6847_seeded"
+    async with _shared_engine.begin() as conn:
+        already_seeded = await conn.scalar(
+            text("SELECT 1 FROM settings WHERE key = :k LIMIT 1"),
+            {"k": _MIGRATION_KEY},
+        )
+        if not already_seeded:
+            # Enable the breaker for DH6847 only.
+            await conn.execute(
+                text(
+                    "UPDATE broker_accounts "
+                    "SET circuit_breaker_enabled = TRUE "
+                    "WHERE account = 'DH6847'"
+                )
+            )
+            # Stamp the marker so this block never re-fires.
+            await conn.execute(
+                text(
+                    "INSERT INTO settings "
+                    "(category, key, value_type, value, default_value, "
+                    " description, updated_at) "
+                    "VALUES ('migrations', :k, 'bool', 'true', 'true', "
+                    "'Idempotency marker: circuit_breaker_enabled seeded for DH6847', "
+                    "now()) "
+                    "ON CONFLICT (key) DO NOTHING"
+                ),
+                {"k": _MIGRATION_KEY},
+            )
+            logger.info(
+                "_ensure_shared_broker_schema: circuit_breaker_enabled seeded for DH6847"
+            )
     logger.info("Shared broker schema verified on ramboq")
 
 

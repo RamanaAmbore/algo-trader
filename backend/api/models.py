@@ -1635,6 +1635,17 @@ class BrokerAccount(Base):
     auto_downgrade_reason: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True
     )
+    # ── Per-account circuit breaker opt-in (Jul 2026) ────────────────────
+    # circuit_breaker_enabled — when True, the 3-fail / 5-min open-circuit
+    #   breaker is fully active for this account.  When False (the default)
+    #   the account still gets its last_ok_at / last_fail_at health stamps
+    #   for the admin badge but the OPEN / HALF-OPEN state machine is
+    #   bypassed so transient blips on one account never freeze the others.
+    #   Currently opt-in only for DH6847; all other accounts stay at False
+    #   unless the operator explicitly toggles via PATCH /api/admin/brokers/{id}.
+    circuit_breaker_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),
