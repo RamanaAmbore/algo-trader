@@ -997,6 +997,38 @@ export function parseLogLineDate(line) {
 // loadPulse inside MarketPulse).
 export const lastRefreshAt = writable(0);
 
+// ── Include-Holdings toggle (shared with derivatives page) ──────────────
+// Backing localStorage key: 'opt.includeHoldings' (same as the
+// derivatives page's existing key). Both surfaces read/write this store
+// so a toggle on either propagates immediately. When true, NavStrip's
+// P pill slots 1 + 2 include the sum of holdings pnl + day_change_val;
+// when false they show F&O-only. Mirrors the derivatives payoff overlay
+// pattern where _includeHoldings gates equity leg contributions. Operator
+// 2026-07-01: "p & l should include underlying position if hold button
+// is on. it should exclude underlying position when hold is off. it is
+// similar to exp p & L."
+const _HOLDINGS_KEY = 'opt.includeHoldings';
+function _readHoldingsFlag() {
+  if (!browser) return false;
+  try {
+    const raw = localStorage.getItem(_HOLDINGS_KEY);
+    return raw === '1' || raw === 'true';
+  } catch { return false; }
+}
+export const includeHoldings = writable(_readHoldingsFlag());
+if (browser) {
+  includeHoldings.subscribe((v) => {
+    try { localStorage.setItem(_HOLDINGS_KEY, v ? '1' : '0'); } catch { /* quota */ }
+  });
+  // Cross-tab sync — a toggle on the derivatives page propagates to
+  // NavStrip in other tabs on the next storage event.
+  window.addEventListener('storage', (e) => {
+    if (e.key === _HOLDINGS_KEY) {
+      includeHoldings.set(e.newValue === '1' || e.newValue === 'true');
+    }
+  });
+}
+
 // ── Activity-modal control ───────────────────────────────────────────
 // Single mount point lives in (algo)/+layout.svelte. Anything that
 // wants to open the activity log surfaces (page header Log button,

@@ -6,7 +6,7 @@
   // Whole strip is a single link to /dashboard.
 
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { marketAwareInterval, visibleInterval, executionMode } from '$lib/stores';
+  import { marketAwareInterval, visibleInterval, executionMode, includeHoldings } from '$lib/stores';
   import { aggCompact } from '$lib/format';
   import { getInstrument, loadInstruments, findNearestFuture } from '$lib/data/instruments';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
@@ -368,6 +368,15 @@
   // positionsPnlFiltered (SSOT in $lib/data/nav) provides the REST-based
   // pnl/dayTotal sums. We add the SSE-tick delta on top in a filtered loop
   // so only F&O rows contribute to both the REST sum and the live correction.
+  // Include-Holdings toggle (mirrors the derivatives page's opt.includeHoldings
+  // via the shared store). When ON, slots 1 + 2 add Σ holdings.pnl +
+  // Σ holdings.day_change_val on top of the F&O positions sum. Operator
+  // 2026-07-01: "p & l should include underlying position if hold button
+  // is on. it should exclude underlying position when hold is off. it is
+  // similar to exp p & L."
+  let _inclHold = $state($includeHoldings);
+  $effect(() => { _inclHold = $includeHoldings; });
+
   const _livePositionsPnl = $derived.by(() => {
     const { pnlTotal } = positionsPnlFiltered(positions);
     let delta = 0;
@@ -375,7 +384,13 @@
       if (!FO_EXCHANGES.has(String(p?.exchange || '').toUpperCase())) continue;
       delta += _delta(p, 'P');
     }
-    return pnlTotal + delta;
+    let base = pnlTotal + delta;
+    if (_inclHold) {
+      for (const h of holdings) {
+        base += Number(h?.pnl || 0) + _delta(h, 'H');
+      }
+    }
+    return base;
   });
   const _livePositionsToday = $derived.by(() => {
     const { dayTotal } = positionsPnlFiltered(positions);
@@ -386,13 +401,22 @@
     // vs poll_ltp) was inflating the slot vs the operator's expected
     // reading. Operator 2026-07-01: "slot 1 is inflated. fix it."
     const _mktOpen = isNseOpen() || isMcxOpen();
-    if (!_mktOpen) return dayTotal;
-    let delta = 0;
-    for (const p of positions) {
-      if (!FO_EXCHANGES.has(String(p?.exchange || '').toUpperCase())) continue;
-      delta += _delta(p, 'P');
+    let base = dayTotal;
+    if (_mktOpen) {
+      let delta = 0;
+      for (const p of positions) {
+        if (!FO_EXCHANGES.has(String(p?.exchange || '').toUpperCase())) continue;
+        delta += _delta(p, 'P');
+      }
+      base += delta;
     }
-    return dayTotal + delta;
+    if (_inclHold) {
+      for (const h of holdings) {
+        const d = _mktOpen ? _delta(h, 'H') : 0;
+        base += Number(h?.day_change_val || 0) + d;
+      }
+    }
+    return base;
   });
   const _liveHoldingsToday = $derived.by(() => {
     let s = 0;
