@@ -246,16 +246,22 @@ test.describe('NavTab error state', () => {
     }
   }
 
-  test('500 from /api/nav/history shows error strip + Retry in NavTab', async ({ page }) => {
+  test('500 from /api/nav/ shows error strip + Retry in NavTab', async ({ page }) => {
     await withToken(page);
 
-    await page.route('**/api/nav/history**', route =>
+    // NavTab fetches /api/nav/?days=90 (the firm NAV daily aggregate endpoint).
+    // Use a regex to match the path precisely without hitting /api/nav/latest.
+    await page.route(/\/api\/nav\/\?days=/, route =>
       route.fulfill({ status: 500, contentType: 'application/json',
         body: JSON.stringify({ detail: 'DB error' }) })
     );
 
     await page.goto(BASE + '/dashboard', { waitUntil: 'domcontentloaded' });
-    // The NAV tab should be the default chart tab.
+    // Ensure NAV is the active chart tab (localStorage may persist a different tab).
+    const navTabBtn = page.locator('button, [role="tab"]').filter({ hasText: /^NAV$/i }).first();
+    if (await navTabBtn.isVisible({ timeout: 5_000 }).catch(() => false)) {
+      await navTabBtn.click();
+    }
     const errEl = page.locator('[data-testid="nav-tab-error"]');
     await expect(errEl).toBeVisible({ timeout: 15_000 });
     await expect(errEl).toContainText(/nav history unavailable/i);
@@ -267,8 +273,8 @@ test.describe('NavTab error state', () => {
     expect(color).toMatch(/248.*113.*113/);
 
     // Retry — swap to success, click, assert recovery.
-    await page.unroute('**/api/nav/history**');
-    await page.route('**/api/nav/history**', route =>
+    await page.unroute(/\/api\/nav\/\?days=/);
+    await page.route(/\/api\/nav\/\?days=/, route =>
       route.fulfill({ status: 200, contentType: 'application/json',
         body: JSON.stringify({ rows: [] }) })
     );
