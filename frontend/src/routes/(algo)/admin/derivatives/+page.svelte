@@ -1093,12 +1093,17 @@
       if (!isFut && !isOpt) continue;
       const root = (decomposeSymbol(sym).root || sym).toUpperCase();
       if (!root) continue;
+      // SSOT: prefer backend-stamped underlying_ltp on the row itself
+      // (positions.py _enrich_positions Pass 3). Operator 2026-07-01:
+      // "use ssot." Falls through to the client-side chain only when
+      // the field is missing (demo/sim mode + legacy payloads).
+      const p_ul = Number(p.underlying_ltp || 0);
       // untrack — same pattern as bbe2d9b3 for liveSpot. `_underlyingQuotes`
       // is replaced wholesale every 30 s snapshot poll; without untrack this
       // derived walks every position + every holding on the snapshot cycle
       // AND on the positions cycle, doubling work and cascading OptionsPayoff
       // SVG re-renders that starve the main thread of click events.
-      const spot = untrack(() => _rootSpot(root));
+      const spot = p_ul > 0 ? p_ul : untrack(() => _rootSpot(root));
       const v = _expiryPnl({
         symbol: sym, qty: p.quantity ?? p.qty,
         avg_cost: p.average_price ?? p.avg_cost,
@@ -5924,13 +5929,26 @@
       align-items: stretch;
     }
     /* Legs card becomes a flex column so .cand-scroll can flex:1
-       and fill the height delta between header + scroll viewport. */
+       and fill the height delta between header + scroll viewport.
+       min-height:0 prevents the card from escaping the grid's
+       align-items:stretch constraint via its natural content height
+       (without it, a tall candidate list pushes the legs card past
+       the payoff card's fixed height and the two stop being equal). */
     .opt-payoff-legs-row:has(.opt-legs-card) .opt-legs-card {
       display: flex;
       flex-direction: column;
+      min-height: 0;
     }
+    /* flex:1 1 0 + min-height:0 lets the scroll wrapper shrink to fit
+       the legs card's grid-stretched height instead of growing to its
+       content height (which broke height parity with the payoff card).
+       Vertical overflow scrolls internally; horizontal overflow is
+       unchanged. max-height:none removed — no longer needed because
+       the grid+flex chain caps the wrapper at the payoff card height. */
     .opt-payoff-legs-row:has(.opt-legs-card) .opt-legs-card .cand-scroll {
-      flex: 1;
+      flex: 1 1 0;
+      min-height: 0;
+      overflow-y: auto;
       max-height: none;
     }
   }

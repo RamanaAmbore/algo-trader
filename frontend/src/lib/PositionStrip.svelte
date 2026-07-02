@@ -573,16 +573,21 @@
         const inst   = getInstrument(sym);
         const root   = decomp.root || inst?.u || null;
         if (!root) continue;
-        // Multi-source spot resolution — 4 chain steps documented in
-        // derivatives/+page.svelte:_rootSpot(). Same order applied here so
-        // NavStrip P.expiry matches Snapshot Exp P&L + payoff overlay
-        // legs TOTAL. Operator 2026-07-01: "use the same number to update
-        // p 3 values in navstrip."
+        // SSOT: backend now stamps underlying_ltp on the option row
+        // (positions.py _enrich_positions Pass 3). Operator 2026-07-01:
+        // "use ssot." Prefer this over any client-side chain; it's the
+        // exact spot the backend used for Greeks / IV, and it's populated
+        // even during closed hours (via LKG cache in broker.quote).
+        let spot = Number(p?.underlying_ltp || 0);
         const resolved = resolveUnderlying(root, findNearestFuture);
-        let spot = 0;
-        for (const key of [resolved?.tradingsymbol, root, inst?.u].filter(Boolean)) {
-          const v = untrack(() => getSnapshot(String(key).toUpperCase())?.ltp);
-          if (typeof v === 'number' && v > 0) { spot = v; break; }
+        if (!(spot > 0)) {
+          // Fallback chain — for demo/sim mode + legacy payloads without
+          // the underlying_ltp field. Same 4 steps as
+          // derivatives/+page.svelte:_rootSpot().
+          for (const key of [resolved?.tradingsymbol, root, inst?.u].filter(Boolean)) {
+            const v = untrack(() => getSnapshot(String(key).toUpperCase())?.ltp);
+            if (typeof v === 'number' && v > 0) { spot = v; break; }
+          }
         }
         if (!(spot > 0)) {
           const wantKey  = String(resolved?.tradingsymbol || root).toUpperCase();

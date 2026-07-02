@@ -573,6 +573,11 @@ def _enrich_position_greeks(rows: list) -> None:
     for i, (p, u_key) in parsed_by_idx.items():
         row = rows[i]
         S = spot_by_key.get(u_key, 0.0)
+        # SSOT: publish the underlying spot on the row itself. Frontend
+        # NavStrip P.expiry, Snapshot Exp P&L, payoff overlay all consume
+        # this instead of reconstructing it via multi-source client-side
+        # fallbacks. Operator 2026-07-01: "use ssot."
+        row.underlying_ltp = S
         if S <= 0:
             continue
         K = float(p.get("strike") or 0.0)

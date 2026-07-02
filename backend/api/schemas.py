@@ -88,6 +88,14 @@ class PositionRow(msgspec.Struct):
     # TWS / Bloomberg OMON convention is to show these alongside LTP.
     delta_pos: float = 0.0
     theta_pos: float = 0.0
+    # Underlying spot for options + futures — the price of the
+    # underlying at broker-fetch time (or LKG during closed hours).
+    # Fetched once per unique underlying in _enrich_positions Pass 2
+    # (positions.py) and stashed here so every frontend consumer
+    # (NavStrip P.expiry, Snapshot Exp P&L, payoff overlay) can compute
+    # intrinsic-at-expiry without reconstructing the spot via a chain
+    # of client-side fallbacks. Non-derivative rows carry 0.0.
+    underlying_ltp: float = 0.0
     # Intraday split — exposed so the Candidates grid can detect
     # close-and-reopen activity and synthesize separate display rows.
     # All post-multiplier (matches the `quantity` column's units).
