@@ -1,5 +1,6 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte';
+  import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   // ag-Grid is lazy-loaded in onMount so it doesn't bloat the initial bundle
   // for public /performance visitors. createGrid is populated after the
   // dynamic import resolves; makeGrid() guards on _agGridReady.
@@ -267,6 +268,38 @@
   const pnlCls = ({ value }) =>
     ['ag-right-aligned-cell', value < 0 ? 'pnl-loss' : value > 0 ? 'pnl-gain' : 'pnl-zero'];
 
+  // Tick-flash — subtle 350ms directional background pulse on numeric cells.
+  // Reuses createTickFlash verbatim. TOTAL rows (rowPinned==='bottom' or
+  // tradingsymbol/account==='TOTAL') are excluded. Threshold 0.001 (epsilon)
+  // prevents false flashes when the same value arrives twice. Alpha 0.13 via
+  // global .tf-up/.tf-down in app.css — lower than LTP flash (0.35).
+  const _perfFlash = createTickFlash({ threshold: 0.001, durationMs: 350 });
+
+  // Stable row key: account|tradingsymbol. Matches updateGrid's key() fn.
+  function _perfFlashKey(data) {
+    if (!data) return null;
+    return data.tradingsymbol ? `${data.account}|${data.tradingsymbol}` : data.account;
+  }
+
+  // cellClass factory for P&L-type columns that also emits tick-flash.
+  // `field` is the data field name used for the per-cell flash key.
+  // Falls through to plain pnlCls array on TOTAL / pinned rows.
+  function pnlClsFlash(field) {
+    return (params) => {
+      const base = ['ag-right-aligned-cell'];
+      const v = params.value;
+      base.push(v < 0 ? 'pnl-loss' : v > 0 ? 'pnl-gain' : 'pnl-zero');
+      // Skip TOTAL / pinned rows — aggregates must not flash.
+      if (params.node?.rowPinned === 'bottom') return base;
+      if (params.data?.tradingsymbol === 'TOTAL' || params.data?.account === 'TOTAL') return base;
+      const k = _perfFlashKey(params.data);
+      if (!k) return base;
+      const fc = _perfFlash.classOf(`${k}:${field}`);
+      if (fc) base.push(fc);
+      return base;
+    };
+  }
+
   // Qty cell: classify by direction, not P&L. A short can be profitable,
   // a long can be losing — what the eye needs here is "which side of the
   // book am I on". Colours live in app.css (qty-short / qty-long).
@@ -406,6 +439,8 @@
     { field: 'cur_val',               headerName: 'Value',  width: 110, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
     { field: 'inv_val',               headerName: 'Invested',  width: 110, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
   ];
+  // Note: holdings/positions summary grids (per-account aggregates) keep
+  // `pnlCls` (no flash) — they are the equivalent of TOTAL rows.
 
   // Cluster: LTP → Prev → Avg → Day P&L → Day % → P&L → P&L %.
   // Avg slots between Prev and Day P&L per operator request — the eye
@@ -421,10 +456,10 @@
     { field: 'tradingsymbol',         headerName: 'Symbol',   width: 132, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _symWithChartRenderer },
     { field: 'last_price',            headerName: 'LTP',      width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'average_price',         headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
-    { field: 'day_change_val',        headerName: 'Day P&L',  width: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'day_change_percentage', headerName: 'Day %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl',                   headerName: 'P&L',      width: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl_percentage',        headerName: 'P&L %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_val',        headerName: 'Day P&L',  width: 78, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('day_change_val'), type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_percentage', headerName: 'Day %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlClsFlash('day_change_percentage'), type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl',                   headerName: 'P&L',      width: 78, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('pnl'), type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl_percentage',        headerName: 'P&L %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlClsFlash('pnl_percentage'), type: 'numericColumn', headerClass: numericHdr },
     { field: 'close_price',           headerName: 'Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
     { field: 'quantity',              headerName: 'Qty',      width: 52, type: 'numericColumn', headerClass: numericHdr },
     // Lots — qty in F&O lot units. Holdings on F&O underlyings use
@@ -531,10 +566,10 @@
     positionsSymbolCol,
     { field: 'last_price',           headerName: 'LTP',       width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'average_price',        headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
-    { field: 'day_change_val',       headerName: 'Day P&L',   width: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'day_change_percentage',headerName: 'Day %',     width: 64, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl',                  headerName: 'P&L',       width: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl_percentage',       headerName: 'P&L %',     width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_val',       headerName: 'Day P&L',   width: 88, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('day_change_val'), type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_percentage',headerName: 'Day %',     width: 64, valueFormatter: pctFmtGrid, cellClass: pnlClsFlash('day_change_percentage'), type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl',                  headerName: 'P&L',       width: 88, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('pnl'), type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl_percentage',       headerName: 'P&L %',     width: 60, valueFormatter: pctFmtGrid, cellClass: pnlClsFlash('pnl_percentage'), type: 'numericColumn', headerClass: numericHdr },
     { field: 'close_price',          headerName: 'Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
     { field: 'quantity',             headerName: 'Qty',       width: 52, type: 'numericColumn', headerClass: numericHdr, cellClass: qtyCls },
     // Lots — option / futures positions use the contract's own lot;
@@ -797,10 +832,45 @@
     holdingsSummaryGrid.setGridOption('pinnedBottomRowData', hSummaryTotal);
     updateGrid(positionsSummaryGrid, pSummaryBody);
     positionsSummaryGrid.setGridOption('pinnedBottomRowData', pSummaryTotal);
+    // Tick-flash: seed _perfFlash.update() for per-row P&L fields before
+    // pushing rows to the detail grids. First call per key seeds baseline
+    // (no flash on mount). TOTAL rows are excluded. The primitive's
+    // threshold=0.001 epsilon prevents false flashes on identical values.
+    for (const r of hRows) {
+      if (r.tradingsymbol === 'TOTAL' || r.account === 'TOTAL') continue;
+      const k = r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
+      if (!k) continue;
+      if (r.day_change_val    != null) _perfFlash.update(`${k}:day_change_val`,    Number(r.day_change_val));
+      if (r.day_change_percentage != null) _perfFlash.update(`${k}:day_change_percentage`, Number(r.day_change_percentage));
+      if (r.pnl               != null) _perfFlash.update(`${k}:pnl`,               Number(r.pnl));
+      if (r.pnl_percentage    != null) _perfFlash.update(`${k}:pnl_percentage`,    Number(r.pnl_percentage));
+    }
+    for (const r of pRows) {
+      if (r.tradingsymbol === 'TOTAL' || r.account === 'TOTAL') continue;
+      const k = r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
+      if (!k) continue;
+      if (r.day_change_val    != null) _perfFlash.update(`${k}:day_change_val`,    Number(r.day_change_val));
+      if (r.day_change_percentage != null) _perfFlash.update(`${k}:day_change_percentage`, Number(r.day_change_percentage));
+      if (r.pnl               != null) _perfFlash.update(`${k}:pnl`,               Number(r.pnl));
+      if (r.pnl_percentage    != null) _perfFlash.update(`${k}:pnl_percentage`,    Number(r.pnl_percentage));
+    }
     updateGrid(holdingsAllGrid, hRows);
     holdingsAllGrid.setGridOption('pinnedBottomRowData', hTotals ? [hTotals] : []);
+    // Trigger a refreshCells so pnlClsFlash callbacks pick up the new flash state.
+    if (holdingsAllGrid) {
+      try { holdingsAllGrid.refreshCells({ columns: ['day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'], force: true }); } catch (_) {}
+      setTimeout(() => {
+        try { holdingsAllGrid.refreshCells({ columns: ['day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'], force: true }); } catch (_) {}
+      }, 400);
+    }
     updateGrid(positionsAllGrid, pRows);
     positionsAllGrid.setGridOption('pinnedBottomRowData', pTotals ? [pTotals] : []);
+    if (positionsAllGrid) {
+      try { positionsAllGrid.refreshCells({ columns: ['day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'], force: true }); } catch (_) {}
+      setTimeout(() => {
+        try { positionsAllGrid.refreshCells({ columns: ['day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'], force: true }); } catch (_) {}
+      }, 400);
+    }
     updateGrid(fundsGrid, fBody);
     fundsGrid.setGridOption('pinnedBottomRowData', fTotal);
     // NAV grid — per-account wealth aggregated from the same three
@@ -1063,6 +1133,7 @@
   onDestroy(() => {
     unsub?.();
     if (_fillToastTimer) { clearTimeout(_fillToastTimer); _fillToastTimer = null; }
+    _perfFlash.dispose();
     [fundsGrid, navGrid, holdingsSummaryGrid, holdingsAllGrid,
      positionsSummaryGrid, positionsAllGrid]
       .forEach(g => g?.destroy());
