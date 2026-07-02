@@ -168,11 +168,12 @@ _QUOTE_TTL_SECONDS = 5.0
 
 
 MOVER_THRESHOLD_PCT: float = 1.5
-# How many top movers to surface even when nothing crossed the
-# threshold — keeps the section populated on calm days. Anything that
-# DID cross the threshold (and stuck for the session) is added on top
-# of this count.
-MOVER_TOP_N: int = 6
+# How many top movers to surface per direction (winners + losers separately).
+# Bumped from 6 → 20 so that after frontend _classifyMoverSym splits rows into
+# three tabs (underlying / midcap / smallcap) each tab still has ~6-8 rows.
+# Frontend caps display at _MOVER_TOP_N=10 per tab — no over-render risk.
+# Payload cost: 40 rows × ~200 B ≈ 8 KB, negligible.
+MOVER_TOP_N: int = 20
 
 # ---------------------------------------------------------------------------
 # Session-sticky movers state
