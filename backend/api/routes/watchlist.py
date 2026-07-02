@@ -296,6 +296,92 @@ async def _load_latest_movers_snapshot() -> Optional[MoversSnapshot]:
         return None
 
 
+async def _force_movers_snapshot() -> int:
+    """Fetch a fresh movers quote batch and persist it to ``movers_snapshots``.
+
+    Called by the ``nse:close`` market lifecycle handler so a guaranteed DB
+    row lands at session close regardless of the in-memory ``_session_movers``
+    state or polling luck.  Uses the same quote + universe logic as the live
+    route path but runs independently of ``_session_movers``.
+
+    Returns the number of rows written (0 if no data or on error).
+    """
+    import asyncio as _asyncio
+    import json as _json
+    from datetime import date as _date, timezone as _tz
+    from zoneinfo import ZoneInfo
+
+    try:
+        from backend.api.cache import get_or_fetch
+        from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS as _INST_TTL
+        from backend.api.algo.derivatives import underlying_ltp_key, is_mcx_underlying
+        from backend.brokers.registry import get_price_broker
+        from backend.shared.helpers.date_time_utils import timestamp_indian
+
+        ist_now = timestamp_indian()
+        ist_today = ist_now.date().isoformat()
+
+        # Build NSE-only universe from instruments cache.
+        try:
+            resp = await get_or_fetch("instruments", _fetch_instruments, ttl_seconds=_INST_TTL)
+            all_items = resp.items if resp else []
+        except Exception:
+            all_items = []
+
+        key_to_underlying: dict[str, str] = {}
+        for inst in all_items:
+            if inst.t in ("CE", "PE") and inst.u:
+                name = inst.u.upper()
+                if not is_mcx_underlying(name):
+                    key = underlying_ltp_key(name)
+                    key_to_underlying[key] = name
+
+        if not key_to_underlying:
+            logger.warning("_force_movers_snapshot: empty universe — instruments cache cold?")
+            return 0
+
+        # Fresh quote batch (bypass per-route 30s cache at close time).
+        keys = list(key_to_underlying.keys())
+        try:
+            broker = get_price_broker()
+            quote_data: dict = await _asyncio.to_thread(broker.quote, keys) or {}
+        except Exception as exc:
+            logger.warning(f"_force_movers_snapshot: quote fetch failed: {exc}")
+            return 0
+
+        rows: list[MoverRow] = []
+        for kite_key, underlying in key_to_underlying.items():
+            q = quote_data.get(kite_key) or {}
+            ltp = float(q.get("last_price") or 0.0)
+            ohlc = q.get("ohlc") or {}
+            prev_close = float(ohlc.get("close") or 0.0)
+            if ltp == 0.0 or prev_close == 0.0:
+                continue
+            change_pct = (ltp - prev_close) / prev_close * 100.0
+            rows.append(MoverRow(
+                tradingsymbol=underlying,
+                exchange="NSE",
+                last_price=ltp,
+                previous_close=prev_close,
+                change_pct=change_pct,
+                peak_pct=change_pct,
+                sticky=False,
+            ))
+
+        rows.sort(key=lambda r: abs(r.change_pct), reverse=True)
+
+        if not rows:
+            logger.warning("_force_movers_snapshot: zero rows from live quotes at close")
+            return 0
+
+        await _save_movers_snapshot(rows, ist_today)
+        return len(rows)
+
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"_force_movers_snapshot: unexpected error: {exc}")
+        return 0
+
+
 async def _resolve_mcx_commodity(commodity_name: str) -> Optional[str]:
     """Map a bare MCX commodity name (e.g. 'GOLD') to the nearest-month
     future tradingsymbol. Reads the shared instruments cache (24h TTL,
@@ -969,7 +1055,9 @@ class WatchlistController(Controller):
         from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS as _INST_TTL
         from backend.api.algo.derivatives import underlying_ltp_key, is_mcx_underlying
         from backend.brokers.registry import get_price_broker
-        from backend.shared.helpers.date_time_utils import is_any_segment_open, timestamp_indian
+        from backend.shared.helpers.date_time_utils import is_market_open, timestamp_indian
+        from backend.brokers.broker_apis import fetch_holidays
+        from datetime import time as _dtime
 
         global _session_movers, _session_date
 
@@ -981,12 +1069,27 @@ class WatchlistController(Controller):
             _session_date = ist_today
 
         # ── Market-closed fast-path ────────────────────────────────────
-        # When no segment is open, skip the live broker quote entirely and
-        # serve the last persisted snapshot.  This covers weekends, holidays,
-        # and the overnight window between MCX close (23:30) and NSE pre-open
-        # (09:00 next day).
-        market_is_open = is_any_segment_open(ist_now)
-        if not market_is_open:
+        # The movers universe is NSE-only (MCX underlyings are explicitly
+        # excluded at the quote-fetch stage). Therefore the correct predicate
+        # is whether the NSE/equity session is open, NOT whether any segment
+        # is open.  The "any segment" check was too permissive: during the
+        # MCX evening window (15:30-23:30 IST) it returned True, the live
+        # path was taken, Kite returned zeros for all post-session NSE quotes,
+        # rows came back empty, and the winners/losers panels went blank.
+        # Fix: gate on the equity segment window only (09:15-15:30 IST, NSE
+        # holiday calendar) so the DB snapshot is served the moment NSE closes.
+        try:
+            _nse_holidays = fetch_holidays("NSE")
+        except Exception:
+            _nse_holidays = set()
+        nse_is_open = is_market_open(
+            ist_now,
+            _nse_holidays,
+            market_start=_dtime(9, 15),
+            market_end=_dtime(15, 30),
+            exchange="NSE",
+        )
+        if not nse_is_open:
             snap = await _load_latest_movers_snapshot()
             if snap:
                 try:

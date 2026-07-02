@@ -101,6 +101,44 @@ async def _snapshot_nav(exchange: str, event_type: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Close → movers snapshot
+# ---------------------------------------------------------------------------
+
+async def _snapshot_movers(exchange: str, event_type: str) -> None:
+    """Persist the NSE movers snapshot at session close.
+
+    The route handler (`GET /watchlist/movers`) relies on an in-memory
+    dict (`_session_movers`) populated during the trading day.  A process
+    restart wipes that dict and, if it happens late in the session or after
+    close, leaves the movers universe empty for the rest of the day.
+
+    This handler fires on ``nse:close`` (and is NOT wired to MCX/CDS —
+    the movers universe is NSE-only; MCX underlyings are explicitly excluded
+    at the quote-fetch stage).  It calls the route-level snapshot writer
+    directly, bypassing the in-memory session state.  The writer
+    (`_save_movers_snapshot`) uses ``pg_insert(...).on_conflict_do_update``
+    so re-fires are idempotent.
+
+    This guarantees a fresh DB row lands at the exact NSE session-close
+    moment regardless of polling luck or process restarts.  The next
+    `GET /watchlist/movers` call after 15:30 IST will read this row from
+    `_load_latest_movers_snapshot()` instead of returning an empty list.
+    """
+    try:
+        from backend.api.routes.watchlist import _force_movers_snapshot
+        rows_written = await _force_movers_snapshot()
+        logger.info(
+            f"market_lifecycle[{exchange}:{event_type}] movers snapshot — "
+            f"rows={rows_written}"
+        )
+    except Exception as e:
+        logger.warning(
+            f"market_lifecycle[{exchange}:{event_type}] "
+            f"movers snapshot failed: {e}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -129,10 +167,17 @@ def register_default_handlers() -> None:
     # remains the authoritative late-session NAV path.
     market_lifecycle.register("nse:close", _snapshot_nav)
 
+    # Movers snapshot — fires only on NSE close. The movers universe is
+    # NSE-only (MCX underlyings excluded at quote-fetch time). This
+    # guarantees a fresh DB row at the exact session-close moment so
+    # off-hours requests serve real last-session data instead of [].
+    market_lifecycle.register("nse:close", _snapshot_movers)
+
     _REGISTERED = True
     logger.info(
         "market_lifecycle: default handlers registered "
-        "(nse/mcx/cds close + close_settled → daily_book; nse:close → NAV)"
+        "(nse/mcx/cds close + close_settled → daily_book; "
+        "nse:close → NAV + movers)"
     )
 
 
