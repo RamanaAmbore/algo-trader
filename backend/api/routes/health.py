@@ -660,6 +660,9 @@ class BrokerAccountHealth(msgspec.Struct):
 
 class BrokerHealthResponse(msgspec.Struct):
     accounts: list[BrokerAccountHealth]
+    # Per-Groww-account segment entitlement-denied counts.
+    # Shape: {account: {segment: count}}.  Empty when no denials recorded.
+    groww_entitlement_denied: dict = {}  # type: ignore[assignment]
 
 
 def _broker_id_to_label(broker_id: str) -> str:
@@ -861,4 +864,18 @@ class BrokerHealthController(Controller):
             key=lambda a: (_display_order_map.get(a.account, 999), a.account)
         )
 
-        return BrokerHealthResponse(accounts=accounts)
+        # Entitlement-denied counters (Groww only — always empty for
+        # Kite/Dhan, harmless to include in the response).
+        entitlement_denied: dict = {}
+        try:
+            from backend.brokers.adapters.groww import (
+                get_entitlement_denied_snapshot as _ged,
+            )
+            entitlement_denied = _ged()
+        except Exception:
+            pass
+
+        return BrokerHealthResponse(
+            accounts=accounts,
+            groww_entitlement_denied=entitlement_denied,
+        )
