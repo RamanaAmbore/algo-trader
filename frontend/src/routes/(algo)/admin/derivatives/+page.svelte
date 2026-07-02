@@ -6655,8 +6655,7 @@
     flex-shrink: 0;
   }
 
-  /* Expiry tab — three-band row tints. Specificity must outrank
-     cand-row-long / cand-row-short (hence !important on bg).
+  /* Expiry tab — three-band row tints.
      Band semantics:
        close  → amber accent — operator action required
        netted → slate/cool — broker settles, no action needed
@@ -6665,52 +6664,81 @@
      so the existing _expiryStatus-based class assignments still work;
      the new band classes are the canonical path going forward. */
   .cand-row.expiry-band-close {
-    background-color: var(--algo-amber-bg-soft) !important;
+    background-color: var(--algo-amber-bg-soft);
     box-shadow: inset 2px 0 0 rgba(251, 191, 36, 0.65);
   }
   .cand-row.expiry-band-netted {
-    background-color: rgba(125, 145, 184, 0.08) !important;
+    background-color: rgba(125, 145, 184, 0.08);
     box-shadow: inset 2px 0 0 rgba(125, 145, 184, 0.35);
   }
   /* Per-pair tint — each pair of opposite positions inside the
-     NETTED band gets one of 5 alternating background tints + a
-     matching left-edge accent so the operator can visually map
-     "this row cancels that one". Cycle-of-5 means two adjacent
-     pairs are always visually distinct. Operator: "in netted, show
-     the opposite positions together color coded · you can
-     alternate color for each netted opposite positions". */
+     NETTED band gets one of 5 alternating background tints so the
+     operator can visually map "this row cancels that one".
+     Cycle-of-5 means two adjacent pairs are always visually distinct.
+     Operator: "in netted, show the opposite positions together color
+     coded · you can alternate color for each netted opposite positions".
+     Alpha reduced from 0.10 → 0.06 so the pair identity tints read as
+     a subtle hint rather than competing with the band chrome. */
   .cand-row.expiry-band-netted[data-pair-tint="0"] {
-    background-color: rgba(125, 211, 252, 0.10) !important;  /* sky */
-    box-shadow: inset 2px 0 0 rgba(125, 211, 252, 0.65);
+    background-color: rgba(125, 211, 252, 0.06);  /* sky */
+    box-shadow: inset 2px 0 0 rgba(125, 211, 252, 0.55);
   }
   .cand-row.expiry-band-netted[data-pair-tint="1"] {
-    background-color: rgba(168, 85, 247, 0.10) !important;   /* violet */
-    box-shadow: inset 2px 0 0 rgba(168, 85, 247, 0.65);
+    background-color: rgba(168, 85, 247, 0.06);   /* violet */
+    box-shadow: inset 2px 0 0 rgba(168, 85, 247, 0.55);
   }
   .cand-row.expiry-band-netted[data-pair-tint="2"] {
-    background-color: rgba(45, 212, 191, 0.10) !important;   /* teal */
-    box-shadow: inset 2px 0 0 rgba(45, 212, 191, 0.65);
+    background-color: rgba(45, 212, 191, 0.06);   /* teal */
+    box-shadow: inset 2px 0 0 rgba(45, 212, 191, 0.55);
   }
   .cand-row.expiry-band-netted[data-pair-tint="3"] {
-    background-color: rgba(244, 114, 182, 0.10) !important;  /* pink */
-    box-shadow: inset 2px 0 0 rgba(244, 114, 182, 0.65);
+    background-color: rgba(244, 114, 182, 0.06);  /* pink */
+    box-shadow: inset 2px 0 0 rgba(244, 114, 182, 0.55);
   }
   .cand-row.expiry-band-netted[data-pair-tint="4"] {
-    background-color: rgba(132, 204, 22, 0.10) !important;   /* lime */
-    box-shadow: inset 2px 0 0 rgba(132, 204, 22, 0.65);
+    background-color: rgba(132, 204, 22, 0.06);   /* lime */
+    box-shadow: inset 2px 0 0 rgba(132, 204, 22, 0.55);
   }
   .cand-row.expiry-band-otm {
-    background-color: transparent !important;
+    background-color: transparent;
     box-shadow: none;
     opacity: 0.55;
   }
+  /* In the Exp Close tab direction is already communicated by the
+     cand-sym-acct::after right-border on the symbol cell. Strip the
+     double-side (left+right) inset bars from cand-row-long/short so
+     they don't stack on top of band tints and create clutter.
+     Combined selectors (3 classes) outrank cand-row-long/short alone,
+     so no !important needed. Band background wins; box-shadow reduces
+     to single-left (inherited from band rule). */
+  .cand-row.expiry-band-close.cand-row-long,
+  .cand-row.expiry-band-close.cand-row-short {
+    background-color: var(--algo-amber-bg-soft);
+    box-shadow: inset 2px 0 0 rgba(251, 191, 36, 0.65);
+  }
+  .cand-row.expiry-band-netted.cand-row-long,
+  .cand-row.expiry-band-netted.cand-row-short {
+    background-color: rgba(125, 145, 184, 0.08);
+    box-shadow: inset 2px 0 0 rgba(125, 145, 184, 0.35);
+  }
+  .cand-row.expiry-band-otm.cand-row-long,
+  .cand-row.expiry-band-otm.cand-row-short {
+    background-color: transparent;
+    box-shadow: none;
+  }
+  .cand-row.expiry-band-close.cand-row-long:hover,
+  .cand-row.expiry-band-close.cand-row-short:hover,
+  .cand-row.expiry-band-netted.cand-row-long:hover,
+  .cand-row.expiry-band-netted.cand-row-short:hover {
+    background-color: inherit;
+  }
   /* Legacy band aliases — keep while _expiryStatus still references them. */
   .cand-row.cand-row-equity-close {
-    background-color: var(--algo-red-bg) !important;
+    background-color: var(--algo-red-bg);
     box-shadow: inset 2px 0 0 rgba(248, 113, 113, 0.65);
   }
   .cand-row.cand-row-commodity-close {
-    background-color: rgba(251, 191, 36, 0.10) !important;
+    background-color: rgba(251, 191, 36, 0.10);
     box-shadow: inset 2px 0 0 rgba(251, 191, 36, 0.65);
   }
 

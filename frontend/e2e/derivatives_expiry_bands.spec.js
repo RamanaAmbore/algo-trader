@@ -459,5 +459,92 @@ for (const vp of VIEWPORTS) {
         'No JS errors on PE ITM check'
       ).toHaveLength(0);
     });
+
+    // ── Defect B (2026-07-01): Exp Close grid visual clutter ──────────
+    //
+    // Before fix: cand-row-long/short double-side inset bars (left+right)
+    // competed with band-specific left bars and pair-tint backgrounds,
+    // creating visual clutter. Direction cue is redundant in the expiry tab
+    // because cand-sym-acct::after already carries a right-border signal
+    // on the symbol cell.
+    //
+    // After fix: combined selectors strip the right inset bar from
+    // band+direction rows; pair-tint alpha reduced 0.10→0.06.
+    // This test checks the source to guarantee the !important-free
+    // approach is maintained and the combined selectors are present.
+
+    test(`SSOT: expiry band rows suppress double-side direction bars via scoped combined selectors [${vp.name}]`, () => {
+      const src = fs.readFileSync(SRC_PATH, 'utf8');
+
+      // 1. Combined selectors must be present (the defect B fix).
+      expect(
+        src.includes('.cand-row.expiry-band-close.cand-row-long'),
+        'combined expiry-band-close.cand-row-long selector must be present'
+      ).toBe(true);
+      expect(
+        src.includes('.cand-row.expiry-band-netted.cand-row-long'),
+        'combined expiry-band-netted.cand-row-long selector must be present'
+      ).toBe(true);
+
+      // 2. The band CSS section must NOT use !important on background-color.
+      //    Extract the band block (from the first band comment to the Legacy
+      //    aliases section) and verify no !important lingers on bg declarations.
+      const bandBlockStart = src.indexOf('/* Expiry tab — three-band row tints.');
+      const bandBlockEnd   = src.indexOf('/* Band section header —', bandBlockStart);
+      expect(bandBlockStart, 'band block must be present in source').toBeGreaterThan(0);
+      expect(bandBlockEnd,   'band section header comment must follow band block').toBeGreaterThan(bandBlockStart);
+
+      const bandBlock = src.slice(bandBlockStart, bandBlockEnd);
+
+      // !important must NOT appear on background-color lines within the band block.
+      const bgImportantCount = (
+        bandBlock.match(/background-color[^;]+!important/g) || []
+      ).length;
+      expect(
+        bgImportantCount,
+        '!important on background-color must be removed from expiry band block (use specificity instead)'
+      ).toBe(0);
+
+      // 3. cand-row-long/short box-shadow must still carry the left+right
+      //    inset bars on the LEGS tab rows (only expiry tab suppresses them).
+      //    Verify the direction class rules still define both left and right bars.
+      const longRuleIdx  = src.indexOf('.cand-row-long {');
+      const shortRuleIdx = src.indexOf('.cand-row-short {');
+      expect(longRuleIdx,  '.cand-row-long must still be defined').toBeGreaterThan(0);
+      expect(shortRuleIdx, '.cand-row-short must still be defined').toBeGreaterThan(0);
+
+      // Extract the two rules (up to their closing brace).
+      const longRuleSnip  = src.slice(longRuleIdx,  src.indexOf('}', longRuleIdx)  + 1);
+      const shortRuleSnip = src.slice(shortRuleIdx, src.indexOf('}', shortRuleIdx) + 1);
+
+      // Both must still include 'inset -' (the right-side bar) for non-expiry rows.
+      expect(
+        longRuleSnip.includes('inset -'),
+        '.cand-row-long must still have a right inset bar (for non-expiry tab)'
+      ).toBe(true);
+      expect(
+        shortRuleSnip.includes('inset -'),
+        '.cand-row-short must still have a right inset bar (for non-expiry tab)'
+      ).toBe(true);
+
+      // 4. Pair-tint alpha must be ≤ 0.07 (reduced from 0.10 for less clutter).
+      //    Check via the sky pair-tint rule — all five share the same alpha.
+      expect(
+        bandBlock.includes('[data-pair-tint="0"]'),
+        'pair-tint=0 rule must be in the band block'
+      ).toBe(true);
+
+      // Extract the pair-tint=0 rule and check its alpha value.
+      const pt0Start = bandBlock.indexOf('[data-pair-tint="0"]');
+      const pt0Snip  = bandBlock.slice(pt0Start, bandBlock.indexOf('}', pt0Start) + 1);
+      const alphaMatch = pt0Snip.match(/rgba\([^)]+,\s*([\d.]+)\)/);
+      if (alphaMatch) {
+        const alpha = parseFloat(alphaMatch[1]);
+        expect(
+          alpha,
+          `pair-tint background alpha must be ≤ 0.07 (was 0.10 before clutter fix, found ${alpha})`
+        ).toBeLessThanOrEqual(0.07);
+      }
+    });
   });
 }
