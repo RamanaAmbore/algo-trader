@@ -58,6 +58,16 @@ def get_last_good_ltp(symbol: str, max_age_s: float = _LAST_GOOD_LTP_TTL_S) -> f
     return ltp
 
 
+def _ts_label(unix_ts: float) -> str:
+    """Format a unix timestamp as HH:MM IST for log lines."""
+    try:
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        return datetime.fromtimestamp(unix_ts, tz=ZoneInfo("Asia/Kolkata")).strftime("%H:%M IST")
+    except Exception:
+        return str(int(unix_ts))
+
+
 def _col_f64(lf: pl.DataFrame, col: str) -> pl.Expr:
     """Return a Float64 expression for `col`, coercing nulls/bad values to 0.0."""
     return pl.col(col).cast(pl.Float64, strict=False).fill_null(0.0)
@@ -101,30 +111,134 @@ _KITE_VALUE_UNIT_LOGGED = False
 # navbar instead 4/5 as one account connection has issue."
 #
 # Shape per account:
-#   { 'last_ok_at':   float (unix ts) | 0,   # most recent successful call
-#     'last_fail_at': float (unix ts) | 0,   # most recent failed call
-#     'last_fail_msg': str }
+#   { 'last_ok_at':    float (unix ts) | 0,   # most recent successful call
+#     'last_fail_at':  float (unix ts) | 0,   # most recent failed call
+#     'last_fail_msg': str,
+#     # Circuit-breaker fields (added Jul 2026 — DH6847 rotation-loop fix):
+#     'consecutive_fail_count': int,           # reset to 0 on any success
+#     'circuit_open_until':     float | None,  # epoch ts; None = CLOSED
+#     'circuit_last_opened_at': float | None,  # for logging
+#     'open_cycle_count':       int,           # exponential back-off tracker
+#   }
 # An account is healthy when last_ok_at >= last_fail_at OR there's
 # no recorded attempt yet (never tried = assume healthy).
 _FETCH_HEALTH: dict[str, dict] = {}
 
+# Dedicated lock for the read-modify-write on circuit-breaker fields.
+# Plain dict writes are GIL-safe but the consecutive_fail_count +=1
+# is a compound operation that is NOT safe without a lock.  The existing
+# last_ok_at / last_fail_at writes (single assignment) continue without
+# a lock — retrofitting them would risk latency regressions on the hot
+# path and those fields are informational-only (stale by design).
+_BREAKER_LOCK = threading.Lock()
+
+# Circuit-breaker thresholds.
+_CB_FAIL_THRESHOLD: int = 3          # consecutive fails to open the breaker
+_CB_INITIAL_COOLOFF_S: float = 300.0 # 5 min
+_CB_MAX_COOLOFF_S: float = 1800.0    # 30 min cap
+
+
+def _default_health_entry() -> dict:
+    return {
+        "last_ok_at": 0.0,
+        "last_fail_at": 0.0,
+        "last_fail_msg": "",
+        "consecutive_fail_count": 0,
+        "circuit_open_until": None,
+        "circuit_last_opened_at": None,
+        "open_cycle_count": 0,
+    }
+
+
+def _circuit_state(account: str) -> str:
+    """Return 'open', 'half-open', or 'closed' for `account`.
+
+    Thread-safe read — reads `circuit_open_until` under _BREAKER_LOCK.
+    """
+    with _BREAKER_LOCK:
+        e = _FETCH_HEALTH.get(account)
+    if e is None:
+        return "closed"
+    until = e.get("circuit_open_until")
+    if until is None:
+        return "closed"
+    now = _time.time()
+    if now < until:
+        return "open"
+    return "half-open"
+
+
+def _is_circuit_open(account: str) -> bool:
+    """Return True only when the breaker is OPEN (not half-open)."""
+    return _circuit_state(account) == "open"
+
 
 def _record_fetch(account: str, ok: bool, error: str = "") -> None:
-    """Record one fetch attempt's outcome. Called from every
-    per-account broker API wrapper (fetch_holdings / fetch_positions /
-    fetch_margins) on both success and failure paths so the per-account
-    health state stays current."""
+    """Record one fetch attempt's outcome and advance the circuit-breaker
+    state machine.
+
+    Called from every per-account broker API wrapper (fetch_holdings /
+    fetch_positions / fetch_margins) on both success and failure paths
+    so the per-account health state stays current.
+
+    State transitions (Jul 2026 circuit-breaker):
+      CLOSED  → ok=True   : reset consecutive_fail_count; stay CLOSED.
+      CLOSED  → ok=False  : increment consecutive_fail_count.
+                             If count >= _CB_FAIL_THRESHOLD → OPEN.
+      HALF-OPEN → ok=True : reset counters; CLOSED.
+      HALF-OPEN → ok=False: OPEN again with exponential cool-off.
+      OPEN    → any call  : callers must check _is_circuit_open() BEFORE
+                             calling the SDK; _record_fetch is not called
+                             for short-circuited attempts.
+
+    Consecutive-fail semantics: we count any consecutive failures
+    regardless of wall-clock gap (no sliding-window). The cool-off
+    period is the rate-limiting mechanism; the counter is just the
+    threshold gate to enter it. A single success resets the counter.
+    """
     if not account:
         return
-    e = _FETCH_HEALTH.setdefault(account, {
-        "last_ok_at": 0.0, "last_fail_at": 0.0, "last_fail_msg": ""
-    })
+
     now = _time.time()
-    if ok:
-        e["last_ok_at"] = now
-    else:
-        e["last_fail_at"] = now
-        e["last_fail_msg"] = str(error)[:200]
+    with _BREAKER_LOCK:
+        e = _FETCH_HEALTH.setdefault(account, _default_health_entry())
+        # Ensure legacy entries (without breaker fields) are back-filled.
+        e.setdefault("consecutive_fail_count", 0)
+        e.setdefault("circuit_open_until", None)
+        e.setdefault("circuit_last_opened_at", None)
+        e.setdefault("open_cycle_count", 0)
+
+        if ok:
+            e["last_ok_at"] = now
+            # Success from HALF-OPEN (or normal CLOSED): reset everything.
+            e["consecutive_fail_count"] = 0
+            e["circuit_open_until"] = None
+            e["circuit_last_opened_at"] = None
+            e["open_cycle_count"] = 0
+        else:
+            e["last_fail_at"] = now
+            e["last_fail_msg"] = str(error)[:200]
+            e["consecutive_fail_count"] = e.get("consecutive_fail_count", 0) + 1
+
+            if e["consecutive_fail_count"] >= _CB_FAIL_THRESHOLD:
+                # Open (or re-open) the breaker with exponential back-off.
+                # open_cycle_count: 0→1st open (5m), 1→10m, 2→20m, 3+→30m.
+                cycle = e.get("open_cycle_count", 0)
+                cooloff = min(
+                    _CB_INITIAL_COOLOFF_S * (2 ** cycle),
+                    _CB_MAX_COOLOFF_S,
+                )
+                e["circuit_open_until"] = now + cooloff
+                e["circuit_last_opened_at"] = now
+                e["open_cycle_count"] = cycle + 1
+                logger.warning(
+                    f"[BREAKER] account={account} state=open "
+                    f"reason={str(error)[:120]} "
+                    f"consecutive_fails={e['consecutive_fail_count']} "
+                    f"cooloff={int(cooloff)}s "
+                    f"open_until={_ts_label(now + cooloff)} "
+                    f"cycle={e['open_cycle_count']}"
+                )
 
 
 def is_account_healthy(account: str) -> bool:
@@ -298,6 +412,17 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
     column set used by downstream UI (tradingsymbol, average_price,
     opening_quantity, pnl, day_change, close_price, etc.)."""
     df_holdings = pd.DataFrame()
+    # Circuit-breaker guard: skip SDK call when the breaker is OPEN.
+    # Half-open state admits one probe attempt (breaker closes or
+    # re-opens based on that attempt's outcome).
+    if account and _is_circuit_open(account):
+        df_holdings.attrs["circuit_open"] = True
+        df_holdings.attrs["fetch_failed"] = True
+        logger.warning(
+            f"[BREAKER] account={account} short-circuit holdings "
+            f"(open until {_ts_label(_FETCH_HEALTH.get(account, {}).get('circuit_open_until', 0) or 0)})"
+        )
+        return df_holdings
     try:
         rows = None
         if broker is not None:
@@ -549,6 +674,15 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
     pattern as fetch_holdings; non-Kite adapters return Kite-shape
     rows via their respective normalisers."""
     df_positions = pd.DataFrame()
+    # Circuit-breaker guard.
+    if account and _is_circuit_open(account):
+        df_positions.attrs["circuit_open"] = True
+        df_positions.attrs["fetch_failed"] = True
+        logger.warning(
+            f"[BREAKER] account={account} short-circuit positions "
+            f"(open until {_ts_label(_FETCH_HEALTH.get(account, {}).get('circuit_open_until', 0) or 0)})"
+        )
+        return df_positions
     try:
         net_rows = None
         if broker is not None:
@@ -1105,6 +1239,15 @@ def _fetch_margins_local(connections=Connections, account=None, kite=None, broke
     """Multi-broker margins fetch. broker.margins(segment) returns the
     same Kite-shape dict every adapter normalises to."""
     df_margins = pd.DataFrame()
+    # Circuit-breaker guard.
+    if account and _is_circuit_open(account):
+        df_margins.attrs["circuit_open"] = True
+        df_margins.attrs["fetch_failed"] = True
+        logger.warning(
+            f"[BREAKER] account={account} short-circuit margins "
+            f"(open until {_ts_label(_FETCH_HEALTH.get(account, {}).get('circuit_open_until', 0) or 0)})"
+        )
+        return df_margins
     try:
         if broker is not None:
             margins_data = broker.margins(segment="equity")
