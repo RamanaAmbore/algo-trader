@@ -187,17 +187,17 @@
         {@const v = _max - _range * t}
         <line class="chart-grid-line" x1={_pad.l} y1={y} x2={_pad.l + innerW} y2={y} />
         <text class="nav-yaxis-label" x={_pad.l - 8} y={y + 3} text-anchor="end"
-              fill="rgba(155,176,208,0.55)" font-size="10"
+              fill="var(--algo-muted)" font-size="10"
               style="font-family: var(--font-numeric)">{_fmtInr(v)}</text>
       {/each}
       <path d={path} fill="none" stroke="#fbbf24" stroke-width="2" class="data-path"/>
       <circle cx={xOf(history.length - 1)} cy={yOf(_navs[_navs.length - 1])}
               r="3" fill="#fbbf24" stroke="#0a1020" stroke-width="1" />
       <text x={xOf(0)} y={H - 6} text-anchor="start"
-            fill="rgba(155,176,208,0.55)" font-size="10"
+            fill="var(--algo-muted)" font-size="10"
             style="font-family: var(--font-numeric)">{history[0].as_of_date}</text>
       <text x={xOf(history.length - 1)} y={H - 6} text-anchor="end"
-            fill="rgba(155,176,208,0.55)" font-size="10"
+            fill="var(--algo-muted)" font-size="10"
             style="font-family: var(--font-numeric)">{history[history.length - 1].as_of_date}</text>
     </svg>
   {:else if _error}
@@ -233,7 +233,6 @@
     width: 100%;
     height: auto;
     aspect-ratio: 760 / 260;
-    background: rgba(15, 23, 42, 0.25);
     border-radius: 4px;
   }
   /* Mobile NAV card height bump — at ≤600 px the sidebar card collapses
