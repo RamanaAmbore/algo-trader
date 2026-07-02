@@ -3356,38 +3356,33 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_funds_offhours(),      name="bg-funds-offhours"),
         asyncio.create_task(_task_warm_backfill(),       name="bg-warm-backfill"),
     ]
-    # Mode 2 (real-data paper) runs only on main. The PaperTradeEngine
-    # singleton processes its open-order book against real Kite quotes
-    # every 5 s, so agent-fired paper orders follow a realistic chase
+    # Mode 2 (real-data paper) runs on BOTH main and dev branches.
+    # The PaperTradeEngine singleton processes its open-order book against
+    # real Kite quotes every 5 s so paper orders follow a realistic chase
     # lifecycle (fill / modify / unfilled) without ever hitting Kite's
-    # order endpoint. Dev never runs this because dev never runs the
-    # live agent engine (see _task_performance's is_prod_branch gate).
-    from backend.shared.helpers.utils import is_prod_branch
-    if is_prod_branch():
-        from backend.api.algo.paper import get_prod_paper_engine
-        paper_engine = get_prod_paper_engine()
-        # Re-register OPEN paper orders from the DB so a service restart
-        # doesn't leave in-flight chases stranded (their AlgoOrder rows
-        # would stay OPEN forever otherwise).
-        try:
-            recovered = await paper_engine.recover_from_db()
-            if recovered:
-                logger.info(f"Background: paper engine recovered {recovered} "
-                            "OPEN order(s) from previous run")
-        except Exception as e:
-            logger.warning(f"Background: paper engine recovery failed: {e}")
-        app.state.bg_tasks.append(
-            asyncio.create_task(paper_engine.tick_loop(interval_seconds=5),
-                                name="bg-paper-chase")
-        )
-        logger.info("Background: all tasks started (market, performance, close, "
-                    "expiry, instruments, daily-snapshot, visitor-log, sparkline-warm, "
-                    "ticker-watchdog, paper-chase)")
-    else:
-        logger.info("Background: all tasks started (market, performance, close, "
-                    "expiry, instruments, daily-snapshot, visitor-log, sparkline-warm, "
-                    "ticker-watchdog) "
-                    "— live agent engine + paper engine OFF on non-main")
+    # order endpoint.  The live agent engine is a separate concern gated
+    # inside _task_performance by its own is_prod_branch check; paper mode
+    # is independent of that gate and must be active wherever operators
+    # can select PAPER (including dev.ramboq.com).
+    from backend.api.algo.paper import get_prod_paper_engine
+    paper_engine = get_prod_paper_engine()
+    # Re-register OPEN paper orders from the DB so a service restart
+    # doesn't leave in-flight chases stranded (their AlgoOrder rows
+    # would stay OPEN forever otherwise).
+    try:
+        recovered = await paper_engine.recover_from_db()
+        if recovered:
+            logger.info(f"Background: paper engine recovered {recovered} "
+                        "OPEN order(s) from previous run")
+    except Exception as e:
+        logger.warning(f"Background: paper engine recovery failed: {e}")
+    app.state.bg_tasks.append(
+        asyncio.create_task(paper_engine.tick_loop(interval_seconds=5),
+                            name="bg-paper-chase")
+    )
+    logger.info("Background: all tasks started (market, performance, close, "
+                "expiry, instruments, daily-snapshot, visitor-log, sparkline-warm, "
+                "ticker-watchdog, paper-chase)")
 
 
 async def on_shutdown(app) -> None:
