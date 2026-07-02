@@ -32,6 +32,9 @@ field names the rest of the codebase consumes.
 from __future__ import annotations
 
 import functools
+import time as _time
+import threading
+from collections import defaultdict
 from typing import Any, Callable
 
 from backend.brokers.base import Broker
@@ -42,28 +45,48 @@ logger = get_logger(__name__)
 
 # ── Auth-retry decorator ──────────────────────────────────────────────
 #
-# Mirrors Kite's `@retry_kite_conn` pattern but scoped to Groww auth
-# errors only: if a method raises GrowwAPIAuthenticationException (or
-# the loose GrowwAPIException carrying a 401 status), evict the cached
-# access token, mint a fresh one via TOTP, and retry the call ONCE
-# with the new SDK handle. Non-auth errors propagate immediately so
-# real bugs (bad params, 5xx, network) aren't masked by silent retries.
-
+# Mirrors Kite's `@retry_kite_conn` pattern but extended to the full
+# Groww exception hierarchy:
+#
+#   Authentication (401) / Authorisation (403)
+#     → evict token, re-mint via TOTP, retry ONCE.
+#
+#   RateLimit (429)
+#     → exponential backoff: 1 / 2 / 4 / 8 s (capped at 30 s), up to
+#       3 retries. Do NOT re-mint — the token is valid. Logs
+#       [GROWW-RATE-LIMIT] at WARN. After 3 retries, re-raises so
+#       broker_apis records ok=False (amber health badge).
+#
+#   Timeout (504)
+#     → retry ONCE with a fresh HTTP session (no re-mint). Logs
+#       [GROWW-TIMEOUT] at WARN. After 1 retry, re-raises.
+#
+#   BadRequest (400) / NotFound (404) / other
+#     → re-raise immediately — caller's bug, no retry.
+#
 # Resolved once at module load — moves the SDK lookup off the hot path.
-# Tuple is empty when the SDK isn't installed (lets the broker module
-# stay importable while the registry surfaces a cleaner error). Empty
-# tuple makes `isinstance(e, ())` always False, so the decorator
-# becomes a transparent passthrough until growwapi lands.
+# Empty tuples make isinstance() always False until growwapi is installed.
+
+_GROWW_RATE_LIMIT_MAX_RETRIES: int = 3
+_GROWW_RATE_LIMIT_BASE_SLEEP_S: float = 1.0
+_GROWW_RATE_LIMIT_SLEEP_CAP_S: float = 30.0
+
 try:
     from growwapi.groww.exceptions import (  # type: ignore[import-not-found]
         GrowwAPIAuthenticationException,
         GrowwAPIAuthorisationException,
+        GrowwAPIRateLimitException,
+        GrowwAPITimeoutException,
     )
     _GROWW_AUTH_EXC: tuple = (
         GrowwAPIAuthenticationException, GrowwAPIAuthorisationException,
     )
+    _GROWW_RATE_EXC: tuple = (GrowwAPIRateLimitException,)
+    _GROWW_TIMEOUT_EXC: tuple = (GrowwAPITimeoutException,)
 except ImportError:
     _GROWW_AUTH_EXC = ()
+    _GROWW_RATE_EXC = ()
+    _GROWW_TIMEOUT_EXC = ()
 
 
 def _retry_groww_auth(fn: Callable) -> Callable:
@@ -71,8 +94,8 @@ def _retry_groww_auth(fn: Callable) -> Callable:
     source-IP ContextVar bound for the duration of the SDK call so
     the patched `requests` module routes through a source-bound
     session (see `_install_groww_source_binding` in connections.py),
-    and (b) an auth-retry that re-mints the token once on
-    GrowwAPIAuthenticationException."""
+    and (b) structured retry handling for the full Groww exception
+    hierarchy — auth re-mint, rate-limit backoff, timeout retry."""
     @functools.wraps(fn)
     def wrapper(self: "GrowwBroker", *args, **kwargs):
         from backend.brokers.connections import (
@@ -81,8 +104,11 @@ def _retry_groww_auth(fn: Callable) -> Callable:
         ip = getattr(self._conn, "_source_ip", None)
         token = _GROWW_SOURCE_IP_OVERRIDE.set(ip) if ip else None
         try:
+            # ── First attempt ─────────────────────────────────────
             try:
                 return fn(self, *args, **kwargs)
+
+            # Auth / Authorisation → re-mint once
             except _GROWW_AUTH_EXC as e:  # type: ignore[misc]
                 logger.warning(
                     f"GrowwBroker.{fn.__name__} for {self.account!r} hit "
@@ -91,10 +117,75 @@ def _retry_groww_auth(fn: Callable) -> Callable:
                 )
                 self._conn.refresh()
                 return fn(self, *args, **kwargs)
+
+            # RateLimit → exponential backoff up to 3 retries
+            except _GROWW_RATE_EXC as e:  # type: ignore[misc]
+                sleep_s = _GROWW_RATE_LIMIT_BASE_SLEEP_S
+                for attempt in range(1, _GROWW_RATE_LIMIT_MAX_RETRIES + 1):
+                    logger.warning(
+                        f"[GROWW-RATE-LIMIT] GrowwBroker.{fn.__name__} for "
+                        f"{self.account!r} — attempt {attempt}/"
+                        f"{_GROWW_RATE_LIMIT_MAX_RETRIES}, "
+                        f"sleeping {sleep_s:.0f}s: {e}"
+                    )
+                    _time.sleep(sleep_s)
+                    sleep_s = min(sleep_s * 2, _GROWW_RATE_LIMIT_SLEEP_CAP_S)
+                    try:
+                        return fn(self, *args, **kwargs)
+                    except _GROWW_RATE_EXC as e2:  # type: ignore[misc]
+                        e = e2
+                        if attempt == _GROWW_RATE_LIMIT_MAX_RETRIES:
+                            raise
+                    except Exception:
+                        raise
+                raise  # unreachable but satisfies type checker
+
+            # Timeout → retry once with a fresh HTTP session
+            except _GROWW_TIMEOUT_EXC as e:  # type: ignore[misc]
+                logger.warning(
+                    f"[GROWW-TIMEOUT] GrowwBroker.{fn.__name__} for "
+                    f"{self.account!r} timed out — retrying once: {e}"
+                )
+                try:
+                    self._conn.refresh_session()
+                except Exception:
+                    pass  # refresh_session is best-effort; proceed regardless
+                return fn(self, *args, **kwargs)
+
         finally:
             if token is not None:
                 _GROWW_SOURCE_IP_OVERRIDE.reset(token)
     return wrapper
+
+
+# ── Entitlement-denied counter ────────────────────────────────────────
+#
+# Tracks Groww "Access forbidden" (GrowwAPIAuthorisationException) hits
+# on quote/ltp paths that indicate the account lacks a market-data
+# entitlement for a particular segment — distinct from a bad token.
+#
+# Shape: {account: {segment: count}}
+# Thread-safe via _ENTITLEMENT_LOCK.
+# Exposed via GET /api/admin/broker-health in the per-account `extra`
+# field. Process restart clears counts (in-memory only).
+
+_entitlement_denied: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+_ENTITLEMENT_LOCK = threading.Lock()
+
+
+def record_entitlement_denied(account: str, segment: str) -> None:
+    """Increment the per-account/segment entitlement-denied counter."""
+    with _ENTITLEMENT_LOCK:
+        _entitlement_denied[account][segment] += 1
+
+
+def get_entitlement_denied_snapshot() -> dict[str, dict[str, int]]:
+    """Return a deepcopy-safe snapshot of the current denied counters."""
+    with _ENTITLEMENT_LOCK:
+        return {
+            acct: dict(segs)
+            for acct, segs in _entitlement_denied.items()
+        }
 
 
 # Kite → Groww exchange string. Groww uses NSE / BSE / NFO directly so
@@ -342,15 +433,31 @@ class GrowwBroker(Broker):
                         kite_key = k.replace("_", ":", 1)
                         out[kite_key] = {"last_price": float(v or 0)}
             return out
+        except _GROWW_AUTH_EXC as e:  # type: ignore[misc]
+            # GrowwAPIAuthorisationException here means the account
+            # lacks the segment entitlement — auth is fine. Log at INFO
+            # (not DEBUG) so operators see partial-entitlement segments,
+            # bump the counter, return empty. _retry_groww_auth has
+            # already tried a token re-mint for Authentication; if we
+            # reach here it's an Authorisation (403) — no re-mint needed.
+            if _GROWW_AUTH_EXC:
+                _is_authn = type(e).__name__ == "GrowwAPIAuthenticationException"
+            else:
+                _is_authn = False
+            if _is_authn:
+                raise
+            # Authorisation (entitlement) — count and swallow.
+            logger.info(
+                f"[GROWW-ENTITLEMENT] GrowwBroker.ltp for {self.account!r}: "
+                f"Access forbidden on segments {list(by_seg.keys())}: {e}"
+            )
+            for seg in by_seg:
+                record_entitlement_denied(self.account, seg)
+            return out  # return whatever succeeded before the exception
         except Exception as e:
-            # Common failure modes on dev/prod: "Access forbidden" when
-            # the Groww token is stale or the account lacks the segment
-            # entitlement. Earlier this raised RuntimeError which
-            # bubbled up through PriceBroker._try as a WARNING per
-            # failover hop, generating log spam on every quote loop.
-            # Empty dict lets the chain fall through to the next
-            # adapter (Kite) silently — the failure is real but it's
-            # already been logged once at adapter scope.
+            # Non-auth failures (network, bad response shape, etc.)
+            # are common on dev/prod when Groww is unavailable. Let the
+            # chain fall through to the next adapter (Kite) silently.
             logger.debug(f"Groww ltp returned empty: {e}")
             return {}
 
@@ -383,6 +490,20 @@ class GrowwBroker(Broker):
             data = resp.get("data") if isinstance(resp, dict) else {}
             if isinstance(data, dict):
                 out[sym] = _normalise_quote_row(data)
+        except _GROWW_AUTH_EXC as e:  # type: ignore[misc]
+            # Authorisation (403) = partial-entitlement; log at INFO
+            # and count. Authentication (401) would have been retried
+            # by the decorator — if we land here after a re-mint it's
+            # still failing, so let it propagate for health recording.
+            if type(e).__name__ == "GrowwAPIAuthenticationException":
+                raise
+            exch_part = sym.split(":", 1)[0] if ":" in sym else sym
+            _, seg = _groww_exchange_and_segment(exch_part) if ":" in sym else ("", exch_part)
+            logger.info(
+                f"[GROWW-ENTITLEMENT] GrowwBroker._quote_single {sym!r} "
+                f"for {self.account!r}: Access forbidden (seg={seg}): {e}"
+            )
+            record_entitlement_denied(self.account, seg)
         except Exception as e:
             logger.debug(f"GrowwBroker._quote_single skipping {sym}: {e}")
         return out
@@ -420,6 +541,18 @@ class GrowwBroker(Broker):
                     row = data.get(gk) or {}
                     if isinstance(row, dict):
                         out[kite_key] = _normalise_quote_row(row)
+            except _GROWW_AUTH_EXC as e:  # type: ignore[misc]
+                # Authorisation (403) = segment not entitled; log at
+                # INFO (was DEBUG). Authentication (401) after re-mint
+                # failure → raise for health recording.
+                if type(e).__name__ == "GrowwAPIAuthenticationException":
+                    raise
+                logger.info(
+                    f"[GROWW-ENTITLEMENT] GrowwBroker._quote_batch_ohlc "
+                    f"for {self.account!r} segment={seg}: "
+                    f"Access forbidden: {e}"
+                )
+                record_entitlement_denied(self.account, seg)
             except Exception as e:
                 logger.debug(f"GrowwBroker._quote_batch_ohlc segment={seg}: {e}")
         return out
