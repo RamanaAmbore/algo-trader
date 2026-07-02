@@ -14,7 +14,7 @@ from typing import Optional
 
 import msgspec
 from litestar import Controller, get
-from sqlalchemy import select, and_, desc
+from sqlalchemy import select, and_, desc, func
 
 from backend.api.database import async_session
 from backend.api.models import AuditLog
@@ -111,16 +111,13 @@ class AuditController(Controller):
             # Count + page in two queries so the UI can render a
             # "showing 1-50 of 1247" footer without scanning the
             # full table.
-            count_q = select(AuditLog.id)
             page_q = select(AuditLog)
+            count_stmt = select(func.count()).select_from(AuditLog)
             if conditions:
-                count_q = count_q.where(and_(*conditions))
-                page_q  = page_q.where(and_(*conditions))
-            total = (await session.execute(
-                select(AuditLog.id.distinct()).where(and_(*conditions)) if conditions
-                else select(AuditLog.id)
-            )).scalars().all()
-            total_count = len(total)
+                where_clause = and_(*conditions)
+                page_q     = page_q.where(where_clause)
+                count_stmt = count_stmt.where(where_clause)
+            total_count = (await session.execute(count_stmt)).scalar_one()
 
             rows = (await session.execute(
                 page_q.order_by(desc(AuditLog.created_at))
