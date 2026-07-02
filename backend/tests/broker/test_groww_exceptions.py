@@ -12,8 +12,8 @@ Five quality dimensions:
 Scenario catalogue:
   1. Authentication → re-mint ONCE then retry
   2. Authorisation (entitlement) → log INFO, count, swallow (no re-mint)
-  3. RateLimit → backoff 1/2/4/8 s, retry up to 3 times; raises after exhaustion
-  4. RateLimit backoff sequence: mock sleep confirms 1/2/4/8 s
+  3. RateLimit → backoff 1/2/4/8 s, retry up to 4 times; raises after exhaustion
+  4. RateLimit backoff sequence: mock sleep confirms 1/2/4/8 s (4 sleeps)
   5. Timeout → retry once (refresh_session best-effort); raises after 1 retry
   6. BadRequest → re-raise immediately (no retry, no re-mint)
   7. NotFound → re-raise immediately
@@ -196,7 +196,7 @@ class TestRateLimitBackoff:
         _reset_entitlement(self.ACCOUNT)
 
     def test_ratelimit_retries_up_to_max_and_raises(self):
-        """After 3 retries, the exception must propagate."""
+        """After 4 retries, the exception must propagate."""
         broker = _make_broker(self.ACCOUNT)
         call_count = {"n": 0}
 
@@ -215,11 +215,11 @@ class TestRateLimitBackoff:
             with pytest.raises(GrowwAPIRateLimitException):
                 wrapped(broker)
 
-        # First attempt + 3 retries = 4 calls
+        # First attempt + 4 retries = 5 calls
         assert call_count["n"] == 1 + _GROWW_RATE_LIMIT_MAX_RETRIES
 
     def test_ratelimit_backoff_sequence_1_2_4_8(self):
-        """Backoff sleeps must follow 1/2/4 s (3 retries, capped at 30)."""
+        """Backoff sleeps must follow 1/2/4/8 s (4 retries, capped at 30)."""
         broker = _make_broker(self.ACCOUNT)
 
         def _always_rate_limit(self_inner):
@@ -241,10 +241,10 @@ class TestRateLimitBackoff:
             with pytest.raises(GrowwAPIRateLimitException):
                 wrapped(broker)
 
-        # 3 retries → 3 sleeps: 1, 2, 4
-        assert len(sleep_calls) == 3, f"Expected 3 sleeps, got {sleep_calls}"
-        assert sleep_calls == [1.0, 2.0, 4.0], (
-            f"Expected backoff [1, 2, 4], got {sleep_calls}"
+        # 4 retries → 4 sleeps: 1, 2, 4, 8
+        assert len(sleep_calls) == 4, f"Expected 4 sleeps, got {sleep_calls}"
+        assert sleep_calls == [1.0, 2.0, 4.0, 8.0], (
+            f"Expected backoff [1, 2, 4, 8], got {sleep_calls}"
         )
 
     def test_ratelimit_success_on_second_attempt_no_more_retries(self):
