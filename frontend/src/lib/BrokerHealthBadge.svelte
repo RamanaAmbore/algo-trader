@@ -107,6 +107,15 @@
                         : acct.state === 'amber' ? 'bh-row-account-amber'
                         : acct.is_active_ticker  ? 'bh-row-account-active'
                         : 'bh-row-account-spare'}
+        {@const _cbOptIn = !!acct.circuit_breaker_enabled}
+        {@const _circuitTitle = (_cbOptIn && acct.circuit_state === 'open')
+            ? `${acct.account} — circuit open until ${_fmtIso(acct.circuit_open_until)} — auto retry then`
+            : null}
+        {@const _redTitle = acct.state === 'red'
+            ? (_cbOptIn
+                ? `${acct.account} — connection problem (${acct.reason})`
+                : `${acct.account} — connection problem (${acct.reason}) — retrying every poll`)
+            : null}
         <div class="bh-row" role="button" tabindex="0"
              onclick={() => { open = false; openActivityModal('conn'); }}
              onkeydown={(e) => {
@@ -116,15 +125,6 @@
              }}
              title="View connection log for {acct.account}">
           <span class="bh-row-dot bh-row-dot-{acct.state}" aria-hidden="true"></span>
-          {@const _cbOptIn = !!acct.circuit_breaker_enabled}
-          {@const _circuitTitle = (_cbOptIn && acct.circuit_state === 'open')
-              ? `${acct.account} — circuit open until ${_fmtIso(acct.circuit_open_until)} — auto retry then`
-              : null}
-          {@const _redTitle = acct.state === 'red'
-              ? (_cbOptIn
-                  ? `${acct.account} — connection problem (${acct.reason})`
-                  : `${acct.account} — connection problem (${acct.reason}) — retrying every poll`)
-              : null}
           <span class="bh-row-account {_accCls}"
                 title={_circuitTitle
                      ? _circuitTitle

@@ -40,7 +40,8 @@
    *   source_ip:string|null,is_active:boolean,historical_data_enabled:boolean,
    *   notes:string|null,created_at:string,updated_at:string,loaded:boolean,
    *   poll_priority:string,auto_downgrade_enabled:boolean,
-   *   auto_downgraded_at:string|null,auto_downgrade_reason:string|null}>} */
+   *   auto_downgraded_at:string|null,auto_downgrade_reason:string|null,
+   *   circuit_breaker_enabled:boolean,display_order:number}>} */
   let accounts = $state([]);
 
   // Per-row priority dropdown open state: { [account]: boolean }
@@ -131,7 +132,7 @@
           const acct = msg.account || '?';
           toast.info(
             `${acct} auto-downgraded to cold — click chip to restore`,
-            { duration: 4000 },
+            { timeoutMs: 4000 },
           );
           // Refresh the list so the chip re-renders with the new state.
           load();
