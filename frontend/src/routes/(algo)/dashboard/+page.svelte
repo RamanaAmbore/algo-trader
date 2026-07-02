@@ -32,6 +32,7 @@
   import { userCaps, userRole, hasCap } from '$lib/rbac';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
+  import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import {
     classifyByIndex,
@@ -505,6 +506,10 @@
   // ── Row 1: Intraday equity curve ───────────────────────────────────
   /** @type {{ ts: string, day_pnl: number, cum_pnl: number }[]} */
   let _equityPoints = $state([]);
+  const _eqPulse = createChartRefreshPulse();
+  $effect(() => {
+    if (_equityPoints.length) _eqPulse.notify('eq');
+  });
 
   // ── Row 1: Margin utilisation gauges ──────────────────────────────
   // Derived from _funds (which itself derives from fundsStore) so the
@@ -1851,7 +1856,7 @@
       <!-- Chart frame — wraps SVG + stat overlay so .eq-stats anchors
            to the chart area (not the card-body); the legend strip above
            stays clear of any stat-overlay overlap. -->
-      <div class="eq-chart-frame">
+      <div class="eq-chart-frame {_eqPulse.classOf('eq')}">
       <!-- Stat overlay — at-a-glance P&L numerics so the operator
            doesn't need a separate hero strip. Pointer-events: none
            so SVG hover / zoom never blocks. Same pattern OptionsPayoff
@@ -1908,7 +1913,7 @@
         <!-- Filled area — only when a single series is enabled. Multi-
              series mode skips the fill so the lines stay readable. -->
         {#if _eqAreaPath}
-          <path d={_eqAreaPath} fill={_eqFillColor ?? 'none'} />
+          <path d={_eqAreaPath} fill={_eqFillColor ?? 'none'} class="data-path"/>
         {/if}
 
         <!-- Lines — one polyline per active series. Order in the SVG
@@ -1922,7 +1927,8 @@
               stroke-width={s.width}
               stroke-dasharray={s.dash || ''}
               stroke-linejoin="round"
-              stroke-linecap="round" />
+              stroke-linecap="round"
+              class="data-path" />
           {/if}
         {/each}
 
