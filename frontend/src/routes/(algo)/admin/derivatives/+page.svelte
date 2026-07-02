@@ -5297,15 +5297,15 @@
           <span class="num" title="Live underlying LTP. Indices use the spot price; MCX commodities use the nearest-future LTP (no tradeable spot).">Spot</span>
           <span class="num" title="Underlying day-change %, signed (+/-). Computed from broker `change_percent`, else (LTP - prev_close) / prev_close.">Day %</span>
           <span class="num" title="Underlying previous-session close (broker `ohlc.close`).">Close</span>
-          <!-- F&O-only trio (matches NavStrip P slots 1/2/3). -->
-          <span class="num" title="Today's P&L change from F&O legs only. Independent of the Hold toggle.">Day P&amp;L</span>
-          <span class="num" title="Total P&L from F&O legs only. Independent of the Hold toggle. Sums to the NavStrip P slot 2 value.">P&amp;L</span>
+          <span class="num" title="Today's Day P&L for the underlying — matches the payoff overlay value for this symbol.">Day P&amp;L</span>
+          <span class="num" title="Today's Day P&L from equity holdings on this underlying (h.day_change_val, proxy-target routed).">H Day P&amp;L</span>
+          <!-- F&O-only pair. -->
+          <span class="num" title="Total P&L from F&O legs only. Sums to the NavStrip P slot 2 value.">P&amp;L</span>
           <span class="num" title="F&O-only expiry P&L for this group. Sums to the NavStrip P slot 3 value.">Exp P&amp;L</span>
           <!-- Net trio: F&O + equity holdings. -->
           <span class="num" title="Today's P&L change including F&O legs + equity holdings on this underlying.">Day P&amp;L Net</span>
           <span class="num" title="Total P&L including F&O legs + equity holdings on this underlying.">P&amp;L Net</span>
           <span class="num" title="Expiry P&L including F&O + equity holdings for this group.">Exp P&amp;L Net</span>
-          <span class="num" title="Today's P&L change from equity holdings only on this underlying (holdings.day_change_val + SSE-tick delta on the underlying's spot). Isolates the holdings contribution from the F&O legs.">H Day P&amp;L</span>
           <span class="num">Legs</span>
           <span class="num" title="Sum of contract-qty across option + future legs.">F&amp;O qty</span>
           <span class="num" title="Sum of share-qty across equity / proxy holding legs.">Eq qty</span>
@@ -5334,9 +5334,12 @@
           {@const _dayG = _byUnderlyingDay[g.underlying]}
           <!-- Overlay-parity Day P&L values (operator 2026-07-01: "day
                p & l should match day overlay value for each symbol in
-               snapshot"). Falls back to broker's g.day_without when the
+               snapshot"). Both cells use .with (F&O + equity holdings)
+               so they match overlay's candidatesDayPnl output for the
+               symbol — the overlay includes eq legs whenever the Hold
+               toggle is on. Falls back to broker's g.day_with when the
                overlay compute isn't available. -->
-          {@const _dayFno = _dayG ? _dayG.without : g.day_without}
+          {@const _dayFno = _dayG ? _dayG.with : g.day_with}
           {@const _dayNet = _dayG ? _dayG.with : g.day_with}
           <!-- Two independent Exp P&L values, both always visible.
                Exp P&L = F&O only (_expG.without). Exp P&L Net = F&O
@@ -5349,16 +5352,16 @@
             <span class="num {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
             <span class="num {_pct != null && _pct > 0 ? 'cell-pos' : _pct != null && _pct < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pct`)}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
-            <!-- F&O-only trio: Day P&L | P&L | Exp P&L -->
+            <!-- Day P&L + H Day P&L adjacent (operator 2026-07-01). -->
             <span class="num {_dayFno > 0 ? 'cell-pos' : _dayFno < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_w`)}">{aggCompact(_dayFno)}</span>
+            <span class="num {_hDay > 0 ? 'cell-pos' : _hDay < 0 ? 'cell-neg' : 'cell-flat'}">{_hDay === 0 ? '—' : aggCompact(_hDay)}</span>
+            <!-- F&O pair: P&L | Exp P&L -->
             <span class="num {g.pnl_without > 0 ? 'cell-pos' : g.pnl_without < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pnl_w`)}">{aggCompact(g.pnl_without)}</span>
             <span class="num {_expFno == null ? 'cell-muted' : _expFno > 0 ? 'cell-pos' : _expFno < 0 ? 'cell-neg' : 'cell-flat'}">{_expFno == null ? '—' : aggCompact(_expFno)}</span>
             <!-- Net trio: Day P&L Net | P&L Net | Exp P&L Net -->
             <span class="num {_dayNet > 0 ? 'cell-pos' : _dayNet < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_h`)}">{aggCompact(_dayNet)}</span>
             <span class="num {g.pnl_with > 0 ? 'cell-pos' : g.pnl_with < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pnl_h`)}">{aggCompact(g.pnl_with)}</span>
             <span class="num {_expNet == null ? 'cell-muted' : _expNet > 0 ? 'cell-pos' : _expNet < 0 ? 'cell-neg' : 'cell-flat'}">{_expNet == null ? '—' : aggCompact(_expNet)}</span>
-            <!-- H Day P&L: holdings' Day P&L contribution only (Net minus F&O). -->
-            <span class="num {_hDay > 0 ? 'cell-pos' : _hDay < 0 ? 'cell-neg' : 'cell-flat'}">{_hDay === 0 ? '—' : aggCompact(_hDay)}</span>
             <span class="num cell-muted">{Math.round(g.legs_with)}{Math.round(g.legs_with) !== g.legs_without ? `/${g.legs_without}` : ''}</span>
             <span class="num cell-muted">{g.qty_fno || '—'}</span>
             <span class="num cell-muted">{g.qty_eq || '—'}</span>
@@ -5387,17 +5390,17 @@
             <span class="num">—</span>
             <span class="num">—</span>
             <span class="num">—</span>
-            <!-- F&O-only trio — Day P&L via overlay-parity sum. -->
-            <span class="num {_dayTotalFno > 0 ? 'cell-pos' : _dayTotalFno < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_dayTotalFno)}</span>
+            <!-- Day P&L + H Day P&L adjacent. Day P&L uses .with
+                 (F&O + eq) so it matches overlay's candidatesDayPnl total. -->
+            <span class="num {_dayTotalNet > 0 ? 'cell-pos' : _dayTotalNet < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_dayTotalNet)}</span>
+            <span class="num {_hDayTotal > 0 ? 'cell-pos' : _hDayTotal < 0 ? 'cell-neg' : 'cell-flat'}">{_hDayTotal === 0 ? '—' : aggCompact(_hDayTotal)}</span>
+            <!-- F&O pair -->
             <span class="num {_byUnderlyingTotal.pnl_without > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_without)}</span>
             <span class="num {_expTotalFno > 0 ? 'cell-pos' : _expTotalFno < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_expTotalFno)}</span>
             <!-- Net trio -->
             <span class="num {_dayTotalNet > 0 ? 'cell-pos' : _dayTotalNet < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_dayTotalNet)}</span>
             <span class="num {_byUnderlyingTotal.pnl_with > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_with)}</span>
             <span class="num {_expTotalNet > 0 ? 'cell-pos' : _expTotalNet < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_expTotalNet)}</span>
-            <!-- H Day P&L TOTAL: Σ holdings' Day P&L directly (from
-                 _hDayByRoot, independent of the F&O Day compute). -->
-            <span class="num {_hDayTotal > 0 ? 'cell-pos' : _hDayTotal < 0 ? 'cell-neg' : 'cell-flat'}">{_hDayTotal === 0 ? '—' : aggCompact(_hDayTotal)}</span>
             <span class="num">{Math.round(_byUnderlyingTotal.legs_with)}{Math.round(_byUnderlyingTotal.legs_with) !== _byUnderlyingTotal.legs_without ? `/${_byUnderlyingTotal.legs_without}` : ''}</span>
             <span class="num">{_byUnderlyingTotal.qty_fno || '—'}</span>
             <span class="num">{_byUnderlyingTotal.qty_eq || '—'}</span>
@@ -6192,13 +6195,13 @@
       minmax(4rem,   0.65fr) /* Spot */
       minmax(3.5rem, 0.5fr)  /* Day % */
       minmax(4rem,   0.65fr) /* Prev Close */
-      minmax(3.8rem, 0.6fr)  /* Day P&L (F&O only) */
+      minmax(3.8rem, 0.6fr)  /* Day P&L */
+      minmax(3.8rem, 0.6fr)  /* H Day P&L */
       minmax(3.8rem, 0.6fr)  /* P&L (F&O only) */
       minmax(4rem,   0.6fr)  /* Exp P&L (F&O only) */
       minmax(3.8rem, 0.6fr)  /* Day P&L Net */
       minmax(3.8rem, 0.6fr)  /* P&L Net */
       minmax(4rem,   0.6fr)  /* Exp P&L Net */
-      minmax(3.8rem, 0.6fr)  /* H Day P&L */
       minmax(3rem,   0.55fr) /* Legs */
       minmax(4rem,   0.6fr)  /* F&O qty */
       minmax(4rem,   0.6fr)  /* Eq qty */
