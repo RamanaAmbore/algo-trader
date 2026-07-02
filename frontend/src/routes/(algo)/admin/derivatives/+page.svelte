@@ -8,7 +8,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, nowStamp, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
+  import { authStore, nowStamp, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings } from '$lib/stores';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import { isMarketOpen } from '$lib/marketHours';
@@ -345,26 +345,20 @@
    *  on. Persisted to localStorage so subsequent visits remember the
    *  operator's last choice — the OFF default applies only on the
    *  very first visit. */
-  function _loadIncludeHoldings() {
-    if (typeof localStorage === 'undefined') return false;
-    try {
-      const raw = localStorage.getItem('opt.includeHoldings');
-      if (raw === '1') return true;
-      if (raw === '0') return false;
-    } catch (_) { /* private mode / quota — fall through */ }
-    return false;  // first-time default
-  }
-  let _includeHoldings = $state(_loadIncludeHoldings());
+  // Sync to shared `includeHoldings` store so NavStrip's P slots 1 + 2
+  // reflect the same toggle. Store persists to localStorage
+  // (opt.includeHoldings key) + fires storage events for cross-tab sync.
+  // Operator 2026-07-01: "p & l should include underlying position if
+  // hold button is on... it is similar to exp p & L."
+  let _includeHoldings = $state($includeHoldings);
+  $effect(() => { _includeHoldings = $includeHoldings; });
   // Stable callback reference for OptionsPayoff.onToggleHoldings.
   // Hoisting it out of the JSX prevents the fresh-closure problem —
   // every parent re-render would otherwise pass a new function ref,
   // triggering OptionsPayoff to invalidate downstream $derived caches
   // even when nothing about the chart actually changed.
   function _flipHoldings() {
-    _includeHoldings = !_includeHoldings;
-    try {
-      localStorage.setItem('opt.includeHoldings', _includeHoldings ? '1' : '0');
-    } catch (_) { /* ignore */ }
+    includeHoldings.set(!_includeHoldings);
   }
   // Composite key for the enabledSymbols map. Plain symbol collided
   // across accounts: a NIFTY24DEC25000PE held in both ZG#### and
