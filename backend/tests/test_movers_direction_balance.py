@@ -305,3 +305,85 @@ def test_force_movers_snapshot_untruncated_by_source():
     assert "untruncated" in body or "full" in body or "directional" in body or "_combine_movers" not in body, (
         "_force_movers_snapshot lacks comment noting it writes the untruncated universe"
     )
+
+
+# ---------------------------------------------------------------------------
+# Pool-depth tests (MOVER_TOP_N = 20 bump, 2026-07-02)
+# ---------------------------------------------------------------------------
+
+def test_mover_top_n_is_20():
+    """MOVER_TOP_N must be 20 so each frontend tab gets enough rows after classification."""
+    src = _wl_source()
+    match = re.search(r"MOVER_TOP_N\s*:\s*int\s*=\s*(\d+)", src)
+    assert match, "MOVER_TOP_N constant not found in watchlist.py"
+    value = int(match.group(1))
+    assert value == 20, (
+        f"MOVER_TOP_N={value}, expected 20. "
+        "With 6, the frontend's 3-tab split (underlying/midcap/smallcap) "
+        "can produce tabs with as few as 1-2 rows."
+    )
+
+
+def test_pool_of_20_losers_returned():
+    """25 losers in snapshot → combined contains 20 (capped at MOVER_TOP_N=20)."""
+    combine = _load_combine_fn()
+    snapshot = _build_snapshot(winners=5, losers=25)
+    combined = combine(snapshot, session_movers={}, top_n=20)
+
+    loser_keys = {k for k in combined if k.startswith("LOS")}
+    assert len(loser_keys) == 20, (
+        f"Expected 20 losers (MOVER_TOP_N cap), got {len(loser_keys)}"
+    )
+
+
+def test_tab_distribution_across_three_buckets():
+    """
+    25 losers with names spread across underlying/midcap/smallcap naming
+    conventions → combined contains 20 losers → each bucket has ≥3 rows.
+
+    Simulates the frontend _classifyMoverSym split: symbols prefixed
+    'UND' → underlying, 'MID' → midcap, 'SML' → smallcap (mimics
+    the bucket names; actual classification uses index sets not name
+    prefixes, but the point is that with 20 rows in the pool the spread
+    gives every tab a non-trivial count).
+    """
+    combine = _load_combine_fn()
+    snapshot: dict[str, dict] = {}
+    # 9 underlying-style, 8 midcap-style, 8 smallcap-style losers (25 total).
+    for i in range(9):
+        sym = f"UND{i}"
+        snapshot[sym] = _make_entry(-1.0 - i * 0.1, sym)
+    for i in range(8):
+        sym = f"MID{i}"
+        snapshot[sym] = _make_entry(-1.5 - i * 0.1, sym)
+    for i in range(8):
+        sym = f"SML{i}"
+        snapshot[sym] = _make_entry(-2.0 - i * 0.1, sym)
+
+    combined = combine(snapshot, session_movers={}, top_n=20)
+
+    loser_keys = {k for k in combined if not k.startswith("WIN")}
+    assert len(loser_keys) == 20, (
+        f"Expected 20 losers in combined pool, got {len(loser_keys)}"
+    )
+
+    # Simulate frontend grouping by name prefix (proxy for the three tabs).
+    und_count = sum(1 for k in loser_keys if k.startswith("UND"))
+    mid_count = sum(1 for k in loser_keys if k.startswith("MID"))
+    sml_count = sum(1 for k in loser_keys if k.startswith("SML"))
+
+    assert und_count >= 3, f"underlying bucket too sparse: {und_count}"
+    assert mid_count >= 3, f"midcap bucket too sparse: {mid_count}"
+    assert sml_count >= 3, f"smallcap bucket too sparse: {sml_count}"
+
+
+def test_balanced_day_twenty_each():
+    """30 winners, 30 losers → combined has exactly 20 winners and 20 losers."""
+    combine = _load_combine_fn()
+    snapshot = _build_snapshot(winners=30, losers=30)
+    combined = combine(snapshot, session_movers={}, top_n=20)
+
+    winner_keys = {k for k in combined if k.startswith("WIN")}
+    loser_keys  = {k for k in combined if k.startswith("LOS")}
+    assert len(winner_keys) == 20, f"Expected 20 winners, got {len(winner_keys)}"
+    assert len(loser_keys)  == 20, f"Expected 20 losers, got {len(loser_keys)}"
