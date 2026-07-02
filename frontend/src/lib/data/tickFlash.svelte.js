@@ -1,6 +1,6 @@
-// Architecture (a): both createTickFlash and createFreshnessShimmer live here
-// as sibling exports — they share the change-detection comparator pattern and
-// a common timer-cleanup idiom, so one file is cleaner than two.
+// Architecture (a): createTickFlash, createFreshnessShimmer, and createTickBus
+// live here as sibling exports — they share the change-detection comparator
+// pattern and a common timer-cleanup idiom, so one file is cleaner than two.
 
 /**
  * Tick-flash helper — emits transient 'up' / 'down' classes when a
@@ -144,4 +144,70 @@ export function createFreshnessShimmer({ durationMs = 700 } = {}) {
     classOf,
     dispose,
   };
+}
+
+/**
+ * createTickBus — single-origin fanout for directional LTP events.
+ *
+ * Consumers subscribe and receive {sym, dir: 'up'|'down'|'flat', at: number}
+ * on every real symbol LTP change. Throttled at the bus edge to 250ms per sym
+ * so a 100-tick/sec SSE burst fires at most 4 events/sec per symbol downstream.
+ *
+ * Direction is computed by the CALLER (symbolStore._mergeSymbolWrite knows both
+ * prev and next ltp at write time — cheapest place to diff). The bus only
+ * throttles, timestamps, and fans out. No LTP state duplication here.
+ *
+ *   const bus = createTickBus({ throttleMs: 250 });
+ *   bus.subscribe(({ sym, dir, at }) => { ... });
+ *   // In the write path:
+ *   bus.emit('NIFTY50', 'up');
+ *
+ * @param {{ throttleMs?: number }} options
+ */
+export function createTickBus({ throttleMs = 250 } = {}) {
+  /** @type {Map<string, number>} — last-emit epoch per sym (for throttle) */
+  const _lastAt = new Map();
+  /** @type {Set<(e: {sym: string, dir: 'up'|'down'|'flat', at: number}) => void>} */
+  const _subs = new Set();
+
+  /**
+   * Emit a tick event for a symbol. Direction MUST be provided by the caller
+   * (who has prev + next LTP available at write time). Dropped if the sym
+   * was emitted within throttleMs — the underlying LTP state has still been
+   * updated; only the flash signal is suppressed.
+   *
+   * Tab-hidden guard: no-op when document.visibilityState === 'hidden' so
+   * the animation class never gets applied + cleared in a hidden tab.
+   *
+   * @param {string} sym
+   * @param {'up'|'down'|'flat'} dir
+   */
+  function emit(sym, dir) {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    if (!sym) return;
+    const key = String(sym).toUpperCase();
+    const now  = Date.now();
+    const last = _lastAt.get(key) ?? 0;
+    if (now - last < throttleMs) return;
+    _lastAt.set(key, now);
+    const event = { sym: key, dir, at: now };
+    for (const fn of _subs) {
+      try { fn(event); } catch { /* subscriber errors must not break the bus */ }
+    }
+  }
+
+  /**
+   * Subscribe to tick events. Returns an unsub function.
+   * @param {(e: {sym: string, dir: 'up'|'down'|'flat', at: number}) => void} fn
+   * @returns {() => void}
+   */
+  function subscribe(fn) {
+    _subs.add(fn);
+    return () => { _subs.delete(fn); };
+  }
+
+  /** Size of the subscriber set — for diagnostics. */
+  function subscriberCount() { return _subs.size; }
+
+  return { emit, subscribe, subscriberCount };
 }
