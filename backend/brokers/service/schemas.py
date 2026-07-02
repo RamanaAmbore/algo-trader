@@ -118,3 +118,24 @@ class TickerSubscribeResp(msgspec.Struct):
     subscribed: int = 0
     total: int = 0
     error: str | None = None
+
+
+# ── Dhan poll reset ───────────────────────────────────────────────────
+
+
+class PollResetRequest(msgspec.Struct):
+    """Request body for POST /internal/dhan/poll_reset.
+
+    ``accounts`` — list of Dhan account codes to reset; None = clear all.
+    Mirrors the ``dhan_next_poll_clear(accounts)`` signature in broker_apis.
+    """
+
+    accounts: list[str] | None = None
+
+
+class PollResetResp(msgspec.Struct):
+    """Response shape for POST /internal/dhan/poll_reset."""
+
+    ok: bool
+    cleared: str  # account code or "all"
+    error: str | None = None

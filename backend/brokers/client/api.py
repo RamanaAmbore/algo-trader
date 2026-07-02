@@ -121,3 +121,24 @@ async def list_accounts() -> list[dict[str, str]]:
     except Exception as e:
         logger.warning("conn_client: /internal/accounts failed: %s", e)
         return []
+
+
+async def dhan_poll_reset_remote(accounts: list[str] | None = None) -> None:
+    """Reset the Dhan next-poll interval gate inside conn_service.
+
+    When ``RAMBOQ_USE_CONN_SERVICE=1`` the _dhan_next_poll dict lives in
+    conn_service (not the main API process).  Route handlers call this on
+    ``?fresh=1`` instead of the local ``dhan_next_poll_clear()``.
+
+    Best-effort: logs a warning on failure but never raises, so the caller
+    always proceeds to the fresh broker fetch regardless.
+
+    ``accounts`` — list of Dhan account codes to reset; None = clear all.
+    """
+    try:
+        client = get_client()
+        body: dict = {"accounts": accounts} if accounts is not None else {}
+        resp = await client.post("/internal/dhan/poll_reset", json=body)
+        resp.raise_for_status()
+    except Exception as e:
+        logger.warning("conn_client: dhan_poll_reset_remote failed: %s", e)
