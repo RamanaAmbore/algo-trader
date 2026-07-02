@@ -223,14 +223,30 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
             if e["consecutive_fail_count"] >= _CB_FAIL_THRESHOLD:
                 # Open (or re-open) the breaker with exponential back-off.
                 # open_cycle_count: 0→1st open (5m), 1→10m, 2→20m, 3+→30m.
+                #
+                # Concurrent-probe race guard: when the breaker is already
+                # OPEN (circuit_open_until is set to a future time), a
+                # parallel probe that also fails would otherwise increment
+                # open_cycle_count a second (and third) time in the same
+                # tick — jumping 3 exponential steps instead of 1.  We
+                # advance the cycle counter ONLY when we are transitioning
+                # from CLOSED (circuit_open_until is None) or HALF-OPEN
+                # (circuit_open_until has already expired).  If the breaker
+                # is already OPEN (circuit_open_until > now), a concurrent
+                # failure simply refreshes the deadline without bumping the
+                # cycle, preventing the multi-step jump.
+                prev_until = e.get("circuit_open_until")
+                was_closed_or_halfopen = (prev_until is None) or (prev_until <= now)
                 cycle = e.get("open_cycle_count", 0)
+                if was_closed_or_halfopen:
+                    cycle += 1
+                    e["open_cycle_count"] = cycle
                 cooloff = min(
-                    _CB_INITIAL_COOLOFF_S * (2 ** cycle),
+                    _CB_INITIAL_COOLOFF_S * (2 ** (cycle - 1)),
                     _CB_MAX_COOLOFF_S,
                 )
                 e["circuit_open_until"] = now + cooloff
                 e["circuit_last_opened_at"] = now
-                e["open_cycle_count"] = cycle + 1
                 logger.warning(
                     f"[BREAKER] account={account} state=open "
                     f"reason={str(error)[:120]} "

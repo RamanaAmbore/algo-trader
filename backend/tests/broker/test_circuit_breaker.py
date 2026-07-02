@@ -433,3 +433,54 @@ class TestGrowwBreakerTrigger:
 
         mock_broker.holdings.assert_not_called()
         assert df.attrs.get("circuit_open") is True
+
+
+# ---------------------------------------------------------------------------
+# 10: Concurrent-probe race — only one cycle increment per HALF-OPEN event
+# ---------------------------------------------------------------------------
+
+class TestConcurrentProbeRace:
+    """Three parallel probe failures during HALF-OPEN must advance
+    open_cycle_count by exactly 1, not 3.
+
+    Simulated sequentially under the lock (which is what actually happens
+    in the threaded executor) — the race is that three _record_fetch calls
+    see expired circuit_open_until and all take the re-open branch.
+    """
+
+    ACCOUNT = "DH6847_test_race"
+
+    def setup_method(self):
+        _reset_health(self.ACCOUNT)
+
+    def test_three_parallel_halfopen_failures_bump_cycle_once(self):
+        import time as _t
+        from backend.brokers import broker_apis
+
+        # Put breaker in OPEN state (open_cycle_count = 1)
+        for _ in range(3):
+            _record(self.ACCOUNT, ok=False, error="DH-906")
+        assert _circuit_state(self.ACCOUNT) == "open"
+        assert _get_entry(self.ACCOUNT)["open_cycle_count"] == 1
+
+        # Expire → HALF-OPEN
+        _get_entry(self.ACCOUNT)["circuit_open_until"] = _t.time() - 1.0
+        assert _circuit_state(self.ACCOUNT) == "half-open"
+
+        # Three consecutive probe failures (simulates parallel dispatch
+        # landing sequentially under the lock).
+        _record(self.ACCOUNT, ok=False, error="probe fail 1")
+        _record(self.ACCOUNT, ok=False, error="probe fail 2")
+        _record(self.ACCOUNT, ok=False, error="probe fail 3")
+
+        e = _get_entry(self.ACCOUNT)
+        assert _circuit_state(self.ACCOUNT) == "open"
+        assert e["open_cycle_count"] == 2, (
+            f"Expected exactly 1 cycle advance (0→1→2), got {e['open_cycle_count']}"
+        )
+        # 2nd cycle cool-off is 10 min = 600s
+        import time as _time2
+        until = e["circuit_open_until"]
+        assert abs(until - _time2.time() - 600.0) < 5.0, (
+            f"Expected ~600s 2nd-cycle cooloff, got {until - _time2.time():.1f}s"
+        )
