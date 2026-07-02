@@ -910,6 +910,18 @@ async def _ensure_shared_broker_schema() -> None:
             "NOT NULL DEFAULT '{}'::jsonb",
             "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
             "historical_data_enabled BOOLEAN NOT NULL DEFAULT TRUE",
+            # Per-account poll priority (Jul 2026 — Dhan background poll
+            # interval gate). poll_priority controls how often the
+            # background poller re-fetches this Dhan account.
+            # auto_downgrade_* columns support the breaker-history watcher.
+            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
+            "poll_priority VARCHAR(8) NOT NULL DEFAULT 'hot'",
+            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
+            "auto_downgrade_enabled BOOLEAN NOT NULL DEFAULT FALSE",
+            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
+            "auto_downgraded_at TIMESTAMPTZ",
+            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
+            "auto_downgrade_reason TEXT",
         ):
             await conn.execute(text(stmt))
     logger.info("Shared broker schema verified on ramboq")

@@ -1610,6 +1610,31 @@ class BrokerAccount(Base):
     historical_data_enabled: Mapped[bool] = mapped_column(
         Boolean, default=True, nullable=False, server_default="true"
     )
+    # ── Per-account poll priority (Dhan-only, Jul 2026) ───────────────────
+    # poll_priority — controls how often the background 30s poller
+    #   re-fetches positions/holdings/margins for THIS account.
+    #   hot (default) = every 30s, warm = every 120s, cold = every 600s.
+    #   Kite + Groww accounts ignore this field; it gates ONLY the Dhan
+    #   background poll path.  Values: 'hot' | 'warm' | 'cold'.
+    # auto_downgrade_enabled — when True the breaker-open history watcher
+    #   will automatically drop this account to 'cold' after ≥5 breaker
+    #   opens within a 15-min window.
+    # auto_downgraded_at — epoch when the last auto-downgrade fired;
+    #   NULL means the current poll_priority was set manually.
+    # auto_downgrade_reason — human-readable cause string stamped at
+    #   auto-downgrade time, e.g. "5 breaker opens in 15 min".
+    poll_priority: Mapped[str] = mapped_column(
+        String(8), nullable=False, default="hot", server_default="hot"
+    )
+    auto_downgrade_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    auto_downgraded_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    auto_downgrade_reason: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),
