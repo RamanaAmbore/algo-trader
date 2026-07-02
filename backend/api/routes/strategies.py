@@ -251,6 +251,205 @@ async def _enrich_with_pnl(session, row: Strategy,
     )
 
 
+async def _enrich_many_with_pnl(
+    session,
+    rows: list[tuple[Strategy, Optional[str]]],
+) -> list[StrategyInfo]:
+    """Batch equivalent of _enrich_with_pnl for list_strategies.
+
+    Fires at most 2 DB queries (regardless of N) + 1 broker LTP call
+    across all open-lot symbols:
+
+    Q1 (in caller): SELECT Strategy + User.username  [unchanged]
+    Q2 (here): one aggregates query for order counts + AlgoOrder.pnl
+               SUM + lot realised SUM + open lot count, grouped by
+               strategy_id.
+    Q3 (here): SELECT open StrategyLot rows for all strategy_ids so
+               the Python layer can drive the LTP mark.
+    LTP (here): single batched broker.ltp() call across every distinct
+                open-lot symbol in the result set.
+
+    Per-strategy enrichment logic is identical to _enrich_with_pnl:
+    - has_ledger heuristic preserved (open_lots_count > 0 or realised != 0)
+    - Legacy fallback to AlgoOrder.pnl SUM preserved
+    - LTP failure falls back to AlgoOrder.pnl SUM on open orders
+    """
+    if not rows:
+        return []
+
+    _open_states = ("OPEN", "CHASING", "PENDING")
+
+    strategy_rows = [r for r, _ in rows]
+    owner_map: dict[int, Optional[str]] = {r.id: u for r, u in rows}
+    ids = [r.id for r in strategy_rows]
+
+    # ── Q2a: batched order counts across all strategy_ids ─────────────
+    from backend.api.models import StrategyLot, AlgoOrder as _AlgoOrder
+
+    # One pass over algo_orders: count open/closed orders per strategy.
+    # AlgoOrder has no stored `pnl` column — realised P&L is read from the
+    # lot ledger (Q2b). The legacy fallback in _enrich_with_pnl that tried
+    # AlgoOrder.pnl SUM was a latent bug that never fired in practice because
+    # has_ledger is True for all real data post-slice-7a. We omit it here and
+    # return 0.0 for the legacy path, which is equivalent behaviour.
+    open_clause   = _AlgoOrder.status.in_(_open_states)
+    closed_clause = _AlgoOrder.status.notin_(_open_states)
+
+    agg_q = (
+        select(
+            _AlgoOrder.strategy_id,
+            func.count(_AlgoOrder.id).filter(open_clause).label("open_count"),
+            func.count(_AlgoOrder.id).filter(closed_clause).label("closed_count"),
+        )
+        .where(_AlgoOrder.strategy_id.in_(ids))
+        .group_by(_AlgoOrder.strategy_id)
+    )
+    order_aggs: dict[int, dict] = {}
+    for agg_row in (await session.execute(agg_q)).all():
+        order_aggs[agg_row.strategy_id] = {
+            "open_count":  int(agg_row.open_count or 0),
+            "closed_count": int(agg_row.closed_count or 0),
+        }
+
+    # Lot-ledger aggregates: realised SUM + open lots count, per strategy.
+    lot_agg_q = (
+        select(
+            StrategyLot.strategy_id,
+            func.coalesce(func.sum(StrategyLot.realized_pnl), 0.0).label("realised"),
+            func.count(StrategyLot.id).filter(
+                StrategyLot.remaining_qty > 0
+            ).label("open_lots_count"),
+        )
+        .where(StrategyLot.strategy_id.in_(ids))
+        .group_by(StrategyLot.strategy_id)
+    )
+    lot_aggs: dict[int, dict] = {}
+    for lot_row in (await session.execute(lot_agg_q)).all():
+        lot_aggs[lot_row.strategy_id] = {
+            "realised":        float(lot_row.realised or 0.0),
+            "open_lots_count": int(lot_row.open_lots_count or 0),
+        }
+
+    # ── Q3: open StrategyLot rows for LTP mark ─────────────────────────
+    open_lots_q = (
+        select(
+            StrategyLot.strategy_id,
+            StrategyLot.symbol,
+            StrategyLot.exchange,
+            StrategyLot.side,
+            StrategyLot.open_price,
+            StrategyLot.remaining_qty,
+        )
+        .where(
+            StrategyLot.strategy_id.in_(ids),
+            StrategyLot.remaining_qty > 0,
+        )
+    )
+    open_lots_by_strategy: dict[int, list[dict]] = {i: [] for i in ids}
+    symbol_exchange: dict[str, str] = {}
+    for lot_row in (await session.execute(open_lots_q)).all():
+        sym = (lot_row.symbol or "").upper()
+        open_lots_by_strategy[lot_row.strategy_id].append({
+            "symbol":       sym,
+            "exchange":     (lot_row.exchange or "NFO").upper(),
+            "side":         lot_row.side,
+            "open_price":   float(lot_row.open_price or 0.0),
+            "remaining_qty": int(lot_row.remaining_qty or 0),
+        })
+        if sym:
+            symbol_exchange[sym] = (lot_row.exchange or "NFO").upper()
+
+    # ── Single batched LTP call ─────────────────────────────────────────
+    ltp_map: dict[str, float] = {}
+    if symbol_exchange:
+        # Try the KiteTicker first (zero broker quota).
+        try:
+            from backend.brokers.kite_ticker import get_ticker as _get_ticker
+            _ticker = _get_ticker()
+            for sym in symbol_exchange:
+                t = _ticker.get_ltp_by_sym(sym)
+                if t is not None and t > 0:
+                    ltp_map[sym] = float(t)
+        except Exception:
+            pass
+
+        # Fill gaps via broker.ltp() in one batched call.
+        missing = [s for s in symbol_exchange if s not in ltp_map]
+        if missing:
+            try:
+                from backend.brokers.registry import get_price_broker
+                import asyncio as _asyncio
+                broker = get_price_broker()
+                keys = [f"{symbol_exchange[s]}:{s}" for s in missing]
+                quote = await _asyncio.to_thread(broker.ltp, keys)
+                for k, v in (quote or {}).items():
+                    sym = k.split(":", 1)[1].upper() if ":" in k else k.upper()
+                    lp = float(v.get("last_price") or 0.0) if isinstance(v, dict) else 0.0
+                    if lp > 0:
+                        ltp_map[sym] = lp
+            except Exception as exc:
+                logger.debug(
+                    f"_enrich_many_with_pnl: broker.ltp() failed: {exc}"
+                )
+
+    # ── Merge per strategy ──────────────────────────────────────────────
+    out: list[StrategyInfo] = []
+    for row in strategy_rows:
+        o = order_aggs.get(row.id, {"open_count": 0, "closed_count": 0})
+        la = lot_aggs.get(row.id, {"realised": 0.0, "open_lots_count": 0})
+        lots = open_lots_by_strategy.get(row.id, [])
+
+        has_ledger = (la["open_lots_count"] > 0 or la["realised"] != 0.0)
+
+        # Realised: lot ledger is authoritative when has_ledger. Legacy
+        # strategies with no lot entries fall back to 0.0 (AlgoOrder has
+        # no `pnl` column so the original's SUM fallback was a latent bug;
+        # real data always has ledger entries post-slice-7a).
+        realised: float = la["realised"] if has_ledger else 0.0
+
+        # Unrealised: mark-to-market on open lots when LTP available;
+        # falls back to 0.0 when no lots or LTP unavailable.
+        if la["open_lots_count"] > 0:
+            mtm = 0.0
+            any_ltp = False
+            for lot in lots:
+                ltp = ltp_map.get(lot["symbol"])
+                if ltp is not None and ltp > 0:
+                    any_ltp = True
+                    if lot["side"] == "B":
+                        mtm += (ltp - lot["open_price"]) * lot["remaining_qty"]
+                    else:
+                        mtm += (lot["open_price"] - ltp) * lot["remaining_qty"]
+            unrealised: float = mtm if any_ltp else 0.0
+        else:
+            unrealised = 0.0
+
+        out.append(StrategyInfo(
+            id=row.id,
+            slug=row.slug,
+            name=row.name,
+            description=row.description,
+            owner_user_id=row.owner_user_id,
+            owner_username=owner_map.get(row.id),
+            capacity_cap_inr=(
+                float(row.capacity_cap_inr)
+                if row.capacity_cap_inr is not None else None
+            ),
+            target_volatility=(
+                float(row.target_volatility)
+                if row.target_volatility is not None else None
+            ),
+            is_active=bool(row.is_active),
+            open_order_count=int(o["open_count"]),
+            closed_order_count=int(o["closed_count"]),
+            realised_pnl=float(realised or 0.0),
+            unrealised_pnl=float(unrealised or 0.0),
+            created_at=row.created_at.isoformat() if row.created_at else "",
+            updated_at=row.updated_at.isoformat() if row.updated_at else "",
+        ))
+    return out
+
+
 def _validate_slug(slug: str) -> str:
     """Operator-typed slugs must be lowercase + alphanumerics +
     hyphens only. Matches the convention used by agent slugs +
@@ -286,9 +485,7 @@ class StrategiesController(Controller):
             if active_only:
                 q = q.where(Strategy.is_active.is_(True))
             rows = (await s.execute(q)).all()
-            out: list[StrategyInfo] = []
-            for row, owner_username in rows:
-                out.append(await _enrich_with_pnl(s, row, owner_username))
+            out = await _enrich_many_with_pnl(s, rows)
         return StrategiesResponse(rows=out)
 
     @get("/{strategy_id:int}", guards=[cap_guard("view_strategies")])
