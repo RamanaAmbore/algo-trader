@@ -34,7 +34,8 @@ import {
 import {
   FO_QUOTE_KEYS, MIDCAP_QUOTE_KEYS, SMLCAP_QUOTE_KEYS,
   INDICES_QUOTE_KEYS, LARGECAP_QUOTE_KEYS, symbolFromQuoteKey,
-  FO_UNDERLYINGS, NIFTY_MIDCAP_100, NIFTY_SMLCAP_100, FO_LARGECAP_STOCKS,
+  FO_UNDERLYINGS, NIFTY_MIDCAP_100, NIFTY_SMLCAP_100,
+  FO_STOCK_UNDERLYINGS,
 } from '$lib/data/indexConstituents';
 import { mergeSymbolBatch } from './symbolStore.svelte.js';
 import { cachedDelete } from './persistentCache.js';
@@ -326,16 +327,28 @@ export const moversSnapshotAt = {
 
 /**
  * Classify a raw tradingsymbol (no exchange prefix) into the mover group.
- * Priority: smallcap → midcap → underlying (F&O).
- * Returns null when the symbol is unknown to all three index sets.
+ *
+ * Priority: smallcap → midcap → large_cap → underlying (F&O indices).
+ *
+ * The 'large_cap' bucket covers F&O-eligible NSE stocks that are NOT in
+ * NIFTY_MIDCAP_100 / NIFTY_SMLCAP_100 — e.g. RELIANCE, TCS, HDFCBANK.
+ * FO_STOCK_UNDERLYINGS excludes the two BSE single-token index names
+ * (SENSEX, BANKEX) so those remain in the 'underlying' tab.
+ *
+ * Stocks in NIFTY_MIDCAP_100 that are ALSO F&O-eligible are classified
+ * as 'midcap' (midcap check fires first), preserving the original intent
+ * that index-membership is the canonical "midcap" answer.
+ *
+ * Returns null when the symbol is unknown to all four sets.
  * @param {string} sym
- * @returns {'smallcap'|'midcap'|'underlying'|null}
+ * @returns {'smallcap'|'midcap'|'large_cap'|'underlying'|null}
  */
 function _classifyMoverSym(sym) {
   const s = String(sym || '').toUpperCase();
-  if (NIFTY_SMLCAP_100.has(s)) return 'smallcap';
-  if (NIFTY_MIDCAP_100.has(s)) return 'midcap';
-  if (FO_UNDERLYINGS.has(s))   return 'underlying';
+  if (NIFTY_SMLCAP_100.has(s))      return 'smallcap';
+  if (NIFTY_MIDCAP_100.has(s))      return 'midcap';
+  if (FO_STOCK_UNDERLYINGS.has(s))  return 'large_cap';
+  if (FO_UNDERLYINGS.has(s))        return 'underlying';
   return null;
 }
 
@@ -371,7 +384,7 @@ export const moversStore = createDataStore({
       const sym = String(it?.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
       const group = _classifyMoverSym(sym);
-      // Symbols unknown to all three index sets are still shown —
+      // Symbols unknown to all four index sets are still shown —
       // the backend may return new F&O additions before the frontend
       // const list is updated. Default them to 'underlying' so they
       // appear in the Underlying tab rather than being silently dropped.
@@ -386,7 +399,6 @@ export const moversStore = createDataStore({
         previous_close: Number(it.previous_close ?? 0) || null,
         sticky:         Boolean(it.sticky),
         _moverGroup:    effectiveGroup,
-        _isLargeCap:    FO_LARGECAP_STOCKS.has(sym) && !NIFTY_MIDCAP_100.has(sym) && !NIFTY_SMLCAP_100.has(sym),
         _moverDirection: pct >= 0 ? 'winners' : 'losers',
       });
     }

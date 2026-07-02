@@ -2,9 +2,14 @@
  * Verify Winners + Losers grids on /pulse after commit b35ee728.
  * Bug report: "winners and losers data is not updated".
  *
+ * Updated (2026-07-02): large_cap classifier fix — 4 tabs now, not 3.
+ * _classifyMoverSym returns 'large_cap' for F&O stocks (RELIANCE, TCS, …),
+ * so the L.Cap tab populates. FO_STOCK_UNDERLYINGS (FO_LARGECAP_STOCKS minus
+ * SENSEX/BANKEX) drives the classifier. All four tab labels are asserted.
+ *
  * Checks:
  *  1. Both sections visible (default Show state has both on).
- *  2. 3 tabs present per section: Underlying / Midcap / Smallcap.
+ *  2. 4 tabs present per section: Underlying / L.Cap / Midcap / Smallcap.
  *  3. ag-Grid rows populate within 60 s (movers poll fires every 30 s).
  *  4. Midcap + Smallcap tabs switch to different symbols.
  *  5. Data refreshes on the 30 s poll cycle.
@@ -65,20 +70,21 @@ test.describe('/pulse Winners + Losers grids', () => {
     await expect(page.locator('.mp-bucket-losers').first()).toBeVisible({ timeout: 30_000 });
     console.log('[check 1] Winners + Losers sections visible');
 
-    // --- 2. Tab strip: 3 tabs each section ---
+    // --- 2. Tab strip: 4 tabs each section (Underlying / L.Cap / Midcap / Smallcap) ---
     const winTabs = page.locator('.mp-bucket-winners .mp-wl-tab');
     const loseTabs = page.locator('.mp-bucket-losers .mp-wl-tab');
 
-    await expect(winTabs).toHaveCount(3, { timeout: 5_000 });
-    await expect(loseTabs).toHaveCount(3, { timeout: 5_000 });
+    await expect(winTabs).toHaveCount(4, { timeout: 5_000 });
+    await expect(loseTabs).toHaveCount(4, { timeout: 5_000 });
 
     const winTabTexts = await winTabs.allTextContents();
     const loseTabTexts = await loseTabs.allTextContents();
     console.log('[check 2] Winners tabs:', winTabTexts.map(t => t.trim()));
     console.log('[check 2] Losers tabs:', loseTabTexts.map(t => t.trim()));
 
-    // Confirm tab labels (strip count badges)
-    for (const label of ['Underlying', 'Midcap', 'Smallcap']) {
+    // Confirm all four tab labels (strip count badges that follow the label text).
+    // 'L.Cap' is the large_cap tab added in the classifier fix.
+    for (const label of ['Underlying', 'L.Cap', 'Midcap', 'Smallcap']) {
       expect(winTabTexts.some(t => t.includes(label)),
         `Winners missing tab "${label}"`).toBe(true);
       expect(loseTabTexts.some(t => t.includes(label)),

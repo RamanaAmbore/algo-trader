@@ -1739,10 +1739,12 @@
     for (const r of mainRows) {
       if (r._majorGroup !== 'movers') continue;
       if (r._moverDirection !== direction) continue;
-      const g = /** @type {'underlying'|'midcap'|'smallcap'} */ (r._moverGroup);
-      if (g === 'underlying' || g === 'midcap' || g === 'smallcap') out[g]++;
-      // Large Cap is a SUBSET of underlying — counted in addition.
-      if (r._isLargeCap) out.large_cap++;
+      const g = /** @type {string} */ (r._moverGroup);
+      // Each symbol lands in exactly one bucket — _moverGroup is the
+      // canonical source (set by _classifyMoverSym in marketDataStores).
+      if (g === 'underlying' || g === 'large_cap' || g === 'midcap' || g === 'smallcap') {
+        out[g]++;
+      }
     }
     return out;
   }
@@ -1775,22 +1777,13 @@
   /** @param {'winners'|'losers'} direction
    *  @param {MoverTab} tab */
   function _topRowsFor(direction, tab) {
-    let pool;
-    if (tab === 'large_cap') {
-      // Large Cap = F&O stocks only. Reads the _isLargeCap flag
-      // (set in loadMovers) rather than the _moverGroup bucket so
-      // we don't compete with the broader Underlying tab.
-      pool = mainRows.filter(r =>
-        r._majorGroup === 'movers'
-        && r._moverDirection === direction
-        && r._isLargeCap === true);
-    } else {
-      // Underlying / Midcap / Smallcap → straight bucket match.
-      pool = mainRows.filter(r =>
-        r._majorGroup === 'movers'
-        && r._moverDirection === direction
-        && r._moverGroup === tab);
-    }
+    // All four tabs (underlying / large_cap / midcap / smallcap) use the
+    // same straight _moverGroup match — _classifyMoverSym now assigns
+    // 'large_cap' directly, so no separate _isLargeCap flag is needed.
+    const pool = mainRows.filter(r =>
+      r._majorGroup === 'movers'
+      && r._moverDirection === direction
+      && r._moverGroup === tab);
     return pool
       .slice()
       .sort((a, b) => Math.abs(Number(b.change_pct) || 0)
@@ -3333,10 +3326,10 @@
       row._mover_sticky    = m.sticky ?? false;
       row._mover_change_pct = liveChangePct ?? null;
       // Sub-group tag carried over from loadMovers() — drives the
-      // identifiable underlying / midcap / smallcap sections in the grid.
+      // underlying / large_cap / midcap / smallcap tab classification.
+      // _moverGroup is the canonical source; _isLargeCap is no longer used.
       if (m._moverGroup)     row._moverGroup     = m._moverGroup;
       if (m._moverDirection) row._moverDirection = m._moverDirection;
-      if (m._isLargeCap != null) row._isLargeCap = !!m._isLargeCap;
     }
     // When showMovers is off, strip the Movers-major rows entirely.
     if (!includeMovers) {

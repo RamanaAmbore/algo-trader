@@ -137,8 +137,19 @@ export function quoteKeyFor(symbol) {
 export const FO_INDICES = new Set(
   [...FO_UNDERLYINGS].filter(n => n.includes(' '))
 );
+// FO_UNDERLYINGS that are stocks (no space in name). Includes SENSEX and
+// BANKEX — BSE single-token index names that look like stock symbols.
 export const FO_LARGECAP_STOCKS = new Set(
   [...FO_UNDERLYINGS].filter(n => !n.includes(' '))
+);
+// F&O-eligible STOCKS only — excludes index names that have no space
+// (SENSEX, BANKEX) so the 'large_cap' mover tab stays stock-only.
+// All NIFTY / BSE indices with spaces are already absent from this set
+// because of the space filter above; only BSE single-token index names
+// need the explicit exclusion here.
+const _BSE_SINGLE_TOKEN_INDICES = new Set(['SENSEX', 'BANKEX']);
+export const FO_STOCK_UNDERLYINGS = new Set(
+  [...FO_LARGECAP_STOCKS].filter(s => !_BSE_SINGLE_TOKEN_INDICES.has(s))
 );
 
 // Pre-built quote-key arrays for the four universes — saves a map
