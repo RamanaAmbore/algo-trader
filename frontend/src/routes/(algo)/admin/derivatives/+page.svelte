@@ -1132,6 +1132,41 @@
     return out;
   });
 
+  /** Per-underlying H Day P&L — Day P&L from equity holdings on that root
+   *  ONLY. Operator 2026-07-01: "you can h day p & l from holdings for
+   *  the symbol." Read directly from h.day_change_val + SSE-tick delta,
+   *  independent of the F&O positions loop. Proxy hedges (e.g. GOLDBEES
+   *  → GOLD) route to the target root's key. */
+  const _hDayByRoot = $derived.by(() => {
+    void _throttledTick;
+    /** @type {Record<string, number>} */
+    const out = {};
+    const _wantedAccts = new Set(
+      selectedAccounts.map(a => String(a || '').trim().toUpperCase())
+    );
+    const matchAccount = (acct) => _wantedAccts.size === 0
+      || _wantedAccts.has(String(acct || '').trim().toUpperCase());
+    for (const _h of holdings) {
+      const h = /** @type {any} */ (_h);
+      if (!matchAccount(h.account)) continue;
+      const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
+      if (!sym) continue;
+      const qty = Number(h.qty ?? h.quantity ?? h.opening_qty ?? h.opening_quantity) || 0;
+      const dbase   = Number(h.day_change_val) || 0;
+      const pollLtp = Number(h.last_price || 0);
+      const liveLtp = Number(untrack(() => getSnapshot(sym)?.ltp) || 0);
+      const delta   = (pollLtp > 0 && liveLtp > 0 && qty !== 0)
+        ? (liveLtp - pollLtp) * qty : 0;
+      const contrib = dbase + delta;
+      const _targets = targetsForProxy(sym);
+      const credits = _targets.length ? _targets : [sym];
+      for (const root of credits) {
+        out[root] = (out[root] || 0) + contrib;
+      }
+    }
+    return out;
+  });
+
   /** Per-underlying Day P&L — overlay-parity computation. Operator 2026-07-01:
    *  "day p & l should match day overlay value for each symbol in snapshot."
    *  Overlay uses _dayPnlForLeg(c, spot) + SSE-tick delta per leg
@@ -5319,7 +5354,7 @@
                + holdings (_expG.with). -->
           {@const _expFno = _expG ? _expG.without : null}
           {@const _expNet = _expG ? _expG.with : null}
-          {@const _hDay = _dayG ? (_dayG.with - _dayG.without) : 0}
+          {@const _hDay = _hDayByRoot[g.underlying] || 0}
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
             <span class="num {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
@@ -5357,6 +5392,7 @@
           {@const _expTotalNet = Object.values(_byUnderlyingExp).reduce((s, v) => s + v.with, 0)}
           {@const _dayTotalFno = Object.values(_byUnderlyingDay).reduce((s, v) => s + v.without, 0)}
           {@const _dayTotalNet = Object.values(_byUnderlyingDay).reduce((s, v) => s + v.with, 0)}
+          {@const _hDayTotal = Object.values(_hDayByRoot).reduce((s, v) => s + v, 0)}
           <div class="byund-row byund-row-total">
             <span class="byund-und">TOTAL</span>
             <span class="num">—</span>
@@ -5370,8 +5406,9 @@
             <span class="num {_dayTotalNet > 0 ? 'cell-pos' : _dayTotalNet < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_dayTotalNet)}</span>
             <span class="num {_byUnderlyingTotal.pnl_with > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_with)}</span>
             <span class="num {_expTotalNet > 0 ? 'cell-pos' : _expTotalNet < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_expTotalNet)}</span>
-            <!-- H Day P&L TOTAL: Net Day - F&O Day = holdings-only contribution. -->
-            <span class="num {(_dayTotalNet - _dayTotalFno) > 0 ? 'cell-pos' : (_dayTotalNet - _dayTotalFno) < 0 ? 'cell-neg' : 'cell-flat'}">{(_dayTotalNet - _dayTotalFno) === 0 ? '—' : aggCompact(_dayTotalNet - _dayTotalFno)}</span>
+            <!-- H Day P&L TOTAL: Σ holdings' Day P&L directly (from
+                 _hDayByRoot, independent of the F&O Day compute). -->
+            <span class="num {_hDayTotal > 0 ? 'cell-pos' : _hDayTotal < 0 ? 'cell-neg' : 'cell-flat'}">{_hDayTotal === 0 ? '—' : aggCompact(_hDayTotal)}</span>
             <span class="num">{Math.round(_byUnderlyingTotal.legs_with)}{Math.round(_byUnderlyingTotal.legs_with) !== _byUnderlyingTotal.legs_without ? `/${_byUnderlyingTotal.legs_without}` : ''}</span>
             <span class="num">{_byUnderlyingTotal.qty_fno || '—'}</span>
             <span class="num">{_byUnderlyingTotal.qty_eq || '—'}</span>
