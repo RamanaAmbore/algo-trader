@@ -419,6 +419,31 @@
   let modeBranch        = $state('');
   /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
   let _liveConfirmRef   = $state(null);
+  // Computed position for the mode dropdown — recalculated from the
+  // trigger's getBoundingClientRect() each time the dropdown opens so
+  // the dropdown renders via position:fixed above any stacking context
+  // (including the order-modal overlay at z-index 10500).
+  /** @type {{ top: number, right: number } | null} */
+  let modeDropdownPos   = $state(null);
+  /** @type {HTMLButtonElement | null} */
+  let _modeTriggerEl    = $state(null);
+  /** @type {HTMLButtonElement | null} */
+  let _modeTriggerElMobile = $state(null);
+
+  /** Open the mode dropdown and compute its fixed position from the trigger rect. */
+  function openModeDropdown(/** @type {HTMLButtonElement | null} */ triggerEl) {
+    modeError = '';
+    if (modeOpen) { modeOpen = false; return; }
+    if (triggerEl) {
+      const r = triggerEl.getBoundingClientRect();
+      modeDropdownPos = {
+        top: r.bottom + 4,
+        // anchor right edge to trigger right edge (same as absolute right:0)
+        right: window.innerWidth - r.right,
+      };
+    }
+    modeOpen = true;
+  }
 
   // Mode colors — keep aligned with the .mode-pill-* CSS in
   // LogPanel.svelte and the .algo-mode-* badges below. SIM and REPLAY
@@ -869,8 +894,9 @@
         {#if $authStore.user && allowedModes.length > 0}
           <div class="mode-combo-wrap">
             <button class="algo-mode-badge mode-trigger"
+                    bind:this={_modeTriggerEl}
                     data-mode={$executionMode ?? 'live'}
-                    onclick={() => { modeOpen = !modeOpen; modeError = ''; }}
+                    onclick={() => openModeDropdown(_modeTriggerEl)}
                     aria-haspopup="listbox" aria-expanded={modeOpen}
                     title="Click to change execution mode">
               {($executionMode ?? 'live').toUpperCase()}
@@ -879,10 +905,11 @@
                       stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
             </button>
-            {#if modeOpen}
+            {#if modeOpen && modeDropdownPos}
               <div class="mode-combo-overlay" role="presentation"
                    onclick={() => { modeOpen = false; }}></div>
-              <ul class="mode-combo-dropdown" role="listbox">
+              <ul class="mode-combo-dropdown" role="listbox"
+                  style="top:{modeDropdownPos.top}px; right:{modeDropdownPos.right}px">
                 {#each allowedModes as m}
                   <li>
                     <button class="mode-combo-item {$executionMode === m ? 'mode-combo-item-active' : ''}"
@@ -1012,8 +1039,9 @@
         {#if $authStore.user && allowedModes.length > 0}
           <div class="mode-combo-wrap">
             <button class="algo-mode-badge mode-trigger"
+                    bind:this={_modeTriggerElMobile}
                     data-mode={$executionMode ?? 'live'}
-                    onclick={() => { modeOpen = !modeOpen; modeError = ''; }}
+                    onclick={() => openModeDropdown(_modeTriggerElMobile)}
                     aria-haspopup="listbox" aria-expanded={modeOpen}
                     title="Click to change execution mode">
               {($executionMode ?? 'live').toUpperCase()}
@@ -1022,10 +1050,11 @@
                       stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
             </button>
-            {#if modeOpen}
+            {#if modeOpen && modeDropdownPos}
               <div class="mode-combo-overlay" role="presentation"
                    onclick={() => { modeOpen = false; }}></div>
-              <ul class="mode-combo-dropdown" role="listbox">
+              <ul class="mode-combo-dropdown" role="listbox"
+                  style="top:{modeDropdownPos.top}px; right:{modeDropdownPos.right}px">
                 {#each allowedModes as m}
                   <li>
                     <button class="mode-combo-item {$executionMode === m ? 'mode-combo-item-active' : ''}"
@@ -2164,17 +2193,24 @@
   .algo-mode-badge[data-mode='sim']    { color:#4ade80; background:rgba(74,222,128,0.10);  border-color:#4ade80; }
   .algo-mode-badge[data-mode='replay'] { color:#4ade80; background:rgba(74,222,128,0.10);  border-color:#4ade80; }
 
-  /* Full-viewport invisible overlay so clicking outside closes the dropdown. */
+  /* Full-viewport invisible overlay so clicking outside closes the dropdown.
+     Must sit just below the dropdown itself, but above the order modal
+     (z-index 10500) so clicks on the overlay close the dropdown without
+     accidentally hitting the modal underneath. */
   .mode-combo-overlay {
     position: fixed;
     inset: 0;
-    z-index: 59;
+    z-index: 10600;
   }
+  /* Dropdown rendered via position:fixed so it escapes the navbar's own
+     stacking context (navbar is position:fixed; z-index:50 — any child
+     positioned absolutely is trapped inside that context and can never
+     paint above the order-modal overlay at z-index:10500).
+     Coordinates (top / right) are injected as inline styles computed
+     from the trigger's getBoundingClientRect() when the dropdown opens. */
   .mode-combo-dropdown {
-    position: absolute;
-    top: calc(100% + 4px);
-    right: 0;
-    z-index: 60;
+    position: fixed;
+    z-index: 10601;
     background: #0a1020;
     border: 1px solid rgba(251, 191, 36, 0.25);
     border-radius: 6px;
