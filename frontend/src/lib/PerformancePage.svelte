@@ -1,6 +1,5 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte';
-  import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   // ag-Grid is lazy-loaded in onMount so it doesn't bloat the initial bundle
   // for public /performance visitors. createGrid is populated after the
   // dynamic import resolves; makeGrid() guards on _agGridReady.
@@ -268,39 +267,6 @@
   const pnlCls = ({ value }) =>
     ['ag-right-aligned-cell', value < 0 ? 'pnl-loss' : value > 0 ? 'pnl-gain' : 'pnl-zero'];
 
-  // Tick-flash — directional 350ms background pulse on numeric cells.
-  // Reuses createTickFlash verbatim. TOTAL rows (rowPinned==='bottom') are excluded.
-  // Threshold: 0.001 (epsilon) to prevent false flashes when the same value
-  // arrives twice. With threshold exactly 0, the guard Math.abs(v-last) < 0
-  // is always false — even identical values would set direction to 'down'
-  // (v > last = false when v === last). A small epsilon avoids this while still
-  // catching any real numeric change (P&L values are in rupees, 0.001 = 0.1 paise).
-  const _perfFlash = createTickFlash({ threshold: 0.001, durationMs: 350 });
-
-  // Stable row key: account|tradingsymbol. Matches updateGrid's key() fn.
-  function _perfFlashKey(data) {
-    if (!data) return null;
-    return data.tradingsymbol ? `${data.account}|${data.tradingsymbol}` : data.account;
-  }
-
-  // cellClass factory for P&L-type columns that also emits tick-flash.
-  // `field` is the data field name used for the per-cell flash key.
-  // Falls through to plain pnlCls on TOTAL rows (no flash on aggregates).
-  function pnlClsFlash(field) {
-    return (params) => {
-      const baseClasses = ['ag-right-aligned-cell'];
-      const v = params.value;
-      baseClasses.push(v < 0 ? 'pnl-loss' : v > 0 ? 'pnl-gain' : 'pnl-zero');
-      // Skip TOTAL / pinned rows — aggregates don't flash.
-      if (params.node?.rowPinned === 'bottom') return baseClasses;
-      const k = _perfFlashKey(params.data);
-      if (!k) return baseClasses;
-      const fc = _perfFlash.classOf(`${k}:${field}`);
-      if (fc === 'tf-up')   { baseClasses.push('tf-up',   'tick-flash-up');   }
-      else if (fc === 'tf-down') { baseClasses.push('tf-down', 'tick-flash-down'); }
-      return baseClasses;
-    };
-  }
   // Qty cell: classify by direction, not P&L. A short can be profitable,
   // a long can be losing — what the eye needs here is "which side of the
   // book am I on". Colours live in app.css (qty-short / qty-long).
@@ -329,20 +295,6 @@
     } else if (typeof prev === 'number' && prev > 0) {
       cls.push('ltp-vs-prev-flat');
     }
-    return cls;
-  };
-
-  // LTP column wrapper: preserves avgVsLtpCls heat-encoding and adds
-  // tick-flash on value change. Skips TOTAL rows (pinned bottom).
-  const avgVsLtpClsFlash = (params) => {
-    const base = /** @type {string | string[]} */ (avgVsLtpCls(params));
-    const cls = Array.isArray(base) ? [...base] : [base];
-    if (params?.node?.rowPinned === 'bottom') return cls;
-    const k = _perfFlashKey(params.data);
-    if (!k) return cls;
-    const fc = _perfFlash.classOf(`${k}:last_price`);
-    if (fc === 'tf-up')        { cls.push('tf-up',   'tick-flash-up');   }
-    else if (fc === 'tf-down') { cls.push('tf-down', 'tick-flash-down'); }
     return cls;
   };
 
@@ -447,10 +399,10 @@
     // first, matching the Funds grid convention (which already has
     // Account at column 0).
     { field: 'account',               headerName: 'Account',  width: 76,  minWidth: 76,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
-    { field: 'day_change_val',        headerName: 'Day P&L',  width: 110, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('day_change_val'), type: 'numericColumn', headerClass: numericHdr },
-    { field: 'day_change_percentage', headerName: 'Day %',    width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlClsFlash('day_change_percentage'), type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl',                   headerName: 'P&L',      width: 110, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('pnl'), type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl_percentage',        headerName: 'P&L %',    width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlClsFlash('pnl_percentage'), type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_val',        headerName: 'Day P&L',  width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_percentage', headerName: 'Day %',    width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl',                   headerName: 'P&L',      width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl_percentage',        headerName: 'P&L %',    width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'cur_val',               headerName: 'Value',  width: 110, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
     { field: 'inv_val',               headerName: 'Invested',  width: 110, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
   ];
@@ -467,12 +419,12 @@
   // primary identifier; everything else flows in priority order.
   const holdingsCols = [
     { field: 'tradingsymbol',         headerName: 'Symbol',   width: 132, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _symWithChartRenderer },
-    { field: 'last_price',            headerName: 'LTP',      width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpClsFlash },
+    { field: 'last_price',            headerName: 'LTP',      width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'average_price',         headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
-    { field: 'day_change_val',        headerName: 'Day P&L',  width: 78, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('day_change_val'), type: 'numericColumn', headerClass: numericHdr },
-    { field: 'day_change_percentage', headerName: 'Day %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlClsFlash('day_change_percentage'), type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl',                   headerName: 'P&L',      width: 78, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('pnl'), type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl_percentage',        headerName: 'P&L %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlClsFlash('pnl_percentage'), type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_val',        headerName: 'Day P&L',  width: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_percentage', headerName: 'Day %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl',                   headerName: 'P&L',      width: 78, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl_percentage',        headerName: 'P&L %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'close_price',           headerName: 'Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
     { field: 'quantity',              headerName: 'Qty',      width: 52, type: 'numericColumn', headerClass: numericHdr },
     // Lots — qty in F&O lot units. Holdings on F&O underlyings use
@@ -501,9 +453,9 @@
   // account number as the first column").
   const positionsSummaryCols = [
     { field: 'account',               headerName: 'Account', width: 76,  cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
-    { field: 'day_change_val',        headerName: 'Day P&L', width: 110, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('day_change_val'), type: 'numericColumn', headerClass: numericHdr },
-    { field: 'day_change_percentage', headerName: 'Day %',   width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlClsFlash('day_change_percentage'), type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl',                   headerName: 'P&L',     width: 110, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('pnl'), type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_val',        headerName: 'Day P&L', width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_percentage', headerName: 'Day %',   width: 78,  valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl',                   headerName: 'P&L',     width: 110, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
   ];
 
   // Symbol cell renderer with inline chart-icon button. Used on both
@@ -577,12 +529,12 @@
     // F&O symbols are wider than equities (e.g. NIFTY26MAY22000CE);
     // 140 when options link active (extra room for the pill), 130 otherwise.
     positionsSymbolCol,
-    { field: 'last_price',           headerName: 'LTP',       width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpClsFlash },
+    { field: 'last_price',           headerName: 'LTP',       width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'average_price',        headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
-    { field: 'day_change_val',       headerName: 'Day P&L',   width: 88, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('day_change_val'), type: 'numericColumn', headerClass: numericHdr },
-    { field: 'day_change_percentage',headerName: 'Day %',     width: 64, valueFormatter: pctFmtGrid, cellClass: pnlClsFlash('day_change_percentage'), type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl',                  headerName: 'P&L',       width: 88, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('pnl'), type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl_percentage',       headerName: 'P&L %',     width: 60, valueFormatter: pctFmtGrid, cellClass: pnlClsFlash('pnl_percentage'), type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_val',       headerName: 'Day P&L',   width: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_percentage',headerName: 'Day %',     width: 64, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl',                  headerName: 'P&L',       width: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl_percentage',       headerName: 'P&L %',     width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'close_price',          headerName: 'Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
     { field: 'quantity',             headerName: 'Qty',       width: 52, type: 'numericColumn', headerClass: numericHdr, cellClass: qtyCls },
     // Lots — option / futures positions use the contract's own lot;
@@ -712,19 +664,11 @@
     });
   }
 
-  // Numeric fields to track with tick-flash on positions + holdings grids.
-  const _PERF_FLASH_FIELDS = ['last_price', 'day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'];
-  // Corresponding ag-Grid colIds / field names for refreshCells.
-  const _PERF_FLASH_COLS   = ['last_price', 'day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'];
-
   /**
    * @param {any} grid — ag-Grid instance
    * @param {any[]} newRows — fresh rows to apply
-   * @param {{ flashFields?: string[], flashCols?: string[] }} [flashOpts]
-   *   When provided, snapshot old numeric values, call _perfFlash.update() for
-   *   changed cells, and schedule refreshCells twice (immediate + at 400ms).
    */
-  function updateGrid(grid, newRows, flashOpts) {
+  function updateGrid(grid, newRows) {
     if (!grid) return;
     const existing = [];
     grid.forEachNode(n => existing.push(n.data));
@@ -735,26 +679,6 @@
     const key = (r) => r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
     const oldMap = new Map(existing.map(r => [key(r), r]));
 
-    // Tick-flash: feed _perfFlash.update() with NEW values BEFORE
-    // Object.assign mutates oldMap entries. The primitive maintains its
-    // own prev[] record; calling update(key, newVal) here lets it
-    // detect direction (newVal vs prev). First call per key seeds the
-    // baseline (no animation fires); subsequent calls produce tf-up/down.
-    const fields = flashOpts?.flashFields;
-    let _flashAny = false;
-    if (fields) {
-      for (const r of newRows) {
-        const k = key(r);
-        if (!oldMap.has(k)) continue; // new row — first sample seeds baseline
-        for (const f of fields) {
-          const v = r[f];
-          if (v == null) continue;
-          _perfFlash.update(`${k}:${f}`, Number(v));
-          _flashAny = true;
-        }
-      }
-    }
-
     const update = [], add = [];
     for (const r of newRows) {
       const k = key(r);
@@ -764,28 +688,10 @@
         oldMap.delete(k);
       } else {
         add.push(r);
-        // New row: seed baseline for flash (no animation on first appearance).
-        if (fields) {
-          for (const f of fields) {
-            const v = r[f];
-            if (v != null) _perfFlash.update(`${key(r)}:${f}`, Number(v));
-          }
-        }
       }
     }
     const remove = [...oldMap.values()];
     grid.applyTransaction({ update, add, remove });
-
-    // After transaction, schedule two refreshCells so ag-Grid re-evaluates
-    // cellClass (which reads flash.classOf()): once immediately to paint the
-    // flash-on state, once at ~400ms to paint the cleared state after 350ms.
-    if (_flashAny && fields) {
-      const cols = flashOpts.flashCols ?? fields;
-      try { grid.refreshCells({ columns: cols, force: true }); } catch (_) { /* grid torn down */ }
-      setTimeout(() => {
-        try { grid.refreshCells({ columns: cols, force: true }); } catch (_) { /* grid torn down */ }
-      }, 400);
-    }
   }
 
   function makeHoldingsTotals(rows) {
@@ -887,17 +793,13 @@
     const pSummaryTotal = pSummary.filter(isTotalRow);
     const fBody         = fRows.filter(r => !isTotalRow(r)).slice().sort(byAcct);
     const fTotal        = fRows.filter(isTotalRow);
-    updateGrid(holdingsSummaryGrid, hSummaryBody,
-      { flashFields: _PERF_FLASH_FIELDS, flashCols: _PERF_FLASH_COLS });
+    updateGrid(holdingsSummaryGrid, hSummaryBody);
     holdingsSummaryGrid.setGridOption('pinnedBottomRowData', hSummaryTotal);
-    updateGrid(positionsSummaryGrid, pSummaryBody,
-      { flashFields: _PERF_FLASH_FIELDS, flashCols: _PERF_FLASH_COLS });
+    updateGrid(positionsSummaryGrid, pSummaryBody);
     positionsSummaryGrid.setGridOption('pinnedBottomRowData', pSummaryTotal);
-    updateGrid(holdingsAllGrid, hRows,
-      { flashFields: _PERF_FLASH_FIELDS, flashCols: _PERF_FLASH_COLS });
+    updateGrid(holdingsAllGrid, hRows);
     holdingsAllGrid.setGridOption('pinnedBottomRowData', hTotals ? [hTotals] : []);
-    updateGrid(positionsAllGrid, pRows,
-      { flashFields: _PERF_FLASH_FIELDS, flashCols: _PERF_FLASH_COLS });
+    updateGrid(positionsAllGrid, pRows);
     positionsAllGrid.setGridOption('pinnedBottomRowData', pTotals ? [pTotals] : []);
     updateGrid(fundsGrid, fBody);
     fundsGrid.setGridOption('pinnedBottomRowData', fTotal);
@@ -1161,7 +1063,6 @@
   onDestroy(() => {
     unsub?.();
     if (_fillToastTimer) { clearTimeout(_fillToastTimer); _fillToastTimer = null; }
-    _perfFlash.dispose();
     [fundsGrid, navGrid, holdingsSummaryGrid, holdingsAllGrid,
      positionsSummaryGrid, positionsAllGrid]
       .forEach(g => g?.destroy());

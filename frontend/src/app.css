@@ -2299,37 +2299,6 @@ button:not(:disabled):active,
   .cell-freshness-pulse::after { animation: none; }
 }
 
-/* ── Tick-flash — ag-Grid numeric cells (directional, 350 ms) ────────────────
-   Emitted by createTickFlash({threshold:0, durationMs:350}).
-   The primitive writes 'tf-up' / 'tf-down' on the $state classes record;
-   cellClass callbacks read classOf() and push both the canonical class AND
-   the Playwright-friendly alias 'tick-flash-up' / 'tick-flash-down' so
-   test selectors work without coupling to the primitive's internal name.
-
-   Keyframes live here (global) because ag-Grid injects cell DOM outside
-   Svelte's <style> scope — component-scoped @keyframes never reach these
-   cells. Uses the same card-tf-* CSS variables defined in .card-theme-*
-   blocks below so the animation respects the page's cream/dark palette. */
-@keyframes tf-pulse-up {
-  0%   { background-color: rgba(74, 222, 128, 0.22); }
-  100% { background-color: transparent; }
-}
-@keyframes tf-pulse-down {
-  0%   { background-color: rgba(248, 113, 113, 0.22); }
-  100% { background-color: transparent; }
-}
-.tf-up,
-.tick-flash-up {
-  animation: tf-pulse-up 350ms ease-out forwards;
-}
-.tf-down,
-.tick-flash-down {
-  animation: tf-pulse-down 350ms ease-out forwards;
-}
-@media (prefers-reduced-motion: reduce) {
-  .tf-up, .tick-flash-up, .tf-down, .tick-flash-down { animation: none; }
-}
-
 /* ── Card theming — dark/cream variants ─────────────────────────────────────
    Scope NavCard + PerformancePage color tokens via CSS custom properties so
    the same component code renders the correct palette in each context.
