@@ -27,6 +27,7 @@
   import { aggCompact } from '$lib/format';
   import { fundsStore, holdingsStore, positionsStore } from '$lib/data/marketDataStores.svelte.js';
   import { navByAccount, navTotalRow } from '$lib/data/nav';
+  import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
   /** @type {{
    *   accountFilter?: string[],
@@ -48,15 +49,20 @@
   /** @type {any[]} */
   const _holdings   = $derived(holdingsStore.value  ?? []);
 
+  // Canonical account display order map — $state so _allAccounts re-derives
+  // when fetchBrokerOrder() resolves after cold load.
+  let _navOrderMap = $state(/** @type {Record<string,number>} */ ({}));
+  accountDisplayOrder.subscribe(m => { _navOrderMap = m; });
+
   // Page-wide account union — every account with data in any of the
-  // three sources. Sorted alphabetically so row order matches the
-  // Capital + Equity tabs and PerformancePage's NAV grid.
+  // three sources. Sorted by canonical display order (Kite → DH3747 →
+  // Groww → DH6847) so row order matches every other grid.
   const _allAccounts = $derived.by(() => {
     const set = new Set();
     for (const r of _funds)     if (r.account && r.account !== 'TOTAL') set.add(String(r.account));
     for (const r of _positions) if (r.account) set.add(String(r.account));
     for (const r of _holdings)  if (r.account) set.add(String(r.account));
-    return [...set].sort();
+    return sortAccountsBy([...set], _navOrderMap);
   });
 
   const _scopedAccounts = $derived.by(() => {

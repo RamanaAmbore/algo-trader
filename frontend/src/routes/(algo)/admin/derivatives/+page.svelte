@@ -86,6 +86,10 @@
   let strategyErr   = $state('');
   /** @type {(() => void) | null} */
   let _autoSelectPollId = null;
+  // Canonical account display order map — subscribed so `accountChoices`
+  // re-derives whenever fetchBrokerOrder() resolves after cold load.
+  let _derivOrderMap = $state(/** @type {Record<string,number>} */ ({}));
+  const _unsubDerivsOrder = accountDisplayOrder.subscribe(m => { _derivOrderMap = m; });
   onDestroy(() => {
     _autoSelectPollId?.();
     for (const t of _orderToastTimers) clearTimeout(t);
@@ -1658,7 +1662,9 @@
     for (const a of realAccounts) {
       if (a) accts.add(a);
     }
-    return Array.from(accts).sort();
+    // Use canonical display order (tracked via _derivOrderMap $state so the
+    // derived re-fires when fetchBrokerOrder() resolves after cold load).
+    return sortAccountsBy(Array.from(accts), _derivOrderMap);
   });
   /** Long-term usage memory for the Underlying picker. Operator: "It
    *  also needs to sort on usage count. The most used ones should come
@@ -1807,7 +1813,7 @@
     if (selectedAccounts.length > 0) {
       const cur = new Set(selectedAccounts);
       for (const a of newAccts) cur.add(a);
-      selectedAccounts = [...cur].sort();
+      selectedAccounts = sortAccountsBy([...cur], _derivOrderMap);
     }
     // Mark every account in choices as seen — "has been offered to
     // the operator in the picker, they had a chance to react." If
@@ -4591,7 +4597,7 @@
   });
   onDestroy(() => {
     teardown?.(); posTeardown?.(); simTeardown?.(); wsTeardown?.(); quotesTeardown?.();
-    flash.dispose(); _unsubBook?.();
+    flash.dispose(); _unsubBook?.(); _unsubDerivsOrder?.();
     if (_urlSyncTimer) { clearTimeout(_urlSyncTimer); _urlSyncTimer = null; }
   });
 

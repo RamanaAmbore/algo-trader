@@ -18,6 +18,7 @@
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import { openActivityModal } from '$lib/stores';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
+  import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
   // mode (sim/paper/live/shadow/replay): when set, auto-flips logTab to
   // the mapped tab AND auto-applies the matching order filter — sim →
@@ -410,7 +411,14 @@
     // system + simulator polls are deferred — started in the $effect below
     // on first tab click so idle sessions pay zero cost for tabs never visited.
   });
-  onDestroy(() => { for (const teardown of _intervals) teardown(); });
+  // Canonical account display order — subscribed so _availableAccounts
+  // re-derives when fetchBrokerOrder() resolves after cold load.
+  let _logOrderMap = $state(/** @type {Record<string,number>} */ ({}));
+  const _unsubLogOrder = accountDisplayOrder.subscribe(m => { _logOrderMap = m; });
+  onDestroy(() => {
+    for (const teardown of _intervals) teardown();
+    _unsubLogOrder();
+  });
 
   // Lazy-start deferred tab pollers on first activation.
   $effect(() => {
@@ -625,7 +633,7 @@
       const a = String(o?.account || '').trim();
       if (a) s.add(a);
     }
-    return [...s].sort();
+    return sortAccountsBy([...s], _logOrderMap);
   });
   // Mirror _availableAccounts into the parent's bindable when one
   // is provided. ActivityLogModal uses this to render its own
