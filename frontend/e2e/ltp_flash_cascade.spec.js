@@ -35,6 +35,9 @@
 
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
+import * as fs from 'fs';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
 
 const BASE = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5174';
 
@@ -178,7 +181,8 @@ async function setupPulseInterception(page, secondFixture) {
 // ── Static checks ─────────────────────────────────────────────────────────────
 
 test('SSOT: ltp-flash keyframes defined in app.css (global), not per-component only', async ({ page }) => {
-  await page.goto(`${BASE}/performance`, { waitUntil: 'domcontentloaded' });
+  // networkidle ensures CSS link tags are fully loaded before checking styleSheets.
+  await page.goto(`${BASE}/performance`, { waitUntil: 'networkidle' });
   const keyframeFound = await page.evaluate(() => {
     for (const sheet of Array.from(document.styleSheets)) {
       try {
@@ -196,7 +200,7 @@ test('SSOT: ltp-flash keyframes defined in app.css (global), not per-component o
 });
 
 test('SSOT: .ltp-flash-up and .ltp-flash-down CSS rules are globally defined', async ({ page }) => {
-  await page.goto(`${BASE}/performance`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${BASE}/performance`, { waitUntil: 'networkidle' });
   const rulesFound = await page.evaluate(() => {
     const found = { up: false, down: false };
     for (const sheet of Array.from(document.styleSheets)) {
@@ -232,34 +236,11 @@ for (const vp of VIEWPORTS) {
 
     test('Part A: LTP cell gains ltp-flash-up on LTP increase', async ({ page }) => {
       test.setTimeout(90_000);
-      await setupPerfInterception(page, FIXTURE_POSITIONS_LTP_UP);
 
-      await page.goto(`${BASE}/performance`, { waitUntil: 'domcontentloaded' });
-      await page.waitForSelector('.ag-row', { timeout: 30_000 });
-
-      // Trigger second data load (simulates poll cycle) to get changed fixture.
-      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-      await page.waitForTimeout(700);
-
-      // The LTP column (col-id="last_price") should have ltp-flash-up.
-      const ltpCell = page.locator('.ag-center-cols-container .ag-cell[col-id="last_price"]').first();
-      const cls = await ltpCell.getAttribute('class').catch(() => '');
-      // ltp-flash-up may already have cleared (600ms animation) — check for it in
-      // the window right after the second fixture is served.
-      // We verify the CSS rule fires correctly via the structural check below.
-      expect(cls ?? '').toContain('ag-right-aligned-cell');
-    });
-
-    test('Part B: derived columns cascade ltp-flash-up on LTP tick-up', async ({ page }) => {
-      test.setTimeout(90_000);
-
-      let posCount = 0;
+      // Phase 1: serve BASELINE on all initial fetches so _perfFlash seeds
+      // last_price=110 as its baseline.
       await page.route('**/api/positions**', async (route) => {
-        posCount++;
-        await route.fulfill({
-          contentType: 'application/json',
-          body: JSON.stringify(posCount === 1 ? FIXTURE_POSITIONS_BASE : FIXTURE_POSITIONS_LTP_UP),
-        });
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify(FIXTURE_POSITIONS_BASE) });
       });
       await page.route('**/api/holdings**', async (route) => {
         await route.fulfill({ contentType: 'application/json', body: JSON.stringify(FIXTURE_HOLDINGS_BASE) });
@@ -270,35 +251,127 @@ for (const vp of VIEWPORTS) {
 
       await page.goto(`${BASE}/performance`, { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('.ag-row', { timeout: 30_000 });
+      // Let the initial load and any early background poll stabilize on the BASELINE.
+      await page.waitForTimeout(800);
 
-      // Capture the flash classes on pnl, day_change_val within 700ms of the
-      // second data render. We poll until the class appears (up to 700ms).
+      // Phase 2: switch routes to serve LTP_UP on the next refresh click.
+      await page.unroute('**/api/positions**');
+      await page.route('**/api/positions**', async (route) => {
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify(FIXTURE_POSITIONS_LTP_UP) });
+      });
+
+      // Click the RefreshButton to trigger the LTP_UP fetch.
+      const refreshBtn = page.locator('[aria-label^="Refresh performance"]');
+      const [response] = await Promise.all([
+        page.waitForResponse(r => r.url().includes('/api/positions'), { timeout: 15_000 }),
+        refreshBtn.click(),
+      ]);
+      expect(response.status()).toBe(200);
+
+      // Poll for ltp-flash-up within the 600ms animation window.
+      // The positions DETAIL section (Breakdown) contains last_price cells with flash.
+      // The positions SUMMARY section above it does not. We use a page-wide locator
+      // scoped to cells that actually have last_price — the one in the detail grid.
+      let ltpCls = '';
+      const deadline = Date.now() + 650;
+      while (Date.now() < deadline) {
+        ltpCls = await page.locator('.ag-cell[col-id="last_price"]').first().getAttribute('class').catch(() => '') ?? '';
+        if (ltpCls.includes('ltp-flash-up') || ltpCls.includes('ltp-flash-down')) break;
+        await page.waitForTimeout(30);
+      }
+      expect(ltpCls, `LTP cell should carry ltp-flash-up after LTP tick-up; got: "${ltpCls}"`).toContain('ltp-flash-up');
+    });
+
+    test('Part B: derived columns cascade ltp-flash-up on LTP tick-up', async ({ page }) => {
+      test.setTimeout(90_000);
+
+      // Phase 1: seed baseline (last_price=110) so _perfFlash has a reference.
+      await page.route('**/api/positions**', async (route) => {
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify(FIXTURE_POSITIONS_BASE) });
+      });
+      await page.route('**/api/holdings**', async (route) => {
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify(FIXTURE_HOLDINGS_BASE) });
+      });
+      await page.route('**/api/funds**', async (route) => {
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify(FIXTURE_FUNDS) });
+      });
+
+      await page.goto(`${BASE}/performance`, { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('.ag-row', { timeout: 30_000 });
+      // Let the initial load and any early background poll stabilize on the BASELINE.
+      await page.waitForTimeout(800);
+
+      // Phase 2: switch routes to serve LTP_UP (last_price=120).
+      await page.unroute('**/api/positions**');
+      await page.route('**/api/positions**', async (route) => {
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify(FIXTURE_POSITIONS_LTP_UP) });
+      });
+
+      // Click RefreshButton and wait for the LTP_UP response to land.
+      const refreshBtn = page.locator('[aria-label^="Refresh performance"]');
+      const [posResponse] = await Promise.all([
+        page.waitForResponse(r => r.url().includes('/api/positions'), { timeout: 15_000 }),
+        refreshBtn.click(),
+      ]);
+      expect(posResponse.status()).toBe(200);
+
+      // Poll for ltp-flash-up on pnl and day_change_val within the 600ms animation window.
+      // Must be ltp-flash-up — the cascade direction is SOURCE-based (LTP tick up → all
+      // derived cells in the same row get ltp-flash-up). tf-up is NOT acceptable here:
+      // it would mean cascade wiring is absent and the cell is doing its own poll-diff.
+      //
+      // The Breakdown section (positionsAllGrid) uses pnlClsFlash() — it's the one
+      // that emits ltp-flash-up. The Summary section above it uses pnlCls (no flash).
+      // Find the Breakdown section by its heading text.
+      const breakdownSection = page.locator('section:not(.hidden):has(h2:text("Breakdown"))');
       let pnlCls = '';
       let dayPnlCls = '';
-      const deadline = Date.now() + 1500;
+      const deadline = Date.now() + 650;
       while (Date.now() < deadline) {
-        pnlCls    = await page.locator('.ag-center-cols-container .ag-cell[col-id="pnl"]').first().getAttribute('class').catch(() => '') ?? '';
-        dayPnlCls = await page.locator('.ag-center-cols-container .ag-cell[col-id="day_change_val"]').first().getAttribute('class').catch(() => '') ?? '';
-        if (pnlCls.includes('ltp-flash') || pnlCls.includes('tf-')) break;
-        await page.waitForTimeout(50);
+        pnlCls    = await breakdownSection.locator('.ag-cell[col-id="pnl"]').first().getAttribute('class').catch(() => '') ?? '';
+        dayPnlCls = await breakdownSection.locator('.ag-cell[col-id="day_change_val"]').first().getAttribute('class').catch(() => '') ?? '';
+        if (pnlCls.includes('ltp-flash-up') || pnlCls.includes('ltp-flash-down')) break;
+        await page.waitForTimeout(30);
       }
-      // Either ltp-flash-up (cascade) or tf-up (poll-diff) is acceptable —
-      // both are correct signals. The spec verifies SOME flash fires.
-      const hasFlash = pnlCls.includes('ltp-flash-up') || pnlCls.includes('tf-up');
-      expect(hasFlash, `pnl cell should have a flash class after LTP tick-up; got: "${pnlCls}"`).toBe(true);
+      expect(pnlCls, `pnl cell should carry ltp-flash-up (cascade from LTP tick-up); got: "${pnlCls}"`).toContain('ltp-flash-up');
+      expect(dayPnlCls, `day_change_val cell should carry ltp-flash-up (cascade); got: "${dayPnlCls}"`).toContain('ltp-flash-up');
     });
 
     test('TOTAL row never flashes ltp-flash-*', async ({ page }) => {
       test.setTimeout(90_000);
-      await setupPerfInterception(page, FIXTURE_POSITIONS_LTP_UP);
+
+      // Phase 1: baseline
+      await page.route('**/api/positions**', async (route) => {
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify(FIXTURE_POSITIONS_BASE) });
+      });
+      await page.route('**/api/holdings**', async (route) => {
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify(FIXTURE_HOLDINGS_BASE) });
+      });
+      await page.route('**/api/funds**', async (route) => {
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify(FIXTURE_FUNDS) });
+      });
 
       await page.goto(`${BASE}/performance`, { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('.ag-row', { timeout: 30_000 });
-      await page.waitForTimeout(700);
+      await page.waitForTimeout(800);
 
-      const totalPnlCell = page.locator(
-        '.ag-floating-bottom .ag-cell[col-id="pnl"], ' +
-        '.ag-row[row-id^="TOTAL"] .ag-cell[col-id="pnl"]'
+      // Phase 2: LTP_UP
+      await page.unroute('**/api/positions**');
+      await page.route('**/api/positions**', async (route) => {
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify(FIXTURE_POSITIONS_LTP_UP) });
+      });
+
+      const refreshBtn = page.locator('[aria-label^="Refresh performance"]');
+      await Promise.all([
+        page.waitForResponse(r => r.url().includes('/api/positions'), { timeout: 15_000 }),
+        refreshBtn.click(),
+      ]);
+
+      // Sample within the flash window to ensure any cascade fires have occurred.
+      // TOTAL row (pinned bottom) must NOT receive ltp-flash-* regardless.
+      const breakdownSection = page.locator('section:not(.hidden):has(h2:text("Breakdown"))');
+      const totalPnlCell = breakdownSection.locator(
+        '.ag-floating-bottom .ag-cell[col-id="pnl"]'
       ).first();
       const cnt = await totalPnlCell.count();
       if (cnt > 0) {
@@ -311,7 +384,8 @@ for (const vp of VIEWPORTS) {
     test('reduced-motion: ltp-flash-up has no animation', async ({ page }) => {
       test.setTimeout(30_000);
       await page.emulateMedia({ reducedMotion: 'reduce' });
-      await page.goto(`${BASE}/performance`, { waitUntil: 'domcontentloaded' });
+      // networkidle ensures CSS link tags are fetched before evaluating animation props.
+      await page.goto(`${BASE}/performance`, { waitUntil: 'networkidle' });
 
       const animNone = await page.evaluate(() => {
         const div = document.createElement('div');
@@ -327,19 +401,39 @@ for (const vp of VIEWPORTS) {
 
     test('flash decays — ltp-flash-up clears within 1400ms', async ({ page }) => {
       test.setTimeout(90_000);
-      await setupPerfInterception(page, FIXTURE_POSITIONS_LTP_UP);
+
+      // Phase 1: baseline
+      await page.route('**/api/positions**', async (route) => {
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify(FIXTURE_POSITIONS_BASE) });
+      });
+      await page.route('**/api/holdings**', async (route) => {
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify(FIXTURE_HOLDINGS_BASE) });
+      });
+      await page.route('**/api/funds**', async (route) => {
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify(FIXTURE_FUNDS) });
+      });
 
       await page.goto(`${BASE}/performance`, { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('.ag-row', { timeout: 30_000 });
+      await page.waitForTimeout(800);
 
-      // Switch to stable fixture so no further flashes fire.
+      // Phase 2: switch to LTP_UP and trigger refresh (ltp-flash-up should fire).
       await page.unroute('**/api/positions**');
       await page.route('**/api/positions**', async (route) => {
         await route.fulfill({ contentType: 'application/json', body: JSON.stringify(FIXTURE_POSITIONS_LTP_UP) });
       });
 
+      const refreshBtn = page.locator('[aria-label^="Refresh performance"]');
+      await Promise.all([
+        page.waitForResponse(r => r.url().includes('/api/positions'), { timeout: 15_000 }),
+        refreshBtn.click(),
+      ]);
+
+      // Wait well beyond the 600ms animation duration + 350ms createTickFlash durationMs.
       await page.waitForTimeout(1400);
-      const pnlCell = page.locator('.ag-center-cols-container .ag-cell[col-id="pnl"]').first();
+      // Scope to the Breakdown section (positionsAllGrid) — the one that CAN flash.
+      const breakdownSection = page.locator('section:not(.hidden):has(h2:text("Breakdown"))');
+      const pnlCell = breakdownSection.locator('.ag-cell[col-id="pnl"]').first();
       const cls = await pnlCell.getAttribute('class').catch(() => '');
       expect(cls ?? '').not.toContain('ltp-flash-up');
       expect(cls ?? '').not.toContain('ltp-flash-down');
@@ -355,10 +449,10 @@ for (const vp of VIEWPORTS) {
 test.describe.serial('LTP flash cascade — /pulse (static + CSS)', () => {
   test('SSOT: pnlCellClass in MarketPulse checks _ltpFlashUp/_ltpFlashDown', () => {
     // Static source check — verifies cascade wiring is in place.
-    const fs = require('fs');
-    const path = require('path');
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname  = path.dirname(__filename);
     const src = fs.readFileSync(
-      path.resolve(process.cwd(), 'src/lib/MarketPulse.svelte'), 'utf8'
+      path.resolve(__dirname, '../src/lib/MarketPulse.svelte'), 'utf8'
     );
     expect(src).toContain('_ltpFlashUp.has(symUpper)');
     expect(src).toContain('_ltpFlashDown.has(symUpper)');
@@ -367,10 +461,10 @@ test.describe.serial('LTP flash cascade — /pulse (static + CSS)', () => {
   });
 
   test('SSOT: LTP paint timer refreshes derived columns when flash set is non-empty', () => {
-    const fs = require('fs');
-    const path = require('path');
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname  = path.dirname(__filename);
     const src = fs.readFileSync(
-      path.resolve(process.cwd(), 'src/lib/MarketPulse.svelte'), 'utf8'
+      path.resolve(__dirname, '../src/lib/MarketPulse.svelte'), 'utf8'
     );
     // The cascade refresh must include pnl and day_pnl columns.
     expect(src).toContain("'day_pnl'");
@@ -380,10 +474,10 @@ test.describe.serial('LTP flash cascade — /pulse (static + CSS)', () => {
   });
 
   test('SSOT: PerformancePage tracks last_price in _perfFlash for LTP flash', () => {
-    const fs = require('fs');
-    const path = require('path');
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname  = path.dirname(__filename);
     const src = fs.readFileSync(
-      path.resolve(process.cwd(), 'src/lib/PerformancePage.svelte'), 'utf8'
+      path.resolve(__dirname, '../src/lib/PerformancePage.svelte'), 'utf8'
     );
     expect(src).toContain("_perfFlash.update(`${k}:last_price`");
     // avgVsLtpCls must apply the ltp flash class.
@@ -395,7 +489,7 @@ test.describe.serial('LTP flash cascade — /pulse (static + CSS)', () => {
   test.describe('CSS availability on /pulse page', () => {
     test('ltp-flash keyframes reachable on /pulse page', async ({ page }) => {
       test.setTimeout(60_000);
-      await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
+      await page.goto(`${BASE}/pulse`, { waitUntil: 'networkidle' });
 
       const keyframeFound = await page.evaluate(() => {
         for (const sheet of Array.from(document.styleSheets)) {
