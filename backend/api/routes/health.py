@@ -647,6 +647,12 @@ class BrokerAccountHealth(msgspec.Struct):
     circuit_state: str = "closed"
     consecutive_fail_count: int = 0
     circuit_open_until: Optional[str] = None  # ISO-8601 UTC, or None
+    # Per-account poll priority fields (Dhan-only, Jul 2026).
+    # Kite/Groww rows carry defaults; UI gates rendering on broker='dhan'.
+    poll_priority: str = "hot"
+    auto_downgrade_enabled: bool = False
+    auto_downgraded_at: Optional[str] = None   # ISO-8601 UTC, or None
+    auto_downgrade_reason: Optional[str] = None
 
 
 class BrokerHealthResponse(msgspec.Struct):
@@ -767,6 +773,8 @@ class BrokerHealthController(Controller):
         # Build per-account entries.  Include every account present in
         # health_map; fall back to BrokerAccount rows for broker label.
         broker_label_map: dict[str, str] = {}
+        # poll_priority_map: account → dict with poll_priority fields
+        poll_priority_map: dict[str, dict] = {}
         try:
             async with shared_async_session() as _sess:
                 rows = (await _sess.execute(
@@ -776,6 +784,21 @@ class BrokerHealthController(Controller):
                     broker_label_map[row.account] = _broker_id_to_label(
                         row.broker_id or ""
                     )
+                    adt = getattr(row, "auto_downgraded_at", None)
+                    poll_priority_map[row.account] = {
+                        "poll_priority": str(
+                            getattr(row, "poll_priority", "hot") or "hot"
+                        ),
+                        "auto_downgrade_enabled": bool(
+                            getattr(row, "auto_downgrade_enabled", False)
+                        ),
+                        "auto_downgraded_at": (
+                            adt.isoformat() if adt else None
+                        ),
+                        "auto_downgrade_reason": getattr(
+                            row, "auto_downgrade_reason", None
+                        ),
+                    }
         except Exception:
             pass
 
@@ -796,6 +819,7 @@ class BrokerHealthController(Controller):
             last_ok   = entry.get("last_ok_at",   0.0) or 0.0
             last_fail = entry.get("last_fail_at", 0.0) or 0.0
             last_check = max(last_ok, last_fail)
+            _pp = poll_priority_map.get(acct, {})
             accounts.append(BrokerAccountHealth(
                 account=acct,
                 broker=broker_label_map.get(acct, "unknown"),
@@ -809,6 +833,10 @@ class BrokerHealthController(Controller):
                 circuit_state=cb_state,
                 consecutive_fail_count=cb_count,
                 circuit_open_until=cb_until_iso,
+                poll_priority=_pp.get("poll_priority", "hot"),
+                auto_downgrade_enabled=bool(_pp.get("auto_downgrade_enabled", False)),
+                auto_downgraded_at=_pp.get("auto_downgraded_at"),
+                auto_downgrade_reason=_pp.get("auto_downgrade_reason"),
             ))
 
         # Stable sort: red → amber → green, then account name.

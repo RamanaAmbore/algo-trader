@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import msgspec
-from litestar import Controller, delete, get, patch, post
+from litestar import Controller, delete, get, patch, post, put
 from litestar.exceptions import HTTPException
 from sqlalchemy import select
 
@@ -68,6 +68,13 @@ class BrokerAccountInfo(msgspec.Struct):
     has_password:     bool = False
     has_totp_token:   bool = False
     has_access_token: bool = False
+    # Per-account poll priority (Dhan-only, Jul 2026).
+    # 'hot' | 'warm' | 'cold' — controls background poll cadence.
+    # Kite/Groww accounts carry this field but the gate is never applied.
+    poll_priority: str = "hot"
+    auto_downgrade_enabled:  bool = False
+    auto_downgraded_at:      str | None = None  # ISO-8601 UTC or None
+    auto_downgrade_reason:   str | None = None
 
 
 class BrokerAccountCreate(msgspec.Struct):
@@ -105,6 +112,9 @@ class BrokerAccountUpdate(msgspec.Struct):
     priority:    Optional[int]  = None
     extra_config: Optional[dict] = None
     historical_data_enabled: Optional[bool] = None
+    # Per-account poll priority (Dhan-only, Jul 2026).
+    poll_priority:          Optional[str]  = None   # 'hot' | 'warm' | 'cold'
+    auto_downgrade_enabled: Optional[bool] = None
 
 
 class TestResult(msgspec.Struct):
@@ -116,6 +126,7 @@ class TestResult(msgspec.Struct):
 # ── Helpers ───────────────────────────────────────────────────────────
 
 def _to_info(row: BrokerAccount, *, loaded: bool = False) -> BrokerAccountInfo:
+    auto_downgraded_at = getattr(row, "auto_downgraded_at", None)
     return BrokerAccountInfo(
         id=row.id, account=row.account, broker_id=row.broker_id,
         api_key=row.api_key,
@@ -133,6 +144,12 @@ def _to_info(row: BrokerAccount, *, loaded: bool = False) -> BrokerAccountInfo:
         created_at=row.created_at.isoformat() if row.created_at else "",
         updated_at=row.updated_at.isoformat() if row.updated_at else "",
         loaded=loaded,
+        poll_priority=str(getattr(row, "poll_priority", "hot") or "hot"),
+        auto_downgrade_enabled=bool(getattr(row, "auto_downgrade_enabled", False)),
+        auto_downgraded_at=(
+            auto_downgraded_at.isoformat() if auto_downgraded_at else None
+        ),
+        auto_downgrade_reason=getattr(row, "auto_downgrade_reason", None),
     )
 
 
@@ -285,6 +302,21 @@ class BrokersController(Controller):
             if data.extra_config is not None: row.extra_config = dict(data.extra_config or {})
             if data.historical_data_enabled is not None:
                 row.historical_data_enabled = bool(data.historical_data_enabled)
+            if data.poll_priority is not None:
+                valid_priorities = {"hot", "warm", "cold"}
+                if data.poll_priority not in valid_priorities:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"poll_priority must be one of: {sorted(valid_priorities)}"
+                    )
+                row.poll_priority = data.poll_priority
+                # Manual priority change clears auto-downgrade stamps so
+                # the UI can distinguish manual vs auto priority changes.
+                if data.poll_priority != getattr(row, "auto_downgrade_reason", None):
+                    row.auto_downgraded_at = None
+                    row.auto_downgrade_reason = None
+            if data.auto_downgrade_enabled is not None:
+                row.auto_downgrade_enabled = bool(data.auto_downgrade_enabled)
 
             # Secret fields — only update when the operator passed a
             # NON-EMPTY string. Empty / None means "leave unchanged" so
@@ -318,6 +350,41 @@ class BrokersController(Controller):
         await _reload_connections()
         logger.warning(f"broker_accounts: deleted {account!r} via /admin/brokers")
         return {"ok": True, "account": account}
+
+    # ── Restore poll priority (manage_brokers) ───────────────────────
+
+    @post("/{account:str}/restore-priority", guards=[cap_guard("manage_brokers")])
+    async def restore_priority(self, account: str) -> BrokerAccountInfo:
+        """Reset poll_priority to 'hot', clear auto-downgrade stamps,
+        and set next_poll_at to now so the account is polled on the
+        next background cycle.
+
+        Operator action after investigating a wave of Dhan errors that
+        triggered auto-downgrade. Does not restart the Connections
+        singleton (no credentials changed).
+        """
+        from backend.brokers.broker_apis import _dhan_next_poll
+        async with shared_async_session() as s:
+            row = (await s.execute(
+                select(BrokerAccount).where(BrokerAccount.account == account)
+            )).scalar_one_or_none()
+            if not row:
+                raise HTTPException(status_code=404,
+                    detail=f"Broker account {account!r} not found")
+            row.poll_priority = "hot"
+            row.auto_downgraded_at = None
+            row.auto_downgrade_reason = None
+            row.updated_at = datetime.now(timezone.utc)
+            await s.commit()
+            await s.refresh(row)
+
+        # Bump next_poll_at to 0 so the next background cycle polls immediately.
+        _dhan_next_poll[account] = 0.0
+
+        logger.warning(
+            f"broker_accounts: poll priority restored to hot for {account!r}"
+        )
+        return _to_info(row, loaded=(account in _loaded_accounts()))
 
     # ── Test connection (test_broker_connection cap — admin / ops) ───
 
