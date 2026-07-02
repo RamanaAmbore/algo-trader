@@ -905,13 +905,10 @@
     // accounts present in the per-render filtered subset. An account
     // with only holdings (no positions, no funds — e.g. Groww when
     // its funds API is auth-failed but holdings cache is warm) still
-    // surfaces as a NAV row. Sorted alphabetically so the row order
-    // matches every other grid (operator: "the account order sequence
-    // should be same in all grids").
+    // surfaces as a NAV row. Already in canonical display order from
+    // `accounts` (sortAccountsBy on line 971) — no secondary sort.
     const navAccts = accounts
-      .filter(a => selectedAccounts.length === 0 || selectedAccounts.includes(a))
-      .slice()
-      .sort();
+      .filter(a => selectedAccounts.length === 0 || selectedAccounts.includes(a));
     // Canonical NAV breakdown via `$lib/data/nav` — same math as
     // NavBreakdown.svelte + backend nav.py:compute_firm_nav. Renames
     // `cash` → `net` to match this page's pre-existing ag-Grid column
