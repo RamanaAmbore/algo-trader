@@ -152,11 +152,16 @@ function _friendlyError(/** @type {number|null} */ status,
 
 /** One fetch wrapper to rule them all. Replaces ~15 hand-rolled
  *  fetch+401+error blocks, and routes every error through the
- *  friendly-message + masked-log pipeline. */
+ *  friendly-message + masked-log pipeline.
+ *
+ *  Callers may pass an `AbortSignal` via `opts.signal` so they can
+ *  cancel in-flight requests (e.g. component unmount, per-call timeout).
+ *  An AbortError is re-thrown as-is so the caller can distinguish
+ *  intentional cancellation from a real network failure. */
 async function _request(/** @type {string} */ method,
                         /** @type {string} */ path,
-                        /** @type {{auth?: boolean, body?: unknown}} */ opts = {}) {
-  const { auth = false, body } = opts;
+                        /** @type {{auth?: boolean, body?: unknown, signal?: AbortSignal}} */ opts = {}) {
+  const { auth = false, body, signal } = opts;
   /** @type {Record<string, string>} */
   const headers = auth ? { ..._authHeaders() } : {};
   /** @type {RequestInit} */
@@ -165,10 +170,13 @@ async function _request(/** @type {string} */ method,
     headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(body);
   }
+  if (signal) init.signal = signal;
   let res;
   try {
     res = await fetch(`${BASE}${path}`, init);
   } catch (e) {
+    // Re-throw AbortError so callers can detect intentional cancellation.
+    if (/** @type {any} */ (e)?.name === 'AbortError') throw e;
     _logApiError(path, null, /** @type {any} */ (e)?.message || e);
     throw new Error(_friendlyError(null, null));
   }
@@ -359,9 +367,11 @@ export const fetchStrategyMetrics = (id, { days = 90 } = {}) =>
   _get(`/strategies/${id}/metrics?days=${Number(days) || 90}`,
        { auth: _hasToken() });
 
-/** Firm NAV (slice 7j) — daily aggregate. */
-export const fetchNavHistory = ({ days = 90 } = {}) =>
-  _get(`/nav/?days=${Number(days) || 90}`, { auth: _hasToken() });
+/** Firm NAV (slice 7j) — daily aggregate.
+ *  Pass `signal` to cancel a pending fetch (e.g. component unmount or
+ *  a caller-managed AbortController timeout). */
+export const fetchNavHistory = ({ days = 90, signal = undefined } = {}) =>
+  _get(`/nav/?days=${Number(days) || 90}`, { auth: _hasToken(), signal });
 export const fetchNavLatest  = () =>
   _get('/nav/latest', { auth: _hasToken() });
 export const triggerNavCompute = () =>

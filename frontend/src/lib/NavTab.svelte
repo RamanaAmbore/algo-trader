@@ -50,14 +50,40 @@
 
   const _pulse = createChartRefreshPulse();
 
+  // Per-call AbortController so a network stall (mobile, broker TLS
+  // handshake, backend slow query) never pins `loading = true`
+  // indefinitely. Cancelled on component unmount and on every new
+  // load() invocation (one in-flight at a time).
+  /** @type {AbortController|null} */
+  let _ac = null;
+
   async function load() {
+    // Cancel any prior in-flight request before starting a new one.
+    if (_ac) { _ac.abort(); }
+    _ac = new AbortController();
+    const { signal } = _ac;
+
+    // 15 s hard timeout — covers slow mobile + stalled backend.
+    const _timeout = setTimeout(() => _ac?.abort(), 15_000);
+
     loading = true;
     _error = null;
     try {
-      const data = await fetchNavHistory({ days: lookback });
+      const data = await fetchNavHistory({ days: lookback, signal });
       history = Array.isArray(data?.rows) ? data.rows : [];
       if (history.length) _pulse.notify('nav');
     } catch (err) {
+      // AbortError from timeout → user-visible retry prompt.
+      // AbortError from unmount → silently swallow (component is gone).
+      if (/** @type {any} */ (err)?.name === 'AbortError') {
+        // If the component was already destroyed, the onDestroy abort
+        // fires and we don't want to flip _error on a dead instance.
+        // Check `_ac` as a proxy for "still mounted": onDestroy nulls it.
+        if (_ac) {
+          _error = 'NAV history timed out — click Retry';
+        }
+        return;
+      }
       // Capture the error so the operator sees it rather than a
       // silent empty state. 401 on demo/anon: the message will read
       // "Unauthorized" which is accurate and actionable.
@@ -65,7 +91,11 @@
         ? String(/** @type {any} */ (err).message).slice(0, 80)
         : 'Failed to load NAV history';
     } finally {
+      clearTimeout(_timeout);
       loading = false;
+      // Null _ac ONLY when this call's controller is still current.
+      // A rapid retry would have replaced _ac before we get here.
+      if (_ac?.signal === signal) _ac = null;
     }
   }
 
@@ -86,7 +116,12 @@
     // keeping a slow heartbeat ensures the chart is fresh on tab return.
     _stop = marketAwareInterval(load, 60_000, 60_000);
   });
-  onDestroy(() => { _stop(); });
+  onDestroy(() => {
+    _stop();
+    // Abort any in-flight fetch to avoid "state updated after unmount"
+    // and to release the network connection.
+    if (_ac) { _ac.abort(); _ac = null; }
+  });
 
   function _fmtInr(/** @type {number} */ n) {
     if (n == null || !isFinite(n)) return '—';
