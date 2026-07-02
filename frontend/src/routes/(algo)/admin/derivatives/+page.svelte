@@ -5193,13 +5193,11 @@
       <div class="byund-grid">
         <div class="byund-headrow">
           <span>Underlying</span>
-          <span class="num" title="Today's P&L change from F&O legs only (excludes any equity holdings on this underlying).">Day P&amp;L (F&amp;O)</span>
-          <span class="num" title="Total P&L from F&O legs only — what the derivative book alone is doing (excludes any equity holdings on this underlying).">P&amp;L (F&amp;O)</span>
           <span class="num" title="Live underlying LTP. Indices use the spot price; MCX commodities use the nearest-future LTP (no tradeable spot).">Spot</span>
           <span class="num" title="Underlying day-change %, signed (+/-). Computed from broker `change_percent`, else (LTP - prev_close) / prev_close.">Day %</span>
           <span class="num" title="Underlying previous-session close (broker `ohlc.close`).">Close</span>
-          <span class="num" title="Today's P&L change across the full book — F&O legs + any equity holdings on this underlying. Matches the dashboard's Day P&L convention.">Day P&amp;L</span>
-          <span class="num" title="Total P&L across the full book — F&O legs + any equity holdings on this underlying. Matches the dashboard's P&L convention.">P&amp;L</span>
+          <span class="num" title="Today's P&L change. When Include Holdings toggle is OFF: F&O legs only. When ON: F&O legs + equity holdings on this underlying.">Day P&amp;L</span>
+          <span class="num" title="Total P&L. When Include Holdings toggle is OFF: F&O legs only. When ON: F&O + equity holdings on this underlying.">P&amp;L</span>
           <span class="num">Legs</span>
           <span class="num" title="Sum of contract-qty across option + future legs.">F&amp;O qty</span>
           <span class="num" title="Sum of share-qty across equity / proxy holding legs.">Eq qty</span>
@@ -5237,15 +5235,20 @@
           {@const _expVal = g.underlying === selectedUnderlying
             ? _legsExpPnlTotal
             : _expValOther}
+          <!-- Toggle-aware Day P&L + P&L (mirrors the Exp P&L column's
+               pattern). Operator 2026-07-01: "p&l in snapshot should
+               change based on hold button is pressed like exp p & l." -->
+          {@const _dayCell = _includeHoldings ? g.day_with : g.day_without}
+          {@const _pnlCell = _includeHoldings ? g.pnl_with : g.pnl_without}
+          {@const _dayFlash = _includeHoldings ? `${g.underlying}:day_h` : `${g.underlying}:day_w`}
+          {@const _pnlFlash = _includeHoldings ? `${g.underlying}:pnl_h` : `${g.underlying}:pnl_w`}
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
-            <span class="num {g.day_without > 0 ? 'cell-pos' : g.day_without < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_w`)}">{aggCompact(g.day_without)}</span>
-            <span class="num {g.pnl_without > 0 ? 'cell-pos' : g.pnl_without < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pnl_w`)}">{aggCompact(g.pnl_without)}</span>
             <span class="num {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
             <span class="num {_pct != null && _pct > 0 ? 'cell-pos' : _pct != null && _pct < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pct`)}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
-            <span class="num {g.day_with > 0 ? 'cell-pos' : g.day_with < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_h`)}">{aggCompact(g.day_with)}</span>
-            <span class="num {g.pnl_with > 0 ? 'cell-pos' : g.pnl_with < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pnl_h`)}">{aggCompact(g.pnl_with)}</span>
+            <span class="num {_dayCell > 0 ? 'cell-pos' : _dayCell < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(_dayFlash)}">{aggCompact(_dayCell)}</span>
+            <span class="num {_pnlCell > 0 ? 'cell-pos' : _pnlCell < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(_pnlFlash)}">{aggCompact(_pnlCell)}</span>
             <span class="num cell-muted">{Math.round(g.legs_with)}{Math.round(g.legs_with) !== g.legs_without ? `/${g.legs_without}` : ''}</span>
             <span class="num cell-muted">{g.qty_fno || '—'}</span>
             <span class="num cell-muted">{g.qty_eq || '—'}</span>
@@ -5266,22 +5269,25 @@
           </div>
         {/each}
         {#if _byUnderlyingTotals.length > 0}
-          <!-- Snapshot TOTAL exp P&L: for the selected underlying row we use
-               _legsExpPnlTotal (SSOT shared with legs grid); all other
-               underlyings use _byUnderlyingExp (whole-book rollup). -->
-          {@const _expTotal = Object.entries(_byUnderlyingExp).reduce(
-            (s, [root, v]) => s + (root === selectedUnderlying
-              ? _legsExpPnlTotal
-              : (_includeHoldings ? v.with : v.without)), 0)}
+          <!-- Snapshot TOTAL Exp P&L: sum every root's Exp contribution
+               from _byUnderlyingExp (whole-book rollup, consistent
+               aggregation across all roots). Prior code special-cased
+               the selected underlying via _legsExpPnlTotal, which
+               respects per-leg checkbox state — leading to divergence
+               when the operator unchecked some legs. Operator 2026-07-01:
+               "exp p & l total value is not correct when the hold button
+               is pressed in snapshot." -->
+          {@const _expTotal = Object.values(_byUnderlyingExp).reduce(
+            (s, v) => s + (_includeHoldings ? v.with : v.without), 0)}
+          {@const _totalDay = _includeHoldings ? _byUnderlyingTotal.day_with : _byUnderlyingTotal.day_without}
+          {@const _totalPnl = _includeHoldings ? _byUnderlyingTotal.pnl_with : _byUnderlyingTotal.pnl_without}
           <div class="byund-row byund-row-total">
             <span class="byund-und">TOTAL</span>
-            <span class="num {_byUnderlyingTotal.day_without > 0 ? 'cell-pos' : _byUnderlyingTotal.day_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_without)}</span>
-            <span class="num {_byUnderlyingTotal.pnl_without > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_without)}</span>
             <span class="num">—</span>
             <span class="num">—</span>
             <span class="num">—</span>
-            <span class="num {_byUnderlyingTotal.day_with > 0 ? 'cell-pos' : _byUnderlyingTotal.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_with)}</span>
-            <span class="num {_byUnderlyingTotal.pnl_with > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_with)}</span>
+            <span class="num {_totalDay > 0 ? 'cell-pos' : _totalDay < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_totalDay)}</span>
+            <span class="num {_totalPnl > 0 ? 'cell-pos' : _totalPnl < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_totalPnl)}</span>
             <span class="num">{Math.round(_byUnderlyingTotal.legs_with)}{Math.round(_byUnderlyingTotal.legs_with) !== _byUnderlyingTotal.legs_without ? `/${_byUnderlyingTotal.legs_without}` : ''}</span>
             <span class="num">{_byUnderlyingTotal.qty_fno || '—'}</span>
             <span class="num">{_byUnderlyingTotal.qty_eq || '—'}</span>
@@ -6077,19 +6083,17 @@
     display: grid;
     grid-template-columns:
       minmax(3.5rem, 0.55fr) /* underlying */
-      minmax(3.8rem, 0.6fr)  /* Day */
-      minmax(3.8rem, 0.6fr)  /* P&L */
       minmax(4rem,   0.65fr) /* Spot */
       minmax(3.5rem, 0.5fr)  /* Day % */
       minmax(4rem,   0.65fr) /* Prev Close */
-      minmax(3.8rem, 0.6fr)  /* Day Net */
-      minmax(3.8rem, 0.6fr)  /* P&L Net */
+      minmax(3.8rem, 0.6fr)  /* Day P&L (toggle-aware) */
+      minmax(3.8rem, 0.6fr)  /* P&L (toggle-aware) */
       minmax(3rem,   0.55fr) /* Legs */
       minmax(4rem,   0.6fr)  /* F&O qty */
       minmax(4rem,   0.6fr)  /* Eq qty */
       minmax(4rem,   0.6fr)  /* Exp P&L */
       minmax(4rem,   0.6fr); /* EV */
-    min-width: 800px;
+    min-width: 700px;
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);        /* match Pulse Positions ~0.625rem */
   }
