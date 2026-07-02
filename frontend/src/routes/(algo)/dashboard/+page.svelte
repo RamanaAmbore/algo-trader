@@ -1634,6 +1634,16 @@
   // Body rows from _positionsSummary / _holdingsSummary (already
   // account-filtered via _filterByAccount); TOTAL row from
   // _positionsTotal / _holdingsTotal is pinned at bottom.
+  //
+  // The 400 ms deferred refreshCells handle MUST be stored and cleared
+  // on each re-fire. Without clearing, every 15 s poll queues a new
+  // deferred task; after 10 min that's 40 dangling tasks per grid
+  // firing in a burst after each data update — visible as lag spikes.
+  /** @type {ReturnType<typeof setTimeout>|null} */
+  let _eqPosRefreshHandle = null;
+  /** @type {ReturnType<typeof setTimeout>|null} */
+  let _eqHoldRefreshHandle = null;
+
   $effect(() => {
     if (!_eqPosReady || !_eqPosGrid) return;
     // Tick-flash: seed flash.update() for each per-account row before
@@ -1647,9 +1657,13 @@
     _eqPosGrid.setGridOption('rowData', _positionsSummary);
     _eqPosGrid.setGridOption('pinnedBottomRowData', [_positionsTotal]);
     try { _eqPosGrid.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
-    setTimeout(() => {
+    // Clear any prior deferred refresh before scheduling a new one.
+    if (_eqPosRefreshHandle != null) { clearTimeout(_eqPosRefreshHandle); _eqPosRefreshHandle = null; }
+    _eqPosRefreshHandle = setTimeout(() => {
+      _eqPosRefreshHandle = null;
       try { _eqPosGrid.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
     }, 400);
+    return () => { if (_eqPosRefreshHandle != null) { clearTimeout(_eqPosRefreshHandle); _eqPosRefreshHandle = null; } };
   });
   $effect(() => {
     if (!_eqHoldReady || !_eqHoldGrid) return;
@@ -1661,9 +1675,13 @@
     _eqHoldGrid.setGridOption('rowData', _holdingsSummary);
     _eqHoldGrid.setGridOption('pinnedBottomRowData', [_holdingsTotal]);
     try { _eqHoldGrid.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
-    setTimeout(() => {
+    // Clear any prior deferred refresh before scheduling a new one.
+    if (_eqHoldRefreshHandle != null) { clearTimeout(_eqHoldRefreshHandle); _eqHoldRefreshHandle = null; }
+    _eqHoldRefreshHandle = setTimeout(() => {
+      _eqHoldRefreshHandle = null;
       try { _eqHoldGrid.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
     }, 400);
+    return () => { if (_eqHoldRefreshHandle != null) { clearTimeout(_eqHoldRefreshHandle); _eqHoldRefreshHandle = null; } };
   });
 
   // ── Account-multiselect scope predicate ───────────────────────────
