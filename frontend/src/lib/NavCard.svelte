@@ -11,7 +11,7 @@
    *                          YOUR SHARE panel hides when share_pct === 0
    *   anonymous / 401      → card hidden (silent swallow)
    */
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { fetchMyNav, fetchFirmNavPublic } from '$lib/api';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { authStore, visibleInterval } from '$lib/stores';
@@ -98,10 +98,16 @@
   // sample establishes baseline (no flash on mount).
   const flash = createTickFlash({ threshold: 0, durationMs: 300 });
   $effect(() => {
-    flash.update('shareNav',    shareNav);
-    flash.update('shareDayPnl', shareDayPnl);
-    flash.update('firmNav',     firmNav);
-    flash.update('firmDayPnl',  firmDayPnl);
+    const sn  = shareNav;
+    const sdp = shareDayPnl;
+    const fn  = firmNav;
+    const fdp = firmDayPnl;
+    untrack(() => {
+      flash.update('shareNav',    sn);
+      flash.update('shareDayPnl', sdp);
+      flash.update('firmNav',     fn);
+      flash.update('firmDayPnl',  fdp);
+    });
   });
 
   onMount(() => {
@@ -120,7 +126,7 @@
   // the effect itself (initialized to undefined) so the first run is a
   // no-op "remember the current value"; subsequent runs only call load()
   // when isLoggedIn actually flips.
-  let _prevLoggedIn = $state(/** @type {boolean | undefined} */ (undefined));
+  let _prevLoggedIn = /** @type {boolean | undefined} */ (undefined);
   $effect(() => {
     const now = isLoggedIn;
     if (_prevLoggedIn !== undefined && now !== _prevLoggedIn) {

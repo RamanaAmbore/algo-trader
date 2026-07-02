@@ -1646,41 +1646,52 @@
 
   $effect(() => {
     if (!_eqPosReady || !_eqPosGrid) return;
-    // Tick-flash: seed flash.update() for each per-account row before
-    // pushing rowData. TOTAL rows excluded. Threshold 0.001 prevents
-    // false flashes on identical values.
-    for (const r of _positionsSummary) {
-      if (r.account === 'TOTAL') continue;
-      _dashFlash.update(`${r.account}:day_pnl`, Number(r.day_pnl));
-      _dashFlash.update(`${r.account}:pnl`,     Number(r.pnl));
-    }
-    _eqPosGrid.setGridOption('rowData', _positionsSummary);
-    _eqPosGrid.setGridOption('pinnedBottomRowData', [_positionsTotal]);
-    try { _eqPosGrid.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
-    // Clear any prior deferred refresh before scheduling a new one.
-    if (_eqPosRefreshHandle != null) { clearTimeout(_eqPosRefreshHandle); _eqPosRefreshHandle = null; }
-    _eqPosRefreshHandle = setTimeout(() => {
-      _eqPosRefreshHandle = null;
+    // Read reactive deps BEFORE untrack so the effect still re-fires when they change.
+    const rows  = _positionsSummary;
+    const total = _positionsTotal;
+    untrack(() => {
+      // Tick-flash: seed flash.update() for each per-account row before
+      // pushing rowData. TOTAL rows excluded. Threshold 0.001 prevents
+      // false flashes on identical values. Wrapped in untrack() so the
+      // $state write inside flash.update() does NOT register as a dep
+      // and cannot cause an infinite reactive loop.
+      for (const r of rows) {
+        if (r.account === 'TOTAL') continue;
+        _dashFlash.update(`${r.account}:day_pnl`, Number(r.day_pnl));
+        _dashFlash.update(`${r.account}:pnl`,     Number(r.pnl));
+      }
+      _eqPosGrid.setGridOption('rowData', rows);
+      _eqPosGrid.setGridOption('pinnedBottomRowData', [total]);
       try { _eqPosGrid.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
-    }, 400);
+      // Clear any prior deferred refresh before scheduling a new one.
+      if (_eqPosRefreshHandle != null) { clearTimeout(_eqPosRefreshHandle); _eqPosRefreshHandle = null; }
+      _eqPosRefreshHandle = setTimeout(() => {
+        _eqPosRefreshHandle = null;
+        try { _eqPosGrid.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
+      }, 400);
+    });
     return () => { if (_eqPosRefreshHandle != null) { clearTimeout(_eqPosRefreshHandle); _eqPosRefreshHandle = null; } };
   });
   $effect(() => {
     if (!_eqHoldReady || !_eqHoldGrid) return;
-    for (const r of _holdingsSummary) {
-      if (r.account === 'TOTAL') continue;
-      _dashFlash.update(`${r.account}:day_pnl`, Number(r.day_pnl));
-      _dashFlash.update(`${r.account}:pnl`,     Number(r.pnl));
-    }
-    _eqHoldGrid.setGridOption('rowData', _holdingsSummary);
-    _eqHoldGrid.setGridOption('pinnedBottomRowData', [_holdingsTotal]);
-    try { _eqHoldGrid.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
-    // Clear any prior deferred refresh before scheduling a new one.
-    if (_eqHoldRefreshHandle != null) { clearTimeout(_eqHoldRefreshHandle); _eqHoldRefreshHandle = null; }
-    _eqHoldRefreshHandle = setTimeout(() => {
-      _eqHoldRefreshHandle = null;
+    const rows  = _holdingsSummary;
+    const total = _holdingsTotal;
+    untrack(() => {
+      for (const r of rows) {
+        if (r.account === 'TOTAL') continue;
+        _dashFlash.update(`${r.account}:day_pnl`, Number(r.day_pnl));
+        _dashFlash.update(`${r.account}:pnl`,     Number(r.pnl));
+      }
+      _eqHoldGrid.setGridOption('rowData', rows);
+      _eqHoldGrid.setGridOption('pinnedBottomRowData', [total]);
       try { _eqHoldGrid.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
-    }, 400);
+      // Clear any prior deferred refresh before scheduling a new one.
+      if (_eqHoldRefreshHandle != null) { clearTimeout(_eqHoldRefreshHandle); _eqHoldRefreshHandle = null; }
+      _eqHoldRefreshHandle = setTimeout(() => {
+        _eqHoldRefreshHandle = null;
+        try { _eqHoldGrid.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
+      }, 400);
+    });
     return () => { if (_eqHoldRefreshHandle != null) { clearTimeout(_eqHoldRefreshHandle); _eqHoldRefreshHandle = null; } };
   });
 

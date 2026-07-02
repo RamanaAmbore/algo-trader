@@ -1455,18 +1455,24 @@
   // cells DO use the `${root}:ltp` key, so the underlying quote flash
   // is still independent and accurate.
   $effect(() => {
-    for (const g of _byUnderlyingTotals) {
-      flash.update(`${g.underlying}:day_w`,  g.day_without);
-      flash.update(`${g.underlying}:pnl_w`,  g.pnl_without);
-      flash.update(`${g.underlying}:day_h`,  g.day_with);
-      flash.update(`${g.underlying}:pnl_h`,  g.pnl_with);
-    }
+    const groups = _byUnderlyingTotals;
+    untrack(() => {
+      for (const g of groups) {
+        flash.update(`${g.underlying}:day_w`,  g.day_without);
+        flash.update(`${g.underlying}:pnl_w`,  g.pnl_without);
+        flash.update(`${g.underlying}:day_h`,  g.day_with);
+        flash.update(`${g.underlying}:pnl_h`,  g.pnl_with);
+      }
+    });
   });
   $effect(() => {
-    for (const [root, q] of Object.entries(_underlyingQuotes)) {
-      flash.update(`${root}:ltp`, q?.ltp);
-      flash.update(`${root}:pct`, q?.day_pct);
-    }
+    const quotes = _underlyingQuotes;
+    untrack(() => {
+      for (const [root, q] of Object.entries(quotes)) {
+        flash.update(`${root}:ltp`, q?.ltp);
+        flash.update(`${root}:pct`, q?.day_pct);
+      }
+    });
   });
 
   // Payoff header chips — EV + Greeks (Δ Γ Θ 𝒱 ρ).
@@ -1475,42 +1481,58 @@
   // so we skip the flash update when the strategy is a shell.
   $effect(() => {
     if (!strategy || (!strategy.iv_proxy && !strategy.days_to_expiry)) return;
-    const g = _mergedGreeks ?? strategy.aggregate_greeks;
-    flash.update('payoff:ev',    _mergedEv);
-    flash.update('payoff:delta', g?.delta);
-    flash.update('payoff:gamma', g?.gamma);
-    flash.update('payoff:theta', g?.theta);
-    flash.update('payoff:vega',  g?.vega);
-    flash.update('payoff:rho',   g?.rho);
+    const g  = _mergedGreeks ?? strategy.aggregate_greeks;
+    const ev = _mergedEv;
+    untrack(() => {
+      flash.update('payoff:ev',    ev);
+      flash.update('payoff:delta', g?.delta);
+      flash.update('payoff:gamma', g?.gamma);
+      flash.update('payoff:theta', g?.theta);
+      flash.update('payoff:vega',  g?.vega);
+      flash.update('payoff:rho',   g?.rho);
+    });
   });
 
   // Aggregate kv-block — POP, EV, R:R (same shell guard).
   $effect(() => {
     if (!strategy || (!strategy.iv_proxy && !strategy.days_to_expiry)) return;
-    flash.update('kv:pop',    _mergedPop);
-    flash.update('kv:ev',     _mergedEv);
-    flash.update('kv:ev_pct', _mergedEvPct);
-    const risk = _mergedRisk ?? strategy.risk;
-    flash.update('kv:max_profit', risk?.max_profit);
-    flash.update('kv:max_loss',   risk?.max_loss);
+    const pop    = _mergedPop;
+    const ev     = _mergedEv;
+    const evPct  = _mergedEvPct;
+    const risk   = _mergedRisk ?? strategy.risk;
+    untrack(() => {
+      flash.update('kv:pop',    pop);
+      flash.update('kv:ev',     ev);
+      flash.update('kv:ev_pct', evPct);
+      flash.update('kv:max_profit', risk?.max_profit);
+      flash.update('kv:max_loss',   risk?.max_loss);
+    });
   });
 
   // Legs per-row: Day P&L, P&L, Exp P&L (keyed by account|symbol).
   $effect(() => {
-    const spot = untrack(() => liveSpot);
-    for (const c of candidatePositions) {
-      const k = `${c.account ?? ''}|${c.symbol ?? ''}`;
-      flash.update(`leg:${k}:day`, _dayPnlForLeg(c, spot ?? null));
-      flash.update(`leg:${k}:pnl`, c.pnl != null ? Number(c.pnl) : null);
-      flash.update(`leg:${k}:exp`, _expiryPnl(c, spot ?? null));
-    }
+    const spot       = untrack(() => liveSpot);
+    const candidates = candidatePositions;
+    untrack(() => {
+      for (const c of candidates) {
+        const k = `${c.account ?? ''}|${c.symbol ?? ''}`;
+        flash.update(`leg:${k}:day`, _dayPnlForLeg(c, spot ?? null));
+        flash.update(`leg:${k}:pnl`, c.pnl != null ? Number(c.pnl) : null);
+        flash.update(`leg:${k}:exp`, _expiryPnl(c, spot ?? null));
+      }
+    });
   });
 
   // Snapshot TOTAL row.
   $effect(() => {
-    flash.update('total:day', _snapshotTotalDay);
-    flash.update('total:pnl', _snapshotTotalPnl);
-    flash.update('total:exp', _snapshotTotalExp);
+    const day = _snapshotTotalDay;
+    const pnl = _snapshotTotalPnl;
+    const exp = _snapshotTotalExp;
+    untrack(() => {
+      flash.update('total:day', day);
+      flash.update('total:pnl', pnl);
+      flash.update('total:exp', exp);
+    });
   });
 
   async function loadUnderlyingQuotes() {

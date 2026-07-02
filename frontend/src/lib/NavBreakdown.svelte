@@ -268,11 +268,11 @@
     height: 28px;              /* matches --ag-header-height: 28px in ag-theme-algo */
     text-align: right;
     font-weight: 800;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
-    font-size: 0.65rem;        /* matches --ag-header-font-size in ag-theme-algo */
+    font-size: 0.6rem;         /* matches --ag-header-font-size in ag-theme-algo */
     color: #7e97b8;            /* --text-muted / var(--algo-muted) */
-    background: rgba(15,23,42,0.65); /* matches ag-theme-algo header bg */
+    background: rgba(15,23,42,0.30); /* matches ag-theme-algo header bg */
     padding: 0 3px;            /* matches ag-theme-algo cell padding */
     border-right: 1px solid rgba(126,151,184,0.18);
     border-bottom: 1px solid rgba(251,191,36,0.30); /* amber accent */

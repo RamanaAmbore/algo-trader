@@ -1,5 +1,5 @@
 <script>
-  import { onMount, onDestroy, tick } from 'svelte';
+  import { onMount, onDestroy, tick, untrack } from 'svelte';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   // ag-Grid is lazy-loaded in onMount so it doesn't bloat the initial bundle
   // for public /performance visitors. createGrid is populated after the
@@ -855,28 +855,33 @@
     // pushing rows to the detail grids. First call per key seeds baseline
     // (no flash on mount). TOTAL rows are excluded. The primitive's
     // threshold=0.001 epsilon prevents false flashes on identical values.
-    for (const r of hRows) {
-      if (r.tradingsymbol === 'TOTAL' || r.account === 'TOTAL') continue;
-      const k = r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
-      if (!k) continue;
-      // LTP flash — fires on poll-cycle LTP change. Cascade direction tracked
-      // per key so pnlClsFlash can emit ltp-flash-up/down on derived columns.
-      if (r.last_price        != null) _perfFlash.update(`${k}:last_price`,         Number(r.last_price));
-      if (r.day_change_val    != null) _perfFlash.update(`${k}:day_change_val`,    Number(r.day_change_val));
-      if (r.day_change_percentage != null) _perfFlash.update(`${k}:day_change_percentage`, Number(r.day_change_percentage));
-      if (r.pnl               != null) _perfFlash.update(`${k}:pnl`,               Number(r.pnl));
-      if (r.pnl_percentage    != null) _perfFlash.update(`${k}:pnl_percentage`,    Number(r.pnl_percentage));
-    }
-    for (const r of pRows) {
-      if (r.tradingsymbol === 'TOTAL' || r.account === 'TOTAL') continue;
-      const k = r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
-      if (!k) continue;
-      if (r.last_price        != null) _perfFlash.update(`${k}:last_price`,         Number(r.last_price));
-      if (r.day_change_val    != null) _perfFlash.update(`${k}:day_change_val`,    Number(r.day_change_val));
-      if (r.day_change_percentage != null) _perfFlash.update(`${k}:day_change_percentage`, Number(r.day_change_percentage));
-      if (r.pnl               != null) _perfFlash.update(`${k}:pnl`,               Number(r.pnl));
-      if (r.pnl_percentage    != null) _perfFlash.update(`${k}:pnl_percentage`,    Number(r.pnl_percentage));
-    }
+    // Wrapped in untrack() so the $state write inside flash.update() does
+    // NOT register as a reactive dep when called from a $effect context,
+    // preventing the infinite re-schedule loop.
+    untrack(() => {
+      for (const r of hRows) {
+        if (r.tradingsymbol === 'TOTAL' || r.account === 'TOTAL') continue;
+        const k = r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
+        if (!k) continue;
+        // LTP flash — fires on poll-cycle LTP change. Cascade direction tracked
+        // per key so pnlClsFlash can emit ltp-flash-up/down on derived columns.
+        if (r.last_price        != null) _perfFlash.update(`${k}:last_price`,         Number(r.last_price));
+        if (r.day_change_val    != null) _perfFlash.update(`${k}:day_change_val`,    Number(r.day_change_val));
+        if (r.day_change_percentage != null) _perfFlash.update(`${k}:day_change_percentage`, Number(r.day_change_percentage));
+        if (r.pnl               != null) _perfFlash.update(`${k}:pnl`,               Number(r.pnl));
+        if (r.pnl_percentage    != null) _perfFlash.update(`${k}:pnl_percentage`,    Number(r.pnl_percentage));
+      }
+      for (const r of pRows) {
+        if (r.tradingsymbol === 'TOTAL' || r.account === 'TOTAL') continue;
+        const k = r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
+        if (!k) continue;
+        if (r.last_price        != null) _perfFlash.update(`${k}:last_price`,         Number(r.last_price));
+        if (r.day_change_val    != null) _perfFlash.update(`${k}:day_change_val`,    Number(r.day_change_val));
+        if (r.day_change_percentage != null) _perfFlash.update(`${k}:day_change_percentage`, Number(r.day_change_percentage));
+        if (r.pnl               != null) _perfFlash.update(`${k}:pnl`,               Number(r.pnl));
+        if (r.pnl_percentage    != null) _perfFlash.update(`${k}:pnl_percentage`,    Number(r.pnl_percentage));
+      }
+    });
     updateGrid(holdingsAllGrid, hRows);
     holdingsAllGrid.setGridOption('pinnedBottomRowData', hTotals ? [hTotals] : []);
     // Trigger a refreshCells so pnlClsFlash callbacks pick up the new flash state.
@@ -1270,15 +1275,15 @@
 <!-- Tabs — Positions / Holdings. No account picker here; the page-
      level picker above scopes both tabs uniformly. -->
 <div class="tabs-row mb-2">
-  <div class="flex gap-0.5">
-    {#each [['positions','Positions'],['holdings','Holdings']] as [id, label]}
-      <button
-        class="px-3 py-1 text-xs font-medium border-b-2 transition-colors
-               {activeTab === id ? 'border-primary text-primary' : 'border-transparent text-muted hover:text-text'}"
-        onclick={() => switchTab(id)}
-      >{label}</button>
-    {/each}
-  </div>
+  <AlgoTabs
+    tabs={[
+      { id: 'positions', label: 'Positions' },
+      { id: 'holdings',  label: 'Holdings'  },
+    ]}
+    value={activeTab}
+    onChange={(id) => switchTab(id)}
+    compact={true}
+  />
 </div>
 
 <!-- Operator: "fund balances should be the second element. summary,
@@ -1687,24 +1692,6 @@
      section heading light blue) read as distinct strata. Previously
      all three tiers rendered in #fbbf24 and the hierarchy collapsed. */
   .perf-dark :global(.section-heading) { color: var(--algo-slate); }
-
-  /* Tabs — active gets an amber tint + slight top-corner round so the
-     selected tab reads as a panel header, not just an underlined word.
-     Hover on inactive lifts text + adds the faintest tint. */
-  .perf-dark :global(button[class*="border-primary"])    {
-    border-color: #d97706 !important;
-    color: #fbbf24 !important;
-    background: rgba(251,191,36,0.12) !important;
-    border-top-left-radius: 4px !important;
-    border-top-right-radius: 4px !important;
-  }
-  .perf-dark :global(button[class*="text-muted"])        { color: rgba(180,200,230,0.6) !important; }
-  .perf-dark :global(button[class*="text-muted"]:hover)  {
-    color: rgba(210,225,250,0.9) !important;
-    background: rgba(251,191,36,0.05) !important;
-    border-top-left-radius: 4px !important;
-    border-top-right-radius: 4px !important;
-  }
 
   /* Refresh button */
   .perf-dark :global(.btn-secondary) {
