@@ -310,7 +310,7 @@
 
   /* ── Big NAV number ─────────────────────────────────────────────── */
   .nav-big {
-    font-size: 1.55rem;
+    font-size: var(--fs-2xl); /* 1.55rem — above --fs-xl scale; token added to app.css */
     font-weight: 700;
     color: var(--card-cell-text, #0c1830);
     line-height: 1.1;

@@ -181,6 +181,7 @@
        --fs-md    was 0.65 / 0.66 / 0.68        (default body cluster)
        --fs-lg    was 0.7  / 0.72 / 0.74 / 0.75 / 0.78 (large cluster)
        --fs-xl    was 0.8  / 0.82 / 0.85 / 0.9  / 0.95 (title cluster)
+       --fs-2xl   headline size (NavCard nav-big, 1.55rem)
      ≤2 px reflow on dense tables is acceptable — operator-approved. */
   --fs-2xs: 0.5rem;
   --fs-xs:  0.55rem;
@@ -188,6 +189,7 @@
   --fs-md:  0.65rem;
   --fs-lg:  0.7rem;
   --fs-xl:  0.85rem;
+  --fs-2xl: 1.55rem;
 
   /* Canonical card-bg gradient — single source for every .algo-card,
      .bucket-card, and chart-wrapper surface that uses the dark navy
