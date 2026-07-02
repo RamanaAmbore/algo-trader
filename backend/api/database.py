@@ -926,6 +926,12 @@ async def _ensure_shared_broker_schema() -> None:
             # the opt-in is explicit; the startup migration below seeds DH6847.
             "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
             "circuit_breaker_enabled BOOLEAN NOT NULL DEFAULT FALSE",
+            # Display ordering (Jul 2026) — canonical position for UI
+            # dropdowns, health-badge chip popup, performance grids, etc.
+            # Default 500 (mid-tier) so new accounts land in the middle.
+            # Seeded below with a one-shot settings marker.
+            "ALTER TABLE broker_accounts ADD COLUMN IF NOT EXISTS "
+            "display_order INTEGER NOT NULL DEFAULT 500",
         ):
             await conn.execute(text(stmt))
 
@@ -962,6 +968,72 @@ async def _ensure_shared_broker_schema() -> None:
             )
             logger.info(
                 "_ensure_shared_broker_schema: circuit_breaker_enabled seeded for DH6847"
+            )
+    # One-shot startup migration: seed display_order for the canonical account
+    # sequence.  Guarded by a settings marker so operator manual edits via
+    # PATCH /api/admin/brokers/{id} are never overwritten on restart.
+    #
+    # Canonical order (Jul 2026):
+    #   Kite accounts   → display_order 10, 20, … (lexical rank × 10)
+    #   Dhan DH3747     → display_order 100  (primary Dhan)
+    #   Groww accounts  → display_order 200, 210, … (lexical rank × 10)
+    #   Other Dhan      → display_order 500  (mid-tier default)
+    #   Dhan DH6847     → display_order 999  (last — operator-requested)
+    _DO_KEY = "migrations.display_order_seeded_v1"
+    async with _shared_engine.begin() as conn:
+        do_already = await conn.scalar(
+            text("SELECT 1 FROM settings WHERE key = :k LIMIT 1"),
+            {"k": _DO_KEY},
+        )
+        if not do_already:
+            # Fetch all active accounts ordered by account_id to assign ranks.
+            rows = (await conn.execute(
+                text(
+                    "SELECT account, broker_id FROM broker_accounts "
+                    "ORDER BY account"
+                )
+            )).fetchall()
+            kite_n = 0
+            groww_n = 0
+            for acct, broker_id in rows:
+                bid = (broker_id or "").lower()
+                if acct == "DH6847":
+                    order = 999
+                elif acct == "DH3747":
+                    order = 100
+                elif "kite" in bid or "zerodha" in bid:
+                    kite_n += 1
+                    order = kite_n * 10
+                elif "groww" in bid:
+                    groww_n += 1
+                    order = 200 + (groww_n - 1) * 10
+                elif "dhan" in bid:
+                    # Any other Dhan account not specifically mapped → mid-tier.
+                    order = 500
+                else:
+                    order = 500
+                await conn.execute(
+                    text(
+                        "UPDATE broker_accounts SET display_order = :o "
+                        "WHERE account = :a"
+                    ),
+                    {"o": order, "a": acct},
+                )
+            await conn.execute(
+                text(
+                    "INSERT INTO settings "
+                    "(category, key, value_type, value, default_value, "
+                    " description, updated_at) "
+                    "VALUES ('migrations', :k, 'bool', 'true', 'true', "
+                    "'display_order seeded v1: Kite→DH3747→Groww→DH6847', "
+                    "now()) "
+                    "ON CONFLICT (key) DO NOTHING"
+                ),
+                {"k": _DO_KEY},
+            )
+            logger.info(
+                "_ensure_shared_broker_schema: display_order seeded for %d accounts",
+                len(rows),
             )
     logger.info("Shared broker schema verified on ramboq")
 
