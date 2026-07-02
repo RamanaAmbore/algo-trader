@@ -852,6 +852,67 @@ async def run_preflight(
         "margin_shortfall":   None,
     }
 
+    # ── 0. QTY↔LOT SAFETY GUARDS (G1 multiple + G2 5-lot cap) ────────────
+    # Operator 2026-07-01: "the code by mistake ordered 100 lots instead
+    # of 1 lot ... happened multiple times." /ticket + /basket enforce
+    # the same guards; agent-driven place_order / close_position paths
+    # ALSO run this preflight, so the guards fire there too. Only F&O.
+    _exch = str(order.get("exchange") or "").upper()
+    _sym  = str(order.get("tradingsymbol") or order.get("symbol") or "").upper()
+    try:
+        _qty_check = int(order.get("quantity") or order.get("qty") or 0)
+    except Exception:
+        _qty_check = 0
+    if _exch in ("NFO", "MCX", "CDS", "BFO") and _qty_check > 0 and _sym:
+        try:
+            from backend.brokers.adapters.kite import get_lot_size as _pf_get_lot_size
+            _pf_lot = int(await _pf_get_lot_size(_exch, _sym) or 0)
+        except Exception:
+            _pf_lot = 0
+        if _pf_lot > 1:
+            if _qty_check % _pf_lot != 0:
+                blocked.append({
+                    "code": "LOT_MULTIPLE",
+                    "reason": (
+                        f"qty={_qty_check} is not a multiple of "
+                        f"lot_size={_pf_lot} (would be "
+                        f"{_qty_check / _pf_lot:.2f} lots)"
+                    ),
+                    "fix": (
+                        f"send qty={_pf_lot} for 1 lot, or N × {_pf_lot} for N lots"
+                    ),
+                    "data": {"qty": _qty_check, "lot_size": _pf_lot},
+                })
+            else:
+                _pf_lots = _qty_check // _pf_lot
+                if _pf_lots > 5:
+                    blocked.append({
+                        "code": "FAT_FINGER_5_LOT_CAP",
+                        "reason": (
+                            f"{_pf_lots} lots exceeds the 5-lot safety cap "
+                            f"(qty={_qty_check}, lot_size={_pf_lot})"
+                        ),
+                        "fix": (
+                            "split into ≤5-lot orders or contact ops to raise the cap"
+                        ),
+                        "data": {"qty": _qty_check, "lot_size": _pf_lot,
+                                 "lots": _pf_lots, "cap": 5},
+                    })
+        elif _pf_lot == 0 and _exch in ("MCX", "NCO"):
+            # MCX/NCO cache miss — deny (no real MCX contract has lot_size ≤ 1).
+            blocked.append({
+                "code": "LOT_SIZE_UNKNOWN",
+                "reason": (
+                    f"lot_size unknown for {_exch}/{_sym} — instruments cache "
+                    f"missed. Refusing to send raw qty as lots."
+                ),
+                "fix": "retry after the instruments cache warms (≤5 s)",
+                "data": {"qty": _qty_check, "exchange": _exch, "symbol": _sym},
+            })
+    # If any guard tripped, short-circuit remaining checks — clean 400 up top.
+    if blocked:
+        return {"ok": False, "blocked": blocked, "diagnostics": diagnostics}
+
     # ── 1. ACCOUNT_UNKNOWN ────────────────────────────────────────────────
     conns = Connections()
     loaded_accounts: set[str] = set(conns.conn.keys())
