@@ -4201,30 +4201,30 @@
         cellClass: `${RA} cell-muted`,
         valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
         headerTooltip: 'Weighted average entry across positions + holdings.' },
-      { field: ‘day_pnl’, headerName: ‘Day P&L’, width: 78, minWidth: 60, maxWidth: 96,
-        type: ‘numericColumn’, headerClass: numericHdr,
-        cellClass: (p) => pnlCellClass(p, ‘day_pnl’),
+      { field: 'day_pnl', headerName: 'Day P&L', width: 78, minWidth: 60, maxWidth: 96,
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: (p) => pnlCellClass(p, 'day_pnl'),
         valueFormatter: aggFmtGrid },
-      // Day P&L % — one-day return on yesterday’s market value (close × qty).
+      // Day P&L % — one-day return on yesterday's market value (close × qty).
       // NOT cost basis: dividing by cost over-states day % for a long-held
       // stock — INFY held 10 yrs at ₹100 cost / ₹2000 today posts a real
       // 1 % day move as 20 % when normalised against cost. close × qty is
       // the honest denominator: per-symbol this collapses to change_pct;
       // TOTAL gets a market-value-weighted day return.
-      { field: ‘day_pnl_pct’, headerName: ‘Day %’, colId: ‘day_pnl_pct’,
-        width: 64, type: ‘numericColumn’, headerClass: numericHdr,
+      { field: 'day_pnl_pct', headerName: 'Day %', colId: 'day_pnl_pct',
+        width: 64, type: 'numericColumn', headerClass: numericHdr,
         // day_pnl_pct is a valueGetter computed from day_pnl; flash is keyed
-        // to ‘day_pnl’ (the underlying source field that changes on each poll).
-        cellClass: (p) => pnlCellClass(p, ‘day_pnl’),
+        // to 'day_pnl' (the underlying source field that changes on each poll).
+        cellClass: (p) => pnlCellClass(p, 'day_pnl'),
         valueGetter: (p) => {
           const dpnl = Number(p.data?.day_pnl);
           const prev = Number(p.data?._prev_market_value);
           // Underlying anchor rows (BHEL / BEL / NIFTY) carry no qty
-          // and no day_pnl, but the underlying’s change_pct IS on the
+          // and no day_pnl, but the underlying's change_pct IS on the
           // row. Fall back to it so the Day % column reads the
-          // underlying’s intraday move directly. Same fallback also
+          // underlying's intraday move directly. Same fallback also
           // covers just-listed contracts and watchlist-only rows where
-          // close × qty isn’t computable.
+          // close × qty isn't computable.
           if (!Number.isFinite(dpnl) || prev <= 0) {
             const cp = Number(p.data?.change_pct);
             return Number.isFinite(cp) ? cp : null;
@@ -4232,16 +4232,16 @@
           return (dpnl / prev) * 100;
         },
         valueFormatter: pctFmtGrid,
-        headerTooltip: `Day P&L as % of yesterday’s market value (close × qty).` },
+        headerTooltip: `Day P&L as % of yesterday's market value (close × qty).` },
       _prevCol,
-      { field: ‘pnl’, headerName: ‘P&L’, width: 78, minWidth: 60, maxWidth: 96,
-        type: ‘numericColumn’, headerClass: numericHdr,
-        cellClass: (p) => pnlCellClass(p, ‘pnl’),
+      { field: 'pnl', headerName: 'P&L', width: 78, minWidth: 60, maxWidth: 96,
+        type: 'numericColumn', headerClass: numericHdr,
+        cellClass: (p) => pnlCellClass(p, 'pnl'),
         valueFormatter: aggFmtGrid },
-      { field: ‘pnl_pct’, headerName: ‘P&L %’, colId: ‘pnl_pct’,
-        width: 64, type: ‘numericColumn’, headerClass: numericHdr,
-        // pnl_pct is computed from pnl; flash keyed to ‘pnl’ (the source field).
-        cellClass: (p) => pnlCellClass(p, ‘pnl’),
+      { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
+        width: 64, type: 'numericColumn', headerClass: numericHdr,
+        // pnl_pct is computed from pnl; flash keyed to 'pnl' (the source field).
+        cellClass: (p) => pnlCellClass(p, 'pnl'),
         valueGetter: (p) => {
           const pnl  = Number(p.data?.pnl);
           const cost = Number(p.data?._cost_basis);
