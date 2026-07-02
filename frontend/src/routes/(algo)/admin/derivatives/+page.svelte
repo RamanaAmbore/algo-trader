@@ -1295,21 +1295,13 @@
         t.day_with  += day;
       }
     }
-    // Operator: "still snapshot totals not in sync with nav strip numbers."
-    // Add back the rows the page filtered out at load time — equity
-    // intraday positions + derivative-looking holdings. The navbar
-    // PositionStrip sums EVERY row from /api/positions + /api/holdings
-    // without any F&O / equity filter, so the snapshot TOTAL has to add
-    // these back to match. Account filter still applies — `_excluded`
-    // is keyed by uppercased account so a per-account pick partitions
-    // correctly.
-    for (const [_acct, _ex] of Object.entries(_excludedByAccount)) {
-      if (!matchAccount(_acct)) continue;
-      t.pnl_without += _ex.pos_pnl;
-      t.pnl_with    += _ex.pos_pnl + _ex.hold_pnl;
-      t.day_without += _ex.pos_day;
-      t.day_with    += _ex.pos_day + _ex.hold_day;
-    }
+    // Excluded-rows adjustment removed 2026-07-01. The Snapshot TOTAL
+    // now targets F&O-only (Day P&L / P&L / Exp P&L) that matches
+    // NavStrip P — adding back equity intraday positions or derivative-
+    // looking holdings would break that invariant. The Net variants
+    // already include F&O + equity holdings via the primary loops; the
+    // excluded rows were creating an over-count of ~200 Cr on some
+    // books (operator 2026-07-01: "231.12C is not correct as a total").
     return t;
   });
 
@@ -5196,21 +5188,17 @@
           <span class="num" title="Live underlying LTP. Indices use the spot price; MCX commodities use the nearest-future LTP (no tradeable spot).">Spot</span>
           <span class="num" title="Underlying day-change %, signed (+/-). Computed from broker `change_percent`, else (LTP - prev_close) / prev_close.">Day %</span>
           <span class="num" title="Underlying previous-session close (broker `ohlc.close`).">Close</span>
-          <span class="num" title="Today's P&L change from F&O legs only (excludes equity holdings). Independent of the Hold toggle.">Day P&amp;L</span>
-          <span class="num" title="Total P&L from F&O legs only (excludes equity holdings). Independent of the Hold toggle. Sums to the NavStrip P slot 2 value.">P&amp;L</span>
-          <span class="num" title="Today's P&L change including F&O legs + equity holdings on this underlying. Always shown irrespective of Hold toggle.">Day P&amp;L Net</span>
-          <span class="num" title="Total P&L including F&O legs + equity holdings on this underlying. Always shown irrespective of Hold toggle.">P&amp;L Net</span>
+          <!-- F&O-only trio (matches NavStrip P slots 1/2/3). -->
+          <span class="num" title="Today's P&L change from F&O legs only. Independent of the Hold toggle.">Day P&amp;L</span>
+          <span class="num" title="Total P&L from F&O legs only. Independent of the Hold toggle. Sums to the NavStrip P slot 2 value.">P&amp;L</span>
+          <span class="num" title="F&O-only expiry P&L for this group. Sums to the NavStrip P slot 3 value.">Exp P&amp;L</span>
+          <!-- Net trio: F&O + equity holdings. -->
+          <span class="num" title="Today's P&L change including F&O legs + equity holdings on this underlying.">Day P&amp;L Net</span>
+          <span class="num" title="Total P&L including F&O legs + equity holdings on this underlying.">P&amp;L Net</span>
+          <span class="num" title="Expiry P&L including F&O + equity holdings for this group.">Exp P&amp;L Net</span>
           <span class="num">Legs</span>
           <span class="num" title="Sum of contract-qty across option + future legs.">F&amp;O qty</span>
           <span class="num" title="Sum of share-qty across equity / proxy holding legs.">Eq qty</span>
-          <span class="num"
-                title="P&L if every F&O contract in this group expired now at the current spot (excludes equity holdings). Independent of the Hold toggle. Sums to the NavStrip P slot 3 value.">
-            Exp P&amp;L
-          </span>
-          <span class="num"
-                title="P&L if every F&O contract + equity holding on this group expired now at the current spot. Always shown irrespective of Hold toggle.">
-            Exp P&amp;L Net
-          </span>
           <span class="num"
                 title="Expected value — probability-weighted average payoff at expiry. Per-underlying EV requires backend support; populates only when the current strategy is scoped to a single underlying. TOTAL carries the merged strategy EV.">
             EV
@@ -5245,21 +5233,17 @@
             <span class="num {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
             <span class="num {_pct != null && _pct > 0 ? 'cell-pos' : _pct != null && _pct < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pct`)}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
+            <!-- F&O-only trio: Day P&L | P&L | Exp P&L -->
             <span class="num {g.day_without > 0 ? 'cell-pos' : g.day_without < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_w`)}">{aggCompact(g.day_without)}</span>
             <span class="num {g.pnl_without > 0 ? 'cell-pos' : g.pnl_without < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pnl_w`)}">{aggCompact(g.pnl_without)}</span>
+            <span class="num {_expFno == null ? 'cell-muted' : _expFno > 0 ? 'cell-pos' : _expFno < 0 ? 'cell-neg' : 'cell-flat'}">{_expFno == null ? '—' : aggCompact(_expFno)}</span>
+            <!-- Net trio: Day P&L Net | P&L Net | Exp P&L Net -->
             <span class="num {g.day_with > 0 ? 'cell-pos' : g.day_with < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_h`)}">{aggCompact(g.day_with)}</span>
             <span class="num {g.pnl_with > 0 ? 'cell-pos' : g.pnl_with < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pnl_h`)}">{aggCompact(g.pnl_with)}</span>
+            <span class="num {_expNet == null ? 'cell-muted' : _expNet > 0 ? 'cell-pos' : _expNet < 0 ? 'cell-neg' : 'cell-flat'}">{_expNet == null ? '—' : aggCompact(_expNet)}</span>
             <span class="num cell-muted">{Math.round(g.legs_with)}{Math.round(g.legs_with) !== g.legs_without ? `/${g.legs_without}` : ''}</span>
             <span class="num cell-muted">{g.qty_fno || '—'}</span>
             <span class="num cell-muted">{g.qty_eq || '—'}</span>
-            <span class="num {_expFno == null ? 'cell-muted' : _expFno > 0 ? 'cell-pos' : _expFno < 0 ? 'cell-neg' : 'cell-flat'}"
-                  title="F&O-only expiry P&L for this group. Renders '—' when the underlying spot hasn't loaded yet.">
-              {_expFno == null ? '—' : aggCompact(_expFno)}
-            </span>
-            <span class="num {_expNet == null ? 'cell-muted' : _expNet > 0 ? 'cell-pos' : _expNet < 0 ? 'cell-neg' : 'cell-flat'}"
-                  title="F&O + equity holdings expiry P&L for this group.">
-              {_expNet == null ? '—' : aggCompact(_expNet)}
-            </span>
             <!-- Per-underlying EV: surfaces _mergedEv when the
                  current strategy is scoped to this exact root.
                  Otherwise '—' (placeholder for backend per-group
@@ -5282,21 +5266,17 @@
             <span class="num">—</span>
             <span class="num">—</span>
             <span class="num">—</span>
+            <!-- F&O-only trio -->
             <span class="num {_byUnderlyingTotal.day_without > 0 ? 'cell-pos' : _byUnderlyingTotal.day_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_without)}</span>
             <span class="num {_byUnderlyingTotal.pnl_without > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_without)}</span>
+            <span class="num {_expTotalFno > 0 ? 'cell-pos' : _expTotalFno < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_expTotalFno)}</span>
+            <!-- Net trio -->
             <span class="num {_byUnderlyingTotal.day_with > 0 ? 'cell-pos' : _byUnderlyingTotal.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_with)}</span>
             <span class="num {_byUnderlyingTotal.pnl_with > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_with)}</span>
+            <span class="num {_expTotalNet > 0 ? 'cell-pos' : _expTotalNet < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_expTotalNet)}</span>
             <span class="num">{Math.round(_byUnderlyingTotal.legs_with)}{Math.round(_byUnderlyingTotal.legs_with) !== _byUnderlyingTotal.legs_without ? `/${_byUnderlyingTotal.legs_without}` : ''}</span>
             <span class="num">{_byUnderlyingTotal.qty_fno || '—'}</span>
             <span class="num">{_byUnderlyingTotal.qty_eq || '—'}</span>
-            <span class="num {_expTotalFno > 0 ? 'cell-pos' : _expTotalFno < 0 ? 'cell-neg' : 'cell-flat'}"
-                  title="Σ F&O-only Exp P&L across every underlying. Matches the NavStrip P slot 3 value.">
-              {aggCompact(_expTotalFno)}
-            </span>
-            <span class="num {_expTotalNet > 0 ? 'cell-pos' : _expTotalNet < 0 ? 'cell-neg' : 'cell-flat'}"
-                  title="Σ Exp P&L including F&O + equity holdings across every underlying.">
-              {aggCompact(_expTotalNet)}
-            </span>
             <span class="num {(_mergedEv ?? 0) > 0 ? 'cell-pos' : (_mergedEv ?? 0) < 0 ? 'cell-neg' : 'cell-flat'}">
               {_mergedEv != null ? aggCompact(_mergedEv) : '—'}
             </span>
@@ -6090,13 +6070,13 @@
       minmax(4rem,   0.65fr) /* Prev Close */
       minmax(3.8rem, 0.6fr)  /* Day P&L (F&O only) */
       minmax(3.8rem, 0.6fr)  /* P&L (F&O only) */
+      minmax(4rem,   0.6fr)  /* Exp P&L (F&O only) */
       minmax(3.8rem, 0.6fr)  /* Day P&L Net */
       minmax(3.8rem, 0.6fr)  /* P&L Net */
+      minmax(4rem,   0.6fr)  /* Exp P&L Net */
       minmax(3rem,   0.55fr) /* Legs */
       minmax(4rem,   0.6fr)  /* F&O qty */
       minmax(4rem,   0.6fr)  /* Eq qty */
-      minmax(4rem,   0.6fr)  /* Exp P&L (F&O only) */
-      minmax(4rem,   0.6fr)  /* Exp P&L Net */
       minmax(4rem,   0.6fr); /* EV */
     min-width: 850px;
     font-family: var(--font-numeric);
