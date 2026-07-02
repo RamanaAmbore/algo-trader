@@ -284,6 +284,26 @@ Operators manage via `/admin/brokers`, not `secrets.yaml` on server. Credentials
 
 **Status pill** (LOADED / PENDING / DISABLED) polls every 15s.
 
+**Canonical display order** — `broker_accounts.display_order` (INTEGER, default 500, operator-editable). Determines the canonical sort across every UI surface (BrokerHealthBadge popup, AccountMultiSelect dropdowns, PerformancePage, MarketPulse, OrderTicket, dashboard, derivatives).
+
+Seeded on first startup via one-shot migration guarded by settings key `migrations.display_order_seeded_v1`:
+
+| Account type | display_order |
+|---|---|
+| Kite accounts (ZG0790, ZJ6294, …) | 10, 20, … (ascending) |
+| Dhan DH3747 (primary Dhan) | 100 |
+| Groww accounts (GR87DF, …) | 200, 210, … |
+| Other Dhan accounts | 500 (column default) |
+| Dhan DH6847 (always last) | 999 |
+
+**Backend sort helper** (`backend/brokers/broker_apis.py`): `sort_accounts(accounts: list[str]) -> list[str]` — reads `get_account_order_map()` (60s TTL cache, ThreadPoolExecutor for sync callers), sorts by `(display_order ASC, account_id ASC)`. Unknown accounts treated as 999. `invalidate_account_order_cache()` called on PATCH.
+
+**REST endpoint**: `GET /api/admin/brokers/order` — returns `{account_id: display_order}` map (guarded by `view_brokers` cap). PATCH `/api/admin/brokers/{account}` accepts `display_order`.
+
+**Frontend**: `frontend/src/lib/data/accountSort.js` — `accountDisplayOrder` Svelte-store-compatible singleton (module-level, survives re-mounts). `sortAccountsBy(accounts, orderMap)` pure function. Loaded once at boot from `(algo)/+layout.svelte:loadAccountOrder()`. All UI surfaces subscribe via `$accountDisplayOrder` and call `sortAccountsBy(rawList, $orderMap)`. Do NOT sort inline by `localeCompare`. After PATCH, call `accountDisplayOrder.refresh()`.
+
+**Rule**: `@for_all_accounts` iteration order is NOT changed (pd.concat callers rely on stable fan-out). Only the display layer sorts.
+
 ---
 
 ## Multi-Account IPv6 Source Binding (Kite + Dhan)
