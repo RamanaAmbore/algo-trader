@@ -2564,6 +2564,7 @@ class OrdersController(Controller):
         # G1 (skip) but is REPORTED in the response — operator sees "lot
         # size unknown" instead of a silent slip.
         # lot_size == 1 (equity/micro) → both guards skip.
+        _is_close = (getattr(data, "intent", None) or "").lower() == "close"
         if data.exchange in ("NFO", "MCX", "CDS", "BFO"):
             from backend.brokers.adapters.kite import get_lot_size as _get_lot_size
             try:
@@ -2588,9 +2589,10 @@ class OrdersController(Controller):
                             f"For N lots, send qty=N×{_lot}."
                         ),
                     )
-                # G2 — 5-lot cap.
+                # G2 — 5-lot cap. Skipped for close-position intent
+                # (operator legitimately closes larger existing positions).
                 _lots = qty // _lot
-                if _lots > 5:
+                if not _is_close and _lots > 5:
                     logger.warning(
                         "[FAT-FINGER-GUARD] rejected: acct=%s sym=%s qty=%s "
                         "lot_size=%s → %d lots (cap: 5)",
@@ -3971,7 +3973,8 @@ class OrdersController(Controller):
                             ))
                             continue
                         _lots = qty // _lot
-                        if _lots > 5:
+                        _leg_close = (getattr(leg, "intent", None) or "").lower() == "close"
+                        if not _leg_close and _lots > 5:
                             logger.warning(
                                 "[FAT-FINGER-GUARD] basket leg rejected: "
                                 "acct=%s sym=%s qty=%s lot_size=%s → %d lots",

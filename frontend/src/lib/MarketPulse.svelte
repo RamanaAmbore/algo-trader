@@ -50,7 +50,7 @@
   }
   import { fetchSettings } from '$lib/api';
   import { streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
-  import { createFreshnessShimmer } from '$lib/data/tickFlash.svelte.js';
+  import { createFreshnessShimmer, createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { getSnapshot, symbolStore, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { bookChanged } from '$lib/data/bookChanged';
   import {
@@ -686,6 +686,13 @@
   // on the LTP cell. Pilot on /pulse only (this component). Fires on every
   // SSE tick update, not just on delta, so it fires even on repeat values.
   const _ltpShimmer = createFreshnessShimmer({ durationMs: 700 });
+  // Tick-flash for P&L columns on the right grid (Positions / Holdings).
+  // LTP already has its own directional flash (_ltpFlashUp/_ltpFlashDown);
+  // this instance covers Day P&L and P&L whose values change on each
+  // poll cycle (broker fetch every 5 s) rather than on every SSE tick.
+  // Key format: tradingsymbol + ':' + field (tradingsymbol is the stable
+  // key for unified rows that may aggregate multiple accounts).
+  const _mpFlash = createTickFlash({ threshold: 0, durationMs: 350 });
   /** Build a `{sym: ltp}` map snapshot from symbolStore for fast cell reads.
    *
    * LTP flicker fix (Jun 2026): include only strictly-positive values.
@@ -1867,12 +1874,44 @@
   $effect(() => { if (gridWatchReady && gridWatch)
     gridWatch.setGridOption('rowData', watchRows); });
   $effect(() => { if (gridPositionsReady && gridPositions) {
+    // Tick-flash: call _mpFlash.update() for each row's P&L fields before
+    // writing rowData. The primitive tracks prev[] internally; first call
+    // per key seeds the baseline (no flash on mount). Non-total rows only.
+    let _flashedPos = false;
+    for (const r of positionsRows) {
+      if (r._isTotal) continue;
+      const sym = r.tradingsymbol;
+      if (!sym) continue;
+      if (r.day_pnl != null) { _mpFlash.update(`${sym}:day_pnl`, Number(r.day_pnl)); _flashedPos = true; }
+      if (r.pnl    != null) { _mpFlash.update(`${sym}:pnl`,     Number(r.pnl));     _flashedPos = true; }
+    }
     gridPositions.setGridOption('rowData', positionsRows);
     gridPositions.setGridOption('pinnedBottomRowData', positionsTotalRows);
+    if (_flashedPos) {
+      try { gridPositions.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) { /* grid torn down */ }
+      setTimeout(() => {
+        try { gridPositions.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) { /* grid torn down */ }
+      }, 400);
+    }
   } });
   $effect(() => { if (gridHoldingsReady && gridHoldings) {
+    // Same pattern for holdings.
+    let _flashedHold = false;
+    for (const r of holdingsRows) {
+      if (r._isTotal) continue;
+      const sym = r.tradingsymbol;
+      if (!sym) continue;
+      if (r.day_pnl != null) { _mpFlash.update(`${sym}:day_pnl`, Number(r.day_pnl)); _flashedHold = true; }
+      if (r.pnl    != null) { _mpFlash.update(`${sym}:pnl`,     Number(r.pnl));     _flashedHold = true; }
+    }
     gridHoldings.setGridOption('rowData', holdingsRows);
     gridHoldings.setGridOption('pinnedBottomRowData', holdingsTotalRows);
+    if (_flashedHold) {
+      try { gridHoldings.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) { /* grid torn down */ }
+      setTimeout(() => {
+        try { gridHoldings.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) { /* grid torn down */ }
+      }, 400);
+    }
   } });
   $effect(() => { if (gridWinReady && gridWin)
     gridWin.setGridOption('rowData', winRows); });
@@ -2199,6 +2238,7 @@
     // but the paint + prefetch timers weren't).
     if (_ltpPaintTimer) { clearTimeout(_ltpPaintTimer); _ltpPaintTimer = null; }
     _ltpShimmer.dispose();
+    _mpFlash.dispose();
     for (const t of _prefetchTimers) { try { clearTimeout(t); } catch { /* no-op */ } }
     _prefetchTimers.length = 0;
     document.removeEventListener('keydown', handleKeydown);
@@ -3905,7 +3945,20 @@
     // P&L columns read with the same visual identity across both
     // surfaces. Plain `dirCellClass` (text-only) stays on the
     // watch/mover grids where the P&L column isn't surfaced.
-    const pnlCellClass = (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`;
+    // Tick-flash augmentation: emits tf-up/tf-down (+ Playwright alias)
+    // when the cell's tracked field changed since last poll cycle.
+    // TOTAL rows (_isTotal) are excluded — aggregates don't flash.
+    const pnlCellClass = (p, field) => {
+      const cls = `${RA} ${dirCls(p.value)} mp-pnl-cell`;
+      // No flash on TOTAL rows.
+      if (p.data?._isTotal) return cls;
+      const sym = p.data?.tradingsymbol;
+      if (!sym || !field) return cls;
+      const fc = _mpFlash.classOf(`${sym}:${field}`);
+      if (fc === 'tf-up')        return `${cls} tf-up tick-flash-up`;
+      if (fc === 'tf-down')      return `${cls} tf-down tick-flash-down`;
+      return cls;
+    };
 
     // Main symbols grid — only built when the parent opted into the
     // per-symbol view (/pulse). /dashboard passes showSymbolsGrid=false
@@ -4109,7 +4162,7 @@
         headerTooltip: 'Weighted average entry across positions + holdings.' },
       { field: 'day_pnl', headerName: 'Day P&L', width: 78, minWidth: 60, maxWidth: 96,
         type: 'numericColumn', headerClass: numericHdr,
-        cellClass: pnlCellClass,
+        cellClass: (p) => pnlCellClass(p, 'day_pnl'),
         valueFormatter: aggFmtGrid },
       // Day P&L % — one-day return on yesterday's market value (close × qty).
       // NOT cost basis: dividing by cost over-states day % for a long-held
@@ -4119,7 +4172,9 @@
       // TOTAL gets a market-value-weighted day return.
       { field: 'day_pnl_pct', headerName: 'Day %', colId: 'day_pnl_pct',
         width: 64, type: 'numericColumn', headerClass: numericHdr,
-        cellClass: pnlCellClass,
+        // day_pnl_pct is a valueGetter computed from day_pnl; flash is keyed
+        // to 'day_pnl' (the underlying source field that changes on each poll).
+        cellClass: (p) => pnlCellClass(p, 'day_pnl'),
         valueGetter: (p) => {
           const dpnl = Number(p.data?.day_pnl);
           const prev = Number(p.data?._prev_market_value);
@@ -4136,15 +4191,16 @@
           return (dpnl / prev) * 100;
         },
         valueFormatter: pctFmtGrid,
-        headerTooltip: 'Day P&L as % of yesterday’s market value (close × qty).' },
+        headerTooltip: `Day P&L as % of yesterday’s market value (close × qty).` },
       _prevCol,
       { field: 'pnl', headerName: 'P&L', width: 78, minWidth: 60, maxWidth: 96,
         type: 'numericColumn', headerClass: numericHdr,
-        cellClass: pnlCellClass,
+        cellClass: (p) => pnlCellClass(p, 'pnl'),
         valueFormatter: aggFmtGrid },
       { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
         width: 64, type: 'numericColumn', headerClass: numericHdr,
-        cellClass: pnlCellClass,
+        // pnl_pct is computed from pnl; flash keyed to 'pnl' (the source field).
+        cellClass: (p) => pnlCellClass(p, 'pnl'),
         valueGetter: (p) => {
           const pnl  = Number(p.data?.pnl);
           const cost = Number(p.data?._cost_basis);
@@ -4348,13 +4404,13 @@
           cellClass: 'ag-col-fill' },
         { field: 'day_pnl',               headerName: 'Day P&L', width: 78,
           type: 'numericColumn', headerClass: numericHdr,
-          cellClass: pnlCellClass, valueFormatter: aggFmtGrid },
+          cellClass: (p) => pnlCellClass(p, 'day_pnl'), valueFormatter: aggFmtGrid },
         { field: 'day_change_percentage', headerName: 'Day %',   width: 60,
           type: 'numericColumn', headerClass: numericHdr,
-          cellClass: pnlCellClass, valueFormatter: pctFmtGrid },
+          cellClass: (p) => pnlCellClass(p, 'day_pnl'), valueFormatter: pctFmtGrid },
         { field: 'pnl',                   headerName: 'P&L',     width: 78,
           type: 'numericColumn', headerClass: numericHdr,
-          cellClass: pnlCellClass, valueFormatter: aggFmtGrid },
+          cellClass: (p) => pnlCellClass(p, 'pnl'), valueFormatter: aggFmtGrid },
       ];
       positionsSummaryGrid = createGrid(positionsSummaryEl, {
         theme: 'legacy',
@@ -4380,16 +4436,16 @@
           cellClass: 'ag-col-fill' },
         { field: 'day_pnl',               headerName: 'Day P&L', width: 78,
           type: 'numericColumn', headerClass: numericHdr,
-          cellClass: pnlCellClass, valueFormatter: aggFmtGrid },
+          cellClass: (p) => pnlCellClass(p, 'day_pnl'), valueFormatter: aggFmtGrid },
         { field: 'day_change_percentage', headerName: 'Day %',   width: 60,
           type: 'numericColumn', headerClass: numericHdr,
-          cellClass: pnlCellClass, valueFormatter: pctFmtGrid },
+          cellClass: (p) => pnlCellClass(p, 'day_pnl'), valueFormatter: pctFmtGrid },
         { field: 'pnl',                   headerName: 'P&L',     width: 78,
           type: 'numericColumn', headerClass: numericHdr,
-          cellClass: pnlCellClass, valueFormatter: aggFmtGrid },
+          cellClass: (p) => pnlCellClass(p, 'pnl'), valueFormatter: aggFmtGrid },
         { field: 'pnl_percentage',        headerName: 'P&L %',   width: 60,
           type: 'numericColumn', headerClass: numericHdr,
-          cellClass: pnlCellClass, valueFormatter: pctFmtGrid },
+          cellClass: (p) => pnlCellClass(p, 'pnl'), valueFormatter: pctFmtGrid },
         { field: 'cur_val',               headerName: 'Value', width: 78,
           type: 'numericColumn', headerClass: numericHdr,
           cellClass: RA, valueFormatter: aggFmtGrid },

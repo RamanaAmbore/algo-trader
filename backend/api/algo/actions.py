@@ -857,8 +857,13 @@ async def run_preflight(
     # of 1 lot ... happened multiple times." /ticket + /basket enforce
     # the same guards; agent-driven place_order / close_position paths
     # ALSO run this preflight, so the guards fire there too. Only F&O.
+    # G2 is BYPASSED when order["intent"] == "close" — closing an
+    # existing large position with a matching-size opposing order is
+    # legitimate. G1 still applies (qty must be a valid multiple).
     _exch = str(order.get("exchange") or "").upper()
     _sym  = str(order.get("tradingsymbol") or order.get("symbol") or "").upper()
+    _intent = str(order.get("intent") or "").lower()
+    _is_close = (_intent == "close")
     try:
         _qty_check = int(order.get("quantity") or order.get("qty") or 0)
     except Exception:
@@ -883,7 +888,7 @@ async def run_preflight(
                     ),
                     "data": {"qty": _qty_check, "lot_size": _pf_lot},
                 })
-            else:
+            elif not _is_close:
                 _pf_lots = _qty_check // _pf_lot
                 if _pf_lots > 5:
                     blocked.append({

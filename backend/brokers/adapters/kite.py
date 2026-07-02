@@ -264,40 +264,39 @@ class KiteBroker(Broker):
 
     def place_order(self, **kwargs: Any) -> str:
         _truncate_tag(kwargs)
-        # LAST-LINE DEFENSE — hard qty ceiling at the adapter layer.
+        # LAST-LINE DEFENSE — absurd-qty ceiling at the adapter layer.
         # Every upstream path (ticket, basket, agent preflight, chase,
-        # trail-stop, OCO pair-watcher) has its own multi-guard, but this
-        # final check runs INSIDE the adapter so no caller can bypass it.
-        # Operator 2026-07-01: "I manually placed the buy order for 1
-        # lot. the order is placed for 100 lots. Then I sold 90 lots at
-        # the broker." Refuses if the qty being sent to Kite is > 5 for
-        # MCX/NCO (where qty is in lots) or > 5000 for equity F&O (which
-        # would be > 5×1000-share caps like NIFTY BEES).
+        # trail-stop, OCO pair-watcher) has its own multi-guard with
+        # opt-in bypass for close-position intent. This final check is
+        # deliberately WIDER than the upstream 5-lot fat-finger cap —
+        # its role is to catch 4-5 digit numeric-typo disasters, not to
+        # block legitimate close-position sizing on carried positions.
+        # Operator 2026-07-01: "for closing an existing order, qty should
+        # not be an issue. the guard should not apply for closing position."
         _exch = str(kwargs.get("exchange") or "").upper()
         _kqty = int(kwargs.get("quantity") or 0)
         _sym  = str(kwargs.get("tradingsymbol") or "")
-        if _exch in ("MCX", "NCO") and _kqty > 5:
+        # MCX/NCO qty is LOTS. 50 lots ≈ 5000 barrels CRUDEOIL, an
+        # exceptional but plausible institutional close. > 50 = typo.
+        if _exch in ("MCX", "NCO") and _kqty > 50:
             logger.error(
                 "[ADAPTER-QTY-CEILING] REFUSING %s %s: qty=%s (MCX/NCO lots) "
-                "> 5-lot ceiling. Every upstream guard failed. Investigate.",
-                _exch, _sym, _kqty,
+                "> 50-lot absurd-value ceiling.", _exch, _sym, _kqty,
             )
             raise ValueError(
-                f"[ADAPTER-QTY-CEILING] {_exch} qty={_kqty} exceeds 5-lot "
-                f"ceiling for {_sym}. Refusing at adapter layer."
+                f"[ADAPTER-QTY-CEILING] {_exch} qty={_kqty} exceeds 50-lot "
+                f"absurd-value ceiling for {_sym}. Refusing at adapter layer."
             )
-        if _exch in ("NFO", "CDS", "BFO") and _kqty > 5000:
-            # 5000 contracts = 5 lots × 1000-share cap (NIFTYBEES-style).
-            # Legitimate F&O orders (NIFTY 25-share lots × 5 = 125) sit
-            # far below this; this catches absurd 4-5 digit qty typos.
+        # NFO/CDS/BFO qty is CONTRACTS. 50000 catches 5-digit typo but
+        # allows massive index option books.
+        if _exch in ("NFO", "CDS", "BFO") and _kqty > 50000:
             logger.error(
-                "[ADAPTER-QTY-CEILING] REFUSING %s %s: qty=%s > 5000-contract "
-                "ceiling. Every upstream guard failed. Investigate.",
-                _exch, _sym, _kqty,
+                "[ADAPTER-QTY-CEILING] REFUSING %s %s: qty=%s > 50000-contract "
+                "absurd-value ceiling.", _exch, _sym, _kqty,
             )
             raise ValueError(
-                f"[ADAPTER-QTY-CEILING] {_exch} qty={_kqty} exceeds 5000-"
-                f"contract ceiling for {_sym}. Refusing at adapter layer."
+                f"[ADAPTER-QTY-CEILING] {_exch} qty={_kqty} exceeds 50000-"
+                f"contract absurd-value ceiling for {_sym}. Refusing at adapter layer."
             )
         return self.kite.place_order(**kwargs)
 
