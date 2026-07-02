@@ -674,9 +674,12 @@ class TestAutoDowngradeRequiresBothFlags:
         """Simulate 5 opens in history; verify _maybe_auto_downgrade short-circuits
         when circuit_breaker_enabled=False on the mock DB row.
 
-        We patch _maybe_auto_downgrade's inner _check_and_update async fn
-        via a mock BrokerAccount row and verify poll_priority is NOT touched.
+        Strategy: we run _check_and_update on a real event loop via asyncio.run()
+        so no coroutine is left dangling (eliminating the RuntimeWarning). We patch
+        the DB session to return a mock row with circuit_breaker_enabled=False and
+        assert poll_priority is never mutated.
         """
+        import asyncio
         from unittest.mock import MagicMock, AsyncMock, patch
         from backend.brokers import broker_apis
 
@@ -686,13 +689,15 @@ class TestAutoDowngradeRequiresBothFlags:
             _t.time() - i * 30 for i in range(5)
         ]
 
-        # Mock row with circuit_breaker_enabled=False, auto_downgrade_enabled=True
+        # Mock row with circuit_breaker_enabled=False, auto_downgrade_enabled=True.
         mock_row = MagicMock()
         mock_row.circuit_breaker_enabled = False
         mock_row.auto_downgrade_enabled = True
         mock_row.poll_priority = "hot"
 
-        # Patch the shared_async_session used inside _check_and_update.
+        # Patch the shared_async_session to return the mock row and set
+        # get_main_loop to return a real running loop so run_coroutine_threadsafe
+        # can schedule and execute the inner coroutine without leaking it.
         mock_session = MagicMock()
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = mock_row
@@ -702,15 +707,25 @@ class TestAutoDowngradeRequiresBothFlags:
 
         from backend.brokers.broker_apis import _maybe_auto_downgrade
 
-        with patch("backend.api.database.shared_async_session", return_value=mock_session), \
-             patch("backend.api.persistence.write_queue.get_main_loop") as mock_loop_fn:
-            import asyncio
-            loop = asyncio.new_event_loop()
-            mock_loop_fn.return_value = loop
-            try:
+        # Run the event loop in a background thread so run_coroutine_threadsafe
+        # can actually schedule and drain the coroutine. This avoids any
+        # RuntimeWarning about unawaited coroutines.
+        loop = asyncio.new_event_loop()
+        import threading
+
+        def _run_loop():
+            loop.run_forever()
+
+        t = threading.Thread(target=_run_loop, daemon=True)
+        t.start()
+        try:
+            with patch("backend.api.database.shared_async_session", return_value=mock_session), \
+                 patch("backend.api.persistence.write_queue.get_main_loop", return_value=loop):
                 _maybe_auto_downgrade(self.ACCOUNT)
-            finally:
-                loop.close()
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            t.join(timeout=2.0)
+            loop.close()
 
         # poll_priority must NOT have been set on the mock row.
         assert mock_row.poll_priority == "hot", (

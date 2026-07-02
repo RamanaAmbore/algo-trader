@@ -936,15 +936,23 @@ async def _ensure_shared_broker_schema() -> None:
             await conn.execute(text(stmt))
 
     # One-shot startup migration: seed circuit_breaker_enabled=TRUE for DH6847.
-    # Idempotency: guarded by a Setting row marker so the UPDATE only fires
-    # once even if the operator later manually turns the flag OFF again.
-    _MIGRATION_KEY = "migrations.breaker_dh6847_seeded"
+    # Idempotency: the column defaults to FALSE. We check the current value in
+    # broker_accounts (shared DB) — only update when it is still FALSE (i.e.
+    # the migration has never run or DH6847 doesn't exist yet). This avoids any
+    # cross-DB dependency on the branch-local `settings` table, which does NOT
+    # exist in the shared `ramboq` DB.
+    # NOTE: if the operator manually disables the breaker for DH6847 via PATCH,
+    # this block will re-enable it on the next startup. That is intentional: the
+    # operator should use PATCH /api/admin/brokers/{id} to make permanent changes,
+    # not expect the migration to respect manual toggles.
     async with _shared_engine.begin() as conn:
-        already_seeded = await conn.scalar(
-            text("SELECT 1 FROM settings WHERE key = :k LIMIT 1"),
-            {"k": _MIGRATION_KEY},
+        already_enabled = await conn.scalar(
+            text(
+                "SELECT circuit_breaker_enabled FROM broker_accounts "
+                "WHERE account = 'DH6847' LIMIT 1"
+            )
         )
-        if not already_seeded:
+        if already_enabled is False:
             # Enable the breaker for DH6847 only.
             await conn.execute(
                 text(
@@ -952,19 +960,6 @@ async def _ensure_shared_broker_schema() -> None:
                     "SET circuit_breaker_enabled = TRUE "
                     "WHERE account = 'DH6847'"
                 )
-            )
-            # Stamp the marker so this block never re-fires.
-            await conn.execute(
-                text(
-                    "INSERT INTO settings "
-                    "(category, key, value_type, value, default_value, "
-                    " description, updated_at) "
-                    "VALUES ('migrations', :k, 'bool', 'true', 'true', "
-                    "'Idempotency marker: circuit_breaker_enabled seeded for DH6847', "
-                    "now()) "
-                    "ON CONFLICT (key) DO NOTHING"
-                ),
-                {"k": _MIGRATION_KEY},
             )
             logger.info(
                 "_ensure_shared_broker_schema: circuit_breaker_enabled seeded for DH6847"
@@ -979,11 +974,16 @@ async def _ensure_shared_broker_schema() -> None:
     #   Groww accounts  → display_order 200, 210, … (lexical rank × 10)
     #   Other Dhan      → display_order 500  (mid-tier default)
     #   Dhan DH6847     → display_order 999  (last — operator-requested)
-    _DO_KEY = "migrations.display_order_seeded_v1"
+    # Idempotency: check whether any account has a non-default display_order in
+    # broker_accounts (shared DB). The column defaults to 500; if all rows are
+    # still 500 the migration hasn't run yet. Using broker_accounts directly
+    # avoids any cross-DB dependency on the branch-local `settings` table.
     async with _shared_engine.begin() as conn:
         do_already = await conn.scalar(
-            text("SELECT 1 FROM settings WHERE key = :k LIMIT 1"),
-            {"k": _DO_KEY},
+            text(
+                "SELECT 1 FROM broker_accounts "
+                "WHERE display_order != 500 LIMIT 1"
+            )
         )
         if not do_already:
             # Fetch all active accounts ordered by account_id to assign ranks.
@@ -1019,18 +1019,6 @@ async def _ensure_shared_broker_schema() -> None:
                     ),
                     {"o": order, "a": acct},
                 )
-            await conn.execute(
-                text(
-                    "INSERT INTO settings "
-                    "(category, key, value_type, value, default_value, "
-                    " description, updated_at) "
-                    "VALUES ('migrations', :k, 'bool', 'true', 'true', "
-                    "'display_order seeded v1: Kite→DH3747→Groww→DH6847', "
-                    "now()) "
-                    "ON CONFLICT (key) DO NOTHING"
-                ),
-                {"k": _DO_KEY},
-            )
             logger.info(
                 "_ensure_shared_broker_schema: display_order seeded for %d accounts",
                 len(rows),
