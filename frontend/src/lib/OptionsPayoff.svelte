@@ -698,7 +698,7 @@
              delta) at a glance. -->
         <div class="ps-row"
              title="Today's mark-to-market change on enabled basket positions (sum of day_change_val). Compare to the PositionStrip's P∆ chip — they match exactly when the basket covers every open position.">
-          <span class="ps-k">DAY</span>
+          <span class="ps-k">DAY Δ</span>
           <span class={'ps-v ' + (dayPnl >= 0 ? 'ps-pos' : 'ps-neg')}>
             {fmtMoney(dayPnl)}
           </span>
@@ -708,7 +708,7 @@
         <div class="ps-row"
              title={realizedPnl !== 0
                ? `Position lifetime P&L at the current spot (open + closed legs combined). Adjusted to match the dashboard's per-underlying ₹ exactly. ADJ row shows the offset folded in.`
-               : "Position lifetime P&L at the current spot — Black-Scholes value of all open legs minus entry cost. NOT today's delta — use the DAY row above for that."}>
+               : "Position lifetime P&L at the current spot — Black-Scholes value of all open legs minus entry cost. NOT today's delta — use the DAY Δ row above for that."}>
           <span class="ps-k">TDAY</span>
           <span class={'ps-v ' + ((curveAtSpot?.today_value ?? 0) >= 0 ? 'ps-pos' : 'ps-neg')}>
             {fmtMoney(curveAtSpot?.today_value)}

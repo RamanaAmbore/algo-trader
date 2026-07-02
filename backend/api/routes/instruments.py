@@ -112,6 +112,12 @@ def _fetch_instruments() -> InstrumentsResponse:
             logger.warning(f"Instruments: {exch} fetch failed: {e}")
             continue
 
+        # MCX diagnostic: log the first CE, PE, and FUT row per fetch cycle
+        # so we can verify that Kite's `name` field matches the keys in
+        # _MCX_LOT_OVERRIDES (e.g. "CRUDEOIL" vs "CRUDE OIL"). A mismatch
+        # would cause the override to silently miss, leaving lot_size=1.
+        _mcx_diag_logged: set[str] = set()
+
         for inst in raw:
             itype = inst.get("instrument_type", "")
             expiry = inst.get("expiry")
@@ -121,6 +127,14 @@ def _fetch_instruments() -> InstrumentsResponse:
             # vendor-supplied lot_size verbatim.
             ls_raw = int(inst.get("lot_size") or 1)
             if exch == "MCX":
+                if itype in ("CE", "PE", "FUT") and itype not in _mcx_diag_logged:
+                    _mcx_diag_logged.add(itype)
+                    logger.info(
+                        f"[MCX-INSTR-DIAG] kind={itype} "
+                        f"tradingsymbol={inst.get('tradingsymbol')} "
+                        f"name='{inst.get('name')}' "
+                        f"lot_size={inst.get('lot_size')}"
+                    )
                 ls_raw = _MCX_LOT_OVERRIDES.get(
                     (inst.get("name") or "").upper(), ls_raw
                 )

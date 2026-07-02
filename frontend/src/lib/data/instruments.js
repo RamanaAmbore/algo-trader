@@ -43,7 +43,11 @@ const ITEMS_KEY = 'items';
 // v5: added _exchangesBySymbol multi-listing index — force a clean refetch
 // so every browser rebuilds the index from a known-good items list rather
 // than trusting partial state from a prior session's cache.
-const INDEX_SCHEMA_VERSION = 5;
+// v6: MCX lot-size override correctness fix (audit 2026-07-01) — browsers
+// that haven't cleared IndexedDB since before v5 may hold stale lot_size=1
+// rows for MCX options (CRUDEOIL CE/PE). Bumping forces a fresh fetch from
+// /api/instruments so every browser gets the corrected lot_size values.
+const INDEX_SCHEMA_VERSION = 6;
 
 // Module-level runtime caches (rebuilt on each page load)
 let _items            = null;  // full list

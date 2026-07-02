@@ -1436,6 +1436,50 @@
     }
   });
 
+  // Payoff header chips — EV + Greeks (Δ Γ Θ 𝒱 ρ).
+  // Shell guard: synth equity-only strategy has iv_proxy=0 and
+  // days_to_expiry=0; those are placeholder zeros, not real ticks,
+  // so we skip the flash update when the strategy is a shell.
+  $effect(() => {
+    if (!strategy || (!strategy.iv_proxy && !strategy.days_to_expiry)) return;
+    const g = _mergedGreeks ?? strategy.aggregate_greeks;
+    flash.update('payoff:ev',    _mergedEv);
+    flash.update('payoff:delta', g?.delta);
+    flash.update('payoff:gamma', g?.gamma);
+    flash.update('payoff:theta', g?.theta);
+    flash.update('payoff:vega',  g?.vega);
+    flash.update('payoff:rho',   g?.rho);
+  });
+
+  // Aggregate kv-block — POP, EV, R:R (same shell guard).
+  $effect(() => {
+    if (!strategy || (!strategy.iv_proxy && !strategy.days_to_expiry)) return;
+    flash.update('kv:pop',    _mergedPop);
+    flash.update('kv:ev',     _mergedEv);
+    flash.update('kv:ev_pct', _mergedEvPct);
+    const risk = _mergedRisk ?? strategy.risk;
+    flash.update('kv:max_profit', risk?.max_profit);
+    flash.update('kv:max_loss',   risk?.max_loss);
+  });
+
+  // Legs per-row: Day P&L, P&L, Exp P&L (keyed by account|symbol).
+  $effect(() => {
+    const spot = untrack(() => liveSpot);
+    for (const c of candidatePositions) {
+      const k = `${c.account ?? ''}|${c.symbol ?? ''}`;
+      flash.update(`leg:${k}:day`, _dayPnlForLeg(c, spot ?? null));
+      flash.update(`leg:${k}:pnl`, c.pnl != null ? Number(c.pnl) : null);
+      flash.update(`leg:${k}:exp`, _expiryPnl(c, spot ?? null));
+    }
+  });
+
+  // Snapshot TOTAL row.
+  $effect(() => {
+    flash.update('total:day', _snapshotTotalDay);
+    flash.update('total:pnl', _snapshotTotalPnl);
+    flash.update('total:exp', _snapshotTotalExp);
+  });
+
   async function loadUnderlyingQuotes() {
     const pairs = untrack(() => _underlyingQuoteKeys);
     if (pairs.length === 0) return;
@@ -4774,7 +4818,7 @@
              expectancy; negative = lose money on average. Companion
              to POP for assessing trade quality (POP alone is
              misleading on asymmetric clip sizes). -->
-        <span class="opt-section-tag {(_mergedEv ?? 0) >= 0 ? 'tag-long' : 'tag-short'}"
+        <span class="opt-section-tag tf-cell {(_mergedEv ?? 0) >= 0 ? 'tag-long' : 'tag-short'} {flash.classOf('payoff:ev')}"
               title="Expected value — probability-weighted average payoff at expiry. ev_pct = EV / |entry cost|.">
           EV {fmtUnbounded(_mergedEv, false)}{_mergedEvPct != null ? ` (${pctFmt(_mergedEvPct)})` : ''}
         </span>
@@ -4795,23 +4839,23 @@
              etc.) — causing the page-wide hang. `?.` throughout so the
              expression returns undefined instead of throwing; pctFmt
              renders '—' for undefined. -->
-        <span class="opt-section-tag tag-greek"
+        <span class="opt-section-tag tf-cell tag-greek {flash.classOf('payoff:delta')}"
           title="Delta — net directional exposure (₹ per ₹1 spot move). Includes +qty for enabled equity-holding legs.">
           Δ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}
         </span>
-        <span class="opt-section-tag tag-greek"
+        <span class="opt-section-tag tf-cell tag-greek {flash.classOf('payoff:gamma')}"
           title="Gamma — convexity, rate of change of Δ as spot moves">
           Γ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}
         </span>
-        <span class="opt-section-tag tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta ?? 0) < 0 ? 'tag-greek-neg' : ''}"
+        <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta ?? 0) < 0 ? 'tag-greek-neg' : ''} {flash.classOf('payoff:theta')}"
           title="Theta — daily decay (₹/day, positive when net short premium)">
           Θ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}
         </span>
-        <span class="opt-section-tag tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega ?? 0) < 0 ? 'tag-greek-neg' : ''}"
+        <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega ?? 0) < 0 ? 'tag-greek-neg' : ''} {flash.classOf('payoff:vega')}"
           title="Vega — P&L per 1% IV move (positive = long volatility)">
           𝒱 {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}
         </span>
-        <span class="opt-section-tag tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho ?? 0) < 0 ? 'tag-greek-neg' : ''}"
+        <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho ?? 0) < 0 ? 'tag-greek-neg' : ''} {flash.classOf('payoff:rho')}"
           title="Rho — P&L per 1% interest-rate move (typically small for short-DTE)">
           ρ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}
         </span>
@@ -5101,6 +5145,7 @@
                               : _decomp.optType === 'PE' ? 'sym-pe'
                               : ''}
             {@const _acctColor = c.account ? acctColor(c.account) : null}
+            {@const _legFlashKey = `leg:${c.account ?? ""}|${c.symbol ?? ""}`}
             <div class="cand-row cand-row-{dir}"
                  style={_acctColor ? `--cand-acct-color: ${_acctColor};` : ''}
                  class:cand-disabled={!_isLegEnabled(c)}
@@ -5282,14 +5327,14 @@
                   : ''}">{ltp != null ? priceFmt(ltp) : '—'}</span>
               <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
               <span class="num">{cost != null ? priceFmt(cost) : '—'}</span>
-              <span class="num cand-pnl {pnl == null ? '' : pnl > 0 ? 'cell-pos' : pnl < 0 ? 'cell-neg' : 'cell-flat'}">
+              <span class="num tf-cell cand-pnl {pnl == null ? '' : pnl > 0 ? 'cell-pos' : pnl < 0 ? 'cell-neg' : 'cell-flat'} {pnl == null ? '' : flash.classOf(`${_legFlashKey}:pnl`)}">
                 {pnl == null ? '—' : aggCompact(pnl)}
               </span>
-              <span class="num cand-pnl {_dayPnl == null ? 'cell-flat' : _dayPnl > 0 ? 'cell-pos' : _dayPnl < 0 ? 'cell-neg' : 'cell-flat'}"
-                    title={_legExp ? 'Day P&L promoted to Exp P&L on expiry day — settlement realized today.' : 'Day P&L = today’s intraday move × qty'}>
+              <span class="num tf-cell cand-pnl {_dayPnl == null ? 'cell-flat' : _dayPnl > 0 ? 'cell-pos' : _dayPnl < 0 ? 'cell-neg' : 'cell-flat'} {_dayPnl == null ? '' : flash.classOf(`${_legFlashKey}:day`)}"
+                    title={_legExp ? 'Day P&L promoted to Exp P&L on expiry day — settlement realized today.' : "Day P&L = today's intraday move × qty"}>
                 {_dayPnl == null ? '—' : aggCompact(Number(_dayPnl))}
               </span>
-              <span class="num cand-pnl {_expPnlLeg == null ? '' : _expPnlLeg > 0 ? 'cell-pos' : _expPnlLeg < 0 ? 'cell-neg' : 'cell-flat'}"
+              <span class="num tf-cell cand-pnl {_expPnlLeg == null ? '' : _expPnlLeg > 0 ? 'cell-pos' : _expPnlLeg < 0 ? 'cell-neg' : 'cell-flat'} {_expPnlLeg == null ? '' : flash.classOf(`${_legFlashKey}:exp`)}"
                     title="P&L if expired now at spot. Intrinsic value minus cost basis × qty.">
                 {_expPnlLeg == null ? '—' : aggCompact(_expPnlLeg)}
               </span>
@@ -5351,18 +5396,18 @@
               <span class="num">—</span>
               <span class="num">—</span>
               <span class="num">—</span>
-              <span class="num cand-pnl {_totalPnl > 0 ? 'cell-pos' : _totalPnl < 0 ? 'cell-neg' : 'cell-flat'}"
+              <span class="num tf-cell cand-pnl {_totalPnl > 0 ? 'cell-pos' : _totalPnl < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:pnl')}"
                     title="Σ P&L across every visible row = strip's P chip for these accounts">
                 {aggCompact(_totalPnl)}
               </span>
-              <span class="num cand-pnl {_totalDcv > 0 ? 'cell-pos' : _totalDcv < 0 ? 'cell-neg' : 'cell-flat'}"
+              <span class="num tf-cell cand-pnl {_totalDcv > 0 ? 'cell-pos' : _totalDcv < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:day')}"
                     title="Σ Day P&L Δ across every visible row = strip's P∆ chip for these accounts">
                 {aggCompact(_totalDcv)}
               </span>
               <!-- _legsExpPnlTotal is the script-level SSOT shared with the
                    snapshot row for the selected underlying — both surfaces
                    read the same derived value so they are always identical. -->
-              <span class="num cand-pnl {_legsExpPnlTotal > 0 ? 'cell-pos' : _legsExpPnlTotal < 0 ? 'cell-neg' : 'cell-flat'}"
+              <span class="num tf-cell cand-pnl {_legsExpPnlTotal > 0 ? 'cell-pos' : _legsExpPnlTotal < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:exp')}"
                     title="Σ Exp P&L across every selected leg — strategy expiry-day P&L at current spot.">
                 {aggCompact(_legsExpPnlTotal)}
               </span>
@@ -5545,11 +5590,11 @@
             <span class="num">—</span>
             <span class="num">—</span>
             <!-- Day P&L + H Day P&L (SSOT — same values published to NavStrip). -->
-            <span class="num {_snapshotTotalDay > 0 ? 'cell-pos' : _snapshotTotalDay < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_snapshotTotalDay)}</span>
+            <span class="num tf-cell {_snapshotTotalDay > 0 ? 'cell-pos' : _snapshotTotalDay < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:day')}">{aggCompact(_snapshotTotalDay)}</span>
             <span class="num {_hDayTotal > 0 ? 'cell-pos' : _hDayTotal < 0 ? 'cell-neg' : 'cell-flat'}">{_hDayTotal === 0 ? '—' : aggCompact(_hDayTotal)}</span>
             <!-- F&O pair (SSOT). -->
-            <span class="num {_snapshotTotalPnl > 0 ? 'cell-pos' : _snapshotTotalPnl < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_snapshotTotalPnl)}</span>
-            <span class="num {_snapshotTotalExp > 0 ? 'cell-pos' : _snapshotTotalExp < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_snapshotTotalExp)}</span>
+            <span class="num tf-cell {_snapshotTotalPnl > 0 ? 'cell-pos' : _snapshotTotalPnl < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:pnl')}">{aggCompact(_snapshotTotalPnl)}</span>
+            <span class="num tf-cell {_snapshotTotalExp > 0 ? 'cell-pos' : _snapshotTotalExp < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf('total:exp')}">{aggCompact(_snapshotTotalExp)}</span>
             <!-- Net trio = SSOT F&O totals + H totals (composed above). -->
             <span class="num {_hDayNetTotal > 0 ? 'cell-pos' : _hDayNetTotal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_hDayNetTotal)}</span>
             <span class="num {_hPnlNetTotal > 0 ? 'cell-pos' : _hPnlNetTotal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_hPnlNetTotal)}</span>
@@ -5581,23 +5626,23 @@
           <div class="opt-kv opt-kv-greeks">
             <div class="kv-pair" title="Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise. Includes +qty for enabled equity-holding legs.">
               <span class="kv-k kv-k-greek">Δ</span>
-              <span class="kv-v">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}</span>
+              <span class="kv-v tf-cell {flash.classOf('payoff:delta')}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}</span>
             </div>
             <div class="kv-pair" title="Gamma — rate-of-change of delta as spot moves.">
               <span class="kv-k kv-k-greek">Γ</span>
-              <span class="kv-v">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}</span>
+              <span class="kv-v tf-cell {flash.classOf('payoff:gamma')}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}</span>
             </div>
             <div class="kv-pair" title="Theta — daily decay in rupees. Positive when net short premium.">
               <span class="kv-k kv-k-greek">Θ</span>
-              <span class="kv-v {(_mergedGreeks ?? strategy?.aggregate_greeks)?.theta < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}</span>
+              <span class="kv-v tf-cell {(_mergedGreeks ?? strategy?.aggregate_greeks)?.theta < 0 ? 'kv-neg' : 'kv-pos'} {flash.classOf('payoff:theta')}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}</span>
             </div>
             <div class="kv-pair" title="Vega — P&L change per 1 % IV move. Positive = long volatility.">
               <span class="kv-k kv-k-greek">𝒱</span>
-              <span class="kv-v {(_mergedGreeks ?? strategy?.aggregate_greeks)?.vega < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}</span>
+              <span class="kv-v tf-cell {(_mergedGreeks ?? strategy?.aggregate_greeks)?.vega < 0 ? 'kv-neg' : 'kv-pos'} {flash.classOf('payoff:vega')}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}</span>
             </div>
             <div class="kv-pair" title="Rho — sensitivity to a 1 % rate change. Mostly cosmetic for short-dated index options.">
               <span class="kv-k kv-k-greek">ρ</span>
-              <span class="kv-v">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}</span>
+              <span class="kv-v tf-cell {flash.classOf('payoff:rho')}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}</span>
             </div>
           </div>
         </div>
@@ -5635,16 +5680,16 @@
             </div>
             <div class="kv-pair">
               <span class="kv-k">POP <InfoHint popup text={'<b>Probability of profit</b> at expiry — sum of lognormal mass over every contiguous profitable region of the payoff curve. For range strategies (iron condors), this measures "P(spot ends inside the wings)".'} /></span>
-              <span class="kv-v {(_mergedPop ?? strategy?.risk?.pop) > 0.6 ? 'kv-pos' : (_mergedPop ?? strategy?.risk?.pop) < 0.4 ? 'kv-neg' : ''}">{fmtPct(_mergedPop ?? strategy?.risk?.pop)}</span>
+              <span class="kv-v tf-cell {(_mergedPop ?? strategy?.risk?.pop) > 0.6 ? 'kv-pos' : (_mergedPop ?? strategy?.risk?.pop) < 0.4 ? 'kv-neg' : ''} {flash.classOf('kv:pop')}">{fmtPct(_mergedPop ?? strategy?.risk?.pop)}</span>
             </div>
             <div class="kv-pair">
               <span class="kv-k">EV <InfoHint popup text={'<b>Expected value</b> — POP × win-magnitude − (1−POP) × loss-magnitude, integrated against the lognormal pdf of the underlying. Positive EV = edge in expectation; negative EV = no edge, even if POP is high.'} /></span>
-              <span class="kv-v {(_mergedEv ?? strategy?.risk?.ev) > 0 ? 'kv-pos' : (_mergedEv ?? strategy?.risk?.ev) < 0 ? 'kv-neg' : ''}">{fmtMoney(_mergedEv ?? strategy?.risk?.ev)}</span>
+              <span class="kv-v tf-cell {(_mergedEv ?? strategy?.risk?.ev) > 0 ? 'kv-pos' : (_mergedEv ?? strategy?.risk?.ev) < 0 ? 'kv-neg' : ''} {flash.classOf('kv:ev')}">{fmtMoney(_mergedEv ?? strategy?.risk?.ev)}</span>
             </div>
             {#if strategy?.risk?.ev_pct != null}
               <div class="kv-pair">
                 <span class="kv-k">EV / cost <InfoHint popup text={'<b>EV / cost</b> — EV as a percentage of |net cost|. Return-on-capital expectation. +5 % = "on average, my outlay returns 5 % of itself per cycle".'} /></span>
-                <span class="kv-v {(_mergedEvPct ?? strategy?.risk?.ev_pct) > 0 ? 'kv-pos' : (_mergedEvPct ?? strategy?.risk?.ev_pct) < 0 ? 'kv-neg' : ''}">
+                <span class="kv-v tf-cell {(_mergedEvPct ?? strategy?.risk?.ev_pct) > 0 ? 'kv-pos' : (_mergedEvPct ?? strategy?.risk?.ev_pct) < 0 ? 'kv-neg' : ''} {flash.classOf('kv:ev_pct')}">
                   {pctFmt(_mergedEvPct ?? strategy?.risk?.ev_pct)}%
                 </span>
               </div>
@@ -6446,11 +6491,22 @@
     0%   { background-color: rgba(248, 113, 113, 0.42); }
     100% { background-color: transparent; }
   }
+
+  /* tf-cell — shared marker for ALL directional flash targets outside
+     the Snapshot grid (payoff chips, kv-block values, legs cells,
+     TOTAL rows). Same 350ms decay + 0.12 alpha as byund-row. The
+     `.byund-row >` selector above keeps the Snapshot grid on its
+     tighter parent-scoped rule; this rule covers the rest. */
+  .tf-cell.tf-up   { animation: tf-pulse-up   350ms ease-out; }
+  .tf-cell.tf-down { animation: tf-pulse-down 350ms ease-out; }
+
   @media (prefers-reduced-motion: reduce) {
     .byund-row > .tf-up,
     .byund-row > .tf-down,
     :global(.fs-card-on) .byund-row > .tf-up,
-    :global(.fs-card-on) .byund-row > .tf-down { animation: none; }
+    :global(.fs-card-on) .byund-row > .tf-down,
+    .tf-cell.tf-up,
+    .tf-cell.tf-down { animation: none; }
   }
   /* Scope chip — small slate-grey tag inline with the Snapshot title
      that names the active account filter. Empty filter reads "all
