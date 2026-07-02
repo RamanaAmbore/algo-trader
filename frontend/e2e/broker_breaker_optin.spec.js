@@ -20,6 +20,7 @@ import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
 
 const TIMEOUT = 25_000;
+const SSOT_TIMEOUT = 45_000; // first test after login hits Vite cold-compile; needs extra headroom
 
 test.describe('Broker circuit-breaker opt-in', () => {
   test.beforeEach(async ({ page }) => {
@@ -29,10 +30,11 @@ test.describe('Broker circuit-breaker opt-in', () => {
   // ── SSOT: broker-health API includes circuit_breaker_enabled field ──────
 
   test('SSOT — broker-health response includes circuit_breaker_enabled per account', async ({ page }) => {
+    test.setTimeout(SSOT_TIMEOUT);
     const [response] = await Promise.all([
       page.waitForResponse(r =>
         r.url().includes('/admin/broker-health') && r.status() === 200,
-        { timeout: TIMEOUT }
+        { timeout: SSOT_TIMEOUT }
       ),
       page.goto('/admin/brokers'),
     ]);

@@ -1117,6 +1117,47 @@ restart required.
 returns `BrokerCapabilities` dataclass (gtt_single / gtt_oco / gtt_modify / etc.)
 for in-page feature gating (OrderTicket warning chips).
 
+### Circuit-breaker opt-in (Dhan accounts only)
+
+Dhan accounts support a **circuit-breaker** that pauses all broker fetch calls for a
+configurable back-off window after repeated consecutive failures, then re-probes
+automatically. This avoids hammering a temporarily-unavailable Dhan endpoint on
+every poll tick and reducing error log noise.
+
+**Enabling**: In the `/admin/brokers` table, each Dhan row shows a **"breaker"**
+checkbox in the Poll column. Check it, then click Save. The change is stored in
+`broker_accounts.circuit_breaker_enabled` and takes effect on the next fetch cycle
+(no restart required). Kite and Groww rows do not show this checkbox because their
+adapters do not implement the circuit-breaker protocol.
+
+**How it works**:
+- After `circuit_breaker_consecutive_fail_threshold` consecutive failures (default 3),
+  the circuit **OPENS** and all fetches for that account return an empty result
+  immediately (no broker call) until the back-off window expires.
+- After the window, the circuit enters **PROBE** state: one real fetch is attempted.
+  Success → circuit CLOSES (normal operation). Failure → window resets and the circuit
+  opens again.
+- Accounts with `circuit_breaker_enabled = False` (the default) never enter OPEN/PROBE
+  state; they retry on every poll regardless of consecutive failures.
+
+**Navbar health badge**: The `BrokerHealthBadge` (top-right navbar, admin only) shows a
+per-account modal when clicked. For opt-in accounts:
+- **OPEN chip** (amber) — circuit is tripped; shows "circuit open until `<time>`" tooltip.
+- **PROBE chip** (sky-blue) — back-off expired; next fetch is a live probe.
+
+For non-opt-in accounts in red state, the tooltip says "retrying every poll" — no OPEN/PROBE
+chips are shown even if the underlying circuit state column has a value.
+
+**API surface**:
+- `PATCH /api/admin/brokers/{account}` accepts `circuit_breaker_enabled: bool`.
+- `GET /api/admin/broker-health` response includes `circuit_breaker_enabled`,
+  `circuit_state`, `circuit_open_until`, and `consecutive_fail_count` per account.
+
+**Startup behaviour**: On first boot after the column was added to the DB schema, the
+platform automatically enables the circuit breaker for `DH6847` (the production Dhan
+account on the shared IP). All other Dhan accounts default to `False`. To override,
+use the checkbox in the UI or PATCH the endpoint.
+
 ### Market-status resolution
 
 `probe_market_active(exchange)` (the gate every `market_hours`-scheduled agent + the daily snapshot pipeline uses) resolves in this order:
