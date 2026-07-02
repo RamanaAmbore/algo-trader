@@ -34,7 +34,7 @@
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { toast } from '$lib/data/toastStore.svelte.js';
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
 
   /**
    * @typedef {object} Props
@@ -185,7 +185,7 @@
   // and only writes when the value actually changes (no chain re-fires).
   $effect(() => {
     if (_showSpinning && _tickPulseClass !== '') {
-      _tickPulseClass = '';
+      untrack(() => { _tickPulseClass = ''; });
     }
   });
 
