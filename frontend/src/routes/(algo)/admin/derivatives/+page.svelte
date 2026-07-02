@@ -1132,6 +1132,70 @@
     return out;
   });
 
+  /** Per-underlying Day P&L via the SAME compute the payoff overlay uses.
+   *  Operator 2026-07-01: "the calcuation for other symbol should use
+   *  the same calculation day uses for each symbol in overlay in payoff.
+   *  ssot." Mirrors candidatesDayPnl's per-leg loop but grouped by root
+   *  so EVERY Snapshot row (not just the currently selected one) reads
+   *  from the same SSOT compute:
+   *    - _isLegEnabled gate per candidate (respects operator's per-leg
+   *      checkbox state)
+   *    - _includeHoldings gate for eq legs
+   *    - _dayPnlForLeg(c, spot) — c.day_change_val for non-expired,
+   *      _expiryPnl(c, spot) promoted for expired
+   *    - Proxy-target routing (targetsForProxy(h.symbol) → root credits)
+   */
+  const _dayPnlByRootMap = $derived.by(() => {
+    void _throttledTick;
+    /** @type {Record<string, number>} */
+    const out = {};
+    const wantedSource = simActive ? 'sim' : 'live';
+    const _wantedAccts = new Set(
+      selectedAccounts.map(a => String(a || '').trim().toUpperCase())
+    );
+    const matchAccount = (acct) => _wantedAccts.size === 0
+      || _wantedAccts.has(String(acct || '').trim().toUpperCase());
+    // Positions (F&O options + futures)
+    for (const _p of positions) {
+      const p = /** @type {any} */ (_p);
+      if (p.source !== wantedSource) continue;
+      if (!matchAccount(p.account)) continue;
+      const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
+      if (!sym) continue;
+      const isFut = /FUT$/i.test(sym);
+      const isOpt = /(CE|PE)$/i.test(sym);
+      if (!isFut && !isOpt) continue;
+      const kind = isOpt ? 'opt' : 'fut';
+      const c = { ...p, kind };
+      if (!_isLegEnabled(c)) continue;
+      const root = (decomposeSymbol(sym).root || sym).toUpperCase();
+      if (!root) continue;
+      const p_ul = Number(p.underlying_ltp || 0);
+      const spot = p_ul > 0 ? p_ul : untrack(() => _rootSpot(root));
+      const day = _dayPnlForLeg(c, spot);
+      out[root] = (out[root] || 0) + Number(day || 0);
+    }
+    // Holdings (only when the Hold toggle is on — matches overlay gate).
+    if (_includeHoldings) {
+      for (const _h of holdings) {
+        const h = /** @type {any} */ (_h);
+        if (!matchAccount(h.account)) continue;
+        const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
+        if (!sym) continue;
+        const c = { ...h, source: 'live', kind: 'eq' };
+        if (!_isLegEnabled(c)) continue;
+        const day = _dayPnlForLeg(c, null);
+        const v = Number(day || 0);
+        const _targets = targetsForProxy(sym);
+        const credits = _targets.length ? _targets : [sym];
+        for (const root of credits) {
+          out[root] = (out[root] || 0) + v;
+        }
+      }
+    }
+    return out;
+  });
+
   /** Per-underlying H Day P&L — Day P&L from equity holdings on that root
    *  ONLY. Operator 2026-07-01: "you can h day p & l from holdings for
    *  the symbol." Read directly from h.day_change_val + SSE-tick delta,
@@ -5331,18 +5395,14 @@
           {@const _close = _q ? Number(_q.prev_close) : null}
           {@const _pct  = _q && _q.day_pct != null ? Number(_q.day_pct) : null}
           {@const _expG = _byUnderlyingExp[g.underlying]}
-          {@const _dayG = _byUnderlyingDay[g.underlying]}
-          <!-- For the SELECTED underlying, use candidatesDayPnl directly —
-               that's the SAME variable the payoff overlay renders (respects
-               the per-leg checkbox state AND the Hold toggle). Operator
-               2026-07-01: "day p & l should match day overlay value for
-               each symbol in snapshot." For OTHER rows fall back to the
-               per-root _byUnderlyingDay.with sum (no leg-checkbox filter
-               there since those legs aren't visible on the current overlay
-               to check). -->
-          {@const _dayFno = g.underlying === selectedUnderlying
-            ? candidatesDayPnl
-            : (_dayG ? _dayG.with : g.day_with)}
+          <!-- SSOT: every row reads _dayPnlByRootMap which mirrors
+               candidatesDayPnl's compute (per-leg checkbox + Hold gate
+               + expiry-day promotion) but keyed by root so ALL Snapshot
+               rows converge on the overlay's calculation for each symbol.
+               Operator 2026-07-01: "the calcuation for other symbol
+               should use the same calculation day uses for each symbol
+               in overlay in payoff. ssot." -->
+          {@const _dayFno = _dayPnlByRootMap[g.underlying] ?? 0}
           {@const _dayNet = _dayFno}
           <!-- Two independent Exp P&L values, both always visible.
                Exp P&L = F&O only (_expG.without). Exp P&L Net = F&O
@@ -5385,8 +5445,8 @@
                from the Hold toggle (like the per-row cells). -->
           {@const _expTotalFno = Object.values(_byUnderlyingExp).reduce((s, v) => s + v.without, 0)}
           {@const _expTotalNet = Object.values(_byUnderlyingExp).reduce((s, v) => s + v.with, 0)}
-          {@const _dayTotalFno = Object.values(_byUnderlyingDay).reduce((s, v) => s + v.without, 0)}
-          {@const _dayTotalNet = Object.values(_byUnderlyingDay).reduce((s, v) => s + v.with, 0)}
+          {@const _dayTotalFno = Object.values(_dayPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)}
+          {@const _dayTotalNet = _dayTotalFno}
           {@const _hDayTotal = Object.values(_hDayByRoot).reduce((s, v) => s + v, 0)}
           <div class="byund-row byund-row-total">
             <span class="byund-und">TOTAL</span>
