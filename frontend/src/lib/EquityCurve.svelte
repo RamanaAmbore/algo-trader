@@ -10,6 +10,7 @@
   // operator can see "above zero = winning, below = losing" at a
   // glance. X-axis: timestamps from each captured tick.
 
+  import { untrack } from 'svelte';
   import { priceFmt } from '$lib/format';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
 
@@ -24,7 +25,7 @@
 
   const _pulse = createChartRefreshPulse();
   $effect(() => {
-    if (ticks.length) _pulse.notify('equity');
+    if (ticks.length) untrack(() => _pulse.notify('equity'));
   });
 
   const W       = 720;

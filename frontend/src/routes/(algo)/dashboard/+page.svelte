@@ -517,7 +517,7 @@
   let _equityPoints = $state([]);
   const _eqPulse = createChartRefreshPulse();
   $effect(() => {
-    if (_equityPoints.length) _eqPulse.notify('eq');
+    if (_equityPoints.length) untrack(() => _eqPulse.notify('eq'));
   });
 
   // ── Row 1: Margin utilisation gauges ──────────────────────────────

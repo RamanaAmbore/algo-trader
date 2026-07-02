@@ -360,7 +360,7 @@
   // don't change the payoff prop identity). `payoff` is the canonical
   // data prop; spot changes are derived display, not new data.
   $effect(() => {
-    if (payoff.length) _pulse.notify('payoff');
+    if (payoff.length) untrack(() => _pulse.notify('payoff'));
   });
 
   // Compact axis label for the Y axis — e.g. "+50K", "0", "-10K".

@@ -337,7 +337,7 @@
   // broker/cache). Skip on symbol-change blanks (length === 0) and on
   // zoom/pan/overlay changes (those don't touch _bars).
   $effect(() => {
-    if (_bars.length) _pulse.notify('chart');
+    if (_bars.length) untrack(() => _pulse.notify('chart'));
   });
   let _histLoading = $state(false);
   // _histLoadingSlow flips true ~150ms after _histLoading starts so

@@ -19,6 +19,7 @@
    *   emptyMsg?:   string,
    *   scrubbedTs?: string | null,
    * }} */
+  import { untrack } from 'svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
   const { series = [], height = 240, title = '',
@@ -107,7 +108,7 @@
   // Fire pulse when normSeries becomes non-empty (new tick batch landed
   // from the simulator or replay). Skips empty resets so the pulse is
   // only a positive signal ("data arrived").
-  $effect(() => { if (normSeries.length) _pulse.notify('mpc'); });
+  $effect(() => { if (normSeries.length) untrack(() => _pulse.notify('mpc')); });
 
   // Unified x-domain (min/max timestamp across every series). When
   // every captured tick collapses to the same timestamp (sub-second
