@@ -6732,14 +6732,19 @@
   .cand-row.expiry-band-netted.cand-row-short:hover {
     background-color: rgba(34,211,238,0.05);
   }
-  /* Legacy band aliases — keep while _expiryStatus still references them. */
+  /* Legacy band aliases — keep while _expiryStatus still references them.
+     Background stripped so they no longer override expiry-band-close amber;
+     box-shadow kept as a minimal fallback cue in the (unlikely) case the
+     band class is absent. In practice every equity-close / commodity-close
+     row in the Exp Close tab also carries expiry-band-close which owns the
+     amber-soft background and amber left bar. */
   .cand-row.cand-row-equity-close {
-    background-color: var(--algo-red-bg);
-    box-shadow: inset 2px 0 0 rgba(248, 113, 113, 0.65);
+    background-color: transparent;
+    box-shadow: inset 2px 0 0 rgba(248, 113, 113, 0.50);
   }
   .cand-row.cand-row-commodity-close {
-    background-color: rgba(251, 191, 36, 0.10);
-    box-shadow: inset 2px 0 0 rgba(251, 191, 36, 0.65);
+    background-color: transparent;
+    box-shadow: inset 2px 0 0 rgba(251, 191, 36, 0.50);
   }
 
   /* Band section header — full-width row containing the section
