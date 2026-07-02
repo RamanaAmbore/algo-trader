@@ -45,21 +45,33 @@
   let history = $state([]);
   let lookback = $state(90);
   let loading = $state(false);
+  /** @type {string|null} */
+  let _error = $state(null);
 
   const _pulse = createChartRefreshPulse();
 
   async function load() {
     loading = true;
+    _error = null;
     try {
       const data = await fetchNavHistory({ days: lookback });
       history = Array.isArray(data?.rows) ? data.rows : [];
       if (history.length) _pulse.notify('nav');
-    } catch (_) {
-      // Demo / anon hits 401 — leave history empty so the empty
-      // state below renders. No toast — this is a passive chart.
+    } catch (err) {
+      // Capture the error so the operator sees it rather than a
+      // silent empty state. 401 on demo/anon: the message will read
+      // "Unauthorized" which is accurate and actionable.
+      _error = (err && typeof err === 'object' && 'message' in err)
+        ? String(/** @type {any} */ (err).message).slice(0, 80)
+        : 'Failed to load NAV history';
     } finally {
       loading = false;
     }
+  }
+
+  function _retry() {
+    _error = null;
+    load();
   }
 
   // Polls on the market-aware interval — same cadence the NavCard
@@ -147,10 +159,17 @@
             fill="rgba(155,176,208,0.55)" font-size="10"
             style="font-family: var(--font-numeric)">{history[history.length - 1].as_of_date}</text>
     </svg>
+  {:else if _error}
+    <!-- Error state — surface message + Retry so the operator can act. -->
+    <div class="nav-tab-empty nav-tab-error" role="alert" data-testid="nav-tab-error">
+      <span class="nav-tab-err-icon" aria-hidden="true">⚠</span>
+      <span class="nav-tab-err-text">NAV history unavailable — {_error}</span>
+      <button class="nav-tab-retry" onclick={_retry}>Retry</button>
+    </div>
   {:else if loading}
-    <div class="nav-tab-empty">Loading NAV history…</div>
+    <div class="nav-tab-empty" data-testid="nav-tab-loading">Loading NAV history…</div>
   {:else}
-    <div class="nav-tab-empty">
+    <div class="nav-tab-empty" data-testid="nav-tab-empty">
       No NAV snapshots yet. First snapshot lands at 16:00 IST.
     </div>
   {/if}
@@ -193,6 +212,53 @@
     text-align: center;
     color: rgba(155, 176, 208, 0.55);
     font-size: var(--fs-lg);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+  }
+
+  /* Error state — red tint matching PerformancePage .perf-banner-error palette. */
+  .nav-tab-error {
+    background: rgba(248, 113, 113, 0.07);
+    color: #f87171;
+    border-radius: 4px;
+    border: 1px solid rgba(248, 113, 113, 0.25);
+    margin: 0.5rem;
+    font-size: var(--fs-md);
+  }
+
+  .nav-tab-err-icon {
+    flex-shrink: 0;
+    font-size: 1rem;
+  }
+
+  .nav-tab-err-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: left;
+  }
+
+  /* Retry button — cyan-400, matches NavBreakdown .nav-bd-retry and the
+     project's canonical action palette. */
+  .nav-tab-retry {
+    flex-shrink: 0;
+    padding: 0.2rem 0.7rem;
+    border-radius: 3px;
+    border: 1px solid rgba(34, 211, 238, 0.55);
+    background: rgba(34, 211, 238, 0.14);
+    color: #22d3ee;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: background 120ms, border-color 120ms;
+  }
+  .nav-tab-retry:hover {
+    background: rgba(34, 211, 238, 0.22);
+    border-color: rgba(34, 211, 238, 0.80);
+    color: #67e8f9;
   }
 
   /* Overlay chip — anchored top-LEFT INSIDE the chart wrapper.
