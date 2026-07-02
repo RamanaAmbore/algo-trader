@@ -168,41 +168,85 @@ _PRIORITY_INTERVALS_SEC: dict[str, float] = {
 }
 _dhan_next_poll: dict[str, float] = {}  # account → next allowed poll epoch
 
+# ---------------------------------------------------------------------------
+# In-process poll-priority cache (avoids async DB reads from thread context)
+# ---------------------------------------------------------------------------
+# Populated by Connections.rebuild_from_db() and invalidated on PATCH via
+# set_dhan_priority_cache(). Hot path is O(1) dict lookup — no I/O.
+# Thread-safe: single-assignment writes are GIL-safe; the cache is written
+# only during rebuild_from_db (startup + after CRUD) and never under lock.
+_dhan_poll_priority_cache: dict[str, str] = {}
+
+# ---------------------------------------------------------------------------
+# In-process circuit-breaker opt-in cache (Jul 2026)
+# ---------------------------------------------------------------------------
+# Populated by Connections.rebuild_from_db() alongside the poll-priority cache
+# and invalidated on PATCH via set_breaker_optin_cache().
+# When False (the default for all accounts except DH6847) the OPEN/HALF-OPEN
+# state machine is bypassed entirely; the account still gets last_ok_at /
+# last_fail_at health stamps for the admin badge.
+# Thread-safe: single-assignment writes are GIL-safe.
+_breaker_optin_cache: dict[str, bool] = {}
+
+
+def set_breaker_optin_cache(account: str, enabled: bool) -> None:
+    """Write the in-process circuit-breaker opt-in cache for one account.
+
+    Called from Connections.rebuild_from_db() and from the PATCH route handler
+    after a circuit_breaker_enabled toggle so the change takes effect
+    immediately without a process restart.
+    """
+    _breaker_optin_cache[account] = bool(enabled)
+
+
+def get_breaker_optin_cache(account: str) -> bool:
+    """Return True if circuit_breaker_enabled is set in the in-process cache.
+
+    Falls back to False (safe default: no breaker) when the account is not
+    yet in the cache (e.g. first poll cycle before rebuild_from_db completes).
+    """
+    return _breaker_optin_cache.get(account, False)
+
+
+def set_dhan_priority_cache(account: str, priority: str) -> None:
+    """Write the in-process priority cache for one account.
+
+    Called from Connections.rebuild_from_db() for each active Dhan row,
+    and from the PATCH + restore-priority route handlers after a DB write.
+    Priority must be 'hot', 'warm', or 'cold' — invalid values are
+    silently coerced to 'hot' so a bad DB value never breaks polling.
+    """
+    if priority not in _PRIORITY_INTERVALS_SEC:
+        priority = "hot"
+    _dhan_poll_priority_cache[account] = priority
+
 
 def _get_dhan_poll_priority(account: str) -> str:
-    """Read poll_priority for a Dhan account from the shared broker DB.
+    """Return poll_priority for a Dhan account from the in-process cache.
 
-    Falls back to 'hot' on any error so a DB hiccup never blocks polling.
-    Result is NOT cached in-process — the DB read is cheap (shared_engine
-    pool, simple SELECT) and this function is called at most once per
-    30s cycle per account.
+    Falls back to 'hot' when the account is not in the cache (e.g. first
+    poll cycle before rebuild_from_db completes) so polling is never
+    blocked by a missing cache entry.
     """
-    try:
-        from backend.api.database import shared_async_session as _shared_session
-        import asyncio as _asyncio
-        from sqlalchemy import select as _select
-        from backend.api.models import BrokerAccount as _BA
+    return _dhan_poll_priority_cache.get(account, "hot")
 
-        async def _read():
-            async with _shared_session() as s:
-                row = (await s.execute(
-                    _select(_BA.poll_priority).where(_BA.account == account)
-                )).scalar_one_or_none()
-            return row
 
-        loop = _asyncio.get_event_loop()
-        if loop.is_running():
-            # We are inside the asyncio event loop (called from the
-            # @for_all_accounts thread pool via to_thread). Schedule the
-            # coroutine on the loop and block on it from this thread.
-            import concurrent.futures as _cf
-            future = _asyncio.run_coroutine_threadsafe(_read(), loop)
-            result = future.result(timeout=2.0)
-        else:
-            result = loop.run_until_complete(_read())
-        return result or "hot"
-    except Exception:
-        return "hot"
+def dhan_next_poll_clear(accounts: list[str] | None = None) -> None:
+    """Reset the interval gate for Dhan accounts so the next call polls
+    immediately regardless of when the last poll ran.
+
+    Called by route handlers when ``?fresh=1`` is requested so manual
+    Refresh bypasses the cold/warm interval and always hits the broker.
+
+    ``accounts`` — list of account codes to reset; pass None to reset ALL
+    Dhan accounts (safe — non-Dhan entries are never inserted into this
+    dict, so a full clear only affects Dhan accounts).
+    """
+    if accounts is None:
+        _dhan_next_poll.clear()
+    else:
+        for acct in accounts:
+            _dhan_next_poll.pop(acct, None)
 
 
 def _is_dhan_interval_due(account: str, broker) -> bool:
@@ -299,8 +343,24 @@ def _maybe_auto_downgrade(account: str) -> None:
     if len(_breaker_open_history[account]) < _DOWNGRADE_MIN_OPENS:
         return  # Not enough opens yet.
 
-    # Read account row to check auto_downgrade_enabled + current poll_priority.
+    # Read account state from in-process cache to decide whether to downgrade.
+    # We check auto_downgrade_enabled + current poll_priority from the cache
+    # (set by set_dhan_priority_cache on rebuild_from_db + after PATCH).
+    # On a fresh start before rebuild_from_db completes, the cache is empty,
+    # so _get_dhan_poll_priority returns 'hot' and we fall through to the
+    # DB check only when we have enough history entries.
     try:
+        current_priority = _get_dhan_poll_priority(account)
+        if current_priority == "cold":
+            return  # Already cold — nothing to do.
+
+        # Check auto_downgrade_enabled via async DB read scheduled on the
+        # main event loop (captured at startup by write_queue.start()).
+        # We use run_coroutine_threadsafe with the stored loop — this is
+        # safe from any thread context and avoids the deprecated
+        # asyncio.get_event_loop() call which fails in Python 3.10+
+        # inside a ThreadPoolExecutor worker (no running loop in that
+        # thread).
         from backend.api.database import shared_async_session as _shared_session
         from backend.api.models import BrokerAccount as _BA
         from sqlalchemy import select as _select
@@ -314,12 +374,19 @@ def _maybe_auto_downgrade(account: str) -> None:
                 )).scalar_one_or_none()
                 if row is None:
                     return None
+                # Auto-downgrade requires BOTH circuit_breaker_enabled AND
+                # auto_downgrade_enabled. If the circuit breaker is not opted
+                # in, the account never enters OPEN state so the downgrade
+                # window counter can only accumulate phantom "opens" from
+                # non-state-machine paths — guard here to be safe.
+                if not getattr(row, "circuit_breaker_enabled", False):
+                    return None
                 if not getattr(row, "auto_downgrade_enabled", False):
                     return None
-                current_priority = getattr(row, "poll_priority", "hot") or "hot"
-                if current_priority == "cold":
-                    return None  # Already cold.
-                old_priority = current_priority
+                current_p = getattr(row, "poll_priority", "hot") or "hot"
+                if current_p == "cold":
+                    return None  # Already cold in DB.
+                old_priority = current_p
                 reason = f"{_DOWNGRADE_MIN_OPENS} breaker opens in 15 min"
                 row.poll_priority = "cold"
                 row.auto_downgraded_at = _dt.now(_tz.utc)
@@ -327,13 +394,22 @@ def _maybe_auto_downgrade(account: str) -> None:
                 await s.commit()
                 return old_priority, reason
 
-        loop = _asyncio.get_event_loop()
-        if loop.is_running():
-            import concurrent.futures as _cf
-            future = _asyncio.run_coroutine_threadsafe(_check_and_update(), loop)
+        # Use the main-event-loop reference captured at startup so this
+        # call works from within a ThreadPoolExecutor (no running loop in
+        # that thread on Python 3.10+).
+        from backend.api.persistence.write_queue import get_main_loop as _get_loop
+        _loop = _get_loop()
+        if _loop is None:
+            # write_queue.start() not called yet (test / early startup).
+            logger.debug(f"[DHAN-AUTO-DOWNGRADE] account={account}: main loop not ready, skipping")
+            return
+
+        future = _asyncio.run_coroutine_threadsafe(_check_and_update(), _loop)
+        try:
             outcome = future.result(timeout=3.0)
-        else:
-            outcome = loop.run_until_complete(_check_and_update())
+        except Exception as _fe:
+            logger.warning(f"[DHAN-AUTO-DOWNGRADE] account={account} DB check failed: {_fe}")
+            return
 
         if outcome is None:
             return  # No downgrade needed.
@@ -342,7 +418,10 @@ def _maybe_auto_downgrade(account: str) -> None:
 
         # Set cooloff so a 6th open within 5 min doesn't re-fire.
         _downgrade_cooloff_until[account] = now + _DOWNGRADE_COOLOFF_S
-        # Advance next_poll so the cold interval applies immediately.
+        # Update in-process cache so next interval-gate check sees 'cold'.
+        set_dhan_priority_cache(account, "cold")
+        # Reset next_poll to 0 so the next background cycle re-schedules
+        # the cold interval via _update_dhan_next_poll.
         _dhan_next_poll[account] = 0.0
 
         logger.warning(
@@ -350,10 +429,9 @@ def _maybe_auto_downgrade(account: str) -> None:
             f"from={old_priority} to=cold reason={reason!r}"
         )
 
-        # Emit WS event so the frontend toast can fire.
+        # Emit WS event so the frontend toast can fire.  Schedule as
+        # fire-and-forget on the main loop — we don't block on it.
         try:
-            import asyncio as _asyncio2
-
             async def _broadcast():
                 from backend.api.routes.ws import broadcast as _ws_broadcast
                 await _ws_broadcast({
@@ -365,12 +443,7 @@ def _maybe_auto_downgrade(account: str) -> None:
                     "auto": True,
                 })
 
-            _loop = _asyncio2.get_event_loop()
-            if _loop.is_running():
-                import concurrent.futures as _cf2
-                _asyncio2.run_coroutine_threadsafe(_broadcast(), _loop)
-            else:
-                _loop.run_until_complete(_broadcast())
+            _asyncio.run_coroutine_threadsafe(_broadcast(), _loop)
         except Exception as _ws_err:
             logger.debug(f"[DHAN-AUTO-DOWNGRADE] WS broadcast failed: {_ws_err}")
 
@@ -409,7 +482,15 @@ def _circuit_state(account: str) -> str:
 
 
 def _is_circuit_open(account: str) -> bool:
-    """Return True only when the breaker is OPEN (not half-open)."""
+    """Return True only when the breaker is OPEN (not half-open).
+
+    Returns False immediately for accounts that have not opted in via
+    circuit_breaker_enabled, so their fetch path is never short-circuited
+    by another account's failures. The opt-in state is read from the
+    in-process cache populated by Connections.rebuild_from_db().
+    """
+    if not get_breaker_optin_cache(account):
+        return False
     return _circuit_state(account) == "open"
 
 
@@ -440,6 +521,18 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
         return
 
     now = _time.time()
+
+    # Fast path for non-opt-in accounts: update health stamps only so the
+    # admin badge stays accurate, but skip the full state machine.
+    if not get_breaker_optin_cache(account):
+        e = _FETCH_HEALTH.setdefault(account, _default_health_entry())
+        if ok:
+            e["last_ok_at"] = now
+        else:
+            e["last_fail_at"] = now
+            e["last_fail_msg"] = str(error)[:200]
+        return
+
     _new_breaker_open = False   # flag set inside lock, hook fired outside
     with _BREAKER_LOCK:
         e = _FETCH_HEALTH.setdefault(account, _default_health_entry())

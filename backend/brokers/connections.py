@@ -1732,6 +1732,24 @@ class Connections(SingletonBase):
             # Mask registry refresh isn't load-critical — fall back to
             # the scalar mask. Log and continue.
             logger.warning(f"mask_account registry refresh failed: {e}")
+        # Populate the in-process poll-priority cache for Dhan accounts.
+        # This replaces the broken async-from-thread DB read that the
+        # interval gate previously used (_get_dhan_poll_priority now does
+        # an O(1) dict lookup instead of an asyncio.run_coroutine_threadsafe
+        # call which fails on Python 3.10+ in ThreadPoolExecutor workers).
+        try:
+            from backend.brokers.broker_apis import set_dhan_priority_cache, set_breaker_optin_cache
+            for r in rows:
+                if r.account in new_conn:
+                    broker_id_val = (r.broker_id or "zerodha_kite").lower()
+                    if broker_id_val == "dhan":
+                        pp = str(getattr(r, "poll_priority", "hot") or "hot")
+                        set_dhan_priority_cache(r.account, pp)
+                    # Populate breaker opt-in cache for all broker types.
+                    cb_enabled = bool(getattr(r, "circuit_breaker_enabled", False))
+                    set_breaker_optin_cache(r.account, cb_enabled)
+        except Exception as _pp_err:
+            logger.warning(f"poll_priority cache refresh failed: {_pp_err}")
         logger.info(f"Connections: rebuilt from DB · accounts={sorted(new_conn.keys())}")
 
         # Notify the KiteTicker if the account it's currently bound to
