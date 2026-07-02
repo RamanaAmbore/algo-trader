@@ -845,6 +845,12 @@ export async function testBrokerAccount(acct) {
   return _post(`/admin/brokers/${encodeURIComponent(acct)}/test`, {}, { auth: true });
 }
 
+/** POST /api/admin/brokers/{account}/restore-priority — reset poll_priority
+ *  to 'hot', clear auto-downgrade stamps, bump next_poll to now. */
+export async function restoreBrokerPriority(acct) {
+  return _post(`/admin/brokers/${encodeURIComponent(acct)}/restore-priority`, {}, { auth: true });
+}
+
 
 // ── Admin outbound email (admin/designated) ─────────────────────────────────
 

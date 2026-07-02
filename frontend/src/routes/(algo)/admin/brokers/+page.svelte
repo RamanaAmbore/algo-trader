@@ -25,7 +25,7 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import {
     fetchBrokerAccounts, createBrokerAccount, updateBrokerAccount,
-    deleteBrokerAccount, testBrokerAccount,
+    deleteBrokerAccount, testBrokerAccount, restoreBrokerPriority,
   } from '$lib/api';
   import StaleBanner    from '$lib/StaleBanner.svelte';
   import Select         from '$lib/Select.svelte';
@@ -33,11 +33,98 @@
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
   import { toast } from '$lib/data/toastStore.svelte.js';
+  import { onMount } from 'svelte';
 
   /** @type {Array<{id:number,account:string,broker_id:string,api_key:string,
    *   source_ip:string|null,is_active:boolean,historical_data_enabled:boolean,
-   *   notes:string|null,created_at:string,updated_at:string,loaded:boolean}>} */
+   *   notes:string|null,created_at:string,updated_at:string,loaded:boolean,
+   *   poll_priority:string,auto_downgrade_enabled:boolean,
+   *   auto_downgraded_at:string|null,auto_downgrade_reason:string|null}>} */
   let accounts = $state([]);
+
+  // Per-row priority dropdown open state: { [account]: boolean }
+  let priorityDropdownOpen = $state(/** @type {Record<string,boolean>} */ ({}));
+
+  /** Whether a broker_id identifies a Dhan account. */
+  function isDhan(/** @type {string} */ brokerId) {
+    return (brokerId || '').toLowerCase().includes('dhan');
+  }
+
+  /** Cycle background colour for each poll_priority value (CSS vars). */
+  const PRIORITY_STYLES = {
+    hot:  { bg: 'rgba(74,222,128,0.18)',  border: 'rgba(74,222,128,0.55)',  color: '#4ade80',  label: 'HOT' },
+    warm: { bg: 'rgba(251,191,36,0.18)',  border: 'rgba(251,191,36,0.55)',  color: '#fbbf24',  label: 'WARM' },
+    cold: { bg: 'rgba(148,163,184,0.18)', border: 'rgba(148,163,184,0.55)', color: '#94a3b8',  label: 'COLD' },
+  };
+  function priorityStyle(/** @type {string} */ p) {
+    return PRIORITY_STYLES[p] || PRIORITY_STYLES.hot;
+  }
+
+  async function setPriority(/** @type {any} */ row, /** @type {string} */ newPriority) {
+    priorityDropdownOpen[row.account] = false;
+    try {
+      await updateBrokerAccount(row.account, { poll_priority: newPriority });
+      // Optimistic update so the chip reflects the change immediately.
+      const idx = accounts.findIndex(a => a.account === row.account);
+      if (idx !== -1) {
+        accounts[idx] = {
+          ...accounts[idx],
+          poll_priority: newPriority,
+          auto_downgraded_at: null,
+          auto_downgrade_reason: null,
+        };
+      }
+      toast.success(`${row.account} priority → ${newPriority}`);
+    } catch (e) {
+      toast.error(`Failed: ${e.message}`);
+    }
+  }
+
+  async function toggleAutoDowngrade(/** @type {any} */ row) {
+    const newVal = !row.auto_downgrade_enabled;
+    try {
+      await updateBrokerAccount(row.account, { auto_downgrade_enabled: newVal });
+      const idx = accounts.findIndex(a => a.account === row.account);
+      if (idx !== -1) {
+        accounts[idx] = { ...accounts[idx], auto_downgrade_enabled: newVal };
+      }
+    } catch (e) {
+      toast.error(`Failed: ${e.message}`);
+    }
+  }
+
+  async function restorePriority(/** @type {any} */ row) {
+    try {
+      const updated = await restoreBrokerPriority(row.account);
+      const idx = accounts.findIndex(a => a.account === row.account);
+      if (idx !== -1) accounts[idx] = { ...accounts[idx], ...updated };
+      toast.success(`${row.account} priority restored to HOT`);
+    } catch (e) {
+      toast.error(`Restore failed: ${e.message}`);
+    }
+  }
+
+  // broker_priority_changed WS subscription — fires toast on auto-downgrade.
+  // Uses the performance socket (same endpoint used by the rest of the algo
+  // layout) so no new socket is opened.
+  let _wsUnsub = /** @type {(() => void) | null} */ (null);
+  // Import is lazy inside onMount to keep SSR safe.
+  onMount(() => {
+    import('$lib/ws.js').then(({ createPerformanceSocket }) => {
+      _wsUnsub = createPerformanceSocket((msg) => {
+        if (msg?.type === 'broker_priority_changed' && msg.auto) {
+          const acct = msg.account || '?';
+          toast.info(
+            `${acct} auto-downgraded to cold — click chip to restore`,
+            { duration: 4000 },
+          );
+          // Refresh the list so the chip re-renders with the new state.
+          load();
+        }
+      });
+    }).catch(() => {});
+    return () => { _wsUnsub?.(); };
+  });
   let loading  = $state(true);
   let error    = $state('');
 
@@ -147,6 +234,11 @@
   let testInFlight = $state(/** @type {string} */ (''));
   let refreshTeardown;
 
+  // Per-account circuit state for the red dot on the priority chip.
+  // Populated by the broker-health fetch; keyed by account code.
+  /** @type {Record<string, string>} */
+  let circuitStateMap = $state({});
+
   function resetForm(/** @type {string} */ acct = '') {
     editing = acct;
     // When entering create mode (acct === NEW_SENTINEL), the form's
@@ -194,6 +286,17 @@
       error = '';
     } catch (e) { error = e.message; }
     finally { loading = false; }
+    // Fetch broker-health for circuit-state dot (non-critical — never
+    // blocks the main list render).
+    try {
+      const { fetchBrokerHealth } = await import('$lib/api');
+      const health = await fetchBrokerHealth();
+      const map = /** @type {Record<string,string>} */ ({});
+      for (const entry of (health?.accounts || [])) {
+        map[entry.account] = entry.circuit_state || 'closed';
+      }
+      circuitStateMap = map;
+    } catch (_) {}
   }
 
   async function save() {
@@ -397,6 +500,7 @@
           <th>Source IP</th>
           <th>Status</th>
           <th>Historical</th>
+          <th>Poll</th>
           <th>Notes</th>
           <th>Test</th>
           <th></th>
@@ -424,6 +528,60 @@
                     class:hist-off={row.historical_data_enabled === false}>
                 {row.historical_data_enabled === false ? 'OFF' : 'ON'}
               </span>
+            </td>
+            <!-- Poll priority cell — Dhan only; Kite/Groww show em-dash -->
+            <td class="priority-cell">
+              {#if isDhan(row.broker_id)}
+                {@const ps = priorityStyle(row.poll_priority || 'hot')}
+                {@const isOpen = (circuitStateMap[row.account] === 'open')}
+                <div class="priority-wrap">
+                  <div class="priority-chip-row">
+                    <!-- Priority chip — click opens dropdown -->
+                    <button
+                      type="button"
+                      class="priority-chip"
+                      style="background:{ps.bg}; border-color:{ps.border}; color:{ps.color};"
+                      onclick={() => priorityDropdownOpen[row.account] = !priorityDropdownOpen[row.account]}
+                      title="Click to change poll priority"
+                      aria-expanded={!!priorityDropdownOpen[row.account]}
+                    >
+                      {ps.label}
+                      {#if isOpen}
+                        <span class="circuit-dot" title="Circuit breaker OPEN"></span>
+                      {/if}
+                    </button>
+                    <!-- Auto-downgrade checkbox -->
+                    <label class="auto-dg-label" title="Auto-downgrade to cold after 5 breaker opens in 15 min">
+                      <input type="checkbox"
+                             checked={row.auto_downgrade_enabled}
+                             onchange={() => toggleAutoDowngrade(row)} />
+                      <span class="auto-dg-text">auto</span>
+                    </label>
+                  </div>
+                  <!-- Dropdown -->
+                  {#if priorityDropdownOpen[row.account]}
+                    <div class="priority-dropdown">
+                      {#each Object.entries(PRIORITY_STYLES) as [key, s]}
+                        <button type="button" class="priority-dropdown-item"
+                                style="color:{s.color}"
+                                onclick={() => setPriority(row, key)}>
+                          {s.label}
+                        </button>
+                      {/each}
+                    </div>
+                  {/if}
+                  <!-- Auto-downgrade annotation -->
+                  {#if row.auto_downgraded_at}
+                    <div class="auto-dg-annotation">
+                      auto @ {new Date(row.auto_downgraded_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })} IST
+                      <button type="button" class="restore-link"
+                              onclick={() => restorePriority(row)}>restore</button>
+                    </div>
+                  {/if}
+                </div>
+              {:else}
+                <span class="priority-na">—</span>
+              {/if}
             </td>
             <td class="notes" title={row.notes}>{row.notes || ''}</td>
             <td class="test-cell">
@@ -612,8 +770,9 @@
   }
   .brokers-table td:nth-child(5),
   .brokers-table td:nth-child(6) { width: 1%; white-space: nowrap; }   /* status, historical */
-  .brokers-table td:nth-child(8),
-  .brokers-table td:nth-child(9) { width: 1%; white-space: nowrap; }   /* test, actions */
+  .brokers-table td:nth-child(7) { width: 1%; }                         /* poll priority */
+  .brokers-table td:nth-child(9),
+  .brokers-table td:nth-child(10) { width: 1%; white-space: nowrap; }  /* test, actions */
   .brokers-table th {
     text-align: left;
     color: var(--algo-muted);
@@ -717,6 +876,98 @@
   :global(.brokers-table .destructive:hover:not(:disabled)) {
     background: rgba(248,113,113,0.10) !important;
   }
+
+  /* ── Poll priority chip + dropdown ─────────────────────────────── */
+  .priority-cell { vertical-align: middle; }
+  .priority-wrap { position: relative; display: inline-flex; flex-direction: column; gap: 0.15rem; }
+  .priority-chip-row { display: inline-flex; align-items: center; gap: 0.3rem; }
+  .priority-chip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    padding: 1px 6px;
+    border-radius: 3px;
+    border: 1px solid;
+    font-family: monospace;
+    font-size: var(--fs-xs);
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    /* 400ms bg-color + border-color transition per spec. */
+    transition: background-color 400ms ease, border-color 400ms ease;
+    white-space: nowrap;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .priority-chip { transition: none; }
+  }
+  .priority-chip:hover { filter: brightness(1.15); }
+  /* Red dot — 4px, top-right corner, no pulse */
+  .circuit-dot {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: #f87171;
+    pointer-events: none;
+  }
+  .auto-dg-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.15rem;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .auto-dg-text { font-size: var(--fs-2xs); color: var(--algo-muted); font-family: monospace; }
+  .auto-dg-annotation {
+    font-size: var(--fs-2xs);
+    color: var(--algo-muted);
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+  .restore-link {
+    background: none;
+    border: none;
+    color: #22d3ee;
+    font-size: var(--fs-2xs);
+    font-family: monospace;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: underline;
+  }
+  .restore-link:hover { color: #67e8f9; }
+  .priority-dropdown {
+    position: absolute;
+    top: calc(100% + 2px);
+    left: 0;
+    z-index: 20;
+    background: #1d2a44;
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    display: flex;
+    flex-direction: column;
+    min-width: 80px;
+  }
+  .priority-dropdown-item {
+    padding: 0.25rem 0.6rem;
+    font-family: monospace;
+    font-size: var(--fs-xs);
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-align: left;
+    cursor: pointer;
+    background: none;
+    border: none;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+  .priority-dropdown-item:last-child { border-bottom: none; }
+  .priority-dropdown-item:hover { background: rgba(255,255,255,0.07); }
+  .priority-na { color: var(--algo-muted); font-size: var(--fs-xs); }
 
   /* Form layout — two-column grid that collapses on narrow viewports. */
   .brokers-form {
