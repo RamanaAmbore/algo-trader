@@ -1,5 +1,5 @@
 <script>
-  import { onMount, onDestroy, tick } from 'svelte';
+  import { onMount, onDestroy, tick, untrack } from 'svelte';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   // ag-Grid is lazy-loaded in onMount so it doesn't bloat the initial bundle
   // for public /performance visitors. createGrid is populated after the
@@ -855,28 +855,33 @@
     // pushing rows to the detail grids. First call per key seeds baseline
     // (no flash on mount). TOTAL rows are excluded. The primitive's
     // threshold=0.001 epsilon prevents false flashes on identical values.
-    for (const r of hRows) {
-      if (r.tradingsymbol === 'TOTAL' || r.account === 'TOTAL') continue;
-      const k = r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
-      if (!k) continue;
-      // LTP flash — fires on poll-cycle LTP change. Cascade direction tracked
-      // per key so pnlClsFlash can emit ltp-flash-up/down on derived columns.
-      if (r.last_price        != null) _perfFlash.update(`${k}:last_price`,         Number(r.last_price));
-      if (r.day_change_val    != null) _perfFlash.update(`${k}:day_change_val`,    Number(r.day_change_val));
-      if (r.day_change_percentage != null) _perfFlash.update(`${k}:day_change_percentage`, Number(r.day_change_percentage));
-      if (r.pnl               != null) _perfFlash.update(`${k}:pnl`,               Number(r.pnl));
-      if (r.pnl_percentage    != null) _perfFlash.update(`${k}:pnl_percentage`,    Number(r.pnl_percentage));
-    }
-    for (const r of pRows) {
-      if (r.tradingsymbol === 'TOTAL' || r.account === 'TOTAL') continue;
-      const k = r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
-      if (!k) continue;
-      if (r.last_price        != null) _perfFlash.update(`${k}:last_price`,         Number(r.last_price));
-      if (r.day_change_val    != null) _perfFlash.update(`${k}:day_change_val`,    Number(r.day_change_val));
-      if (r.day_change_percentage != null) _perfFlash.update(`${k}:day_change_percentage`, Number(r.day_change_percentage));
-      if (r.pnl               != null) _perfFlash.update(`${k}:pnl`,               Number(r.pnl));
-      if (r.pnl_percentage    != null) _perfFlash.update(`${k}:pnl_percentage`,    Number(r.pnl_percentage));
-    }
+    // Wrapped in untrack() so the $state write inside flash.update() does
+    // NOT register as a reactive dep when called from a $effect context,
+    // preventing the infinite re-schedule loop.
+    untrack(() => {
+      for (const r of hRows) {
+        if (r.tradingsymbol === 'TOTAL' || r.account === 'TOTAL') continue;
+        const k = r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
+        if (!k) continue;
+        // LTP flash — fires on poll-cycle LTP change. Cascade direction tracked
+        // per key so pnlClsFlash can emit ltp-flash-up/down on derived columns.
+        if (r.last_price        != null) _perfFlash.update(`${k}:last_price`,         Number(r.last_price));
+        if (r.day_change_val    != null) _perfFlash.update(`${k}:day_change_val`,    Number(r.day_change_val));
+        if (r.day_change_percentage != null) _perfFlash.update(`${k}:day_change_percentage`, Number(r.day_change_percentage));
+        if (r.pnl               != null) _perfFlash.update(`${k}:pnl`,               Number(r.pnl));
+        if (r.pnl_percentage    != null) _perfFlash.update(`${k}:pnl_percentage`,    Number(r.pnl_percentage));
+      }
+      for (const r of pRows) {
+        if (r.tradingsymbol === 'TOTAL' || r.account === 'TOTAL') continue;
+        const k = r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
+        if (!k) continue;
+        if (r.last_price        != null) _perfFlash.update(`${k}:last_price`,         Number(r.last_price));
+        if (r.day_change_val    != null) _perfFlash.update(`${k}:day_change_val`,    Number(r.day_change_val));
+        if (r.day_change_percentage != null) _perfFlash.update(`${k}:day_change_percentage`, Number(r.day_change_percentage));
+        if (r.pnl               != null) _perfFlash.update(`${k}:pnl`,               Number(r.pnl));
+        if (r.pnl_percentage    != null) _perfFlash.update(`${k}:pnl_percentage`,    Number(r.pnl_percentage));
+      }
+    });
     updateGrid(holdingsAllGrid, hRows);
     holdingsAllGrid.setGridOption('pinnedBottomRowData', hTotals ? [hTotals] : []);
     // Trigger a refreshCells so pnlClsFlash callbacks pick up the new flash state.
