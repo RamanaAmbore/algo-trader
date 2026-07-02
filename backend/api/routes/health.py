@@ -653,6 +653,9 @@ class BrokerAccountHealth(msgspec.Struct):
     auto_downgrade_enabled: bool = False
     auto_downgraded_at: Optional[str] = None   # ISO-8601 UTC, or None
     auto_downgrade_reason: Optional[str] = None
+    # True when the OPEN/HALF-OPEN state machine is active for this account.
+    # False (default) for all accounts except DH6847 (startup migration).
+    circuit_breaker_enabled: bool = False
 
 
 class BrokerHealthResponse(msgspec.Struct):
@@ -798,6 +801,9 @@ class BrokerHealthController(Controller):
                         "auto_downgrade_reason": getattr(
                             row, "auto_downgrade_reason", None
                         ),
+                        "circuit_breaker_enabled": bool(
+                            getattr(row, "circuit_breaker_enabled", False)
+                        ),
                     }
         except Exception:
             pass
@@ -837,6 +843,9 @@ class BrokerHealthController(Controller):
                 auto_downgrade_enabled=bool(_pp.get("auto_downgrade_enabled", False)),
                 auto_downgraded_at=_pp.get("auto_downgraded_at"),
                 auto_downgrade_reason=_pp.get("auto_downgrade_reason"),
+                circuit_breaker_enabled=bool(
+                    _pp.get("circuit_breaker_enabled", False)
+                ),
             ))
 
         # Stable sort: red → amber → green, then account name.

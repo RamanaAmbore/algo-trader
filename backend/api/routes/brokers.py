@@ -75,6 +75,11 @@ class BrokerAccountInfo(msgspec.Struct):
     auto_downgrade_enabled:  bool = False
     auto_downgraded_at:      str | None = None  # ISO-8601 UTC or None
     auto_downgrade_reason:   str | None = None
+    # Circuit-breaker opt-in (Jul 2026). When True the 3-fail / 5-min
+    # OPEN state machine is active for this account. Default False so
+    # the breaker is disabled for all accounts except DH6847 (seeded
+    # by the startup migration in _ensure_shared_broker_schema).
+    circuit_breaker_enabled: bool = False
 
 
 class BrokerAccountCreate(msgspec.Struct):
@@ -114,7 +119,8 @@ class BrokerAccountUpdate(msgspec.Struct):
     historical_data_enabled: Optional[bool] = None
     # Per-account poll priority (Dhan-only, Jul 2026).
     poll_priority:          Optional[str]  = None   # 'hot' | 'warm' | 'cold'
-    auto_downgrade_enabled: Optional[bool] = None
+    auto_downgrade_enabled:  Optional[bool] = None
+    circuit_breaker_enabled: Optional[bool] = None  # opt-in per-account breaker
 
 
 class TestResult(msgspec.Struct):
@@ -150,6 +156,7 @@ def _to_info(row: BrokerAccount, *, loaded: bool = False) -> BrokerAccountInfo:
             auto_downgraded_at.isoformat() if auto_downgraded_at else None
         ),
         auto_downgrade_reason=getattr(row, "auto_downgrade_reason", None),
+        circuit_breaker_enabled=bool(getattr(row, "circuit_breaker_enabled", False)),
     )
 
 
@@ -317,6 +324,8 @@ class BrokersController(Controller):
                     row.auto_downgrade_reason = None
             if data.auto_downgrade_enabled is not None:
                 row.auto_downgrade_enabled = bool(data.auto_downgrade_enabled)
+            if data.circuit_breaker_enabled is not None:
+                row.circuit_breaker_enabled = bool(data.circuit_breaker_enabled)
 
             # Secret fields — only update when the operator passed a
             # NON-EMPTY string. Empty / None means "leave unchanged" so
@@ -329,6 +338,22 @@ class BrokersController(Controller):
             row.updated_at = datetime.now(timezone.utc)
             await s.commit()
             await s.refresh(row)
+
+        # Immediately update the in-process caches so the interval gate and
+        # circuit-breaker opt-in check see the new value even before
+        # rebuild_from_db completes (it will also update the caches).
+        if data.poll_priority is not None or data.circuit_breaker_enabled is not None:
+            try:
+                from backend.brokers.broker_apis import (
+                    set_dhan_priority_cache,
+                    set_breaker_optin_cache,
+                )
+                if data.poll_priority is not None:
+                    set_dhan_priority_cache(account, row.poll_priority or "hot")
+                if data.circuit_breaker_enabled is not None:
+                    set_breaker_optin_cache(account, bool(row.circuit_breaker_enabled))
+            except Exception:
+                pass
 
         await _reload_connections()
         logger.warning(f"broker_accounts: updated {account!r} via /admin/brokers")
@@ -363,7 +388,7 @@ class BrokersController(Controller):
         triggered auto-downgrade. Does not restart the Connections
         singleton (no credentials changed).
         """
-        from backend.brokers.broker_apis import _dhan_next_poll
+        from backend.brokers.broker_apis import _dhan_next_poll, set_dhan_priority_cache
         async with shared_async_session() as s:
             row = (await s.execute(
                 select(BrokerAccount).where(BrokerAccount.account == account)
@@ -378,7 +403,10 @@ class BrokersController(Controller):
             await s.commit()
             await s.refresh(row)
 
-        # Bump next_poll_at to 0 so the next background cycle polls immediately.
+        # Update in-process cache immediately so the interval gate
+        # sees 'hot' before the next rebuild_from_db completes.
+        set_dhan_priority_cache(account, "hot")
+        # Reset next_poll so the account is polled on the very next cycle.
         _dhan_next_poll[account] = 0.0
 
         logger.warning(
