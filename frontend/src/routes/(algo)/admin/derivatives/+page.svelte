@@ -8,7 +8,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, nowStamp, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings } from '$lib/stores';
+  import { authStore, nowStamp, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, snapshotTotals } from '$lib/stores';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import { isMarketOpen } from '$lib/marketHours';
@@ -1214,6 +1214,29 @@
   const _expPnlByRootMap = $derived.by(() => {
     void _throttledTick;
     return _perRootReduce((c, spot) => _expiryPnl(c, spot));
+  });
+
+  // Snapshot TOTAL sums — computed ONCE, published to the shared
+  // snapshotTotals store so NavStrip's P slots 1/2/3 render identical
+  // values without duplicated compute. Operator 2026-07-01: "now p
+  // three values should match the snapshot total row day p & l, p & l,
+  // exp p & l. again no duplicated code ssot."
+  const _snapshotTotalDay = $derived(
+    Object.values(_dayPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
+  );
+  const _snapshotTotalPnl = $derived(
+    Object.values(_pnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
+  );
+  const _snapshotTotalExp = $derived(
+    Object.values(_expPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
+  );
+  $effect(() => {
+    snapshotTotals.set({
+      day: _snapshotTotalDay,
+      pnl: _snapshotTotalPnl,
+      exp: _snapshotTotalExp,
+      at:  Date.now(),
+    });
   });
 
   /** Per-underlying H Day P&L — Day P&L from equity holdings on that root
@@ -5460,21 +5483,18 @@
                from the Hold toggle (like the per-row cells). -->
           {@const _expTotalFno = Object.values(_byUnderlyingExp).reduce((s, v) => s + v.without, 0)}
           {@const _expTotalNet = Object.values(_byUnderlyingExp).reduce((s, v) => s + v.with, 0)}
-          {@const _dayTotalFno = Object.values(_dayPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)}
-          {@const _pnlTotalFno = Object.values(_pnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)}
-          {@const _expTotalFnoSum = Object.values(_expPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)}
           {@const _hDayTotal = Object.values(_hDayByRoot).reduce((s, v) => s + v, 0)}
           <div class="byund-row byund-row-total">
             <span class="byund-und">TOTAL</span>
             <span class="num">—</span>
             <span class="num">—</span>
             <span class="num">—</span>
-            <!-- Day P&L + H Day P&L (SSOT). -->
-            <span class="num {_dayTotalFno > 0 ? 'cell-pos' : _dayTotalFno < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_dayTotalFno)}</span>
+            <!-- Day P&L + H Day P&L (SSOT — same values published to NavStrip). -->
+            <span class="num {_snapshotTotalDay > 0 ? 'cell-pos' : _snapshotTotalDay < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_snapshotTotalDay)}</span>
             <span class="num {_hDayTotal > 0 ? 'cell-pos' : _hDayTotal < 0 ? 'cell-neg' : 'cell-flat'}">{_hDayTotal === 0 ? '—' : aggCompact(_hDayTotal)}</span>
             <!-- F&O pair (SSOT). -->
-            <span class="num {_pnlTotalFno > 0 ? 'cell-pos' : _pnlTotalFno < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_pnlTotalFno)}</span>
-            <span class="num {_expTotalFnoSum > 0 ? 'cell-pos' : _expTotalFnoSum < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_expTotalFnoSum)}</span>
+            <span class="num {_snapshotTotalPnl > 0 ? 'cell-pos' : _snapshotTotalPnl < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_snapshotTotalPnl)}</span>
+            <span class="num {_snapshotTotalExp > 0 ? 'cell-pos' : _snapshotTotalExp < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_snapshotTotalExp)}</span>
             <!-- Net trio (broker rollup for reference). -->
             <span class="num {_byUnderlyingTotal.day_with > 0 ? 'cell-pos' : _byUnderlyingTotal.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_with)}</span>
             <span class="num {_byUnderlyingTotal.pnl_with > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_with)}</span>
