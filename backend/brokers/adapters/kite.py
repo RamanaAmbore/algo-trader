@@ -264,6 +264,41 @@ class KiteBroker(Broker):
 
     def place_order(self, **kwargs: Any) -> str:
         _truncate_tag(kwargs)
+        # LAST-LINE DEFENSE — hard qty ceiling at the adapter layer.
+        # Every upstream path (ticket, basket, agent preflight, chase,
+        # trail-stop, OCO pair-watcher) has its own multi-guard, but this
+        # final check runs INSIDE the adapter so no caller can bypass it.
+        # Operator 2026-07-01: "I manually placed the buy order for 1
+        # lot. the order is placed for 100 lots. Then I sold 90 lots at
+        # the broker." Refuses if the qty being sent to Kite is > 5 for
+        # MCX/NCO (where qty is in lots) or > 5000 for equity F&O (which
+        # would be > 5×1000-share caps like NIFTY BEES).
+        _exch = str(kwargs.get("exchange") or "").upper()
+        _kqty = int(kwargs.get("quantity") or 0)
+        _sym  = str(kwargs.get("tradingsymbol") or "")
+        if _exch in ("MCX", "NCO") and _kqty > 5:
+            logger.error(
+                "[ADAPTER-QTY-CEILING] REFUSING %s %s: qty=%s (MCX/NCO lots) "
+                "> 5-lot ceiling. Every upstream guard failed. Investigate.",
+                _exch, _sym, _kqty,
+            )
+            raise ValueError(
+                f"[ADAPTER-QTY-CEILING] {_exch} qty={_kqty} exceeds 5-lot "
+                f"ceiling for {_sym}. Refusing at adapter layer."
+            )
+        if _exch in ("NFO", "CDS", "BFO") and _kqty > 5000:
+            # 5000 contracts = 5 lots × 1000-share cap (NIFTYBEES-style).
+            # Legitimate F&O orders (NIFTY 25-share lots × 5 = 125) sit
+            # far below this; this catches absurd 4-5 digit qty typos.
+            logger.error(
+                "[ADAPTER-QTY-CEILING] REFUSING %s %s: qty=%s > 5000-contract "
+                "ceiling. Every upstream guard failed. Investigate.",
+                _exch, _sym, _kqty,
+            )
+            raise ValueError(
+                f"[ADAPTER-QTY-CEILING] {_exch} qty={_kqty} exceeds 5000-"
+                f"contract ceiling for {_sym}. Refusing at adapter layer."
+            )
         return self.kite.place_order(**kwargs)
 
     def modify_order(self, order_id: str, **kwargs: Any) -> str:
