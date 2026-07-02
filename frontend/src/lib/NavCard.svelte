@@ -96,7 +96,7 @@
   // PositionStrip + /admin/derivatives convention so the operator's
   // muscle memory for "this just refreshed" works everywhere. First
   // sample establishes baseline (no flash on mount).
-  const flash = createTickFlash({ threshold: 0, durationMs: 350 });
+  const flash = createTickFlash({ threshold: 0, durationMs: 300 });
   $effect(() => {
     flash.update('shareNav',    shareNav);
     flash.update('shareDayPnl', shareDayPnl);

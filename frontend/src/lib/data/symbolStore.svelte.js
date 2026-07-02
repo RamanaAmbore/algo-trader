@@ -49,6 +49,7 @@ import { browser } from '$app/environment';
 import { SvelteMap } from 'svelte/reactivity';
 import { writable } from 'svelte/store';
 import { cachedRead, cachedWrite, TTL } from './persistentCache.js';
+import { createTickBus } from './tickFlash.svelte.js';
 
 const _STORE_KEY = 'md.symbolStore';
 // 7 days so closing values for actively-traded symbols survive Friday
@@ -98,6 +99,19 @@ export const symbolStore = new SvelteMap();
  * scanning the map on every render.
  */
 export const symbolTickCount = writable(0);
+
+/**
+ * Single-origin directional tick bus — emits {sym, dir, at} on every
+ * real LTP write (throttled 250ms per sym). Consumers (RefreshButton,
+ * MarketPulse, PositionStrip) subscribe in onMount and tear down in
+ * onDestroy. Direction is computed inside _mergeSymbolWrite where
+ * prev + next LTP are both in scope — no extra LTP state here.
+ *
+ * Additive alongside symbolTickCount: symbolTickCount stays for poll-
+ * cadence liveness signals (RefreshButton halo, _liveLtpSnap rebuild);
+ * tickBus is the per-tick directional signal for flash animations.
+ */
+export const tickBus = createTickBus({ throttleMs: 250 });
 
 // ── Hydrate from localStorage ────────────────────────────────────────────
 //
@@ -195,6 +209,9 @@ function _mergeSymbolWrite(sym, fields, ts = {}) {
     ? { ...prev }
     : { ltp_ts: 0, snapshot_ts: 0, touched_at: 0 };
 
+  // Capture prev LTP before any writes so _emitTickBus can diff later.
+  const _prevLtp = prev?.ltp;
+
   let changed = false;
 
   for (const [k, raw] of Object.entries(fields)) {
@@ -265,6 +282,17 @@ function _mergeSymbolWrite(sym, fields, ts = {}) {
   next.touched_at = Math.max(next.ltp_ts, next.snapshot_ts);
 
   symbolStore.set(key, next);
+
+  // Emit to tickBus when LTP actually changed — subscribers drive
+  // unified flash animations (RefreshButton, MarketPulse, PositionStrip).
+  // Gate: prev must be non-null (first write = baseline, no direction) and
+  // the new LTP value must have been written (not stale-rejected or zeroed).
+  const _newLtp = next.ltp;
+  if (_prevLtp != null && _newLtp != null && _newLtp !== _prevLtp) {
+    const dir = _newLtp > _prevLtp ? 'up' : _newLtp < _prevLtp ? 'down' : 'flat';
+    tickBus.emit(key, dir);
+  }
+
   return true;
 }
 

@@ -273,7 +273,7 @@
   // tradingsymbol/account==='TOTAL') are excluded. Threshold 0.001 (epsilon)
   // prevents false flashes when the same value arrives twice. Alpha 0.13 via
   // global .tf-up/.tf-down in app.css — lower than LTP flash (0.35).
-  const _perfFlash = createTickFlash({ threshold: 0.001, durationMs: 350 });
+  const _perfFlash = createTickFlash({ threshold: 0.001, durationMs: 300 });
 
   // Stable row key: account|tradingsymbol. Matches updateGrid's key() fn.
   function _perfFlashKey(data) {

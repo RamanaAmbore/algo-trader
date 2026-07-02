@@ -628,6 +628,13 @@ class BrokerAccountHealth(msgspec.Struct):
     `is_active_ticker` is True only for the ONE Kite account currently
     running the ticker WebSocket in conn_service. Displayed as a small
     'active' chip next to the account row in BrokerHealthBadge.
+
+    Circuit-breaker fields (added Jul 2026 — defaults allow older
+    conn_service responses to deserialize cleanly on rolling deploys):
+      circuit_state         — 'closed' | 'half-open' | 'open'
+      consecutive_fail_count — number of consecutive failed fetches
+      circuit_open_until    — ISO-8601 UTC when the breaker reopens,
+                              or None when closed/half-open
     """
     account: str
     broker: str                   # 'kite' | 'dhan' | 'groww' | 'unknown'
@@ -636,6 +643,10 @@ class BrokerAccountHealth(msgspec.Struct):
     last_good_at: Optional[str]   # ISO-8601 UTC, or None
     last_check_at: Optional[str]  # ISO-8601 UTC, or None
     is_active_ticker: bool = False  # True only for the Kite account bound to the WS
+    # Circuit-breaker fields — default to safe values for back-compat.
+    circuit_state: str = "closed"
+    consecutive_fail_count: int = 0
+    circuit_open_until: Optional[str] = None  # ISO-8601 UTC, or None
 
 
 class BrokerHealthResponse(msgspec.Struct):
@@ -674,20 +685,41 @@ def _ts_to_ist_label(unix_ts: float | None) -> str:
         return ""
 
 
-def _derive_account_health(entry: dict, now: float) -> tuple[str, str]:
-    """Return ``(state, reason)`` for one _FETCH_HEALTH entry.
+def _derive_account_health(entry: dict, now: float) -> tuple[str, str, str, int, Optional[str]]:
+    """Return ``(state, reason, circuit_state, consecutive_fail_count, circuit_open_until_iso)``
+    for one _FETCH_HEALTH entry.
 
     State rules:
       green  — last_ok_at is present AND within the last 5 min
+               (circuit must be CLOSED)
       amber  — last_ok_at present but > 5 min ago (stale), OR never tried
       red    — last_fail_at > last_ok_at (most-recent call failed)
+               OR circuit breaker is OPEN (overrides auth-ok state)
     """
     last_ok   = entry.get("last_ok_at",   0.0) or 0.0
     last_fail = entry.get("last_fail_at", 0.0) or 0.0
     last_msg  = entry.get("last_fail_msg", "") or ""
 
+    # Circuit-breaker fields (may be absent on legacy entries).
+    cb_until  = entry.get("circuit_open_until") or None
+    cb_count  = int(entry.get("consecutive_fail_count", 0) or 0)
+    if cb_until is not None and now < cb_until:
+        cb_state = "open"
+    elif cb_until is not None and now >= cb_until:
+        cb_state = "half-open"
+    else:
+        cb_state = "closed"
+
+    cb_until_iso: Optional[str] = _ts_to_iso(cb_until) if cb_until else None
+
+    # Circuit OPEN → always red, with retry timestamp in reason.
+    if cb_state == "open":
+        label = _ts_to_ist_label(cb_until)
+        reason = f"circuit open — auto retry at {label}" if label else "circuit open"
+        return "red", reason, cb_state, cb_count, cb_until_iso
+
     if last_ok == 0.0 and last_fail == 0.0:
-        return "amber", "no fetch attempt recorded yet"
+        return "amber", "no fetch attempt recorded yet", cb_state, cb_count, cb_until_iso
 
     if last_fail > last_ok:
         label = _ts_to_ist_label(last_fail)
@@ -695,17 +727,17 @@ def _derive_account_health(entry: dict, now: float) -> tuple[str, str]:
         if last_msg:
             short_msg = last_msg[:80]
             reason = f"{reason} — {short_msg}"
-        return "red", reason
+        return "red", reason, cb_state, cb_count, cb_until_iso
 
     # last_ok >= last_fail — account is currently healthy
     age = now - last_ok
     if age <= _BROKER_HEALTH_FRESH_WINDOW_S:
         label = _ts_to_ist_label(last_ok)
-        return "green", f"healthy, last good at {label}" if label else "healthy"
+        return "green", (f"healthy, last good at {label}" if label else "healthy"), cb_state, cb_count, cb_until_iso
     else:
         label = _ts_to_ist_label(last_ok)
         mins = int(age // 60)
-        return "amber", f"stale — last good {mins} min ago at {label}" if label else f"stale — {mins} min ago"
+        return "amber", (f"stale — last good {mins} min ago at {label}" if label else f"stale — {mins} min ago"), cb_state, cb_count, cb_until_iso
 
 
 class BrokerHealthController(Controller):
@@ -760,7 +792,7 @@ class BrokerHealthController(Controller):
 
         accounts: list[BrokerAccountHealth] = []
         for acct, entry in health_map.items():
-            state, reason = _derive_account_health(entry, now)
+            state, reason, cb_state, cb_count, cb_until_iso = _derive_account_health(entry, now)
             last_ok   = entry.get("last_ok_at",   0.0) or 0.0
             last_fail = entry.get("last_fail_at", 0.0) or 0.0
             last_check = max(last_ok, last_fail)
@@ -774,6 +806,9 @@ class BrokerHealthController(Controller):
                 is_active_ticker=bool(
                     active_ticker_acct and acct == active_ticker_acct
                 ),
+                circuit_state=cb_state,
+                consecutive_fail_count=cb_count,
+                circuit_open_until=cb_until_iso,
             ))
 
         # Stable sort: red → amber → green, then account name.

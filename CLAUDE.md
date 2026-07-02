@@ -354,6 +354,23 @@ signal (loaded/total count) and is unchanged.
 
 ---
 
+## Broker resilience
+
+**Circuit breaker (Jul 2026 — P0 DH6847 rotation-loop fix)**:
+Per-account, per-broker state machine in `backend/brokers/broker_apis.py` (`_record_fetch` + `_is_circuit_open`).
+
+- **CLOSED** (normal): every fetch runs; `consecutive_fail_count` increments on each failure.
+- **OPEN** (after 3 consecutive failures): `circuit_open_until = now + cool-off`. All `_fetch_*_local` functions short-circuit immediately — the SDK is never called. One `[BREAKER]` warning logged. Cool-off is exponential: 5m → 10m → 20m → 30m (cap). Returns empty DataFrame with `attrs['circuit_open'] = True`.
+- **HALF-OPEN** (after cool-off expires): next probe runs. Success → CLOSED (counters reset). Failure → OPEN again at next exponential step.
+
+State is stored as extra fields in `_FETCH_HEALTH[account]`: `consecutive_fail_count`, `circuit_open_until`, `circuit_last_opened_at`, `open_cycle_count`. No separate state store.
+
+`/api/admin/broker-health` surfaces `circuit_state`, `consecutive_fail_count`, `circuit_open_until` per account. `BrokerHealthBadge.svelte` renders OPEN/PROBE chips + tooltip with retry time. Tests: `backend/tests/broker/test_circuit_breaker.py` (17 tests).
+
+**Prod effect**: DH6847 hammering DH-906 every 30s stops after 3 consecutive failures (~90s of prod log noise) vs the observed ~50 failures/hour before the fix.
+
+---
+
 ## Broker isolation (slices 1–4)
 
 **Architecture**: Broker code isolated in `backend/brokers/` with separate

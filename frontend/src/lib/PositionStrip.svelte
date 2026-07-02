@@ -11,7 +11,7 @@
   import { getInstrument, loadInstruments, findNearestFuture } from '$lib/data/instruments';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { cachedRead, cachedWrite, cachedDelete, TTL } from '$lib/data/persistentCache';
-  import { getSnapshot, symbolStore, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
+  import { getSnapshot, symbolStore, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { positionsStore, holdingsStore, fundsStore, publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
@@ -162,7 +162,7 @@
   // sums round to ₹1 anyway — every meaningful poll-to-poll delta
   // fires; the first-sample-no-flash gate in the helper prevents
   // a mount paint from flashing every cell.
-  const flash = createTickFlash({ threshold: 0, durationMs: 350 });
+  const flash = createTickFlash({ threshold: 0, durationMs: 300 });
 
   onMount(() => {
     // Instruments cache feeds both the long-options premium derivation
@@ -202,6 +202,22 @@
     // the last in-session value persisted via daily_book. The legacy
     // cache restore went stale during the snapshot-zero-capture outage
     // and never recovered; SSOT path is robust to that class of bug.
+
+    // Tick-bus border shimmer — sky-300 border flash on every real SSE
+    // LTP tick. Separate from the amber poll heartbeat; direction ignored
+    // (neutral palette). 300ms unified duration. Re-arm on each event so
+    // continuous tick flow keeps the border lit; clears 300ms after the
+    // last tick in any burst.
+    _tickBusUnsub = tickBus.subscribe(() => {
+      // Toggle a↔b so the browser sees a new animation-name and restarts
+      // the keyframe on every tick (same pattern as RefreshButton rf-tick-a/b).
+      _tickBorderClass = _tickBorderClass === 'ps-tick-border-a' ? 'ps-tick-border-b' : 'ps-tick-border-a';
+      if (_tickBorderTimer) clearTimeout(_tickBorderTimer);
+      _tickBorderTimer = setTimeout(() => {
+        _tickBorderClass = '';
+        _tickBorderTimer = null;
+      }, 300);
+    });
   });
   onDestroy(() => {
     teardown?.();
@@ -209,7 +225,7 @@
     _mktTimer?.();   // visibleInterval teardown
     if (_tickThrottleTimer) { clearTimeout(_tickThrottleTimer); _tickThrottleTimer = null; }
     _tickThrottleUnsub?.();
-    // _heartbeatTimer is the 450ms pulse decay timer scheduled inside
+    // _heartbeatTimer is the 300ms pulse decay timer scheduled inside
     // the heartbeat $effect. Latent leak today (strip is layout-
     // persistent so it never unmounts) but the timer would fire into
     // a destroyed component if the strip ever became conditional.
@@ -217,6 +233,8 @@
       clearTimeout(_heartbeatTimer);
       _heartbeatTimer = null;
     }
+    _tickBusUnsub?.();
+    if (_tickBorderTimer) { clearTimeout(_tickBorderTimer); _tickBorderTimer = null; }
   });
 
   // P    = positions P&L lifetime (open + closed intraday).
@@ -687,14 +705,30 @@
     if (_pollCycleStamp === 0) return;  // skip mount paint
     _heartbeatOn = true;
     if (_heartbeatTimer) clearTimeout(_heartbeatTimer);
+    // 300ms — unified duration (tick-bus synchrony). Previously 450ms.
     _heartbeatTimer = setTimeout(() => {
       _heartbeatOn = false;
       _heartbeatTimer = null;
-    }, 450);
+    }, 300);
   });
+
+  // Tick-bus border shimmer — per-tick sky-300 border flash driven by
+  // real SSE ticks (separate from the poll-based amber heartbeat).
+  // Direction not applicable on this surface; sky (neutral) palette per
+  // the unified spec. 300ms + cubic-bezier(0.4,0,0.2,1) — same as all
+  // other flash surfaces.
+  // Uses the same a/b class-toggle pattern as RefreshButton: each emit
+  // alternates between ps-tick-border-a and ps-tick-border-b (distinct
+  // @keyframes names) so the browser restarts the animation on every
+  // tick even during continuous bursts, rather than sitting static.
+  let _tickBorderClass = $state(/** @type {'' | 'ps-tick-border-a' | 'ps-tick-border-b'} */ (''));
+  /** @type {ReturnType<typeof setTimeout> | null} */
+  let _tickBorderTimer = null;
+  /** @type {(() => void) | null} */
+  let _tickBusUnsub = null;
 </script>
 
-<a class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '')} href="/dashboard"
+<a class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_tickBorderClass ? ' ' + _tickBorderClass : '')} href="/dashboard"
    aria-label="Open the dashboard — full positions, holdings, and funds grids">
   <!-- SSOT: read the three P slots from snapshotTotals when the
        derivatives page has published (single source of truth shared
@@ -787,13 +821,40 @@
     transition: background 0.08s, border-bottom-color 0.18s;
   }
   /* Heartbeat — fires on every successful 30s poll completion via a
-     class toggle that resolves after 450ms. Subtle amber-bordered
-     glow that reads as "data refreshed" without competing with the
-     per-cell directional flash. Operator: "I don't see any animation
-     refreshing nav strip". */
+     class toggle that resolves after 300ms (unified tick-bus duration).
+     Subtle amber-bordered glow that reads as "data refreshed" without
+     competing with the per-cell directional flash. Operator: "I don't
+     see any animation refreshing nav strip". */
   .ps-strip.ps-heartbeat {
     border-bottom-color: rgba(251, 191, 36, 0.85);
     background: linear-gradient(180deg, #0a1020 0%, #1a2640 100%);
+  }
+  /* Tick-border shimmer — per-SSE-tick sky-300 border flash driven by
+     tickBus. Neutral (no direction). 300ms cubic-bezier(0.4,0,0.2,1)
+     easing matches the unified animation spec.
+     Uses the same a/b name-toggle pattern as RefreshButton: each emit
+     alternates between ps-tick-border-a and ps-tick-border-b, which have
+     DISTINCT @keyframes names. The browser sees an animation-name change
+     and restarts the animation even during continuous tick bursts, giving
+     a per-tick pulse rather than a static lit border. */
+  .ps-strip.ps-tick-border-a {
+    animation: ps-tick-border-kf-a 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .ps-strip.ps-tick-border-b {
+    animation: ps-tick-border-kf-b 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  @keyframes ps-tick-border-kf-a {
+    0%   { border-bottom-color: rgba(125, 211, 252, 0.70); }
+    100% { border-bottom-color: rgba(125, 211, 252, 0); }
+  }
+  @keyframes ps-tick-border-kf-b {
+    0%   { border-bottom-color: rgba(125, 211, 252, 0.70); }
+    100% { border-bottom-color: rgba(125, 211, 252, 0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .ps-strip.ps-heartbeat { transition: none; }
+    .ps-strip.ps-tick-border-a,
+    .ps-strip.ps-tick-border-b { animation: none; }
   }
   .ps-strip:hover {
     background: linear-gradient(180deg, #0a1020 0%, #1a2746 100%);
