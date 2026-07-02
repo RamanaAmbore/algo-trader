@@ -50,6 +50,74 @@
   /** @type {any[]} */
   const _holdings   = $derived(holdingsStore.value  ?? []);
 
+  // ── Loading-state machine ────────────────────────────────────────────
+  // Three explicit states so the operator never sees a silent perpetual
+  // spinner:
+  //   1. loading  — at least one store still in-flight (or never loaded).
+  //                 After 10 s flip to "timed-out" so the operator can act.
+  //   2. empty    — all three stores have completed (lastFetch > 0) with no
+  //                 data. Show actionable "check broker connections" message.
+  //   3. error    — at least one store surfaced an error. Show message + Retry.
+  //   4. ready    — table renders.
+
+  /** True while any of the three stores is actively fetching. */
+  const _inFlight = $derived(
+    positionsStore.loading || holdingsStore.loading || fundsStore.loading
+  );
+
+  /** True once all three stores have completed at least one successful fetch. */
+  const _allLoaded = $derived(
+    positionsStore.lastFetch > 0 &&
+    holdingsStore.lastFetch  > 0 &&
+    fundsStore.lastFetch     > 0
+  );
+
+  /** First fetch-error string across all three stores (null when clean). */
+  const _anyError = $derived(
+    positionsStore.error || holdingsStore.error || fundsStore.error || null
+  );
+
+  /** Flips to true >5 s into loading: show "retrying — network slow" hint. */
+  let _slowLoad  = $state(false);
+  /** 10-second hard timeout — flips to true when still loading after 10 s. */
+  let _timedOut  = $state(false);
+  /** @type {ReturnType<typeof setTimeout>|null} */
+  let _slowHandle    = null;
+  /** @type {ReturnType<typeof setTimeout>|null} */
+  let _timeoutHandle = null;
+
+  $effect(() => {
+    if (_inFlight && !_allLoaded) {
+      // Arm the slow-load hint (5 s) and hard timeout (10 s).
+      if (!_slowHandle) {
+        _slowHandle = setTimeout(() => { _slowLoad = true; }, 5_000);
+      }
+      if (!_timeoutHandle) {
+        _timeoutHandle = setTimeout(() => { _timedOut = true; }, 10_000);
+      }
+    } else {
+      // Loaded or errored — cancel both clocks.
+      if (_slowHandle)    { clearTimeout(_slowHandle);    _slowHandle    = null; }
+      if (_timeoutHandle) { clearTimeout(_timeoutHandle); _timeoutHandle = null; }
+      _slowLoad  = false;
+      _timedOut  = false;
+    }
+  });
+
+  onDestroy(() => {
+    if (_slowHandle)    clearTimeout(_slowHandle);
+    if (_timeoutHandle) clearTimeout(_timeoutHandle);
+  });
+
+  /** Force a fresh fetch on all three stores (Retry button handler). */
+  function _retry() {
+    _timedOut = false;
+    if (_timeoutHandle) { clearTimeout(_timeoutHandle); _timeoutHandle = null; }
+    positionsStore.load(undefined, { force: true });
+    holdingsStore.load(undefined,  { force: true });
+    fundsStore.load(undefined,     { force: true });
+  }
+
   // Canonical account display order map — $state so _allAccounts re-derives
   // when fetchBrokerOrder() resolves after cold load.
   let _navOrderMap = $state(/** @type {Record<string,number>} */ ({}));
@@ -130,9 +198,32 @@
       NAV = Cash (SOD + long-option premium) + Σ position M2M + Σ holdings MTM
     </div>
   </div>
+{:else if _anyError && !_inFlight}
+  <!-- State 3: fetch error — at least one store returned an error. -->
+  <div class="nav-bd-empty nav-bd-error" role="alert" data-testid="nav-bd-error">
+    <span class="nav-bd-status-icon" aria-hidden="true">⚠</span>
+    <span class="nav-bd-status-text">NAV data unavailable — {_anyError}</span>
+    <button class="nav-bd-retry" onclick={_retry}>Retry</button>
+  </div>
+{:else if _timedOut}
+  <!-- State 1b: hard timeout (>10 s) while loading. -->
+  <div class="nav-bd-empty nav-bd-warn" role="alert" data-testid="nav-bd-timeout">
+    <span class="nav-bd-status-icon" aria-hidden="true">⏳</span>
+    <span class="nav-bd-status-text">Fetch timed out — click Retry</span>
+    <button class="nav-bd-retry" onclick={_retry}>Retry</button>
+  </div>
+{:else if _allLoaded}
+  <!-- State 2: loaded successfully but no data (empty broker accounts?). -->
+  <div class="nav-bd-empty nav-bd-hint" data-testid="nav-bd-empty">
+    <span class="nav-bd-status-icon" aria-hidden="true">—</span>
+    <span class="nav-bd-status-text">No NAV data — check
+      <a class="nav-bd-link" href="/admin/brokers">broker connections</a>
+    </span>
+  </div>
 {:else}
-  <div class="nav-bd-empty">
-    Loading NAV breakdown… (positions + holdings + funds warming)
+  <!-- State 1a: loading (in-flight or stores not yet started). -->
+  <div class="nav-bd-empty" data-testid="nav-bd-loading">
+    Loading NAV breakdown…{_slowLoad ? ' (retrying — network slow)' : ''}
   </div>
 {/if}
 
@@ -261,6 +352,71 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.72rem;
     background: #1d2a44;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+  }
+
+  /* Error state — red tint matching PerformancePage .perf-banner-error palette. */
+  .nav-bd-error {
+    background: rgba(248, 113, 113, 0.07);
+    color: #f87171;
+    border-top: 1px solid rgba(248, 113, 113, 0.25);
+  }
+
+  /* Slow/timed-out warning — amber tint matching the algo-theme warn palette. */
+  .nav-bd-warn {
+    background: rgba(251, 191, 36, 0.07);
+    color: #fbbf24;
+    border-top: 1px solid rgba(251, 191, 36, 0.25);
+  }
+
+  /* Hint (empty-but-loaded) — muted slate, same as the loading text. */
+  .nav-bd-hint {
+    color: rgba(155, 176, 208, 0.70);
+  }
+
+  .nav-bd-status-icon {
+    font-size: 0.9rem;
+    flex-shrink: 0;
+  }
+
+  .nav-bd-status-text {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .nav-bd-link {
+    color: #22d3ee;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .nav-bd-link:hover {
+    color: #67e8f9;
+  }
+
+  /* Retry button — cyan-400 palette matching RefreshButton / PageHeaderActions
+     so the operator doesn't have to relearn the "action" visual language. */
+  .nav-bd-retry {
+    flex-shrink: 0;
+    padding: 0.15rem 0.6rem;
+    border-radius: 3px;
+    border: 1px solid rgba(34, 211, 238, 0.55);
+    background: rgba(34, 211, 238, 0.14);
+    color: #22d3ee;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    transition: background 120ms, border-color 120ms;
+  }
+  .nav-bd-retry:hover {
+    background: rgba(34, 211, 238, 0.22);
+    border-color: rgba(34, 211, 238, 0.80);
+    color: #67e8f9;
   }
 
   /* Mobile: tighten padding so 5 columns fit comfortably on a

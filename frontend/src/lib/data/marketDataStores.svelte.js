@@ -326,30 +326,50 @@ export const moversSnapshotAt = {
 };
 
 /**
- * Classify a raw tradingsymbol (no exchange prefix) into the mover group.
+ * Classify a raw tradingsymbol (no exchange prefix) into ALL mover groups
+ * it belongs to. A symbol may belong to multiple tabs simultaneously.
  *
- * Priority: smallcap → midcap → large_cap → underlying (F&O indices).
+ * Membership rules (non-exclusive):
+ * - 'underlying' = any F&O underlying (indices + stocks), including SENSEX/BANKEX
+ * - 'large_cap'  = F&O-eligible stocks that are NOT in MIDCAP/SMLCAP 100.
+ *   SENSEX/BANKEX are excluded from FO_STOCK_UNDERLYINGS so they never land here.
+ * - 'midcap'     = NIFTY MIDCAP 100 constituents (also F&O-eligible stocks)
+ * - 'smallcap'   = NIFTY SMLCAP 100 constituents
  *
- * The 'large_cap' bucket covers F&O-eligible NSE stocks that are NOT in
- * NIFTY_MIDCAP_100 / NIFTY_SMLCAP_100 — e.g. RELIANCE, TCS, HDFCBANK.
- * FO_STOCK_UNDERLYINGS excludes the two BSE single-token index names
- * (SENSEX, BANKEX) so those remain in the 'underlying' tab.
+ * Examples:
+ *   RELIANCE → ['underlying', 'large_cap']   (F&O stock, not midcap/smlcap)
+ *   BHEL     → ['underlying', 'midcap']      (F&O stock AND NIFTY MIDCAP 100)
+ *   SENSEX   → ['underlying']                (BSE index, excluded from large_cap)
+ *   UNKNOWN  → []                            (falls to 'underlying' default at store layer)
  *
- * Stocks in NIFTY_MIDCAP_100 that are ALSO F&O-eligible are classified
- * as 'midcap' (midcap check fires first), preserving the original intent
- * that index-membership is the canonical "midcap" answer.
- *
- * Returns null when the symbol is unknown to all four sets.
+ * Returns an empty array when the symbol is unknown to all four sets.
+ * @param {string} sym
+ * @returns {string[]}
+ */
+function _classifyMoverGroups(sym) {
+  const s = String(sym || '').toUpperCase();
+  /** @type {string[]} */
+  const groups = [];
+  if (FO_UNDERLYINGS.has(s))        groups.push('underlying');
+  // large_cap = F&O stocks NOT in midcap/smallcap. SENSEX/BANKEX are already
+  // excluded from FO_STOCK_UNDERLYINGS so they never enter this branch.
+  if (FO_STOCK_UNDERLYINGS.has(s)
+      && !NIFTY_MIDCAP_100.has(s)
+      && !NIFTY_SMLCAP_100.has(s))  groups.push('large_cap');
+  if (NIFTY_MIDCAP_100.has(s))      groups.push('midcap');
+  if (NIFTY_SMLCAP_100.has(s))      groups.push('smallcap');
+  return groups;
+}
+
+/**
+ * Legacy single-group classifier — kept for any consumers that still read
+ * `_moverGroup`. Returns the first group from _classifyMoverGroups, or null.
  * @param {string} sym
  * @returns {'smallcap'|'midcap'|'large_cap'|'underlying'|null}
  */
 function _classifyMoverSym(sym) {
-  const s = String(sym || '').toUpperCase();
-  if (NIFTY_SMLCAP_100.has(s))      return 'smallcap';
-  if (NIFTY_MIDCAP_100.has(s))      return 'midcap';
-  if (FO_STOCK_UNDERLYINGS.has(s))  return 'large_cap';
-  if (FO_UNDERLYINGS.has(s))        return 'underlying';
-  return null;
+  const groups = _classifyMoverGroups(sym);
+  return /** @type {any} */ (groups[0] ?? null);
 }
 
 /**
@@ -383,22 +403,23 @@ export const moversStore = createDataStore({
     for (const it of raw) {
       const sym = String(it?.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
-      const group = _classifyMoverSym(sym);
+      const groups = _classifyMoverGroups(sym);
       // Symbols unknown to all four index sets are still shown —
       // the backend may return new F&O additions before the frontend
       // const list is updated. Default them to 'underlying' so they
       // appear in the Underlying tab rather than being silently dropped.
-      const effectiveGroup = group ?? 'underlying';
+      const effectiveGroups = groups.length > 0 ? groups : ['underlying'];
       const pct = Number(it.change_pct ?? 0);
       rows.push({
-        tradingsymbol:  sym,
-        exchange:       it.exchange ?? 'NSE',
-        last_price:     Number(it.last_price ?? 0),
-        change_pct:     pct,
-        peak_pct:       Number(it.peak_pct ?? pct),
-        previous_close: Number(it.previous_close ?? 0) || null,
-        sticky:         Boolean(it.sticky),
-        _moverGroup:    effectiveGroup,
+        tradingsymbol:   sym,
+        exchange:        it.exchange ?? 'NSE',
+        last_price:      Number(it.last_price ?? 0),
+        change_pct:      pct,
+        peak_pct:        Number(it.peak_pct ?? pct),
+        previous_close:  Number(it.previous_close ?? 0) || null,
+        sticky:          Boolean(it.sticky),
+        _moverGroups:    effectiveGroups,
+        _moverGroup:     effectiveGroups[0],   // legacy compat — first membership
         _moverDirection: pct >= 0 ? 'winners' : 'losers',
       });
     }
