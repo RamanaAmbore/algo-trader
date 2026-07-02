@@ -284,6 +284,8 @@
   // cellClass factory for P&L-type columns that also emits tick-flash.
   // `field` is the data field name used for the per-cell flash key.
   // Falls through to plain pnlCls array on TOTAL / pinned rows.
+  // Cascade dominance: if the row's LTP changed this cycle, emit
+  // ltp-flash-up/down (source direction) instead of the per-field tf-*.
   function pnlClsFlash(field) {
     return (params) => {
       const base = ['ag-right-aligned-cell'];
@@ -294,6 +296,10 @@
       if (params.data?.tradingsymbol === 'TOTAL' || params.data?.account === 'TOTAL') return base;
       const k = _perfFlashKey(params.data);
       if (!k) return base;
+      // LTP cascade: if last_price changed this cycle, propagate its
+      // direction to derived columns (source-based, not per-cell-diff).
+      const ltpCls = _perfFlash.classOf(`${k}:last_price`);
+      if (ltpCls) { base.push(ltpCls === 'tf-up' ? 'ltp-flash-up' : 'ltp-flash-down'); return base; }
       const fc = _perfFlash.classOf(`${k}:${field}`);
       if (fc) base.push(fc);
       return base;
@@ -305,6 +311,8 @@
   // book am I on". Colours live in app.css (qty-short / qty-long).
   const qtyCls = ({ value }) =>
     ['ag-right-aligned-cell', value < 0 ? 'qty-short' : value > 0 ? 'qty-long' : 'qty-flat'];
+  // avgVsLtpCls: two-axis heat on the LTP + Avg cells. Also emits ltp-flash-up/down
+  // when last_price changed this poll cycle so the LTP cell itself pulses.
   const avgVsLtpCls = (params) => {
     if (params?.data?._isTotal || params?.data?.tradingsymbol === 'TOTAL' || params?.data?.account === 'TOTAL') {
       return 'ag-right-aligned-cell';
@@ -314,6 +322,12 @@
     const prev = params.data?.close_price;
     if (ltp == null) return 'ag-right-aligned-cell';
     const cls = ['ag-right-aligned-cell'];
+    // LTP flash on the LTP cell itself.
+    const k = _perfFlashKey(params.data);
+    if (k) {
+      const ltpCls = _perfFlash.classOf(`${k}:last_price`);
+      if (ltpCls) cls.push(ltpCls === 'tf-up' ? 'ltp-flash-up' : 'ltp-flash-down');
+    }
     // Two-axis heat: bg vs avg_cost ("am I up overall?"), left-border
     // vs prev_close ("is it moving my way today?"). Operator scans
     // both axes at once. Legacy pnl-* text-colour kept alongside so
@@ -840,6 +854,9 @@
       if (r.tradingsymbol === 'TOTAL' || r.account === 'TOTAL') continue;
       const k = r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
       if (!k) continue;
+      // LTP flash — fires on poll-cycle LTP change. Cascade direction tracked
+      // per key so pnlClsFlash can emit ltp-flash-up/down on derived columns.
+      if (r.last_price        != null) _perfFlash.update(`${k}:last_price`,         Number(r.last_price));
       if (r.day_change_val    != null) _perfFlash.update(`${k}:day_change_val`,    Number(r.day_change_val));
       if (r.day_change_percentage != null) _perfFlash.update(`${k}:day_change_percentage`, Number(r.day_change_percentage));
       if (r.pnl               != null) _perfFlash.update(`${k}:pnl`,               Number(r.pnl));
@@ -849,6 +866,7 @@
       if (r.tradingsymbol === 'TOTAL' || r.account === 'TOTAL') continue;
       const k = r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
       if (!k) continue;
+      if (r.last_price        != null) _perfFlash.update(`${k}:last_price`,         Number(r.last_price));
       if (r.day_change_val    != null) _perfFlash.update(`${k}:day_change_val`,    Number(r.day_change_val));
       if (r.day_change_percentage != null) _perfFlash.update(`${k}:day_change_percentage`, Number(r.day_change_percentage));
       if (r.pnl               != null) _perfFlash.update(`${k}:pnl`,               Number(r.pnl));
@@ -857,18 +875,19 @@
     updateGrid(holdingsAllGrid, hRows);
     holdingsAllGrid.setGridOption('pinnedBottomRowData', hTotals ? [hTotals] : []);
     // Trigger a refreshCells so pnlClsFlash callbacks pick up the new flash state.
+    // last_price included so LTP column + cascade columns repaint together.
     if (holdingsAllGrid) {
-      try { holdingsAllGrid.refreshCells({ columns: ['day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'], force: true }); } catch (_) {}
+      try { holdingsAllGrid.refreshCells({ columns: ['last_price', 'day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'], force: true }); } catch (_) {}
       setTimeout(() => {
-        try { holdingsAllGrid.refreshCells({ columns: ['day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'], force: true }); } catch (_) {}
+        try { holdingsAllGrid.refreshCells({ columns: ['last_price', 'day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'], force: true }); } catch (_) {}
       }, 400);
     }
     updateGrid(positionsAllGrid, pRows);
     positionsAllGrid.setGridOption('pinnedBottomRowData', pTotals ? [pTotals] : []);
     if (positionsAllGrid) {
-      try { positionsAllGrid.refreshCells({ columns: ['day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'], force: true }); } catch (_) {}
+      try { positionsAllGrid.refreshCells({ columns: ['last_price', 'day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'], force: true }); } catch (_) {}
       setTimeout(() => {
-        try { positionsAllGrid.refreshCells({ columns: ['day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'], force: true }); } catch (_) {}
+        try { positionsAllGrid.refreshCells({ columns: ['last_price', 'day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'], force: true }); } catch (_) {}
       }, 400);
     }
     updateGrid(fundsGrid, fBody);
