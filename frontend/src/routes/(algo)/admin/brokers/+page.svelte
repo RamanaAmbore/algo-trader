@@ -93,6 +93,20 @@
     }
   }
 
+  async function toggleCircuitBreaker(/** @type {any} */ row) {
+    const newVal = !row.circuit_breaker_enabled;
+    try {
+      await updateBrokerAccount(row.account, { circuit_breaker_enabled: newVal });
+      const idx = accounts.findIndex(a => a.account === row.account);
+      if (idx !== -1) {
+        accounts[idx] = { ...accounts[idx], circuit_breaker_enabled: newVal };
+      }
+      toast.success(`${row.account} circuit breaker ${newVal ? 'enabled' : 'disabled'}`);
+    } catch (e) {
+      toast.error(`Failed: ${e.message}`);
+    }
+  }
+
   async function restorePriority(/** @type {any} */ row) {
     try {
       const updated = await restoreBrokerPriority(row.account);
@@ -236,8 +250,11 @@
 
   // Per-account circuit state for the red dot on the priority chip.
   // Populated by the broker-health fetch; keyed by account code.
+  // circuit_breaker_enabled is also tracked so the dot only shows for opt-in accounts.
   /** @type {Record<string, string>} */
   let circuitStateMap = $state({});
+  /** @type {Record<string, boolean>} */
+  let breakerOptinMap = $state({});
 
   function resetForm(/** @type {string} */ acct = '') {
     editing = acct;
@@ -292,10 +309,13 @@
       const { fetchBrokerHealth } = await import('$lib/api');
       const health = await fetchBrokerHealth();
       const map = /** @type {Record<string,string>} */ ({});
+      const optinMap = /** @type {Record<string,boolean>} */ ({});
       for (const entry of (health?.accounts || [])) {
         map[entry.account] = entry.circuit_state || 'closed';
+        optinMap[entry.account] = !!entry.circuit_breaker_enabled;
       }
       circuitStateMap = map;
+      breakerOptinMap = optinMap;
     } catch (_) {}
   }
 
@@ -533,7 +553,8 @@
             <td class="priority-cell">
               {#if isDhan(row.broker_id)}
                 {@const ps = priorityStyle(row.poll_priority || 'hot')}
-                {@const isOpen = (circuitStateMap[row.account] === 'open')}
+                {@const _cbEnabled = row.circuit_breaker_enabled ?? breakerOptinMap[row.account] ?? false}
+                {@const isOpen = (_cbEnabled && circuitStateMap[row.account] === 'open')}
                 <div class="priority-wrap">
                   <div class="priority-chip-row">
                     <!-- Priority chip — click opens dropdown -->
@@ -550,6 +571,13 @@
                         <span class="circuit-dot" title="Circuit breaker OPEN"></span>
                       {/if}
                     </button>
+                    <!-- Circuit-breaker opt-in checkbox -->
+                    <label class="auto-dg-label" title="Enable circuit breaker: pause fetches for 5 min after 3 consecutive failures">
+                      <input type="checkbox"
+                             checked={_cbEnabled}
+                             onchange={() => toggleCircuitBreaker(row)} />
+                      <span class="auto-dg-text">breaker</span>
+                    </label>
                     <!-- Auto-downgrade checkbox -->
                     <label class="auto-dg-label" title="Auto-downgrade to cold after 5 breaker opens in 15 min">
                       <input type="checkbox"
