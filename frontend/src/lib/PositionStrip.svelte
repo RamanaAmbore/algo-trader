@@ -15,6 +15,7 @@
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { positionsStore, holdingsStore, fundsStore, publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
+  import { expiryPnl } from '$lib/data/expiryPnl';
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
   import { batchQuote } from '$lib/api';
   import { positionsPnlFiltered, FO_EXCHANGES } from '$lib/data/nav';
@@ -566,41 +567,30 @@
       const isFut = sym.endsWith('FUT') || (!isCE && !isPE && exch !== 'CDS');
 
       if (isCE || isPE) {
-        // Option — need underlying spot + strike.
-        // Use decomposeSymbol (pure regex, no cache) as primary so the
-        // expiry P&L can be computed even when the instruments cache is
-        // cold. getInstrument provides fallback values only.
+        // Resolve the underlying root (regex-first so cold instruments cache
+        // doesn't gate the compute).
         const decomp = decomposeSymbol(sym);
-        // Root: decomposeSymbol gives the clean F&O root (e.g. "NIFTY"
-        // from "NIFTY26JUN22000CE"); fall back to inst.u if the parse
-        // produced an empty root (should not happen for valid Kite syms).
-        const inst = getInstrument(sym);
-        const root = decomp.root || inst?.u || null;
-        if (!root) continue;                              // can't resolve underlying
-        // Multi-source spot resolution — operator 2026-07-01: "slot 3 is
-        // deflated." Options were being skipped whenever the resolveUnderlying
-        // key wasn't in symbolStore. Chain of fallbacks so most options resolve:
-        //   1. resolveUnderlying (canonical: NIFTY → NIFTY 50 tradingsymbol)
-        //   2. bare root (NIFTY, GOLD, CRUDEOIL)
-        //   3. inst.u from instruments cache
+        const inst   = getInstrument(sym);
+        const root   = decomp.root || inst?.u || null;
+        if (!root) continue;
+        // Multi-source spot resolution — 4 chain steps documented in
+        // derivatives/+page.svelte:_rootSpot(). Same order applied here so
+        // NavStrip P.expiry matches Snapshot Exp P&L + payoff overlay
+        // legs TOTAL. Operator 2026-07-01: "use the same number to update
+        // p 3 values in navstrip."
         const resolved = resolveUnderlying(root, findNearestFuture);
         let spot = 0;
         for (const key of [resolved?.tradingsymbol, root, inst?.u].filter(Boolean)) {
           const v = untrack(() => getSnapshot(String(key).toUpperCase())?.ltp);
           if (typeof v === 'number' && v > 0) { spot = v; break; }
         }
-        // Fallback 4 (closed-hours-critical): scan positions + holdings for
-        // a row whose tradingsymbol IS the resolved anchor or bare root
-        // (equity holding, spot future, etc.) and use its last_price. When
-        // markets are closed the batchQuote pipeline is paused and SSE ticks
-        // may not cover equity roots — but the row itself carries the last
-        // session's close price which is the authoritative expiry-day spot.
         if (!(spot > 0)) {
           const wantKey  = String(resolved?.tradingsymbol || root).toUpperCase();
           const wantRoot = String(root).toUpperCase();
           for (const src of [positions, holdings]) {
             if (spot > 0) break;
-            for (const row of (src ?? [])) {
+            for (const _row of (src ?? [])) {
+              const row = /** @type {any} */ (_row);
               const rSym = String(row?.symbol || row?.tradingsymbol || '').toUpperCase();
               if (!rSym) continue;
               if (rSym === wantKey || rSym === wantRoot) {
@@ -610,19 +600,22 @@
             }
           }
         }
-        if (!(spot > 0)) continue;                        // no spot from any source → skip
-        // Strike: decomposeSymbol parses the numeric token directly from
-        // the tradingsymbol regex; fall back to the instruments-cache
-        // field inst.k when the parse misses (e.g. edge-case formats).
-        const strike = Number(decomp.strike ?? inst?.k ?? 0);
-        if (!strike) continue;
-        const intrinsic = isCE ? Math.max(0, spot - strike) : Math.max(0, strike - spot);
-        total += (intrinsic - avg) * qty;
+        if (!(spot > 0)) continue;
+        // SHARED SSOT — same helper the derivatives page uses.
+        const v = expiryPnl(
+          { symbol: sym, qty, avg_cost: avg, kind: 'opt' },
+          spot,
+        );
+        if (v != null) total += v;
       } else if (isFut) {
-        // Future — settles at spot = its own LTP
+        // Future — spot = its own LTP; use shared helper for parity.
         const live = untrack(() => getSnapshot(sym)?.ltp) || Number(p?.last_price || 0);
         if (!(live > 0)) continue;
-        total += (live - avg) * qty;
+        const v = expiryPnl(
+          { symbol: sym, qty, avg_cost: avg, kind: 'fut' },
+          live,
+        );
+        if (v != null) total += v;
       }
     }
     return total;

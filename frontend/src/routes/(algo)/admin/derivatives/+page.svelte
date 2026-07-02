@@ -39,6 +39,7 @@
     findNearestFuture,
   } from '$lib/data/instruments';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
+  import { expiryPnl } from '$lib/data/expiryPnl';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
   import { acctColor } from '$lib/account';
@@ -2084,30 +2085,10 @@
    *  @param {number|null} spot - current underlying spot (LTP)
    *  @returns {number|null} P&L if every contract expired now at `spot`
    */
+  // Delegate to the shared SSOT so NavStrip P.expiry, Snapshot Exp P&L
+  // and payoff overlay legs TOTAL compute from ONE implementation.
   function _expiryPnl(c, spot) {
-    if (spot == null || !isFinite(Number(spot)) || Number(spot) <= 0) return null;
-    const qty = Number(c.qty || 0);
-    const cost = Number(c.avg_cost || 0);
-    if (!qty || !cost) return null;
-    const S = Number(spot);
-    if (c.kind === 'opt') {
-      // Need strike + opt_type. Pull from legAnalyticsBySymbol when
-      // available (covers strategy-loaded legs); fall back to a regex
-      // parse of the tradingsymbol for rows that haven't joined the
-      // strategy payload yet.
-      const lg = legAnalyticsBySymbol[c.symbol];
-      let K = lg?.strike ?? null;
-      let opt = lg?.opt_type ?? null;
-      if (K == null || !opt) {
-        const m = /(\d+(?:\.\d+)?)(CE|PE)$/i.exec(String(c.symbol || ''));
-        if (m) { K = Number(m[1]); opt = m[2].toUpperCase(); }
-      }
-      if (K == null || !opt) return null;
-      const intrinsic = opt === 'CE' ? Math.max(0, S - K) : Math.max(0, K - S);
-      return (intrinsic - cost) * qty;
-    }
-    // futures + equity: P&L tracks spot 1:1 (no time value to strip).
-    return (S - cost) * qty;
+    return expiryPnl(c, spot, legAnalyticsBySymbol);
   }
 
   /** Exp P&L total for the CURRENTLY SELECTED underlying across all
