@@ -589,6 +589,27 @@
           const v = untrack(() => getSnapshot(String(key).toUpperCase())?.ltp);
           if (typeof v === 'number' && v > 0) { spot = v; break; }
         }
+        // Fallback 4 (closed-hours-critical): scan positions + holdings for
+        // a row whose tradingsymbol IS the resolved anchor or bare root
+        // (equity holding, spot future, etc.) and use its last_price. When
+        // markets are closed the batchQuote pipeline is paused and SSE ticks
+        // may not cover equity roots — but the row itself carries the last
+        // session's close price which is the authoritative expiry-day spot.
+        if (!(spot > 0)) {
+          const wantKey  = String(resolved?.tradingsymbol || root).toUpperCase();
+          const wantRoot = String(root).toUpperCase();
+          for (const src of [positions, holdings]) {
+            if (spot > 0) break;
+            for (const row of (src ?? [])) {
+              const rSym = String(row?.symbol || row?.tradingsymbol || '').toUpperCase();
+              if (!rSym) continue;
+              if (rSym === wantKey || rSym === wantRoot) {
+                const lp = Number(row?.last_price || 0);
+                if (lp > 0) { spot = lp; break; }
+              }
+            }
+          }
+        }
         if (!(spot > 0)) continue;                        // no spot from any source → skip
         // Strike: decomposeSymbol parses the numeric token directly from
         // the tradingsymbol regex; fall back to the instruments-cache

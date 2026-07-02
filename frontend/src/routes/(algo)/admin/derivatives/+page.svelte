@@ -1032,6 +1032,27 @@
     }
     const v2 = getSnapshot(String(root).toUpperCase())?.ltp;
     if (typeof v2 === 'number' && v2 > 0) return v2;
+    // Fallback 4 (closed-hours-critical): scan positions + holdings for a
+    // row whose tradingsymbol IS the underlying root (equity holding /
+    // spot future) OR whose resolveUnderlying match hits this root. Use
+    // its `last_price` as the spot. When markets are closed, batchQuote
+    // is paused by marketAwareInterval and symbolStore may not have SSE
+    // ticks for equity roots — but the position/holding row still has
+    // the LAST session's close price which is authoritative for expiry-
+    // day P&L intrinsic calculation.
+    const targetKey = String(resolved?.tradingsymbol || root).toUpperCase();
+    const targetRoot = String(root).toUpperCase();
+    for (const src of [positions, holdings]) {
+      for (const _row of (src ?? [])) {
+        const row = /** @type {any} */ (_row);
+        const rSym = String(row?.symbol || row?.tradingsymbol || '').toUpperCase();
+        if (!rSym) continue;
+        if (rSym === targetKey || rSym === targetRoot) {
+          const lp = Number(row?.last_price || 0);
+          if (lp > 0) return lp;
+        }
+      }
+    }
     return null;
   }
 
