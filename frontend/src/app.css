@@ -2401,3 +2401,27 @@ button:not(:disabled):active,
   /* Timestamp row divider */
   --card-ts-divider:          rgba(255, 255, 255, 0.08);
 }
+
+/* ── Sitewide tick-flash — P&L cells ───────────────────────────────────────
+   Global .tf-up / .tf-down rules so any page (ag-Grid or plain DOM) can
+   emit a subtle 350ms directional background pulse just by adding the class.
+   Alpha 0.13 — intentionally lower than the LTP flash (0.35) and derivatives
+   Snapshot (0.22) so P&L columns feel calm, not alarming. The primitive
+   (createTickFlash) clears the class after durationMs=350; the animation
+   decay matches so there is no visible "stuck" state.
+   prefers-reduced-motion: animation suppressed entirely (no flicker risk).
+   These rules are global so ag-Grid cellClass callbacks (which run outside
+   Svelte's scoped DOM) pick them up without :global() wrappers. */
+@keyframes tf-pnl-up {
+  0%   { background-color: rgba(74, 222, 128, 0.13); }
+  100% { background-color: transparent; }
+}
+@keyframes tf-pnl-down {
+  0%   { background-color: rgba(248, 113, 113, 0.13); }
+  100% { background-color: transparent; }
+}
+.tf-up   { animation: tf-pnl-up   350ms ease-out; }
+.tf-down { animation: tf-pnl-down 350ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .tf-up, .tf-down { animation: none; }
+}

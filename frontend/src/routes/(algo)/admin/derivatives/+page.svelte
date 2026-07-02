@@ -282,6 +282,16 @@
     // Also validates the cached selection: if a stale symbol was
     // restored from sessionStorage but is NOT in the current picker,
     // treat it as invalid and swap to the picker's first entry.
+    //
+    // Late-arrival refresh: when the picker list is delayed (opts empty
+    // on the first poll tick), the reactive chain ($effect legs →
+    // loadStrategy) may have already fired with an empty leg set and
+    // resolved to a no-op. When opts finally arrives and we auto-select
+    // (or confirm the cached pick is valid), force strategy + positions
+    // to refresh immediately instead of waiting for the next 5 s tick.
+    // `_autoSelectAttempts > 1` is the delayed-path guard — fast path
+    // (opts already populated on tick 1) relies on the reactive chain
+    // as normal and does not add an extra network round-trip.
     let _autoSelectAttempts = 0;
     _autoSelectPollId = visibleInterval(() => {
       _autoSelectAttempts++;
@@ -297,6 +307,13 @@
       // Picker is populated and selection is valid — stop polling.
       _autoSelectPollId?.();
       _autoSelectPollId = null;
+      // Delayed arrival: picker was absent on first poll tick — the
+      // reactive chain ran earlier with empty legs and resolved to a
+      // no-op. Kick a forced refresh so analytics/payoff load without
+      // waiting for the next marketAwareInterval cycle (up to 5 s).
+      if (_autoSelectAttempts > 1) {
+        untrack(() => { loadStrategy({ force: true }); });
+      }
     }, 300);
   });
 

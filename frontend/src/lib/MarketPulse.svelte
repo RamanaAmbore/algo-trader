@@ -50,7 +50,7 @@
   }
   import { fetchSettings } from '$lib/api';
   import { streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
-  import { createFreshnessShimmer } from '$lib/data/tickFlash.svelte.js';
+  import { createFreshnessShimmer, createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { getSnapshot, symbolStore, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
   import { bookChanged } from '$lib/data/bookChanged';
   import {
@@ -686,6 +686,15 @@
   // on the LTP cell. Pilot on /pulse only (this component). Fires on every
   // SSE tick update, not just on delta, so it fires even on repeat values.
   const _ltpShimmer = createFreshnessShimmer({ durationMs: 700 });
+  // Tick-flash for P&L columns on the right grid (Positions / Holdings).
+  // LTP already has its own directional flash (_ltpFlashUp/_ltpFlashDown);
+  // this instance covers Day P&L and P&L whose values change on each
+  // poll cycle (broker fetch every 5 s) rather than on every SSE tick.
+  // Key format: tradingsymbol + ':' + field. Threshold 0.001 (epsilon)
+  // prevents false flashes when the effect re-runs with identical float
+  // values — Math.abs(v - last) < 0 is always false with threshold=0.
+  // Alpha is 0.13 (app.css .tf-up/.tf-down) — subtle, not alarming.
+  const _mpFlash = createTickFlash({ threshold: 0.001, durationMs: 350 });
   /** Build a `{sym: ltp}` map snapshot from symbolStore for fast cell reads.
    *
    * LTP flicker fix (Jun 2026): include only strictly-positive values.
@@ -1885,12 +1894,41 @@
   $effect(() => { if (gridWatchReady && gridWatch)
     gridWatch.setGridOption('rowData', watchRows); });
   $effect(() => { if (gridPositionsReady && gridPositions) {
+    // Tick-flash: call _mpFlash.update() for each row's P&L fields before
+    // writing rowData. The primitive tracks prev[] internally; the first
+    // call per key seeds the baseline (no flash on mount). Non-total only.
+    for (const r of positionsRows) {
+      if (r._isTotal) continue;
+      const sym = r.tradingsymbol;
+      if (!sym) continue;
+      if (r.day_pnl != null) _mpFlash.update(`${sym}:day_pnl`, Number(r.day_pnl));
+      if (r.pnl    != null) _mpFlash.update(`${sym}:pnl`,     Number(r.pnl));
+    }
     gridPositions.setGridOption('rowData', positionsRows);
     gridPositions.setGridOption('pinnedBottomRowData', positionsTotalRows);
+    // Force a refreshCells pass so cellClass callbacks re-evaluate the
+    // flash state set above. Deferred 0ms so ag-Grid's own row-data
+    // transaction finishes first; second refresh at +400ms clears flash.
+    try { gridPositions.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) {}
+    setTimeout(() => {
+      try { gridPositions.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) {}
+    }, 400);
   } });
   $effect(() => { if (gridHoldingsReady && gridHoldings) {
+    // Same pattern for holdings P&L flash.
+    for (const r of holdingsRows) {
+      if (r._isTotal) continue;
+      const sym = r.tradingsymbol;
+      if (!sym) continue;
+      if (r.day_pnl != null) _mpFlash.update(`${sym}:day_pnl`, Number(r.day_pnl));
+      if (r.pnl    != null) _mpFlash.update(`${sym}:pnl`,     Number(r.pnl));
+    }
     gridHoldings.setGridOption('rowData', holdingsRows);
     gridHoldings.setGridOption('pinnedBottomRowData', holdingsTotalRows);
+    try { gridHoldings.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) {}
+    setTimeout(() => {
+      try { gridHoldings.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) {}
+    }, 400);
   } });
   $effect(() => { if (gridWinReady && gridWin)
     gridWin.setGridOption('rowData', winRows); });
@@ -2217,6 +2255,7 @@
     // but the paint + prefetch timers weren't).
     if (_ltpPaintTimer) { clearTimeout(_ltpPaintTimer); _ltpPaintTimer = null; }
     _ltpShimmer.dispose();
+    _mpFlash.dispose();
     for (const t of _prefetchTimers) { try { clearTimeout(t); } catch { /* no-op */ } }
     _prefetchTimers.length = 0;
     document.removeEventListener('keydown', handleKeydown);
@@ -3929,7 +3968,20 @@
     // P&L columns read with the same visual identity across both
     // surfaces. Plain `dirCellClass` (text-only) stays on the
     // watch/mover grids where the P&L column isn't surfaced.
-    const pnlCellClass = (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`;
+    // Tick-flash augmentation: emits tf-up/tf-down when the cell's tracked
+    // field changed since the last poll cycle. TOTAL rows (_isTotal) are
+    // excluded — aggregates must not flash. `field` is the data field name
+    // used as the per-cell flash key (tradingsymbol + ':' + field).
+    // The global .tf-up / .tf-down CSS in app.css carries alpha 0.13 —
+    // subtle enough to signal liveness without competing with text colour.
+    const pnlCellClass = (p, field) => {
+      const base = `${RA} ${dirCls(p.value)} mp-pnl-cell`;
+      if (p.data?._isTotal) return base;
+      const sym = p.data?.tradingsymbol;
+      if (!sym || !field) return base;
+      const fc = _mpFlash.classOf(`${sym}:${field}`);
+      return fc ? `${base} ${fc}` : base;
+    };
 
     // Main symbols grid — only built when the parent opted into the
     // per-symbol view (/pulse). /dashboard passes showSymbolsGrid=false
@@ -4131,30 +4183,30 @@
         cellClass: `${RA} cell-muted`,
         valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
         headerTooltip: 'Weighted average entry across positions + holdings.' },
-      { field: 'day_pnl', headerName: 'Day P&L', width: 78, minWidth: 60, maxWidth: 96,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: pnlCellClass,
+      { field: ‘day_pnl’, headerName: ‘Day P&L’, width: 78, minWidth: 60, maxWidth: 96,
+        type: ‘numericColumn’, headerClass: numericHdr,
+        cellClass: (p) => pnlCellClass(p, ‘day_pnl’),
         valueFormatter: aggFmtGrid },
-      // Day P&L % — one-day return on yesterday's market value (close × qty).
+      // Day P&L % — one-day return on yesterday’s market value (close × qty).
       // NOT cost basis: dividing by cost over-states day % for a long-held
       // stock — INFY held 10 yrs at ₹100 cost / ₹2000 today posts a real
       // 1 % day move as 20 % when normalised against cost. close × qty is
       // the honest denominator: per-symbol this collapses to change_pct;
       // TOTAL gets a market-value-weighted day return.
-      { field: 'day_pnl_pct', headerName: 'Day %', colId: 'day_pnl_pct',
-        width: 64, type: 'numericColumn', headerClass: numericHdr,
+      { field: ‘day_pnl_pct’, headerName: ‘Day %’, colId: ‘day_pnl_pct’,
+        width: 64, type: ‘numericColumn’, headerClass: numericHdr,
         // day_pnl_pct is a valueGetter computed from day_pnl; flash is keyed
-        // to 'day_pnl' (the underlying source field that changes on each poll).
-        cellClass: pnlCellClass,
+        // to ‘day_pnl’ (the underlying source field that changes on each poll).
+        cellClass: (p) => pnlCellClass(p, ‘day_pnl’),
         valueGetter: (p) => {
           const dpnl = Number(p.data?.day_pnl);
           const prev = Number(p.data?._prev_market_value);
           // Underlying anchor rows (BHEL / BEL / NIFTY) carry no qty
-          // and no day_pnl, but the underlying's change_pct IS on the
+          // and no day_pnl, but the underlying’s change_pct IS on the
           // row. Fall back to it so the Day % column reads the
-          // underlying's intraday move directly. Same fallback also
+          // underlying’s intraday move directly. Same fallback also
           // covers just-listed contracts and watchlist-only rows where
-          // close × qty isn't computable.
+          // close × qty isn’t computable.
           if (!Number.isFinite(dpnl) || prev <= 0) {
             const cp = Number(p.data?.change_pct);
             return Number.isFinite(cp) ? cp : null;
@@ -4164,14 +4216,14 @@
         valueFormatter: pctFmtGrid,
         headerTooltip: `Day P&L as % of yesterday’s market value (close × qty).` },
       _prevCol,
-      { field: 'pnl', headerName: 'P&L', width: 78, minWidth: 60, maxWidth: 96,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: pnlCellClass,
+      { field: ‘pnl’, headerName: ‘P&L’, width: 78, minWidth: 60, maxWidth: 96,
+        type: ‘numericColumn’, headerClass: numericHdr,
+        cellClass: (p) => pnlCellClass(p, ‘pnl’),
         valueFormatter: aggFmtGrid },
-      { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
-        width: 64, type: 'numericColumn', headerClass: numericHdr,
-        // pnl_pct is computed from pnl; flash keyed to 'pnl' (the source field).
-        cellClass: pnlCellClass,
+      { field: ‘pnl_pct’, headerName: ‘P&L %’, colId: ‘pnl_pct’,
+        width: 64, type: ‘numericColumn’, headerClass: numericHdr,
+        // pnl_pct is computed from pnl; flash keyed to ‘pnl’ (the source field).
+        cellClass: (p) => pnlCellClass(p, ‘pnl’),
         valueGetter: (p) => {
           const pnl  = Number(p.data?.pnl);
           const cost = Number(p.data?._cost_basis);
