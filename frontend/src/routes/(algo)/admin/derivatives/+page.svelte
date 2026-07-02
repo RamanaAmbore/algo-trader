@@ -1132,21 +1132,27 @@
     return out;
   });
 
-  /** Per-underlying Day P&L via the SAME compute the payoff overlay uses.
-   *  Operator 2026-07-01: "the calcuation for other symbol should use
-   *  the same calculation day uses for each symbol in overlay in payoff.
-   *  ssot." Mirrors candidatesDayPnl's per-leg loop but grouped by root
-   *  so EVERY Snapshot row (not just the currently selected one) reads
-   *  from the same SSOT compute:
-   *    - _isLegEnabled gate per candidate (respects operator's per-leg
-   *      checkbox state)
+  /** Shared per-root accumulator — mirrors overlay's per-leg iteration
+   *  (candidatesDayPnl / candidatesActualPnl / _legsExpPnlTotal) but
+   *  groups by root so every Snapshot row consumes the SAME overlay
+   *  compute rather than a divergent per-row sum.
+   *
+   *  Semantics locked in one place:
+   *    - _isLegEnabled gate per candidate (operator's per-leg checkbox)
    *    - _includeHoldings gate for eq legs
-   *    - _dayPnlForLeg(c, spot) — c.day_change_val for non-expired,
-   *      _expiryPnl(c, spot) promoted for expired
-   *    - Proxy-target routing (targetsForProxy(h.symbol) → root credits)
+   *    - Proxy-target routing via targetsForProxy(h.symbol) → root credits
+   *    - Account + source filter (live vs sim)
+   *
+   *  Operator 2026-07-01: "day p & l should use the same calculation
+   *  in overlay in payoff. ssot" + "p & l should use the same
+   *  calculation of tday. exp p & l should use the same calculation as
+   *  exp of overlay. reusable similar code should be used for both."
+   *
+   *  @param {(c: any, spot: number|null) => number|null|undefined} accessor
+   *    Per-leg value function — same shape overlay uses.
+   *  @returns {Record<string, number>} root → summed value
    */
-  const _dayPnlByRootMap = $derived.by(() => {
-    void _throttledTick;
+  function _perRootReduce(accessor) {
     /** @type {Record<string, number>} */
     const out = {};
     const wantedSource = simActive ? 'sim' : 'live';
@@ -1155,7 +1161,6 @@
     );
     const matchAccount = (acct) => _wantedAccts.size === 0
       || _wantedAccts.has(String(acct || '').trim().toUpperCase());
-    // Positions (F&O options + futures)
     for (const _p of positions) {
       const p = /** @type {any} */ (_p);
       if (p.source !== wantedSource) continue;
@@ -1165,17 +1170,16 @@
       const isFut = /FUT$/i.test(sym);
       const isOpt = /(CE|PE)$/i.test(sym);
       if (!isFut && !isOpt) continue;
-      const kind = isOpt ? 'opt' : 'fut';
-      const c = { ...p, kind };
+      const c = { ...p, kind: isOpt ? 'opt' : 'fut' };
       if (!_isLegEnabled(c)) continue;
       const root = (decomposeSymbol(sym).root || sym).toUpperCase();
       if (!root) continue;
       const p_ul = Number(p.underlying_ltp || 0);
       const spot = p_ul > 0 ? p_ul : untrack(() => _rootSpot(root));
-      const day = _dayPnlForLeg(c, spot);
-      out[root] = (out[root] || 0) + Number(day || 0);
+      const v = accessor(c, spot);
+      if (v == null || !isFinite(Number(v))) continue;
+      out[root] = (out[root] || 0) + Number(v);
     }
-    // Holdings (only when the Hold toggle is on — matches overlay gate).
     if (_includeHoldings) {
       for (const _h of holdings) {
         const h = /** @type {any} */ (_h);
@@ -1184,16 +1188,32 @@
         if (!sym) continue;
         const c = { ...h, source: 'live', kind: 'eq' };
         if (!_isLegEnabled(c)) continue;
-        const day = _dayPnlForLeg(c, null);
-        const v = Number(day || 0);
         const _targets = targetsForProxy(sym);
         const credits = _targets.length ? _targets : [sym];
         for (const root of credits) {
-          out[root] = (out[root] || 0) + v;
+          const spot = untrack(() => _rootSpot(root));
+          const v = accessor(c, spot);
+          if (v == null || !isFinite(Number(v))) continue;
+          out[root] = (out[root] || 0) + Number(v);
         }
       }
     }
     return out;
+  }
+
+  // Per-root maps consumed by every Snapshot row. All three use the
+  // same _perRootReduce iteration — the ONLY difference is the per-leg
+  // value function, matching what the overlay uses for each metric.
+  const _dayPnlByRootMap = $derived.by(() => {
+    void _throttledTick;
+    return _perRootReduce((c, spot) => _dayPnlForLeg(c, spot));
+  });
+  const _pnlByRootMap = $derived.by(() =>
+    _perRootReduce((c, _spot) => Number(c.pnl || 0))
+  );
+  const _expPnlByRootMap = $derived.by(() => {
+    void _throttledTick;
+    return _perRootReduce((c, spot) => _expiryPnl(c, spot));
   });
 
   /** Per-underlying H Day P&L — Day P&L from equity holdings on that root
@@ -5394,37 +5414,32 @@
           {@const _ltp  = _q ? Number(_q.ltp) : null}
           {@const _close = _q ? Number(_q.prev_close) : null}
           {@const _pct  = _q && _q.day_pct != null ? Number(_q.day_pct) : null}
-          {@const _expG = _byUnderlyingExp[g.underlying]}
-          <!-- SSOT: every row reads _dayPnlByRootMap which mirrors
-               candidatesDayPnl's compute (per-leg checkbox + Hold gate
-               + expiry-day promotion) but keyed by root so ALL Snapshot
-               rows converge on the overlay's calculation for each symbol.
-               Operator 2026-07-01: "the calcuation for other symbol
-               should use the same calculation day uses for each symbol
-               in overlay in payoff. ssot." -->
-          {@const _dayFno = _dayPnlByRootMap[g.underlying] ?? 0}
-          {@const _dayNet = _dayFno}
-          <!-- Two independent Exp P&L values, both always visible.
-               Exp P&L = F&O only (_expG.without). Exp P&L Net = F&O
-               + holdings (_expG.with). -->
-          {@const _expFno = _expG ? _expG.without : null}
-          {@const _expNet = _expG ? _expG.with : null}
-          {@const _hDay = _hDayByRoot[g.underlying] || 0}
+          <!-- SSOT: all three trios read from per-root maps that share
+               _perRootReduce (same iteration, same _isLegEnabled gate,
+               same _includeHoldings gate, same proxy routing). Only the
+               per-leg accessor differs — matching overlay's compute for
+               each metric (candidatesDayPnl, candidatesActualPnl,
+               _legsExpPnlTotal). Operator 2026-07-01: "reusable similar
+               code should be used for both." -->
+          {@const _dayVal = _dayPnlByRootMap[g.underlying] ?? 0}
+          {@const _pnlVal = _pnlByRootMap[g.underlying] ?? 0}
+          {@const _expVal = _expPnlByRootMap[g.underlying] ?? 0}
+          {@const _hDay   = _hDayByRoot[g.underlying] || 0}
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
             <span class="num {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
             <span class="num {_pct != null && _pct > 0 ? 'cell-pos' : _pct != null && _pct < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pct`)}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
-            <!-- Day P&L + H Day P&L adjacent (operator 2026-07-01). -->
-            <span class="num {_dayFno > 0 ? 'cell-pos' : _dayFno < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_w`)}">{aggCompact(_dayFno)}</span>
+            <!-- Day P&L + H Day P&L (SSOT overlay compute for Day P&L). -->
+            <span class="num {_dayVal > 0 ? 'cell-pos' : _dayVal < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_w`)}">{aggCompact(_dayVal)}</span>
             <span class="num {_hDay > 0 ? 'cell-pos' : _hDay < 0 ? 'cell-neg' : 'cell-flat'}">{_hDay === 0 ? '—' : aggCompact(_hDay)}</span>
-            <!-- F&O pair: P&L | Exp P&L -->
-            <span class="num {g.pnl_without > 0 ? 'cell-pos' : g.pnl_without < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pnl_w`)}">{aggCompact(g.pnl_without)}</span>
-            <span class="num {_expFno == null ? 'cell-muted' : _expFno > 0 ? 'cell-pos' : _expFno < 0 ? 'cell-neg' : 'cell-flat'}">{_expFno == null ? '—' : aggCompact(_expFno)}</span>
-            <!-- Net trio: Day P&L Net | P&L Net | Exp P&L Net -->
-            <span class="num {_dayNet > 0 ? 'cell-pos' : _dayNet < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_h`)}">{aggCompact(_dayNet)}</span>
+            <!-- F&O pair: P&L (SSOT overlay compute) | Exp P&L (SSOT overlay compute) -->
+            <span class="num {_pnlVal > 0 ? 'cell-pos' : _pnlVal < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pnl_w`)}">{aggCompact(_pnlVal)}</span>
+            <span class="num {_expVal > 0 ? 'cell-pos' : _expVal < 0 ? 'cell-neg' : 'cell-flat'}">{_expVal === 0 ? '—' : aggCompact(_expVal)}</span>
+            <!-- Net trio (broker rollup — kept for reference visibility). -->
+            <span class="num {g.day_with > 0 ? 'cell-pos' : g.day_with < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_h`)}">{aggCompact(g.day_with)}</span>
             <span class="num {g.pnl_with > 0 ? 'cell-pos' : g.pnl_with < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:pnl_h`)}">{aggCompact(g.pnl_with)}</span>
-            <span class="num {_expNet == null ? 'cell-muted' : _expNet > 0 ? 'cell-pos' : _expNet < 0 ? 'cell-neg' : 'cell-flat'}">{_expNet == null ? '—' : aggCompact(_expNet)}</span>
+            <span class="num cell-muted">—</span>
             <span class="num cell-muted">{Math.round(g.legs_with)}{Math.round(g.legs_with) !== g.legs_without ? `/${g.legs_without}` : ''}</span>
             <span class="num cell-muted">{g.qty_fno || '—'}</span>
             <span class="num cell-muted">{g.qty_eq || '—'}</span>
@@ -5446,24 +5461,24 @@
           {@const _expTotalFno = Object.values(_byUnderlyingExp).reduce((s, v) => s + v.without, 0)}
           {@const _expTotalNet = Object.values(_byUnderlyingExp).reduce((s, v) => s + v.with, 0)}
           {@const _dayTotalFno = Object.values(_dayPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)}
-          {@const _dayTotalNet = _dayTotalFno}
+          {@const _pnlTotalFno = Object.values(_pnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)}
+          {@const _expTotalFnoSum = Object.values(_expPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)}
           {@const _hDayTotal = Object.values(_hDayByRoot).reduce((s, v) => s + v, 0)}
           <div class="byund-row byund-row-total">
             <span class="byund-und">TOTAL</span>
             <span class="num">—</span>
             <span class="num">—</span>
             <span class="num">—</span>
-            <!-- Day P&L + H Day P&L adjacent. Day P&L uses .with
-                 (F&O + eq) so it matches overlay's candidatesDayPnl total. -->
-            <span class="num {_dayTotalNet > 0 ? 'cell-pos' : _dayTotalNet < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_dayTotalNet)}</span>
+            <!-- Day P&L + H Day P&L (SSOT). -->
+            <span class="num {_dayTotalFno > 0 ? 'cell-pos' : _dayTotalFno < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_dayTotalFno)}</span>
             <span class="num {_hDayTotal > 0 ? 'cell-pos' : _hDayTotal < 0 ? 'cell-neg' : 'cell-flat'}">{_hDayTotal === 0 ? '—' : aggCompact(_hDayTotal)}</span>
-            <!-- F&O pair -->
-            <span class="num {_byUnderlyingTotal.pnl_without > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_without < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_without)}</span>
-            <span class="num {_expTotalFno > 0 ? 'cell-pos' : _expTotalFno < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_expTotalFno)}</span>
-            <!-- Net trio -->
-            <span class="num {_dayTotalNet > 0 ? 'cell-pos' : _dayTotalNet < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_dayTotalNet)}</span>
+            <!-- F&O pair (SSOT). -->
+            <span class="num {_pnlTotalFno > 0 ? 'cell-pos' : _pnlTotalFno < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_pnlTotalFno)}</span>
+            <span class="num {_expTotalFnoSum > 0 ? 'cell-pos' : _expTotalFnoSum < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_expTotalFnoSum)}</span>
+            <!-- Net trio (broker rollup for reference). -->
+            <span class="num {_byUnderlyingTotal.day_with > 0 ? 'cell-pos' : _byUnderlyingTotal.day_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.day_with)}</span>
             <span class="num {_byUnderlyingTotal.pnl_with > 0 ? 'cell-pos' : _byUnderlyingTotal.pnl_with < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_byUnderlyingTotal.pnl_with)}</span>
-            <span class="num {_expTotalNet > 0 ? 'cell-pos' : _expTotalNet < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_expTotalNet)}</span>
+            <span class="num cell-muted">—</span>
             <span class="num">{Math.round(_byUnderlyingTotal.legs_with)}{Math.round(_byUnderlyingTotal.legs_with) !== _byUnderlyingTotal.legs_without ? `/${_byUnderlyingTotal.legs_without}` : ''}</span>
             <span class="num">{_byUnderlyingTotal.qty_fno || '—'}</span>
             <span class="num">{_byUnderlyingTotal.qty_eq || '—'}</span>
