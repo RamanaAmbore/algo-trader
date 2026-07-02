@@ -1917,41 +1917,50 @@
   $effect(() => { if (gridWatchReady && gridWatch)
     gridWatch.setGridOption('rowData', watchRows); });
   $effect(() => { if (gridPositionsReady && gridPositions) {
-    // Tick-flash: call _mpFlash.update() for each row's P&L fields before
-    // writing rowData. The primitive tracks prev[] internally; the first
-    // call per key seeds the baseline (no flash on mount). Non-total only.
-    for (const r of positionsRows) {
-      if (r._isTotal) continue;
-      const sym = r.tradingsymbol;
-      if (!sym) continue;
-      if (r.day_pnl != null) _mpFlash.update(`${sym}:day_pnl`, Number(r.day_pnl));
-      if (r.pnl    != null) _mpFlash.update(`${sym}:pnl`,     Number(r.pnl));
-    }
-    gridPositions.setGridOption('rowData', positionsRows);
-    gridPositions.setGridOption('pinnedBottomRowData', positionsTotalRows);
-    // Force a refreshCells pass so cellClass callbacks re-evaluate the
-    // flash state set above. Deferred 0ms so ag-Grid's own row-data
-    // transaction finishes first; second refresh at +400ms clears flash.
-    try { gridPositions.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) {}
-    setTimeout(() => {
+    // Read reactive deps BEFORE untrack so the effect re-fires on changes.
+    const pRows      = positionsRows;
+    const pTotalRows = positionsTotalRows;
+    untrack(() => {
+      // Tick-flash: call _mpFlash.update() for each row's P&L fields before
+      // writing rowData. Wrapped in untrack() to prevent the $state write
+      // inside flash.update() from registering as a dep and looping.
+      for (const r of pRows) {
+        if (r._isTotal) continue;
+        const sym = r.tradingsymbol;
+        if (!sym) continue;
+        if (r.day_pnl != null) _mpFlash.update(`${sym}:day_pnl`, Number(r.day_pnl));
+        if (r.pnl    != null) _mpFlash.update(`${sym}:pnl`,     Number(r.pnl));
+      }
+      gridPositions.setGridOption('rowData', pRows);
+      gridPositions.setGridOption('pinnedBottomRowData', pTotalRows);
+      // Force a refreshCells pass so cellClass callbacks re-evaluate the
+      // flash state set above. Deferred 0ms so ag-Grid's own row-data
+      // transaction finishes first; second refresh at +400ms clears flash.
       try { gridPositions.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) {}
-    }, 400);
+      setTimeout(() => {
+        try { gridPositions.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) {}
+      }, 400);
+    });
   } });
   $effect(() => { if (gridHoldingsReady && gridHoldings) {
     // Same pattern for holdings P&L flash.
-    for (const r of holdingsRows) {
-      if (r._isTotal) continue;
-      const sym = r.tradingsymbol;
-      if (!sym) continue;
-      if (r.day_pnl != null) _mpFlash.update(`${sym}:day_pnl`, Number(r.day_pnl));
-      if (r.pnl    != null) _mpFlash.update(`${sym}:pnl`,     Number(r.pnl));
-    }
-    gridHoldings.setGridOption('rowData', holdingsRows);
-    gridHoldings.setGridOption('pinnedBottomRowData', holdingsTotalRows);
-    try { gridHoldings.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) {}
-    setTimeout(() => {
+    const hRows      = holdingsRows;
+    const hTotalRows = holdingsTotalRows;
+    untrack(() => {
+      for (const r of hRows) {
+        if (r._isTotal) continue;
+        const sym = r.tradingsymbol;
+        if (!sym) continue;
+        if (r.day_pnl != null) _mpFlash.update(`${sym}:day_pnl`, Number(r.day_pnl));
+        if (r.pnl    != null) _mpFlash.update(`${sym}:pnl`,     Number(r.pnl));
+      }
+      gridHoldings.setGridOption('rowData', hRows);
+      gridHoldings.setGridOption('pinnedBottomRowData', hTotalRows);
       try { gridHoldings.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) {}
-    }, 400);
+      setTimeout(() => {
+        try { gridHoldings.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) {}
+      }, 400);
+    });
   } });
   $effect(() => { if (gridWinReady && gridWin)
     gridWin.setGridOption('rowData', winRows); });
