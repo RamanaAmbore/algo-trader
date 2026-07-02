@@ -137,6 +137,114 @@ _CB_FAIL_THRESHOLD: int = 3          # consecutive fails to open the breaker
 _CB_INITIAL_COOLOFF_S: float = 300.0 # 5 min
 _CB_MAX_COOLOFF_S: float = 1800.0    # 30 min cap
 
+# ---------------------------------------------------------------------------
+# Per-account Dhan poll-priority interval gate (Jul 2026)
+# ---------------------------------------------------------------------------
+# poll_priority is a per-account string field on broker_accounts:
+#   'hot'  → poll every 30s  (default, same as Kite/Groww)
+#   'warm' → poll every 120s
+#   'cold' → poll every 600s
+#
+# The interval gate applies ONLY to Dhan accounts in the background poll
+# loop. Kite and Groww accounts always poll every cycle regardless of this
+# dict. Manual Refresh (?fresh=1) invalidates _RAW_CACHE and bypasses the
+# interval gate by going through fetch_positions/holdings/margins directly
+# (not gated here — the gate only fires during background @for_all_accounts
+# calls that resolve to a Dhan broker instance).
+#
+# _dhan_next_poll: {account_code: next_poll_epoch_seconds}
+# Updated after every background poll attempt (success or fail — do not
+# compound intervals on breaker-open cycles; breaker already rate-limits
+# those separately).
+#
+# Thread-safety: dict writes are single-assignment (GIL-safe). The read-
+# then-write in _update_dhan_next_poll is atomic from Python's GIL
+# perspective since we use time.time() as an independent value, not a
+# compound read-modify-write.
+_PRIORITY_INTERVALS_SEC: dict[str, float] = {
+    "hot":  30.0,
+    "warm": 120.0,
+    "cold": 600.0,
+}
+_dhan_next_poll: dict[str, float] = {}  # account → next allowed poll epoch
+
+
+def _get_dhan_poll_priority(account: str) -> str:
+    """Read poll_priority for a Dhan account from the shared broker DB.
+
+    Falls back to 'hot' on any error so a DB hiccup never blocks polling.
+    Result is NOT cached in-process — the DB read is cheap (shared_engine
+    pool, simple SELECT) and this function is called at most once per
+    30s cycle per account.
+    """
+    try:
+        from backend.api.database import shared_async_session as _shared_session
+        import asyncio as _asyncio
+        from sqlalchemy import select as _select
+        from backend.api.models import BrokerAccount as _BA
+
+        async def _read():
+            async with _shared_session() as s:
+                row = (await s.execute(
+                    _select(_BA.poll_priority).where(_BA.account == account)
+                )).scalar_one_or_none()
+            return row
+
+        loop = _asyncio.get_event_loop()
+        if loop.is_running():
+            # We are inside the asyncio event loop (called from the
+            # @for_all_accounts thread pool via to_thread). Schedule the
+            # coroutine on the loop and block on it from this thread.
+            import concurrent.futures as _cf
+            future = _asyncio.run_coroutine_threadsafe(_read(), loop)
+            result = future.result(timeout=2.0)
+        else:
+            result = loop.run_until_complete(_read())
+        return result or "hot"
+    except Exception:
+        return "hot"
+
+
+def _is_dhan_interval_due(account: str, broker) -> bool:
+    """Return True when this Dhan account should be polled right now.
+
+    Also returns True for non-Dhan brokers (gate is Dhan-only).
+    The check reads _dhan_next_poll without a lock — single dict
+    lookup is GIL-safe.
+    """
+    if broker is None:
+        return True  # legacy kite= path; always poll
+    try:
+        broker_name = type(broker).__name__.lower()
+    except Exception:
+        return True
+    if "dhan" not in broker_name:
+        return True  # Kite / Groww → always poll
+    now = _time.time()
+    next_due = _dhan_next_poll.get(account, 0.0)
+    return now >= next_due
+
+
+def _update_dhan_next_poll(account: str, broker) -> None:
+    """Record the next allowed poll time for this Dhan account.
+
+    No-op for non-Dhan brokers. Called after every background fetch
+    attempt — success or fail (breaker handles the actual skip on open
+    circuits; we still advance next_poll so the interval counts from the
+    attempt, not from when the breaker re-opened).
+    """
+    if broker is None:
+        return
+    try:
+        broker_name = type(broker).__name__.lower()
+    except Exception:
+        return
+    if "dhan" not in broker_name:
+        return
+    priority = _get_dhan_poll_priority(account)
+    interval = _PRIORITY_INTERVALS_SEC.get(priority, 30.0)
+    _dhan_next_poll[account] = _time.time() + interval
+
 
 def _default_health_entry() -> dict:
     return {
@@ -439,6 +547,21 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
             f"(open until {_ts_label(_FETCH_HEALTH.get(account, {}).get('circuit_open_until', 0) or 0)})"
         )
         return df_holdings
+    # Interval gate (Dhan-only): skip if not yet due for next poll.
+    # Kite + Groww pass through unconditionally (_is_dhan_interval_due
+    # returns True for non-Dhan brokers). Manual ?fresh=1 calls bypass
+    # by calling fetch_holdings() directly which skips @for_all_accounts.
+    if account and not _is_dhan_interval_due(account, broker):
+        df_holdings.attrs["interval_skipped"] = True
+        logger.debug(
+            f"[INTERVAL] account={account} holdings poll skipped "
+            f"(next_due={_ts_label(_dhan_next_poll.get(account, 0))})"
+        )
+        return df_holdings
+    # Advance next-poll timestamp BEFORE the fetch so even a crash/exception
+    # doesn't cause a tight retry loop.
+    if account:
+        _update_dhan_next_poll(account, broker)
     try:
         rows = None
         if broker is not None:
@@ -699,6 +822,16 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
             f"(open until {_ts_label(_FETCH_HEALTH.get(account, {}).get('circuit_open_until', 0) or 0)})"
         )
         return df_positions
+    # Interval gate (Dhan-only) — same pattern as holdings.
+    if account and not _is_dhan_interval_due(account, broker):
+        df_positions.attrs["interval_skipped"] = True
+        logger.debug(
+            f"[INTERVAL] account={account} positions poll skipped "
+            f"(next_due={_ts_label(_dhan_next_poll.get(account, 0))})"
+        )
+        return df_positions
+    if account:
+        _update_dhan_next_poll(account, broker)
     try:
         net_rows = None
         if broker is not None:
@@ -1264,6 +1397,16 @@ def _fetch_margins_local(connections=Connections, account=None, kite=None, broke
             f"(open until {_ts_label(_FETCH_HEALTH.get(account, {}).get('circuit_open_until', 0) or 0)})"
         )
         return df_margins
+    # Interval gate (Dhan-only) — same pattern as holdings.
+    if account and not _is_dhan_interval_due(account, broker):
+        df_margins.attrs["interval_skipped"] = True
+        logger.debug(
+            f"[INTERVAL] account={account} margins poll skipped "
+            f"(next_due={_ts_label(_dhan_next_poll.get(account, 0))})"
+        )
+        return df_margins
+    if account:
+        _update_dhan_next_poll(account, broker)
     try:
         if broker is not None:
             margins_data = broker.margins(segment="equity")
