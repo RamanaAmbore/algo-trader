@@ -1634,6 +1634,16 @@
           // is critical for qty→lots translation. Sending it here prevents
           // the backend from being blocked when its own cache is cold.
           lot_size_hint:    _lotSize > 0 ? Number(_lotSize) : null,
+          // Intent: "close" when the operator's side flips against the
+          // existing position (long → SELL = close; short → BUY = close).
+          // Backend bypasses the 5-lot fat-finger cap for close intent
+          // so large existing positions can be unwound in one order.
+          // Operator 2026-07-01: "for closing an existing order, qty
+          // should not be an issue. the guard should not apply for
+          // closing position."
+          intent: (Number(currentQty) > 0 && _side === 'SELL') ||
+                  (Number(currentQty) < 0 && _side === 'BUY')
+                    ? 'close' : 'open',
           product:          _product,
           order_type:       _type,
           variety:          _variety,

@@ -365,6 +365,9 @@ class BasketLeg(msgspec.Struct):
     # selected template's value.
     sl_trail_pct_override:       Optional[float] = None
     tp_scales_json_override:     Optional[str]   = None
+    # Intent — "open" | "close". Same semantics as TicketOrderRequest.intent
+    # (bypasses G2 5-lot cap for close). None → treat as open.
+    intent: Optional[str] = None
 
 
 class BasketGroup(msgspec.Struct):
@@ -493,6 +496,16 @@ class TicketOrderRequest(msgspec.Struct):
     # ignored (None / 0) for non-derivative symbols. Integer — same units
     # as instruments.lot_size (barrels for CRUDEOIL, grams for GOLD, etc.)
     lot_size_hint: Optional[int] = None
+    # Intent hint — "open" (new position) vs "close" (reduce existing).
+    # The 5-lot fat-finger cap (G2) is BYPASSED when intent == "close"
+    # because closing an existing 20-lot position with a single 20-lot
+    # SELL order is legitimate. The G1 multiple-of-lot check STILL fires
+    # (qty must always be a valid multiple). Operator 2026-07-01: "for
+    # closing an existing order, qty should not be an issue. the guard
+    # should not apply for closing position." None / "open" (default) →
+    # both guards apply. Frontend passes "close" when the ticket is
+    # opened from a close-position context.
+    intent: Optional[str] = None
 
 
 class TicketOrderResponse(msgspec.Struct):
