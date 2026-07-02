@@ -23,6 +23,7 @@
  */
 
 import { test, expect } from '@playwright/test';
+import { loginAsAdmin } from './fixtures/auth.js';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -204,6 +205,30 @@ test('SSOT: TOTAL row amber bg preserved (canonical rollup anchor)', () => {
   ).toBe(true);
 });
 
+test('SSOT: legacy equity-close / commodity-close aliases have transparent background', () => {
+  const src = fs.readFileSync(SRC_PATH, 'utf8');
+
+  // The legacy rules were overriding expiry-band-close amber. They must now
+  // have transparent background so expiry-band-close wins the cascade.
+  const eqIdx = src.indexOf('.cand-row.cand-row-equity-close {');
+  expect(eqIdx, 'cand-row-equity-close rule must exist').toBeGreaterThan(0);
+  const eqEnd = src.indexOf('}', eqIdx);
+  const eqBlock = src.slice(eqIdx, eqEnd + 1);
+  expect(
+    eqBlock.includes('background-color: transparent'),
+    'cand-row-equity-close must have background-color: transparent'
+  ).toBe(true);
+
+  const comIdx = src.indexOf('.cand-row.cand-row-commodity-close {');
+  expect(comIdx, 'cand-row-commodity-close rule must exist').toBeGreaterThan(0);
+  const comEnd = src.indexOf('}', comIdx);
+  const comBlock = src.slice(comIdx, comEnd + 1);
+  expect(
+    comBlock.includes('background-color: transparent'),
+    'cand-row-commodity-close must have background-color: transparent'
+  ).toBe(true);
+});
+
 // ── Browser-level contrast assertions ──────────────────────────────────────
 // These run against dev.ramboq.com and require a logged-in session.
 
@@ -216,6 +241,7 @@ const VIEWPORTS = [
 
 for (const vp of VIEWPORTS) {
   test(`UX [${vp.name}]: cand-row background alpha ≤ 0.10 on any single cell`, async ({ page }) => {
+    await loginAsAdmin(page);
     await page.setViewportSize({ width: vp.width, height: vp.height });
     await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'networkidle' });
 
@@ -231,7 +257,7 @@ for (const vp of VIEWPORTS) {
 
     const bg = await firstRow.evaluate(el => getComputedStyle(el).backgroundColor);
 
-    // Parse rgba(r,g,b,a). Accept transparent and alpha ≤ 0.10.
+    // Parse rgba(r,g,b,a). Accept transparent (alpha 0) and alpha ≤ 0.10.
     if (bg === 'rgba(0, 0, 0, 0)' || bg === 'transparent') return;
 
     const match = bg.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)(?:,\s*([\d.]+))?\)/);
@@ -242,10 +268,11 @@ for (const vp of VIEWPORTS) {
   });
 
   test(`UX [${vp.name}]: cand-pnl cell-pos/neg computed alpha ≤ 0.10`, async ({ page }) => {
+    await loginAsAdmin(page);
     await page.setViewportSize({ width: vp.width, height: vp.height });
     await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'networkidle' });
 
-    // If no P&L cells with positive colour, skip gracefully.
+    // If no P&L cells with positive/negative colour, skip gracefully.
     const posCells = await page.locator('.cand-pnl.cell-pos').count();
     const negCells = await page.locator('.cand-pnl.cell-neg').count();
     if (posCells === 0 && negCells === 0) {
@@ -266,7 +293,11 @@ for (const vp of VIEWPORTS) {
     expect(alpha, `cand-pnl bg alpha must be ≤ 0.10 — got ${alpha} for bg: ${bg}`).toBeLessThanOrEqual(0.10);
   });
 
-  test(`UX [${vp.name}]: cand-sym text color lightness ≥ 200`, async ({ page }) => {
+  test(`UX [${vp.name}]: cand-sym text color luma ≥ 150 (readable against dark bg)`, async ({ page }) => {
+    // Threshold is 150 (not 200): algo palette CE #4ade80 luma≈173, PE
+    // #f87171 luma≈155 — both above 150 but not 200. Using 200 would
+    // reject intentional directional colours from the canonical palette.
+    await loginAsAdmin(page);
     await page.setViewportSize({ width: vp.width, height: vp.height });
     await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'networkidle' });
 
@@ -281,8 +312,8 @@ for (const vp of VIEWPORTS) {
     if (!match) return;
 
     const [r, g, b] = [parseInt(match[1]), parseInt(match[2]), parseInt(match[3])];
-    // Perceived lightness (ITU-R 601 luma proxy)
+    // ITU-R 601 luma proxy
     const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-    expect(luma, `cand-sym luma must be ≥ 150 for readability — got ${luma.toFixed(1)} for color: ${color}`).toBeGreaterThanOrEqual(150);
+    expect(luma, `cand-sym luma must be ≥ 150 — got ${luma.toFixed(1)} for color: ${color}`).toBeGreaterThanOrEqual(150);
   });
 }
