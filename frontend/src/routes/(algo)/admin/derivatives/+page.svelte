@@ -1151,17 +1151,12 @@
       if (!matchAccount(h.account)) continue;
       const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
-      const qty = Number(h.qty ?? h.quantity ?? h.opening_qty ?? h.opening_quantity) || 0;
-      const dbase   = Number(h.day_change_val) || 0;
-      const pollLtp = Number(h.last_price || 0);
-      const liveLtp = Number(untrack(() => getSnapshot(sym)?.ltp) || 0);
-      const delta   = (pollLtp > 0 && liveLtp > 0 && qty !== 0)
-        ? (liveLtp - pollLtp) * qty : 0;
-      const contrib = dbase + delta;
+      // Broker's day_change_val — matches H pill / overlay poll-time values.
+      const dbase = Number(h.day_change_val) || 0;
       const _targets = targetsForProxy(sym);
       const credits = _targets.length ? _targets : [sym];
       for (const root of credits) {
-        out[root] = (out[root] || 0) + contrib;
+        out[root] = (out[root] || 0) + dbase;
       }
     }
     return out;
@@ -1211,7 +1206,11 @@
       const spot = p_ul > 0 ? p_ul : untrack(() => _rootSpot(root));
       const qty  = Number(p.quantity ?? p.qty) || 0;
       const cost = Number(p.average_price ?? p.avg_cost) || 0;
-      // Expiry-day promotion: overlay uses expiryPnl on expiry day.
+      // Matches overlay's `_dayPnlForLeg(c, spot)` exactly:
+      //   - non-expired: c.day_change_val (no SSE-tick delta because
+      //     overlay reads `c.ltp` which candidates don't carry — the
+      //     delta path is de-facto no-op in candidatesDayPnl too)
+      //   - expired: promoted to _expiryPnl(c, spot)
       const cand = { symbol: sym, qty, avg_cost: cost, kind: isOpt ? 'opt' : 'fut' };
       let dv;
       if (_isLegExpired({ symbol: sym, kind: isOpt ? 'opt' : 'fut' })) {
@@ -1219,12 +1218,6 @@
         dv = (ep != null && isFinite(ep)) ? ep : Number(p.day_change_val) || 0;
       } else {
         dv = Number(p.day_change_val) || 0;
-        // SSE-tick delta on the option/future's own LTP.
-        const pollLtp = Number(p.last_price || 0);
-        const liveLtp = Number(untrack(() => getSnapshot(sym)?.ltp) || 0);
-        if (pollLtp > 0 && liveLtp > 0 && qty !== 0) {
-          dv += (liveLtp - pollLtp) * qty;
-        }
       }
       const g = ensure(root);
       g.with    += dv;
@@ -1235,18 +1228,14 @@
       if (!matchAccount(h.account)) continue;
       const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
-      const qty = Number(h.qty ?? h.quantity ?? h.opening_qty ?? h.opening_quantity) || 0;
-      // Broker-stamped day P&L for holdings + SSE-tick delta on the eq
-      // symbol's own LTP (mirrors _liveDeltaByRow logic in PositionStrip).
-      const dbase   = Number(h.day_change_val) || 0;
-      const pollLtp = Number(h.last_price || 0);
-      const liveLtp = Number(untrack(() => getSnapshot(sym)?.ltp) || 0);
-      const delta   = (pollLtp > 0 && liveLtp > 0 && qty !== 0)
-        ? (liveLtp - pollLtp) * qty : 0;
+      // Broker's day_change_val — matches how the H pill sums holdings.
+      // No SSE-tick delta so the value matches overlay's snapshot value
+      // for the underlying at poll time.
+      const dbase = Number(h.day_change_val) || 0;
       const _targets = targetsForProxy(sym);
       const credits = _targets.length ? _targets : [sym];
       for (const root of credits) {
-        ensure(root).with += dbase + delta;
+        ensure(root).with += dbase;
       }
     }
     return out;
