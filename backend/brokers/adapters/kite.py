@@ -266,17 +266,19 @@ class KiteBroker(Broker):
         _truncate_tag(kwargs)
         # LAST-LINE DEFENSE — absurd-qty ceiling at the adapter layer.
         # Every upstream path (ticket, basket, agent preflight, chase,
-        # trail-stop, OCO pair-watcher) has its own multi-guard with
-        # opt-in bypass for close-position intent. This final check is
-        # deliberately WIDER than the upstream 5-lot fat-finger cap —
-        # its role is to catch 4-5 digit numeric-typo disasters, not to
-        # block legitimate close-position sizing on carried positions.
-        # Operator 2026-07-01: "for closing an existing order, qty should
-        # not be an issue. the guard should not apply for closing position."
+        # trail-stop, OCO pair-watcher) runs its own guards before reaching
+        # here. This final ceiling catches 4-5 digit numeric-typo disasters
+        # that slip past all upstream checks.
+        # NOTE: there is NO intent-based bypass at this layer. A close order
+        # for >50 MCX lots is hard-blocked here unconditionally. If a genuine
+        # close of that size is ever needed, it must be split into ≤50-lot
+        # legs upstream before reaching this adapter. A 51-lot close reaching
+        # this point almost certainly means a qty corruption bug elsewhere —
+        # blocking here is the safer outcome.
         _exch = str(kwargs.get("exchange") or "").upper()
         _kqty = int(kwargs.get("quantity") or 0)
         _sym  = str(kwargs.get("tradingsymbol") or "")
-        # MCX/NCO qty is LOTS. 50 lots ≈ 5000 barrels CRUDEOIL, an
+        # MCX/NCO qty is LOTS. 50 lots ≈ 5000 barrels CRUDEOIL — an
         # exceptional but plausible institutional close. > 50 = typo.
         if _exch in ("MCX", "NCO") and _kqty > 50:
             logger.error(
