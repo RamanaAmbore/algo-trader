@@ -848,8 +848,17 @@ class BrokerHealthController(Controller):
                 ),
             ))
 
-        # Stable sort: red → amber → green, then account name.
-        _order = {"red": 0, "amber": 1, "green": 2}
-        accounts.sort(key=lambda a: (_order.get(a.state, 9), a.account))
+        # Sort by canonical display_order (operator-configured) so the
+        # chip popup always shows accounts in the requested sequence:
+        # Kite → DH3747 → Groww → DH6847. Falls back to (999, account)
+        # for unknown entries so new accounts land at the end.
+        try:
+            from backend.brokers.broker_apis import get_account_order_map as _gaom
+            _display_order_map = _gaom()
+        except Exception:
+            _display_order_map = {}
+        accounts.sort(
+            key=lambda a: (_display_order_map.get(a.account, 999), a.account)
+        )
 
         return BrokerHealthResponse(accounts=accounts)

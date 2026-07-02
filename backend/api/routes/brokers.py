@@ -80,6 +80,10 @@ class BrokerAccountInfo(msgspec.Struct):
     # the breaker is disabled for all accounts except DH6847 (seeded
     # by the startup migration in _ensure_shared_broker_schema).
     circuit_breaker_enabled: bool = False
+    # Display ordering (Jul 2026) — canonical position in UI dropdowns,
+    # health-badge chip popup, performance grids. Lower = shown earlier.
+    # Default 500 (mid-tier) so new accounts land in the middle.
+    display_order: int = 500
 
 
 class BrokerAccountCreate(msgspec.Struct):
@@ -121,6 +125,8 @@ class BrokerAccountUpdate(msgspec.Struct):
     poll_priority:          Optional[str]  = None   # 'hot' | 'warm' | 'cold'
     auto_downgrade_enabled:  Optional[bool] = None
     circuit_breaker_enabled: Optional[bool] = None  # opt-in per-account breaker
+    # Display ordering (Jul 2026) — canonical UI position across all surfaces.
+    display_order:           Optional[int]  = None
 
 
 class TestResult(msgspec.Struct):
@@ -157,6 +163,7 @@ def _to_info(row: BrokerAccount, *, loaded: bool = False) -> BrokerAccountInfo:
         ),
         auto_downgrade_reason=getattr(row, "auto_downgrade_reason", None),
         circuit_breaker_enabled=bool(getattr(row, "circuit_breaker_enabled", False)),
+        display_order=int(getattr(row, "display_order", 500) or 500),
     )
 
 
@@ -220,7 +227,9 @@ class BrokersController(Controller):
     async def list_accounts(self) -> list[BrokerAccountInfo]:
         async with shared_async_session() as s:
             rows = (await s.execute(
-                select(BrokerAccount).order_by(BrokerAccount.account)
+                select(BrokerAccount).order_by(
+                    BrokerAccount.display_order, BrokerAccount.account
+                )
             )).scalars().all()
         loaded = _loaded_accounts()
         return [_to_info(r, loaded=(r.account in loaded)) for r in rows]
@@ -247,6 +256,23 @@ class BrokersController(Controller):
         from dataclasses import asdict
         caps = capabilities_for(account)
         return asdict(caps)
+
+    @get("/order", guards=[cap_guard("view_brokers")])
+    async def get_display_order(self) -> dict[str, int]:
+        """GET /api/admin/brokers/order — returns {account_id: display_order}
+        map for every active broker account.
+
+        Frontend hydrates this once at boot into an `accountDisplayOrder`
+        store and uses `sortAccountsBy(accounts, orderMap)` on every UI
+        surface that lists accounts. Cached on the backend for 60 s;
+        invalidated immediately by PATCH display_order changes.
+        """
+        async with shared_async_session() as s:
+            rows = (await s.execute(
+                select(BrokerAccount.account, BrokerAccount.display_order)
+                .order_by(BrokerAccount.display_order, BrokerAccount.account)
+            )).all()
+        return {str(r.account): int(r.display_order) for r in rows}
 
     # ── Create (manage_brokers — admin / ops only) ────────────────────
 
@@ -326,6 +352,8 @@ class BrokersController(Controller):
                 row.auto_downgrade_enabled = bool(data.auto_downgrade_enabled)
             if data.circuit_breaker_enabled is not None:
                 row.circuit_breaker_enabled = bool(data.circuit_breaker_enabled)
+            if data.display_order is not None:
+                row.display_order = int(data.display_order)
 
             # Secret fields — only update when the operator passed a
             # NON-EMPTY string. Empty / None means "leave unchanged" so
@@ -352,6 +380,14 @@ class BrokersController(Controller):
                     set_dhan_priority_cache(account, row.poll_priority or "hot")
                 if data.circuit_breaker_enabled is not None:
                     set_breaker_optin_cache(account, bool(row.circuit_breaker_enabled))
+            except Exception:
+                pass
+        # Invalidate the display_order cache so the next sort_accounts() call
+        # re-reads fresh values from the DB.
+        if data.display_order is not None:
+            try:
+                from backend.brokers.broker_apis import invalidate_account_order_cache
+                invalidate_account_order_cache()
             except Exception:
                 pass
 
