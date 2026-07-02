@@ -296,6 +296,48 @@ async def _load_latest_movers_snapshot() -> Optional[MoversSnapshot]:
         return None
 
 
+def _combine_movers(
+    live_snapshot: dict[str, dict],
+    session_movers: dict[str, dict],
+    top_n: int,
+) -> dict[str, dict]:
+    """Build the combined movers dict from ``live_snapshot`` + ``session_movers``.
+
+    Takes ``top_n`` losers (most negative ``last_pct``) and ``top_n`` winners
+    (most positive ``last_pct``) from ``live_snapshot`` INDEPENDENTLY so that
+    a strongly bullish or bearish day cannot crowd out the minority direction.
+
+    Directional-fairness invariant: given M winners and L losers in
+    ``live_snapshot``, the result always contains min(L, top_n) losers AND
+    min(M, top_n) winners regardless of their relative magnitudes.
+
+    Session-sticky entries (``session_movers``) overlay at higher priority —
+    they represent underlyings that crossed the threshold threshold earlier
+    today and must stay visible even if they have since reverted.
+
+    ``_force_movers_snapshot`` (the NSE-close capture path) writes the full
+    untruncated universe to the DB independently of this function — the same
+    directional-fairness invariant applies there implicitly because no slice
+    is ever applied.
+    """
+    items_sorted = sorted(live_snapshot.items(), key=lambda kv: kv[1]["last_pct"])
+    top_losers = [(u, e) for u, e in items_sorted if e["last_pct"] < 0][:top_n]
+    top_winners = sorted(
+        [(u, e) for u, e in items_sorted if e["last_pct"] > 0],
+        key=lambda kv: kv[1]["last_pct"],
+        reverse=True,
+    )[:top_n]
+
+    combined: dict[str, dict] = {}
+    # Directional slices first (lower priority).
+    for u, entry in top_losers + top_winners:
+        combined[u] = entry
+    # Session-sticky overlay (higher priority — overrides snapshot entries).
+    for u, entry in session_movers.items():
+        combined[u] = entry
+    return combined
+
+
 async def _force_movers_snapshot() -> int:
     """Fetch a fresh movers quote batch and persist it to ``movers_snapshots``.
 
@@ -1230,18 +1272,13 @@ class WatchlistController(Controller):
         # today) + top-N from the live snapshot to keep the section
         # populated on calm days. Sticky entries override snapshot when
         # both have data for the same underlying.
-        combined: dict[str, dict] = {}
-        # Top-N live first (lower priority).
-        snapshot_sorted = sorted(
-            live_snapshot.items(),
-            key=lambda kv: abs(kv[1]["last_pct"]),
-            reverse=True,
-        )[:MOVER_TOP_N]
-        for u, entry in snapshot_sorted:
-            combined[u] = entry
-        # Then sticky entries overlay (higher priority).
-        for u, entry in _session_movers.items():
-            combined[u] = entry
+        #
+        # DIRECTIONAL BALANCE: take top-N losers and top-N winners
+        # independently so a strongly bullish (or bearish) day cannot
+        # crowd out the minority direction entirely.  A single abs-sorted
+        # [:MOVER_TOP_N] slice would discard all losers on a day where
+        # the top-6 movers are all positive — losers grid becomes blank.
+        combined: dict[str, dict] = _combine_movers(live_snapshot, _session_movers, MOVER_TOP_N)
 
         rows: list[MoverRow] = []
         for underlying, entry in combined.items():
