@@ -51,6 +51,7 @@
   import NavCard from '$lib/NavCard.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
+  import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
   // ModuleRegistry is registered inside onMount after the dynamic import.
 
@@ -212,6 +213,10 @@
   let rawFunds        = $state([]);
   let rawHoldingsSummary  = $state([]);
   let rawPositionsSummary = $state([]);
+
+  // Canonical account display order — used when building the account picker.
+  let _perfOrderMap = $state(/** @type {Record<string,number>} */ ({}));
+  const _unsubPerfOrder = accountDisplayOrder.subscribe(m => { _perfOrderMap = m; });
 
   // Total cur_val across the currently visible holdings — used by the
   // Weight % valueGetter. Updated whenever the filter applies. Plain
@@ -963,7 +968,7 @@
       ...rawPositions.map(r => r.account),
       ...rawFunds.map(r => r.account).filter(a => a && a !== 'TOTAL'),
     ])];
-    accounts = allAccts;
+    accounts = sortAccountsBy(allAccts, _perfOrderMap);
     // Symbol-list derivation + reconcileSymbols() retired alongside
     // the dropdown — GridSearchButton handles filtering with no
     // pre-computed picker scope.
@@ -1150,6 +1155,7 @@
   }
 
   onDestroy(() => {
+    _unsubPerfOrder();
     unsub?.();
     if (_fillToastTimer) { clearTimeout(_fillToastTimer); _fillToastTimer = null; }
     _perfFlash.dispose();

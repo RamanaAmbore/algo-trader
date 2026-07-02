@@ -19,13 +19,28 @@
   import { onMount, onDestroy } from 'svelte';
   import { visibleInterval, openActivityModal } from '$lib/stores';
   import { fetchBrokerHealth } from '$lib/api';
+  import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
   /** Bindable: parent (algo layout) toggles this from the 5/5 chip. */
   let { open = $bindable(false) } = $props();
 
   /** @type {Array<{account:string,broker:string,state:string,reason:string,last_good_at:string|null,last_check_at:string|null,is_active_ticker?:boolean,circuit_state?:string,consecutive_fail_count?:number,circuit_open_until?:string|null,circuit_breaker_enabled?:boolean}>} */
-  let accounts = $state([]);
+  let _rawAccounts = $state([]);
   let loading  = $state(false);
+
+  // Subscribe to the canonical order map so the chip popup re-sorts
+  // immediately when the operator patches display_order in /admin/brokers.
+  let _orderMap = $state(/** @type {Record<string,number>} */ ({}));
+  const _unsubOrder = accountDisplayOrder.subscribe(m => { _orderMap = m; });
+  onDestroy(() => _unsubOrder());
+
+  // Client-side sort mirrors the backend sort so even a stale API
+  // response renders in the right order.
+  const accounts = $derived(
+    sortAccountsBy(_rawAccounts.map(a => a.account), _orderMap)
+      .map(id => _rawAccounts.find(a => a.account === id))
+      .filter(Boolean)
+  );
 
   let _teardown = () => {};
 
@@ -34,7 +49,7 @@
     loading = true;
     try {
       const data = await fetchBrokerHealth();
-      accounts = data?.accounts ?? [];
+      _rawAccounts = data?.accounts ?? [];
     } catch (_) {
       // Silently suppress — badge disappears when API unreachable.
     } finally {

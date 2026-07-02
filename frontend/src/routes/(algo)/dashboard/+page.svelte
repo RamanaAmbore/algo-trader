@@ -40,6 +40,7 @@
     symbolFromQuoteKey,
   } from '$lib/data/indexConstituents';
   import { readChartPref, writeChartPref } from '$lib/data/chartPrefs';
+  import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
   // ag-Grid module registration — idempotent across re-mounts.
   ModuleRegistry.registerModules([AllCommunityModule]);
@@ -257,15 +258,19 @@
   });
 
   // Derived list of distinct accounts seen in current positions +
-  // holdings + broker registry. Sorted ascending. Empty fallback when
-  // fetchBrokerAccounts 403s (non-admin session) — picker still works
-  // off the rows-derived set.
+  // holdings + broker registry. Sorted by canonical display_order.
+  // Empty fallback when fetchBrokerAccounts 403s (non-admin session) —
+  // picker still works off the rows-derived set.
+  let _orderMap = $state(/** @type {Record<string,number>} */ ({}));
+  const _unsubDashOrder = accountDisplayOrder.subscribe(m => { _orderMap = m; });
+  onDestroy(() => _unsubDashOrder());
+
   const _availableAccounts = $derived.by(() => {
     const set = new Set();
     for (const r of _positions) if (r.account) set.add(String(r.account));
     for (const r of _holdings)  if (r.account) set.add(String(r.account));
     for (const a of _knownBrokerAccounts) set.add(String(a));
-    return [...set].sort();
+    return sortAccountsBy([...set], _orderMap);
   });
 
   // Apply a per-card account filter to a row list. Empty filter
@@ -454,7 +459,9 @@
       byAcct[a].day_pnl += Number(r.day_change_val) || 0;
       byAcct[a].pnl     += Number(r.pnl) || 0;
     }
-    return Object.values(byAcct).sort((a, b) => a.account.localeCompare(b.account));
+    const rows = Object.values(byAcct);
+    return sortAccountsBy(rows.map(r => r.account), _orderMap)
+      .map(id => rows.find(r => r.account === id)).filter(Boolean);
   });
 
   const _holdingsSummary = $derived.by(() => {
@@ -468,7 +475,9 @@
       byAcct[a].inv_val += Number(r.inv_val) || 0;
       byAcct[a].cur_val += Number(r.cur_val) || 0;
     }
-    return Object.values(byAcct).sort((a, b) => a.account.localeCompare(b.account));
+    const rows = Object.values(byAcct);
+    return sortAccountsBy(rows.map(r => r.account), _orderMap)
+      .map(id => rows.find(r => r.account === id)).filter(Boolean);
   });
 
   // Per-account TOTAL rows (sum across accounts) — pinned at the

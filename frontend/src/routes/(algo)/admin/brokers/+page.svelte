@@ -20,6 +20,7 @@
 
   import { onDestroy } from 'svelte';
   import { nowStamp, visibleInterval } from '$lib/stores';
+  import { accountDisplayOrder } from '$lib/data/accountSort.js';
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
@@ -237,6 +238,8 @@
     // Operational fields
     source_ip: '', is_active: true, notes: '',
     priority: 100,
+    // Display ordering (Jul 2026). Lower = shown first across all UI surfaces.
+    display_order: 500,
     // JSON text bound to a <textarea>; parsed at save time. Bound here as
     // a string so the operator's in-progress typing isn't constantly
     // re-validated. Empty = `{}` server-side.
@@ -269,6 +272,7 @@
       access_token: '',
       source_ip: '', is_active: true, notes: '',
       priority: 100,
+      display_order: 500,
       extra_config_text: '{}',
     };
     _formHistEnabled = true;
@@ -289,7 +293,8 @@
       source_ip:  row.source_ip || '',
       is_active:  !!row.is_active,
       notes:      row.notes || '',
-      priority:   typeof row.priority === 'number' ? row.priority : 100,
+      priority:      typeof row.priority      === 'number' ? row.priority      : 100,
+      display_order: typeof row.display_order === 'number' ? row.display_order : 500,
       extra_config_text: JSON.stringify(row.extra_config || {}, null, 2),
     };
     // Default true for rows pre-dating the column (undefined → ON).
@@ -350,6 +355,7 @@
           historical_data_enabled: _formHistEnabled,
           notes: form.notes,
           priority: Number(form.priority) || 100,
+          display_order: Number(form.display_order) || 500,
           extra_config: parsedExtra,
         };
         // Only send each secret if the operator typed a new value AND
@@ -385,7 +391,8 @@
           is_active:   form.is_active,
           historical_data_enabled: _formHistEnabled,
           notes:       form.notes,
-          priority:    Number(form.priority) || 100,
+          priority:      Number(form.priority) || 100,
+          display_order: Number(form.display_order) || 500,
           extra_config: parsedExtra,
         };
         await createBrokerAccount(payload);
@@ -393,6 +400,9 @@
       }
       resetForm();
       await load();
+      // Refresh the canonical display_order store so all other pages
+      // (dropdowns, health badge, etc.) reflect the new order immediately.
+      accountDisplayOrder.refresh().catch(() => {});
     } catch (e) {
       error = `Save failed: ${e.message}`;
     }
@@ -687,6 +697,14 @@
                placeholder="100"
                title="PriceBroker fallback order — lower = tried first for shared market data. Default 100; ties broken by insertion order."
                bind:value={form.priority} />
+      </div>
+      <div class="bf-field">
+        <label class="field-label" for="bf-display-order">Display Order</label>
+        <input id="bf-display-order" type="number" class="field-input font-mono"
+               min="1" max="999" step="1"
+               placeholder="500"
+               title="Canonical display position across all UI surfaces (dropdowns, health badge, grids). Lower = shown first. Seeded: Kite=10–20, DH3747=100, Groww=200, DH6847=999."
+               bind:value={form.display_order} />
       </div>
       <div class="bf-field bf-field-wide">
         <label class="field-label" for="bf-ip">Source IP (optional)</label>
