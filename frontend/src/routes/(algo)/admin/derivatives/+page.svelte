@@ -1161,6 +1161,12 @@
     );
     const matchAccount = (acct) => _wantedAccts.size === 0
       || _wantedAccts.has(String(acct || '').trim().toUpperCase());
+    // Snapshot's rollup semantic: include EVERY position + holding
+    // (not gated by the operator's per-candidate checkbox state
+    // `_isLegEnabled`). The overlay uses _isLegEnabled to reflect
+    // operator's manual checkbox picks; Snapshot always shows the
+    // full-book contribution per root so operator can see the true
+    // total regardless of which candidates they're actively analysing.
     for (const _p of positions) {
       const p = /** @type {any} */ (_p);
       if (p.source !== wantedSource) continue;
@@ -1171,7 +1177,6 @@
       const isOpt = /(CE|PE)$/i.test(sym);
       if (!isFut && !isOpt) continue;
       const c = { ...p, kind: isOpt ? 'opt' : 'fut' };
-      if (!_isLegEnabled(c)) continue;
       const root = (decomposeSymbol(sym).root || sym).toUpperCase();
       if (!root) continue;
       const p_ul = Number(p.underlying_ltp || 0);
@@ -1180,22 +1185,22 @@
       if (v == null || !isFinite(Number(v))) continue;
       out[root] = (out[root] || 0) + Number(v);
     }
-    if (_includeHoldings) {
-      for (const _h of holdings) {
-        const h = /** @type {any} */ (_h);
-        if (!matchAccount(h.account)) continue;
-        const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
-        if (!sym) continue;
-        const c = { ...h, source: 'live', kind: 'eq' };
-        if (!_isLegEnabled(c)) continue;
-        const _targets = targetsForProxy(sym);
-        const credits = _targets.length ? _targets : [sym];
-        for (const root of credits) {
-          const spot = untrack(() => _rootSpot(root));
-          const v = accessor(c, spot);
-          if (v == null || !isFinite(Number(v))) continue;
-          out[root] = (out[root] || 0) + Number(v);
-        }
+    // Holdings included unconditionally — no _includeHoldings gate for
+    // the Snapshot rollup. Hold toggle affects the overlay's rendering
+    // but not the Snapshot rollup which represents the full-book state.
+    for (const _h of holdings) {
+      const h = /** @type {any} */ (_h);
+      if (!matchAccount(h.account)) continue;
+      const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
+      if (!sym) continue;
+      const c = { ...h, source: 'live', kind: 'eq' };
+      const _targets = targetsForProxy(sym);
+      const credits = _targets.length ? _targets : [sym];
+      for (const root of credits) {
+        const spot = untrack(() => _rootSpot(root));
+        const v = accessor(c, spot);
+        if (v == null || !isFinite(Number(v))) continue;
+        out[root] = (out[root] || 0) + Number(v);
       }
     }
     return out;
