@@ -246,6 +246,138 @@ def _update_dhan_next_poll(account: str, broker) -> None:
     _dhan_next_poll[account] = _time.time() + interval
 
 
+# ---------------------------------------------------------------------------
+# Auto-downgrade state (Jul 2026)
+# ---------------------------------------------------------------------------
+# When a Dhan account has auto_downgrade_enabled=True and its circuit
+# breaker opens ≥ _DOWNGRADE_MIN_OPENS times within a 15-min window,
+# poll_priority is automatically set to 'cold'.
+#
+# Per-account history of breaker-open events (epoch timestamps).
+# Trimmed to the last 15 min on each new open event.
+_DOWNGRADE_WINDOW_S: float = 900.0    # 15-min sliding window
+_DOWNGRADE_MIN_OPENS: int  = 5        # opens needed to trigger downgrade
+_DOWNGRADE_COOLOFF_S: float = 300.0   # 5-min cooloff after a downgrade
+
+_breaker_open_history: dict[str, list[float]] = {}  # account → [epoch, ...]
+_downgrade_cooloff_until: dict[str, float] = {}     # account → epoch
+
+
+def _maybe_auto_downgrade(account: str) -> None:
+    """Called from _record_fetch each time the circuit-breaker opens.
+
+    Checks whether the account qualifies for auto-downgrade to 'cold'
+    priority. No-op when:
+      - auto_downgrade_enabled is False for this account
+      - account is already 'cold'
+      - the downgrade cooloff has not expired (5 min after last downgrade)
+      - fewer than 5 breaker opens in the last 15 min
+
+    When downgrade fires:
+      - Updates broker_accounts row: poll_priority='cold', stamps
+        auto_downgraded_at + auto_downgrade_reason
+      - Resets _dhan_next_poll[account] to 0 so the cold interval
+        takes effect on the next _update_dhan_next_poll call
+      - Emits WS event broker_priority_changed
+      - Sets a 5-min cooloff on subsequent downgrade checks
+    """
+    if not account:
+        return
+
+    now = _time.time()
+
+    # Cooloff guard — prevent re-firing within 5 min of last downgrade.
+    if now < _downgrade_cooloff_until.get(account, 0.0):
+        return
+
+    # Update open-event history (trim to window).
+    history = _breaker_open_history.setdefault(account, [])
+    history.append(now)
+    cutoff = now - _DOWNGRADE_WINDOW_S
+    _breaker_open_history[account] = [t for t in history if t >= cutoff]
+
+    if len(_breaker_open_history[account]) < _DOWNGRADE_MIN_OPENS:
+        return  # Not enough opens yet.
+
+    # Read account row to check auto_downgrade_enabled + current poll_priority.
+    try:
+        from backend.api.database import shared_async_session as _shared_session
+        from backend.api.models import BrokerAccount as _BA
+        from sqlalchemy import select as _select
+        from datetime import datetime as _dt, timezone as _tz
+        import asyncio as _asyncio
+
+        async def _check_and_update():
+            async with _shared_session() as s:
+                row = (await s.execute(
+                    _select(_BA).where(_BA.account == account)
+                )).scalar_one_or_none()
+                if row is None:
+                    return None
+                if not getattr(row, "auto_downgrade_enabled", False):
+                    return None
+                current_priority = getattr(row, "poll_priority", "hot") or "hot"
+                if current_priority == "cold":
+                    return None  # Already cold.
+                old_priority = current_priority
+                reason = f"{_DOWNGRADE_MIN_OPENS} breaker opens in 15 min"
+                row.poll_priority = "cold"
+                row.auto_downgraded_at = _dt.now(_tz.utc)
+                row.auto_downgrade_reason = reason
+                await s.commit()
+                return old_priority, reason
+
+        loop = _asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures as _cf
+            future = _asyncio.run_coroutine_threadsafe(_check_and_update(), loop)
+            outcome = future.result(timeout=3.0)
+        else:
+            outcome = loop.run_until_complete(_check_and_update())
+
+        if outcome is None:
+            return  # No downgrade needed.
+
+        old_priority, reason = outcome
+
+        # Set cooloff so a 6th open within 5 min doesn't re-fire.
+        _downgrade_cooloff_until[account] = now + _DOWNGRADE_COOLOFF_S
+        # Advance next_poll so the cold interval applies immediately.
+        _dhan_next_poll[account] = 0.0
+
+        logger.warning(
+            f"[DHAN-AUTO-DOWNGRADE] account={account} "
+            f"from={old_priority} to=cold reason={reason!r}"
+        )
+
+        # Emit WS event so the frontend toast can fire.
+        try:
+            import asyncio as _asyncio2
+
+            async def _broadcast():
+                from backend.api.routes.ws import broadcast as _ws_broadcast
+                await _ws_broadcast({
+                    "type": "broker_priority_changed",
+                    "account": account,
+                    "old_priority": old_priority,
+                    "new_priority": "cold",
+                    "reason": reason,
+                    "auto": True,
+                })
+
+            _loop = _asyncio2.get_event_loop()
+            if _loop.is_running():
+                import concurrent.futures as _cf2
+                _asyncio2.run_coroutine_threadsafe(_broadcast(), _loop)
+            else:
+                _loop.run_until_complete(_broadcast())
+        except Exception as _ws_err:
+            logger.debug(f"[DHAN-AUTO-DOWNGRADE] WS broadcast failed: {_ws_err}")
+
+    except Exception as _exc:
+        logger.warning(f"[DHAN-AUTO-DOWNGRADE] account={account} check failed: {_exc}")
+
+
 def _default_health_entry() -> dict:
     return {
         "last_ok_at": 0.0,
@@ -308,6 +440,7 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
         return
 
     now = _time.time()
+    _new_breaker_open = False   # flag set inside lock, hook fired outside
     with _BREAKER_LOCK:
         e = _FETCH_HEALTH.setdefault(account, _default_health_entry())
         # Ensure legacy entries (without breaker fields) are back-filled.
@@ -349,6 +482,7 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
                 if was_closed_or_halfopen:
                     cycle += 1
                     e["open_cycle_count"] = cycle
+                    _new_breaker_open = True   # new OPEN transition
                 cooloff = min(
                     _CB_INITIAL_COOLOFF_S * (2 ** (cycle - 1)),
                     _CB_MAX_COOLOFF_S,
@@ -363,6 +497,16 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
                     f"open_until={_ts_label(now + cooloff)} "
                     f"cycle={e['open_cycle_count']}"
                 )
+    # Auto-downgrade hook — called OUTSIDE the lock to avoid deadlock
+    # (the hook acquires shared_async_session which can block).
+    # Only fires on a genuine new OPEN transition, not on re-opens of
+    # an already-open circuit, so each open event is counted exactly once
+    # for the 15-min history window.
+    if _new_breaker_open:
+        try:
+            _maybe_auto_downgrade(account)
+        except Exception as _adg_err:
+            logger.debug(f"[DHAN-AUTO-DOWNGRADE] hook error: {_adg_err}")
 
 
 def is_account_healthy(account: str) -> bool:
