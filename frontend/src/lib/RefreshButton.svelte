@@ -570,25 +570,28 @@
      The `:not(.rf-spinning)` guard ensures the rotate animation NEVER
      touches the spinner SVG while the button is in loading state — see
      rf-spin rule above for the full root-cause story. */
+  /* Unified animation spec (2026-07 tick-bus synchrony):
+     Duration 300ms, easing cubic-bezier(0.4,0,0.2,1) (material standard).
+     Neutral sky-300 α 0.14 palette (no direction on the button). */
   .rf-btn.rf-tick-a {
-    animation: rf-tick-pulse-a 0.25s ease-out;
+    animation: rf-tick-pulse-a 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   }
   .rf-btn.rf-tick-b {
-    animation: rf-tick-pulse-b 0.25s ease-out;
+    animation: rf-tick-pulse-b 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   }
   .rf-btn.rf-tick-a:not(.rf-spinning) svg {
-    animation: rf-tick-rotate-a 0.25s ease-in-out;
+    animation: rf-tick-rotate-a 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   }
   .rf-btn.rf-tick-b:not(.rf-spinning) svg {
-    animation: rf-tick-rotate-b 0.25s ease-in-out;
+    animation: rf-tick-rotate-b 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   }
   @keyframes rf-tick-pulse-a {
-    0%   { box-shadow: 0 0 0 0 rgba(125, 211, 252, 0.55); }
-    100% { box-shadow: 0 0 8px 2px rgba(125, 211, 252, 0); }
+    0%   { box-shadow: 0 0 0 0 rgba(125, 211, 252, 0.55); background-color: rgba(125, 211, 252, 0.14); }
+    100% { box-shadow: 0 0 8px 2px rgba(125, 211, 252, 0); background-color: transparent; }
   }
   @keyframes rf-tick-pulse-b {
-    0%   { box-shadow: 0 0 0 0 rgba(125, 211, 252, 0.55); }
-    100% { box-shadow: 0 0 8px 2px rgba(125, 211, 252, 0); }
+    0%   { box-shadow: 0 0 0 0 rgba(125, 211, 252, 0.55); background-color: rgba(125, 211, 252, 0.14); }
+    100% { box-shadow: 0 0 8px 2px rgba(125, 211, 252, 0); background-color: transparent; }
   }
   @keyframes rf-tick-rotate-a {
     from { transform: rotate(0deg); }
