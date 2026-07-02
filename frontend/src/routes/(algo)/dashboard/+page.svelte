@@ -2634,6 +2634,17 @@
      LEFT, control trio on the right via the first button's
      `margin-left: auto`). */
   .card-header-row > :global(.ams) { margin-left: 0; }
+  /* AGENT ACTIVITY label uses .mp-section-label--bar which carries a
+     margin-bottom for the standalone (non-flex) row-separator context.
+     Inside .card-header-row the label sits in a flex `align-items:
+     center` row alongside the fires chip + CardControls. The bottom
+     margin shifts the label's outer box downward but not its baseline,
+     so visually the text sat above the center of its siblings.
+     Operator 2026-07-01: "This text is not vertically aligned in header
+     in dashboard page: AGENT ACTIVITY." Zero the margin only in the
+     flex-header context so standalone uses (dash-agent-summary as row
+     separator elsewhere) are untouched. */
+  .card-header-row > :global(.mp-section-label--bar) { margin-bottom: 0; }
 
   /* Compact ag-Grid wrappers inside the Capital + W/L cards. Width
      is 100% (grid columns flex to fill); height is driven by the
