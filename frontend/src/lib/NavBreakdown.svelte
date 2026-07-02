@@ -24,7 +24,7 @@
   testable from the e2e suite without ag-Grid plumbing.
 -->
 <script>
-  import { onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import { aggCompact } from '$lib/format';
   import { fundsStore, holdingsStore, positionsStore } from '$lib/data/marketDataStores.svelte.js';
   import { navByAccount, navTotalRow } from '$lib/data/nav';
@@ -87,21 +87,27 @@
   let _timeoutHandle = null;
 
   $effect(() => {
-    if (_inFlight && !_allLoaded) {
-      // Arm the slow-load hint (5 s) and hard timeout (10 s).
-      if (!_slowHandle) {
-        _slowHandle = setTimeout(() => { _slowLoad = true; }, 5_000);
+    // Read reactive deps inside the effect; write via untrack() so the writes
+    // don't re-trigger the effect (avoids reactive churn on every store poll).
+    const shouldArm = _inFlight && !_allLoaded;
+    untrack(() => {
+      if (shouldArm) {
+        // Arm the slow-load hint (5 s) and hard timeout (10 s).
+        if (!_slowHandle) {
+          _slowHandle = setTimeout(() => { _slowLoad = true; }, 5_000);
+        }
+        if (!_timeoutHandle) {
+          _timeoutHandle = setTimeout(() => { _timedOut = true; }, 10_000);
+        }
+      } else {
+        // Loaded or errored — cancel both clocks.
+        if (_slowHandle)    { clearTimeout(_slowHandle);    _slowHandle    = null; }
+        if (_timeoutHandle) { clearTimeout(_timeoutHandle); _timeoutHandle = null; }
+        // Identity-guarded writes: avoids churn when already at the resting value.
+        if (_slowLoad)  _slowLoad  = false;
+        if (_timedOut)  _timedOut  = false;
       }
-      if (!_timeoutHandle) {
-        _timeoutHandle = setTimeout(() => { _timedOut = true; }, 10_000);
-      }
-    } else {
-      // Loaded or errored — cancel both clocks.
-      if (_slowHandle)    { clearTimeout(_slowHandle);    _slowHandle    = null; }
-      if (_timeoutHandle) { clearTimeout(_timeoutHandle); _timeoutHandle = null; }
-      _slowLoad  = false;
-      _timedOut  = false;
-    }
+    });
   });
 
   onDestroy(() => {
