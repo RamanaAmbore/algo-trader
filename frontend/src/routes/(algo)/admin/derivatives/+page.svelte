@@ -1432,7 +1432,7 @@
   // 350 ms decay so the operator sees the pulse without it competing
   // with the next poll cycle. Keyed as `<root>:<field>` so each cell
   // has its own timer (Spot moves but Day % may not on the same tick).
-  const flash = createTickFlash({ threshold: 0, durationMs: 350 });
+  const flash = createTickFlash({ threshold: 0, durationMs: 300 });
 
   // Drive the flash off the polled data. Two effects — one for the
   // F&O rollup (Day / P&L / Day Net / P&L Net) and one for the live

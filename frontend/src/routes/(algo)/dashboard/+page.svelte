@@ -65,7 +65,7 @@
   // Tick-flash — subtle 350ms directional background pulse on the Equity
   // card's Day P&L and P&L cells. Keyed as `account:field`. TOTAL rows
   // (account === 'TOTAL') excluded. Alpha 0.13 via global .tf-up/.tf-down.
-  const _dashFlash = createTickFlash({ threshold: 0.001, durationMs: 350 });
+  const _dashFlash = createTickFlash({ threshold: 0.001, durationMs: 300 });
 
   // Flash-augmented cellClass for the equity summary grids.
   // `field` is the column field name used as part of the per-cell key.
