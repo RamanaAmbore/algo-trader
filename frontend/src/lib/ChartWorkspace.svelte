@@ -329,16 +329,16 @@
 
   // ── Chart-refresh pulse ───────────────────────────────────────────
   const _pulse = createChartRefreshPulse();
+
+  // ── Historical OHLCV ──────────────────────────────────────────────
+  /** @type {Array<{ts:string,open:number,high:number,low:number,close:number,volume:number}>} */
+  let _bars        = $state([]);
   // Fire when _bars changes to a non-empty array (new data landed from
   // broker/cache). Skip on symbol-change blanks (length === 0) and on
   // zoom/pan/overlay changes (those don't touch _bars).
   $effect(() => {
     if (_bars.length) _pulse.notify('chart');
   });
-
-  // ── Historical OHLCV ──────────────────────────────────────────────
-  /** @type {Array<{ts:string,open:number,high:number,low:number,close:number,volume:number}>} */
-  let _bars        = $state([]);
   let _histLoading = $state(false);
   // _histLoadingSlow flips true ~150ms after _histLoading starts so
   // cache-hits (which complete in one frame) don't flash a spinner.
