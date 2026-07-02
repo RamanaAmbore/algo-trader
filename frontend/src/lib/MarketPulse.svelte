@@ -51,7 +51,7 @@
   import { fetchSettings } from '$lib/api';
   import { streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
   import { createFreshnessShimmer, createTickFlash } from '$lib/data/tickFlash.svelte.js';
-  import { getSnapshot, symbolStore, symbolTickCount } from '$lib/data/symbolStore.svelte.js';
+  import { getSnapshot, symbolStore, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
   import { bookChanged } from '$lib/data/bookChanged';
   import {
     positionsStore, holdingsStore, fundsStore,
@@ -694,7 +694,7 @@
   // prevents false flashes when the effect re-runs with identical float
   // values — Math.abs(v - last) < 0 is always false with threshold=0.
   // Alpha is 0.13 (app.css .tf-up/.tf-down) — subtle, not alarming.
-  const _mpFlash = createTickFlash({ threshold: 0.001, durationMs: 350 });
+  const _mpFlash = createTickFlash({ threshold: 0.001, durationMs: 300 });
   /** Build a `{sym: ltp}` map snapshot from symbolStore for fast cell reads.
    *
    * LTP flicker fix (Jun 2026): include only strictly-positive values.
@@ -1396,6 +1396,29 @@
     // WebSocket. startQuoteStream() is idempotent so multiple Pulse
     // instances on the same page share one connection.
     startQuoteStream();
+
+    // Tick-bus subscription — drives _ltpFlashUp/Down from real SSE ticks
+    // (sub-250ms per sym) instead of the poll-diffed $effect. Direction
+    // comes from tickBus (computed in symbolStore._mergeSymbolWrite where
+    // prev and next LTP are both available). Per-sym clearance timers
+    // prevent one sym's 300ms window from wiping another sym's flash.
+    _tickBusUnsub = tickBus.subscribe(({ sym, dir }) => {
+      if (dir === 'up') {
+        _ltpFlashUp = new Set([..._ltpFlashUp, sym]);
+        _ltpFlashDown = new Set([..._ltpFlashDown].filter(s => s !== sym));
+      } else if (dir === 'down') {
+        _ltpFlashDown = new Set([..._ltpFlashDown, sym]);
+        _ltpFlashUp = new Set([..._ltpFlashUp].filter(s => s !== sym));
+      }
+      // Clear existing timer for this sym (re-arm on each tick).
+      const existing = _ltpFlashTimers.get(sym);
+      if (existing) clearTimeout(existing);
+      _ltpFlashTimers.set(sym, setTimeout(() => {
+        _ltpFlashTimers.delete(sym);
+        _ltpFlashUp   = new Set([..._ltpFlashUp].filter(s => s !== sym));
+        _ltpFlashDown = new Set([..._ltpFlashDown].filter(s => s !== sym));
+      }, 300));
+    });
   });
 
   async function loadFunds() {
@@ -1970,8 +1993,27 @@
   // Slice AS audit defect: the prior single-set + amber `ltp-flash` lost
   // direction information on the product's highest-frequency cell. Pro
   // terminals (Bloomberg, IBKR) always split.
+  //
+  // TICK-BUS MIGRATION (2026-07): _ltpFlashUp/Down are now fed by the
+  // tickBus subscriber (onMount below) rather than by the $effect diff.
+  // The $effect retains the shimmer + refreshCells cascade path.
   let _ltpFlashUp   = $state(/** @type {Set<string>} */ (new Set()));
   let _ltpFlashDown = $state(/** @type {Set<string>} */ (new Set()));
+  // Per-sym clearance timers for tickBus-fed flash (avoids wiping the
+  // whole set when one symbol clears — prevents flicker when multiple
+  // symbols have staggered 300ms windows).
+  const _ltpFlashTimers = /** @type {Map<string, ReturnType<typeof setTimeout>>} */ (new Map());
+  /** @type {(() => void) | null} */
+  let _tickBusUnsub = null;
+
+  const _scheduleIdle = (cb) => {
+    if (typeof window !== 'undefined'
+        && typeof window.requestIdleCallback === 'function') {
+      window.requestIdleCallback(cb, { timeout: 500 });
+    } else {
+      setTimeout(cb, 1);
+    }
+  };
 
   $effect(() => {
     const snap = _liveLtpSnap; // reactive subscribe — re-runs on every update
@@ -1998,56 +2040,35 @@
     // forces the paint even on a saturated thread so cells don't go
     // stale during heavy tick bursts. Safari fallback: setTimeout with
     // a minimal delay so the work still yields one tick.
-    const _scheduleIdle = (cb) => {
-      if (typeof window !== 'undefined'
-          && typeof window.requestIdleCallback === 'function') {
-        window.requestIdleCallback(cb, { timeout: 500 });
-      } else {
-        setTimeout(cb, 1);
-      }
-    };
     _ltpPaintTimer = setTimeout(() => {
       _ltpPaintTimer = null;
-      // B1 — collect symbols whose value changed so the LTP cell can flash.
-      // Split by direction (up=green, down=red) — slice AS audit fix.
-      const prev = _lastPaintedSnap;
-      const cur  = _liveLtpSnap;
-      const flashedUp   = new Set(/** @type {string[]} */ ([]));
-      const flashedDown = new Set(/** @type {string[]} */ ([]));
       // Design B: freshness shimmer — collect ALL symbols that arrived in this
       // tick batch (not just those whose value changed). notifyAll fires only
       // when the tab is visible (guard is inside createFreshnessShimmer).
+      const prev = _lastPaintedSnap;
+      const cur  = _liveLtpSnap;
       const freshnessKeys = /** @type {string[]} */ ([]);
+      let hasCascade = false;
       for (const k of Object.keys(cur)) {
         const p = prev[k];
         if (p === undefined) continue;
         freshnessKeys.push(k);
         const c = cur[k];
-        if (c > p) flashedUp.add(k);
-        else if (c < p) flashedDown.add(k);
+        if (c !== p) hasCascade = true;
       }
       if (freshnessKeys.length > 0) _ltpShimmer.notifyAll(freshnessKeys);
-      if (flashedUp.size > 0 || flashedDown.size > 0) {
-        _ltpFlashUp   = flashedUp;
-        _ltpFlashDown = flashedDown;
-        setTimeout(() => {
-          _ltpFlashUp   = new Set();
-          _ltpFlashDown = new Set();
-        }, 650);
-      }
       // Capture the current snapshot at paint time (may have advanced
       // further than when the timer was scheduled).
       _lastPaintedSnap = { ..._liveLtpSnap };
       // Defer the actual ag-Grid refresh batch until the main thread
       // is idle so clicks always jump the queue. The flash class
-      // assignments above already happened synchronously — only the
-      // expensive grid work runs on idle.
+      // assignments (now driven by tickBus subscriber) already happened
+      // synchronously — only the expensive grid work runs on idle.
       // Part B cascade: when any symbol's LTP changed, also repaint
       // derived columns whose cellClass callbacks check _ltpFlashUp/Down.
       // Includes left-grid Day % (dirCellClass reads no flash, so skip)
       // and right-grid Day P&L / Day % / P&L / P&L % (pnlCellClass checks
       // both _mpFlash and the LTP flash sets).
-      const hasCascade = flashedUp.size > 0 || flashedDown.size > 0;
       _scheduleIdle(() => {
         const _ltpCols = ['ltp', 'sparkline'];
         const _cascadeCols = hasCascade
@@ -2264,6 +2285,9 @@
     // — the flush timer is cleaned up by the $effect's own teardown,
     // but the paint + prefetch timers weren't).
     if (_ltpPaintTimer) { clearTimeout(_ltpPaintTimer); _ltpPaintTimer = null; }
+    _tickBusUnsub?.();
+    for (const t of _ltpFlashTimers.values()) clearTimeout(t);
+    _ltpFlashTimers.clear();
     _ltpShimmer.dispose();
     _mpFlash.dispose();
     for (const t of _prefetchTimers) { try { clearTimeout(t); } catch { /* no-op */ } }
