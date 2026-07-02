@@ -28,6 +28,7 @@
   import { startBookChangedBus } from '$lib/data/bookChanged';
   import { startBookPollers, setBookPollerInterval } from '$lib/data/marketDataStores.svelte.js';
   import { startMarketGatedQuoteStream, stopMarketGatedQuoteStream } from '$lib/data/quoteStream';
+  import { tickBus } from '$lib/data/symbolStore.svelte.js';
   import NavigationIndicator from '$lib/NavigationIndicator.svelte';
   import BrokerHealthBadge from '$lib/BrokerHealthBadge.svelte';
 
@@ -731,6 +732,17 @@
     // Hibernation gates fire for free via `marketAwareInterval` (throttle
     // to 30 s after 5 min hidden, immediate refire on tab return).
     startBookPollers();
+    // Expose tickBus on window.__stores for Playwright specs (dev only).
+    // Lets specs call window.__stores.tickBus.emit(sym, dir) to inject
+    // synthetic ticks and assert flash class synchrony without needing
+    // a real SSE stream. Kept out of the store module so the prod bundle
+    // has no window reference from the data layer.
+    if (import.meta.env.DEV) {
+      if (typeof window !== 'undefined') {
+        /** @type {any} */ (window).__stores = /** @type {any} */ (window).__stores || {};
+        /** @type {any} */ (window).__stores.tickBus = tickBus;
+      }
+    }
     // Market-gated quote stream gate. Starts the SSE if any segment is
     // open right now; runs a 30 s visibility-aware watcher that pauses /
     // resumes the stream on open ↔ close transitions. Idempotent —
