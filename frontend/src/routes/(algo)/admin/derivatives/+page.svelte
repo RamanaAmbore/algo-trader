@@ -5332,15 +5332,18 @@
           {@const _pct  = _q && _q.day_pct != null ? Number(_q.day_pct) : null}
           {@const _expG = _byUnderlyingExp[g.underlying]}
           {@const _dayG = _byUnderlyingDay[g.underlying]}
-          <!-- Overlay-parity Day P&L values (operator 2026-07-01: "day
-               p & l should match day overlay value for each symbol in
-               snapshot"). Both cells use .with (F&O + equity holdings)
-               so they match overlay's candidatesDayPnl output for the
-               symbol — the overlay includes eq legs whenever the Hold
-               toggle is on. Falls back to broker's g.day_with when the
-               overlay compute isn't available. -->
-          {@const _dayFno = _dayG ? _dayG.with : g.day_with}
-          {@const _dayNet = _dayG ? _dayG.with : g.day_with}
+          <!-- For the SELECTED underlying, use candidatesDayPnl directly —
+               that's the SAME variable the payoff overlay renders (respects
+               the per-leg checkbox state AND the Hold toggle). Operator
+               2026-07-01: "day p & l should match day overlay value for
+               each symbol in snapshot." For OTHER rows fall back to the
+               per-root _byUnderlyingDay.with sum (no leg-checkbox filter
+               there since those legs aren't visible on the current overlay
+               to check). -->
+          {@const _dayFno = g.underlying === selectedUnderlying
+            ? candidatesDayPnl
+            : (_dayG ? _dayG.with : g.day_with)}
+          {@const _dayNet = _dayFno}
           <!-- Two independent Exp P&L values, both always visible.
                Exp P&L = F&O only (_expG.without). Exp P&L Net = F&O
                + holdings (_expG.with). -->
