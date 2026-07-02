@@ -16,6 +16,7 @@
   import { userRole, hasCap, userCaps } from '$lib/rbac';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import OrderTimelineDrawer from '$lib/order/OrderTimelineDrawer.svelte';
+  import { portal } from '$lib/portal';
   import PositionStrip from '$lib/PositionStrip.svelte';
   import ImpersonationBanner from '$lib/ImpersonationBanner.svelte';
   import AgentToast from '$lib/AgentToast.svelte';
@@ -906,9 +907,13 @@
               </svg>
             </button>
             {#if modeOpen && modeDropdownPos}
-              <div class="mode-combo-overlay" role="presentation"
+              <!-- Portalled to document.body so the dropdown escapes
+                   EVERY ancestor stacking context — z-index alone was
+                   insufficient (operator 2026-07-01: "mode dropdown is
+                   not showing over modals. double check"). -->
+              <div class="mode-combo-overlay" use:portal role="presentation"
                    onclick={() => { modeOpen = false; }}></div>
-              <ul class="mode-combo-dropdown" role="listbox"
+              <ul class="mode-combo-dropdown" use:portal role="listbox"
                   style="top:{modeDropdownPos.top}px; right:{modeDropdownPos.right}px">
                 {#each allowedModes as m}
                   <li>
@@ -1051,9 +1056,13 @@
               </svg>
             </button>
             {#if modeOpen && modeDropdownPos}
-              <div class="mode-combo-overlay" role="presentation"
+              <!-- Portalled to document.body so the dropdown escapes
+                   EVERY ancestor stacking context — z-index alone was
+                   insufficient (operator 2026-07-01: "mode dropdown is
+                   not showing over modals. double check"). -->
+              <div class="mode-combo-overlay" use:portal role="presentation"
                    onclick={() => { modeOpen = false; }}></div>
-              <ul class="mode-combo-dropdown" role="listbox"
+              <ul class="mode-combo-dropdown" use:portal role="listbox"
                   style="top:{modeDropdownPos.top}px; right:{modeDropdownPos.right}px">
                 {#each allowedModes as m}
                   <li>
