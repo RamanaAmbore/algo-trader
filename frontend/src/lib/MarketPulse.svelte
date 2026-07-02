@@ -5677,6 +5677,18 @@
     min-height: 260px;
     flex: 1 1 auto;
   }
+  /* Operator 2026-07-01: "remove the border around ag grids in pulse. it
+     is only outer border." The ag-Grid default draws a 1px --ag-border-color
+     ring around .ag-root-wrapper. Card chrome already provides visual
+     containment, so the outer ring reads as duplicate chrome. Kill it on
+     Pulse's three grid classes (bucket / summary / funds) only — other
+     surfaces (derivatives, dashboard) keep the ring. Inner row / cell
+     borders are unaffected (they come from --ag-row-border-* variables). */
+  :global(.bucket-grid .ag-root-wrapper),
+  :global(.summary-grid .ag-root-wrapper),
+  :global(.funds-grid .ag-root-wrapper) {
+    border: none !important;
+  }
   /* Collapsed card hides the grid body but keeps the header — the
      grid div stays in the DOM (so bind:this lands at mount time and
      ag-Grid can instantiate) but renders as zero-height. When the
