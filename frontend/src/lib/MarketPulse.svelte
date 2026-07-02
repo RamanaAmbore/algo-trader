@@ -1693,8 +1693,45 @@
     midcap:     'M.Cap',
     smallcap:   'S.Cap',
   });
-  let winTab  = $state(/** @type {MoverTab} */ ('underlying'));
-  let loseTab = $state(/** @type {MoverTab} */ ('underlying'));
+  // Per-tab denominator badges. Counts mirror the full pool (NOT
+  // the top-N slice) so the operator sees how many candidates
+  // exist before the cap kicks in. Declared FIRST because the
+  // effective-tab deriveds below reference them.
+  /** @param {'winners'|'losers'} direction */
+  function _tabCounts(direction) {
+    const out = { underlying: 0, large_cap: 0, midcap: 0, smallcap: 0 };
+    for (const r of mainRows) {
+      if (r._majorGroup !== 'movers') continue;
+      if (r._moverDirection !== direction) continue;
+      const g = /** @type {'underlying'|'midcap'|'smallcap'} */ (r._moverGroup);
+      if (g === 'underlying' || g === 'midcap' || g === 'smallcap') out[g]++;
+      // Large Cap is a SUBSET of underlying — counted in addition.
+      if (r._isLargeCap) out.large_cap++;
+    }
+    return out;
+  }
+  const winnerCounts = $derived(_tabCounts('winners'));
+  const loserCounts  = $derived(_tabCounts('losers'));
+
+  // null = auto-select (system picks the tab with the most rows).
+  // Once the operator clicks a tab the selection is "locked" to that tab.
+  let winTab  = $state(/** @type {MoverTab|null} */ (null));
+  let loseTab = $state(/** @type {MoverTab|null} */ (null));
+
+  /** Auto-pick the tab with the highest candidate count for a direction.
+   *  Falls back to 'underlying' when all counts are zero. */
+  function _bestTab(counts) {
+    /** @type {MoverTab} */
+    let best = 'underlying';
+    let max  = -1;
+    for (const t of MOVER_TABS) {
+      const c = counts[t] ?? 0;
+      if (c > max) { max = c; best = /** @type {MoverTab} */ (t); }
+    }
+    return best;
+  }
+  const _effWinTab  = $derived(winTab  ?? _bestTab(winnerCounts));
+  const _effLoseTab = $derived(loseTab ?? _bestTab(loserCounts));
 
   // Top-N filter for a direction × tab. All tabs draw from the
   // movers fetch (Holdings tab retired — operator's book lives
@@ -1724,27 +1761,8 @@
                     - Math.abs(Number(a.change_pct) || 0))
       .slice(0, _MOVER_TOP_N);
   }
-  const winRows  = $derived(_topRowsFor('winners', winTab));
-  const loseRows = $derived(_topRowsFor('losers',  loseTab));
-
-  // Per-tab denominator badges. Counts mirror the full pool (NOT
-  // the top-N slice) so the operator sees how many candidates
-  // exist before the cap kicks in.
-  /** @param {'winners'|'losers'} direction */
-  function _tabCounts(direction) {
-    const out = { underlying: 0, large_cap: 0, midcap: 0, smallcap: 0 };
-    for (const r of mainRows) {
-      if (r._majorGroup !== 'movers') continue;
-      if (r._moverDirection !== direction) continue;
-      const g = /** @type {'underlying'|'midcap'|'smallcap'} */ (r._moverGroup);
-      if (g === 'underlying' || g === 'midcap' || g === 'smallcap') out[g]++;
-      // Large Cap is a SUBSET of underlying — counted in addition.
-      if (r._isLargeCap) out.large_cap++;
-    }
-    return out;
-  }
-  const winnerCounts = $derived(_tabCounts('winners'));
-  const loserCounts  = $derived(_tabCounts('losers'));
+  const winRows  = $derived(_topRowsFor('winners', _effWinTab));
+  const loseRows = $derived(_topRowsFor('losers',  _effLoseTab));
 
   // TOTAL row for one major (positions / holdings). Each carries
   // summed day_pnl + pnl + cost_basis so the Day P&L % and P&L %
@@ -3163,16 +3181,15 @@
       if (row.change_pct == null) row.change_pct = q.change_pct ?? null;
     }
 
-    // 5. Movers — single-place rule. A symbol qualifies for the
-    //    Movers major ONLY if it has no existing row in any other
-    //    major. Symbols that already appear in Pinned / Watchlist /
-    //    Positions / Holdings get the mover badge stamped onto every
-    //    such row, but do NOT create an additional Movers row.
-    //
-    //    This fixes the previous "option underlyings showing in
-    //    movers" complaint — NIFTY moving 6% intraday is captured by
-    //    badging the existing positions / pinned NIFTY rows; it
-    //    doesn't surface as a fresh Movers entry.
+    // 5. Movers — every mover symbol creates exactly one Movers-major row
+    //    (keyed with the `__mov` MAJOR_SUFFIX). If the symbol ALSO exists in
+    //    Pinned / Watchlist / Positions / Holdings, those rows are additionally
+    //    badged with `src.m = true` so context chips still appear there.
+    //    The Movers-major row is always created regardless of membership in
+    //    other majors so the Winners/Losers grids always see the full mover
+    //    set. (Prior "single-place rule" suppressed the movers row when the
+    //    symbol was already in pinned/watchlist, leaving the grids empty for
+    //    any operator whose pinned list covers F&O underlyings.)
     // Build existingSymbols from ONLY currently-visible majors so the
     // mover badging logic doesn't suppress rows whose source toggle is
     // off. Without this gate, a stock in a toggled-off watchlist would
@@ -3210,9 +3227,16 @@
             row._mover_change_pct = liveChangePct ?? row._mover_change_pct ?? null;
           }
         }
-        continue;
+        // Fall through: ALSO create a dedicated Movers-major row so the
+        // Winners/Losers grids see this symbol even when it already appears
+        // in Pinned or Watchlist. The `__mov` key suffix in MAJOR_SUFFIX
+        // guarantees no collision with the pinned/watchlist row. Without
+        // this, symbols in the pinned watchlist (NIFTY, RELIANCE, …) were
+        // silently stripped from the movers grid — only obscure symbols
+        // with no watchlist membership ever appeared there.
       }
-      // Pure mover — no other major qualification. Create a Movers row.
+      // Create a Movers-major row (both pure movers AND symbols that are
+      // also in other majors get a dedicated movers row via the __mov key).
       const row = get(sym, 'movers');
       row.src.m = true;
       row.exchange      = row.exchange || m.exchange || 'NSE';
@@ -4963,8 +4987,8 @@
               <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
               <div class="mp-head-tabs">
                 <AlgoTabs
-                  tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t] }))}
-                  value={winTab}
+                  tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t], badge: winnerCounts[t] || undefined }))}
+                  value={_effWinTab}
                   onChange={(id) => { winTab = /** @type {MoverTab} */ (id); }}
                   compact={true}
                 />
@@ -4993,8 +5017,8 @@
               <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
               <div class="mp-head-tabs">
                 <AlgoTabs
-                  tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t] }))}
-                  value={loseTab}
+                  tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t], badge: loserCounts[t] || undefined }))}
+                  value={_effLoseTab}
                   onChange={(id) => { loseTab = /** @type {MoverTab} */ (id); }}
                   compact={true}
                 />
