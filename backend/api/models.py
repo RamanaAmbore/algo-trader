@@ -1646,6 +1646,17 @@ class BrokerAccount(Base):
     circuit_breaker_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # ── Display ordering (Jul 2026) ───────────────────────────────────────
+    # display_order — canonical position for UI surfaces: dropdowns,
+    #   health-badge chip popup, PerformancePage rows, dashboard tables,
+    #   order-ticket pickers. Lower = shown earlier.
+    #   Seeded at startup via _ensure_shared_broker_schema() one-shot
+    #   migration (settings marker 'migrations.display_order_seeded_v1').
+    #   Operator can adjust live via PATCH /api/admin/brokers/{id}.
+    #   Default 500 so new/unknown accounts land in the middle, not last.
+    display_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=500, server_default="500"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),
