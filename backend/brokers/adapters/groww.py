@@ -67,7 +67,7 @@ logger = get_logger(__name__)
 # Resolved once at module load — moves the SDK lookup off the hot path.
 # Empty tuples make isinstance() always False until growwapi is installed.
 
-_GROWW_RATE_LIMIT_MAX_RETRIES: int = 3
+_GROWW_RATE_LIMIT_MAX_RETRIES: int = 4
 _GROWW_RATE_LIMIT_BASE_SLEEP_S: float = 1.0
 _GROWW_RATE_LIMIT_SLEEP_CAP_S: float = 30.0
 
@@ -78,12 +78,21 @@ try:
         GrowwAPIRateLimitException,
         GrowwAPITimeoutException,
     )
+    # Split authentication (401, token bad) from authorisation (403, entitlement
+    # denied) so inline catch blocks can handle each separately without a
+    # string-name type check.
+    _GROWW_AUTHN_EXC: tuple = (GrowwAPIAuthenticationException,)
+    _GROWW_AUTHZ_EXC: tuple = (GrowwAPIAuthorisationException,)
+    # Combined tuple kept for the decorator's single re-mint branch (both
+    # 401 and 403 warrant a token refresh attempt).
     _GROWW_AUTH_EXC: tuple = (
         GrowwAPIAuthenticationException, GrowwAPIAuthorisationException,
     )
     _GROWW_RATE_EXC: tuple = (GrowwAPIRateLimitException,)
     _GROWW_TIMEOUT_EXC: tuple = (GrowwAPITimeoutException,)
 except ImportError:
+    _GROWW_AUTHN_EXC = ()
+    _GROWW_AUTHZ_EXC = ()
     _GROWW_AUTH_EXC = ()
     _GROWW_RATE_EXC = ()
     _GROWW_TIMEOUT_EXC = ()
@@ -411,19 +420,22 @@ class GrowwBroker(Broker):
         an instruments-cache lookup."""
         if not symbols:
             return {}
-        try:
-            # Split each `"NSE:RELIANCE"` into exchange + symbol; Groww
-            # wants them joined back as `"NSE_RELIANCE"`. Mixed-exchange
-            # calls need a per-segment fan-out — group by segment first.
-            by_seg: dict[str, list[str]] = {}
-            for sym in symbols:
-                if ":" not in sym:
-                    continue
-                exch, ts = sym.split(":", 1)
+        # Split each `"NSE:RELIANCE"` into exchange + symbol; Groww
+        # wants them joined back as `"NSE_RELIANCE"`. Mixed-exchange
+        # calls need a per-segment fan-out — group by segment first.
+        by_seg: dict[str, list[str]] = {}
+        for sym in symbols:
+            if ":" not in sym:
+                continue
+            exch, ts = sym.split(":", 1)
+            try:
                 _, seg = _groww_exchange_and_segment(exch)
-                by_seg.setdefault(seg, []).append(f"{exch}_{ts}")
-            out: dict[str, dict] = {}
-            for seg, keys in by_seg.items():
+            except ValueError:
+                continue
+            by_seg.setdefault(seg, []).append(f"{exch}_{ts}")
+        out: dict[str, dict] = {}
+        for seg, keys in by_seg.items():
+            try:
                 resp = self.groww.get_ltp(tuple(keys), segment=seg)
                 data = resp.get("data") if isinstance(resp, dict) else {}
                 if isinstance(data, dict):
@@ -432,34 +444,24 @@ class GrowwBroker(Broker):
                     for k, v in data.items():
                         kite_key = k.replace("_", ":", 1)
                         out[kite_key] = {"last_price": float(v or 0)}
-            return out
-        except _GROWW_AUTH_EXC as e:  # type: ignore[misc]
-            # GrowwAPIAuthorisationException here means the account
-            # lacks the segment entitlement — auth is fine. Log at INFO
-            # (not DEBUG) so operators see partial-entitlement segments,
-            # bump the counter, return empty. _retry_groww_auth has
-            # already tried a token re-mint for Authentication; if we
-            # reach here it's an Authorisation (403) — no re-mint needed.
-            if _GROWW_AUTH_EXC:
-                _is_authn = type(e).__name__ == "GrowwAPIAuthenticationException"
-            else:
-                _is_authn = False
-            if _is_authn:
+            except _GROWW_AUTHN_EXC:  # type: ignore[misc]
+                # Authentication (401) after a decorator re-mint — token
+                # is still bad. Re-raise so broker_apis records ok=False.
                 raise
-            # Authorisation (entitlement) — count and swallow.
-            logger.info(
-                f"[GROWW-ENTITLEMENT] GrowwBroker.ltp for {self.account!r}: "
-                f"Access forbidden on segments {list(by_seg.keys())}: {e}"
-            )
-            for seg in by_seg:
+            except _GROWW_AUTHZ_EXC as e:  # type: ignore[misc]
+                # Authorisation (403) = account lacks segment entitlement.
+                # Log at INFO so operators see partial-entitlement segments.
+                # Record only THIS segment — not the full by_seg set.
+                logger.info(
+                    f"[GROWW-ENTITLEMENT] GrowwBroker.ltp for {self.account!r}: "
+                    f"Access forbidden on segment={seg!r}: {e}"
+                )
                 record_entitlement_denied(self.account, seg)
-            return out  # return whatever succeeded before the exception
-        except Exception as e:
-            # Non-auth failures (network, bad response shape, etc.)
-            # are common on dev/prod when Groww is unavailable. Let the
-            # chain fall through to the next adapter (Kite) silently.
-            logger.debug(f"Groww ltp returned empty: {e}")
-            return {}
+            except Exception as e:
+                # Non-auth failures (network, bad response shape, etc.)
+                # are common on dev/prod when Groww is unavailable.
+                logger.debug(f"Groww ltp segment={seg}: {e}")
+        return out
 
     @_retry_groww_auth
     def quote(self, symbols: list[str]) -> dict:
@@ -490,15 +492,18 @@ class GrowwBroker(Broker):
             data = resp.get("data") if isinstance(resp, dict) else {}
             if isinstance(data, dict):
                 out[sym] = _normalise_quote_row(data)
-        except _GROWW_AUTH_EXC as e:  # type: ignore[misc]
-            # Authorisation (403) = partial-entitlement; log at INFO
-            # and count. Authentication (401) would have been retried
-            # by the decorator — if we land here after a re-mint it's
-            # still failing, so let it propagate for health recording.
-            if type(e).__name__ == "GrowwAPIAuthenticationException":
-                raise
+        except _GROWW_AUTHN_EXC:  # type: ignore[misc]
+            # Authentication (401) after decorator re-mint — still failing.
+            # Re-raise so broker_apis records ok=False.
+            raise
+        except _GROWW_AUTHZ_EXC as e:  # type: ignore[misc]
+            # Authorisation (403) = partial-entitlement; log at INFO and
+            # count only the specific segment that was denied.
             exch_part = sym.split(":", 1)[0] if ":" in sym else sym
-            _, seg = _groww_exchange_and_segment(exch_part) if ":" in sym else ("", exch_part)
+            try:
+                _, seg = _groww_exchange_and_segment(exch_part)
+            except ValueError:
+                seg = exch_part
             logger.info(
                 f"[GROWW-ENTITLEMENT] GrowwBroker._quote_single {sym!r} "
                 f"for {self.account!r}: Access forbidden (seg={seg}): {e}"
@@ -541,12 +546,13 @@ class GrowwBroker(Broker):
                     row = data.get(gk) or {}
                     if isinstance(row, dict):
                         out[kite_key] = _normalise_quote_row(row)
-            except _GROWW_AUTH_EXC as e:  # type: ignore[misc]
-                # Authorisation (403) = segment not entitled; log at
-                # INFO (was DEBUG). Authentication (401) after re-mint
-                # failure → raise for health recording.
-                if type(e).__name__ == "GrowwAPIAuthenticationException":
-                    raise
+            except _GROWW_AUTHN_EXC:  # type: ignore[misc]
+                # Authentication (401) after decorator re-mint — still
+                # failing. Re-raise so broker_apis records ok=False.
+                raise
+            except _GROWW_AUTHZ_EXC as e:  # type: ignore[misc]
+                # Authorisation (403) = this segment not entitled.
+                # Log at INFO and count only this segment.
                 logger.info(
                     f"[GROWW-ENTITLEMENT] GrowwBroker._quote_batch_ohlc "
                     f"for {self.account!r} segment={seg}: "
