@@ -1134,15 +1134,26 @@
   let _navLatest = $state(null);
   let _navDelta     = $state(/** @type {number|null} */ (null));
   let _navDeltaPct  = $state(/** @type {number|null} */ (null));
+  /** @type {string|null} */
+  let _navFetchError = $state(null);
   const _canViewNav = $derived(hasCap('view_nav', $userCaps, $userRole));
   async function _fetchNav() {
     if (!_canViewNav) return;
+    _navFetchError = null;
     try {
       const r = await fetchNavLatest();
       _navLatest   = r?.latest ?? null;
       _navDelta    = r?.day_delta ?? null;
       _navDeltaPct = r?.day_delta_pct ?? null;
-    } catch (_) { /* leave at last-good */ }
+    } catch (err) {
+      // Surface the error so the operator can act (check broker
+      // connections, re-run /api/nav/recompute, etc.). Leave
+      // _navLatest at last-good so the chip stays populated on
+      // transient failures.
+      _navFetchError = (err && typeof err === 'object' && 'message' in err)
+        ? String(/** @type {any} */ (err).message).slice(0, 60)
+        : 'NAV fetch failed';
+    }
   }
   // `_fmtNavInr` formatter retired — its sole caller (the dedicated
   // .dash-nav-row chip) moved into NavTab as an overlay, and NavTab
@@ -1826,6 +1837,16 @@
          Intraday + Performance panels so the operator's first glance
          on the chart card is the firm's net-liq trajectory. -->
     <div class="card-body" hidden={_chartTab !== 'nav' || _colEquityCurve}>
+      {#if _navFetchError}
+        <!-- Chip-fetch error strip — shown when /api/nav/latest fails.
+             Small banner above the chart so the curve (if available) still
+             renders and the operator has a clear Retry call-to-action. -->
+        <div class="dash-nav-err" role="alert" data-testid="dash-nav-error">
+          <span aria-hidden="true">⚠</span>
+          <span>NAV chip unavailable — {_navFetchError}</span>
+          <button class="dash-nav-retry" onclick={() => _fetchNav()}>Retry</button>
+        </div>
+      {/if}
       <NavTab
         chipLatest={_canViewNav ? _navLatest : null}
         chipDelta={_navDelta}
@@ -2949,4 +2970,41 @@
     transition: color 0.1s;
   }
   .demo-banner-close:hover { color: #c084fc; }
+
+  /* NAV chip fetch-error strip — rendered above <NavTab> when
+     /api/nav/latest returns an error. Red palette matching
+     PerformancePage .perf-banner-error. Compact (padding-light)
+     so it doesn't push the SVG chart out of view. */
+  .dash-nav-err {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.6rem;
+    margin-bottom: 0.3rem;
+    background: rgba(248, 113, 113, 0.07);
+    border: 1px solid rgba(248, 113, 113, 0.25);
+    border-radius: 4px;
+    color: #f87171;
+    font-size: 0.72rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .dash-nav-retry {
+    flex-shrink: 0;
+    padding: 0.12rem 0.5rem;
+    border-radius: 3px;
+    border: 1px solid rgba(34, 211, 238, 0.55);
+    background: rgba(34, 211, 238, 0.14);
+    color: #22d3ee;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: background 120ms, border-color 120ms;
+  }
+  .dash-nav-retry:hover {
+    background: rgba(34, 211, 238, 0.22);
+    border-color: rgba(34, 211, 238, 0.80);
+    color: #67e8f9;
+  }
 </style>
