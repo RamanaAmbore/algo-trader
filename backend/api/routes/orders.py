@@ -2542,17 +2542,28 @@ class OrdersController(Controller):
         if account not in _loaded_accounts():
             raise HTTPException(status_code=400, detail=f"Unknown account: {account}.")
 
-        # ── Fat-finger safety cap — reject F&O orders larger than 5 lots ──
-        # Operator 2026-07-01: "the code by mistake ordered 100 lots instead
-        # of 1 lot. qty vs lot issue exists in order placement. add
-        # additional guard to reject before placing any order if the lot
-        # size is more 5 before reaching broker."
+        # ── F&O order safety guards ────────────────────────────────────
+        # Operator 2026-07-01: "how do you make sure qty is not
+        # interpreted as lot in option trading. it is a huge mistake.
+        # happened multiple times."
         #
-        # Guard fires BEFORE the market-hours gate + broker dispatch. Only
-        # applies to F&O exchanges (NFO/MCX/CDS/BFO); equity qty is shares,
-        # no lot concept. lot_size == 0 (unknown) OR == 1 (share-scale)
-        # falls through — the underlying qty/lot arithmetic isn't a
-        # meaningful multiplier there.
+        # Two guards fire BEFORE the market-hours gate + broker dispatch,
+        # both applied only to F&O exchanges (NFO/MCX/CDS/BFO) where the
+        # qty↔lot confusion can flip the actual notional by 25-100×:
+        #
+        # G1 — LOT-MULTIPLE ENFORCEMENT: qty must be an exact multiple
+        # of lot_size. Catches the "operator typed 1 lot instead of
+        # 1 × lot_size contracts" and vice-versa. NIFTY lot_size=25 → qty
+        # must be 25/50/75/… Not 1, not 30.
+        #
+        # G2 — 5-LOT CAP: even valid multiples cap at 5 lots per order.
+        # Catches "100 lots instead of 1" incidents where G1 wouldn't fire
+        # because 100 × 25 = 2500 is a valid multiple.
+        #
+        # lot_size == 0 (unknown / cache miss) is treated as fail-open in
+        # G1 (skip) but is REPORTED in the response — operator sees "lot
+        # size unknown" instead of a silent slip.
+        # lot_size == 1 (equity/micro) → both guards skip.
         if data.exchange in ("NFO", "MCX", "CDS", "BFO"):
             from backend.brokers.adapters.kite import get_lot_size as _get_lot_size
             try:
@@ -2560,17 +2571,35 @@ class OrdersController(Controller):
             except Exception:
                 _lot = 0
             if _lot > 1:
-                _lots = qty / _lot
+                # G1 — multiple-of-lot enforcement.
+                if qty % _lot != 0:
+                    _guess_lots = qty / _lot
+                    logger.warning(
+                        "[LOT-MULTIPLE-GUARD] rejected: acct=%s sym=%s qty=%s "
+                        "lot_size=%s (not a multiple) — possible qty/lot confusion",
+                        account, sym, qty, _lot,
+                    )
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Refusing order — qty={qty} is not a multiple of "
+                            f"lot_size={_lot} (would be {_guess_lots:.2f} lots). "
+                            f"If you meant 1 lot, send qty={_lot}. "
+                            f"For N lots, send qty=N×{_lot}."
+                        ),
+                    )
+                # G2 — 5-lot cap.
+                _lots = qty // _lot
                 if _lots > 5:
                     logger.warning(
                         "[FAT-FINGER-GUARD] rejected: acct=%s sym=%s qty=%s "
-                        "lot_size=%s → %.1f lots (cap: 5)",
+                        "lot_size=%s → %d lots (cap: 5)",
                         account, sym, qty, _lot, _lots,
                     )
                     raise HTTPException(
                         status_code=400,
                         detail=(
-                            f"Refusing order — {_lots:.1f} lots exceeds the "
+                            f"Refusing order — {_lots} lots exceeds the "
                             f"5-lot safety cap (qty={qty}, lot_size={_lot}). "
                             "Split into ≤5-lot orders or contact ops to raise "
                             "the cap."
@@ -3918,8 +3947,9 @@ class OrdersController(Controller):
                     ))
                     continue
 
-                # Fat-finger safety cap — reject F&O legs > 5 lots (same
-                # guard as /ticket).
+                # F&O safety guards — same G1 (multiple-of-lot) + G2 (5-lot
+                # cap) as /ticket. Rejections recorded per-leg; other legs
+                # still dispatch.
                 if exch in ("NFO", "MCX", "CDS", "BFO"):
                     from backend.brokers.adapters.kite import get_lot_size as _ls_lookup
                     try:
@@ -3927,16 +3957,29 @@ class OrdersController(Controller):
                     except Exception:
                         _lot = 0
                     if _lot > 1:
-                        _lots = qty / _lot
+                        if qty % _lot != 0:
+                            _guess = qty / _lot
+                            logger.warning(
+                                "[LOT-MULTIPLE-GUARD] basket leg rejected: "
+                                "acct=%s sym=%s qty=%s lot_size=%s (not multiple)",
+                                account, sym, qty, _lot,
+                            )
+                            leg_results.append(BasketLegResult(
+                                leg_index=i, order_id=None, status="error",
+                                error=(f"qty={qty} not a multiple of lot_size={_lot} "
+                                       f"({_guess:.2f} lots) — 1 lot = qty {_lot}"),
+                            ))
+                            continue
+                        _lots = qty // _lot
                         if _lots > 5:
                             logger.warning(
                                 "[FAT-FINGER-GUARD] basket leg rejected: "
-                                "acct=%s sym=%s qty=%s lot_size=%s → %.1f lots",
+                                "acct=%s sym=%s qty=%s lot_size=%s → %d lots",
                                 account, sym, qty, _lot, _lots,
                             )
                             leg_results.append(BasketLegResult(
                                 leg_index=i, order_id=None, status="error",
-                                error=(f"{_lots:.1f} lots exceeds 5-lot safety cap "
+                                error=(f"{_lots} lots exceeds 5-lot safety cap "
                                        f"(qty={qty}, lot_size={_lot})"),
                             ))
                             continue

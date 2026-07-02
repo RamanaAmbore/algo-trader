@@ -1237,6 +1237,18 @@
     if (_lotSize > 0 && Number(_qty) % _lotSize !== 0) {
       return `Qty must be a multiple of lot ${_lotSize}`;
     }
+    // Fat-finger 5-lot cap — operator 2026-07-01: "the code by
+    // mistake ordered 100 lots instead of 1 lot. qty vs lot issue
+    // exists in order placement. add additional guard." Applies only
+    // when lot_size > 1 (F&O). Backend enforces the same limit as a
+    // defense-in-depth layer; front here shows a clear message before
+    // Submit is attempted.
+    if (_lotSize > 1) {
+      const _lotsCount = Math.floor(Number(_qty) / _lotSize);
+      if (_lotsCount > 5) {
+        return `Refusing ${_lotsCount} lots — the 5-lot safety cap prevents fat-finger errors. Reduce qty to ≤${5 * _lotSize}.`;
+      }
+    }
     if (showLimit   && !Number(_price))   return 'Limit price required';
     if (showTrigger && !Number(_trigger)) return 'Trigger price required';
     if (Number(_price) < 0)   return 'Price must be ≥ 0';
