@@ -24,6 +24,7 @@
   testable from the e2e suite without ag-Grid plumbing.
 -->
 <script>
+  import { onDestroy } from 'svelte';
   import { aggCompact } from '$lib/format';
   import { fundsStore, holdingsStore, positionsStore } from '$lib/data/marketDataStores.svelte.js';
   import { navByAccount, navTotalRow } from '$lib/data/nav';
@@ -52,7 +53,8 @@
   // Canonical account display order map — $state so _allAccounts re-derives
   // when fetchBrokerOrder() resolves after cold load.
   let _navOrderMap = $state(/** @type {Record<string,number>} */ ({}));
-  accountDisplayOrder.subscribe(m => { _navOrderMap = m; });
+  const _unsubNavOrder = accountDisplayOrder.subscribe(m => { _navOrderMap = m; });
+  onDestroy(() => { _unsubNavOrder(); });
 
   // Page-wide account union — every account with data in any of the
   // three sources. Sorted by canonical display order (Kite → DH3747 →
