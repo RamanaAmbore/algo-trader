@@ -692,7 +692,11 @@
   // poll cycle (broker fetch every 5 s) rather than on every SSE tick.
   // Key format: tradingsymbol + ':' + field (tradingsymbol is the stable
   // key for unified rows that may aggregate multiple accounts).
-  const _mpFlash = createTickFlash({ threshold: 0, durationMs: 350 });
+  // Threshold: 0.001 (not exactly 0) to prevent false flashes when the
+  // effect re-runs with identical values. With threshold=0, the guard
+  // `Math.abs(v - last) < 0` is always false — every call fires a flash
+  // even when the value didn't change. A small epsilon avoids that.
+  const _mpFlash = createTickFlash({ threshold: 0.001, durationMs: 350 });
   /** Build a `{sym: ltp}` map snapshot from symbolStore for fast cell reads.
    *
    * LTP flicker fix (Jun 2026): include only strictly-positive values.

@@ -269,9 +269,13 @@
     ['ag-right-aligned-cell', value < 0 ? 'pnl-loss' : value > 0 ? 'pnl-gain' : 'pnl-zero'];
 
   // Tick-flash — directional 350ms background pulse on numeric cells.
-  // Reuses createTickFlash verbatim. Flash fires on ACTUAL value change
-  // (threshold=0). TOTAL rows (rowPinned==='bottom') are excluded.
-  const _perfFlash = createTickFlash({ threshold: 0, durationMs: 350 });
+  // Reuses createTickFlash verbatim. TOTAL rows (rowPinned==='bottom') are excluded.
+  // Threshold: 0.001 (epsilon) to prevent false flashes when the same value
+  // arrives twice. With threshold exactly 0, the guard Math.abs(v-last) < 0
+  // is always false — even identical values would set direction to 'down'
+  // (v > last = false when v === last). A small epsilon avoids this while still
+  // catching any real numeric change (P&L values are in rupees, 0.001 = 0.1 paise).
+  const _perfFlash = createTickFlash({ threshold: 0.001, durationMs: 350 });
 
   // Stable row key: account|tradingsymbol. Matches updateGrid's key() fn.
   function _perfFlashKey(data) {
