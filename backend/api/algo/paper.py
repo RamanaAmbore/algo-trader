@@ -893,12 +893,13 @@ def get_prod_paper_engine() -> PaperTradeEngine:
     Lazily constructed PaperTradeEngine fed by LiveQuoteSource.
     Used by the mode-2 action path: every broker-hitting handler that
     isn't promoted to live writes an AlgoOrder(mode='paper') and
-    registers the order here. A background `tick_loop` runs the chase
-    against real Kite quotes.
+    registers the order here. A background `tick_loop` (scheduled in
+    on_startup on BOTH main and dev branches) runs the chase against
+    real Kite quotes.
 
-    On non-main branches this is unused — dev's paper trading is the
-    existing simulator (SimDriver owns its own engine fed by
-    SimQuoteSource).
+    Note: SimDriver owns a *separate* PaperTradeEngine instance fed by
+    SimQuoteSource for the scenario simulator (mode 1).  This singleton
+    is the real-data paper engine and is independent of branch.
     """
     global _prod_paper_engine
     if _prod_paper_engine is None:
