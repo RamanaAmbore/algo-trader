@@ -73,29 +73,35 @@
       history = Array.isArray(data?.rows) ? data.rows : [];
       if (history.length) _pulse.notify('nav');
     } catch (err) {
-      // AbortError from timeout → user-visible retry prompt.
-      // AbortError from unmount → silently swallow (component is gone).
+      // AbortError: either the 15s timeout fired, a superseding load()
+      // replaced and aborted us, or onDestroy unmounted the component.
+      // Show the retry banner ONLY when THIS call's signal is still
+      // current. If a newer load() has replaced _ac, or onDestroy nulled
+      // it, stay silent — the replacement will resolve on its own.
       if (/** @type {any} */ (err)?.name === 'AbortError') {
-        // If the component was already destroyed, the onDestroy abort
-        // fires and we don't want to flip _error on a dead instance.
-        // Check `_ac` as a proxy for "still mounted": onDestroy nulls it.
-        if (_ac) {
+        if (_ac?.signal === signal) {
           _error = 'NAV history timed out — click Retry';
         }
         return;
       }
-      // Capture the error so the operator sees it rather than a
-      // silent empty state. 401 on demo/anon: the message will read
-      // "Unauthorized" which is accurate and actionable.
-      _error = (err && typeof err === 'object' && 'message' in err)
-        ? String(/** @type {any} */ (err).message).slice(0, 80)
-        : 'Failed to load NAV history';
+      // Non-abort errors (network, 4xx/5xx): write to state only when
+      // this call is still current, preventing a stale failure from
+      // overwriting a successfully-loaded replacement.
+      if (_ac?.signal === signal || !_ac) {
+        _error = (err && typeof err === 'object' && 'message' in err)
+          ? String(/** @type {any} */ (err).message).slice(0, 80)
+          : 'Failed to load NAV history';
+      }
     } finally {
       clearTimeout(_timeout);
-      loading = false;
-      // Null _ac ONLY when this call's controller is still current.
-      // A rapid retry would have replaced _ac before we get here.
-      if (_ac?.signal === signal) _ac = null;
+      // Only flip terminal state (loading=false, _ac=null) when THIS
+      // call is still the current one. A newer load() that aborted us
+      // is now managing its own state; clearing loading here would
+      // prematurely remove the spinner for the in-flight replacement.
+      if (_ac?.signal === signal) {
+        loading = false;
+        _ac = null;
+      }
     }
   }
 
