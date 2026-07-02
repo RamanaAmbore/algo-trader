@@ -328,6 +328,36 @@ class KiteBroker(Broker):
         trigger_values: list[float],
         tag: str | None = None,
     ) -> str:
+        # LAST-LINE DEFENSE (GTT layer) — same ceiling as place_order but
+        # applied to each GTT leg. GTT legs arrive with qty already
+        # translated to lots (template_attach.apply_plan_live calls
+        # translate_qty before this). Any leg still carrying raw contracts
+        # (100 for CRUDEOIL) would be an untranslated qty leak — catch it
+        # here before it hits the exchange.
+        _exch = exchange.upper()
+        for _leg in orders:
+            _kqty = int(_leg.get("quantity") or 0)
+            if _exch in ("MCX", "NCO") and _kqty > 50:
+                logger.error(
+                    "[ADAPTER-GTT-QTY-CEILING] REFUSING GTT %s %s: leg qty=%s "
+                    "(MCX/NCO lots) > 50-lot absurd-value ceiling.",
+                    _exch, tradingsymbol, _kqty,
+                )
+                raise ValueError(
+                    f"[ADAPTER-GTT-QTY-CEILING] {_exch} GTT leg qty={_kqty} "
+                    f"exceeds 50-lot absurd-value ceiling for {tradingsymbol}. "
+                    f"Refusing at adapter layer — translate_qty must be called "
+                    f"before place_gtt on MCX/NCO."
+                )
+            if _exch in ("NFO", "CDS", "BFO") and _kqty > 50000:
+                logger.error(
+                    "[ADAPTER-GTT-QTY-CEILING] REFUSING GTT %s %s: leg qty=%s "
+                    "> 50000-contract absurd-value ceiling.", _exch, tradingsymbol, _kqty,
+                )
+                raise ValueError(
+                    f"[ADAPTER-GTT-QTY-CEILING] {_exch} GTT leg qty={_kqty} "
+                    f"exceeds 50000-contract absurd-value ceiling for {tradingsymbol}."
+                )
         # Kite's place_gtt requires every order dict to carry exchange +
         # tradingsymbol on the leg itself. Inject them so callers can
         # keep the order dict broker-agnostic (Dhan uses different keys).

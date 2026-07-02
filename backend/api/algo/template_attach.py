@@ -85,6 +85,10 @@ class TemplatePlan:
     parent_qty:         int
     parent_exchange:    str
     parent_fill_price:  float
+    # lot_size for MCX/NCO qty translation at apply time. Non-MCX = 1 (no-op).
+    # Populated in apply_template_to_order via get_lot_size() before the plan
+    # is resolved — keeps resolve_template_plan sync (pure data).
+    parent_lot_size:    int = 1
     gtts:               list[GttSpec] = field(default_factory=list)
     wing:               Optional[WingSpec] = None
     notes:              list[str] = field(default_factory=list)
@@ -100,6 +104,7 @@ class TemplatePlan:
             "parent_qty":         self.parent_qty,
             "parent_exchange":    self.parent_exchange,
             "parent_fill_price":  self.parent_fill_price,
+            "parent_lot_size":    self.parent_lot_size,
             "gtts":               [asdict(g) for g in self.gtts],
             "wing":               asdict(self.wing) if self.wing else None,
             "notes":              list(self.notes),
@@ -551,6 +556,7 @@ def resolve_template_plan(
     parent_fill_price: float,
     parent_product:    str = "NRML",
     broker_caps:       Optional[BrokerCapabilities] = None,
+    parent_lot_size:   int = 1,
 ) -> TemplatePlan:
     """Build the plan. No broker calls, no DB writes — pure data."""
 
@@ -647,6 +653,7 @@ def resolve_template_plan(
         parent_qty=parent_qty,
         parent_exchange=parent_exchange,
         parent_fill_price=float(parent_fill_price),
+        parent_lot_size=int(parent_lot_size) if parent_lot_size > 1 else 1,
     )
     # Surface the pre-plan validation notes (tp_pct/sl_pct rejected) so
     # the operator sees them in the preview chip + retry response.
@@ -967,12 +974,39 @@ def apply_plan_live(
 
     for idx, spec in enumerate(plan.gtts):
         try:
+            # MCX/NCO: translate each leg's quantity from contracts to lots
+            # before sending to the broker. plan.parent_lot_size is set in
+            # apply_template_to_order via get_lot_size() so we never need
+            # an async call here. For non-MCX, translate_qty is a no-op
+            # (returns raw_qty unchanged). Hard-fail on translation error
+            # (sub-lot or cache miss on MCX) rather than sending raw qty.
+            translated_orders: list[dict] = []
+            for leg in spec.orders:
+                raw_q = int(leg["quantity"])
+                try:
+                    kite_q = broker.translate_qty(
+                        plan.parent_exchange, raw_q, plan.parent_lot_size
+                    )
+                except (ValueError, AttributeError) as _te:
+                    raise ValueError(
+                        f"[GTT-QTY-GUARD] translate_qty failed for "
+                        f"{plan.parent_exchange}/{plan.parent_symbol} "
+                        f"qty={raw_q} lot_size={plan.parent_lot_size}: {_te}"
+                    ) from _te
+                translated_orders.append({**leg, "quantity": kite_q})
+            logger.info(
+                "[GTT-QTY] %s/%s: contract legs %s → lot legs %s (lot_size=%s)",
+                plan.parent_exchange, plan.parent_symbol,
+                [int(l["quantity"]) for l in spec.orders],
+                [int(l["quantity"]) for l in translated_orders],
+                plan.parent_lot_size,
+            )
             gtt_id = broker.place_gtt(
                 trigger_type=spec.trigger_type,
                 tradingsymbol=plan.parent_symbol,
                 exchange=plan.parent_exchange,
                 last_price=plan.parent_fill_price,
-                orders=list(spec.orders),
+                orders=translated_orders,
                 trigger_values=list(spec.trigger_values),
                 # Kite tag cap: 20 chars. Use template_id (compact int)
                 # instead of slug so the tag fits even for long slugs
@@ -996,11 +1030,24 @@ def apply_plan_live(
 
     if plan.wing is not None:
         try:
+            # Wing leg: same translate_qty guard. Wing exchange = parent_exchange
+            # (options on the same underlying share the same lot convention).
+            raw_wing_q = int(plan.wing.quantity)
+            try:
+                kite_wing_q = broker.translate_qty(
+                    plan.wing.exchange, raw_wing_q, plan.parent_lot_size
+                )
+            except (ValueError, AttributeError) as _te:
+                raise ValueError(
+                    f"[WING-QTY-GUARD] translate_qty failed for "
+                    f"{plan.wing.exchange}/{plan.wing.tradingsymbol} "
+                    f"qty={raw_wing_q} lot_size={plan.parent_lot_size}: {_te}"
+                ) from _te
             order_id = broker.place_order(
                 tradingsymbol=plan.wing.tradingsymbol,
                 exchange=plan.wing.exchange,
                 transaction_type=plan.wing.transaction_type,
-                quantity=plan.wing.quantity,
+                quantity=kite_wing_q,
                 order_type=plan.wing.order_type,
                 product=plan.wing.product,
                 variety="regular",
@@ -1221,6 +1268,68 @@ async def apply_template_to_order(
         except Exception:
             caps = None
 
+    # MCX qty translation — look up lot_size BEFORE resolving the plan so
+    # apply_plan_live has what it needs without an async call.  get_lot_size
+    # is async and we're already in async context here.  For non-MCX/NCO
+    # exchanges this is always 1 (no-op translation later).
+    parent_lot_size: int = 1
+    if parent_exchange.upper() in ("MCX", "NCO"):
+        try:
+            from backend.brokers.adapters.kite import get_lot_size
+            _ls = await get_lot_size(parent_exchange, parent_symbol)
+            if _ls > 1:
+                parent_lot_size = _ls
+            elif _ls <= 1:
+                # 0 = cache miss, 1 = equity sentinel — both are dangerous on
+                # MCX. Surface to caller as a hard failure so no untranslated
+                # qty ever reaches the broker.
+                logger.error(
+                    "[GTT-QTY-GUARD] lot_size=%s for MCX/NCO %s/%s — "
+                    "instruments cache miss or sub-lot. Refusing template attach.",
+                    _ls, parent_exchange, parent_symbol,
+                )
+                result_err = AttachResult(plan=TemplatePlan(
+                    template_id=template.get("id"),
+                    template_name=template.get("name") or "(unnamed)",
+                    template_slug=template.get("slug"),
+                    parent_account=parent_account,
+                    parent_symbol=parent_symbol,
+                    parent_side=parent_side,
+                    parent_qty=parent_qty,
+                    parent_exchange=parent_exchange,
+                    parent_fill_price=float(parent_fill_price),
+                    parent_lot_size=1,
+                ))
+                result_err.errors.append(
+                    f"[GTT-QTY-GUARD] lot_size={_ls} for "
+                    f"{parent_exchange}/{parent_symbol} — instruments cache miss. "
+                    f"Cannot safely translate qty to lots. Template attach refused."
+                )
+                return result_err
+        except Exception as _e:
+            logger.error(
+                "[GTT-QTY-GUARD] get_lot_size failed for %s/%s: %s — "
+                "refusing MCX template attach.", parent_exchange, parent_symbol, _e,
+            )
+            result_err = AttachResult(plan=TemplatePlan(
+                template_id=template.get("id"),
+                template_name=template.get("name") or "(unnamed)",
+                template_slug=template.get("slug"),
+                parent_account=parent_account,
+                parent_symbol=parent_symbol,
+                parent_side=parent_side,
+                parent_qty=parent_qty,
+                parent_exchange=parent_exchange,
+                parent_fill_price=float(parent_fill_price),
+                parent_lot_size=1,
+            ))
+            result_err.errors.append(
+                f"[GTT-QTY-GUARD] lot_size lookup failed for "
+                f"{parent_exchange}/{parent_symbol}: {_e}. "
+                f"Template attach refused to prevent MCX oversize."
+            )
+            return result_err
+
     # Phase 1B — when the template says "pick wing by premium %" AND
     # no explicit wing_strike_offset overrides it, run the chain scan
     # here (we're in async context) and feed the picked tradingsymbol
@@ -1268,6 +1377,7 @@ async def apply_template_to_order(
         parent_fill_price=parent_fill_price,
         parent_product=parent_product,
         broker_caps=caps,
+        parent_lot_size=parent_lot_size,
     )
     if wing_scan_note:
         plan.notes.append(wing_scan_note)
