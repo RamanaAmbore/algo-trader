@@ -93,6 +93,8 @@ test.describe('Code-level SSOT guards', () => {
 // ── Browser: NavStrip P pill structure ───────────────────────────────────────
 
 test.describe('NavStrip P pill — structure', () => {
+  // /pulse keeps an open SSE connection; allow 45s for loginAsAdmin + goto + element
+  test.setTimeout(45_000);
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
   });
@@ -108,7 +110,7 @@ test.describe('NavStrip P pill — structure', () => {
   });
 
   test('P pill has 3 slash-separated values on /admin/derivatives', async ({ page }) => {
-    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'domcontentloaded' });
     const strip = page.locator('.ps-strip');
     await expect(strip).toBeVisible({ timeout: TIMEOUT });
     const pPill = strip.locator('.ps-agg').first();
@@ -121,12 +123,13 @@ test.describe('NavStrip P pill — structure', () => {
 // ── Browser: Snapshot TOTAL row exists when positions present ────────────────
 
 test.describe('Snapshot TOTAL row — structure', () => {
+  test.setTimeout(45_000);
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
   });
 
   test('Snapshot TOTAL row is the last row in the byund grid when data present', async ({ page }) => {
-    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'domcontentloaded' });
     // Wait for the Snapshot card to stabilise
     const card = page.locator('.opt-byund-card');
     await expect(card).toBeVisible({ timeout: TIMEOUT });
@@ -143,7 +146,7 @@ test.describe('Snapshot TOTAL row — structure', () => {
   });
 
   test('NavStrip P and Snapshot TOTAL are both visible simultaneously on derivatives', async ({ page }) => {
-    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'domcontentloaded' });
     const strip    = page.locator('.ps-strip');
     const snapCard = page.locator('.opt-byund-card');
     await expect(strip).toBeVisible({ timeout: TIMEOUT });
@@ -158,6 +161,7 @@ test.describe('Snapshot TOTAL row — structure', () => {
 // ── Browser: mobile viewport — P pill fits ───────────────────────────────────
 
 test.describe('NavStrip P pill — mobile viewport', () => {
+  test.setTimeout(45_000);
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await loginAsAdmin(page);
