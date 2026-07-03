@@ -124,9 +124,11 @@ test.describe('algo consistency — SSOT stale-code guard', () => {
  *
  * Asserts that the 5 Phase-1 migration target files:
  *   1. Contain NO raw palette hex literals from the migrated set.
- *   2. Each use var(--algo-*) at least as many times as the migration
+ *   2. Each use var(--c-*) at least as many times as the migration
  *      delivered (floor counts; the guard is a regression fence, not
- *      an exact snapshot).
+ *      an exact snapshot). Only the semantic --c-* layer is checked —
+ *      residual var(--algo-sky-*) / border / bg variants have no --c-*
+ *      equivalent and are intentionally excluded from the floor.
  *
  * "Near-match" rgba values that were intentionally left raw (each
  * appearing <3× with a non-standard alpha) are NOT listed here —
@@ -151,12 +153,14 @@ const BANNED_HEX = [
   '#7e97b8',
 ];
 
-/** Minimum var(--algo-*) + var(--c-*) token call count per file. */
+/** Minimum var(--c-*) semantic token call count per file.
+ *  Set at ~90% of the actual post-migration count so minor
+ *  future refactors don't spuriously trip the guard. */
 const TOKEN_FLOOR = {
-  'MarketPulse.svelte':  40,
-  'PerformancePage.svelte': 10,
-  '+page.svelte (dashboard)': 55,
-  '+page.svelte (derivatives)': 120,
+  'MarketPulse.svelte':  32,
+  'PerformancePage.svelte': 7,
+  '+page.svelte (dashboard)': 34,
+  '+page.svelte (derivatives)': 68,
   'NavCard.svelte': 1,
 };
 
@@ -176,18 +180,20 @@ test.describe('algo consistency — Phase 1 palette migration guard', () => {
       }
     }
     expect(offenders,
-      `Palette hex literals must use var(--algo-*) tokens. Regression in:\n${offenders.join('\n')}`
+      `Palette hex literals must use var(--c-*) semantic tokens. Regression in:\n${offenders.join('\n')}`
     ).toEqual([]);
   });
 
-  test('Phase-1 files meet minimum --algo-* token usage floors', () => {
+  test('Phase-1 files meet minimum --c-* semantic token usage floors', () => {
     const failures = [];
     for (const rel of PHASE1_FILES) {
       const abs = path.join(process.cwd(), rel);
       let src;
       try { src = fs.readFileSync(abs, 'utf-8'); } catch { continue; }
-      // Count all var(--algo-*) + var(--c-*) occurrences
-      const matches = (src.match(/var\(--(?:algo|c)-/g) || []).length;
+      // Count ONLY var(--c-*) occurrences — the semantic alias layer.
+      // var(--algo-*) usages that have no --c-* equivalent (sky, violet,
+      // border, bg variants) are intentionally excluded from this floor.
+      const matches = (src.match(/var\(--c-/g) || []).length;
       // Identify the floor entry by filename
       const key = rel.includes('dashboard')
         ? '+page.svelte (dashboard)'
@@ -196,20 +202,22 @@ test.describe('algo consistency — Phase 1 palette migration guard', () => {
           : path.basename(rel);
       const floor = TOKEN_FLOOR[key] ?? 1;
       if (matches < floor) {
-        failures.push(`${key}: ${matches} token usages (floor ${floor}) — possible regression`);
+        failures.push(`${key}: ${matches} --c-* usages (floor ${floor}) — semantic layer not applied`);
       }
     }
     expect(failures,
-      `Token usage below floor — files may have regressed:\n${failures.join('\n')}`
+      `--c-* semantic token usage below floor — Commit 8 migration may not have landed:\n${failures.join('\n')}`
     ).toEqual([]);
   });
 
   test('app.css defines the 15 --c-* semantic alias tokens', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src/app.css'), 'utf-8');
+    // Alpha suffixes match actual alpha values: green/red use 0.06/0.10;
+    // cyan uses 0.08/0.14.
     const required = [
       '--c-long', '--c-short', '--c-info', '--c-action', '--c-muted',
-      '--c-long-08', '--c-long-14', '--c-long-22',
-      '--c-short-08', '--c-short-14', '--c-short-22',
+      '--c-long-06', '--c-long-10', '--c-long-22',
+      '--c-short-06', '--c-short-10', '--c-short-22',
       '--c-info-08', '--c-info-14', '--c-info-22',
       '--c-action-14', '--c-action-22',
     ];
