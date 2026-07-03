@@ -1924,7 +1924,7 @@
        onclick={(e) => e.stopPropagation()}>
     <div class="ot-header">
       <div class="ot-symbol">
-        <span class="ot-symbol-text"><LegLabel sym={symbol} /></span>
+        <span class="ot-symbol-text"><LegLabel sym={symbol} exchange={exchange || ''} /></span>
         <span class="ot-symbol-meta">
           {exchange ? exchange + ' · ' : ''}
           {kind}{_lotSize ? ' · lot ' + _lotSize : ''}

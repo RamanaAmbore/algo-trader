@@ -544,99 +544,40 @@ def _build_mcx_universe(
 
 async def _resolve_mcx_commodity(commodity_name: str) -> Optional[str]:
     """Map a bare MCX commodity name (e.g. 'GOLD') to the nearest-month
-    future tradingsymbol. Reads the shared instruments cache (24h TTL,
-    warmed at startup + 08:00 IST). Returns None when no MCX FUT is
-    found for that commodity (cache cold or broker fetch failed).
+    future tradingsymbol.
 
-    On the expiry date itself, the expiring contract is skipped (its
-    quote is the settlement price, not a tradable spot). Matches
-    ``lookup_mcx_front_month_future`` which uses the same
-    ``inst.x > today_iso (IST)`` rule. Falls back to the most-recent
-    listed contract only when the instruments cache hasn't yet included
-    the next-month contract (rare; cache warmed at startup + 08:00 IST).
+    Delegates to the canonical resolver in ``symbol_resolver.py``.
+    Falls back to the most-recently listed (highest expiry) contract on
+    instruments-cache lag (so the caller gets a non-None symbol rather than
+    a silent row drop).
     """
-    from backend.api.cache import get_or_fetch
-    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
-    from datetime import datetime as _dt
-    try:
-        resp = await get_or_fetch("instruments", _fetch_instruments,
-                                   ttl_seconds=_TTL_SECONDS)
-        items = resp.items if resp else []
-    except Exception:
-        items = []
-    if not items:
-        return None
-    try:
-        from zoneinfo import ZoneInfo
-        _today_iso = _dt.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
-    except Exception:
-        _today_iso = _dt.utcnow().date().isoformat()
-    target_u = commodity_name.upper()
-    candidates = [
-        inst for inst in items
-        if (inst.e == "MCX"
-            and inst.t == "FUT"
-            and (inst.u or "").upper() == target_u
-            and inst.x)
-    ]
-    if not candidates:
-        return None
-    # Earliest expiry first — that's the near-month future.
-    candidates.sort(key=lambda i: i.x or "")
-    # Skip any contract whose expiry is on or before today IST — it is
-    # settling today and its quote is the settlement price, not a live spot.
-    for inst in candidates:
-        if inst.x > _today_iso:
-            return inst.s
-    # All listed contracts expired (instruments cache lag) — return the
-    # last known contract so callers get a non-None symbol rather than
-    # silently dropping the row. The stale quote is better than no quote.
-    return candidates[-1].s
+    from backend.api.algo.symbol_resolver import (
+        list_active_futures, _list_all_futures_fallback,
+    )
+    futures = await list_active_futures(commodity_name, "MCX", limit=1)
+    if futures:
+        return futures[0]
+    # Cache lag: fetch all listed contracts (including expiring-today) and
+    # return the LAST one (highest expiry) — same semantic as original logic.
+    fallback = await _list_all_futures_fallback(commodity_name, "MCX", limit=100)
+    return fallback[-1] if fallback else None
 
 
 async def _resolve_cds_currency(currency_name: str) -> Optional[str]:
     """Map a bare CDS currency pair name (e.g. 'USDINR') to the nearest-month
-    future tradingsymbol. Mirrors _resolve_mcx_commodity for the CDS exchange.
-    Returns None when no CDS FUT is found (cache cold or broker fetch failed).
+    future tradingsymbol.
 
-    On the expiry date itself the expiring contract is skipped — the CDS
-    segment closes at 17:00 IST and the settlement price is not a tradable
-    spot. Uses the same ``inst.x > today_iso (IST)`` rule as the MCX path.
+    Delegates to the canonical resolver in ``symbol_resolver.py``.
+    Falls back to the most-recently listed contract on instruments-cache lag.
     """
-    from backend.api.cache import get_or_fetch
-    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
-    from datetime import datetime as _dt
-    try:
-        resp = await get_or_fetch("instruments", _fetch_instruments,
-                                   ttl_seconds=_TTL_SECONDS)
-        items = resp.items if resp else []
-    except Exception:
-        items = []
-    if not items:
-        return None
-    try:
-        from zoneinfo import ZoneInfo
-        _today_iso = _dt.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
-    except Exception:
-        _today_iso = _dt.utcnow().date().isoformat()
-    target_u = currency_name.upper()
-    candidates = [
-        inst for inst in items
-        if (inst.e == "CDS"
-            and inst.t == "FUT"
-            and (inst.u or "").upper() == target_u
-            and inst.x)
-    ]
-    if not candidates:
-        return None
-    # Earliest expiry first — that's the near-month future.
-    candidates.sort(key=lambda i: i.x or "")
-    # Skip contracts whose expiry is on or before today IST.
-    for inst in candidates:
-        if inst.x > _today_iso:
-            return inst.s
-    # Instruments cache lag fallback — return latest known contract.
-    return candidates[-1].s
+    from backend.api.algo.symbol_resolver import (
+        list_active_futures, _list_all_futures_fallback,
+    )
+    futures = await list_active_futures(currency_name, "CDS", limit=1)
+    if futures:
+        return futures[0]
+    fallback = await _list_all_futures_fallback(currency_name, "CDS", limit=100)
+    return fallback[-1] if fallback else None
 
 
 async def _build_quote_key(item: WatchlistItem) -> tuple[str, str]:

@@ -30,6 +30,7 @@
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
+  import { rootOfLabel } from '$lib/data/rootOf.js';
 
   // Module-scope cache for hyphenated symbol display. The cellRenderer
   // re-runs for every row × redraw; parsing each symbol once per session
@@ -38,13 +39,33 @@
   // pins the cold-cache form (no expiry day) and never picks up the
   // per-symbol day once the dump loads.
   const _pulseSymFmtCache = new Map();
-  function _pulseFmtSym(/** @type {string} */ s) {
+  /**
+   * Format a symbol for the Pulse cell renderer.
+   * For MCX/CDS futures the virtual root label is shown (e.g. "CRUDEOIL",
+   * "CRUDEOIL • NEXT") instead of the raw contract name.
+   * All other symbols go through the Dhan-style hyphenated formatter.
+   *
+   * @param {string} s         tradingsymbol
+   * @param {string} [exch]    exchange (MCX / CDS / …)
+   */
+  function _pulseFmtSym(s, exch = '') {
     if (!s) return '';
+    const cacheKey = `${s}|${exch}`;
     if (_pulseSymFmtCache.size > 600) _pulseSymFmtCache.clear();
-    let v = _pulseSymFmtCache.get(s);
+    let v = _pulseSymFmtCache.get(cacheKey);
     if (v === undefined) {
-      v = formatSymbol(s);
-      _pulseSymFmtCache.set(s, v);
+      const eUp = (exch || '').toUpperCase();
+      if (eUp === 'MCX' || eUp === 'CDS') {
+        // Returns "CRUDEOIL", "CRUDEOIL • NEXT", or raw contract for far-month
+        const rl = rootOfLabel(s, eUp);
+        // Only use virtual label when it differs from the raw contract.
+        // If rootOfLabel returns the raw contract (far-month), fall through
+        // to the hyphenated format so the expiry is still visible.
+        v = rl !== s ? rl : formatSymbol(s);
+      } else {
+        v = formatSymbol(s);
+      }
+      _pulseSymFmtCache.set(cacheKey, v);
     }
     return v;
   }
@@ -3764,11 +3785,11 @@
     // those bypass the formatter.
     const main    = opAlias
                     || row.alias
-                    || _pulseFmtSym(row.tradingsymbol || '');
+                    || _pulseFmtSym(row.tradingsymbol || '', row.exchange || '');
     // Always surface the raw tradingsymbol after the main when an alias
     // is in play so the operator can still see what the row really is.
     const aliasTail = (opAlias || row.alias)
-      ? `<span class="sym-alias" title="Tradingsymbol"> → ${_pulseFmtSym(row.tradingsymbol || '')}</span>`
+      ? `<span class="sym-alias" title="Tradingsymbol"> → ${_pulseFmtSym(row.tradingsymbol || '', row.exchange || '')}</span>`
       : '';
     // CE / PE tint on the symbol text — Sensibull / Streak convention.
     // Green = Call (right to BUY the underlying), red = Put (right to

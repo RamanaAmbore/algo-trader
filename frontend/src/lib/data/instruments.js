@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import { _setExpiryLookup } from './decomposeSymbol.js';
+import { seedRootMapFromInstruments } from './rootOf.js';
 
 /**
  * Reactive signal bumped once each time `_buildIndexes` finishes — i.e.
@@ -150,6 +151,9 @@ function _buildIndexes(items) {
     const inst = _byTradingsymbol?.get(String(sym || '').toUpperCase());
     return inst?.x || null;
   });
+  // Seed the virtual-root resolution map so rootOf() / rootOfLabel()
+  // can map MCX/CDS front/back-month contracts to their virtual roots.
+  seedRootMapFromInstruments(items);
   // Bump the cache-ready signal so subscribed `$derived` blocks re-fire
   // and pick up the now-available expiry / lot-size / exchange data.
   instrumentsCacheVersion.update((n) => n + 1);

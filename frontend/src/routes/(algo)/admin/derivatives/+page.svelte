@@ -42,6 +42,7 @@
   import { expiryPnl } from '$lib/data/expiryPnl';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
+  import { rootOfLabel } from '$lib/data/rootOf.js';
   import { acctColor } from '$lib/account';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact, fmtPctFraction } from '$lib/format';
@@ -4887,7 +4888,7 @@
                 use:longPress={(ev) => {
                   _ctxMenu = { symbol: c.symbol, exchange: c.exchange || 'NFO', x: ev.clientX, y: ev.clientY };
                 }}>
-                <span class="sym-main {_optClass}">{formatSymbol(c.symbol)}</span>
+                <span class="sym-main {_optClass}">{(() => { const rl = rootOfLabel(c.symbol, c.exchange || ''); return rl !== c.symbol ? rl : formatSymbol(c.symbol); })()}</span>
                 {#if c.kind === 'eq'}
                   <!-- Equity-holding leg tag — operator scanning the
                        Candidates panel sees at a glance which row is
