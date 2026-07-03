@@ -2451,7 +2451,14 @@
       const ep = _expiryPnl(c, spot);
       if (ep != null && isFinite(ep)) return ep;
     }
-    return Number(c?.day_change_val ?? 0);
+    let day = Number(c?.day_change_val ?? 0);
+    // New-position override: overnight_quantity=0 means the position was
+    // opened today, so day P&L equals total P&L (no prior-close reference).
+    // Mirrors _byUnderlyingTotals's override (operator 2026-07-01).
+    const oq = Number(c?.overnight_quantity ?? 0);
+    const pnl = Number(c?.pnl ?? 0);
+    if (oq === 0 && pnl !== 0) day = pnl;
+    return day;
   }
 
   /** @param {any} c - candidate row

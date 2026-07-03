@@ -1,13 +1,8 @@
 // chartRefreshPulse — "data just landed" visual cue for chart containers.
 //
-// Two-layer effect:
-//   Layer 1 — wrapper div gets a CSS class that fires a cyan bg keyframe
-//              (rgba(125,211,252,0.10) → transparent over 300ms). Applied
-//              to the chart's outer HTML wrapper so the pulse reads at the
-//              card's padding edges.
-//   Layer 2 — SVG paths carrying class="data-path" flash via
-//              .cp-pulse-a/.cp-pulse-b > svg path.data-path selector
-//              (opacity 0.85 → 1.0 over 200ms).
+// Wrapper div gets a CSS class that fires a cyan bg keyframe
+// (rgba(125,211,252,0.10) → transparent over 300ms). Applied to the chart's
+// outer HTML wrapper so the pulse reads at the card's padding edges.
 //
 // CSS is global (lives in app.css) so it reaches inside Svelte scoped DOM
 // without :global() wrappers. This file only manages class-name state.
