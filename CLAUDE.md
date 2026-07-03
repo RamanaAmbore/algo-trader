@@ -1105,6 +1105,88 @@ tens of ms of work before its first await.
 
 ---
 
+## Performance measurement
+
+Four-tool scaffold for iterative perf work — capture a snapshot, ship a change, capture again, diff. Every result is a JSON file in `.log/`; nothing writes to DB or config.
+
+**Tools**:
+
+| Tool | Kind | Output |
+|---|---|---|
+| `scripts/perf_baseline.py` | Static grep — LOC, `$effect` / `$state` / `$derived` / `.subscribe(` counts per page + `async def` counts per backend route + optional bundle size | `.log/perf_baseline_<utc>.json` + `perf_baseline_latest.json` symlink |
+| `frontend/e2e/perf_capture.spec.js` | Playwright — LCP, DOMContent, load, long-task Σ + max, JS heap, /ws/* opens, RefreshButton click-to-feedback per page | `.log/perf_capture_<utc>.json` + `perf_capture_latest.json` symlink |
+| `backend/api/middleware/perf_stats.py` | Opt-in ASGI middleware (RAMBOQ_PERF_STATS=1) — count / p50 / p95 / p99 / queries_avg per normalised route | `.log/perf_stats.json` (5-min flush + shutdown) |
+| `scripts/perf_diff.py` | Prints per-page + per-route delta table; flags >5% regression in red; writes plain-text copy to `.log/perf_diff_<from>_<to>.txt` | stdout + `.log/` file |
+
+**Baseline schema** (single JSON per snapshot; capture and static tools write the same shape so diff merges both):
+
+```json
+{
+  "captured_at": "2026-07-03T03:57:26Z",
+  "commit":      "5b841d2f",
+  "frontend": {
+    "pages": {
+      "/pulse": {
+        "file":             "frontend/src/lib/MarketPulse.svelte",
+        "loc":              6465,
+        "effect_count":     53,
+        "state_count":      109,
+        "derived_count":    69,
+        "subscribe_count":  4,
+        "runtime": {                    // only present after perf_capture
+          "lcp_ms":         840,
+          "load_ms":        1240,
+          "heap_mb":        44.2,
+          "long_task_ms":   120,
+          "ws_connections": 2,
+          "refresh_click_ms": 260
+        }
+      }, ...
+    },
+    "bundle_size_kb": 1234
+  },
+  "backend": {
+    "routes": {
+      "GET /api/positions": { "file": "...", "loc": 890, "async_fn_count": 12 }, ...
+    }
+  }
+}
+```
+
+**Canonical workflow** (agent prompts should embed this):
+
+```sh
+# 1) Snapshot before the change
+./venv/bin/python scripts/perf_baseline.py --no-build
+
+# 2) Ship changes …
+
+# 3) Snapshot again on the new HEAD
+./venv/bin/python scripts/perf_baseline.py --no-build
+
+# 4) Diff (defaults pick the two newest baselines)
+./venv/bin/python scripts/perf_diff.py
+```
+
+Runtime capture is a separate lane (needs a running dev API + Playwright):
+
+```sh
+PLAYWRIGHT_BASE_URL=https://dev.ramboq.com \
+  npx playwright test e2e/perf_capture.spec.js \
+  --project=chromium-desktop --workers=1
+```
+
+Enable per-route latency capture for a diagnostic session:
+
+```sh
+RAMBOQ_PERF_STATS=1 ./venv/bin/uvicorn backend.api.app:app --workers 1
+# poke the API for 5-10 min, then read .log/perf_stats.json
+```
+
+**Zero prod cost** — perf_stats middleware is not registered when the flag is off. Baseline + capture are external — nothing runs inside the API process. Diff is a pure JSON reader.
+
+---
+
 ## Visibility-aware polling (Option A, Jun 2026)
 
 **Design (operator-approved)**: ALL pollers + visual updates stop when
