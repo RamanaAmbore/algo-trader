@@ -45,10 +45,13 @@ test('pulseColumns.js: mkResolveCellLtp probes quote_symbol before tradingsymbol
   const fnEnd = src.indexOf('\n}', idx);
   const fn = src.slice(idx, fnEnd + 2);
   expect(fn).toContain('quote_symbol');
-  // quote_symbol probe must come BEFORE tradingsymbol probe in the function.
-  const qsIdx = fn.indexOf('quote_symbol');
-  const tsIdx = fn.indexOf('tradingsymbol');
-  expect(qsIdx).toBeLessThan(tsIdx);
+  // The p.data.quote_symbol code line must appear before the
+  // p.data.tradingsymbol code line (comments may mention either in any order).
+  const qsCodeIdx = fn.indexOf('p.data.quote_symbol');
+  const tsCodeIdx = fn.indexOf('p.data.tradingsymbol');
+  expect(qsCodeIdx).toBeGreaterThan(0);
+  expect(tsCodeIdx).toBeGreaterThan(0);
+  expect(qsCodeIdx).toBeLessThan(tsCodeIdx);
 });
 
 // STALE CODE check — _publishMoverRows must write quote_symbol key.
