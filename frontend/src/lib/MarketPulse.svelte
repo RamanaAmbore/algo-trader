@@ -5954,7 +5954,7 @@
     flex-direction: column;
     min-width: 0;
     border: 1.5px solid rgba(255, 255, 255, 0.10);
-    border-radius: 4px;
+    border-radius: 6px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
                 inset 0 1px 0 rgba(255, 255, 255, 0.08);
     background: var(--card-bg-elevated);
