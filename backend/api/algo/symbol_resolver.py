@@ -306,3 +306,125 @@ async def root_of(contract: str, exchange: str) -> str:
         return f"{root}_NEXT"
     # Far-month or unknown — return raw contract
     return contract
+
+
+# ---------------------------------------------------------------------------
+# Batch resolver: resolve_market_data_keys
+# ---------------------------------------------------------------------------
+
+class MarketDataKeyMap:
+    """Return value from ``resolve_market_data_keys``.
+
+    Attributes
+    ----------
+    broker_keys : list[str]
+        Resolved broker keys in ``EXCHANGE:TRADINGSYMBOL`` format — safe to
+        pass directly to ``broker.quote()`` or ``broker.ltp()``.
+    input_to_broker : dict[str, str]
+        Maps each original input key (e.g. ``"MCX:CRUDEOIL"``) to its
+        resolved broker key (e.g. ``"MCX:CRUDEOILM26JULFUT"``).
+        Identity entries are included for non-virtual symbols so callers can
+        always look up any input key without a special-case branch.
+    broker_to_input : dict[str, str]
+        Reverse map — resolved broker key → original input key.  Used to
+        re-key broker response rows back to operator-facing symbols.
+    """
+
+    __slots__ = ("broker_keys", "input_to_broker", "broker_to_input")
+
+    def __init__(
+        self,
+        broker_keys: list[str],
+        input_to_broker: dict[str, str],
+        broker_to_input: dict[str, str],
+    ) -> None:
+        self.broker_keys = broker_keys
+        self.input_to_broker = input_to_broker
+        self.broker_to_input = broker_to_input
+
+
+async def resolve_market_data_keys(keys: list[str]) -> "MarketDataKeyMap":
+    """Resolve a list of ``EXCHANGE:TRADINGSYMBOL`` broker keys, replacing
+    virtual MCX/CDS root symbols with their front-month futures contracts.
+
+    Virtual roots (bare alpha symbols on MCX/CDS) are not tradable
+    instruments — ``broker.quote("MCX:CRUDEOIL")`` returns nothing.
+    This helper maps them to the real contract (e.g.
+    ``"MCX:CRUDEOILM26JULFUT"``) before the broker call, then lets
+    callers re-key the broker response back to the original operator-facing
+    symbol via the returned maps.
+
+    Non-virtual keys (equities, real contracts, indices) are passed through
+    unchanged — an identity mapping is still included so callers can use
+    ``broker_to_input`` for every key without a special-case branch.
+
+    Resolution failures (instruments cache cold, network timeout) return an
+    identity mapping for the affected key so the call proceeds; the broker
+    will return empty data for that key which the caller already handles.
+
+    Parameters
+    ----------
+    keys : list[str]
+        Input broker keys in ``EXCHANGE:TRADINGSYMBOL`` format.
+        Keys without a ``:`` separator are passed through unchanged.
+
+    Returns
+    -------
+    MarketDataKeyMap
+        ``.broker_keys`` — deduplicated resolved keys for the broker call.
+        ``.input_to_broker`` — original key → resolved key.
+        ``.broker_to_input`` — resolved key → original key (last-wins on
+        duplicate broker keys, which can't happen because two distinct
+        original inputs never resolve to the same contract).
+
+    Log tag
+    -------
+    ``[MARKET-DATA-VIRTUAL-RESOLVE]`` — emitted once per resolved key so
+    the operator can grep for resolution events.
+    """
+    input_to_broker: dict[str, str] = {}
+    broker_to_input: dict[str, str] = {}
+
+    for key in keys:
+        if ":" not in key:
+            # Malformed — pass through; broker will ignore or error.
+            input_to_broker[key] = key
+            broker_to_input[key] = key
+            continue
+
+        exch, sym = key.split(":", 1)
+        exch_upper = exch.upper()
+
+        if exch_upper in _VIRTUAL_EXCHANGES and _is_virtual(sym):
+            try:
+                resolved_sym = await resolve_symbol(sym, exch_upper)
+            except Exception:
+                resolved_sym = sym
+
+            resolved_key = f"{exch_upper}:{resolved_sym}"
+
+            if resolved_sym != sym:
+                logger.info(
+                    f"[MARKET-DATA-VIRTUAL-RESOLVE] input={sym} "
+                    f"exchange={exch_upper} resolved={resolved_sym}"
+                )
+        else:
+            # Non-virtual: identity mapping.
+            resolved_key = f"{exch_upper}:{sym.upper()}"
+
+        input_to_broker[key] = resolved_key
+        broker_to_input[resolved_key] = key
+
+    # Deduplicated broker keys (preserves original insertion order).
+    seen: set[str] = set()
+    broker_keys: list[str] = []
+    for bk in input_to_broker.values():
+        if bk not in seen:
+            seen.add(bk)
+            broker_keys.append(bk)
+
+    return MarketDataKeyMap(
+        broker_keys=broker_keys,
+        input_to_broker=input_to_broker,
+        broker_to_input=broker_to_input,
+    )
