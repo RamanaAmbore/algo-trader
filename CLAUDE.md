@@ -206,17 +206,36 @@ via `market_lifecycle.register(event, callback)`.
 |---|---|
 | `<exch>:open` | At session open (calendar-aware, holiday-gated via `fetch_holidays`) |
 | `<exch>:close` | At session close |
-| `<exch>:close_settled` | 45 min AFTER `<exch>:close` — operator-tunable via `market_lifecycle.settled_offset_min`. Captures broker's adjusted close_price (Kite weighted-avg-last-30-min) which lands late. |
+| `<exch>:close_settled` | 15 min AFTER `<exch>:close` — operator-tunable via `market_lifecycle.settled_offset_min`. Captures broker's adjusted close_price (Kite weighted-avg-last-30-min) which lands within ~10-15 min of session close. Before firing, the lifecycle re-probes `is_market_open` for the exchange; if the exchange has reopened (evening session on a holiday, MCX-style), the settled event is skipped to avoid capturing mid-session LTPs as "settled close" values. |
 
 **Default handlers** (`backend/api/algo/market_lifecycle_handlers.py`):
-- `nse:close` + `nse:close_settled` → `snapshot_daily_book()` + NAV snapshot
-- `mcx:close` + `mcx:close_settled` → `snapshot_daily_book()`
-- `cds:close` + `cds:close_settled` → `snapshot_daily_book()`
+- `nse:close` + `nse:close_settled` → `snapshot_daily_book(settled=…)` + `snapshot_sparkline(settled=…)` + NAV snapshot
+- `mcx:close` + `mcx:close_settled` → `snapshot_daily_book(settled=…)` + `snapshot_sparkline(settled=…)`
+- `cds:close` + `cds:close_settled` → `snapshot_daily_book(settled=…)` + `snapshot_sparkline(settled=…)`
 
 Snapshot is idempotent via UPSERT on `(date, account, kind, symbol)`,
 so `close_settled` overwrites the initial rows with the adjusted broker
-values. Audit rows persisted to `market_lifecycle_events` (indexed on
-fired_at + (exchange, event_type, fired_at)).
+values. The `settled` flag (False on `<exch>:close`, True on
+`<exch>:close_settled`) lands in `daily_book.payload_json.snapshot_extras.settled`
+so downstream readers can distinguish the initial close capture from the
+settled follow-up. Audit rows persisted to `market_lifecycle_events`
+(indexed on fired_at + (exchange, event_type, fired_at)).
+
+**Snapshot payload extras** — `daily_book.payload_json` now embeds a
+`snapshot_extras` block per positions/holdings row: `open`, `high`,
+`low`, `close_settled`, `prev_close`, `volume`, `oi`, `day_change_val`,
+`day_change_pct`, `ltp`, `settled`. Extracted by
+`_extract_snapshot_extras` (single helper shared by holdings + positions
+row builders in `daily_snapshot.py`). Legacy top-level Kite fields
+preserved for readers that pre-date the extras block.
+
+**Sparkline snapshot** — `snapshot_sparkline()` persists per-symbol
+5-day close-bar series into `daily_book` with `kind='sparkline'`,
+`account='__firm__'`. Payload
+`{"points": [{"t", "ltp"}], "settled": <bool>, "captured_at": <iso>}`.
+Universe = watchlists + latest open positions/holdings, capped at 500
+symbols; source bars from `ohlcv_store`. Frontend cell renderer reads
+this row when `is_animating === false`.
 
 **Frontend gating** — `marketOpenInterval(fn, ms, 'NSE'|'MCX'|null)` in
 `stores.js` is the per-exchange equivalent of `marketAwareInterval`.
@@ -296,11 +315,14 @@ clicks so cash/margins/holdings-metadata refresh from the broker while
 LTPs stay frozen at the snapshot value.
 
 *Snapshot lifecycle* — `<exch>:close` writes first-cut daily_book row
-with live LTP; `<exch>:close_settled` UPSERTs 45 min later with broker's
+with live LTP; `<exch>:close_settled` UPSERTs 15 min later with broker's
 weighted-avg-last-30-min close_price. Both events share the same
 `_snapshot_close` handler → the second call is idempotent overwrite.
-Mid-session daily_book rows carry `ltp=None` so the row-overlay skips
-them (`ltp IS NOT NULL AND ltp > 0` gate in `latest_snapshot_ltp_map`).
+The handler also fires `snapshot_sparkline()` on each event so the
+frontend cell renderer has a durable close-bar series to draw when
+`is_animating === false`. Mid-session daily_book rows carry `ltp=None`
+so the row-overlay skips them (`ltp IS NOT NULL AND ltp > 0` gate in
+`latest_snapshot_ltp_map`).
 
 **Sparkline cache** — `_spark_past_cache` (past closes) + `_spark_today_cache` (intraday 30m, 5min TTL) + LTP at response time. Disk-persisted to `.log/sparkline_cache.json` (throttled 5s writes, atomic).
 
@@ -451,7 +473,15 @@ TTL window. `?fresh=1` and terminal-order postbacks (Kite + Dhan/Groww shared pa
 still memoises the FORMATTED `msgspec.Struct` response — both layers cooperate. Single
 canonical layer eliminates the 4× broker fan-out and the NavCard-vs-/performance drift.
 
-**Holiday calendar**: `fetch_holidays(exchange)` cached per `(exchange, today's date)` in `_HOLIDAY_CACHE` module dict. Buster = date rollover. Empty sets also cached (avoid retry-storm on API failure).
+**Holiday calendar** — four-tier read in `fetch_holidays(exchange)`:
+1. `holidays_store._MEM_CACHE` (in-process LRU, year-scoped).
+2. Module-level `_HOLIDAY_CACHE` (daily TTL, sync fallback).
+3. **`market_holidays` PostgreSQL table** — durable across restarts. Populated by the daily 04:00 IST `_task_holiday_refresh` cron, which calls `_fetch_holidays_from_nse` and UPSERTs (source='nse_auto'). Retry every 30 min until 08:00 IST hard stop on failure.
+4. NSE public API (`nseindia.com/api/holiday-master?type=trading`) — cold-boot fallback ONLY. `_fetch_holidays_from_nse` is the sole HTTP invocation site (SSOT).
+
+Empty sets also cached (avoid retry-storm on API failure). Buster = date rollover for Tiers 1+2; PK-idempotent UPSERT keeps Tier 3 accurate.
+
+**Market segments — multi-session shape** — every `market_segments.<seg>` block now carries a `sessions: list[{start, end}]` list (single-session today for both equity + MCX, but the list shape is future-proof for lunch breaks / evening halts) plus an `evening_open_on_holidays: bool` flag. MCX has `evening_open_on_holidays: true` → on a calendar-holiday date the segment is treated as open only when `now.time() >= 17:00` (models the evening session when the daytime leg is holiday-closed). Legacy `hours_start`/`hours_end` keys still parsed as a compatibility fallback. `is_market_open(now, holidays, market_start, market_end, exchange=…)` positional signature unchanged; new keyword-only args `sessions=[…]` + `evening_open_on_holidays=<bool>` override when passed.
 
 **Multi-account broker calls**: `@for_all_accounts` iterates accounts, returns list of DataFrames. Callers use `pd.concat(..., ignore_index=True)`.
 
