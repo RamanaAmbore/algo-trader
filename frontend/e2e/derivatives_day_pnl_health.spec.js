@@ -203,25 +203,23 @@ for (const vp of VIEWPORTS) {
         )
       );
 
-      // Regression guard: not ALL cells should be exactly '0' or '₹0' or '—'
-      // when we have live positions with intraday movement.
-      // We can't guarantee any specific value without a live account, but we
-      // CAN assert the column is functional — it should contain at least one
-      // cell with a numeral other than zero, OR all cells are legitimately '—'
-      // (closed hours / no data). What must NOT happen is all cells '0'/'₹0'.
-      const isAllZeroOrDash = cellTexts.every(t =>
-        t === '' || t === '—' || t === '0' || t === '₹0' || t === '0.00' || t === '₹0.00'
-      );
-      const hasAnyDash = cellTexts.some(t => t === '—');
-      const hasAnyNumeral = cellTexts.some(t => /[1-9]/.test(t));
+      // Regression guard: if ≥80% of Day P&L cells are exactly zero (not '—')
+      // that signals the regression state (Day P&L wired to 0 for most positions).
+      // '—' is valid for closed hours or missing data. Genuine flat days are rare
+      // across a full portfolio, so the 80% threshold keeps false-positive rate low.
+      const isZeroText = (t) =>
+        t === '' || t === '0' || t === '₹0' || t === '0.00' || t === '₹0.00';
+      const zeroCells = cellTexts.filter(isZeroText).length;
+      const dashCells = cellTexts.filter(t => t === '—').length;
+      const nonZeroNonDash = cellCount - zeroCells - dashCells;
 
-      if (!hasAnyNumeral && isAllZeroOrDash && !hasAnyDash) {
-        // All zeros, no dashes — this is the regression state
-        // Provide diagnostic info in the failure message
+      if (cellCount >= 2 && zeroCells / cellCount >= 0.8 && nonZeroNonDash === 0) {
+        // 80%+ zero, no non-zero non-dash cells — regression state
         throw new Error(
-          `Day P&L regression detected: all ${cellCount} Snapshot Day P&L cells are zero.\n` +
+          `Day P&L regression detected: ${zeroCells}/${cellCount} Snapshot Day P&L cells are zero (≥80%).\n` +
           `Cell texts: ${cellTexts.join(' | ')}\n` +
-          'Expected at least one non-zero value or "—" for positions with intraday movement.'
+          'Expected meaningful non-zero values for positions with intraday movement.\n' +
+          'If overnight_quantity≠0 cells are also 0, check backend _override_stale_ltp_from_ticker.'
         );
       }
 
@@ -300,18 +298,19 @@ for (const vp of VIEWPORTS) {
         )
       );
 
-      // Same guard as snapshot: all-zero with no dashes = regression
-      const allZeroNoMissing = legTexts.every(t =>
-        t === '' || t === '0' || t === '₹0' || t === '0.00' || t === '₹0.00'
-      );
-      const anyDash = legTexts.some(t => t === '—');
-      const anyNumeral = legTexts.some(t => /[1-9]/.test(t));
+      // Same 80%-zero guard as the snapshot test
+      const isLegZero = (t) =>
+        t === '' || t === '0' || t === '₹0' || t === '0.00' || t === '₹0.00';
+      const legZeroCnt = legTexts.filter(isLegZero).length;
+      const legDashCnt = legTexts.filter(t => t === '—').length;
+      const legNonZeroNonDash = legCellCount - legZeroCnt - legDashCnt;
 
-      if (allZeroNoMissing && !anyDash && !anyNumeral) {
+      if (legCellCount >= 2 && legZeroCnt / legCellCount >= 0.8 && legNonZeroNonDash === 0) {
         throw new Error(
-          `Per-leg Day P&L regression: all ${legCellCount} leg Day P&L cells are zero.\n` +
+          `Per-leg Day P&L regression: ${legZeroCnt}/${legCellCount} leg cells are zero (≥80%).\n` +
           `Leg cell texts: ${legTexts.join(' | ')}\n` +
-          'Expected at least one non-zero value when legs exist with intraday movement.'
+          'Expected meaningful non-zero values for legs with intraday movement.\n' +
+          'If overnight_quantity≠0 legs are also 0, check backend _override_stale_ltp_from_ticker.'
         );
       }
 
