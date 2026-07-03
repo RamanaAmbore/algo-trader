@@ -248,13 +248,18 @@ test.describe('tick-bus flash synchrony', () => {
       }
     });
 
-    test('NavStrip border animates at most 4Hz during rapid tick burst (20 ticks in 1s)', async () => {
-      // Use MutationObserver to count class-attribute changes on .ps-strip that
-      // involve a ps-tick-border-[ab] token appearing. This measures leading-edge
-      // throttle effectiveness: 20 emits over 1s with a 250ms throttle should
-      // yield at most 4 leading-edge fires (1s / 250ms = 4 windows).
+    test('NavStrip border animates at most 4Hz during rapid multi-symbol burst (20 symbols, 50ms apart)', async () => {
+      // The operator bug: 20 different symbols tick within 250ms — each one fires
+      // a separate tickBus.subscribe callback in PositionStrip.svelte, causing the
+      // border to animate 20 times. The per-bus same-symbol throttle doesn't help
+      // here because each symbol is DISTINCT. Only the consumer-side leading-edge
+      // throttle (_tickBorderThrottleUntil) prevents over-firing.
       //
-      // Setup: register observer before emitting.
+      // This test uses 20 different synthetic symbols spread over 1s (50ms apart)
+      // to bypass the bus's per-symbol dedup — that's the scenario that fails
+      // without the fix and passes with it.
+      //
+      // Setup: register MutationObserver before emitting.
       await page.evaluate(() => {
         /** @type {any} */
         const w = window;
@@ -275,9 +280,10 @@ test.describe('tick-bus flash synchrony', () => {
         w.__stripBorderObs = obs;
       });
 
-      // Fire 20 ticks over 1 second (50ms apart).
+      // Fire 20 distinct symbols over 1 second (50ms apart).
+      // Each fires a separate tickBus event — bypasses same-symbol bus throttle.
       for (let i = 0; i < 20; i++) {
-        await emitTick(page, TEST_SYM, 'up');
+        await emitTick(page, `SYNTHSYM${i}`, 'up');
         await page.waitForTimeout(50);
       }
 
@@ -291,9 +297,11 @@ test.describe('tick-bus flash synchrony', () => {
         return w.__stripBorderToggleCount || 0;
       });
 
-      // 20 ticks over 1000ms with 250ms leading-edge throttle =
+      // 20 distinct-symbol ticks over 1000ms with 250ms leading-edge throttle =
       // 4 windows → at most 4 class additions (first tick per window).
       // Allow 5 as a small tolerance for timer jitter.
+      // Without the fix: toggleCount would equal 20 (one per symbol).
+      // With the fix:    toggleCount ≤ 5 (4Hz cap).
       expect(toggleCount).toBeGreaterThan(0);        // at least one fired
       expect(toggleCount).toBeLessThanOrEqual(5);    // at most 4Hz (≤5 with jitter)
     });
