@@ -1583,6 +1583,147 @@ async def _task_mcp_audit_cleanup() -> None:
         await _purge_once()
 
 
+async def _task_holiday_refresh() -> None:
+    """Daily NSE-holiday refresh cron — 04:00 IST.
+
+    Fetches trading holidays from the NSE public API for every distinct
+    `holiday_exchange` in `market_segments` (NSE + MCX today) and UPSERTs
+    them into the `market_holidays` DB table with `source='nse_auto'`.
+
+    Retry cadence:
+      • First attempt at `holiday_refresh_time` (default 04:00 IST) each day.
+      • On failure (network error / empty response), retry every 30 min
+        until 08:00 IST, then give up for the day. The prior day's rows
+        remain in the table; `fetch_holidays` Tier 3 still serves them.
+
+    Idempotent — the ON CONFLICT UPDATE path just refreshes `captured_at`.
+    Zero-op when the NSE API is reachable and nothing changed.
+
+    Ships as its own asyncio task so a stuck HTTP call (10 s timeout in
+    `_fetch_holidays_from_nse`) does not block any other cron.
+    """
+    from backend.brokers.broker_apis import (
+        _fetch_holidays_from_nse, _upsert_market_holidays_coro,
+        _mirror_to_holidays_store,
+    )
+    from backend.shared.helpers.utils import config as _cfg
+
+    def _next_run_at(now_ist: datetime) -> datetime:
+        """Return the next 04:00 IST slot after `now_ist`."""
+        target_str = str(_cfg.get("holiday_refresh_time", "04:00") or "04:00")
+        try:
+            hh, mm = (int(x) for x in target_str.split(":", 1))
+        except Exception:
+            hh, mm = 4, 0
+        slot = now_ist.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if slot <= now_ist:
+            slot += timedelta(days=1)
+        return slot
+
+    def _exchanges_to_refresh() -> list[str]:
+        """De-dup list of `holiday_exchange` values across configured segments."""
+        segs = _cfg.get("market_segments", {}) or {}
+        seen: list[str] = []
+        for _name, seg in segs.items():
+            exch = (seg or {}).get("holiday_exchange", "NSE").upper().strip()
+            if exch and exch not in seen:
+                seen.append(exch)
+        return seen or ["NSE"]
+
+    async def _refresh_once(exch: str) -> tuple[bool, int]:
+        """Fetch → upsert for one exchange. Returns (success, count).
+
+        A `success=False` return signals the caller to retry on the
+        every-30-min schedule.
+        """
+        # Diff against prior known set for logging.
+        prev: set = set()
+        try:
+            from backend.brokers.broker_apis import (
+                _read_market_holidays_async as _read,
+            )
+            prev = await _read(exch)
+        except Exception:
+            prev = set()
+
+        # Blocking NSE HTTP call — offload to a thread so the event loop
+        # stays responsive (10 s timeout inside _fetch_holidays_from_nse).
+        try:
+            loop = asyncio.get_running_loop()
+            got: set = await loop.run_in_executor(
+                None, _fetch_holidays_from_nse, exch,
+            )
+        except Exception as e:
+            logger.warning(f"[HOLIDAY-REFRESH] exchange={exch} NSE fetch raised: {e}")
+            return False, 0
+        if not got:
+            logger.warning(
+                f"[HOLIDAY-REFRESH] exchange={exch} NSE returned empty — "
+                "will retry"
+            )
+            return False, 0
+
+        try:
+            n = await _upsert_market_holidays_coro(exch, got, "nse_auto")
+        except Exception as e:
+            logger.error(f"[HOLIDAY-REFRESH] exchange={exch} DB upsert failed: {e}")
+            return False, 0
+
+        _mirror_to_holidays_store(exch, got)
+        added = sorted(d.isoformat() for d in (got - prev))
+        removed = sorted(d.isoformat() for d in (prev - got))
+        logger.info(
+            f"[HOLIDAY-REFRESH] exchange={exch} prev={len(prev)} now={len(got)} "
+            f"added={added} removed={removed}"
+        )
+        return True, n
+
+    async def _do_all() -> dict:
+        """Fire refresh for every exchange; retry pending ones every 30 min
+        until 08:00 IST. Returns dict of outcomes."""
+        exchanges = _exchanges_to_refresh()
+        pending: set[str] = set(exchanges)
+        outcomes: dict[str, tuple[bool, int]] = {}
+        while pending:
+            for exch in list(pending):
+                ok, n = await _refresh_once(exch)
+                outcomes[exch] = (ok, n)
+                if ok:
+                    pending.discard(exch)
+
+            if not pending:
+                break
+
+            # Retry gate — 08:00 IST hard stop.
+            now_ist = timestamp_indian()
+            if now_ist.hour >= 8:
+                logger.warning(
+                    f"[HOLIDAY-REFRESH] give-up after 08:00 IST — still "
+                    f"pending: {sorted(pending)}"
+                )
+                break
+            await asyncio.sleep(30 * 60)
+        return outcomes
+
+    while True:
+        now = timestamp_indian()
+        nxt = _next_run_at(now)
+        sleep_s = (nxt - now).total_seconds()
+        logger.info(
+            f"Background: holiday refresh sleeping {sleep_s/3600:.1f}h until "
+            f"{nxt.strftime('%H:%M')} IST"
+        )
+        try:
+            await asyncio.sleep(sleep_s)
+        except asyncio.CancelledError:
+            raise
+        try:
+            outcomes = await _do_all()
+            logger.info(f"Background: holiday refresh complete — {outcomes}")
+        except Exception as e:
+            logger.error(f"Background: holiday refresh crashed: {e}")
+
+
 async def _task_hedge_proxy_regression() -> None:
     """Periodic β regression for every active hedge-proxy pair.
 
@@ -3701,6 +3842,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_visitor_log_daily(),   name="bg-visitor-log"),
         asyncio.create_task(_task_sparkline_warm(state), name="bg-sparkline-warm"),
         asyncio.create_task(_task_ticker_watchdog(state), name="bg-ticker-watchdog"),
+        asyncio.create_task(_task_holiday_refresh(),     name="bg-holiday-refresh"),
         asyncio.create_task(_task_hedge_proxy_regression(), name="bg-hedge-proxy-regression"),
         asyncio.create_task(_task_trail_stop(),          name="bg-trail-stop"),
         asyncio.create_task(_task_oco_pair_watcher(),    name="bg-oco-pair-watcher"),
