@@ -101,9 +101,9 @@ class TestBreakerOpens:
         e = _get_entry(self.ACCOUNT)
         until = e.get("circuit_open_until")
         assert until is not None
-        # First cycle: 5-min cool-off
-        assert abs(until - now_before - 300.0) < 2.0, (
-            f"Expected ~300s cool-off, got {until - now_before:.1f}s"
+        # First cycle: 5-min cool-off + up to 30s jitter
+        assert 300.0 <= until - now_before < 332.0, (
+            f"Expected 300–332s cool-off, got {until - now_before:.1f}s"
         )
 
     def test_fourth_call_short_circuits_no_sdk_call(self):
@@ -236,9 +236,9 @@ class TestExponentialBackoff:
         e = _get_entry(self.ACCOUNT)
         assert _circuit_state(self.ACCOUNT) == "open"
         until = e["circuit_open_until"]
-        # 2nd cycle: 5m × 2^1 = 10m = 600s
-        assert abs(until - now_before - 600.0) < 2.0, (
-            f"2nd cycle expected ~600s, got {until - now_before:.1f}s"
+        # 2nd cycle: 5m × 2^1 = 10m = 600s + up to 30s jitter
+        assert 600.0 <= until - now_before < 632.0, (
+            f"2nd cycle expected 600–632s, got {until - now_before:.1f}s"
         )
         assert e["open_cycle_count"] == 2
 
@@ -255,8 +255,8 @@ class TestExponentialBackoff:
         _record(self.ACCOUNT, ok=False, error="DH-906")
         e = _get_entry(self.ACCOUNT)
         until = e["circuit_open_until"]
-        assert abs(until - now - 1200.0) < 2.0, (
-            f"3rd cycle expected ~1200s, got {until - now:.1f}s"
+        assert 1200.0 <= until - now < 1232.0, (
+            f"3rd cycle expected 1200–1232s, got {until - now:.1f}s"
         )
 
 
@@ -301,16 +301,17 @@ class TestCooloffCap:
             # Expire breaker for the next iteration
             broker_apis._FETCH_HEALTH[self.ACCOUNT]["circuit_open_until"] = _time.time() - 1.0
 
-        assert cooloffs[0] <= 305.0
-        assert cooloffs[1] <= 605.0
-        assert cooloffs[2] <= 1205.0
-        # Cycles 3+ must be capped
-        assert cooloffs[3] <= 1805.0
-        assert cooloffs[4] <= 1805.0
-        # All caps respect the 1800s maximum
+        # Jitter range: up to +30s per cycle
+        assert 300.0 <= cooloffs[0] < 332.0
+        assert 600.0 <= cooloffs[1] < 632.0
+        assert 1200.0 <= cooloffs[2] < 1232.0
+        # Cycles 3+ hit the 1800s cap; jitter can push slightly above
+        assert 1800.0 <= cooloffs[3] < 1832.0
+        assert 1800.0 <= cooloffs[4] < 1832.0
+        # All caps respect _CB_MAX_COOLOFF_S + 30s maximum
         for c in cooloffs[3:]:
-            assert c <= broker_apis._CB_MAX_COOLOFF_S + 2.0, (
-                f"Cool-off exceeded cap: {c:.0f}s"
+            assert c <= broker_apis._CB_MAX_COOLOFF_S + 31.0, (
+                f"Cool-off exceeded cap+jitter: {c:.0f}s"
             )
 
 
@@ -524,11 +525,11 @@ class TestConcurrentProbeRace:
         assert e["open_cycle_count"] == 2, (
             f"Expected exactly 1 cycle advance (0→1→2), got {e['open_cycle_count']}"
         )
-        # 2nd cycle cool-off is 10 min = 600s
+        # 2nd cycle cool-off is 10 min = 600s + up to 30s jitter
         import time as _time2
         until = e["circuit_open_until"]
-        assert abs(until - _time2.time() - 600.0) < 5.0, (
-            f"Expected ~600s 2nd-cycle cooloff, got {until - _time2.time():.1f}s"
+        assert 600.0 <= until - _time2.time() < 632.0, (
+            f"Expected 600–632s 2nd-cycle cooloff, got {until - _time2.time():.1f}s"
         )
 
 

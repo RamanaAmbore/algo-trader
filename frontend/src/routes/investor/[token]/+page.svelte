@@ -59,6 +59,10 @@
 
   onMount(load);
 
+  // Kept local: diverges from aggCompact in three ways — (1) '₹' prefix,
+  // (2) space before Cr/L suffix (investor portal uses "₹1.23 L" style),
+  // (3) en-IN grouping for values ≥1000 instead of K-compact form.
+  // Investor page targets LP readers who expect natural Indian notation.
   function _fmtInr(/** @type {number|null|undefined} */ v) {
     if (v == null || !isFinite(v)) return '—';
     const abs = Math.abs(v);

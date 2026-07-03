@@ -3079,6 +3079,155 @@ async def _task_purge_audit_log() -> None:
         await _purge_once()
 
 
+async def _task_purge_visitor_log() -> None:
+    """Daily 03:25 IST — purge old visitor_log rows.
+
+    visitor_log holds one row per unique (ip, UTC-date).  Row-level
+    detail beyond 90 days is rarely needed — page-level aggregates are
+    more useful at that horizon and take a fraction of the space.
+
+    Scheduled 5 minutes after ``_task_purge_audit_log`` (03:20) to
+    keep DELETE-heavy tasks staggered across the quiet overnight window.
+
+    Setting ``retention.visitor_log_days = 0`` disables the purge so
+    the table can grow indefinitely (useful during traffic investigations
+    that span more than the default window).
+    """
+    from backend.api.database import async_session
+    from backend.shared.helpers.settings import get_int
+
+    async def _purge_once():
+        days = get_int("retention.visitor_log_days", 90)
+        if days <= 0:
+            logger.info("Background: visitor_log retention disabled (days=0)")
+            return
+        try:
+            async with async_session() as session:
+                deleted = await _apply_retention(session, "visitor_log", "created_at", days)
+                await session.commit()
+            logger.info(
+                f"Background: visitor_log purged {deleted} row(s) older than {days} days"
+            )
+        except Exception as exc:
+            logger.error(f"Background: visitor_log purge failed: {exc}")
+
+    await asyncio.sleep(240)  # startup settle — runs after audit_log purge
+
+    await _purge_once()
+
+    while True:
+        now = timestamp_indian()
+        next_run = now.replace(hour=3, minute=25, second=0, microsecond=0)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+        sleep_s = (next_run - now).total_seconds()
+        logger.info(f"Background: visitor_log purge sleeping {sleep_s/3600:.1f}h until 03:25 IST")
+        await asyncio.sleep(sleep_s)
+        await _purge_once()
+
+
+async def _task_purge_impersonation_events() -> None:
+    """Daily 03:30 IST — purge old impersonation_events rows.
+
+    impersonation_events is a forensic surface — one row per sudo
+    session (admin/designated views platform as partner).  365 days
+    matches the audit_log horizon so the two trails are co-extensive.
+
+    Scheduled 5 minutes after ``_task_purge_visitor_log`` (03:25).
+
+    Setting ``retention.impersonation_events_days = 0`` disables the
+    purge (useful during extended compliance investigations).
+    """
+    from backend.api.database import async_session
+    from backend.shared.helpers.settings import get_int
+
+    async def _purge_once():
+        days = get_int("retention.impersonation_events_days", 365)
+        if days <= 0:
+            logger.info("Background: impersonation_events retention disabled (days=0)")
+            return
+        try:
+            async with async_session() as session:
+                deleted = await _apply_retention(
+                    session, "impersonation_events", "started_at", days
+                )
+                await session.commit()
+            logger.info(
+                f"Background: impersonation_events purged {deleted} row(s) older than {days} days"
+            )
+        except Exception as exc:
+            logger.error(f"Background: impersonation_events purge failed: {exc}")
+
+    await asyncio.sleep(270)  # startup settle
+
+    await _purge_once()
+
+    while True:
+        now = timestamp_indian()
+        next_run = now.replace(hour=3, minute=30, second=0, microsecond=0)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+        sleep_s = (next_run - now).total_seconds()
+        logger.info(
+            f"Background: impersonation_events purge sleeping "
+            f"{sleep_s/3600:.1f}h until 03:30 IST"
+        )
+        await asyncio.sleep(sleep_s)
+        await _purge_once()
+
+
+async def _task_purge_admin_email_events() -> None:
+    """Daily 03:35 IST — purge old admin_email_events rows.
+
+    admin_email_events records every /api/admin/email-partners POST —
+    who sent what to whom.  Delivery-status audit beyond 90 days is
+    rarely investigated; 90 days covers two full monthly-statement
+    cycles and the most likely incident-response window.
+
+    Scheduled 5 minutes after ``_task_purge_impersonation_events``
+    (03:30).
+
+    Setting ``retention.admin_email_events_days = 0`` disables the
+    purge so the table can grow indefinitely.
+    """
+    from backend.api.database import async_session
+    from backend.shared.helpers.settings import get_int
+
+    async def _purge_once():
+        days = get_int("retention.admin_email_events_days", 90)
+        if days <= 0:
+            logger.info("Background: admin_email_events retention disabled (days=0)")
+            return
+        try:
+            async with async_session() as session:
+                deleted = await _apply_retention(
+                    session, "admin_email_events", "created_at", days
+                )
+                await session.commit()
+            logger.info(
+                f"Background: admin_email_events purged {deleted} row(s) older than {days} days"
+            )
+        except Exception as exc:
+            logger.error(f"Background: admin_email_events purge failed: {exc}")
+
+    await asyncio.sleep(300)  # startup settle
+
+    await _purge_once()
+
+    while True:
+        now = timestamp_indian()
+        next_run = now.replace(hour=3, minute=35, second=0, microsecond=0)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+        sleep_s = (next_run - now).total_seconds()
+        logger.info(
+            f"Background: admin_email_events purge sleeping "
+            f"{sleep_s/3600:.1f}h until 03:35 IST"
+        )
+        await asyncio.sleep(sleep_s)
+        await _purge_once()
+
+
 async def _task_market_lifecycle() -> None:
     """Poll the MarketLifecycle singleton every 30s.
 
@@ -3352,6 +3501,9 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_nav_compute(),         name="bg-nav-compute"),
         asyncio.create_task(_task_purge_persistence_caches(), name="bg-purge-persistence"),
         asyncio.create_task(_task_purge_audit_log(),           name="bg-purge-audit-log"),
+        asyncio.create_task(_task_purge_visitor_log(),         name="bg-purge-visitor-log"),
+        asyncio.create_task(_task_purge_impersonation_events(), name="bg-purge-impersonation-events"),
+        asyncio.create_task(_task_purge_admin_email_events(),   name="bg-purge-admin-email-events"),
         asyncio.create_task(_task_market_lifecycle(),    name="bg-market-lifecycle"),
         asyncio.create_task(_task_funds_offhours(),      name="bg-funds-offhours"),
         asyncio.create_task(_task_warm_backfill(),       name="bg-warm-backfill"),

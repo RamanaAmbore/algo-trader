@@ -842,6 +842,7 @@ class AlgoOrder(Base):
     # impact on the small dev DB but matters as algo_orders grows.
     __table_args__ = (
         Index("ix_algo_orders_mode_status", "mode", "status"),
+        Index("ix_algo_orders_account_symbol", "account", "symbol"),
     )
 
 
@@ -858,6 +859,7 @@ class AlgoEvent(Base):
     timestamp: Mapped[datetime]  = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),
+        index=True,
     )
 
 

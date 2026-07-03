@@ -22,6 +22,7 @@
   import { fetchNavHistory } from '$lib/api';
   import { marketAwareInterval } from '$lib/stores';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
+  import { fmtPctFraction } from '$lib/format';
 
   /**
    * @typedef {Object} Props
@@ -129,6 +130,9 @@
     if (_ac) { _ac.abort(); _ac = null; }
   });
 
+  // Kept local: aggCompact intentionally omits '₹' prefix and uses K/L/C.
+  // This surface uses Intl currency style (e.g. "₹1,234") for the
+  // NAV curve axis tick labels where the ₹ glyph is load-bearing.
   function _fmtInr(/** @type {number} */ n) {
     if (n == null || !isFinite(n)) return '—';
     return new Intl.NumberFormat('en-IN', {
@@ -160,7 +164,7 @@
       <span class="nav-chip-val">{_fmtChipInr(chipLatest.nav)}</span>
       {#if chipDeltaPct != null}
         <span class="nav-chip-delta">
-          {chipDeltaPct >= 0 ? '+' : ''}{(chipDeltaPct * 100).toFixed(2)}%
+          {fmtPctFraction(chipDeltaPct, 2, true)}
         </span>
       {/if}
     </div>

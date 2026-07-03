@@ -35,7 +35,14 @@ def _build_url() -> str:
 
 DATABASE_URL = _build_url()
 
-engine = create_async_engine(DATABASE_URL, echo=False, pool_size=5, max_overflow=10)
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,
+    pool_size=5,
+    max_overflow=10,
+    pool_pre_ping=True,   # validate connections on checkout; prevents stale-conn errors after overnight idle
+    pool_recycle=1800,    # recycle proactively every 30 min — before pgbouncer / server idle timeout
+)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
@@ -77,7 +84,12 @@ _SHARED_DATABASE_URL = _build_shared_url()
 # (pool_size=3) because the shared DB sees half the write traffic of the
 # main engine even in the worst case.
 _shared_engine = create_async_engine(
-    _SHARED_DATABASE_URL, echo=False, pool_size=3, max_overflow=5
+    _SHARED_DATABASE_URL,
+    echo=False,
+    pool_size=3,
+    max_overflow=5,
+    pool_pre_ping=True,   # same rationale as primary engine
+    pool_recycle=1800,
 )
 shared_async_session = async_sessionmaker(
     _shared_engine, class_=AsyncSession, expire_on_commit=False
@@ -807,6 +819,36 @@ async def init_db() -> None:
             await create_intraday_bars_table(conn)
         except Exception as _intraday_err:
             logger.warning("init_db: intraday_bars migration skipped — %s", _intraday_err)
+
+        # ── Audit a4f91d + a87bc7 — DB stability indexes (Jul 2026) ─────────
+        # P1 fixes identified in two consecutive audit rounds.
+        #
+        # 1. ix_algo_orders_account_symbol — composite (account, symbol).
+        #    /admin/history Orders endpoint filters WHERE account IN (…)
+        #    AND symbol IN (…). The singletons ix_algo_orders_account /
+        #    ix_algo_orders_symbol (added Slice M) let Postgres pick one
+        #    and filter the other in memory. The composite eliminates that
+        #    residual scan; leads with account (higher selectivity, always
+        #    present) then symbol (optional refinement).
+        #
+        # 2. ix_algo_events_timestamp — standalone on algo_events.timestamp.
+        #    The 30-day retention DELETE in background.py filters on
+        #    timestamp; without the index every cycle was a full seq-scan
+        #    over a growing append-only table.
+        _audit_indexes = (
+            "CREATE INDEX IF NOT EXISTS ix_algo_orders_account_symbol "
+            "ON algo_orders (account, symbol)",
+            "CREATE INDEX IF NOT EXISTS ix_algo_events_timestamp "
+            "ON algo_events (timestamp)",
+        )
+        for _stmt in _audit_indexes:
+            try:
+                await conn.execute(text(_stmt))
+            except Exception as _ai_err:
+                logger.warning(
+                    "init_db: audit index migration skipped — %s "
+                    "(stmt=%s)", _ai_err, _stmt[:80],
+                )
 
         # code_metrics_snapshots — captured per release by
         # scripts/capture_metrics.py. The table itself is created by
