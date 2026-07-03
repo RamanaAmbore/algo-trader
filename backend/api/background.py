@@ -639,9 +639,9 @@ async def _task_performance(state: dict) -> None:
                     (df_positions, "NFO"),
                 ):
                     if _df is not None and not _df.empty:
-                        for _, _row in _df.iterrows():
-                            _sym  = str(_row.get("tradingsymbol") or "").strip().upper()
-                            _exch = str(_row.get("exchange") or _default_exch).strip().upper()
+                        for _row in _df.itertuples(index=False):
+                            _sym  = str(getattr(_row, "tradingsymbol", None) or "").strip().upper()
+                            _exch = str(getattr(_row, "exchange", None) or _default_exch).strip().upper()
                             if _sym:
                                 _book_pairs.append((_sym, _exch))
                 # Resolve tokens for symbols not yet in the ticker.
