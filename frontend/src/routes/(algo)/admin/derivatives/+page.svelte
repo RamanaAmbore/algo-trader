@@ -1164,6 +1164,9 @@
    *    - _includeHoldings gate for eq legs
    *    - Proxy-target routing via targetsForProxy(h.symbol) → root credits
    *    - Account + source filter (live vs sim)
+   *    - Strategy filter (matchStrategy) — MUST match _byUnderlyingTotals /
+   *      _byUnderlyingExp / _byUnderlyingDay to keep the Snapshot TOTAL row
+   *      and the snapshotTotals store in sync with the per-row data.
    *
    *  Operator 2026-07-01: "day p & l should use the same calculation
    *  in overlay in payoff. ssot" + "p & l should use the same
@@ -1172,9 +1175,13 @@
    *
    *  @param {(c: any, spot: number|null) => number|null|undefined} accessor
    *    Per-leg value function — same shape overlay uses.
+   *  @param {(sym: string) => boolean} [matchStrategy]
+   *    Optional strategy gate — callers build it from $selectedStrategyId /
+   *    $strategyOpenSymbols so the TOTAL always sums the SAME rows that are
+   *    visible above it.  Defaults to () => true (no filter).
    *  @returns {Record<string, number>} root → summed value
    */
-  function _perRootReduce(accessor) {
+  function _perRootReduce(accessor, matchStrategy = () => true) {
     /** @type {Record<string, number>} */
     const out = {};
     const wantedSource = simActive ? 'sim' : 'live';
@@ -1191,6 +1198,7 @@
       const p = /** @type {any} */ (_p);
       if (p.source !== wantedSource) continue;
       if (!matchAccount(p.account)) continue;
+      if (!matchStrategy(p.symbol || p.tradingsymbol || '')) continue;
       const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
       if (!sym) continue;
       const isFut = /FUT$/i.test(sym);
@@ -1206,6 +1214,17 @@
       out[root] = (out[root] || 0) + Number(v);
     }
     return out;
+  }
+
+  /** Builds the same strategy-gate closure used by _byUnderlyingTotals /
+   *  _byUnderlyingExp / _byUnderlyingDay.  Call this inside a $derived.by()
+   *  so reads of $selectedStrategyId + $strategyOpenSymbols are tracked. */
+  function _makeStrategyMatcher() {
+    return (sym) => {
+      if ($selectedStrategyId == null) return true;
+      if ($strategyOpenSymbols.size === 0) return false;
+      return $strategyOpenSymbols.has(String(sym || '').toUpperCase());
+    };
   }
 
   /** Per-underlying holdings-only P&L (lifetime). Same shape as
@@ -1266,16 +1285,22 @@
   // Per-root maps consumed by every Snapshot row. All three use the
   // same _perRootReduce iteration — the ONLY difference is the per-leg
   // value function, matching what the overlay uses for each metric.
+  // SSOT: pass the strategy matcher so the TOTAL sums ONLY the same rows
+  // visible above it — fixes snapshotTotals / NavStrip P drift when a
+  // strategy filter is active (operator 2026-07-02).
   const _dayPnlByRootMap = $derived.by(() => {
     void _throttledTick;
-    return _perRootReduce((c, spot) => _dayPnlForLeg(c, spot));
+    const ms = _makeStrategyMatcher();
+    return _perRootReduce((c, spot) => _dayPnlForLeg(c, spot), ms);
   });
-  const _pnlByRootMap = $derived.by(() =>
-    _perRootReduce((c, _spot) => Number(c.pnl || 0))
-  );
+  const _pnlByRootMap = $derived.by(() => {
+    const ms = _makeStrategyMatcher();
+    return _perRootReduce((c, _spot) => Number(c.pnl || 0), ms);
+  });
   const _expPnlByRootMap = $derived.by(() => {
     void _throttledTick;
-    return _perRootReduce((c, spot) => _expiryPnl(c, spot));
+    const ms = _makeStrategyMatcher();
+    return _perRootReduce((c, spot) => _expiryPnl(c, spot), ms);
   });
 
   // Snapshot TOTAL sums — computed ONCE, published to the shared
