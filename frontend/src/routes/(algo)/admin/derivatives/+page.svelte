@@ -58,6 +58,11 @@
   import EmptyState from '$lib/EmptyState.svelte';
   import { longPress } from '$lib/actions/longPress.js';
   import { accountDisplayOrder, sortAccountsBy, getAccountOrderMap } from '$lib/data/accountSort.js';
+  import {
+    buildAcctMatcher, buildStrategyMatcher,
+    annotateOptionCandidates, computeExpiryBands,
+    rollupByUnderlying, perRootReduce,
+  } from '$lib/data/derivativesMath.js';
 
   // Row-level chart modal for Candidates panel rows.
   let _chartModalSym  = $state('');
@@ -507,8 +512,6 @@
   // allocate a new object on every render cycle.
   const BAND_LABELS = { close: 'ITM ON EXPIRY', netted: 'NETTED', otm: 'OUT OF THE MONEY' };
   // Band sort order — shared by both equity + commodity sort comparators.
-  const BAND_ORDER = { close: 0, netted: 1, otm: 2 };
-
   const expiryCloseAnalysis = $derived.by(() => {
     // Track candidatePositions + selectedExpiries reactively (this is
     // the heavy O(N²) work — we want it to re-run when positions
@@ -569,264 +572,21 @@
     });
     const legA = untrack(() => legAnalyticsBySymbol);
     void expFilter;
-    /** @type {{equity:any[], commodity:any[]}} */
-    const result = { equity: [], commodity: [] };
-    if (!spot || !cps.length) return result;
+    const empty = /** @type {{equity:any[], commodity:any[]}} */ ({ equity: [], commodity: [] });
+    if (!spot || !cps.length) return empty;
 
-    // First pass — annotate every option candidate with parsed
-    // metadata, ITM verdict, and theta from the strategy analytics.
-    // Segment is derived from the underlying name (MCX list above),
-    // not the row's exchange field — GOLDM positions sometimes
-    // arrive with empty / NSE exchange and were getting tagged as
-    // equity before this fix. Skip futures, zero-qty, and drafts.
-    const annotated = [];
-    for (const c of cps) {
-      const qty = Number(c.qty || 0);
-      // Operator: closed positions of the selected expiry should still
-      // appear in the Close-tab analysis — they're informational ("this
-      // expiry leg was closed today, nothing to do"). When no expiry is
-      // selected, keep the old behavior of hiding zero-qty rows so the
-      // unfiltered Close list isn't noisy with historical closeouts.
-      if (qty === 0 && !expFilter.length) continue;
-      if (c.source === 'draft') continue;
-      const inst = getInstrument(String(c.symbol || '').toUpperCase());
-      if (!inst) continue;
-      const optType = inst.t;
-      if (optType !== 'CE' && optType !== 'PE') continue;
-      const strike = Number(inst.k || 0);
-      if (!strike) continue;
-      const underlying = String(inst.u || '').toUpperCase();
-      const expiry = String(inst.x || '');
-      const segment = _MCX_UNDERLYINGS.has(underlying) ? 'commodity' : 'equity';
-      const isITM = optType === 'CE' ? spot > strike : spot < strike;
-      const lg = legA[c.symbol];
-      const theta = Number(lg?.greeks?.theta ?? 0) || 0;
-      const otmDist = isITM ? 0
-        : (optType === 'CE' ? strike - spot : spot - strike);
-      annotated.push({
-        ...c,
-        _strike: strike,
-        _underlying: underlying,
-        _expiry: expiry,
-        _optType: optType,
-        _segment: segment,
-        _isITM: isITM,
-        _spot: spot,
-        _qty: qty,
-        _theta: theta,
-        _otmDist: otmDist,
-      });
-    }
-
-    // Equity segment — ITM → close, OTM → otm band.
-    // No hedge exception on NFO; each contract settles independently.
-    let _eqCloseCounter = 0;
-    for (const r of annotated) {
-      if (r._segment !== 'equity') continue;
-      if (r._isITM) {
-        _eqCloseCounter++;
-        result.equity.push({
-          ...r,
-          _band: 'close',
-          _closeId: `C${_eqCloseCounter}`,
-          _reason: 'ITM equity — physical settlement risk',
-        });
-      } else {
-        result.equity.push({
-          ...r,
-          _band: 'otm',
-          _reason: `OTM by ₹${Math.round(r._otmDist).toLocaleString('en-IN')}`,
-        });
-      }
-    }
-
-    // Commodity segment — greedy theta-priority netting, scoped per
-    // (account, underlying, expiry). Same four pair rules preserved.
-    //
-    // Output enrichment vs previous version:
-    //   • Fully netted pairs → _band='netted', shared _pairId
-    //   • Partial cancels → consumed slice goes to 'netted' with
-    //     _pairId + _splitNote; remaining qty stays in the map and
-    //     may form another pair or land as residual
-    //   • Residual (non-zero after all greedy attempts) → _band='close'
-    //   • Non-ITM commodity positions → _band='otm'
-    //
-    // Theta-priority direction is UNCHANGED: high |theta| paired
-    // first → low |theta| as residual = to-close. This matches the
-    // "close the positions that are costing you the most time-value"
-    // logic in the original algorithm.
-    function _canPair(A, B, remaining) {
-      const aq = remaining.get(A) || 0;
-      const bq = remaining.get(B) || 0;
-      if (aq === 0 || bq === 0) return false;
-      const aSign = Math.sign(aq);
-      const bSign = Math.sign(bq);
-      // Rule 1 + 2: same opt type, opposite sign
-      if (A._optType === B._optType && aSign !== bSign) return true;
-      // Rule 3 + 4: different opt type, same sign
-      if (A._optType !== B._optType && aSign === bSign) return true;
-      return false;
-    }
-
-    // Emit OTM commodity positions first.
-    for (const r of annotated) {
-      if (r._segment !== 'commodity' || r._isITM) continue;
-      result.commodity.push({
-        ...r,
-        _band: 'otm',
-        _reason: `OTM by ₹${Math.round(r._otmDist).toLocaleString('en-IN')}`,
-      });
-    }
-
-    // Group ITM commodity positions by (account, underlying, expiry).
-    /** @type {Record<string, any[]>} */
-    const groups = {};
-    for (const r of annotated) {
-      if (r._segment !== 'commodity' || !r._isITM) continue;
-      const key = `${r.account || ''}|${r._underlying}|${r._expiry}`;
-      (groups[key] ??= []).push(r);
-    }
-
-    for (const key of Object.keys(groups)) {
-      const grp = groups[key];
-      const sortedAbs = grp.slice().sort(
-        (a, b) => Math.abs(b._theta || 0) - Math.abs(a._theta || 0));
-
-      // remaining tracks signed qty consumed through netting.
-      const remaining = new Map();
-      for (const r of sortedAbs) remaining.set(r, r._qty);
-
-      // nettedRows accumulates {row, consumedQty, pairId, splitNote}
-      // so we can emit them all after the greedy pass.
-      /** @type {Array<{row:any, consumedQty:number, pairId:string, splitNote:string}>} */
-      const nettedRows = [];
-      let pairCounter = 0;
-
-      for (const A of sortedAbs) {
-        let aq = remaining.get(A) || 0;
-        while (aq !== 0) {
-          // Pick the highest-|theta| valid partner remaining.
-          let bestB = null;
-          let bestT = -1;
-          for (const B of sortedAbs) {
-            if (B === A) continue;
-            if (!_canPair(A, B, remaining)) continue;
-            const t = Math.abs(B._theta || 0);
-            if (t > bestT) { bestB = B; bestT = t; }
-          }
-          if (!bestB) break;
-          pairCounter++;
-          const pairId = `N${pairCounter}`;
-          const bq = remaining.get(bestB) || 0;
-          const netAmt = Math.min(Math.abs(aq), Math.abs(bq));
-          const newAq = aq - netAmt * Math.sign(aq);
-          const newBq = bq - netAmt * Math.sign(bq);
-          remaining.set(A, newAq);
-          remaining.set(bestB, newBq);
-          // Record consumed slices for both members of the pair.
-          const aSplit = newAq !== 0;
-          const bSplit = newBq !== 0;
-          nettedRows.push({
-            row: A,
-            consumedQty: netAmt * Math.sign(aq),
-            pairId,
-            splitNote: aSplit ? `split ${aq > 0 ? '+' : ''}${aq}→${netAmt * Math.sign(aq)}` : '',
-          });
-          nettedRows.push({
-            row: bestB,
-            consumedQty: netAmt * Math.sign(bq),
-            pairId,
-            splitNote: bSplit ? `split ${bq > 0 ? '+' : ''}${bq}→${netAmt * Math.sign(bq)}` : '',
-          });
-          aq = remaining.get(A) || 0;
-        }
-      }
-
-      // Emit netted rows.
-      for (const { row, consumedQty, pairId, splitNote } of nettedRows) {
-        result.commodity.push({
-          ...row,
-          _band: 'netted',
-          _pairId: pairId,
-          _residualQty: consumedQty,
-          _reason: splitNote
-            ? `Netted (${splitNote})`
-            : `Netted — broker settles at expiry`,
-        });
-      }
-
-      // Residuals → close band.
-      let closeCounter = 0;
-      for (const r of sortedAbs) {
-        const q = remaining.get(r) || 0;
-        if (q === 0) continue;
-        closeCounter++;
-        result.commodity.push({
-          ...r,
-          _band: 'close',
-          _closeId: `C${closeCounter}`,
-          _residualQty: q,
-          _reason: `Unhedged ITM commodity (residual qty ${q > 0 ? '+' : ''}${q})`,
-        });
-      }
-    }
-
-    // Final display sort per band — account ASC, then symbol ASC.
-    const acctSymSort = (a, b) => {
-      const ac = String(a.account || '').localeCompare(String(b.account || ''));
-      if (ac !== 0) return ac;
-      return String(a.symbol || '').localeCompare(String(b.symbol || ''));
-    };
-    // Sort within each band independently so band order is preserved
-    // in rendering (we'll render close → netted → otm).
-    result.equity.sort((a, b) => {
-      const bo = (BAND_ORDER[a._band] ?? 9) - (BAND_ORDER[b._band] ?? 9);
-      if (bo !== 0) return bo;
-      // Within NETTED band, sort by pair id so paired rows sit adjacent.
-      if (a._band === 'netted' && b._band === 'netted') {
-        const ap = a._pairId || '';
-        const bp = b._pairId || '';
-        if (ap !== bp) return ap < bp ? -1 : 1;
-      }
-      return acctSymSort(a, b);
+    // annotateOptionCandidates + computeExpiryBands are pure helpers in
+    // derivativesMath.js. The untrack() wraps above keep the reactive
+    // dependency on candidatePositions only (not every spot tick).
+    const annotated = annotateOptionCandidates({
+      candidates: cps,
+      spot,
+      expFilter,
+      mcxUnderlyings: _MCX_UNDERLYINGS,
+      legAnalytics: legA,
+      getInstrument,
     });
-    result.commodity.sort((a, b) => {
-      const bo = (BAND_ORDER[a._band] ?? 9) - (BAND_ORDER[b._band] ?? 9);
-      if (bo !== 0) return bo;
-      // Within NETTED band, sort by pair id so paired rows sit
-      // adjacent — operator: "in netted, show the opposite
-      // positions together color coded". N1-A, N1-B, N2-A, N2-B …
-      if (a._band === 'netted' && b._band === 'netted') {
-        const ap = a._pairId || '';
-        const bp = b._pairId || '';
-        if (ap !== bp) return ap < bp ? -1 : 1;
-      }
-      return acctSymSort(a, b);
-    });
-
-    // Tag each NETTED row with a `_pairTint` color-cycle index so
-    // the renderer can apply one of N alternating background tints
-    // per pair — operator: "you can alternate color for each
-    // netted opposite positions". Numbered 0..4 cycling so two
-    // adjacent pairs always read as distinct.
-    const _assignPairTint = (arr) => {
-      const map = new Map();
-      let cycle = 0;
-      for (const r of arr) {
-        if (r._band !== 'netted') continue;
-        const pid = r._pairId || '';
-        if (!pid) continue;
-        if (!map.has(pid)) {
-          map.set(pid, cycle % 5);
-          cycle++;
-        }
-        r._pairTint = map.get(pid);
-      }
-    };
-    _assignPairTint(result.commodity);
-    _assignPairTint(result.equity);
-
-    return result;
+    return computeExpiryBands({ annotated });
   });
   // expiryCloseTotal counts only the 'close' band rows — those
   // are the ones that need operator action before expiry.
@@ -888,128 +648,19 @@
    *  a glance. */
   const _byUnderlyingTotals = $derived.by(() => {
     const wantedSource = simActive ? 'sim' : 'live';
-    // Account filter — when the operator picks one or more accounts in
-    // the page's Account multi-select, ONLY positions / holdings on
-    // those accounts contribute to the snapshot rows. Empty filter =
-    // all accounts. Operator: "when account is selected, the snapshot
-    // should include only the positions in the account for rows."
-    // Trim + uppercase both sides so casing / whitespace mismatches
-    // never cause a silent zero row.
-    const _wantedAccts = new Set(
-      selectedAccounts.map(a => String(a || '').trim().toUpperCase())
-    );
-    const matchAccount = (acct) => {
-      if (_wantedAccts.size === 0) return true;
-      return _wantedAccts.has(String(acct || '').trim().toUpperCase());
-    };
-    // Slice 7f — strategy filter. Broker positions don't carry
-    // strategy_id directly (broker reports NET positions per
-    // account), so the filter matches on SYMBOL against the
-    // strategy's open-lot universe (`_strategyOpenSymbols`, a Set
-    // refreshed alongside the strategy id below). null filter =
-    // every position contributes. With a strategy active, a row's
-    // symbol must be in the open-lot set or it's dropped.
-    const matchStrategy = (sym) => {
-      if ($selectedStrategyId == null) return true;
-      if ($strategyOpenSymbols.size === 0) return true; // fail-open: still loading or empty strategy
-      return $strategyOpenSymbols.has(String(sym || '').toUpperCase());
-    };
-    const groups = new Map();
-    const ensure = (root) => {
-      let g = groups.get(root);
-      if (!g) {
-        g = { underlying: root,
-              qty_fno: 0, qty_eq: 0,
-              legs_with: 0, legs_without: 0,
-              pnl_with: 0, pnl_without: 0,
-              day_with: 0, day_without: 0 };
-        groups.set(root, g);
-      }
-      return g;
-    };
-    // F&O positions — opt + fut. Grouped by parsed underlying root.
-    // Cast through `any` because the JSDoc shape for `positions` lists
-    // a minimal subset (`symbol`/`account`/`qty`/`source`); the actual
-    // backend row carries `quantity`/`pnl`/`day_change_val` too.
-    for (const _p of positions) {
-      const p = /** @type {any} */ (_p);
-      if (p.source !== wantedSource) continue;
-      if (!matchAccount(p.account)) continue;
-      if (!matchStrategy(p.symbol || p.tradingsymbol)) continue;
-      const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
-      if (!sym) continue;
-      const isFut = /FUT$/i.test(sym);
-      const isOpt = /(CE|PE)$/i.test(sym);
-      if (!isFut && !isOpt) continue;
-      const root = (decomposeSymbol(sym).root || sym).toUpperCase();
-      if (!root) continue;
-      const g = ensure(root);
-      const qty = Number(p.quantity ?? p.qty) || 0;
-      const pnl = Number(p.pnl) || 0;
-      // baseDayPnlForPosition is the SSOT for the new-position override.
-      // Operator: "for new positions added it is showing incorrect data."
-      const day = baseDayPnlForPosition(p);
-      g.qty_fno += qty;
-      g.legs_with++;
-      g.legs_without++;
-      g.pnl_with     += pnl;
-      g.pnl_without  += pnl;
-      g.day_with     += day;
-      g.day_without  += day;
-    }
-    // Equity holdings — each stock contributes to its DIRECT root
-    // (RELIANCE holding → RELIANCE) AND to every underlying it's a
-    // configured proxy for (NIFTYBEES holding → NIFTY via the
-    // /admin/settings hedge-proxies table). Counted only in the
-    // "with Hold" totals so the operator can read the F&O book
-    // alone via the No-Hold column. Bare holdings whose root has
-    // no F&O exposure get filtered out below (legs_without === 0).
-    for (const _h of holdings) {
-      const h = /** @type {any} */ (_h);
-      if (!matchAccount(h.account)) continue;
-      const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
-      if (!sym) continue;
-      // Holdings store qty as `qty` for current and `opening_qty` for
-      // start-of-day (sold-today rows have qty=0, opening_qty=N). Use
-      // opening_qty when present so sold-today rows still count.
-      const qty = Number(h.opening_qty ?? h.opening_quantity ?? h.quantity ?? h.qty) || 0;
-      const pnl = Number(h.pnl) || 0;
-      const day = Number(h.day_change_val) || 0;
-      const _targets = targetsForProxy(sym);
-      const credits = _targets.length ? _targets : [sym];
-      for (const root of credits) {
-        const g = ensure(root);
-        g.qty_eq += qty;
-        // Equity contributes to leg count in F&O-lot equivalents. Each
-        // holding row adds `qty / lot_size(root)` — a 500-share HDFC
-        // holding with a 550-lot HDFC future counts as ~0.91 legs.
-        // Non-F&O equities (lot_size 0) contribute ZERO to the leg count —
-        // they have no lot-equivalent representation and inflate the count
-        // meaninglessly. Operator 2026-07-01: "129 derivation is not
-        // correct. I think it should show lots" — the pill has to reflect
-        // F&O-equivalent exposure, not row counts.
-        const _lot = getOptionUnderlyingLot(root);
-        if (_lot > 0) {
-          g.legs_with += qty / _lot;
-          g.pnl_with += pnl;
-          g.day_with += day;
-        }
-      }
-    }
-    if (_filterByund) {
-      const q = _filterByund.toUpperCase();
-      for (const [k] of groups) if (!k.includes(q)) groups.delete(k);
-    }
-    // Hide eq-only rows (no F&O on this underlying) — operator's
-    // explicit ask. A stock holding without any options or futures
-    // open against it isn't an "underlying" in the derivative
-    // workspace sense; surface those via /performance Holdings.
-    for (const [k, g] of groups) {
-      if (g.legs_without === 0) groups.delete(k);
-    }
-    return Array.from(groups.values()).sort(
-      (a, b) => Math.abs(b.pnl_with) - Math.abs(a.pnl_with)
-    );
+    // Delegates to rollupByUnderlying in derivativesMath.js.
+    // buildAcctMatcher + buildStrategyMatcher eliminate the duplicated
+    // closure boilerplate that appears in _byUnderlyingExp, _byUnderlyingDay,
+    // _hDayByRoot, _hPnlByRoot, _hExpByRoot, and _perRootReduce.
+    const matchAccount  = buildAcctMatcher(selectedAccounts);
+    const matchStrategy = buildStrategyMatcher($selectedStrategyId, $strategyOpenSymbols);
+    return rollupByUnderlying({
+      positions, holdings, wantedSource,
+      matchAccount, matchStrategy,
+      filterQ: _filterByund,
+      decomposeSymbol, targetsForProxy, getOptionUnderlyingLot,
+      baseDayPnlForPosition,
+    });
   });
 
   /** Multi-source per-root spot resolver — same chain the payoff overlay
@@ -1070,16 +721,8 @@
     /** @type {Record<string, { with: number, without: number }>} */
     const out = {};
     const wantedSource = simActive ? 'sim' : 'live';
-    const _wantedAccts = new Set(
-      selectedAccounts.map(a => String(a || '').trim().toUpperCase())
-    );
-    const matchAccount = (acct) => _wantedAccts.size === 0
-      || _wantedAccts.has(String(acct || '').trim().toUpperCase());
-    const matchStrategy = (sym) => {
-      if ($selectedStrategyId == null) return true;
-      if ($strategyOpenSymbols.size === 0) return true; // fail-open: still loading or empty strategy
-      return $strategyOpenSymbols.has(String(sym || '').toUpperCase());
-    };
+    const matchAccount  = buildAcctMatcher(selectedAccounts);
+    const matchStrategy = buildStrategyMatcher($selectedStrategyId, $strategyOpenSymbols);
     const ensure = (root) => out[root] || (out[root] = { with: 0, without: 0 });
 
     for (const _p of positions) {
@@ -1166,50 +809,30 @@
    *    visible above it.  Defaults to () => true (no filter).
    *  @returns {Record<string, number>} root → summed value
    */
-  function _perRootReduce(accessor, matchStrategy = () => true) {
-    /** @type {Record<string, number>} */
-    const out = {};
+  /** Page-local _perRootReduce wrapper — delegates to the pure helper in
+   *  derivativesMath.js. Captures page-level reactive state (positions,
+   *  simActive, selectedAccounts) so callers pass only accessor + matcher. */
+  function _perRootReduce(accessor, /** @type {(sym: string) => boolean} */ matchStrategy = (_s) => true) {
     const wantedSource = simActive ? 'sim' : 'live';
-    const _wantedAccts = new Set(
-      selectedAccounts.map(a => String(a || '').trim().toUpperCase())
-    );
-    const matchAccount = (acct) => _wantedAccts.size === 0
-      || _wantedAccts.has(String(acct || '').trim().toUpperCase());
-    // F&O-only rollup per root. Operator 2026-07-01: "day p & l net =
-    // day p & l + h day p & l" — the primary Day/P&L/Exp columns are
-    // F&O only; the equity-holdings contribution surfaces via
-    // _hDayByRoot etc., and the Net variants compose the two.
-    for (const _p of positions) {
-      const p = /** @type {any} */ (_p);
-      if (p.source !== wantedSource) continue;
-      if (!matchAccount(p.account)) continue;
-      if (!matchStrategy(p.symbol || p.tradingsymbol || '')) continue;
-      const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
-      if (!sym) continue;
-      const isFut = /FUT$/i.test(sym);
-      const isOpt = /(CE|PE)$/i.test(sym);
-      if (!isFut && !isOpt) continue;
-      const c = { ...p, kind: isOpt ? 'opt' : 'fut' };
-      const root = (decomposeSymbol(sym).root || sym).toUpperCase();
-      if (!root) continue;
-      const p_ul = Number(p.underlying_ltp || 0);
-      const spot = p_ul > 0 ? p_ul : untrack(() => _rootSpot(root));
-      const v = accessor(c, spot);
-      if (v == null || !isFinite(Number(v))) continue;
-      out[root] = (out[root] || 0) + Number(v);
-    }
-    return out;
+    const matchAccount = buildAcctMatcher(selectedAccounts);
+    return perRootReduce({
+      positions, wantedSource,
+      matchAccount, matchStrategy,
+      decomposeSymbol,
+      getSpot: (root, p) => {
+        const p_ul = Number(p.underlying_ltp || 0);
+        return p_ul > 0 ? p_ul : untrack(() => _rootSpot(root));
+      },
+      accessor,
+    });
   }
 
   /** Builds the same strategy-gate closure used by _byUnderlyingTotals /
    *  _byUnderlyingExp / _byUnderlyingDay.  Call this inside a $derived.by()
-   *  so reads of $selectedStrategyId + $strategyOpenSymbols are tracked. */
+   *  so reads of $selectedStrategyId + $strategyOpenSymbols are tracked.
+   *  Delegates to buildStrategyMatcher in derivativesMath.js. */
   function _makeStrategyMatcher() {
-    return (sym) => {
-      if ($selectedStrategyId == null) return true;
-      if ($strategyOpenSymbols.size === 0) return true; // fail-open: still loading or empty strategy
-      return $strategyOpenSymbols.has(String(sym || '').toUpperCase());
-    };
+    return buildStrategyMatcher($selectedStrategyId, $strategyOpenSymbols);
   }
 
   /** Per-underlying holdings-only P&L (lifetime). Same shape as
@@ -1217,11 +840,7 @@
   const _hPnlByRoot = $derived.by(() => {
     /** @type {Record<string, number>} */
     const out = {};
-    const _wantedAccts = new Set(
-      selectedAccounts.map(a => String(a || '').trim().toUpperCase())
-    );
-    const matchAccount = (acct) => _wantedAccts.size === 0
-      || _wantedAccts.has(String(acct || '').trim().toUpperCase());
+    const matchAccount = buildAcctMatcher(selectedAccounts);
     for (const _h of holdings) {
       const h = /** @type {any} */ (_h);
       if (!matchAccount(h.account)) continue;
@@ -1242,11 +861,7 @@
     void _throttledTick;
     /** @type {Record<string, number>} */
     const out = {};
-    const _wantedAccts = new Set(
-      selectedAccounts.map(a => String(a || '').trim().toUpperCase())
-    );
-    const matchAccount = (acct) => _wantedAccts.size === 0
-      || _wantedAccts.has(String(acct || '').trim().toUpperCase());
+    const matchAccount = buildAcctMatcher(selectedAccounts);
     for (const _h of holdings) {
       const h = /** @type {any} */ (_h);
       if (!matchAccount(h.account)) continue;
@@ -1320,11 +935,7 @@
     void _throttledTick;
     /** @type {Record<string, number>} */
     const out = {};
-    const _wantedAccts = new Set(
-      selectedAccounts.map(a => String(a || '').trim().toUpperCase())
-    );
-    const matchAccount = (acct) => _wantedAccts.size === 0
-      || _wantedAccts.has(String(acct || '').trim().toUpperCase());
+    const matchAccount = buildAcctMatcher(selectedAccounts);
     for (const _h of holdings) {
       const h = /** @type {any} */ (_h);
       if (!matchAccount(h.account)) continue;
@@ -1357,16 +968,8 @@
     /** @type {Record<string, { with: number, without: number }>} */
     const out = {};
     const wantedSource = simActive ? 'sim' : 'live';
-    const _wantedAccts = new Set(
-      selectedAccounts.map(a => String(a || '').trim().toUpperCase())
-    );
-    const matchAccount = (acct) => _wantedAccts.size === 0
-      || _wantedAccts.has(String(acct || '').trim().toUpperCase());
-    const matchStrategy = (sym) => {
-      if ($selectedStrategyId == null) return true;
-      if ($strategyOpenSymbols.size === 0) return true; // fail-open: still loading or empty strategy
-      return $strategyOpenSymbols.has(String(sym || '').toUpperCase());
-    };
+    const matchAccount  = buildAcctMatcher(selectedAccounts);
+    const matchStrategy = buildStrategyMatcher($selectedStrategyId, $strategyOpenSymbols);
     const ensure = (root) => out[root] || (out[root] = { with: 0, without: 0 });
 
     for (const _p of positions) {
@@ -1596,13 +1199,7 @@
    *  semantics as the per-row derivation. */
   const _byUnderlyingTotal = $derived.by(() => {
     const wantedSource = simActive ? 'sim' : 'live';
-    const _wantedAccts = new Set(
-      selectedAccounts.map(a => String(a || '').trim().toUpperCase())
-    );
-    const matchAccount = (acct) => {
-      if (_wantedAccts.size === 0) return true;
-      return _wantedAccts.has(String(acct || '').trim().toUpperCase());
-    };
+    const matchAccount = buildAcctMatcher(selectedAccounts);
     const t = { qty_fno: 0, qty_eq: 0,
                 legs_with: 0, legs_without: 0,
                 pnl_with: 0, pnl_without: 0,
@@ -6594,9 +6191,12 @@
 
   /* TOTAL row — same canonical amber stratum the Legs TOTAL uses
      (commit fb0344fc). Override the alternating + hover bg so the
-     amber reads uniformly. */
+     amber reads uniformly. Layered over opaque #1d2a44 base so
+     sticky-pinned TOTAL row is fully opaque (no scroll bleed). */
   .byund-row-total > span {
-    background: var(--algo-amber-bg-strong) !important;
+    background:
+      linear-gradient(rgba(251,191,36,0.22), rgba(251,191,36,0.22)),
+      #1d2a44 !important;
     border-top: 2px solid rgba(251,191,36,0.70);
     border-bottom: 1px solid rgba(251,191,36,0.40);
     color: var(--c-action);
@@ -6996,7 +6596,11 @@
      pointer-events default so hover doesn't dim the amber. */
   .cand-row.cand-row-total {
     font-weight: 700;
-    background: var(--algo-amber-bg-strong) !important;
+    /* Layered over opaque #1d2a44 base — sticky-pinned TOTAL row
+       is fully opaque so scrolled rows behind it cannot bleed. */
+    background:
+      linear-gradient(rgba(251,191,36,0.22), rgba(251,191,36,0.22)),
+      #1d2a44 !important;
     border-top: 2px solid rgba(251,191,36,0.70) !important;
     border-bottom: 1px solid rgba(251,191,36,0.40) !important;
     border-radius: 0 !important;
@@ -7008,7 +6612,9 @@
     cursor: default;
   }
   .cand-row.cand-row-total:hover {
-    background: var(--algo-amber-bg-strong) !important;
+    background:
+      linear-gradient(rgba(251,191,36,0.22), rgba(251,191,36,0.22)),
+      #1d2a44 !important;
   }
   /* Direction-tint variants — slightly lighter green/red so they
      stay readable against the amber stratum, matching the

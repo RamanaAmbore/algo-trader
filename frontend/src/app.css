@@ -595,8 +595,13 @@
      above the data rows even when those rows carry their own bg
      direction tints (long-green / short-red) or LTP heat colouring.
      Operator: "total row should have a different background color
-     scheme." */
-  background-color: rgba(251,191,36,0.22) !important;
+     scheme."
+     Layered background: amber tint over opaque #1d2a44 base so
+     scrolled rows behind the pinned-bottom TOTAL cannot bleed through.
+     Visual result is identical to rgba(251,191,36,0.22) on #1d2a44. */
+  background:
+    linear-gradient(rgba(251,191,36,0.22), rgba(251,191,36,0.22)),
+    #1d2a44 !important;
   color: #fbbf24 !important;
   border-top: 2px solid rgba(251,191,36,0.70) !important;
   border-bottom: 1px solid rgba(251,191,36,0.55) !important;
