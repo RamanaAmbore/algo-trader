@@ -369,34 +369,39 @@
   .bh-row-state-red   { color: var(--c-short); background: var(--c-short-10); }
 
   .bh-row-reason {
-    color: #64748b;
+    /* Was #64748b (WCAG 3.01:1 on --card-bg-gradient — borderline/fail).
+       --text-lo (#8294a8) passes 4.60:1 on #1d2a44, 4.55:1 on #273552. */
+    color: var(--text-lo);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: var(--fs-sm);
   }
   .bh-row-ts {
-    color: #475569;
+    /* Was #475569 (WCAG 1.89:1 — fails). --text-lo passes on both bg layers. */
+    color: var(--text-lo);
     font-size: var(--fs-sm);
     text-align: right;
     white-space: nowrap;
   }
 
   .bh-empty {
-    color: #64748b;
+    /* Was #64748b (fail). --text-lo passes. */
+    color: var(--text-lo);
     font-size: var(--fs-md);
     text-align: center;
     padding: 1.5rem 1rem;
   }
 
-  /* ── Modal footer ── */
+  /* ── Panel footer ── */
   .bh-modal-footer {
-    border-top: 1px solid rgba(148, 163, 184, 0.12);
-    padding: 0.5rem 1rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 0.45rem 0.8rem;
   }
   .bh-footer-note {
+    /* Was #475569 (WCAG 1.89:1 — fails). --text-lo passes. */
     font-size: var(--fs-xs);
-    color: #475569;
+    color: var(--text-lo);
     font-family: var(--font-numeric);
   }
 
