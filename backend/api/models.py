@@ -6,7 +6,7 @@ import secrets as _secrets
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, Numeric, String, Text, Time, UniqueConstraint, text
 from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -2125,4 +2125,51 @@ class MarketHoliday(Base):
 
     __table_args__ = (
         Index("ix_market_holidays_exchange_date", "exchange", "date"),
+    )
+
+
+class MarketSpecialSession(Base):
+    """Operator-defined special trading sessions that trump all calendar rules.
+
+    A row in this table says: on ``date`` the exchange named ``exchange`` is
+    open ONLY during ``[start_time, end_time)`` IST.  This is the HIGHEST-
+    precedence rule in ``is_market_open`` — it short-circuits holiday checks,
+    regular session windows, and the live-quote probe.
+
+    Typical use: Diwali Muhurat sessions where NSE/MCX hold a 1-hour evening
+    session on an otherwise-holiday date.  On any date that has a special-
+    session row the exchange is treated as:
+      • open   if now.time() in [start_time, end_time)
+      • closed  at all other times during that day
+
+    If no row exists for a given (exchange, date) the normal precedence chain
+    (holiday → regular sessions → probe) applies unchanged.
+
+    Columns
+    -------
+    exchange   : Exchange identifier, e.g. "NSE", "MCX".
+    date       : Calendar date (IST) of the special session.
+    start_time : Session open time (IST), inclusive.
+    end_time   : Session close time (IST), exclusive.
+    reason     : Human-readable label, e.g. "Diwali Muhurat 2026".
+    created_at : Row-creation timestamp (UTC).
+
+    Primary key is ``(exchange, date, start_time)`` so multiple non-overlapping
+    windows on the same day are representable (rare but valid).
+    """
+    __tablename__ = "market_special_sessions"
+
+    exchange:   Mapped[str]      = mapped_column(String(10),  nullable=False, primary_key=True)
+    date:       Mapped[datetime] = mapped_column(Date,        nullable=False, primary_key=True)
+    start_time: Mapped[datetime] = mapped_column(Time,        nullable=False, primary_key=True)
+    end_time:   Mapped[datetime] = mapped_column(Time,        nullable=False)
+    reason:     Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_special_sessions_exchange_date", "exchange", "date"),
     )

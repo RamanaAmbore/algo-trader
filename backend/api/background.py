@@ -80,6 +80,20 @@ def _default_seg_state() -> dict:
             for s in _build_segments()}
 
 
+def _fetch_special_sessions_safe(exchange: str) -> list:
+    """Wrapper around ``fetch_special_sessions`` that never raises.
+
+    Used by background pollers (watchdog, etc.) that need the special-
+    session override list but must not crash on a DB outage.  Returns an
+    empty list on any error (fail-open — normal calendar logic applies).
+    """
+    try:
+        from backend.brokers.broker_apis import fetch_special_sessions
+        return fetch_special_sessions(exchange)
+    except Exception:
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Direct broker fetch helpers
 # ---------------------------------------------------------------------------
@@ -3012,8 +3026,13 @@ async def _task_ticker_watchdog(state: dict) -> None:
                     except Exception:
                         _wd_holiday_cache[exch] = set()
             any_open = any(
-                is_market_open(now, _wd_holiday_cache.get(seg['holiday_exchange'], set()),
-                               seg['hours_start'], seg['hours_end'])
+                is_market_open(
+                    now,
+                    _wd_holiday_cache.get(seg['holiday_exchange'], set()),
+                    seg['hours_start'],
+                    seg['hours_end'],
+                    special_sessions=_fetch_special_sessions_safe(seg['holiday_exchange']),
+                )
                 for seg in segments
             )
             if not any_open:

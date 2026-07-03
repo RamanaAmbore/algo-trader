@@ -112,7 +112,7 @@ async def init_db() -> None:
     in a separate call below.
     """
     async with engine.begin() as conn:
-        from backend.api.models import User, Agent, AgentEvent, AlgoOrderEvent, MarketReport, NewsHeadline, GrammarToken, Setting, DailyBook, Watchlist, WatchlistItem, VisitorLog, CodeMetricsSnapshot, MarketLifecycleEvent, BrokerAccount  # noqa: F401 — ensure model registered
+        from backend.api.models import User, Agent, AgentEvent, AlgoOrderEvent, MarketReport, NewsHeadline, GrammarToken, Setting, DailyBook, Watchlist, WatchlistItem, VisitorLog, CodeMetricsSnapshot, MarketLifecycleEvent, MarketHoliday, MarketSpecialSession, BrokerAccount  # noqa: F401 — ensure model registered
         _branch_local_tables = [
             t for t in Base.metadata.sorted_tables
             if t.name != BrokerAccount.__tablename__
@@ -912,10 +912,63 @@ async def init_db() -> None:
     from backend.api.routes.watchlist import seed_global_pinned
     await seed_global_pinned()
 
+    # Seed illustrative special-session rows (idempotent — skips if already
+    # present). Operator replaces/adds rows via DB when the exchange
+    # publishes its actual Muhurat schedule.
+    await seed_special_sessions()
+
     # Warm the alert-recipient cache from the users table so the very
     # first alert after a restart already routes to the right addresses.
     from backend.shared.helpers.alert_utils import refresh_alert_recipients
     await refresh_alert_recipients()
+
+
+async def seed_special_sessions() -> None:
+    """Insert illustrative special-session rows at boot (idempotent).
+
+    These are example rows that demonstrate the override mechanism.  The
+    operator should replace / extend them before the relevant dates arrive
+    (NSE/MCX publish Muhurat timings ~2 weeks in advance).
+
+    Primary key is ``(exchange, date, start_time)`` so the SELECT-before-
+    INSERT guard is exact and concurrent boots cannot duplicate rows.
+    """
+    from datetime import date as _date, time as _time
+    from sqlalchemy import select
+    from backend.api.models import MarketSpecialSession
+
+    _SEED_ROWS: list[dict] = [
+        # NSE Diwali Muhurat 2026 — operator updates annually.
+        {
+            "exchange":   "NSE",
+            "date":       _date(2026, 11, 1),
+            "start_time": _time(18, 0),
+            "end_time":   _time(19, 0),
+            "reason":     "Diwali Muhurat 2026",
+        },
+        # MCX Diwali Muhurat 2026 — same window, different exchange.
+        {
+            "exchange":   "MCX",
+            "date":       _date(2026, 11, 1),
+            "start_time": _time(18, 0),
+            "end_time":   _time(19, 0),
+            "reason":     "Diwali Muhurat 2026 (MCX)",
+        },
+    ]
+
+    async with async_session() as session:
+        for row in _SEED_ROWS:
+            exists_q = await session.execute(
+                select(MarketSpecialSession).where(
+                    MarketSpecialSession.exchange   == row["exchange"],
+                    MarketSpecialSession.date       == row["date"],
+                    MarketSpecialSession.start_time == row["start_time"],
+                )
+            )
+            if exists_q.first() is None:
+                session.add(MarketSpecialSession(**row))
+        await session.commit()
+    logger.info("seed_special_sessions: seed check complete")
 
 
 async def _ensure_shared_broker_schema() -> None:

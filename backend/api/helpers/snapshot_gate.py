@@ -132,7 +132,7 @@ def is_exchange_closed_now(exchange: str) -> bool:
             is_market_open, timestamp_indian,
         )
         from backend.shared.helpers.utils import config as _cfg
-        from backend.brokers.broker_apis import fetch_holidays
+        from backend.brokers.broker_apis import fetch_holidays, fetch_special_sessions
         from datetime import time as _dt_time
 
         segments = _cfg.get("market_segments", {}) or {}
@@ -148,8 +148,15 @@ def is_exchange_closed_now(exchange: str) -> bool:
                 holidays = fetch_holidays(exch)
             except Exception:
                 holidays = set()
+            try:
+                special = fetch_special_sessions(exch)
+            except Exception:
+                special = []
             now_ist = timestamp_indian()
-            return not is_market_open(now_ist, holidays, seg_start, seg_end, exchange=exch)
+            return not is_market_open(
+                now_ist, holidays, seg_start, seg_end, exchange=exch,
+                special_sessions=special,
+            )
     except Exception:
         return False
     # No matching segment configured — treat as closed (conservative).

@@ -292,6 +292,118 @@ def _update_dhan_next_poll(account: str, broker) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Per-account last-known-good frame cache (Jul 2026 — Dhan stale-persist fix)
+# ---------------------------------------------------------------------------
+# Operator: "dhan is showing and disappearing accounts on and off"
+#
+# Root cause: DH6847 has circuit_breaker_enabled=True. When the breaker is
+# OPEN, `_fetch_positions_local` / `_fetch_holdings_local` / `_fetch_margins_local`
+# short-circuit and return an empty DataFrame. That empty frame gets concatenated
+# away in `_apply_backfill_to_list`, so DH6847 rows silently vanish from the
+# API payload. On the next successful poll the rows reappear — visible flicker.
+#
+# Fix: on every successful per-account fetch, stash a shallow copy of the frame
+# keyed by (kind, account). On breaker-open short-circuit, return the LKG copy
+# with attrs['stale']=True + attrs['stale_since']=<epoch> instead of an empty
+# frame. The route layer surfaces `stale=True` on each row + a response-level
+# `stale_accounts` list.
+#
+# Not persisted to disk (in-memory only). Cold-restart during market hours will
+# show an empty frame for one poll cycle until the first successful fetch
+# populates the cache. This is acceptable — the flicker problem is the ongoing
+# case, not the sub-30s post-restart window.
+#
+# Shape: {(kind, account): (unix_ts, pd.DataFrame_copy)}
+# kind ∈ {'positions', 'holdings', 'margins'}
+_LKG_FRAME_BY_ACCT: dict[tuple[str, str], tuple[float, "pd.DataFrame"]] = {}
+_LKG_FRAME_LOCK = threading.Lock()
+
+# TTL for LKG substitution — after 24h assume the account has been offline
+# too long to substitute. Downstream sees empty (same as pre-fix behaviour).
+_LKG_MAX_AGE_S: float = 24 * 3600.0
+
+
+def _record_lkg_frame(kind: str, account: str, df: "pd.DataFrame") -> None:
+    """Stash a shallow copy of `df` as the last-known-good frame for
+    (kind, account). Called from every successful `_fetch_*_local`.
+
+    Only records non-empty frames — an empty successful fetch (legitimate
+    "no positions" state) does not overwrite a prior LKG copy. This means
+    an account that had positions on Monday, exited them Tuesday, will
+    keep serving Monday's frame on Wednesday if it goes breaker-open —
+    which is wrong. Guard: only overwrite on non-empty; empty successful
+    fetches poison the cache to an empty frame via the timestamp so the
+    stale-substitute path returns an empty frame with the fresh timestamp.
+    """
+    if not account or not kind:
+        return
+    now = _time.time()
+    try:
+        snapshot = df.copy(deep=False) if df is not None else None
+    except Exception:
+        return
+    with _LKG_FRAME_LOCK:
+        _LKG_FRAME_BY_ACCT[(kind, account)] = (now, snapshot)
+
+
+def _get_lkg_frame(kind: str, account: str) -> tuple[float, "pd.DataFrame"] | None:
+    """Return (stale_since_epoch, DataFrame_copy) for (kind, account), or
+    None when no LKG exists or the entry is older than _LKG_MAX_AGE_S."""
+    if not account or not kind:
+        return None
+    now = _time.time()
+    with _LKG_FRAME_LOCK:
+        entry = _LKG_FRAME_BY_ACCT.get((kind, account))
+    if entry is None:
+        return None
+    ts, snap = entry
+    if now - ts > _LKG_MAX_AGE_S:
+        return None
+    if snap is None:
+        return None
+    # Return a shallow copy so the caller can freely mutate attrs/columns
+    # without leaking mutations back into the LKG store.
+    try:
+        return ts, snap.copy(deep=False)
+    except Exception:
+        return None
+
+
+def _stale_substitute_frame(kind: str, account: str) -> "pd.DataFrame":
+    """Return the LKG frame for (kind, account) with staleness attrs +
+    per-row `account_stale=True` column marked. Returns an empty frame
+    when no LKG exists (falls back to pre-fix behaviour for that cycle).
+
+    Marks:
+      • df.attrs['stale']         = True   (response-level flag)
+      • df.attrs['stale_since']   = epoch  (unix ts of last success)
+      • df.attrs['circuit_open']  = True   (diagnostic — matches pre-fix attr)
+      • df['account_stale']       = True   (per-row column; consumed by
+                                            schema mapping in routes)
+
+    Does NOT set attrs['fetch_failed']=True — that would trigger the
+    route's "all failed → 503" outage gate. A stale-substituted frame
+    counts as a SUCCESS (with old data), not a failure.
+    """
+    result = _get_lkg_frame(kind, account)
+    if result is None:
+        # No LKG yet — same behaviour as before this fix.
+        df_empty = pd.DataFrame()
+        df_empty.attrs["circuit_open"] = True
+        df_empty.attrs["fetch_failed"] = True
+        return df_empty
+    stale_since, df = result
+    df.attrs["stale"] = True
+    df.attrs["stale_since"] = stale_since
+    df.attrs["circuit_open"] = True
+    # DO NOT set fetch_failed — see docstring. Substituted rows are "success
+    # with old data", not a fetch failure.
+    if not df.empty:
+        df["account_stale"] = True
+    return df
+
+
+# ---------------------------------------------------------------------------
 # Auto-downgrade state (Jul 2026)
 # ---------------------------------------------------------------------------
 # When a Dhan account has auto_downgrade_enabled=True and its circuit
@@ -863,13 +975,14 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
     # Half-open state admits one probe attempt (breaker closes or
     # re-opens based on that attempt's outcome).
     if account and _is_circuit_open(account):
-        df_holdings.attrs["circuit_open"] = True
-        df_holdings.attrs["fetch_failed"] = True
         logger.warning(
             f"[BREAKER] account={account} short-circuit holdings "
             f"(open until {_ts_label(_FETCH_HEALTH.get(account, {}).get('circuit_open_until', 0) or 0)})"
         )
-        return df_holdings
+        # Stale-substitute path (Jul 2026): return the LKG frame with
+        # stale=True attrs instead of an empty frame so DH6847 rows do
+        # not vanish from the payload on every breaker-open cycle.
+        return _stale_substitute_frame("holdings", account)
     # Interval gate (Dhan-only): skip if not yet due for next poll.
     # Kite + Groww pass through unconditionally (_is_dhan_interval_due
     # returns True for non-Dhan brokers). Manual ?fresh=1 calls bypass
@@ -917,6 +1030,11 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
         return df_holdings
 
     df_holdings = _enrich_holdings(df_holdings)
+    # Stash a shallow copy for the stale-substitute path when this
+    # account's breaker opens on a future cycle. Non-empty only —
+    # legitimate "no holdings" returns don't overwrite a prior LKG.
+    if account and not df_holdings.empty:
+        _record_lkg_frame("holdings", account, df_holdings)
     return df_holdings
 
 
@@ -1138,13 +1256,13 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
     df_positions = pd.DataFrame()
     # Circuit-breaker guard.
     if account and _is_circuit_open(account):
-        df_positions.attrs["circuit_open"] = True
-        df_positions.attrs["fetch_failed"] = True
         logger.warning(
             f"[BREAKER] account={account} short-circuit positions "
             f"(open until {_ts_label(_FETCH_HEALTH.get(account, {}).get('circuit_open_until', 0) or 0)})"
         )
-        return df_positions
+        # Stale-substitute path (Jul 2026) — see holdings variant for
+        # rationale. DH6847 rows persist across breaker-open cycles.
+        return _stale_substitute_frame("positions", account)
     # Interval gate (Dhan-only) — same pattern as holdings.
     if account and not _is_dhan_interval_due(account, broker):
         df_positions.attrs["interval_skipped"] = True
@@ -1256,6 +1374,11 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
         return df_positions
 
     df_positions = _enrich_positions(df_positions)
+    # Stash a shallow copy for the stale-substitute path when this
+    # account's breaker opens on a future cycle. Non-empty only —
+    # legitimate "no positions" returns don't overwrite a prior LKG.
+    if account and not df_positions.empty:
+        _record_lkg_frame("positions", account, df_positions)
     return df_positions
 
 
@@ -1713,13 +1836,13 @@ def _fetch_margins_local(connections=Connections, account=None, kite=None, broke
     df_margins = pd.DataFrame()
     # Circuit-breaker guard.
     if account and _is_circuit_open(account):
-        df_margins.attrs["circuit_open"] = True
-        df_margins.attrs["fetch_failed"] = True
         logger.warning(
             f"[BREAKER] account={account} short-circuit margins "
             f"(open until {_ts_label(_FETCH_HEALTH.get(account, {}).get('circuit_open_until', 0) or 0)})"
         )
-        return df_margins
+        # Stale-substitute path (Jul 2026) — see holdings variant for
+        # rationale. DH6847 funds row persists across breaker-open cycles.
+        return _stale_substitute_frame("margins", account)
     # Interval gate (Dhan-only) — same pattern as holdings.
     if account and not _is_dhan_interval_due(account, broker):
         df_margins.attrs["interval_skipped"] = True
@@ -1761,6 +1884,10 @@ def _fetch_margins_local(connections=Connections, account=None, kite=None, broke
         logger.error(f"[{account}] Failed to fetch margins: {e}")
         _record_fetch(account, ok=False, error=str(e))
 
+    # Stash a shallow copy for the stale-substitute path when this
+    # account's breaker opens on a future cycle. Non-empty only.
+    if account and not df_margins.empty:
+        _record_lkg_frame("margins", account, df_margins)
     return df_margins
 
 
@@ -1781,6 +1908,93 @@ _NSE_SEGMENT_MAP: dict[str, str] = {
     "CDS": "CD",
     "MCX": "COM",
 }
+
+# Daily-TTL cache for fetch_special_sessions.
+# Format: {exchange: (cached_date, list_of_session_dicts)}
+# Each dict has keys: date (datetime.date), start (datetime.time),
+# end (datetime.time).  Empty lists are cached to avoid retry-storm.
+_SPECIAL_SESSION_CACHE: dict[str, tuple] = {}
+
+
+def fetch_special_sessions(exchange: str = "NSE") -> list[dict]:
+    """Return today's special-session override rows for ``exchange``.
+
+    Queries the ``market_special_sessions`` DB table (populated by
+    ``seed_special_sessions`` at startup + by the operator directly).
+    Results are cached with a daily TTL — the same bust-on-date-rollover
+    pattern as ``_HOLIDAY_CACHE``.  Empty lists are cached so a missing
+    table (fresh deploy) never causes a retry-storm.
+
+    Returns a list of dicts, each with:
+      ``{"date": datetime.date, "start": datetime.time, "end": datetime.time}``
+
+    The list only contains rows whose ``date`` field equals today (IST).
+    Callers pass this list as ``special_sessions=`` to ``is_market_open``.
+    Fail-open: on any DB error returns ``[]``.
+    """
+    from datetime import date as _dt_date
+
+    exch = (exchange or "NSE").upper().strip()
+    today = _dt_date.today()
+
+    cached = _SPECIAL_SESSION_CACHE.get(exch)
+    if cached and cached[0] == today:
+        return cached[1]
+
+    rows: list[dict] = []
+    try:
+        rows = _read_special_sessions_sync(exch, today)
+    except Exception:
+        pass  # DB unavailable — fail open (return empty list)
+
+    _SPECIAL_SESSION_CACHE[exch] = (today, rows)
+    return rows
+
+
+def _read_special_sessions_sync(exchange: str, today) -> list[dict]:
+    """Blocking DB read for market_special_sessions rows matching today.
+
+    Intentionally sync so ``fetch_special_sessions`` can be called from
+    non-async code (same rationale as ``_read_market_holidays_sync``).
+    Fires at most once per (exchange, day) per process — subsequent calls
+    hit the in-process ``_SPECIAL_SESSION_CACHE``.
+    """
+    import asyncio
+    from sqlalchemy import select
+    from datetime import date as _dt_date, time as _dt_time
+
+    async def _async_read() -> list[dict]:
+        from backend.api.database import async_session
+        from backend.api.models import MarketSpecialSession
+        async with async_session() as sess:
+            result = await sess.execute(
+                select(MarketSpecialSession).where(
+                    MarketSpecialSession.exchange == exchange,
+                    MarketSpecialSession.date == today,
+                )
+            )
+            rows = result.scalars().all()
+            return [
+                {
+                    "date":  r.date if isinstance(r.date, _dt_date) else r.date,
+                    "start": r.start_time if isinstance(r.start_time, _dt_time) else r.start_time,
+                    "end":   r.end_time if isinstance(r.end_time, _dt_time) else r.end_time,
+                }
+                for r in rows
+            ]
+
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Inside an async context — run in thread to avoid blocking loop.
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                fut = pool.submit(asyncio.run, _async_read())
+                return fut.result(timeout=5)
+        else:
+            return loop.run_until_complete(_async_read())
+    except Exception:
+        return []
 
 
 def fetch_holidays(exchange="NSE"):

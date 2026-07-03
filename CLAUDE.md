@@ -160,6 +160,8 @@ also monitored (independent cadence; only logs if file changes detected).
 
 Open/close summaries sent at `open_summary_offset_minutes` / `close_summary_offset_minutes` after segment open/close. Weekends hardcoded closed (special Muhurat needs explicit override).
 
+**Special-session overrides** (`market_special_sessions` table) — highest-precedence rule in `is_market_open`. A row `(exchange, date, start_time, end_time)` says: on that date the exchange is open ONLY during `[start_time, end_time)` IST. Beats holiday check, regular session windows, weekend/probe path entirely. Seeded at boot with illustrative Muhurat 2026 rows (NSE + MCX, 2026-11-01 18:00-19:00); operator replaces/extends annually. `fetch_special_sessions(exchange)` in `broker_apis.py` reads from DB with daily-TTL cache; wired to all four `is_market_open` callsites (`is_any_segment_open`, `_exchange_is_open`, `is_exchange_closed_now`, ticker watchdog). Pass `special_sessions=<list>` keyword arg to `is_market_open` — `None` (default) leaves existing behaviour unchanged.
+
 **Winners/Losers movers gate** (`backend/api/routes/watchlist.py:get_movers`):
 - NSE open (09:15–15:30) → NSE equity universe (existing behaviour).
 - NSE closed + MCX open (15:30–23:30) → Live MCX commodity movers (CRUDEOIL, GOLD, SILVER, NATURALGAS, COPPER, ZINC, LEAD, ALUMINIUM, NICKEL, MENTHAOIL, COTTON, …). Quote keys are `MCX:<FUT_tradingsymbol>` resolved via `_build_mcx_universe()` (single-pass instruments scan). MCX rows are NOT persisted to `movers_snapshots` — snapshot stays NSE-only to avoid corrupting the pre-09:15 fallback. Session-sticky state is separate: `_session_movers_mcx` (MCX) vs `_session_movers` (NSE).
@@ -620,7 +622,7 @@ stays warm across API restarts. Frontend-only pushes touch neither service.
 - Don't add branch filters to `hooks.json` — routing in `dispatch.sh`
 - Don't use `2>>&1` in systemd — use `2>&1` (>> causes bash syntax errors)
 - Always `chown www-data -R` after server ops: `/opt/ramboq*/.git /opt/ramboq*/.log`
-- Weekends hardcoded closed — special sessions need explicit override
+- Weekends hardcoded closed for normal sessions — use `market_special_sessions` table to open a specific window (e.g. Muhurat)
 - Don't try to run main API without conn-service when `RAMBOQ_USE_CONN_SERVICE=1`
   is set — service startup will fail with socket connection errors
 
