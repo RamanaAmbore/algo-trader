@@ -132,8 +132,9 @@ export function mkSparkCol({ sparkRenderer }) {
 // ─── LTP column ──────────────────────────────────────────────────────
 
 /**
- * LTP column with real-time SSE tick, directional flash, vs-avg/vs-prev
- * heat encoding, and SNAP chip for close-snapshot rows.
+ * LTP column with real-time SSE tick, directional flash, and vs-avg/vs-prev
+ * heat encoding. Snapshot rows (is_animating=false) render a static LTP
+ * number without any visible chip — tick-flash is still gated on is_animating.
  *
  * @param {{
  *   getLiveLtpSnap: () => Record<string, number>,
@@ -208,33 +209,6 @@ export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, numFm
     },
     valueGetter: resolveCellLtp,
     valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
-    // SNAP chip — rendered when the row's LTP came from the daily_book
-    // close_settled snapshot (exchange currently closed). Non-snap rows
-    // return undefined so ag-Grid falls through to the valueFormatter.
-    // The chip's variant modifier (`.ltp-snap-chip--unsettled`) hints
-    // that broker close_price hasn't landed yet (pre-45m settle window).
-    cellRenderer: (p) => {
-      if (p.data?._isTotal) return '';
-      if (_isAnimating(p.data)) return undefined;
-      const ps = _normalisePriceSource(p.data);
-      const val = p.valueFormatted ?? p.value ?? '';
-      const el = document.createElement('span');
-      el.style.cssText = 'display:inline-flex;align-items:center;gap:4px;justify-content:flex-end;width:100%;';
-      const num = document.createElement('span');
-      num.textContent = String(val || '—');
-      const chip = document.createElement('span');
-      chip.textContent = 'SNAP';
-      chip.className = ps === 'snapshot_unsettled'
-        ? 'ltp-snap-chip ltp-snap-chip--unsettled'
-        : 'ltp-snap-chip';
-      chip.setAttribute('data-testid', 'ltp-snap-chip');
-      chip.title = ps === 'snapshot_unsettled'
-        ? 'LTP frozen — broker close_price not yet published (pre-settle window)'
-        : 'LTP frozen at daily_book close_settled snapshot — exchange currently closed';
-      el.appendChild(num);
-      el.appendChild(chip);
-      return el;
-    },
   };
 }
 
