@@ -235,34 +235,72 @@ refresh from the broker while LTPs stay frozen at the daily_book
 snapshot. Tooltip flips to "Markets closed — refresh only updates
 cash/margins/holdings" so the intent is discoverable.
 
-**Per-exchange close-snapshot lifecycle (Jul 2026)** —
-`_snapshot_close` already writes per-exchange (`_is_exchange_open_at`
-gates `ltp` + `day_pnl` to `None` for mid-session rows, so `nse:close`
-effectively writes NSE-only rows with real LTP; MCX rows filter out
-downstream). Routes now overlay row-by-row on the live path:
+**Unified animation model + per-exchange close-snapshot lifecycle
+(Jul 2026)** — one branch matrix, three surfaces (positions, holdings,
+movers) all dispatch through the same resolver. The pipeline:
 
-- `PositionRow` / `HoldingRow` gain `ltp_source: str = "live"`.
-- `backend/api/routes/positions.py:_overlay_snapshot_for_closed_exchanges`
-  and its holdings twin build the closed-exchange snapshot LTP map ONCE
-  per response via `snapshot_gate.latest_snapshot_ltp_map(kind)` (same
-  latest-batch CTE the `_positions_snapshot` reader uses — SSOT).
-- Rows on a CLOSED exchange get their `last_price` overlaid with the
-  snapshot LTP + tagged `ltp_source="snapshot"`. Rows on still-open
-  exchanges keep the broker LTP + `ltp_source="live"`.
-- Exchange gate map (`snapshot_gate._EXCHANGE_TO_GATE`): NSE/BSE/NFO/BFO/CDS
-  → NSE (09:15-15:30 IST), MCX → MCX (09:00-23:30 IST).
-- `?skip_ltp=1` on positions/holdings runs the normal broker path so
-  qty / avg_cost / metadata refresh, but the row-level overlay flips
-  every closed-exchange row to `ltp_source='snapshot'` + freezes
-  `last_price` at the daily_book value. During both-closed (the
-  RefreshButton trigger) every row's exchange is closed → every LTP
-  is snapshot-served. Funds accepts the param as a no-op — funds carry
-  no LTP concept.
-- Frontend cell renderer in `MarketPulse.svelte` reads `row.ltp_source`
-  → renders `data-testid="ltp-snap-chip"` amber "SNAP" pill next to LTP
-  and skips tick-flash on snapshot rows. Both positions and holdings
-  branches in the unified-row merge propagate `ltp_source` so a mixed
-  leg still surfaces the chip.
+*Schema triad* — `PositionRow` / `HoldingRow` / `MoverRow` all carry:
+- `price_source` ∈ `{"live","snapshot_settled","snapshot_unsettled"}`
+- `current_price: float` — unified-model alias for `last_price`
+- `is_animating: bool` — cell-animation gate (False on closed-exchange rows)
+
+Legacy field `ltp_source` renamed → `price_source`. Values split by
+whether broker's `close_price` has published (post-45m settle window):
+- `snapshot_settled`   — Kite has weighted-avg-last-30-min close_price
+- `snapshot_unsettled` — first-cut `<exch>:close` snapshot without close
+
+*Resolver* (`backend/api/helpers/price_resolver.py`) — pure, O(1):
+
+```python
+resolve_current_price(exchange_open, live_ltp, snapshot_close,
+                     snapshot_last_ltp, settled) → (price, source, animating)
+```
+
+Branch matrix:
+- open                                → (live_ltp,          "live",              True)
+- closed + settled + close available  → (snapshot_close,    "snapshot_settled",  False)
+- closed + no settled close           → (snapshot_last_ltp, "snapshot_unsettled",False)
+- closed + no snapshot at all         → (None,              "snapshot_unsettled",False)
+
+*Route overlays* (positions.py + holdings.py + watchlist.py) — build the
+closed-exchange snapshot LTP map ONCE per response via
+`snapshot_gate.latest_snapshot_ltp_map(kind)` (same latest-batch CTE
+the `_positions_snapshot` reader uses — SSOT). Per-row: call the
+resolver, apply the triad. Holdings-specific: cur_val recompute when
+snapshot LTP wins.
+
+*Unified movers* (`backend/api/routes/watchlist.py:get_movers`) — one
+live-path body handles NSE-only / MCX-only / both-open scenarios. Same
+resolver dispatch. `_get_movers_mcx_live`, `_session_movers_mcx`,
+`_mcx_fut_map_cache` **deleted**. Session-sticky collapsed to one dict
+keyed by symbol. Snapshot persistence filtered to NSE-exchange rows only
+(via `nse_rows = [r for r in rows if r.exchange == "NSE"]`) so the NSE
+15:29 close snapshot isn't overwritten by evening MCX data. Cache key
+scoped by `len(key_to_meta)` — busts on NSE-only → NSE+MCX transitions.
+
+*Exchange gate map* (`snapshot_gate._EXCHANGE_TO_GATE`):
+NSE/BSE/NFO/BFO/CDS → NSE (09:15-15:30 IST), MCX → MCX (09:00-23:30 IST).
+
+*Frontend cell gate* — `pulseColumns.js:mkLtpCol` reads the triad. The
+tick-flash cellClass is gated by `is_animating`; snapshot rows never
+flash regardless of price change. SNAP chip variants:
+- `.ltp-snap-chip`             — settled (standard amber)
+- `.ltp-snap-chip--unsettled`  — pre-settle (broker close_price pending)
+
+`MarketPulse.svelte` unified-row merge propagates the triad: ANY leg
+tagged non-live tags the merged row; ANY leg with `is_animating=False`
+freezes the merged row.
+
+*`?skip_ltp=1`* — RefreshButton passes this during both-markets-closed
+clicks so cash/margins/holdings-metadata refresh from the broker while
+LTPs stay frozen at the snapshot value.
+
+*Snapshot lifecycle* — `<exch>:close` writes first-cut daily_book row
+with live LTP; `<exch>:close_settled` UPSERTs 45 min later with broker's
+weighted-avg-last-30-min close_price. Both events share the same
+`_snapshot_close` handler → the second call is idempotent overwrite.
+Mid-session daily_book rows carry `ltp=None` so the row-overlay skips
+them (`ltp IS NOT NULL AND ltp > 0` gate in `latest_snapshot_ltp_map`).
 
 **Sparkline cache** — `_spark_past_cache` (past closes) + `_spark_today_cache` (intraday 30m, 5min TTL) + LTP at response time. Disk-persisted to `.log/sparkline_cache.json` (throttled 5s writes, atomic).
 
