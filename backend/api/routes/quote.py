@@ -173,9 +173,43 @@ def _fetch_ltp(exchange: str, tradingsymbol: str) -> QuoteResponse:
     # the operator's `connections.price_account` setting decides which
     # account's API handle services chart-data calls. Broker-agnostic
     # path; any vendor's adapter will work the same.
+    #
+    # Virtual MCX/CDS root resolution: bare roots like "CRUDEOIL" on MCX
+    # are not tradable instruments — broker.quote("MCX:CRUDEOIL") returns
+    # nothing.  Resolve to the front-month contract before the call so the
+    # response carries live data.  The returned QuoteResponse keeps the
+    # original operator-facing tradingsymbol so the frontend row-lookup
+    # still matches.
+    import asyncio as _asyncio
+    from backend.api.algo.symbol_resolver import resolve_market_data_keys as _rmdk
     from backend.brokers.registry import get_market_data_broker
+
+    exch_upper = exchange.upper()
+    sym_upper = tradingsymbol.upper()
+    input_key = f"{exch_upper}:{sym_upper}"
+
+    # Resolve synchronously: run the async resolver via a new event loop
+    # snapshot if a loop is running, else via asyncio.run.  _fetch_ltp is
+    # called from a sync context (thread via asyncio.to_thread or direct),
+    # so we need run_coroutine_threadsafe when inside an async context.
+    try:
+        loop = _asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures as _cf
+            fut = _asyncio.run_coroutine_threadsafe(_rmdk([input_key]), loop)
+            key_map = fut.result(timeout=2.0)
+        else:
+            key_map = loop.run_until_complete(_rmdk([input_key]))
+    except Exception:
+        # Resolution failure: fall back to identity (original key)
+        class _Identity:
+            input_to_broker = {input_key: input_key}
+            broker_to_input = {input_key: input_key}
+            broker_keys = [input_key]
+        key_map = _Identity()  # type: ignore[assignment]
+
+    broker_key = key_map.input_to_broker.get(input_key, input_key)
     broker = get_market_data_broker()
-    key = f"{exchange}:{tradingsymbol}"
 
     bid = ask = None
     depth_buy: list[DepthLevel] = []
@@ -184,7 +218,7 @@ def _fetch_ltp(exchange: str, tradingsymbol: str) -> QuoteResponse:
     ltp = 0.0
 
     try:
-        full = broker.quote([key]).get(key) or {}
+        full = broker.quote([broker_key]).get(broker_key) or {}
         ltp = float(full.get("last_price") or 0.0)
         volume = int(full.get("volume") or 0)
         depth = full.get("depth") or {}
@@ -202,16 +236,16 @@ def _fetch_ltp(exchange: str, tradingsymbol: str) -> QuoteResponse:
             ask = depth_sell[0].price
     except Exception as e:
         # Fallback to ltp-only
-        logger.warning(f"Quote depth failed for {key}: {e}")
+        logger.warning(f"Quote depth failed for {broker_key}: {e}")
         try:
-            data = broker.ltp([key])
-            row = data.get(key) or {}
+            data = broker.ltp([broker_key])
+            row = data.get(broker_key) or {}
             ltp = float(row.get("last_price") or 0.0)
         except Exception as e2:
-            logger.error(f"Quote LTP fallback failed for {key}: {e2}")
+            logger.error(f"Quote LTP fallback failed for {broker_key}: {e2}")
 
     return QuoteResponse(
-        tradingsymbol=tradingsymbol,
+        tradingsymbol=tradingsymbol,  # always the operator-facing symbol
         exchange=exchange,
         ltp=ltp,
         tick_size=0.05,
@@ -279,6 +313,12 @@ class QuoteController(Controller):
         live LTP / day-change for positions + holdings + underlyings
         without N round-trips.
 
+        Virtual MCX/CDS root symbols (e.g. ``MCX:CRUDEOIL``) are resolved
+        to their front-month futures contract before the broker call.
+        Response rows are keyed on the ORIGINAL operator-facing symbol so
+        the frontend row-lookup (``cMap[exchange:tradingsymbol]``) always
+        matches, regardless of which contract is live.
+
         When all requested exchanges are closed the route skips the broker
         call and returns the last-known-good LTP from the in-process
         _LAST_GOOD_LTP cache (populated during the last market session).
@@ -288,11 +328,18 @@ class QuoteController(Controller):
         import asyncio
         from datetime import datetime, timezone
         from backend.brokers.registry import get_market_data_broker
+        from backend.api.algo.symbol_resolver import resolve_market_data_keys
 
         keys = list({k.strip() for k in (data.keys or []) if k and ":" in k})
         # Soft cap — Kite quote() handles ~500 keys but the UI shouldn't
         # ask for more than this in one tab. Trim silently.
         keys = keys[:300]
+
+        # ── Virtual root resolution ────────────────────────────────────────
+        # Resolve MCX/CDS bare roots to front-month contracts so broker calls
+        # succeed. key_map carries both directions so we can emit response rows
+        # keyed on the original operator symbol.
+        key_map = await resolve_market_data_keys(keys)
 
         # ── Closed-hours fast-path ─────────────────────────────────────────
         # When every exchange in the requested set is currently closed, skip
@@ -307,6 +354,8 @@ class QuoteController(Controller):
 
         if market_closed:
             # Read last-known-good LTPs; mark all rows as stale.
+            # LKG lookup uses the RESOLVED symbol since that's what was
+            # recorded during the live session.
             from backend.brokers.broker_apis import get_last_good_ltp
             logger.debug(f"batch_quote: market closed — serving LKG LTP for {len(keys)} keys")
             items: list[BatchQuoteRow] = []
@@ -316,9 +365,17 @@ class QuoteController(Controller):
                     exch, sym = k.split(":", 1)
                 except ValueError:
                     continue
-                ltp = get_last_good_ltp(sym, max_age_s=86400.0) or 0.0
+                # Prefer LKG from the resolved contract symbol, fall back to
+                # the raw input symbol (for non-virtual pass-throughs).
+                broker_key = key_map.input_to_broker.get(k, k)
+                _, resolved_sym = broker_key.split(":", 1) if ":" in broker_key else ("", sym)
+                ltp = (
+                    get_last_good_ltp(resolved_sym, max_age_s=86400.0) or
+                    get_last_good_ltp(sym, max_age_s=86400.0) or
+                    0.0
+                )
                 items.append(BatchQuoteRow(
-                    exchange=exch, tradingsymbol=sym,
+                    exchange=exch, tradingsymbol=sym,  # always original key
                     ltp=ltp,
                     stale=True,
                 ))
@@ -329,10 +386,10 @@ class QuoteController(Controller):
             )
 
         # ── Live path (market open) ────────────────────────────────────────
-        if keys:
+        if key_map.broker_keys:
             try:
                 broker = get_market_data_broker()
-                quote_data = await asyncio.to_thread(broker.quote, keys) or {}
+                quote_data = await asyncio.to_thread(broker.quote, key_map.broker_keys) or {}
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"Batch quote failed: {exc}")
                 quote_data = {}
@@ -345,13 +402,18 @@ class QuoteController(Controller):
         # The sparkline tail in the renderer reads _liveLtpSnap[sym]; if
         # SSE never subscribed the symbol, the tail stays pinned at the
         # poll-time LTP and the curve looks frozen.
+        # seen_pairs tracks ORIGINAL (operator-facing) symbols so the
+        # ticker subscribe uses the same sym key that SSE listeners
+        # registered for.
         seen_pairs: list[tuple[str, str]] = []
         for k in keys:
-            q = quote_data.get(k) or {}
             try:
                 exch, sym = k.split(":", 1)
             except ValueError:
                 continue
+            # Look up broker data via the resolved key.
+            broker_key = key_map.input_to_broker.get(k, k)
+            q = quote_data.get(broker_key) or {}
             ltp    = float(q.get("last_price") or 0.0)
             ohlc   = q.get("ohlc") or {}
             close  = float(ohlc.get("close") or 0.0) or None
@@ -364,7 +426,7 @@ class QuoteController(Controller):
             change = (ltp - close) if (close and ltp) else 0.0
             chg_pct = (change / close * 100.0) if close else 0.0
             items.append(BatchQuoteRow(
-                exchange=exch, tradingsymbol=sym,
+                exchange=exch, tradingsymbol=sym,  # always original operator-facing key
                 ltp=ltp, bid=bid, ask=ask, open=open_, close=close,
                 change=change, change_pct=chg_pct,
                 volume=int(q.get("volume") or 0),
