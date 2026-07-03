@@ -3149,9 +3149,8 @@
       // Per-exchange close-snapshot lifecycle (Jul 2026, unified
       // animation model): any contributing leg tagged as snapshot
       // (either legacy `ltp_source` or new `price_source`) tags the
-      // whole unified row so the frontend cell renderer surfaces the
-      // SNAP chip + freezes tick-flash. Also propagate `is_animating`
-      // — a single non-animating leg freezes the merged row.
+      // whole unified row and freezes tick-flash. Also propagate
+      // `is_animating` — a single non-animating leg freezes the merged row.
       const _rpsPos = r.price_source ?? r.ltp_source;
       if (_rpsPos && _rpsPos !== 'live') {
         row.price_source = row.price_source && row.price_source !== 'live'
@@ -5904,30 +5903,6 @@
   :global(.ag-theme-algo .mp-total-row .ltp-vs-avg-up),
   :global(.ag-theme-algo .mp-total-row .ltp-vs-avg-down) {
     background-color: transparent !important;
-  }
-  /* SNAP chip — per-exchange close-snapshot lifecycle (Jul 2026).
-     Renders next to the LTP number on rows whose exchange is currently
-     CLOSED. Amber palette (matches MCX-only / lifecycle-frozen tone)
-     so the operator recognises the frozen-state signal from across the
-     page without confusing it with a green (live-open) or red (error)
-     indicator. Small font + tight padding so it fits inside the LTP
-     cell without eating LTP digits.
-     .ltp-snap on the cell itself is a hook used by future CSS if we
-     want to dim the frozen number — currently the chip alone carries
-     the signal so the cell stays readable. */
-  :global(.ag-theme-algo .ltp-snap-chip) {
-    display: inline-block;
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    padding: 0 3px;
-    line-height: 12px;
-    height: 12px;
-    border-radius: 2px;
-    background: rgba(251, 191, 36, 0.16);
-    color: #fbbf24;
-    border: 1px solid rgba(251, 191, 36, 0.5);
-    flex-shrink: 0;
   }
   /* Hide the day-P&L mini-bar on TOTAL rows — the aggregate doesn't
      get a per-day sign indicator (the operator reads the TOTAL P&L
