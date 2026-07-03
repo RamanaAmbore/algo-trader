@@ -1785,24 +1785,25 @@ _NSE_SEGMENT_MAP: dict[str, str] = {
 
 def fetch_holidays(exchange="NSE"):
     """
-    Fetch trading holidays from NSE/MCX official APIs.
+    Fetch trading holidays for `exchange`. Read priority (four tiers):
 
-    NSE API returns segments: CM (equity cash), FO (F&O), CD (currency), CBM (commodity on BSE).
-    MCX holidays are fetched from MCX website.
-    Maps exchange param to the right segment.
+      1. ``holidays_store._MEM_CACHE`` (in-process LRU) — sync dict read.
+         Populated by the async persistent-store path.
+      2. Module-level ``_HOLIDAY_CACHE`` (daily-TTL fallback) — used when
+         the persistent store has not been warmed yet.
+      3. ``market_holidays`` PostgreSQL table — durable across restarts,
+         populated daily by ``_task_holiday_refresh`` at 04:00 IST.
+      4. NSE public API (``nseindia.com/api/holiday-master``) — cold-boot
+         fallback ONLY. Also invoked directly by ``_task_holiday_refresh``
+         which is what normally populates Tier 3.
 
-    Read priority:
-      1. holidays_store._MEM_CACHE (Tier 1 of the persistent store) — sync read.
-         Populated on the async path by get_or_fetch_holidays().
-      2. Module-level _HOLIDAY_CACHE fallback — used when the persistent store
-         has not been warmed yet (first cold call from a sync context).
-         Falls through to NSE API and fires a background populate as a side-effect.
+    On Tier-3 or Tier-4 hit the result is mirrored into Tiers 1+2 so the
+    next call (which may be on the agent-engine hot path) short-circuits.
 
-    This function is sync so it can be called from non-async code (agent engine,
-    background tasks). Do NOT make it async — that would require changing every
-    callsite throughout the codebase.
+    This function is sync so it can be called from non-async code. Do NOT
+    make it async — Tier 3 does a blocking DB query, which is acceptable
+    because it fires at most once per (exchange, day) per process.
     """
-    import requests
     from datetime import datetime as dt_datetime, date as dt_date
 
     exch = exchange.upper().strip()
@@ -1824,13 +1825,50 @@ def fetch_holidays(exchange="NSE"):
     except Exception:
         pass  # persistent store not available — fall through
 
-    # ── Legacy Tier 2: module-level _HOLIDAY_CACHE (daily TTL) ────────────────
+    # ── Tier 2: module-level _HOLIDAY_CACHE (daily TTL) ───────────────────────
     today = dt_date.today()
     cached = _HOLIDAY_CACHE.get(exchange)
     if cached and cached[0] == today:
         return cached[1]
 
-    # ── Legacy Tier 3: NSE API fetch ──────────────────────────────────────────
+    # ── Tier 3: market_holidays DB table ──────────────────────────────────────
+    # Read all rows for `exchange` in the current IST calendar year. If the
+    # cron has populated the table, this satisfies the request without any
+    # network I/O; on a cold DB (first boot after migration) it returns an
+    # empty set and we fall through to Tier 4.
+    try:
+        db_hols = _read_market_holidays_sync(exch)
+        if db_hols:  # only accept non-empty; empty could mean cron hasn't run yet
+            _HOLIDAY_CACHE[exchange] = (today, db_hols)
+            _mirror_to_holidays_store(exch, db_hols)
+            return db_hols
+    except Exception:
+        pass  # DB unavailable / not initialised — fall through to Tier 4
+
+    # ── Tier 4: NSE public API (cold-boot fallback) ───────────────────────────
+    holidays: set = _fetch_holidays_from_nse(exchange)
+
+    # Cache even on failure (empty set) — avoids retry-hammering nseindia
+    # all day if the API is down. Next day's call retries naturally.
+    _HOLIDAY_CACHE[exchange] = (today, holidays)
+
+    # Fire-and-forget: populate persistent store + DB table so future
+    # restarts hit Tier 1/2/3 instead of Tier 4.
+    if holidays:
+        _trigger_holidays_store_populate(exch, holidays)
+        _upsert_market_holidays_async(exch, holidays, source="nse_auto")
+
+    return holidays
+
+
+def _fetch_holidays_from_nse(exchange: str) -> set:
+    """Direct NSE public-API fetch (Tier 4 in `fetch_holidays`; ALSO the
+    primary path invoked by `_task_holiday_refresh`). Returns a set of
+    `date` objects; empty set on any failure so the caller can decide
+    what to do (cache empty, retry, etc.)."""
+    import requests
+    from datetime import datetime as dt_datetime
+
     holidays: set = set()
     try:
         resp = requests.get(
@@ -1841,7 +1879,6 @@ def fetch_holidays(exchange="NSE"):
         data = resp.json()
         segment = _NSE_SEGMENT_MAP.get(exchange, "CM")
         entries = data.get(segment, [])
-
         for h in entries:
             d = h.get("tradingDate", "")
             if d:
@@ -1851,17 +1888,128 @@ def fetch_holidays(exchange="NSE"):
                     pass
     except Exception:
         pass
-
-    # Cache even on failure (empty set) — avoids retry-hammering nseindia
-    # all day if the API is down. Next day's call retries naturally.
-    _HOLIDAY_CACHE[exchange] = (today, holidays)
-
-    # Fire-and-forget: populate the persistent store so future restarts
-    # hit Tier 1 or Tier 2 instead of calling the API again.
-    if holidays:
-        _trigger_holidays_store_populate(exch, holidays)
-
     return holidays
+
+
+def _read_market_holidays_sync(exchange: str) -> set:
+    """Synchronous read of `market_holidays` for `exchange` in the current
+    IST year. Uses the sync-friendly connection path via `asyncio.run` on a
+    scratch loop when no loop is running, else schedules the coroutine.
+
+    Returns a set of `date` objects. Never raises — DB errors return empty.
+    """
+    from datetime import date as dt_date
+    import asyncio as _asyncio
+
+    try:
+        try:
+            _asyncio.get_running_loop()
+            # We're inside an event loop — cannot use asyncio.run(). Fall
+            # back to a threadpool executor that spins up a fresh loop.
+            import concurrent.futures as _cf
+            with _cf.ThreadPoolExecutor(max_workers=1) as pool:
+                fut = pool.submit(_asyncio.run, _read_market_holidays_async(exchange))
+                return fut.result(timeout=5.0)
+        except RuntimeError:
+            # No running loop — safe to run one inline.
+            return _asyncio.run(_read_market_holidays_async(exchange))
+    except Exception:
+        return set()
+
+
+async def _read_market_holidays_async(exchange: str) -> set:
+    """Async DB query — returns set of `date` for `exchange` in the current
+    IST calendar year. Filtered to current year to match the semantic
+    contract of the legacy tiers (year-scoped cache)."""
+    from datetime import date as dt_date
+    from sqlalchemy import select, and_, extract
+    try:
+        from backend.api.database import async_session
+        from backend.api.models import MarketHoliday
+    except Exception:
+        return set()
+    year = dt_date.today().year
+    async with async_session() as s:
+        rows = await s.execute(
+            select(MarketHoliday.date).where(
+                and_(
+                    MarketHoliday.exchange == exchange,
+                    extract("year", MarketHoliday.date) == year,
+                )
+            )
+        )
+        return {r[0] for r in rows.all()}
+
+
+def _mirror_to_holidays_store(exchange: str, holidays: set) -> None:
+    """After a Tier-3 hit, populate the in-process `holidays_store` cache
+    so future callers short-circuit at Tier 1 rather than repeating the
+    DB read."""
+    try:
+        from backend.api.persistence.holidays_store import (
+            _MEM_CACHE as _hol_mem,
+            _ist_year as _hol_year,
+        )
+        yr = _hol_year()
+        _hol_mem[(exchange, yr)] = holidays
+    except Exception:
+        pass
+
+
+def _upsert_market_holidays_async(
+    exchange: str, holidays: set, source: str = "nse_auto",
+) -> None:
+    """Fire-and-forget UPSERT into `market_holidays`. Called from Tier-4
+    NSE fallback (best-effort) and from `_task_holiday_refresh` (authoritative).
+
+    Idempotent PK on (exchange, date). A row that was previously stored but
+    is missing from the current `holidays` set is NOT deleted — a mid-year
+    holiday removal is rare enough to warrant operator review rather than
+    silent auto-delete.
+    """
+    try:
+        import asyncio as _asyncio
+        loop = _asyncio.get_running_loop()
+        loop.create_task(_upsert_market_holidays_coro(exchange, holidays, source))
+    except RuntimeError:
+        # No running loop — likely import-time or a sync test. Skip.
+        pass
+    except Exception:
+        pass
+
+
+async def _upsert_market_holidays_coro(
+    exchange: str, holidays: set, source: str,
+) -> int:
+    """Async body of `_upsert_market_holidays_async`. Returns rows inserted
+    or updated (best-effort; PG doesn't distinguish on ON CONFLICT DO UPDATE)."""
+    from datetime import datetime, timezone
+    from sqlalchemy import text as _text
+    try:
+        from backend.api.database import async_session
+    except Exception:
+        return 0
+    if not holidays:
+        return 0
+    now_utc = datetime.now(timezone.utc)
+    rows = [
+        {"exchange": exchange, "date": d, "source": source, "captured_at": now_utc}
+        for d in holidays
+    ]
+    _upsert_sql = _text("""
+        INSERT INTO market_holidays (exchange, date, source, captured_at)
+        VALUES (:exchange, :date, :source, :captured_at)
+        ON CONFLICT (exchange, date) DO UPDATE SET
+            source      = EXCLUDED.source,
+            captured_at = EXCLUDED.captured_at
+    """)
+    try:
+        async with async_session() as s:
+            await s.execute(_upsert_sql, rows)
+            await s.commit()
+        return len(rows)
+    except Exception:
+        return 0
 
 
 def _trigger_holidays_store_populate(exchange: str, holidays: set) -> None:
