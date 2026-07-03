@@ -110,7 +110,7 @@ test.describe('NavStrip P pill — structure', () => {
   });
 
   test('P pill has 3 slash-separated values on /admin/derivatives', async ({ page }) => {
-    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'domcontentloaded' });
     const strip = page.locator('.ps-strip');
     await expect(strip).toBeVisible({ timeout: TIMEOUT });
     const pPill = strip.locator('.ps-agg').first();
@@ -146,7 +146,7 @@ test.describe('Snapshot TOTAL row — structure', () => {
   });
 
   test('NavStrip P and Snapshot TOTAL are both visible simultaneously on derivatives', async ({ page }) => {
-    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'domcontentloaded' });
     const strip    = page.locator('.ps-strip');
     const snapCard = page.locator('.opt-byund-card');
     await expect(strip).toBeVisible({ timeout: TIMEOUT });
