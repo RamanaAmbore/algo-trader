@@ -644,15 +644,39 @@ async def _stop_event_queues(app) -> None:  # noqa: ARG001
 
 from backend.api.audit import AuditMiddleware
 
+# Optional dev-only perf-stats middleware. Gated on RAMBOQ_PERF_STATS=1
+# so prod never pays the timing / query-count cost per request. The
+# module import is cheap (no side-effects); only the wiring calls fire
+# when the flag is set. Writes `.log/perf_stats.json` every 5 min +
+# on shutdown.
+from backend.api.middleware import perf_stats as _perf_stats
+
+_perf_middleware: list = []
+_perf_on_startup: list = []
+_perf_on_shutdown: list = []
+if _perf_stats.is_enabled():
+    _perf_middleware.append(_perf_stats.PerfStatsMiddleware())
+
+    async def _start_perf_stats() -> None:
+        _perf_stats.attach_sqlalchemy_listener()
+        _perf_stats.start_background_flusher()
+        logger.info("[perf_stats] enabled (RAMBOQ_PERF_STATS=1)")
+
+    async def _stop_perf_stats() -> None:
+        _perf_stats.shutdown_flush()
+
+    _perf_on_startup.append(_start_perf_stats)
+    _perf_on_shutdown.append(_stop_perf_stats)
+
 app = Litestar(
     route_handlers=_route_handlers,
     cors_config=cors_config,
     openapi_config=openapi_config,
-    on_startup=[init_db, _rebuild_broker_connections, seed_hedge_proxies, _start_kite_ticker, bg_startup, _start_write_queue, _start_event_queues],
-    on_shutdown=[bg_shutdown, _stop_kite_ticker, _stop_write_queue, _stop_event_queues],
+    on_startup=[init_db, _rebuild_broker_connections, seed_hedge_proxies, _start_kite_ticker, bg_startup, _start_write_queue, _start_event_queues, *_perf_on_startup],
+    on_shutdown=[bg_shutdown, _stop_kite_ticker, _stop_write_queue, _stop_event_queues, *_perf_on_shutdown],
     before_request=_log_visitor,
     # Audit middleware — writes one audit_log row per mutating
     # request after the response leaves the server. Reads + suppressed
     # paths (health, /auth/whoami, etc.) short-circuit at zero cost.
-    middleware=[AuditMiddleware()],
+    middleware=[AuditMiddleware(), *_perf_middleware],
 )
