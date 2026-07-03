@@ -50,7 +50,7 @@
   }
   import { fetchSettings } from '$lib/api';
   import { streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
-  import { createFreshnessShimmer, createTickFlash } from '$lib/data/tickFlash.svelte.js';
+  import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { getSnapshot, symbolStore, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
   import { bookChanged } from '$lib/data/bookChanged';
   import {
@@ -686,10 +686,6 @@
   // deleted with this slice.
   let _liveLtpSnap = $state(/** @type {Record<string, number>} */ ({}));
   let _liveLtpFlushTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
-  // Design B: freshness shimmer instance — neutral "data just landed" signal
-  // on the LTP cell. Pilot on /pulse only (this component). Fires on every
-  // SSE tick update, not just on delta, so it fires even on repeat values.
-  const _ltpShimmer = createFreshnessShimmer({ durationMs: 700 });
   // Tick-flash for P&L columns on the right grid (Positions / Holdings).
   // LTP already has its own directional flash (_ltpFlashUp/_ltpFlashDown);
   // this instance covers Day P&L and P&L whose values change on each
@@ -2051,21 +2047,16 @@
     // a minimal delay so the work still yields one tick.
     _ltpPaintTimer = setTimeout(() => {
       _ltpPaintTimer = null;
-      // Design B: freshness shimmer — collect ALL symbols that arrived in this
-      // tick batch (not just those whose value changed). notifyAll fires only
-      // when the tab is visible (guard is inside createFreshnessShimmer).
+      // Determine which symbols had an LTP change in this paint batch
+      // so the cascade refresh only repaints cells that actually changed.
       const prev = _lastPaintedSnap;
       const cur  = _liveLtpSnap;
-      const freshnessKeys = /** @type {string[]} */ ([]);
       let hasCascade = false;
       for (const k of Object.keys(cur)) {
         const p = prev[k];
         if (p === undefined) continue;
-        freshnessKeys.push(k);
-        const c = cur[k];
-        if (c !== p) hasCascade = true;
+        if (cur[k] !== p) hasCascade = true;
       }
-      if (freshnessKeys.length > 0) _ltpShimmer.notifyAll(freshnessKeys);
       // Capture the current snapshot at paint time (may have advanced
       // further than when the timer was scheduled).
       _lastPaintedSnap = { ..._liveLtpSnap };
@@ -2298,7 +2289,6 @@
     _tickBusUnsub?.();
     for (const t of _ltpFlashTimers.values()) clearTimeout(t);
     _ltpFlashTimers.clear();
-    _ltpShimmer.dispose();
     _mpFlash.dispose();
     for (const t of _prefetchTimers) { try { clearTimeout(t); } catch { /* no-op */ } }
     _prefetchTimers.length = 0;
@@ -4125,13 +4115,9 @@
                    : (p.data.qty_hold && p.data.avg_hold) ? p.data.avg_hold
                    : null;
         const cls = [RA];
-        // B1 — flash green/red on tick-up/tick-down (slice AS audit fix).
+        // Flash green/red on tick-up/tick-down.
         if      (_ltpFlashUp.has(sym))   cls.push('ltp-flash-up');
         else if (_ltpFlashDown.has(sym)) cls.push('ltp-flash-down');
-        // Design B — freshness shimmer: neutral underline sweep on every data
-        // update from the bus, regardless of direction.
-        const shimmerCls = _ltpShimmer.classOf(sym);
-        if (shimmerCls) cls.push(shimmerCls);
         if (typeof ltp === 'number' && typeof avg === 'number' && avg > 0) {
           cls.push(ltp > avg ? 'ltp-vs-avg-up' : ltp < avg ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat');
         }
