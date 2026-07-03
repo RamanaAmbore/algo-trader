@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { onMount, onDestroy, setContext } from 'svelte';
   import { get } from 'svelte/store';
-  import { authStore, visibleInterval, executionMode, connStatus, startConnStatusPoller, startMarketStatusPoller, activityModal, openActivityModal, closeActivityModal, setHibernationIdleMinutes } from '$lib/stores';
+  import { authStore, visibleInterval, executionMode, connStatus, startConnStatusPoller, startMarketStatusPoller, brokerHealthStore, startBrokerHealthPoller, activityModal, openActivityModal, closeActivityModal, setHibernationIdleMinutes } from '$lib/stores';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import {
     fetchSimStatus, fetchPaperStatus,
@@ -687,6 +687,9 @@
     // ensures the navbar chip stays fresh even on pages with no
     // RefreshButton mounted.
     startConnStatusPoller();
+    // Broker auth-health store — drives chip color (green/amber/red) and
+    // feeds BrokerHealthBadge popup without duplicate polling. Singleton.
+    startBrokerHealthPoller();
     // Holiday-aware /api/market/status poller — feeds isNseOpen/isMcxOpen
     // so the RefreshButton "market closed" popup fires correctly on
     // Indian-market holidays where weekday+time alone says "open".
@@ -980,13 +983,14 @@
              was removed — operator: two chips for adjacent concerns
              felt redundant; consolidate into one. -->
         {#if $authStore.user && $connStatus.total > 0}
-          {@const _loaded = $connStatus.loaded}
-          {@const _total  = $connStatus.total}
-          {@const _ok     = $connStatus.backendOk}
-          {@const _cls    = !_ok ? 'broker-chip-unknown'
-                          : _loaded === 0 ? 'broker-chip-down'
-                          : _loaded < _total ? 'broker-chip-partial'
-                          : 'broker-chip-ok'}
+          {@const _loaded  = $connStatus.loaded}
+          {@const _total   = $connStatus.total}
+          {@const _ok      = $connStatus.backendOk}
+          {@const _worst   = $brokerHealthStore.worstState}
+          {@const _cls     = _worst === 'red'   ? 'broker-chip-down'
+                           : _worst === 'amber' ? 'broker-chip-partial'
+                           : _worst === 'green' ? 'broker-chip-ok'
+                           : 'broker-chip-partial'}
           {@const _failList = $connStatus.failingAccounts.join(', ')}
           <button class="broker-chip {_cls}"
                   onclick={() => brokerHealthOpen = !brokerHealthOpen}
@@ -1103,10 +1107,11 @@
           {@const _loaded = $connStatus.loaded}
           {@const _total  = $connStatus.total}
           {@const _ok     = $connStatus.backendOk}
-          {@const _cls    = !_ok ? 'broker-chip-unknown'
-                          : _loaded === 0 ? 'broker-chip-down'
-                          : _loaded < _total ? 'broker-chip-partial'
-                          : 'broker-chip-ok'}
+          {@const _worst  = $brokerHealthStore.worstState}
+          {@const _cls    = _worst === 'red'   ? 'broker-chip-down'
+                          : _worst === 'amber' ? 'broker-chip-partial'
+                          : _worst === 'green' ? 'broker-chip-ok'
+                          : 'broker-chip-partial'}
           <button class="broker-chip {_cls}"
                   onclick={() => brokerHealthOpen = !brokerHealthOpen}
                   title={!_ok ? 'Broker status: API unreachable. Click for per-account auth detail.'

@@ -12,21 +12,23 @@
    *   amber  — last good > 5 min ago (stale) but no active failure
    *   green  — healthy + fresh
    *
-   * Poll: 30 s via visibleInterval. NOT market-gated — auth breaks
-   * happen during closed hours too. Polling pauses when the modal is
-   * closed AND no badge consumer needs the data; restarts on open.
+   * Data source: shared `brokerHealthStore` in stores.js, polled every
+   * 30 s by startBrokerHealthPoller() (started from the layout onMount).
+   * This component is modal-only — no local polling needed.
    */
-  import { onMount, onDestroy } from 'svelte';
-  import { visibleInterval, openActivityModal } from '$lib/stores';
-  import { fetchBrokerHealth } from '$lib/api';
+  import { onDestroy } from 'svelte';
+  import { brokerHealthStore, openActivityModal } from '$lib/stores';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
   /** Bindable: parent (algo layout) toggles this from the 5/5 chip. */
   let { open = $bindable(false) } = $props();
 
-  /** @type {Array<{account:string,broker:string,state:string,reason:string,last_good_at:string|null,last_check_at:string|null,is_active_ticker?:boolean,circuit_state?:string,consecutive_fail_count?:number,circuit_open_until?:string|null,circuit_breaker_enabled?:boolean}>} */
-  let _rawAccounts = $state([]);
-  let loading  = $state(false);
+  // Consume the shared broker-health store (populated by startBrokerHealthPoller
+  // in the layout). No local fetch needed — the store already polls at 30 s
+  // continuously so the popup shows current data immediately on open.
+  let _rawAccounts = $state(/** @type {Array<{account:string,broker:string,state:string,reason:string,last_good_at:string|null,last_check_at:string|null,is_active_ticker?:boolean,circuit_state?:string,consecutive_fail_count?:number,circuit_open_until?:string|null,circuit_breaker_enabled?:boolean,poll_priority?:string,auto_downgrade_enabled?:boolean,auto_downgraded_at?:string|null,auto_downgrade_reason?:string|null}>} */ ([]));
+  const _unsubHealth = brokerHealthStore.subscribe(v => { _rawAccounts = v.accounts; });
+  onDestroy(() => _unsubHealth());
 
   // Subscribe to the canonical order map so the chip popup re-sorts
   // immediately when the operator patches display_order in /admin/brokers.
@@ -34,44 +36,13 @@
   const _unsubOrder = accountDisplayOrder.subscribe(m => { _orderMap = m; });
   onDestroy(() => _unsubOrder());
 
-  // Client-side sort mirrors the backend sort so even a stale API
+  // Client-side sort mirrors the backend sort so even a stale store
   // response renders in the right order.
   const accounts = $derived(
     sortAccountsBy(_rawAccounts.map(a => a.account), _orderMap)
       .map(id => _rawAccounts.find(a => a.account === id))
       .filter(Boolean)
   );
-
-  let _teardown = () => {};
-
-  async function load() {
-    if (loading) return;
-    loading = true;
-    try {
-      const data = await fetchBrokerHealth();
-      _rawAccounts = data?.accounts ?? [];
-    } catch (_) {
-      // Silently suppress — badge disappears when API unreachable.
-    } finally {
-      loading = false;
-    }
-  }
-
-  // Lazy polling: load once on mount (so the chip-driven toggle can
-  // open instantly with data); then poll every 30 s ONLY while the modal
-  // is open. Closed-modal background polling would burn ~120 req/hr
-  // forever with no consumer reading the result.
-  onMount(() => { load(); });
-  $effect(() => {
-    if (!open) {
-      _teardown();
-      _teardown = () => {};
-      return;
-    }
-    load();
-    _teardown = visibleInterval(load, 30_000);
-  });
-  onDestroy(() => { _teardown(); });
 
   function _fmtIso(iso) {
     if (!iso) return '—';
