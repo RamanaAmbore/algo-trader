@@ -15,7 +15,7 @@ broker.instruments() is called at most once per cold (exchange, date) pair.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from typing import Any
 
 from backend.api.persistence.store_base import PersistentStoreBase
@@ -71,6 +71,14 @@ class InstrumentsStore(PersistentStoreBase):
         from backend.api.database import async_session
 
         date_str, exchange = key
+        # asyncpg binds :date strictly to Postgres DATE — a raw string
+        # raises `'str' object has no attribute 'toordinal'` and the
+        # snapshot lookup fails every request. Coerce at the boundary.
+        try:
+            date_obj = date.fromisoformat(date_str)
+        except (TypeError, ValueError):
+            logger.warning(f"instruments_store: bad ISO date in key {key}")
+            return None
         stmt = text("""
             SELECT payload, row_count
             FROM   instruments_snapshot
@@ -79,7 +87,7 @@ class InstrumentsStore(PersistentStoreBase):
         """)
         try:
             async with async_session() as session:
-                result = await session.execute(stmt, {"exch": exchange, "date": date_str})
+                result = await session.execute(stmt, {"exch": exchange, "date": date_obj})
                 row = result.fetchone()
             if row is None:
                 return None

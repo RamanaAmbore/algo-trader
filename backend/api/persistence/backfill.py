@@ -114,11 +114,15 @@ async def _count_db_bars(symbol: str, exchange: str, from_d: date, to_d: date) -
               AND  date     BETWEEN :from_d AND :to_d
         """)
         async with async_session() as session:
+            # asyncpg binds :from_d / :to_d strictly to Postgres DATE —
+            # pass real date objects, not ISO strings, or the driver
+            # raises `'str' object has no attribute 'toordinal'` and the
+            # count silently returns 0 (misleading "already covered" skip).
             result = await session.execute(stmt, {
                 "sym": symbol.upper().strip(),
                 "exch": exchange.upper().strip(),
-                "from_d": from_d.isoformat(),
-                "to_d":   to_d.isoformat(),
+                "from_d": from_d,
+                "to_d":   to_d,
             })
             row = result.fetchone()
             return int(row[0]) if row else 0
