@@ -2730,6 +2730,25 @@
           if (wSym && wExch) allKeys.add(`${wExch}:${wSym}`);
         }
       }
+      // Add mover rows (winners/losers) to the batchQuote universe.
+      // Without this, mover-only symbols (HCLTECH, LODHA, ZYDUSLIFE …
+      // — the top-N stocks by day % change) never enter symbolStore
+      // with open / high / low / volume / oi. The MoverRow backend
+      // schema only carries last_price / previous_close / change_pct,
+      // so _publishMoverRows can't populate OHLCV — the only path is
+      // this batchQuote pass. Pre-fix symptom: /pulse mover-grid rows
+      // rendered LTP + Day % correctly but Open / Volume / OI cells
+      // stayed at "—" indefinitely.
+      // Set semantics dedupe against contractKeys + watchlist entries
+      // (a mover that's also in the operator's watchlist adds no
+      // incremental cost). Cap the mover contribution at 60 symbols
+      // (winners + losers per major = 30 + 30) so allKeys.size stays
+      // well under batchQuoteChunked's per-call ceiling.
+      for (const m of (movers || [])) {
+        const mSym  = String(m?.tradingsymbol || '').toUpperCase();
+        const mExch = String(m?.exchange || 'NSE').toUpperCase();
+        if (mSym && mExch) allKeys.add(`${mExch}:${mSym}`);
+      }
 
       if (allKeys.size) {
         const items = await batchQuoteChunked([...allKeys]);
