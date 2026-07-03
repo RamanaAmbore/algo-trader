@@ -205,19 +205,20 @@
 
     // Tick-bus border shimmer — sky-300 border flash on real SSE LTP ticks.
     // Separate from the amber poll heartbeat; direction ignored (neutral palette).
-    // 300ms unified duration. Throttled to 4 Hz (leading-edge, 250ms window)
+    // 300ms unified duration. Throttled to 1 Hz (leading-edge, 1000ms window)
     // so a 20-symbol burst doesn't animate the border 20 times. Only the FIRST
-    // tick in each 250ms window triggers the animation; subsequent ticks in
+    // tick in each 1000ms window triggers the animation; subsequent ticks in
     // the same window are ignored. Re-arm the 300ms decay timer on each leading
     // edge so continuous tick flow keeps the border lit, clearing 300ms after
-    // the last window opens.
+    // the last window opens. Decay (300ms) < window (1000ms) so the border
+    // returns to idle 700ms before the next pulse — clean gap, no overlap.
     // Leading-edge pattern: fires immediately (no setTimeout delay), so the
     // class is visible within one tick of the emit — the 50ms spec assertion
     // continues to pass. No throttle-timer handle needed; only a timestamp.
     _tickBusUnsub = tickBus.subscribe(() => {
       const _now = performance.now();
       if (_now < _tickBorderThrottleUntil) return;
-      _tickBorderThrottleUntil = _now + 250;
+      _tickBorderThrottleUntil = _now + 1000;  // was 250 (4 Hz) → 1000 (1 Hz)
       // Toggle a↔b so the browser sees a new animation-name and restarts
       // the keyframe on every leading-edge tick (same pattern as RefreshButton).
       _tickBorderClass = _tickBorderClass === 'ps-tick-border-a' ? 'ps-tick-border-b' : 'ps-tick-border-a';
@@ -734,7 +735,7 @@
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _tickBorderTimer = null;
   // Leading-edge throttle timestamp (performance.now() units). Ticks that arrive
-  // before this time are ignored; resets 250ms after each leading-edge fire.
+  // before this time are ignored; resets 1000ms after each leading-edge fire.
   // Plain number (not $state) — no reactive dep needed, just a gate check.
   let _tickBorderThrottleUntil = 0;
   /** @type {(() => void) | null} */
