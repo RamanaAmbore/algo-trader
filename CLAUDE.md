@@ -527,6 +527,9 @@ Mode is runtime-only (resets to `off` on process restart).
 - `auth_tokens` → 7 days after expiry (`retention.auth_tokens_days`); one-time verify/reset tokens only.
 - `mcp_audit` → 90 days (`mcp.audit_retention_days`); MCP-initiated mutations.
 - `audit_log` → 365 days (`retention.audit_log_days`); forensic operator trail. NOT the SEBI record.
+- `visitor_log` → 90 days (`retention.visitor_log_days`); one row per unique (ip, UTC-date); 03:25 IST.
+- `impersonation_events` → 365 days (`retention.impersonation_events_days`); forensic sudo trail; 03:30 IST.
+- `admin_email_events` → 90 days (`retention.admin_email_events_days`); partner email delivery audit; 03:35 IST.
 - `nav_daily`, `daily_book`, `investor_events`, `monthly_statements` → forever (financial records).
 - All configurable keys editable live from `/admin/settings` → Retention. Set to `0` to disable.
 
@@ -909,12 +912,23 @@ Every algo page card follows ONE structure:
 
 ## Post-fill handling + postback scaffold
 
-**Postback fan-out** (`order_postback`, all brokers):
+**Postback fan-out** (`order_postback`, all brokers + paper engine):
 1. `invalidate("orders")` always
 2. On COMPLETE/CANCELLED/REJECTED/EXPIRED: `invalidate("positions", "holdings")` + broadcast `book_changed` event
 3. On COMPLETE: broadcast `position_filled` (qty delta for optimistic patch)
 4. Audit log entry tagged `order.fill / order.cancel / order.reject / order.expired`
 5. Optional template-attach on FILL (idempotent via `attached_gtts_json IS NULL` guard)
+
+**Single canonical fanout** — `_postback_broadcast_fanout` in `backend/api/routes/orders.py` is the SSOT for all cache invalidation + WS broadcasts. Called from:
+- Kite inline postback handler
+- `_process_broker_postback` (Dhan / Groww shared path)
+- `PaperTradeEngine._update_algo_order` (fill / unfilled terminal states)
+- `PaperTradeEngine._safe_update_algo_order_cancel` (operator MCP cancel)
+
+**Paper fill status mapping** (paper internal → Kite canonical for fanout):
+- `kind="fill"` → `status="COMPLETE"` (fires position_filled + full cache invalidation)
+- `kind="unfilled"` → `status="EXPIRED"` (terminal: book_changed + orders/positions/holdings invalidated; position_filled skipped — no qty moved)
+- `kind="modify"` → not terminal; fanout NOT fired
 
 **BroadcastBus pattern** — backend invalidation + broadcast → frontend WS subscriber → `bookChanged` store (monotonic counter) → `$effect` debounced refetch (200ms).
 
