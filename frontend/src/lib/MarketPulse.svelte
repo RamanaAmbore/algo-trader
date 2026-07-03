@@ -3422,6 +3422,20 @@
         row.close = liveClose;
       if (liveClose != null && row.change == null && row.ltp != null)
         row.change = row.ltp - liveClose;
+      // Wire OHLCV + OI from symbolStore snap onto the mover row. The
+      // batchQuote pass in loadPulse now includes mover symbols (fix
+      // adbc03d7), so `snap.open / .high / .low / .volume / .oi` are
+      // populated after publishPulseQuotes lands.  Prior to this line
+      // the mover row-composer wrote only ltp / close / change_pct so
+      // the Open, Volume, and OI grid cells rendered "—" indefinitely
+      // (defect 1, operator report 2026-07-03).  Same null-guard idiom
+      // as ltp / close above: only overwrite when the row hasn't got a
+      // value yet (badging-path callers may have populated first).
+      if (row.open   == null && snap?.open   != null) row.open   = snap.open;
+      if (row.high   == null && snap?.high   != null) row.high   = snap.high;
+      if (row.low    == null && snap?.low    != null) row.low    = snap.low;
+      if (row.volume == null && snap?.volume != null) row.volume = snap.volume;
+      if (row.oi     == null && snap?.oi     != null) row.oi     = snap.oi;
       row._mover_sticky    = m.sticky ?? false;
       row._mover_change_pct = liveChangePct ?? null;
       // Sub-group tags carried over from loadMovers() — drive the

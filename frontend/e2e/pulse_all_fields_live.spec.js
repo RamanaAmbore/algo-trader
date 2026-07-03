@@ -272,26 +272,33 @@ test.describe('/pulse — all-fields populated after MCX virtual-root fix', () =
       return;
     }
 
-    // Sample the first mover row that has a populated LTP (skips rows
-    // where symbolStore hasn't hydrated yet).  For that row, the Open
-    // cell MUST contain a digit — em-dash is the defect signature.
-    // Volume can legitimately be 0 on illiquid tickers during off-hours,
-    // so we're lenient: at least one of Open or Volume must be numeric.
-    const hydrated = dump.filter((r) => /[0-9]/.test(r.ltp));
-    expect(hydrated.length, `at least one hydrated mover row (of ${dump.length})`).toBeGreaterThan(0);
+    // The defect-1 root cause was: the mover row-composer never read
+    // snap.open / snap.volume / snap.oi off the symbolStore, and mover
+    // symbols weren't in the batchQuote universe.  The fix landed in
+    // MarketPulse.svelte.  Precondition for a meaningful assertion is
+    // "at least one mover row landed with the row-data pipeline" — we
+    // use `close` populated (which the moversStore-only path already
+    // populates via previous_close) as the has-landed signal.  LTP-
+    // hydration is a separate concern (SSE path, currently 404 on dev)
+    // that this spec deliberately doesn't gate on.
+    const landed = dump.filter((r) => /[0-9]/.test(r.close));
+    expect(landed.length, `at least one mover row rendered (of ${dump.length})`).toBeGreaterThan(0);
 
-    // Log the first 5 hydrated rows for defect-diagnosis on failure.
-    console.log('Mover rows (first 5 hydrated):', hydrated.slice(0, 5));
+    // Log the first 5 landed rows for defect-diagnosis on failure.
+    console.log('Mover rows (first 5 landed):', landed.slice(0, 5));
 
-    // Assert: at least 60% of hydrated movers have a numeric Open cell.
+    // Assert: at least 60% of landed movers have a numeric Open cell.
     // A single blank row could be a symbol just added to the batchQuote
     // universe pending its first response, but a majority-blank grid is
-    // the defect.
-    const withOpen = hydrated.filter((r) => /[0-9]/.test(r.open));
+    // the defect signature.  Volume can legitimately be 0 during
+    // off-hours (renderers show "—" for zero volume), so we only lock
+    // the Open field — it's Kite's first-traded-price of the current
+    // session and is populated even during closed hours via LKG.
+    const withOpen = landed.filter((r) => /[0-9]/.test(r.open));
     expect(
       withOpen.length,
-      `mover rows with numeric Open: ${withOpen.length}/${hydrated.length} — ` +
-      `defect if <60%.  Sample rows: ${JSON.stringify(hydrated.slice(0, 3))}`
-    ).toBeGreaterThanOrEqual(Math.ceil(hydrated.length * 0.6));
+      `mover rows with numeric Open: ${withOpen.length}/${landed.length} — ` +
+      `defect if <60%.  Sample rows: ${JSON.stringify(landed.slice(0, 3))}`
+    ).toBeGreaterThanOrEqual(Math.ceil(landed.length * 0.6));
   });
 });
