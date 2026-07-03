@@ -378,7 +378,7 @@
     '#a78bfa', // violet
     '#5eead4', // teal
     '#fda4af', // rose
-    '#7dd3fc', // sky
+    'var(--algo-sky)', // sky
     '#bef264', // lime
     '#fcd34d', // amber
     '#a5b4fc', // indigo
@@ -701,7 +701,7 @@
       // `numericColumn` (warning #34). The built-in already adds
       // `ag-right-aligned-cell` + `ag-right-aligned-header` classes
       // that our CSS picks up — no override needed.
-      overlayNoRowsTemplate: '<span style="font-size: var(--fs-md);color:#7e97b8">—</span>',
+      overlayNoRowsTemplate: '<span style="font-size: var(--fs-md);color:var(--algo-muted)">—</span>',
       domLayout: 'autoHeight',
       getRowClass,
       pinnedBottomRowData: [],
@@ -1421,7 +1421,7 @@
   .perf-grid-loading {
     padding: 0.6rem 0.25rem;
     font-size: var(--fs-md);
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-family: var(--font-numeric);
     letter-spacing: 0.03em;
   }
@@ -1534,8 +1534,8 @@
     right: 0.75rem;
     z-index: 1000;
     background: rgba(251,191,36,0.18);
-    border: 1px solid rgba(251,191,36,0.55);
-    color: #fbbf24;
+    border: 1px solid var(--algo-amber-border);
+    color: var(--algo-amber);
     padding: 0.4rem 0.7rem;
     border-radius: 4px;
     font-size: var(--fs-lg);
@@ -1586,15 +1586,15 @@
     color: #fde68a;
   }
   .perf-dark .perf-banner-outage .perf-banner-icon {
-    color: #fbbf24;
+    color: var(--algo-amber);
   }
   .perf-dark .perf-banner-error {
-    background: rgba(248,113,113,0.10);
+    background: var(--algo-red-bg);
     border-color: rgba(248,113,113,0.35);
     color: #fda4a4;
   }
   .perf-dark .perf-banner-error .perf-banner-icon {
-    color: #f87171;
+    color: var(--algo-red);
   }
 
   /* Tabs + Account + Symbol on one row — keep them all visible on
@@ -1643,7 +1643,7 @@
     .acct-multi { width: 6rem; }
   }
   /* Funds & NAV tabs — sub-tab strip rendered by AlgoTabs. The
-     canonical AlgoTabs amber palette (#fbbf24 + rgba(251,191,36,0.10)
+     canonical AlgoTabs amber palette (var(--algo-amber) + rgba(251,191,36,0.10)
      fill) is overridden here to champagne so this strip matches the
      Positions/Holdings tabs immediately below it. Operator: "make
      nav and funds tabs decoration to be similar to positions/
@@ -1690,7 +1690,7 @@
      "Holdings") demoted from full amber to light blue so the three
      heading tiers (page title amber → section label muted blue →
      section heading light blue) read as distinct strata. Previously
-     all three tiers rendered in #fbbf24 and the hierarchy collapsed. */
+     all three tiers rendered in var(--algo-amber) and the hierarchy collapsed. */
   .perf-dark :global(.section-heading) { color: var(--algo-slate); }
 
   /* Refresh button */
@@ -1715,7 +1715,7 @@
     padding: 0 0.28rem;
     border-radius: 0.18rem;
     background: rgba(251,191,36,0.15);
-    color: #fbbf24;
+    color: var(--algo-amber);
     border: 1px solid rgba(251,191,36,0.40);
     text-decoration: none;
     line-height: 1.4;
