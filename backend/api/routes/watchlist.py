@@ -1148,6 +1148,14 @@ class WatchlistController(Controller):
                         )
                         for d in _json.loads(snap.payload_json)
                     ]
+                    winners = sum(1 for r in snap_rows if r.change_pct > 0)
+                    losers  = sum(1 for r in snap_rows if r.change_pct < 0)
+                    zeros   = sum(1 for r in snap_rows if r.change_pct == 0)
+                    logger.info(
+                        f"MOVERS_DEBUG branch=closed snap_rows={len(snap_rows)} "
+                        f"winners={winners} losers={losers} zeros={zeros} "
+                        f"captured_at={snap.captured_at.isoformat()}"
+                    )
                     return MoversResponse(
                         movers=snap_rows,
                         threshold_pct=MOVER_THRESHOLD_PCT,
@@ -1157,6 +1165,7 @@ class WatchlistController(Controller):
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(f"Movers snapshot deserialise failed: {exc}")
             # No snapshot yet (e.g. first deploy) — return empty gracefully.
+            logger.info(f"MOVERS_DEBUG branch=closed snap_rows=0 (no snapshot in DB)")
             return MoversResponse(
                 movers=[], threshold_pct=MOVER_THRESHOLD_PCT, session_date=ist_today,
             )
@@ -1188,6 +1197,7 @@ class WatchlistController(Controller):
         underlyings_with_opts = _underlyings_cache
 
         if not underlyings_with_opts:
+            logger.info(f"MOVERS_DEBUG branch=live combined_rows=0 (underlyings cache empty)")
             return MoversResponse(
                 movers=[], threshold_pct=MOVER_THRESHOLD_PCT, session_date=ist_today,
             )
@@ -1306,6 +1316,15 @@ class WatchlistController(Controller):
         if rows:
             asyncio.create_task(_save_movers_snapshot(rows, ist_today))
 
+        winners = sum(1 for r in rows if r.change_pct > 0)
+        losers  = sum(1 for r in rows if r.change_pct < 0)
+        zeros   = sum(1 for r in rows if r.change_pct == 0)
+        logger.info(
+            f"MOVERS_DEBUG branch=live combined_rows={len(rows)} "
+            f"winners={winners} losers={losers} zeros={zeros} "
+            f"session_movers={len(_session_movers)} "
+            f"underlyings={len(underlyings_with_opts)}"
+        )
         return MoversResponse(
             movers=rows,
             threshold_pct=MOVER_THRESHOLD_PCT,
