@@ -46,12 +46,14 @@ from backend.shared.helpers.utils import config
 logger = get_logger(__name__)
 
 
-# Settled-close offset — operator-configurable. Default = 45 minutes per
-# Kite's documented weighted-avg-last-30-min close-price calculation,
-# with 15 min of slack so the broker has time to publish the adjusted
-# value. Read fresh from settings on every poll so a /admin/settings
-# change lands without restart.
-_DEFAULT_SETTLED_OFFSET_MIN = 45
+# Settled-close offset — operator-configurable. Default = 15 minutes.
+# Kite publishes the adjusted close (weighted-avg-last-30-min) within
+# ~10-15 min after session close; operator-approved to fire the
+# `close_settled` handler at T+15 rather than T+45 so the daily snapshot
+# lands sooner. Runtime override via /admin/settings ->
+# `market_lifecycle.settled_offset_min` (previous value 45 still valid;
+# raise it back if a broker delays the adjusted-close publish).
+_DEFAULT_SETTLED_OFFSET_MIN = 15
 
 
 # Callback signature accepted by `register()`. Handlers are awaited
@@ -217,22 +219,44 @@ class MarketLifecycle:
             # Fire ONCE per close, `_settled_offset` minutes after the
             # close timestamp. The `not is_open_now` guard prevents the
             # event firing again after the next session's `open`.
+            #
+            # Belt-and-suspenders — if a segment defined multiple sessions
+            # (currently unused, but shape supports it) OR the exchange
+            # reopens via the ``evening_open_on_holidays`` rule inside the
+            # settled window, skip the `close_settled` event entirely.
+            # Firing during a live session would let the snapshot handler
+            # capture mid-session LTPs as "settled close" values, which
+            # poisons the close-override path in positions.py.
             if not is_open_now and not self._settled_fired.get(exch_lower, False):
                 last_close = self._last_close_at.get(exch_lower)
                 if last_close is not None:
                     offset = _settled_offset_minutes()
                     if now_ist >= last_close + timedelta(minutes=offset):
-                        self._settled_fired[exch_lower] = True
-                        event_key = f"{exch_lower}:close_settled"
-                        ran, failed = await self._dispatch(
-                            event_key, exch_lower, "close_settled",
-                        )
-                        fired.append({
-                            "exchange":       exch_lower,
-                            "event_type":     "close_settled",
-                            "handlers_run":   ran,
-                            "handlers_failed": failed,
-                        })
+                        # Re-probe right now — if the exchange has reopened
+                        # (evening session on a holiday) skip the settled
+                        # event; it will not fire again this close cycle.
+                        try:
+                            reopened = _exchange_is_open(segment, now_ist)
+                        except Exception:
+                            reopened = False
+                        if reopened:
+                            logger.info(
+                                f"market_lifecycle: skipping {exch_lower}:close_settled "
+                                "— exchange has reopened (evening session on holiday?)"
+                            )
+                            self._settled_fired[exch_lower] = True
+                        else:
+                            self._settled_fired[exch_lower] = True
+                            event_key = f"{exch_lower}:close_settled"
+                            ran, failed = await self._dispatch(
+                                event_key, exch_lower, "close_settled",
+                            )
+                            fired.append({
+                                "exchange":       exch_lower,
+                                "event_type":     "close_settled",
+                                "handlers_run":   ran,
+                                "handlers_failed": failed,
+                            })
 
         # Persist audit rows (one per event fired). Fire-and-forget — a
         # DB outage must not stall the poll loop.
@@ -319,16 +343,51 @@ def _enumerate_exchanges() -> dict[str, dict]:
     exchange-name -> config, so the lifecycle tracks `nse` / `mcx` /
     `cds` independently. The `holiday_exchange` value is the canonical
     exchange identifier.
+
+    Each per-exchange entry carries:
+      • name                   — segment key from yaml
+      • exchange               — upper-case exchange name (NSE/MCX/CDS)
+      • sessions               — list[{start: dtime, end: dtime}] from yaml.
+                                 Falls back to a single [(hours_start,
+                                 hours_end)] entry when the yaml still uses
+                                 the legacy shape.
+      • hours_start / hours_end — first session bookends. Kept because
+                                 `_task_market_lifecycle` derives its poll
+                                 cadence from the earliest / latest window.
+      • evening_open_on_holidays — MCX-style rule (calendar-closed day
+                                 with 17:00+ evening session).
     """
     raw = config.get("market_segments", {}) or {}
     out: dict[str, dict] = {}
     for seg_name, seg_cfg in raw.items():
         exch = (seg_cfg or {}).get("holiday_exchange", "NSE")
+        sessions_raw = (seg_cfg or {}).get("sessions") or None
+        parsed_sessions: list[dict] = []
+        if sessions_raw:
+            for s in sessions_raw:
+                try:
+                    parsed_sessions.append({
+                        "start": _parse_time(s.get("start", "09:15")),
+                        "end":   _parse_time(s.get("end",   "15:30")),
+                    })
+                except Exception:
+                    continue
+        if not parsed_sessions:
+            parsed_sessions = [{
+                "start": _parse_time((seg_cfg or {}).get("hours_start", "09:15")),
+                "end":   _parse_time((seg_cfg or {}).get("hours_end",   "15:30")),
+            }]
+        first_start = parsed_sessions[0]["start"]
+        last_end    = parsed_sessions[-1]["end"]
         out[exch.lower()] = {
             "name":             seg_name,
             "exchange":         exch,
-            "hours_start":      _parse_time((seg_cfg or {}).get("hours_start", "09:15")),
-            "hours_end":        _parse_time((seg_cfg or {}).get("hours_end",   "15:30")),
+            "sessions":         parsed_sessions,
+            "hours_start":      first_start,
+            "hours_end":        last_end,
+            "evening_open_on_holidays": bool(
+                (seg_cfg or {}).get("evening_open_on_holidays", False)
+            ),
         }
     # CDS shares the equity 09:15-15:30 window; backend_config.yaml lumps
     # it into the equity segment via `exchanges: [..., CDS]`. Surface it
@@ -339,8 +398,10 @@ def _enumerate_exchanges() -> dict[str, dict]:
         out["cds"] = {
             "name":        "currency",
             "exchange":    "CDS",
+            "sessions":    list(equity["sessions"]),
             "hours_start": equity["hours_start"],
             "hours_end":   equity["hours_end"],
+            "evening_open_on_holidays": False,
         }
     return out
 
@@ -352,18 +413,29 @@ def _exchange_is_open(segment: dict, now_ist: datetime) -> bool:
     that the existing `_task_close` uses, so no extra API quota. On
     fetch failure we fall back to an empty holiday set (open on
     holidays — better than spurious-closed transitions).
+
+    Passes the session list + evening-open flag through so a single MCX
+    holiday-evening reopen (calendar-closed day, ``now.time() >= 17:00``)
+    is detected correctly.
     """
     try:
         from backend.brokers.broker_apis import fetch_holidays
         h_set = fetch_holidays(segment["exchange"])
     except Exception:
         h_set = set()
+    sessions_config = [
+        {"start": f"{w['start'].hour:02d}:{w['start'].minute:02d}",
+         "end":   f"{w['end'].hour:02d}:{w['end'].minute:02d}"}
+        for w in segment.get("sessions", [])
+    ] or None
     return is_market_open(
         now_ist,
         h_set,
         market_start=segment["hours_start"],
         market_end=segment["hours_end"],
         exchange=segment["exchange"],
+        sessions=sessions_config,
+        evening_open_on_holidays=segment.get("evening_open_on_holidays", False),
     )
 
 
