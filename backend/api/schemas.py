@@ -37,6 +37,17 @@ class HoldingRow(msgspec.Struct):
     # (both PriceBroker.quote and KiteTicker returned 0 or raised).
     # Frontend can surface a small staleness indicator on these rows.
     last_price_stale: bool = False
+    # True when the row was substituted from broker_apis' per-account
+    # last-known-good frame cache because the account's circuit breaker
+    # was OPEN at fetch time. Distinct from `last_price_stale` (LTP-only
+    # staleness) — `account_stale` means the entire row is a stale copy
+    # from a prior successful fetch. Frontend surfaces this via a slate
+    # row tint + optional "stale @ HH:MM" account-cell badge.
+    account_stale: bool = False
+    # HH:MM IST string of the last successful broker fetch for this
+    # account. Non-empty only when account_stale=True. Frontend renders
+    # this as a small "STALE @ HH:MM" badge next to the account name.
+    account_stale_since: str = ""
 
 
 class HoldingsSummaryRow(msgspec.Struct):
@@ -60,6 +71,11 @@ class HoldingsResponse(msgspec.Struct):
     # frontend can show a staleness hint ("as of <time>") instead of a
     # live label.  Null during market hours (live broker data).
     as_of: Optional[str] = None
+    # Accounts whose rows were substituted from the broker_apis last-known-
+    # good frame cache because their circuit breaker was OPEN at fetch
+    # time. Frontend NavStrip / TOTAL rollups tag aggregates as "stale @
+    # HH:MM" when any account in this list contributes to the sum.
+    stale_accounts: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +124,17 @@ class PositionRow(msgspec.Struct):
     # (both PriceBroker.quote and KiteTicker returned 0 or raised).
     # Frontend can surface a small staleness indicator on these rows.
     last_price_stale: bool = False
+    # True when the row was substituted from broker_apis' per-account
+    # last-known-good frame cache because the account's circuit breaker
+    # was OPEN at fetch time. Distinct from `last_price_stale` (LTP-only
+    # staleness) — `account_stale` means the entire row is a stale copy
+    # from a prior successful fetch. Frontend surfaces this via a slate
+    # row tint + optional "stale @ HH:MM" account-cell badge.
+    account_stale: bool = False
+    # HH:MM IST string of the last successful broker fetch for this
+    # account. Non-empty only when account_stale=True. Frontend renders
+    # this as a small "STALE @ HH:MM" badge next to the account name.
+    account_stale_since: str = ""
     # "live" for broker-fetched rows; "paper" for synthesized paper rows.
     # Default "live" preserves backward compatibility with all existing callers.
     mode: str = "live"
@@ -134,6 +161,11 @@ class PositionsResponse(msgspec.Struct):
     # frontend can show a staleness hint ("as of <time>") instead of a
     # live label.  Null during market hours (live broker data).
     as_of: Optional[str] = None
+    # Accounts whose rows were substituted from the broker_apis last-known-
+    # good frame cache because their circuit breaker was OPEN at fetch
+    # time. Frontend NavStrip / TOTAL rollups tag aggregates as "stale @
+    # HH:MM" when any account in this list contributes to the sum.
+    stale_accounts: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -158,11 +190,21 @@ class FundsRow(msgspec.Struct):
     # never re-implements the arithmetic.
     available_funds:  float = 0.0  # = avail_margin — free cash for new trades (broker "net")
     available_cash:   float = 0.0  # = cash − option_premium — SOD cash net of locked option premiums
+    # True when the row was substituted from broker_apis' per-account
+    # last-known-good frame cache because the account's circuit breaker
+    # was OPEN at fetch time. Frontend surfaces via slate row tint.
+    account_stale: bool = False
+    # HH:MM IST string of the last successful broker fetch for this
+    # account. Non-empty only when account_stale=True.
+    account_stale_since: str = ""
 
 
 class FundsResponse(msgspec.Struct):
     rows: list[FundsRow]
     refreshed_at: str
+    # Accounts whose rows were substituted from the broker_apis last-known-
+    # good frame cache. See PositionsResponse.stale_accounts for details.
+    stale_accounts: list[str] = []
 
 
 # ---------------------------------------------------------------------------
