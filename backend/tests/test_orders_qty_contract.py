@@ -291,29 +291,31 @@ async def test_basket_margin_translate_qty_mcx():
     assert kb.translate_qty(CRUDEOIL_EXCHANGE, 100, CRUDEOIL_LOT_SIZE) == 1
     assert kb.normalise_qty(CRUDEOIL_EXCHANGE, 100, CRUDEOIL_LOT_SIZE) == 1
 
-    # Stale check: grep-level assertion — orders.py must call translate_qty
-    # (or normalise_qty) before every basket_order_margins call.
+    # Stale check: grep-level assertion — the basket_margin handler must call
+    # translate_qty (or normalise_qty) before every basket_order_margins call.
+    # After the RED-zone split the basket_margin body moved to orders_basket.py;
+    # orders.py now has a thin delegation shim. We check BOTH files to catch any
+    # future regression where the translate_qty call is accidentally removed.
     import re
     import pathlib
+    basket_src = pathlib.Path(
+        "backend/api/routes/orders_basket.py"
+    ).read_text()
     orders_src = pathlib.Path(
         "backend/api/routes/orders.py"
     ).read_text()
+    combined_src = basket_src + orders_src
     # The fix inserts translate_qty into the basket_margin _margin_for_group
-    # closure. We verify the pattern is present so no future refactor
-    # silently removes it.
-    assert re.search(r"translate_qty", orders_src), \
-        "orders.py must call translate_qty in the basket_margin handler"
+    # handler. We verify the pattern is present so no future refactor removes it.
+    assert re.search(r"translate_qty", basket_src), \
+        "orders_basket.py must call translate_qty in the basket_margin handler"
     # Before the fix, every orders_payload was built with `"quantity": leg.quantity`
     # in a simple list comprehension (no translation). That exact pattern is gone
-    # from every basket_order_margins call site. Verify no list-comprehension
-    # with raw leg.quantity feeds into basket_order_margins.
-    # Heuristic: there must be no occurrence of `leg.quantity` inside a dict
-    # that is directly part of an orders_payload list (without a translate_qty
-    # wrapper). The marker string `"quantity":         leg.quantity` (with spaces
-    # matching the old list-comp formatting) must not exist.
+    # from every basket_order_margins call site across BOTH files. Verify no
+    # list-comprehension with raw leg.quantity feeds into basket_order_margins.
     old_raw_pattern = '"quantity":         leg.quantity'
-    assert old_raw_pattern not in orders_src, (
-        "Defect 1 regression: found old raw `leg.quantity` pattern in orders.py. "
+    assert old_raw_pattern not in combined_src, (
+        "Defect 1 regression: found old raw `leg.quantity` pattern in orders*.py. "
         "Every basket_order_margins call site must translate qty via translate_qty."
     )
 

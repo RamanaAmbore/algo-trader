@@ -1,0 +1,475 @@
+"""
+orders_postback.py — Shared broker-postback processing pipeline.
+
+Extracted from orders.py (4322 LOC → split) as Commit 2 of the RED-zone split.
+
+Exports:
+  _process_broker_postback   — shared fan-out used by Dhan + Groww handlers.
+  kite_postback_handler      — full Kite postback logic (HMAC + row-sync + fan-out).
+
+`_postback_broadcast_fanout` intentionally stays in orders.py because:
+  - test_postback_fanout_ssot.py reads orders.py source directly and asserts
+    that `def _postback_broadcast_fanout(` is defined there.
+  - test_paper_fanout.py asserts paper.py imports from backend.api.routes.orders.
+
+This module imports `_postback_broadcast_fanout` lazily (inside the function
+body) to avoid the circular import that would arise from a module-level import
+of orders.py here while orders.py imports from this module.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timezone
+
+from backend.shared.helpers.ramboq_logger import get_logger
+from backend.shared.helpers.utils import mask_account
+
+logger = get_logger(__name__)
+
+
+async def _process_broker_postback(
+    *,
+    broker_id: str,
+    order_id: str,
+    status: str,            # Kite-canonical status string
+    account: str,
+    symbol: str,
+    txn: str,
+    qty,
+    price,
+    exchange: str = "",
+    status_message: str = "",
+) -> None:
+    """Shared post-broker-postback pipeline used by Dhan + Groww
+    handlers (Kite has its own inline logic with HMAC validation).
+
+    Same fan-out as the Kite path:
+      1. AlgoOrder row update by broker_order_id match
+      2. invalidate `orders` / `positions` / `holdings` on terminal
+      3. broadcast `order_update` + `position_filled` (on COMPLETE)
+         + `book_changed` (on terminal) WS events
+      4. audit-log entry tagged `category='order.fill|cancel|reject|expired'`
+
+    Best-effort: never raises. Failures log + drop so the broker's
+    webhook gets a 200 OK and stops retrying.
+    """
+    from sqlalchemy import select as _sql_select
+    from backend.api.database import async_session as _async_s
+    from backend.api.models import AlgoOrder as _AO
+    masked = mask_account(account)
+
+    logger.info(
+        f"{broker_id} postback: {order_id} [{masked}] {status} {txn} "
+        f"{qty} {symbol} price={price} msg={status_message}"
+    )
+
+    _terminal = status in ("COMPLETE", "CANCELLED", "REJECTED", "EXPIRED")
+
+    # Sync AlgoOrder row + record event.
+    try:
+        from backend.api.algo.order_events import write_event as _write_event
+        _KITE_STATUS_MAP = {
+            "COMPLETE":  "FILLED",
+            "CANCELLED": "CANCELLED",
+            "REJECTED":  "REJECTED",
+            "EXPIRED":   "UNFILLED",
+        }
+        _new_status = _KITE_STATUS_MAP.get(status)
+
+        _filled_rows: list = []
+        async with _async_s() as _s:
+            _rows = (await _s.execute(
+                _sql_select(_AO).where(_AO.broker_order_id == str(order_id))
+            )).scalars().all()
+            for _r in _rows:
+                if _new_status and _r.status != _new_status:
+                    _r.status = _new_status
+                    if _new_status == "FILLED":
+                        try:
+                            _r.fill_price = float(price) if price else _r.fill_price
+                        except (TypeError, ValueError):
+                            pass
+                        _r.filled_at = datetime.now(timezone.utc)
+                        _filled_rows.append(_r)
+                    _r.detail = ((_r.detail or "")[:200]
+                                 + f" · {broker_id} postback {status}"
+                                 + (f": {status_message}" if status_message else ""))
+            await _s.commit()
+            for _r in _rows:
+                try:
+                    await _write_event(
+                        _r.id, "broker_postback",
+                        f"{status}{(' · ' + status_message) if status_message else ''}",
+                        payload={"broker_id": broker_id, "broker_order_id": order_id,
+                                 "status": status, "qty": qty, "price": price},
+                    )
+                except Exception as _we:
+                    logger.debug(f"order_events write skipped: {_we}")
+        # Fire template-attach on FILL — mirrors the Kite postback path
+        # (`_pb_event`). Idempotency lives inside
+        # `_fire_template_attach_on_fill` (attached_gtts_json check) so a
+        # duplicate postback can't double-place TP/SL GTTs.
+        for _r in _filled_rows:
+            try:
+                from backend.api.routes.orders_place import (
+                    _maybe_fire_template_attach_for_reconcile,
+                )
+                _maybe_fire_template_attach_for_reconcile(_r)
+            except Exception as _te:
+                logger.warning(
+                    f"{broker_id} postback template-attach failed for #{_r.id}: {_te}"
+                )
+    except Exception as e:
+        logger.warning(f"{broker_id} postback row sync failed: {e}")
+
+    # Audit trail
+    try:
+        from backend.api.audit import write_audit_event
+        # Audit category mapping. Pre-fix EXPIRED + unknown statuses
+        # fell through to "order.fill" which mislabelled them in
+        # /admin/audit's Orders pill. EXPIRED gets its own category;
+        # truly-unknown statuses bucket to "order" (the generic).
+        # (Slice P3.)
+        _cat = ("order.fill"    if status == "COMPLETE"
+                else "order.cancel"  if status == "CANCELLED"
+                else "order.reject"  if status == "REJECTED"
+                else "order.expired" if status == "EXPIRED"
+                else "order")
+        write_audit_event(
+            category=_cat,
+            action=f"BROKER_{status}",
+            actor_username=broker_id,
+            actor_role="system",
+            target_type="broker_order",
+            target_id=order_id or None,
+            summary=(f"{status} {txn} {qty} {symbol} @₹{price} acct={masked}"
+                     + (f" msg={status_message}" if status_message else ""))[:1000],
+        )
+    except Exception as _aud:
+        logger.debug(f"{broker_id} postback audit write skipped: {_aud}")
+
+    # Cache invalidation + WS broadcasts — delegated to the shared
+    # `_postback_broadcast_fanout` helper. Imported lazily to avoid a
+    # circular import at module load time (orders.py imports this
+    # module; this module would circularly depend on orders.py at the
+    # module level if we imported at the top).
+    from backend.api.routes.orders import _postback_broadcast_fanout  # noqa: PLC0415
+    _postback_broadcast_fanout(
+        status=status, order_id=order_id, account=account, masked=masked,
+        symbol=symbol, txn=txn, qty=qty, price=price,
+        exchange=exchange, status_message=status_message,
+    )
+
+
+# ── Kite postback handler ─────────────────────────────────────────────────────
+
+async def _pb_event_kite(
+    *,
+    order_id: str,
+    tradingsymbol: str,
+    txn: str,
+    qty,
+    price,
+    status: str,
+    status_msg: str,
+    account: str,
+) -> None:
+    """Timeline + row-sync for the Kite postback.
+
+    Runs inside an asyncio.create_task so failures log + drop
+    without blocking the postback acknowledgement.
+    """
+    from sqlalchemy import select as _sql_select
+    from backend.api.database import async_session as _async_session
+    from backend.api.models import AlgoOrder as _AlgoOrder
+    from backend.api.algo.order_events import write_event as _write_event
+    from backend.api.routes.orders_place import (
+        _arm_take_profit, _fire_template_attach_on_fill,
+    )
+
+    _KITE_STATUS_MAP = {
+        "COMPLETE":  "FILLED",
+        "CANCELLED": "CANCELLED",
+        "REJECTED":  "REJECTED",
+        "EXPIRED":   "UNFILLED",
+    }
+    _new_status = _KITE_STATUS_MAP.get(str(status or "").upper())
+
+    try:
+        _filled_rows: list = []
+        async with _async_session() as _s:
+            _rows = (await _s.execute(
+                _sql_select(_AlgoOrder).where(
+                    _AlgoOrder.broker_order_id == str(order_id)
+                )
+            )).scalars().all()
+
+            if not _rows:
+                from datetime import datetime, timezone, timedelta
+                _cutoff = datetime.now(timezone.utc) - timedelta(seconds=60)
+                _fallback_where = [
+                    _AlgoOrder.broker_order_id.is_(None),
+                    _AlgoOrder.status == "OPEN",
+                    _AlgoOrder.mode == "live",
+                    _AlgoOrder.symbol == str(tradingsymbol or ""),
+                    _AlgoOrder.transaction_type == str(txn or "").upper(),
+                    _AlgoOrder.created_at >= _cutoff,
+                ]
+                _pb_account = str(account or "").strip() if account else ""
+                if _pb_account:
+                    _fallback_where.append(_AlgoOrder.account == _pb_account)
+                try:
+                    _pb_qty = int(qty or 0)
+                except (TypeError, ValueError):
+                    _pb_qty = 0
+                if _pb_qty > 0:
+                    _fallback_where.append(_AlgoOrder.quantity == _pb_qty)
+                _fallback = (await _s.execute(
+                    _sql_select(_AlgoOrder).where(*_fallback_where)
+                    .order_by(_AlgoOrder.id.desc()).limit(1)
+                )).scalars().first()
+                if _fallback is not None:
+                    _fallback.broker_order_id = str(order_id)
+                    _rows = [_fallback]
+                    logger.info(
+                        f"postback fallback matched row #{_fallback.id} "
+                        f"to broker_order_id={order_id} via account/symbol/side"
+                    )
+
+            for _r in _rows:
+                if _new_status and _r.status != _new_status:
+                    _r.status = _new_status
+                    if _new_status == "FILLED" and price:
+                        try:
+                            _r.fill_price = float(price)
+                        except (TypeError, ValueError):
+                            pass
+                        if _r.created_at:
+                            from datetime import datetime, timezone
+                            _r.filled_at = datetime.now(timezone.utc)
+                        _filled_rows.append(_r)
+            await _s.commit()
+
+            from backend.api.algo.lot_ledger import record_fill as _record_ledger_fill
+            for _r in _filled_rows:
+                if _r.strategy_id and _r.fill_price and _r.quantity > 0:
+                    try:
+                        await _record_ledger_fill(
+                            _s,
+                            strategy_id=_r.strategy_id,
+                            algo_order_id=_r.id,
+                            account=str(_r.account or ""),
+                            symbol=str(_r.symbol or ""),
+                            exchange=str(_r.exchange or "NFO"),
+                            side_kite=str(_r.transaction_type or "BUY"),
+                            qty=int(_r.quantity or 0),
+                            fill_price=float(_r.fill_price or 0),
+                        )
+                    except Exception as _le:
+                        logger.warning(
+                            f"postback lot_ledger write failed for "
+                            f"order_id={_r.id} strategy={_r.strategy_id}: {_le}"
+                        )
+            await _s.commit()
+
+        for _r in _rows:
+            await _write_event(
+                _r.id, "postback",
+                f"Kite postback: {status} {txn} {qty} {tradingsymbol} @{price}",
+                payload={
+                    "broker_order_id": order_id,
+                    "status": status,
+                    "new_algo_status": _new_status,
+                    "tradingsymbol": tradingsymbol,
+                    "transaction_type": txn,
+                    "quantity": qty,
+                    "price": price,
+                    "status_message": status_msg,
+                },
+            )
+
+        for _r in _filled_rows:
+            if ((_r.target_pct or _r.target_abs)
+                    and _r.parent_order_id is None
+                    and _r.template_id is None
+                    and _r.fill_price):
+                asyncio.create_task(_arm_take_profit(
+                    parent_row_id=_r.id,
+                    parent_account=str(_r.account or ""),
+                    parent_symbol=str(_r.symbol or ""),
+                    parent_exchange=str(_r.exchange or "NFO"),
+                    parent_side=str(_r.transaction_type or "BUY"),
+                    fill_price=float(_r.fill_price),
+                    target_pct=float(_r.target_pct or 0.0),
+                    target_abs=(_r.target_abs and float(_r.target_abs)),
+                    parent_mode=str(_r.mode or "live"),
+                ))
+
+        for _r in _filled_rows:
+            if (_r.template_id
+                    and _r.parent_order_id is None
+                    and _r.mode == "live"
+                    and _r.fill_price):
+                _attach_qty = (
+                    int(_r.filled_quantity)
+                    if int(_r.filled_quantity or 0) > 0
+                    else int(_r.quantity or 0)
+                )
+                asyncio.create_task(
+                    _fire_template_attach_on_fill(
+                        parent_row_id=int(_r.id),
+                        parent_account=str(_r.account or ""),
+                        parent_symbol=str(_r.symbol or ""),
+                        parent_exchange=str(_r.exchange or "NFO"),
+                        parent_side=str(_r.transaction_type or "BUY"),
+                        parent_qty=_attach_qty,
+                        fill_price=float(_r.fill_price),
+                        template_id=int(_r.template_id),
+                        parent_product=str(_r.product or "NRML"),
+                    )
+                )
+    except Exception as _pe:
+        logger.debug(f"postback event write failed: {_pe}")
+
+
+async def kite_postback_handler(request) -> dict:
+    """Full Kite postback logic — HMAC verification + row sync + broadcast.
+
+    Extracted from OrdersController.order_postback. Delegates to
+    _pb_event_kite for async timeline work, then calls _postback_broadcast_fanout
+    (lazily imported from orders.py to avoid circular import).
+    """
+    import hashlib
+    import hmac
+    from litestar.exceptions import HTTPException
+    from backend.brokers.connections import Connections
+    from backend.shared.helpers.utils import mask_account
+
+    try:
+        body = await request.json()
+        order_id        = body.get("order_id", "")
+        order_timestamp = body.get("order_timestamp", "")
+        checksum        = body.get("checksum", "")
+        account         = body.get("user_id", "")
+        status          = body.get("status", "")
+        tradingsymbol   = body.get("tradingsymbol", "")
+        txn             = body.get("transaction_type", "")
+        qty             = body.get("quantity", 0)
+        price           = body.get("average_price") or body.get("price", 0)
+        status_msg      = body.get("status_message") or ""
+        masked          = mask_account(account)
+
+        import os as _os
+        _use_conn_svc = _os.environ.get(
+            "RAMBOQ_USE_CONN_SERVICE", "",
+        ).strip().lower() in ("1", "true", "yes", "on")
+
+        if _use_conn_svc:
+            from backend.brokers.client.remote_broker import (
+                list_remote_accounts, verify_postback,
+            )
+            kite_candidates = [
+                r["account"] for r in list_remote_accounts()
+                if r.get("broker_id") in ("zerodha_kite", "kite")
+            ]
+            candidates = (
+                [account] + [a for a in kite_candidates if a != account]
+                if account and account in kite_candidates
+                else kite_candidates
+            )
+            sig_valid = False
+            for acct in candidates:
+                if verify_postback(
+                    acct,
+                    order_id=order_id,
+                    order_timestamp=order_timestamp,
+                    checksum=checksum,
+                ):
+                    sig_valid = True
+                    break
+        else:
+            conns = Connections()
+            from backend.brokers.connections import KiteConnection
+            kite_candidates: list[str] = [
+                a for a, c in conns.conn.items() if isinstance(c, KiteConnection)
+            ]
+            candidates: list[str] = []
+            if account and account in kite_candidates:
+                candidates = [account] + [a for a in kite_candidates if a != account]
+            else:
+                candidates = kite_candidates
+
+            sig_valid = False
+            for acct in candidates:
+                api_secret = conns.conn[acct].api_secret
+                msg = (str(order_id) + str(order_timestamp) + api_secret).encode()
+                expected = hashlib.sha256(msg).hexdigest()
+                if hmac.compare_digest(expected, str(checksum)):
+                    sig_valid = True
+                    break
+
+        if not sig_valid:
+            logger.warning(
+                "postback signature mismatch",
+                extra={"order_id": order_id},
+            )
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid postback signature.",
+            )
+
+        logger.info(f"Postback: {order_id} [{masked}] {status} {txn} {qty} "
+                    f"{tradingsymbol} price={price} msg={status_msg}")
+
+        try:
+            from backend.api.audit import write_audit_event
+            _status_u = str(status or "").upper()
+            _cat = ("order.fill"     if _status_u == "COMPLETE"
+                    else "order.cancel"  if _status_u == "CANCELLED"
+                    else "order.reject"  if _status_u == "REJECTED"
+                    else "order.expired" if _status_u == "EXPIRED"
+                    else "order")
+            write_audit_event(
+                category=_cat,
+                action=f"BROKER_{_status_u or 'EVENT'}",
+                actor_username="broker",
+                actor_role="system",
+                target_type="broker_order",
+                target_id=str(order_id) if order_id else None,
+                summary=(f"{_status_u} {txn} {qty} {tradingsymbol} "
+                         f"@₹{price} acct={masked}"
+                         + (f" msg={status_msg}" if status_msg else ""))[:1000],
+            )
+        except Exception as _exc:
+            logger.debug(f"postback audit write skipped: {_exc}")
+
+        try:
+            asyncio.create_task(_pb_event_kite(
+                order_id=order_id,
+                tradingsymbol=tradingsymbol,
+                txn=txn,
+                qty=qty,
+                price=price,
+                status=status,
+                status_msg=status_msg,
+                account=account,
+            ))
+        except Exception:
+            pass
+
+        from backend.api.routes.orders import _postback_broadcast_fanout  # noqa: PLC0415
+        _postback_broadcast_fanout(
+            status=status, order_id=order_id, account=account,
+            masked=masked, symbol=tradingsymbol, txn=txn,
+            qty=qty, price=price,
+            exchange=body.get("exchange", ""),
+            status_message=status_msg,
+        )
+
+        return {"status": "ok"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Postback error: {e}")
+        return {"status": "error", "detail": str(e)}
