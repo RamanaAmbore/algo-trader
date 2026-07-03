@@ -686,7 +686,10 @@ class BrokerHealthResponse(msgspec.Struct):
 
 def _broker_id_to_label(broker_id: str) -> str:
     if not broker_id:
-        return "unknown"
+        # Legacy rows seeded before the broker_id column existed may have
+        # an empty string or NULL. Treat as Kite (the historical default)
+        # rather than returning "unknown" which confused the operator.
+        return "kite"
     b = broker_id.lower()
     if "kite" in b or "zerodha" in b:
         return "kite"
