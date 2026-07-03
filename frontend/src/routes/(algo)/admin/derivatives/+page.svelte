@@ -4779,7 +4779,7 @@
 {/if}
 
 {#if !strategy && !strategyErr && !loading && !drafts.length}
-  <div class="text-[0.65rem] text-[#7e97b8] italic mb-3">
+  <div class="text-[0.65rem] text-[var(--algo-muted)] italic mb-3">
     {#if !selectedUnderlying}
       Pick an underlying to surface {simActive ? 'sim' : 'live'} candidates, or click
       <b>+ Add</b> to drop a draft strike into the payoff.
@@ -5485,7 +5485,7 @@
         </div>
       </div>
     {:else if !_colLegs}
-      <div class="text-[0.6rem] text-[#7e97b8] italic">
+      <div class="text-[0.6rem] text-[var(--algo-muted)] italic">
         {#if legsTab === 'expiry'}
           No ITM options in the current candidate set.
         {:else}
@@ -5752,7 +5752,7 @@
               </div>
             {/if}
           </div>
-          <div class="text-[0.5rem] text-[#7e97b8] mt-1 italic">
+          <div class="text-[0.5rem] text-[var(--algo-muted)] mt-1 italic">
             * numerical max/min within
             {#if (strategy?.span_sigmas ?? 0) > 0}
               ±{(strategy?.span_sigmas ?? 0).toFixed(1)}σ
@@ -5768,7 +5768,7 @@
 
 
   {#if !strategy && !strategyErr && !legs.length}
-    <div class="text-[0.65rem] text-[#7e97b8] italic mb-3">
+    <div class="text-[0.65rem] text-[var(--algo-muted)] italic mb-3">
       No legs yet. Pick an underlying above to surface candidates, or click
       <b>+</b> to drop a draft strike into the payoff.
     </div>
@@ -5942,11 +5942,11 @@
     display: none;
   }
   .opt-und-row :global(.rbq-select-option-label[data-hint='frequent']) {
-    color: #fbbf24;         /* amber-400 — operator favourite */
+    color: var(--algo-amber);         /* amber-400 — operator favourite */
     font-weight: 700;
   }
   .opt-und-row :global(.rbq-select-option-label[data-hint='options']) {
-    color: #22d3ee;         /* cyan-400 — actionable, matches card controls */
+    color: var(--algo-cyan);         /* cyan-400 — actionable, matches card controls */
     font-weight: 700;
   }
   .opt-und-row :global(.rbq-select-option-label[data-hint='hedge']) {
@@ -5955,7 +5955,7 @@
   /* Watchlist fallback tier — sky-blue, slightly dimmed vs 'options'
      cyan to signal "from watchlist, no live position yet". */
   .opt-und-row :global(.rbq-select-option-label[data-hint='watchlist']) {
-    color: #7dd3fc;            /* sky-300 */
+    color: var(--algo-sky);            /* sky-300 */
   }
   /* Popular/liquid tier — default colour, muted opacity so they read
      as "generic fallback, not your book". */
@@ -5965,7 +5965,7 @@
   /* Hint shown below the underlying picker when book is empty. */
   .opt-und-hint {
     font-size: var(--fs-xs, 0.65rem);
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-style: italic;
     margin-top: 0.2rem;
     line-height: 1.3;
@@ -6075,7 +6075,7 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: #fbbf24;
+    color: var(--algo-amber);
     padding: 0 0.25rem 0.25rem;
     /* Match .opt-block-h (Greeks heading) — the amber underline
        anchors the label and makes it read as bright as the Greeks
@@ -6103,7 +6103,7 @@
      .algo-card-title tokens; only the SIZE is bumped to fs-lg so the
      header out-ranks the smaller sub-titles beneath it. */
   .opt-section-title {
-    color: #fbbf24;
+    color: var(--algo-amber);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-weight: 700;
     font-size: var(--fs-lg);
@@ -6139,9 +6139,9 @@
     white-space: nowrap;
     margin-left: auto;
   }
-  .tag-deriv  { color: #7dd3fc; background: rgba(125,211,252,0.10); }
-  .tag-long   { color: #4ade80; background: rgba(74,222,128,0.10); }
-  .tag-short  { color: #f87171; background: rgba(248,113,113,0.10); }
+  .tag-deriv  { color: var(--algo-sky); background: rgba(125,211,252,0.10); }
+  .tag-long   { color: var(--algo-green); background: var(--algo-green-bg); }
+  .tag-short  { color: var(--algo-red); background: var(--algo-red-bg); }
   /* Greek chips in the payoff header — distinct cyan tint so they
      read as a different category from the amber net-cost / max-PnL
      chips. Theta + Vega flip to a red variant when negative (short
@@ -6186,7 +6186,7 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: #fbbf24;
+    color: var(--algo-amber);
     border-bottom: 1px solid rgba(251,191,36,0.18);
     padding-bottom: 0.25rem;
     margin-bottom: 0.4rem;
@@ -6257,8 +6257,8 @@
     margin-right: 0.5rem;
     text-align: left;
   }
-  .kv-pos { color: #4ade80; }
-  .kv-neg { color: #f87171; }
+  .kv-pos { color: var(--algo-green); }
+  .kv-neg { color: var(--algo-red); }
   .kv-sub { color: var(--text-muted); font-size: var(--fs-md); margin-left: 0.2rem; }
 
   .opt-payoff {
@@ -6353,9 +6353,9 @@
     color: var(--text-muted);
     text-align: center;
   }
-  .leg-source-live   { color: #4ade80; }
-  .leg-source-sim    { color: #fbbf24; }
-  .leg-source-manual { color: #7dd3fc; }
+  .leg-source-live   { color: var(--algo-green); }
+  .leg-source-sim    { color: var(--algo-amber); }
+  .leg-source-manual { color: var(--algo-sky); }
   .leg-source-draft  { color: #f0abfc; }
   .leg-del {
     width: 1.4rem;
@@ -6363,7 +6363,7 @@
     border-radius: 3px;
     border: 1px solid rgba(248,113,113,0.4);
     background: rgba(248,113,113,0.08);
-    color: #f87171;
+    color: var(--algo-red);
     font-size: var(--fs-xl);
     line-height: 1;
     cursor: pointer;
@@ -6403,8 +6403,8 @@
      prefixed selectors don't reach it). Operator: "check every
      where else for ltp and color code the way ltp is color coded
      in pulse positions, holding ltp." */
-  .cand-grid .ltp-vs-avg-up   { background-color: rgba(74,222,128,0.10); }
-  .cand-grid .ltp-vs-avg-down { background-color: rgba(248,113,113,0.10); }
+  .cand-grid .ltp-vs-avg-up   { background-color: var(--algo-green-bg); }
+  .cand-grid .ltp-vs-avg-down { background-color: var(--algo-red-bg); }
   .cand-grid .ltp-vs-prev-up   { box-shadow: inset 1px 0 0 0 rgba(74,222,128,0.85); }
   .cand-grid .ltp-vs-prev-down { box-shadow: inset 1px 0 0 0 rgba(248,113,113,0.85); }
   .cand-grid .ltp-vs-prev-flat { box-shadow: inset 1px 0 0 0 rgba(126,151,184,0.50); }
@@ -6419,7 +6419,7 @@
     padding: 0.85rem 0.7rem;
     font-family: monospace;
     font-size: var(--fs-md);
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-style: italic;
     text-align: center;
   }
@@ -6474,7 +6474,7 @@
   .byund-headrow > span {
     padding: 0.3rem 0.45rem;
     background: rgba(15,23,42,0.65);  /* matches History / ag-theme-algo */
-    border-bottom: 1px solid rgba(251,191,36,0.30);
+    border-bottom: 1px solid var(--algo-amber-border-soft);
     font-size: var(--fs-2xs);
     font-weight: 800;
     letter-spacing: 0.06em;
@@ -6508,13 +6508,13 @@
   }
   .byund-und {
     font-weight: 700;
-    color: #fbbf24;
+    color: var(--algo-amber);
     letter-spacing: 0.02em;
     font-variant-numeric: tabular-nums;
   }
-  .byund-row > .cell-pos { color: #4ade80; }
-  .byund-row > .cell-neg { color: #f87171; }
-  .byund-row > .cell-flat { color: #7e97b8; }
+  .byund-row > .cell-pos { color: var(--algo-green); }
+  .byund-row > .cell-neg { color: var(--algo-red); }
+  .byund-row > .cell-flat { color: var(--algo-muted); }
   .byund-row > .cell-muted { color: rgba(200,216,240,0.65); }
 
   /* Tick-flash animation — transient background pulse when a tracked
@@ -6525,11 +6525,11 @@
      In fullscreen mode the alpha doubles so the operator sees the
      pulse from across the room. */
   @keyframes tf-pulse-up {
-    0%   { background-color: rgba(74, 222, 128, 0.22); }
+    0%   { background-color: var(--algo-green-bg-strong); }
     100% { background-color: transparent; }
   }
   @keyframes tf-pulse-down {
-    0%   { background-color: rgba(248, 113, 113, 0.22); }
+    0%   { background-color: var(--algo-red-bg-strong); }
     100% { background-color: transparent; }
   }
   .byund-row > .tf-up   { animation: tf-pulse-up   350ms ease-out; }
@@ -6587,10 +6587,10 @@
      (commit fb0344fc). Override the alternating + hover bg so the
      amber reads uniformly. */
   .byund-row-total > span {
-    background: rgba(251,191,36,0.22) !important;
+    background: var(--algo-amber-bg-strong) !important;
     border-top: 2px solid rgba(251,191,36,0.70);
     border-bottom: 1px solid rgba(251,191,36,0.40);
-    color: #fbbf24;
+    color: var(--algo-amber);
     font-weight: 700;
   }
   .byund-row-total > .cell-pos { color: #86efac !important; }
@@ -6600,7 +6600,7 @@
     padding: 0.85rem 0.7rem;
     font-family: monospace;
     font-size: var(--fs-md);
-    color: #7e97b8;
+    color: var(--algo-muted);
     font-style: italic;
     text-align: center;
   }
@@ -6630,7 +6630,7 @@
        affordance ("there's more grid off-screen") instead of a
        hairline that's easy to miss. */
     scrollbar-width: auto;
-    scrollbar-color: rgba(251,191,36,0.55) rgba(15, 25, 45, 0.6);
+    scrollbar-color: var(--algo-amber-border) rgba(15, 25, 45, 0.6);
   }
   .cand-scroll::-webkit-scrollbar { height: 10px; width: 10px; }
   .cand-scroll::-webkit-scrollbar-track {
@@ -6638,7 +6638,7 @@
     border-radius: 4px;
   }
   .cand-scroll::-webkit-scrollbar-thumb {
-    background: rgba(251,191,36,0.55);
+    background: var(--algo-amber-border);
     border-radius: 4px;
   }
   .cand-scroll::-webkit-scrollbar-thumb:hover {
@@ -6668,7 +6668,7 @@
     border: 0;
     padding: 0 0.25rem 0.5rem;
     cursor: pointer;
-    color: #fbbf24;
+    color: var(--algo-amber);
     font-family: monospace;
     font-size: var(--fs-sm);
     font-weight: 700;
@@ -6695,7 +6695,7 @@
     border-radius: 3px;
     background: var(--algo-amber-bg-strong);
     border: 1px solid var(--algo-amber-border);
-    color: #fbbf24;
+    color: var(--algo-amber);
     font-family: var(--font-numeric);
     font-size: var(--fs-lg);
     font-weight: 800;
@@ -6866,10 +6866,10 @@
     background: var(--algo-amber-bg-strong);
     border-color: var(--algo-amber-border);
     color: var(--algo-amber);
-    box-shadow: 0 0 6px rgba(251, 191, 36, 0.30);
+    box-shadow: 0 0 6px var(--algo-amber-border-soft);
   }
   .expiry-band-header-close .expiry-band-count {
-    background: rgba(251, 191, 36, 0.30);
+    background: var(--algo-amber-border-soft);
     color: #fed7aa;
     border: 1px solid var(--algo-amber-border);
   }
@@ -6915,7 +6915,7 @@
   }
   .expiry-id-close {
     background: var(--algo-amber-bg-strong);
-    color: #fbbf24;
+    color: var(--algo-amber);
     border: 1px solid var(--algo-amber-border-soft);
   }
   .expiry-id-netted {
@@ -6996,11 +6996,11 @@
      pointer-events default so hover doesn't dim the amber. */
   .cand-row.cand-row-total {
     font-weight: 700;
-    background: rgba(251,191,36,0.22) !important;
+    background: var(--algo-amber-bg-strong) !important;
     border-top: 2px solid rgba(251,191,36,0.70) !important;
     border-bottom: 1px solid rgba(251,191,36,0.40) !important;
     border-radius: 0 !important;
-    color: #fbbf24;
+    color: var(--algo-amber);
     /* sticky pin so the rollup stays visible on a tall list */
     position: sticky;
     bottom: 0;
@@ -7008,7 +7008,7 @@
     cursor: default;
   }
   .cand-row.cand-row-total:hover {
-    background: rgba(251,191,36,0.22) !important;
+    background: var(--algo-amber-bg-strong) !important;
   }
   /* Direction-tint variants — slightly lighter green/red so they
      stay readable against the amber stratum, matching the
@@ -7017,7 +7017,7 @@
   .cand-row.cand-row-total .cell-neg { color: #fca5a5 !important; }
   .cand-row.cand-row-total .cell-flat { color: rgba(251,191,36,0.75) !important; }
   .cand-total-label {
-    color: #fbbf24;
+    color: var(--algo-amber);
     font-weight: 800;
     letter-spacing: 0.08em;
   }
@@ -7036,12 +7036,12 @@
     vertical-align: middle;
   }
   .cand-split-closed {
-    color: #f87171;
+    color: var(--algo-red);
     background: var(--algo-red-bg);
     border: 1px solid rgba(248, 113, 113, 0.45);
   }
   .cand-split-open {
-    color: #4ade80;
+    color: var(--algo-green);
     background: var(--algo-green-bg);
     border: 1px solid rgba(74, 222, 128, 0.45);
   }
@@ -7069,14 +7069,14 @@
      background task hasn't been able to refresh — operator should
      investigate. Tooltip carries the precise age + any error text. */
   .cand-proxy-tag.cand-proxy-staleish {
-    color: #fbbf24;
-    background: rgba(251, 191, 36, 0.14);
-    border-color: rgba(251, 191, 36, 0.55);
+    color: var(--algo-amber);
+    background: var(--algo-amber-bg);
+    border-color: var(--algo-amber-border);
   }
   .cand-proxy-tag.cand-proxy-stale {
-    color: #f87171;
+    color: var(--algo-red);
     background: rgba(248, 113, 113, 0.16);
-    border-color: rgba(248, 113, 113, 0.55);
+    border-color: var(--algo-red-border);
   }
   /* Soft sky tint on the whole eq row so it reads as a different
      layer from the option/futures legs without competing with the
@@ -7125,7 +7125,7 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     padding-bottom: 0.15rem;
-    border-bottom: 1px solid rgba(251,191,36,0.30);  /* amber — matches History */
+    border-bottom: 1px solid var(--algo-amber-border-soft);  /* amber — matches History */
     /* Sticky header — operator scrolls data rows under it instead of
        the whole grid sliding up. Pinned to top of .cand-scroll (the
        overflow-y container); the card-bottom navy of the parent card
@@ -7264,8 +7264,8 @@
   /* CE / PE text tint on the symbol main (Sensibull / Streak convention,
      same colours used everywhere else for sym-main). */
   :global(.cand-sym .sym-main)        { color: #e2e8f0; font-weight: 600; }
-  :global(.cand-sym .sym-main.sym-ce) { color: #4ade80; }
-  :global(.cand-sym .sym-main.sym-pe) { color: #f87171; }
+  :global(.cand-sym .sym-main.sym-ce) { color: var(--algo-green); }
+  :global(.cand-sym .sym-main.sym-pe) { color: var(--algo-red); }
   /* SINGLE vertical right border on the symbol cell, encoding
      POSITION DIRECTION (long vs short). 2 px wide, flush against the
      right edge so it reads as a clean cell-edge border. Green when
@@ -7288,7 +7288,7 @@
   .cand-row.cand-row-short .cand-sym-acct::after { background: rgba(248, 113, 113, 0.85); }
 
   .cand-row input[type="checkbox"] {
-    accent-color: #fbbf24;
+    accent-color: var(--algo-amber);
     width: 0.9rem;
     height: 0.9rem;
     cursor: pointer;
@@ -7302,8 +7302,8 @@
      checkbox-driven multi-select Candidates panel. */
 
   .leg-type-CE {
-    color: #4ade80;
-    background: rgba(74,222,128,0.10);
+    color: var(--algo-green);
+    background: var(--algo-green-bg);
     border: 1px solid rgba(74,222,128,0.4);
     border-radius: 2px;
     padding: 0 4px;
@@ -7311,8 +7311,8 @@
     font-size: var(--fs-md);
   }
   .leg-type-PE {
-    color: #f87171;
-    background: rgba(248,113,113,0.10);
+    color: var(--algo-red);
+    background: var(--algo-red-bg);
     border: 1px solid rgba(248,113,113,0.4);
     border-radius: 2px;
     padding: 0 4px;
@@ -7324,10 +7324,10 @@
      out from "+ Add row" / "Analyze" without being scary. */
   :global(.opt-clear) {
     border-color: rgba(248,113,113,0.45) !important;
-    color: #f87171 !important;
+    color: var(--algo-red) !important;
   }
   :global(.opt-clear:hover) {
-    background: rgba(248,113,113,0.10) !important;
+    background: var(--algo-red-bg) !important;
   }
 
   /* Stale-LTP / fallback-source chips — surfaced when broker live price
@@ -7346,7 +7346,7 @@
     border: 1px solid currentColor;
   }
   .src-stale {
-    color: #fbbf24;
+    color: var(--algo-amber);
     background: rgba(251,191,36,0.10);
   }
   .src-tag {
@@ -7357,11 +7357,11 @@
     text-transform: uppercase;
     letter-spacing: 0.03em;
   }
-  .src-warn { color: #fbbf24; font-weight: 700; }
+  .src-warn { color: var(--algo-amber); font-weight: 700; }
   /* When .src-warn is paired with .src-chip (background context), give
      it the same amber-tinted background as .src-stale so the chip looks
      like a chip and not just amber text floating on the panel. */
-  .src-chip.src-warn { background: rgba(251,191,36,0.14); }
+  .src-chip.src-warn { background: var(--algo-amber-bg); }
 
   /* Per-leg LTP source pill — fresh = sky-blue, stale = amber. Sits in
      its own column on the breakdown table. */
@@ -7376,8 +7376,8 @@
     border: 1px solid currentColor;
     font-weight: 700;
   }
-  .leg-src-fresh { color: #7dd3fc; background: rgba(125,211,252,0.10); }
-  .leg-src-stale { color: #fbbf24; background: rgba(251,191,36,0.10); }
+  .leg-src-fresh { color: var(--algo-sky); background: rgba(125,211,252,0.10); }
+  .leg-src-stale { color: var(--algo-amber); background: rgba(251,191,36,0.10); }
 
   /* Option-chain picker — three-column controls (Underlying / Expiry /
      Side) above a CE-strike-PE table. Each row shows one strike with
@@ -7473,8 +7473,8 @@
        depending on per-row content width. */
     table-layout: fixed;
   }
-  .chain-th-ce     { text-align: left; color: #4ade80; }
-  .chain-th-pe     { text-align: right; color: #f87171; }
+  .chain-th-ce     { text-align: left; color: var(--algo-green); }
+  .chain-th-pe     { text-align: right; color: var(--algo-red); }
   .chain-th-strike { text-align: center; color: var(--algo-slate); }
   /* CE / PE cells host an inner flex wrapper (chain-cell-row) so
      the cells themselves stay regular table-cells (which keeps the
@@ -7495,7 +7495,7 @@
      "ATM" pill; the row's amber background + borders carry the rest
      of the highlight, so this stays compact (no extra width). */
   .chain-td-strike-atm {
-    color: #fbbf24;
+    color: var(--algo-amber);
     font-weight: 800;
     letter-spacing: 0.04em;
   }
@@ -7515,8 +7515,8 @@
     white-space: nowrap;
     text-align: center;
   }
-  .chain-cell-bid { color: #4ade80; }   /* same green as CE header */
-  .chain-cell-ask { color: #f87171; }   /* same red as PE header */
+  .chain-cell-bid { color: var(--algo-green); }   /* same green as CE header */
+  .chain-cell-ask { color: var(--algo-red); }   /* same red as PE header */
   .chain-cell-sep {
     color: var(--algo-muted);
     opacity: 0.7;
@@ -7535,8 +7535,8 @@
      it identifies the row without taking extra horizontal space. */
   .chain-row-atm {
     background: rgba(251,191,36,0.18);
-    border-top:    1px solid rgba(251,191,36,0.55);
-    border-bottom: 1px solid rgba(251,191,36,0.55);
+    border-top:    1px solid var(--algo-amber-border);
+    border-bottom: 1px solid var(--algo-amber-border);
   }
 
   /* Chain header SPOT pill — sits next to the "Option chain" title
@@ -7553,9 +7553,9 @@
     letter-spacing: 0.05em;
     padding: 1px 6px;
     border-radius: 2px;
-    border: 1px solid rgba(251,191,36,0.55);
+    border: 1px solid var(--algo-amber-border);
     background: rgba(251,191,36,0.10);
-    color: #fbbf24;
+    color: var(--algo-amber);
   }
   .chain-btn {
     font-family: monospace;
@@ -7577,15 +7577,15 @@
   /* BUY (+) — green, SELL (−) — red. Same palette as the outer
      +/− toggle so the operator's eye reads the side without
      parsing the glyph. */
-  .chain-btn-buy  { color: #4ade80; }
-  .chain-btn-sell { color: #f87171; }
-  .chain-btn-buy:hover  { background: rgba(74,222,128,0.10); }
-  .chain-btn-sell:hover { background: rgba(248,113,113,0.10); }
+  .chain-btn-buy  { color: var(--algo-green); }
+  .chain-btn-sell { color: var(--algo-red); }
+  .chain-btn-buy:hover  { background: var(--algo-green-bg); }
+  .chain-btn-sell:hover { background: var(--algo-red-bg); }
   /* Info button — sky-blue, neutral. Opens the full OrderTicket
      pre-filled (advanced path, when the operator wants to edit
      qty / limit price / chase / mode before placing). */
   .chain-btn-info {
-    color: #7dd3fc;
+    color: var(--algo-sky);
     font-style: italic;
     padding: 1px 5px;
   }
@@ -7593,7 +7593,7 @@
   /* Watchlist button — amber, sits next to the "i" info button.
      One click adds the contract to the user's default watchlist. */
   .chain-btn-watch {
-    color: #fbbf24;
+    color: var(--algo-amber);
     padding: 1px 5px;
     font-weight: 700;
   }
@@ -7606,7 +7606,7 @@
     padding: 2px 8px;
     border-radius: 2px;
     background: rgba(74,222,128,0.18);
-    color: #4ade80;
+    color: var(--algo-green);
     font-family: monospace;
     font-size: var(--fs-sm);
     font-weight: 700;
@@ -7659,16 +7659,16 @@
     transition: background 0.12s, transform 0.05s;
   }
   .chain-basket-leg:focus-visible {
-    outline: 2px solid #fbbf24;
+    outline: 2px solid var(--algo-amber);
     outline-offset: 1px;
   }
   .chain-basket-leg:hover:not(.is-disabled) {
-    background: rgba(248,113,113,0.10);
+    background: var(--algo-red-bg);
     transform: translateY(-1px);
   }
   .chain-basket-leg:hover:not(.is-disabled) .chain-basket-sym::after {
     content: ' ✕';
-    color: #f87171;
+    color: var(--algo-red);
     margin-left: 0.15rem;
     font-weight: 700;
   }
@@ -7678,14 +7678,14 @@
   }
   /* Outline + side text colour by SIDE (chain-btn-buy / -sell green /
      red, same as the strike-row buttons). */
-  .chain-basket-leg-buy  { color: #4ade80; background: rgba(74,222,128,0.06); }
-  .chain-basket-leg-sell { color: #f87171; background: rgba(248,113,113,0.06); }
+  .chain-basket-leg-buy  { color: var(--algo-green); background: var(--algo-green-bg-soft); }
+  .chain-basket-leg-sell { color: var(--algo-red); background: var(--algo-red-bg-soft); }
   /* Left-border accent by TYPE (CE green / PE red / FUT sky-blue,
      matching the strike header palette + OrderTicket option-type
      pills). */
-  .chain-basket-leg-type-ce  { border-left-color: #4ade80; }
-  .chain-basket-leg-type-pe  { border-left-color: #f87171; }
-  .chain-basket-leg-type-fut { border-left-color: #7dd3fc; }
+  .chain-basket-leg-type-ce  { border-left-color: var(--algo-green); }
+  .chain-basket-leg-type-pe  { border-left-color: var(--algo-red); }
+  .chain-basket-leg-type-fut { border-left-color: var(--algo-sky); }
   .chain-basket-side {
     font-weight: 800;
     letter-spacing: 0.04em;
@@ -7728,7 +7728,7 @@
   .chain-basket-lots {
     min-width: 1.1rem;
     text-align: center;
-    color: #fbbf24;
+    color: var(--algo-amber);
     font-family: monospace;
     font-weight: 700;
     font-size: var(--fs-sm);
@@ -7738,7 +7738,7 @@
      from chain bid/ask at add-time; shows "@MKT" when no quote was
      available so the operator knows that leg routes as MARKET. */
   .chain-basket-limit-static {
-    color: #fbbf24;
+    color: var(--algo-amber);
     font-family: monospace;
     font-size: var(--fs-sm);
     font-weight: 700;
@@ -7784,9 +7784,9 @@
     background: rgba(255,255,255,0.05);
   }
   .chain-basket-chase-pill:disabled { opacity: 0.4; cursor: not-allowed; }
-  .chain-basket-chase-pill-low.on  { background: rgba(125,211,252,0.20); color: #7dd3fc; border-color: rgba(125,211,252,0.55); }
-  .chain-basket-chase-pill-med.on  { background: rgba(251,191,36,0.20); color: #fbbf24; border-color: rgba(251,191,36,0.55); }
-  .chain-basket-chase-pill-high.on { background: rgba(74,222,128,0.20); color: #4ade80; border-color: rgba(74,222,128,0.55); }
+  .chain-basket-chase-pill-low.on  { background: rgba(125,211,252,0.20); color: var(--algo-sky); border-color: var(--algo-sky-border); }
+  .chain-basket-chase-pill-med.on  { background: rgba(251,191,36,0.20); color: var(--algo-amber); border-color: var(--algo-amber-border); }
+  .chain-basket-chase-pill-high.on { background: rgba(74,222,128,0.20); color: var(--algo-green); border-color: var(--algo-green-border); }
   .chain-basket-actions {
     display: inline-flex;
     align-items: center;
@@ -7809,13 +7809,13 @@
   }
   .chain-basket-clear { color: var(--text-muted); }
   .chain-basket-clear:hover { background: rgba(163,185,208,0.08); }
-  .chain-basket-place { color: #fbbf24; background: rgba(251,191,36,0.10); }
+  .chain-basket-place { color: var(--algo-amber); background: rgba(251,191,36,0.10); }
   .chain-basket-place:hover    { background: rgba(251,191,36,0.20); }
   .chain-basket-place:disabled,
   .chain-basket-clear:disabled { opacity: 0.55; cursor: progress; }
   .chain-basket-err {
     flex: 1 1 100%;
-    color: #f87171;
+    color: var(--algo-red);
     font-family: monospace;
     font-size: var(--fs-sm);
     margin-top: 0.2rem;
@@ -7825,7 +7825,7 @@
     padding: 0.3rem 0.5rem;
     border-radius: 2px;
     background: rgba(74,222,128,0.14);
-    color: #4ade80;
+    color: var(--algo-green);
     font-family: monospace;
     font-size: var(--fs-md);
     font-weight: 700;
@@ -7854,7 +7854,7 @@
   }
   .chain-lots-input:focus {
     outline: none;
-    border-color: rgba(251,191,36,0.55);
+    border-color: var(--algo-amber-border);
     background: rgba(13,21,38,0.8);
   }
   /* "chain" source pill on legs added via the chain picker — sky-blue
@@ -7904,9 +7904,9 @@
   /* Per-status accent — overrides the default violet for filled /
      unfilled / rejected outcomes so the operator catches errors at
      a glance without reading the text. */
-  .order-toast-filled   { border-left-color: #4ade80; border-color: rgba(74,222,128,0.55); }
-  .order-toast-unfilled { border-left-color: #f87171; border-color: rgba(248,113,113,0.55); }
-  .order-toast-rejected { border-left-color: #f87171; border-color: rgba(248,113,113,0.55); }
+  .order-toast-filled   { border-left-color: var(--algo-green); border-color: var(--algo-green-border); }
+  .order-toast-unfilled { border-left-color: var(--algo-red); border-color: var(--algo-red-border); }
+  .order-toast-rejected { border-left-color: var(--algo-red); border-color: var(--algo-red-border); }
 
   .order-toast-head {
     display: flex; align-items: center; gap: 0.45rem;
@@ -7925,13 +7925,13 @@
     color: #a78bfa;
     border: 1px solid rgba(167,139,250,0.55);
   }
-  .order-toast-mode-paper { background: rgba(56,189,248,0.18);  color: #7dd3fc; border-color: rgba(56,189,248,0.4); }
+  .order-toast-mode-paper { background: rgba(56,189,248,0.18);  color: var(--algo-sky); border-color: rgba(56,189,248,0.4); }
   .order-toast-mode-live  { background: rgba(248,113,113,0.18); color: #fca5a5; border-color: rgba(248,113,113,0.5); }
   /* FILL toast — emerald, fired when a position_filled ws event lands.
      Either replaces an in-flight placement toast (updates its status to
      FILLED in place) or pushes fresh when the fill came from an algo
      path the operator didn't manually place. */
-  .order-toast-mode-fill  { background: rgba(74,222,128,0.18);  color: #4ade80; border-color: rgba(74,222,128,0.5); }
+  .order-toast-mode-fill  { background: rgba(74,222,128,0.18);  color: var(--algo-green); border-color: rgba(74,222,128,0.5); }
   .order-toast-status { font-weight: 600; }
   .order-toast-close {
     margin-left: auto;
@@ -7952,9 +7952,9 @@
     font-size: var(--fs-lg);
     font-weight: 700;
   }
-  .order-toast-side-buy  { color: #4ade80; }
-  .order-toast-side-sell { color: #f87171; }
-  .order-toast-qty { color: #fbbf24; }
+  .order-toast-side-buy  { color: var(--algo-green); }
+  .order-toast-side-sell { color: var(--algo-red); }
+  .order-toast-qty { color: var(--algo-amber); }
   .order-toast-sym { color: #e5edf7; }
   .order-toast-px  { color: var(--algo-slate); opacity: 0.9; }
 
