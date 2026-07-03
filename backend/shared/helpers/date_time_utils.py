@@ -334,9 +334,15 @@ def is_any_segment_open(now) -> bool:
                 holidays = fetch_holidays(exch)
             except Exception:
                 holidays = set()
+            try:
+                from backend.brokers.broker_apis import fetch_special_sessions
+                special = fetch_special_sessions(exch)
+            except Exception:
+                special = []
             if is_market_open(
                 now, holidays, seg_start, seg_end, exchange=exch,
                 sessions=sessions, evening_open_on_holidays=evening,
+                special_sessions=special,
             ):
                 return True
         except Exception:

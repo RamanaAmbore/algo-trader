@@ -423,6 +423,11 @@ def _exchange_is_open(segment: dict, now_ist: datetime) -> bool:
         h_set = fetch_holidays(segment["exchange"])
     except Exception:
         h_set = set()
+    try:
+        from backend.brokers.broker_apis import fetch_special_sessions
+        special = fetch_special_sessions(segment["exchange"])
+    except Exception:
+        special = []
     sessions_config = [
         {"start": f"{w['start'].hour:02d}:{w['start'].minute:02d}",
          "end":   f"{w['end'].hour:02d}:{w['end'].minute:02d}"}
@@ -436,6 +441,7 @@ def _exchange_is_open(segment: dict, now_ist: datetime) -> bool:
         exchange=segment["exchange"],
         sessions=sessions_config,
         evening_open_on_holidays=segment.get("evening_open_on_holidays", False),
+        special_sessions=special,
     )
 
 
