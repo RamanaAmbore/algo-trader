@@ -373,4 +373,64 @@ test.describe('BrokerHealthBadge popup — Snapshot palette consistency', () => 
     await P.waitForTimeout(300);
     // No assertion — just verify no crash.
   });
+
+  // ── 9. Chip color matches health state — never grey ──────────────────────
+
+  test('chip carries a health-state class (not broker-chip-unknown)', async () => {
+    // Mock broker-health to green so the chip has a deterministic class.
+    await P.route('**/api/admin/broker-health', route => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        accounts: [{
+          account: 'ZG0790', broker: 'kite', state: 'green',
+          reason: 'healthy', last_good_at: new Date().toISOString(),
+          last_check_at: new Date().toISOString(),
+        }],
+        groww_entitlement_denied: {},
+        primary_market_data_account: 'ZG0790',
+      }),
+    }));
+
+    await P.goto('/dashboard', { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
+    const chip = P.locator('button.broker-chip').first();
+    if (!await chip.count()) {
+      test.info().annotations.push({ type: 'skip', description: 'No broker chip' });
+      return;
+    }
+    await chip.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+
+    // Chip must NOT carry the grey unknown class.
+    await expect(chip, 'chip must not be broker-chip-unknown').not.toHaveClass(/broker-chip-unknown/);
+    // Chip must carry one of the three health-state classes.
+    const cls = await chip.getAttribute('class') ?? '';
+    const hasHealthClass = /broker-chip-ok|broker-chip-partial|broker-chip-down/.test(cls);
+    expect(hasHealthClass, `chip class "${cls}" must include a health-state variant`).toBe(true);
+  });
+
+  // ── 10. Popup broker names — no "unknown" present ────────────────────────
+
+  test('popup broker column contains no "unknown" text', async () => {
+    const found = await openBrokerPopup();
+    if (!found) {
+      test.info().annotations.push({ type: 'skip', description: 'Broker chip not found' });
+      return;
+    }
+
+    const brokerCells = P.locator('.bh-row-broker');
+    const count = await brokerCells.count();
+    if (count === 0) {
+      test.info().annotations.push({ type: 'skip', description: 'No broker cells in popup' });
+      return;
+    }
+
+    for (let i = 0; i < count; i++) {
+      const text = (await brokerCells.nth(i).textContent() ?? '').trim().toLowerCase();
+      expect(text, `popup broker cell ${i} must not be "unknown"`).not.toBe('unknown');
+    }
+
+    // Close popup
+    const closeBtn = P.locator('.bh-close').first();
+    if (await closeBtn.count()) await closeBtn.click();
+  });
 });
