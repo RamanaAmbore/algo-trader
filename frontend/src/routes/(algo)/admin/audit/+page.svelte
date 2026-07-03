@@ -412,6 +412,7 @@
   .audit-table {
     width: 100%; border-collapse: collapse;
     font-family: var(--font-numeric);
+    font-variant-numeric: tabular-nums;
     font-size: var(--fs-md);
   }
   .audit-table th {
@@ -587,5 +588,5 @@
     font-size: var(--fs-lg);
     color: #c8d8f0;
   }
-  .audit-pager-info { margin: 0 auto; font-family: var(--font-numeric); }
+  .audit-pager-info { margin: 0 auto; font-family: var(--font-numeric); font-variant-numeric: tabular-nums; }
 </style>
