@@ -72,6 +72,15 @@
   import ChartModal from '$lib/ChartModal.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { baseDayPnlForPosition } from '$lib/data/nav';
+  import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
+  import {
+    dirCls,
+    mkPnlCellClass, mkResolveCellLtp,
+    mkSymColLeft, mkSymColRight, mkSparkCol,
+    mkLtpCol, mkPrevCol, mkOpenCol, mkVolCol, mkOiCol, mkAcctColTrailing,
+    mkLeftColDefs, mkRightColDefs,
+    mkPosSummaryCols, mkHoldSummaryCols, mkFundsCols,
+  } from '$lib/data/pulseColumns';
 
   let {
     title              = 'Pulse',
@@ -933,7 +942,15 @@
    *  stayed true forever if any one of the 5 awaits never resolved.
    *  allSettled guarantees `finally` runs once every fetcher has
    *  either fulfilled OR rejected, so the spinner always drains. */
-  async function refreshAllNow() {
+  /**
+   * @param {boolean} [skipLtp]  When true (RefreshButton's both-closed
+   *   path), positions + holdings fetches route with `?skip_ltp=1` so the
+   *   broker LTP fetch is bypassed and rows serve from the daily_book
+   *   snapshot. Funds/margins still fetch fresh (broker-authoritative
+   *   values that don't depend on market being open). Batched quotes +
+   *   sparklines also skip because there's no live LTP to consume.
+   */
+  async function refreshAllNow(skipLtp = false) {
     if (_refreshing) return;
     _refreshing = true;
     try {
@@ -941,12 +958,15 @@
       // in-flight requests are already running (operator expects fresh data
       // on explicit Refresh). The batchQuote + underlying-anchor pass at
       // the tail of loadPulse still runs so underlyings stay in sync.
+      // skipLtp=true routes positions/holdings to the snapshot path AND
+      // skips the quote / sparkline pollers that would otherwise fan out
+      // broker LTP fetches for the watchlist + movers.
       await Promise.allSettled([
-        loadQuotes(),
-        loadPulse({ force: true }),
+        skipLtp ? Promise.resolve() : loadQuotes(),
+        loadPulse({ force: true, skipLtp }),
         showFunds ? loadFunds() : Promise.resolve(),
-        enableMovers ? loadMovers() : Promise.resolve(),
-        loadSparklines(),
+        (enableMovers && !skipLtp) ? loadMovers() : Promise.resolve(),
+        skipLtp ? Promise.resolve() : loadSparklines(),
       ]);
     } finally {
       _refreshing = false;
@@ -956,7 +976,7 @@
   // (next to the wall-clock timestamp) into the same refresh flow the
   // per-card RefreshButtons trigger. `bind:this={pulseRef}` from the
   // page lets the page call `pulseRef.refresh()`.
-  export async function refresh() { await refreshAllNow(); }
+  export async function refresh(skipLtp = false) { await refreshAllNow(skipLtp); }
   // Wall-clock timestamp (ms) of the last loadPulse() completion.
   // The 5 s loadQuotes poll consults this to skip ticks that land
   // within a 700 ms window of a loadPulse — the two pollers used to
@@ -1119,47 +1139,8 @@
     return v;
   }
 
-  /** Lots-in-F&O-units for a unified Pulse row.
-   *  - Holdings on an F&O underlying (EQ row with options listed)
-   *      → qty_hold / underlying_lot
-   *  - Position on a derivative contract (CE / PE / FUT)
-   *      → qty_pos / contract_lot
-   *  - Everything else → 0
-   *  Combined holdings + position rows on the same symbol sum.
-   *  Returns null for TOTAL rows (the aggregate is meaningless). */
-  function _lotsForUnifiedRow(/** @type {any} */ row) {
-    if (!row || row._isTotal) return null;
-    const sym = String(row.tradingsymbol || '').toUpperCase();
-    if (!sym) return 0;
-    let total = 0;
-    // Derivative-contract position: use the contract's own ls.
-    const inst = getInstrument ? getInstrument(sym) : null;
-    const itype = inst?.t;
-    if (itype === 'CE' || itype === 'PE' || itype === 'FUT') {
-      const lot = Number(inst?.ls) || 0;
-      if (lot > 0) {
-        const qPos = Math.abs(Number(row.qty_pos) || 0);
-        if (qPos > 0) total += qPos / lot;
-      }
-    } else {
-      // Equity / index: use the underlying-options lot (if any).
-      const lot = _fnoLotFor(sym);
-      if (lot > 0) {
-        const qHold = Math.abs(Number(row.qty_hold) || 0);
-        if (qHold > 0) total += qHold / lot;
-      }
-    }
-    return Math.round(total * 10) / 10;
-  }
-
-  /** Number formatter for the Lots column. Hides 0 as a bare '0'
-   *  string (operator scan-cost matters more than completeness);
-   *  whole-number lots render without decimal, fractional with one. */
-  function _lotsFmt(/** @type {number|null|undefined} */ value) {
-    if (value == null) return '';
-    if (value === 0) return '0';
-    return value % 1 === 0 ? String(value) : value.toFixed(1);
-  }
+  // _lotsForUnifiedRow and _lotsFmt removed — replaced by lotsForRow / fmtLots
+  // imported from $lib/data/lotsForRow (shared with PerformancePage / Dashboard).
 
   // Transient-error suppression. Quote-refresh polls fire every 5 s
   // and can blip on broker hiccups; one failed call shouldn't paint
@@ -2476,21 +2457,24 @@
   // force=true  → operator Refresh or mount: re-fetch positions + holdings.
   // force=false → background tick: layout poller already fetched; read values.
   // Rate impact: ~24 req/min (layout poller only) vs ~36/min pre-migration.
-  async function loadPulse(/** @type {{ force?: boolean }} */ { force = false } = {}) {
+  async function loadPulse(/** @type {{ force?: boolean, skipLtp?: boolean }} */ { force = false, skipLtp = false } = {}) {
     try {
       if (force) {
         // showSummary (dashboard mode) needs raw .summary from the API response;
         // the shared store discards it. Fetch in parallel with the store loads.
+        // skipLtp (Jul 2026) — RefreshButton's both-markets-closed path.
+        // Positions + holdings route with `?skip_ltp=1` so broker LTP fetch
+        // is bypassed; funds still fetches fresh margins/cash independently.
         const summaryP = showSummary
           ? Promise.allSettled([
-              fetchPositions().catch(() => null),
-              fetchHoldings().catch(() => null),
+              fetchPositions({ skipLtp }).catch(() => null),
+              fetchHoldings({ skipLtp }).catch(() => null),
             ])
           : Promise.resolve(null);
 
         await Promise.allSettled([
-          positionsStore.load({ force: true }),
-          holdingsStore.load({ force: true }),
+          positionsStore.load({ skipLtp }, { force: true }),
+          holdingsStore.load({ skipLtp }, { force: true }),
         ]);
 
         if (showSummary) {
@@ -3108,6 +3092,11 @@
         row.account_stale = true;
         if (r.account_stale_since) row.account_stale_since = r.account_stale_since;
       }
+      // Per-exchange close-snapshot lifecycle (Jul 2026): any contributing
+      // leg with ltp_source==='snapshot' tags the whole unified row.
+      // Frontend cell renderer surfaces a "SNAP" chip on the LTP cell
+      // + freezes tick-flash. See PositionRow.ltp_source in schemas.py.
+      if (r.ltp_source === 'snapshot') row.ltp_source = 'snapshot';
       fill(row, sym);
     }
 
@@ -3205,6 +3194,8 @@
         row.account_stale = true;
         if (r.account_stale_since) row.account_stale_since = r.account_stale_since;
       }
+      // Per-exchange close-snapshot lifecycle (Jul 2026): see positions branch above.
+      if (r.ltp_source === 'snapshot') row.ltp_source = 'snapshot';
       fill(row, sym);
     }
 
@@ -3933,12 +3924,8 @@
     return `<span style="display:flex;align-items:center;justify-content:center;height:100%"><svg width="${W}" height="${H}" style="display:block;overflow:visible"><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/></svg></span>`;
   }
 
-  function dirCls(v) {
-    if (v == null) return 'cell-flat';
-    if (v > 0) return 'cell-pos';
-    if (v < 0) return 'cell-neg';
-    return 'cell-flat';
-  }
+  // dirCls is imported from pulseColumns.js (line 77 import) — the local
+  // duplicate definition was removed as part of the pulseColumns refactor.
 
   function getRowClass(params) {
     const r = params.data || {};
@@ -4043,35 +4030,14 @@
   function mountGrid() {
     const RA = 'ag-right-aligned-cell';
     const dirCellClass = (p) => `${RA} ${dirCls(p.value)}`;
-    // P&L-tinted cell class for the Positions / Holdings right-grid
-    // P&L + Day P&L columns. Adds a green/red background tint on
-    // top of the direction-colored text — matches the Candidates
-    // panel in /admin/derivatives (`.cand-pnl.cell-pos` etc.) so the
-    // P&L columns read with the same visual identity across both
-    // surfaces. Plain `dirCellClass` (text-only) stays on the
-    // watch/mover grids where the P&L column isn't surfaced.
-    // Tick-flash augmentation: emits tf-up/tf-down when the cell's tracked
-    // field changed since the last poll cycle. TOTAL rows (_isTotal) are
-    // excluded — aggregates must not flash. `field` is the data field name
-    // used as the per-cell flash key (tradingsymbol + ':' + field).
-    // The global .tf-up / .tf-down CSS in app.css carries alpha 0.13 —
-    // subtle enough to signal liveness without competing with text colour.
-    // Cascade dominance: if the row's symbol has an active LTP flash (source
-    // event), emit ltp-flash-up/down instead of the poll-diff tf-up/down so
-    // the eye tracks cause (LTP tick) rather than effect (derived delta).
-    // One pulse per row per tick; _mpFlash is suppressed while LTP flash runs.
-    const pnlCellClass = (p, field) => {
-      const base = `${RA} ${dirCls(p.value)} mp-pnl-cell`;
-      if (p.data?._isTotal) return base;
-      const sym = p.data?.tradingsymbol;
-      if (!sym || !field) return base;
-      // LTP cascade takes precedence over poll-diff flash.
-      const symUpper = String(sym).toUpperCase();
-      if (_ltpFlashUp.has(symUpper))   return `${base} ltp-flash-up`;
-      if (_ltpFlashDown.has(symUpper)) return `${base} ltp-flash-down`;
-      const fc = _mpFlash.classOf(`${sym}:${field}`);
-      return fc ? `${base} ${fc}` : base;
-    };
+    // P&L-tinted cell class — built via factory so the accessor closures
+    // capture the live $state bindings (_ltpFlashUp/Down reassigned each tick).
+    const pnlCellClass = mkPnlCellClass({
+      RA,
+      getMpFlash:       () => _mpFlash,
+      getLtpFlashUp:    () => _ltpFlashUp,
+      getLtpFlashDown:  () => _ltpFlashDown,
+    });
 
     // Main symbols grid — only built when the parent opted into the
     // per-symbol view (/pulse). /dashboard passes showSymbolsGrid=false
@@ -4079,312 +4045,41 @@
     // below still need to mount in that case.
     if (showSymbolsGrid && gridPinnedEl) {
 
-    // ─── Shared column shapes ────────────────────────────────────
-    // Left and right grids serve different audiences:
-    //   left  → market-data scan (Pinned / Watchlist / Movers)
-    //   right → operator's book (Positions / Holdings)
-    // Position-specific columns (Avg / Qty / Day P&L / P&L / P&L %)
-    // render blank on left-grid rows because those rows carry no qty
-    // — so they were noise. Right grid carries the full position set
-    // plus an Account column at the trailing edge so the operator can
-    // tell at a glance which book a row belongs to.
-    const _symColLeft = {
-      field: 'tradingsymbol', headerName: 'Symbol', width: 168, pinned: 'left',
-      cellRenderer: symRenderer, sortable: true,
-      cellClass: 'ag-col-sym ag-col-fill',
-    };
-    // Right-grid symbol cell carries an account-tinted background +
-    // vertical borders so the operator can colour-spot each row's
-    // owning account at a glance (matches the per-account hash
-    // palette already used on PerformancePage account stripes).
-    const _symColRight = {
-      field: 'tradingsymbol', headerName: 'Symbol', width: 168, pinned: 'left',
-      cellRenderer: symRenderer, sortable: true,
-      cellClass: 'ag-col-sym ag-col-fill mp-sym-acct',
-      cellStyle: (p) => {
-        if (p.data?._isTotal) return {};
-        const color = p.data?._acctColor ?? null;
-        if (!color) return {};
-        return {
-          '--mp-sym-acct-color': color,
-        };
-      },
-    };
-    // Per-symbol columns suppress their values on TOTAL rows — the
-    // aggregate doesn't have a meaningful LTP / Prev / Avg / Open /
-    // Vol / OI / sparkline, so the cell renders blank instead of a
-    // bogus number. Day P&L %, P&L %, P&L and Day P&L stay populated
-    // (those are legitimately aggregable across the bucket).
-    const _sparkCol = {
-      field: 'tradingsymbol', headerName: '5d', width: 44, minWidth: 44,
-      maxWidth: 48, colId: 'sparkline',
-      cellRenderer: (p) => p.data?._isTotal ? '' : sparkRenderer(p),
-      sortable: false, resizable: false,
-      cellClass: 'spark-cell',
-      headerClass: 'ag-header-cell-spark',
-    };
-    // LTP flicker fix (Jun 2026): canonical resolver for the LTP a cell
-    // should display. _liveLtpSnap is already filtered to positive
-    // values (see _buildLtpSnap); the polled row.ltp fallback can still
-    // be 0 mid-poll-race (broker returned a stale tick before our
-    // backfill ran). Treat any non-positive numeric value as "no quote"
-    // so the cell renders "—" instead of "0" — never let a 0 propagate
-    // into the visible price column or into the day-change classifier
-    // below. Operator: "flickering LTP is a major issue".
-    const _resolveCellLtp = (/** @type {any} */ p) => {
-      if (!p?.data) return null;
-      const sym = String(p.data.tradingsymbol || '').toUpperCase();
-      const live = _liveLtpSnap[sym];
-      if (typeof live === 'number' && live > 0) return live;
-      const polled = Number(p.data.ltp);
-      if (Number.isFinite(polled) && polled > 0) return polled;
-      return null;
-    };
-    const _ltpCol = {
-      // valueGetter reads _liveLtpSnap first (real-time SSE tick) and
-      // falls back to the polled row.ltp from buildUnified. ag-Grid
-      // re-evaluates the getter when refreshCells is called on 'ltp'.
-      // Both sources are filtered to v > 0 by _resolveCellLtp so a
-      // transient 0 NEVER paints on the LTP column — cell renders "—".
-      colId: 'ltp', headerName: 'LTP', width: 77, minWidth: 77, maxWidth: 96,
-      type: 'numericColumn', headerClass: numericHdr,
-      // Heat encoding: bg vs purchase price (avg_pos / avg_hold),
-      // left-border stripe vs prev_close. Operator can scan both
-      // axes simultaneously — "am I up overall?" (bg) and "is it
-      // going my way today?" (stripe). TOTAL row suppresses both.
-      cellClass: (p) => {
-        if (!p.data || p.data._isTotal) return RA;
-        const sym = String(p.data.tradingsymbol || '').toUpperCase();
-        const ltp  = _resolveCellLtp(p);
-        const prev = p.data.close ?? null;
-        const avg  = (p.data.qty_pos && p.data.avg_pos) ? p.data.avg_pos
-                   : (p.data.qty_hold && p.data.avg_hold) ? p.data.avg_hold
-                   : null;
-        const cls = [RA];
-        // Flash green/red on tick-up/tick-down.
-        if      (_ltpFlashUp.has(sym))   cls.push('ltp-flash-up');
-        else if (_ltpFlashDown.has(sym)) cls.push('ltp-flash-down');
-        if (typeof ltp === 'number' && typeof avg === 'number' && avg > 0) {
-          cls.push(ltp > avg ? 'ltp-vs-avg-up' : ltp < avg ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat');
-        }
-        if (typeof ltp === 'number' && typeof prev === 'number' && prev > 0) {
-          cls.push(ltp > prev ? 'ltp-vs-prev-up' : ltp < prev ? 'ltp-vs-prev-down' : 'ltp-vs-prev-flat');
-        }
-        return cls.join(' ');
-      },
-      valueGetter: _resolveCellLtp,
-      valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
-    };
-    const _prevCol = {
-      field: 'close', headerName: 'Close', width: 68, minWidth: 68, maxWidth: 84,
-      type: 'numericColumn', headerClass: numericHdr,
-      cellClass: `${RA} cell-muted`,
-      valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
-    };
-    const _openCol = {
-      field: 'open', headerName: 'Open', width: 68, minWidth: 68, maxWidth: 90,
-      type: 'numericColumn', headerClass: numericHdr,
-      cellClass: `${RA} cell-muted`,
-      valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
-    };
-    const _volCol = {
-      field: 'volume', headerName: 'Vol', width: 58, minWidth: 58, maxWidth: 80,
-      type: 'numericColumn', headerClass: numericHdr,
-      cellClass: `${RA} cell-muted`,
-      valueFormatter: (p) => {
-        if (p.data?._isTotal) return '';
-        return (p.value == null || p.value === 0) ? '—' : aggCompact(p.value);
-      },
-    };
-    const _oiCol = {
-      field: 'oi', headerName: 'OI', width: 58, minWidth: 58, maxWidth: 80,
-      type: 'numericColumn', headerClass: numericHdr,
-      cellClass: `${RA} cell-muted`,
-      valueFormatter: (p) => {
-        if (p.data?._isTotal) return '';
-        return (p.value == null || p.value === 0) ? '—' : aggCompact(p.value);
-      },
-    };
+    // ─── Shared column shapes (built via pulseColumns.js factories) ─────
+    // Accessor functions (`() => _ltpFlashUp` etc.) are mandatory for any
+    // $state binding that is REASSIGNED (not just mutated) — the tick handler
+    // does `_ltpFlashUp = new Set(...)` so a captured value would be stale.
+    const _symColLeft       = mkSymColLeft({ symRenderer });
+    const _symColRight      = mkSymColRight({ symRenderer });
+    const _sparkCol         = mkSparkCol({ sparkRenderer });
+    const _ltpCol           = mkLtpCol({
+      getLiveLtpSnap:  () => _liveLtpSnap,
+      getLtpFlashUp:   () => _ltpFlashUp,
+      getLtpFlashDown: () => _ltpFlashDown,
+      numFmt, RA, numericHdr,
+    });
+    const _prevCol          = mkPrevCol({ RA, numericHdr, numFmt });
+    const _openCol          = mkOpenCol({ RA, numericHdr, numFmt });
+    const _volCol           = mkVolCol({ RA, numericHdr, aggCompact });
+    const _oiCol            = mkOiCol({ RA, numericHdr, aggCompact });
 
     // ─── Left grid: Pinned / Watchlist / Movers ──────────────────
-    // Day % shows raw symbol change_pct (no qty) — back-fills the
-    // information the legacy Day % column carried for non-position
-    // rows. Renders blank on rows without a quote.
-    const leftColDefs = /** @type {any[]} */ ([
-      _symColLeft,
-      _sparkCol,
-      _ltpCol,
-      { field: 'change_pct', headerName: 'Day %', colId: 'left_change_pct',
-        width: 64, type: 'numericColumn', headerClass: numericHdr,
-        cellClass: dirCellClass,
-        valueFormatter: pctFmtGrid,
-        headerTooltip: 'Raw symbol day-change % (no qty).' },
-      _prevCol,
-      _openCol,
-      _volCol,
-      _oiCol,
-    ]);  // ← left grid (Pinned / Watchlist / Movers) — no Account col
+    const leftColDefs = mkLeftColDefs({
+      symColLeft: _symColLeft, sparkCol: _sparkCol, ltpCol: _ltpCol,
+      prevCol: _prevCol, openCol: _openCol, volCol: _volCol, oiCol: _oiCol,
+      numericHdr, dirCellClass, pctFmtGrid,
+    });
 
     // ─── Right grid: Positions / Holdings ────────────────────────
-    // Column order — action-first: numbers leading, Account trailing.
-    // Operator: "i am more interested in ltp, avg, day p&l, p&l, etc
-    // for taking action."
-    //
-    //   Symbol → Sparkline → LTP → Avg → Day P&L → Day % → Close →
-    //   P&L → P&L % → Qty → Invested → Value → Open → Vol →
-    //   OI → Account (trailing)
-    //
-    // The trailing Account column keeps the lead-account-or-"+N"
-    // valueGetter + per-account tint so colour-spotting still works,
-    // but it sits at the end of the row where it doesn't compete with
-    // the action-relevant numbers.
-    const _acctColTrailing = {
-      field: '_acct_display', headerName: 'Account', colId: 'account',
-      width: 86, minWidth: 70, maxWidth: 110,
-      cellClass: 'mp-acct-cell',
-      cellStyle: (p) => {
-        if (p.data?._isTotal) return {};
-        const color = p.data?._acctColor ?? null;
-        if (!color) return {};
-        return { color };
-      },
-      valueGetter: (p) => {
-        if (p.data?._isTotal) return '';
-        const accts = p.data?.accounts;
-        if (!accts) return '';
-        const list = accts instanceof Set ? Array.from(accts) : Array.isArray(accts) ? accts : [];
-        if (list.length === 0) return '';
-        if (list.length === 1) return list[0];
-        return `${list[0]} +${list.length - 1}`;
-      },
-      // Show "STALE @ HH:MM" badge next to account name when the row's
-      // data came from the broker_apis LKG frame cache (circuit breaker
-      // was OPEN at fetch time). Only visible when stale > 30s — the
-      // badge renders as a muted slate chip flush-right inside the cell.
-      cellRenderer: (p) => {
-        const val = p.valueFormatted ?? p.value ?? '';
-        const stale = p.data?.account_stale === true;
-        const since = p.data?.account_stale_since;
-        if (!stale || !since) return val || '';
-        const el = document.createElement('span');
-        el.style.cssText = 'display:flex;align-items:center;gap:4px;white-space:nowrap;overflow:hidden;';
-        const name = document.createElement('span');
-        name.textContent = val;
-        name.style.cssText = 'overflow:hidden;text-overflow:ellipsis;';
-        const badge = document.createElement('span');
-        badge.textContent = `STALE@${since.replace(' IST', '')}`;
-        badge.style.cssText = 'font-size:9px;color:rgba(148,163,184,0.75);flex-shrink:0;';
-        badge.title = `Last live data: ${since}`;
-        el.appendChild(name);
-        el.appendChild(badge);
-        return el;
-      },
-    };
-    const rightColDefs = /** @type {any[]} */ ([
-      _symColRight,
-      _sparkCol,
-      _ltpCol,
-      // Avg — weighted entry price across positions + holdings on the row.
-      { field: 'avg_combined', headerName: 'Avg', colId: 'avg_combined',
-        width: 68, minWidth: 60, maxWidth: 90,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: `${RA} cell-muted`,
-        valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
-        headerTooltip: 'Weighted average entry across positions + holdings.' },
-      { field: 'day_pnl', headerName: 'Day P&L', width: 78, minWidth: 60, maxWidth: 96,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: (p) => pnlCellClass(p, 'day_pnl'),
-        valueFormatter: aggFmtGrid },
-      // Day P&L % — one-day return on yesterday's market value (close × qty).
-      // NOT cost basis: dividing by cost over-states day % for a long-held
-      // stock — INFY held 10 yrs at ₹100 cost / ₹2000 today posts a real
-      // 1 % day move as 20 % when normalised against cost. close × qty is
-      // the honest denominator: per-symbol this collapses to change_pct;
-      // TOTAL gets a market-value-weighted day return.
-      { field: 'day_pnl_pct', headerName: 'Day %', colId: 'day_pnl_pct',
-        width: 64, type: 'numericColumn', headerClass: numericHdr,
-        // Percentage column — no tick-flash cascade (absolute Day P&L carries flash).
-        cellClass: (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`,
-        valueGetter: (p) => {
-          const dpnl = Number(p.data?.day_pnl);
-          const prev = Number(p.data?._prev_market_value);
-          // Underlying anchor rows (BHEL / BEL / NIFTY) carry no qty
-          // and no day_pnl, but the underlying's change_pct IS on the
-          // row. Fall back to it so the Day % column reads the
-          // underlying's intraday move directly. Same fallback also
-          // covers just-listed contracts and watchlist-only rows where
-          // close × qty isn't computable.
-          if (!Number.isFinite(dpnl) || prev <= 0) {
-            const cp = Number(p.data?.change_pct);
-            return Number.isFinite(cp) ? cp : null;
-          }
-          return (dpnl / prev) * 100;
-        },
-        valueFormatter: pctFmtGrid,
-        headerTooltip: `Day P&L as % of yesterday's market value (close × qty).` },
-      _prevCol,
-      { field: 'pnl', headerName: 'P&L', width: 78, minWidth: 60, maxWidth: 96,
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: (p) => pnlCellClass(p, 'pnl'),
-        valueFormatter: aggFmtGrid },
-      { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
-        width: 64, type: 'numericColumn', headerClass: numericHdr,
-        // Percentage column — no tick-flash cascade (absolute P&L carries flash).
-        cellClass: (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`,
-        valueGetter: (p) => {
-          const pnl  = Number(p.data?.pnl);
-          const cost = Number(p.data?._cost_basis);
-          if (!Number.isFinite(pnl) || !(cost > 0)) return null;
-          return (pnl / cost) * 100;
-        },
-        valueFormatter: pctFmtGrid,
-        headerTooltip: 'P&L as % of cost basis.' },
-      { field: 'qty_net', headerName: 'Qty', width: 56, colId: 'qty_net',
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: RA,
-        valueGetter: (p) => {
-          // Blank on TOTAL — summing qty across different symbols
-          // (100 NIFTY + 50 RELIANCE etc.) gives a meaningless
-          // number. Stays populated on per-symbol rows where qty is
-          // a real shares/contracts count.
-          if (p.data?._isTotal) return null;
-          const q = (Number(p.data?.qty_pos) || 0) + (Number(p.data?.qty_hold) || 0);
-          return q === 0 ? null : q;
-        },
-        valueFormatter: ({ value }) => value == null ? '' : qtyFmt(value) },
-      // Lots — qty expressed in F&O lot units. Holdings on F&O
-      // underlyings use the underlying's lot; option/futures POSITIONS
-      // use the contract's own lot. Everything else (cash equity
-      // position, non-F&O holding) reads 0. Operator: "you can keep
-      // qty as lot size as a separate column. if it is not an
-      // underlying show it as 0… similarly do it for option positions
-      // for other positions show it as 0. keep it consistent across
-      // all algo pages for holdings and positions."
-      // One-decimal precision when fractional, integer otherwise.
-      { field: 'lots', headerName: 'Lots', width: 52, colId: 'lots',
-        type: 'numericColumn', headerClass: numericHdr,
-        cellClass: RA,
-        valueGetter: (p) => _lotsForUnifiedRow(p.data),
-        valueFormatter: ({ value }) => _lotsFmt(value),
-        headerTooltip: 'Qty in F&O lot units. Holdings on F&O underlyings use the underlying lot; option / futures positions use the contract lot. Cash equity + non-F&O rows read 0.' },
-      // Investment + Current value — holdings only. The user wants both
-      // values per row plus a TOTAL footer; aggregator sums them when
-      // present (positions rows carry null inv/cur and skip the sum).
-      { field: 'inv_val', headerName: 'Invested', colId: 'inv_val',
-        width: 78, type: 'numericColumn', headerClass: numericHdr,
-        cellClass: `${RA} cell-muted`,
-        valueFormatter: aggFmtGrid,
-        headerTooltip: 'Avg cost × held qty — your invested rupees on this holding.' },
-      { field: 'cur_val', headerName: 'Value', colId: 'cur_val',
-        width: 78, type: 'numericColumn', headerClass: numericHdr,
-        cellClass: RA,
-        valueFormatter: aggFmtGrid,
-        headerTooltip: 'Live LTP × held qty — current market value of this holding.' },
-      _openCol,
-      _volCol,
-      _oiCol,
-      _acctColTrailing,
-    ]);
+    const _acctColTrailing  = mkAcctColTrailing({ RA });
+    const rightColDefs = mkRightColDefs({
+      symColRight: _symColRight, sparkCol: _sparkCol, ltpCol: _ltpCol,
+      prevCol: _prevCol, openCol: _openCol, volCol: _volCol, oiCol: _oiCol,
+      acctColTrailing: _acctColTrailing,
+      RA, numericHdr,
+      pnlCellClass, dirCellClass, pctFmtGrid, aggFmtGrid, numFmt, qtyFmt,
+      lotsForRow, fmtLots,
+    });
 
     // Group-preserving postSortRows. After ag-Grid sorts each row
     // independently by the selected column, we re-arrange so an
@@ -4526,22 +4221,8 @@
     }  // end main symbols grid block
 
     // Positions Summary grid — Account | Day P&L | Day % | P&L
-    // Compact widths — aggCompact maxes at ~8 chars ("-999.99L") so
-    // 78 px fits every rupee value plus the standard cell padding.
     if (showSummary && positionsSummaryEl) {
-      const posSummaryCols = [
-        { field: 'account',               headerName: 'Account', width: 76,
-          cellClass: 'ag-col-fill' },
-        { field: 'day_pnl',               headerName: 'Day P&L', width: 78,
-          type: 'numericColumn', headerClass: numericHdr,
-          cellClass: pnlCellClass, valueFormatter: aggFmtGrid },
-        { field: 'day_change_percentage', headerName: 'Day %',   width: 60,
-          type: 'numericColumn', headerClass: numericHdr,
-          cellClass: pnlCellClass, valueFormatter: pctFmtGrid },
-        { field: 'pnl',                   headerName: 'P&L',     width: 78,
-          type: 'numericColumn', headerClass: numericHdr,
-          cellClass: pnlCellClass, valueFormatter: aggFmtGrid },
-      ];
+      const posSummaryCols = mkPosSummaryCols({ numericHdr, pnlCellClass, aggFmtGrid, pctFmtGrid });
       positionsSummaryGrid = createGrid(positionsSummaryEl, {
         theme: 'legacy',
         columnDefs: posSummaryCols,
@@ -4559,30 +4240,8 @@
     }
 
     // Holdings Summary grid — Account | Day P&L | Day % | P&L | P&L % | Cur Val | Inv Val
-    // Compact widths matching the Positions Summary above.
     if (showSummary && holdingsSummaryEl) {
-      const holdSummaryCols = [
-        { field: 'account',               headerName: 'Account', width: 76,
-          cellClass: 'ag-col-fill' },
-        { field: 'day_pnl',               headerName: 'Day P&L', width: 78,
-          type: 'numericColumn', headerClass: numericHdr,
-          cellClass: pnlCellClass, valueFormatter: aggFmtGrid },
-        { field: 'day_change_percentage', headerName: 'Day %',   width: 60,
-          type: 'numericColumn', headerClass: numericHdr,
-          cellClass: pnlCellClass, valueFormatter: pctFmtGrid },
-        { field: 'pnl',                   headerName: 'P&L',     width: 78,
-          type: 'numericColumn', headerClass: numericHdr,
-          cellClass: pnlCellClass, valueFormatter: aggFmtGrid },
-        { field: 'pnl_percentage',        headerName: 'P&L %',   width: 60,
-          type: 'numericColumn', headerClass: numericHdr,
-          cellClass: pnlCellClass, valueFormatter: pctFmtGrid },
-        { field: 'cur_val',               headerName: 'Value', width: 78,
-          type: 'numericColumn', headerClass: numericHdr,
-          cellClass: RA, valueFormatter: aggFmtGrid },
-        { field: 'inv_val',               headerName: 'Invested', width: 78,
-          type: 'numericColumn', headerClass: numericHdr,
-          cellClass: RA, valueFormatter: aggFmtGrid },
-      ];
+      const holdSummaryCols = mkHoldSummaryCols({ RA, numericHdr, pnlCellClass, aggFmtGrid, pctFmtGrid });
       holdingsSummaryGrid = createGrid(holdingsSummaryEl, {
         theme: 'legacy',
         columnDefs: holdSummaryCols,
@@ -4599,49 +4258,9 @@
       holdingsSummaryReady = true;
     }
 
-    // Funds grid — per-account margins. Compact widths matching the
-    // summary grids above. Header labels shortened (Avail Margin →
-    // Avail Mar, Used Margin → Used Mar, Collateral → Coll) so the
-    // headers don't truncate at 78 px column width.
+    // Funds grid — per-account margins.
     if (showFunds && fundsEl) {
-      const fundsCols = [
-        { field: 'account',        headerName: 'Account',   width: 76,
-          cellClass: 'ag-col-fill' },
-        { field: 'cash_total',     headerName: 'Cash',      width: 78,
-          type: 'numericColumn', headerClass: numericHdr,
-          cellClass: dirCellClass, valueFormatter: aggFmtGrid,
-          headerTooltip: 'Live cash + cash debited on currently-held long options (= cash you would have if every long option were closed at its entry premium)',
-          // live_cash + sum(avg_price × |qty|) for long CE/PE rows in
-          // this account. `_long_opt_cash` is pre-computed by the
-          // scopedFunds derivation. Falls back to row.cash when
-          // live_cash is missing (older API cached during deploy).
-          valueGetter: (/** @type {any} */ p) => {
-            const d = p?.data || {};
-            const lc  = Number(d.live_cash ?? 0);
-            const loc = Number(d._long_opt_cash ?? 0);
-            return (lc !== 0 ? lc : Number(d.cash ?? 0)) + loc;
-          } },
-        { field: 'live_cash',      headerName: 'Live Cash', width: 78,
-          type: 'numericColumn', headerClass: numericHdr,
-          cellClass: dirCellClass, valueFormatter: aggFmtGrid,
-          headerTooltip: 'Current cash — decreases when option premium is debited' },
-        { field: '_long_opt_cash', headerName: 'Opt Cash',  width: 78,
-          type: 'numericColumn', headerClass: numericHdr,
-          cellClass: RA, valueFormatter: aggFmtGrid,
-          headerTooltip: 'Cash debited on currently-held long options (sum of avg_price × |qty| across each long CE/PE)' },
-        { field: 'avail_margin',   headerName: 'Avail Margin', width: 92,
-          type: 'numericColumn', headerClass: numericHdr,
-          cellClass: RA, valueFormatter: aggFmtGrid,
-          headerTooltip: 'Available margin — net trading buffer' },
-        { field: 'used_margin',    headerName: 'Used Margin', width: 90,
-          type: 'numericColumn', headerClass: numericHdr,
-          cellClass: RA, valueFormatter: aggFmtGrid,
-          headerTooltip: 'Margin currently locked against open positions' },
-        { field: 'collateral',     headerName: 'Collateral', flex: 1, minWidth: 80,
-          type: 'numericColumn', headerClass: numericHdr,
-          cellClass: RA, valueFormatter: aggFmtGrid,
-          headerTooltip: 'Collateral value from pledged holdings' },
-      ];
+      const fundsCols = mkFundsCols({ RA, numericHdr, dirCellClass, aggFmtGrid });
       fundsGrid = createGrid(fundsEl, {
         theme: 'legacy',
         columnDefs: fundsCols,
@@ -6191,6 +5810,30 @@
   :global(.ag-theme-algo .mp-total-row .ltp-vs-avg-up),
   :global(.ag-theme-algo .mp-total-row .ltp-vs-avg-down) {
     background-color: transparent !important;
+  }
+  /* SNAP chip — per-exchange close-snapshot lifecycle (Jul 2026).
+     Renders next to the LTP number on rows whose exchange is currently
+     CLOSED. Amber palette (matches MCX-only / lifecycle-frozen tone)
+     so the operator recognises the frozen-state signal from across the
+     page without confusing it with a green (live-open) or red (error)
+     indicator. Small font + tight padding so it fits inside the LTP
+     cell without eating LTP digits.
+     .ltp-snap on the cell itself is a hook used by future CSS if we
+     want to dim the frozen number — currently the chip alone carries
+     the signal so the cell stays readable. */
+  :global(.ag-theme-algo .ltp-snap-chip) {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 0 3px;
+    line-height: 12px;
+    height: 12px;
+    border-radius: 2px;
+    background: rgba(251, 191, 36, 0.16);
+    color: #fbbf24;
+    border: 1px solid rgba(251, 191, 36, 0.5);
+    flex-shrink: 0;
   }
   /* Hide the day-P&L mini-bar on TOTAL rows — the aggregate doesn't
      get a per-day sign indicator (the operator reads the TOTAL P&L
