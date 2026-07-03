@@ -766,6 +766,22 @@ async def seed_global_pinned() -> None:
             )
             logger.info("Watchlist: migrated %d legacy Pinned rows into global",
                         len(legacy_ids))
+
+        # 5a. One-shot cleanup: remove retired symbols from global Pinned.
+        #     Idempotent — safe to re-run on every boot. sa_delete already
+        #     imported above inside the legacy-migration block; hoist it
+        #     if the legacy block was skipped.
+        from sqlalchemy import delete as sa_delete  # noqa: F811 (idempotent re-import)
+        _RETIRED_PINNED = [("GOLDM", "MCX"), ("USDINR", "CDS")]
+        for _sym, _exch in _RETIRED_PINNED:
+            await session.execute(
+                sa_delete(WatchlistItem).where(
+                    WatchlistItem.watchlist_id == global_row.id,
+                    WatchlistItem.tradingsymbol == _sym,
+                    WatchlistItem.exchange == _exch,
+                )
+            )
+
         # 5. Top up the global Pinned with any MARKETS_DEFAULT item
         #    that isn't already in it. Additive — never removes the
         #    operator's curated extras. The (tradingsymbol, exchange)
