@@ -330,9 +330,12 @@
   .nav-zero { color: var(--algo-slate); }
 
   /* TOTAL row — amber tint mirrors ag-theme-algo totals-row rule.
-     border-top 2px amber matches the ag-Grid TOTAL row treatment. */
+     border-top 2px amber matches the ag-Grid TOTAL row treatment.
+     Layered over opaque #1d2a44 base to prevent scroll bleed. */
   .nav-bd-total td {
-    background: var(--c-action-22) !important;
+    background:
+      linear-gradient(rgba(251,191,36,0.22), rgba(251,191,36,0.22)),
+      #1d2a44 !important;
     color: var(--c-action) !important;
     border-top: 2px solid rgba(251, 191, 36, 0.70) !important;
     border-bottom: 1px solid rgba(251, 191, 36, 0.55) !important;
