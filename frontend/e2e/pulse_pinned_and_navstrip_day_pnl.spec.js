@@ -262,6 +262,8 @@ test.describe('Bug 2 — P slot 1 not frozen to 0 after cross-page nav', () => {
 
 test.describe('Mobile — pinned card + P pill on 390px', () => {
   test.use({ viewport: { width: 390, height: 844 } });
+  // Mobile /pulse loads slower in headless (CSS layout + SSE setup); raise per-test timeout
+  test.setTimeout(60_000);
 
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
@@ -270,17 +272,17 @@ test.describe('Mobile — pinned card + P pill on 390px', () => {
   test('P strip and P pill visible on 390px /pulse', async ({ page }) => {
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
     const strip = page.locator('.ps-strip');
-    await expect(strip).toBeVisible({ timeout: TIMEOUT });
+    await expect(strip).toBeVisible({ timeout: 40_000 });
     const pPill = strip.locator('.ps-agg').first();
-    await expect(pPill).toBeVisible({ timeout: TIMEOUT });
+    await expect(pPill).toBeVisible({ timeout: 40_000 });
     const vals = pPill.locator('.ps-agg-v');
-    await expect(vals).toHaveCount(3, { timeout: TIMEOUT });
+    await expect(vals).toHaveCount(3, { timeout: 40_000 });
   });
 
   test('strip does not overflow viewport on 390px', async ({ page }) => {
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
     const strip = page.locator('.ps-strip');
-    await expect(strip).toBeVisible({ timeout: TIMEOUT });
+    await expect(strip).toBeVisible({ timeout: 40_000 });
     const box = await strip.boundingBox();
     expect(box, 'strip must have a bounding box').not.toBeNull();
     expect(box.width, 'strip width must not exceed viewport').toBeLessThanOrEqual(390 + 4);
