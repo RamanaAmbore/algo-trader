@@ -180,7 +180,14 @@ MOVER_TOP_N: int = 20
 # ---------------------------------------------------------------------------
 
 _session_movers: dict[str, dict] = {}
+_session_movers_mcx: dict[str, dict] = {}  # separate dict for MCX-only evening session
 _session_date: Optional[str] = None  # ISO date string — rolls over at IST midnight
+
+# ---------------------------------------------------------------------------
+# Per-day MCX underlyings cache (instruments scan, same buster as NSE cache)
+# ---------------------------------------------------------------------------
+_mcx_underlyings_cache: set[str] = set()  # bare commodity roots with CE/PE chain
+_mcx_underlyings_cache_date: Optional[str] = None
 
 # ---------------------------------------------------------------------------
 # Demo synthetic watchlist
@@ -469,6 +476,59 @@ async def _get_movers_now_off_hours() -> tuple[list["MoverRow"], str]:
             f"universe_size=0 snapshot_present=True err={exc}"
         )
         return [], "snapshot_deserialise_failed"
+
+
+def _build_mcx_universe(
+    all_items: list,
+) -> tuple[set[str], dict[str, str]]:
+    """Single-pass over instruments list to build MCX movers universe.
+
+    Returns:
+        (mcx_underlyings_with_opts, underlying_to_fut_symbol)
+
+    ``mcx_underlyings_with_opts`` — bare commodity roots (e.g. 'GOLD',
+    'CRUDEOIL') that have at least one MCX CE/PE row in the instruments
+    dump, i.e. they have an active option chain.
+
+    ``underlying_to_fut_symbol`` — earliest-expiry MCX FUT tradingsymbol per
+    underlying root. This is what Kite wants in the quote key, e.g.
+    'MCX:GOLD26JUNFUT'.  When no FUT row exists for a root (cache cold) the
+    root is absent from this dict and skipped at quote-key construction time.
+
+    Both structures are built in ONE pass over all_items so no N async
+    look-ups are needed at request time.
+    """
+    from backend.api.algo.derivatives import is_mcx_underlying
+
+    # Collect CE/PE roots and FUT rows in one pass.
+    opt_roots: set[str] = set()
+    # fut_candidates[root] = list of (expiry_str, tradingsymbol)
+    fut_candidates: dict[str, list[tuple[str, str]]] = {}
+
+    for inst in all_items:
+        exch = getattr(inst, "e", None)
+        if exch != "MCX":
+            continue
+        underlying = (getattr(inst, "u", None) or "").upper()
+        if not underlying or not is_mcx_underlying(underlying):
+            continue
+        inst_type = getattr(inst, "t", None)
+        if inst_type in ("CE", "PE"):
+            opt_roots.add(underlying)
+        elif inst_type == "FUT":
+            expiry = getattr(inst, "x", None) or ""
+            sym = getattr(inst, "s", None) or ""
+            if sym:
+                fut_candidates.setdefault(underlying, []).append((expiry, sym))
+
+    # Pick earliest-expiry FUT per underlying (near-month = most liquid).
+    underlying_to_fut: dict[str, str] = {}
+    for root, candidates in fut_candidates.items():
+        if root in opt_roots:  # only include roots that actually have options
+            candidates.sort(key=lambda t: t[0] or "")
+            underlying_to_fut[root] = candidates[0][1]
+
+    return opt_roots, underlying_to_fut
 
 
 async def _resolve_mcx_commodity(commodity_name: str) -> Optional[str]:
@@ -909,6 +969,201 @@ def _is_designated_role(request) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# MCX-only movers live fetch (NSE closed, MCX open — 15:30-23:30 IST)
+# ---------------------------------------------------------------------------
+
+async def _get_movers_mcx_live(
+    ist_today: str,
+    ist_now,
+    get_or_fetch,
+    _fetch_instruments,
+    _INST_TTL: int,
+    get_price_broker,
+    asyncio,
+    datetime,
+    timezone,
+) -> "MoversResponse":
+    """Live MCX movers computation for the evening session (NSE closed).
+
+    Builds universe from instruments in a SINGLE pass via ``_build_mcx_universe``
+    (commodity roots with active CE/PE chain + earliest-expiry FUT symbol per root).
+    Quote keys are ``MCX:<FUT_tradingsymbol>`` — bare commodity roots return nothing
+    from Kite's quote API.
+
+    No snapshot is persisted: MCX-only rows must NOT overwrite the NSE 15:29
+    snapshot in ``movers_snapshots`` (off-hours fallback before 09:15 IST would
+    then serve commodity rows on an equity-context grid).
+
+    On broker failure → returns empty movers with reason logged; operator sees
+    an explicit empty state rather than stale NSE rows.
+    """
+    global _mcx_underlyings_cache, _mcx_underlyings_cache_date, _session_movers_mcx
+
+    # Refresh MCX universe cache once per calendar day.
+    if _mcx_underlyings_cache_date != ist_today:
+        try:
+            resp = await get_or_fetch("instruments", _fetch_instruments,
+                                      ttl_seconds=_INST_TTL)
+            all_items = resp.items if resp else []
+        except Exception as _exc:
+            logger.warning(f"MCX Movers: instruments fetch failed: {_exc}")
+            all_items = []
+        mcx_opt_roots, mcx_underlying_to_fut = _build_mcx_universe(all_items)
+        logger.info(
+            f"MCX Movers: universe build — all_items={len(all_items)} "
+            f"mcx_opt_roots={len(mcx_opt_roots)} "
+            f"mcx_fut_resolved={len(mcx_underlying_to_fut)}"
+        )
+        if mcx_opt_roots:
+            _mcx_underlyings_cache = mcx_opt_roots
+            _mcx_underlyings_cache_date = ist_today
+    else:
+        # Cache is warm; still need fut-symbol map for quote keys — rebuild
+        # from cache (cheap: already filtered set vs instruments list).
+        try:
+            resp = await get_or_fetch("instruments", _fetch_instruments,
+                                      ttl_seconds=_INST_TTL)
+            all_items = resp.items if resp else []
+        except Exception:
+            all_items = []
+        _, mcx_underlying_to_fut = _build_mcx_universe(all_items)
+
+    mcx_opt_roots = _mcx_underlyings_cache
+
+    if not mcx_opt_roots:
+        logger.info(
+            f"[MOVERS-EMPTY] reason=no_mcx_universe "
+            f"universe_size=0 snapshot_present=False "
+            f"session_movers_mcx={len(_session_movers_mcx)}"
+        )
+        return MoversResponse(
+            movers=[], threshold_pct=MOVER_THRESHOLD_PCT, session_date=ist_today,
+        )
+
+    # Build Kite quote keys: MCX:<FUT_symbol>  (e.g. "MCX:GOLD26JUNFUT").
+    # Only include roots where we resolved a FUT symbol — bare root names
+    # (e.g. "MCX:GOLD") return nothing from broker.quote().
+    key_to_underlying: dict[str, str] = {}
+    for root in mcx_opt_roots:
+        fut_sym = mcx_underlying_to_fut.get(root)
+        if fut_sym:
+            key_to_underlying[f"MCX:{fut_sym}"] = root
+
+    if not key_to_underlying:
+        logger.info(
+            f"[MOVERS-EMPTY] reason=mcx_no_fut_resolved "
+            f"universe_size={len(mcx_opt_roots)} "
+            f"session_movers_mcx={len(_session_movers_mcx)}"
+        )
+        return MoversResponse(
+            movers=[], threshold_pct=MOVER_THRESHOLD_PCT, session_date=ist_today,
+        )
+
+    # Cached 30 s quote batch for the MCX movers universe.
+    _MOVERS_QUOTE_TTL = 30
+    import time as _time
+
+    async def _fetch_mcx_movers_quotes() -> dict:
+        keys = list(key_to_underlying.keys())
+        try:
+            broker = get_price_broker()
+            return await asyncio.to_thread(broker.quote, keys) or {}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"MCX Movers quote fetch failed: {exc}")
+            return {}
+
+    cache_key = f"movers_quotes_mcx_{int(_time.time() // _MOVERS_QUOTE_TTL)}"
+    quote_data: dict = await get_or_fetch(
+        cache_key, _fetch_mcx_movers_quotes, ttl_seconds=_MOVERS_QUOTE_TTL,
+    )
+
+    if not quote_data:
+        logger.info(
+            f"[MOVERS-EMPTY] reason=broker_quote_empty_mcx "
+            f"universe_size={len(key_to_underlying)} "
+            f"session_movers_mcx={len(_session_movers_mcx)}"
+        )
+        # Broker failed — return empty. Do NOT fall back to NSE snapshot.
+        return MoversResponse(
+            movers=[], threshold_pct=MOVER_THRESHOLD_PCT, session_date=ist_today,
+        )
+
+    # Compute change_pct. MCX session-sticky dict is separate from NSE to
+    # prevent morning NSE stickies from appearing alongside evening MCX rows.
+    live_snapshot: dict[str, dict] = {}
+    for kite_key, underlying in key_to_underlying.items():
+        q = quote_data.get(kite_key) or {}
+        ltp = float(q.get("last_price") or 0.0)
+        ohlc = q.get("ohlc") or {}
+        prev_close = float(ohlc.get("close") or 0.0)
+        if ltp == 0.0 or prev_close == 0.0:
+            if underlying in _session_movers_mcx and ltp:
+                _session_movers_mcx[underlying]["last_price"] = ltp
+            continue
+        change_pct = (ltp - prev_close) / prev_close * 100.0
+        live_snapshot[underlying] = {
+            "peak_pct": change_pct,
+            "last_pct": change_pct,
+            "last_price": ltp,
+            "previous_close": prev_close,
+            "exchange": "MCX",
+        }
+
+        if underlying in _session_movers_mcx:
+            entry = _session_movers_mcx[underlying]
+            entry["last_pct"] = change_pct
+            entry["last_price"] = ltp
+            entry["previous_close"] = prev_close
+            if abs(change_pct) > abs(entry["peak_pct"]):
+                entry["peak_pct"] = change_pct
+        elif abs(change_pct) >= MOVER_THRESHOLD_PCT:
+            _session_movers_mcx[underlying] = {
+                "first_seen_at": datetime.now(timezone.utc).isoformat(),
+                "peak_pct": change_pct,
+                "last_pct": change_pct,
+                "last_price": ltp,
+                "previous_close": prev_close,
+                "exchange": "MCX",
+            }
+
+    combined: dict[str, dict] = _combine_movers(live_snapshot, _session_movers_mcx, MOVER_TOP_N)
+
+    rows: list[MoverRow] = []
+    for underlying, entry in combined.items():
+        change_pct = entry["last_pct"]
+        rows.append(MoverRow(
+            tradingsymbol=underlying,
+            exchange=entry["exchange"],
+            last_price=entry["last_price"],
+            previous_close=entry["previous_close"],
+            change_pct=change_pct,
+            peak_pct=entry.get("peak_pct", change_pct),
+            sticky=(underlying in _session_movers_mcx
+                    and abs(change_pct) < MOVER_THRESHOLD_PCT),
+        ))
+
+    rows.sort(key=lambda r: abs(r.change_pct), reverse=True)
+
+    if not rows:
+        logger.info(
+            f"[MOVERS-EMPTY] reason=no_mcx_matches "
+            f"universe_size={len(key_to_underlying)} "
+            f"session_movers_mcx={len(_session_movers_mcx)} "
+            f"live_snapshot={len(live_snapshot)}"
+        )
+
+    # NOTE: MCX rows are intentionally NOT persisted to movers_snapshots.
+    # Persisting would overwrite the NSE 15:29 close snapshot; the
+    # closed-hours fallback (before 09:15 IST) would then serve commodity
+    # rows on an equity-context grid. MCX-only period has no snapshot fallback.
+    return MoversResponse(
+        movers=rows,
+        threshold_pct=MOVER_THRESHOLD_PCT,
+        session_date=ist_today,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Controller
 # ---------------------------------------------------------------------------
 
@@ -1164,29 +1419,34 @@ class WatchlistController(Controller):
         from backend.brokers.broker_apis import fetch_holidays
         from datetime import time as _dtime
 
-        global _session_movers, _session_date
+        global _session_movers, _session_movers_mcx, _session_date
 
         # Session rollover at IST midnight.
         ist_now = timestamp_indian()
         ist_today = ist_now.date().isoformat()
         if _session_date != ist_today:
             _session_movers = {}
+            _session_movers_mcx = {}
             _session_date = ist_today
 
-        # ── Market-closed fast-path ────────────────────────────────────
-        # The movers universe is NSE-only (MCX underlyings are explicitly
-        # excluded at the quote-fetch stage). Therefore the correct predicate
-        # is whether the NSE/equity session is open, NOT whether any segment
-        # is open.  The "any segment" check was too permissive: during the
-        # MCX evening window (15:30-23:30 IST) it returned True, the live
-        # path was taken, Kite returned zeros for all post-session NSE quotes,
-        # rows came back empty, and the winners/losers panels went blank.
-        # Fix: gate on the equity segment window only (09:15-15:30 IST, NSE
-        # holiday calendar) so the DB snapshot is served the moment NSE closes.
+        # ── Market-state gate ─────────────────────────────────────────
+        # Three branches:
+        #   1. NSE open (09:15-15:30 IST, with or without MCX) — NSE universe.
+        #   2. NSE closed + MCX open (15:30-23:30 IST) — MCX live universe.
+        #   3. Both closed — NSE DB snapshot fallback.
+        #
+        # Branch 2 was previously a gap: the old guard fired the snapshot
+        # path when NSE was closed, serving stale NSE rows during MCX evening
+        # hours when CRUDEOIL / GOLD / SILVER were actively moving.
         try:
             _nse_holidays = fetch_holidays("NSE")
         except Exception:
             _nse_holidays = set()
+        try:
+            _mcx_holidays = fetch_holidays("MCX")
+        except Exception:
+            _mcx_holidays = set()
+
         nse_is_open = is_market_open(
             ist_now,
             _nse_holidays,
@@ -1194,11 +1454,16 @@ class WatchlistController(Controller):
             market_end=_dtime(15, 30),
             exchange="NSE",
         )
-        if not nse_is_open:
-            # Off-hours: delegate to the unified resolver so the DB-snapshot
-            # deserialise path is a SINGLE choke-point that owns the
-            # [MOVERS-EMPTY] reason semantics. The route only handles the
-            # extra route-response bookkeeping (captured_at, session_date).
+        mcx_is_open = is_market_open(
+            ist_now,
+            _mcx_holidays,
+            market_start=_dtime(9, 0),
+            market_end=_dtime(23, 30),
+            exchange="MCX",
+        )
+
+        # Branch 3: both closed → NSE snapshot.
+        if not nse_is_open and not mcx_is_open:
             snap_rows, reason = await _get_movers_now_off_hours()
             if reason == "snapshot":
                 snap = await _load_latest_movers_snapshot()
@@ -1208,7 +1473,6 @@ class WatchlistController(Controller):
                     session_date=snap.date.isoformat() if hasattr(snap.date, "isoformat") else str(snap.date),
                     captured_at=snap.captured_at.isoformat() if snap else None,
                 )
-            # snapshot_missing_off_hours OR snapshot_deserialise_failed → empty.
             if reason == "snapshot_missing_off_hours":
                 logger.info(
                     f"[MOVERS-EMPTY] reason=snapshot_missing_off_hours "
@@ -1219,7 +1483,15 @@ class WatchlistController(Controller):
                 movers=[], threshold_pct=MOVER_THRESHOLD_PCT, session_date=ist_today,
             )
 
-        # ── Live fetch (market open) ───────────────────────────────────
+        # Branch 2: NSE closed, MCX open — live MCX movers.
+        if not nse_is_open and mcx_is_open:
+            return await _get_movers_mcx_live(
+                ist_today, ist_now,
+                get_or_fetch, _fetch_instruments, _INST_TTL,
+                get_price_broker, asyncio, datetime, timezone,
+            )
+
+        # ── Branch 1: NSE open (live NSE fetch) ───────────────────────
 
         # Build universe: underlyings that have at least one CE/PE row.
         # Per-day cached — the instruments dump only changes when Kite

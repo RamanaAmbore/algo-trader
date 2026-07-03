@@ -160,6 +160,11 @@ also monitored (independent cadence; only logs if file changes detected).
 
 Open/close summaries sent at `open_summary_offset_minutes` / `close_summary_offset_minutes` after segment open/close. Weekends hardcoded closed (special Muhurat needs explicit override).
 
+**Winners/Losers movers gate** (`backend/api/routes/watchlist.py:get_movers`):
+- NSE open (09:15–15:30) → NSE equity universe (existing behaviour).
+- NSE closed + MCX open (15:30–23:30) → Live MCX commodity movers (CRUDEOIL, GOLD, SILVER, NATURALGAS, COPPER, ZINC, LEAD, ALUMINIUM, NICKEL, MENTHAOIL, COTTON, …). Quote keys are `MCX:<FUT_tradingsymbol>` resolved via `_build_mcx_universe()` (single-pass instruments scan). MCX rows are NOT persisted to `movers_snapshots` — snapshot stays NSE-only to avoid corrupting the pre-09:15 fallback. Session-sticky state is separate: `_session_movers_mcx` (MCX) vs `_session_movers` (NSE).
+- Both closed → NSE DB snapshot fallback (existing behaviour).
+
 ---
 
 ## Background Tasks (`backend/api/background.py`)
