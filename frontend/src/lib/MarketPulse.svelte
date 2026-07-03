@@ -3851,7 +3851,7 @@
     const sym    = String((params.data || {}).tradingsymbol || '').toUpperCase();
     let base     = sparklines[sym];
     if (!base || base.length === 0) {
-      return '<span style="display:flex;align-items:center;justify-content:center;height:100%;color:#7e97b8;font-size: var(--fs-sm)">—</span>';
+      return '<span style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--algo-muted);font-size: var(--fs-sm)">—</span>';
     }
     // Defensive: when the backend ships only the current LTP (movers
     // entering a fresh universe with no cached history + broker rate-
@@ -4420,7 +4420,7 @@
         },
         sortingOrder: ['asc', 'desc', null],
         overlayNoRowsTemplate:
-          `<span style="font-size: var(--fs-md);color:#7e97b8">${emptyMsg}</span>`,
+          `<span style="font-size: var(--fs-md);color:var(--algo-muted)">${emptyMsg}</span>`,
         domLayout: 'normal',
         getRowClass,
         // Keep underlyings + their options together as a block during
@@ -5331,7 +5331,7 @@
                   _pendingDeleteId = null;
                 }}
                 class="text-[0.7rem] py-1 px-3 rounded font-bold border"
-                style="background: rgba(56,189,248,0.2); color: #7dd3fc; border-color: rgba(56,189,248,0.55);"
+                style="background: rgba(56,189,248,0.2); color: var(--algo-sky); border-color: rgba(56,189,248,0.55);"
                 title={_renameId === targetListId ? 'Cancel rename' : `Rename "${_tgtList.name}" watchlist`}>
                 {_renameId === targetListId ? '× Cancel' : '✎ Rename'}
               </button>
@@ -5356,7 +5356,7 @@
                   }
                 }}
                 class="text-[0.7rem] py-1 px-3 rounded font-bold border"
-                style="background: rgba(248,113,113,0.2); color: #f87171; border-color: rgba(248,113,113,0.55);"
+                style="background: rgba(248,113,113,0.2); color: var(--algo-red); border-color: var(--algo-red-border);"
                 title={`Delete "${_tgtList.name}" watchlist`}>
                 🗑 Delete
               </button>
@@ -5377,7 +5377,7 @@
               class="btn-primary text-[0.7rem] py-1 px-3 disabled:opacity-50">Save</button>
           </div>
           {#if _renameError}
-            <div class="search-hint" style="color:#f87171">{_renameError}</div>
+            <div class="search-hint" style="color:var(--algo-red)">{_renameError}</div>
           {:else}
             <div class="search-hint">Enter to save · Esc to cancel · names are case-insensitive and must be unique.</div>
           {/if}
@@ -5472,8 +5472,8 @@
             {#each typeahead as inst}
               <button onclick={() => pickFromTypeahead(inst)}
                 class="search-typeahead-item">
-                <span class="font-mono text-[#fbbf24]">{inst.s}</span>
-                <span class="text-[0.6rem] text-[#7e97b8] ml-2">{inst.e}</span>
+                <span class="font-mono text-[var(--algo-amber)]">{inst.s}</span>
+                <span class="text-[0.6rem] text-[var(--algo-muted)] ml-2">{inst.e}</span>
               </button>
             {/each}
           </div>
@@ -5537,19 +5537,19 @@
               options={optionPickerExpiries.map(exp => ({ value: exp, label: exp }))} />
           </div>
           <!-- CE / PE toggle -->
-          <span class="flex rounded overflow-hidden border border-[#fbbf24]/25">
+          <span class="flex rounded overflow-hidden border border-[var(--algo-amber)]/25">
             <button type="button"
               onclick={() => optionPickerSide = 'CE'}
               class="text-[0.65rem] font-bold px-2.5 py-0.5 transition-colors
                      {optionPickerSide === 'CE'
-                       ? 'bg-[#fbbf24] text-[#0a1628]'
-                       : 'text-[#7e97b8] hover:bg-[#fbbf24]/10'}">CE</button>
+                       ? 'bg-[var(--algo-amber)] text-[#0a1628]'
+                       : 'text-[var(--algo-muted)] hover:bg-[var(--algo-amber)]/10'}">CE</button>
             <button type="button"
               onclick={() => optionPickerSide = 'PE'}
               class="text-[0.65rem] font-bold px-2.5 py-0.5 transition-colors
                      {optionPickerSide === 'PE'
-                       ? 'bg-[#fbbf24] text-[#0a1628]'
-                       : 'text-[#7e97b8] hover:bg-[#fbbf24]/10'}">PE</button>
+                       ? 'bg-[var(--algo-amber)] text-[#0a1628]'
+                       : 'text-[var(--algo-muted)] hover:bg-[var(--algo-amber)]/10'}">PE</button>
           </span>
           <!-- Strike dropdown -->
           <div class="w-28">
@@ -5600,8 +5600,8 @@
   /* CE = green (right to BUY = bullish), PE = red (right to SELL =
      bearish). Sensibull / Streak convention. Operator scanning
      positions tells calls from puts at a glance. */
-  :global(.sym-main.sym-ce) { color: #4ade80; }
-  :global(.sym-main.sym-pe) { color: #f87171; }
+  :global(.sym-main.sym-ce) { color: var(--algo-green); }
+  :global(.sym-main.sym-pe) { color: var(--algo-red); }
   :global(.sym-alias) { color: var(--algo-muted); font-size: var(--fs-xs); }
 
   /* Source badges (P / H / W / U) — sit right of the symbol. */
@@ -5620,12 +5620,12 @@
     border-radius: 2px;
     font-variant-numeric: tabular-nums;
   }
-  :global(.badge-p) { color: #7dd3fc; background: var(--algo-sky-bg);   }
-  :global(.badge-h) { color: #4ade80; background: var(--algo-green-bg); }
-  :global(.badge-w) { color: #fbbf24; background: var(--algo-amber-bg); }
+  :global(.badge-p) { color: var(--algo-sky); background: var(--algo-sky-bg);   }
+  :global(.badge-h) { color: var(--algo-green); background: var(--algo-green-bg); }
+  :global(.badge-w) { color: var(--algo-amber); background: var(--algo-amber-bg); }
   :global(.badge-u) { color: #c084fc; background: rgba(192,132,252,0.14); }
-  :global(.badge-m-pos) { color: #4ade80; background: var(--algo-green-bg); }
-  :global(.badge-m-neg) { color: #f87171; background: var(--algo-red-bg);   }
+  :global(.badge-m-pos) { color: var(--algo-green); background: var(--algo-green-bg); }
+  :global(.badge-m-neg) { color: var(--algo-red); background: var(--algo-red-bg);   }
   /* Covered-call lot-count badge — green pill with the number of whole
      lots the operator holds. Same pill family as the H/P/W/U badges so
      the row's badge strip reads as one consistent set. Bolder
@@ -5633,7 +5633,7 @@
      actionable column (the rest are informational tags). */
   :global(.badge-fno-lot) {
     color: #052e16;
-    background: #4ade80;
+    background: var(--algo-green);
     font-weight: 800;
     /* Standalone — sits between sym-main and the sym-badges group, so
        it needs its own breathing room (the group's `margin-left: 2px`
@@ -5648,7 +5648,7 @@
      bright fill. */
   :global(.badge-fno-lot-pos) {
     color: #422006;
-    background: #fbbf24;
+    background: var(--algo-amber);
   }
 
   /* Inline remove-from-watchlist button. */
@@ -5666,7 +5666,7 @@
     transition: color 0.12s ease, background 0.12s ease;
   }
   :global(.sym-remove:hover) {
-    color: #f87171;
+    color: var(--algo-red);
     background: rgba(248,113,113,0.12);
   }
   /* Compositor-thread :active so mobile / touch clicks feel
@@ -5697,7 +5697,7 @@
     transition: color 0.12s ease, background 0.12s ease;
   }
   :global(.sym-actions:hover) {
-    color: #fbbf24;
+    color: var(--algo-amber);
     background: rgba(251,191,36,0.10);
   }
   :global(.sym-actions:active) {
@@ -5724,7 +5724,7 @@
   }
   :global(.ag-row:hover .sym-move) { opacity: 1; }
   :global(.sym-move:hover) {
-    color: #fbbf24;
+    color: var(--algo-amber);
     background: rgba(251,191,36,0.12);
   }
 
@@ -5734,22 +5734,22 @@
   @media (hover: none), (max-width: 768px) {
     :global(.sym-move) { opacity: 0.55; }
     :global(.sym-move:active) {
-      color: #fbbf24;
+      color: var(--algo-amber);
       background: rgba(251,191,36,0.18);
     }
   }
 
   /* Day Δ / P&L cells. */
-  :global(.cell-pos)  { color: #4ade80 !important; }
-  :global(.cell-neg)  { color: #f87171 !important; }
+  :global(.cell-pos)  { color: var(--algo-green) !important; }
+  :global(.cell-neg)  { color: var(--algo-red) !important; }
   :global(.cell-flat) { color: #94a3b8 !important; }
   /* P&L cell background tint — same colour family + same alphas as the
      /admin/derivatives Candidates panel (`.cand-pnl.cell-pos` etc.) so
      the two surfaces' P&L columns read with the same visual identity.
      Applied via the `mp-pnl-cell` marker class on Pulse's right-grid
      P&L / Day P&L / P&L % / Day % columns + the summary grids. */
-  :global(.mp-pnl-cell.cell-pos)  { background-color: rgba(74,222,128,0.10) !important; }
-  :global(.mp-pnl-cell.cell-neg)  { background-color: rgba(248,113,113,0.10) !important; }
+  :global(.mp-pnl-cell.cell-pos)  { background-color: var(--algo-green-bg) !important; }
+  :global(.mp-pnl-cell.cell-neg)  { background-color: var(--algo-red-bg) !important; }
   :global(.mp-pnl-cell.cell-flat) { background-color: rgba(148,163,184,0.08) !important; }
   :global(.cell-muted){ color: rgba(200,216,240,0.55) !important; }
 
@@ -5760,7 +5760,7 @@
      idx row (very first row in the grid) skips the divider since
      there's nothing above it to separate from. */
   :global(.ag-theme-algo .ag-row.pin-divider) {
-    border-top: 1px solid rgba(251,191,36,0.30);
+    border-top: 1px solid var(--algo-amber-border-soft);
   }
   :global(.ag-theme-algo .ag-row.pin-divider.pin-cat-idx:first-of-type) {
     border-top: none;
@@ -6059,7 +6059,7 @@
     border-left: 0 !important;
   }
   /* Header underline retired — `.ag-theme-algo .ag-header` (app.css)
-     already applies `border-bottom: 1px solid rgba(251,191,36,0.30)`
+     already applies `border-bottom: 1px solid var(--algo-amber-border-soft)`
      from the History-parity treatment. Adding a second border on
      .ag-header-row stacked at the same pixel, darkening the line via
      alpha compositing so Pulse's underline read heavier than every
@@ -6106,7 +6106,7 @@
     /* Stronger amber stratum so TOTAL stands out over data-row
        directional tints + (incoming) LTP heat cells. Operator:
        "total row should have a different background color scheme." */
-    background: rgba(251, 191, 36, 0.22) !important;
+    background: var(--algo-amber-bg-strong) !important;
     border-top: 2px solid rgba(251, 191, 36, 0.70) !important;
     border-bottom: 1px solid var(--algo-amber-border-soft) !important;
   }
@@ -6262,10 +6262,10 @@
   }
   :global(.ctx-item:hover) {
     background: rgba(251,191,36,0.1);
-    color: #fbbf24;
+    color: var(--algo-amber);
   }
   :global(.ctx-item-danger) { color: rgba(248,113,113,0.8); }
-  :global(.ctx-item-danger:hover) { background: rgba(248,113,113,0.1); color: #f87171; }
+  :global(.ctx-item-danger:hover) { background: rgba(248,113,113,0.1); color: var(--algo-red); }
   :global(.ctx-sep) {
     height: 1px;
     background: rgba(200,216,240,0.1);
@@ -6326,7 +6326,7 @@
     font-size: var(--fs-xl);
     line-height: 1;
     font-weight: 700;
-    color: #fbbf24;
+    color: var(--algo-amber);
     background: transparent;
     border: 1px solid rgba(251, 191, 36, 0.4);
     border-radius: 4px;
@@ -6348,7 +6348,7 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: #fbbf24;
+    color: var(--algo-amber);
     margin-bottom: 0.35rem;
   }
   /* Divider between the two Add-popup sections — faint horizontal
@@ -6393,7 +6393,7 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: var(--fs-md);
     font-weight: 700;
-    color: #fbbf24;
+    color: var(--algo-amber);
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
@@ -6406,7 +6406,7 @@
     padding: 0 0.25rem;
     cursor: pointer;
   }
-  :global(.search-close:hover) { color: #fbbf24; }
+  :global(.search-close:hover) { color: var(--algo-amber); }
   :global(.search-body) {
     padding: 0.7rem 0.8rem 0.85rem;
     display: flex;
