@@ -4,9 +4,9 @@ import pandas as pd
 import polars as pl
 from litestar import Controller, Request, get
 from litestar.exceptions import HTTPException
-from typing import Optional
+from typing import Optional, Literal
 
-from backend.api.auth_guard import is_admin_request, is_authenticated_request
+from backend.api.auth_guard import is_admin_request
 from backend.api.rbac import (
     resolve_role_from_connection, user_scope_for_connection,
     normalise_role,
@@ -19,7 +19,7 @@ from backend.api.schemas import PositionsResponse, PositionRow, PositionsSummary
 from backend.brokers import broker_apis
 from backend.shared.helpers.date_time_utils import timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import mask_account, mask_column
+from backend.shared.helpers.utils import mask_account
 
 logger = get_logger(__name__)
 
@@ -87,7 +87,6 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
     prev_by_account: dict[str, float] = {}
 
     rows: list[PositionRow] = []
-    import json as _json
     for (account, symbol, exchange, qty, avg_cost, ltp,
          day_pnl, total_pnl, payload_json, captured_at) in raw_rows:
         # Reconstruct a minimal PositionRow from the snapshot columns.
@@ -512,6 +511,109 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     logger.info(f"positions: close-override patched {len(patched_idx)}/{len(raw)} rows from daily_book")
 
 
+async def _build_paper_positions_response() -> PositionsResponse:
+    """Synthesize paper positions from filled AlgoOrder rows and mark-to-market
+    them using the KiteTicker tick map + daily_book close_price snapshot.
+
+    Returns a PositionsResponse whose rows all carry mode='paper'.
+    """
+    from backend.api.algo.paper import synthesize_paper_positions
+
+    raw_dicts = await synthesize_paper_positions()
+    if not raw_dicts:
+        return PositionsResponse(rows=[], summary=[], refreshed_at=timestamp_display())
+
+    # Convert to DataFrame for vectorised LTP + close patches.
+    raw = pd.DataFrame(raw_dicts)
+
+    # Patch last_price from KiteTicker (same path as live positions).
+    # We want the freshest LTP; fall through to LKG cache if ticker
+    # has no sample.  The policy matches positions_policy from ltp_patch.
+    _override_stale_ltp_from_ticker(raw)
+
+    # Patch close_price from daily_book (prior-session authoritative close).
+    # Paper rows carry close_price=0.0 from the synthesis step; this
+    # replaces them so day_change_val can be computed correctly.
+    await _override_stale_close_from_snapshot(raw)
+
+    # Recompute pnl = (last_price - average_price) × quantity.
+    # Paper rows don't have broker-side unrealised; we compute from scratch.
+    if 'last_price' in raw.columns and 'average_price' in raw.columns:
+        _ltp = pd.to_numeric(raw['last_price'],    errors='coerce').fillna(0)
+        _avg = pd.to_numeric(raw['average_price'], errors='coerce').fillna(0)
+        _qty = pd.to_numeric(raw['quantity'],       errors='coerce').fillna(0)
+        raw['pnl'] = (_ltp - _avg) * _qty
+        raw['pnl_percentage'] = (
+            raw['pnl'] / ((_avg * _qty).abs().replace(0, float('nan'))) * 100
+        ).fillna(0)
+
+    # Compute day_change_val using naive (LTP - close) × qty.
+    # Paper positions don't carry overnight/buy/sell decomposition so
+    # we always use the naive formula here — this is correct for paper
+    # because every fill happened during the current session.
+    if 'last_price' in raw.columns and 'close_price' in raw.columns:
+        _ltp_s  = pd.to_numeric(raw['last_price'],  errors='coerce').fillna(0)
+        _cls_s  = pd.to_numeric(raw['close_price'], errors='coerce').fillna(0)
+        _qty_s  = pd.to_numeric(raw['quantity'],     errors='coerce').fillna(0)
+        raw['day_change_val'] = naive_day_pnl(_ltp_s, _cls_s, _qty_s)
+        raw['day_change'] = _ltp_s - _cls_s
+        _prev_val = (_cls_s * _qty_s).abs()
+        raw['day_change_percentage'] = (
+            raw['day_change_val'] / _prev_val.replace(0, float('nan')) * 100
+        ).fillna(0)
+
+    numeric = raw.select_dtypes(include='number').columns
+    raw[numeric] = raw[numeric].fillna(0)
+
+    rows: list[PositionRow] = []
+    for r in raw.to_dict(orient='records'):
+        kwargs = {k: (r[k] if r[k] is not None else 0) for k in r}
+        # Rename column-name 'last_price_stale' default
+        kwargs.setdefault('last_price_stale', False)
+        kwargs['mode'] = 'paper'
+        # Only pass fields PositionRow knows about
+        valid = {f for f in PositionRow.__struct_fields__}
+        kwargs = {k: v for k, v in kwargs.items() if k in valid}
+        rows.append(PositionRow(**kwargs))
+
+    # Build summary — per-account aggregates.
+    pnl_by_account: dict[str, float] = {}
+    dcv_by_account: dict[str, float] = {}
+    prev_by_account: dict[str, float] = {}
+    for row in rows:
+        acct = row.account
+        pnl_by_account[acct]  = pnl_by_account.get(acct, 0.0) + row.pnl
+        dcv_by_account[acct]  = dcv_by_account.get(acct, 0.0) + row.day_change_val
+        prev_by_account[acct] = prev_by_account.get(acct, 0.0) + abs(row.close_price * row.quantity)
+
+    summary: list[PositionsSummaryRow] = []
+    total_pnl_sum = 0.0
+    total_dcv_sum = 0.0
+    for acct, pnl_sum in pnl_by_account.items():
+        dcv_sum  = dcv_by_account.get(acct, 0.0)
+        prev_sum = prev_by_account.get(acct, 0.0)
+        pct = dcv_sum / prev_sum * 100.0 if prev_sum else 0.0
+        summary.append(PositionsSummaryRow(
+            account=acct,
+            pnl=pnl_sum,
+            day_change_val=dcv_sum,
+            day_change_percentage=pct,
+            day_prev_val=prev_sum,
+        ))
+        total_pnl_sum += pnl_sum
+        total_dcv_sum += dcv_sum
+    total_prev = sum(prev_by_account.values())
+    summary.append(PositionsSummaryRow(
+        account="TOTAL",
+        pnl=total_pnl_sum,
+        day_change_val=total_dcv_sum,
+        day_change_percentage=total_dcv_sum / total_prev * 100.0 if total_prev else 0.0,
+        day_prev_val=total_prev,
+    ))
+
+    return PositionsResponse(rows=rows, summary=summary, refreshed_at=timestamp_display())
+
+
 def _enrich_position_greeks(rows: list) -> None:
     """In-place: compute Δ-exposure (delta × qty) and Θ-per-day (theta × qty)
     for every row whose tradingsymbol parses as an option (CE / PE). Non-
@@ -604,7 +706,50 @@ class PositionsController(Controller):
     path = "/api/positions"
 
     @get("/")
-    async def get_positions(self, request: Request, fresh: bool = False) -> PositionsResponse:
+    async def get_positions(
+        self,
+        request: Request,
+        fresh: bool = False,
+        mode: Optional[str] = None,
+    ) -> PositionsResponse:
+        """Return positions.
+
+        ?mode=paper — synthesized paper rows only (from filled AlgoOrder rows)
+        ?mode=live  — broker-fetched rows only (current default behaviour)
+        ?mode=both  — union of live + paper; each row carries a `mode` field
+        (no param)  — same as 'live' for backward compatibility
+        """
+        # ── Paper-only fast path ─────────────────────────────────────────────
+        if mode == "paper":
+            try:
+                resp = await _build_paper_positions_response()
+                role = normalise_role(resolve_role_from_connection(request))
+                if role == "trader":
+                    allowed, _ = await user_scope_for_connection(request)
+                    allowed_set = {str(a).upper() for a in (allowed or [])}
+                    import msgspec
+                    resp = msgspec.structs.replace(
+                        resp,
+                        rows=[r for r in resp.rows
+                              if str(getattr(r, "account", "")).upper() in allowed_set],
+                        summary=[s for s in resp.summary
+                                 if str(getattr(s, "account", "")).upper() in allowed_set
+                                 or str(getattr(s, "account", "")).upper() == "TOTAL"],
+                    )
+                if not is_admin_request(request):
+                    import msgspec
+                    def _mask_paper_row(row):
+                        return msgspec.structs.replace(row, account=mask_account(row.account))
+                    resp = msgspec.structs.replace(
+                        resp,
+                        rows=[_mask_paper_row(r) for r in resp.rows],
+                        summary=[_mask_paper_row(s) for s in resp.summary],
+                    )
+                return resp
+            except Exception as e:
+                logger.error(f"Paper positions API error: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
         try:
             # ── Closed-hours gate via canonical helper ──────────────────────
             # closed_hours_or_broker is the single gate for "should I call the
@@ -693,6 +838,50 @@ class PositionsController(Controller):
             else:
                 # ?fresh=1 — bypass closed-hours gate entirely
                 resp = await _broker_fn()
+            # ── mode=both — merge paper rows into the live response ─────────
+            # Paper rows tagged mode='paper'; live rows default mode='live'.
+            # Summary is recomputed over the combined set so totals are correct.
+            if mode == "both":
+                paper_resp = await _build_paper_positions_response()
+                if paper_resp.rows:
+                    import msgspec as _msgspec
+                    # Tag live rows explicitly so frontend can distinguish them.
+                    live_rows_tagged = [
+                        _msgspec.structs.replace(r, mode="live") for r in resp.rows
+                    ]
+                    merged_rows = live_rows_tagged + list(paper_resp.rows)
+                    # Recompute summary over merged set.
+                    _pnl_by_acct: dict[str, float] = {}
+                    _dcv_by_acct: dict[str, float] = {}
+                    _prev_by_acct: dict[str, float] = {}
+                    for _r in merged_rows:
+                        _a = _r.account
+                        _pnl_by_acct[_a]  = _pnl_by_acct.get(_a, 0.0) + _r.pnl
+                        _dcv_by_acct[_a]  = _dcv_by_acct.get(_a, 0.0) + _r.day_change_val
+                        _prev_by_acct[_a] = _prev_by_acct.get(_a, 0.0) + abs(_r.close_price * _r.quantity)
+                    _merged_summary: list[PositionsSummaryRow] = []
+                    _t_pnl = 0.0
+                    _t_dcv = 0.0
+                    for _a, _p in _pnl_by_acct.items():
+                        _d = _dcv_by_acct.get(_a, 0.0)
+                        _pv = _prev_by_acct.get(_a, 0.0)
+                        _pct = _d / _pv * 100.0 if _pv else 0.0
+                        _merged_summary.append(PositionsSummaryRow(
+                            account=_a, pnl=_p, day_change_val=_d,
+                            day_change_percentage=_pct, day_prev_val=_pv,
+                        ))
+                        _t_pnl += _p
+                        _t_dcv += _d
+                    _t_pv = sum(_prev_by_acct.values())
+                    _merged_summary.append(PositionsSummaryRow(
+                        account="TOTAL", pnl=_t_pnl, day_change_val=_t_dcv,
+                        day_change_percentage=_t_dcv / _t_pv * 100.0 if _t_pv else 0.0,
+                        day_prev_val=_t_pv,
+                    ))
+                    resp = _msgspec.structs.replace(
+                        resp, rows=merged_rows, summary=_merged_summary,
+                    )
+
             # Horizontal scoping. Trader-role callers see only
             # positions on their `assigned_accounts`; firm-wide roles
             # (designated / risk / admin / partner / demo) see every

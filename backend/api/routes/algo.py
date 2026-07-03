@@ -11,8 +11,8 @@ from litestar import WebSocket
 from litestar import websocket as ws_handler
 from litestar.exceptions import WebSocketDisconnect
 
-from backend.api.database import async_session
 from backend.api.models import AlgoEvent
+from backend.api.persistence.event_queue import EventQueue as _EventQueue
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -20,14 +20,25 @@ logger = get_logger(__name__)
 # Module-level state — shared across requests
 _ws_clients: set[asyncio.Queue] = set()
 
+# EventQueue for AlgoEvent rows (WS broadcast event log).
+# Replaces the old _persist_buffer + _persist_flush_loop pattern with
+# the canonical EventQueue so AlgoEvent flush shares the same class as
+# AgentEvent / AlgoOrderEvent / McpAudit.
+algo_event_queue: _EventQueue = _EventQueue(
+    AlgoEvent,
+    name="algo_event",
+    batch_size=500,
+    flush_interval_s=1.0,
+    max_queue=10_000,
+    on_full="drop",
+)
+
 
 def _broadcast_event(event_type: str, detail: dict = None):
     """
-    Push event to all WebSocket clients and queue it for persistence.
-    The persistence writer flushes the buffer every second so a burst of
-    agent fires collapses into one batched INSERT instead of spawning a
-    bare `create_task` per event (which used to accumulate unbounded
-    under high tick cadences).
+    Push event to all WebSocket clients and enqueue it for persistence.
+    The EventQueue flush fires every second so a burst of agent fires
+    collapses into one bulk INSERT instead of spawning a task per event.
     """
     msg = json.dumps({"event": event_type, **(detail or {})})
     for q in list(_ws_clients):
@@ -35,47 +46,16 @@ def _broadcast_event(event_type: str, detail: dict = None):
             q.put_nowait(msg)
         except asyncio.QueueFull:
             pass
-    _persist_buffer.append((event_type, detail))
-
-
-# Event rows accumulate here and are flushed to algo_events every second
-# by `_persist_flush_loop()` (started on app startup via `start_persist_flush`).
-_persist_buffer: list[tuple[str, dict | None]] = []
-_persist_flush_task: asyncio.Task | None = None
-
-
-async def _persist_flush_loop(interval: float = 1.0) -> None:
-    """Drain _persist_buffer once per second with a single commit."""
-    while True:
-        try:
-            await asyncio.sleep(interval)
-            if not _persist_buffer:
-                continue
-            batch = _persist_buffer[:]
-            _persist_buffer.clear()
-            try:
-                async with async_session() as session:
-                    for event_type, detail in batch:
-                        session.add(AlgoEvent(
-                            event_type=event_type,
-                            detail=json.dumps(detail) if detail else None,
-                        ))
-                    await session.commit()
-            except Exception as e:
-                logger.warning(f"Algo: batched event persist failed ({len(batch)} rows): {e}")
-        except asyncio.CancelledError:
-            return
-        except Exception as e:
-            logger.error(f"Algo: persist-flush loop hiccup: {e}")
+    # Fire-and-forget enqueue — coroutine is scheduled on the running loop.
+    asyncio.ensure_future(algo_event_queue.enqueue(
+        event_type=event_type,
+        detail=json.dumps(detail) if detail else None,
+    ))
 
 
 def start_persist_flush() -> None:
-    """Kick off the background persist loop. Safe to call multiple times."""
-    global _persist_flush_task
-    if _persist_flush_task is None or _persist_flush_task.done():
-        _persist_flush_task = asyncio.create_task(
-            _persist_flush_loop(), name="algo-persist-flush",
-        )
+    """Start the algo_event_queue flush task. Safe to call multiple times."""
+    asyncio.ensure_future(algo_event_queue.start())
 
 
 # ---------------------------------------------------------------------------

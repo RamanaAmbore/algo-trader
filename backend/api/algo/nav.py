@@ -338,7 +338,6 @@ async def write_nav_snapshot(target_date: Optional[date] = None) -> dict:
     Idempotent — same `as_of_date` re-writes the existing row (e.g.
     operator triggers a recompute mid-day after an outage clears).
     """
-    from datetime import datetime, timezone
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     from backend.api.database import async_session
     from backend.api.models import NavDaily

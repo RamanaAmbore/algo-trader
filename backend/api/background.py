@@ -25,7 +25,7 @@ import pandas as pd
 
 from backend.shared.helpers.date_time_utils import timestamp_indian, is_market_open, timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import config, get_nearest_time, get_cycle_date, mask_column
+from backend.shared.helpers.utils import config, get_nearest_time, get_cycle_date
 
 logger = get_logger(__name__)
 
@@ -639,9 +639,9 @@ async def _task_performance(state: dict) -> None:
                     (df_positions, "NFO"),
                 ):
                     if _df is not None and not _df.empty:
-                        for _, _row in _df.iterrows():
-                            _sym  = str(_row.get("tradingsymbol") or "").strip().upper()
-                            _exch = str(_row.get("exchange") or _default_exch).strip().upper()
+                        for _row in _df.itertuples(index=False):
+                            _sym  = str(getattr(_row, "tradingsymbol", None) or "").strip().upper()
+                            _exch = str(getattr(_row, "exchange", None) or _default_exch).strip().upper()
                             if _sym:
                                 _book_pairs.append((_sym, _exch))
                 # Resolve tokens for symbols not yet in the ticker.
@@ -1612,6 +1612,14 @@ async def _task_hedge_proxy_regression() -> None:
         ran = 0
         skipped = 0
         failed = 0
+        # Collect (row_id, patch_dict) from broker calls first, then
+        # write all updates in ONE session.  Each broker call is an
+        # asyncio.to_thread blocking operation followed by asyncio.sleep
+        # for rate-pacing (1 s per row × Kite 3 req/s budget).  Holding
+        # a pooled DB connection open across those sleeps wastes a pool
+        # slot for no benefit; batch-writing avoids the per-row session
+        # churn while keeping broker work fully paced.
+        _pending_writes: list[tuple[int, dict]] = []  # (row.id, patch)
         for row in rows:
             # Skip rows that regressed within the freshness window —
             # daily firing should still hit a row's slot exactly once
@@ -1628,56 +1636,58 @@ async def _task_hedge_proxy_regression() -> None:
                 # can flag it. Still stamps `regression_at` to enforce
                 # the freshness gate; operator can clear by editing
                 # the pair or hitting /compute manually.
-                async with async_session() as s:
-                    db_row = await s.get(HedgeProxy, row.id)
-                    if db_row:
-                        db_row.regression_at = datetime.now(timezone.utc)
-                        db_row.regression_error = f"broker error: {str(exc)[:200]}"
-                        await s.commit()
                 logger.warning(
                     f"hedge-proxy regression: {row.proxy_symbol}→{row.target_root} failed: {exc}"
                 )
+                _pending_writes.append((row.id, {
+                    "regression_at": datetime.now(timezone.utc),
+                    "regression_error": f"broker error: {str(exc)[:200]}",
+                }))
                 failed += 1
+                await asyncio.sleep(1.0)
                 continue
             if beta is None:
                 # Resolution failure or not enough overlapping bars.
                 # Stamp `regression_at` anyway so we don't retry the
                 # same broken pair on every run — operator should
                 # delete the row or fix the symbol.
-                async with async_session() as s:
-                    db_row = await s.get(HedgeProxy, row.id)
-                    if db_row:
-                        db_row.regression_at = datetime.now(timezone.utc)
-                        db_row.regression_error = (
-                            f"too few overlapping bars (n={n}, need ≥ 15)"
-                        )
-                        await s.commit()
+                _pending_writes.append((row.id, {
+                    "regression_at": datetime.now(timezone.utc),
+                    "regression_error": f"too few overlapping bars (n={n}, need ≥ 15)",
+                }))
                 failed += 1
+                await asyncio.sleep(1.0)
                 continue
-            try:
-                async with async_session() as s:
-                    db_row = await s.get(HedgeProxy, row.id)
-                    if db_row:
-                        db_row.beta = float(beta)
-                        db_row.correlation = float(r2 if r2 is not None else 1.0)
-                        db_row.target_sigma = float(sigma_t) if sigma_t is not None else None
-                        db_row.proxy_sigma  = float(sigma_p) if sigma_p is not None else None
-                        db_row.regression_at = datetime.now(timezone.utc)
-                        # Successful run — clear any stale failure marker
-                        db_row.regression_error = None
-                        await s.commit()
-                _st = f"{sigma_t:.3f}" if sigma_t is not None else "—"
-                logger.info(
-                    f"hedge-proxy regression: {row.proxy_symbol}→{row.target_root} "
-                    f"β={beta:.4f} R²={r2:.3f} σ_t={_st} n={n}"
-                )
-                ran += 1
-            except Exception as exc:
-                logger.warning(f"hedge-proxy regression: write-back failed for {row.id}: {exc}")
-                failed += 1
+            _st = f"{sigma_t:.3f}" if sigma_t is not None else "—"
+            logger.info(
+                f"hedge-proxy regression: {row.proxy_symbol}→{row.target_root} "
+                f"β={beta:.4f} R²={r2:.3f} σ_t={_st} n={n}"
+            )
+            _pending_writes.append((row.id, {
+                "beta": float(beta),
+                "correlation": float(r2 if r2 is not None else 1.0),
+                "target_sigma": float(sigma_t) if sigma_t is not None else None,
+                "proxy_sigma":  float(sigma_p) if sigma_p is not None else None,
+                "regression_at": datetime.now(timezone.utc),
+                "regression_error": None,
+            }))
+            ran += 1
             # Pace per-row work to stay within Kite's 3 req/s historical
             # budget (each row burns 2 historical_data calls).
             await asyncio.sleep(1.0)
+
+        # Single write session — apply all collected patches in one commit.
+        if _pending_writes:
+            try:
+                async with async_session() as s:
+                    for _row_id, _patch in _pending_writes:
+                        db_row = await s.get(HedgeProxy, _row_id)
+                        if db_row:
+                            for _k, _v in _patch.items():
+                                setattr(db_row, _k, _v)
+                    await s.commit()
+            except Exception as exc:
+                logger.warning(f"hedge-proxy regression: batch write-back failed: {exc}")
 
         logger.info(
             f"hedge-proxy regression: cycle complete — "
@@ -2864,7 +2874,7 @@ async def _task_visitor_log_daily() -> None:
             # different loop than the upsert futures expected, producing
             # the chronic "Future attached to a different loop" errors
             # py-spy + log review caught.
-            from backend.scripts.visitor_report import arun_daily, _summary_block
+            from backend.scripts.visitor_report import arun_daily
             report_path = await arun_daily()
             logger.info(f"Background: visitor log report → {report_path}")
 

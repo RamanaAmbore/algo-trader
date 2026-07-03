@@ -339,6 +339,21 @@ class HealthController(Controller):
             from backend.api.persistence import write_queue
             persistence = write_queue.get_health()
 
+            # EventQueue health — four high-freq writers
+            try:
+                from backend.api.routes.algo import algo_event_queue
+                from backend.api.algo.events import agent_event_queue
+                from backend.api.algo.order_events import order_event_queue
+                from backend.api.routes.research import mcp_audit_queue
+                persistence["queues"] = {
+                    "algo_event":   algo_event_queue.get_health(),
+                    "agent_event":  agent_event_queue.get_health(),
+                    "order_event":  order_event_queue.get_health(),
+                    "mcp_audit":    mcp_audit_queue.get_health(),
+                }
+            except Exception:
+                pass  # best-effort; never break the health check
+
             try:
                 from backend.api.persistence import (
                     ohlcv_store, instruments_store, holidays_store,

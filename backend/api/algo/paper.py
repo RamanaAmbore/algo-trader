@@ -416,6 +416,33 @@ class PaperTradeEngine:
                 f"[{self._label.upper()}] operator-initiated cancel via MCP",
                 payload={"source": "mcp"},
             )
+            # Cache invalidation + WS broadcast for CANCELLED terminal state.
+            # Same fanout helper used by fill / unfilled paths above.
+            try:
+                from backend.api.routes.orders import _postback_broadcast_fanout
+                from backend.shared.helpers.utils import mask_account
+                _acct = str(order.get("account") or "")
+                _sym  = str(order.get("symbol") or "")
+                _exch = str(order.get("exchange") or "")
+                _side = str(order.get("side") or "")
+                _qty  = int(order.get("qty") or 0)
+                _postback_broadcast_fanout(
+                    status="CANCELLED",
+                    order_id=order["algo_order_id"],
+                    account=_acct,
+                    masked=mask_account(_acct),
+                    symbol=_sym,
+                    txn=_side,
+                    qty=_qty,
+                    price=0.0,
+                    exchange=_exch,
+                    status_message="operator cancel via MCP",
+                )
+            except Exception as _fe:
+                logger.warning(
+                    f"[{self._label.upper()}] _safe_update_algo_order_cancel "
+                    f"fanout failed (id={order.get('algo_order_id')}): {_fe}"
+                )
         except Exception as e:
             logger.warning(
                 f"[{self._label.upper()}] _safe_update_algo_order_cancel "
@@ -879,6 +906,173 @@ class PaperTradeEngine:
             msg = f"UNFILLED — gave up after {row.attempts} chase(s)"
 
         await write_event(order["algo_order_id"], event_kind, msg, payload)
+
+        # ── Cache invalidation + WS broadcast (fill / unfilled terminal) ──────
+        # Mirrors the live-order postback fan-out in
+        # `backend.api.routes.orders._postback_broadcast_fanout`.  Both paths
+        # now share the same helper so frontend surfaces (/orders grid,
+        # /positions, NavCard, MarketPulse) update immediately on paper fills
+        # rather than waiting for the next cold poll (5-30 s).
+        #
+        # Status translation (paper internal → Kite canonical):
+        #   kind == "fill"     → "COMPLETE"  (triggers position_filled + full
+        #                                      positions/holdings invalidation)
+        #   kind == "unfilled" → "EXPIRED"   (terminal but NOT COMPLETE, so
+        #                                      position_filled is skipped — correct
+        #                                      because no qty actually moved)
+        #   kind == "modify"   → not terminal; fanout NOT fired (no invalidation
+        #                        needed for an in-flight chase rephrase)
+        #
+        # write_audit_event is called separately below so the audit trail is
+        # consistent with the live path which also fires it outside fanout.
+        if kind in ("fill", "unfilled"):
+            _fanout_status = "COMPLETE" if kind == "fill" else "EXPIRED"
+            try:
+                from backend.api.routes.orders import _postback_broadcast_fanout
+                from backend.shared.helpers.utils import mask_account
+                _postback_broadcast_fanout(
+                    status=_fanout_status,
+                    order_id=order["algo_order_id"],
+                    account=str(_row_account or ""),
+                    masked=mask_account(str(_row_account or "")),
+                    symbol=str(_row_symbol or symbol),
+                    txn=str(_row_side or order.get("side") or ""),
+                    qty=_row_qty,
+                    price=float(order.get("fill_price") or 0),
+                    exchange=str(_row_exchange or ""),
+                    status_message="",
+                )
+            except Exception as _fe:
+                logger.warning(
+                    f"PaperTradeEngine[{self._label}] fanout failed for "
+                    f"#{order['algo_order_id']}: {_fe}"
+                )
+
+        # Audit log — mirrors live-path audit tag (order.fill / order.expired).
+        # Only on terminal states (fill / unfilled); modify rows don't warrant
+        # an audit entry.
+        if kind in ("fill", "unfilled"):
+            try:
+                from backend.api.audit import write_audit_event
+                _aud_cat = "order.fill" if kind == "fill" else "order.expired"
+                _aud_fp  = order.get("fill_price")
+                write_audit_event(
+                    category=_aud_cat,
+                    action=f"PAPER_{kind.upper()}",
+                    actor_username=f"paper[{self._label}]",
+                    actor_role="system",
+                    target_type="algo_order",
+                    target_id=str(order["algo_order_id"]),
+                    summary=(
+                        f"{kind.upper()} {order.get('side','')} {_row_qty} "
+                        f"{_row_symbol} acct={mask_account(str(_row_account or ''))}"
+                        + (f" @₹{_aud_fp:,.2f}" if _aud_fp is not None else "")
+                    )[:1000],
+                )
+            except Exception as _ae:
+                logger.debug(
+                    f"PaperTradeEngine[{self._label}] audit write skipped "
+                    f"for #{order['algo_order_id']}: {_ae}"
+                )
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  Paper position synthesis — aggregate open AlgoOrder rows into
+#  position-like dicts that the /api/positions route can surface.
+# ═════════════════════════════════════════════════════════════════════════
+
+
+async def synthesize_paper_positions() -> list[dict]:
+    """Aggregate open (non-closed) paper AlgoOrder rows into synthetic
+    position dicts.
+
+    Returns one dict per (account, symbol) group that has a non-zero net qty.
+    Closed positions (net qty == 0) are excluded — the operator already saw
+    them in the order log.
+
+    Each returned dict carries the fields expected by PositionRow:
+      account, tradingsymbol, exchange, product, quantity, average_price,
+      close_price (0.0 — caller patches from daily_book), last_price (0.0
+      — caller patches from KiteTicker), pnl (0.0 — caller recomputes),
+      day_change_val (0.0 — caller recomputes), plus mode="paper".
+
+    Only rows with status FILLED are included — OPEN orders (still in
+    the chase queue) have not yet resulted in a real filled quantity.
+    UNFILLED / CANCELLED / EXPIRED rows are excluded (no position effect).
+    """
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    from sqlalchemy import select, and_
+
+    try:
+        async with async_session() as sess:
+            rows = (await sess.execute(
+                select(AlgoOrder).where(and_(
+                    AlgoOrder.mode == "paper",
+                    AlgoOrder.status == "FILLED",
+                ))
+            )).scalars().all()
+    except Exception as e:
+        logger.warning(f"synthesize_paper_positions: DB query failed: {e}")
+        return []
+
+    if not rows:
+        return []
+
+    # Group by (account, symbol).  Accumulate signed qty + notional for
+    # weighted-average fill price.  BUY = +qty, SELL = -qty.
+    from collections import defaultdict
+    groups: dict[tuple[str, str], dict] = defaultdict(lambda: {
+        "net_qty": 0,
+        "notional": 0.0,
+        "exchange": "",
+        "product": "NRML",
+    })
+
+    for r in rows:
+        key = (str(r.account), str(r.symbol))
+        g = groups[key]
+        qty_filled = int(r.filled_quantity or r.quantity or 0)
+        fill_px = float(r.fill_price or r.initial_price or 0.0)
+        side = str(r.transaction_type or "BUY").upper()
+        if side == "BUY":
+            g["net_qty"] += qty_filled
+            g["notional"] += qty_filled * fill_px
+        else:
+            g["net_qty"] -= qty_filled
+            g["notional"] -= qty_filled * fill_px
+        if not g["exchange"]:
+            g["exchange"] = str(r.exchange or "NFO")
+        if r.product:
+            g["product"] = str(r.product)
+
+    result: list[dict] = []
+    for (account, symbol), g in groups.items():
+        net_qty = g["net_qty"]
+        if net_qty == 0:
+            continue  # position is flat — don't surface as a row
+        # Weighted-average fill price (absolute notional / absolute qty).
+        # Sign of net_qty determines long (+) vs short (-).
+        abs_qty = abs(net_qty)
+        abs_notional = abs(g["notional"])
+        avg_cost = abs_notional / abs_qty if abs_qty else 0.0
+        result.append({
+            "account": account,
+            "tradingsymbol": symbol,
+            "exchange": g["exchange"],
+            "product": g["product"],
+            "quantity": net_qty,
+            "average_price": avg_cost,
+            "close_price": 0.0,   # patched by caller from daily_book
+            "last_price": 0.0,    # patched by caller from KiteTicker
+            "pnl": 0.0,
+            "pnl_percentage": 0.0,
+            "day_change_val": 0.0,
+            "day_change_percentage": 0.0,
+            "mode": "paper",
+        })
+
+    return result
 
 
 # ═════════════════════════════════════════════════════════════════════════

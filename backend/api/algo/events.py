@@ -16,6 +16,26 @@ from backend.shared.helpers.utils import config, is_enabled
 
 logger = get_logger(__name__)
 
+# Module-level EventQueue for AgentEvent rows.
+# _log_event enqueues here instead of opening a session per row.
+# Started at app startup via start_event_queues() in app.py.
+from backend.api.persistence.event_queue import EventQueue as _EventQueue
+
+agent_event_queue: _EventQueue  # assigned below after import guard
+
+def _make_agent_event_queue() -> _EventQueue:
+    from backend.api.models import AgentEvent
+    return _EventQueue(
+        AgentEvent,
+        name="agent_event",
+        batch_size=500,
+        flush_interval_s=1.0,
+        max_queue=10_000,
+        on_full="drop",
+    )
+
+agent_event_queue = _make_agent_event_queue()
+
 
 @dataclass
 class EvalResult:
@@ -134,24 +154,22 @@ async def log_event(agent, event_type: str, condition_text: str = "",
 
 async def _log_event(agent, event_type: str, condition_text: str = "",
                      detail: dict = None, sim_mode: bool = False):
-    """Persist event to agent_events table. `sim_mode` is stored verbatim so
-    the `/api/simulator/events/recent` endpoint can filter cleanly."""
-    try:
-        from backend.api.database import async_session
-        from backend.api.models import AgentEvent
+    """Enqueue an agent_events row for batched INSERT (1 s flush cycle).
 
-        async with async_session() as session:
-            event = AgentEvent(
-                agent_id=agent.id,
-                event_type=event_type,
-                trigger_condition=condition_text,
-                detail=json.dumps(detail) if detail else None,
-                sim_mode=sim_mode,
-            )
-            session.add(event)
-            await session.commit()
+    No longer opens a session per call — `agent_event_queue` coalesces
+    N fires per cycle into one bulk INSERT so run_cycle() bursts don't
+    generate N individual round-trips.
+    """
+    try:
+        await agent_event_queue.enqueue(
+            agent_id=agent.id,
+            event_type=event_type,
+            trigger_condition=condition_text,
+            detail=json.dumps(detail) if detail else None,
+            sim_mode=sim_mode,
+        )
     except Exception as e:
-        logger.error(f"Agent event persist failed: {e}")
+        logger.error(f"Agent event enqueue failed: {e}")
 
 
 async def _send_telegram(message: str):

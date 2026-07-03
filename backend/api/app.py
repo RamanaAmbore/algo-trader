@@ -616,14 +616,40 @@ async def _stop_write_queue(app) -> None:  # noqa: ARG001
     await write_queue.stop()
 
 
+async def _start_event_queues(app) -> None:  # noqa: ARG001
+    """Start the four EventQueue flush tasks for high-frequency event writers."""
+    from backend.api.routes.algo import algo_event_queue
+    from backend.api.algo.events import agent_event_queue
+    from backend.api.algo.order_events import order_event_queue
+    from backend.api.routes.research import mcp_audit_queue
+    await algo_event_queue.start()
+    await agent_event_queue.start()
+    await order_event_queue.start()
+    await mcp_audit_queue.start()
+    logger.info("event_queues: algo_event + agent_event + order_event + mcp_audit started")
+
+
+async def _stop_event_queues(app) -> None:  # noqa: ARG001
+    """Gracefully flush + stop all four EventQueues on shutdown."""
+    from backend.api.routes.algo import algo_event_queue
+    from backend.api.algo.events import agent_event_queue
+    from backend.api.algo.order_events import order_event_queue
+    from backend.api.routes.research import mcp_audit_queue
+    await algo_event_queue.stop()
+    await agent_event_queue.stop()
+    await order_event_queue.stop()
+    await mcp_audit_queue.stop()
+    logger.info("event_queues: all stopped and flushed")
+
+
 from backend.api.audit import AuditMiddleware
 
 app = Litestar(
     route_handlers=_route_handlers,
     cors_config=cors_config,
     openapi_config=openapi_config,
-    on_startup=[init_db, _rebuild_broker_connections, seed_hedge_proxies, _start_kite_ticker, bg_startup, _start_write_queue],
-    on_shutdown=[bg_shutdown, _stop_kite_ticker, _stop_write_queue],
+    on_startup=[init_db, _rebuild_broker_connections, seed_hedge_proxies, _start_kite_ticker, bg_startup, _start_write_queue, _start_event_queues],
+    on_shutdown=[bg_shutdown, _stop_kite_ticker, _stop_write_queue, _stop_event_queues],
     before_request=_log_visitor,
     # Audit middleware — writes one audit_log row per mutating
     # request after the response leaves the server. Reads + suppressed

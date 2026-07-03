@@ -1035,8 +1035,12 @@ async def _ensure_shared_broker_schema() -> None:
                     "ORDER BY account"
                 )
             )).fetchall()
+            # Build display_order per account, then issue ONE batched UPDATE
+            # using a CASE expression — avoids N round-trips to the DB
+            # (was one UPDATE per account).
             kite_n = 0
             groww_n = 0
+            order_map: list[tuple[str, int]] = []
             for acct, broker_id in rows:
                 bid = (broker_id or "").lower()
                 if acct == "DH6847":
@@ -1054,12 +1058,23 @@ async def _ensure_shared_broker_schema() -> None:
                     order = 500
                 else:
                     order = 500
+                order_map.append((acct, order))
+            if order_map:
+                cases = " ".join(
+                    f"WHEN :a{i} THEN :o{i}" for i in range(len(order_map))
+                )
+                params: dict = {}
+                for i, (a, o) in enumerate(order_map):
+                    params[f"a{i}"] = a
+                    params[f"o{i}"] = o
+                params["accounts"] = tuple(a for a, _ in order_map)
                 await conn.execute(
                     text(
-                        "UPDATE broker_accounts SET display_order = :o "
-                        "WHERE account = :a"
+                        f"UPDATE broker_accounts "
+                        f"SET display_order = CASE account {cases} END "
+                        f"WHERE account IN :accounts"
                     ),
-                    {"o": order, "a": acct},
+                    params,
                 )
             logger.info(
                 "_ensure_shared_broker_schema: display_order seeded for %d accounts",

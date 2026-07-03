@@ -28,6 +28,7 @@ from backend.api.database import async_session
 from backend.api.models import AlgoOrder, DailyBook
 from backend.api.auth_guard import admin_guard
 from backend.api.rbac import cap_guard
+from backend.shared.helpers.settings import get_int
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -351,12 +352,23 @@ class HistoryController(Controller):
         # halves wall-time when the filtered query scans many rows.
         # (Slice M3.)
         async def _fetch_rows():
+            hard_cap = get_int("retention.list_funds_hard_cap", 1000)
             async with async_session() as s_rows:
-                return (await s_rows.execute(
+                result = (await s_rows.execute(
                     select(DailyBook).where(and_(*conditions))
                       .order_by(desc(DailyBook.date),
                                 DailyBook.account, DailyBook.segment)
+                      .limit(hard_cap + 1)  # fetch one extra to detect truncation
                 )).scalars().all()
+            if len(result) > hard_cap:
+                from backend.shared.helpers.ramboq_logger import get_logger as _gl
+                _gl(__name__).warning(
+                    "list_funds: response truncated at %d rows (hard_cap=%d); "
+                    "operator should narrow the date range.",
+                    hard_cap, hard_cap,
+                )
+                result = result[:hard_cap]
+            return result
 
         async def _fetch_earliest():
             async with async_session() as s_min:

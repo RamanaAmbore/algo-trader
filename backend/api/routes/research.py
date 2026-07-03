@@ -33,6 +33,25 @@ from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
 
+# Module-level EventQueue for McpAudit rows.
+# on_full="sync" preserves the compliance/forensic guarantee that every
+# audit row lands even if the queue is momentarily full.
+from backend.api.persistence.event_queue import EventQueue as _EventQueue
+
+
+def _make_mcp_audit_queue() -> _EventQueue:
+    return _EventQueue(
+        McpAudit,
+        name="mcp_audit",
+        batch_size=500,
+        flush_interval_s=1.0,
+        max_queue=10_000,
+        on_full="sync",
+    )
+
+
+mcp_audit_queue: _EventQueue = _make_mcp_audit_queue()
+
 
 # ── Schemas ───────────────────────────────────────────────────────────
 
@@ -1020,29 +1039,27 @@ class ResearchController(Controller):
 
         async def _audit(status_: str, summary: str) -> None:
             try:
-                async with async_session() as s:
-                    s.add(McpAudit(
-                        tool="place_order",
-                        user_id=user_id,
-                        args_redacted={
-                            "account":       acct,
-                            "tradingsymbol": sym,
-                            "side":          side,
-                            "quantity":      qty,
-                            "mode":          mode,
-                            "order_type":    order_type,
-                            "price":         data.price,
-                            "trigger_price": data.trigger_price,
-                            # token is NEVER persisted — only its presence is logged
-                            "had_token":     bool(data.confirm_token),
-                        },
-                        result_status=status_,
-                        result_summary=summary[:1024],
-                        request_id=request_id,
-                    ))
-                    await s.commit()
+                await mcp_audit_queue.enqueue(
+                    tool="place_order",
+                    user_id=user_id,
+                    args_redacted={
+                        "account":       acct,
+                        "tradingsymbol": sym,
+                        "side":          side,
+                        "quantity":      qty,
+                        "mode":          mode,
+                        "order_type":    order_type,
+                        "price":         data.price,
+                        "trigger_price": data.trigger_price,
+                        # token is NEVER persisted — only its presence is logged
+                        "had_token":     bool(data.confirm_token),
+                    },
+                    result_status=status_,
+                    result_summary=summary[:1024],
+                    request_id=request_id,
+                )
             except Exception as e:
-                logger.warning(f"mcp_audit insert failed: {e}")
+                logger.warning(f"mcp_audit enqueue failed: {e}")
 
         # Token gate.
         err = _consume_token(data.confirm_token or "", user_id, ph)
@@ -1143,24 +1160,22 @@ class ResearchController(Controller):
 
         async def _audit(status_: str, summary: str) -> None:
             try:
-                async with async_session() as s:
-                    s.add(McpAudit(
-                        tool="cancel_order",
-                        user_id=user_id,
-                        args_redacted={
-                            "account":  acct,
-                            "order_id": oid,
-                            "mode":     mode,
-                            "variety":  data.variety,
-                            "had_token": bool(data.confirm_token),
-                        },
-                        result_status=status_,
-                        result_summary=summary[:1024],
-                        request_id=request_id,
-                    ))
-                    await s.commit()
+                await mcp_audit_queue.enqueue(
+                    tool="cancel_order",
+                    user_id=user_id,
+                    args_redacted={
+                        "account":  acct,
+                        "order_id": oid,
+                        "mode":     mode,
+                        "variety":  data.variety,
+                        "had_token": bool(data.confirm_token),
+                    },
+                    result_status=status_,
+                    result_summary=summary[:1024],
+                    request_id=request_id,
+                )
             except Exception as e:
-                logger.warning(f"mcp_audit insert failed: {e}")
+                logger.warning(f"mcp_audit enqueue failed: {e}")
 
         err = _consume_token(data.confirm_token or "", user_id, ph)
         if err:
@@ -1264,29 +1279,27 @@ class ResearchController(Controller):
 
         async def _audit(status_: str, summary: str) -> None:
             try:
-                async with async_session() as s:
-                    s.add(McpAudit(
-                        tool="modify_order",
-                        user_id=user_id,
-                        args_redacted={
-                            "account":       acct,
-                            "order_id":      oid,
-                            "mode":          mode,
-                            "quantity":      qty or None,
-                            "order_type":    otype,
-                            "price":         data.price,
-                            "trigger_price": data.trigger_price,
-                            "variety":       data.variety,
-                            "validity":      data.validity,
-                            "had_token":     bool(data.confirm_token),
-                        },
-                        result_status=status_,
-                        result_summary=summary[:1024],
-                        request_id=request_id,
-                    ))
-                    await s.commit()
+                await mcp_audit_queue.enqueue(
+                    tool="modify_order",
+                    user_id=user_id,
+                    args_redacted={
+                        "account":       acct,
+                        "order_id":      oid,
+                        "mode":          mode,
+                        "quantity":      qty or None,
+                        "order_type":    otype,
+                        "price":         data.price,
+                        "trigger_price": data.trigger_price,
+                        "variety":       data.variety,
+                        "validity":      data.validity,
+                        "had_token":     bool(data.confirm_token),
+                    },
+                    result_status=status_,
+                    result_summary=summary[:1024],
+                    request_id=request_id,
+                )
             except Exception as e:
-                logger.warning(f"mcp_audit insert failed: {e}")
+                logger.warning(f"mcp_audit enqueue failed: {e}")
 
         err = _consume_token(data.confirm_token or "", user_id, ph)
         if err:
@@ -1401,21 +1414,19 @@ class ResearchController(Controller):
 
         async def _audit(status_: str, summary: str) -> None:
             try:
-                async with async_session() as s:
-                    s.add(McpAudit(
-                        tool=f"{action}_agent",
-                        user_id=user_id,
-                        args_redacted={
-                            "agent_slug": slug,
-                            "had_token":  bool(data.confirm_token),
-                        },
-                        result_status=status_,
-                        result_summary=summary[:1024],
-                        request_id=request_id,
-                    ))
-                    await s.commit()
+                await mcp_audit_queue.enqueue(
+                    tool=f"{action}_agent",
+                    user_id=user_id,
+                    args_redacted={
+                        "agent_slug": slug,
+                        "had_token":  bool(data.confirm_token),
+                    },
+                    result_status=status_,
+                    result_summary=summary[:1024],
+                    request_id=request_id,
+                )
             except Exception as e:
-                logger.warning(f"mcp_audit insert failed: {e}")
+                logger.warning(f"mcp_audit enqueue failed: {e}")
 
         err = _consume_token(data.confirm_token or "", user_id, ph)
         if err:
@@ -1525,22 +1536,20 @@ class ResearchController(Controller):
 
         async def _audit(status_: str, summary: str) -> None:
             try:
-                async with async_session() as s:
-                    s.add(McpAudit(
-                        tool="update_agent",
-                        user_id=user_id,
-                        args_redacted={
-                            "agent_slug":     slug,
-                            "changed_fields": sorted(filtered.keys()),
-                            "had_token":      bool(data.confirm_token),
-                        },
-                        result_status=status_,
-                        result_summary=summary[:1024],
-                        request_id=request_id,
-                    ))
-                    await s.commit()
+                await mcp_audit_queue.enqueue(
+                    tool="update_agent",
+                    user_id=user_id,
+                    args_redacted={
+                        "agent_slug":     slug,
+                        "changed_fields": sorted(filtered.keys()),
+                        "had_token":      bool(data.confirm_token),
+                    },
+                    result_status=status_,
+                    result_summary=summary[:1024],
+                    request_id=request_id,
+                )
             except Exception as e:
-                logger.warning(f"mcp_audit insert failed: {e}")
+                logger.warning(f"mcp_audit enqueue failed: {e}")
 
         err = _consume_token(data.confirm_token or "", user_id, ph)
         if err:

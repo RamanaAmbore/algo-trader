@@ -8,7 +8,7 @@ from typing import Optional
 
 from litestar import Request
 
-from backend.api.auth_guard import is_admin_request, is_authenticated_request
+from backend.api.auth_guard import is_admin_request
 from backend.api.rbac import (
     resolve_role_from_connection, user_scope_for_connection, normalise_role,
 )
@@ -20,7 +20,7 @@ from backend.api.schemas import HoldingsResponse, HoldingRow, HoldingsSummaryRow
 from backend.brokers import broker_apis
 from backend.shared.helpers.date_time_utils import timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import mask_account, mask_column
+from backend.shared.helpers.utils import mask_account
 
 logger = get_logger(__name__)
 
