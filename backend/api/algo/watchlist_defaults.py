@@ -9,18 +9,31 @@ add / remove items via the standard manage-watchlists UI.
 Item-naming policy:
   - Indices stored as the broker quote key (e.g. "NIFTY 50") — stable.
   - ETFs stored as the NSE tradingsymbol (e.g. GOLDBEES) — stable.
-  - F&O is NOT seeded by default. Operator adds futures / options via
-    the /pulse watchlist UI when wanted.
+  - Bare roots (e.g. CRUDEOIL, GOLD, USDINR) are FIRST-CLASS SYMBOLS.
+    Displayed as-is in the watchlist UI. At LTP subscribe / order /
+    chart time the resolver translates each root to the active
+    near-month contract (e.g. "GOLD" → "GOLDAUG25FUT"). Rollover to the
+    next-month future is automatic — operator never updates the watchlist
+    row on expiry. Roots can be added / removed via the /pulse UI exactly
+    like any other watchlist item.
 
-Removed from seed (with migration markers in seed_global_pinned):
-  - GOLDM, USDINR — prior cleanup
-  - COPPER, CRUDEOIL, NATURALGAS, SILVERM (MCX) — Jul 2026 (bare roots
-    resolve to near-month futures; operator adds explicitly if wanted)
+Migration history (markers in seed_global_pinned):
+  - GOLDM, USDINR — removed Jun 2026 (wave 1)
+  - COPPER, CRUDEOIL, NATURALGAS, SILVERM (MCX) — removed Jul 2026 (wave 2)
+  Migration markers stay recorded as historical audit. NATURALGAS remains
+  excluded (operator adds explicitly if wanted). All other MCX/CDS roots
+  restored as first-class bare-root symbols (wave markers prevent the
+  one-shot DELETE from re-firing; top-up loop re-adds them).
 """
 
 # Each entry: (tradingsymbol, exchange). The order here is the
-# `sort_order` the symbols land at — indices first, then ETFs.
-# Pinned is INDICES + ETFs only. F&O is not seeded by default.
+# `sort_order` the symbols land at — indices first, then ETFs, then
+# MCX/CDS bare roots.
+#
+# Bare roots are first-class watchlist entries. LTP, order routing,
+# chart data, and sparklines all go through the resolver which maps
+# root → active near-month contract for broker calls. Rollover on
+# expiry is automatic.
 MARKETS_DEFAULT: list[tuple[str, str]] = [
     # Indices — quote endpoint maps these via broker.quote() keys
     # like NSE:NIFTY 50. Stable across months.
@@ -35,6 +48,18 @@ MARKETS_DEFAULT: list[tuple[str, str]] = [
     # ETFs — gold + silver cash exposure via Nippon's BeES family.
     ("GOLDBEES",            "NSE"),
     ("SILVERBEES",          "NSE"),
+
+    # MCX commodity bare roots — resolver maps to active near-month future.
+    # Rollover is automatic. Operator manages via /pulse UI same as any symbol.
+    ("SILVER",              "MCX"),
+    ("SILVERM",             "MCX"),
+    ("GOLD",                "MCX"),
+    ("GOLDM",               "MCX"),
+    ("CRUDEOIL",            "MCX"),
+    ("COPPER",              "MCX"),
+
+    # CDS currency bare root — resolver maps to active near-month future.
+    ("USDINR",              "CDS"),
 ]
 
 
