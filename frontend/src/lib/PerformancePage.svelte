@@ -21,6 +21,7 @@
   import GridSearchButton from '$lib/GridSearchButton.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
+  import { rootOfLabel } from '$lib/data/rootOf.js';
   import { navByAccount, navTotalRow } from '$lib/data/nav';
 
   // Module-scope cache for hyphenated display strings. ag-Grid
@@ -32,12 +33,28 @@
   // never picks up the per-symbol expiry once the instruments
   // dump finishes loading.
   const _symFmtCache = new Map();
-  function _fmtSymCached(sym) {
+  /**
+   * Format a symbol for display. For MCX/CDS futures the virtual root
+   * label is shown (e.g. "CRUDEOIL", "CRUDEOIL • NEXT") instead of the
+   * raw contract name. All other symbols use the Dhan-style hyphenated
+   * format.
+   *
+   * @param {string} sym    tradingsymbol
+   * @param {string} [exch] exchange (MCX / CDS / …)
+   */
+  function _fmtSymCached(sym, exch = '') {
     if (!sym) return '';
-    let v = _symFmtCache.get(sym);
+    const cacheKey = `${sym}|${exch}`;
+    let v = _symFmtCache.get(cacheKey);
     if (v === undefined) {
-      v = formatSymbol(sym);
-      _symFmtCache.set(sym, v);
+      const eUp = (exch || '').toUpperCase();
+      if (eUp === 'MCX' || eUp === 'CDS') {
+        const rl = rootOfLabel(sym, eUp);
+        v = rl !== sym ? rl : formatSymbol(sym);
+      } else {
+        v = formatSymbol(sym);
+      }
+      _symFmtCache.set(cacheKey, v);
     }
     return v;
   }
@@ -526,7 +543,7 @@
     // Display Dhan-style hyphenated form; data-sym keeps the raw
     // Kite tradingsymbol so context-menu / chart deep-links still
     // resolve correctly.
-    txt.textContent = sym === 'TOTAL' ? sym : _fmtSymCached(sym);
+    txt.textContent = sym === 'TOTAL' ? sym : _fmtSymCached(sym, exch);
     if (sym && sym !== 'TOTAL') {
       txt.setAttribute('data-sym',  sym);
       txt.setAttribute('data-exch', exch);
@@ -548,7 +565,7 @@
     const exch = String(params.data?.exchange || 'NFO');
     const span = document.createElement('span');
     span.style.cssText = 'display:inline-flex;align-items:center;gap:0;width:100%';
-    span.textContent = sym === 'TOTAL' ? sym : _fmtSymCached(sym);
+    span.textContent = sym === 'TOTAL' ? sym : _fmtSymCached(sym, exch);
     if (sym && sym !== 'TOTAL') {
       // data attrs for context menu delegation
       span.setAttribute('data-sym',  sym);
