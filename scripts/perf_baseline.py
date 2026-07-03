@@ -162,19 +162,38 @@ _SVELTE_DECISION_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 # Svelte function-decl heuristic — used only to derive top-5 hotspots
-# by name (script slice from decl line → next same-column decl OR EOF).
-# Matches `function foo()`, `const foo = () =>`, `const foo = async () =>`,
-# `const foo = function`. Naive: falls apart on multi-line arrow bodies
-# with braces inside object literals — that's OK, this is a "top-5 by
-# count" gesture, not a precise slicer.
+# by name (script slice from decl line → next slice-terminator OR EOF).
+#
+# A "slice terminator" is ANY of:
+#   - `function foo(...)`                       — classic decl
+#   - `const/let foo = () => ...` / `= function` / `= arg => ...`
+#   - `const/let foo = $state(...)` / `$props(...)` / `$derived(...)`
+#     / `$derived.by(...)` / `$effect(...)` / `$effect.pre(...)`
+#     / `$effect.root(...)`                     — Svelte 5 runes
+#   - standalone `$effect(...)` / `.pre(...)` / `.root(...)` at line start
+#
+# Anchored to line starts with ≤ 2 leading spaces so nested decls inside
+# a function body (indent ≥ 4) don't split the slice prematurely.
+#
+# Without these terminators, a function's slice absorbs downstream state
+# / rune / effect blocks — inflating cc to 100+ on tiny 6-line functions.
 _RE_SVELTE_FN = re.compile(
-    r"^\s*(?:export\s+)?"
+    r"^(?: {0,2})(?:export\s+)?"
     r"(?:async\s+)?"
-    r"(?:function\s+(?P<fn1>[A-Za-z_$][\w$]*)"
+    r"(?:"
+    # 1. classic `function foo(...)`
+    r"function\s+(?P<fn1>[A-Za-z_$][\w$]*)"
+    # 2. `const foo = ...` where RHS is a function-like OR a rune call
     r"|const\s+(?P<fn2>[A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?"
-    r"(?:function\b|\([^)]*\)\s*=>|\w+\s*=>)"
+    r"(?:function\b|\([^)]*\)\s*=>|\w+\s*=>"
+    r"|\$(?:state|props|derived(?:\.by)?|effect(?:\.pre|\.root)?)\s*\()"
+    # 3. `let foo = ...` same as (2)
     r"|let\s+(?P<fn3>[A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?"
-    r"(?:function\b|\([^)]*\)\s*=>|\w+\s*=>))",
+    r"(?:function\b|\([^)]*\)\s*=>|\w+\s*=>"
+    r"|\$(?:state|props|derived(?:\.by)?|effect(?:\.pre|\.root)?)\s*\()"
+    # 4. standalone rune-call at line start (no assignment): `$effect(...)` etc.
+    r"|(?P<fn4>\$effect(?:\.pre|\.root)?)\s*\("
+    r")",
     re.MULTILINE,
 )
 
