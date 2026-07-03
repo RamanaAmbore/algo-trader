@@ -45,6 +45,13 @@ const SRC = path.resolve(
   process.cwd(),
   'src/routes/(algo)/admin/derivatives/+page.svelte'
 );
+// Math helpers extracted from the page (Phase 1 decomposition).
+// Static checks that formerly scanned only SRC now need to scan either
+// SRC or the module — the logic lives in the module, the page delegates.
+const MATH_SRC = path.resolve(
+  process.cwd(),
+  'src/lib/data/derivativesMath.js'
+);
 
 // ── Static source checks ─────────────────────────────────────────────────────
 
@@ -122,8 +129,9 @@ test('STALE: no duplicate Day P&L accumulator loop beside _dayPnlByRootMap', () 
   ).toBe(0);
 });
 
-test('STALE: no fail-closed strategy matchers remain in derivatives page', () => {
+test('STALE: no fail-closed strategy matchers remain in derivatives page or math module', () => {
   const src = fs.readFileSync(SRC, 'utf8');
+  const mathSrc = fs.existsSync(MATH_SRC) ? fs.readFileSync(MATH_SRC, 'utf8') : '';
 
   // Every "strategyOpenSymbols.size === 0" branch must return true (fail-open),
   // not false (fail-closed). The fail-closed form zeros out the entire snapshot
@@ -131,20 +139,29 @@ test('STALE: no fail-closed strategy matchers remain in derivatives page', () =>
   // hasn't completed yet — causing Day P&L, P&L, Exp P&L to show 0.
   const lines = src.split('\n');
   const failClosedLines = lines.filter(
-    (line, i) => line.includes('strategyOpenSymbols.size === 0') && line.includes('return false')
+    (line) => line.includes('strategyOpenSymbols.size === 0') && line.includes('return false')
   );
   expect(
     failClosedLines.length,
-    `Found ${failClosedLines.length} fail-closed strategy matcher(s) — all must use "return true" (fail-open):\n${failClosedLines.join('\n')}`
+    `Found ${failClosedLines.length} fail-closed strategy matcher(s) in page — all must use "return true" (fail-open):\n${failClosedLines.join('\n')}`
   ).toBe(0);
 
-  // Confirm fail-open matchers are present (the fix must exist, not just be non-broken)
-  const failOpenLines = lines.filter(
-    line => line.includes('strategyOpenSymbols.size === 0') && line.includes('return true')
+  // After Phase 1 decomposition the fail-open pattern lives in derivativesMath.js
+  // (buildStrategyMatcher) using the parameter name `openSymbols` (not the call-site
+  // name `strategyOpenSymbols`). The page delegates and no longer has the inline check.
+  // Match either the page form (strategyOpenSymbols.size === 0 ... return true) or
+  // the module form (openSymbols.size === 0 ... return () => true).
+  const allSrc = src + '\n' + mathSrc;
+  const allLines = allSrc.split('\n');
+  const failOpenLines = allLines.filter(
+    line => (
+      (line.includes('strategyOpenSymbols.size === 0') && line.includes('return true')) ||
+      (line.includes('openSymbols.size === 0') && line.includes('return'))
+    )
   );
   expect(
     failOpenLines.length,
-    'Expected at least 1 fail-open strategy matcher (return true when strategyOpenSymbols empty)'
+    'Expected at least 1 fail-open strategy matcher (return/return () => true when openSymbols empty) in page or derivativesMath.js'
   ).toBeGreaterThanOrEqual(1);
 });
 
