@@ -417,3 +417,115 @@ async def test_batch_quote_closed_hours_resolves_for_lkg():
     assert "CRUDEOILM26JULFUT" in lkg_calls, (
         f"LKG lookup must use resolved symbol; calls were: {lkg_calls}"
     )
+
+
+# ---------------------------------------------------------------------------
+# 6. get_quote — async resolution in handler (no run_coroutine_threadsafe)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_quote_virtual_mcx_root_resolved():
+    """GET /api/quote/?exchange=MCX&tradingsymbol=CRUDEOIL must resolve the
+    bare root to a front-month contract before the broker call, and the
+    response tradingsymbol must remain 'CRUDEOIL' (original operator symbol).
+
+    The fix removes the deadlocking run_coroutine_threadsafe block from
+    _fetch_ltp; resolution now happens in get_quote (async) before calling
+    the purely-sync _fetch_ltp with the resolved broker keys.
+    """
+    from backend.api.routes.quote import QuoteController
+
+    resolved_contract = "CRUDEOILM26JULFUT"
+    resolved_key      = f"MCX:{resolved_contract}"
+
+    broker_keys_seen: list[list] = []
+
+    def _tracking_quote(keys):
+        broker_keys_seen.append(list(keys))
+        return {resolved_key: {
+            "last_price": 6200.0,
+            "volume": 2000,
+            "depth": {"buy": [], "sell": []},
+        }}
+
+    async def _mock_resolve(virtual: str, exchange: str) -> str:
+        if virtual.upper() == "CRUDEOIL" and exchange == "MCX":
+            return resolved_contract
+        return virtual
+
+    mock_broker = MagicMock()
+    mock_broker.quote = _tracking_quote
+
+    with (
+        patch("backend.api.algo.symbol_resolver.resolve_symbol", side_effect=_mock_resolve),
+        patch("backend.brokers.registry.get_market_data_broker", return_value=mock_broker),
+        patch("asyncio.to_thread", side_effect=_fake_to_thread),
+    ):
+        handler_fn = QuoteController.get_quote.fn
+
+        class _FakeRequest:
+            pass
+
+        result = await handler_fn(None, exchange="MCX", tradingsymbol="CRUDEOIL")
+
+    # Broker received the RESOLVED contract key
+    assert broker_keys_seen, "broker.quote was not called"
+    assert resolved_key in broker_keys_seen[0], (
+        f"Expected {resolved_key} in broker call, got {broker_keys_seen[0]}"
+    )
+    assert "MCX:CRUDEOIL" not in broker_keys_seen[0], (
+        "Bare root MCX:CRUDEOIL must not reach the broker"
+    )
+
+    # Response preserves the original operator-facing symbol
+    assert result.tradingsymbol == "CRUDEOIL", (
+        f"Response tradingsymbol must be 'CRUDEOIL', got '{result.tradingsymbol}'"
+    )
+    assert result.exchange == "MCX"
+    assert result.ltp == 6200.0
+
+
+@pytest.mark.asyncio
+async def test_get_quote_non_virtual_passthrough():
+    """Non-virtual symbols on GET /api/quote/ pass through with no resolution
+    and no extra overhead — broker receives the same key as the input."""
+    from backend.api.routes.quote import QuoteController
+
+    broker_keys_seen: list[list] = []
+
+    def _tracking_quote(keys):
+        broker_keys_seen.append(list(keys))
+        return {"NSE:RELIANCE": {"last_price": 2950.0, "volume": 0, "depth": {"buy": [], "sell": []}}}
+
+    mock_broker = MagicMock()
+    mock_broker.quote = _tracking_quote
+
+    with (
+        patch("backend.brokers.registry.get_market_data_broker", return_value=mock_broker),
+        patch("asyncio.to_thread", side_effect=_fake_to_thread),
+    ):
+        handler_fn = QuoteController.get_quote.fn
+        result = await handler_fn(None, exchange="NSE", tradingsymbol="RELIANCE")
+
+    assert broker_keys_seen
+    assert "NSE:RELIANCE" in broker_keys_seen[0]
+    assert result.tradingsymbol == "RELIANCE"
+    assert result.exchange == "NSE"
+    assert result.ltp == 2950.0
+
+
+def test_fetch_ltp_has_no_run_coroutine_threadsafe():
+    """_fetch_ltp body must NOT contain run_coroutine_threadsafe — that
+    pattern deadlocks when called from an async context on the running loop.
+    Resolution must happen in get_quote (async) before calling _fetch_ltp.
+
+    Note: run_coroutine_threadsafe is legitimately used elsewhere in quote.py
+    (e.g. _trigger_instruments_store_populate), so we scope the check to the
+    _fetch_ltp function source only.
+    """
+    from backend.api.routes.quote import _fetch_ltp
+    fn_src = inspect.getsource(_fetch_ltp)
+    assert "run_coroutine_threadsafe" not in fn_src, (
+        "_fetch_ltp must not use run_coroutine_threadsafe (deadlocks on running loop). "
+        "Resolution must happen in get_quote (async) before calling _fetch_ltp."
+    )

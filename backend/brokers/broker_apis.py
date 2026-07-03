@@ -59,6 +59,70 @@ def get_last_good_ltp(symbol: str, max_age_s: float = _LAST_GOOD_LTP_TTL_S) -> f
     return ltp
 
 
+# ---------------------------------------------------------------------------
+# Last-known-good QUOTE cache (open/close/volume/oi/change)
+# ---------------------------------------------------------------------------
+# Companion to _LAST_GOOD_LTP.  While the LTP cache holds the most recent
+# scalar price per symbol, this one holds the full non-LTP snapshot fields
+# (open, close, volume, oi, change, change_pct, bid, ask) so /api/quote/batch
+# can serve real values during closed hours instead of dropping every
+# non-LTP field to null.
+#
+# Shape: {symbol: (unix_ts, {open, close, volume, oi, change, change_pct, bid, ask})}
+# Populated by batch_quote's live path (successful broker.quote() response).
+# Read by batch_quote's closed-hours path (skip broker call).
+# TTL: 24h — same window used by the closed-hours LTP fallback so both
+# scalar and snapshot fields survive Fri→Mon dark windows and one-day
+# holidays.  Process restart clears the dict (in-memory by design; next
+# session's live path repopulates).
+_LAST_GOOD_QUOTE: dict[str, tuple[float, dict]] = {}
+_LAST_GOOD_QUOTE_LOCK = threading.Lock()
+_LAST_GOOD_QUOTE_TTL_S: float = 86400.0  # 24 hours
+
+
+def record_good_quote(symbol: str, fields: dict) -> None:
+    """Record `fields` as the last-known-good non-LTP snapshot for `symbol`.
+
+    Only writes when at least one meaningful field (open, close, volume, oi)
+    is non-null/non-zero — silently drops empty payloads so a broker miss
+    doesn't overwrite a real prior snapshot.  Thread-safe."""
+    if not symbol or not isinstance(fields, dict):
+        return
+    # Guard: don't clobber a real prior snapshot with an empty broker response.
+    _meaningful = any(
+        fields.get(k) not in (None, 0, 0.0)
+        for k in ("open", "close", "volume", "oi")
+    )
+    if not _meaningful:
+        return
+    now = _time.time()
+    # Copy so caller mutations don't leak into the cache.
+    _clean = {
+        k: fields.get(k)
+        for k in ("open", "close", "volume", "oi", "change", "change_pct", "bid", "ask")
+    }
+    with _LAST_GOOD_QUOTE_LOCK:
+        _LAST_GOOD_QUOTE[symbol] = (now, _clean)
+
+
+def get_last_good_quote(symbol: str, max_age_s: float = _LAST_GOOD_QUOTE_TTL_S) -> dict | None:
+    """Return the cached last-known-good non-LTP snapshot for `symbol` if it
+    was recorded within `max_age_s`, else None.
+
+    Thread-safe.  Returned dict is a shallow copy so callers may mutate it."""
+    if not symbol:
+        return None
+    now = _time.time()
+    with _LAST_GOOD_QUOTE_LOCK:
+        entry = _LAST_GOOD_QUOTE.get(symbol)
+    if entry is None:
+        return None
+    ts, payload = entry
+    if now - ts > max_age_s:
+        return None
+    return dict(payload)
+
+
 def _ts_label(unix_ts: float) -> str:
     """Format a unix timestamp as HH:MM IST for log lines."""
     try:
