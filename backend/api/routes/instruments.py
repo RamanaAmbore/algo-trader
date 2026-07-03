@@ -128,6 +128,13 @@ def _fetch_instruments() -> InstrumentsResponse:
         # would cause the override to silently miss, leaving lot_size=1.
         _mcx_diag_logged: set[str] = set()
 
+        # Diagnostic: log the first item's keys to verify field names
+        if raw and exch == "NFO":
+            first = raw[0]
+            logger.info(
+                f"[INSTR-DIAG] NFO first row keys={list(first.keys())[:10]} "
+                f"instrument_type={first.get('instrument_type', '<MISSING>')!r}"
+            )
         for inst in raw:
             itype = inst.get("instrument_type", "")
             expiry = inst.get("expiry")
