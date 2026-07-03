@@ -1177,19 +1177,12 @@ class WatchlistController(Controller):
                 logger.warning(f"Movers: instruments fetch failed: {_exc}")
                 all_items = []
             new_set: set[str] = set()
-            type_counts: dict = {}
-            u_none_count = 0
             for inst in all_items:
-                type_counts[inst.t] = type_counts.get(inst.t, 0) + 1
-                if inst.t in ("CE", "PE"):
-                    if inst.u:
-                        new_set.add(inst.u.upper())
-                    else:
-                        u_none_count += 1
+                if inst.t in ("CE", "PE") and inst.u:
+                    new_set.add(inst.u.upper())
             logger.info(
                 f"Movers: underlyings build — all_items={len(all_items)} "
-                f"new_set={len(new_set)} u_none_ce_pe={u_none_count} "
-                f"type_sample={dict(list(type_counts.items())[:6])} "
+                f"new_set={len(new_set)} "
                 f"cache_date={_underlyings_cache_date!r} today={ist_today!r}"
             )
             # Only commit + flip the date if we actually got data — empty
@@ -1319,15 +1312,6 @@ class WatchlistController(Controller):
         if rows:
             asyncio.create_task(_save_movers_snapshot(rows, ist_today))
 
-        winners = sum(1 for r in rows if r.change_pct > 0)
-        losers  = sum(1 for r in rows if r.change_pct < 0)
-        zeros   = sum(1 for r in rows if r.change_pct == 0)
-        logger.info(
-            f"MOVERS_DEBUG branch=live combined_rows={len(rows)} "
-            f"winners={winners} losers={losers} zeros={zeros} "
-            f"session_movers={len(_session_movers)} "
-            f"underlyings={len(underlyings_with_opts)}"
-        )
         return MoversResponse(
             movers=rows,
             threshold_pct=MOVER_THRESHOLD_PCT,

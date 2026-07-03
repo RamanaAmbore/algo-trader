@@ -31,7 +31,6 @@ from litestar.exceptions import HTTPException
 
 from backend.api.auth_guard import auth_or_demo_guard
 from backend.api.cache import get_or_fetch
-from backend.brokers.connections import Connections
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -106,13 +105,18 @@ class InstrumentsResponse(msgspec.Struct):
 def _fetch_instruments() -> InstrumentsResponse:
     """Fetch full instrument dump from Kite across all relevant exchanges.
 
-    Routes through the Broker ABC so the call hops to conn_service when
-    RAMBOQ_USE_CONN_SERVICE=1."""
-    from backend.brokers.registry import all_brokers
-    brokers = all_brokers()
-    if not brokers:
+    Must use a Kite broker — Dhan/Groww instruments() return a different dict
+    schema (no `instrument_type` / `name` fields) which would leave every
+    instrument with t='' and break the movers underlyings universe.
+    When RAMBOQ_USE_CONN_SERVICE=1, get_broker() returns RemoteBroker stubs
+    that proxy through conn_service, so the Kite filter still applies."""
+    from backend.brokers.registry import _loaded_accounts, _broker_id_for, get_broker
+    accts = _loaded_accounts()
+    kite_accts = [a for a in accts if _broker_id_for(a) in {"zerodha_kite", "kite"}]
+    if not kite_accts:
+        logger.warning("Instruments: no Kite account loaded — dump unavailable")
         return InstrumentsResponse(cycle_date="", count=0, items=[])
-    broker = brokers[0]
+    broker = get_broker(kite_accts[0])
 
     items: list[Instrument] = []
     for exch in _EXCHANGES:
@@ -128,13 +132,6 @@ def _fetch_instruments() -> InstrumentsResponse:
         # would cause the override to silently miss, leaving lot_size=1.
         _mcx_diag_logged: set[str] = set()
 
-        # Diagnostic: log the first item's keys to verify field names
-        if raw and exch == "NFO":
-            first = raw[0]
-            logger.info(
-                f"[INSTR-DIAG] NFO first row keys={list(first.keys())[:10]} "
-                f"instrument_type={first.get('instrument_type', '<MISSING>')!r}"
-            )
         for inst in raw:
             itype = inst.get("instrument_type", "")
             expiry = inst.get("expiry")
