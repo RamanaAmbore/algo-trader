@@ -273,6 +273,23 @@ SEEDS: list[tuple] = [
      "nav_daily + daily_book (the SEBI-relevant financial records) "
      "are kept forever regardless of this setting. 0 disables.",
      "days", {"min": 0, "max": 1825, "step": 1}),
+    ("retention", "retention.visitor_log_days", "int", 90,
+     "visitor_log rows older than this are purged daily (03:25 IST). "
+     "visitor_log holds one row per unique (ip, UTC-date); analytics "
+     "beyond 90 days are better served by aggregates — row-level detail "
+     "beyond that window wastes storage. 0 disables.",
+     "days", {"min": 0, "max": 730, "step": 1}),
+    ("retention", "retention.impersonation_events_days", "int", 365,
+     "impersonation_events rows older than this are purged daily "
+     "(03:30 IST). Forensic surface matching audit_log — 365 days "
+     "covers a full calendar year of sudo-action history. 0 disables.",
+     "days", {"min": 0, "max": 1825, "step": 1}),
+    ("retention", "retention.admin_email_events_days", "int", 90,
+     "admin_email_events rows older than this are purged daily "
+     "(03:35 IST). Delivery-status audit beyond 90 days is rarely "
+     "investigated; 90 days covers two full statement cycles. "
+     "0 disables.",
+     "days", {"min": 0, "max": 730, "step": 1}),
 
     # ── Hedge proxies — Stage 4 ──────────────────────────────────────
     # Category matches the CRUD section header on /admin/settings so
