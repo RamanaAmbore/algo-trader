@@ -127,6 +127,85 @@ async def test_graceful_stop_flushes_remaining(sqlite_factory):
     assert len(rows) == 10
 
 
+@pytest.mark.asyncio
+async def test_stop_drains_multiple_batches(sqlite_factory):
+    """stop() must flush ALL items even when queue depth > batch_size.
+
+    With batch_size=5 and 12 items queued, stop() must make 3 flush
+    passes (5 + 5 + 2) — not just one.  A single await self._flush()
+    would leave 7 items silently on the floor.
+    """
+    from sqlalchemy import select
+    factory, Model = sqlite_factory
+    from backend.api.persistence.event_queue import EventQueue
+
+    BATCH = 5
+    TOTAL = 12   # > batch_size; requires ≥3 flush passes
+
+    q = EventQueue(Model, name="t", batch_size=BATCH,
+                   flush_interval_s=60.0,   # background task won't fire
+                   max_queue=200)
+    with _patch_session(factory):
+        await q.start()
+        for i in range(TOTAL):
+            await q.enqueue(kind="placed", message=f"m-{i}")
+        # Confirm nothing has been flushed yet (interval=60 s)
+        async with factory() as s:
+            pre_count = len((await s.execute(select(Model))).scalars().all())
+        assert pre_count == 0, "nothing should flush before stop()"
+
+        await q.stop()
+
+    async with factory() as s:
+        rows = (await s.execute(select(Model))).scalars().all()
+    assert len(rows) == TOTAL, (
+        f"stop() must drain all {TOTAL} items across multiple batches; "
+        f"only {len(rows)} committed"
+    )
+
+
+# ── enqueue_nowait sync fast-path ────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_enqueue_nowait_commits_items(sqlite_factory):
+    """enqueue_nowait() appends to the deque; flush commits normally."""
+    from sqlalchemy import select
+    factory, Model = sqlite_factory
+    from backend.api.persistence.event_queue import EventQueue
+
+    q = EventQueue(Model, name="t", flush_interval_s=60.0, max_queue=50)
+    # enqueue_nowait is a plain sync call — no await needed
+    for i in range(5):
+        q.enqueue_nowait(kind="placed", message=f"sync-{i}")
+    assert len(q._queue) == 5
+
+    with _patch_session(factory):
+        await q.stop()   # drains the queue
+
+    async with factory() as s:
+        rows = (await s.execute(select(Model))).scalars().all()
+    assert len(rows) == 5
+
+
+@pytest.mark.asyncio
+async def test_enqueue_nowait_drops_on_full():
+    """enqueue_nowait() on a full queue increments dropped, never raises."""
+    from backend.api.persistence.event_queue import EventQueue
+
+    class _FakeModel:
+        __tablename__ = "fake"
+
+    q = EventQueue(_FakeModel, name="t", max_queue=3, on_full="sync",
+                   flush_interval_s=60.0)
+    for _ in range(3):
+        q.enqueue_nowait(kind="x", message="ok")
+    # Overflow — enqueue_nowait must NOT attempt a sync DB insert
+    q.enqueue_nowait(kind="x", message="overflow")
+
+    assert q._dropped == 1
+    assert len(q._queue) == 3   # no extra item snuck in
+
+
 # ── Queue-full policies ───────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

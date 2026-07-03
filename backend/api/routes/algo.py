@@ -46,11 +46,12 @@ def _broadcast_event(event_type: str, detail: dict = None):
             q.put_nowait(msg)
         except asyncio.QueueFull:
             pass
-    # Fire-and-forget enqueue — coroutine is scheduled on the running loop.
-    asyncio.ensure_future(algo_event_queue.enqueue(
+    # Sync fast-path: _broadcast_event is a plain def so we cannot await.
+    # enqueue_nowait() is a pure deque.append — no event-loop dependency.
+    algo_event_queue.enqueue_nowait(
         event_type=event_type,
         detail=json.dumps(detail) if detail else None,
-    ))
+    )
 
 
 def start_persist_flush() -> None:

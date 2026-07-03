@@ -115,6 +115,27 @@ class EventQueue:
             return
         self._queue.append(kwargs)
 
+    def enqueue_nowait(self, **kwargs: Any) -> None:
+        """Synchronous fast-path for drop-mode callers in non-async contexts.
+
+        Safe to call from a sync function (e.g. a KiteTicker callback or a
+        Litestar sync route handler) without requiring a running event loop.
+        On queue-full: increments dropped counter and discards — ``on_full``
+        "sync" is intentionally NOT honoured here because a sync DB round-trip
+        from a non-async context would block the event loop thread.
+
+        Only use this method when the caller is a ``def`` (not ``async def``)
+        and cannot ``await``.  Prefer ``enqueue()`` everywhere else.
+        """
+        if len(self._queue) >= self.max_queue:
+            self._dropped += 1
+            logger.warning(
+                f"event_queue[{self.name}]: queue full "
+                f"(dropped={self._dropped}, max={self.max_queue})"
+            )
+            return
+        self._queue.append(kwargs)
+
     # ── Lifespan API ─────────────────────────────────────────────────────────
 
     async def start(self) -> None:
@@ -126,15 +147,15 @@ class EventQueue:
             logger.info(f"event_queue[{self.name}]: flush task started")
 
     async def stop(self) -> None:
-        """Flush remaining items, then cancel the task."""
+        """Flush ALL remaining items (multiple batches if needed), then cancel task."""
         if self._task is not None and not self._task.done():
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        # Drain remaining items
-        if self._queue:
+        # Drain all remaining items — may take >1 flush if queue > batch_size
+        while self._queue:
             await self._flush()
         logger.info(f"event_queue[{self.name}]: stopped, flushed remaining")
 
