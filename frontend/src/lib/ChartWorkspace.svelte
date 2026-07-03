@@ -1929,36 +1929,36 @@
     {#if _chartHover && !_overlayOpen && !pan}
       {@const ch = Number(_chartHover.bar.close) - Number(_chartHover.bar.open)}
       {@const pct = Number(_chartHover.bar.open) ? (ch / Number(_chartHover.bar.open)) * 100 : 0}
-      <div class="cw-hover-popup" class:cw-hover-popup-pinned={_chartPinned}
+      <div class="chart-tooltip" class:chart-tooltip-pinned={_chartPinned}
            style="left: {_chartHover.pxLeft}px; top: {_chartHover.pxTop}px;">
         {#if _chartPinned}
-          <button type="button" class="cw-hp-close"
+          <button type="button" class="chart-tooltip-close"
                   aria-label="Close pinned popup"
                   title="Close (or click the chart again)"
                   onclick={(e) => { e.stopPropagation(); _chartPinned = false; _chartHover = null; }}>×</button>
         {/if}
-        <div class="cw-hp-ts">{_fmtBarTs(_chartHover.bar.ts)}</div>
-        <div class="cw-hp-row">
-          <span class="cw-hp-label">O</span>
-          <span class="cw-hp-val">₹{priceFmt(_chartHover.bar.open)}</span>
-          <span class="cw-hp-label">H</span>
-          <span class="cw-hp-val">₹{priceFmt(_chartHover.bar.high)}</span>
+        <div class="chart-tooltip-ts">{_fmtBarTs(_chartHover.bar.ts)}</div>
+        <div class="chart-tooltip-row">
+          <span class="chart-tooltip-label">O</span>
+          <span class="chart-tooltip-value">₹{priceFmt(_chartHover.bar.open)}</span>
+          <span class="chart-tooltip-label">H</span>
+          <span class="chart-tooltip-value">₹{priceFmt(_chartHover.bar.high)}</span>
         </div>
-        <div class="cw-hp-row">
-          <span class="cw-hp-label">L</span>
-          <span class="cw-hp-val">₹{priceFmt(_chartHover.bar.low)}</span>
-          <span class="cw-hp-label">C</span>
-          <span class="cw-hp-val">₹{priceFmt(_chartHover.bar.close)}</span>
+        <div class="chart-tooltip-row">
+          <span class="chart-tooltip-label">L</span>
+          <span class="chart-tooltip-value">₹{priceFmt(_chartHover.bar.low)}</span>
+          <span class="chart-tooltip-label">C</span>
+          <span class="chart-tooltip-value">₹{priceFmt(_chartHover.bar.close)}</span>
         </div>
         {#if _chartHover.bar.volume}
-          <div class="cw-hp-row">
-            <span class="cw-hp-label">Vol</span>
-            <span class="cw-hp-val">{Number(_chartHover.bar.volume).toLocaleString()}</span>
+          <div class="chart-tooltip-row">
+            <span class="chart-tooltip-label">Vol</span>
+            <span class="chart-tooltip-value">{Number(_chartHover.bar.volume).toLocaleString()}</span>
           </div>
         {/if}
-        <div class="cw-hp-row">
-          <span class="cw-hp-label">Δ</span>
-          <span class="cw-hp-val" class:up={ch >= 0} class:down={ch < 0}>
+        <div class="chart-tooltip-row">
+          <span class="chart-tooltip-label">Δ</span>
+          <span class="chart-tooltip-value" class:up={ch >= 0} class:down={ch < 0}>
             {ch >= 0 ? '+' : ''}{ch.toFixed(2)} ({pct.toFixed(2)}%)
           </span>
         </div>
@@ -2314,25 +2314,25 @@
         })}
         <!-- Intraday hover popup -->
         {#if _intradayHover && !_overlayOpen}
-          <div class="cw-hover-popup" class:cw-hover-popup-pinned={_intradayPinned}
+          <div class="chart-tooltip" class:chart-tooltip-pinned={_intradayPinned}
                style="left: {_intradayHover.pxLeft}px; top: {_intradayHover.pxTop}px;">
             {#if _intradayPinned}
-              <button type="button" class="cw-hp-close"
+              <button type="button" class="chart-tooltip-close"
                       aria-label="Close pinned popup"
                       title="Close (or click the chart again)"
                       onclick={(e) => { e.stopPropagation(); _intradayPinned = false; _intradayHover = null; }}>×</button>
             {/if}
-            <div class="cw-hp-ts">{_fmtTickTs(_intradayHover.tick.ts)}</div>
-            <div class="cw-hp-row">
-              <span class="cw-hp-label">LTP</span>
-              <span class="cw-hp-val">₹{priceFmt(_intradayHover.tick.ltp)}</span>
+            <div class="chart-tooltip-ts">{_fmtTickTs(_intradayHover.tick.ts)}</div>
+            <div class="chart-tooltip-row">
+              <span class="chart-tooltip-label">LTP</span>
+              <span class="chart-tooltip-value">₹{priceFmt(_intradayHover.tick.ltp)}</span>
             </div>
             {#if _intradayHover.tick.bid != null && _intradayHover.tick.ask != null}
-              <div class="cw-hp-row">
-                <span class="cw-hp-label">Bid</span>
-                <span class="cw-hp-val">₹{priceFmt(_intradayHover.tick.bid)}</span>
-                <span class="cw-hp-label">Ask</span>
-                <span class="cw-hp-val">₹{priceFmt(_intradayHover.tick.ask)}</span>
+              <div class="chart-tooltip-row">
+                <span class="chart-tooltip-label">Bid</span>
+                <span class="chart-tooltip-value">₹{priceFmt(_intradayHover.tick.bid)}</span>
+                <span class="chart-tooltip-label">Ask</span>
+                <span class="chart-tooltip-value">₹{priceFmt(_intradayHover.tick.ask)}</span>
               </div>
             {/if}
           </div>
@@ -2687,74 +2687,10 @@
     z-index: 80;
   }
 
-  /* ── Hover popup (shared by historical and intraday) ─────── */
-  .cw-hover-popup {
-    position: absolute;
-    pointer-events: none;
-    background: rgba(15, 25, 45, 0.95);
-    border: 1px solid rgba(251, 191, 36, 0.45);
-    border-radius: 4px;
-    padding: 0.3rem 0.45rem;
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    color: var(--algo-slate);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-    z-index: 10;
-    min-width: 9rem;
-    max-width: 13rem;
-  }
-  /* Pinned variant — brighter cyan border so the operator sees the
-     popup is locked in place, and `pointer-events: auto` so the ×
-     close button is clickable. */
-  .cw-hover-popup-pinned {
-    pointer-events: auto;
-    border-color: rgba(125, 211, 252, 0.85);
-    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(125, 211, 252, 0.20);
-  }
-  .cw-hp-close {
-    position: absolute;
-    top: 0.15rem;
-    right: 0.2rem;
-    width: 0.95rem;
-    height: 0.95rem;
-    padding: 0;
-    background: none;
-    border: 0;
-    color: rgba(248, 113, 113, 0.85);
-    font-family: monospace;
-    font-size: var(--fs-lg);
-    line-height: 1;
-    cursor: pointer;
-    border-radius: 2px;
-  }
-  .cw-hp-close:hover { color: var(--c-short); background: rgba(248, 113, 113, 0.12); }
-  .cw-hp-ts {
-    color: var(--c-action);
-    font-weight: 800;
-    font-size: var(--fs-xs);
-    margin-bottom: 0.2rem;
-    padding-bottom: 0.18rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    white-space: nowrap;
-  }
-  .cw-hp-row {
-    display: flex;
-    gap: 0.35rem;
-    align-items: baseline;
-    margin-top: 0.12rem;
-  }
-  .cw-hp-label {
-    color: var(--algo-muted);
-    font-weight: 700;
-    min-width: 1.2rem;
-    flex-shrink: 0;
-  }
-  .cw-hp-val {
-    color: var(--algo-slate);
-    font-variant-numeric: tabular-nums;
-  }
-  .cw-hp-val.up   { color: var(--c-long); }
-  .cw-hp-val.down { color: var(--c-short); }
+  /* ── Hover popup (shared by historical and intraday) ─────────────────
+     Canonical styles live in app.css (.chart-tooltip family).
+     The .up/.down directional colors for .chart-tooltip-value are in
+     app.css as global selectors (.chart-tooltip-value.up / .down). */
 
   .cw-reset-zoom {
     /* SSOT chart-toolbar height — Reset rides the same --chart-toolbar-h
