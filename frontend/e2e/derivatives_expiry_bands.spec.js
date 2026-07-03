@@ -47,6 +47,13 @@ const SRC_PATH = path.resolve(
   process.cwd(),
   'src/routes/(algo)/admin/derivatives/+page.svelte'
 );
+// Phase 1 decomposition: band-analysis logic extracted to derivativesMath.js.
+// Static checks that look for patterns previously inline in the page now scan
+// the module as the SSOT.
+const MATH_PATH = path.resolve(
+  process.cwd(),
+  'src/lib/data/derivativesMath.js'
+);
 
 // ── SSOT / stale-code checks (static source scan) ──────────────────────────
 
@@ -154,24 +161,26 @@ test('SSOT: liveSpot and expiryCloseAnalysis share the same three-tier spot reso
 });
 
 test('SSOT: isITM comparison uses instrument-parsed strike and opt_type, not regex', () => {
-  const src = fs.readFileSync(SRC_PATH, 'utf8');
+  // After Phase 1 decomposition, the ITM comparison lives in
+  // derivativesMath.js:annotateOptionCandidates — scan the module as SSOT.
+  const mathSrc = fs.readFileSync(MATH_PATH, 'utf8');
 
   // The ITM comparison should use inst.t (opt_type) and inst.k (strike)
   // sourced from getInstrument(), not an ad-hoc regex over the symbol string.
   expect(
-    src.includes("optType === 'CE' ? spot > strike : spot < strike"),
-    'ITM comparison must use canonical CE/PE vs spot/strike form'
+    mathSrc.includes("optType === 'CE' ? spot > strike : spot < strike"),
+    'ITM comparison must use canonical CE/PE vs spot/strike form (in derivativesMath.js)'
   ).toBe(true);
 
   // The strike must come from inst.k (instrument cache), not a regex parse.
   expect(
-    src.includes('Number(inst.k || 0)'),
-    'strike must be sourced from inst.k (instrument cache field)'
+    mathSrc.includes('Number(inst.k || 0)'),
+    'strike must be sourced from inst.k (instrument cache field, in derivativesMath.js)'
   ).toBe(true);
 
   expect(
-    src.includes("inst.t"),
-    'opt_type must be sourced from inst.t (instrument cache field)'
+    mathSrc.includes("inst.t"),
+    'opt_type must be sourced from inst.t (instrument cache field, in derivativesMath.js)'
   ).toBe(true);
 });
 

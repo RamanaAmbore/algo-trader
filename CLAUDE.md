@@ -228,7 +228,41 @@ on their own poll path.
 **Closed-hours refresh UX** — `RefreshButton.svelte` no longer blocks
 refresh during closed hours. Click fires the parent's onClick AND
 surfaces a toast "Showing close snapshot — markets reopen at <time>"
-(3s auto-dismiss).
+(3s auto-dismiss). When BOTH markets closed the click now also passes
+`{ skipLtp: true }` to `onClick(opts)`; consumers route positions +
+holdings fetches with `?skip_ltp=1` so cash / margins / holdings still
+refresh from the broker while LTPs stay frozen at the daily_book
+snapshot. Tooltip flips to "Markets closed — refresh only updates
+cash/margins/holdings" so the intent is discoverable.
+
+**Per-exchange close-snapshot lifecycle (Jul 2026)** —
+`_snapshot_close` already writes per-exchange (`_is_exchange_open_at`
+gates `ltp` + `day_pnl` to `None` for mid-session rows, so `nse:close`
+effectively writes NSE-only rows with real LTP; MCX rows filter out
+downstream). Routes now overlay row-by-row on the live path:
+
+- `PositionRow` / `HoldingRow` gain `ltp_source: str = "live"`.
+- `backend/api/routes/positions.py:_overlay_snapshot_for_closed_exchanges`
+  and its holdings twin build the closed-exchange snapshot LTP map ONCE
+  per response via `snapshot_gate.latest_snapshot_ltp_map(kind)` (same
+  latest-batch CTE the `_positions_snapshot` reader uses — SSOT).
+- Rows on a CLOSED exchange get their `last_price` overlaid with the
+  snapshot LTP + tagged `ltp_source="snapshot"`. Rows on still-open
+  exchanges keep the broker LTP + `ltp_source="live"`.
+- Exchange gate map (`snapshot_gate._EXCHANGE_TO_GATE`): NSE/BSE/NFO/BFO/CDS
+  → NSE (09:15-15:30 IST), MCX → MCX (09:00-23:30 IST).
+- `?skip_ltp=1` on positions/holdings runs the normal broker path so
+  qty / avg_cost / metadata refresh, but the row-level overlay flips
+  every closed-exchange row to `ltp_source='snapshot'` + freezes
+  `last_price` at the daily_book value. During both-closed (the
+  RefreshButton trigger) every row's exchange is closed → every LTP
+  is snapshot-served. Funds accepts the param as a no-op — funds carry
+  no LTP concept.
+- Frontend cell renderer in `MarketPulse.svelte` reads `row.ltp_source`
+  → renders `data-testid="ltp-snap-chip"` amber "SNAP" pill next to LTP
+  and skips tick-flash on snapshot rows. Both positions and holdings
+  branches in the unified-row merge propagate `ltp_source` so a mixed
+  leg still surfaces the chip.
 
 **Sparkline cache** — `_spark_past_cache` (past closes) + `_spark_today_cache` (intraday 30m, 5min TTL) + LTP at response time. Disk-persisted to `.log/sparkline_cache.json` (throttled 5s writes, atomic).
 

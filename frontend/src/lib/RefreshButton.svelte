@@ -37,8 +37,17 @@
   import { onMount, onDestroy, untrack } from 'svelte';
 
   /**
+   * @typedef {object} RefreshOpts
+   * @property {boolean} [skipLtp] - When true (RefreshButton's both-markets-
+   *   closed path), consumers should route positions/holdings fetches
+   *   with `?skip_ltp=1` so cash/margins/holdings refresh from the broker
+   *   while LTPs stay frozen at the daily_book snapshot value. Consumers
+   *   that don't care about this can ignore the arg (backward compatible).
+   *
    * @typedef {object} Props
-   * @property {() => void} onClick - Click handler that should trigger the refresh.
+   * @property {(opts?: RefreshOpts) => void} onClick - Click handler that should
+   *   trigger the refresh. Called with `{ skipLtp: true }` on both-markets-
+   *   closed clicks, `{ skipLtp: false }` otherwise.
    * @property {boolean} [loading] - Spinner state; click is suppressed while true.
    * @property {string} [label] - aria-label suffix (e.g. "positions", "audit").
    */
@@ -241,10 +250,15 @@
   );
   // Tooltip suffix surfaces which segments are open so the colour
   // change is self-explanatory the first time the operator sees it.
+  // Both-closed variant surfaces the "only cash/margins refreshes" caveat
+  // per the per-exchange close-snapshot lifecycle (Jul 2026): the click
+  // still fires but the fetch chain passes `?skip_ltp=1` to the book
+  // endpoints so the broker isn't hit for LTPs.
+  const _bothClosed = $derived(!_nseOpen && !_mcxOpen);
   const _mktTooltip = $derived(
     _nseOpen && _mcxOpen ? 'Equity + MCX open'
     : _mcxOpen            ? 'MCX open · Equity closed'
-    :                       'Market closed'
+    :                       'Markets closed — refresh only updates cash/margins/holdings'
   );
   // Closed-market UX (slice Market-Lifecycle).
   //
@@ -277,6 +291,11 @@
       // come from the snapshot path during closed hours and the
       // operator may still want fresher numbers (e.g. after a manual
       // fund transfer). The toast clarifies why ticks stay frozen.
+      // Per-exchange close-snapshot lifecycle (Jul 2026): pass
+      // { skipLtp: true } to parents that opted in — the fetch chain
+      // then flips to `?skip_ltp=1` and the broker is NOT called for
+      // LTP data. Callers that ignore the arg fall through to their
+      // legacy no-arg refresh flow (backward compatible).
       try {
         toast.info(
           `Showing close snapshot — markets reopen at ${_nextOpenLabel()}`,
@@ -284,7 +303,8 @@
         );
       } catch (_) { /* toast store unavailable — silent */ }
       queueMicrotask(() => {
-        try { onClick?.(); } catch (e) { console.warn('[refresh] onClick threw:', e); }
+        try { onClick?.({ skipLtp: true }); }
+        catch (e) { console.warn('[refresh] onClick threw:', e); }
       });
       return;
     }
@@ -296,7 +316,10 @@
     // getting stuck still is an issue" — the stall was the gap between
     // the click and the next paint when the parent's onClick body did
     // tens of ms of bookkeeping synchronously before the first await.
-    queueMicrotask(() => { try { onClick?.(); } catch (e) { console.warn('[refresh] onClick threw:', e); } });
+    queueMicrotask(() => {
+      try { onClick?.({ skipLtp: false }); }
+      catch (e) { console.warn('[refresh] onClick threw:', e); }
+    });
   }
 
   // Watch the `loading` prop for true → false transitions and stamp

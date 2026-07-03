@@ -92,6 +92,110 @@ def _get_stale_live(route_key: str) -> Any | None:
     return data
 
 
+# ---------------------------------------------------------------------------
+# Per-exchange closed check (row-level snapshot serving)
+# ---------------------------------------------------------------------------
+# When one exchange has closed but another is still open (e.g. NSE closed at
+# 15:30 IST while MCX runs till 23:30) we want to serve NSE rows from the
+# daily_book snapshot while MCX rows stay live.  These helpers give routes a
+# single sync predicate they can consult per-row after fetching the raw
+# broker frame.
+
+# Kite exchange → lifecycle gate label. NFO/BFO derivatives track the NSE
+# equity session (same 09:15-15:30 IST window); MCX tracks its own longer
+# window; CDS (currency derivatives) also inherits equity hours. Rows on
+# unknown exchanges fall through to NSE (safest default — most equity-like).
+_EXCHANGE_TO_GATE: dict[str, str] = {
+    "NSE":  "NSE",
+    "BSE":  "NSE",
+    "NFO":  "NSE",
+    "BFO":  "NSE",
+    "CDS":  "NSE",   # 09:15-15:30 IST
+    "MCX":  "MCX",
+}
+
+
+def is_exchange_closed_now(exchange: str) -> bool:
+    """Return True when `exchange` is currently closed (row-level gate).
+
+    Consults `is_market_open()` with the per-segment hours + holiday
+    calendar. Used by positions.py / holdings.py to decide whether an
+    individual row's LTP should be served from the DB snapshot or from
+    the live broker fetch.
+
+    Fail-open: if the check raises (config missing, holiday API down),
+    return False so the caller keeps the broker value.
+    """
+    gate = _EXCHANGE_TO_GATE.get((exchange or "").upper(), "NSE")
+    try:
+        from backend.shared.helpers.date_time_utils import (
+            is_market_open, timestamp_indian,
+        )
+        from backend.shared.helpers.utils import config as _cfg
+        from backend.brokers.broker_apis import fetch_holidays
+        from datetime import time as _dt_time
+
+        segments = _cfg.get("market_segments", {}) or {}
+        for seg_cfg in segments.values():
+            exch = str(seg_cfg.get("holiday_exchange", "NSE")).upper()
+            if exch != gate:
+                continue
+            h_s, m_s = map(int, seg_cfg.get("hours_start", "09:15").split(":"))
+            h_e, m_e = map(int, seg_cfg.get("hours_end",   "15:30").split(":"))
+            seg_start = _dt_time(h_s, m_s)
+            seg_end   = _dt_time(h_e, m_e)
+            try:
+                holidays = fetch_holidays(exch)
+            except Exception:
+                holidays = set()
+            now_ist = timestamp_indian()
+            return not is_market_open(now_ist, holidays, seg_start, seg_end, exchange=exch)
+    except Exception:
+        return False
+    # No matching segment configured — treat as closed (conservative).
+    return True
+
+
+async def latest_snapshot_ltp_map(kind: str) -> dict[tuple[str, str], float]:
+    """Return a `(account, symbol) → ltp` map from the most-recent daily_book
+    batch per account for the given kind ('positions' | 'holdings').
+
+    Uses the same `WITH latest_batch AS (...)` CTE as the per-route snapshot
+    readers (positions.py `_positions_snapshot`, holdings.py `_holdings_snapshot`)
+    so the two paths cannot drift on which batch is authoritative. This is
+    what the per-exchange row overlay reads when a row's exchange has
+    just closed and its LTP should be frozen at the close_settled value.
+    """
+    from backend.api.database import async_session
+    from sqlalchemy import text as _sql_text
+
+    kind_lower = str(kind or "").lower()
+    if kind_lower not in ("positions", "holdings"):
+        return {}
+    out: dict[tuple[str, str], float] = {}
+    try:
+        async with async_session() as session:
+            result = await session.execute(_sql_text("""
+                WITH latest_batch AS (
+                    SELECT account, MAX(captured_at) AS max_at
+                    FROM daily_book
+                    WHERE kind = :kind AND ltp IS NOT NULL AND ltp > 0
+                    GROUP BY account
+                )
+                SELECT db.account, db.symbol, db.ltp
+                FROM daily_book db
+                JOIN latest_batch lb
+                  ON db.account = lb.account AND db.captured_at = lb.max_at
+                WHERE db.kind = :kind
+                  AND db.ltp IS NOT NULL AND db.ltp > 0
+            """), {"kind": kind_lower})
+            for account, symbol, ltp in result.all():
+                out[(str(account), str(symbol))] = float(ltp)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"latest_snapshot_ltp_map({kind}) failed: {exc}")
+    return out
+
+
 def _any_segment_open() -> bool:
     """Sync wrapper used by asyncio.to_thread."""
     try:

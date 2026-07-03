@@ -15,7 +15,9 @@ from backend.api.rbac import (
 from backend.api.algo.pnl_math import recompute_row_percentages
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.helpers.ltp_patch import apply_ltp_patch, holdings_policy
-from backend.api.helpers.snapshot_gate import closed_hours_or_broker
+from backend.api.helpers.snapshot_gate import (
+    closed_hours_or_broker, is_exchange_closed_now, latest_snapshot_ltp_map,
+)
 from backend.api.schemas import HoldingsResponse, HoldingRow, HoldingsSummaryRow
 from backend.brokers import broker_apis
 from backend.shared.helpers.date_time_utils import timestamp_display
@@ -121,6 +123,7 @@ async def _holdings_snapshot() -> Optional[HoldingsResponse]:
             day_change_val=day_pnl_f,
             day_change_percentage=day_pct,
             last_price_stale=True,
+            ltp_source="snapshot",
         )
         rows.append(row)
 
@@ -241,6 +244,52 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
     )
 
 
+async def _overlay_snapshot_for_closed_exchanges(rows: list) -> list:
+    """Per-exchange close-snapshot overlay for holdings rows. See
+    positions._overlay_snapshot_for_closed_exchanges for full rationale.
+
+    Holdings are eq-only (NSE/BSE) so the closed-exchange gate almost
+    always resolves to "NSE closed" during 15:30-23:30 IST. MCX holdings
+    don't exist (delivery is by contract expiry). Kept generic so a
+    future BSE-only session (or a corporate-action holiday split) still
+    tags rows correctly.
+    """
+    if not rows:
+        return rows
+    exchange_closed: dict[str, bool] = {}
+    def _closed(exch: str) -> bool:
+        e = (exch or "").upper()
+        if e not in exchange_closed:
+            exchange_closed[e] = is_exchange_closed_now(e)
+        return exchange_closed[e]
+
+    if not any(_closed(getattr(r, "exchange", "")) for r in rows):
+        import msgspec as _msc
+        return [_msc.structs.replace(r, ltp_source="live") for r in rows]
+
+    snap_map = await latest_snapshot_ltp_map("holdings")
+    import msgspec as _msc
+    out: list = []
+    for r in rows:
+        if not _closed(getattr(r, "exchange", "")):
+            out.append(_msc.structs.replace(r, ltp_source="live"))
+            continue
+        key = (getattr(r, "account", ""), getattr(r, "tradingsymbol", ""))
+        snap_ltp = snap_map.get(key)
+        if snap_ltp is not None and snap_ltp > 0:
+            # Overlay snapshot LTP + recompute cur_val since holdings
+            # cur_val is derived (unlike positions where broker owns pnl).
+            qty = int(getattr(r, "quantity", 0) or getattr(r, "opening_quantity", 0))
+            new_cur_val = float(snap_ltp) * qty
+            out.append(_msc.structs.replace(
+                r, last_price=float(snap_ltp), cur_val=new_cur_val,
+                close_price=float(snap_ltp), ltp_source="snapshot",
+            ))
+        else:
+            out.append(_msc.structs.replace(r, ltp_source="snapshot"))
+    return out
+
+
 def _fetch() -> HoldingsResponse:
     per_acct = broker_apis.fetch_holdings()
     # Outage detection: only raise when every per-account call failed
@@ -345,13 +394,19 @@ class HoldingsController(Controller):
     path = "/api/holdings"
 
     @get("/")
-    async def get_holdings(self, request: Request, fresh: bool = False) -> HoldingsResponse:
+    async def get_holdings(
+        self, request: Request, fresh: bool = False, skip_ltp: bool = False,
+    ) -> HoldingsResponse:
         try:
             # ── Closed-hours gate via canonical helper ──────────────────────
             # Holdings are long-dated (days–weeks) so their LTP doesn't
             # change between sessions.  closed_hours_or_broker decides
             # whether to call the broker or serve the daily_book snapshot.
             # `?fresh=1` bypasses the gate.
+            # `?skip_ltp=1` — force snapshot path even when a segment is open.
+            # RefreshButton sends this during both-markets-closed clicks so
+            # the operator can still refresh cash/margins/holdings-metadata
+            # without hitting the broker for LTPs.
 
             async def _snapshot_fn() -> HoldingsResponse:
                 snap = await _holdings_snapshot()
@@ -379,9 +434,25 @@ class HoldingsController(Controller):
                             dhan_next_poll_clear()
                     except Exception:
                         pass
-                return await get_or_fetch("holdings", _fetch, ttl_seconds=_TTL)
+                _resp = await get_or_fetch("holdings", _fetch, ttl_seconds=_TTL)
+                # Per-exchange overlay — closed exchanges get snapshot LTP
+                # + ltp_source="snapshot". Runs on the broker path so
+                # NSE-closed / MCX-open windows serve mixed live+snap.
+                _new_rows = await _overlay_snapshot_for_closed_exchanges(list(_resp.rows))
+                import msgspec as _msc
+                return _msc.structs.replace(_resp, rows=_new_rows)
 
-            if not fresh:
+            # ?skip_ltp=1 — RefreshButton's both-closed click. Runs the
+            # normal broker path so holdings metadata refreshes (qty +
+            # avg_cost change on corporate actions, dividend credits,
+            # delivery-to-holdings transitions); the row-level overlay
+            # in _broker_fn tags every closed-exchange row as
+            # ltp_source='snapshot' and freezes its last_price to the
+            # daily_book close_settled value. Funds stays on its own
+            # broker path in parallel.
+            if skip_ltp:
+                resp = await _broker_fn()
+            elif not fresh:
                 resp, source = await closed_hours_or_broker(
                     exchange="NSE",
                     snapshot_fn=_snapshot_fn,
