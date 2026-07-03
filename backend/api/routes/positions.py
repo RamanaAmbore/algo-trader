@@ -14,6 +14,7 @@ from backend.api.rbac import (
 from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl, recompute_row_percentages
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.helpers.ltp_patch import apply_ltp_patch, positions_policy
+from backend.api.helpers.price_resolver import resolve_current_price
 from backend.api.helpers.snapshot_gate import (
     closed_hours_or_broker, is_exchange_closed_now, latest_snapshot_ltp_map,
 )
@@ -206,28 +207,21 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> li
     """Per-exchange close-snapshot overlay under the unified animation model
     (Jul 2026 refactor).
 
-    For each row whose `exchange` is currently CLOSED, replace `last_price`
-    with the latest daily_book snapshot LTP and tag the row so it renders
-    as a static snapshot cell (no tick-flash / freshness shimmer):
-        • `price_source = "snapshot_settled"`   (Kite close_price available)
-        • `price_source = "snapshot_unsettled"` (broker close_price missing)
-        • `current_price = last_price`          (unified-model alias)
-        • `is_animating = False`                (cell renderer freezes flash)
-    Rows on still-open exchanges get:
-        • `price_source = "live"`
-        • `current_price = last_price`
-        • `is_animating = True`
-    When ALL market segments are open, this is a no-op fast-path (every row
-    stays live). When ALL are closed, the caller normally reached this path
-    via the snapshot branch — but the tag still gets set correctly here for
-    the anti-flicker `stale-live` case.
+    Delegates the per-row (current_price, price_source, is_animating)
+    decision to `price_resolver.resolve_current_price` so movers /
+    watchlist / positions all share ONE branch matrix. The overlay layer
+    itself only owns:
+      1. per-exchange closed-check caching (avoid N×holidays lookups)
+      2. one-shot snapshot-map lookup (via latest_snapshot_ltp_map)
+      3. mapping resolver outputs back into the msgspec Struct row
+      4. holdings-only recompute of cur_val when the snapshot LTP wins
+         (positions' pnl is broker-owned and stays as-is)
 
-    NOTE (Commit 1): the settled-vs-unsettled discriminator is a coarse
-    "snapshot LTP present in latest daily_book batch?" check. Commit 2
-    ships `price_resolver.py` which distinguishes the two via a proper
-    `is_settled` column on the daily_book snapshot. Until then, the
-    presence heuristic is a safe approximation — a closed exchange with
-    NO snapshot value at all is by definition unsettled.
+    The `settled` flag we pass to the resolver is a presence heuristic:
+    when the snapshot map has an LTP for this key we treat it as settled
+    (the daily_book close_settled writer null-guards `ltp`, so a value in
+    the map came from a close_settled cut). When the map has no key we
+    pass settled=False and the resolver returns "snapshot_unsettled".
 
     Args:
         rows: list of PositionRow / HoldingRow structs.
@@ -246,54 +240,66 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> li
             exchange_closed[e] = is_exchange_closed_now(e)
         return exchange_closed[e]
 
-    # Fast path — every row's exchange is currently open. No snapshot
-    # lookup needed; just tag every row as live.
+    import msgspec as _msc
+
+    # Fast path — every row's exchange is currently open. Route through
+    # the resolver for uniform tagging (single decision point).
     if not any(_closed(getattr(r, "exchange", "")) for r in rows):
-        import msgspec as _msc
-        return [
-            _msc.structs.replace(
-                r, price_source="live",
-                current_price=float(getattr(r, "last_price", 0.0) or 0.0),
-                is_animating=True,
+        out: list = []
+        for r in rows:
+            live_ltp = float(getattr(r, "last_price", 0.0) or 0.0)
+            price, source, animating = resolve_current_price(
+                exchange_open=True, live_ltp=live_ltp,
             )
-            for r in rows
-        ]
+            out.append(_msc.structs.replace(
+                r, price_source=source,
+                current_price=price if price is not None else live_ltp,
+                is_animating=animating,
+            ))
+        return out
 
     # Some rows are on closed exchanges — pull the snapshot map ONCE and
-    # overlay LTP for those rows.
+    # let the resolver decide per-row.
     snap_map = await latest_snapshot_ltp_map(kind)
-    import msgspec as _msc
-    out: list = []
+    out = []
     for r in rows:
-        if not _closed(getattr(r, "exchange", "")):
+        exch = getattr(r, "exchange", "")
+        broker_ltp = float(getattr(r, "last_price", 0.0) or 0.0)
+        if not _closed(exch):
+            price, source, animating = resolve_current_price(
+                exchange_open=True, live_ltp=broker_ltp,
+            )
             out.append(_msc.structs.replace(
-                r, price_source="live",
-                current_price=float(getattr(r, "last_price", 0.0) or 0.0),
-                is_animating=True,
+                r, price_source=source,
+                current_price=price if price is not None else broker_ltp,
+                is_animating=animating,
             ))
             continue
+
         key = (getattr(r, "account", ""), getattr(r, "tradingsymbol", ""))
         snap_ltp = snap_map.get(key)
-        if snap_ltp is not None and snap_ltp > 0:
-            # Overlay snapshot LTP. Recompute pnl / day_change_val is
-            # deliberately NOT done here — the frozen close_settled
-            # values already carry the correct EOD pnl. Frontend renders
-            # the SNAP chip and freezes tick-flash based on is_animating.
-            out.append(_msc.structs.replace(
-                r, last_price=float(snap_ltp),
-                current_price=float(snap_ltp),
-                price_source="snapshot_settled",
-                is_animating=False,
-            ))
-        else:
-            # No snapshot yet (first deploy for a newly-opened contract)
-            # OR broker hasn't published close_price yet (pre-settled).
-            # Keep broker LTP but tag unsettled + freeze animation.
-            out.append(_msc.structs.replace(
-                r, current_price=float(getattr(r, "last_price", 0.0) or 0.0),
-                price_source="snapshot_unsettled",
-                is_animating=False,
-            ))
+        has_snapshot = snap_ltp is not None and snap_ltp > 0
+
+        price, source, animating = resolve_current_price(
+            exchange_open=False,
+            live_ltp=broker_ltp,
+            snapshot_close=(float(snap_ltp) if has_snapshot else None),
+            # broker LTP captured before close serves as the pre-settle
+            # fallback — the resolver falls through to it via
+            # snapshot_last_ltp when snapshot_close is missing.
+            snapshot_last_ltp=broker_ltp,
+            settled=has_snapshot,
+        )
+        replace_kwargs: dict = {
+            "price_source": source,
+            "current_price": price if price is not None else broker_ltp,
+            "is_animating": animating,
+        }
+        # On settled path, overlay last_price with the snapshot value so
+        # legacy consumers reading last_price see the frozen close_price.
+        if has_snapshot and price is not None:
+            replace_kwargs["last_price"] = float(price)
+        out.append(_msc.structs.replace(r, **replace_kwargs))
     return out
 
 
