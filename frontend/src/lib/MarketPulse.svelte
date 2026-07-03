@@ -1796,8 +1796,16 @@
           : r._moverGroup === tab));
     return pool
       .slice()
-      .sort((a, b) => Math.abs(Number(b.change_pct) || 0)
-                    - Math.abs(Number(a.change_pct) || 0))
+      .sort((a, b) => {
+        const pA = Math.abs(Number(a._mover_change_pct) || Number(a.change_pct) || 0);
+        const pB = Math.abs(Number(b._mover_change_pct) || Number(b.change_pct) || 0);
+        if (pA !== pB) return pB - pA;
+        // Stable tie-break: tradingsymbol prevents row shuffling when
+        // two symbols have equal |change_pct| (common during closed hours
+        // when symbolStore publishers may produce subtly different
+        // floating-point values across polls).
+        return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
+      })
       .slice(0, _MOVER_TOP_N);
   }
   const winRows  = $derived(_topRowsFor('winners', _effWinTab));
