@@ -354,3 +354,113 @@ def test_raw_qty_blocked_by_ceiling_before_reaching_sdk():
     assert not mock_kite.place_gtt.called, (
         "Kite SDK place_gtt must not be called when ceiling fires"
     )
+
+
+# ── G1 lot-multiple guard in apply_plan_live ─────────────────────────
+# These tests verify the new early-return guard added at the top of
+# apply_plan_live that fires BEFORE any broker call when a GTT leg or
+# wing carries a qty that is not a multiple of parent_lot_size.
+
+def test_g1_guard_rejects_sub_lot_gtt_qty():
+    """Sub-lot qty on a GTT leg returns errors before calling place_gtt."""
+    lot_size = 100
+    # Build a plan with qty=50 (half a lot) — invalid
+    plan = _make_mcx_plan(parent_qty=50, lot_size=lot_size)
+    broker = _make_mock_broker(lot_size)
+
+    result = apply_plan_live(plan, broker)
+
+    assert result.errors, "Expected G1 error for sub-lot GTT qty"
+    assert any("G1 lot-multiple guard" in e for e in result.errors), (
+        f"Error must mention 'G1 lot-multiple guard', got: {result.errors}"
+    )
+    assert not broker.place_gtt.called, (
+        "place_gtt must not be called when G1 fires"
+    )
+
+
+def test_g1_guard_passes_exact_multiple():
+    """Exact multiple of lot_size must proceed to normal placement."""
+    lot_size = 100
+    plan = _make_mcx_plan(parent_qty=100, lot_size=lot_size)  # exactly 1 lot
+    broker = _make_mock_broker(lot_size)
+
+    result = apply_plan_live(plan, broker)
+
+    assert not result.errors, f"Unexpected G1 errors: {result.errors}"
+    assert broker.place_gtt.called, "place_gtt must be called for valid qty"
+
+
+def test_g1_guard_passes_two_lots_exact():
+    """2-lot exact multiple (qty=200) must proceed."""
+    lot_size = 100
+    plan = _make_mcx_plan(parent_qty=200, lot_size=lot_size)
+    broker = _make_mock_broker(lot_size)
+
+    result = apply_plan_live(plan, broker)
+
+    assert not result.errors, f"Unexpected G1 errors: {result.errors}"
+
+
+def test_g1_guard_rejects_wing_sub_lot():
+    """Sub-lot wing qty also triggers G1 early return before place_order."""
+    lot_size = 100
+    plan = TemplatePlan(
+        template_id=1,
+        template_name="test",
+        template_slug="test",
+        parent_account="ZG0790",
+        parent_symbol="CRUDEOIL25AUGFUT",
+        parent_side="SELL",
+        parent_qty=100,          # 1 lot — valid GTT qty
+        parent_exchange="MCX",
+        parent_fill_price=5000.0,
+        parent_lot_size=lot_size,
+    )
+    plan.wing = WingSpec(
+        tradingsymbol="CRUDEOIL25AUGSOMECALLOPT",
+        transaction_type="BUY",
+        quantity=50,             # half a lot — invalid
+        exchange="MCX",
+        product="NRML",
+        order_type="MARKET",
+    )
+    broker = _make_mock_broker(lot_size)
+
+    result = apply_plan_live(plan, broker)
+
+    assert result.errors, "Expected G1 error for sub-lot wing qty"
+    assert any("G1 lot-multiple guard" in e for e in result.errors), (
+        f"Error must mention 'G1 lot-multiple guard', got: {result.errors}"
+    )
+    assert not broker.place_order.called, (
+        "place_order must not be called when wing G1 fires"
+    )
+
+
+def test_g1_guard_skips_when_lot_size_one():
+    """lot_size=1 (equity/micro sentinel) — G1 guard skips entirely."""
+    plan = TemplatePlan(
+        template_id=1,
+        template_name="test",
+        template_slug="test",
+        parent_account="ZG0790",
+        parent_symbol="RELIANCE",
+        parent_side="BUY",
+        parent_qty=7,            # arbitrary — not a lot concern
+        parent_exchange="NSE",
+        parent_fill_price=2900.0,
+        parent_lot_size=1,
+    )
+    broker = MagicMock()
+    broker.broker_id = "zerodha_kite"
+    broker.place_gtt.return_value = "gtt-789"
+    broker.translate_qty.side_effect = lambda exch, qty, ls: qty  # NSE passthrough
+
+    # Should not error even if qty=7 (odd number)
+    result = apply_plan_live(plan, broker)
+
+    # No G1 errors (guard skips for lot_size=1)
+    assert not any("G1 lot-multiple guard" in e for e in result.errors), (
+        f"G1 guard must not fire for lot_size=1, got: {result.errors}"
+    )

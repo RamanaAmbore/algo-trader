@@ -961,6 +961,32 @@ def apply_plan_live(
     one side fires."""
     result = AttachResult(plan=plan)
 
+    # G1 lot-multiple guard — fire before any broker call so sub-lot GTT
+    # legs are caught here, not by the adapter ceiling after wire cost.
+    # plan.parent_lot_size is set by apply_template_to_order via get_lot_size()
+    # so it is already resolved; this is a synchronous check only.
+    _g1_ls = int(plan.parent_lot_size or 1)
+    if _g1_ls > 1:
+        for _spec in plan.gtts:
+            for _leg in _spec.orders:
+                _q = int(_leg["quantity"])
+                if _q % _g1_ls != 0:
+                    result.errors.append(
+                        f"G1 lot-multiple guard failed: "
+                        f"{plan.parent_symbol} GTT leg qty={_q} "
+                        f"not a multiple of lot_size={_g1_ls}"
+                    )
+                    return result
+        if plan.wing is not None:
+            _wq = int(plan.wing.quantity)
+            if _wq % _g1_ls != 0:
+                result.errors.append(
+                    f"G1 lot-multiple guard failed: "
+                    f"{plan.wing.tradingsymbol} wing qty={_wq} "
+                    f"not a multiple of lot_size={_g1_ls}"
+                )
+                return result
+
     # Detect Groww-style two-singles split. Same predicate `apply_plan_sim`
     # uses to wire SimGttBook.pair_with — the resolver produces two
     # `trigger_type="single"` GTTs labelled TP + SL when broker_caps.

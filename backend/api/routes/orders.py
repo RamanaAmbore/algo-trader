@@ -1366,17 +1366,18 @@ async def _arm_take_profit(
                 from backend.api.algo.paper import get_prod_paper_engine
                 eng = get_prod_paper_engine()
                 eng.register_open_order({
-                    "algo_order_id": tp_id,
-                    "account":       parent_account,
-                    "symbol":        parent_symbol,
-                    "side":          tp_side,
-                    "qty":           qty,
-                    "limit_price":   tp_price,
-                    "initial_price": tp_price,
-                    "exchange":      parent_exchange,
-                    "agent_slug":    "auto-tp",
-                    "action_type":   "place_order",
-                    "chase_agg":     "low",
+                    "algo_order_id":  tp_id,
+                    "account":        parent_account,
+                    "symbol":         parent_symbol,
+                    "side":           tp_side,
+                    "qty":            qty,
+                    "limit_price":    tp_price,
+                    "initial_price":  tp_price,
+                    "exchange":       parent_exchange,
+                    "agent_slug":     "auto-tp",
+                    "action_type":    "place_order",
+                    "chase_agg":      "low",
+                    "is_close_intent": True,  # auto-TP always closes an existing position
                 })
             except Exception as _pe:
                 logger.warning(f"[TP] paper engine register failed for tp #{tp_id}: {_pe}")
@@ -3167,7 +3168,7 @@ class OrdersController(Controller):
                     # strategy lot ledger entry. None / 0 = no
                     # attribution; ledger write skips.
                     "strategy_id":      data.strategy_id,
-                    "is_close_intent":  False,  # ticket = open intent
+                    "is_close_intent":  (getattr(data, "intent", "") or "").lower() == "close",
                 })
             except Exception as e:
                 logger.warning(f"[PAPER-TICKET] engine register failed: {e}")
@@ -4141,6 +4142,8 @@ class OrdersController(Controller):
                                 "agent_slug":    "basket-ticket",
                                 "action_type":   "place_order",
                                 "chase_agg":     "low",
+                                "strategy_id":   getattr(leg, "strategy_id", None),
+                                "is_close_intent": (getattr(leg, "intent", "") or "").lower() == "close",
                             })
                         except Exception as _pe:
                             logger.warning(
