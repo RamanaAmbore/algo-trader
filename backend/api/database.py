@@ -808,6 +808,36 @@ async def init_db() -> None:
         except Exception as _intraday_err:
             logger.warning("init_db: intraday_bars migration skipped — %s", _intraday_err)
 
+        # ── Audit a4f91d + a87bc7 — DB stability indexes (Jul 2026) ─────────
+        # P1 fixes identified in two consecutive audit rounds.
+        #
+        # 1. ix_algo_orders_account_symbol — composite (account, symbol).
+        #    /admin/history Orders endpoint filters WHERE account IN (…)
+        #    AND symbol IN (…). The singletons ix_algo_orders_account /
+        #    ix_algo_orders_symbol (added Slice M) let Postgres pick one
+        #    and filter the other in memory. The composite eliminates that
+        #    residual scan; leads with account (higher selectivity, always
+        #    present) then symbol (optional refinement).
+        #
+        # 2. ix_algo_events_timestamp — standalone on algo_events.timestamp.
+        #    The 30-day retention DELETE in background.py filters on
+        #    timestamp; without the index every cycle was a full seq-scan
+        #    over a growing append-only table.
+        _audit_indexes = (
+            "CREATE INDEX IF NOT EXISTS ix_algo_orders_account_symbol "
+            "ON algo_orders (account, symbol)",
+            "CREATE INDEX IF NOT EXISTS ix_algo_events_timestamp "
+            "ON algo_events (timestamp)",
+        )
+        for _stmt in _audit_indexes:
+            try:
+                await conn.execute(text(_stmt))
+            except Exception as _ai_err:
+                logger.warning(
+                    "init_db: audit index migration skipped — %s "
+                    "(stmt=%s)", _ai_err, _stmt[:80],
+                )
+
         # code_metrics_snapshots — captured per release by
         # scripts/capture_metrics.py. The table itself is created by
         # Base.metadata.create_all above (the model is registered in
