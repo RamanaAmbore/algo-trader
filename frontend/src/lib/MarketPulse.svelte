@@ -3092,6 +3092,13 @@
       // live-recompute path above so the cells still tick.
       row._broker_pnl     = (row._broker_pnl     ?? 0) + (Number(r.pnl)             || 0);
       row._broker_day_pnl = (row._broker_day_pnl ?? 0) + (Number(r.day_change_val) || 0);
+      // Account-level staleness: propagate from any contributing row.
+      // When any leg of this merged row is stale, mark the whole row
+      // stale so getRowClass can apply the row-account-stale CSS tint.
+      if (r.account_stale === true) {
+        row.account_stale = true;
+        if (r.account_stale_since) row.account_stale_since = r.account_stale_since;
+      }
       fill(row, sym);
     }
 
@@ -3184,6 +3191,11 @@
       // path above stays untouched.
       row._broker_pnl     = (row._broker_pnl     ?? 0) + (Number(r.pnl)             || 0);
       row._broker_day_pnl = (row._broker_day_pnl ?? 0) + (Number(r.day_change_val) || 0);
+      // Account-level staleness: propagate from any contributing holding row.
+      if (r.account_stale === true) {
+        row.account_stale = true;
+        if (r.account_stale_since) row.account_stale_since = r.account_stale_since;
+      }
       fill(row, sym);
     }
 
@@ -4000,6 +4012,13 @@
     // for flat rows. See app.css :: ".ag-row.pos-long .ag-col-sym".
     if (s.w && !s.p && !s.h) classes.push('row-watch');
     else if (s.u) classes.push('row-und');
+    // Account-level staleness (Jul 2026) — rows served from broker_apis
+    // LKG cache when the account's circuit breaker was OPEN at fetch
+    // time. Slate row tint + reduced opacity so the operator sees the
+    // rows persist across breaker-open cycles instead of flickering to
+    // empty, but knows they aren't live. Distinct from `last_price_stale`
+    // (LTP-only staleness); this is a whole-row staleness.
+    if (r.account_stale === true) classes.push('row-account-stale');
     return classes.join(' ');
   }
 
@@ -4219,6 +4238,28 @@
         if (list.length === 0) return '';
         if (list.length === 1) return list[0];
         return `${list[0]} +${list.length - 1}`;
+      },
+      // Show "STALE @ HH:MM" badge next to account name when the row's
+      // data came from the broker_apis LKG frame cache (circuit breaker
+      // was OPEN at fetch time). Only visible when stale > 30s — the
+      // badge renders as a muted slate chip flush-right inside the cell.
+      cellRenderer: (p) => {
+        const val = p.valueFormatted ?? p.value ?? '';
+        const stale = p.data?.account_stale === true;
+        const since = p.data?.account_stale_since;
+        if (!stale || !since) return val || '';
+        const el = document.createElement('span');
+        el.style.cssText = 'display:flex;align-items:center;gap:4px;white-space:nowrap;overflow:hidden;';
+        const name = document.createElement('span');
+        name.textContent = val;
+        name.style.cssText = 'overflow:hidden;text-overflow:ellipsis;';
+        const badge = document.createElement('span');
+        badge.textContent = `STALE@${since.replace(' IST', '')}`;
+        badge.style.cssText = 'font-size:9px;color:rgba(148,163,184,0.75);flex-shrink:0;';
+        badge.title = `Last live data: ${since}`;
+        el.appendChild(name);
+        el.appendChild(badge);
+        return el;
       },
     };
     const rightColDefs = /** @type {any[]} */ ([

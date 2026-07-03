@@ -9,7 +9,7 @@ Five quality dimensions:
                 inline _is_all_markets_closed helpers remain there.
   4. Reuse    — each migrated route imports from snapshot_gate (single import SSOT).
   5. UX       — source field in return value correctly encodes live / snapshot /
-                snapshot-fallback for all code paths.
+                snapshot-fallback / stale-live for all code paths.
 """
 
 from __future__ import annotations
@@ -295,3 +295,207 @@ async def test_snapshot_gate_tests_run_fast():
     )
     assert s1 == "snapshot"
     assert s2 == "live"
+
+
+# ---------------------------------------------------------------------------
+# Anti-flicker stale-live path (added Jul 2026)
+# ---------------------------------------------------------------------------
+
+def _clear_route_cache(key: str) -> None:
+    """Wipe the anti-flicker cache entry for `key` so tests start clean."""
+    from backend.api.helpers import snapshot_gate
+    snapshot_gate._last_response_by_route.pop(key, None)
+
+
+@pytest.mark.asyncio
+async def test_stale_live_returned_on_broker_fail_after_success():
+    """When broker fails but a recent live payload is cached, return
+    stale-live instead of snapshot-fallback."""
+    from backend.api.helpers.snapshot_gate import closed_hours_or_broker
+    _clear_route_cache("test_pos")
+
+    live_sentinel = {"rows": ["live_data"]}
+    fallback_sentinel = {"rows": ["snapshot_data"]}
+
+    call_count = 0
+
+    async def _snap():
+        return fallback_sentinel
+
+    async def _live_first():
+        return live_sentinel
+
+    async def _live_fail():
+        raise RuntimeError("transient broker error")
+
+    # First call: market open, broker succeeds — stashes in cache.
+    with patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True):
+        data1, source1 = await closed_hours_or_broker(
+            "NSE", _snap, _live_first,
+            fallback_to_snapshot_on_broker_error=True,
+            route_key="test_pos",
+        )
+    assert source1 == "live"
+    assert data1 is live_sentinel
+
+    # Second call: market open, broker fails — should return stale-live NOT snapshot-fallback.
+    with patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True):
+        data2, source2 = await closed_hours_or_broker(
+            "NSE", _snap, _live_fail,
+            fallback_to_snapshot_on_broker_error=True,
+            route_key="test_pos",
+        )
+    assert source2 == "stale-live", (
+        f"Expected stale-live but got {source2!r} — anti-flicker cache not working"
+    )
+    # CRITICAL: the operator sees the live data, not the snapshot.
+    assert data2 is live_sentinel
+
+    _clear_route_cache("test_pos")
+
+
+@pytest.mark.asyncio
+async def test_snapshot_fallback_when_no_cache_and_broker_fails():
+    """Without a prior successful call, broker failure still falls back to snapshot."""
+    from backend.api.helpers.snapshot_gate import closed_hours_or_broker
+    _clear_route_cache("test_cold")
+
+    fallback_sentinel = {"rows": ["snapshot_data"]}
+
+    async def _snap():
+        return fallback_sentinel
+
+    async def _live():
+        raise RuntimeError("transient broker error")
+
+    with patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True):
+        data, source = await closed_hours_or_broker(
+            "NSE", _snap, _live,
+            fallback_to_snapshot_on_broker_error=True,
+            route_key="test_cold",
+        )
+    assert source == "snapshot-fallback"
+    assert data is fallback_sentinel
+
+    _clear_route_cache("test_cold")
+
+
+@pytest.mark.asyncio
+async def test_stale_live_respects_ttl():
+    """Stale-live cache entry older than _STALE_LIVE_TTL_S is ignored;
+    falls through to snapshot-fallback."""
+    import time as _time
+    from backend.api.helpers import snapshot_gate
+    from backend.api.helpers.snapshot_gate import closed_hours_or_broker
+    _clear_route_cache("test_ttl")
+
+    live_sentinel = {"rows": ["live_data"]}
+    fallback_sentinel = {"rows": ["snapshot_data"]}
+
+    # Manually insert an old cache entry (1 second past TTL).
+    snapshot_gate._last_response_by_route["test_ttl"] = (
+        _time.time() - snapshot_gate._STALE_LIVE_TTL_S - 1.0,
+        live_sentinel,
+    )
+
+    async def _snap():
+        return fallback_sentinel
+
+    async def _live():
+        raise RuntimeError("transient broker error")
+
+    with patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True):
+        data, source = await closed_hours_or_broker(
+            "NSE", _snap, _live,
+            fallback_to_snapshot_on_broker_error=True,
+            route_key="test_ttl",
+        )
+    assert source == "snapshot-fallback", (
+        f"Expired stale-live entry should fall through to snapshot-fallback, got {source!r}"
+    )
+    assert data is fallback_sentinel
+
+    _clear_route_cache("test_ttl")
+
+
+@pytest.mark.asyncio
+async def test_no_route_key_skips_anti_flicker():
+    """When route_key='', broker failure always uses snapshot-fallback (legacy behaviour)."""
+    from backend.api.helpers.snapshot_gate import closed_hours_or_broker
+
+    live_sentinel = {"rows": ["live_data"]}
+    fallback_sentinel = {"rows": ["snapshot_data"]}
+
+    async def _snap():
+        return fallback_sentinel
+
+    async def _live_success():
+        return live_sentinel
+
+    async def _live_fail():
+        raise RuntimeError("broker down")
+
+    # Even after a successful call, no-route_key path can't cache.
+    with patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True):
+        await closed_hours_or_broker("NSE", _snap, _live_success)
+        data, source = await closed_hours_or_broker(
+            "NSE", _snap, _live_fail,
+            fallback_to_snapshot_on_broker_error=True,
+            route_key="",
+        )
+    assert source == "snapshot-fallback"
+
+
+@pytest.mark.asyncio
+async def test_route_keys_independent():
+    """Different route keys have independent caches — a 'positions' cache
+    does not serve as stale-live for 'holdings'."""
+    from backend.api.helpers.snapshot_gate import closed_hours_or_broker
+    _clear_route_cache("pos_ind")
+    _clear_route_cache("hold_ind")
+
+    live_sentinel = {"rows": ["live_data"]}
+    fallback_sentinel = {"rows": ["snapshot_data"]}
+
+    async def _snap():
+        return fallback_sentinel
+
+    async def _live_success():
+        return live_sentinel
+
+    async def _live_fail():
+        raise RuntimeError("broker down")
+
+    # Warm the positions cache.
+    with patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True):
+        await closed_hours_or_broker("NSE", _snap, _live_success, route_key="pos_ind")
+
+    # Holdings cache is cold — should fall back to snapshot-fallback.
+    with patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True):
+        data, source = await closed_hours_or_broker(
+            "NSE", _snap, _live_fail,
+            fallback_to_snapshot_on_broker_error=True,
+            route_key="hold_ind",
+        )
+    assert source == "snapshot-fallback"
+
+    _clear_route_cache("pos_ind")
+    _clear_route_cache("hold_ind")
+
+
+def test_positions_passes_route_key():
+    """positions.py must pass route_key='positions' to closed_hours_or_broker."""
+    src = _src(_POS_SRC)
+    assert "route_key=\"positions\"" in src or "route_key='positions'" in src, (
+        "positions.py must pass route_key='positions' to closed_hours_or_broker "
+        "for the anti-flicker stale-live cache to work"
+    )
+
+
+def test_holdings_passes_route_key():
+    """holdings.py must pass route_key='holdings' to closed_hours_or_broker."""
+    src = _src(_HOL_SRC)
+    assert "route_key=\"holdings\"" in src or "route_key='holdings'" in src, (
+        "holdings.py must pass route_key='holdings' to closed_hours_or_broker "
+        "for the anti-flicker stale-live cache to work"
+    )

@@ -8,12 +8,16 @@ Every route handler that reads broker data MUST call this at the top:
         exchange='NSE',
         snapshot_fn=_my_snapshot,
         broker_fn=_my_live_fetch,
+        route_key='positions',
     )
 
 `source` is one of:
   'live'              — broker_fn() succeeded during market hours
   'snapshot'          — market closed; snapshot_fn() returned data
   'snapshot-fallback' — market open but broker_fn() raised; snapshot_fn() used
+  'stale-live'        — market open but broker_fn() raised; last-known live
+                        payload (< _STALE_LIVE_TTL_S old) returned instead of
+                        snapshot to prevent live/snapshot alternation flicker
 
 This module eliminates the class of bug where individual routes reinvent
 the "should I call broker or return snapshot?" decision inconsistently.
@@ -28,18 +32,64 @@ Thread / async safety
 from the in-process cache); it is called via ``asyncio.to_thread`` so the
 event loop is not blocked.  The caller-supplied ``snapshot_fn`` and
 ``broker_fn`` are both awaitable.
+
+Anti-flicker cache (``route_key``)
+-----------------------------------
+When the broker fails during market hours, consecutive poll cycles would
+alternate between live (broker up) and snapshot-fallback (broker down),
+producing visible flicker every ~30 s.  The fix: each route nominates a
+``route_key`` string; on every successful broker call the response is
+stashed in ``_last_response_by_route`` with a timestamp.  On broker
+failure, if a stale-live entry younger than ``_STALE_LIVE_TTL_S`` (120 s)
+exists, return it with source ``'stale-live'`` instead of the DB snapshot.
+The operator sees the last-good live payload for up to 2 min during a
+transient outage, with no snapshot/live alternation.
+
+When no ``route_key`` is supplied (backward-compatible), the anti-flicker
+path is skipped and the existing ``'snapshot-fallback'`` behaviour applies.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Awaitable, Callable, TypeVar
+import time as _time
+from typing import Any, Awaitable, Callable, TypeVar
 
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
 
 T = TypeVar("T")
+
+# ---------------------------------------------------------------------------
+# Anti-flicker last-known-live cache
+# ---------------------------------------------------------------------------
+# Shape: {route_key: (unix_ts, T)}
+# Eviction: 2-minute TTL (much shorter than the daily_book snapshot TTL so
+# we don't serve truly stale live data for extended outages — after 2 min
+# the helper falls through to snapshot-fallback which is always correct).
+_last_response_by_route: dict[str, tuple[float, Any]] = {}
+_STALE_LIVE_TTL_S: float = 120.0  # 2 minutes
+
+
+def _stash_live_response(route_key: str, data: Any) -> None:
+    """Record a successful live response for anti-flicker substitution."""
+    if route_key:
+        _last_response_by_route[route_key] = (_time.time(), data)
+
+
+def _get_stale_live(route_key: str) -> Any | None:
+    """Return the cached live response if it's younger than _STALE_LIVE_TTL_S,
+    else None."""
+    if not route_key:
+        return None
+    entry = _last_response_by_route.get(route_key)
+    if entry is None:
+        return None
+    ts, data = entry
+    if _time.time() - ts > _STALE_LIVE_TTL_S:
+        return None
+    return data
 
 
 def _any_segment_open() -> bool:
@@ -62,6 +112,7 @@ async def closed_hours_or_broker(
     broker_fn: Callable[[], Awaitable[T]],
     *,
     fallback_to_snapshot_on_broker_error: bool = True,
+    route_key: str = "",
 ) -> tuple[T, str]:
     """Return ``(data, source)`` for a data route.
 
@@ -75,21 +126,29 @@ async def closed_hours_or_broker(
     snapshot_fn:
         Async callable that returns the most-recent DB snapshot.  Called
         when market is closed OR when broker_fn raises and
-        ``fallback_to_snapshot_on_broker_error`` is True.
+        ``fallback_to_snapshot_on_broker_error`` is True and no recent
+        stale-live entry is available.
     broker_fn:
         Async callable that fetches live data from the broker.  Called
         only when the market is open.
     fallback_to_snapshot_on_broker_error:
         When True (default), a broker_fn exception during market hours
-        triggers a snapshot_fn() call.  The returned source is
+        triggers the anti-flicker path (stale-live if available, else
+        snapshot_fn()).  The returned source is ``'stale-live'`` or
         ``'snapshot-fallback'`` so the caller can log/surface the
         degraded-mode indicator.
+    route_key:
+        Stable string identifying this route (e.g. 'positions',
+        'holdings').  Enables the anti-flicker stale-live cache.  When
+        empty (default) the cache is bypassed and the original
+        snapshot-fallback behaviour applies.
 
     Returns
     -------
     tuple[T, str]
-        ``(data, source)`` where source is ``'live'``, ``'snapshot'``, or
-        ``'snapshot-fallback'``.
+        ``(data, source)`` where source is one of:
+        ``'live'``, ``'snapshot'``, ``'snapshot-fallback'``,
+        ``'stale-live'``.
 
     Notes
     -----
@@ -114,13 +173,28 @@ async def closed_hours_or_broker(
     # Market is open — call broker_fn.
     try:
         data = await broker_fn()
+        # Stash successful live payload for anti-flicker substitution.
+        _stash_live_response(route_key, data)
         return data, "live"
     except Exception as broker_exc:
         if not fallback_to_snapshot_on_broker_error:
             raise
         logger.warning(
             f"closed_hours_or_broker [{exchange}]: broker_fn failed "
-            f"({broker_exc!r}) — falling back to snapshot"
+            f"({broker_exc!r}) — checking stale-live cache (route_key={route_key!r})"
+        )
+        # Anti-flicker: return last-known live payload if recent enough.
+        stale_data = _get_stale_live(route_key)
+        if stale_data is not None:
+            logger.info(
+                f"closed_hours_or_broker [{exchange}]: serving stale-live "
+                f"payload for route_key={route_key!r} (avoids live/snapshot flicker)"
+            )
+            return stale_data, "stale-live"
+        # No recent live payload — fall back to DB snapshot.
+        logger.warning(
+            f"closed_hours_or_broker [{exchange}]: no stale-live entry — "
+            f"falling back to snapshot"
         )
         data = await snapshot_fn()
         return data, "snapshot-fallback"

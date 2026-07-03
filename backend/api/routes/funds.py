@@ -44,7 +44,25 @@ _COL_MAP = {
 
 
 def _fetch() -> FundsResponse:
-    raw = pd.concat(broker_apis.fetch_margins(), ignore_index=True)
+    per_acct = broker_apis.fetch_margins()
+    # Build account → "HH:MM IST" map from stale-substituted frames BEFORE
+    # concat (which drops all DataFrame.attrs). Mirrors the positions/holdings
+    # pattern — LKG-substituted frames carry attrs["stale_since"] (unix epoch).
+    _acct_stale_since: dict[str, str] = {}
+    if per_acct:
+        for _df in per_acct:
+            _ss = _df.attrs.get("stale_since")
+            if _ss and not _df.empty and "account" in _df.columns:
+                _acct = str(_df["account"].iloc[0])
+                try:
+                    from zoneinfo import ZoneInfo
+                    from datetime import datetime
+                    _acct_stale_since[_acct] = datetime.fromtimestamp(
+                        float(_ss), tz=ZoneInfo("Asia/Kolkata")
+                    ).strftime("%H:%M IST")
+                except Exception:
+                    pass
+    raw = pd.concat(per_acct, ignore_index=True)
     # broker_apis.fetch_margins swallows Kite HTTP errors internally and
     # returns empty per-account frames on outage. An empty concat result
     # means EVERY account's call failed — signal of an upstream outage,
@@ -81,8 +99,35 @@ def _fetch() -> FundsResponse:
         (cash_col - prem_col).alias('available_cash'),
     ])
 
-    rows = [FundsRow(**r) for r in df_all.to_dicts()]
-    return FundsResponse(rows=rows, refreshed_at=timestamp_display())
+    # Carry through the account_stale column so the FundsRow schema
+    # receives it — broker_apis stamps this on stale-substituted frames
+    # when the account's circuit breaker was OPEN at fetch time.
+    if 'account_stale' in df.columns:
+        stale_map = {
+            r['account']: bool(r['account_stale'])
+            for r in df.select(['account', 'account_stale']).to_dicts()
+            if r.get('account_stale')
+        }
+    else:
+        stale_map = {}
+
+    rows: list[FundsRow] = []
+    for r in df_all.to_dicts():
+        acct = r.get('account', '')
+        # Only per-account rows carry account_stale; TOTAL row never stale.
+        if acct != 'TOTAL':
+            r['account_stale'] = stale_map.get(acct, False)
+            # Thread account_stale_since so the frontend can render
+            # "STALE @ HH:MM" without a separate endpoint.
+            if r['account_stale'] and acct in _acct_stale_since:
+                r['account_stale_since'] = _acct_stale_since[acct]
+        rows.append(FundsRow(**r))
+    stale_accts = sorted(k for k, v in stale_map.items() if v)
+    return FundsResponse(
+        rows=rows,
+        refreshed_at=timestamp_display(),
+        stale_accounts=stale_accts,
+    )
 
 
 class FundsController(Controller):

@@ -178,6 +178,10 @@ _ROW_COLS = [
     # Staleness flag — True when last_price came from the last-known-good
     # cache rather than a live broker or ticker source.
     'last_price_stale',
+    # Account-level staleness — True when the entire row was substituted
+    # from broker_apis' LKG frame cache because the account's circuit
+    # breaker was OPEN. Preserves DH6847 rows across breaker-open cycles.
+    'account_stale',
 ]
 
 _TTL = 30
@@ -210,6 +214,24 @@ async def _fetch() -> PositionsResponse:
     # false "Positions feed unavailable" banner on /admin/derivatives.
     if per_acct and all(df.attrs.get('fetch_failed', False) for df in per_acct):
         raise Exception("Broker (Kite) returned no positions data — upstream Bad Gateway / outage")
+    # Build account → "HH:MM IST" map for stale-substituted frames BEFORE
+    # concat (which drops all DataFrame.attrs). Each LKG-substituted frame
+    # carries attrs["stale_since"] (unix epoch of last successful fetch)
+    # and at least one row with the account in the "account" column.
+    _acct_stale_since: dict[str, str] = {}
+    if per_acct:
+        for _df in per_acct:
+            _ss = _df.attrs.get("stale_since")
+            if _ss and not _df.empty and "account" in _df.columns:
+                _acct = str(_df["account"].iloc[0])
+                try:
+                    from zoneinfo import ZoneInfo
+                    from datetime import datetime
+                    _acct_stale_since[_acct] = datetime.fromtimestamp(
+                        float(_ss), tz=ZoneInfo("Asia/Kolkata")
+                    ).strftime("%H:%M IST")
+                except Exception:
+                    pass
     raw = pd.concat(per_acct, ignore_index=True) if per_acct else pd.DataFrame()
     # Legitimate empty book — no positions on any account. Return a
     # well-formed empty response so /admin/derivatives renders zero
@@ -294,6 +316,17 @@ async def _fetch() -> PositionsResponse:
         PositionRow(**{k: (v if v is not None else 0) for k, v in r.items()})
         for r in df_rows.to_dicts()
     ]
+    # Thread account_stale_since into stale rows so the frontend can
+    # render "STALE @ HH:MM" next to the account name without a separate
+    # endpoint. _acct_stale_since is built before concat (attrs survive).
+    if _acct_stale_since:
+        import msgspec as _msc
+        rows = [
+            _msc.structs.replace(r, account_stale_since=_acct_stale_since[r.account])
+            if r.account_stale and r.account in _acct_stale_since
+            else r
+            for r in rows
+        ]
     # Enrich option rows with position-Greeks (Δ × qty, Θ × qty) so the
     # /performance + /dashboard grids can surface them as columns without
     # round-tripping through /api/options/analytics per symbol.
@@ -302,7 +335,16 @@ async def _fetch() -> PositionsResponse:
         PositionsSummaryRow(**{k: (v if v is not None else 0) for k, v in r.items()})
         for r in summary_df.to_dicts()
     ]
-    return PositionsResponse(rows=rows, summary=summary, refreshed_at=timestamp_display())
+    # Response-level stale_accounts list — every account whose rows were
+    # substituted from broker_apis' LKG frame cache. NavStrip + TOTAL
+    # rollups read this to surface "stale @ HH:MM" without walking rows.
+    stale_accts = sorted({r.account for r in rows if r.account_stale})
+    return PositionsResponse(
+        rows=rows,
+        summary=summary,
+        refreshed_at=timestamp_display(),
+        stale_accounts=stale_accts,
+    )
 
 
 # Required columns for the decomposed (intraday-aware) day_change_val
@@ -798,10 +840,13 @@ class PositionsController(Controller):
                     snapshot_fn=_snapshot_fn,
                     broker_fn=_broker_fn,
                     fallback_to_snapshot_on_broker_error=True,
+                    route_key="positions",
                 )
                 # When market is closed and the DB has a genuine snapshot
                 # (as_of is set), return it with masking applied.
-                if source != "live" and getattr(resp, "as_of", None):
+                # stale-live means market is open but broker transient-failed;
+                # we serve the last-known live payload — no snapshot branch.
+                if source not in ("live", "stale-live") and getattr(resp, "as_of", None):
                     logger.info(
                         f"positions: market closed ({source}) — serving daily_book snapshot"
                     )
@@ -828,10 +873,11 @@ class PositionsController(Controller):
                             summary=[_mask_snap(s) for s in resp.summary],
                         )
                     return resp
-                # Market is open, or no snapshot exists yet — continue to live
-                # path (resp already holds the live broker response from _broker_fn).
-                if source == "live":
-                    pass  # resp is already the broker response
+                # Market is open (or stale-live), or no snapshot exists yet —
+                # continue to live path (resp already holds the broker response
+                # from _broker_fn or the anti-flicker stale-live copy).
+                if source in ("live", "stale-live"):
+                    pass  # resp is already the broker/stale-live response
                 else:
                     # Market closed but no snapshot (first deploy) — fall back live.
                     resp = await _broker_fn()

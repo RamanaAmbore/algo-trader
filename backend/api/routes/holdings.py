@@ -184,6 +184,10 @@ _ROW_COLS = [
     # Staleness flag — True when last_price came from the last-known-good
     # cache rather than a live broker or ticker source.
     'last_price_stale',
+    # Account-level staleness — True when the entire row was substituted
+    # from broker_apis' LKG frame cache because the account's circuit
+    # breaker was OPEN. Preserves DH6847 rows across breaker-open cycles.
+    'account_stale',
 ]
 
 _TTL = 30  # seconds — background task invalidates on each refresh
@@ -247,6 +251,22 @@ def _fetch() -> HoldingsResponse:
     # on /performance.
     if per_acct and all(df.attrs.get('fetch_failed', False) for df in per_acct):
         raise Exception("Broker (Kite) returned no holdings data — upstream Bad Gateway / outage")
+    # Build account → "HH:MM IST" map for stale-substituted frames BEFORE
+    # concat (which drops all DataFrame.attrs). See positions.py for rationale.
+    _acct_stale_since: dict[str, str] = {}
+    if per_acct:
+        for _df in per_acct:
+            _ss = _df.attrs.get("stale_since")
+            if _ss and not _df.empty and "account" in _df.columns:
+                _acct = str(_df["account"].iloc[0])
+                try:
+                    from zoneinfo import ZoneInfo
+                    from datetime import datetime
+                    _acct_stale_since[_acct] = datetime.fromtimestamp(
+                        float(_ss), tz=ZoneInfo("Asia/Kolkata")
+                    ).strftime("%H:%M IST")
+                except Exception:
+                    pass
     raw = pd.concat(per_acct, ignore_index=True) if per_acct else pd.DataFrame()
     if raw.empty:
         return HoldingsResponse(rows=[], summary=[], refreshed_at=timestamp_display())
@@ -297,11 +317,28 @@ def _fetch() -> HoldingsResponse:
         HoldingRow(**{k: (v if v is not None else 0) for k, v in r.items()})
         for r in df_rows.to_dicts()
     ]
+    # Thread account_stale_since into stale rows. See positions.py for rationale.
+    if _acct_stale_since:
+        import msgspec as _msc
+        rows = [
+            _msc.structs.replace(r, account_stale_since=_acct_stale_since[r.account])
+            if r.account_stale and r.account in _acct_stale_since
+            else r
+            for r in rows
+        ]
     summary = [
         HoldingsSummaryRow(**{k: (v if v is not None else 0) for k, v in r.items()})
         for r in summary_df.to_dicts()
     ]
-    return HoldingsResponse(rows=rows, summary=summary, refreshed_at=timestamp_display())
+    # Response-level stale_accounts list — see PositionsResponse.stale_accounts
+    # for the rationale (breaker-open account rows served from LKG cache).
+    stale_accts = sorted({r.account for r in rows if r.account_stale})
+    return HoldingsResponse(
+        rows=rows,
+        summary=summary,
+        refreshed_at=timestamp_display(),
+        stale_accounts=stale_accts,
+    )
 
 
 class HoldingsController(Controller):
@@ -350,8 +387,9 @@ class HoldingsController(Controller):
                     snapshot_fn=_snapshot_fn,
                     broker_fn=_broker_fn,
                     fallback_to_snapshot_on_broker_error=True,
+                    route_key="holdings",
                 )
-                if source != "live" and getattr(resp, "as_of", None):
+                if source not in ("live", "stale-live") and getattr(resp, "as_of", None):
                     logger.info(
                         f"holdings: market closed ({source}) — serving daily_book snapshot"
                     )
@@ -378,8 +416,9 @@ class HoldingsController(Controller):
                             summary=[_mask_snap(s) for s in resp.summary],
                         )
                     return resp
-                # Market is open, or no snapshot exists yet — continue to live path.
-                if source != "live":
+                # Market is open (or stale-live), or no snapshot exists yet —
+                # continue to live path (resp already holds broker or stale-live).
+                if source not in ("live", "stale-live"):
                     resp = await _broker_fn()
             else:
                 # ?fresh=1 — bypass closed-hours gate entirely
