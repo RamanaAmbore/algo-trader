@@ -14,7 +14,9 @@ from backend.api.rbac import (
 from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl, recompute_row_percentages
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.helpers.ltp_patch import apply_ltp_patch, positions_policy
-from backend.api.helpers.snapshot_gate import closed_hours_or_broker
+from backend.api.helpers.snapshot_gate import (
+    closed_hours_or_broker, is_exchange_closed_now, latest_snapshot_ltp_map,
+)
 from backend.api.schemas import PositionsResponse, PositionRow, PositionsSummaryRow
 from backend.brokers import broker_apis
 from backend.shared.helpers.date_time_utils import timestamp_display
@@ -124,6 +126,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
             day_change_val=day_pnl_f,
             day_change_percentage=day_pct,
             last_price_stale=True,
+            ltp_source="snapshot",
         )
         rows.append(row)
 
@@ -195,6 +198,68 @@ def _is_broker_outage(err: Exception) -> bool:
         'bad gateway', '502', '503', '504',
         'service unavailable', 'gateway timeout',
     ))
+
+
+async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> list:
+    """Per-exchange close-snapshot overlay.
+
+    For each row whose `exchange` is currently CLOSED, replace `last_price`
+    with the latest daily_book snapshot LTP and tag `ltp_source="snapshot"`.
+    Rows on still-open exchanges keep the broker LTP and get `ltp_source="live"`.
+    When ALL market segments are open, this is a no-op fast-path (every row
+    stays live). When ALL are closed, the caller normally reached this path
+    via the snapshot branch — but the tag still gets set correctly here for
+    the anti-flicker `stale-live` case.
+
+    Args:
+        rows: list of PositionRow / HoldingRow structs.
+        kind: 'positions' or 'holdings' — routes the snapshot query.
+    Returns:
+        new list (rows are msgspec Structs — replaced not mutated).
+    """
+    if not rows:
+        return rows
+    # Which exchanges are currently closed? Cache per call so we don't
+    # probe holidays N × per-row times.
+    exchange_closed: dict[str, bool] = {}
+    def _closed(exch: str) -> bool:
+        e = (exch or "").upper()
+        if e not in exchange_closed:
+            exchange_closed[e] = is_exchange_closed_now(e)
+        return exchange_closed[e]
+
+    # Fast path — every row's exchange is currently open. No snapshot
+    # lookup needed; just tag every row as live.
+    if not any(_closed(getattr(r, "exchange", "")) for r in rows):
+        import msgspec as _msc
+        return [_msc.structs.replace(r, ltp_source="live") for r in rows]
+
+    # Some rows are on closed exchanges — pull the snapshot map ONCE and
+    # overlay LTP for those rows.
+    snap_map = await latest_snapshot_ltp_map(kind)
+    import msgspec as _msc
+    out: list = []
+    for r in rows:
+        if not _closed(getattr(r, "exchange", "")):
+            out.append(_msc.structs.replace(r, ltp_source="live"))
+            continue
+        key = (getattr(r, "account", ""), getattr(r, "tradingsymbol", ""))
+        snap_ltp = snap_map.get(key)
+        if snap_ltp is not None and snap_ltp > 0:
+            # Overlay snapshot LTP. Recompute pnl / day_change_val is
+            # deliberately NOT done here — the frozen close_settled
+            # values already carry the correct EOD pnl. Frontend renders
+            # the SNAP chip and freezes tick-flash based on ltp_source.
+            out.append(_msc.structs.replace(
+                r, last_price=float(snap_ltp), ltp_source="snapshot",
+            ))
+        else:
+            # No snapshot yet (first deploy for a newly-opened contract).
+            # Keep broker LTP but still tag as snapshot so the frontend
+            # shows the SNAP chip — better UX than pretending it's live
+            # when the exchange has closed.
+            out.append(_msc.structs.replace(r, ltp_source="snapshot"))
+    return out
 
 
 async def _fetch() -> PositionsResponse:
@@ -331,6 +396,13 @@ async def _fetch() -> PositionsResponse:
     # /performance + /dashboard grids can surface them as columns without
     # round-tripping through /api/options/analytics per symbol.
     await _asyncio.to_thread(_enrich_position_greeks, rows)
+    # Per-exchange close-snapshot overlay (Jul 2026). If NSE has closed
+    # but MCX is still open, rows on NSE/BSE/NFO/BFO exchanges get their
+    # LTP frozen at the daily_book close_settled snapshot value and are
+    # tagged ltp_source="snapshot". Rows on still-open exchanges are
+    # tagged ltp_source="live". Runs after Greeks + LKG threading so the
+    # tag is authoritative for what the frontend actually renders.
+    rows = await _overlay_snapshot_for_closed_exchanges(rows, kind="positions")
     summary = [
         PositionsSummaryRow(**{k: (v if v is not None else 0) for k, v in r.items()})
         for r in summary_df.to_dicts()
@@ -753,12 +825,16 @@ class PositionsController(Controller):
         request: Request,
         fresh: bool = False,
         mode: Optional[str] = None,
+        skip_ltp: bool = False,
     ) -> PositionsResponse:
         """Return positions.
 
         ?mode=paper — synthesized paper rows only (from filled AlgoOrder rows)
         ?mode=live  — broker-fetched rows only (current default behaviour)
         ?mode=both  — union of live + paper; each row carries a `mode` field
+        ?skip_ltp=1 — force daily_book snapshot path even when a segment is
+                     open (RefreshButton uses this during both-markets-closed
+                     click so cash/margins refresh without a broker LTP fetch).
         (no param)  — same as 'live' for backward compatibility
         """
         # ── Paper-only fast path ─────────────────────────────────────────────
@@ -834,7 +910,19 @@ class PositionsController(Controller):
                         pass
                 return await get_or_fetch("positions", _fetch, ttl_seconds=_TTL)
 
-            if not fresh:
+            # ?skip_ltp=1 — RefreshButton's both-closed click. Runs the
+            # normal broker path so metadata (qty / avg_cost / product /
+            # intraday split) refreshes; the row-level overlay in
+            # _broker_fn tags every closed-exchange row as
+            # ltp_source='snapshot' and freezes its last_price to the
+            # daily_book close_settled value. When both markets are
+            # closed (the RefreshButton's trigger condition) every row's
+            # exchange is closed → every LTP is snapshot-served
+            # regardless of what the broker's REST payload said.
+            # Funds/margins stay on their own broker paths in parallel.
+            if skip_ltp:
+                resp = await _broker_fn()
+            elif not fresh:
                 resp, source = await closed_hours_or_broker(
                     exchange="NSE",
                     snapshot_fn=_snapshot_fn,

@@ -14,10 +14,17 @@
   // reactively observable from outside, so we wrap the call.
   let pulseRef = $state(/** @type {any} */ (null));
   let _refreshing = $state(false);
-  async function refreshPage() {
+  /**
+   * @param {{ skipLtp?: boolean } | undefined} opts  passed by RefreshButton
+   *   when both markets are closed: `{ skipLtp: true }` tells the fetchers
+   *   to route with `?skip_ltp=1` so cash/margins/holdings refresh from
+   *   the broker while LTPs stay frozen at the daily_book snapshot value.
+   *   Undefined / no arg → legacy behaviour (skipLtp: false).
+   */
+  async function refreshPage(opts = undefined) {
     if (_refreshing || !pulseRef) return;
     _refreshing = true;
-    try { await pulseRef.refresh(); }
+    try { await pulseRef.refresh(opts?.skipLtp === true); }
     finally { _refreshing = false; }
   }
 </script>

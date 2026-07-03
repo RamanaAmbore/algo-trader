@@ -134,7 +134,14 @@ class FundsController(Controller):
     path = "/api/funds"
 
     @get("/")
-    async def get_funds(self, request: Request, fresh: bool = False) -> FundsResponse:
+    async def get_funds(
+        self, request: Request, fresh: bool = False, skip_ltp: bool = False,
+    ) -> FundsResponse:
+        # ?skip_ltp=1 accepted as a no-op — funds have no LTP concept, but
+        # the RefreshButton fans this parameter out to every book route
+        # (positions/holdings/funds) during both-markets-closed clicks so
+        # the API surface stays uniform. See RefreshButton.svelte.
+        _ = skip_ltp  # accepted, ignored — funds already broker-authoritative
         try:
             if fresh:
                 invalidate("funds")

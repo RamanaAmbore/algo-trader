@@ -272,12 +272,25 @@ export const stopImpersonation = () =>
 // Pass `fresh=true` to make the server bypass its 30-second cache and
 // pull a live broker snapshot. The Refresh button uses it; page mount
 // + WebSocket-driven auto-refresh rely on the cached value.
-export const fetchHoldings  = ({ fresh = false } = {}) =>
-  _get(`/holdings/${fresh ? '?fresh=1' : ''}`, { auth: _hasToken() });
-export const fetchPositions = ({ fresh = false } = {}) =>
-  _get(`/positions/${fresh ? '?fresh=1' : ''}`, { auth: _hasToken() });
-export const fetchFunds     = ({ fresh = false } = {}) =>
-  _get(`/funds/${fresh ? '?fresh=1' : ''}`, { auth: _hasToken() });
+/**
+ * Build query string for the three book endpoints.
+ * `skipLtp` (per-exchange close-snapshot lifecycle, Jul 2026) forces the
+ * daily_book snapshot path even when a segment is open. RefreshButton
+ * passes this during both-markets-closed clicks so cash/margins/holdings
+ * refresh from the broker while LTPs stay frozen at the snapshot value.
+ */
+function _bookQs(fresh, skipLtp) {
+  const q = [];
+  if (fresh)   q.push('fresh=1');
+  if (skipLtp) q.push('skip_ltp=1');
+  return q.length ? `?${q.join('&')}` : '';
+}
+export const fetchHoldings  = ({ fresh = false, skipLtp = false } = {}) =>
+  _get(`/holdings/${_bookQs(fresh, skipLtp)}`, { auth: _hasToken() });
+export const fetchPositions = ({ fresh = false, skipLtp = false } = {}) =>
+  _get(`/positions/${_bookQs(fresh, skipLtp)}`, { auth: _hasToken() });
+export const fetchFunds     = ({ fresh = false, skipLtp = false } = {}) =>
+  _get(`/funds/${_bookQs(fresh, skipLtp)}`, { auth: _hasToken() });
 
 // ── Protected endpoints (require JWT — order mutations) ───────────────────────
 export const fetchOrders    = () => _get('/orders/',    { auth: true });

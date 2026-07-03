@@ -48,6 +48,14 @@ class HoldingRow(msgspec.Struct):
     # account. Non-empty only when account_stale=True. Frontend renders
     # this as a small "STALE @ HH:MM" badge next to the account name.
     account_stale_since: str = ""
+    # Per-row LTP source tag — "live" (broker or live ticker) or
+    # "snapshot" (daily_book close_settled snapshot). Populated by the
+    # per-exchange close-snapshot lifecycle (Jul 2026): when the row's
+    # exchange is currently closed (e.g. NSE row during 15:30-23:30
+    # window while MCX still open), the last_price + close_price are
+    # taken from the DB snapshot and this tag flips to "snapshot". The
+    # frontend renders a "SNAP" chip next to LTP + freezes tick-flash.
+    ltp_source: str = "live"
 
 
 class HoldingsSummaryRow(msgspec.Struct):
@@ -138,6 +146,14 @@ class PositionRow(msgspec.Struct):
     # "live" for broker-fetched rows; "paper" for synthesized paper rows.
     # Default "live" preserves backward compatibility with all existing callers.
     mode: str = "live"
+    # Per-row LTP source tag — "live" (broker or live ticker) or
+    # "snapshot" (daily_book close_settled snapshot). Populated by the
+    # per-exchange close-snapshot lifecycle (Jul 2026): when the row's
+    # exchange is currently closed (e.g. NSE row during 15:30-23:30
+    # window while MCX still open), the last_price + close_price are
+    # taken from the DB snapshot and this tag flips to "snapshot". The
+    # frontend renders a "SNAP" chip next to LTP + freezes tick-flash.
+    ltp_source: str = "live"
 
 
 class PositionsSummaryRow(msgspec.Struct):
