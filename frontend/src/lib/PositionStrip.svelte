@@ -739,14 +739,14 @@
        row day p & l, p & l, exp p & l. again no duplicated code ssot." -->
   <span class="ps-agg" title="Positions: today's MTM move / lifetime P&L / F&O expiry profit at current spot (SSOT with Snapshot TOTAL)">
     <span class="ps-agg-k">P</span>
-    <span class={'ps-agg-v ' + (($snapshotTotals?.day ?? dispPositionsToday) > 0 ? 'ps-pos' : ($snapshotTotals?.day ?? dispPositionsToday) < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
-      >{fmtMoney($snapshotTotals?.day ?? dispPositionsToday)}</span
+    <span class={'ps-agg-v ' + (($snapshotTotals != null ? $snapshotTotals.day : dispPositionsToday) > 0 ? 'ps-pos' : ($snapshotTotals != null ? $snapshotTotals.day : dispPositionsToday) < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
+      >{fmtMoney($snapshotTotals != null ? $snapshotTotals.day : dispPositionsToday)}</span
     ><span class="ps-agg-sep">/</span
-    ><span class={'ps-agg-v ' + (($snapshotTotals?.pnl ?? _livePositionsPnl) > 0 ? 'ps-pos' : ($snapshotTotals?.pnl ?? _livePositionsPnl) < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}
-      >{fmtMoney($snapshotTotals?.pnl ?? _livePositionsPnl)}</span
+    ><span class={'ps-agg-v ' + (($snapshotTotals != null ? $snapshotTotals.pnl : _livePositionsPnl) > 0 ? 'ps-pos' : ($snapshotTotals != null ? $snapshotTotals.pnl : _livePositionsPnl) < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}
+      >{fmtMoney($snapshotTotals != null ? $snapshotTotals.pnl : _livePositionsPnl)}</span
     ><span class="ps-agg-sep">/</span
     ><span class={'ps-agg-v ps-exp ' + flash.classOf('PE')}
-      >{fmtMoney($snapshotTotals?.exp ?? _expiryProfit)}</span>
+      >{fmtMoney($snapshotTotals != null ? $snapshotTotals.exp : _expiryProfit)}</span>
   </span>
   <!-- Margin pill: available / total (used + avail). Operator wants the
        "room I have / full capacity" framing rather than util %. -->
