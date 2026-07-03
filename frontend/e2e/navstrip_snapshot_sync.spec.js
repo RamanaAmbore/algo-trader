@@ -93,6 +93,8 @@ test.describe('Code-level SSOT guards', () => {
 // ── Browser: NavStrip P pill structure ───────────────────────────────────────
 
 test.describe('NavStrip P pill — structure', () => {
+  // /pulse keeps an open SSE connection; allow 45s for loginAsAdmin + goto + element
+  test.setTimeout(45_000);
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
   });
@@ -121,12 +123,13 @@ test.describe('NavStrip P pill — structure', () => {
 // ── Browser: Snapshot TOTAL row exists when positions present ────────────────
 
 test.describe('Snapshot TOTAL row — structure', () => {
+  test.setTimeout(45_000);
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
   });
 
   test('Snapshot TOTAL row is the last row in the byund grid when data present', async ({ page }) => {
-    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'domcontentloaded' });
     // Wait for the Snapshot card to stabilise
     const card = page.locator('.opt-byund-card');
     await expect(card).toBeVisible({ timeout: TIMEOUT });

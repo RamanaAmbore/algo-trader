@@ -116,6 +116,8 @@ test.describe('Code-level guards — Bug 2 (snapshotTotals null-guard)', () => {
 // ── Browser: Pinned card renders quickly on warm /pulse ───────────────────────
 
 test.describe('Bug 1 — Pinned card visible within 500ms on warm cache', () => {
+  // /pulse keeps SSE open; allow extra time for loginAsAdmin + goto + element waits
+  test.setTimeout(45_000);
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
   });
@@ -159,6 +161,7 @@ test.describe('Bug 1 — Pinned card visible within 500ms on warm cache', () => 
 // ── Browser: P pill slot 1 does not freeze to 0 after derivatives visit ───────
 
 test.describe('Bug 2 — P slot 1 not frozen to 0 after cross-page nav', () => {
+  test.setTimeout(45_000);
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
   });
