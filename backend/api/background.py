@@ -452,9 +452,35 @@ async def _task_performance(state: dict) -> None:
             # — same failure mode the "1 uvicorn worker" rule in CLAUDE.md
             # prevents. The ~300 ms shaved per cycle wasn't worth locking
             # the website around the refresh window.
-            (df_holdings, sum_holdings) = await _run(_fetch_holdings_direct)
-            (df_positions, sum_positions) = await _run(_fetch_positions_direct)
-            df_margins = await _run(_fetch_margins_direct)
+            # 45s budget per op: generous (Dhan retry ~20s + auth ~15s) but
+            # caps a wedged cycle. NOTE: asyncio.wait_for cancels the coroutine
+            # wrapper but does NOT terminate the underlying executor thread —
+            # hung threads still consume _executor worker slots until they
+            # naturally unblock. Four simultaneous hangs would exhaust the pool.
+            try:
+                (df_holdings, sum_holdings) = await asyncio.wait_for(
+                    _run(_fetch_holdings_direct), timeout=45
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[BROKER-TIMEOUT] account=all op=holdings timeout=45s")
+                df_holdings, sum_holdings = pd.DataFrame(), pd.DataFrame()
+
+            try:
+                (df_positions, sum_positions) = await asyncio.wait_for(
+                    _run(_fetch_positions_direct), timeout=45
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[BROKER-TIMEOUT] account=all op=positions timeout=45s")
+                df_positions, sum_positions = pd.DataFrame(), pd.DataFrame()
+
+            try:
+                df_margins = await asyncio.wait_for(
+                    _run(_fetch_margins_direct), timeout=45
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[BROKER-TIMEOUT] account=all op=margins timeout=45s")
+                df_margins = pd.DataFrame()
+
             ist_display = timestamp_display()
             perf_key    = get_nearest_time(interval=interval)
 
@@ -727,9 +753,23 @@ async def _task_close(state: dict) -> None:
             # globally; no broker activity to summarise).
             if now.weekday() < 5 and now >= close_trigger:
                 try:
-                    (df_h, sum_h), (df_p, sum_p) = await _run(
-                        lambda: (_fetch_holdings_direct(), _fetch_positions_direct()))
-                    df_margins  = await _run(_fetch_margins_direct)
+                    try:
+                        (df_h, sum_h), (df_p, sum_p) = await asyncio.wait_for(
+                            _run(lambda: (_fetch_holdings_direct(), _fetch_positions_direct())),
+                            timeout=45,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("[BROKER-TIMEOUT] account=all op=holdings+positions timeout=45s")
+                        df_h, sum_h, df_p, sum_p = pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+
+                    try:
+                        df_margins = await asyncio.wait_for(
+                            _run(_fetch_margins_direct), timeout=45
+                        )
+                    except asyncio.TimeoutError:
+                        logger.warning("[BROKER-TIMEOUT] account=all op=margins timeout=45s")
+                        df_margins = pd.DataFrame()
+
                     ist_display = timestamp_display()
 
                     _sh = _summarise_holdings(df_h, sum_h, None)
