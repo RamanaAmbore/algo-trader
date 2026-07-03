@@ -375,7 +375,7 @@ class TestPollLoopSsot:
     def test_poll_loop_logs_missing_sym_not_silently_drops(self):
         """Verify that mmap_ticker.py contains the [MMAP-MISSING-SYM] guard."""
         src = (
-            Path(__file__).resolve().parent.parent
+            Path(__file__).resolve().parent.parent.parent
             / "brokers"
             / "mmap_ticker.py"
         ).read_text(encoding="utf-8")
@@ -387,7 +387,7 @@ class TestPollLoopSsot:
     def test_ltp_patch_contains_ltp_gap_log(self):
         """Verify that ltp_patch.py contains the [LTP-GAP] log helper."""
         src = (
-            Path(__file__).resolve().parent.parent
+            Path(__file__).resolve().parent.parent.parent
             / "api"
             / "helpers"
             / "ltp_patch.py"
@@ -400,7 +400,7 @@ class TestPollLoopSsot:
     def test_background_contains_register_universe(self):
         """Verify that _register_universe_with_ticker is defined in background.py."""
         src = (
-            Path(__file__).resolve().parent.parent
+            Path(__file__).resolve().parent.parent.parent
             / "api"
             / "background.py"
         ).read_text(encoding="utf-8")
