@@ -5957,7 +5957,7 @@
     border-radius: 4px;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
                 inset 0 1px 0 rgba(255, 255, 255, 0.08);
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+    background: var(--card-bg-elevated);
     overflow: hidden;
   }
   /* Bucket label — small mono caps above each grid, tinted to match
