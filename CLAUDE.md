@@ -619,7 +619,11 @@ Logs one healing per symbol per 60s to avoid spam. Coverage threshold tunable vi
 - `database.py` — PostgreSQL + `init_db()`
 - `models.py` — User, AlgoOrder, AlgoEvent
 - `routes/algo.py` — Agents API + WebSocket
-- `routes/orders.py` — Ticket, basket, postback
+- `routes/orders.py` — OrdersController + thin delegation shims (<1500 LOC after RED-zone split)
+- `routes/orders_helpers.py` — Validation constants, rejection tracker, tick-index, broker utils (~500 LOC)
+- `routes/orders_place.py` — Ticket handler, capacity guard, template-attach, take-profit arming (~1270 LOC)
+- `routes/orders_postback.py` — Kite postback handler, Dhan/Groww shared pipeline (~475 LOC)
+- `routes/orders_basket.py` — Basket margin + basket order dispatch (~530 LOC)
 - `algo/agent_engine.py` — Declarative agent runner + `run_cycle()`
 - `algo/chase.py` — Adaptive limit-order chase
 - `algo/simulator.py` / `sim/driver.py` — Market sim + scenario engine
@@ -935,9 +939,9 @@ Every algo page card follows ONE structure:
 4. Audit log entry tagged `order.fill / order.cancel / order.reject / order.expired`
 5. Optional template-attach on FILL (idempotent via `attached_gtts_json IS NULL` guard)
 
-**Single canonical fanout** — `_postback_broadcast_fanout` in `backend/api/routes/orders.py` is the SSOT for all cache invalidation + WS broadcasts. Called from:
-- Kite inline postback handler
-- `_process_broker_postback` (Dhan / Groww shared path)
+**Single canonical fanout** — `_postback_broadcast_fanout` DEFINED in `backend/api/routes/orders.py` (SSOT constraint preserved by test). Call sites after RED-zone split:
+- `orders_postback.kite_postback_handler` (Kite path)
+- `orders_postback._process_broker_postback` (Dhan / Groww shared path)
 - `PaperTradeEngine._update_algo_order` (fill / unfilled terminal states)
 - `PaperTradeEngine._safe_update_algo_order_cancel` (operator MCP cancel)
 
@@ -1297,7 +1301,9 @@ immediately (within one event-loop tick) before resuming its normal cadence.
 | NAV breakdown (frontend) | `frontend/src/lib/data/nav.js` — `navByAccount` + `navTotalRow`. PerformancePage + NavBreakdown consume. Backend equivalent: `backend/api/algo/nav.py:compute_firm_nav`. |
 | LTP-override scaffold | `backend/api/helpers/ltp_patch.py` — `apply_ltp_patch(df, policy)` shared by positions + holdings routes. Each route passes its own `policy(current, tick_ltp) -> Decision`. |
 | Mask account in text | `backend/shared/helpers/utils.py:mask_account_in_text` — JSON-string scrubber for non-admin viewers. Routes every match through canonical `mask_account()`. |
-| Postback fan-out | `backend/api/routes/orders.py:_postback_broadcast_fanout` — cache-invalidate + WS-broadcast trio (orders/positions/holdings + order_update/position_filled/book_changed). Kite (inline) and Dhan/Groww (via `_process_broker_postback`) both delegate. |
+| Postback fan-out | `backend/api/routes/orders.py:_postback_broadcast_fanout` — cache-invalidate + WS-broadcast trio (orders/positions/holdings + order_update/position_filled/book_changed). Defined in orders.py (SSOT); call sites in orders_postback.py (Kite + Dhan/Groww). |
+| Ticket placement | `backend/api/routes/orders_place.py:ticket_order_handler` — full ticket logic (validation, G1/G2 guards, circuit breaker, preflight, live/paper paths). Controller shim delegates here. |
+| Basket order | `backend/api/routes/orders_basket.py:basket_order_handler` + `basket_margin_handler` — multi-account basket dispatch and margin computation. |
 | Percentage formatters | `frontend/src/lib/format.js` — `fmtPctScaled(v, dp, signed)` for already-percent inputs; `fmtPctFraction(v, dp, signed)` for fractional inputs (e.g. 0.05). |
 | Chart self-heal threshold | `/admin/settings` → Persistence → `chart_self_heal_coverage_threshold` (default 0.70). Auto-fetch from broker if <70% of requested days present in DB. |
 | Backfill admin endpoint | `POST /api/admin/persistence/backfill?kind=daily\|intraday\|both` (admin-guarded). Starts async coverage repair for 300-symbol universe. |

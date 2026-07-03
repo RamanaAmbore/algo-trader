@@ -334,32 +334,48 @@ def test_no_parallel_blake2b_implementation():
 
 def test_expiry_curve_computation_single_ssot():
     """
-    Source-grep: the only call to multileg_intermediate_curves in
-    _strategy_analytics_impl must be inside the cache-miss branch
-    (guarded by `_lc_hit is None` or equivalent).
+    Source-grep: the only call to multileg_intermediate_curves must live
+    inside the cache-miss branch of `_strategy_compute_curves` (guarded by
+    `_lc_hit is None`). After the July 2026 decomposition the impl is a
+    thin orchestrator that delegates curve caching to a dedicated helper —
+    guard now targets that helper's source, not the impl's.
 
     This ensures the leg-curve cache is the single source of truth for
     expiry / intermediate curves — not bypassed by a parallel code path.
     """
-    src = inspect.getsource(
-        _options_mod.OptionsController.__dict__["_strategy_analytics_impl"]
-    )
+    curves_src = inspect.getsource(_options_mod._strategy_compute_curves)
     # The cache-miss sentinel (_lc_hit is not None / _lc_hit is None) must
-    # appear in the impl source.
-    assert "_lc_hit" in src, (
-        "_strategy_analytics_impl must reference _lc_hit (leg-curve cache hit variable)"
+    # appear in the helper source.
+    assert "_lc_hit" in curves_src, (
+        "_strategy_compute_curves must reference _lc_hit (leg-curve cache hit variable)"
     )
     # multileg_intermediate_curves must appear (the cold-miss path).
-    assert "multileg_intermediate_curves" in src, (
-        "_strategy_analytics_impl must call multileg_intermediate_curves on cache miss"
+    assert "multileg_intermediate_curves" in curves_src, (
+        "_strategy_compute_curves must call multileg_intermediate_curves on cache miss"
     )
     # _leg_curve_cache_put must appear (stores on miss).
-    assert "_leg_curve_cache_put" in src, (
-        "_strategy_analytics_impl must call _leg_curve_cache_put on cache miss"
+    assert "_leg_curve_cache_put" in curves_src, (
+        "_strategy_compute_curves must call _leg_curve_cache_put on cache miss"
     )
     # _leg_curve_cache_get must appear (checks on each request).
-    assert "_leg_curve_cache_get" in src, (
-        "_strategy_analytics_impl must call _leg_curve_cache_get on each request"
+    assert "_leg_curve_cache_get" in curves_src, (
+        "_strategy_compute_curves must call _leg_curve_cache_get on each request"
+    )
+    # And the impl must delegate to _strategy_compute_curves (no parallel path).
+    impl_src = inspect.getsource(
+        _options_mod.OptionsController.__dict__["_strategy_analytics_impl"]
+    )
+    assert "_strategy_compute_curves" in impl_src, (
+        "_strategy_analytics_impl must delegate curve computation to "
+        "_strategy_compute_curves (single source of truth for the leg-curve "
+        "cache short-circuit path)"
+    )
+    # And there must be no direct multileg_intermediate_curves call in impl
+    # (otherwise a parallel cache-bypass path could exist).
+    assert "multileg_intermediate_curves" not in impl_src, (
+        "_strategy_analytics_impl must NOT call multileg_intermediate_curves "
+        "directly — that would bypass the leg-curve cache. Delegate via "
+        "_strategy_compute_curves."
     )
 
 

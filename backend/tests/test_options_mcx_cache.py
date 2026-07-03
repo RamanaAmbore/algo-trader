@@ -153,32 +153,30 @@ def test_sim_leg_ltp_skips_broker_quote():
         pass
 
     # Behavioral assertion: for ltp=420.5, the sim leg must never be in
-    # need_quote. We test this by checking the source text.
-    src = inspect.getsource(_options_mod._strategy_analytics_impl
-                            if hasattr(_options_mod, "_strategy_analytics_impl")
-                            else _options_mod.OptionsController._strategy_analytics_impl.fn
-                            if hasattr(_options_mod.OptionsController
-                                       ._strategy_analytics_impl, "fn")
-                            else _options_mod.OptionsController.__dict__[
-                                "_strategy_analytics_impl"])
+    # need_quote. After the July 2026 decomposition, the SIM fast path guard
+    # lives in `_strategy_collect_leg_metadata` — check that helper's source.
+    src = inspect.getsource(_options_mod._strategy_collect_leg_metadata)
     # The guard must read `leg.ltp is None or leg.ltp <= 0`.
     assert "leg.ltp is None or leg.ltp <= 0" in src, (
         "SIM fast path guard must be `leg.ltp is None or leg.ltp <= 0` "
-        "so legs with explicit ltp > 0 skip broker.quote()"
+        "so legs with explicit ltp > 0 skip broker.quote() (guard lives in "
+        "_strategy_collect_leg_metadata after Jul-2026 decomposition)"
     )
 
     # Confirm the "SIM leg LTP fast path" comment is present (Phase 3 marker).
     assert "SIM leg LTP fast path" in src, (
-        "Phase 3 SIM fast path comment must be present in _strategy_analytics_impl"
+        "Phase 3 SIM fast path comment must be present in "
+        "_strategy_collect_leg_metadata (moved from _strategy_analytics_impl "
+        "during Jul-2026 decomposition)"
     )
 
 
 def test_sim_leg_ltp_zero_still_quotes():
     """A leg with ltp=0 (stale picker value) must still trigger broker.quote().
-    The guard is `ltp <= 0`, so zero is explicitly NOT a skip condition."""
-    src = inspect.getsource(
-        _options_mod.OptionsController.__dict__["_strategy_analytics_impl"]
-    )
+    The guard is `ltp <= 0`, so zero is explicitly NOT a skip condition.
+    Guard lives in `_strategy_collect_leg_metadata` after Jul-2026 decomp.
+    """
+    src = inspect.getsource(_options_mod._strategy_collect_leg_metadata)
     # The guard must include `<= 0` to catch zero values.
     assert "ltp <= 0" in src, (
         "Guard must catch ltp=0; `ltp is None` alone would skip broker quote "

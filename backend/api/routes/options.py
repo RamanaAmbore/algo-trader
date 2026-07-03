@@ -1436,6 +1436,434 @@ async def _resolve_ltp(symbol: str, mode: str, account: Optional[str],
     )
 
 
+# ── Strategy-analytics helpers ──────────────────────────────────────────
+# Extracted from OptionsController._strategy_analytics_impl (cyclomatic
+# hotspot, cc=120 → target < 30). Each helper is a pure function operating
+# on the fully-parsed inputs so unit tests can exercise them without a live
+# broker mock. The impl is now a thin orchestrator that composes them.
+# Any HTTPException raised inside a helper surfaces unchanged.
+
+
+def _strategy_validate_and_parse(data: "StrategyRequest") -> dict:
+    """Validate the request shape and pre-parse every leg symbol.
+
+    Returns:
+        parsed_by_sym — {UPPERCASE_SYM: parse_tradingsymbol(sym) | None}
+
+    Raises HTTPException(400) if data.legs is empty.
+    """
+    if not data.legs:
+        raise HTTPException(status_code=400, detail="legs is required")
+    return {
+        (leg.symbol or "").upper().strip(): parse_tradingsymbol((leg.symbol or "").upper().strip())
+        for leg in data.legs
+    }
+
+
+def _strategy_collect_leg_metadata(
+    data: "StrategyRequest",
+    parsed_by_sym: dict,
+) -> tuple[set[str], set[str], dict[str, str]]:
+    """Validate each leg + collect roots/expiries + build need_quote map.
+
+    Returns:
+        (roots, expiries, need_quote)
+          - roots: {parsed[root]} across all legs
+          - expiries: {leg_expiry_iso} across all legs
+          - need_quote: {option_quote_key(sym): sym} for legs whose LTP
+            wasn't supplied by the caller (ltp<=0 → broker fetch)
+
+    Raises HTTPException(400) for empty/unrecognised legs or mixed roots.
+    """
+    roots: set[str] = set()
+    expiries: set[str] = set()
+    need_quote: dict[str, str] = {}
+    for leg in data.legs:
+        sym = (leg.symbol or "").upper().strip()
+        if not sym:
+            raise HTTPException(status_code=400, detail="leg.symbol is required")
+        parsed = parsed_by_sym.get(sym)
+        if not parsed or parsed.get("kind") not in ("opt", "fut"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{sym}' isn't a recognised option or futures contract."
+            )
+        roots.add(parsed["root"])
+        leg_expiry = _leg_expiry_iso(leg, parsed)
+        expiries.add(leg_expiry)
+        # SIM leg LTP fast path: only queue legs that need a broker quote.
+        if leg.ltp is None or leg.ltp <= 0:
+            need_quote[option_quote_key(sym)] = sym
+    if len(roots) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"All legs must share an underlying; got {sorted(roots)}"
+        )
+    return roots, expiries, need_quote
+
+
+def _strategy_pick_spot_anchor(
+    data: "StrategyRequest",
+    parsed_by_sym: dict,
+) -> tuple[Optional[str], Optional[date]]:
+    """Pick the spot ANCHOR leg — modal-expiry, option-preferred, front-month
+    tie-break. See the exhaustive rationale block in the caller.
+
+    Returns:
+        (anchor_symbol, expiry_hint)
+        Falls back to legs[0] symbol if none of the legs parse (defensive).
+    """
+    leg_expiries: list[tuple[str, str, str]] = []
+    for leg in data.legs:
+        p = parsed_by_sym.get(leg.symbol.upper().strip())
+        if not p:
+            continue
+        kind = p.get("kind") or ""
+        expiry_iso = _leg_expiry_iso(leg, p)
+        leg_expiries.append((expiry_iso, kind, leg.symbol.upper().strip()))
+    anchor_symbol: Optional[str] = None
+    expiry_hint: Optional[date] = None
+    if leg_expiries:
+        from collections import Counter
+        expiry_counts = Counter(e for (e, _k, _s) in leg_expiries)
+        modal_expiry = min(
+            expiry_counts.keys(),
+            key=lambda e: (-expiry_counts[e], e)
+        )
+        modal_legs = [(k, s) for (e, k, s) in leg_expiries if e == modal_expiry]
+        option_modal = next((s for (k, s) in modal_legs if k == "opt"), None)
+        futures_modal = next((s for (k, s) in modal_legs if k == "fut"), None)
+        anchor_symbol = option_modal or futures_modal
+        try:
+            expiry_hint = date.fromisoformat(modal_expiry)
+        except Exception:
+            expiry_hint = None
+    if anchor_symbol is None and data.legs:
+        anchor_symbol = data.legs[0].symbol
+    return anchor_symbol, expiry_hint
+
+
+def _strategy_option_T_range(
+    data: "StrategyRequest",
+    parsed_by_sym: dict,
+    close_time: tuple[int, int],
+) -> tuple[float, float]:
+    """Compute (eval_T, T_yrs_shared) — earliest and latest option leg T_years.
+    Returns (0.0, 0.0) if the basket has no option legs (fut-only).
+    """
+    _option_T_list = [
+        days_to_expiry(
+            date.fromisoformat(_leg_expiry_iso(leg, parsed_by_sym.get(leg.symbol.upper().strip()))),
+            close_time=close_time,
+        ) / 365.0
+        for leg in data.legs
+        if parsed_by_sym.get(leg.symbol.upper().strip()) and
+           parsed_by_sym.get(leg.symbol.upper().strip()).get("kind") == "opt"
+    ]
+    eval_T = min(_option_T_list) if _option_T_list else 0.0
+    T_yrs_shared = max(_option_T_list) if _option_T_list else 0.0
+    return eval_T, T_yrs_shared
+
+
+async def _strategy_mcx_scale_ratios(
+    data: "StrategyRequest",
+    parsed_by_sym: dict,
+    underlying: str,
+    S: float,
+    price_broker,
+) -> dict[str, float]:
+    """For MCX baskets, build per-leg scale_ratio = S_leg_current / S_near.
+    Non-MCX + fallback → scale_ratio = 1.0 (caller reads via .get(sym, 1.0)).
+    """
+    _leg_scale_ratios: dict[str, float] = {}
+    if not (S > 0):
+        return _leg_scale_ratios
+    _month_to_cached: dict[tuple[int, int], tuple[str, float]] = {}
+    _month_to_fut_sym: dict[tuple[int, int], Optional[str]] = {}
+    for _leg in data.legs:
+        _lsym = _leg.symbol.upper().strip()
+        _lparsed = parsed_by_sym.get(_lsym)
+        if not _lparsed:
+            continue
+        _leg_exp = date.fromisoformat(_leg_expiry_iso(_leg, _lparsed))
+        _month_key = (_leg_exp.year, _leg_exp.month)
+        if _month_key in _month_to_cached or _month_key in _month_to_fut_sym:
+            continue
+        _cached = _mcx_fut_cache_get(underlying, _leg_exp.year, _leg_exp.month)
+        if _cached is not None:
+            _month_to_cached[_month_key] = _cached
+        else:
+            _month_to_fut_sym[_month_key] = None
+
+    for _mk in list(_month_to_fut_sym.keys()):
+        _hint = date(_mk[0], _mk[1], 1)
+        try:
+            _fut_sym = await _lookup_mcx_future(underlying, _hint)
+            _month_to_fut_sym[_mk] = _fut_sym
+        except Exception:
+            pass
+
+    _fut_quote_keys = [f"MCX:{fs}" for fs in _month_to_fut_sym.values() if fs]
+    _fut_quote_resp: dict = {}
+    if _fut_quote_keys:
+        try:
+            _fut_quote_resp = await asyncio.to_thread(price_broker.quote, _fut_quote_keys) or {}
+        except Exception as _e:
+            logger.warning(
+                f"MCX per-leg futures batch quote failed: {_e}; "
+                "falling back to scale_ratio=1 for all legs"
+            )
+
+    for _mk, _fut_sym in _month_to_fut_sym.items():
+        if not _fut_sym:
+            continue
+        _qdict = _fut_quote_resp.get(f"MCX:{_fut_sym}") or {}
+        _s_fresh, _ = _ltp_from_quote(_qdict)
+        if _s_fresh and _s_fresh > 0:
+            _mcx_fut_cache_put(underlying, _mk[0], _mk[1], _fut_sym, _s_fresh)
+            _month_to_cached[_mk] = (_fut_sym, _s_fresh)
+
+    for _leg in data.legs:
+        _lsym = _leg.symbol.upper().strip()
+        _lparsed = parsed_by_sym.get(_lsym)
+        if not _lparsed:
+            _leg_scale_ratios[_lsym] = 1.0
+            continue
+        _leg_exp = date.fromisoformat(_leg_expiry_iso(_leg, _lparsed))
+        _mk = (_leg_exp.year, _leg_exp.month)
+        _month_data = _month_to_cached.get(_mk)
+        if _month_data:
+            _fut_sym_leg, _s_leg = _month_data
+            _leg_scale_ratios[_lsym] = _s_leg / S if _s_leg > 0 else 1.0
+        else:
+            _leg_scale_ratios[_lsym] = 1.0
+    return _leg_scale_ratios
+
+
+def _strategy_build_futures_leg(
+    leg,
+    sym: str,
+    quote_resp: dict,
+    S_leg: float,
+    scale_ratio: float,
+    qty: int,
+) -> tuple[dict, dict]:
+    """Resolve a futures leg → (resolved_leg dict, leg_detail dict).
+    LTP chain: operator override → broker quote → avg_cost → S_leg estimate.
+    """
+    fut_ltp: Optional[float] = None
+    fut_src: str = "none"
+    if leg.ltp is not None and leg.ltp > 0:
+        fut_ltp, fut_src = float(leg.ltp), "override"
+    else:
+        q = quote_resp.get(option_quote_key(sym)) or {}
+        fut_ltp, fut_src = _ltp_from_quote(q)
+    if fut_ltp is None and leg.avg_cost is not None and leg.avg_cost > 0:
+        fut_ltp, fut_src = float(leg.avg_cost), "avg_cost"
+    if fut_ltp is None or fut_ltp <= 0:
+        fut_ltp, fut_src = float(S_leg), "estimated"
+    fut_entry = float(leg.avg_cost) if leg.avg_cost is not None else fut_ltp
+    resolved = {
+        "kind":        "fut",
+        "qty":         qty,
+        "entry_price": fut_entry,
+        "scale_ratio": scale_ratio,
+    }
+    fut_g = {"delta": 1.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
+    detail = {
+        "symbol":      sym,
+        "opt_type":    "FUT",
+        "strike":      0.0,
+        "qty":         qty,
+        "avg_cost":    fut_entry,
+        "ltp":         fut_ltp,
+        "iv":          0.0,
+        "theoretical": fut_ltp,
+        "discrepancy": 0.0,
+        "greeks":      fut_g,
+        "ltp_source":  fut_src,
+        "iv_source":   "n/a",
+    }
+    return resolved, detail
+
+
+def _strategy_resolve_option_ltp(
+    leg,
+    sym: str,
+    parsed: dict,
+    quote_resp: dict,
+    S_leg: float,
+    T_yrs: float,
+) -> tuple[float, str]:
+    """Option-leg LTP chain: override → broker → avg_cost → BS estimate → fail.
+    Raises HTTPException(400) if all fallbacks are exhausted.
+    """
+    ltp_val: Optional[float]
+    ltp_source: str
+    if leg.ltp is not None and leg.ltp > 0:
+        ltp_val, ltp_source = float(leg.ltp), "override"
+    else:
+        q = quote_resp.get(option_quote_key(sym)) or {}
+        ltp_val, ltp_source = _ltp_from_quote(q)
+    if ltp_val is None and leg.avg_cost is not None and leg.avg_cost > 0:
+        ltp_val, ltp_source = float(leg.avg_cost), "avg_cost"
+    if ltp_val is None or ltp_val <= 0:
+        est = black_scholes(S_leg, parsed["strike"], T_yrs,
+                            DEFAULT_RISK_FREE, DEFAULT_IV,
+                            parsed["opt_type"])
+        if est > 0:
+            ltp_val, ltp_source = est, "estimated"
+    if ltp_val is None or ltp_val <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Leg '{sym}' has no usable price. Pass `ltp` "
+                    f"or `avg_cost` in the leg body (sim positions "
+                    f"and illiquid contracts often need this).")
+        )
+    return ltp_val, ltp_source
+
+
+def _strategy_calibrate_iv(
+    leg,
+    parsed: dict,
+    S_leg: float,
+    T_yrs: float,
+    ltp_val: float,
+    ltp_source: str,
+) -> tuple[float, str]:
+    """Return (sigma, iv_source). Operator override → calibrated → DEFAULT_IV.
+    """
+    if leg.iv is not None and leg.iv > 0:
+        return float(leg.iv), "override"
+    sig = implied_vol(ltp_val, S_leg, parsed["strike"], T_yrs,
+                      DEFAULT_RISK_FREE, parsed["opt_type"])
+    if sig == DEFAULT_IV or ltp_source not in ("override", "live", "sim"):
+        iv_source = "default" if sig == DEFAULT_IV else "calibrated"
+    else:
+        iv_source = "calibrated"
+    return sig, iv_source
+
+
+def _strategy_build_option_leg(
+    leg,
+    sym: str,
+    parsed: dict,
+    quote_resp: dict,
+    S_leg: float,
+    T_yrs: float,
+    scale_ratio: float,
+    qty: int,
+) -> tuple[dict, dict, float]:
+    """Resolve an option leg → (resolved_leg dict, leg_detail dict, sigma).
+    Sigma is returned so the caller can accumulate the qty-weighted mean
+    across all option legs.
+    """
+    ltp_val, ltp_source = _strategy_resolve_option_ltp(
+        leg, sym, parsed, quote_resp, S_leg, T_yrs,
+    )
+    sig, iv_source = _strategy_calibrate_iv(
+        leg, parsed, S_leg, T_yrs, ltp_val, ltp_source,
+    )
+    entry = float(leg.avg_cost) if leg.avg_cost is not None else ltp_val
+    theo = black_scholes(S_leg, parsed["strike"], T_yrs,
+                         DEFAULT_RISK_FREE, sig, parsed["opt_type"])
+    g_per = greeks(S_leg, parsed["strike"], T_yrs,
+                   DEFAULT_RISK_FREE, sig, parsed["opt_type"])
+    resolved = {
+        "strike":      parsed["strike"],
+        "opt_type":    parsed["opt_type"],
+        "qty":         qty,
+        "entry_price": entry,
+        "T_years":     T_yrs,
+        "sigma":       sig,
+        "scale_ratio": scale_ratio,
+    }
+    detail = {
+        "symbol":      sym,
+        "opt_type":    parsed["opt_type"],
+        "strike":      parsed["strike"],
+        "qty":         qty,
+        "avg_cost":    entry,
+        "ltp":         ltp_val,
+        "iv":          sig,
+        "theoretical": theo,
+        "discrepancy": ltp_val - theo,
+        "greeks":      g_per,
+        "ltp_source":  ltp_source,
+        "iv_source":   iv_source,
+    }
+    return resolved, detail, sig
+
+
+def _strategy_compute_curves(
+    resolved_legs: list[dict],
+    S: float,
+    span_pct_resolved: float,
+    pts: int,
+    n_slices: int,
+    eval_T: float,
+    data_span_sigmas: float,
+) -> tuple[list, list, float, float, Optional[float]]:
+    """Compute payoff curve + slices + extremes + rr_ratio with cache short-circuit.
+
+    Returns (curve, slices, max_profit, max_loss, rr_ratio). The `curve` is
+    the fresh today_value curve; expiry_value is either freshly computed or
+    rewritten from cache in place (see leg-curve-cache Phase-4 comment block).
+    """
+    _lc_key = _leg_curve_cache_key(
+        resolved_legs, span_pct_resolved,
+        data_span_sigmas, pts, n_slices,
+    )
+    _lc_hit = _leg_curve_cache_get(_lc_key)
+
+    curve = multileg_payoff_curve(
+        resolved_legs, S=S,
+        span_pct=span_pct_resolved,
+        points=pts,
+        eval_T=eval_T,
+    )
+
+    if _lc_hit is not None:
+        _ev_norm: list[float] = _lc_hit["expiry_values_norm"]
+        _xr:      list[float] = _lc_hit["x_ratios"]
+        for _i, _pt in enumerate(curve):
+            if _i < len(_ev_norm):
+                _pt["expiry_value"] = _ev_norm[_i]
+                _pt["spot"]         = round(_xr[_i] * S, 4)
+        slices = _lc_hit["slices_norm"]
+        max_p = _lc_hit["max_profit"]
+        max_l = _lc_hit["max_loss"]
+        agg_rr = _lc_hit["rr_ratio"]
+        logger.debug(
+            "[leg-curve-cache] hit key=%s legs=%d pts=%d slices=%d",
+            _lc_key[:8], len(resolved_legs), pts, n_slices,
+        )
+    else:
+        slices = multileg_intermediate_curves(
+            resolved_legs, S=S,
+            span_pct=span_pct_resolved,
+            points=pts,
+            time_slices=n_slices,
+        )
+        max_p, max_l = multileg_extremes(curve)
+        agg_rr = risk_reward_ratio(max_p, max_l)
+        _x_ratios_store  = [round(pt["spot"] / S, 10) for pt in curve] if S > 0 else []
+        _ev_norm_store   = [pt["expiry_value"] for pt in curve]
+        _leg_curve_cache_put(_lc_key, {
+            "expiry_values_norm": _ev_norm_store,
+            "x_ratios":          _x_ratios_store,
+            "slices_norm":       slices,
+            "max_profit":        max_p,
+            "max_loss":          max_l,
+            "rr_ratio":          agg_rr,
+        })
+        logger.debug(
+            "[leg-curve-cache] miss key=%s legs=%d pts=%d slices=%d",
+            _lc_key[:8], len(resolved_legs), pts, n_slices,
+        )
+    return curve, slices, max_p, max_l, agg_rr
+
+
 # ── Controller ────────────────────────────────────────────────────────
 
 class OptionsController(Controller):
@@ -2411,34 +2839,20 @@ class OptionsController(Controller):
         return result
 
     async def _strategy_analytics_impl(self, data: "StrategyRequest") -> "StrategyResponse":
-        if not data.legs:
-            raise HTTPException(status_code=400, detail="legs is required")
+        """Orchestrator — thin composition of module-level `_strategy_*`
+        helpers. Original 620-LOC monolith decomposed 2026-07-03 (cyclomatic
+        hotspot cc=120 → target < 30). All helpers are pure (no self),
+        exception semantics preserved (HTTPException 400 for validation).
+        """
+        # ── 1. Parse + validate leg metadata ──────────────────────────
+        parsed_by_sym = _strategy_validate_and_parse(data)
+        roots, expiries, need_quote = _strategy_collect_leg_metadata(data, parsed_by_sym)
+        # Mixed expiries are supported — near-expiry evaluation is used for
+        # the payoff curve and the far leg is re-priced with its remaining T.
+        underlying = next(iter(roots))
 
-        # Pre-build a parse cache so every subsequent parse_tradingsymbol()
-        # call in this function is a dict lookup (O(1)) rather than a regex
-        # execution. For a 6-leg basket this avoids ~24-30 redundant regex
-        # runs — one per concern (quotes / expiries / scale-ratios / leg-
-        # details / payoff / greeks). Both successes (dict) and failures
-        # (None) are cached so .get() is a drop-in replacement everywhere.
-        parsed_by_sym: dict[str, Optional[dict]] = {
-            (leg.symbol or "").upper().strip(): parse_tradingsymbol((leg.symbol or "").upper().strip())
-            for leg in data.legs
-        }
-
-        # ── 1. Resolve metadata + LTP per leg ─────────────────────────
-        resolved_legs: list[dict] = []
-        # roots = the parsed symbol-family identifiers across all legs.
-        # Strategy endpoint rejects mixed roots (the legs don't share a
-        # vol surface). The downstream scalar `underlying` (price-source
-        # name) is derived from this set below.
-        roots: set[str] = set()
-        expiries: set[str]    = set()
-        # Single get_price_broker() construction per request — was being
-        # built twice in this impl (line ~1838 for spot/leg quotes, again
-        # at the MCX futures batch around line ~2065). Each construction
-        # calls _loaded_accounts() which under the cutover flag hops to
-        # list_remote_accounts() via UDS. Audit P1 finding — measurable
-        # on the derivatives page first-load.
+        # Single get_price_broker() construction per request — avoids the
+        # double-build audit P1 finding on the derivatives page first-load.
         from backend.brokers.registry import get_price_broker
         _price_broker = get_price_broker()
 
@@ -2446,68 +2860,19 @@ class OptionsController(Controller):
         # broker.quote() once (richer than ltp(): includes ohlc.close +
         # depth, so the per-leg fallback can pick `close` when no live
         # last_price is on the wire — handy for off-hours / illiquid).
-        need_quote: dict[str, str] = {}   # nfo_key → leg_symbol
-        for leg in data.legs:
-            sym = (leg.symbol or "").upper().strip()
-            if not sym:
-                raise HTTPException(status_code=400, detail="leg.symbol is required")
-            parsed = parsed_by_sym.get(sym)
-            if not parsed or parsed.get("kind") not in ("opt", "fut"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"'{sym}' isn't a recognised option or futures contract."
-                )
-            roots.add(parsed["root"])
-            # Expiry — the operator (frontend instruments cache) wins over
-            # parsed-symbol inference. The parser uses NSE F&O's last-
-            # Thursday rule which is wrong for MCX commodities.
-            leg_expiry = _leg_expiry_iso(leg, parsed)
-            expiries.add(leg_expiry)
-            # SIM leg LTP fast path (Phase 3): when the caller supplied an
-            # explicit ltp > 0 (sim positions, draft legs, or operator
-            # overrides), skip the broker quote for this leg entirely.
-            # Only queue legs with ltp=None or ltp<=0 (live-broker path).
-            # Guard is ltp <= 0 (not just None) because a sim picker that
-            # copied a stale last_price=0 would otherwise bypass the fetch
-            # and fall straight to avg_cost, producing a misleading result.
-            if leg.ltp is None or leg.ltp <= 0:
-                # Route commodity contracts to MCX, everything else to
-                # NFO. `option_quote_key()` parses the underlying and
-                # picks the exchange — keeps this in one place.
-                need_quote[option_quote_key(sym)] = sym
-
-        if len(roots) > 1:
-            raise HTTPException(
-                status_code=400,
-                detail=f"All legs must share an underlying; got {sorted(roots)}"
-            )
-        # Mixed expiries are supported — near-expiry evaluation is used for
-        # the payoff curve and the far leg is re-priced with its remaining T.
-        # The scalar `underlying` flowing downstream is the price-source name
-        # (operator-canonical vocab) derived from the single root.
-        underlying = next(iter(roots))
-
         quote_resp: dict = {}
         if need_quote:
             try:
                 quote_resp = await asyncio.to_thread(_price_broker.quote, list(need_quote.keys())) or {}
             except Exception as e:
-                # Don't fail the whole request — sim legs and operator
-                # overrides + per-leg fallbacks (avg_cost) can still
-                # produce useful output. Surface a warning so the UI can
-                # flag the legs whose LTP came from a fallback.
+                # Don't fail the whole request — sim legs + operator overrides
+                # + per-leg fallbacks (avg_cost) can still produce useful output.
                 logger.warning(f"Strategy quote() failed: {e}")
 
         # ── 2. Resolve spot (request override > sim > broker > fallback) ─
-        # Strike-of-the-median-leg used as the synthetic-spot fallback so
-        # the strategy still draws a payoff curve even when broker market
-        # data is fully unreachable. The response carries no spot_source
-        # field today, but the per-leg ltp_source='estimated' or 'fallback'
-        # downstream gives the operator the right "treat with care" signal.
-        # Only options have strikes — futures contribute no strike anchor
-        # to the synthetic-spot fallback. parse_tradingsymbol() returns a
-        # dict without `strike` for kind=fut, so guard the access here
-        # (otherwise KeyError → 500 when a futures leg is in the basket).
+        # Strike-of-the-median-leg is the synthetic-spot fallback so the
+        # strategy still draws a payoff curve when broker data is unreachable.
+        # Only options have strikes — futures contribute no strike anchor.
         sorted_strikes = sorted({
             p["strike"]
             for l in data.legs
@@ -2515,84 +2880,15 @@ class OptionsController(Controller):
         })
         median_strike = (sorted_strikes[len(sorted_strikes) // 2]
                          if sorted_strikes else None)
-        # Pick the spot ANCHOR leg — the one whose expiry month decides
-        # which futures contract becomes our spot proxy. Two failure
-        # modes the naive `data.legs[0]` shape hit:
-        #
-        #   (a) Mixed-expiry baskets where leg[0] is a far-month outlier.
-        #       Operator's CRUDEOIL basket is mostly JUN with one JUL leg;
-        #       client-side sort puts JUL (lexically "JUL" < "JUN") at
-        #       index 0 → resolver anchors to CRUDEOIL26JULFUT instead of
-        #       CRUDEOIL26JUNFUT and the chart shows the JUL price as
-        #       "spot" even though every JUN leg is being priced off the
-        #       JUN future. Calendar spread basis can drift hundreds of
-        #       rupees on a 6800 CRUDEOIL — a material miscalibration.
-        #
-        #   (b) Futures-first baskets (covered call: long fut + short
-        #       call) where leg[0] is the future itself. The future's
-        #       symbol IS the anchor — fine — but then the strike-anchor
-        #       fallback for the synthetic spot still wants an option's
-        #       median strike, which is irrelevant for a pure-fut basket.
-        #
-        # Anchor selection rule:
-        #   1. Build a multiset of (kind, expiry_iso, symbol) per leg.
-        #   2. Pick the modal expiry — the month carrying the most legs.
-        #      Ties broken by FRONT-MONTH (nearest expiry) since that's
-        #      the operator's primary book and the conservative choice.
-        #   3. From that month, prefer an option symbol over a futures
-        #      symbol for option_symbol (lookup_future_for_option needs
-        #      the option's month token). Fall back to a futures leg if
-        #      that's all the month has.
-        #
-        # Front-month tie-break matches the industry-standard convention
-        # (Sensibull / Bloomberg / Streak all anchor multi-expiry payoff
-        # charts on the front month).
-        leg_expiries: list[tuple[str, str, str]] = []  # (expiry_iso, kind, symbol)
-        for leg in data.legs:
-            p = parsed_by_sym.get(leg.symbol.upper().strip())
-            if not p:
-                continue
-            kind = p.get("kind") or ""
-            expiry_iso = _leg_expiry_iso(leg, p)
-            leg_expiries.append((expiry_iso, kind, leg.symbol.upper().strip()))
-        anchor_symbol: Optional[str] = None
-        expiry_hint: Optional[date] = None
-        if leg_expiries:
-            from collections import Counter
-            expiry_counts = Counter(e for (e, _k, _s) in leg_expiries)
-            # Tie-break by nearest expiry (front-month wins).
-            modal_expiry = min(
-                expiry_counts.keys(),
-                key=lambda e: (-expiry_counts[e], e)
-            )
-            modal_legs = [(k, s) for (e, k, s) in leg_expiries if e == modal_expiry]
-            # Prefer an option symbol for the anchor (lookup_future_for_option
-            # parses the option's month token directly); fall back to the
-            # futures symbol when the modal month is fut-only.
-            option_modal = next((s for (k, s) in modal_legs if k == "opt"), None)
-            futures_modal = next((s for (k, s) in modal_legs if k == "fut"), None)
-            anchor_symbol = option_modal or futures_modal
-            try:
-                expiry_hint = date.fromisoformat(modal_expiry)
-            except Exception:
-                expiry_hint = None
-        # Anchor leg fallback to legs[0] only when none of the legs parse
-        # — defensive, shouldn't fire in practice since parse_tradingsymbol
-        # already gated the basket above.
-        if anchor_symbol is None and data.legs:
-            anchor_symbol = data.legs[0].symbol
+        # Modal-expiry, option-preferred, front-month tie-break anchor pick.
+        # See `_strategy_pick_spot_anchor` for the exhaustive rationale.
+        anchor_symbol, expiry_hint = _strategy_pick_spot_anchor(data, parsed_by_sym)
         S, _spot_src, spot_prev_close, _spot_anchor = await _resolve_spot(
             underlying, data.spot,
             fallback=median_strike,
             expiry_hint=expiry_hint,
-            option_symbol=anchor_symbol)
-        # Surface provenance to the UI. When the resolver fell through
-        # to the synthetic median-strike anchor, the spot value is just
-        # the strike — NOT a real market price. Logging it so prod
-        # debugging can correlate spot=8129-style complaints with the
-        # actual path: 'fallback' = no broker data; 'cached' = stale
-        # broker reading from earlier in the session; 'futures' = live
-        # broker quote on the matching-month future.
+            option_symbol=anchor_symbol,
+        )
         if _spot_src in ('fallback', 'cached'):
             logger.warning(
                 f"strategy spot for {underlying} fell through to "
@@ -2601,402 +2897,88 @@ class OptionsController(Controller):
             )
 
         # ── 3. Build resolved-leg list with σ calibrated per leg ──────
-        # Pre-compute per-option T_years list so eval_T (near expiry) and
-        # T_yrs_shared (far expiry for POP / EV) are deterministic and not
-        # subject to set-iteration order.
+        # eval_T — payoff curve's "expiry" evaluation point (near leg).
+        # T_yrs_shared — far horizon used for POP / EV / span_pct.
         _is_commodity = is_mcx_underlying(underlying)
         _close_time = (23, 30) if _is_commodity else (15, 30)
-        _option_T_list = [
-            days_to_expiry(date.fromisoformat(_leg_expiry_iso(leg, parsed_by_sym.get(leg.symbol.upper().strip()))),
-                           close_time=_close_time) / 365.0
-            for leg in data.legs
-            if parsed_by_sym.get(leg.symbol.upper().strip()) and
-               parsed_by_sym.get(leg.symbol.upper().strip()).get("kind") == "opt"
-        ]
-        # eval_T — the payoff curve's "expiry" evaluation point (near leg).
-        # Far legs are re-priced with remaining T via BS (not intrinsic).
-        # T_yrs_shared — far horizon used for POP / EV / span_pct.
-        eval_T: float      = min(_option_T_list) if _option_T_list else 0.0
-        T_yrs_shared: float = max(_option_T_list) if _option_T_list else 0.0
+        eval_T, T_yrs_shared = _strategy_option_T_range(data, parsed_by_sym, _close_time)
 
-        # ── MCX per-leg scale_ratio ────────────────────────────────────
-        # For MCX commodity baskets the chart's X-axis uses the near-month
-        # (front-month) futures price as "spot" (S). But an option whose
-        # contract month ≠ near month has its own forward price S_leg. If
-        # we calibrate σ against S (near) instead of S_leg the IV is
-        # wrong, and the today_value curve comes out distorted.
-        #
-        # Fix: per-leg scale_ratio = S_leg_current / S_near.
-        # BS calls in multileg_* use S * scale_ratio for each leg.
-        # At chart X = S (today), S_leg = S_leg_current exactly — matching
-        # the point σ was calibrated against. At X = S*1.05 (+5% chart),
-        # each leg evaluates at +5% on its own contract-month price.
-        #
-        # Non-MCX legs and any leg whose same-month future can't be found
-        # get scale_ratio = 1.0 (no-op, original behaviour preserved).
-        #
-        # Batch all the per-leg same-month futures lookups into one
-        # broker.quote() call to avoid N sequential round-trips.
-        # (_is_commodity hoisted above for close_time threading.)
-        _leg_scale_ratios: dict[str, float] = {}   # symbol → scale_ratio
-        if _is_commodity and S > 0:
-            # Collect unique (underlying, expiry_month) pairs across legs;
-            # one quote key per distinct contract month suffices.
-            # _month_to_cached: months already resolved from the 60s cache.
-            # _month_to_fut_sym: months that need a fresh broker.quote().
-            _month_to_cached: dict[tuple[int, int], tuple[str, float]] = {}
-            _month_to_fut_sym: dict[tuple[int, int], Optional[str]] = {}
-            for _leg in data.legs:
-                _lsym = _leg.symbol.upper().strip()
-                _lparsed = parsed_by_sym.get(_lsym)
-                if not _lparsed:
-                    continue
-                _leg_exp = date.fromisoformat(_leg_expiry_iso(_leg, _lparsed))
-                _month_key = (_leg_exp.year, _leg_exp.month)
-                if _month_key in _month_to_cached or _month_key in _month_to_fut_sym:
-                    continue
-                # Cache-first lookup — 60s TTL per (underlying, year, month).
-                _cached = _mcx_fut_cache_get(underlying, _leg_exp.year, _leg_exp.month)
-                if _cached is not None:
-                    _month_to_cached[_month_key] = _cached
-                else:
-                    _month_to_fut_sym[_month_key] = None   # needs broker fetch
+        # MCX per-leg scale_ratio = S_leg_current / S_near — see the
+        # `_strategy_mcx_scale_ratios` docstring for full rationale.
+        _leg_scale_ratios: dict[str, float] = {}
+        if _is_commodity:
+            _leg_scale_ratios = await _strategy_mcx_scale_ratios(
+                data, parsed_by_sym, underlying, S, _price_broker,
+            )
 
-            # Resolve tradingsymbol for each month not in the cache.
-            for _mk in list(_month_to_fut_sym.keys()):
-                _hint = date(_mk[0], _mk[1], 1)
-                try:
-                    _fut_sym = await _lookup_mcx_future(underlying, _hint)
-                    _month_to_fut_sym[_mk] = _fut_sym
-                except Exception:
-                    pass
-
-            # Batch broker.quote() only for months that missed the cache.
-            _fut_quote_keys = [
-                f"MCX:{fs}"
-                for fs in _month_to_fut_sym.values()
-                if fs
-            ]
-            _fut_quote_resp: dict = {}
-            if _fut_quote_keys:
-                try:
-                    _fut_quote_resp = await asyncio.to_thread(_price_broker.quote, _fut_quote_keys) or {}
-                except Exception as _e:
-                    logger.warning(
-                        f"MCX per-leg futures batch quote failed: {_e}; "
-                        "falling back to scale_ratio=1 for all legs"
-                    )
-
-            # Populate cache from fresh broker responses so subsequent
-            # re-polls within the 60s TTL skip the broker.quote() entirely.
-            for _mk, _fut_sym in _month_to_fut_sym.items():
-                if not _fut_sym:
-                    continue
-                _qdict = _fut_quote_resp.get(f"MCX:{_fut_sym}") or {}
-                _s_fresh, _ = _ltp_from_quote(_qdict)
-                if _s_fresh and _s_fresh > 0:
-                    _mcx_fut_cache_put(underlying, _mk[0], _mk[1], _fut_sym, _s_fresh)
-                    _month_to_cached[_mk] = (_fut_sym, _s_fresh)
-
-            # Build per-leg scale_ratio from the unified cached + fresh data.
-            for _leg in data.legs:
-                _lsym = _leg.symbol.upper().strip()
-                _lparsed = parsed_by_sym.get(_lsym)
-                if not _lparsed:
-                    _leg_scale_ratios[_lsym] = 1.0
-                    continue
-                _leg_exp = date.fromisoformat(_leg_expiry_iso(_leg, _lparsed))
-                _mk = (_leg_exp.year, _leg_exp.month)
-                _month_data = _month_to_cached.get(_mk)
-                if _month_data:
-                    _fut_sym_leg, _s_leg = _month_data
-                    _leg_scale_ratios[_lsym] = _s_leg / S if _s_leg > 0 else 1.0
-                else:
-                    _leg_scale_ratios[_lsym] = 1.0
-
+        # Per-leg loop — dispatch on kind (fut / opt) to the appropriate
+        # builder. Sigma is accumulated (qty-weighted) for the aggregate
+        # POP/EV lognormal below.
+        resolved_legs: list[dict] = []
+        leg_details: list[dict] = []
         sigma_weight_num = 0.0
         sigma_weight_den = 0.0
-        leg_details: list[dict] = []
         for leg in data.legs:
             sym = leg.symbol.upper().strip()
             parsed = parsed_by_sym.get(sym)
-            # Operator-supplied expiry (instruments cache) wins over
-            # the parser's last-Thursday inference.
             leg_expiry = date.fromisoformat(_leg_expiry_iso(leg, parsed))
             T_yrs = days_to_expiry(leg_expiry, close_time=_close_time) / 365.0
-            qty   = int(leg.qty or 0)
+            qty = int(leg.qty or 0)
             if qty == 0:
                 raise HTTPException(status_code=400,
                     detail=f"leg '{sym}' has qty=0")
-
-            # ── Futures branch ─────────────────────────────────────
-            # Linear payoff in spot, no IV, no Greeks beyond delta=1.
-            # Resolve LTP from operator override → broker quote → spot
-            # (futures track spot 1:1 over the sim window). Cost basis
-            # falls back to LTP for "what would buying NOW look like".
-            # Per-leg scale_ratio: 1.0 for non-MCX; S_leg_current/S for MCX.
             scale_ratio = _leg_scale_ratios.get(sym, 1.0) if _is_commodity else 1.0
-            # The leg's own effective spot (same-month futures price for MCX,
-            # identical to S for non-MCX). Used for σ calibration so BS(S_leg,
-            # K, T, σ) = market premium — σ is not distorted by a cross-month
-            # spread between S (near-month) and the leg's contract month.
             S_leg = S * scale_ratio
 
             if parsed.get("kind") == "fut":
-                fut_ltp: Optional[float] = None
-                fut_src: str = "none"
-                if leg.ltp is not None and leg.ltp > 0:
-                    fut_ltp, fut_src = float(leg.ltp), "override"
-                else:
-                    q = quote_resp.get(option_quote_key(sym)) or {}
-                    fut_ltp, fut_src = _ltp_from_quote(q)
-                if fut_ltp is None and leg.avg_cost is not None and leg.avg_cost > 0:
-                    fut_ltp, fut_src = float(leg.avg_cost), "avg_cost"
-                if fut_ltp is None or fut_ltp <= 0:
-                    fut_ltp, fut_src = float(S_leg), "estimated"
-                fut_entry = float(leg.avg_cost) if leg.avg_cost is not None else fut_ltp
-                resolved_legs.append({
-                    "kind":        "fut",
-                    "qty":         qty,
-                    "entry_price": fut_entry,
-                    "scale_ratio": scale_ratio,
-                })
-                # Greeks for the leg detail row — futures contribute
-                # delta=±1 only; everything else is zero.
-                fut_g = {"delta": 1.0, "gamma": 0.0, "theta": 0.0,
-                         "vega": 0.0, "rho": 0.0}
-                leg_details.append({
-                    "symbol":      sym,
-                    "opt_type":    "FUT",
-                    "strike":      0.0,
-                    "qty":         qty,
-                    "avg_cost":    fut_entry,
-                    "ltp":         fut_ltp,
-                    "iv":          0.0,
-                    "theoretical": fut_ltp,    # futures are linear; no separate theo
-                    "discrepancy": 0.0,
-                    "greeks":      fut_g,
-                    "ltp_source":  fut_src,
-                    "iv_source":   "n/a",
-                })
+                fut_resolved, fut_detail = _strategy_build_futures_leg(
+                    leg, sym, quote_resp, S_leg, scale_ratio, qty,
+                )
+                resolved_legs.append(fut_resolved)
+                leg_details.append(fut_detail)
                 continue
 
-            # LTP fallback chain — return `(price, source)` so the UI can
-            # flag stale legs. Order:
-            #   operator override → broker live/close/depth → avg_cost → fail
-            ltp_val: Optional[float]
-            ltp_source: str
-            if leg.ltp is not None and leg.ltp > 0:
-                ltp_val, ltp_source = float(leg.ltp), "override"
-            else:
-                q = quote_resp.get(option_quote_key(sym)) or {}
-                ltp_val, ltp_source = _ltp_from_quote(q)
-            # Fallback to operator's avg_cost if no broker price was usable.
-            if ltp_val is None and leg.avg_cost is not None and leg.avg_cost > 0:
-                ltp_val, ltp_source = float(leg.avg_cost), "avg_cost"
-            # Final fallback — synthesise via Black-Scholes at default IV
-            # against the resolved spot. The strategy still produces a
-            # readable payoff curve when the broker is fully unreachable;
-            # leg.ltp_source='estimated' tells the UI to treat absolute
-            # numbers with care.
-            # NOTE: DEFAULT_IV + black_scholes are imported at module
-            # level — DON'T re-import here. A `from … import DEFAULT_IV`
-            # inside this branch makes Python flag DEFAULT_IV as a local
-            # for the WHOLE function, then the comparison further down
-            # raises UnboundLocalError when this branch never runs.
-            if ltp_val is None or ltp_val <= 0:
-                # Use S_leg (same-month spot) for the estimated fallback so
-                # the BS price is consistent with the leg's own contract month.
-                est = black_scholes(S_leg, parsed["strike"], T_yrs,
-                                    DEFAULT_RISK_FREE, DEFAULT_IV,
-                                    parsed["opt_type"])
-                if est > 0:
-                    ltp_val, ltp_source = est, "estimated"
-            if ltp_val is None or ltp_val <= 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(f"Leg '{sym}' has no usable price. Pass `ltp` "
-                            f"or `avg_cost` in the leg body (sim positions "
-                            f"and illiquid contracts often need this).")
-                )
-
-            # σ fallback — operator override > calibrate > default IV.
-            # Calibrate using S_leg (same-month spot) so BS(S_leg, K, T, σ)
-            # = market premium. Using S (near-month) here would distort σ
-            # when the leg's contract month ≠ near month (e.g. JUN vs MAY
-            # crude oil). For non-MCX legs scale_ratio=1 so S_leg == S.
-            iv_source: str
-            if leg.iv is not None and leg.iv > 0:
-                sig = float(leg.iv)
-                iv_source = "override"
-            else:
-                sig = implied_vol(ltp_val, S_leg, parsed["strike"], T_yrs,
-                                  DEFAULT_RISK_FREE, parsed["opt_type"])
-                # Fresh sources: live (broker last_price), override
-                # (operator-supplied), sim (driver state). Anything else
-                # means the LTP was a fallback so the calibrated σ
-                # shouldn't be trusted as authoritative.
-                if sig == DEFAULT_IV or ltp_source not in ("override", "live", "sim"):
-                    iv_source = "default" if sig == DEFAULT_IV else "calibrated"
-                else:
-                    iv_source = "calibrated"
-
-            # Cost basis: operator > LTP fallback (just-opened semantics)
-            entry = float(leg.avg_cost) if leg.avg_cost is not None else ltp_val
-
-            # Theoretical for the leg + per-share Greeks (UI shows them).
-            # Use S_leg so these figures are consistent with σ calibration.
-            theo = black_scholes(S_leg, parsed["strike"], T_yrs,
-                                 DEFAULT_RISK_FREE, sig, parsed["opt_type"])
-            g_per = greeks(S_leg, parsed["strike"], T_yrs,
-                           DEFAULT_RISK_FREE, sig, parsed["opt_type"])
-
-            resolved_legs.append({
-                "strike":      parsed["strike"],
-                "opt_type":    parsed["opt_type"],
-                "qty":         qty,
-                "entry_price": entry,
-                "T_years":     T_yrs,
-                "sigma":       sig,
-                "scale_ratio": scale_ratio,
-            })
+            opt_resolved, opt_detail, sig = _strategy_build_option_leg(
+                leg, sym, parsed, quote_resp, S_leg, T_yrs, scale_ratio, qty,
+            )
+            resolved_legs.append(opt_resolved)
+            leg_details.append(opt_detail)
             sigma_weight_num += sig * abs(qty)
             sigma_weight_den += abs(qty)
-            leg_details.append({
-                "symbol":      sym,
-                "opt_type":    parsed["opt_type"],
-                "strike":      parsed["strike"],
-                "qty":         qty,
-                "avg_cost":    entry,
-                "ltp":         ltp_val,
-                "iv":          sig,
-                "theoretical": theo,
-                "discrepancy": ltp_val - theo,
-                "greeks":      g_per,
-                "ltp_source":  ltp_source,
-                "iv_source":   iv_source,
-            })
 
         # ── 4. Aggregate analytics ────────────────────────────────────
-        # qty-weighted IV used for the lognormal that drives POP. Imperfect
-        # (the real underlying σ isn't the same as any leg's IV) but it's
-        # the most defensible single number from the data we have.
+        # qty-weighted IV drives the lognormal used for POP.
         sigma_proxy = (sigma_weight_num / sigma_weight_den
                        if sigma_weight_den else DEFAULT_IV)
-
-        # Span auto-derived from the qty-weighted σ × √T_shared so the
-        # chart automatically tightens for short-DTE strategies and
-        # widens for long-DTE ones. Operator override via data.span_pct.
+        # Span auto-derived from σ × √T_shared; operator override via data.span_pct.
         span_pct_resolved = _resolve_span_pct(
             sigma=sigma_proxy, T_years=T_yrs_shared,
             span_pct=data.span_pct, span_sigmas=data.span_sigmas,
         )
-
         pts = max(11, min(int(data.points or 51), 121))
         _n_slices = max(0, min(int(data.time_slices or 0), 5))
 
-        # ── Phase 4: leg-curve cache ───────────────────────────────────
-        # Key encodes resolved leg geometry + shape params (NOT spot/LTP).
-        # On hit: skip multileg_intermediate_curves + multileg_extremes +
-        #         risk_reward_ratio (spot-independent pieces, ~40 ms).
-        # On miss: compute everything, store normalized form.
-        #
-        # multileg_payoff_curve is called in both paths (today_value
-        # is spot-dependent; running it is the cheapest way to obtain
-        # today_value without a separate helper).  On hit its expiry_value
-        # column is overwritten with the cached (rescaled) values so
-        # find_breakevens / multileg_pop / expected_value all see
-        # consistent data from a single curve list.
-        _lc_key = _leg_curve_cache_key(
-            resolved_legs, span_pct_resolved,
-            float(data.span_sigmas), pts, _n_slices,
+        # Phase-4 leg-curve cache short-circuit → today_value always fresh;
+        # expiry_value + slices reused from cache on hit.
+        curve, slices, max_p, max_l, agg_rr = _strategy_compute_curves(
+            resolved_legs, S, span_pct_resolved, pts, _n_slices,
+            eval_T, float(data.span_sigmas),
         )
-        _lc_hit = _leg_curve_cache_get(_lc_key)
-
-        # Always compute today_value fresh — it uses current sigma (derived
-        # from live LTP above) and current spot S.
-        curve = multileg_payoff_curve(
-            resolved_legs, S=S,
-            span_pct=span_pct_resolved,
-            points=pts,
-            eval_T=eval_T,
-        )
-
-        if _lc_hit is not None:
-            # Cache hit — overwrite expiry_value in place from normalized form.
-            # x_ratio_i × S gives the absolute spot at each grid position,
-            # exactly matching multileg_payoff_curve's linspace grid.
-            _ev_norm: list[float] = _lc_hit["expiry_values_norm"]
-            _xr:      list[float] = _lc_hit["x_ratios"]
-            for _i, _pt in enumerate(curve):
-                if _i < len(_ev_norm):
-                    _pt["expiry_value"] = _ev_norm[_i]
-                    _pt["spot"]         = round(_xr[_i] * S, 4)
-
-            # Reconstruct intermediate slices with rescaled spot.
-            # `values[i]` is spot-independent (see Phase 4 comment block);
-            # only the `spot` axis changes — which isn't part of the slice
-            # payload (slices carry values[], label, elapsed_pct, days_left).
-            slices = _lc_hit["slices_norm"]   # already spot-free; reuse as-is
-
-            max_p = _lc_hit["max_profit"]
-            max_l = _lc_hit["max_loss"]
-            agg_rr = _lc_hit["rr_ratio"]
-            logger.debug(
-                "[leg-curve-cache] hit key=%s legs=%d pts=%d slices=%d",
-                _lc_key[:8], len(resolved_legs), pts, _n_slices,
-            )
-        else:
-            # Cache miss — full compute; store normalized form.
-            slices = multileg_intermediate_curves(
-                resolved_legs, S=S,
-                span_pct=span_pct_resolved,
-                points=pts,
-                time_slices=_n_slices,
-            )
-            max_p, max_l = multileg_extremes(curve)
-            agg_rr = risk_reward_ratio(max_p, max_l)
-
-            # Normalise expiry_value and x_ratio for storage.
-            # x_ratio[i] = spot_i / S  →  recoverable as x_ratio[i] * S_future.
-            # expiry_value[i] is already spot-independent (depends only on
-            # leg geometry + T_years + sigma, not on the current spot level).
-            _x_ratios_store  = [round(pt["spot"] / S, 10) for pt in curve] if S > 0 else []
-            _ev_norm_store   = [pt["expiry_value"] for pt in curve]
-            _leg_curve_cache_put(_lc_key, {
-                "expiry_values_norm": _ev_norm_store,
-                "x_ratios":          _x_ratios_store,
-                "slices_norm":       slices,
-                "max_profit":        max_p,
-                "max_loss":          max_l,
-                "rr_ratio":          agg_rr,
-            })
-            logger.debug(
-                "[leg-curve-cache] miss key=%s legs=%d pts=%d slices=%d",
-                _lc_key[:8], len(resolved_legs), pts, _n_slices,
-            )
 
         agg_greeks  = multileg_greeks(resolved_legs, S=S)
         bes         = find_breakevens(curve)
         pop = multileg_pop(curve, S=S, T_years=T_yrs_shared, sigma=sigma_proxy)
         net_cost = sum(l["entry_price"] * l["qty"] for l in resolved_legs)
 
-        # Aggregate EV — same lognormal integration as single-leg, but
-        # the curve already sums every leg's signed-qty payoff so this
-        # is just one trapezoidal pass.
+        # Aggregate EV — trapezoidal integration against risk-neutral lognormal.
         agg_ev = expected_value(curve, S=S, T_years=T_yrs_shared,
                                 sigma=sigma_proxy)
         agg_ev_pct = (round(agg_ev / abs(net_cost) * 100.0, 2)
                       if abs(net_cost) > 0 else None)
 
-        # Near expiry — the payoff curve evaluates at eval_T (the earliest
-        # leg's expiry). Report that date as the strategy's primary expiry.
-        # Options drive "time to expiry" (futures track spot 1:1 with no
-        # time decay), so prefer min(option expiries) when any option leg
-        # is present. MCX futures + options on the same contract month
-        # have DIFFERENT expiries (e.g. GOLDM26JUNFUT = 2026-06-05, but
-        # GOLDM26JUN*CE = 2026-06-26) — without this guard a covered-call
-        # basket reports the futures DTE instead of the option's.
+        # Prefer min(option expiries) — options drive "time to expiry"
+        # (futures track spot 1:1 with no time decay). MCX futures + options
+        # on the same contract month have DIFFERENT expiries.
         option_expiries = {
             _leg_expiry_iso(leg, parsed_by_sym.get(leg.symbol.upper().strip()))
             for leg in data.legs
@@ -3030,12 +3012,7 @@ class OptionsController(Controller):
             spot_prev_close=spot_prev_close,
             span_pct=span_pct_resolved,
             span_sigmas=float(data.span_sigmas) if data.span_pct is None else 0.0,
-            multi_expiry=len({
-                _leg_expiry_iso(leg, parsed_by_sym.get(leg.symbol.upper().strip()))
-                for leg in data.legs
-                if parsed_by_sym.get(leg.symbol.upper().strip())
-                   and parsed_by_sym.get(leg.symbol.upper().strip()).get("kind") == "opt"
-            }) > 1,
+            multi_expiry=len(option_expiries) > 1,
             spot_anchor_contract=_spot_anchor,
             spot_source=_spot_src,
         )
