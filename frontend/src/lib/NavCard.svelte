@@ -295,7 +295,7 @@
     font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.04em;
-    color: var(--card-label-text, #fbbf24);
+    color: var(--card-label-text, var(--algo-amber));
     text-transform: uppercase;
     margin-bottom: 0.1rem;
   }
