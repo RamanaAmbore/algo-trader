@@ -1148,14 +1148,6 @@ class WatchlistController(Controller):
                         )
                         for d in _json.loads(snap.payload_json)
                     ]
-                    winners = sum(1 for r in snap_rows if r.change_pct > 0)
-                    losers  = sum(1 for r in snap_rows if r.change_pct < 0)
-                    zeros   = sum(1 for r in snap_rows if r.change_pct == 0)
-                    logger.info(
-                        f"MOVERS_DEBUG branch=closed snap_rows={len(snap_rows)} "
-                        f"winners={winners} losers={losers} zeros={zeros} "
-                        f"captured_at={snap.captured_at.isoformat()}"
-                    )
                     return MoversResponse(
                         movers=snap_rows,
                         threshold_pct=MOVER_THRESHOLD_PCT,
@@ -1165,7 +1157,6 @@ class WatchlistController(Controller):
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(f"Movers snapshot deserialise failed: {exc}")
             # No snapshot yet (e.g. first deploy) — return empty gracefully.
-            logger.info(f"MOVERS_DEBUG branch=closed snap_rows=0 (no snapshot in DB)")
             return MoversResponse(
                 movers=[], threshold_pct=MOVER_THRESHOLD_PCT, session_date=ist_today,
             )
@@ -1182,12 +1173,17 @@ class WatchlistController(Controller):
                 resp = await get_or_fetch("instruments", _fetch_instruments,
                                           ttl_seconds=_INST_TTL)
                 all_items = resp.items if resp else []
-            except Exception:
+            except Exception as _exc:
+                logger.warning(f"Movers: instruments fetch failed: {_exc}")
                 all_items = []
             new_set: set[str] = set()
             for inst in all_items:
                 if inst.t in ("CE", "PE") and inst.u:
                     new_set.add(inst.u.upper())
+            logger.info(
+                f"Movers: underlyings build — all_items={len(all_items)} "
+                f"new_set={len(new_set)} cache_date={_underlyings_cache_date!r} today={ist_today!r}"
+            )
             # Only commit + flip the date if we actually got data — empty
             # set on a fetch failure shouldn't pin a stale-zero result for
             # the rest of the day.
@@ -1197,7 +1193,6 @@ class WatchlistController(Controller):
         underlyings_with_opts = _underlyings_cache
 
         if not underlyings_with_opts:
-            logger.info(f"MOVERS_DEBUG branch=live combined_rows=0 (underlyings cache empty)")
             return MoversResponse(
                 movers=[], threshold_pct=MOVER_THRESHOLD_PCT, session_date=ist_today,
             )
