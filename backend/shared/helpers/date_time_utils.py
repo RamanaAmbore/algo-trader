@@ -191,48 +191,71 @@ def is_market_open(now, holiday_set: set, market_start: dtime = dtime(9, 15),
                    exchange: str | None = None,
                    *,
                    sessions: list | None = None,
-                   evening_open_on_holidays: bool = False) -> bool:
+                   evening_open_on_holidays: bool = False,
+                   special_sessions: list | None = None) -> bool:
     """
     Returns True if the market is currently open.
 
-    Two calling conventions — both supported so pre-existing callsites
-    keep working while new code can pass a full session list:
+    Precedence (highest to lowest):
+
+    ① Special-session override — if ``special_sessions`` contains a row
+      for today's date, it completely supersedes all other rules.  The
+      exchange is open iff ``now.time()`` is in ``[start_time, end_time)``
+      (half-open interval).  Holiday, regular-session, and probe checks
+      are all skipped.  Pass None if the caller hasn't fetched overrides.
+
+    ② Holiday check — if today is in ``holiday_set``:
+      • ``evening_open_on_holidays=True`` → open only if
+        ``now.time() >= 17:00`` AND in a published session window.
+      • Otherwise → closed.
+
+    ③ Regular sessions — open if ``now.time()`` is inside at least one
+      configured session window.
+
+    Calling conventions (both supported):
 
     Legacy (positional): ``is_market_open(now, holidays, start, end, exchange)``
       A single session window is inferred from ``market_start`` and
-      ``market_end``. This is the shape used by every callsite prior to
-      the multi-session change; kept indefinitely so downstream code
-      does not need to churn.
+      ``market_end``. Pre-existing callsites keep working unchanged.
 
     Multi-session (keyword): ``is_market_open(now, holidays,
-                                              sessions=[{start,end}, ...],
+                                              sessions=[{start, end}, ...],
                                               evening_open_on_holidays=True)``
       When ``sessions`` is provided it overrides ``market_start`` /
-      ``market_end``. The segment is treated as open if ``now`` falls in
-      ANY session window.
+      ``market_end``. The segment is open if ``now`` falls in ANY window.
 
-    Holiday handling:
-      • Non-holiday date → run standard clock + calendar path.
-      • Holiday date + ``evening_open_on_holidays=True`` → the calendar
-        is treated as "closed" for the daytime portion, but ``now.time()
-        >= 17:00`` re-opens the evening portion (models the MCX evening
-        session on days flagged as commodity holidays). Kept explicit
-        rather than deferred to the live-quote probe so unit tests can
-        reason about it deterministically.
-      • Holiday date + ``evening_open_on_holidays=False`` → closed.
-
-    The live-quote probe (``probe_market_active``) still fires for
-    calendar-closed dates inside the published window via
-    ``is_trading_day`` — that catches Muhurat / special sessions that
-    the calendar doesn't know about. The explicit
-    ``evening_open_on_holidays`` rule short-circuits BEFORE the probe.
+    Special-session (keyword): ``is_market_open(now, holidays, ...,
+                                                special_sessions=[...])``
+      ``special_sessions`` is a list of dicts with keys ``date``
+      (datetime.date), ``start`` (datetime.time), and ``end``
+      (datetime.time).  Pass only rows for the relevant exchange.
 
     - now: timezone-aware datetime in IST
     - holiday_set: set of date objects from fetch_holidays(exchange)
     - exchange (optional): forwarded to ``is_trading_day`` so the probe
       layer can identify which exchange to poll.
+    - special_sessions (optional): list of override rows; pass None if
+      the caller doesn't fetch them (normal path remains unchanged).
     """
+    from datetime import date as _date, time as _time  # local import avoids circular
+
     t = now.time().replace(second=0, microsecond=0)
+    today = now.date()
+
+    # ① SPECIAL-SESSION OVERRIDE — highest precedence.  If any row matches
+    #    today's date, skip ALL other rules and apply the override window.
+    #    Half-open interval: start <= t < end  (matches task spec).
+    if special_sessions:
+        today_overrides = [
+            s for s in special_sessions
+            if s.get("date") == today
+        ]
+        if today_overrides:
+            return any(
+                s["start"] <= t < s["end"]
+                for s in today_overrides
+            )
+        # No override for today — fall through to normal logic.
 
     # Resolve session windows — sessions list wins when provided.
     if sessions:
@@ -249,13 +272,12 @@ def is_market_open(now, holiday_set: set, market_start: dtime = dtime(9, 15),
     else:
         windows = [(market_start, market_end)]
 
-    # ① Clock — must be inside AT LEAST ONE window. If not, definitely closed.
+    # ② Clock — must be inside AT LEAST ONE window. If not, definitely closed.
     in_window = any(w_start <= t <= w_end for (w_start, w_end) in windows)
 
-    # ② Calendar — a holiday date can still be "open" when
+    # ③ Calendar — a holiday date can still be "open" when
     #    evening_open_on_holidays=True AND clock >= 17:00. Handle that first
     #    so we don't spuriously call the probe on MCX evening-open holidays.
-    today = now.date()
     if today in holiday_set:
         if evening_open_on_holidays and t >= dtime(17, 0):
             # Also require the clock to be in a published session window.
@@ -265,7 +287,7 @@ def is_market_open(now, holiday_set: set, market_start: dtime = dtime(9, 15),
     if not in_window:
         return False
 
-    # ③ Non-holiday, in-window — standard calendar + probe check.
+    # ④ Non-holiday, in-window — standard calendar + probe check.
     return is_trading_day(today, holiday_set,
                           exchange=exchange, now=now)
 
