@@ -1113,8 +1113,9 @@ Four-tool scaffold for iterative perf work — capture a snapshot, ship a change
 
 | Tool | Kind | Output |
 |---|---|---|
-| `scripts/perf_baseline.py` | Static grep — LOC, `$effect` / `$state` / `$derived` / `.subscribe(` counts per page + `async def` counts per backend route + optional bundle size | `.log/perf_baseline_<utc>.json` + `perf_baseline_latest.json` symlink |
-| `frontend/e2e/perf_capture.spec.js` | Playwright — LCP, DOMContent, load, long-task Σ + max, JS heap, /ws/* opens, RefreshButton click-to-feedback per page | `.log/perf_capture_<utc>.json` + `perf_capture_latest.json` symlink |
+| `scripts/perf_baseline.py` | Static grep — LOC, `$effect` / `$state` / `$derived` / `.subscribe(` counts per page + `async def` counts per backend route + optional bundle size + optional cyclomatic complexity + optional merged runtime | `.log/perf_baseline_<utc>.json` + `perf_baseline_latest.json` symlink |
+| `frontend/e2e/perf_capture.spec.js` | Playwright — LCP, DOMContent, load, long-task Σ + max, TBT, JS heap, /ws/* opens, RefreshButton click-to-feedback per page | `.log/perf_capture_<utc>.json` + `perf_capture_latest.json` symlink |
+| `scripts/perf_capture_run.sh` | Wrapper — reachability + creds preflight, then invokes the Playwright spec against the deployed dev URL (default `dev.ramboq.com`), prints per-page summary | stdout + capture JSON (via spec) |
 | `backend/api/middleware/perf_stats.py` | Opt-in ASGI middleware (RAMBOQ_PERF_STATS=1) — count / p50 / p95 / p99 / queries_avg per normalised route | `.log/perf_stats.json` (5-min flush + shutdown) |
 | `scripts/perf_diff.py` | Prints per-page + per-route delta table; flags >5% regression in red; writes plain-text copy to `.log/perf_diff_<from>_<to>.txt` | stdout + `.log/` file |
 
@@ -1133,11 +1134,16 @@ Four-tool scaffold for iterative perf work — capture a snapshot, ship a change
         "state_count":      109,
         "derived_count":    69,
         "subscribe_count":  4,
-        "runtime": {                    // only present after perf_capture
+        "cyclomatic_est":   1651,                 // only with --with-cyclomatic
+        "cyclomatic_hotspots": [                  // top 5, cc >= 10
+          {"fn_name": "addSpotFromPicker", "cc": 75, "line": 332}, ...
+        ],
+        "runtime": {                              // only with --with-runtime
           "lcp_ms":         840,
           "load_ms":        1240,
           "heap_mb":        44.2,
           "long_task_ms":   120,
+          "tbt_ms":         42,
           "ws_connections": 2,
           "refresh_click_ms": 260
         }
@@ -1147,16 +1153,34 @@ Four-tool scaffold for iterative perf work — capture a snapshot, ship a change
   },
   "backend": {
     "routes": {
-      "GET /api/positions": { "file": "...", "loc": 890, "async_fn_count": 12 }, ...
+      "GET /api/positions": {
+        "file":           "...",
+        "loc":            890,
+        "async_fn_count": 12,
+        "cyclomatic_avg": 10.8,                   // only with --with-cyclomatic
+        "cyclomatic_max": 49,
+        "cyclomatic_hotspots": [
+          {"fn_name": "PositionsController.get_positions", "cc": 49, "line": 709}, ...
+        ]
+      }, ...
     }
   }
 }
 ```
 
+**Cyclomatic thresholds**: green < 10 · yellow 10–20 · red > 20. Applied at report time; JSON stores raw scores only. Backend uses `radon cc -a -j` (already pinned in `backend/requirements-api.txt`); frontend uses a regex heuristic on the extracted `<script>` block (if / else if / for / while / case / catch / && / || / ternary − optional-chaining) since escomplex on parsed Svelte is fragile.
+
+**Runtime lane** — driven by `scripts/perf_capture_run.sh`. Fail-fast preflight requires:
+
+- `PLAYWRIGHT_USER` + `PLAYWRIGHT_PASS` (real `dev.ramboq.com` operator credentials — the auth fixture's `rambo/admin1234` defaults are localhost-only)
+- `dev.ramboq.com` reachable (curl HEAD probe)
+
+The wrapper is preferred over local `npm run dev`: warm DB, realistic data, no 30-60 s startup penalty. `ensureAuth` works exactly like any other e2e spec.
+
 **Canonical workflow** (agent prompts should embed this):
 
 ```sh
-# 1) Snapshot before the change
+# 1) Snapshot before the change (fast static-only)
 ./venv/bin/python scripts/perf_baseline.py --no-build
 
 # 2) Ship changes …
@@ -1168,12 +1192,20 @@ Four-tool scaffold for iterative perf work — capture a snapshot, ship a change
 ./venv/bin/python scripts/perf_diff.py
 ```
 
-Runtime capture is a separate lane (needs a running dev API + Playwright):
+**Full baseline** (static + cyclomatic + runtime — for release candidates or
+after a big refactor; ~1-2 min end-to-end):
 
 ```sh
-PLAYWRIGHT_BASE_URL=https://dev.ramboq.com \
-  npx playwright test e2e/perf_capture.spec.js \
-  --project=chromium-desktop --workers=1
+export PLAYWRIGHT_USER=ambore
+export PLAYWRIGHT_PASS='...'
+./venv/bin/python scripts/perf_baseline.py --no-build \
+  --with-cyclomatic --with-runtime
+```
+
+Static + cyclomatic only (no network — good for CI + laptop-offline runs):
+
+```sh
+./venv/bin/python scripts/perf_baseline.py --no-build --with-cyclomatic
 ```
 
 Enable per-route latency capture for a diagnostic session:
