@@ -234,19 +234,21 @@
     max-height: min(90vh, 480px);
   }
 
-  /* ── Modal header ── */
+  /* ── Modal header — matches byund-headrow canonical (Snapshot grid) ── */
   .bh-modal-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0.7rem 1rem;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+    padding: 0.3rem 1rem;
+    background: rgba(15, 23, 42, 0.65);
+    border-bottom: 1px solid var(--algo-amber-border-soft);
   }
   .bh-modal-title {
-    font-size: var(--fs-lg);
-    font-weight: 700;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-2xs);
+    font-weight: 800;
     letter-spacing: 0.06em;
-    color: #cbd5e1;
+    color: var(--text-muted);
     text-transform: uppercase;
   }
   .bh-close {
@@ -256,14 +258,14 @@
     width: 1.4rem;
     height: 1.4rem;
     border-radius: 0.3rem;
-    color: #64748b;
+    color: var(--text-faint);
     cursor: pointer;
     outline: none;
     background: transparent;
     border: none;
     transition: color 0.1s;
   }
-  .bh-close:hover { color: #cbd5e1; }
+  .bh-close:hover { color: var(--text-muted); }
 
   /* ── Modal body ── */
   .bh-modal-body {
@@ -277,18 +279,18 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.45rem 1rem;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.07);
+    border-bottom: 1px solid rgba(126, 151, 184, 0.10);
     font-size: var(--fs-md);
     font-family: var(--font-numeric);
-  }
-  .bh-row:last-child { border-bottom: none; }
-  .bh-row {
     cursor: pointer;
     transition: background-color 0.1s;
   }
+  .bh-row:last-child { border-bottom: none; }
+  /* Alternating row background — matches .byund-row:nth-of-type(odd) */
+  .bh-row:nth-child(odd) { background-color: rgba(13, 22, 42, 0.30); }
   .bh-row:hover,
   .bh-row:focus-visible {
-    background-color: rgba(34, 211, 238, 0.05);
+    background-color: rgba(34, 211, 238, 0.05) !important;
     outline: none;
   }
 
@@ -302,7 +304,7 @@
   .bh-row-dot-red    { background: var(--c-short); }
 
   .bh-row-account {
-    color: #e2e8f0;
+    color: #c8d8f0;
     font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -321,7 +323,7 @@
   .bh-row-account-red    { color: var(--c-short); font-weight: 700; }
   .bh-row-account-amber  { color: var(--c-action); font-weight: 700; }
   .bh-row-account-active { color: var(--c-info); font-weight: 700; }
-  .bh-row-account-spare  { color: #e2e8f0; font-weight: 600; }
+  .bh-row-account-spare  { color: #c8d8f0; font-weight: 600; }
   /* Circuit-breaker state chips inside the account cell */
   .bh-circuit-chip {
     font-size: 0.6rem;
@@ -342,7 +344,7 @@
   }
 
   .bh-row-broker {
-    color: #94a3b8;
+    color: var(--text-muted);
     text-transform: uppercase;
     font-size: var(--fs-sm);
   }
