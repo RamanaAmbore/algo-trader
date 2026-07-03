@@ -227,6 +227,131 @@ test.describe('algo consistency — Phase 1 palette migration guard', () => {
   });
 });
 
+/* ── Phase 2 palette-token grep guard (2026-07-02) ──────────────────── *
+ *
+ * Extends the Phase-1 guard to the ~75 files swept in Phase 2.
+ * Same contract:
+ *   1. No raw palette hex in the migrated files (post-comment-strip).
+ *   2. Each file uses var(--c-*) at least as many times as the floor
+ *      count (set at ~90% of actual post-migration count).
+ *
+ * Phase-3 candidates (near-match alphas left raw intentionally):
+ *   amber-10 (×39), amber-18 (×33), amber-55 (×30), amber-45 (×24),
+ *   amber-35 (×24), amber-15 (×20), muted-18 (×51), muted-10 (×23),
+ *   muted-30 (×25), red-55 (×24), red-35 (×24), red-15 (×20),
+ *   green-18 (×16), cyan-65 (×16)  — all deferred to Phase 3.
+ * ─────────────────────────────────────────────────────────────────── */
+
+const PHASE2_FILES = [
+  path.join('src/lib', 'SymbolPanel.svelte'),
+  path.join('src/lib/order', 'OrderTicket.svelte'),
+  path.join('src/lib/execution', 'SimulatorPanel.svelte'),
+  path.join('src/lib', 'ChartWorkspace.svelte'),
+  path.join('src/lib/order', 'OptionChainTab.svelte'),
+  path.join('src/lib', 'OptionsPayoff.svelte'),
+  path.join('src/routes/(algo)', '+layout.svelte'),
+  path.join('src/lib', 'LogPanel.svelte'),
+  path.join('src/lib', 'BrokerHealthBadge.svelte'),
+  path.join('src/lib', 'Select.svelte'),
+  path.join('src/lib', 'CommandBar.svelte'),
+  path.join('src/lib', 'NavTab.svelte'),
+  path.join('src/lib', 'PnlAnalysis.svelte'),
+  path.join('src/lib', 'NavBreakdown.svelte'),
+  path.join('src/lib', 'PriceChart.svelte'),
+  path.join('src/lib', 'RefreshButton.svelte'),
+  path.join('src/lib', 'MultiSelect.svelte'),
+  path.join('src/lib', 'EquityCurve.svelte'),
+  path.join('src/lib', 'UnifiedLog.svelte'),
+  path.join('src/lib', 'PnlPanel.svelte'),
+  path.join('src/lib', 'MultiPriceChart.svelte'),
+  path.join('src/lib/order', 'ChaseCard.svelte'),
+  path.join('src/lib/order', 'CommandLineTab.svelte'),
+  path.join('src/lib/order', 'OrderTimelineDrawer.svelte'),
+];
+
+/** Minimum var(--c-*) usage floors for Phase-2 files (~90% of actual). */
+const TOKEN_FLOOR_P2 = {
+  'SymbolPanel.svelte': 63,
+  'OrderTicket.svelte': 42,
+  'SimulatorPanel.svelte': 45,
+  'ChartWorkspace.svelte': 22,
+  'OptionChainTab.svelte': 28,
+  'OptionsPayoff.svelte': 14,
+  '+layout.svelte': 46,
+  'LogPanel.svelte': 22,
+  'BrokerHealthBadge.svelte': 16,
+  'Select.svelte': 8,
+  'CommandBar.svelte': 10,
+};
+
+/** Phase-2 banned hex — same set as Phase-1 minus sky (#7dd3fc) which
+ *  has no --c-* alias and was not a Phase-2 migration target. */
+const BANNED_HEX_P2 = [
+  '#4ade80',  // --c-long
+  '#f87171',  // --c-short
+  '#22d3ee',  // --c-info
+  '#fbbf24',  // --c-action
+  '#7e97b8',  // --c-muted
+];
+
+/** Strip comments, SVG presentation attrs and known-exempt CSS props
+ *  before checking for raw palette hex. */
+function stripExemptContextsP2(src) {
+  return src
+    // Block comments
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    // HTML template comments
+    .replace(/<!--[\s\S]*?-->/g, '')
+    // JS line comments
+    .replace(/\/\/[^\n]*/g, '')
+    // SVG presentation attributes (CSS var() unreliable in attrs)
+    .replace(/\b(fill|stroke|stop-color)="[^"]*"/g, '')
+    // accent-color intentionally excluded (control theming, not content)
+    .replace(/accent-color\s*:[^;]+;/g, '');
+}
+
+test.describe('algo consistency — Phase 2 palette migration guard', () => {
+  test('no raw palette hex in Phase-2 migrated files', () => {
+    const offenders = [];
+    for (const rel of PHASE2_FILES) {
+      const abs = path.join(process.cwd(), rel);
+      let src;
+      try { src = fs.readFileSync(abs, 'utf-8'); } catch { continue; }
+      const stripped = stripExemptContextsP2(src);
+      for (const hex of BANNED_HEX_P2) {
+        // Match 6-digit hex only — exclude hex8 (e.g. #fbbf2466) which is a
+        // distinct colour and has no --c-* alias (deferred Phase-3).
+        const rx = new RegExp(hex + '(?![0-9a-fA-F])', 'i');
+        if (rx.test(stripped)) {
+          offenders.push(`${path.basename(rel)}: contains raw ${hex}`);
+        }
+      }
+    }
+    expect(offenders,
+      `Phase-2 files must use var(--c-*) semantic tokens. Regression in:\n${offenders.join('\n')}`
+    ).toEqual([]);
+  });
+
+  test('Phase-2 key files meet minimum --c-* semantic token usage floors', () => {
+    const failures = [];
+    for (const rel of PHASE2_FILES) {
+      const abs = path.join(process.cwd(), rel);
+      let src;
+      try { src = fs.readFileSync(abs, 'utf-8'); } catch { continue; }
+      const name = path.basename(rel);
+      const floor = TOKEN_FLOOR_P2[name];
+      if (!floor) continue;  // No floor defined for low-count files
+      const matches = (src.match(/var\(--c-/g) || []).length;
+      if (matches < floor) {
+        failures.push(`${name}: ${matches} --c-* usages (floor ${floor})`);
+      }
+    }
+    expect(failures,
+      `--c-* semantic token usage below floor — Phase 2 migration may not have landed:\n${failures.join('\n')}`
+    ).toEqual([]);
+  });
+});
+
 /* ── SSOT tokens defined ────────────────────────────────────────────── */
 
 test.describe('algo consistency — token definitions present', () => {
