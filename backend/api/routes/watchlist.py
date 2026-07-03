@@ -188,6 +188,7 @@ _session_date: Optional[str] = None  # ISO date string — rolls over at IST mid
 # ---------------------------------------------------------------------------
 _mcx_underlyings_cache: set[str] = set()  # bare commodity roots with CE/PE chain
 _mcx_underlyings_cache_date: Optional[str] = None
+_mcx_fut_map_cache: dict[str, str] = {}   # root → earliest-expiry FUT symbol; same buster
 
 # ---------------------------------------------------------------------------
 # Demo synthetic watchlist
@@ -997,7 +998,7 @@ async def _get_movers_mcx_live(
     On broker failure → returns empty movers with reason logged; operator sees
     an explicit empty state rather than stale NSE rows.
     """
-    global _mcx_underlyings_cache, _mcx_underlyings_cache_date, _session_movers_mcx
+    global _mcx_underlyings_cache, _mcx_underlyings_cache_date, _mcx_fut_map_cache, _session_movers_mcx
 
     # Refresh MCX universe cache once per calendar day.
     if _mcx_underlyings_cache_date != ist_today:
@@ -1016,17 +1017,13 @@ async def _get_movers_mcx_live(
         )
         if mcx_opt_roots:
             _mcx_underlyings_cache = mcx_opt_roots
+            _mcx_fut_map_cache = mcx_underlying_to_fut   # cache alongside opt_roots
             _mcx_underlyings_cache_date = ist_today
     else:
-        # Cache is warm; still need fut-symbol map for quote keys — rebuild
-        # from cache (cheap: already filtered set vs instruments list).
-        try:
-            resp = await get_or_fetch("instruments", _fetch_instruments,
-                                      ttl_seconds=_INST_TTL)
-            all_items = resp.items if resp else []
-        except Exception:
-            all_items = []
-        _, mcx_underlying_to_fut = _build_mcx_universe(all_items)
+        # Cache is warm — reuse the cached fut-symbol map directly.
+        # No instruments re-scan needed; _mcx_fut_map_cache is populated
+        # by the first-run branch above and cleared at midnight rollover.
+        mcx_underlying_to_fut = _mcx_fut_map_cache
 
     mcx_opt_roots = _mcx_underlyings_cache
 
@@ -1419,7 +1416,7 @@ class WatchlistController(Controller):
         from backend.brokers.broker_apis import fetch_holidays
         from datetime import time as _dtime
 
-        global _session_movers, _session_movers_mcx, _session_date
+        global _session_movers, _session_movers_mcx, _session_date, _mcx_fut_map_cache
 
         # Session rollover at IST midnight.
         ist_now = timestamp_indian()
@@ -1427,6 +1424,7 @@ class WatchlistController(Controller):
         if _session_date != ist_today:
             _session_movers = {}
             _session_movers_mcx = {}
+            _mcx_fut_map_cache = {}   # cleared alongside _mcx_underlyings_cache_date buster
             _session_date = ist_today
 
         # ── Market-state gate ─────────────────────────────────────────

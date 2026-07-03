@@ -15,12 +15,19 @@ Five quality dimensions:
                    12:00 IST → NSE path; 05:00 IST → snapshot path.
                    MCX exchange field = "MCX" on every row.
                    Broker fail during MCX-only → empty, no NSE snapshot fallback.
+
+Behavior-matrix tests (Dimension 5 runtime):
+  - test_behavior_20_00_mcx_only  — NSE closed, MCX open  → _get_movers_mcx_live called
+  - test_behavior_12_00_nse_open  — NSE open               → _get_movers_mcx_live NOT called
+  - test_behavior_05_00_both_closed — both closed          → _get_movers_now_off_hours called
 """
 
 import re
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -398,3 +405,185 @@ def test_mcx_session_rollover_clears_mcx_dict():
         "Session rollover does not reset _session_movers_mcx — "
         "stale MCX stickies from the previous day survive midnight rollover"
     )
+
+
+def test_fut_map_cache_populated_in_first_run_branch():
+    """_mcx_fut_map_cache is assigned in the cache-miss branch of _get_movers_mcx_live."""
+    src = _wl_source()
+    match = re.search(
+        r"async def _get_movers_mcx_live\(.*?\).*?(?=\nasync def |\ndef |\nclass |\Z)",
+        src, re.DOTALL,
+    )
+    assert match, "_get_movers_mcx_live body not found"
+    body = match.group(0)
+    assert "_mcx_fut_map_cache" in body, (
+        "_get_movers_mcx_live does not write _mcx_fut_map_cache — "
+        "the warm-cache else branch will re-scan all_items on every 30s poll"
+    )
+
+
+def test_fut_map_cache_cleared_on_rollover():
+    """midnight rollover in get_movers clears _mcx_fut_map_cache alongside _session_movers_mcx."""
+    src = _wl_source()
+    match = re.search(
+        r"async def get_movers\(self\).*?(?=\n    @|\nclass |\Z)",
+        src, re.DOTALL,
+    )
+    assert match, "get_movers not found"
+    body = match.group(0)
+    rollover_match = re.search(
+        r"if _session_date != ist_today:.*?_session_date = ist_today",
+        body, re.DOTALL,
+    )
+    assert rollover_match, "Session rollover block not found in get_movers"
+    rollover_block = rollover_match.group(0)
+    assert "_mcx_fut_map_cache" in rollover_block, (
+        "Session rollover does not clear _mcx_fut_map_cache — "
+        "stale yesterday's FUT symbols survive into the new trading day"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5 (Correctness) — behavior-matrix RUNTIME tests
+#
+# Strategy: patch the *delegates* (_get_movers_mcx_live, _get_movers_now_off_hours)
+# as AsyncMocks so no broker calls are made.  Patch is_market_open at its
+# source module (date_time_utils) and timestamp_indian likewise — because
+# get_movers imports them with `from … import …` inside the function body,
+# which re-reads from the source module at call time.
+# fetch_holidays is also patched at its source to avoid DB/broker calls.
+# ---------------------------------------------------------------------------
+
+_IST = ZoneInfo("Asia/Kolkata")
+
+
+def _make_ist(hour: int, minute: int = 0) -> datetime:
+    """Return a timezone-aware IST datetime on an arbitrary weekday (Wednesday)."""
+    return datetime(2026, 7, 1, hour, minute, 0, tzinfo=_IST)  # 2026-07-01 is a Wednesday
+
+
+def _market_open_side_effect(nse_open: bool, mcx_open: bool):
+    """Return a side_effect function for is_market_open keyed on exchange= kwarg."""
+    def _fn(now, holiday_set, market_start=None, market_end=None, exchange=None):
+        if exchange == "NSE":
+            return nse_open
+        if exchange == "MCX":
+            return mcx_open
+        return False
+    return _fn
+
+
+@pytest.fixture(autouse=True)
+def _reset_session_state():
+    """Ensure module-level session dicts are clean before each behavior test."""
+    import backend.api.routes.watchlist as wl
+    wl._session_date = None
+    wl._session_movers = {}
+    wl._session_movers_mcx = {}
+    wl._mcx_underlyings_cache = set()
+    wl._mcx_underlyings_cache_date = None
+    wl._mcx_fut_map_cache = {}
+    yield
+    # clean up after too
+    wl._session_date = None
+    wl._session_movers = {}
+    wl._session_movers_mcx = {}
+    wl._mcx_underlyings_cache = set()
+    wl._mcx_underlyings_cache_date = None
+    wl._mcx_fut_map_cache = {}
+
+
+from backend.api.routes.watchlist import WatchlistController, MoversResponse  # noqa: E402
+
+
+def _call_get_movers(ctrl):
+    """Return the raw coroutine for ctrl.get_movers (bypasses HTTPRouteHandler.__call__)."""
+    # Litestar wraps get_movers in an HTTPRouteHandler; .fn is the original coroutine.
+    handler = WatchlistController.get_movers
+    return handler.fn(ctrl)
+
+
+@pytest.mark.asyncio
+async def test_behavior_20_00_mcx_only():
+    """20:00 IST (NSE closed, MCX open) → _get_movers_mcx_live is awaited,
+    _get_movers_now_off_hours is NOT called."""
+    fake_ist = _make_ist(20, 0)
+    fake_response = MoversResponse(movers=[], threshold_pct=5.0, session_date="2026-07-01")
+
+    with (
+        patch("backend.shared.helpers.date_time_utils.timestamp_indian",
+              return_value=fake_ist),
+        patch("backend.shared.helpers.date_time_utils.is_market_open",
+              side_effect=_market_open_side_effect(nse_open=False, mcx_open=True)),
+        patch("backend.brokers.broker_apis.fetch_holidays", return_value=set()),
+        patch("backend.api.routes.watchlist._get_movers_mcx_live",
+              new_callable=AsyncMock, return_value=fake_response) as mock_mcx,
+        patch("backend.api.routes.watchlist._get_movers_now_off_hours",
+              new_callable=AsyncMock) as mock_off_hours,
+    ):
+        ctrl = WatchlistController(owner=MagicMock())
+        result = await _call_get_movers(ctrl)
+
+    mock_mcx.assert_awaited_once(), "20:00 IST: _get_movers_mcx_live was NOT called"
+    mock_off_hours.assert_not_awaited(), "20:00 IST: NSE snapshot helper was called — MCX path not taken"
+    assert result is fake_response
+
+
+@pytest.mark.asyncio
+async def test_behavior_12_00_nse_open():
+    """12:00 IST (both NSE and MCX open) → _get_movers_mcx_live is NOT called;
+    the NSE live path runs (symbolised here by _get_movers_now_off_hours also not called)."""
+    fake_ist = _make_ist(12, 0)
+
+    with (
+        patch("backend.shared.helpers.date_time_utils.timestamp_indian",
+              return_value=fake_ist),
+        patch("backend.shared.helpers.date_time_utils.is_market_open",
+              side_effect=_market_open_side_effect(nse_open=True, mcx_open=True)),
+        patch("backend.brokers.broker_apis.fetch_holidays", return_value=set()),
+        patch("backend.api.routes.watchlist._get_movers_mcx_live",
+              new_callable=AsyncMock) as mock_mcx,
+        patch("backend.api.routes.watchlist._get_movers_now_off_hours",
+              new_callable=AsyncMock) as mock_off_hours,
+        # Patch the NSE live sub-calls so the handler doesn't hit the DB/broker.
+        patch("backend.api.cache.get_or_fetch", new_callable=AsyncMock, return_value=None),
+        patch("backend.brokers.registry.get_price_broker", return_value=MagicMock()),
+    ):
+        ctrl = WatchlistController(owner=MagicMock())
+        # NSE live path ends with a return of MoversResponse; it may raise on
+        # missing data — we only care that the MCX delegate was NOT called.
+        try:
+            await _call_get_movers(ctrl)
+        except Exception:
+            pass  # NSE path may fail without real instruments — that's expected
+
+    mock_mcx.assert_not_awaited(), "12:00 IST: _get_movers_mcx_live was called when NSE is open"
+    mock_off_hours.assert_not_awaited(), "12:00 IST: off-hours helper was called when NSE is open"
+
+
+@pytest.mark.asyncio
+async def test_behavior_05_00_both_closed():
+    """05:00 IST (both NSE and MCX closed) → _get_movers_now_off_hours is awaited,
+    _get_movers_mcx_live is NOT called."""
+    fake_ist = _make_ist(5, 0)
+
+    with (
+        patch("backend.shared.helpers.date_time_utils.timestamp_indian",
+              return_value=fake_ist),
+        patch("backend.shared.helpers.date_time_utils.is_market_open",
+              side_effect=_market_open_side_effect(nse_open=False, mcx_open=False)),
+        patch("backend.brokers.broker_apis.fetch_holidays", return_value=set()),
+        patch("backend.api.routes.watchlist._get_movers_mcx_live",
+              new_callable=AsyncMock) as mock_mcx,
+        patch("backend.api.routes.watchlist._get_movers_now_off_hours",
+              new_callable=AsyncMock,
+              return_value=([], "snapshot_missing_off_hours")) as mock_off_hours,
+    ):
+        ctrl = WatchlistController(owner=MagicMock())
+        result = await _call_get_movers(ctrl)
+
+    mock_off_hours.assert_awaited_once(), "05:00 IST: _get_movers_now_off_hours was NOT called"
+    mock_mcx.assert_not_awaited(), "05:00 IST: MCX live path was triggered — snapshot path not taken"
+    # Result should be empty MoversResponse (no snapshot present)
+    assert hasattr(result, "movers"), "result is not a MoversResponse"
+    assert result.movers == [], f"Expected empty movers for snapshot_missing_off_hours, got {result.movers}"
