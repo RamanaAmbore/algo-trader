@@ -1,0 +1,996 @@
+{
+  "captured_at": "2026-07-03T05:11:50Z",
+  "commit": "523d86cf",
+  "frontend": {
+    "pages": {
+      "/pulse": {
+        "file": "frontend/src/lib/MarketPulse.svelte",
+        "loc": 6470,
+        "effect_count": 54,
+        "state_count": 109,
+        "derived_count": 69,
+        "subscribe_count": 4,
+        "cyclomatic_est": 1650,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "buildUnified",
+            "cc": 467,
+            "line": 2891
+          },
+          {
+            "fn_name": "mountGrid",
+            "cc": 127,
+            "line": 4006
+          },
+          {
+            "fn_name": "loadPulse",
+            "cc": 92,
+            "line": 2470
+          },
+          {
+            "fn_name": "symRenderer",
+            "cc": 59,
+            "line": 3703
+          },
+          {
+            "fn_name": "loadSparklines",
+            "cc": 47,
+            "line": 1179
+          }
+        ]
+      },
+      "/dashboard": {
+        "file": "frontend/src/routes/(algo)/dashboard/+page.svelte",
+        "loc": 3003,
+        "effect_count": 32,
+        "state_count": 68,
+        "derived_count": 56,
+        "subscribe_count": 1,
+        "cyclomatic_est": 410,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "_fetchNifty",
+            "cc": 30,
+            "line": 1210
+          },
+          {
+            "fn_name": "_marketRows",
+            "cc": 16,
+            "line": 625
+          },
+          {
+            "fn_name": "loadHero",
+            "cc": 16,
+            "line": 1164
+          },
+          {
+            "fn_name": "_holdingsFor",
+            "cc": 15,
+            "line": 714
+          },
+          {
+            "fn_name": "_positionsByUnderlying",
+            "cc": 11,
+            "line": 653
+          }
+        ]
+      },
+      "/performance": {
+        "file": "frontend/src/lib/PerformancePage.svelte",
+        "loc": 1734,
+        "effect_count": 7,
+        "state_count": 26,
+        "derived_count": 4,
+        "subscribe_count": 1,
+        "cyclomatic_est": 296,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "applyAccountFilter",
+            "cc": 42,
+            "line": 804
+          },
+          {
+            "fn_name": "loadAll",
+            "cc": 35,
+            "line": 985
+          },
+          {
+            "fn_name": "applyData",
+            "cc": 30,
+            "line": 948
+          },
+          {
+            "fn_name": "avgVsLtpCls",
+            "cc": 23,
+            "line": 321
+          },
+          {
+            "fn_name": "positionsCols",
+            "cc": 14,
+            "line": 582
+          }
+        ]
+      },
+      "/admin/derivatives": {
+        "file": "frontend/src/routes/(algo)/admin/derivatives/+page.svelte",
+        "loc": 7986,
+        "effect_count": 32,
+        "state_count": 66,
+        "derived_count": 63,
+        "subscribe_count": 3,
+        "cyclomatic_est": 1442,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "expiryCloseAnalysis",
+            "cc": 126,
+            "line": 507
+          },
+          {
+            "fn_name": "loadPositions",
+            "cc": 76,
+            "line": 3964
+          },
+          {
+            "fn_name": "_byUnderlyingTotals",
+            "cc": 65,
+            "line": 884
+          },
+          {
+            "fn_name": "loadStrategy",
+            "cc": 50,
+            "line": 4247
+          },
+          {
+            "fn_name": "_byUnderlyingExp",
+            "cc": 46,
+            "line": 1084
+          }
+        ]
+      },
+      "/charts": {
+        "file": "frontend/src/routes/(algo)/charts/+page.svelte",
+        "loc": 140,
+        "effect_count": 0,
+        "state_count": 4,
+        "derived_count": 0,
+        "subscribe_count": 0,
+        "cyclomatic_est": 10,
+        "cyclomatic_hotspots": []
+      },
+      "/orders": {
+        "file": "frontend/src/routes/(algo)/orders/+page.svelte",
+        "loc": 925,
+        "effect_count": 6,
+        "state_count": 29,
+        "derived_count": 4,
+        "subscribe_count": 0,
+        "cyclomatic_est": 56,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "_buildModifyProps",
+            "cc": 23,
+            "line": 215
+          }
+        ]
+      },
+      "/admin/history": {
+        "file": "frontend/src/routes/(algo)/admin/history/+page.svelte",
+        "loc": 618,
+        "effect_count": 5,
+        "state_count": 22,
+        "derived_count": 2,
+        "subscribe_count": 0,
+        "cyclomatic_est": 62,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "load",
+            "cc": 28,
+            "line": 68
+          }
+        ]
+      },
+      "/admin/audit": {
+        "file": "frontend/src/routes/(algo)/admin/audit/+page.svelte",
+        "loc": 592,
+        "effect_count": 4,
+        "state_count": 16,
+        "derived_count": 2,
+        "subscribe_count": 0,
+        "cyclomatic_est": 36,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "load",
+            "cc": 14,
+            "line": 56
+          }
+        ]
+      },
+      "/automation": {
+        "file": "frontend/src/routes/(algo)/automation/+page.svelte",
+        "loc": 1698,
+        "effect_count": 0,
+        "state_count": 20,
+        "derived_count": 4,
+        "subscribe_count": 0,
+        "cyclomatic_est": 136,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "saveEdit",
+            "cc": 20,
+            "line": 340
+          },
+          {
+            "fn_name": "saveAIDraft",
+            "cc": 17,
+            "line": 52
+          },
+          {
+            "fn_name": "startEdit",
+            "cc": 14,
+            "line": 199
+          }
+        ]
+      },
+      "/activity": {
+        "file": "frontend/src/routes/(algo)/activity/+page.svelte",
+        "loc": 126,
+        "effect_count": 0,
+        "state_count": 5,
+        "derived_count": 2,
+        "subscribe_count": 0,
+        "cyclomatic_est": 3,
+        "cyclomatic_hotspots": []
+      },
+      "lib::MarketPulse": {
+        "file": "frontend/src/lib/MarketPulse.svelte",
+        "loc": 6470,
+        "effect_count": 54,
+        "state_count": 109,
+        "derived_count": 69,
+        "subscribe_count": 4,
+        "cyclomatic_est": 1650,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "buildUnified",
+            "cc": 467,
+            "line": 2891
+          },
+          {
+            "fn_name": "mountGrid",
+            "cc": 127,
+            "line": 4006
+          },
+          {
+            "fn_name": "loadPulse",
+            "cc": 92,
+            "line": 2470
+          },
+          {
+            "fn_name": "symRenderer",
+            "cc": 59,
+            "line": 3703
+          },
+          {
+            "fn_name": "loadSparklines",
+            "cc": 47,
+            "line": 1179
+          }
+        ]
+      },
+      "lib::PerformancePage": {
+        "file": "frontend/src/lib/PerformancePage.svelte",
+        "loc": 1734,
+        "effect_count": 7,
+        "state_count": 26,
+        "derived_count": 4,
+        "subscribe_count": 1,
+        "cyclomatic_est": 296,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "applyAccountFilter",
+            "cc": 42,
+            "line": 804
+          },
+          {
+            "fn_name": "loadAll",
+            "cc": 35,
+            "line": 985
+          },
+          {
+            "fn_name": "applyData",
+            "cc": 30,
+            "line": 948
+          },
+          {
+            "fn_name": "avgVsLtpCls",
+            "cc": 23,
+            "line": 321
+          },
+          {
+            "fn_name": "positionsCols",
+            "cc": 14,
+            "line": 582
+          }
+        ]
+      },
+      "lib::NavCard": {
+        "file": "frontend/src/lib/NavCard.svelte",
+        "loc": 425,
+        "effect_count": 3,
+        "state_count": 4,
+        "derived_count": 18,
+        "subscribe_count": 1,
+        "cyclomatic_est": 50,
+        "cyclomatic_hotspots": []
+      },
+      "lib::NavBreakdown": {
+        "file": "frontend/src/lib/NavBreakdown.svelte",
+        "loc": 441,
+        "effect_count": 1,
+        "state_count": 4,
+        "derived_count": 11,
+        "subscribe_count": 1,
+        "cyclomatic_est": 41,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "<anon>",
+            "cc": 10,
+            "line": 64
+          }
+        ]
+      },
+      "lib::PositionStrip": {
+        "file": "frontend/src/lib/PositionStrip.svelte",
+        "loc": 920,
+        "effect_count": 10,
+        "state_count": 12,
+        "derived_count": 16,
+        "subscribe_count": 3,
+        "cyclomatic_est": 184,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "_expiryProfit",
+            "cc": 46,
+            "line": 570
+          },
+          {
+            "fn_name": "_liveDeltaByRow",
+            "cc": 27,
+            "line": 275
+          },
+          {
+            "fn_name": "_throttledTick",
+            "cc": 22,
+            "line": 143
+          },
+          {
+            "fn_name": "_loadUnderlyingSpots",
+            "cc": 16,
+            "line": 88
+          },
+          {
+            "fn_name": "<anon>",
+            "cc": 10,
+            "line": 443
+          }
+        ]
+      },
+      "lib::PriceChart": {
+        "file": "frontend/src/lib/PriceChart.svelte",
+        "loc": 749,
+        "effect_count": 2,
+        "state_count": 13,
+        "derived_count": 24,
+        "subscribe_count": 0,
+        "cyclomatic_est": 92,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "load",
+            "cc": 14,
+            "line": 83
+          }
+        ]
+      },
+      "lib::ChartWorkspace": {
+        "file": "frontend/src/lib/ChartWorkspace.svelte",
+        "loc": 3201,
+        "effect_count": 17,
+        "state_count": 52,
+        "derived_count": 53,
+        "subscribe_count": 0,
+        "cyclomatic_est": 418,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "_loadHistorical",
+            "cc": 50,
+            "line": 617
+          },
+          {
+            "fn_name": "<anon>",
+            "cc": 28,
+            "line": 1556
+          },
+          {
+            "fn_name": "_resolveFetchSymbol",
+            "cc": 24,
+            "line": 510
+          },
+          {
+            "fn_name": "_signalMarkers",
+            "cc": 20,
+            "line": 1229
+          },
+          {
+            "fn_name": "prefetchChartBars",
+            "cc": 14,
+            "line": 52
+          }
+        ]
+      },
+      "lib::LogPanel": {
+        "file": "frontend/src/lib/LogPanel.svelte",
+        "loc": 1770,
+        "effect_count": 8,
+        "state_count": 23,
+        "derived_count": 10,
+        "subscribe_count": 1,
+        "cyclomatic_est": 390,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "_orderRowHtml",
+            "cc": 37,
+            "line": 962
+          },
+          {
+            "fn_name": "_terminalHtml",
+            "cc": 36,
+            "line": 1046
+          },
+          {
+            "fn_name": "filteredOrderRows",
+            "cc": 24,
+            "line": 652
+          },
+          {
+            "fn_name": "_renderSimLine",
+            "cc": 24,
+            "line": 823
+          },
+          {
+            "fn_name": "_loadOrders",
+            "cc": 18,
+            "line": 360
+          }
+        ]
+      },
+      "lib::OrderTicket": {
+        "file": "frontend/src/lib/order/OrderTicket.svelte",
+        "loc": 3542,
+        "effect_count": 38,
+        "state_count": 60,
+        "derived_count": 39,
+        "subscribe_count": 1,
+        "cyclomatic_est": 560,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "submit",
+            "cc": 79,
+            "line": 1540
+          },
+          {
+            "fn_name": "_isDemo",
+            "cc": 54,
+            "line": 50
+          },
+          {
+            "fn_name": "<anon>",
+            "cc": 28,
+            "line": 1442
+          },
+          {
+            "fn_name": "<anon>",
+            "cc": 25,
+            "line": 1831
+          },
+          {
+            "fn_name": "validationErr",
+            "cc": 24,
+            "line": 1238
+          }
+        ]
+      },
+      "lib::RefreshButton": {
+        "file": "frontend/src/lib/RefreshButton.svelte",
+        "loc": 690,
+        "effect_count": 6,
+        "state_count": 12,
+        "derived_count": 6,
+        "subscribe_count": 4,
+        "cyclomatic_est": 69,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "_refiring",
+            "cc": 20,
+            "line": 46
+          }
+        ]
+      }
+    },
+    "bundle_size_kb": null
+  },
+  "backend": {
+    "routes": {
+      "GET /api/positions": {
+        "file": "backend/api/routes/positions.py",
+        "loc": 933,
+        "async_fn_count": 7,
+        "cyclomatic_avg": 11.3,
+        "cyclomatic_max": 49,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "PositionsController.get_positions",
+            "cc": 49,
+            "line": 709
+          },
+          {
+            "fn_name": "_fetch",
+            "cc": 20,
+            "line": 196
+          },
+          {
+            "fn_name": "_enrich_position_greeks",
+            "cc": 19,
+            "line": 617
+          },
+          {
+            "fn_name": "_positions_snapshot",
+            "cc": 18,
+            "line": 31
+          },
+          {
+            "fn_name": "_override_stale_close_from_snapshot",
+            "cc": 17,
+            "line": 415
+          },
+          {
+            "fn_name": "_build_paper_positions_response",
+            "cc": 16,
+            "line": 514
+          }
+        ]
+      },
+      "GET /api/holdings": {
+        "file": "backend/api/routes/holdings.py",
+        "loc": 426,
+        "async_fn_count": 4,
+        "cyclomatic_avg": 9.2,
+        "cyclomatic_max": 29,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "HoldingsController.get_holdings",
+            "cc": 29,
+            "line": 311
+          },
+          {
+            "fn_name": "_holdings_snapshot",
+            "cc": 19,
+            "line": 32
+          },
+          {
+            "fn_name": "_fetch",
+            "cc": 17,
+            "line": 240
+          }
+        ]
+      },
+      "GET /api/funds": {
+        "file": "backend/api/routes/funds.py",
+        "loc": 154,
+        "async_fn_count": 1,
+        "cyclomatic_avg": 7.0,
+        "cyclomatic_max": 14,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "FundsController.get_funds",
+            "cc": 14,
+            "line": 92
+          },
+          {
+            "fn_name": "_fetch",
+            "cc": 10,
+            "line": 46
+          }
+        ]
+      },
+      "GET /api/nav": {
+        "file": "backend/api/routes/nav.py",
+        "loc": 330,
+        "async_fn_count": 5,
+        "cyclomatic_avg": 7.3,
+        "cyclomatic_max": 16,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "my_slice",
+            "cc": 16,
+            "line": 174
+          },
+          {
+            "fn_name": "my_history",
+            "cc": 11,
+            "line": 258
+          }
+        ]
+      },
+      "POST /api/orders": {
+        "file": "backend/api/routes/orders.py",
+        "loc": 1493,
+        "async_fn_count": 20,
+        "cyclomatic_avg": 14.5,
+        "cyclomatic_max": 43,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "list_active_chases",
+            "cc": 43,
+            "line": 298
+          },
+          {
+            "fn_name": "retry_template",
+            "cc": 43,
+            "line": 592
+          },
+          {
+            "fn_name": "reconcile_single_order",
+            "cc": 29,
+            "line": 888
+          },
+          {
+            "fn_name": "reconcile_algo_orders",
+            "cc": 25,
+            "line": 769
+          },
+          {
+            "fn_name": "kill_chase",
+            "cc": 22,
+            "line": 473
+          },
+          {
+            "fn_name": "preflight_order",
+            "cc": 21,
+            "line": 1110
+          },
+          {
+            "fn_name": "order_postback_dhan",
+            "cc": 20,
+            "line": 1269
+          },
+          {
+            "fn_name": "order_postback_groww",
+            "cc": 17,
+            "line": 1339
+          },
+          {
+            "fn_name": "_postback_broadcast_fanout",
+            "cc": 15,
+            "line": 127
+          },
+          {
+            "fn_name": "OrdersController.list_algo_orders",
+            "cc": 13,
+            "line": 245
+          },
+          {
+            "fn_name": "OrdersController.ticket_preview",
+            "cc": 12,
+            "line": 1178
+          },
+          {
+            "fn_name": "AccountsController.list_accounts",
+            "cc": 10,
+            "line": 1445
+          }
+        ]
+      },
+      "GET /api/charts": {
+        "file": "backend/api/routes/charts.py",
+        "loc": 376,
+        "async_fn_count": 5,
+        "cyclomatic_avg": 6.8,
+        "cyclomatic_max": 18,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "_algo_order_events",
+            "cc": 18,
+            "line": 129
+          },
+          {
+            "fn_name": "batch",
+            "cc": 12,
+            "line": 258
+          }
+        ]
+      },
+      "GET /api/options": {
+        "file": "backend/api/routes/options.py",
+        "loc": 3018,
+        "async_fn_count": 12,
+        "cyclomatic_avg": 10.8,
+        "cyclomatic_max": 61,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "historical",
+            "cc": 61,
+            "line": 2400
+          },
+          {
+            "fn_name": "chain_snapshot",
+            "cc": 52,
+            "line": 2225
+          },
+          {
+            "fn_name": "_resolve_spot",
+            "cc": 35,
+            "line": 1135
+          },
+          {
+            "fn_name": "_strategy_analytics_impl",
+            "cc": 31,
+            "line": 2841
+          },
+          {
+            "fn_name": "OptionsController.chain_quotes",
+            "cc": 30,
+            "line": 2109
+          },
+          {
+            "fn_name": "_strategy_mcx_scale_ratios",
+            "cc": 23,
+            "line": 1568
+          },
+          {
+            "fn_name": "_resolve_ltp",
+            "cc": 22,
+            "line": 1364
+          },
+          {
+            "fn_name": "OptionsController.analytics",
+            "cc": 22,
+            "line": 1879
+          },
+          {
+            "fn_name": "_resolve_position",
+            "cc": 19,
+            "line": 826
+          },
+          {
+            "fn_name": "_lookup_mcx_future",
+            "cc": 16,
+            "line": 943
+          },
+          {
+            "fn_name": "_strategy_pick_spot_anchor",
+            "cc": 16,
+            "line": 1505
+          },
+          {
+            "fn_name": "_ltp_from_quote",
+            "cc": 12,
+            "line": 901
+          },
+          {
+            "fn_name": "_strategy_resolve_option_ltp",
+            "cc": 12,
+            "line": 1690
+          },
+          {
+            "fn_name": "_leg_curve_cache_key",
+            "cc": 10,
+            "line": 149
+          },
+          {
+            "fn_name": "_strategy_build_futures_leg",
+            "cc": 10,
+            "line": 1643
+          }
+        ]
+      },
+      "GET /api/quote": {
+        "file": "backend/api/routes/quote.py",
+        "loc": 1238,
+        "async_fn_count": 17,
+        "cyclomatic_avg": 10.3,
+        "cyclomatic_max": 79,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "batch_sparkline",
+            "cc": 79,
+            "line": 561
+          },
+          {
+            "fn_name": "batch_quote",
+            "cc": 43,
+            "line": 276
+          },
+          {
+            "fn_name": "_fetch_ltp",
+            "cc": 23,
+            "line": 171
+          },
+          {
+            "fn_name": "warm_sparkline_cache",
+            "cc": 18,
+            "line": 1124
+          },
+          {
+            "fn_name": "_get_today_token_map",
+            "cc": 16,
+            "line": 428
+          },
+          {
+            "fn_name": "_ticker_seed_early",
+            "cc": 14,
+            "line": 1056
+          },
+          {
+            "fn_name": "_resolve_token_for_sym",
+            "cc": 13,
+            "line": 107
+          },
+          {
+            "fn_name": "_is_exchange_segment_closed",
+            "cc": 11,
+            "line": 56
+          }
+        ]
+      },
+      "GET /api/history": {
+        "file": "backend/api/routes/history.py",
+        "loc": 603,
+        "async_fn_count": 6,
+        "cyclomatic_avg": 9.4,
+        "cyclomatic_max": 20,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "list_funds",
+            "cc": 20,
+            "line": 325
+          },
+          {
+            "fn_name": "HistoryController.backfill_funds",
+            "cc": 19,
+            "line": 431
+          },
+          {
+            "fn_name": "HistoryController.list_orders",
+            "cc": 18,
+            "line": 162
+          },
+          {
+            "fn_name": "HistoryController.list_trades",
+            "cc": 17,
+            "line": 253
+          }
+        ]
+      },
+      "GET /api/audit": {
+        "file": "backend/api/routes/audit.py",
+        "loc": 152,
+        "async_fn_count": 1,
+        "cyclomatic_avg": 18.0,
+        "cyclomatic_max": 18,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "AuditController.list_audit",
+            "cc": 18,
+            "line": 57
+          }
+        ]
+      },
+      "GET /api/health": {
+        "file": "backend/api/routes/health.py",
+        "loc": 896,
+        "async_fn_count": 11,
+        "cyclomatic_avg": 6.5,
+        "cyclomatic_max": 38,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "PersistenceAdminController.backfill._run_backfill",
+            "cc": 38,
+            "line": 536
+          },
+          {
+            "fn_name": "_derive_account_health",
+            "cc": 21,
+            "line": 715
+          },
+          {
+            "fn_name": "BrokerHealthController.get_broker_health",
+            "cc": 16,
+            "line": 784
+          },
+          {
+            "fn_name": "_fetch_broker_statuses",
+            "cc": 14,
+            "line": 143
+          }
+        ]
+      },
+      "GET /api/execution": {
+        "file": "backend/api/routes/execution.py",
+        "loc": 303,
+        "async_fn_count": 3,
+        "cyclomatic_avg": 7.2,
+        "cyclomatic_max": 18,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "set_mode",
+            "cc": 18,
+            "line": 117
+          }
+        ]
+      },
+      "GET /api/logs": {
+        "file": "backend/api/routes/logs.py",
+        "loc": 205,
+        "async_fn_count": 1,
+        "cyclomatic_avg": 15.7,
+        "cyclomatic_max": 43,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "LogsController.unified_log",
+            "cc": 43,
+            "line": 73
+          }
+        ]
+      },
+      "POST /api/agents": {
+        "file": "backend/api/routes/agents.py",
+        "loc": 1102,
+        "async_fn_count": 22,
+        "cyclomatic_avg": 7.6,
+        "cyclomatic_max": 35,
+        "cyclomatic_hotspots": [
+          {
+            "fn_name": "interpret",
+            "cc": 35,
+            "line": 752
+          },
+          {
+            "fn_name": "_build_dry_run_response",
+            "cc": 24,
+            "line": 310
+          },
+          {
+            "fn_name": "update_agent",
+            "cc": 15,
+            "line": 550
+          },
+          {
+            "fn_name": "_cmd_ai_create",
+            "cc": 15,
+            "line": 901
+          },
+          {
+            "fn_name": "_cmd_config",
+            "cc": 14,
+            "line": 865
+          },
+          {
+            "fn_name": "create_agent",
+            "cc": 13,
+            "line": 508
+          },
+          {
+            "fn_name": "_agent_to_info",
+            "cc": 11,
+            "line": 402
+          },
+          {
+            "fn_name": "_cmd_ai_refine",
+            "cc": 10,
+            "line": 1023
+          }
+        ]
+      }
+    }
+  }
+}
