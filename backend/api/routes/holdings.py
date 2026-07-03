@@ -15,6 +15,7 @@ from backend.api.rbac import (
 from backend.api.algo.pnl_math import recompute_row_percentages
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.helpers.ltp_patch import apply_ltp_patch, holdings_policy
+from backend.api.helpers.price_resolver import resolve_current_price
 from backend.api.helpers.snapshot_gate import (
     closed_hours_or_broker, is_exchange_closed_now, latest_snapshot_ltp_map,
 )
@@ -248,9 +249,14 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
 
 async def _overlay_snapshot_for_closed_exchanges(rows: list) -> list:
     """Per-exchange close-snapshot overlay for holdings rows under the
-    unified animation model (Jul 2026 refactor). See
-    positions._overlay_snapshot_for_closed_exchanges for the full model
-    rationale (`price_source`, `current_price`, `is_animating`).
+    unified animation model (Jul 2026 refactor). Delegates the per-row
+    triad decision to `price_resolver.resolve_current_price` so
+    positions + holdings + movers all share ONE branch matrix.
+
+    Holdings-specific concern: cur_val is derived from ltp × qty
+    (unlike positions where broker owns pnl). When the snapshot LTP
+    wins, we recompute cur_val to match — otherwise the frontend TOTAL
+    row rolls up stale broker cur_val against fresh snapshot LTP.
 
     Holdings are eq-only (NSE/BSE) so the closed-exchange gate almost
     always resolves to "NSE closed" during 15:30-23:30 IST. MCX holdings
@@ -267,48 +273,65 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list) -> list:
             exchange_closed[e] = is_exchange_closed_now(e)
         return exchange_closed[e]
 
+    import msgspec as _msc
+
+    # Fast path — every exchange currently open. Resolver call per row.
     if not any(_closed(getattr(r, "exchange", "")) for r in rows):
-        import msgspec as _msc
-        return [
-            _msc.structs.replace(
-                r, price_source="live",
-                current_price=float(getattr(r, "last_price", 0.0) or 0.0),
-                is_animating=True,
+        out: list = []
+        for r in rows:
+            live_ltp = float(getattr(r, "last_price", 0.0) or 0.0)
+            price, source, animating = resolve_current_price(
+                exchange_open=True, live_ltp=live_ltp,
             )
-            for r in rows
-        ]
+            out.append(_msc.structs.replace(
+                r, price_source=source,
+                current_price=price if price is not None else live_ltp,
+                is_animating=animating,
+            ))
+        return out
 
     snap_map = await latest_snapshot_ltp_map("holdings")
-    import msgspec as _msc
-    out: list = []
+    out = []
     for r in rows:
-        if not _closed(getattr(r, "exchange", "")):
+        exch = getattr(r, "exchange", "")
+        broker_ltp = float(getattr(r, "last_price", 0.0) or 0.0)
+        if not _closed(exch):
+            price, source, animating = resolve_current_price(
+                exchange_open=True, live_ltp=broker_ltp,
+            )
             out.append(_msc.structs.replace(
-                r, price_source="live",
-                current_price=float(getattr(r, "last_price", 0.0) or 0.0),
-                is_animating=True,
+                r, price_source=source,
+                current_price=price if price is not None else broker_ltp,
+                is_animating=animating,
             ))
             continue
+
         key = (getattr(r, "account", ""), getattr(r, "tradingsymbol", ""))
         snap_ltp = snap_map.get(key)
-        if snap_ltp is not None and snap_ltp > 0:
-            # Overlay snapshot LTP + recompute cur_val since holdings
-            # cur_val is derived (unlike positions where broker owns pnl).
-            qty = int(getattr(r, "quantity", 0) or getattr(r, "opening_quantity", 0))
-            new_cur_val = float(snap_ltp) * qty
-            out.append(_msc.structs.replace(
-                r, last_price=float(snap_ltp), cur_val=new_cur_val,
-                close_price=float(snap_ltp),
-                current_price=float(snap_ltp),
-                price_source="snapshot_settled",
-                is_animating=False,
-            ))
-        else:
-            out.append(_msc.structs.replace(
-                r, current_price=float(getattr(r, "last_price", 0.0) or 0.0),
-                price_source="snapshot_unsettled",
-                is_animating=False,
-            ))
+        has_snapshot = snap_ltp is not None and snap_ltp > 0
+
+        price, source, animating = resolve_current_price(
+            exchange_open=False,
+            live_ltp=broker_ltp,
+            snapshot_close=(float(snap_ltp) if has_snapshot else None),
+            snapshot_last_ltp=broker_ltp,
+            settled=has_snapshot,
+        )
+        replace_kwargs: dict = {
+            "price_source": source,
+            "current_price": price if price is not None else broker_ltp,
+            "is_animating": animating,
+        }
+        # On settled path — overlay last_price + close_price + recompute
+        # cur_val (holdings-specific: cur_val is derived from ltp × qty).
+        if has_snapshot and price is not None:
+            qty = int(
+                getattr(r, "quantity", 0) or getattr(r, "opening_quantity", 0)
+            )
+            replace_kwargs["last_price"] = float(price)
+            replace_kwargs["close_price"] = float(price)
+            replace_kwargs["cur_val"] = float(price) * qty
+        out.append(_msc.structs.replace(r, **replace_kwargs))
     return out
 
 
