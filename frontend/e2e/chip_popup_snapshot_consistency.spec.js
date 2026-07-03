@@ -2,34 +2,28 @@
  * chip_popup_snapshot_consistency.spec.js
  *
  * Regression guard: BrokerHealthBadge popup chrome must stay visually
- * consistent with the Snapshot grid canonical defined in derivatives/+page.svelte
- * (.byund-headrow / .byund-row).
+ * consistent with the canonical card-heading style defined in CLAUDE.md:
  *
- * Root cause fixed (2026-07-03): .bh-modal-header used a hardcoded slate
- * colour (#cbd5e1) and a faint non-amber border. Now aligned to:
- *   - Header bg:     rgba(15,23,42,0.65) — matches .byund-headrow > span
- *   - Header border: var(--algo-amber-border-soft) = rgba(251,191,36,0.30)
- *   - Header text:   var(--text-muted) = #7e97b8
- *   - Row text:      #c8d8f0 — matches .byund-row > span
- *   - Row alt-bg:    rgba(13,22,42,0.30) — matches .byund-row:nth-of-type(odd)
- *   - Row divider:   rgba(126,151,184,0.10)
- * The .algo-modal wrapper (amber border halo, gradient, radius 6px) was
- * already correct and is unchanged.
+ * Level 1 (card title / popup heading):
+ *   - Text color: var(--c-action) = #fbbf24 (amber-400)
+ *   - Font: var(--font-numeric), 0.85rem, weight 700, uppercase
+ *   - Bottom border: rgba(251,191,36,0.30)
+ *
+ * Level 2 (grid column-header row inside body):
+ *   - Text color: var(--text-muted) = #7e97b8
+ *   - Font: 0.6rem, uppercase, letter-spacing 0.04em
+ *   - Background: rgba(15,23,42,0.30)
+ *
+ * Grid outer border: 1px solid rgba(255,255,255,0.08), border-radius 4px.
  *
  * Five quality dimensions:
- *  1. SSOT  — popup header/row styles match Snapshot canonical token values
+ *  1. SSOT  — popup title is amber (#fbbf24); grid-header row is muted (#7e97b8)
  *  2. Perf  — popup opens within 500 ms of click
- *  3. Stale — no #cbd5e1 or rgba(148,163,184,0.12) on .bh-modal-header
- *  4. Reuse — same CSS tokens / values as derivatives Snapshot grid
- *  5. UX    — palette, font-family, border-radius confirmed across viewports
+ *  3. Stale — no muted/slate color on .bh-modal-title; no missing .bh-headrow
+ *  4. Reuse — same CSS tokens / values as CLAUDE.md canonical card heading
+ *  5. UX    — palette, font-family, border, border-radius confirmed across viewports
  *
- * Method: navigate to /dashboard, click the broker chip, assert popup chrome
- * against the canonical Snapshot values. All 3 viewports.
- *
- * Note on header text colour: the Snapshot .byund-headrow uses var(--text-muted)
- * which resolves to #7e97b8 (rgb(126,151,184)). The parent task spec quoted
- * amber #fbbf24 for the header — that is incorrect relative to the actual
- * Snapshot canonical. We assert the correct value here.
+ * Method: navigate to /dashboard, click the broker chip, assert popup chrome.
  */
 
 import { test, expect } from '@playwright/test';
@@ -68,17 +62,18 @@ function expectColorNear(actual, expected, label, delta = 10) {
   expect(Math.abs(a.b - e.b), `${label}: B Δ≤${delta}`).toBeLessThanOrEqual(delta);
 }
 
-// ── Canonical Snapshot reference values (from byund-headrow > span) ────────
+// ── Canonical reference values ──────────────────────────────────────────────
 
-/**
- * Header bg blend: rgba(15,23,42,0.65) painted over --card-bg-gradient
- * (#1d2a44..#152033).  Blended result ≈ rgb(20, 27, 42).  We use a generous
- * delta of 15 for the composite since the alpha composite varies slightly
- * depending on which layer of the gradient is the actual backdrop pixel.
- */
-const SNAP_HEADER_TEXT  = 'rgb(126, 151, 184)'; // var(--text-muted) = #7e97b8
-const SNAP_ROW_TEXT     = 'rgb(200, 216, 240)'; // #c8d8f0
-const SNAP_FONT_NUMERIC = 'ui-monospace';        // var(--font-numeric)
+// Level 1: popup card title — amber-400 = var(--c-action)
+const TITLE_AMBER_COLOR  = 'rgb(251, 191, 36)';  // #fbbf24
+const TITLE_MIN_FONT_PX  = 13;                    // 0.85rem × 16px/rem
+
+// Level 2: grid column-header row — muted = var(--text-muted)
+const HEADROW_MUTED_TEXT = 'rgb(126, 151, 184)';  // #7e97b8
+
+// Row data cells
+const SNAP_ROW_TEXT     = 'rgb(200, 216, 240)';   // #c8d8f0
+const SNAP_FONT_NUMERIC = 'ui-monospace';           // var(--font-numeric)
 
 // --algo-amber-border-soft = rgba(251,191,36,0.30). The border-color resolved
 // by the browser against the popup background will be very close to rgb(251,191,36).
@@ -129,9 +124,9 @@ test.describe('BrokerHealthBadge popup — Snapshot palette consistency', () => 
     return true;
   }
 
-  // ── 1. SSOT: popup header text colour matches Snapshot --text-muted ─────
+  // ── 1. SSOT: popup title colour = amber-400 (var(--c-action) = #fbbf24) ───
 
-  test('Header title colour = var(--text-muted) = #7e97b8', async () => {
+  test('Popup title colour = amber-400 (#fbbf24)', async () => {
     const found = await openBrokerPopup();
     if (!found) {
       test.info().annotations.push({ type: 'skip', description: 'Broker chip not found' });
@@ -140,8 +135,21 @@ test.describe('BrokerHealthBadge popup — Snapshot palette consistency', () => 
 
     const title = P.locator('.bh-modal-title').first();
     const color = await title.evaluate(el => getComputedStyle(el).color);
+    expectColorNear(color, TITLE_AMBER_COLOR, 'popup title color vs amber-400', 10);
+  });
 
-    expectColorNear(color, SNAP_HEADER_TEXT, 'header title color vs --text-muted', 10);
+  // ── 1b. SSOT: popup title font-size ≥ 0.85rem ────────────────────────────
+
+  test('Popup title font-size ≥ 0.85rem (13px)', async () => {
+    const found = await openBrokerPopup();
+    if (!found) {
+      test.info().annotations.push({ type: 'skip', description: 'Broker chip not found' });
+      return;
+    }
+
+    const title = P.locator('.bh-modal-title').first();
+    const fontPx = await title.evaluate(el => parseFloat(getComputedStyle(el).fontSize));
+    expect(fontPx, 'popup title font-size ≥ 13px (0.85rem)').toBeGreaterThanOrEqual(TITLE_MIN_FONT_PX);
   });
 
   // ── 2. SSOT: popup header border-bottom contains amber (amber-border-soft) ─
@@ -242,6 +250,71 @@ test.describe('BrokerHealthBadge popup — Snapshot palette consistency', () => 
         /ui-monospace|SFMono|Menlo|Consolas|monospace/i
       );
     }
+  });
+
+  // ── 5b. SSOT: grid header row (.bh-headrow) is present when accounts exist ─
+
+  test('Grid header row (.bh-headrow) present when accounts exist', async () => {
+    const found = await openBrokerPopup();
+    if (!found) {
+      test.info().annotations.push({ type: 'skip', description: 'Broker chip not found' });
+      return;
+    }
+
+    // If there are account rows, a .bh-headrow must also be present.
+    const rows = P.locator('.bh-row');
+    const rowCount = await rows.count();
+    if (rowCount === 0) {
+      test.info().annotations.push({ type: 'skip', description: 'No account rows to check against' });
+      return;
+    }
+
+    const headrow = P.locator('.bh-headrow').first();
+    await expect(headrow, 'grid header row must be present').toBeVisible();
+  });
+
+  // ── 5c. SSOT: grid header row text colour = muted (#7e97b8) ─────────────
+
+  test('Grid header row text colour = var(--text-muted) = #7e97b8', async () => {
+    const found = await openBrokerPopup();
+    if (!found) {
+      test.info().annotations.push({ type: 'skip', description: 'Broker chip not found' });
+      return;
+    }
+
+    const headrow = P.locator('.bh-headrow').first();
+    if (!await headrow.count()) {
+      test.info().annotations.push({ type: 'skip', description: 'No .bh-headrow present' });
+      return;
+    }
+
+    // Check a text-bearing span inside the headrow (skip the empty dot span).
+    const label = headrow.locator('span').nth(1);
+    const color = await label.evaluate(el => getComputedStyle(el).color);
+    expectColorNear(color, HEADROW_MUTED_TEXT, 'headrow label color vs --text-muted', 10);
+  });
+
+  // ── 5d. SSOT: .bh-grid has a visible border ───────────────────────────────
+
+  test('Grid wrapper (.bh-grid) has outer border with border-width > 0', async () => {
+    const found = await openBrokerPopup();
+    if (!found) {
+      test.info().annotations.push({ type: 'skip', description: 'Broker chip not found' });
+      return;
+    }
+
+    const grid = P.locator('.bh-grid').first();
+    if (!await grid.count()) {
+      test.info().annotations.push({ type: 'skip', description: 'No .bh-grid present' });
+      return;
+    }
+
+    const borderWidth = await grid.evaluate(el => parseFloat(getComputedStyle(el).borderTopWidth));
+    expect(borderWidth, 'grid border-width > 0').toBeGreaterThan(0);
+
+    const borderColor = await grid.evaluate(el => getComputedStyle(el).borderTopColor);
+    const parsed = parseRgba(borderColor);
+    expect(parsed, 'grid border-color is parseable (not transparent)').not.toBeNull();
   });
 
   // ── 6. Perf: popup renders within 500 ms (already checked in openBrokerPopup) ─

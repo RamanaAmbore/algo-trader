@@ -102,6 +102,17 @@
       </button>
     </div>
     <div class="bh-modal-body">
+      <div class="bh-grid">
+        {#if accounts.length > 0}
+          <div class="bh-headrow" aria-hidden="true">
+            <span></span>
+            <span>Account</span>
+            <span>Broker</span>
+            <span>Status</span>
+            <span>Reason</span>
+            <span>Last Good</span>
+          </div>
+        {/if}
       {#each accounts as acct (acct.account)}
         {@const _accCls = acct.state === 'red'   ? 'bh-row-account-red'
                         : acct.state === 'amber' ? 'bh-row-account-amber'
@@ -151,6 +162,7 @@
       {#if accounts.length === 0}
         <p class="bh-empty">No fetch health data recorded yet.</p>
       {/if}
+      </div>
     </div>
     <div class="bh-modal-footer">
       <span class="bh-footer-note">Polls every 30 s · Auth state from broker API calls</span>
@@ -245,10 +257,10 @@
   }
   .bh-modal-title {
     font-family: var(--font-numeric);
-    font-size: var(--fs-2xs);
-    font-weight: 800;
-    letter-spacing: 0.06em;
-    color: var(--text-muted);
+    font-size: 0.85rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: var(--c-action);
     text-transform: uppercase;
   }
   .bh-close {
@@ -271,7 +283,31 @@
   .bh-modal-body {
     flex: 1;
     overflow-y: auto;
-    padding: 0.5rem 0;
+    padding: 0.5rem 0.75rem;
+  }
+
+  /* ── Grid wrapper — gives the account rows a bordered container ── */
+  .bh-grid {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  /* ── Grid header row (Level-2: column labels, muted) ── */
+  .bh-headrow {
+    display: grid;
+    grid-template-columns: 0.6rem 5.5rem 3.5rem 3.5rem 1fr 5rem;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 1rem;
+    background: rgba(15, 23, 42, 0.30);
+    border-bottom: 1px solid rgba(251, 191, 36, 0.20);
+    font-family: var(--font-numeric);
+    font-size: 0.6rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-muted);
   }
   .bh-row {
     display: grid;
@@ -406,9 +442,12 @@
       width: auto;
       max-height: 70vh;
     }
-    .bh-row {
+    .bh-row,
+    .bh-headrow {
       grid-template-columns: 0.6rem 4rem 2.5rem 3rem 1fr 4rem;
       gap: 0.35rem;
+    }
+    .bh-row {
       font-size: var(--fs-sm);
     }
   }
