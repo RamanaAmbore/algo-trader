@@ -171,8 +171,8 @@ def _resolve_spot_prices(df_positions: pd.DataFrame) -> dict[str, float]:
     if not underlyings:
         return {}
     try:
-        from backend.brokers.registry import get_price_broker
-        broker = get_price_broker()
+        from backend.brokers.registry import get_market_data_broker
+        broker = get_market_data_broker()
         resp = broker.ltp(list(underlyings.values())) or {}
     except Exception as e:
         logger.debug(f"_resolve_spot_prices: broker.ltp failed: {e}")
@@ -1768,8 +1768,8 @@ async def _task_hedge_proxy_regression() -> None:
         max_age = get_int("hedge_proxies.regression_max_age_days", 7)
         window  = get_int("hedge_proxies.regression_window_days", 60)
         try:
-            from backend.brokers.registry import get_price_broker
-            broker = get_price_broker()
+            from backend.brokers.registry import get_market_data_broker
+            broker = get_market_data_broker()
         except Exception as exc:
             logger.warning(f"hedge-proxy regression: no broker available: {exc}")
             return

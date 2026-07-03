@@ -790,7 +790,7 @@ def _enrich_position_greeks(rows: list) -> None:
     from backend.api.algo.derivatives import (
         parse_tradingsymbol, implied_vol, greeks, option_underlying_quote_key,
     )
-    from backend.brokers.registry import get_price_broker
+    from backend.brokers.registry import get_market_data_broker
 
     # Pass 1 — parse + collect unique underlying keys we need spots for.
     # option_underlying_quote_key() returns the right key shape for both
@@ -820,7 +820,7 @@ def _enrich_position_greeks(rows: list) -> None:
     # Pass 2 — single batched broker.quote() for every underlying.
     spot_by_key: dict[str, float] = {}
     try:
-        broker = get_price_broker()
+        broker = get_market_data_broker()
         spot_data = broker.quote(list(underlying_keys)) or {}
         for k, v in spot_data.items():
             spot_by_key[k] = float(v.get("last_price") or 0.0)

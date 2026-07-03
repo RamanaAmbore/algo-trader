@@ -12,7 +12,7 @@ candles for any single-leg option position. Three input modes:
                      the trade.
 
 Underlying spot, current LTP, and historical candles are fetched via
-`get_price_broker()` so they honor the `connections.price_account`
+`get_market_data_broker()` so they honor the `connections.price_account`
 setting in /admin/settings — operators centralize "which Kite handle do
 we hammer for shared market data" in one place.
 """
@@ -1173,8 +1173,8 @@ async def _resolve_spot(underlying: str, override: Optional[float],
     except Exception:
         pass
 
-    from backend.brokers.registry import get_price_broker
-    broker = get_price_broker()
+    from backend.brokers.registry import get_market_data_broker
+    broker = get_market_data_broker()
     is_commodity = is_mcx_underlying(underlying)
 
     # 3. Spot ticker — only meaningful for indices/stocks. Commodities
@@ -1398,10 +1398,10 @@ async def _resolve_ltp(symbol: str, mode: str, account: Optional[str],
         # outside the sim. Fall through to broker fallbacks (handy when
         # the sim is paused but real-data analytics are still useful).
 
-    from backend.brokers.registry import get_price_broker
+    from backend.brokers.registry import get_market_data_broker
     key = option_quote_key(symbol)
     try:
-        resp = await asyncio.to_thread(get_price_broker().quote, [key]) or {}
+        resp = await asyncio.to_thread(get_market_data_broker().quote, [key]) or {}
     except Exception as e:
         logger.warning(f"options LTP quote() failed for {symbol}: {e}")
         resp = {}
@@ -2164,11 +2164,11 @@ class OptionsController(Controller):
                 keys.append(qk)
                 key_meta[qk] = (strike, side)
 
-        from backend.brokers.registry import get_price_broker
+        from backend.brokers.registry import get_market_data_broker
         quote_resp: dict = {}
         if keys:
             try:
-                quote_resp = await asyncio.to_thread(get_price_broker().quote, keys) or {}
+                quote_resp = await asyncio.to_thread(get_market_data_broker().quote, keys) or {}
             except Exception as e:
                 logger.warning(
                     f"chain-quotes quote() failed for {und}/{exp}: {e}")
@@ -2326,11 +2326,11 @@ class OptionsController(Controller):
                 keys.append(qk)
                 key_meta[qk] = (strike, side)
 
-        from backend.brokers.registry import get_price_broker
+        from backend.brokers.registry import get_market_data_broker
         quote_resp: dict = {}
         if keys:
             try:
-                quote_resp = await asyncio.to_thread(get_price_broker().quote, keys) or {}
+                quote_resp = await asyncio.to_thread(get_market_data_broker().quote, keys) or {}
             except Exception as e:
                 logger.warning(f"chain-snapshot quote() failed for {und}/{exp}: {e}")
 
@@ -2851,10 +2851,10 @@ class OptionsController(Controller):
         # the payoff curve and the far leg is re-priced with its remaining T.
         underlying = next(iter(roots))
 
-        # Single get_price_broker() construction per request — avoids the
-        # double-build audit P1 finding on the derivatives page first-load.
-        from backend.brokers.registry import get_price_broker
-        _price_broker = get_price_broker()
+        # Single get_market_data_broker() call per request — contextvar cache
+        # means all callsites in this request share one broker session.
+        from backend.brokers.registry import get_market_data_broker
+        _price_broker = get_market_data_broker()
 
         # Bulk quote fetch — for legs without operator-supplied ltp, hit
         # broker.quote() once (richer than ltp(): includes ohlc.close +

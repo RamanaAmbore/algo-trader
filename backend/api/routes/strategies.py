@@ -377,9 +377,9 @@ async def _enrich_many_with_pnl(
         missing = [s for s in symbol_exchange if s not in ltp_map]
         if missing:
             try:
-                from backend.brokers.registry import get_price_broker
+                from backend.brokers.registry import get_market_data_broker
                 import asyncio as _asyncio
-                broker = get_price_broker()
+                broker = get_market_data_broker()
                 keys = [f"{symbol_exchange[s]}:{s}" for s in missing]
                 quote = await _asyncio.to_thread(broker.ltp, keys)
                 for k, v in (quote or {}).items():

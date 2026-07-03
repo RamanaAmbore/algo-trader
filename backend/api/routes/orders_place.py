@@ -123,8 +123,8 @@ async def _enforce_capacity_guard(
         # Broker fallback. Single batched call; failure → 503 (we
         # cannot risk-check the order without a price).
         try:
-            from backend.brokers.registry import get_price_broker
-            broker = get_price_broker()
+            from backend.brokers.registry import get_market_data_broker
+            broker = get_market_data_broker()
             # Exchange resolution: use NFO as the safe default for F&O
             # symbols; broker.ltp accepts EXCH:SYM keys.
             key = f"NFO:{tradingsymbol.upper()}"
