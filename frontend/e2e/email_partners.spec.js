@@ -206,6 +206,107 @@ test.describe('Email Partners — preset vocabulary contract', () => {
   });
 
 
+  /**
+   * Counter-label accuracy tests (defect 2026-07-02):
+   * emailRecipientLabel was counting only role==='partner', missing
+   * role==='designated' in the all-partners preset. These tests mock
+   * the users list API and assert the label text rendered in the
+   * confirm dialog and on the Send button.
+   *
+   * Mock universe: 3 partner + 2 designated + 1 admin, all
+   * is_active=true, email set, email_verified=true, share_pct=100.
+   */
+
+  const MOCK_USERS = [
+    { id: 1, username: 'p1', role: 'partner',    is_active: true, email: 'p1@x.com', email_verified: true,  share_pct: 100, display_name: 'P1', is_approved: true },
+    { id: 2, username: 'p2', role: 'partner',    is_active: true, email: 'p2@x.com', email_verified: true,  share_pct: 100, display_name: 'P2', is_approved: true },
+    { id: 3, username: 'p3', role: 'partner',    is_active: true, email: 'p3@x.com', email_verified: true,  share_pct: 100, display_name: 'P3', is_approved: true },
+    { id: 4, username: 'd1', role: 'designated', is_active: true, email: 'd1@x.com', email_verified: true,  share_pct: 100, display_name: 'D1', is_approved: true },
+    { id: 5, username: 'd2', role: 'designated', is_active: true, email: 'd2@x.com', email_verified: true,  share_pct: 100, display_name: 'D2', is_approved: true },
+    { id: 6, username: 'a1', role: 'admin',      is_active: true, email: 'a1@x.com', email_verified: true,  share_pct: 0,   display_name: 'A1', is_approved: true },
+  ];
+
+  async function setupWithMockUsers(page) {
+    await loginAsAdmin(page);
+    // Mock the users list BEFORE navigating so the page hydrates with our data.
+    await page.route('**/api/admin/users', (route) =>
+      route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ users: MOCK_USERS }),
+      })
+    );
+    await page.route('**/api/admin/email-events**', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json',
+                      body: JSON.stringify({ events: [] }) }));
+    await page.goto(`${BASE}/admin`, { waitUntil: 'domcontentloaded' });
+    const panel = page.locator('section.email-panel').first();
+    await panel.waitFor({ state: 'visible', timeout: 15000 });
+    return panel;
+  }
+
+  test('all-partners counter includes designated role — label reads (5)',
+       async ({ page }) => {
+    const panel = await setupWithMockUsers(page);
+
+    await panel.getByLabel('Recipient preset').click();
+    await page.getByRole('option', { name: /^All partners$/ }).click();
+    await panel.locator('input[placeholder="Email subject…"]').fill('X');
+    await panel.locator('textarea[placeholder="Message body…"]').fill('X');
+
+    // Send button shows count immediately after preset pick.
+    const sendBtn = panel.getByRole('button', { name: /^Send to/ });
+    // 3 partner + 2 designated = 5 (not just 3)
+    await expect(sendBtn).toContainText('5', { timeout: 3000 });
+
+    // Confirm dialog label also shows correct count.
+    await sendBtn.click();
+    const dlg = page.getByRole('dialog', { name: /Send email\?/ });
+    await dlg.waitFor({ state: 'visible', timeout: 5000 });
+    await expect(dlg).toContainText('all partners (5)');
+    // Dismiss without sending.
+    await dlg.getByRole('button', { name: /Cancel/i }).click();
+  });
+
+  test('all-designated counter — label reads (2)',
+       async ({ page }) => {
+    const panel = await setupWithMockUsers(page);
+
+    await panel.getByLabel('Recipient preset').click();
+    await page.getByRole('option', { name: /^All designated$/ }).click();
+    await panel.locator('input[placeholder="Email subject…"]').fill('X');
+    await panel.locator('textarea[placeholder="Message body…"]').fill('X');
+
+    const sendBtn = panel.getByRole('button', { name: /^Send to/ });
+    await expect(sendBtn).toContainText('2', { timeout: 3000 });
+
+    await sendBtn.click();
+    const dlg = page.getByRole('dialog', { name: /Send email\?/ });
+    await dlg.waitFor({ state: 'visible', timeout: 5000 });
+    await expect(dlg).toContainText('all designated (2)');
+    await dlg.getByRole('button', { name: /Cancel/i }).click();
+  });
+
+  test('all-users counter includes all verified active users — label reads (6)',
+       async ({ page }) => {
+    const panel = await setupWithMockUsers(page);
+
+    await panel.getByLabel('Recipient preset').click();
+    await page.getByRole('option', { name: /^All users$/ }).click();
+    await panel.locator('input[placeholder="Email subject…"]').fill('X');
+    await panel.locator('textarea[placeholder="Message body…"]').fill('X');
+
+    const sendBtn = panel.getByRole('button', { name: /^Send to/ });
+    // All 6 users are active + email + email_verified → 6
+    await expect(sendBtn).toContainText('6', { timeout: 3000 });
+
+    await sendBtn.click();
+    const dlg = page.getByRole('dialog', { name: /Send email\?/ });
+    await dlg.waitFor({ state: 'visible', timeout: 5000 });
+    await expect(dlg).toContainText('all users (6)');
+    await dlg.getByRole('button', { name: /Cancel/i }).click();
+  });
+
+
   test('button re-enables after Send resolves',
        async ({ page }) => {
     await loginAsAdmin(page);

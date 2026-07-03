@@ -477,9 +477,9 @@
 
   /** Computed recipient count label for the confirm dialog. */
   const emailRecipientLabel = $derived(() => {
-    if (emailPreset === 'all-partners')   return `all partners (${users.filter(u=>u.role==='partner'&&u.is_active&&u.email).length})`;
-    if (emailPreset === 'all-designated') return `all designated (${users.filter(u=>u.role==='designated'&&u.is_active&&u.email).length})`;
-    if (emailPreset === 'all')            return `all users (${users.filter(u=>u.is_active&&u.email).length})`;
+    if (emailPreset === 'all-partners')   return `all partners (${users.filter(u=>(u.role==='partner'||u.role==='designated')&&(u.share_pct||0)>0&&u.is_active&&u.email&&u.email_verified).length})`;
+    if (emailPreset === 'all-designated') return `all designated (${users.filter(u=>u.role==='designated'&&(u.share_pct||0)>0&&u.is_active&&u.email&&u.email_verified).length})`;
+    if (emailPreset === 'all')            return `all users (${users.filter(u=>u.is_active&&u.email&&u.email_verified).length})`;
     return `${emailPicked.length} partner(s)`;
   });
 
@@ -1034,9 +1034,9 @@
         Sending…
       {:else}
         Send to {
-          emailPreset === 'all-partners'   ? `${users.filter(u=>u.role==='partner'&&u.is_active&&u.email).length} partner(s)` :
-          emailPreset === 'all-designated' ? `${users.filter(u=>u.role==='designated'&&u.is_active&&u.email).length} designated` :
-          emailPreset === 'all'            ? `${users.filter(u=>u.is_active&&u.email).length} user(s)` :
+          emailPreset === 'all-partners'   ? `${users.filter(u=>(u.role==='partner'||u.role==='designated')&&(u.share_pct||0)>0&&u.is_active&&u.email&&u.email_verified).length} partner(s)` :
+          emailPreset === 'all-designated' ? `${users.filter(u=>u.role==='designated'&&(u.share_pct||0)>0&&u.is_active&&u.email&&u.email_verified).length} designated` :
+          emailPreset === 'all'            ? `${users.filter(u=>u.is_active&&u.email&&u.email_verified).length} user(s)` :
           emailPicked.length > 0           ? `${emailPicked.length} partner(s)` :
           'partners'
         }
