@@ -474,7 +474,7 @@
   .hcard-title {
     font-size: var(--fs-sm);
     font-weight: 700;
-    color: #fbbf24;
+    color: var(--c-action);
     text-transform: uppercase;
     letter-spacing: 0.09em;
     margin-bottom: 0.45rem;
@@ -506,7 +506,7 @@
     font-variant-numeric: tabular-nums;
   }
   .kv-num { font-variant-numeric: tabular-nums; text-align: right; }
-  .kv-amber  { color: #fbbf24 !important; }
+  .kv-amber  { color: var(--c-action) !important; }
   .kv-mono   { font-family: var(--font-numeric); font-size: var(--fs-md); }
   .kv-muted  { font-size: var(--fs-sm); color: #4a5a70; font-style: italic; }
 
@@ -545,8 +545,8 @@
     white-space: nowrap;
     flex: 0 0 auto;
   }
-  .status-loaded   { background: rgba(74,222,128,0.16); color: #4ade80; border: 1px solid rgba(74,222,128,0.45); }
-  .status-pending  { background: rgba(251,191,36,0.16); color: #fbbf24; border: 1px solid rgba(251,191,36,0.45); }
+  .status-loaded   { background: rgba(74,222,128,0.16); color: var(--c-long); border: 1px solid rgba(74,222,128,0.45); }
+  .status-pending  { background: rgba(251,191,36,0.16); color: var(--c-action); border: 1px solid rgba(251,191,36,0.45); }
   .status-disabled { background: rgba(148,163,184,0.12); color: #94a3b8; border: 1px solid rgba(148,163,184,0.3); }
 
   /* Cache keys */
@@ -583,7 +583,7 @@
 
   /* Ticker card — staleness list + warn-tint on the stale_count cell */
   .stale-warn {
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 700;
   }
   .ticker-stale-list {
@@ -639,11 +639,11 @@
   /* Selected state — each mode adopts its own palette so the operator
      can scan "what mode am I in" at a glance even without reading the
      pill above. */
-  .pm-btn.pm-on.pm-off   { background: rgba(74, 222, 128, 0.18); color: #4ade80; border-color: rgba(74, 222, 128, 0.55); }
-  .pm-btn.pm-on.pm-soft  { background: rgba(251, 191, 36, 0.18); color: #fbbf24; border-color: rgba(251, 191, 36, 0.55); }
-  .pm-btn.pm-on.pm-hard  { background: rgba(248, 113, 113, 0.20); color: #f87171; border-color: rgba(248, 113, 113, 0.55); }
+  .pm-btn.pm-on.pm-off   { background: rgba(74, 222, 128, 0.18); color: var(--c-long); border-color: rgba(74, 222, 128, 0.55); }
+  .pm-btn.pm-on.pm-soft  { background: rgba(251, 191, 36, 0.18); color: var(--c-action); border-color: rgba(251, 191, 36, 0.55); }
+  .pm-btn.pm-on.pm-hard  { background: rgba(248, 113, 113, 0.20); color: var(--c-short); border-color: rgba(248, 113, 113, 0.55); }
   .pm-err {
-    color: #f87171;
+    color: var(--c-short);
     font-size: var(--fs-sm);
     padding-top: 0.25rem;
   }
@@ -676,9 +676,9 @@
   }
   .pm-inval-btn:disabled { cursor: not-allowed; opacity: 0.5; }
   .pm-inval-all {
-    background: rgba(248, 113, 113, 0.10);
+    background: var(--c-short-10);
     border-color: rgba(248, 113, 113, 0.4);
-    color: #f87171;
+    color: var(--c-short);
   }
   /* Tier-hit metric cells (slice AJ) */
   .kv-tier-pct {
@@ -687,9 +687,9 @@
     font-weight: 700;
     color: #94a3b8;
   }
-  .kv-tier-pct.cell-pos   { color: #4ade80; }     /* ≥ 80% hit rate */
-  .kv-tier-pct.cell-amber { color: #fbbf24; }     /* 50-79% */
-  .kv-tier-pct.cell-neg   { color: #f87171; }     /* < 50% — broker-heavy */
+  .kv-tier-pct.cell-pos   { color: var(--c-long); }     /* ≥ 80% hit rate */
+  .kv-tier-pct.cell-amber { color: var(--c-action); }     /* 50-79% */
+  .kv-tier-pct.cell-neg   { color: var(--c-short); }     /* < 50% — broker-heavy */
   .kv-tier-counts {
     margin-left: 0.4rem;
     color: #94a3b8;

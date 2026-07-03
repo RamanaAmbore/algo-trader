@@ -191,11 +191,11 @@
     text-decoration: none;
     margin-left: 0.75rem;
   }
-  .back-link:hover { color: #fbbf24; }
+  .back-link:hover { color: var(--c-action); }
   .err-banner {
-    background: rgba(248,113,113,0.10);
+    background: var(--c-short-10);
     border: 1px solid rgba(248,113,113,0.35);
-    color: #f87171;
+    color: var(--c-short);
     padding: 0.4rem 0.65rem;
     border-radius: 4px;
     font-family: var(--font-numeric);
@@ -220,7 +220,7 @@
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
   }
-  .run-id { color: #fbbf24; font-weight: 700; letter-spacing: 0.05em; }
+  .run-id { color: var(--c-action); font-weight: 700; letter-spacing: 0.05em; }
   .run-meta { color: var(--algo-slate); }
   .run-started { color: var(--algo-muted); margin-left: auto; }
 
@@ -264,16 +264,16 @@
     color: var(--algo-slate);
     border-bottom: 1px solid rgba(255,255,255,0.05);
   }
-  .slug { color: #fbbf24; }
+  .slug { color: var(--c-action); }
   .er {
     text-transform: uppercase;
     font-size: var(--fs-xs);
     letter-spacing: 0.04em;
     font-weight: 700;
   }
-  .er-ok      { color: #4ade80; }
-  .er-warn    { color: #fbbf24; }
-  .er-err     { color: #f87171; }
+  .er-ok      { color: var(--c-long); }
+  .er-warn    { color: var(--c-action); }
+  .er-err     { color: var(--c-short); }
   .er-pending { color: #7dd3fc; }
   .er-other   { color: var(--text-muted); }
 </style>

@@ -181,18 +181,18 @@
   .bh-badge:hover { filter: brightness(1.15); }
 
   .bh-badge-green {
-    color: #4ade80;
-    background: rgba(74, 222, 128, 0.10);
+    color: var(--c-long);
+    background: var(--c-long-10);
     border-color: rgba(74, 222, 128, 0.45);
   }
   .bh-badge-amber {
-    color: #fbbf24;
+    color: var(--c-action);
     background: rgba(251, 191, 36, 0.10);
     border-color: rgba(251, 191, 36, 0.45);
   }
   .bh-badge-red {
-    color: #f87171;
-    background: rgba(248, 113, 113, 0.10);
+    color: var(--c-short);
+    background: var(--c-short-10);
     border-color: rgba(248, 113, 113, 0.45);
     animation: bh-pulse 2s ease-in-out infinite;
   }
@@ -297,9 +297,9 @@
     height: 0.45rem;
     border-radius: 50%;
   }
-  .bh-row-dot-green  { background: #4ade80; }
-  .bh-row-dot-amber  { background: #fbbf24; }
-  .bh-row-dot-red    { background: #f87171; }
+  .bh-row-dot-green  { background: var(--c-long); }
+  .bh-row-dot-amber  { background: var(--c-action); }
+  .bh-row-dot-red    { background: var(--c-short); }
 
   .bh-row-account {
     color: #e2e8f0;
@@ -318,9 +318,9 @@
      - slate → warm spare (healthy, not active)
      No separate "active" chip needed. Operator: "color code the account
      which is active or having problems in connection etc." */
-  .bh-row-account-red    { color: #f87171; font-weight: 700; }
-  .bh-row-account-amber  { color: #fbbf24; font-weight: 700; }
-  .bh-row-account-active { color: #22d3ee; font-weight: 700; }
+  .bh-row-account-red    { color: var(--c-short); font-weight: 700; }
+  .bh-row-account-amber  { color: var(--c-action); font-weight: 700; }
+  .bh-row-account-active { color: var(--c-info); font-weight: 700; }
   .bh-row-account-spare  { color: #e2e8f0; font-weight: 600; }
   /* Circuit-breaker state chips inside the account cell */
   .bh-circuit-chip {
@@ -329,14 +329,14 @@
     letter-spacing: 0.06em;
     padding: 0.05rem 0.3rem;
     border-radius: 9999px;
-    color: #f87171;
+    color: var(--c-short);
     background: rgba(248, 113, 113, 0.15);
     border: 1px solid rgba(248, 113, 113, 0.4);
     vertical-align: middle;
     flex-shrink: 0;
   }
   .bh-circuit-half {
-    color: #fbbf24;
+    color: var(--c-action);
     background: rgba(251, 191, 36, 0.12);
     border-color: rgba(251, 191, 36, 0.4);
   }
@@ -354,9 +354,9 @@
     padding: 0.05rem 0.4rem;
     text-align: center;
   }
-  .bh-row-state-green { color: #4ade80; background: rgba(74,222,128,0.10); }
-  .bh-row-state-amber { color: #fbbf24; background: rgba(251,191,36,0.10); }
-  .bh-row-state-red   { color: #f87171; background: rgba(248,113,113,0.10); }
+  .bh-row-state-green { color: var(--c-long); background: var(--c-long-10); }
+  .bh-row-state-amber { color: var(--c-action); background: rgba(251,191,36,0.10); }
+  .bh-row-state-red   { color: var(--c-short); background: var(--c-short-10); }
 
   .bh-row-reason {
     color: #64748b;

@@ -442,7 +442,7 @@
       }}
       onClose={() => { /* inline mode — no close affordance */ }} />
     {#if isDemo}
-      <div class="mt-2 text-[0.62rem] text-[#7e97b8] font-mono">
+      <div class="mt-2 text-[0.62rem] text-[var(--c-muted)] font-mono">
         Demo: read-only — sign in to place orders
       </div>
     {/if}
@@ -663,7 +663,7 @@
   /* Activity card title — bell icon + label match the ActivityLogModal's
      header so heading reads identically on both surfaces. */
   .oc-act-title { display: inline-flex; align-items: center; gap: 0.35rem; }
-  :global(.oc-act-title-icon) { color: #fbbf24; flex-shrink: 0; transform: translateY(-0.5px); }
+  :global(.oc-act-title-icon) { color: var(--c-action); flex-shrink: 0; transform: translateY(-0.5px); }
   /* .oc-act-acct CSS lifted into ActivityAccountSelect.svelte (the
      shared component). Operator: "activity should use the same
      reusable code across all the pages and modals." */
@@ -890,9 +890,9 @@
     font-variant-numeric: tabular-nums;
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
   }
-  .oc-filter-card[data-status="running"]   .oc-filter-count { color: #fbbf24; }
-  .oc-filter-card[data-status="active"]    .oc-filter-count { color: #4ade80; }
-  .oc-filter-card[data-status="error"]     .oc-filter-count { color: #f87171; }
+  .oc-filter-card[data-status="running"]   .oc-filter-count { color: var(--c-action); }
+  .oc-filter-card[data-status="active"]    .oc-filter-count { color: var(--c-long); }
+  .oc-filter-card[data-status="error"]     .oc-filter-count { color: var(--c-short); }
   .oc-filter-card[data-status="cancelled"] .oc-filter-count { color: #fb923c; }
 
   .oc-filter-label {

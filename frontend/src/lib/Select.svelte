@@ -238,9 +238,9 @@
     transition: border-color 0.08s;
   }
   .rbq-select-trigger:hover:not(:disabled)  { border-color: rgba(251,191,36,0.6); }
-  .rbq-select-trigger:focus                 { outline: none; border-color: #fbbf24; }
+  .rbq-select-trigger:focus                 { outline: none; border-color: var(--c-action); }
   .rbq-select-trigger:disabled              { opacity: 0.45; cursor: not-allowed; }
-  .rbq-select-open .rbq-select-trigger      { border-color: #fbbf24; }
+  .rbq-select-open .rbq-select-trigger      { border-color: var(--c-action); }
 
   .rbq-select-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rbq-select-placeholder { color: rgba(180,200,230,0.55); }
@@ -250,7 +250,7 @@
        affordance reads at a glance — earlier the glyph was so small
        it looked like a stray period. Open state rotates 180° to
        point up (`▴`-equivalent). */
-    color: #fbbf24;
+    color: var(--c-action);
     font-size: var(--fs-xl);
     line-height: 1;
     font-weight: 700;
@@ -292,7 +292,7 @@
   .rbq-select-search-input {
     width: 100%;
     background: rgba(13,21,38,0.55);
-    border: 1px solid rgba(251,191,36,0.22);
+    border: 1px solid var(--c-action-22);
     border-radius: 3px;
     padding: 0.25rem 0.45rem;
     color: var(--algo-slate);
@@ -301,7 +301,7 @@
     outline: none;
   }
   .rbq-select-search-input:focus {
-    border-color: #fbbf24;
+    border-color: var(--c-action);
   }
   .rbq-select-search-input::placeholder {
     color: rgba(180,200,230,0.45);
@@ -347,16 +347,16 @@
   .rbq-select-option-hl,
   .rbq-select-option:hover {
     background: rgba(251,191,36,0.15);
-    color: #fbbf24;
-    border-left-color: #fbbf24;
+    color: var(--c-action);
+    border-left-color: var(--c-action);
   }
   .rbq-select-option-selected {
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 700;
   }
   .rbq-select-option-selected::before {
     content: '✓';
-    color: #4ade80;
+    color: var(--c-long);
     margin-right: 0.3rem;
   }
   .rbq-select-option-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

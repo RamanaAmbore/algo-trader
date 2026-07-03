@@ -80,11 +80,11 @@
     { id: 'BANK NIFTY',         color: '#c084fc', label: 'BANK NIFTY'         },
     { id: 'SENSEX',             color: '#14b8a6', label: 'SENSEX'             },
     { id: 'NIFTY MIDCAP 100',   color: '#f43f5e', label: 'MIDCAP 100'         },
-    { id: 'NIFTY SMALLCAP 100', color: '#4ade80', label: 'SMALLCAP 100'       },
+    { id: 'NIFTY SMALLCAP 100', color: 'var(--c-long)', label: 'SMALLCAP 100'       },
   ];
 
   // Portfolio series — always shown when pct_change_from_start data exists
-  const PORTFOLIO_COLOR = '#fbbf24';
+  const PORTFOLIO_COLOR = 'var(--c-action)';
 
   /** @returns {{ symbol: string, name: string, closes: Array<{date:string, pct_change_from_start:number}> }} */
   const portfolioSeries = $derived.by(() => {
@@ -919,7 +919,7 @@
   .preset-chip:hover { color: var(--algo-slate); background: var(--algo-amber-bg-soft); }
   .preset-chip.preset-on {
     background: var(--algo-amber-bg);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .filter-spinner {
     font-size: var(--fs-sm);
@@ -938,11 +938,11 @@
     margin-bottom: 0.55rem;
     line-height: 1.5;
   }
-  .no-data-banner strong { color: #fbbf24; font-weight: 700; }
+  .no-data-banner strong { color: var(--c-action); font-weight: 700; }
   .link-btn {
     background: transparent;
     border: none;
-    color: #fbbf24;
+    color: var(--c-action);
     cursor: pointer;
     font-family: inherit;
     font-size: inherit;
@@ -977,7 +977,7 @@
     background: rgba(248,113,113,0.12);
     border: 1px solid rgba(248,113,113,0.4);
     border-radius: 4px;
-    color: #f87171;
+    color: var(--c-short);
     font-size: var(--fs-md);
     padding: 0.3rem 0.6rem;
     margin-bottom: 0.45rem;
@@ -997,7 +997,7 @@
   .section-head {
     display: block;
     font-size: var(--fs-xs);
-    color: #fbbf24;
+    color: var(--c-action);
     font-family: var(--font-numeric);
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -1049,8 +1049,8 @@
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
-  .kv-val.pos { color: #4ade80; }
-  .kv-val.neg { color: #f87171; }
+  .kv-val.pos { color: var(--c-long); }
+  .kv-val.neg { color: var(--c-short); }
   .summary-meta {
     margin-left: auto;
     font-size: var(--fs-xs);
@@ -1219,8 +1219,8 @@
   .pnl-tbl .mono { font-family: var(--font-numeric); }
   .pnl-tbl .sym  { font-weight: 600; letter-spacing: 0.02em; }
   .pnl-tbl .muted { color: #4e6080; }
-  .pnl-tbl .pos  { color: #4ade80; }
-  .pnl-tbl .neg  { color: #f87171; }
+  .pnl-tbl .pos  { color: var(--c-long); }
+  .pnl-tbl .neg  { color: var(--c-short); }
 
   .empty-hint {
     font-size: var(--fs-md);
@@ -1252,7 +1252,7 @@
     border-radius: 4px;
     border: 1px solid rgba(251,191,36,0.45);
     background: rgba(251,191,36,0.1);
-    color: #fbbf24;
+    color: var(--c-action);
     cursor: pointer;
     transition: background 0.12s;
   }
@@ -1276,7 +1276,7 @@
   }
   .chevron {
     font-size: var(--fs-lg);
-    color: #fbbf24;
+    color: var(--c-action);
     transition: transform 0.15s;
     margin-left: auto;
   }
@@ -1309,7 +1309,7 @@
   }
   .modal-title {
     font-size: var(--fs-lg);
-    color: #fbbf24;
+    color: var(--c-action);
     font-family: var(--font-numeric);
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -1325,7 +1325,7 @@
     line-height: 1;
     padding: 0 0.2rem;
   }
-  .modal-x:hover { color: #fbbf24; }
+  .modal-x:hover { color: var(--c-action); }
 
   .upload-hint {
     font-size: var(--fs-sm);
@@ -1368,7 +1368,7 @@
   .drop-clear {
     background: transparent;
     border: none;
-    color: #f87171;
+    color: var(--c-short);
     font-size: 1rem;
     cursor: pointer;
     line-height: 1;
@@ -1388,7 +1388,7 @@
     margin-top: 0.4rem;
     font-size: var(--fs-md);
     font-family: var(--font-numeric);
-    color: #4ade80;
+    color: var(--c-long);
     background: rgba(74,222,128,0.07);
     border: 1px solid rgba(74,222,128,0.2);
     border-radius: 4px;

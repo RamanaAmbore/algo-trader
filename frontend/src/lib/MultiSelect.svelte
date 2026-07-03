@@ -190,9 +190,9 @@
     transition: border-color 0.08s;
   }
   .rbq-multi-trigger:hover:not(:disabled)  { border-color: rgba(251,191,36,0.6); }
-  .rbq-multi-trigger:focus                 { outline: none; border-color: #fbbf24; }
+  .rbq-multi-trigger:focus                 { outline: none; border-color: var(--c-action); }
   .rbq-multi-trigger:disabled              { opacity: 0.45; cursor: not-allowed; }
-  .rbq-multi-open .rbq-multi-trigger       { border-color: #fbbf24; }
+  .rbq-multi-open .rbq-multi-trigger       { border-color: var(--c-action); }
 
   .rbq-multi-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rbq-multi-placeholder { color: rgba(180,200,230,0.55); }
@@ -208,13 +208,13 @@
     line-height: 1;
     cursor: pointer;
   }
-  .rbq-multi-clear:hover { color: #fbbf24; }
+  .rbq-multi-clear:hover { color: var(--c-action); }
   .rbq-multi-caret {
     flex: 0 0 auto;
     /* Match Select.svelte's caret treatment: 0.95rem amber `▾` with
        weight 700 + smooth rotate transition. Earlier this was 0.55rem
        which made the dropdown affordance read as a stray period. */
-    color: #fbbf24;
+    color: var(--c-action);
     font-size: var(--fs-xl);
     line-height: 1;
     font-weight: 700;
@@ -253,14 +253,14 @@
   }
   .rbq-multi-option:hover {
     background: rgba(251,191,36,0.15);
-    color: #fbbf24;
-    border-left-color: #fbbf24;
+    color: var(--c-action);
+    border-left-color: var(--c-action);
   }
-  .rbq-multi-option-selected { color: #fbbf24; font-weight: 700; }
+  .rbq-multi-option-selected { color: var(--c-action); font-weight: 700; }
   .rbq-multi-check {
     flex: 0 0 0.8rem;
     width: 0.8rem;
-    color: #4ade80;
+    color: var(--c-long);
     font-family: var(--font-numeric);
   }
   .rbq-multi-option-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

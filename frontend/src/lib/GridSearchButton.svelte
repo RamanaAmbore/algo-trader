@@ -103,7 +103,7 @@
     background: var(--algo-cyan-bg);
     border: 1px solid var(--algo-cyan-border);
     border-radius: 3px;
-    color: #22d3ee;
+    color: var(--c-info);
     cursor: pointer;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;
@@ -127,7 +127,7 @@
     width: 8rem;
     margin: 0 0.3rem 0 auto;
     padding: 0 0.4rem;
-    background: rgba(34, 211, 238, 0.08);
+    background: var(--c-info-08);
     border: 1px solid rgba(34, 211, 238, 0.55);
     border-radius: 3px;
     color: var(--algo-slate);
@@ -142,7 +142,7 @@
   .grid-search-input:focus {
     outline: none;
     border-color: rgba(34, 211, 238, 0.85);
-    background: rgba(34, 211, 238, 0.14);
+    background: var(--c-info-14);
   }
 
   /* When the search input is visible just before the trio, the

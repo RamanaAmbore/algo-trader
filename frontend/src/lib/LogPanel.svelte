@@ -1512,13 +1512,13 @@
      feedback. Every row sits on the same flat surface, severity reads
      from the message colour so the three-column [time · msg · tag]
      grid stays uncluttered. */
-  :global(.log-panel.log-rows .log-row.log-agent-success) { color: #4ade80; }
-  :global(.log-panel.log-rows .log-row.log-agent-failed)  { color: #f87171; }
-  :global(.log-panel.log-rows .log-row.log-agent-alert)   { color: #fbbf24; }
+  :global(.log-panel.log-rows .log-row.log-agent-success) { color: var(--c-long); }
+  :global(.log-panel.log-rows .log-row.log-agent-failed)  { color: var(--c-short); }
+  :global(.log-panel.log-rows .log-row.log-agent-alert)   { color: var(--c-action); }
   :global(.log-panel.log-rows .log-row.log-agent-triggered) { color: #fb923c; }
   :global(.log-panel.log-rows .log-row.log-agent-cooldown)  { color: #94a3b8; }
-  :global(.log-panel.log-rows .log-row.log-error)   { color: #f87171; }
-  :global(.log-panel.log-rows .log-row.log-warning) { color: #fbbf24; }
+  :global(.log-panel.log-rows .log-row.log-error)   { color: var(--c-short); }
+  :global(.log-panel.log-rows .log-row.log-warning) { color: var(--c-action); }
   :global(.log-panel.log-rows .log-row.log-debug)   { color: #94a3b8; font-style: italic; }
 
   /* Orders-tab card grid — mirrors /orders' .oc-book-grid so the
@@ -1565,8 +1565,8 @@
     vertical-align: baseline;
   }
   :global(.mode-pill-sim) {
-    background: rgba(251,191,36,0.14);
-    color: #fbbf24;
+    background: var(--c-action-14);
+    color: var(--c-action);
     border-color: rgba(251,191,36,0.45);
   }
   /* LIVE pill — red to match the navbar LIVE badge + LIVE banner.
@@ -1575,7 +1575,7 @@
      emerald), making the two indistinguishable on a quick scan. */
   :global(.mode-pill-live) {
     background: rgba(248,113,113,0.14);
-    color: #f87171;
+    color: var(--c-short);
     border-color: rgba(248,113,113,0.45);
   }
   /* Mode-2 paper rows — sky-blue tint, distinct from amber sim and
@@ -1589,7 +1589,7 @@
   /* Mode-4 replay — green, matching the navbar REPLAY badge. */
   :global(.mode-pill-replay) {
     background: rgba(74,222,128,0.14);
-    color: #4ade80;
+    color: var(--c-long);
     border-color: rgba(74,222,128,0.45);
   }
   /* Mode-5 shadow — orange, matching the navbar SHADOW badge. */
@@ -1604,7 +1604,7 @@
      REJECTED: stronger red than UNFILLED — broker hard-rejected.
      SHADOW_OK: orange — matches the SHADOW mode pill, not a fill. */
   :global(.log-order-cancelled) { color: var(--algo-muted); }
-  :global(.log-order-rejected)  { color: #f87171; }
+  :global(.log-order-rejected)  { color: var(--c-short); }
   :global(.log-order-shadow-ok) { color: #fb923c; }
 
   /* Order-tab mode subnav — [All / Paper / Live / Sim] chip strip.
@@ -1642,18 +1642,18 @@
   .om-chip:first-child { border-top-left-radius: 3px; border-bottom-left-radius: 3px; }
   .om-chip:last-child  { border-right-width: 1px; border-top-right-radius: 3px; border-bottom-right-radius: 3px; }
   .om-chip:hover { color: var(--algo-slate); }
-  .om-chip.om-on.om-chip-all    { background: rgba(251,191,36,0.14); color: #fbbf24; border-color: rgba(251,191,36,0.45); }
+  .om-chip.om-on.om-chip-all    { background: var(--c-action-14); color: var(--c-action); border-color: rgba(251,191,36,0.45); }
   .om-chip.om-on.om-chip-paper  { background: rgba(56,189,248,0.14); color: #7dd3fc; border-color: rgba(56,189,248,0.45); }
-  /* Canonical green (#4ade80) for live — replaces off-palette emerald #10b981 */
+  /* Canonical green (var(--c-long)) for live — replaces off-palette emerald #10b981 */
   /* LIVE chip on the Order-tab mode filter — red to match LIVE pill
      + LIVE banner. Operator selects "Live" → red glow signals "I'm
      about to look at real-broker orders". */
-  .om-chip.om-on.om-chip-live   { background: rgba(248,113,113,0.14); color: #f87171; border-color: rgba(248,113,113,0.45); }
-  .om-chip.om-on.om-chip-sim    { background: rgba(251,191,36,0.14); color: #fbbf24; border-color: rgba(251,191,36,0.45); }
+  .om-chip.om-on.om-chip-live   { background: rgba(248,113,113,0.14); color: var(--c-short); border-color: rgba(248,113,113,0.45); }
+  .om-chip.om-on.om-chip-sim    { background: var(--c-action-14); color: var(--c-action); border-color: rgba(251,191,36,0.45); }
   /* Shadow — orange #fb923c, matching the mode pill palette */
   .om-chip.om-on.om-chip-shadow { background: rgba(251,146,60,0.14); color: #fb923c; border-color: rgba(251,146,60,0.45); }
-  /* Replay — canonical green #4ade80 */
-  .om-chip.om-on.om-chip-replay { background: rgba(74,222,128,0.14); color: #4ade80; border-color: rgba(74,222,128,0.45); }
+  /* Replay — canonical green var(--c-long) */
+  .om-chip.om-on.om-chip-replay { background: rgba(74,222,128,0.14); color: var(--c-long); border-color: rgba(74,222,128,0.45); }
 
   /* Preflight verdict chip — ✓ when basket_margin / Kite preflight
      accepted the order, ✗ when it pushed back. Hover the chip to see
@@ -1668,8 +1668,8 @@
     border-radius: 2px;
     cursor: help;
   }
-  :global(.log-pf-ok)  { color: #4ade80; background: rgba(74,222,128,0.10); }
-  :global(.log-pf-bad) { color: #f87171; background: rgba(248,113,113,0.12); }
+  :global(.log-pf-ok)  { color: var(--c-long); background: var(--c-long-10); }
+  :global(.log-pf-bad) { color: var(--c-short); background: rgba(248,113,113,0.12); }
 
   /* Chart icon inside the <pre> log rows — inline-flex so it sits flush
      next to the monospace text without breaking the line. Overrides the
@@ -1687,7 +1687,7 @@
     padding: 0;
     border: 1px solid rgba(34, 211, 238, 0.45);
     background: rgba(34, 211, 238, 0.12);
-    color: #22d3ee;
+    color: var(--c-info);
     border-radius: 2px;
     cursor: pointer;
     flex-shrink: 0;
@@ -1736,17 +1736,17 @@
   /* Modify — cyan-400 palette (matches all other edit affordances) */
   .lp-oc-modify {
     border: 1px solid rgba(34,211,238,0.45);
-    color: #22d3ee;
+    color: var(--c-info);
   }
   .lp-oc-modify:hover:not(:disabled) {
-    background: rgba(34,211,238,0.14);
+    background: var(--c-info-14);
     border-color: rgba(103,232,249,0.65);
     color: #67e8f9;
   }
   /* Cancel — red-400 palette (matches order rejection / kill affordances) */
   .lp-oc-cancel {
     border: 1px solid rgba(248,113,113,0.45);
-    color: #f87171;
+    color: var(--c-short);
   }
   .lp-oc-cancel:hover:not(:disabled) {
     background: rgba(248,113,113,0.14);

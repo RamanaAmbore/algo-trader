@@ -49,7 +49,7 @@
     {
       title: 'Multi-mode execution ladder',
       tag: 'Execution',
-      color: '#fbbf24',
+      color: 'var(--c-action)',
       body: 'Every agent and order graduates through a confidence ladder before real money moves. Mode is now set exclusively from the navbar dropdown — one click switches the entire pipeline. Same engine runs fabricated (sim), historical (replay), paper (real quotes, no execution), and live (real orders).',
       bullets: [
         'Simulator — fabricated price moves drive the same agent engine that runs live. Run-in-Simulator on any agent for instant dry-fire.',
@@ -161,7 +161,7 @@
     {
       title: 'Holdings F&O signal — at-a-glance covered-call sizing',
       tag: 'Operator UX',
-      color: '#4ade80',
+      color: 'var(--c-long)',
       body: 'The Holdings grid surfaces F&O eligibility AND sized-position viability inline on every row, so the operator scans the book and sees "this stock has options + I hold enough for N covered calls + there\'s already an open derivative here" in one glance — no per-symbol drill-down required.',
       bullets: [
         'Green left stripe on holding rows where the stock has CE/PE listed (F&O underlying)',
@@ -174,7 +174,7 @@
     {
       title: 'Unified card UX + page-header modal trio + connection health',
       tag: 'Operator UX',
-      color: '#22d3ee',
+      color: 'var(--c-info)',
       body: 'Every card across every page speaks one UX language — Collapse / Default / Fullscreen sit top-right in the same cyan-400 trio, refresh affordances bake into the same icon family, a connection-status badge on every Refresh button shows broker-account health at-a-glance, and a page-header trio (Orders / Charts / Activity) opens canonical modals at the same viewport position regardless of which page launched them. One mental model, every surface.',
       bullets: [
         'Default-mode trio: Collapse → Default → Fullscreen (DefaultSize hidden when not maximized)',
@@ -350,7 +350,7 @@
   .show-title {
     font-size: clamp(1.4rem, 4vw, 1.9rem);
     font-weight: 800;
-    color: #fbbf24;
+    color: var(--c-action);
     letter-spacing: -0.01em;
     margin: 0 0 0.6rem;
     line-height: 1.15;
@@ -377,7 +377,7 @@
     background: rgba(251, 191, 36, 0.20);
     border: 1px solid rgba(251, 191, 36, 0.65);
     border-radius: 5px;
-    color: #fbbf24;
+    color: var(--c-action);
     font-size: var(--fs-xl);
     font-weight: 800;
     letter-spacing: 0.03em;
@@ -427,7 +427,7 @@
   .show-fact-val {
     font-size: 1.05rem;
     font-weight: 800;
-    color: #fbbf24;
+    color: var(--c-action);
     line-height: 1.1;
     font-variant-numeric: tabular-nums;
   }
@@ -571,7 +571,7 @@
     padding: 0.45rem 1rem;
     border-radius: 0.3rem;
     background: rgba(251, 191, 36, 0.10);
-    color: #fbbf24;
+    color: var(--c-action);
     border: 1px solid rgba(251, 191, 36, 0.40);
     text-decoration: none;
     transition: background-color 0.1s, border-color 0.1s;

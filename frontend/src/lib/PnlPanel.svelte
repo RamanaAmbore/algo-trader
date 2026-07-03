@@ -222,7 +222,7 @@
     border-radius: 3px;
     background: rgba(248,113,113,0.12);
     border: 1px solid rgba(248,113,113,0.35);
-    color: #f87171;
+    color: var(--c-short);
     font-size: var(--fs-md);
   }
 
@@ -273,7 +273,7 @@
   .mode-pill-active {
     background: rgba(251,191,36,0.16);
     border-color: rgba(251,191,36,0.55);
-    color: #fbbf24;
+    color: var(--c-action);
   }
 
   /* ── Table ──────────────────────────────────────────────────────── */
@@ -295,7 +295,7 @@
     padding: 0.3rem 0.6rem;
     font-size: var(--fs-xs);
     font-weight: 700;
-    color: #fbbf24;
+    color: var(--c-action);
     text-transform: uppercase;
     letter-spacing: 0.07em;
     border-bottom: 1px solid rgba(251,191,36,0.35);
@@ -322,7 +322,7 @@
   .td-agent { text-align: left; white-space: nowrap; }
   .agent-slug {
     font-weight: 600;
-    color: #fbbf24;
+    color: var(--c-action);
     font-size: var(--fs-md);
     display: block;
   }

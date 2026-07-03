@@ -280,7 +280,7 @@
 <style>
   .strat-error {
     padding: 0.6rem 0.9rem;
-    background: rgba(248, 113, 113, 0.10);
+    background: var(--c-short-10);
     border: 1px solid rgba(248, 113, 113, 0.40);
     border-radius: 4px;
     color: #fca5a5; font-size: var(--fs-lg);
@@ -291,7 +291,7 @@
      which drifted from every other card heading on the page. */
   .strat-section-heading {
     font-size: var(--fs-md); font-weight: 700; letter-spacing: 0.04em;
-    text-transform: uppercase; color: #fbbf24;
+    text-transform: uppercase; color: var(--c-action);
     margin: 0 0 0.5rem;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
@@ -350,32 +350,32 @@
     font-variant-numeric: tabular-nums;
   }
   .strat-table td.td-slug {
-    color: #fbbf24; font-weight: 700; font-family: var(--font-numeric);
+    color: var(--c-action); font-weight: 700; font-family: var(--font-numeric);
   }
-  .strat-slug { color: #fbbf24; font-weight: 600; }
+  .strat-slug { color: var(--c-action); font-weight: 600; }
   .strat-table tbody tr:hover td { background: rgba(34, 211, 238, 0.05); }
   .strat-row-inactive td { opacity: 0.5; }
   .strat-row-editing td { background: rgba(251, 191, 36, 0.06); }
   .strat-empty {
     text-align: center; padding: 1.5rem !important;
-    color: #7e97b8; font-style: italic;
+    color: var(--c-muted); font-style: italic;
   }
-  .pnl-pos { color: #4ade80; }
-  .pnl-neg { color: #f87171; }
+  .pnl-pos { color: var(--c-long); }
+  .pnl-neg { color: var(--c-short); }
 
   .pill-active   { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
-                   background: rgba(74,222,128,0.16); color: #4ade80;
+                   background: rgba(74,222,128,0.16); color: var(--c-long);
                    border: 1px solid rgba(74,222,128,0.40);
                    font-size: var(--fs-xs); font-weight: 700; letter-spacing: 0.04em;
                    text-transform: uppercase; font-family: var(--font-numeric); }
   .pill-inactive { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 3px;
-                   background: rgba(126,151,184,0.16); color: #7e97b8;
+                   background: rgba(126,151,184,0.16); color: var(--c-muted);
                    border: 1px solid rgba(126,151,184,0.40);
                    font-size: var(--fs-xs); font-weight: 700; letter-spacing: 0.04em;
                    text-transform: uppercase; font-family: var(--font-numeric); }
 
   .btn-sm { font-size: var(--fs-sm); padding: 0.2rem 0.55rem; }
-  .btn-danger { color: #f87171; border-color: rgba(248,113,113,0.40); }
+  .btn-danger { color: var(--c-short); border-color: rgba(248,113,113,0.40); }
   .btn-danger:hover { background: rgba(248,113,113,0.15); }
 
   .field-input-sm { font-size: var(--fs-lg); padding: 0.18rem 0.4rem; }

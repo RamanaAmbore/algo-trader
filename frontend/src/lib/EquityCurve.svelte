@@ -238,14 +238,14 @@
         <line x1={hover?.x} x2={hover?.x} y1={PAD_T} y2={height - PAD_B}
               stroke="rgba(251,191,36,0.5)" stroke-width="1" stroke-dasharray="3 2" />
         <circle cx={hover?.x} cy={hover?.y} r="3"
-                fill={(hover?.pnl ?? 0) >= 0 ? '#4ade80' : '#f87171'}
+                fill={(hover?.pnl ?? 0) >= 0 ? 'var(--c-long)' : 'var(--c-short)'}
                 stroke="#fff" stroke-width="1" />
         {@const _tx = Math.min(W - 110 - PAD_R, Math.max(PAD_L, (hover?.x ?? 0) + 8))}
         {@const _ty = Math.max(PAD_T + 4, (hover?.y ?? 0) - 30)}
         <rect x={_tx} y={_ty} width="110" height="26" rx="3"
               fill="#1d2a44" stroke="rgba(251,191,36,0.4)" stroke-width="1" />
         <text x={_tx + 6} y={_ty + 12}
-              fill={(hover?.pnl ?? 0) >= 0 ? '#4ade80' : '#f87171'}
+              fill={(hover?.pnl ?? 0) >= 0 ? 'var(--c-long)' : 'var(--c-short)'}
               font-size="10" font-weight="800" font-family="monospace">
           {(hover?.pnl ?? 0) >= 0 ? '+' : ''}₹{priceFmt(hover?.pnl)}
         </text>
@@ -262,7 +262,7 @@
   .eq-shell {
     background: var(--card-bg-gradient);
     border: 1px solid var(--algo-amber-border-soft);
-    border-left: 3px solid #fbbf24;
+    border-left: 3px solid var(--c-action);
     border-radius: 4px;
     padding: 8px 12px;
     width: 100%;
@@ -290,8 +290,8 @@
     font-weight: 800;
     font-variant-numeric: tabular-nums;
   }
-  .eq-final-up   { color: #4ade80; }
-  .eq-final-down { color: #f87171; }
+  .eq-final-up   { color: var(--c-long); }
+  .eq-final-down { color: var(--c-short); }
   .eq-final-flat { color: var(--algo-slate); }
   .eq-svg {
     width: 100%;

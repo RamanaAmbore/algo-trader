@@ -513,12 +513,12 @@
     border: 1px solid rgba(126, 151, 184, 0.30);
     color: #c8d8f0;
   }
-  .hist-pill.st-ok      { background: rgba(74, 222, 128, 0.15);  border-color: rgba(74,222,128,0.5);  color: #4ade80; }
+  .hist-pill.st-ok      { background: rgba(74, 222, 128, 0.15);  border-color: rgba(74,222,128,0.5);  color: var(--c-long); }
   .hist-pill.st-err     { background: rgba(248, 113, 113, 0.15); border-color: rgba(248,113,113,0.5); color: #fca5a5; }
-  .hist-pill.st-warn    { background: rgba(251, 191, 36, 0.15);  border-color: rgba(251,191,36,0.5);  color: #fbbf24; }
+  .hist-pill.st-warn    { background: rgba(251, 191, 36, 0.15);  border-color: rgba(251,191,36,0.5);  color: var(--c-action); }
   .hist-pill.st-pending { background: rgba(34, 211, 238, 0.13);  border-color: rgba(34,211,238,0.45); color: #67e8f9; }
   .hist-pill-info       { background: rgba(34, 211, 238, 0.13);  border-color: rgba(34,211,238,0.45); color: #67e8f9; }
-  .hist-pill-warn       { background: rgba(251, 191, 36, 0.12);  border-color: rgba(251,191,36,0.4);  color: #fbbf24; }
+  .hist-pill-warn       { background: rgba(251, 191, 36, 0.12);  border-color: rgba(251,191,36,0.4);  color: var(--c-action); }
 
   .hist-table-wrap {
     overflow-x: auto;
@@ -575,10 +575,10 @@
     text-transform: uppercase;
     font-family: var(--font-numeric);
   }
-  .hist-side-buy  { background: rgba(74, 222, 128, 0.15);  color: #4ade80; border: 1px solid rgba(74,222,128,0.45); }
+  .hist-side-buy  { background: rgba(74, 222, 128, 0.15);  color: var(--c-long); border: 1px solid rgba(74,222,128,0.45); }
   .hist-side-sell { background: rgba(248, 113, 113, 0.15); color: #fca5a5; border: 1px solid rgba(248,113,113,0.45); }
 
-  .cell-pos { color: #4ade80; }
+  .cell-pos { color: var(--c-long); }
   .cell-neg { color: #fca5a5; }
 
   /* Per-row Audit link in Orders tab — drill-through to /admin/audit
@@ -597,7 +597,7 @@
     font-family: var(--font-numeric);
   }
   .hist-audit-link:hover {
-    background: rgba(34, 211, 238, 0.22);
+    background: var(--c-info-22);
     border-color: rgba(34, 211, 238, 0.75);
     color: #a5f3fc;
   }

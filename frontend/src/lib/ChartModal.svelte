@@ -195,7 +195,7 @@
   /* Matches the page-header Chart button's resting colour (#22d3ee
      = cyan-400) so the modal title icon is the exact same shade as
      the button that opened it. */
-  .cm-title-icon { color: #22d3ee; flex-shrink: 0; }
+  .cm-title-icon { color: var(--c-info); flex-shrink: 0; }
 
   .cm-close {
     /* Operator: "X and refresh rotating icon should be of similar
@@ -210,7 +210,7 @@
     background: none;
     border: 1px solid rgba(248, 113, 113, 0.35);
     border-radius: 3px;
-    color: #f87171;
+    color: var(--c-short);
     font-size: var(--fs-xl);
     line-height: 1;
     padding: 0;
@@ -281,7 +281,7 @@
     justify-content: center;
     width: 1.4rem;
     height: 1.4rem;
-    color: #22d3ee;
+    color: var(--c-info);
     border-radius: 3px;
     background: var(--algo-cyan-bg);
     border: 1px solid var(--algo-cyan-border);

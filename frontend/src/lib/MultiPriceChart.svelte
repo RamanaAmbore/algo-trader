@@ -328,7 +328,7 @@
   .mpc-shell {
     background: var(--card-bg-gradient);
     border: 1px solid rgba(251,191,36,0.18);
-    border-left: 3px solid #fbbf24;
+    border-left: 3px solid var(--c-action);
     border-radius: 4px;
     padding: 8px 12px;
     width: 100%;
@@ -371,7 +371,7 @@
   .mpc-yscale-btn:hover { background: rgba(255,255,255,0.05); color: #f1f7ff; }
   .mpc-yscale-btn.on {
     background: rgba(74,222,128,0.18);
-    color: #4ade80;
+    color: var(--c-long);
   }
   .mpc-svg {
     width: 100%;
@@ -412,7 +412,7 @@
     padding: 0 0.18rem;
   }
   .mpc-side-long  { color: #67e8f9; }
-  .mpc-side-short { color: #fbbf24; }
+  .mpc-side-short { color: var(--c-action); }
   .mpc-sym {
     color: #f1f7ff;
     font-weight: 700;
@@ -425,8 +425,8 @@
     font-weight: 800;
     font-variant-numeric: tabular-nums;
   }
-  .mpc-val-up   { color: #4ade80; }
-  .mpc-val-down { color: #f87171; }
+  .mpc-val-up   { color: var(--c-long); }
+  .mpc-val-down { color: var(--c-short); }
   .mpc-raw {
     color: var(--algo-slate);
     font-variant-numeric: tabular-nums;

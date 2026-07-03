@@ -203,7 +203,7 @@
     font-style: italic;
     padding: 0.3rem 0.5rem;
   }
-  .ul-error { color: #f87171; font-style: normal; }
+  .ul-error { color: var(--c-short); font-style: normal; }
 
   .ul-list {
     display: flex;
@@ -261,15 +261,15 @@
 
   /* ── Order-event kind chips ─────────────────────────────────── */
   .ul-kind-placed          { color: #38bdf8; }
-  .ul-kind-chase_modify    { color: #fbbf24; }
-  .ul-kind-fill            { color: #4ade80; }
-  .ul-kind-unfill          { color: #f87171; }
-  .ul-kind-reject          { color: #f87171; }
+  .ul-kind-chase_modify    { color: var(--c-action); }
+  .ul-kind-fill            { color: var(--c-long); }
+  .ul-kind-unfill          { color: var(--c-short); }
+  .ul-kind-reject          { color: var(--c-short); }
   .ul-kind-preflight_ok    { color: #94a3b8; }
-  .ul-kind-preflight_block { color: #f87171; }
+  .ul-kind-preflight_block { color: var(--c-short); }
   .ul-kind-cancel          { color: #94a3b8; }
   .ul-kind-postback        { color: #c084fc; }
-  .ul-kind-error           { color: #f87171; }
+  .ul-kind-error           { color: var(--c-short); }
 
   /* ── Agent-event kind chips — violet/fuchsia/pink so rule fires
        are instantly distinguishable from order events. ──────────── */

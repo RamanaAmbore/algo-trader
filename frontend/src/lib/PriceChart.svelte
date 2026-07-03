@@ -270,9 +270,9 @@
 
   // Event markers — one circle per AlgoOrder lifecycle transition.
   const markerColors = /** @type {Record<string,string>} */ ({
-    placed:   '#fbbf24',  // amber
-    filled:   '#4ade80',  // emerald
-    unfilled: '#f87171',  // red
+    placed:   'var(--c-action)',  // amber
+    filled:   'var(--c-long)',  // emerald
+    unfilled: 'var(--c-short)',  // red
     chased:   '#7dd3fc',  // sky
   });
 
@@ -526,7 +526,7 @@
       <!-- LTP line — sky-blue for underlyings (so it matches the index
            palette used elsewhere) and amber for derivatives / equities. -->
       <path d={ltpPath} fill="none"
-            stroke={kind === 'underlying' ? '#7dd3fc' : '#fbbf24'}
+            stroke={kind === 'underlying' ? '#7dd3fc' : 'var(--c-action)'}
             stroke-width="1.5" class="data-path"/>
 
       <!-- Order event markers -->
@@ -591,7 +591,7 @@
           </text>
           {#if _slip != null && _slip !== 0}
             <text x={tx + 6} y={ty + 56}
-                  fill={_slip < 0 ? '#4ade80' : '#f87171'}
+                  fill={_slip < 0 ? 'var(--c-long)' : 'var(--c-short)'}
                   font-size="9" font-family="monospace">
               slippage {_slip < 0 ? '−' : '+'}{fmtPrice(Math.abs(_slip))}
             </text>
@@ -606,7 +606,7 @@
   .price-chart {
     background: var(--card-bg-gradient);
     border: 1px solid rgba(251,191,36,0.18);
-    border-left: 3px solid #fbbf24;
+    border-left: 3px solid var(--c-action);
     border-radius: 4px;
     padding: 8px 12px 6px;
     width: 100%;
@@ -639,9 +639,9 @@
     font-weight: 700;
     border: 1px solid currentColor;
   }
-  .chart-mode-sim   { color: #fbbf24; }
+  .chart-mode-sim   { color: var(--c-action); }
   .chart-mode-paper { color: #7dd3fc; }
-  .chart-mode-live  { color: #4ade80; }
+  .chart-mode-live  { color: var(--c-long); }
   /* Kind tag — distinguishes spot vs F&O at a glance, complementary to
      the mode tag. Subtler than the mode pill so it doesn't dominate. */
   .chart-tag {
@@ -660,7 +660,7 @@
   }
   .chart-tag-deriv {
     background: rgba(251,191,36,0.10);
-    color: #fbbf24;
+    color: var(--c-action);
     border-color: rgba(251,191,36,0.35);
   }
   /* Legend for the underlying overlay — tiny dashed sample + the
@@ -688,7 +688,7 @@
     margin-left: auto;
     font-family: monospace;
   }
-  .chart-error { color: #f87171; }
+  .chart-error { color: var(--c-short); }
   .chart-reset {
     font-family: monospace;
     font-size: var(--fs-2xs);
@@ -698,7 +698,7 @@
     border-radius: 2px;
     border: 1px solid rgba(251,191,36,0.45);
     background: rgba(251,191,36,0.10);
-    color: #fbbf24;
+    color: var(--c-action);
     cursor: pointer;
     margin-left: 0.3rem;
   }

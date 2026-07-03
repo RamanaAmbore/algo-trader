@@ -266,7 +266,7 @@
   /* Error state — red tint matching PerformancePage .perf-banner-error palette. */
   .nav-tab-error {
     background: rgba(248, 113, 113, 0.07);
-    color: #f87171;
+    color: var(--c-short);
     border-radius: 4px;
     border: 1px solid rgba(248, 113, 113, 0.25);
     margin: 0.5rem;
@@ -291,8 +291,8 @@
     padding: 0.2rem 0.7rem;
     border-radius: 3px;
     border: 1px solid rgba(34, 211, 238, 0.55);
-    background: rgba(34, 211, 238, 0.14);
-    color: #22d3ee;
+    background: var(--c-info-14);
+    color: var(--c-info);
     font-size: 0.75rem;
     font-weight: 700;
     letter-spacing: 0.05em;
@@ -300,7 +300,7 @@
     transition: background 120ms, border-color 120ms;
   }
   .nav-tab-retry:hover {
-    background: rgba(34, 211, 238, 0.22);
+    background: var(--c-info-22);
     border-color: rgba(34, 211, 238, 0.80);
     color: #67e8f9;
   }
@@ -341,7 +341,7 @@
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: #7e97b8;
+    color: var(--c-muted);
   }
   .nav-chip-val {
     font-size: var(--fs-lg);
@@ -354,15 +354,15 @@
     color: #c8d8f0;
   }
   .nav-chip-overlay.nav-chip-pos {
-    background: rgba(74, 222, 128, 0.10);
+    background: var(--c-long-10);
     border-color: rgba(74, 222, 128, 0.40);
   }
   .nav-chip-overlay.nav-chip-pos .nav-chip-val,
-  .nav-chip-overlay.nav-chip-pos .nav-chip-delta { color: #4ade80; }
+  .nav-chip-overlay.nav-chip-pos .nav-chip-delta { color: var(--c-long); }
   .nav-chip-overlay.nav-chip-neg {
-    background: rgba(248, 113, 113, 0.10);
+    background: var(--c-short-10);
     border-color: rgba(248, 113, 113, 0.40);
   }
   .nav-chip-overlay.nav-chip-neg .nav-chip-val,
-  .nav-chip-overlay.nav-chip-neg .nav-chip-delta { color: #f87171; }
+  .nav-chip-overlay.nav-chip-neg .nav-chip-delta { color: var(--c-short); }
 </style>

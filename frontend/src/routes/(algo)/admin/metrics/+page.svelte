@@ -434,7 +434,7 @@
   }
   .metrics-line {
     fill: none;
-    stroke: #22d3ee;
+    stroke: var(--c-info);
     stroke-width: 1.4;
   }
   .metrics-dot {
@@ -456,7 +456,7 @@
     letter-spacing: 0.04em;
     text-transform: uppercase;
     margin: 1.2rem 0 0.4rem;
-    color: #fbbf24;
+    color: var(--c-action);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   .metrics-table-wrap { overflow-x: auto; }
@@ -482,7 +482,7 @@
   }
   .metrics-ts { color: var(--text-soft, #94a3b8); }
   .metrics-drill {
-    background: rgba(34, 211, 238, 0.14);
+    background: var(--c-info-14);
     border: 1px solid rgba(34, 211, 238, 0.55);
     color: #67e8f9;
     padding: 0.18rem 0.5rem;
@@ -490,7 +490,7 @@
     cursor: pointer;
     font-size: var(--fs-lg);
   }
-  .metrics-drill:hover { background: rgba(34, 211, 238, 0.22); }
+  .metrics-drill:hover { background: var(--c-info-22); }
 
   /* Modal */
   .metrics-modal-overlay {
@@ -548,7 +548,7 @@
   }
   .metrics-modal-notes {
     background: rgba(34, 211, 238, 0.06);
-    border: 1px solid rgba(34, 211, 238, 0.22);
+    border: 1px solid var(--c-info-22);
     padding: 0.4rem 0.6rem;
     border-radius: 4px;
     font-size: var(--fs-xl);
@@ -587,7 +587,7 @@
   .metrics-test-side-label {
     font-size: var(--fs-lg);
     font-weight: 600;
-    color: #22d3ee;
+    color: var(--c-info);
     margin-bottom: 0.3rem;
   }
   .metrics-test-kv {
@@ -623,7 +623,7 @@
   .metrics-test-dur {
     flex-shrink: 0;
     font-variant-numeric: tabular-nums;
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 600;
     min-width: 3.5rem;
     text-align: right;

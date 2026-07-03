@@ -262,7 +262,7 @@
       <h3 class="algo-card-title mb-0">
         {editingId == null ? 'New token' : `Edit token #${editingId}`}
       </h3>
-      <button onclick={closeForm} class="text-xs text-[#7e97b8] hover:text-[#fbbf24]">Cancel</button>
+      <button onclick={closeForm} class="text-xs text-[var(--c-muted)] hover:text-[var(--c-action)]">Cancel</button>
     </div>
 
     {#if formError}
@@ -371,8 +371,8 @@
     <button onclick={() => { activeTab = /** @type {'condition'|'notify'|'action'} */ (key); expandedId = null; }}
       class="px-3 py-1 text-xs font-medium border-b-2 transition-colors
         {activeTab === key
-          ? 'border-[#fbbf24] text-[#fbbf24]'
-          : 'border-transparent text-[#b4c8e6] hover:text-[#fbbf24]'}">
+          ? 'border-[var(--c-action)] text-[var(--c-action)]'
+          : 'border-transparent text-[#b4c8e6] hover:text-[var(--c-action)]'}">
       {label}
       <span class="ml-1 text-[0.55rem] opacity-70">({tokenCount(key)})</span>
     </button>
@@ -391,7 +391,7 @@
   <div class="algo-status-card p-0 overflow-hidden content-fade-in" data-status="inactive">
     <table class="w-full text-[0.65rem]">
       <thead>
-        <tr class="bg-[#0a1020] text-[#fbbf24]">
+        <tr class="bg-[#0a1020] text-[var(--c-action)]">
           <th class="text-left py-1.5 px-2">Kind</th>
           <th class="text-left py-1.5 px-2">Token</th>
           <th class="text-left py-1.5 px-2">Value</th>
@@ -405,8 +405,8 @@
         {#each filtered() as t}
           <tr class="border-t border-white/5 hover:bg-white/5 cursor-pointer"
               onclick={() => expandedId = expandedId === t.id ? null : t.id}>
-            <td class="py-1.5 px-2 text-[#7e97b8] font-mono uppercase text-[0.55rem]">{t.token_kind}</td>
-            <td class="py-1.5 px-2 font-mono text-[#fbbf24]">{t.token}</td>
+            <td class="py-1.5 px-2 text-[var(--c-muted)] font-mono uppercase text-[0.55rem]">{t.token_kind}</td>
+            <td class="py-1.5 px-2 font-mono text-[var(--c-action)]">{t.token}</td>
             <td class="py-1.5 px-2 text-[#c8d8f0]">{t.value_type ?? '—'}</td>
             <td class="py-1.5 px-2 text-[#c8d8f0]">{t.units ?? '—'}</td>
             <td class="py-1.5 px-2 text-[#c8d8f0]/80 text-[0.6rem] max-w-[360px] truncate"
@@ -443,33 +443,33 @@
               <td colspan="7" class="py-2 px-3 text-[0.6rem] text-[#c8d8f0]/80">
                 <div class="grid grid-cols-2 gap-x-6 gap-y-1">
                   {#if t.resolver}
-                    <div><span class="text-[#7e97b8]">Resolver:</span> <span class="font-mono">{t.resolver}</span></div>
+                    <div><span class="text-[var(--c-muted)]">Resolver:</span> <span class="font-mono">{t.resolver}</span></div>
                   {/if}
                   {#if t.params_schema}
                     <div class="col-span-2">
-                      <div class="text-[#7e97b8] mb-0.5">Params schema</div>
+                      <div class="text-[var(--c-muted)] mb-0.5">Params schema</div>
                       <pre class="text-[0.55rem] bg-black/30 p-2 rounded overflow-x-auto">{JSON.stringify(t.params_schema, null, 2)}</pre>
                     </div>
                   {/if}
                   {#if t.enum_values}
                     <div class="col-span-2">
-                      <span class="text-[#7e97b8]">Enum values:</span> {JSON.stringify(t.enum_values)}
+                      <span class="text-[var(--c-muted)]">Enum values:</span> {JSON.stringify(t.enum_values)}
                     </div>
                   {/if}
                   {#if t.template_body}
                     <div class="col-span-2">
-                      <div class="text-[#7e97b8] mb-0.5">Template body</div>
+                      <div class="text-[var(--c-muted)] mb-0.5">Template body</div>
                       <pre class="text-[0.55rem] bg-black/30 p-2 rounded whitespace-pre-wrap">{t.template_body}</pre>
                     </div>
                   {/if}
                   <div class="col-span-2 flex gap-2 mt-1 pt-1 border-t border-white/5">
                     {#if isDemo}
-                      <span class="text-[#7e97b8] text-[0.55rem] italic">Read-only in demo.</span>
+                      <span class="text-[var(--c-muted)] text-[0.55rem] italic">Read-only in demo.</span>
                     {:else if t.is_system}
-                      <span class="text-[#7e97b8] text-[0.55rem] italic">System tokens edit only via the toggle above.</span>
+                      <span class="text-[var(--c-muted)] text-[0.55rem] italic">System tokens edit only via the toggle above.</span>
                     {:else}
                       <button onclick={() => openEdit(t)}
-                        class="text-[0.6rem] px-2 py-0.5 rounded border border-[#fbbf24]/50 text-[#fbbf24] hover:bg-[#fbbf24]/15">Edit</button>
+                        class="text-[0.6rem] px-2 py-0.5 rounded border border-[var(--c-action)]/50 text-[var(--c-action)] hover:bg-[var(--c-action)]/15">Edit</button>
                       <button onclick={() => doDelete(t)}
                         class="text-[0.6rem] px-2 py-0.5 rounded border border-red-500/50 text-red-300 hover:bg-red-500/15">Delete</button>
                     {/if}

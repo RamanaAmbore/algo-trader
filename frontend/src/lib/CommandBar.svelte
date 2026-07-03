@@ -399,7 +399,7 @@
   .cmd-chips-area {
     background: #152033;
     border: 1px solid #334155;
-    border-left: 2px solid #fbbf24;
+    border-left: 2px solid var(--c-action);
     border-bottom: 1px solid #1e2d42;
     border-radius: 0.375rem 0.375rem 0 0;
     height: 4.5rem;
@@ -409,7 +409,7 @@
   }
   .cmd-container {
     border: 1px solid #334155;
-    border-left: 2px solid #fbbf24;
+    border-left: 2px solid var(--c-action);
     border-radius: 0 0 0.375rem 0.375rem;
     background: #152033;
     color: #f1f5f9;
@@ -419,7 +419,7 @@
   }
   .cmd-container:focus-within {
     border-color: #fbbf2466;
-    border-left: 2px solid #fbbf24;
+    border-left: 2px solid var(--c-action);
   }
   .cmd-pairs {
     display: flex;
@@ -429,7 +429,7 @@
     align-items: center;
   }
   .cmd-input-inner {
-    caret-color: #fbbf24;
+    caret-color: var(--c-action);
     border: none !important;
     outline: none !important;
     background: transparent !important;
@@ -469,15 +469,15 @@
     white-space: nowrap;
   }
   .cmd-suggest-item:hover { background: rgba(255,255,255,0.06); }
-  .cmd-suggest-item.active { background: rgba(251,191,36,0.2); color: #fbbf24; }
-  :global(.text-accent) { color: #fbbf24; }
+  .cmd-suggest-item.active { background: rgba(251,191,36,0.2); color: var(--c-action); }
+  :global(.text-accent) { color: var(--c-action); }
 
   .symbol-preview {
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
     font-weight: 600;
-    color: #22d3ee;
-    background: rgba(34,211,238,0.14);
+    color: var(--c-info);
+    background: var(--c-info-14);
     padding: 0.1rem 0.4rem;
     border-radius: 0.25rem;
   }
@@ -492,15 +492,15 @@
     border: 1px solid transparent;
   }
   .pair-filled {
-    background: rgba(74,222,128,0.1);
+    background: var(--c-long-10);
     border-color: rgba(74,222,128,0.25);
   }
-  .pair-filled .pair-key { color: #4ade80; }
+  .pair-filled .pair-key { color: var(--c-long); }
   .pair-current {
     background: var(--algo-amber-bg);
     border-color: var(--algo-amber-border-soft);
   }
-  .pair-current .pair-key { color: #fbbf24; }
+  .pair-current .pair-key { color: var(--c-action); }
   .pair-pending {
     background: rgba(100,116,139,0.06);
     border-color: rgba(100,116,139,0.12);
@@ -516,7 +516,7 @@
     font-weight: 500;
   }
   .pair-cursor {
-    color: #fbbf24;
+    color: var(--c-action);
     animation: blink 1s step-end infinite;
   }
   @keyframes blink { 50% { opacity: 0; } }

@@ -54,8 +54,8 @@
 
   /** Cycle background colour for each poll_priority value (CSS vars). */
   const PRIORITY_STYLES = {
-    hot:  { bg: 'rgba(74,222,128,0.18)',  border: 'rgba(74,222,128,0.55)',  color: '#4ade80',  label: 'HOT' },
-    warm: { bg: 'rgba(251,191,36,0.18)',  border: 'rgba(251,191,36,0.55)',  color: '#fbbf24',  label: 'WARM' },
+    hot:  { bg: 'rgba(74,222,128,0.18)',  border: 'rgba(74,222,128,0.55)',  color: 'var(--c-long)',  label: 'HOT' },
+    warm: { bg: 'rgba(251,191,36,0.18)',  border: 'rgba(251,191,36,0.55)',  color: 'var(--c-action)',  label: 'WARM' },
     cold: { bg: 'rgba(148,163,184,0.18)', border: 'rgba(148,163,184,0.55)', color: '#94a3b8',  label: 'COLD' },
   };
   function priorityStyle(/** @type {string} */ p) {
@@ -757,7 +757,7 @@
               onclick={() => resetForm()}>Cancel</button>
     </div>
 
-    <div class="text-[0.55rem] text-[#7e97b8] italic mt-2">
+    <div class="text-[0.55rem] text-[var(--c-muted)] italic mt-2">
       Encryption: secrets are Fernet-encrypted at rest with a key derived
       from <span class="font-mono">cookie_secret</span> via HKDF. Never
       stored in plaintext, never returned by the API. After saving, click
@@ -789,7 +789,7 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: #fbbf24;
+    color: var(--c-action);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     margin: 0;
   }
@@ -866,8 +866,8 @@
     border: 1px solid currentColor;
     letter-spacing: 0.04em;
   }
-  .status-loaded   { color: #4ade80; background: rgba(74,222,128,0.10); }
-  .status-pending  { color: #fbbf24; background: rgba(251,191,36,0.10); }
+  .status-loaded   { color: var(--c-long); background: var(--c-long-10); }
+  .status-pending  { color: var(--c-action); background: rgba(251,191,36,0.10); }
   .status-inactive { color: var(--algo-muted); background: rgba(126,151,184,0.10); }
 
   .brokers-hist-cell { text-align: center; }
@@ -880,7 +880,7 @@
     font-family: monospace;
     letter-spacing: 0.06em;
   }
-  .brokers-hist-pill.hist-on  { background: rgba(34,211,238,0.18); border: 1px solid rgba(103,232,249,0.55); color: #22d3ee; }
+  .brokers-hist-pill.hist-on  { background: rgba(34,211,238,0.18); border: 1px solid rgba(103,232,249,0.55); color: var(--c-info); }
   .brokers-hist-pill.hist-off { background: rgba(126,151,184,0.10); border: 1px solid rgba(126,151,184,0.30); color: var(--algo-muted); }
 
   .brokers-form-toggle {
@@ -888,7 +888,7 @@
     background: rgba(34,211,238,0.10);
     border: 1px solid rgba(34,211,238,0.45);
     border-radius: 3px;
-    color: #22d3ee;
+    color: var(--c-info);
     font-family: monospace;
     font-size: var(--fs-md);
     font-weight: 700;
@@ -913,15 +913,15 @@
     line-height: 1;
     cursor: help;
   }
-  .test-result.ok   { color: #4ade80; }
-  .test-result.fail { color: #f87171; }
+  .test-result.ok   { color: var(--c-long); }
+  .test-result.fail { color: var(--c-short); }
 
   :global(.brokers-table .destructive) {
     border-color: rgba(248,113,113,0.45) !important;
-    color: #f87171 !important;
+    color: var(--c-short) !important;
   }
   :global(.brokers-table .destructive:hover:not(:disabled)) {
-    background: rgba(248,113,113,0.10) !important;
+    background: var(--c-short-10) !important;
   }
 
   /* ── Poll priority chip + dropdown ─────────────────────────────── */
@@ -957,7 +957,7 @@
     width: 4px;
     height: 4px;
     border-radius: 50%;
-    background: #f87171;
+    background: var(--c-short);
     pointer-events: none;
   }
   .auto-dg-label {
@@ -979,7 +979,7 @@
   .restore-link {
     background: none;
     border: none;
-    color: #22d3ee;
+    color: var(--c-info);
     font-size: var(--fs-2xs);
     font-family: monospace;
     cursor: pointer;

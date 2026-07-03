@@ -491,12 +491,12 @@
   /* Only MCX — amber (matches the order-icon hue family + signals
      "commodities only", a partial-session state). */
   .rf-mkt-mcx {
-    background: rgba(251, 191, 36, 0.14);
+    background: var(--c-action-14);
     border-color: var(--algo-amber-border);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .rf-mkt-mcx:hover:not(:disabled) {
-    background: rgba(251, 191, 36, 0.22);
+    background: var(--c-action-22);
     border-color: rgba(251, 191, 36, 0.85);
     color: #fcd34d;
   }
@@ -649,7 +649,7 @@
   .rf-closed-title {
     font-weight: 700;
     font-size: var(--fs-lg);
-    color: #fbbf24;
+    color: var(--c-action);
     margin-bottom: 0.35rem;
     letter-spacing: 0.03em;
   }

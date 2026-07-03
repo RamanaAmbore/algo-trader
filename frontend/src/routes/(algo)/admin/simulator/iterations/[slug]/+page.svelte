@@ -177,7 +177,7 @@
   .slug-chip {
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
-    color: #fbbf24;
+    color: var(--c-action);
     background: rgba(251,191,36,0.10);
     border: 1px solid rgba(251,191,36,0.35);
     padding: 0.15rem 0.45rem;
@@ -191,11 +191,11 @@
     text-decoration: none;
     margin-left: 0.75rem;
   }
-  .back-link:hover { color: #fbbf24; }
+  .back-link:hover { color: var(--c-action); }
   .err-banner {
-    background: rgba(248,113,113,0.10);
+    background: var(--c-short-10);
     border: 1px solid rgba(248,113,113,0.35);
-    color: #f87171;
+    color: var(--c-short);
     padding: 0.4rem 0.65rem;
     border-radius: 4px;
     font-family: var(--font-numeric);
@@ -225,7 +225,7 @@
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
     font-weight: 700;
-    color: #fbbf24;
+    color: var(--c-action);
     text-transform: uppercase;
     letter-spacing: 0.08em;
     margin-bottom: 0.45rem;
@@ -251,7 +251,7 @@
     padding: 0.18rem 0;
     font-variant-numeric: tabular-nums;
   }
-  .slug    { color: #fbbf24; font-weight: 700; }
+  .slug    { color: var(--c-action); font-weight: 700; }
   .regime  { color: #c084fc; font-weight: 700; }
   .er {
     text-transform: uppercase;
@@ -259,9 +259,9 @@
     letter-spacing: 0.04em;
     font-weight: 700;
   }
-  .er-ok      { color: #4ade80; }
-  .er-warn    { color: #fbbf24; }
-  .er-err     { color: #f87171; }
+  .er-ok      { color: var(--c-long); }
+  .er-warn    { color: var(--c-action); }
+  .er-err     { color: var(--c-short); }
   .er-pending { color: #7dd3fc; }
   .er-other   { color: var(--text-muted); }
 
@@ -278,7 +278,7 @@
     padding: 0.45rem 0.65rem;
     background: rgba(251,191,36,0.18);
     border: 1px solid rgba(251,191,36,0.55);
-    color: #fbbf24;
+    color: var(--c-action);
     font-family: var(--font-numeric);
     font-size: var(--fs-lg);
     font-weight: 700;
@@ -300,9 +300,9 @@
     text-align: center;
   }
   .exhausted-tag {
-    color: #f87171;
+    color: var(--c-short);
     font-weight: 700;
-    background: rgba(248,113,113,0.10);
+    background: var(--c-short-10);
     border: 1px solid rgba(248,113,113,0.35);
     padding: 0 0.3rem;
     border-radius: 2px;

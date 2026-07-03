@@ -264,7 +264,7 @@
     border: 1px solid rgba(255, 255, 255, 0.10);
     border-radius: 3px;
     padding: 0.18rem 0.45rem;
-    color: #fbbf24;
+    color: var(--c-action);
     font-size: var(--fs-lg);
     font-weight: 800;
     font-family: var(--font-numeric);
@@ -335,7 +335,7 @@
   }
   .ssi-row:hover {
     background: rgba(251, 191, 36, 0.12);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .ssi-row-active {
     background: rgba(251, 191, 36, 0.12);

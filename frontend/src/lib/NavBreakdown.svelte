@@ -271,7 +271,7 @@
     letter-spacing: 0.04em;
     text-transform: uppercase;
     font-size: 0.6rem;         /* matches --ag-header-font-size in ag-theme-algo */
-    color: #7e97b8;            /* --text-muted / var(--algo-muted) */
+    color: var(--c-muted);            /* --text-muted / var(--algo-muted) */
     background: rgba(15,23,42,0.30); /* matches ag-theme-algo header bg */
     padding: 0 3px;            /* matches ag-theme-algo cell padding */
     border-right: 1px solid rgba(126,151,184,0.18);
@@ -320,15 +320,15 @@
 
   /* Direction palette matches the algo theme tokens used across
      PerformancePage / MarketPulse / ag-theme-algo pnl-gain/pnl-loss. */
-  .nav-up   { color: #4ade80; }
-  .nav-down { color: #f87171; }
+  .nav-up   { color: var(--c-long); }
+  .nav-down { color: var(--c-short); }
   .nav-zero { color: var(--algo-slate); }
 
   /* TOTAL row — amber tint mirrors ag-theme-algo totals-row rule.
      border-top 2px amber matches the ag-Grid TOTAL row treatment. */
   .nav-bd-total td {
-    background: rgba(251, 191, 36, 0.22) !important;
-    color: #fbbf24 !important;
+    background: var(--c-action-22) !important;
+    color: var(--c-action) !important;
     border-top: 2px solid rgba(251, 191, 36, 0.70) !important;
     border-bottom: 1px solid rgba(251, 191, 36, 0.55) !important;
     font-weight: 700;
@@ -338,7 +338,7 @@
   .nav-bd-total .nav-up,
   .nav-bd-total .nav-down,
   .nav-bd-total .nav-zero {
-    color: #fbbf24 !important;
+    color: var(--c-action) !important;
   }
 
   .nav-bd-caption {
@@ -368,14 +368,14 @@
   /* Error state — red tint matching PerformancePage .perf-banner-error palette. */
   .nav-bd-error {
     background: rgba(248, 113, 113, 0.07);
-    color: #f87171;
+    color: var(--c-short);
     border-top: 1px solid rgba(248, 113, 113, 0.25);
   }
 
   /* Slow/timed-out warning — amber tint matching the algo-theme warn palette. */
   .nav-bd-warn {
     background: rgba(251, 191, 36, 0.07);
-    color: #fbbf24;
+    color: var(--c-action);
     border-top: 1px solid rgba(251, 191, 36, 0.25);
   }
 
@@ -395,7 +395,7 @@
   }
 
   .nav-bd-link {
-    color: #22d3ee;
+    color: var(--c-info);
     text-decoration: underline;
     text-underline-offset: 2px;
   }
@@ -410,8 +410,8 @@
     padding: 0.15rem 0.6rem;
     border-radius: 3px;
     border: 1px solid rgba(34, 211, 238, 0.55);
-    background: rgba(34, 211, 238, 0.14);
-    color: #22d3ee;
+    background: var(--c-info-14);
+    color: var(--c-info);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.68rem;
     font-weight: 700;
@@ -420,7 +420,7 @@
     transition: background 120ms, border-color 120ms;
   }
   .nav-bd-retry:hover {
-    background: rgba(34, 211, 238, 0.22);
+    background: var(--c-info-22);
     border-color: rgba(34, 211, 238, 0.80);
     color: #67e8f9;
   }

@@ -367,12 +367,12 @@
   }
   .filter-btn:hover {
     background: rgba(251,191,36,0.08);
-    color: #fbbf24;
+    color: var(--c-action);
     border-color: rgba(251,191,36,0.3);
   }
   .filter-btn-on {
     background: rgba(251,191,36,0.18);
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 700;
     border-color: rgba(251,191,36,0.5);
   }
@@ -427,7 +427,7 @@
   }
   .frag-name {
     font-weight: 700;
-    color: #fbbf24;
+    color: var(--c-action);
     letter-spacing: 0.02em;
     flex-shrink: 0;
   }
@@ -494,7 +494,7 @@
   }
   .action-btn:hover {
     background: rgba(251,191,36,0.10);
-    color: #fbbf24;
+    color: var(--c-action);
     border-color: rgba(251,191,36,0.35);
   }
   .action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -508,7 +508,7 @@
     padding: 0.32rem 0.95rem;
     font-size: var(--fs-lg);
     font-weight: 700;
-    color: #fbbf24;
+    color: var(--c-action);
     background: rgba(251,191,36,0.18);
     border: 1px solid rgba(251,191,36,0.5);
     border-radius: 0.25rem;
@@ -526,7 +526,7 @@
   .form-title {
     font-size: var(--fs-xl);
     font-weight: 700;
-    color: #fbbf24;
+    color: var(--c-action);
     margin: 0 0 0.6rem 0;
     font-family: var(--font-numeric);
     letter-spacing: 0.04em;

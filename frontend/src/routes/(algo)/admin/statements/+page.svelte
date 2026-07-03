@@ -314,7 +314,7 @@
   }
   .ms-field { display: flex; flex-direction: column; gap: 0.2rem; }
   .ms-field-lbl {
-    font-size: var(--fs-xs); color: #7e97b8; letter-spacing: 0.06em;
+    font-size: var(--fs-xs); color: var(--c-muted); letter-spacing: 0.06em;
     text-transform: uppercase; font-weight: 700;
     font-family: var(--font-numeric);
   }
@@ -335,9 +335,9 @@
   }
   .ms-pill:hover { background: rgba(34, 211, 238, 0.10); }
   .ms-pill.active { border-color: rgba(34, 211, 238, 0.65); color: #67e8f9; }
-  .ms-pill.ms-pill-pending.active { border-color: rgba(251, 191, 36, 0.65); color: #fbbf24; }
+  .ms-pill.ms-pill-pending.active { border-color: rgba(251, 191, 36, 0.65); color: var(--c-action); }
   .ms-pill.ms-pill-failed.active  { border-color: rgba(248, 113, 113, 0.65); color: #fca5a5; }
-  .ms-pill.ms-pill-sent.active    { border-color: rgba( 74, 222, 128, 0.65); color: #4ade80; }
+  .ms-pill.ms-pill-sent.active    { border-color: rgba( 74, 222, 128, 0.65); color: var(--c-long); }
   .ms-pill-n {
     margin-left: 0.3rem;
     opacity: 0.75;
@@ -377,7 +377,7 @@
   .ms-table td.td-actions { text-align: right; white-space: nowrap; }
   .ms-table td.td-actions :global(button) { margin-left: 0.25rem; }
   .ms-lp-name { font-weight: 700; }
-  .ms-lp-sub  { font-size: var(--fs-sm); color: #7e97b8; font-family: var(--font-numeric); }
+  .ms-lp-sub  { font-size: var(--fs-sm); color: var(--c-muted); font-family: var(--font-numeric); }
 
   .ms-row.row-pending td { background: rgba(251, 191, 36, 0.05); }
   .ms-row.row-failed td  { background: rgba(248, 113, 113, 0.05); }
@@ -404,7 +404,7 @@
     font-family: var(--font-numeric);
   }
   .ms-pill-status.ms-pill-sent {
-    background: rgba(74, 222, 128, 0.15); color: #4ade80;
+    background: rgba(74, 222, 128, 0.15); color: var(--c-long);
     border: 1px solid rgba(74, 222, 128, 0.4);
   }
   .ms-pill-status.ms-pill-failed {
@@ -412,7 +412,7 @@
     border: 1px solid rgba(248, 113, 113, 0.4);
   }
   .ms-pill-status.ms-pill-pending {
-    background: rgba(251, 191, 36, 0.15); color: #fbbf24;
+    background: rgba(251, 191, 36, 0.15); color: var(--c-action);
     border: 1px solid rgba(251, 191, 36, 0.4);
   }
 </style>
