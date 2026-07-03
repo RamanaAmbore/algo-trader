@@ -12,6 +12,9 @@
  *   - load_ms         load event timing
  *   - long_task_ms    Σ long-task duration during 5 s idle
  *   - long_task_max_ms  longest single long task
+ *   - tbt_ms          Total Blocking Time (Σ max(0, task.dur - 50))
+ *                     — the canonical Web Vitals blocking metric; perf_diff
+ *                     surfaces this in its runtime column
  *   - heap_mb         used JS heap after 5 s idle (Chrome only)
  *   - ws_connections  count of open /ws/* sockets
  *   - refresh_click_ms  RefreshButton click → visible feedback latency
@@ -243,12 +246,21 @@ test.describe('perf capture (runtime metrics)', () => {
         const wsCount  = await page.evaluate(() => window.__wsCount || 0);
         const refresh  = await measureRefreshClick(page);
 
+        // TBT (Total Blocking Time) — Web Vitals canonical metric.
+        // Only the portion of each long task ABOVE the 50 ms threshold
+        // counts as "blocking". A pile of 60 ms tasks (10 ms blocking
+        // each) vs one 500 ms task (450 ms blocking) — both surface
+        // here, but long_task_ms alone would mask the difference.
+        const tbt = Math.round(longTasks.reduce(
+          (a, t) => a + Math.max(0, t.duration - 50), 0));
+
         row.runtime = {
           ...nav,
           ...lcp,
           heap_mb: heap == null ? null : Number(heap.toFixed(2)),
           long_task_ms:      Math.round(longTasks.reduce((a, t) => a + t.duration, 0)),
           long_task_max_ms:  Math.round(longTasks.reduce((m, t) => Math.max(m, t.duration), 0)),
+          tbt_ms:            tbt,
           ws_connections:    wsCount,
           refresh_click_ms:  refresh,
         };
