@@ -1,7 +1,7 @@
 /**
  * quoteStream.js — SSE-backed live LTP feed.
  *
- * Connects to GET /api/quote/stream and maintains one reactive primitive:
+ * Connects to GET /api/quotes/stream and maintains one reactive primitive:
  *   streamOpen  — writable store: true when the SSE connection has received
  *                 at least one snapshot/tick without a subsequent error
  *
@@ -69,7 +69,7 @@ function _open() {
   // /api/* call. EventSource does not support arbitrary request headers so
   // bearer-token auth cannot be used here; cookie auth is the fallback the
   // backend already supports for SSE.
-  _es = new EventSource('/api/quote/stream', { withCredentials: true });
+  _es = new EventSource('/api/quotes/stream', { withCredentials: true });
 
   _es.addEventListener('snapshot', (e) => {
     try {
