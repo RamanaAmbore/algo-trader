@@ -839,19 +839,76 @@ async def seed_global_pinned() -> None:
                         len(legacy_ids))
 
         # 5a. One-shot cleanup: remove retired symbols from global Pinned.
-        #     Idempotent — safe to re-run on every boot. sa_delete already
-        #     imported above inside the legacy-migration block; hoist it
-        #     if the legacy block was skipped.
+        #     Each wave is guarded by a settings marker so the DELETE fires
+        #     ONCE at the first boot after the code lands, then never again.
+        #     This preserves operator intent: if the operator manually re-adds
+        #     a symbol after cleanup, it stays on subsequent restarts.
+        #
+        #     Marker keys live in the `settings` table (category='migrations',
+        #     value_type='string', value='1'). We read/write them directly here
+        #     to avoid a circular import with routes/settings.py.
         from sqlalchemy import delete as sa_delete  # noqa: F811 (idempotent re-import)
-        _RETIRED_PINNED = [("GOLDM", "MCX"), ("USDINR", "CDS")]
-        for _sym, _exch in _RETIRED_PINNED:
-            await session.execute(
-                sa_delete(WatchlistItem).where(
-                    WatchlistItem.watchlist_id == global_row.id,
-                    WatchlistItem.tradingsymbol == _sym,
-                    WatchlistItem.exchange == _exch,
+        from backend.api.models import Setting
+
+        async def _migration_done(key: str) -> bool:
+            row = (await session.execute(
+                select(Setting).where(Setting.key == key)
+            )).scalar_one_or_none()
+            return row is not None and row.value == "1"
+
+        async def _mark_migration(key: str) -> None:
+            now_ts = datetime.now(timezone.utc)
+            existing = (await session.execute(
+                select(Setting).where(Setting.key == key)
+            )).scalar_one_or_none()
+            if existing is None:
+                session.add(Setting(
+                    category="migrations",
+                    key=key,
+                    value_type="string",
+                    value="1",
+                    default_value="0",
+                    description=f"One-shot pinned cleanup: {key}",
+                    updated_at=now_ts,
+                ))
+            else:
+                existing.value = "1"
+                existing.updated_at = now_ts
+
+        # Wave 1 — GOLDM (MCX mini), USDINR (CDS) removed Jun 2026
+        _W1_KEY = "migrations.pinned_remove_goldm_usdinr_v1"
+        if not await _migration_done(_W1_KEY):
+            for _sym, _exch in [("GOLDM", "MCX"), ("USDINR", "CDS")]:
+                await session.execute(
+                    sa_delete(WatchlistItem).where(
+                        WatchlistItem.watchlist_id == global_row.id,
+                        WatchlistItem.tradingsymbol == _sym,
+                        WatchlistItem.exchange == _exch,
+                    )
                 )
-            )
+            await _mark_migration(_W1_KEY)
+            logger.info("Watchlist: one-shot cleanup wave 1 (GOLDM/USDINR) done")
+
+        # Wave 2 — MCX bare-root futures removed Jul 2026
+        # COPPER, CRUDEOIL, NATURALGAS, SILVERM resolve to near-month futures;
+        # operator adds F&O to pinned explicitly via /pulse if wanted.
+        _W2_KEY = "migrations.pinned_remove_mcx_futures_v1"
+        if not await _migration_done(_W2_KEY):
+            for _sym, _exch in [
+                ("COPPER",      "MCX"),
+                ("CRUDEOIL",    "MCX"),
+                ("NATURALGAS",  "MCX"),
+                ("SILVERM",     "MCX"),
+            ]:
+                await session.execute(
+                    sa_delete(WatchlistItem).where(
+                        WatchlistItem.watchlist_id == global_row.id,
+                        WatchlistItem.tradingsymbol == _sym,
+                        WatchlistItem.exchange == _exch,
+                    )
+                )
+            await _mark_migration(_W2_KEY)
+            logger.info("Watchlist: one-shot cleanup wave 2 (MCX futures) done")
 
         # 5. Top up the global Pinned with any MARKETS_DEFAULT item
         #    that isn't already in it. Additive — never removes the

@@ -14,6 +14,7 @@ class + one entry in `_ADAPTERS`.
 
 from __future__ import annotations
 
+import contextvars
 import threading
 import time
 from typing import Any, Callable, Optional
@@ -26,6 +27,33 @@ from backend.brokers.connections import Connections
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Per-request market-data broker contextvar
+# ---------------------------------------------------------------------------
+# Within a single HTTP request all market-data fetches (quote, ltp,
+# instruments, historical_data) must hit the SAME broker session so
+# that e.g. quote + instruments + sparkline data are timestamp-coherent.
+#
+# `_MDB_CTX` stores the resolved `PriceBroker` for the current
+# asyncio Task / OS thread.  `get_market_data_broker()` populates it on
+# first call in each request and returns the same instance on every
+# subsequent call.  `reset_market_data_broker_ctx()` is called at the
+# Litestar request boundary (before handler dispatch) to clear the
+# previous request's cached selection.
+#
+# Background tasks run outside a request context — they never call
+# `reset_market_data_broker_ctx()`, so the contextvar is unset and
+# `get_market_data_broker()` falls through to `get_price_broker()`
+# fresh on every call.  That is the correct behaviour for pollers.
+#
+# `asyncio.to_thread` propagates contextvars (Python 3.9+), so a
+# threaded broker call inside a route handler sees the same cached
+# broker as the async code that issued it.
+# ---------------------------------------------------------------------------
+_MDB_CTX: contextvars.ContextVar[Optional["PriceBroker"]] = contextvars.ContextVar(
+    "_MDB_CTX", default=None
+)
 
 # ── Per-broker rate-limit cool-off ────────────────────────────────────
 # When a broker call raises an exception containing "too many requests"
@@ -639,6 +667,72 @@ def get_sparkline_broker() -> Broker:
     if not ordered:
         return get_price_broker()
     return PriceBroker(ordered)
+
+
+# ---------------------------------------------------------------------------
+# Per-request market-data broker helpers
+# ---------------------------------------------------------------------------
+
+def reset_market_data_broker_ctx() -> None:
+    """Clear the per-request market-data broker cache.
+
+    Call at the Litestar request boundary BEFORE handler dispatch so every
+    new request resolves its own primary broker.  Idempotent — safe to call
+    even if never set.
+
+    Background pollers do NOT call this; they have their own asyncio Task
+    context so the ContextVar defaults to None and `get_market_data_broker()`
+    resolves fresh each call.
+    """
+    _MDB_CTX.set(None)
+
+
+def get_market_data_broker() -> Broker:
+    """Return the primary market-data broker for the current request context.
+
+    Within one HTTP request (asyncio Task) the SAME `PriceBroker` instance is
+    returned on every call.  This guarantees that quote / instruments /
+    historical_data calls made by a single route handler all go through the
+    same broker session, preventing timestamp-incoherence caused by two
+    concurrent callsites picking different primary brokers mid-cycle.
+
+    Selection order (delegated to `get_price_broker()`):
+      1. `connections.price_account` setting (operator pin).
+      2. All accounts sorted by `broker_accounts.priority` ASC.
+      3. Tie-break: insertion order in Connections().conn.
+
+    On the first call in a request the selection is resolved and logged with
+    `[MARKET-DATA-BROKER]`.  Subsequent calls return the cached instance
+    without additional I/O.
+
+    Background pollers / non-request code (no contextvar set) skip the cache
+    and call `get_price_broker()` directly, which is the correct behaviour for
+    pollers that should always resolve the freshest healthy broker.
+
+    Failure telemetry: PriceBroker._try() already logs per-broker fallbacks as
+    `[MARKET-DATA-FALLBACK]`; the primary selection is logged here once per
+    request with the account and selection reason.
+    """
+    cached = _MDB_CTX.get(None)
+    if cached is not None:
+        return cached
+
+    broker = get_price_broker()
+    # Log the selection once per request.  `PriceBroker.account` returns the
+    # first underlying broker's account ID — the operator-pinned or
+    # lowest-priority primary.
+    try:
+        from backend.shared.helpers.settings import get_string as _gs
+        _pinned = (_gs("connections.price_account", "") or "").strip()
+        _reason = "pinned" if (_pinned and broker.account == _pinned) else "priority-sort"
+        logger.debug(
+            f"[MARKET-DATA-BROKER] account={broker.account} reason={_reason}"
+        )
+    except Exception:
+        pass
+
+    _MDB_CTX.set(broker)
+    return broker
 
 
 def get_price_broker() -> Broker:

@@ -2695,6 +2695,20 @@
 
       const allKeys = new Set(contractKeys);
       for (const info of underlyingInfos.values()) allKeys.add(info.quoteKey);
+      // Add every active watchlist item (pinned + user lists) to the
+      // batchQuote universe. Without this, pinned indices (NIFTY 50,
+      // SENSEX) and watchlist-only symbols are excluded from
+      // publishPulseQuotes and only get their symbolStore entry
+      // refreshed via the loadQuotes path (30 s when SSE is up).
+      // Positions/holdings already land in contractKeys above, so the
+      // incremental cost is just the ~15-20 pinned symbols.
+      for (const list of (activeLists || [])) {
+        for (const it of (list?.items || [])) {
+          const wSym  = String(it.tradingsymbol || '').toUpperCase();
+          const wExch = String(it.exchange || 'NSE').toUpperCase();
+          if (wSym && wExch) allKeys.add(`${wExch}:${wSym}`);
+        }
+      }
 
       if (allKeys.size) {
         const items = await batchQuoteChunked([...allKeys]);

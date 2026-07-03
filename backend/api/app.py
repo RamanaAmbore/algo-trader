@@ -526,12 +526,19 @@ def _visitor_ignored(ip: str, company: str) -> bool:
 
 
 async def _log_visitor(request) -> None:  # type: ignore[no-untyped-def]
-    """Litestar before_request hook — logs every first-sight-per-hour
-    visitor to the operator-facing System log with country / city /
-    region / company / ASN resolved inline via local MaxMind. Skips
-    static asset paths and IPs matched by visitors.ignore_ips /
-    visitors.ignore_companies so the System tab reads as real
-    third-party visitor traffic."""
+    """Litestar before_request hook — resets per-request market-data broker
+    cache + logs every first-sight-per-hour visitor to the operator-facing
+    System log with country / city / region / company / ASN resolved inline
+    via local MaxMind. Skips static asset paths and IPs matched by
+    visitors.ignore_ips / visitors.ignore_companies so the System tab reads
+    as real third-party visitor traffic."""
+    # Reset per-request market-data broker selection so that quote / instruments
+    # / historical_data calls within this request always use the same session.
+    try:
+        from backend.brokers.registry import reset_market_data_broker_ctx
+        reset_market_data_broker_ctx()
+    except Exception:
+        pass
     try:
         path = request.scope.get("path") or ""
         # Skip static + asset + infra traffic — operator wants 'someone
