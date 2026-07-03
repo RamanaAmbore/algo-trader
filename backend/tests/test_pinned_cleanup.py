@@ -2,19 +2,21 @@
 Tests for seed_global_pinned: retired-symbol cleanup + default top-up.
 
 Five quality dimensions:
-  1. SSOT     — RETIRED_PINNED_SYMBOLS list in watchlist.py is the single
-                authoritative source; GOLDM/USDINR are not in MARKETS_DEFAULT.
-  2. Perf     — cleanup block executes O(|RETIRED|) DELETE statements, not a
-                full table scan; idempotent across two runs (no duplicate rows).
-  3. Stale    — GOLDM and USDINR do NOT appear in MARKETS_DEFAULT after edit.
-  4. Reuse    — seed_global_pinned is the single call-site for both cleanup
-                and top-up; no inline DELETE calls exist elsewhere in watchlist.py.
+  1. SSOT     — MARKETS_DEFAULT has no F&O (MCX bare roots gone). Migration
+                marker keys are the SSOT for cleanup waves.
+  2. Perf     — each wave is O(|wave|) targeted DELETEs (filter by symbol+exch),
+                not a full-table scan or truncation.
+  3. Stale    — GOLDM, USDINR, COPPER, CRUDEOIL, NATURALGAS, SILVERM absent
+                from MARKETS_DEFAULT.
+  4. Reuse    — seed_global_pinned is the single call-site for cleanup + top-up.
   5. Correctness — scenario matrix:
-       a. GOLDM + USDINR present → removed after seed.
-       b. GOLDBEES / SILVERBEES absent → added after seed.
-       c. GOLDM + GOLDBEES both present → GOLDM removed, GOLDBEES preserved.
+       a. GOLDM + USDINR present → removed after seed (wave 1).
+       b. MCX bare roots present → removed after seed (wave 2).
+       c. GOLDBEES / SILVERBEES absent → added after seed (top-up).
        d. Second seed run is idempotent (no double-inserts, no errors).
        e. Operator-curated extras (e.g. TATASTEEL NSE) untouched by cleanup.
+       f. Migration is one-shot: marker present → DELETE not re-executed.
+       g. Operator re-adds CRUDEOIL after wave-2 cleanup → preserved on next boot.
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, UniqueConstraint, delete
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -47,7 +49,7 @@ def _wl_text() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Dimension 3 — GOLDM and USDINR are NOT in MARKETS_DEFAULT after the edit
+# Dimension 3 — retired symbols NOT in MARKETS_DEFAULT
 # ---------------------------------------------------------------------------
 
 def test_goldm_removed_from_markets_default():
@@ -62,6 +64,26 @@ def test_usdinr_removed_from_markets_default():
     assert '("USDINR"' not in src, (
         "USDINR must not appear in MARKETS_DEFAULT after the pinned-cleanup edit"
     )
+
+
+def test_copper_removed_from_markets_default():
+    src = _defaults_text()
+    assert '("COPPER"' not in src, "COPPER must not appear in MARKETS_DEFAULT"
+
+
+def test_crudeoil_removed_from_markets_default():
+    src = _defaults_text()
+    assert '("CRUDEOIL"' not in src, "CRUDEOIL must not appear in MARKETS_DEFAULT"
+
+
+def test_naturalgas_removed_from_markets_default():
+    src = _defaults_text()
+    assert '("NATURALGAS"' not in src, "NATURALGAS must not appear in MARKETS_DEFAULT"
+
+
+def test_silverm_removed_from_markets_default():
+    src = _defaults_text()
+    assert '("SILVERM"' not in src, "SILVERM must not appear in MARKETS_DEFAULT"
 
 
 # ---------------------------------------------------------------------------
@@ -83,20 +105,31 @@ def test_silverbees_in_markets_default():
 
 
 # ---------------------------------------------------------------------------
-# Dimension 3 — RETIRED_PINNED_SYMBOLS block exists in watchlist.py
+# Dimension 3 — migration marker keys exist in watchlist.py (SSOT check)
 # ---------------------------------------------------------------------------
 
-def test_retired_pinned_symbols_block_present():
+def test_wave1_migration_key_present():
     src = _wl_text()
-    assert "_RETIRED_PINNED" in src, (
-        "seed_global_pinned must define _RETIRED_PINNED cleanup list"
+    assert "migrations.pinned_remove_goldm_usdinr_v1" in src, (
+        "Wave-1 migration key must be present in seed_global_pinned"
     )
     assert '"GOLDM"' in src and '"MCX"' in src, (
-        "_RETIRED_PINNED must include (GOLDM, MCX)"
+        "Wave 1 cleanup must reference (GOLDM, MCX)"
     )
     assert '"USDINR"' in src and '"CDS"' in src, (
-        "_RETIRED_PINNED must include (USDINR, CDS)"
+        "Wave 1 cleanup must reference (USDINR, CDS)"
     )
+
+
+def test_wave2_migration_key_present():
+    src = _wl_text()
+    assert "migrations.pinned_remove_mcx_futures_v1" in src, (
+        "Wave-2 migration key must be present in seed_global_pinned"
+    )
+    assert '"COPPER"' in src, "Wave 2 cleanup must reference COPPER"
+    assert '"CRUDEOIL"' in src, "Wave 2 cleanup must reference CRUDEOIL"
+    assert '"NATURALGAS"' in src, "Wave 2 cleanup must reference NATURALGAS"
+    assert '"SILVERM"' in src, "Wave 2 cleanup must reference SILVERM"
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +186,20 @@ class _WatchlistItem(_Base):
                            default=lambda: datetime.now(timezone.utc))
 
 
+class _Setting(_Base):
+    """Mirrors the production Setting model for migration-marker reads/writes."""
+    __tablename__ = "settings"
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    category      = Column(String(32), nullable=False)
+    key           = Column(String(128), unique=True, nullable=False)
+    value_type    = Column(String(16), nullable=False)
+    value         = Column(Text, nullable=False, default="")
+    default_value = Column(Text, nullable=False, default="")
+    description   = Column(Text, nullable=False, default="")
+    updated_at    = Column(DateTime(timezone=True), nullable=False,
+                           default=lambda: datetime.now(timezone.utc))
+
+
 @pytest_asyncio.fixture
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -172,6 +219,8 @@ async def _run_seed(db_session: AsyncSession) -> None:
     """
     Call seed_global_pinned with its DB wired to our in-memory SQLite
     session factory so we can assert against the live rows.
+    The production Setting model is patched to our _Setting stub so the
+    migration-marker reads/writes land in the same in-memory DB.
     """
     from contextlib import asynccontextmanager
 
@@ -179,7 +228,10 @@ async def _run_seed(db_session: AsyncSession) -> None:
     async def _fake_session_ctx():
         yield db_session
 
-    with patch("backend.api.routes.watchlist.async_session", _fake_session_ctx):
+    with (
+        patch("backend.api.routes.watchlist.async_session", _fake_session_ctx),
+        patch("backend.api.models.Setting", _Setting),
+    ):
         from backend.api.routes.watchlist import seed_global_pinned
         await seed_global_pinned()
 
@@ -213,7 +265,7 @@ async def _make_global_pinned(db_session: AsyncSession) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Dimension 5a — GOLDM + USDINR present → removed after seed
+# Dimension 5a — GOLDM + USDINR present → removed after seed (wave 1)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -331,4 +383,107 @@ def test_cleanup_uses_targeted_deletes():
     )
     assert "WatchlistItem.exchange == _exch" in src, (
         "Cleanup DELETE must filter by exchange"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5b (wave 2) — MCX bare roots removed after seed
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_mcx_futures_removed_after_seed(db_session):
+    wl_id = await _make_global_pinned(db_session)
+    await _insert_items(db_session, wl_id, [
+        ("COPPER",      "MCX"),
+        ("CRUDEOIL",    "MCX"),
+        ("NATURALGAS",  "MCX"),
+        ("SILVERM",     "MCX"),
+        ("NIFTY 50",    "NSE"),
+    ])
+
+    await _run_seed(db_session)
+
+    syms = await _symbols(db_session)
+    for sym in ("COPPER", "CRUDEOIL", "NATURALGAS", "SILVERM"):
+        assert (sym, "MCX") not in syms, f"{sym} MCX must be removed by wave-2 cleanup"
+    assert ("NIFTY 50", "NSE") in syms, "NIFTY 50 must be preserved"
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5f — Migration is one-shot: marker present → DELETE not re-run
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_wave2_migration_is_one_shot(db_session):
+    """If wave-2 marker is already set, a subsequent seed does NOT delete
+    CRUDEOIL even if it exists in the pinned list (operator re-added it)."""
+    from sqlalchemy import select as sa_select
+
+    wl_id = await _make_global_pinned(db_session)
+
+    # Pre-set wave-2 marker → simulate "migration already ran"
+    now_ts = datetime.now(timezone.utc)
+    db_session.add(_Setting(
+        category="migrations",
+        key="migrations.pinned_remove_mcx_futures_v1",
+        value_type="string",
+        value="1",
+        default_value="0",
+        description="pre-seeded for test",
+        updated_at=now_ts,
+    ))
+    await db_session.flush()
+
+    # Also pre-set wave-1 marker so it doesn't interfere
+    db_session.add(_Setting(
+        category="migrations",
+        key="migrations.pinned_remove_goldm_usdinr_v1",
+        value_type="string",
+        value="1",
+        default_value="0",
+        description="pre-seeded for test",
+        updated_at=now_ts,
+    ))
+    await db_session.flush()
+
+    # Operator manually re-added CRUDEOIL after a previous cleanup
+    await _insert_items(db_session, wl_id, [("CRUDEOIL", "MCX")])
+
+    await _run_seed(db_session)
+
+    syms = await _symbols(db_session)
+    assert ("CRUDEOIL", "MCX") in syms, (
+        "Operator re-added CRUDEOIL must survive seed when wave-2 marker is already set"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5g — Operator re-adds after cleanup is preserved on next boot
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_operator_readd_after_cleanup_preserved(db_session):
+    """Full lifecycle: seed removes MCX roots, operator re-adds NATURALGAS,
+    next boot (marker set) leaves it in place."""
+    wl_id = await _make_global_pinned(db_session)
+    await _insert_items(db_session, wl_id, [
+        ("NATURALGAS", "MCX"),
+        ("NIFTY 50",   "NSE"),
+    ])
+
+    # First boot — wave 2 fires, removes NATURALGAS
+    await _run_seed(db_session)
+    syms_after_first = await _symbols(db_session)
+    assert ("NATURALGAS", "MCX") not in syms_after_first, (
+        "NATURALGAS must be removed on first boot"
+    )
+
+    # Operator manually re-adds NATURALGAS
+    await _insert_items(db_session, wl_id, [("NATURALGAS", "MCX")])
+
+    # Second boot — marker already set, NATURALGAS survives
+    await _run_seed(db_session)
+    syms_after_second = await _symbols(db_session)
+    assert ("NATURALGAS", "MCX") in syms_after_second, (
+        "Operator re-added NATURALGAS must survive second boot (marker already set)"
     )
