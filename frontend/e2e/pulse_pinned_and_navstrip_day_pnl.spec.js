@@ -122,7 +122,7 @@ test.describe('Bug 1 — Pinned card visible within 500ms on warm cache', () => 
 
   test('no /api/watchlist/ requests fired on second /pulse visit (warm cache serves from localStorage)', async ({ page }) => {
     // First visit: prime localStorage cache for activeListsStore (TTL.week)
-    await page.goto(`${BASE}/pulse`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
     // Allow loadActive + its watchlist fetches to complete and write localStorage
     await page.waitForTimeout(3_000);
 
@@ -148,7 +148,7 @@ test.describe('Bug 1 — Pinned card visible within 500ms on warm cache', () => 
   });
 
   test('pinned bucket section is present in DOM on /pulse', async ({ page }) => {
-    await page.goto(`${BASE}/pulse`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
     // The pinned/watch section uses .mp-bucket-pinwatch
     const pinwatchSection = page.locator('.mp-bucket-pinwatch');
     await expect(pinwatchSection).toBeVisible({ timeout: TIMEOUT });
@@ -167,7 +167,7 @@ test.describe('Bug 2 — P slot 1 not frozen to 0 after cross-page nav', () => {
 
   test('P slot 1 is non-blank on /pulse regardless of prior derivatives visit', async ({ page }) => {
     // Visit derivatives first to populate snapshotTotals (may be 0 if no positions loaded yet)
-    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'domcontentloaded' });
     // Wait enough for snapshotTotals to potentially get published as {day:0,...}
     await page.waitForTimeout(3_000);
 
@@ -190,7 +190,7 @@ test.describe('Bug 2 — P slot 1 not frozen to 0 after cross-page nav', () => {
     // 1. Visit derivatives early (snapshotTotals publishes {day:0, pnl:x, exp:y})
     // 2. Navigate to pulse
     // 3. Confirm slot 1 reflects actual positions, not the stale 0
-    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(2_000);
 
     // Read the F&O day_change_val sum from the API (the expected slot 1 value)
@@ -242,7 +242,7 @@ test.describe('Bug 2 — P slot 1 not frozen to 0 after cross-page nav', () => {
 
   test('P pill has all 3 values after navigating derivatives → pulse → derivatives', async ({ page }) => {
     // Cross-page navigation stress test
-    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(2_000);
 
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
@@ -270,7 +270,7 @@ test.describe('Mobile — pinned card + P pill on 390px', () => {
   });
 
   test('P strip and P pill visible on 390px /pulse', async ({ page }) => {
-    await page.goto(`${BASE}/pulse`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
     const strip = page.locator('.ps-strip');
     await expect(strip).toBeVisible({ timeout: TIMEOUT });
     const pPill = strip.locator('.ps-agg').first();
@@ -280,7 +280,7 @@ test.describe('Mobile — pinned card + P pill on 390px', () => {
   });
 
   test('strip does not overflow viewport on 390px', async ({ page }) => {
-    await page.goto(`${BASE}/pulse`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
     const strip = page.locator('.ps-strip');
     await expect(strip).toBeVisible({ timeout: TIMEOUT });
     const box = await strip.boundingBox();
