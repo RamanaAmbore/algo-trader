@@ -218,11 +218,9 @@
        green/red bg levels: 0.06 (soft) · 0.10 (standard) · 0.22 (strong)
        cyan/amber/sky bg levels: 0.08 (soft) · 0.14 (standard) · 0.22 (strong)
 
-     The `--c-*-08` / `--c-*-14` names in the alias set match the
-     operator spec for the long/short layer; the underlying value is
-     the nearest existing `--algo-*` alpha (e.g. --c-long-08 is
-     actually 0.06 green-bg-soft, not 0.08). The name reflects
-     intent; the value preserves the existing visual.  */
+     Alpha suffix = actual alpha value in the underlying token.
+     green/red step to 0.06 / 0.10 / 0.22 (not 0.08/0.14);
+     cyan/amber step to 0.08 / 0.14 / 0.22.  */
 
   /* Solid semantic aliases */
   --c-long:   var(--algo-green);   /* #4ade80 — long / up / buy fills     */
@@ -231,14 +229,14 @@
   --c-action: var(--algo-amber);   /* #fbbf24 — TOTAL rows, warnings       */
   --c-muted:  var(--algo-muted);   /* #7e97b8 — muted labels, axis text    */
 
-  /* Long (green) alpha aliases */
-  --c-long-08: var(--algo-green-bg-soft);    /* rgba(74, 222, 128, 0.06) */
-  --c-long-14: var(--algo-green-bg);         /* rgba(74, 222, 128, 0.10) */
+  /* Long (green) alpha aliases — suffix = actual alpha */
+  --c-long-06: var(--algo-green-bg-soft);    /* rgba(74, 222, 128, 0.06) */
+  --c-long-10: var(--algo-green-bg);         /* rgba(74, 222, 128, 0.10) */
   --c-long-22: var(--algo-green-bg-strong);  /* rgba(74, 222, 128, 0.22) */
 
-  /* Short (red) alpha aliases */
-  --c-short-08: var(--algo-red-bg-soft);     /* rgba(248, 113, 113, 0.06) */
-  --c-short-14: var(--algo-red-bg);          /* rgba(248, 113, 113, 0.10) */
+  /* Short (red) alpha aliases — suffix = actual alpha */
+  --c-short-06: var(--algo-red-bg-soft);     /* rgba(248, 113, 113, 0.06) */
+  --c-short-10: var(--algo-red-bg);          /* rgba(248, 113, 113, 0.10) */
   --c-short-22: var(--algo-red-bg-strong);   /* rgba(248, 113, 113, 0.22) */
 
   /* Info (cyan) alpha aliases */
