@@ -98,7 +98,7 @@ test.describe('NavStrip P pill — structure', () => {
   });
 
   test('P pill has 3 slash-separated values on /pulse', async ({ page }) => {
-    await page.goto(`${BASE}/pulse`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
     const strip = page.locator('.ps-strip');
     await expect(strip).toBeVisible({ timeout: TIMEOUT });
     const pPill = strip.locator('.ps-agg').first();
@@ -164,7 +164,7 @@ test.describe('NavStrip P pill — mobile viewport', () => {
   });
 
   test('P pill visible and not overflowing on 390px', async ({ page }) => {
-    await page.goto(`${BASE}/pulse`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
     const strip = page.locator('.ps-strip');
     await expect(strip).toBeVisible({ timeout: TIMEOUT });
     const box = await strip.boundingBox();
