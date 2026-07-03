@@ -297,13 +297,12 @@ test.describe('tick-bus flash synchrony', () => {
         return w.__stripBorderToggleCount || 0;
       });
 
-      // 20 distinct-symbol ticks over 1000ms with 250ms leading-edge throttle =
-      // 4 windows → at most 4 class additions (first tick per window).
-      // Allow 5 as a small tolerance for timer jitter.
+      // 20 distinct-symbol ticks over 1000ms with 1000ms leading-edge throttle =
+      // 1 window → at most 1 class addition (first tick only).
       // Without the fix: toggleCount would equal 20 (one per symbol).
-      // With the fix:    toggleCount ≤ 5 (4Hz cap).
+      // With the fix:    toggleCount ≤ 1 (1Hz cap).
       expect(toggleCount).toBeGreaterThan(0);        // at least one fired
-      expect(toggleCount).toBeLessThanOrEqual(5);    // at most 4Hz (≤5 with jitter)
+      expect(toggleCount).toBeLessThanOrEqual(1);    // at most 1Hz (≤1 over 1s window)
     });
   });
 
