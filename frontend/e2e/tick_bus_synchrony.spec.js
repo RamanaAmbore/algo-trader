@@ -144,6 +144,41 @@ test.describe('tick-bus flash synchrony', () => {
       expect(elapsed).toBeLessThan(300);
     });
 
+    test('cut systems: Day%, P&L% cells and LTP cell carry no shimmer/path-opacity class', async () => {
+      // Emit an up tick and give the flash callbacks 80ms to fire.
+      await emitTick(page, TEST_SYM, 'up');
+      await page.waitForTimeout(80);
+
+      // A. Day % and P&L % cells must NOT gain ltp-flash-up/down.
+      //    We check across the whole grid (not scoped to TEST_SYM) because any
+      //    row receiving the class would indicate the cascade is still running.
+      const dayPctFlash = await page.evaluate(() => {
+        return document.querySelectorAll('[col-id="day_pnl_pct"].ltp-flash-up, [col-id="day_pnl_pct"].ltp-flash-down, [col-id="pnl_pct"].ltp-flash-up, [col-id="pnl_pct"].ltp-flash-down').length;
+      });
+      expect(dayPctFlash).toBe(0);
+
+      // B. LTP cell must NOT carry cell-freshness-pulse (shimmer removed).
+      const freshnessCount = await page.evaluate(() => {
+        return document.querySelectorAll('.cell-freshness-pulse').length;
+      });
+      expect(freshnessCount).toBe(0);
+
+      // C. Chart SVG data-path elements must NOT have a cp-path-flash animation
+      //    (the path opacity rule was removed; only the wrapper bg pulse remains).
+      const pathOpacityAnimating = await page.evaluate(() => {
+        const paths = document.querySelectorAll('.cp-pulse-a svg path.data-path, .cp-pulse-b svg path.data-path');
+        if (paths.length === 0) return false; // no chart container is pulsing — trivially OK
+        // If any path.data-path inside a pulsing container has an animation other
+        // than 'none', the CSS rule is still active.
+        for (const p of paths) {
+          const anim = window.getComputedStyle(p).animationName;
+          if (anim && anim !== 'none') return true;
+        }
+        return false;
+      });
+      expect(pathOpacityAnimating).toBe(false);
+    });
+
     test('all flash classes decay within 400ms', async () => {
       await emitTick(page, TEST_SYM, 'up');
       // Wait for classes to appear.
