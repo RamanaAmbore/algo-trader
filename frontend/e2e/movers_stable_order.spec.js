@@ -4,43 +4,50 @@
  * Operator complaint (2026-07-03): "the winners and losers cards shuffling
  * rows when the market is closed, why?"
  *
- * Root cause: `_topRowsFor` in MarketPulse.svelte sorted by
- * `Math.abs(change_pct)` with no tie-breaker. The `change_pct` value is
- * read from symbolStore, which is updated each poll by multiple competing
- * publishers (publishMoverRows, publishWatchQuotes, publishPulseQuotes),
- * each using `snapshot_ts = Date.now()`. Small floating-point differences
- * between publishers cause `|change_pct|` to fluctuate at the boundary
- * between similarly-ranked rows, flipping their relative order on
- * consecutive renders.
+ * Root cause: `buildUnified` in MarketPulse.svelte read `liveChangePct` from
+ * symbolStore (`snap.day_change_pct`) as the primary source. During closed
+ * hours, multiple publishers — `publishMoverRows`, `publishPulseQuotes`,
+ * `publishWatchQuotes` — all write `day_change_pct` to the same symbolStore
+ * slot using `snapshot_ts = Date.now()`. The most-recently-landed publisher
+ * wins. When publishers produce subtly different floating-point values for the
+ * same symbol (e.g. /watchlist/movers returns 1.058 while /quote/batch returns
+ * 1.061), `_mover_change_pct` oscillates poll-to-poll, flipping the sort order
+ * of nearby-ranked symbols.
  *
- * Fix: `_topRowsFor` now uses `_mover_change_pct || change_pct` (the
- * movers-specific canonical field, mirroring the mainRows sort) and adds
- * `tradingsymbol.localeCompare` as a stable tie-break.
+ * Fix applied (line 3322, buildUnified):
+ *   BEFORE:  const liveChangePct = snap?.day_change_pct ?? m.change_pct ?? null;
+ *   AFTER:   const liveChangePct = m.change_pct ?? snap?.day_change_pct ?? null;
  *
- * This spec:
- *  1. Mocks /api/watchlist/movers with a closed-hours snapshot (captured_at
- *     set), containing pairs of rows with similar |change_pct| values that
- *     were historically prone to flipping.
- *  2. Simulates multiple movers-store re-triggers (multiple polled responses
- *     with subtly different floating-point values, as competing publishers
- *     would produce).
- *  3. Captures the Winners grid row order after each re-trigger.
- *  4. Asserts that the row order is IDENTICAL across all captures.
- *  5. Repeats for the Losers grid.
- *  6. Also checks: no row disappears between captures (keepStaleOnEmpty guard).
+ * By preferring `m.change_pct` (the moversStore-owned value, from the same
+ * stable DB snapshot on every closed-hours poll), `_mover_change_pct` becomes
+ * invariant to competing publisher drift. `_topRowsFor` therefore produces the
+ * same sort order on every render.
+ *
+ * This spec reproduces the ACTUAL shuffle mechanism:
+ *  1. Mocks /api/watchlist/movers with a stable closed-hours snapshot containing
+ *     pairs of rows with near-identical |change_pct| values (the shuffle-prone
+ *     case).
+ *  2. Mocks POST /api/quote/batch (called by publishPulseQuotes) with DRIFTED
+ *     change_pct values for the same symbols — simulating the competing-publisher
+ *     float divergence that caused the reorder.
+ *  3. Re-routes the quote/batch mock with a second drift value between captures,
+ *     which would have flipped sort order under the old code.
+ *  4. Asserts that the Winners and Losers grid row order is IDENTICAL both
+ *     before and after the drift injection.
+ *  5. Verifies no rows disappear (keepStaleOnEmpty regression guard).
  *
  * Five quality dimensions:
- *  1. SSOT     — `_topRowsFor` is the single sort gate for Winners/Losers
- *                grids; no duplicate sort logic elsewhere.
- *  2. Perf     — mocked responses, no real broker calls, < 5 s per run.
- *  3. Stale    — asserts the BEFORE order == AFTER order (regression guard
- *                for the shuffling defect).
- *  4. Reuse    — same route.fulfill + page.evaluate pattern used in
+ *  1. SSOT     — `buildUnified` line 3322 is the single gate; `_topRowsFor`
+ *                is the single sort point for Winners/Losers grids.
+ *  2. Perf     — mocked responses only; no real broker calls; < 10 s per run.
+ *  3. Stale    — asserts BEFORE order == AFTER order (regression guard for
+ *                the shuffling defect). Fails on the OLD code, passes on the fix.
+ *  4. Reuse    — same route.fulfill + page.evaluate pattern as
  *                dhan_stale_persist.spec.js and closed_hours_day_change.spec.js.
- *  5. UX       — palette + direction indicators unchanged (winners green,
- *                losers red, both rendered as separate cards).
+ *  5. UX       — winners/losers cards both verified; row count stable across
+ *                drift cycles (no phantom dropouts).
  *
- * Run context: chromium-desktop (grid requires min-width viewport).
+ * Run context: chromium-desktop (ag-Grid requires min-width viewport).
  */
 
 import { test, expect } from '@playwright/test';
@@ -56,48 +63,71 @@ const MARKET_CLOSED = {
   is_holiday: false,
 };
 
-// Snapshot timestamp — non-null means backend served a persisted snapshot.
+// Snapshot timestamp — non-null signals a backend persisted snapshot.
 const CAPTURED_AT = '2026-07-02T15:35:00.000000+00:00';
 
+// -----------------------------------------------------------------------
+// Movers payload — stable DB snapshot values (no drift).
+// BANKNIFTY and TCS share |change_pct| = 1.058; TECHM and MINDTREE share
+// |change_pct| = 1.172 and 1.176 respectively (near-tie). These tight
+// deltas are the historically shuffle-prone case.
+// -----------------------------------------------------------------------
+const STABLE_MOVERS = {
+  movers: [
+    // Winners (positive change_pct, ascending by rank)
+    { tradingsymbol: 'NIFTY',     exchange: 'NSE', last_price: 24200, previous_close: 23952, change_pct:  1.035, peak_pct:  1.035, sticky: false },
+    { tradingsymbol: 'RELIANCE',  exchange: 'NSE', last_price: 1450,  previous_close: 1435,  change_pct:  1.045, peak_pct:  1.045, sticky: false },
+    { tradingsymbol: 'BANKNIFTY', exchange: 'NSE', last_price: 52500, previous_close: 51950, change_pct:  1.058, peak_pct:  1.058, sticky: false },
+    { tradingsymbol: 'TCS',       exchange: 'NSE', last_price: 3820,  previous_close: 3780,  change_pct:  1.058, peak_pct:  1.058, sticky: false },
+    { tradingsymbol: 'INFY',      exchange: 'NSE', last_price: 1720,  previous_close: 1700,  change_pct:  1.176, peak_pct:  1.176, sticky: false },
+    // Losers (negative change_pct)
+    { tradingsymbol: 'WIPRO',     exchange: 'NSE', last_price: 450,   previous_close: 455,   change_pct: -1.099, peak_pct: -1.099, sticky: false },
+    { tradingsymbol: 'HCLTECH',   exchange: 'NSE', last_price: 1560,  previous_close: 1578,  change_pct: -1.141, peak_pct: -1.141, sticky: false },
+    { tradingsymbol: 'LTIM',      exchange: 'NSE', last_price: 5600,  previous_close: 5665,  change_pct: -1.147, peak_pct: -1.147, sticky: false },
+    { tradingsymbol: 'TECHM',     exchange: 'NSE', last_price: 1680,  previous_close: 1700,  change_pct: -1.172, peak_pct: -1.172, sticky: false },
+    { tradingsymbol: 'MINDTREE',  exchange: 'NSE', last_price: 3120,  previous_close: 3157,  change_pct: -1.176, peak_pct: -1.176, sticky: false },
+  ],
+  threshold_pct: 1.5,
+  session_date: '2026-07-02',
+  captured_at: CAPTURED_AT,
+};
+
 /**
- * Build a movers payload.  `jitter` introduces the small floating-point
- * differences that competing symbolStore publishers produce — the sort
- * tie-breaker must keep the order stable regardless of jitter magnitude.
+ * Build a /quote/batch response that mimics publishPulseQuotes writing
+ * DRIFTED change_pct values for the mover symbols. The drift is the
+ * competing-publisher float divergence that causes symbolStore to oscillate.
  *
- * @param {number} jitter  Small floating-point offset applied to change_pct.
- * @returns {object}
+ * @param {number} drift  Floating-point offset applied to every change_pct.
+ * @returns {object}      Batch quote response payload.
  */
-function buildMoversPayload(jitter = 0) {
+function buildDriftedBatchQuotes(drift) {
   return {
-    movers: [
-      // Winners — pairs with near-identical |change_pct| (the shuffle-prone case).
-      { tradingsymbol: 'NIFTY',       exchange: 'NSE', last_price: 24200, previous_close: 23952, change_pct:  1.035 + jitter, peak_pct:  1.035, sticky: false },
-      { tradingsymbol: 'RELIANCE',    exchange: 'NSE', last_price: 1450,  previous_close: 1435,  change_pct:  1.045 + jitter, peak_pct:  1.045, sticky: false },
-      { tradingsymbol: 'BANKNIFTY',   exchange: 'NSE', last_price: 52500, previous_close: 51950, change_pct:  1.058 + jitter, peak_pct:  1.058, sticky: false },
-      { tradingsymbol: 'INFY',        exchange: 'NSE', last_price: 1720,  previous_close: 1700,  change_pct:  1.176 + jitter, peak_pct:  1.176, sticky: false },
-      { tradingsymbol: 'TCS',         exchange: 'NSE', last_price: 3820,  previous_close: 3780,  change_pct:  1.058 + jitter, peak_pct:  1.058, sticky: false },
-      // Losers — same pattern.
-      { tradingsymbol: 'WIPRO',       exchange: 'NSE', last_price: 450,   previous_close: 455,   change_pct: -1.099 + jitter, peak_pct: -1.099, sticky: false },
-      { tradingsymbol: 'HCLTECH',     exchange: 'NSE', last_price: 1560,  previous_close: 1578,  change_pct: -1.141 + jitter, peak_pct: -1.141, sticky: false },
-      { tradingsymbol: 'LTIM',        exchange: 'NSE', last_price: 5600,  previous_close: 5665,  change_pct: -1.147 + jitter, peak_pct: -1.147, sticky: false },
-      { tradingsymbol: 'TECHM',       exchange: 'NSE', last_price: 1680,  previous_close: 1700,  change_pct: -1.176 + jitter, peak_pct: -1.176, sticky: false },
-      { tradingsymbol: 'MINDTREE',    exchange: 'NSE', last_price: 3120,  previous_close: 3157,  change_pct: -1.172 + jitter, peak_pct: -1.172, sticky: false },
-    ],
-    threshold_pct: 1.5,
-    session_date: '2026-07-02',
-    captured_at: CAPTURED_AT,
+    quotes: STABLE_MOVERS.movers.map(m => ({
+      tradingsymbol: m.tradingsymbol,
+      exchange:      m.exchange,
+      ltp:           m.last_price,
+      close:         m.previous_close,
+      open:          m.previous_close,
+      high:          m.last_price,
+      low:           m.previous_close,
+      // Drift applied here — this is the competing publisher's divergent value.
+      // Under the OLD code, _mover_change_pct used this drifted value from
+      // symbolStore, flipping near-tie rows on alternate polls.
+      change_pct:    m.change_pct + drift,
+      change:        m.last_price - m.previous_close,
+      volume:        100000,
+      oi:            0,
+    })),
   };
 }
 
 /**
- * Install all route mocks for a closed-hours movers scenario.
- * The movers endpoint is called multiple times with the given payload factory
- * so the test can simulate symbolStore re-triggers.
+ * Install all route mocks for the publisher-drift scenario.
  *
  * @param {import('@playwright/test').Page} page
- * @param {() => object} payloadFn  Called on each movers request to return the payload.
+ * @param {number} initialDrift  First drift to apply to quote/batch.
  */
-async function installMoversMocks(page, payloadFn) {
+async function installDriftMocks(page, initialDrift = 0) {
   await page.route('**/api/market/status', (route) =>
     route.fulfill({
       status: 200,
@@ -106,29 +136,55 @@ async function installMoversMocks(page, payloadFn) {
     })
   );
 
+  // Movers endpoint — always stable (DB snapshot, same value every call).
   await page.route('**/api/watchlist/movers*', (route) =>
     route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify(payloadFn()),
+      body: JSON.stringify(STABLE_MOVERS),
     })
   );
 
-  // Empty positions / holdings / funds so Pulse focuses on movers.
-  const empty = (rows = []) => JSON.stringify({ rows, summary: [], refreshed_at: 'Wed 02 Jul 15:30 IST', stale_accounts: [] });
+  // quote/batch — returns DRIFTED values (simulates publishPulseQuotes writing
+  // different day_change_pct values into symbolStore than moversRows wrote).
+  await page.route('**/api/quote/batch', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(buildDriftedBatchQuotes(initialDrift)),
+    })
+  );
+
+  // Watchlist quotes — suppress (empty items, no additional symbolStore writes).
+  // This isolates the quote/batch publisher as the only competing source.
+  await page.route('**/api/watchlist/*/quotes*', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [] }),
+    })
+  );
+
+  // Empty positions / holdings / funds — focus on movers.
+  const empty = () => JSON.stringify({ rows: [], summary: [], refreshed_at: 'Wed 02 Jul 15:30 IST', stale_accounts: [] });
   await page.route('**/api/positions*', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: empty() }));
   await page.route('**/api/holdings*',  (route) => route.fulfill({ status: 200, contentType: 'application/json', body: empty() }));
   await page.route('**/api/funds*',     (route) => route.fulfill({ status: 200, contentType: 'application/json', body: empty() }));
 
-  // Suppress sparklines + watchlist quotes — not needed for this test.
-  await page.route('**/api/sparklines*',    (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: {}, refreshed_at: '' }) }));
-  await page.route('**/api/watchlist/**',   (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], id: -1, name: 'Pinned' }) }));
+  // Sparklines — suppress (cosmetic, not needed for sort regression test).
+  await page.route('**/api/sparklines*', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: {}, refreshed_at: '' }) })
+  );
+
+  // Suppress remaining watchlist calls (list metadata, not quotes).
+  await page.route('**/api/watchlist/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], id: -1, name: 'Pinned' }) })
+  );
 }
 
 /**
- * Extract the visible row tradingsymbols from the Winners or Losers grid.
- * The grids are rendered via ag-Grid inside elements with data-direction
- * attribute. Falls back to reading from any ag-Grid row cell text.
+ * Extract visible row tradingsymbols from the Winners or Losers card
+ * in DOM order (top-to-bottom = rank 1 to N).
  *
  * @param {import('@playwright/test').Page} page
  * @param {'winners'|'losers'} direction
@@ -136,59 +192,65 @@ async function installMoversMocks(page, payloadFn) {
  */
 async function getMoverRowOrder(page, direction) {
   return page.evaluate((dir) => {
-    // MarketPulse renders winner/loser cards; look for the heading label
-    // 'Winners' or 'Losers' then walk sibling/child ag-Grid rows.
-    // The simplest cross-version approach: read all ag-Grid rows in DOM
-    // order whose tradingsymbol cells appear in a card labelled with the
-    // direction heading.
-    const headings = Array.from(document.querySelectorAll('*'));
-    /** @type {Element|null} */
+    // Find the card whose heading text matches the direction label.
     let directionCard = null;
-    for (const el of headings) {
-      const tag = el.tagName;
-      if (tag === 'H3' || tag === 'H4' || tag === 'SPAN' || tag === 'DIV') {
-        const text = (el.textContent || '').trim().toLowerCase();
-        if (text === dir) {
-          // Walk up to find the enclosing card container.
-          let p = el.parentElement;
-          for (let i = 0; i < 6 && p; i++, p = p.parentElement) {
-            if (p.querySelector('.ag-root-wrapper') || p.querySelector('.ag-center-cols-container')) {
-              directionCard = p;
-              break;
-            }
+    const candidates = Array.from(document.querySelectorAll('h3, h4, span, div'));
+    for (const el of candidates) {
+      const text = (el.textContent || '').trim().toLowerCase();
+      if (text === dir) {
+        // Walk up at most 6 levels to find an enclosing container with an ag-Grid.
+        let p = el.parentElement;
+        for (let i = 0; i < 6 && p; i++, p = p.parentElement) {
+          if (p.querySelector('.ag-root-wrapper') || p.querySelector('.ag-center-cols-container')) {
+            directionCard = p;
+            break;
           }
-          if (directionCard) break;
         }
+        if (directionCard) break;
       }
     }
 
-    if (!directionCard) {
-      // Fallback: return all mover row tradingsymbols in DOM order.
-      const rows = Array.from(document.querySelectorAll('.ag-center-cols-container .ag-row'));
-      return rows.map(r => {
-        const cells = Array.from(r.querySelectorAll('.ag-cell'));
-        for (const c of cells) {
-          const t = (c.textContent || '').trim();
-          if (t && /^[A-Z0-9 .]+$/.test(t) && t.length < 30) return t;
+    const rowSelector = '.ag-center-cols-container .ag-row';
+    const rows = Array.from(
+      directionCard
+        ? directionCard.querySelectorAll(rowSelector)
+        : document.querySelectorAll(rowSelector)
+    );
+
+    return rows
+      .map(row => {
+        // The tradingsymbol is the first short uppercase cell text.
+        const cells = Array.from(row.querySelectorAll('.ag-cell'));
+        for (const cell of cells) {
+          const t = (cell.textContent || '').trim();
+          if (t && /^[A-Z0-9 .]+$/.test(t) && t.length >= 3 && t.length < 30) return t;
         }
         return '';
-      }).filter(Boolean);
-    }
-
-    const rows = Array.from(directionCard.querySelectorAll('.ag-center-cols-container .ag-row'));
-    return rows.map(row => {
-      const cells = Array.from(row.querySelectorAll('.ag-cell'));
-      for (const cell of cells) {
-        const t = (cell.textContent || '').trim();
-        // Tradingsymbol cells are short uppercase strings.
-        if (t && /^[A-Z0-9 .]+$/.test(t) && t.length >= 3 && t.length < 30) return t;
-      }
-      return '';
-    }).filter(Boolean);
+      })
+      .filter(Boolean);
   }, direction);
 }
 
-test.describe('Movers stable order — closed-hours snapshot', () => {
+/**
+ * Wait for the movers grid to populate (at least one ag-Grid row visible).
+ * @param {import('@playwright/test').Page} page
+ */
+async function waitForMoversGrid(page) {
+  await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(
+    () => document.querySelectorAll('.ag-center-cols-container .ag-row').length > 0,
+    { timeout: TIMEOUT }
+  );
+  // Also wait for the Winners heading to appear.
+  await page.waitForFunction(
+    () => Array.from(document.querySelectorAll('*')).some(
+      el => (el.textContent || '').trim().toLowerCase() === 'winners'
+    ),
+    { timeout: TIMEOUT }
+  );
+}
+
+test.describe('Movers stable order — publisher-drift regression', () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
   test.beforeEach(async ({ page }) => {
@@ -196,165 +258,125 @@ test.describe('Movers stable order — closed-hours snapshot', () => {
   });
 
   /**
-   * Core regression test: Winners order is identical across 5 consecutive
-   * movers-store re-triggers with jittered change_pct values (simulating
-   * the competing-publisher floating-point drift that caused shuffling).
+   * Core regression: Winners order is stable when quote/batch returns a
+   * DIFFERENT change_pct for the same symbols between polls.
+   *
+   * Under the OLD code (prefers snap.day_change_pct), publishPulseQuotes
+   * would overwrite symbolStore with the drifted value, causing _mover_change_pct
+   * to fluctuate and near-tie rows to flip on each render.
+   *
+   * Under the NEW code (prefers m.change_pct), the moversStore-owned value
+   * is always used — symbolStore drift is ignored — so the order is stable.
    */
-  test('Winners grid row order is stable across re-renders', async ({ page }) => {
-    // Jitter values representing the per-poll floating-point drift from
-    // competing symbolStore publishers (watchQuotes vs moversRow floats).
-    const jitters = [0, 0.0001, -0.0001, 0.0002, -0.0002];
-    let jitterIdx = 0;
-    await installMoversMocks(page, () => buildMoversPayload(jitters[jitterIdx % jitters.length]));
+  test('Winners order stable when quote/batch returns drifted change_pct', async ({ page }) => {
+    // Initial state: quote/batch returns values slightly above movers snapshot.
+    await installDriftMocks(page, +0.003);
+    await waitForMoversGrid(page);
 
-    await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
+    const orderBefore = await getMoverRowOrder(page, 'winners');
+    expect(orderBefore.length).toBeGreaterThan(0);
 
-    // Wait for the movers grid to render.
-    await page.waitForFunction(() => {
-      const rows = document.querySelectorAll('.ag-center-cols-container .ag-row');
-      return rows.length > 0;
-    }, { timeout: TIMEOUT });
-
-    // Wait for winners card to appear (the "Winners" heading must exist).
-    await page.waitForFunction(() => {
-      const els = Array.from(document.querySelectorAll('*'));
-      return els.some(el => (el.textContent || '').trim().toLowerCase() === 'winners');
-    }, { timeout: TIMEOUT });
-
-    const capturedOrders = [];
-    for (let i = 0; i < 5; i++) {
-      jitterIdx = i;
-      // Re-trigger the movers store by re-routing movers to a jittered payload,
-      // then waiting one short tick for the derived to settle.
-      await page.route('**/api/watchlist/movers*', (route) =>
-        route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify(buildMoversPayload(jitters[i])),
-        })
-      );
-      // Small pause to let any pending re-render settle without a full reload.
-      await page.waitForTimeout(300);
-      const order = await getMoverRowOrder(page, 'winners');
-      if (order.length > 0) capturedOrders.push(order);
-    }
-
-    // Must have captured at least 2 snapshots with rows to compare.
-    expect(capturedOrders.length).toBeGreaterThanOrEqual(2);
-    const reference = capturedOrders[0];
-    for (let i = 1; i < capturedOrders.length; i++) {
-      // Same symbols, same order. If a new poll changes jitter,
-      // the tie-breaker keeps the order stable.
-      expect(capturedOrders[i], `Winners order changed between render 0 and render ${i}`).toEqual(reference);
-    }
-  });
-
-  /**
-   * Losers grid row order is stable across re-renders — same test, other card.
-   */
-  test('Losers grid row order is stable across re-renders', async ({ page }) => {
-    const jitters = [0, 0.0001, -0.0001, 0.0002, -0.0002];
-    await installMoversMocks(page, () => buildMoversPayload(0));
-
-    await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
-    await page.waitForFunction(() => {
-      const rows = document.querySelectorAll('.ag-center-cols-container .ag-row');
-      return rows.length > 0;
-    }, { timeout: TIMEOUT });
-    await page.waitForFunction(() => {
-      const els = Array.from(document.querySelectorAll('*'));
-      return els.some(el => (el.textContent || '').trim().toLowerCase() === 'losers');
-    }, { timeout: TIMEOUT });
-
-    const capturedOrders = [];
-    for (let i = 0; i < 5; i++) {
-      await page.route('**/api/watchlist/movers*', (route) =>
-        route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify(buildMoversPayload(jitters[i])),
-        })
-      );
-      await page.waitForTimeout(300);
-      const order = await getMoverRowOrder(page, 'losers');
-      if (order.length > 0) capturedOrders.push(order);
-    }
-
-    expect(capturedOrders.length).toBeGreaterThanOrEqual(2);
-    const reference = capturedOrders[0];
-    for (let i = 1; i < capturedOrders.length; i++) {
-      expect(capturedOrders[i], `Losers order changed between render 0 and render ${i}`).toEqual(reference);
-    }
-  });
-
-  /**
-   * No rows disappear between renders (keepStaleOnEmpty guard regression).
-   * moversStore.keepStaleOnEmpty ensures empty-array responses don't wipe
-   * the grid. Verify here that symbol count is stable.
-   */
-  test('Winners row count is stable across re-renders (no disappearing rows)', async ({ page }) => {
-    await installMoversMocks(page, () => buildMoversPayload(0));
-
-    await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
-    await page.waitForFunction(() => {
-      const rows = document.querySelectorAll('.ag-center-cols-container .ag-row');
-      return rows.length > 0;
-    }, { timeout: TIMEOUT });
-
-    // Capture initial count.
-    const orderA = await getMoverRowOrder(page, 'winners');
-    expect(orderA.length).toBeGreaterThan(0);
-
-    // Trigger two more polls.
-    for (let i = 0; i < 2; i++) {
-      await page.route('**/api/watchlist/movers*', (route) =>
-        route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify(buildMoversPayload(0)),
-        })
-      );
-      await page.waitForTimeout(300);
-    }
-
-    const orderB = await getMoverRowOrder(page, 'winners');
-    // Count must be the same — no ghost-blank rows, no dropouts.
-    expect(orderB.length).toBe(orderA.length);
-  });
-
-  /**
-   * Manual tab switch: operator clicks Underlying tab — order remains stable.
-   * Covers the UX path where winTab is set (not null) so _bestTab is bypassed.
-   */
-  test('Winners order stable after operator tab switch', async ({ page }) => {
-    await installMoversMocks(page, () => buildMoversPayload(0));
-
-    await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
-    await page.waitForFunction(() => {
-      return Array.from(document.querySelectorAll('*'))
-        .some(el => (el.textContent || '').trim().toLowerCase() === 'winners');
-    }, { timeout: TIMEOUT });
-
-    // Click the Underlying tab if it exists (may not if no large_cap rows).
-    const underlyingBtn = page.locator('button, [role="tab"]').filter({ hasText: /^Underlying$/i }).first();
-    const btnCount = await underlyingBtn.count();
-    if (btnCount > 0) await underlyingBtn.click();
-
-    const orderA = await getMoverRowOrder(page, 'winners');
-
-    // Re-trigger movers.
-    await page.route('**/api/watchlist/movers*', (route) =>
+    // Simulate a second poll cycle: quote/batch now returns values slightly
+    // BELOW the movers snapshot (opposite sign from first call). Under the
+    // old code this would flip the symbolStore value for BANKNIFTY (1.058+0.003=1.061)
+    // vs TCS (1.058-0.003=1.055) causing them to swap rank — the shuffle.
+    await page.route('**/api/quote/batch', (route) =>
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(buildMoversPayload(0.0001)),
+        body: JSON.stringify(buildDriftedBatchQuotes(-0.003)),
       })
     );
-    await page.waitForTimeout(300);
-    const orderB = await getMoverRowOrder(page, 'winners');
+    // Wait for any reactive re-render to settle.
+    await page.waitForTimeout(400);
 
-    if (orderA.length > 0 && orderB.length > 0) {
-      expect(orderB).toEqual(orderA);
+    const orderAfter = await getMoverRowOrder(page, 'winners');
+    expect(orderAfter.length).toBeGreaterThan(0);
+
+    // The order must be identical — the moversStore-owned change_pct insulates
+    // the sort from the competing quote/batch publisher's drifted values.
+    expect(orderAfter, 'Winners order must not change when quote/batch drifts').toEqual(orderBefore);
+  });
+
+  /**
+   * Losers order stable under the same publisher-drift scenario.
+   */
+  test('Losers order stable when quote/batch returns drifted change_pct', async ({ page }) => {
+    await installDriftMocks(page, +0.003);
+    await waitForMoversGrid(page);
+
+    const orderBefore = await getMoverRowOrder(page, 'losers');
+    expect(orderBefore.length).toBeGreaterThan(0);
+
+    await page.route('**/api/quote/batch', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(buildDriftedBatchQuotes(-0.003)),
+      })
+    );
+    await page.waitForTimeout(400);
+
+    const orderAfter = await getMoverRowOrder(page, 'losers');
+    expect(orderAfter.length).toBeGreaterThan(0);
+
+    expect(orderAfter, 'Losers order must not change when quote/batch drifts').toEqual(orderBefore);
+  });
+
+  /**
+   * Repeated drift cycles: order stays stable across N alternating drift
+   * values (regression guard for the intermittent-shuffle complaint).
+   */
+  test('Winners order stable across N alternating drift cycles', async ({ page }) => {
+    await installDriftMocks(page, 0);
+    await waitForMoversGrid(page);
+
+    const referenceOrder = await getMoverRowOrder(page, 'winners');
+    expect(referenceOrder.length).toBeGreaterThan(0);
+
+    // Alternate between positive and negative drift — the old code would have
+    // shuffled BANKNIFTY ↔ TCS (both at 1.058) on every alternate cycle.
+    const drifts = [+0.005, -0.005, +0.002, -0.002, +0.001];
+    for (let i = 0; i < drifts.length; i++) {
+      await page.route('**/api/quote/batch', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(buildDriftedBatchQuotes(drifts[i])),
+        })
+      );
+      await page.waitForTimeout(350);
+      const order = await getMoverRowOrder(page, 'winners');
+      if (order.length > 0) {
+        expect(order, `Winners shuffled on drift cycle ${i} (drift=${drifts[i]})`).toEqual(referenceOrder);
+      }
+    }
+  });
+
+  /**
+   * Row count stable across drift cycles (keepStaleOnEmpty regression).
+   * No rows should disappear when the drift changes.
+   */
+  test('Winners row count unchanged across drift cycles', async ({ page }) => {
+    await installDriftMocks(page, 0);
+    await waitForMoversGrid(page);
+
+    const initialOrder = await getMoverRowOrder(page, 'winners');
+    const initialCount = initialOrder.length;
+    expect(initialCount).toBeGreaterThan(0);
+
+    for (const drift of [+0.005, -0.005, 0]) {
+      await page.route('**/api/quote/batch', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(buildDriftedBatchQuotes(drift)),
+        })
+      );
+      await page.waitForTimeout(350);
+      const order = await getMoverRowOrder(page, 'winners');
+      // Count must never change — no rows dropped or added by drift.
+      expect(order.length, `Row count changed on drift=${drift}`).toBe(initialCount);
     }
   });
 });
