@@ -110,13 +110,18 @@ def _fetch_instruments() -> InstrumentsResponse:
     instrument with t='' and break the movers underlyings universe.
     When RAMBOQ_USE_CONN_SERVICE=1, get_broker() returns RemoteBroker stubs
     that proxy through conn_service, so the Kite filter still applies."""
-    from backend.brokers.registry import _loaded_accounts, _broker_id_for, get_broker
+    from backend.brokers.registry import _loaded_accounts, _broker_id_for, get_market_data_broker
     accts = _loaded_accounts()
     kite_accts = [a for a in accts if _broker_id_for(a) in {"zerodha_kite", "kite"}]
     if not kite_accts:
         logger.warning("Instruments: no Kite account loaded — dump unavailable")
         return InstrumentsResponse(cycle_date="", count=0, items=[])
-    broker = get_broker(kite_accts[0])
+    # Route through the primary market-data broker (honours
+    # connections.price_account pin + priority sort) rather than
+    # hard-coding kite_accts[0]. Within a request this returns the same
+    # PriceBroker that quote / sparkline / historical calls will use, so
+    # all callsites share one broker session per request.
+    broker = get_market_data_broker()
 
     items: list[Instrument] = []
     for exch in _EXCHANGES:
