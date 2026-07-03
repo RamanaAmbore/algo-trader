@@ -3319,7 +3319,16 @@
       // market data).
       const snap = untrack(() => getSnapshot(sym));
       const liveLtp        = snap?.ltp            ?? m.last_price ?? null;
-      const liveChangePct  = snap?.day_change_pct ?? m.change_pct ?? null;
+      // Closed-hours shuffle fix: prefer moversStore-owned change_pct over
+      // symbolStore-arbitrated day_change_pct. During closed hours multiple
+      // publishers (watchQuotes, pulseQuotes, moversRows) all write
+      // day_change_pct to the same symbolStore slot with snapshot_ts=Date.now(),
+      // so the winning value oscillates poll-to-poll causing row reorder.
+      // The moversStore value (m.change_pct) comes from the same stable DB
+      // snapshot on every closed-hours poll — use it as the canonical source.
+      // SSE live-LTP updates during open hours still flow via liveLtp; the
+      // change_pct during open hours also updates via moversStore polls (30s).
+      const liveChangePct  = m.change_pct ?? snap?.day_change_pct ?? null;
       const liveClose      = snap?.close          ?? m.previous_close ?? null;
       if (existingSymbols.has(sym)) {
         // Badge every existing row for this symbol (across majors).
@@ -6155,8 +6164,12 @@
     color: #fbbf24;
     /* Stronger amber stratum so TOTAL stands out over data-row
        directional tints + (incoming) LTP heat cells. Operator:
-       "total row should have a different background color scheme." */
-    background: var(--algo-amber-bg-strong) !important;
+       "total row should have a different background color scheme."
+       Layered over opaque #1d2a44 base — prevents scrolled rows
+       from bleeding through the pinned-bottom TOTAL row. */
+    background:
+      linear-gradient(rgba(251,191,36,0.22), rgba(251,191,36,0.22)),
+      #1d2a44 !important;
     border-top: 2px solid rgba(251, 191, 36, 0.70) !important;
     border-bottom: 1px solid rgba(251, 191, 36, 0.55) !important;
   }
