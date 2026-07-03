@@ -464,6 +464,33 @@ Seeded on first startup via one-shot migration guarded by settings key `migratio
 
 ## Key Patterns
 
+**Market-data broker resolution** — `get_market_data_broker()` in `backend/brokers/registry.py`
+is the **single** resolution path for all quote / ltp / instruments / historical_data calls in
+route handlers and background tasks.  A `contextvars.ContextVar` (`_MDB_CTX`) caches the
+`PriceBroker` instance for the lifetime of one HTTP request so every callsite within the same
+handler picks the **same** broker session.
+
+- `reset_market_data_broker_ctx()` — called in the Litestar `before_request` hook (`app.py`)
+  before every handler dispatch.  Sets `_MDB_CTX` to None so the next call in the new request
+  gets a fresh selection.
+- Selection order: (1) `connections.price_account` operator pin, (2) `broker_accounts.priority`
+  ASC, (3) insertion order.  Delegated to `get_price_broker()`.
+- Telemetry: first call per request logs `[MARKET-DATA-BROKER] account=… reason=pinned|priority-sort`.
+  Broker failover inside `PriceBroker._try()` logs `[MARKET-DATA-FALLBACK]`.
+- Background pollers have their own asyncio Task context → `_MDB_CTX` defaults to None →
+  `get_market_data_broker()` resolves fresh on every call (correct — pollers should always
+  see the healthiest current broker, not a stale cached pick from a prior request).
+- `get_sparkline_broker()` and `get_historical_brokers()` are intentionally **not** wired to
+  this contextvar — they exist to spread the 3 req/sec Kite historical_data budget across
+  accounts and must pick independently.
+- `@for_all_accounts` fan-out (positions / holdings / margins) is also untouched — it fans
+  out per-account by design.
+
+Wired callsites (15 files): `quote.py`, `watchlist.py`, `options.py`, `strategies.py`,
+`positions.py`, `orders_place.py`, `hedge_proxies.py`, `admin.py`, `instruments.py`,
+`background.py`, `lot_ledger.py`, `paper.py`, `template_attach.py`, `replay/driver.py`,
+`ohlcv_store.py`, `broker_apis.py` (backfill_market_data).
+
 **Caching**: In-process TTL in `backend/api/cache.py` with per-key locking. Pre-warm before users hit pages.
 
 **Raw broker-DataFrame cache** (`backend/brokers/broker_apis.py:_RAW_CACHE`, 30s TTL):

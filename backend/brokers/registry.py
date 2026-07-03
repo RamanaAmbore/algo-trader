@@ -385,7 +385,7 @@ class PriceBroker(Broker):
                     )
                 else:
                     logger.warning(
-                        f"PriceBroker fallback: {method_name} failed on "
+                        f"[MARKET-DATA-FALLBACK] {method_name} failed on "
                         f"{broker_key}: {str(e)[:160]}"
                     )
                 continue
