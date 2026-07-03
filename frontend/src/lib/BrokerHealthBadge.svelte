@@ -91,7 +91,7 @@
 {#if open}
   <!-- Modal overlay -->
   <div class="bh-overlay" role="presentation" onclick={() => open = false}></div>
-  <div class="bh-modal" role="dialog" aria-label="Broker auth health">
+  <div class="bh-modal algo-modal" role="dialog" aria-label="Broker auth health">
     <div class="bh-modal-header">
       <span class="bh-modal-title">Broker Auth Health</span>
       <button class="bh-close" onclick={() => open = false} aria-label="Close">
@@ -218,46 +218,36 @@
     background: transparent;
   }
   .bh-modal {
-    /* Grid-card chrome — matches .algo-grid-chrome + .bucket-card visual
-       family (elevated navy gradient, white-α border, compact shadow).
-       This is a chip-anchored dropdown panel, not a full modal, so it
-       uses the grid-card chrome rather than the amber-halo .algo-modal
-       recipe that is reserved for dialog-weight surfaces (ChartModal,
-       ActivityLogModal, OrderTicket, ConfirmModal). */
+    /* Composes .algo-modal chrome (gradient + amber halo + shadow +
+       flex column + overflow hidden). Overrides:
+       - positioning: fixed top-right (not centered) — this is a
+         dropdown-style utility panel anchored to the navbar chip.
+       - border-radius: 0.6rem (slightly softer than canonical 6px)
+         — preserves the pill-drop feel.
+       - dimensions: constrained to 680×480 for a compact status panel. */
     position: fixed;
     top: 3.2rem;
     right: 0.5rem;
     z-index: 9991;
-    background: var(--card-bg-elevated);
-    border: 1.5px solid rgba(255, 255, 255, 0.10);
-    border-radius: 6px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                inset 0 1px 0 rgba(255, 255, 255, 0.08);
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    box-sizing: border-box;
+    border-radius: 0.6rem;
     width: min(96vw, 680px);
     max-height: min(90vh, 480px);
-    pointer-events: auto;
-    color: var(--algo-slate);
   }
 
-  /* ── Panel header — grid-card variant (amber accent, same as .algo-card-title) ── */
+  /* ── Modal header ── */
   .bh-modal-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0.55rem 0.8rem;
-    border-bottom: 1px solid rgba(251, 191, 36, 0.20);
+    padding: 0.7rem 1rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.12);
   }
   .bh-modal-title {
     font-size: var(--fs-lg);
     font-weight: 700;
     letter-spacing: 0.06em;
-    color: var(--text-accent);
+    color: #cbd5e1;
     text-transform: uppercase;
-    font-family: var(--font-numeric);
   }
   .bh-close {
     display: flex;
@@ -266,14 +256,14 @@
     width: 1.4rem;
     height: 1.4rem;
     border-radius: 0.3rem;
-    color: var(--text-faint);
+    color: #64748b;
     cursor: pointer;
     outline: none;
     background: transparent;
     border: none;
     transition: color 0.1s;
   }
-  .bh-close:hover { color: var(--algo-slate); }
+  .bh-close:hover { color: #cbd5e1; }
 
   /* ── Modal body ── */
   .bh-modal-body {
