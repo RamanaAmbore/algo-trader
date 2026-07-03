@@ -897,12 +897,12 @@
   // gives the cleanest scan; the breakdowns (ΔH, ΔP) and the lifetime
   // combined live behind one click in the legend strip.
   const _EQ_SERIES = [
-    { id: 'H',     label: 'H',      title: 'Holdings — lifetime P&L',           field: 'h_pnl',  color: '#7dd3fc', dash: '',    width: 1.5, dflt: true  },
-    { id: 'dH',    label: 'ΔH',     title: 'Holdings — today’s change',    field: 'h_day',  color: '#7dd3fc', dash: '4 3', width: 1.5, dflt: false },
-    { id: 'P',     label: 'P',      title: 'Positions — lifetime P&L',          field: 'p_pnl',  color: '#fbbf24', dash: '',    width: 1.5, dflt: true  },
-    { id: 'dP',    label: 'ΔP',     title: 'Positions — today’s change',   field: 'p_day',  color: '#fbbf24', dash: '4 3', width: 1.5, dflt: false },
-    { id: 'comb',  label: 'H+P',    title: 'Combined — lifetime P&L',           field: 'cum_pnl',color: '#4ade80', dash: '',    width: 2.0, dflt: false },
-    { id: 'dComb', label: 'ΔH+ΔP',  title: 'Combined — today’s change',    field: 'day_pnl',color: '#4ade80', dash: '4 3', width: 2.0, dflt: true  },
+    { id: 'H',     label: 'H',      title: 'Holdings — lifetime P&L',           field: 'h_pnl',  color: 'var(--algo-sky)', dash: '',    width: 1.5, dflt: true  },
+    { id: 'dH',    label: 'ΔH',     title: 'Holdings — today’s change',    field: 'h_day',  color: 'var(--algo-sky)', dash: '4 3', width: 1.5, dflt: false },
+    { id: 'P',     label: 'P',      title: 'Positions — lifetime P&L',          field: 'p_pnl',  color: 'var(--algo-amber)', dash: '',    width: 1.5, dflt: true  },
+    { id: 'dP',    label: 'ΔP',     title: 'Positions — today’s change',   field: 'p_day',  color: 'var(--algo-amber)', dash: '4 3', width: 1.5, dflt: false },
+    { id: 'comb',  label: 'H+P',    title: 'Combined — lifetime P&L',           field: 'cum_pnl',color: 'var(--algo-green)', dash: '',    width: 2.0, dflt: false },
+    { id: 'dComb', label: 'ΔH+ΔP',  title: 'Combined — today’s change',    field: 'day_pnl',color: 'var(--algo-green)', dash: '4 3', width: 2.0, dflt: true  },
   ];
   let _eqSeriesOn = $state(/** @type {Record<string,boolean>} */ (
     Object.fromEntries(_EQ_SERIES.map(s => [s.id, s.dflt]))
@@ -994,7 +994,7 @@
 
   // Palette mirrors .eq-svg CSS vars --eq-line-up / --eq-line-down.
   // Only used in SVG attrs; null when multi-series (area fill hidden, dot falls back to sky).
-  const _eqLineColor  = $derived(_eqDominantField ? (_eqPositive ? '#4ade80' : '#f87171') : null);
+  const _eqLineColor  = $derived(_eqDominantField ? (_eqPositive ? 'var(--algo-green)' : 'var(--algo-red)') : null);
   const _eqFillColor  = $derived(_eqDominantField ? (_eqPositive ? 'rgba(74,222,128,0.12)' : 'rgba(248,113,113,0.12)') : null);
 
   // Y-axis labels for equity chart (5 ticks)
@@ -1064,10 +1064,10 @@
   const GAUGE_CIRC = 2 * Math.PI * GAUGE_R;
 
   function _gaugeColor(pct) {
-    if (pct < 0.50) return '#4ade80';
-    if (pct < 0.70) return '#fbbf24';
+    if (pct < 0.50) return 'var(--algo-green)';
+    if (pct < 0.70) return 'var(--algo-amber)';
     if (pct < 0.85) return '#f59410';
-    return '#f87171';
+    return 'var(--algo-red)';
   }
 
   function _gaugeDash(pct) {
@@ -1410,7 +1410,7 @@
       rowData: [],
       domLayout: 'autoHeight',
       overlayNoRowsTemplate:
-        '<span style="font-size: var(--fs-md);color:#7e97b8">No fund data</span>',
+        '<span style="font-size: var(--fs-md);color:var(--algo-muted)">No fund data</span>',
     });
     _fundsReady = true;
   });
@@ -1450,7 +1450,7 @@
       rowData: [],
       domLayout: 'autoHeight',
       overlayNoRowsTemplate:
-        '<span style="font-size: var(--fs-md);color:#7e97b8">No accounts connected</span>',
+        '<span style="font-size: var(--fs-md);color:var(--algo-muted)">No accounts connected</span>',
     });
     _marginReady = true;
   });
@@ -1489,7 +1489,7 @@
       getRowStyle: () => ({ cursor: 'pointer' }),
       onRowClicked: (ev) => _openSymbol(ev.data?.symbol),
       overlayNoRowsTemplate:
-        `<span style="font-size: var(--fs-md);color:#7e97b8">No ${kind === 'win' ? 'winners' : 'losers'} in this bucket</span>`,
+        `<span style="font-size: var(--fs-md);color:var(--algo-muted)">No ${kind === 'win' ? 'winners' : 'losers'} in this bucket</span>`,
     });
   }
 
@@ -1527,7 +1527,7 @@
       rowData: [],
       domLayout: 'autoHeight',
       overlayNoRowsTemplate:
-        '<span style="font-size: var(--fs-md);color:#7e97b8">No open positions</span>',
+        '<span style="font-size: var(--fs-md);color:var(--algo-muted)">No open positions</span>',
     });
     _eqPosReady = true;
   });
@@ -1554,7 +1554,7 @@
       rowData: [],
       domLayout: 'autoHeight',
       overlayNoRowsTemplate:
-        '<span style="font-size: var(--fs-md);color:#7e97b8">No holdings</span>',
+        '<span style="font-size: var(--fs-md);color:var(--algo-muted)">No holdings</span>',
     });
     _eqHoldReady = true;
   });
@@ -2011,7 +2011,7 @@
             stroke="rgba(200,216,240,0.55)" stroke-width="1"
             stroke-dasharray="3 2" />
           <circle cx={_hoverX} cy={_hoverY} r="3"
-            fill={_eqLineColor ?? '#7dd3fc'} stroke="#0a1428" stroke-width="1.5" />
+            fill={_eqLineColor ?? 'var(--algo-sky)'} stroke="#0a1428" stroke-width="1.5" />
           <!-- Tooltip box -->
           {@const _tipX = _hoverX > INNER_W * 0.65 ? _hoverX - 108 : _hoverX + 8}
           {@const _tipY = Math.max(PAD_T, Math.min(_hoverY - 28, PAD_T + INNER_H - 58))}
@@ -2023,16 +2023,16 @@
             {@const _th = String(_ist.getUTCHours()).padStart(2,'0')}
             {@const _tm = String(_ist.getUTCMinutes()).padStart(2,'0')}
             <text x={_tipX + 6} y={_tipY + 13}
-              font-size="8.5" fill="#7dd3fc" style="font-family: var(--font-numeric)">{_th}:{_tm} IST</text>
+              font-size="8.5" fill="var(--algo-sky)" style="font-family: var(--font-numeric)">{_th}:{_tm} IST</text>
             <text x={_tipX + 6} y={_tipY + 26}
-              font-size="8" fill="#7e97b8" style="font-family: var(--font-numeric)">Day P&amp;L</text>
+              font-size="8" fill="var(--algo-muted)" style="font-family: var(--font-numeric)">Day P&amp;L</text>
             <text x={_tipX + 6} y={_tipY + 37}
-              font-size="9" font-weight="700" fill={_hoverPt.day_pnl >= 0 ? '#4ade80' : '#f87171'}
+              font-size="9" font-weight="700" fill={_hoverPt.day_pnl >= 0 ? 'var(--algo-green)' : 'var(--algo-red)'}
               style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
               {_hoverPt.day_pnl >= 0 ? '+' : ''}₹{priceFmt(_hoverPt.day_pnl)}
             </text>
             <text x={_tipX + 6} y={_tipY + 49}
-              font-size="9" font-weight="700" fill={_hoverPt.cum_pnl >= 0 ? '#4ade80' : '#f87171'}
+              font-size="9" font-weight="700" fill={_hoverPt.cum_pnl >= 0 ? 'var(--algo-green)' : 'var(--algo-red)'}
               style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
               cum {_hoverPt.cum_pnl >= 0 ? '+' : ''}₹{priceFmt(_hoverPt.cum_pnl)}
             </text>
@@ -2390,9 +2390,9 @@
      in sky-blue, positions in amber, combined in green. */
   .eq-chip-H.eq-chip-on,
   .eq-chip-dH.eq-chip-on {
-    background: rgba(125, 211, 252, 0.14);
+    background: var(--algo-sky-bg);
     border-color: var(--algo-sky-border);
-    color: #7dd3fc;
+    color: var(--algo-sky);
   }
   .eq-chip-H.eq-chip-on:hover,
   .eq-chip-dH.eq-chip-on:hover { background: var(--algo-sky-bg-strong); }
@@ -2401,7 +2401,7 @@
   .eq-chip-dP.eq-chip-on {
     background: var(--algo-amber-bg);
     border-color: var(--algo-amber-border);
-    color: #fbbf24;
+    color: var(--algo-amber);
   }
   .eq-chip-P.eq-chip-on:hover,
   .eq-chip-dP.eq-chip-on:hover { background: var(--algo-amber-bg-strong); }
@@ -2410,7 +2410,7 @@
   .eq-chip-dComb.eq-chip-on {
     background: rgba(74, 222, 128, 0.14);
     border-color: var(--algo-green-border);
-    color: #4ade80;
+    color: var(--algo-green);
   }
   .eq-chip-comb.eq-chip-on:hover,
   .eq-chip-dComb.eq-chip-on:hover { background: var(--algo-green-bg-strong); }
@@ -2425,8 +2425,8 @@
   }
 
   .eq-svg {
-    --eq-line-up: #4ade80;
-    --eq-line-down: #f87171;
+    --eq-line-up: var(--algo-green);
+    --eq-line-down: var(--algo-red);
     display: block;
     width: 100%;
     height: 220px;
@@ -2490,8 +2490,8 @@
     font-variant-numeric: tabular-nums;
     color: var(--algo-slate);
   }
-  .eq-stat-v.hero-pnl-up   { color: #4ade80; }
-  .eq-stat-v.hero-pnl-down { color: #f87171; }
+  .eq-stat-v.hero-pnl-up   { color: var(--algo-green); }
+  .eq-stat-v.hero-pnl-down { color: var(--algo-red); }
   .eq-stat-v.hero-pnl-neutral { color: rgba(200, 216, 240, 0.6); }
   .eq-stat-scope {
     font-size: var(--fs-2xs);
@@ -2616,14 +2616,14 @@
     align-items: center;
     gap: 0.3rem;
     padding: 0.15rem 0.5rem;
-    border-left: 2px solid #fbbf24;
+    border-left: 2px solid var(--algo-amber);
     background: rgba(255, 255, 255, 0.02);
     border-radius: 2px;
     font-family: var(--font-numeric);
     line-height: 1;
   }
   .dash-agent-count {
-    color: #fbbf24;
+    color: var(--algo-amber);
     font-size: var(--fs-xl);
     font-weight: 800;
     font-variant-numeric: tabular-nums;
@@ -2663,7 +2663,7 @@
     gap: 0.3rem;
     font-family: var(--font-numeric);
     font-size: var(--fs-xs);
-    color: #7dd3fc;
+    color: var(--algo-sky);
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -2673,7 +2673,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: #7dd3fc;
+    background: var(--algo-sky);
     animation: oo-pulse 2s ease-in-out infinite;
   }
   @keyframes oo-pulse {
@@ -2815,7 +2815,7 @@
      + util-mild fill the amber middle of the colour ramp.
      `!important` so they win against the theme's row-level `color`. */
   :global(.ag-theme-algo .util-warn) {
-    color: #fbbf24 !important;
+    color: var(--algo-amber) !important;
     background-color: rgba(251,191,36,0.08) !important;
   }
   :global(.ag-theme-algo .util-mild) {
@@ -2883,8 +2883,8 @@
     font-variant-numeric: tabular-nums;
     flex-shrink: 0;
   }
-  .wl-pnl-up   { color: #4ade80; }
-  .wl-pnl-down { color: #f87171; }
+  .wl-pnl-up   { color: var(--algo-green); }
+  .wl-pnl-down { color: var(--algo-red); }
   .wl-pct {
     font-size: var(--fs-sm);
     color: var(--algo-muted);
@@ -3014,7 +3014,7 @@
     background: rgba(248, 113, 113, 0.07);
     border: 1px solid rgba(248, 113, 113, 0.25);
     border-radius: 4px;
-    color: #f87171;
+    color: var(--algo-red);
     font-size: 0.72rem;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
@@ -3022,9 +3022,9 @@
     flex-shrink: 0;
     padding: 0.12rem 0.5rem;
     border-radius: 3px;
-    border: 1px solid rgba(34, 211, 238, 0.55);
-    background: rgba(34, 211, 238, 0.14);
-    color: #22d3ee;
+    border: 1px solid var(--algo-cyan-border);
+    background: var(--algo-cyan-bg);
+    color: var(--algo-cyan);
     font-size: 0.68rem;
     font-weight: 700;
     letter-spacing: 0.04em;
@@ -3032,7 +3032,7 @@
     transition: background 120ms, border-color 120ms;
   }
   .dash-nav-retry:hover {
-    background: rgba(34, 211, 238, 0.22);
+    background: var(--algo-cyan-bg-strong);
     border-color: rgba(34, 211, 238, 0.80);
     color: #67e8f9;
   }
