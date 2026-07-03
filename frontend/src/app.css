@@ -2024,7 +2024,7 @@
    every card across the workspace now reads as a flat panel. */
 .algo-card {
   background: var(--card-bg-gradient);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1.5px solid rgba(255, 255, 255, 0.10);
   border-radius: 4px;
   padding: 0.55rem 0.7rem;
 }
