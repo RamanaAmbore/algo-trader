@@ -6454,19 +6454,10 @@
      followed by leg-count + qty + four side-by-side P&L columns
      (Hold / No-Hold for both lifetime + today). Right-aligned numeric
      cells with the standard cell-pos / cell-neg / cell-flat tinting. */
+  /* Chrome delegated to .algo-grid-chrome class on the element. */
   .byund-scroll {
     overflow-x: auto;
     margin-top: 0.4rem;
-    /* Outer chrome matches ag-theme-algo — 1.5px slate border + 4px
-       radius + navy inset shadow — so the Snapshot grid reads as the
-       same visual family as NavBreakdown, dashboard grids, History
-       grid. Operator: "dashboard NAV grid has better border color
-       scheme compared to Snapshot grid." */
-    border: 1.5px solid rgba(255, 255, 255, 0.10);
-    border-radius: 4px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                inset 0 1px 0 rgba(255, 255, 255, 0.08);
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
   }
   .byund-grid {
     display: grid;
@@ -6634,21 +6625,12 @@
     max-height: calc(100vh - 28rem) !important;
   }
 
+  /* Chrome delegated to .algo-grid-chrome class on the element. */
   .cand-scroll {
     overflow-x: auto;
     overflow-y: auto;
     max-height: 22rem;
     margin-top: 0.4rem;
-    /* Outer chrome — matches .algo-grid-chrome in app.css + .byund-scroll so
-       the Legs candidates grid reads as the same visual family as the Snapshot
-       grid, NavBreakdown, and dashboard mini-grids. Inlined here because the
-       class is applied directly on the scroll wrapper (which already owns
-       overflow/height), avoiding an extra wrapping div. */
-    border: 1.5px solid rgba(255, 255, 255, 0.10);
-    border-radius: 4px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                inset 0 1px 0 rgba(255, 255, 255, 0.08);
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     /* Scrollbar styling — operator: "add scroll bars so that newly
        added columns get the space required in legs". Bumped from
        6 px to 10 px so the horizontal track reads as a clear
