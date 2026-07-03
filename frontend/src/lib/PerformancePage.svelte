@@ -476,9 +476,9 @@
     { field: 'last_price',            headerName: 'LTP',      width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'average_price',         headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'day_change_val',        headerName: 'Day P&L',  width: 78, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('day_change_val'), type: 'numericColumn', headerClass: numericHdr },
-    { field: 'day_change_percentage', headerName: 'Day %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlClsFlash('day_change_percentage'), type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_percentage', headerName: 'Day %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                   headerName: 'P&L',      width: 78, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('pnl'), type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl_percentage',        headerName: 'P&L %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlClsFlash('pnl_percentage'), type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl_percentage',        headerName: 'P&L %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'close_price',           headerName: 'Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
     { field: 'quantity',              headerName: 'Qty',      width: 52, type: 'numericColumn', headerClass: numericHdr },
     // Lots — qty in F&O lot units. Holdings on F&O underlyings use
@@ -586,9 +586,9 @@
     { field: 'last_price',           headerName: 'LTP',       width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'average_price',        headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
     { field: 'day_change_val',       headerName: 'Day P&L',   width: 88, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('day_change_val'), type: 'numericColumn', headerClass: numericHdr },
-    { field: 'day_change_percentage',headerName: 'Day %',     width: 64, valueFormatter: pctFmtGrid, cellClass: pnlClsFlash('day_change_percentage'), type: 'numericColumn', headerClass: numericHdr },
+    { field: 'day_change_percentage',headerName: 'Day %',     width: 64, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                  headerName: 'P&L',       width: 88, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('pnl'), type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pnl_percentage',       headerName: 'P&L %',     width: 60, valueFormatter: pctFmtGrid, cellClass: pnlClsFlash('pnl_percentage'), type: 'numericColumn', headerClass: numericHdr },
+    { field: 'pnl_percentage',       headerName: 'P&L %',     width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'close_price',          headerName: 'Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
     { field: 'quantity',             headerName: 'Qty',       width: 52, type: 'numericColumn', headerClass: numericHdr, cellClass: qtyCls },
     // Lots — option / futures positions use the contract's own lot;
@@ -864,22 +864,18 @@
         const k = r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
         if (!k) continue;
         // LTP flash — fires on poll-cycle LTP change. Cascade direction tracked
-        // per key so pnlClsFlash can emit ltp-flash-up/down on derived columns.
-        if (r.last_price        != null) _perfFlash.update(`${k}:last_price`,         Number(r.last_price));
-        if (r.day_change_val    != null) _perfFlash.update(`${k}:day_change_val`,    Number(r.day_change_val));
-        if (r.day_change_percentage != null) _perfFlash.update(`${k}:day_change_percentage`, Number(r.day_change_percentage));
-        if (r.pnl               != null) _perfFlash.update(`${k}:pnl`,               Number(r.pnl));
-        if (r.pnl_percentage    != null) _perfFlash.update(`${k}:pnl_percentage`,    Number(r.pnl_percentage));
+        // per key so pnlClsFlash can emit ltp-flash-up/down on absolute columns.
+        if (r.last_price     != null) _perfFlash.update(`${k}:last_price`,    Number(r.last_price));
+        if (r.day_change_val != null) _perfFlash.update(`${k}:day_change_val`, Number(r.day_change_val));
+        if (r.pnl            != null) _perfFlash.update(`${k}:pnl`,            Number(r.pnl));
       }
       for (const r of pRows) {
         if (r.tradingsymbol === 'TOTAL' || r.account === 'TOTAL') continue;
         const k = r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
         if (!k) continue;
-        if (r.last_price        != null) _perfFlash.update(`${k}:last_price`,         Number(r.last_price));
-        if (r.day_change_val    != null) _perfFlash.update(`${k}:day_change_val`,    Number(r.day_change_val));
-        if (r.day_change_percentage != null) _perfFlash.update(`${k}:day_change_percentage`, Number(r.day_change_percentage));
-        if (r.pnl               != null) _perfFlash.update(`${k}:pnl`,               Number(r.pnl));
-        if (r.pnl_percentage    != null) _perfFlash.update(`${k}:pnl_percentage`,    Number(r.pnl_percentage));
+        if (r.last_price     != null) _perfFlash.update(`${k}:last_price`,    Number(r.last_price));
+        if (r.day_change_val != null) _perfFlash.update(`${k}:day_change_val`, Number(r.day_change_val));
+        if (r.pnl            != null) _perfFlash.update(`${k}:pnl`,            Number(r.pnl));
       }
     });
     updateGrid(holdingsAllGrid, hRows);
@@ -887,17 +883,17 @@
     // Trigger a refreshCells so pnlClsFlash callbacks pick up the new flash state.
     // last_price included so LTP column + cascade columns repaint together.
     if (holdingsAllGrid) {
-      try { holdingsAllGrid.refreshCells({ columns: ['last_price', 'day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'], force: true }); } catch (_) {}
+      try { holdingsAllGrid.refreshCells({ columns: ['last_price', 'day_change_val', 'pnl'], force: true }); } catch (_) {}
       setTimeout(() => {
-        try { holdingsAllGrid.refreshCells({ columns: ['last_price', 'day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'], force: true }); } catch (_) {}
+        try { holdingsAllGrid.refreshCells({ columns: ['last_price', 'day_change_val', 'pnl'], force: true }); } catch (_) {}
       }, 400);
     }
     updateGrid(positionsAllGrid, pRows);
     positionsAllGrid.setGridOption('pinnedBottomRowData', pTotals ? [pTotals] : []);
     if (positionsAllGrid) {
-      try { positionsAllGrid.refreshCells({ columns: ['last_price', 'day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'], force: true }); } catch (_) {}
+      try { positionsAllGrid.refreshCells({ columns: ['last_price', 'day_change_val', 'pnl'], force: true }); } catch (_) {}
       setTimeout(() => {
-        try { positionsAllGrid.refreshCells({ columns: ['last_price', 'day_change_val', 'day_change_percentage', 'pnl', 'pnl_percentage'], force: true }); } catch (_) {}
+        try { positionsAllGrid.refreshCells({ columns: ['last_price', 'day_change_val', 'pnl'], force: true }); } catch (_) {}
       }, 400);
     }
     updateGrid(fundsGrid, fBody);

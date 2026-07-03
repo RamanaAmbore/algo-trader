@@ -1222,7 +1222,17 @@
       const cachedShow = sessionStorage.getItem('mp.selectedShow');
       if (cachedShow) {
         const parsed = JSON.parse(cachedShow);
-        if (Array.isArray(parsed) && parsed.length > 0) selectedShow = parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          // One-time migration: old builds stored 'src:movers' as a single
+          // unified movers toggle. The 6-grid layout split this into two
+          // separate 'src:winners' + 'src:losers' tokens. If the stored
+          // value contains the old token, replace it with both new tokens
+          // so the Winners/Losers grids don't silently disappear after
+          // an upgrade (the prune $effect would strip 'src:movers' since
+          // it's no longer in _availableSourceValues).
+          const migrated = parsed.flatMap(v => v === 'src:movers' ? ['src:winners', 'src:losers'] : [v]);
+          selectedShow = migrated;
+        }
       }
     } catch (_) { /* fall through to default seed */ }
     // Cache restoration is now handled automatically by the three-tier
@@ -1932,9 +1942,9 @@
       // Force a refreshCells pass so cellClass callbacks re-evaluate the
       // flash state set above. Deferred 0ms so ag-Grid's own row-data
       // transaction finishes first; second refresh at +400ms clears flash.
-      try { gridPositions.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) {}
+      try { gridPositions.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
       setTimeout(() => {
-        try { gridPositions.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) {}
+        try { gridPositions.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
       }, 400);
     });
   } });
@@ -1952,9 +1962,9 @@
       }
       gridHoldings.setGridOption('rowData', hRows);
       gridHoldings.setGridOption('pinnedBottomRowData', hTotalRows);
-      try { gridHoldings.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) {}
+      try { gridHoldings.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
       setTimeout(() => {
-        try { gridHoldings.refreshCells({ columns: ['day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct'], force: true }); } catch (_) {}
+        try { gridHoldings.refreshCells({ columns: ['day_pnl', 'pnl'], force: true }); } catch (_) {}
       }, 400);
     });
   } });
@@ -2066,13 +2076,12 @@
       // synchronously — only the expensive grid work runs on idle.
       // Part B cascade: when any symbol's LTP changed, also repaint
       // derived columns whose cellClass callbacks check _ltpFlashUp/Down.
-      // Includes left-grid Day % (dirCellClass reads no flash, so skip)
-      // and right-grid Day P&L / Day % / P&L / P&L % (pnlCellClass checks
-      // both _mpFlash and the LTP flash sets).
+      // Cascade: Day P&L + P&L (absolute). Day % and P&L % no longer flash,
+      // so they are excluded from the force-repaint list.
       _scheduleIdle(() => {
         const _ltpCols = ['ltp', 'sparkline'];
         const _cascadeCols = hasCascade
-          ? ['ltp', 'sparkline', 'day_pnl', 'day_pnl_pct', 'pnl', 'pnl_pct']
+          ? ['ltp', 'sparkline', 'day_pnl', 'pnl']
           : _ltpCols;
         if (gridPinnedReady    && gridPinned    && topTab === 'pinned')    gridPinned.refreshCells({ columns: _ltpCols, force: true });
         if (gridWatchReady     && gridWatch     && typeof topTab === 'number') gridWatch.refreshCells({ columns: _ltpCols, force: true });
@@ -4235,9 +4244,8 @@
       // TOTAL gets a market-value-weighted day return.
       { field: 'day_pnl_pct', headerName: 'Day %', colId: 'day_pnl_pct',
         width: 64, type: 'numericColumn', headerClass: numericHdr,
-        // day_pnl_pct is a valueGetter computed from day_pnl; flash is keyed
-        // to 'day_pnl' (the underlying source field that changes on each poll).
-        cellClass: (p) => pnlCellClass(p, 'day_pnl'),
+        // Percentage column — no tick-flash cascade (absolute Day P&L carries flash).
+        cellClass: (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`,
         valueGetter: (p) => {
           const dpnl = Number(p.data?.day_pnl);
           const prev = Number(p.data?._prev_market_value);
@@ -4262,8 +4270,8 @@
         valueFormatter: aggFmtGrid },
       { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
         width: 64, type: 'numericColumn', headerClass: numericHdr,
-        // pnl_pct is computed from pnl; flash keyed to 'pnl' (the source field).
-        cellClass: (p) => pnlCellClass(p, 'pnl'),
+        // Percentage column — no tick-flash cascade (absolute P&L carries flash).
+        cellClass: (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`,
         valueGetter: (p) => {
           const pnl  = Number(p.data?.pnl);
           const cost = Number(p.data?._cost_basis);
