@@ -2477,25 +2477,17 @@ button:not(:disabled):active,
 }
 
 /* ── Chart-refresh pulse ─────────────────────────────────────────────────────
-   Two-layer animation fired when a chart container receives new data.
-
-   Layer 1 — background-color keyframe on the chart wrapper div.
-     Alpha 0.10 — more subtle than cell tick-flash (0.13) because charts
-     occupy large visual area; same alpha would read as alarm not data signal.
-     Two keyframe names (kf-a / kf-b) with identical bodies so the browser
-     restarts the animation on a class-name swap (a → b or b → a) even when
-     the transition fires faster than the previous animation duration.
-
-   Layer 2 — opacity flash on SVG paths carrying class="data-path".
-     Grid lines, axes, markers do NOT carry data-path and are unaffected.
-     200ms ease-out is faster than the wrapper so the path flash reads as
-     the leading-edge cue; the bg sustains it slightly.
+   Background-color keyframe on the chart wrapper div when it receives new data.
+   Alpha 0.10 — more subtle than cell tick-flash (0.13) because charts occupy
+   large visual area. Two keyframe names (kf-a / kf-b) with identical bodies
+   so the browser restarts the animation on a class-name swap (a → b or b → a)
+   even when the transition fires faster than the previous animation duration.
 
    Neutral palette (cyan) — chart redraws are structural, not directional.
    easing: cubic-bezier(0.4, 0, 0.2, 1) — Material standard, matches
      RefreshButton + cell tick-flash convention.
 
-   prefers-reduced-motion: both layers disabled entirely.
+   prefers-reduced-motion: wrapper animation disabled.
 
    CSS lives here (global scope) so it reaches inside Svelte scoped DOM and
    ag-Grid shadow roots without :global() wrappers in each chart file.
@@ -2515,20 +2507,9 @@ button:not(:disabled):active,
   animation: cp-pulse-kf-b 0.3s cubic-bezier(0.4, 0, 0.2, 1) forwards;
 }
 
-@keyframes cp-path-flash {
-  0%   { opacity: 0.85; }
-  100% { opacity: 1; }
-}
-.cp-pulse-a svg path.data-path,
-.cp-pulse-b svg path.data-path {
-  animation: cp-path-flash 0.2s ease-out forwards;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .cp-pulse-a,
-  .cp-pulse-b,
-  .cp-pulse-a svg path.data-path,
-  .cp-pulse-b svg path.data-path {
+  .cp-pulse-b {
     animation: none;
   }
 }
