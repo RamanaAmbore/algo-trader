@@ -429,7 +429,11 @@
   // ── Email Partners panel ─────────────────────────────────────────────
   /** @type {'preset'|'pick'} */
   let emailMode        = $state('preset');
-  let emailPreset      = $state('');   // '' | 'all_partners' | 'all_designated' | 'all_users'
+  // Preset values MUST match the backend `EmailPartnersRequest.recipients`
+  // preset strings — `all-partners`, `all-designated`, `all`. Using
+  // underscore variants silently fails the backend preset lookup and
+  // falls through to the "recipients must be a list…" 422 branch.
+  let emailPreset      = $state('');   // '' | 'all-partners' | 'all-designated' | 'all'
   let emailPicked      = $state(/** @type {string[]} */ ([]));
   let emailSubject     = $state('');
   let emailBody        = $state('');
@@ -451,10 +455,10 @@
   });
 
   const PRESET_OPTIONS = [
-    { value: '',               label: 'Pick recipients…' },
-    { value: 'all_partners',   label: 'All partners'     },
-    { value: 'all_designated', label: 'All designated'   },
-    { value: 'all_users',      label: 'All users'        },
+    { value: '',                label: 'Pick recipients…' },
+    { value: 'all-partners',    label: 'All partners'     },
+    { value: 'all-designated',  label: 'All designated'   },
+    { value: 'all',             label: 'All users'        },
   ];
 
   /** Active users with an email, available for specific-pick. */
@@ -473,9 +477,9 @@
 
   /** Computed recipient count label for the confirm dialog. */
   const emailRecipientLabel = $derived(() => {
-    if (emailPreset === 'all_partners')   return `all partners (${users.filter(u=>u.role==='partner'&&u.is_active&&u.email).length})`;
-    if (emailPreset === 'all_designated') return `all designated (${users.filter(u=>u.role==='designated'&&u.is_active&&u.email).length})`;
-    if (emailPreset === 'all_users')      return `all users (${users.filter(u=>u.is_active&&u.email).length})`;
+    if (emailPreset === 'all-partners')   return `all partners (${users.filter(u=>u.role==='partner'&&u.is_active&&u.email).length})`;
+    if (emailPreset === 'all-designated') return `all designated (${users.filter(u=>u.role==='designated'&&u.is_active&&u.email).length})`;
+    if (emailPreset === 'all')            return `all users (${users.filter(u=>u.is_active&&u.email).length})`;
     return `${emailPicked.length} partner(s)`;
   });
 
@@ -1030,9 +1034,9 @@
         Sending…
       {:else}
         Send to {
-          emailPreset === 'all_partners'   ? `${users.filter(u=>u.role==='partner'&&u.is_active&&u.email).length} partner(s)` :
-          emailPreset === 'all_designated' ? `${users.filter(u=>u.role==='designated'&&u.is_active&&u.email).length} designated` :
-          emailPreset === 'all_users'      ? `${users.filter(u=>u.is_active&&u.email).length} user(s)` :
+          emailPreset === 'all-partners'   ? `${users.filter(u=>u.role==='partner'&&u.is_active&&u.email).length} partner(s)` :
+          emailPreset === 'all-designated' ? `${users.filter(u=>u.role==='designated'&&u.is_active&&u.email).length} designated` :
+          emailPreset === 'all'            ? `${users.filter(u=>u.is_active&&u.email).length} user(s)` :
           emailPicked.length > 0           ? `${emailPicked.length} partner(s)` :
           'partners'
         }
