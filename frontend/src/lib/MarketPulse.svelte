@@ -3340,6 +3340,19 @@
       if (row.close      == null) row.close      = q.close      ?? null;
       if (row.change     == null) row.change     = q.change     ?? null;
       if (row.change_pct == null) row.change_pct = q.change_pct ?? null;
+      // Open / volume / OI on the underlying anchor. Same reasoning as
+      // Prev close above — the broker quote carries these fields but
+      // this branch never propagated them to the row.  Symptom:
+      // GOLDM / GOLD / SILVER / SILVERM / COPPER / USDINR bare-root
+      // anchor rows in /pulse pinned card rendered Open / Volume / OI
+      // as "—" even when the batch quote (via _underlyingQuotes) had
+      // populated values.  (Same defect class as the mover-row fix
+      // shipped in 0469ac86 — different composer branch.)
+      if (row.open       == null) row.open       = q.open       ?? null;
+      if (row.high       == null) row.high       = q.high       ?? null;
+      if (row.low        == null) row.low        = q.low        ?? null;
+      if (row.volume     == null) row.volume     = q.volume     ?? null;
+      if (row.oi         == null) row.oi         = q.oi         ?? null;
     }
 
     // 5. Movers — every mover symbol creates exactly one Movers-major row
