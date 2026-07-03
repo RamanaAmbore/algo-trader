@@ -4,6 +4,9 @@ Append-only per-order event log helper.
 One async function — `write_event` — that any callsite can fire-and-forget.
 Errors are logged at WARNING and swallowed so a DB hiccup never bubbles into
 the order-placement hot path.
+
+`write_event` enqueues into `order_event_queue` (started at app startup)
+which batches inserts every 1 s rather than opening a session per row.
 """
 
 from __future__ import annotations
@@ -12,10 +15,27 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
-from backend.api.database import async_session
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+# Module-level EventQueue for AlgoOrderEvent rows.
+from backend.api.persistence.event_queue import EventQueue as _EventQueue
+
+
+def _make_order_event_queue() -> _EventQueue:
+    from backend.api.models import AlgoOrderEvent
+    return _EventQueue(
+        AlgoOrderEvent,
+        name="order_event",
+        batch_size=500,
+        flush_interval_s=1.0,
+        max_queue=10_000,
+        on_full="drop",
+    )
+
+
+order_event_queue: _EventQueue = _make_order_event_queue()
 
 VALID_KINDS = frozenset({
     "placed", "chase_modify", "fill", "unfill", "reject", "cancel",
@@ -56,18 +76,13 @@ async def write_event(
     message = str(message)[:500]
 
     try:
-        from backend.api.models import AlgoOrderEvent
-
-        async with async_session() as s:
-            s.add(AlgoOrderEvent(
-                order_id=order_id,
-                ts=datetime.now(timezone.utc),
-                kind=kind,
-                message=message,
-                payload_json=payload_json,
-            ))
-            await s.commit()
-
+        await order_event_queue.enqueue(
+            order_id=order_id,
+            ts=datetime.now(timezone.utc),
+            kind=kind,
+            message=message,
+            payload_json=payload_json,
+        )
         logger.info(f"[order_event] order={order_id} kind={kind} — {message}")
 
     except Exception as db_err:
