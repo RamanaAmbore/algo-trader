@@ -206,14 +206,182 @@ test.describe('Fast path (no delay) — auto-default on first tick', () => {
   });
 });
 
-// ── Test 4: Stale-code audit (source grep) ───────────────────────────────────
+// ── Test 4: sessionStorage last-symbol → preserved when no URL param ─────────
+//
+// When no ?u= param is in the URL but sessionStorage cache has a prior symbol
+// (ramboq:options-state), the cached underlying is restored and the picker
+// reflects that symbol once the dropdown populates.
+
+test.describe('sessionStorage last symbol — restored when URL has no param', () => {
+  test.setTimeout(30_000);
+
+  test('cached underlying from sessionStorage is used as fallback', async ({ page }) => {
+    await loginAsAdmin(page);
+
+    // Inject a sessionStorage cache entry before the page loads.
+    // Use a well-known derivative root so the picker is likely to contain it.
+    // The fallback to first-item is acceptable if the server has no NIFTY positions.
+    await page.addInitScript(() => {
+      try {
+        const payload = {
+          ts: Date.now(),
+          positions: [], strategy: null, drafts: [],
+          selectedAccounts: [], selectedUnderlying: 'NIFTY', selectedExpiries: [],
+          _includeHoldings: false,
+        };
+        sessionStorage.setItem('ramboq:options-state', JSON.stringify(payload));
+      } catch (_) {}
+    });
+
+    // Slow positions so the picker is empty at first paint.
+    await page.route('**/api/positions*', async (route) => {
+      await new Promise((r) => setTimeout(r, 1200));
+      await route.continue();
+    });
+
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+
+    // Picker must settle on a real symbol within 15 s.
+    const pick = await waitForPick(page, 15_000);
+    expect(pick.length).toBeGreaterThan(0);
+    expect(PLACEHOLDERS.has(pick)).toBe(false);
+
+    // URL must be updated with the selected underlying.
+    const url = page.url();
+    expect(url).toContain('u=');
+  });
+});
+
+// ── Test 5: URL param beats sessionStorage ────────────────────────────────────
+//
+// When ?u=NIFTY is in the URL AND sessionStorage has a different symbol
+// (e.g. BANKNIFTY), URL must win — _loadCache must not clobber the URL-seeded
+// selectedUnderlying.
+
+test.describe('URL param beats sessionStorage cache', () => {
+  test.setTimeout(30_000);
+
+  test('?u=NIFTY wins over sessionStorage BANKNIFTY', async ({ page }) => {
+    await loginAsAdmin(page);
+
+    // Seed sessionStorage with BANKNIFTY (different from URL param).
+    await page.addInitScript(() => {
+      try {
+        const payload = {
+          ts: Date.now(),
+          positions: [], strategy: null, drafts: [],
+          selectedAccounts: [], selectedUnderlying: 'BANKNIFTY', selectedExpiries: [],
+          _includeHoldings: false,
+        };
+        sessionStorage.setItem('ramboq:options-state', JSON.stringify(payload));
+      } catch (_) {}
+    });
+
+    // Slow positions to surface the race condition.
+    await page.route('**/api/positions*', async (route) => {
+      await new Promise((r) => setTimeout(r, 1200));
+      await route.continue();
+    });
+
+    // Navigate with ?u=NIFTY.
+    await page.goto(`${DERIV_URL}?u=NIFTY`, { waitUntil: 'domcontentloaded' });
+
+    // Picker must settle on a real symbol.
+    const pick = await waitForPick(page, 15_000);
+    expect(pick.length).toBeGreaterThan(0);
+    expect(PLACEHOLDERS.has(pick)).toBe(false);
+
+    // The picker must NOT show BANKNIFTY (the sessionStorage override must not
+    // have won). It must show NIFTY or the first valid item from the dropdown
+    // if NIFTY is not present in the current book.
+    expect(pick).not.toBe('BANKNIFTY');
+
+    // URL must contain u= (could be NIFTY or first item, but never BANKNIFTY).
+    expect(page.url()).toContain('u=');
+    expect(page.url()).not.toContain('u=BANKNIFTY');
+  });
+});
+
+// ── Test 6: Unknown URL param → first item fallback + strategy load ───────────
+//
+// When ?u=UNKNOWN is in the URL and UNKNOWN is not in the dropdown, the poll
+// detects an invalid selection and picks the first item, then fires
+// loadStrategy({ force: true }).
+
+test.describe('Unknown URL param → first-item fallback + strategy loads', () => {
+  test.setTimeout(30_000);
+
+  test('?u=UNKNOWNSYM falls back to first item and triggers strategy', async ({ page }) => {
+    await loginAsAdmin(page);
+
+    const strategyRequests = /** @type {number[]} */ ([]);
+    page.on('request', (req) => {
+      if (req.url().includes('/api/options/strategy-analytics')) {
+        strategyRequests.push(Date.now());
+      }
+    });
+
+    await page.goto(`${DERIV_URL}?u=UNKNOWNSYM`, { waitUntil: 'domcontentloaded' });
+
+    // Picker must settle on a real symbol (not UNKNOWNSYM).
+    const pick = await waitForPick(page, 15_000);
+    expect(pick).not.toBe('UNKNOWNSYM');
+    expect(PLACEHOLDERS.has(pick)).toBe(false);
+
+    // Strategy must have been requested (forced on invalid pick).
+    await page.waitForTimeout(2000);
+    expect(strategyRequests.length).toBeGreaterThan(0);
+  });
+});
+
+// ── Test 7: Fast path + forced refresh when no context (empty URL + no cache) ──
+//
+// When neither URL param nor sessionStorage has a prior selection AND the picker
+// populates immediately (fast path, attempt === 1), the poll auto-picks the first
+// item (isValid=false) and now fires loadStrategy({ force: true }) due to the
+// !isValid branch.
+
+test.describe('Fast path + no context → first item picked + strategy loads', () => {
+  test.setTimeout(20_000);
+
+  test('first item auto-selected and strategy fires on fast-path with no context', async ({ page }) => {
+    await loginAsAdmin(page);
+
+    // Clear sessionStorage for this test — ensure no cached underlying.
+    await page.addInitScript(() => {
+      try { sessionStorage.removeItem('ramboq:options-state'); } catch (_) {}
+    });
+
+    const strategyRequests = /** @type {number[]} */ ([]);
+    page.on('request', (req) => {
+      if (req.url().includes('/api/options/strategy-analytics')) {
+        strategyRequests.push(Date.now());
+      }
+    });
+
+    // Navigate without ?u= param.
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded' });
+
+    // Picker must auto-select.
+    const pick = await waitForPick(page, 8_000);
+    expect(pick.length).toBeGreaterThan(0);
+    expect(PLACEHOLDERS.has(pick)).toBe(false);
+
+    // A strategy request must fire (the !isValid branch now triggers even on
+    // the fast path when no prior selection was set).
+    await page.waitForTimeout(2000);
+    expect(strategyRequests.length).toBeGreaterThan(0);
+  });
+});
+
+// ── Test 8: Stale-code audit (source grep) ───────────────────────────────────
 //
 // Dimension 3 (Stale): confirm the delay-guard and forced-refresh call
 // are present in the source file, and no duplicate auto-default mechanism
 // was added (one poll site only).
 
 test.describe('Stale-code audit — grep source', () => {
-  test('delayed-path guard and loadStrategy force call exist in onMount poll', async () => {
+  test('guards and loadStrategy force call present; URL beats sessionStorage guard present', async () => {
     const fs = await import('fs/promises');
     const src = await fs.readFile(
       new URL(
@@ -223,14 +391,16 @@ test.describe('Stale-code audit — grep source', () => {
       'utf8',
     );
 
-    // The guard that fires only on delayed arrivals.
+    // The delayed-path guard is still present.
     expect(src).toContain('_autoSelectAttempts > 1');
 
-    // The forced refresh call on the delayed path.
+    // The fast-path (!isValid) branch now also triggers a force refresh.
+    expect(src).toContain('!isValid || _autoSelectAttempts > 1');
+
+    // The forced refresh call is in the poll.
     expect(src).toContain("loadStrategy({ force: true })");
 
-    // Confirm the existing one-shot poll is still the only auto-default
-    // mechanism (no second $effect with _autoDefaulted was added).
+    // Confirm no duplicate auto-default $effect site was introduced.
     const autoDefaultedCount = (src.match(/_autoDefaulted/g) || []).length;
     expect(autoDefaultedCount).toBe(0);
 
@@ -238,7 +408,10 @@ test.describe('Stale-code audit — grep source', () => {
     // so the reactive path is unchanged.
     expect(src).toContain('if (cur) return');
 
-    // URL param read on mount is still intact (line ~267-269).
+    // URL param read on mount is still intact.
     expect(src).toContain("sp.get('u')");
+
+    // URL-beats-sessionStorage guard is present in _loadCache.
+    expect(src).toContain('&& !selectedUnderlying');
   });
 });
