@@ -247,6 +247,56 @@ test.describe('tick-bus flash synchrony', () => {
         }
       }
     });
+
+    test('NavStrip border animates at most 4Hz during rapid tick burst (20 ticks in 1s)', async () => {
+      // Use MutationObserver to count class-attribute changes on .ps-strip that
+      // involve a ps-tick-border-[ab] token appearing. This measures leading-edge
+      // throttle effectiveness: 20 emits over 1s with a 250ms throttle should
+      // yield at most 4 leading-edge fires (1s / 250ms = 4 windows).
+      //
+      // Setup: register observer before emitting.
+      await page.evaluate(() => {
+        /** @type {any} */
+        const w = window;
+        w.__stripBorderToggleCount = 0;
+        const strip = document.querySelector('.ps-strip');
+        if (!strip) return;
+        const obs = new MutationObserver((mutations) => {
+          for (const m of mutations) {
+            if (m.attributeName !== 'class') continue;
+            const cls = (/** @type {Element} */ (m.target)).className;
+            // Count each transition where a ps-tick-border-[ab] class appears.
+            if (/ps-tick-border-[ab]/.test(cls)) {
+              w.__stripBorderToggleCount++;
+            }
+          }
+        });
+        obs.observe(strip, { attributes: true });
+        w.__stripBorderObs = obs;
+      });
+
+      // Fire 20 ticks over 1 second (50ms apart).
+      for (let i = 0; i < 20; i++) {
+        await emitTick(page, TEST_SYM, 'up');
+        await page.waitForTimeout(50);
+      }
+
+      // Give 100ms for any final timer callbacks.
+      await page.waitForTimeout(100);
+
+      const toggleCount = await page.evaluate(() => {
+        /** @type {any} */
+        const w = window;
+        if (w.__stripBorderObs) { w.__stripBorderObs.disconnect(); w.__stripBorderObs = null; }
+        return w.__stripBorderToggleCount || 0;
+      });
+
+      // 20 ticks over 1000ms with 250ms leading-edge throttle =
+      // 4 windows → at most 4 class additions (first tick per window).
+      // Allow 5 as a small tolerance for timer jitter.
+      expect(toggleCount).toBeGreaterThan(0);        // at least one fired
+      expect(toggleCount).toBeLessThanOrEqual(5);    // at most 4Hz (≤5 with jitter)
+    });
   });
 
   // ── Mobile viewport ────────────────────────────────────────────────
