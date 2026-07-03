@@ -284,6 +284,30 @@ def _ltp_has_data(result: Any, symbols: list[str]) -> bool:
     return False
 
 
+def _instruments_has_kite_shape(result: Any) -> bool:
+    """True when `instruments()` returned rows carrying Kite's canonical
+    schema (`instrument_type`, `name`, `expiry` fields).
+
+    Dhan / Groww's `instruments()` return a stripped schema —
+    `{tradingsymbol, security_id, exchange, lot_size, tick_size, ...}` with
+    NO `instrument_type` / `name` / `expiry`. When PriceBroker falls over to
+    them the API's instruments cache is silently populated with 156K rows of
+    stripped data, which breaks every filter site downstream
+    (symbol_resolver's virtual-root resolution, movers underlyings universe,
+    chart historical fallback). This predicate lets `_try` skip a
+    stripped response and fall through to the next broker.
+
+    Empty responses fail — an empty result on one broker should always try
+    the next before giving up.
+    """
+    if not isinstance(result, list) or not result:
+        return False
+    first = result[0]
+    if not isinstance(first, dict):
+        return False
+    return "instrument_type" in first
+
+
 class PriceBroker(Broker):
     """
     Auto-failover wrapper for shared market-data fetches.
@@ -427,7 +451,15 @@ class PriceBroker(Broker):
                           to_date, interval)
 
     def instruments(self, exchange: str | None = None) -> list[dict]:
-        return self._try("instruments", exchange)
+        # Fall through when a broker returns a stripped-schema response
+        # (Dhan / Groww return rows without `instrument_type` / `name` /
+        # `expiry`).  Without this guard `_try` treats the first non-empty
+        # response as authoritative and populates the API's instruments
+        # cache with 156K rows of Dhan-shape data, which silently breaks
+        # every downstream `t == "FUT" and u == root` filter — including
+        # MCX / CDS virtual-root resolution.
+        return self._try("instruments", exchange,
+                         _result_ok=_instruments_has_kite_shape)
 
     def holidays(self, exchange: str) -> set[str]:
         return self._try("holidays", exchange)

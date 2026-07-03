@@ -271,30 +271,127 @@ class TestBackgroundTaskContext:
 
 
 # ---------------------------------------------------------------------------
-# 7. SSOT grep — instruments.py no longer calls get_price_broker directly
+# 7. SSOT grep — instruments.py walks Kite accounts directly, NEVER falls
+#    over to Dhan / Groww (whose stripped schema poisons the cache).
 # ---------------------------------------------------------------------------
 
 class TestInstrumentsCallsite:
-    """instruments.py must call get_market_data_broker, not get_broker(kite_accts[0])."""
+    """instruments.py must NOT route through PriceBroker (which fails-over
+    to Dhan/Groww on Kite rate-limit).  Dhan/Groww instruments() return a
+    stripped schema (no `instrument_type` / `name` / `expiry`) that poisons
+    the API's instruments cache and breaks every virtual-root filter
+    downstream.  The Jul 2026 defect fix reverts to explicit
+    `get_broker(kite_acct)` iteration over Kite-only accounts.
+    """
 
-    def test_instruments_uses_get_market_data_broker(self):
-        """_fetch_instruments function must call get_market_data_broker."""
+    def test_instruments_uses_kite_only_get_broker(self):
+        """_fetch_instruments must call get_broker for Kite accounts only,
+        never get_market_data_broker (PriceBroker with Dhan/Groww fallback)."""
         import inspect
         from backend.api.routes import instruments as instr_mod
 
-        # Inspect the _fetch_instruments function body specifically,
-        # not the full module (module docstring / comments may retain
-        # the old pattern for explanation purposes).
         fn = instr_mod._fetch_instruments
         src = inspect.getsource(fn)
-        assert "get_market_data_broker" in src, (
-            "_fetch_instruments must call get_market_data_broker() "
-            "instead of get_broker(kite_accts[0])"
+
+        # Must import + use get_broker for the Kite-account walk.
+        assert "get_broker" in src, (
+            "_fetch_instruments must call get_broker(kite_acct) directly "
+            "for the Kite-only walk"
         )
-        # The actual call `get_broker(kite_accts[0])` must not appear in
-        # the function body (comments are ok; the pattern check targets
-        # the assignment `broker = get_broker(kite_accts[0])`).
-        assert "get_broker(kite_accts[0])" not in src, (
-            "_fetch_instruments: broker = get_broker(kite_accts[0]) "
-            "must be replaced with get_market_data_broker()"
+
+        # Must NOT bind PriceBroker via get_market_data_broker() —
+        # PriceBroker.instruments() falls over to Dhan/Groww on Kite
+        # rate-limit, populating the cache with stripped-schema rows.
+        # Look for the actual call pattern (identifier followed by `(`),
+        # ignoring lines that are comments (# leader) or lines where the
+        # token appears inside backticks/quotes (documentation string
+        # embedded in a docstring).  A bare `get_market_data_broker(` on
+        # a code line — with no leading `#` and no surrounding backticks
+        # — is the smoking-gun regression.
+        import re
+        _bad = re.compile(r"(?<![`'\"])get_market_data_broker\(")
+        for line in src.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            # Docstring lines wrap the call in backticks — reject those
+            # too even though _bad already guards.
+            if "`get_market_data_broker(" in stripped:
+                continue
+            assert not _bad.search(stripped), (
+                "_fetch_instruments must NOT call get_market_data_broker() — "
+                "PriceBroker falls over to Dhan/Groww whose instruments() "
+                "return a stripped schema that poisons the API's instruments "
+                "cache. Walk Kite accounts explicitly via get_broker(acct).  "
+                f"Offending line: {stripped!r}"
+            )
+
+    def test_instruments_iterates_kite_accts(self):
+        """_fetch_instruments must iterate kite_accts (not pick [0])."""
+        import inspect
+        from backend.api.routes import instruments as instr_mod
+
+        fn = instr_mod._fetch_instruments
+        src = inspect.getsource(fn)
+        # Fix requires walking every loaded Kite account (cross-account
+        # failover for rate-limits) rather than hard-coding kite_accts[0].
+        assert "for _acct in kite_accts" in src or "for acct in kite_accts" in src, (
+            "_fetch_instruments must iterate kite_accts for cross-account "
+            "failover on Kite rate-limits (never single-account [0])"
         )
+
+    def test_price_broker_instruments_has_kite_shape_gate(self):
+        """PriceBroker.instruments() must apply the Kite-shape predicate so
+        a stripped Dhan/Groww response falls through to the next broker."""
+        import inspect
+        from backend.brokers import registry as reg
+
+        # The gate function itself is present.
+        assert hasattr(reg, "_instruments_has_kite_shape"), (
+            "registry._instruments_has_kite_shape helper missing — required "
+            "to detect Dhan/Groww stripped instrument schemas"
+        )
+
+        # PriceBroker.instruments passes it as _result_ok.
+        pb_fn = reg.PriceBroker.instruments
+        src = inspect.getsource(pb_fn)
+        assert "_instruments_has_kite_shape" in src, (
+            "PriceBroker.instruments() must apply _instruments_has_kite_shape "
+            "as _result_ok predicate so Dhan/Groww stripped responses fall "
+            "through to the next broker"
+        )
+
+    def test_instruments_kite_shape_predicate_semantics(self):
+        """The predicate returns True only for Kite-shape rows."""
+        from backend.brokers.registry import _instruments_has_kite_shape
+
+        # Empty / non-list — always False (encourages fall-through).
+        assert _instruments_has_kite_shape([]) is False
+        assert _instruments_has_kite_shape(None) is False
+        assert _instruments_has_kite_shape("not a list") is False
+
+        # Dhan-shape row — missing instrument_type / name / expiry.
+        dhan_row = {
+            "tradingsymbol": "CRUDEOIL26JULFUT",
+            "security_id": "12345",
+            "instrument_token": 12345,
+            "exchange": "MCX",
+            "lot_size": 100,
+            "tick_size": 1.0,
+        }
+        assert _instruments_has_kite_shape([dhan_row]) is False, (
+            "stripped Dhan row must be rejected"
+        )
+
+        # Kite-shape row — carries instrument_type + name + expiry.
+        kite_row = {
+            "instrument_token": 12345,
+            "tradingsymbol": "CRUDEOIL26JULFUT",
+            "name": "CRUDEOIL",
+            "expiry": "2026-07-20",
+            "instrument_type": "FUT",
+            "exchange": "MCX",
+            "lot_size": 100,
+            "tick_size": 1.0,
+        }
+        assert _instruments_has_kite_shape([kite_row]) is True
