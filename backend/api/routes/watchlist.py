@@ -1177,12 +1177,20 @@ class WatchlistController(Controller):
                 logger.warning(f"Movers: instruments fetch failed: {_exc}")
                 all_items = []
             new_set: set[str] = set()
+            type_counts: dict = {}
+            u_none_count = 0
             for inst in all_items:
-                if inst.t in ("CE", "PE") and inst.u:
-                    new_set.add(inst.u.upper())
+                type_counts[inst.t] = type_counts.get(inst.t, 0) + 1
+                if inst.t in ("CE", "PE"):
+                    if inst.u:
+                        new_set.add(inst.u.upper())
+                    else:
+                        u_none_count += 1
             logger.info(
                 f"Movers: underlyings build — all_items={len(all_items)} "
-                f"new_set={len(new_set)} cache_date={_underlyings_cache_date!r} today={ist_today!r}"
+                f"new_set={len(new_set)} u_none_ce_pe={u_none_count} "
+                f"type_sample={dict(list(type_counts.items())[:6])} "
+                f"cache_date={_underlyings_cache_date!r} today={ist_today!r}"
             )
             # Only commit + flip the date if we actually got data — empty
             # set on a fetch failure shouldn't pin a stale-zero result for
