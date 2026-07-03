@@ -146,6 +146,15 @@ class IntradayStore(PersistentStoreBase):
         from backend.api.database import async_session
 
         sym, exch, date_iso, interval = key
+        # asyncpg binds :on_date strictly to Postgres DATE — a raw string
+        # raises `'str' object has no attribute 'toordinal'` which was
+        # silently swallowed by the bare except below, poisoning every
+        # intraday Tier 2 read. Coerce at the boundary.
+        try:
+            on_date_obj = date.fromisoformat(date_iso)
+        except (TypeError, ValueError):
+            logger.warning(f"intraday_store: bad ISO date in key {key}")
+            return None
         stmt = text("""
             SELECT bar_ts, open, high, low, close, volume
             FROM   intraday_bars
@@ -159,7 +168,7 @@ class IntradayStore(PersistentStoreBase):
             async with async_session() as session:
                 result = await session.execute(stmt, {
                     "sym": sym, "exch": exch,
-                    "on_date": date_iso, "interval": interval,
+                    "on_date": on_date_obj, "interval": interval,
                 })
                 rows = result.fetchall()
             bars = [
@@ -179,7 +188,10 @@ class IntradayStore(PersistentStoreBase):
             is_today = date_iso == _ist_today()
             cached_at = 0.0 if is_today else time.time()
             return (cached_at, bars)
-        except Exception:
+        except Exception as exc:
+            # Prior `except: return None` masked the string→DATE coercion
+            # regression — surface DB failures so the next one is caught.
+            logger.warning(f"intraday_store: DB fetch failed for {key}: {exc}")
             return None
 
     # ── Tier 3: broker fetch ─────────────────────────────────────────────────

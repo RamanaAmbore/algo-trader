@@ -214,6 +214,17 @@ class OHLCVStore(PersistentStoreBase):
         from backend.api.database import async_session
 
         sym, exch, from_iso, to_iso = key
+        # asyncpg binds :from_d / :to_d strictly to Postgres DATE — a raw
+        # string raises `'str' object has no attribute 'toordinal'` which
+        # was silently swallowed by the bare except below, poisoning every
+        # Tier 2 read (all sparkline / OHLCV reads returned []). Coerce
+        # once at the boundary so the driver gets real date objects.
+        try:
+            from_d_obj = date.fromisoformat(from_iso)
+            to_d_obj   = date.fromisoformat(to_iso)
+        except (TypeError, ValueError):
+            logger.warning(f"ohlcv_store: bad ISO date in key {key}")
+            return []
         stmt = text("""
             SELECT date, open, high, low, close, volume
             FROM   ohlcv_daily
@@ -226,7 +237,7 @@ class OHLCVStore(PersistentStoreBase):
             async with async_session() as session:
                 result = await session.execute(stmt, {
                     "sym": sym, "exch": exch,
-                    "from_d": from_iso, "to_d": to_iso,
+                    "from_d": from_d_obj, "to_d": to_d_obj,
                 })
                 rows = result.fetchall()
             return [
@@ -238,7 +249,11 @@ class OHLCVStore(PersistentStoreBase):
                 )
                 for r in rows
             ]
-        except Exception:
+        except Exception as exc:
+            # Log the failure — the prior bare `except: return []` masked
+            # the string→DATE coercion bug for weeks. Even after the
+            # coercion above, a DB outage or schema drift should surface.
+            logger.warning(f"ohlcv_store: DB fetch failed for {key}: {exc}")
             return []
 
     # ── Tier 3: broker fetch ─────────────────────────────────────────────────
