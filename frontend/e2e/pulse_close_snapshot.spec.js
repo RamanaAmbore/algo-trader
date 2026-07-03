@@ -5,26 +5,24 @@
 //   - When NSE has closed but MCX is still open (15:30-23:30 IST window),
 //     NSE-anchored rows on /pulse serve their LTP from the daily_book
 //     close_settled snapshot and are tagged `price_source='snapshot_settled'`
-//     + `is_animating=false` by the backend. The frontend renders a "SNAP"
-//     chip on those rows' LTP cells and skips tick-flash. MCX rows keep
-//     live tickers with `is_animating=true`.
+//     + `is_animating=false` by the backend. The frontend skips tick-flash
+//     for those rows. MCX rows keep live tickers with `is_animating=true`.
 //   - When BOTH markets are closed, every row is on a closed exchange, so
 //     every row's LTP is snapshot-served + tagged. The RefreshButton
 //     tooltip surfaces "Markets closed — refresh only updates cash/margins/
 //     holdings" so the operator knows why LTPs stay frozen.
 //
 // Five quality dimensions:
-//   1. SSOT       — Backend tags rows with `ltp_source`; frontend reads that
-//                   single field to decide chip visibility (no client-side
-//                   duplicate of the market-hours logic).
-//   2. Performance — SNAP chip renders inline via ag-Grid cellRenderer; no
-//                   per-cell DOM query or reactive polling.
+//   1. SSOT       — Backend tags rows with `price_source`; frontend reads that
+//                   single field to decide animation (no client-side duplicate
+//                   of the market-hours logic). No chip element is rendered.
+//   2. Performance — Tick-flash gate is purely CSS-class-based; no per-cell
+//                   DOM query or reactive polling.
 //   3. Stale code — Old "block-refresh-during-closed" modal (.rf-closed-popup)
 //                   stays hidden — replaced by toast + skip_ltp flow.
-//   4. Reusable   — Uses the canonical `data-testid="ltp-snap-chip"` locator
-//                   for both mixed and all-closed scenarios (single grep).
-//   5. UX         — Chip colour is amber (matches MCX-only lifecycle tone);
-//                   RefreshButton tooltip carries the "cash/margins" copy.
+//   4. Reusable   — `is_animating=false` is the single boolean that gates
+//                   flash; `price_source` drives observability only.
+//   5. UX         — RefreshButton tooltip carries the "cash/margins" copy.
 
 import { test, expect } from '@playwright/test';
 
@@ -68,10 +66,10 @@ async function forceMarketState(page, { nse, mcx }) {
 
 /**
  * Return a mocked positions payload with one NSE and one MCX row. Both are
- * tagged as if the backend already computed ltp_source for the current
+ * tagged as if the backend already computed price_source for the current
  * market state. The test uses different tags per scenario to isolate the
  * frontend rendering.
- * @param {'nse'|'mcx'|'both'} snapExchanges  which rows should carry ltp_source='snapshot'
+ * @param {'nse'|'mcx'|'both'} snapExchanges  which rows should carry price_source='snapshot_settled'
  */
 function positionsPayload(snapExchanges) {
   const nseSnap = snapExchanges === 'nse' || snapExchanges === 'both';
@@ -90,7 +88,7 @@ function positionsPayload(snapExchanges) {
         last_price_stale: false, account_stale: false, account_stale_since: '',
         mode: 'live',
         // Unified animation triad (Jul 2026) — is_animating gates the
-        // frontend cell-flash class; price_source drives SNAP-chip variant.
+        // frontend cell-flash class; price_source drives observability.
         price_source: nseSnap ? 'snapshot_settled' : 'live',
         current_price: 22150.0,
         is_animating: !nseSnap,
@@ -134,20 +132,21 @@ async function mockPositionsRoute(page, snapExchanges) {
 }
 
 test.describe('per-exchange close-snapshot lifecycle', () => {
-  test('NSE-closed / MCX-open — NSE row shows SNAP chip, MCX row does not', async ({ page }) => {
+  test('NSE-closed / MCX-open — NSE snapshot row has no chip and no flash class', async ({ page }) => {
     await forceMarketState(page, { nse: false, mcx: true });
     await mockPositionsRoute(page, 'nse');   // only NSE rows tagged
     await signIn(page);
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
-    // Wait for at least one SNAP chip to render (positions grid mounted).
+    // Wait for the positions grid to mount (at least one LTP cell present).
+    await page.waitForSelector('.ag-cell[col-id="ltp"]', { timeout: 20000 });
+    // No SNAP chip at all — chip was removed.
     const chip = page.locator('[data-testid="ltp-snap-chip"]');
-    await expect(chip.first()).toBeVisible({ timeout: 20000 });
-    // Exactly ONE chip — the NSE row. MCX row is still live.
-    const count = await chip.count();
-    expect(count).toBeGreaterThanOrEqual(1);
-    // Every visible chip carries the same "SNAP" copy.
-    const texts = await chip.allTextContents();
-    for (const t of texts) expect(t.trim()).toBe('SNAP');
+    expect(await chip.count()).toBe(0);
+    // NSE snapshot row must not carry a flash class (freeze still holds).
+    const nseRow = page.locator('.ag-row').filter({ hasText: 'NIFTY26JULFUT' });
+    await expect(nseRow).toBeVisible({ timeout: 10000 });
+    const ltpCell = nseRow.locator('.ag-cell[col-id="ltp"]');
+    await expect(ltpCell).not.toHaveClass(/ltp-flash-up|ltp-flash-down/);
   });
 
   test('both markets closed — RefreshButton tooltip mentions cash/margins', async ({ page }) => {
@@ -163,20 +162,5 @@ test.describe('per-exchange close-snapshot lifecycle', () => {
     await page.waitForTimeout(6000);
     const title = await refreshBtn.getAttribute('title');
     expect(title || '').toMatch(/cash.*margins.*holdings/i);
-  });
-
-  test('both closed — every visible SNAP chip is amber', async ({ page }) => {
-    await forceMarketState(page, { nse: false, mcx: false });
-    await mockPositionsRoute(page, 'both');
-    await signIn(page);
-    await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
-
-    const chip = page.locator('[data-testid="ltp-snap-chip"]').first();
-    await expect(chip).toBeVisible({ timeout: 20000 });
-    // Amber palette check — either the border-color or color carries the
-    // rgb(251, 191, 36) sequence (fbbf24). We verify computed style.
-    const color = await chip.evaluate((el) => window.getComputedStyle(el).color);
-    // Colour is amber (rgb(251, 191, 36)) — allow tolerance on browser rounding.
-    expect(color.replace(/\s/g, '')).toMatch(/rgb\(251,191,3[56]\)/);
   });
 });
