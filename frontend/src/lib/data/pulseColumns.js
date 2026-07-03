@@ -71,8 +71,19 @@ export function mkPnlCellClass({ RA, getMpFlash, getLtpFlashUp, getLtpFlashDown 
 export function mkResolveCellLtp({ getLiveLtpSnap }) {
   return (p) => {
     if (!p?.data) return null;
+    const snap = getLiveLtpSnap();
+    // For MCX mover rows, tradingsymbol is the bare commodity root
+    // (CRUDEOIL) while SSE ticks are keyed on the resolved front-month
+    // contract (CRUDEOIL26JUNFUT). Try quote_symbol first so the LTP
+    // cell reads the sub-second SSE value rather than falling through
+    // to the 30 s polled last_price.
+    const quoteSym = p.data.quote_symbol ? String(p.data.quote_symbol).toUpperCase() : null;
+    if (quoteSym) {
+      const liveBySym = snap[quoteSym];
+      if (typeof liveBySym === 'number' && liveBySym > 0) return liveBySym;
+    }
     const sym  = String(p.data.tradingsymbol || '').toUpperCase();
-    const live = getLiveLtpSnap()[sym];
+    const live = snap[sym];
     if (typeof live === 'number' && live > 0) return live;
     const polled = Number(p.data.ltp);
     if (Number.isFinite(polled) && polled > 0) return polled;
@@ -158,15 +169,16 @@ function _normalisePriceSource(row) {
 
 // Under the unified model, `is_animating` is the SINGLE decision point
 // for cell animation. Rows on a currently-open exchange animate; rows
-// carrying a close-snapshot LTP freeze. Falls back to the legacy
-// `ltp_source !== 'snapshot'` check when the field is absent (cached
-// response during deploy window). Defaults to true (animating) so an
-// unknown row keeps its historical behaviour.
+// carrying a close-snapshot LTP freeze. Defaults to true (animating) so
+// rows without the field (movers, watchlist) keep live-flash behaviour
+// rather than being incorrectly frozen. The legacy price_source fallback
+// is removed — it produced false-negatives during market hours when the
+// field was absent (e.g. movers rows), which suppressed tick-flash and
+// added the ltp-snap class even on live-price rows.
 function _isAnimating(row) {
   if (!row) return true;
   if (typeof row.is_animating === 'boolean') return row.is_animating;
-  const ps = _normalisePriceSource(row);
-  return ps === 'live';
+  return true;
 }
 
 export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, numFmt, RA, numericHdr }) {
@@ -401,7 +413,13 @@ export function mkRightColDefs({
     { field: 'avg_combined', headerName: 'Avg', colId: 'avg_combined',
       width: 68, minWidth: 60, maxWidth: 90,
       type: 'numericColumn', headerClass: numericHdr,
-      cellClass: `${RA} cell-muted`,
+      // Directional tint mirrors LTP/P&L cells: long (net qty > 0) = green,
+      // short (net qty < 0) = red, flat/total = plain RA.
+      cellClass: (p) => {
+        if (!p.data || p.data._isTotal) return RA;
+        const qty = (Number(p.data.qty_pos) || 0) + (Number(p.data.qty_hold) || 0);
+        return `${RA} ${dirCls(qty)}`;
+      },
       valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
       headerTooltip: 'Weighted average entry across positions + holdings.' },
     { field: 'day_pnl', headerName: 'Day P&L', width: 78, minWidth: 60, maxWidth: 96,

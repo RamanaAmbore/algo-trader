@@ -3423,6 +3423,11 @@
       row.src.m = true;
       row.exchange      = row.exchange || m.exchange || 'NSE';
       row.tradingsymbol = sym;
+      // MCX mover rows: tradingsymbol is the bare root (CRUDEOIL) but
+      // symbolStore + SSE ticks are keyed on the resolved contract
+      // (CRUDEOIL26JUNFUT). Propagate quote_symbol so mkResolveCellLtp
+      // can hit the right _liveLtpSnap slot for sub-second LTP updates.
+      if (m.quote_symbol) row.quote_symbol = m.quote_symbol;
       if (row.ltp == null && liveLtp != null)             row.ltp        = liveLtp;
       if (row.change_pct == null && liveChangePct != null) row.change_pct = liveChangePct;
       // Wire previous_close → row.close so the Prev Close column

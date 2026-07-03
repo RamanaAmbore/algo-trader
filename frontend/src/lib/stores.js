@@ -1270,3 +1270,72 @@ export function stopMarketStatusPoller() {
   }
   _mktStatusStarted = false;
 }
+
+// ---------------------------------------------------------------------------
+// Broker auth-health store — drives chip color + BrokerHealthBadge popup.
+//
+// Polls GET /api/admin/broker-health every 30 s (visibleInterval).
+// NOT market-gated — auth breaks happen outside market hours.
+// Singleton — safe to start from layout; BrokerHealthBadge reads from here
+// instead of maintaining its own _rawAccounts fetch, eliminating duplicate
+// polling and ensuring the chip color stays fresh continuously.
+//
+// Shape: { accounts: BrokerAccountHealth[], worstState: 'green'|'amber'|'red' }
+//
+// worstState priority: red > amber > green.
+// Falls through to 'amber' (never grey) when no data loaded yet or all
+// accounts have unknown state.
+// ---------------------------------------------------------------------------
+
+/** @typedef {{ account: string, broker: string, state: string, reason: string, last_good_at: string|null, last_check_at: string|null, is_active_ticker?: boolean, circuit_state?: string, consecutive_fail_count?: number, circuit_open_until?: string|null, circuit_breaker_enabled?: boolean, poll_priority?: string, auto_downgrade_enabled?: boolean, auto_downgraded_at?: string|null, auto_downgrade_reason?: string|null }} BrokerAccountHealth */
+
+/**
+ * Derive worst state across all accounts.
+ * red > amber > green; returns 'amber' for empty (never grey).
+ * @param {BrokerAccountHealth[]} accounts
+ * @returns {'green'|'amber'|'red'}
+ */
+function _brokerHealthWorstState(accounts) {
+  if (!accounts || accounts.length === 0) return 'amber';
+  if (accounts.some(a => a.state === 'red'))   return 'red';
+  if (accounts.some(a => a.state === 'amber')) return 'amber';
+  if (accounts.every(a => a.state === 'green')) return 'green';
+  return 'amber';
+}
+
+export const brokerHealthStore = writable(/** @type {{ accounts: BrokerAccountHealth[], worstState: 'green'|'amber'|'red' }} */ ({
+  accounts: [],
+  worstState: 'amber',
+}));
+
+let _bhPollerStarted = false;
+/** @type {(() => void) | null} */
+let _bhPollerTeardown = null;
+
+export function startBrokerHealthPoller() {
+  if (!browser || _bhPollerStarted) return;
+  _bhPollerStarted = true;
+  const poll = async () => {
+    if (!authStore.getToken()) return;   // anonymous — skip (admin-guarded endpoint)
+    try {
+      const { fetchBrokerHealth } = await import('$lib/api');
+      const data = await fetchBrokerHealth();
+      const accounts = /** @type {BrokerAccountHealth[]} */ (data?.accounts ?? []);
+      brokerHealthStore.set({ accounts, worstState: _brokerHealthWorstState(accounts) });
+    } catch {
+      // Silently suppress — store keeps prior state so chip stays colored.
+    }
+  };
+  poll();
+  // 30 s cadence; throttle to 60 s on hidden so we keep monitoring
+  // auth breaks in the background without burning unnecessary quota.
+  _bhPollerTeardown = visibleInterval(poll, 30_000, 'throttle:60000');
+}
+
+export function stopBrokerHealthPoller() {
+  if (_bhPollerTeardown) {
+    _bhPollerTeardown();
+    _bhPollerTeardown = null;
+  }
+  _bhPollerStarted = false;
+}

@@ -242,16 +242,24 @@ function _publishMoverRows(rows) {
   for (const r of rows) {
     const sym = String(r?.tradingsymbol || '').toUpperCase();
     if (!sym) continue;
-    batch.push({
-      sym,
-      fields: {
-        ltp:            r.last_price,
-        close:          r.previous_close,
-        day_change_pct: r.change_pct,
-        exchange:       r.exchange,
-      },
-      ts: { ltp_ts: 0, snapshot_ts: ts },
-    });
+    const fields = {
+      ltp:            r.last_price,
+      close:          r.previous_close,
+      day_change_pct: r.change_pct,
+      exchange:       r.exchange,
+    };
+    const tsObj = { ltp_ts: 0, snapshot_ts: ts };
+    // MCX mover rows: tradingsymbol is the bare commodity root (CRUDEOIL)
+    // but symbolStore + SSE ticks are keyed on the resolved front-month
+    // contract (CRUDEOIL26JUNFUT). Write BOTH keys so consumers that read
+    // by bare-root (e.g. MarketPulse row-composer via getSnapshot) still
+    // get the value, AND the LTP column's mkResolveCellLtp lookup via
+    // quote_symbol key also hits.
+    const quoteSym = r.quote_symbol ? String(r.quote_symbol).toUpperCase() : null;
+    if (quoteSym && quoteSym !== sym) {
+      batch.push({ sym: quoteSym, fields, ts: tsObj });
+    }
+    batch.push({ sym, fields, ts: tsObj });
   }
   mergeSymbolBatch(batch);
 }
@@ -423,6 +431,11 @@ export const moversStore = createDataStore({
         peak_pct:        Number(it.peak_pct ?? pct),
         previous_close:  Number(it.previous_close ?? 0) || null,
         sticky:          Boolean(it.sticky),
+        // Resolved broker/SSE key for MCX rows (e.g. "CRUDEOIL26JUNFUT").
+        // Undefined for NSE rows. Used by mkResolveCellLtp and
+        // _publishMoverRows to match the symbolStore / _liveLtpSnap key
+        // that SSE ticks are written to.
+        quote_symbol:    it.quote_symbol ? String(it.quote_symbol).toUpperCase() : undefined,
         _moverGroups:    effectiveGroups,
         _moverGroup:     effectiveGroups[0],   // legacy compat — first membership
         _moverDirection: pct >= 0 ? 'winners' : 'losers',

@@ -843,6 +843,11 @@ class BrokerHealthController(Controller):
 
         accounts: list[BrokerAccountHealth] = []
         for acct, entry in health_map.items():
+            # Skip health entries for accounts that no longer exist in the DB
+            # (orphan entries from past sessions / deleted rows). They would
+            # otherwise render as "broker: unknown" in the popup.
+            if broker_label_map and acct not in broker_label_map:
+                continue
             state, reason, cb_state, cb_count, cb_until_iso = _derive_account_health(entry, now)
             last_ok   = entry.get("last_ok_at",   0.0) or 0.0
             last_fail = entry.get("last_fail_at", 0.0) or 0.0
@@ -850,7 +855,7 @@ class BrokerHealthController(Controller):
             _pp = poll_priority_map.get(acct, {})
             accounts.append(BrokerAccountHealth(
                 account=acct,
-                broker=broker_label_map.get(acct, "unknown"),
+                broker=broker_label_map.get(acct, "—"),
                 state=state,
                 reason=reason,
                 last_good_at=_ts_to_iso(last_ok if last_ok else None),

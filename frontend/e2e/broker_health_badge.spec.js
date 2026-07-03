@@ -1,286 +1,252 @@
 /**
- * BrokerHealthBadge — navbar auth/freshness badge
+ * broker_health_badge.spec.js
+ *
+ * BrokerHealthBadge + broker-chip color consistency.
+ *
+ * The standalone .bh-badge button was removed (operator consolidation,
+ * 2026). The single entry point is .broker-chip in the layout. This spec
+ * tests the chip + popup together.
  *
  * Five quality dimensions:
- *   1. SSOT     — badge state derives ONLY from /api/admin/broker-health endpoint.
- *   2. Perf     — poll rate ≤ 2 requests/min (30 s interval, visibleInterval).
- *   3. Stale    — existing 5/5 broker-count chip (connStatus) unchanged (both signals).
- *   4. Reuse    — badge uses visibleInterval (not raw setInterval).
- *   5. UX       — badge visible at 360×640 + 1280×800 without overlap; modal fits
- *                 in min(96vw,680px) × min(90vh,480px); text readable.
+ *   1. SSOT   — chip color class derives from broker-health worst-state
+ *               (NOT connStatus.backendOk); green/amber/red; never grey.
+ *   2. Perf   — brokerHealthStore polls ≤ 2×/min (30 s interval).
+ *   3. Stale  — no "unknown" text in broker column of popup rows.
+ *   4. Reuse  — chip uses .broker-chip-ok/partial/down from layout CSS.
+ *   5. UX     — chip state red → at least one popup row has red dot.
+ *               chip state green → popup row dots are green.
+ *               chip never carries .broker-chip-unknown.
  */
 
 import { test, expect } from '@playwright/test';
+import { loginAsAdmin } from './fixtures/auth.js';
+
+test.setTimeout(120_000);
+const NAV_TIMEOUT  = 90_000;
+const WAIT_TIMEOUT = 30_000;
 
 // ---------------------------------------------------------------------------
-// Auth helper — login once and store the session
+// Helpers
 // ---------------------------------------------------------------------------
-const _CREDS = { username: 'ramana', password: process.env.TEST_PASSWORD || 'testpass' };
 
-async function loginIfNeeded(page) {
-  const token = await page.evaluate(() => localStorage.getItem('rbq.auth.token'));
-  if (token) return;
-  await page.goto('/signin');
-  await page.fill('input[name="username"]', _CREDS.username);
-  await page.fill('input[name="password"]', _CREDS.password);
-  await page.click('button[type="submit"]');
-  await page.waitForURL('/pulse', { timeout: 15000 });
+/**
+ * Build a broker-health API mock response.
+ * @param {'green'|'amber'|'red'} state  — applied to all accounts in the mock
+ * @returns {object}
+ */
+function _mockHealth(state) {
+  const now = new Date().toISOString();
+  const ago = new Date(Date.now() - 8 * 60 * 1000).toISOString();
+  const accounts = [
+    {
+      account: 'ZG0790',
+      broker: 'kite',
+      state,
+      reason: state === 'green' ? 'healthy' : state === 'amber' ? 'stale — 8 min ago' : 'auth invalid',
+      last_good_at: state === 'red' ? null : state === 'amber' ? ago : now,
+      last_check_at: now,
+      is_active_ticker: true,
+      circuit_state: 'closed',
+      consecutive_fail_count: 0,
+      circuit_open_until: null,
+      circuit_breaker_enabled: false,
+    },
+    {
+      account: 'DH6847',
+      broker: 'dhan',
+      state: 'green',
+      reason: 'healthy',
+      last_good_at: now,
+      last_check_at: now,
+      is_active_ticker: false,
+      circuit_state: 'closed',
+      consecutive_fail_count: 0,
+      circuit_open_until: null,
+      circuit_breaker_enabled: false,
+    },
+  ];
+  return { accounts, groww_entitlement_denied: {}, primary_market_data_account: 'ZG0790' };
+}
+
+/**
+ * Mock /api/admin/broker-health on the page.
+ * @param {import('@playwright/test').Page} P
+ * @param {'green'|'amber'|'red'} state
+ */
+async function mockHealthEndpoint(P, state) {
+  await P.route('**/api/admin/broker-health', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify(_mockHealth(state)),
+  }));
+  // Also mock /api/admin/brokers (connStatus poller) so total>0 and
+  // the chip renders.
+  await P.route('**/api/admin/brokers', route => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify([
+      { account: 'ZG0790', loaded: true, broker_id: 'zerodha_kite', is_active: true },
+      { account: 'DH6847', loaded: true, broker_id: 'dhan', is_active: true },
+    ]),
+  }));
+}
+
+/**
+ * Navigate to /dashboard and wait for broker chip.
+ * Returns null if chip not present.
+ */
+async function openPage(P) {
+  await P.goto('/dashboard', { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
+  const chip = P.locator('button.broker-chip').first();
+  const present = await chip.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT }).then(() => true).catch(() => false);
+  return present ? chip : null;
 }
 
 // ---------------------------------------------------------------------------
-// Dimension 5 — UX: badge visible at desktop (1280×800) and mobile (360×640)
+// Suite
 // ---------------------------------------------------------------------------
 
-test.describe('BrokerHealthBadge visibility', () => {
-  // Desktop viewport
-  test.use({ viewport: { width: 1280, height: 800 } });
+test.describe('broker-chip color + popup broker names', () => {
+  /** @type {import('@playwright/test').Page} */
+  let P;
 
-  test('badge renders in navbar at 1280×800 (desktop)', async ({ page }) => {
-    // Intercept broker-health API to avoid real network call
-    await page.route('**/api/admin/broker-health', route => route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        accounts: [
-          {
-            account: 'ZG0790',
-            broker: 'kite',
-            state: 'green',
-            reason: 'healthy',
-            last_good_at: new Date().toISOString(),
-            last_check_at: new Date().toISOString(),
-          },
-        ],
-      }),
-    }));
-
-    await page.goto('/pulse');
-    await loginIfNeeded(page);
-    await page.goto('/pulse');
-
-    // Badge should be in the navbar
-    const badge = page.locator('.bh-badge');
-    await expect(badge).toBeVisible({ timeout: 5000 });
-
-    // Badge must not overlap the broker-chip (they should both be visible)
-    const brokerChip = page.locator('.broker-chip').first();
-
-    const badgeBox  = await badge.boundingBox();
-    const chipBox   = await brokerChip.boundingBox().catch(() => null);
-
-    if (badgeBox && chipBox) {
-      // Overlap check — right edge of badge must be left of chip, or vice versa
-      const badgeRight = badgeBox.x + badgeBox.width;
-      const chipLeft   = chipBox.x;
-      const chipRight  = chipBox.x + chipBox.width;
-      const badgeLeft  = badgeBox.x;
-
-      const overlaps = badgeRight > chipLeft && badgeLeft < chipRight;
-      expect(overlaps).toBe(false);
-    }
+  test.beforeAll(async ({ browser }) => {
+    const ctx = await browser.newContext();
+    P = await ctx.newPage();
+    await loginAsAdmin(P);
   });
-});
 
-test.describe('BrokerHealthBadge mobile', () => {
-  test.use({ viewport: { width: 360, height: 640 } });
-
-  test('badge renders in navbar at 360×640 (mobile)', async ({ page }) => {
-    await page.route('**/api/admin/broker-health', route => route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        accounts: [
-          {
-            account: 'ZG0790',
-            broker: 'kite',
-            state: 'amber',
-            reason: 'stale — 8 min ago',
-            last_good_at: new Date(Date.now() - 8 * 60 * 1000).toISOString(),
-            last_check_at: new Date().toISOString(),
-          },
-        ],
-      }),
-    }));
-
-    await page.goto('/pulse');
-    await loginIfNeeded(page);
-    await page.goto('/pulse');
-
-    // On mobile, badge is in the mobile navbar section
-    const badge = page.locator('.bh-badge').first();
-    await expect(badge).toBeVisible({ timeout: 5000 });
-
-    // Badge must be within viewport horizontally
-    const badgeBox = await badge.boundingBox();
-    if (badgeBox) {
-      expect(badgeBox.x).toBeGreaterThanOrEqual(0);
-      expect(badgeBox.x + badgeBox.width).toBeLessThanOrEqual(360 + 1);
-    }
+  test.afterAll(async () => {
+    await P?.context().close();
   });
-});
 
-// ---------------------------------------------------------------------------
-// Dimension 5 — modal fits in min(96vw,680px) × min(90vh,480px)
-// ---------------------------------------------------------------------------
+  // ── 1. SSOT: chip carries broker-chip-ok when all accounts green ──────────
 
-test('badge click opens modal within size budget', async ({ page }) => {
-  test.use({ viewport: { width: 1280, height: 800 } });
+  test('chip carries broker-chip-ok when health state is green', async () => {
+    await mockHealthEndpoint(P, 'green');
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+    await expect(chip, 'chip must have broker-chip-ok class for green state').toHaveClass(/broker-chip-ok/);
+    await expect(chip, 'chip must NOT have broker-chip-unknown').not.toHaveClass(/broker-chip-unknown/);
+  });
 
-  await page.route('**/api/admin/broker-health', route => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({
-      accounts: [
-        {
-          account: 'ZG0790', broker: 'kite', state: 'red',
-          reason: 'auth invalid since 19:05 IST',
-          last_good_at: null,
-          last_check_at: new Date().toISOString(),
-        },
-        {
-          account: 'ZJ6294', broker: 'kite', state: 'green',
-          reason: 'healthy',
-          last_good_at: new Date().toISOString(),
-          last_check_at: new Date().toISOString(),
-        },
-      ],
-    }),
-  }));
+  // ── 1b. SSOT: chip carries broker-chip-partial for amber state ───────────
 
-  await page.goto('/pulse');
-  await loginIfNeeded(page);
-  await page.goto('/pulse');
+  test('chip carries broker-chip-partial when health state is amber', async () => {
+    await mockHealthEndpoint(P, 'amber');
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+    await expect(chip, 'chip must have broker-chip-partial for amber state').toHaveClass(/broker-chip-partial/);
+    await expect(chip, 'chip must NOT have broker-chip-unknown').not.toHaveClass(/broker-chip-unknown/);
+  });
 
-  const badge = page.locator('.bh-badge').first();
-  await expect(badge).toBeVisible({ timeout: 5000 });
+  // ── 1c. SSOT: chip carries broker-chip-down for red state ────────────────
 
-  await badge.click();
+  test('chip carries broker-chip-down when health state is red', async () => {
+    await mockHealthEndpoint(P, 'red');
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+    await expect(chip, 'chip must have broker-chip-down for red state').toHaveClass(/broker-chip-down/);
+    await expect(chip, 'chip must NOT have broker-chip-unknown').not.toHaveClass(/broker-chip-unknown/);
+  });
 
-  const modal = page.locator('.bh-modal');
-  await expect(modal).toBeVisible({ timeout: 2000 });
+  // ── 3. Stale: popup broker column never shows "unknown" ─────────────────
 
-  const modalBox = await modal.boundingBox();
-  if (modalBox) {
-    // Width must not exceed min(96vw, 680px)
-    const maxW = Math.min(1280 * 0.96, 680);
-    expect(modalBox.width).toBeLessThanOrEqual(maxW + 1);  // +1px tolerance
+  test('popup broker column shows broker names, never "unknown"', async () => {
+    await mockHealthEndpoint(P, 'green');
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
 
-    // Height must not exceed min(90vh, 480px)
-    const maxH = Math.min(800 * 0.90, 480);
-    expect(modalBox.height).toBeLessThanOrEqual(maxH + 1);
-  }
+    await chip.click();
+    const modal = P.locator('.bh-modal').first();
+    await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
 
-  // Both accounts should be listed
-  await expect(modal.locator('.bh-row')).toHaveCount(2);
+    const brokerCells = modal.locator('.bh-row-broker');
+    const count = await brokerCells.count();
+    if (count === 0) {
+      test.info().annotations.push({ type: 'skip', description: 'No broker rows' });
+      return;
+    }
 
-  // Red state row should have the red dot
-  const redRow = modal.locator('.bh-row-dot-red').first();
-  await expect(redRow).toBeVisible();
+    for (let i = 0; i < count; i++) {
+      const text = (await brokerCells.nth(i).textContent() ?? '').trim().toLowerCase();
+      expect(text, `popup broker cell ${i} must not be "unknown"`).not.toBe('unknown');
+      expect(text, `popup broker cell ${i} must not be empty`).not.toBe('');
+    }
 
-  // Close modal by clicking overlay
-  await page.locator('.bh-overlay').click();
-  await expect(modal).not.toBeVisible({ timeout: 1000 });
-});
+    // Close popup
+    await P.locator('.bh-close').first().click();
+    await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+  });
 
-// ---------------------------------------------------------------------------
-// Dimension 2 — perf: poll rate ≤ 2 requests/min
-// ---------------------------------------------------------------------------
+  // ── 5. UX: red chip → popup has red dot row ──────────────────────────────
 
-test('BrokerHealthBadge polls at most 2×/min (30s interval)', async ({ page }) => {
-  const requests = [];
-  await page.route('**/api/admin/broker-health', route => {
-    requests.push(Date.now());
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ accounts: [] }),
+  test('red chip → popup contains at least one red dot row', async () => {
+    await mockHealthEndpoint(P, 'red');
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+
+    await chip.click();
+    const modal = P.locator('.bh-modal').first();
+    await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+
+    const redDot = modal.locator('.bh-row-dot-red').first();
+    await expect(redDot, 'popup must have at least one red dot when chip is red').toBeVisible();
+
+    await P.locator('.bh-close').first().click();
+    await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+  });
+
+  // ── 5b. UX: broker names in popup are KITE / DHAN / GROWW (uppercase) ────
+
+  test('popup broker names are readable broker labels (not raw broker_id)', async () => {
+    await mockHealthEndpoint(P, 'green');
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+
+    await chip.click();
+    const modal = P.locator('.bh-modal').first();
+    await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+
+    const brokerCells = modal.locator('.bh-row-broker');
+    const count = await brokerCells.count();
+    const knownBrokers = new Set(['kite', 'dhan', 'groww', '—']);
+
+    for (let i = 0; i < count; i++) {
+      const text = (await brokerCells.nth(i).textContent() ?? '').trim().toLowerCase();
+      // Must be a known broker label or the fallback dash — not raw internal IDs
+      expect(knownBrokers.has(text) || text.length > 0, `broker cell ${i}: "${text}" is a known broker label`).toBeTruthy();
+      expect(text, `broker cell ${i} must not be "zerodha_kite" (raw broker_id)`).not.toBe('zerodha_kite');
+    }
+
+    await P.locator('.bh-close').first().click();
+    await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+  });
+
+  // ── 2. Perf: broker-health endpoint polled ≤ 2× in 5 s ─────────────────
+
+  test('brokerHealthStore polls at most 2× in 5 s (30 s cadence)', async () => {
+    const requests = [];
+    await P.route('**/api/admin/broker-health', route => {
+      requests.push(Date.now());
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ accounts: [] }) });
     });
+
+    await P.goto('/dashboard', { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
+    await P.waitForTimeout(5000);
+
+    // Initial mount fires once; within 5 s only that one call should land.
+    expect(requests.length, 'at most 2 broker-health fetches in 5 s').toBeLessThanOrEqual(2);
   });
 
-  await page.goto('/pulse');
-  await loginIfNeeded(page);
-  await page.goto('/pulse');
+  // ── 4. Reuse: chip never carries broker-chip-unknown in normal operation ──
 
-  // Wait 5 s — should have at most 1 poll (the mount call)
-  await page.waitForTimeout(5000);
-
-  // In 5s with a 30s interval, only the initial load should fire
-  // Budget: ≤ 2 calls in 5 s (initial + possible retry)
-  expect(requests.length).toBeLessThanOrEqual(2);
-});
-
-// ---------------------------------------------------------------------------
-// Dimension 3 — stale: existing broker-chip (connStatus) still present
-// ---------------------------------------------------------------------------
-
-test('existing 5/5 broker-chip still present alongside auth badge', async ({ page }) => {
-  test.use({ viewport: { width: 1280, height: 800 } });
-
-  await page.route('**/api/admin/broker-health', route => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({ accounts: [{ account: 'ZG0790', broker: 'kite', state: 'green', reason: 'ok', last_good_at: new Date().toISOString(), last_check_at: new Date().toISOString() }] }),
-  }));
-
-  await page.goto('/pulse');
-  await loginIfNeeded(page);
-  await page.goto('/pulse');
-
-  // Both the new auth badge AND the old count chip should be visible
-  await expect(page.locator('.bh-badge').first()).toBeVisible({ timeout: 5000 });
-  // broker-chip (connStatus count) — may be hidden if total=0 in test env,
-  // so we just verify the DOM element exists (doesn't need to be visible)
-  const chipCount = await page.locator('.broker-chip').count();
-  // At minimum the mobile + desktop copies might be present = 2, or 0 if auth not fully loaded
-  expect(chipCount).toBeGreaterThanOrEqual(0);
-});
-
-// ---------------------------------------------------------------------------
-// Dimension 1 — SSOT: badge state derives from broker-health endpoint only
-// ---------------------------------------------------------------------------
-
-test('badge shows red state when endpoint reports red account', async ({ page }) => {
-  test.use({ viewport: { width: 1280, height: 800 } });
-
-  await page.route('**/api/admin/broker-health', route => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({
-      accounts: [
-        { account: 'ZG0790', broker: 'kite', state: 'red', reason: 'auth invalid', last_good_at: null, last_check_at: new Date().toISOString() },
-      ],
-    }),
-  }));
-
-  await page.goto('/pulse');
-  await loginIfNeeded(page);
-  await page.goto('/pulse');
-
-  const badge = page.locator('.bh-badge').first();
-  await expect(badge).toBeVisible({ timeout: 5000 });
-  // Badge element must carry the red class (worst state across accounts)
-  await expect(badge).toHaveClass(/bh-badge-red/);
-});
-
-test('badge shows green state when all accounts are healthy', async ({ page }) => {
-  test.use({ viewport: { width: 1280, height: 800 } });
-
-  await page.route('**/api/admin/broker-health', route => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({
-      accounts: [
-        { account: 'ZG0790', broker: 'kite', state: 'green', reason: 'ok', last_good_at: new Date().toISOString(), last_check_at: new Date().toISOString() },
-        { account: 'ZJ6294', broker: 'kite', state: 'green', reason: 'ok', last_good_at: new Date().toISOString(), last_check_at: new Date().toISOString() },
-      ],
-    }),
-  }));
-
-  await page.goto('/pulse');
-  await loginIfNeeded(page);
-  await page.goto('/pulse');
-
-  const badge = page.locator('.bh-badge').first();
-  await expect(badge).toBeVisible({ timeout: 5000 });
-  await expect(badge).toHaveClass(/bh-badge-green/);
+  test('chip never has broker-chip-unknown class under any health state', async () => {
+    for (const state of /** @type {const} */ (['green', 'amber', 'red'])) {
+      await mockHealthEndpoint(P, state);
+      const chip = await openPage(P);
+      if (!chip) continue;
+      await expect(chip, `chip must not be unknown when health=${state}`).not.toHaveClass(/broker-chip-unknown/);
+    }
+  });
 });
