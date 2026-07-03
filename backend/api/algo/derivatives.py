@@ -392,133 +392,37 @@ def underlying_ltp_key(underlying: str) -> str:
 
 async def lookup_mcx_futures_list(underlying: str, limit: int = 2) -> list[str]:
     """Return the next *limit* non-expired MCX futures for *underlying*,
-    sorted by expiry. Used by the watchlist endpoint to expand a bare
-    commodity root into its current + next-month contracts when
-    serving the global Pinned list.
+    sorted by expiry.
 
+    Delegates to the canonical resolver in ``symbol_resolver.py``.
     Returns an empty list when the cache is cold or no commodity matches.
     """
-    if not underlying or limit <= 0:
-        return []
-    from backend.api.cache import get_or_fetch
-    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
-    try:
-        resp = await get_or_fetch("instruments", _fetch_instruments,
-                                  ttl_seconds=_TTL_SECONDS)
-        items = resp.items if resp else []
-    except Exception:
-        items = []
-    if not items:
-        return []
-    target_u = underlying.upper()
-    from datetime import datetime as _dt
-    try:
-        from zoneinfo import ZoneInfo
-        _ist_today_iso = _dt.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
-    except Exception:
-        _ist_today_iso = _dt.utcnow().date().isoformat()
-    candidates = [
-        inst for inst in items
-        if (inst.e == "MCX"
-            and inst.t == "FUT"
-            and (inst.u or "").upper() == target_u
-            and inst.x
-            and inst.x > _ist_today_iso)
-    ]
-    if not candidates:
-        return []
-    candidates.sort(key=lambda i: i.x or "")
-    return [c.s for c in candidates[:limit]]
+    from backend.api.algo.symbol_resolver import list_active_futures
+    return await list_active_futures(underlying, "MCX", limit=limit)
 
 
 async def lookup_cds_futures_list(underlying: str, limit: int = 2) -> list[str]:
     """Same as lookup_mcx_futures_list but for CDS currency futures
-    (USDINR / EURINR / GBPINR / JPYINR)."""
-    if not underlying or limit <= 0:
-        return []
-    from backend.api.cache import get_or_fetch
-    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
-    try:
-        resp = await get_or_fetch("instruments", _fetch_instruments,
-                                  ttl_seconds=_TTL_SECONDS)
-        items = resp.items if resp else []
-    except Exception:
-        items = []
-    if not items:
-        return []
-    target_u = underlying.upper()
-    from datetime import datetime as _dt
-    try:
-        from zoneinfo import ZoneInfo
-        _ist_today_iso = _dt.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
-    except Exception:
-        _ist_today_iso = _dt.utcnow().date().isoformat()
-    candidates = [
-        inst for inst in items
-        if (inst.e == "CDS"
-            and inst.t == "FUT"
-            and (inst.u or "").upper() == target_u
-            and inst.x
-            and inst.x > _ist_today_iso)
-    ]
-    if not candidates:
-        return []
-    candidates.sort(key=lambda i: i.x or "")
-    return [c.s for c in candidates[:limit]]
+    (USDINR / EURINR / GBPINR / JPYINR).
+
+    Delegates to the canonical resolver in ``symbol_resolver.py``.
+    """
+    from backend.api.algo.symbol_resolver import list_active_futures
+    return await list_active_futures(underlying, "CDS", limit=limit)
 
 
 async def lookup_mcx_front_month_future(underlying: str) -> str | None:
     """Resolve the FRONT-MONTH liquid MCX futures tradingsymbol for an
     underlying — the contract operators read as "today's spot price".
 
-    Important: skips any contract whose expiry is on or before today
-    (IST) — those settle today and their last-trade price is stale /
-    illiquid for the rest of the session. The operator's broker app
-    shows the next-out month instead, and so do we.
-
-    Example (2026-05-18):
-      CRUDEOIL26MAYFUT  expiry=2026-05-18  → SKIP (settling today)
-      CRUDEOIL26JUNFUT  expiry=2026-06-18  → use this one
-      CRUDEOIL26JULFUT  expiry=2026-07-20
-
-    Reads the 24h-cached instruments dump; deferred imports avoid
-    circular dependency from `backend.api.algo` ↔ `backend.api`
-    layers.
-
-    Returns the bare tradingsymbol (e.g. `'CRUDEOIL26JUNFUT'`) or None
-    when the cache is cold / no commodity matches.
+    Delegates to the canonical resolver in ``symbol_resolver.py``.
+    Returns None when the cache is cold / no commodity matches.
     """
     if not underlying:
         return None
-    from backend.api.cache import get_or_fetch
-    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
-    try:
-        resp = await get_or_fetch("instruments", _fetch_instruments,
-                                  ttl_seconds=_TTL_SECONDS)
-        items = resp.items if resp else []
-    except Exception:
-        items = []
-    if not items:
-        return None
-    target_u = underlying.upper()
-    from datetime import datetime as _dt
-    try:
-        from zoneinfo import ZoneInfo
-        _ist_today_iso = _dt.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
-    except Exception:
-        _ist_today_iso = _dt.utcnow().date().isoformat()
-    candidates = [
-        inst for inst in items
-        if (inst.e == "MCX"
-            and inst.t == "FUT"
-            and (inst.u or "").upper() == target_u
-            and inst.x
-            and inst.x > _ist_today_iso)
-    ]
-    if not candidates:
-        return None
-    candidates.sort(key=lambda i: i.x or "")
-    return candidates[0].s
+    from backend.api.algo.symbol_resolver import list_active_futures
+    futures = await list_active_futures(underlying, "MCX", limit=1)
+    return futures[0] if futures else None
 
 
 # Per-cache by-symbol index, keyed by the ID of the `items` list so a
