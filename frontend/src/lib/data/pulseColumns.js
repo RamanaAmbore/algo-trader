@@ -413,7 +413,13 @@ export function mkRightColDefs({
     { field: 'avg_combined', headerName: 'Avg', colId: 'avg_combined',
       width: 68, minWidth: 60, maxWidth: 90,
       type: 'numericColumn', headerClass: numericHdr,
-      cellClass: `${RA} cell-muted`,
+      // Directional tint mirrors LTP/P&L cells: long (net qty > 0) = green,
+      // short (net qty < 0) = red, flat/total = plain RA.
+      cellClass: (p) => {
+        if (!p.data || p.data._isTotal) return RA;
+        const qty = (Number(p.data.qty_pos) || 0) + (Number(p.data.qty_hold) || 0);
+        return `${RA} ${dirCls(qty)}`;
+      },
       valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
       headerTooltip: 'Weighted average entry across positions + holdings.' },
     { field: 'day_pnl', headerName: 'Day P&L', width: 78, minWidth: 60, maxWidth: 96,
