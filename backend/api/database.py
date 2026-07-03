@@ -35,7 +35,14 @@ def _build_url() -> str:
 
 DATABASE_URL = _build_url()
 
-engine = create_async_engine(DATABASE_URL, echo=False, pool_size=5, max_overflow=10)
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,
+    pool_size=5,
+    max_overflow=10,
+    pool_pre_ping=True,   # validate connections on checkout; prevents stale-conn errors after overnight idle
+    pool_recycle=1800,    # recycle proactively every 30 min — before pgbouncer / server idle timeout
+)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
@@ -77,7 +84,12 @@ _SHARED_DATABASE_URL = _build_shared_url()
 # (pool_size=3) because the shared DB sees half the write traffic of the
 # main engine even in the worst case.
 _shared_engine = create_async_engine(
-    _SHARED_DATABASE_URL, echo=False, pool_size=3, max_overflow=5
+    _SHARED_DATABASE_URL,
+    echo=False,
+    pool_size=3,
+    max_overflow=5,
+    pool_pre_ping=True,   # same rationale as primary engine
+    pool_recycle=1800,
 )
 shared_async_session = async_sessionmaker(
     _shared_engine, class_=AsyncSession, expire_on_commit=False
