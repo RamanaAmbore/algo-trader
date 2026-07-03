@@ -1,4 +1,5 @@
 import os
+import random
 import threading
 import pandas as pd
 import polars as pl
@@ -576,10 +577,8 @@ def _record_fetch(account: str, ok: bool, error: str = "") -> None:
                     cycle += 1
                     e["open_cycle_count"] = cycle
                     _new_breaker_open = True   # new OPEN transition
-                cooloff = min(
-                    _CB_INITIAL_COOLOFF_S * (2 ** (cycle - 1)),
-                    _CB_MAX_COOLOFF_S,
-                )
+                base = _CB_INITIAL_COOLOFF_S * (2 ** (cycle - 1))
+                cooloff = min(base, _CB_MAX_COOLOFF_S) + random.uniform(0, 30)
                 e["circuit_open_until"] = now + cooloff
                 e["circuit_last_opened_at"] = now
                 logger.warning(
