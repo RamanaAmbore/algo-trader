@@ -425,6 +425,52 @@ async def _force_movers_snapshot() -> int:
         return 0
 
 
+# ---------------------------------------------------------------------------
+# Unified movers resolver (hardening: single-source truth + reason tagging)
+# ---------------------------------------------------------------------------
+
+async def _get_movers_now_off_hours() -> tuple[list["MoverRow"], str]:
+    """Off-hours branch of the unified resolver.
+
+    Returns the persisted DB snapshot when NSE is closed. The tuple's second
+    element names which fallback layer served the data so the caller (and
+    `[MOVERS-EMPTY]` structured log) can attribute the empty case:
+
+      ("snapshot" , rows) — DB row deserialised cleanly, N>=0 rows returned
+      ("snapshot_missing_off_hours", []) — no DB row yet (fresh deploy)
+      ("snapshot_deserialise_failed", []) — DB row present but malformed
+
+    The route handler `get_movers` retains its inline paths for now — this
+    helper is the single canonical consolidation that both the /movers route
+    and any future caller (MCP tool, /admin/history drilldown) share so we
+    can't have two paths drift apart on reason semantics.
+    """
+    import json as _json
+    snap = await _load_latest_movers_snapshot()
+    if not snap:
+        return [], "snapshot_missing_off_hours"
+    try:
+        snap_rows: list["MoverRow"] = [
+            MoverRow(
+                tradingsymbol=d["tradingsymbol"],
+                exchange=d["exchange"],
+                last_price=float(d["last_price"]),
+                previous_close=float(d["previous_close"]),
+                change_pct=float(d["change_pct"]),
+                peak_pct=float(d["peak_pct"]),
+                sticky=bool(d.get("sticky", False)),
+            )
+            for d in _json.loads(snap.payload_json)
+        ]
+        return snap_rows, "snapshot"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            f"[MOVERS-EMPTY] reason=snapshot_deserialise_failed "
+            f"universe_size=0 snapshot_present=True err={exc}"
+        )
+        return [], "snapshot_deserialise_failed"
+
+
 async def _resolve_mcx_commodity(commodity_name: str) -> Optional[str]:
     """Map a bare MCX commodity name (e.g. 'GOLD') to the nearest-month
     future tradingsymbol. Reads the shared instruments cache (24h TTL,
@@ -1133,30 +1179,26 @@ class WatchlistController(Controller):
             exchange="NSE",
         )
         if not nse_is_open:
-            snap = await _load_latest_movers_snapshot()
-            if snap:
-                try:
-                    snap_rows: list[MoverRow] = [
-                        MoverRow(
-                            tradingsymbol=d["tradingsymbol"],
-                            exchange=d["exchange"],
-                            last_price=float(d["last_price"]),
-                            previous_close=float(d["previous_close"]),
-                            change_pct=float(d["change_pct"]),
-                            peak_pct=float(d["peak_pct"]),
-                            sticky=bool(d.get("sticky", False)),
-                        )
-                        for d in _json.loads(snap.payload_json)
-                    ]
-                    return MoversResponse(
-                        movers=snap_rows,
-                        threshold_pct=MOVER_THRESHOLD_PCT,
-                        session_date=snap.date.isoformat() if hasattr(snap.date, "isoformat") else str(snap.date),
-                        captured_at=snap.captured_at.isoformat(),
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(f"Movers snapshot deserialise failed: {exc}")
-            # No snapshot yet (e.g. first deploy) — return empty gracefully.
+            # Off-hours: delegate to the unified resolver so the DB-snapshot
+            # deserialise path is a SINGLE choke-point that owns the
+            # [MOVERS-EMPTY] reason semantics. The route only handles the
+            # extra route-response bookkeeping (captured_at, session_date).
+            snap_rows, reason = await _get_movers_now_off_hours()
+            if reason == "snapshot":
+                snap = await _load_latest_movers_snapshot()
+                return MoversResponse(
+                    movers=snap_rows,
+                    threshold_pct=MOVER_THRESHOLD_PCT,
+                    session_date=snap.date.isoformat() if hasattr(snap.date, "isoformat") else str(snap.date),
+                    captured_at=snap.captured_at.isoformat() if snap else None,
+                )
+            # snapshot_missing_off_hours OR snapshot_deserialise_failed → empty.
+            if reason == "snapshot_missing_off_hours":
+                logger.info(
+                    f"[MOVERS-EMPTY] reason=snapshot_missing_off_hours "
+                    f"universe_size=0 snapshot_present=False "
+                    f"session_movers={len(_session_movers)}"
+                )
             return MoversResponse(
                 movers=[], threshold_pct=MOVER_THRESHOLD_PCT, session_date=ist_today,
             )
@@ -1194,6 +1236,11 @@ class WatchlistController(Controller):
         underlyings_with_opts = _underlyings_cache
 
         if not underlyings_with_opts:
+            logger.info(
+                f"[MOVERS-EMPTY] reason=no_universe "
+                f"universe_size=0 snapshot_present=False "
+                f"session_movers={len(_session_movers)}"
+            )
             return MoversResponse(
                 movers=[], threshold_pct=MOVER_THRESHOLD_PCT, session_date=ist_today,
             )
@@ -1207,6 +1254,17 @@ class WatchlistController(Controller):
                 continue
             key = underlying_ltp_key(name)
             key_to_underlying[key] = name
+
+        if not key_to_underlying:
+            logger.info(
+                f"[MOVERS-EMPTY] reason=all_mcx_excluded "
+                f"universe_size={len(underlyings_with_opts)} "
+                f"snapshot_present=False "
+                f"session_movers={len(_session_movers)}"
+            )
+            return MoversResponse(
+                movers=[], threshold_pct=MOVER_THRESHOLD_PCT, session_date=ist_today,
+            )
 
         # Cached 30 s quote batch for the movers universe.
         _MOVERS_QUOTE_TTL = 30
@@ -1232,6 +1290,15 @@ class WatchlistController(Controller):
         cache_key = f"movers_quotes_{int(_time.time() // _MOVERS_QUOTE_TTL)}"
         quote_data: dict = await _gof(cache_key, _fetch_movers_quotes,
                                       ttl_seconds=_MOVERS_QUOTE_TTL)
+
+        if not quote_data:
+            logger.info(
+                f"[MOVERS-EMPTY] reason=broker_quote_empty "
+                f"universe_size={len(key_to_underlying)} "
+                f"snapshot_present=False "
+                f"session_movers={len(_session_movers)}"
+            )
+            # Fall through: session_movers may still yield rows via _combine_movers.
 
         # Compute change_pct for every underlying. Update session-sticky
         # state for anything that crossed the threshold. Always collect
@@ -1311,6 +1378,14 @@ class WatchlistController(Controller):
         # requests can serve it instead of returning an empty list.
         if rows:
             asyncio.create_task(_save_movers_snapshot(rows, ist_today))
+        else:
+            logger.info(
+                f"[MOVERS-EMPTY] reason=no_matches "
+                f"universe_size={len(key_to_underlying)} "
+                f"snapshot_present=False "
+                f"session_movers={len(_session_movers)} "
+                f"live_snapshot={len(live_snapshot)}"
+            )
 
         return MoversResponse(
             movers=rows,

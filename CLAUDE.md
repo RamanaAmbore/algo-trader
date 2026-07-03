@@ -178,6 +178,18 @@ Open/close summaries sent at `open_summary_offset_minutes` / `close_summary_offs
 | Market lifecycle poller | Every 30s (per-exchange open/close transitions) |
 | Funds-off-hours refresh | Every 30 min while no segment open |
 
+**Ticker subscription DB backstop** (`_snapshot_book_symbols`, Jul 2026):
+Both `_task_sparkline_warm._collect_symbols` and `_task_performance` phase-2
+union a `daily_book` DB query into the Kite ticker subscription universe.
+Query: `SELECT DISTINCT symbol, exchange, kind FROM daily_book WHERE kind IN
+('positions','holdings') AND date >= today-7`. This survives conn_service
+restart, Dhan circuit-breaker open at boot, or any account being unhealthy
+at cold-start — Dhan rows subscribe to Kite ticker immediately on process
+start rather than waiting up to 30 min for the next healthy broker cycle.
+Exchange fallback: `holdings` → NSE, `positions` → NFO when column is NULL.
+7-day window covers weekends + public holidays. Stale (>7-day) symbols excluded.
+Tests: `backend/tests/test_ticker_backstop.py` (11 tests).
+
 ## Market lifecycle events
 
 Singleton `MarketLifecycle` in `backend/api/algo/market_lifecycle.py` is

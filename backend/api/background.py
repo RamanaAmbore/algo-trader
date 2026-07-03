@@ -628,12 +628,20 @@ async def _task_performance(state: dict) -> None:
             # (F&O positions, held equities) which changes intraday.
             # subscribe() is idempotent — re-subscribing known tokens is a
             # no-op. We never unsubscribe stale symbols (Phase 2 simplicity).
+            #
+            # Backstop: when an account's circuit-breaker is open (e.g.
+            # Dhan auth failure), its DataFrame is empty.  Union the live
+            # pairs with the last-known symbols from daily_book so Kite
+            # ticker subscriptions are maintained across breaker-open
+            # periods.  _snapshot_book_symbols() is DB-backed and survives
+            # conn_service restart + any unhealthy broker account.
             try:
                 from backend.brokers.kite_ticker import get_ticker as _get_ticker
                 from backend.api.routes.quote import _resolve_token_for_sym as _rts
                 _ticker = _get_ticker()
                 # Collect tradingsymbol+exchange pairs from both DataFrames.
                 _book_pairs: list[tuple[str, str]] = []
+                _book_seen: set[tuple[str, str]] = set()
                 for _df, _default_exch in (
                     (df_holdings, "NSE"),
                     (df_positions, "NFO"),
@@ -643,7 +651,19 @@ async def _task_performance(state: dict) -> None:
                             _sym  = str(getattr(_row, "tradingsymbol", None) or "").strip().upper()
                             _exch = str(getattr(_row, "exchange", None) or _default_exch).strip().upper()
                             if _sym:
-                                _book_pairs.append((_sym, _exch))
+                                _k = (_sym, _exch)
+                                if _k not in _book_seen:
+                                    _book_seen.add(_k)
+                                    _book_pairs.append(_k)
+                # Backstop: union daily_book snapshot for breaker-open accounts.
+                try:
+                    _snap = await _snapshot_book_symbols(days=7)
+                    for _k in _snap:
+                        if _k not in _book_seen:
+                            _book_seen.add(_k)
+                            _book_pairs.append(_k)
+                except Exception as _se:
+                    logger.debug(f"Background: snapshot book symbols skipped in perf: {_se}")
                 # Resolve tokens for symbols not yet in the ticker.
                 # Batch into one exchange→instruments call per unique exchange.
                 _need_resolve = [
@@ -2259,17 +2279,76 @@ async def _task_oco_pair_watcher() -> None:
             logger.debug(f"[OCO-WATCH] poll iteration failed: {e}")
 
 
+async def _snapshot_book_symbols(days: int = 7) -> list[tuple[str, str]]:
+    """Return (tradingsymbol, exchange) pairs from recent daily_book rows.
+
+    Queried from DB — survives conn_service restart, Dhan circuit-breaker
+    open at boot, or any account being unhealthy. Acts as a cold-start
+    backstop so Kite ticker subscriptions are seeded even when all live
+    broker fetches return empty.
+
+    ``days`` controls how far back to look. 7 days (the default) covers
+    weekends + public holidays so a Monday-morning restart after a long
+    weekend still picks up Friday's positions.  Symbols whose most recent
+    row is older than ``days`` days are excluded — they represent stale
+    closed/expired positions not worth subscribing.
+
+    Exchange fallback per kind:
+      * 'holdings'  → NSE  (equity default, matches broker_apis.fetch_holdings)
+      * 'positions' → NFO  (F&O/commodity default, matches broker_apis.fetch_positions)
+    """
+    from backend.api.database import async_session
+    from backend.api.models import DailyBook
+    from sqlalchemy import select as _sa_select, func as _sa_func
+
+    cutoff = (timestamp_indian().date() - timedelta(days=days))
+    try:
+        async with async_session() as session:
+            stmt = (
+                _sa_select(DailyBook.symbol, DailyBook.exchange, DailyBook.kind)
+                .where(
+                    DailyBook.kind.in_(["positions", "holdings"]),
+                    DailyBook.date >= cutoff,
+                )
+                .distinct()
+            )
+            result = await session.execute(stmt)
+            rows = result.fetchall()
+
+        pairs: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            sym  = str(row.symbol or "").upper().strip()
+            exch = str(row.exchange or "").upper().strip()
+            kind = str(row.kind or "").lower().strip()
+            if not sym:
+                continue
+            if not exch:
+                exch = "NSE" if kind == "holdings" else "NFO"
+            key = (sym, exch)
+            if key not in seen:
+                seen.add(key)
+                pairs.append(key)
+        return pairs
+    except Exception as e:
+        logger.warning(f"snapshot book symbols: DB query failed: {e}")
+        return []
+
+
 async def _task_sparkline_warm(state: dict) -> None:
     """
     Pre-populate the sparkline past-close cache at startup and at each
     market segment open so the operator's first Pulse load is free of
     historical_data calls.
 
-    Symbol universe (capped at 100, deduped):
+    Symbol universe (capped at 300, deduped):
       1. All distinct tradingsymbols in watchlist_items (DB query).
       2. Live holdings tradingsymbols (one broker fetch; equity symbols
          for which sparklines are most commonly shown).
       3. Live positions tradingsymbols (F&O + commodities in the open book).
+      4. Backstop: last-known symbols from daily_book (7-day window).
+         Ensures Dhan / unhealthy-account symbols subscribe to Kite ticker
+         even when the broker circuit-breaker is open at cold-start.
 
     Positions and holdings come from the same in-process broker call used
     by _task_performance — no extra Kite session or rate-limit budget is
@@ -2412,7 +2491,21 @@ async def _task_sparkline_warm(state: dict) -> None:
         except Exception as e:
             logger.warning(f"sparkline warm: positions collect failed: {e}")
 
-        # 4. Mover universe — indices + F&O largecap + NIFTY midcap +
+        # 4. Backstop: DB snapshot from daily_book (7-day window).
+        # Handles cold-start when Dhan / any account has its circuit-breaker
+        # open: broker fetch returns empty but the last known symbols are
+        # still in the DB. Without this, Dhan rows miss Kite ticker
+        # subscriptions until the next healthy performance cycle (30+ min).
+        try:
+            snap_pairs = await _snapshot_book_symbols(days=7)
+            for key in snap_pairs:
+                if key not in seen:
+                    seen.add(key)
+                    pairs.append(key)
+        except Exception as e:
+            logger.warning(f"sparkline warm: snapshot book symbols failed: {e}")
+
+        # 5. Mover universe — indices + F&O largecap + NIFTY midcap +
         # smallcap. Without this the Winners/Losers tab on /pulse pays
         # a cold-cache hit every time a new symbol rotates into the
         # top movers (operator: "winners and losers sparklines are
