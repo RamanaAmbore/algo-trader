@@ -144,6 +144,30 @@ export function mkSparkCol({ sparkRenderer }) {
  *   numericHdr: string,
  * }} opts
  */
+// Legacy `ltp_source` value → normalised `price_source` value. The
+// backend renamed the field in Jul 2026 (unified animation model);
+// the old value only appears on cached responses served during the
+// deploy window. `snapshot` maps to `snapshot_settled` (safe default).
+function _normalisePriceSource(row) {
+  if (!row) return 'live';
+  const ps = row.price_source ?? row.ltp_source ?? 'live';
+  if (ps === 'snapshot') return 'snapshot_settled';
+  return ps;
+}
+
+// Under the unified model, `is_animating` is the SINGLE decision point
+// for cell animation. Rows on a currently-open exchange animate; rows
+// carrying a close-snapshot LTP freeze. Falls back to the legacy
+// `ltp_source !== 'snapshot'` check when the field is absent (cached
+// response during deploy window). Defaults to true (animating) so an
+// unknown row keeps its historical behaviour.
+function _isAnimating(row) {
+  if (!row) return true;
+  if (typeof row.is_animating === 'boolean') return row.is_animating;
+  const ps = _normalisePriceSource(row);
+  return ps === 'live';
+}
+
 export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, numFmt, RA, numericHdr }) {
   const resolveCellLtp = mkResolveCellLtp({ getLiveLtpSnap });
   return {
@@ -158,14 +182,22 @@ export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, numFm
                  : (p.data.qty_hold && p.data.avg_hold) ? p.data.avg_hold
                  : null;
       const cls = [RA];
-      const isSnap = p.data.ltp_source === 'snapshot';
-      if (!isSnap) {
+      const animating = _isAnimating(p.data);
+      const ps = _normalisePriceSource(p.data);
+      // Animation gate — tick-flash only when the row's exchange is
+      // currently open. Snapshot rows render static.
+      if (animating) {
         const ltpFlashUp   = getLtpFlashUp();
         const ltpFlashDown = getLtpFlashDown();
         if      (ltpFlashUp.has(sym))   cls.push('ltp-flash-up');
         else if (ltpFlashDown.has(sym)) cls.push('ltp-flash-down');
+      } else {
+        cls.push('ltp-snap');
+        // Slight visual differentiation for the pre-settle window —
+        // frontend can style .ltp-snap-unsettled with a dashed border
+        // to convey "close_price not yet published".
+        if (ps === 'snapshot_unsettled') cls.push('ltp-snap-unsettled');
       }
-      if (isSnap) cls.push('ltp-snap');
       if (typeof ltp === 'number' && typeof avg === 'number' && avg > 0) {
         cls.push(ltp > avg ? 'ltp-vs-avg-up' : ltp < avg ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat');
       }
@@ -179,9 +211,12 @@ export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, numFm
     // SNAP chip — rendered when the row's LTP came from the daily_book
     // close_settled snapshot (exchange currently closed). Non-snap rows
     // return undefined so ag-Grid falls through to the valueFormatter.
+    // The chip's variant modifier (`.ltp-snap-chip--unsettled`) hints
+    // that broker close_price hasn't landed yet (pre-45m settle window).
     cellRenderer: (p) => {
       if (p.data?._isTotal) return '';
-      if (p.data?.ltp_source !== 'snapshot') return undefined;
+      if (_isAnimating(p.data)) return undefined;
+      const ps = _normalisePriceSource(p.data);
       const val = p.valueFormatted ?? p.value ?? '';
       const el = document.createElement('span');
       el.style.cssText = 'display:inline-flex;align-items:center;gap:4px;justify-content:flex-end;width:100%;';
@@ -189,9 +224,13 @@ export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, numFm
       num.textContent = String(val || '—');
       const chip = document.createElement('span');
       chip.textContent = 'SNAP';
-      chip.className = 'ltp-snap-chip';
+      chip.className = ps === 'snapshot_unsettled'
+        ? 'ltp-snap-chip ltp-snap-chip--unsettled'
+        : 'ltp-snap-chip';
       chip.setAttribute('data-testid', 'ltp-snap-chip');
-      chip.title = 'LTP frozen at daily_book close_settled snapshot — exchange currently closed';
+      chip.title = ps === 'snapshot_unsettled'
+        ? 'LTP frozen — broker close_price not yet published (pre-settle window)'
+        : 'LTP frozen at daily_book close_settled snapshot — exchange currently closed';
       el.appendChild(num);
       el.appendChild(chip);
       return el;

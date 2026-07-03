@@ -1,11 +1,13 @@
-// Verifies the per-exchange close-snapshot lifecycle shipped Jul 2026.
+// Verifies the per-exchange close-snapshot lifecycle + unified animation
+// model shipped Jul 2026.
 //
 // The lifecycle:
 //   - When NSE has closed but MCX is still open (15:30-23:30 IST window),
 //     NSE-anchored rows on /pulse serve their LTP from the daily_book
-//     close_settled snapshot and are tagged `ltp_source='snapshot'` by the
-//     backend. The frontend renders a "SNAP" chip on those rows' LTP cells.
-//     MCX rows keep live tickers.
+//     close_settled snapshot and are tagged `price_source='snapshot_settled'`
+//     + `is_animating=false` by the backend. The frontend renders a "SNAP"
+//     chip on those rows' LTP cells and skips tick-flash. MCX rows keep
+//     live tickers with `is_animating=true`.
 //   - When BOTH markets are closed, every row is on a closed exchange, so
 //     every row's LTP is snapshot-served + tagged. The RefreshButton
 //     tooltip surfaces "Markets closed — refresh only updates cash/margins/
@@ -87,7 +89,11 @@ function positionsPayload(snapExchanges) {
         day_buy_value: 0.0, day_sell_value: 0.0,
         last_price_stale: false, account_stale: false, account_stale_since: '',
         mode: 'live',
-        ltp_source: nseSnap ? 'snapshot' : 'live',
+        // Unified animation triad (Jul 2026) — is_animating gates the
+        // frontend cell-flash class; price_source drives SNAP-chip variant.
+        price_source: nseSnap ? 'snapshot_settled' : 'live',
+        current_price: 22150.0,
+        is_animating: !nseSnap,
       },
       {
         account: 'ZG0790', tradingsymbol: 'CRUDEOIL26JULFUT', exchange: 'MCX',
@@ -100,7 +106,9 @@ function positionsPayload(snapExchanges) {
         day_buy_value: 0.0, day_sell_value: 0.0,
         last_price_stale: false, account_stale: false, account_stale_since: '',
         mode: 'live',
-        ltp_source: mcxSnap ? 'snapshot' : 'live',
+        price_source: mcxSnap ? 'snapshot_settled' : 'live',
+        current_price: 6850.0,
+        is_animating: !mcxSnap,
       },
     ],
     summary: [
