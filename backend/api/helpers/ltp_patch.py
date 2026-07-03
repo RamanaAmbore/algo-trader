@@ -40,10 +40,33 @@ from typing import Callable, Optional
 
 import pandas as pd
 
+import time as _time
+
 from backend.brokers.broker_apis import get_last_good_ltp, record_good_ltp
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
+
+# ---------------------------------------------------------------------------
+# Throttled log helper — emit at most once per (sym, source) per 60s.
+# Detects when the LTP patch scaffold falls back to close_price territory
+# because the ticker has no local token registration for the symbol.
+# ---------------------------------------------------------------------------
+_LTP_GAP_LOG_TTL_S = 60.0
+_ltp_gap_last: dict[tuple[str, str], float] = {}  # (sym, source) → monotonic
+
+
+def _log_ltp_gap_throttled(sym: str, source: str, close: float) -> None:
+    key = (sym, source)
+    now = _time.monotonic()
+    if now - _ltp_gap_last.get(key, 0.0) > _LTP_GAP_LOG_TTL_S:
+        _ltp_gap_last[key] = now
+        logger.warning(
+            "[LTP-GAP] sym=%s source=%s close=%.4f reason=no_local_token",
+            sym,
+            source,
+            close,
+        )
 
 
 @dataclass(frozen=True)
@@ -118,6 +141,18 @@ def apply_ltp_patch(raw: pd.DataFrame, policy: PolicyFn) -> Optional[PatchResult
         # Keep LKG cache warm independent of policy outcome.
         if tick_ltp is not None and tick_ltp > 0:
             record_good_ltp(sym_s, tick_ltp)
+        else:
+            # Ticker has no sample for this symbol — log when the broker
+            # value is indistinguishable from close_price, which is the
+            # exact condition that causes LTP/close flicker on the frontend.
+            if 'close_price' in raw.columns:
+                try:
+                    _close_val = raw.at[idx, 'close_price']
+                    _close_f = float(_close_val) if pd.notna(_close_val) else None
+                except (TypeError, ValueError):
+                    _close_f = None
+                if _close_f is not None and _close_f > 0 and abs(current - _close_f) < 0.005:
+                    _log_ltp_gap_throttled(sym_s, "policy_no_ticker", _close_f)
 
         decision = policy(current, tick_ltp)
         if decision.new_ltp is not None:
