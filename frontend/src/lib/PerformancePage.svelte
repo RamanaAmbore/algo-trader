@@ -701,7 +701,7 @@
       // `numericColumn` (warning #34). The built-in already adds
       // `ag-right-aligned-cell` + `ag-right-aligned-header` classes
       // that our CSS picks up — no override needed.
-      overlayNoRowsTemplate: '<span style="font-size: var(--fs-md);color:var(--algo-muted)">—</span>',
+      overlayNoRowsTemplate: '<span style="font-size: var(--fs-md);color:var(--c-muted)">—</span>',
       domLayout: 'autoHeight',
       getRowClass,
       pinnedBottomRowData: [],
@@ -1421,7 +1421,7 @@
   .perf-grid-loading {
     padding: 0.6rem 0.25rem;
     font-size: var(--fs-md);
-    color: var(--algo-muted);
+    color: var(--c-muted);
     font-family: var(--font-numeric);
     letter-spacing: 0.03em;
   }
@@ -1535,7 +1535,7 @@
     z-index: 1000;
     background: rgba(251,191,36,0.18);
     border: 1px solid var(--algo-amber-border);
-    color: var(--algo-amber);
+    color: var(--c-action);
     padding: 0.4rem 0.7rem;
     border-radius: 4px;
     font-size: var(--fs-lg);
@@ -1586,7 +1586,7 @@
     color: #fde68a;
   }
   .perf-dark .perf-banner-outage .perf-banner-icon {
-    color: var(--algo-amber);
+    color: var(--c-action);
   }
   .perf-dark .perf-banner-error {
     background: var(--algo-red-bg);
@@ -1594,7 +1594,7 @@
     color: #fda4a4;
   }
   .perf-dark .perf-banner-error .perf-banner-icon {
-    color: var(--algo-red);
+    color: var(--c-short);
   }
 
   /* Tabs + Account + Symbol on one row — keep them all visible on
@@ -1643,7 +1643,7 @@
     .acct-multi { width: 6rem; }
   }
   /* Funds & NAV tabs — sub-tab strip rendered by AlgoTabs. The
-     canonical AlgoTabs amber palette (var(--algo-amber) + rgba(251,191,36,0.10)
+     canonical AlgoTabs amber palette (var(--c-action) + rgba(251,191,36,0.10)
      fill) is overridden here to champagne so this strip matches the
      Positions/Holdings tabs immediately below it. Operator: "make
      nav and funds tabs decoration to be similar to positions/
@@ -1690,7 +1690,7 @@
      "Holdings") demoted from full amber to light blue so the three
      heading tiers (page title amber → section label muted blue →
      section heading light blue) read as distinct strata. Previously
-     all three tiers rendered in var(--algo-amber) and the hierarchy collapsed. */
+     all three tiers rendered in var(--c-action) and the hierarchy collapsed. */
   .perf-dark :global(.section-heading) { color: var(--algo-slate); }
 
   /* Refresh button */
@@ -1715,7 +1715,7 @@
     padding: 0 0.28rem;
     border-radius: 0.18rem;
     background: rgba(251,191,36,0.15);
-    color: var(--algo-amber);
+    color: var(--c-action);
     border: 1px solid rgba(251,191,36,0.40);
     text-decoration: none;
     line-height: 1.4;
