@@ -71,6 +71,7 @@
   import { openActivityModal } from '$lib/stores';
   import ChartModal from '$lib/ChartModal.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
+  import { baseDayPnlForPosition } from '$lib/data/nav';
 
   let {
     title              = 'Pulse',
@@ -3054,7 +3055,7 @@
       const livePos = (_mktOpen && Number(liveQ?.ltp) > 0) ? Number(liveQ.ltp) : null;
       const closePx = Number(r.close_price) || 0;
       const pollLtp = Number(r.last_price) || 0;
-      const brokerDcv = Number(r.day_change_val) || 0;
+      const brokerDcv = baseDayPnlForPosition(r);
       // Solve for realised_today from the broker snapshot. Falls
       // through to 0 when LTP or close is missing (no way to solve).
       const realisedToday = (pollLtp > 0 && closePx > 0 && q !== 0)
@@ -3091,7 +3092,7 @@
       // /api/positions). Per-row `row.pnl` / `row.day_pnl` keep the
       // live-recompute path above so the cells still tick.
       row._broker_pnl     = (row._broker_pnl     ?? 0) + (Number(r.pnl)             || 0);
-      row._broker_day_pnl = (row._broker_day_pnl ?? 0) + (Number(r.day_change_val) || 0);
+      row._broker_day_pnl = (row._broker_day_pnl ?? 0) + baseDayPnlForPosition(r);
       // Account-level staleness: propagate from any contributing row.
       // When any leg of this merged row is stale, mark the whole row
       // stale so getRowClass can apply the row-account-stale CSS tint.
