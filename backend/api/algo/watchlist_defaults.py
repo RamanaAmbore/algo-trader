@@ -9,19 +9,18 @@ add / remove items via the standard manage-watchlists UI.
 Item-naming policy:
   - Indices stored as the broker quote key (e.g. "NIFTY 50") — stable.
   - ETFs stored as the NSE tradingsymbol (e.g. GOLDBEES) — stable.
-  - MCX commodities stored as the bare commodity ROOT (e.g. CRUDEOIL,
-    NATURALGAS). The frontend's _pinLabel + the quote endpoint BOTH
-    resolve these to the current near-month future via the instruments
-    cache (CRUDEOIL → CRUDEOIL26JUNFUT, etc.). The operator never has
-    to roll contracts month-over-month — the resolver follows the
-    front-month expiry.
-  - Gold + silver exposure is via NSE ETFs (GOLDBEES / SILVERBEES),
-    not MCX minis. GOLDM and USDINR were removed from the pinned seed.
+  - F&O is NOT seeded by default. Operator adds futures / options via
+    the /pulse watchlist UI when wanted.
+
+Removed from seed (with migration markers in seed_global_pinned):
+  - GOLDM, USDINR — prior cleanup
+  - COPPER, CRUDEOIL, NATURALGAS, SILVERM (MCX) — Jul 2026 (bare roots
+    resolve to near-month futures; operator adds explicitly if wanted)
 """
 
 # Each entry: (tradingsymbol, exchange). The order here is the
-# `sort_order` the symbols land at — indices first, then ETFs, then
-# MCX commodities (alphabetical).
+# `sort_order` the symbols land at — indices first, then ETFs.
+# Pinned is INDICES + ETFs only. F&O is not seeded by default.
 MARKETS_DEFAULT: list[tuple[str, str]] = [
     # Indices — quote endpoint maps these via broker.quote() keys
     # like NSE:NIFTY 50. Stable across months.
@@ -36,13 +35,6 @@ MARKETS_DEFAULT: list[tuple[str, str]] = [
     # ETFs — gold + silver cash exposure via Nippon's BeES family.
     ("GOLDBEES",            "NSE"),
     ("SILVERBEES",          "NSE"),
-
-    # MCX commodities — alphabetical. Roots resolve to current near-
-    # month future at quote / chart time.
-    ("COPPER",              "MCX"),
-    ("CRUDEOIL",            "MCX"),
-    ("NATURALGAS",          "MCX"),
-    ("SILVERM",             "MCX"),
 ]
 
 
