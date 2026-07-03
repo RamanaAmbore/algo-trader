@@ -3,7 +3,7 @@
   level disclosure (NOT card-level collapse — that's CollapseButton).
 
   Visual contract:
-    - 0.65rem, muted slate-blue (#7e97b8), flex-shrink-0
+    - 0.65rem, muted slate-blue (var(--c-muted)), flex-shrink-0
     - Right-pointing triangle when collapsed (▸), down when expanded (▾)
     - Sized + coloured identically across agents, fragments, anywhere
       else a row toggles open inline

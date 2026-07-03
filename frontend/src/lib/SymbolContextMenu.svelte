@@ -137,16 +137,16 @@
     font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.04em;
-    color: #fbbf24;
+    color: var(--c-action);
     text-transform: uppercase;
     user-select: none;
   }
   /* Close-position action — red accent so the operator sees it as
      destructive vs the neutral place-order / chart / orders items. */
   :global(.ctx-item.ctx-item-danger) {
-    color: #f87171;
+    color: var(--c-short);
   }
   :global(.ctx-item.ctx-item-danger:hover) {
-    background: rgba(248, 113, 113, 0.10);
+    background: var(--c-short-10);
   }
 </style>

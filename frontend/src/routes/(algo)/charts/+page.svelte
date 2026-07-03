@@ -117,7 +117,7 @@
   }
 
   .page-error {
-    color: #f87171;
+    color: var(--c-short);
     font-size: var(--fs-md);
     font-family: monospace;
     padding: 0 0.25rem;

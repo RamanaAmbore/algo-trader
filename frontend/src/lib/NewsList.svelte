@@ -175,7 +175,7 @@
     transition: color 0.1s;
   }
   .newslist-title:hover {
-    color: #fbbf24;
+    color: var(--c-action);
     text-decoration: underline;
     text-decoration-thickness: 1px;
     text-underline-offset: 2px;

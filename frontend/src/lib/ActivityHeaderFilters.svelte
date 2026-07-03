@@ -110,8 +110,8 @@
     transition: border-color 0.08s;
   }
   .act-level-sel:hover         { border-color: rgba(251, 191, 36, 0.6); }
-  .act-level-sel:focus         { outline: none; border-color: #fbbf24; }
-  .act-level-sel:focus-visible { outline: none; border-color: #fbbf24; }
+  .act-level-sel:focus         { outline: none; border-color: var(--c-action); }
+  .act-level-sel:focus-visible { outline: none; border-color: var(--c-action); }
   /* Options inherit dark bg from the page; spell out the contrast so
      OS-dark-mode users don't see washed-out white-on-white menus. */
   .act-level-sel option {

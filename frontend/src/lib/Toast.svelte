@@ -91,10 +91,10 @@
   // border-left colour + the tint variable; the base background remains
   // `rgba(29,42,68,0.97)` from the stylesheet.
   const COLORS = {
-    success: { border: '#4ade80', tint: 'rgba(74,222,128,0.08)',  icon: '#4ade80' },
-    error:   { border: '#f87171', tint: 'rgba(248,113,113,0.10)', icon: '#f87171' },
+    success: { border: 'var(--c-long)', tint: 'rgba(74,222,128,0.08)',  icon: 'var(--c-long)' },
+    error:   { border: 'var(--c-short)', tint: 'var(--c-short-10)', icon: 'var(--c-short)' },
     info:    { border: '#7dd3fc', tint: 'rgba(56,189,248,0.07)',  icon: '#7dd3fc' },
-    warning: { border: '#fbbf24', tint: 'rgba(251,191,36,0.08)',  icon: '#fbbf24' },
+    warning: { border: 'var(--c-action)', tint: 'rgba(251,191,36,0.08)',  icon: 'var(--c-action)' },
   };
 
   const c = $derived(COLORS[item.kind] || COLORS.info);
@@ -198,7 +198,7 @@
     padding: 0;
     font-size: var(--fs-sm);
     font-weight: 600;
-    color: #22d3ee;
+    color: var(--c-info);
     cursor: pointer;
     text-decoration: underline;
     text-underline-offset: 2px;
@@ -222,8 +222,8 @@
     margin-top: -0.05rem;
   }
   .rbq-toast-x:hover {
-    color: #f87171;
-    background: rgba(248,113,113,0.10);
+    color: var(--c-short);
+    background: var(--c-short-10);
   }
 
   @keyframes rbq-toast-in {

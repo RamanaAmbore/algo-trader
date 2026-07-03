@@ -184,13 +184,13 @@
     transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
   .info-btn:hover {
-    background: rgba(251,191,36,0.14);
+    background: var(--c-action-14);
     border-color: rgba(251,191,36,0.5);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .info-btn.open {
-    background: rgba(251,191,36,0.22);
-    color: #fbbf24;
+    background: var(--c-action-22);
+    color: var(--c-action);
     border-color: rgba(251,191,36,0.6);
   }
 
@@ -243,5 +243,5 @@
   :global(.info-popout code),
   :global(.info-popout .font-mono) { color: #7dd3fc; }
   :global(.info-popout b),
-  :global(.info-popout strong) { color: #fbbf24; font-weight: 700; }
+  :global(.info-popout strong) { color: var(--c-action); font-weight: 700; }
 </style>

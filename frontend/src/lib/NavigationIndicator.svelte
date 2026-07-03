@@ -120,7 +120,7 @@
   .nav-indicator-algo {
     background: linear-gradient(
       90deg,
-      #22d3ee 0%,
+      var(--c-info) 0%,
       #67e8f9 85%,
       rgba(103, 232, 249, 0.6) 100%
     );

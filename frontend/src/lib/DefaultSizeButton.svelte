@@ -84,7 +84,7 @@
     background: var(--algo-cyan-bg);
     border: 1px solid var(--algo-cyan-border);
     border-radius: 3px;
-    color: #22d3ee;
+    color: var(--c-info);
     cursor: pointer;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;

@@ -94,7 +94,7 @@
 </section>
 
 <style>
-  :global(.page-title-icon) { color: #fbbf24; flex-shrink: 0; }
+  :global(.page-title-icon) { color: var(--c-action); flex-shrink: 0; }
   /* Neutralize ActivityHeaderFilters' built-in `margin-left: auto`
      when mounted inside this page-header. The component's auto-margin
      is designed for card-headers (where it pushes CardControls to the

@@ -92,7 +92,7 @@
   }
 
   .leg-strike {
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
   }
@@ -101,7 +101,7 @@
     font-weight: 700;
   }
 
-  .leg-type-ce  { color: #4ade80; }
-  .leg-type-pe  { color: #f87171; }
-  .leg-type-fut { color: #22d3ee; }
+  .leg-type-ce  { color: var(--c-long); }
+  .leg-type-pe  { color: var(--c-short); }
+  .leg-type-fut { color: var(--c-info); }
 </style>

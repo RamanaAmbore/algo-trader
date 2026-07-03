@@ -888,13 +888,13 @@
     font-weight: 400;
   }
 
-  .ps-pos  { color: #4ade80; }
-  .ps-neg  { color: #f87171; }
+  .ps-pos  { color: var(--c-long); }
+  .ps-neg  { color: var(--c-short); }
   .ps-flat { color: var(--algo-slate); }
   /* Negative cash (margin debt) flips to red via .ps-neg. */
   .ps-cash { color: #7dd3fc; }
   /* Expiry profit — amber action palette; signals a time-bound outcome. */
-  .ps-exp  { color: #fbbf24; }
+  .ps-exp  { color: var(--c-action); }
   @media (max-width: 640px) {
     /* Four pills (P · M · C · H) fill the mobile viewport width:
        P locks to the left edge; M / C / H distribute across the

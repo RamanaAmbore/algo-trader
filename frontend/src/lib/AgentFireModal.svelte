@@ -35,8 +35,8 @@
   // border 0.55. Matches AgentToast tier pills so the modal + toast read
   // identically. Pre-fix bg was 0.15 + border 0.45 (off-palette).
   const TIER_PALETTE = {
-    critical: { color: '#f87171', bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.55)' },
-    high:     { color: '#fbbf24', bg: 'rgba(251,191,36,0.14)',  border: 'rgba(251,191,36,0.55)' },
+    critical: { color: 'var(--c-short)', bg: 'var(--c-short-10)', border: 'rgba(248,113,113,0.55)' },
+    high:     { color: 'var(--c-action)', bg: 'var(--c-action-14)',  border: 'rgba(251,191,36,0.55)' },
     medium:   { color: '#7dd3fc', bg: 'rgba(125,211,252,0.14)', border: 'rgba(125,211,252,0.55)' },
     info:     { color: '#a78bfa', bg: 'rgba(167,139,250,0.14)', border: 'rgba(167,139,250,0.55)' },
   };

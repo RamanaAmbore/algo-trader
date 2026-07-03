@@ -63,7 +63,7 @@
     z-index: 250;  /* above the navbar (z-50/100) so it never gets covered */
     width: 100%;
     background: #fef3c7;            /* amber-100 */
-    border-bottom: 2px solid #fbbf24; /* amber-400 — canonical algo palette */
+    border-bottom: 2px solid var(--c-action); /* amber-400 — canonical algo palette */
     color: #78350f;                 /* amber-900 */
     padding: 0.45rem 1rem;
     display: flex;

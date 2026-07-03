@@ -176,7 +176,7 @@
   .alm-title {
     font-family: var(--font-numeric);
     font-size: var(--fs-lg);
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 800;
     letter-spacing: 0.10em;
     text-transform: uppercase;
@@ -187,7 +187,7 @@
   /* Matches the page-header Activity button's new orange resting
      colour (#fb923c = orange-400) so the modal title icon is the
      exact same shade as the button that opened it. */
-  :global(.alm-title-icon) { color: #fbbf24; flex-shrink: 0; }
+  :global(.alm-title-icon) { color: var(--c-action); flex-shrink: 0; }
   /* .alm-acct CSS moved into ActivityAccountSelect.svelte so the
      dropdown chrome is shared with the /orders Activity card via
      the .act-acct class on the canonical component. */
@@ -211,7 +211,7 @@
     background: none;
     border: 1px solid rgba(248, 113, 113, 0.35);
     border-radius: 3px;
-    color: #f87171;
+    color: var(--c-short);
     font-size: var(--fs-xl);
     line-height: 1;
     padding: 0;

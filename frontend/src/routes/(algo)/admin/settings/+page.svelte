@@ -335,7 +335,7 @@
               <div class="flex items-baseline gap-2 flex-wrap">
                 <span class="font-mono text-[#7dd3fc] break-all">{s.key}</span>
                 {#if isModified(s)}
-                  <span class="px-1 rounded bg-[#fbbf24]/15 text-[#fbbf24] border border-[#fbbf24]/30 text-[0.55rem] shrink-0">mod</span>
+                  <span class="px-1 rounded bg-[var(--c-action)]/15 text-[var(--c-action)] border border-[var(--c-action)]/30 text-[0.55rem] shrink-0">mod</span>
                 {/if}
               </div>
 
@@ -383,7 +383,7 @@
                          value={currentValue(s)}
                          oninput={(e) => onEdit(s, e.currentTarget.value)} />
                 {/if}
-                {#if s.units}<span class="text-[0.55rem] text-[#7e97b8] whitespace-nowrap">{s.units}</span>{/if}
+                {#if s.units}<span class="text-[0.55rem] text-[var(--c-muted)] whitespace-nowrap">{s.units}</span>{/if}
               </div>
 
               <button type="button"

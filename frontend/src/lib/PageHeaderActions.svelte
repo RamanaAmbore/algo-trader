@@ -284,10 +284,10 @@
   /* ── Order button — muted amber ──────────────────────────────── */
   .pha-order {
     border: 1px solid rgba(251, 191, 36, 0.40);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .pha-order:hover:not(:disabled) {
-    background: rgba(251, 191, 36, 0.14);
+    background: var(--c-action-14);
     border-color: rgba(252, 211, 77, 0.65);
     color: #fcd34d;
   }
@@ -295,10 +295,10 @@
   /* ── Chart button — muted cyan ───────────────────────────────── */
   .pha-chart {
     border: 1px solid rgba(34, 211, 238, 0.40);
-    color: #22d3ee;
+    color: var(--c-info);
   }
   .pha-chart:hover:not(:disabled) {
-    background: rgba(34, 211, 238, 0.14);
+    background: var(--c-info-14);
     border-color: rgba(103, 232, 249, 0.65);
     color: #67e8f9;
   }

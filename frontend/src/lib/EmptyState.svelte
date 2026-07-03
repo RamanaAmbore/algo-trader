@@ -204,7 +204,7 @@
     padding: 0.3rem 0.8rem;
     font-size: var(--fs-sm);
     font-weight: 600;
-    color: #fbbf24;
+    color: var(--c-action);
     background: rgba(251, 191, 36, 0.08);
     border: 1px solid rgba(251, 191, 36, 0.28);
     border-radius: 3px;

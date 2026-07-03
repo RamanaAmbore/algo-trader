@@ -159,8 +159,8 @@
     font-weight: 800;
     letter-spacing: 0.08em;
   }
-  .atst-tier-critical { color: #f87171; background: var(--algo-red-bg);   border-color: var(--algo-red-border);   }
-  .atst-tier-high     { color: #fbbf24; background: var(--algo-amber-bg); border-color: var(--algo-amber-border); }
+  .atst-tier-critical { color: var(--c-short); background: var(--algo-red-bg);   border-color: var(--algo-red-border);   }
+  .atst-tier-high     { color: var(--c-action); background: var(--algo-amber-bg); border-color: var(--algo-amber-border); }
   .atst-tier-medium   { color: #7dd3fc; background: var(--algo-sky-bg);   border-color: var(--algo-sky-border);   }
   .atst-tier-info     { color: #a78bfa; background: rgba(167,139,250,0.14); border-color: rgba(167,139,250,0.55); }
   .atst-sim {
@@ -184,7 +184,7 @@
     border: 0;
     font-family: inherit;
   }
-  .atst-x:hover { color: #f87171; background: rgba(255,255,255,0.06); }
+  .atst-x:hover { color: var(--c-short); background: rgba(255,255,255,0.06); }
   .atst-name {
     font-size: var(--fs-lg);
     font-weight: 700;
