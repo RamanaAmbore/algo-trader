@@ -953,17 +953,39 @@ class SparklineController(Controller):
             if len(series) == 1:
                 series = series + series
             if not series:
-                # Diagnostic: log symbols with truly empty series (past=[], today=[],
-                # ltp=None/0) at most once per hour per (sym, exch) so the operator
-                # can grep "sparkline: no data" to identify the failing symbols.
+                # Structured [SPARK-EMPTY] tag — one canonical grep target so
+                # the operator can find every empty-sparkline path with a
+                # single log query. Reason maps the empty state to which
+                # layer of the three-tier read hierarchy failed:
+                #   spark_past_cache_miss  — ohlcv_store returned nothing
+                #                            (Tier 1 mem + Tier 2 DB both cold).
+                #   spark_today_cache_miss — intraday_store returned nothing
+                #                            (only relevant while market open).
+                #   historical_fetch_fail  — market open, both tiers empty AND
+                #                            no live LTP tail available.
+                #   warm_universe_empty    — market closed, both tiers empty
+                #                            AND no last-known-good LTP.
                 _now = _time_mod.monotonic()
                 _key = (sym, sym_obj.exchange)
+                if len(past) == 0 and len(today_bars) == 0:
+                    _reason = "warm_universe_empty" if spark_market_closed else "historical_fetch_fail"
+                    _layer = "tier1_2_cache" if spark_market_closed else "tier3_broker"
+                elif len(past) == 0:
+                    _reason = "spark_past_cache_miss"
+                    _layer = "tier1_past_cache"
+                elif len(today_bars) == 0:
+                    _reason = "spark_today_cache_miss"
+                    _layer = "tier1_today_cache"
+                else:
+                    _reason = "unknown"
+                    _layer = "unknown"
                 if _now - _spark_empty_last_log.get(_key, 0.0) >= 3600:
                     _spark_empty_last_log[_key] = _now
                     logger.info(
-                        f"sparkline: no data for {sym_obj.exchange}:{sym} "
-                        f"(past={len(past)}, today={len(today_bars)}, "
-                        f"ltp={ltp_val}, market_closed={spark_market_closed})"
+                        f"[SPARK-EMPTY] symbol={sym_obj.exchange}:{sym} "
+                        f"reason={_reason} cache_layer={_layer} "
+                        f"past={len(past)} today={len(today_bars)} "
+                        f"ltp={ltp_val} market_closed={spark_market_closed}"
                     )
             if series:
                 result[sym] = series

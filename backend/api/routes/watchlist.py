@@ -1311,6 +1311,14 @@ class WatchlistController(Controller):
         # requests can serve it instead of returning an empty list.
         if rows:
             asyncio.create_task(_save_movers_snapshot(rows, ist_today))
+        else:
+            logger.info(
+                f"[MOVERS-EMPTY] reason=no_matches "
+                f"universe_size={len(key_to_underlying)} "
+                f"snapshot_present=False "
+                f"session_movers={len(_session_movers)} "
+                f"live_snapshot={len(live_snapshot)}"
+            )
 
         return MoversResponse(
             movers=rows,
