@@ -988,6 +988,10 @@
     background: transparent;
     padding: 0.5rem 0.75rem;
     margin-bottom: 0.55rem;
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
   }
 
   .section-head {
