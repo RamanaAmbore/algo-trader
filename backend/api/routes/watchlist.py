@@ -149,6 +149,14 @@ class MoverRow(msgspec.Struct):
     price_source: str = "live"
     current_price: float = 0.0
     is_animating: bool = True
+    # Resolved broker/SSE key for MCX commodities. MCX movers use a bare
+    # underlying root as tradingsymbol (e.g. "CRUDEOIL") while the Kite
+    # ticker and symbolStore are keyed on the front-month contract
+    # ("CRUDEOIL26JUNFUT"). Without this field the frontend _liveLtpSnap
+    # lookup always misses for MCX mover rows and cells fall back to the
+    # polled last_price (30 s cadence) instead of the sub-second SSE tick.
+    # NSE rows leave this None — the bare tradingsymbol IS the quote key.
+    quote_symbol: Optional[str] = None
 
 
 class MoversResponse(msgspec.Struct):
@@ -1469,6 +1477,14 @@ class WatchlistController(Controller):
             broker_ltp = float(q.get("last_price") or 0.0)
             ohlc = q.get("ohlc") or {}
             prev_close = float(ohlc.get("close") or 0.0)
+            # MCX kite_key is "MCX:{fut_sym}". Extract the resolved contract
+            # name so the frontend can key _liveLtpSnap lookups against the
+            # same symbol the SSE ticker uses (CRUDEOIL26JUNFUT, not CRUDEOIL).
+            # NSE kite_key has no prefix — leave quote_symbol None so
+            # tradingsymbol is used as the SSE lookup key unchanged.
+            row_quote_symbol: Optional[str] = None
+            if exchange == "MCX" and kite_key.startswith("MCX:"):
+                row_quote_symbol = kite_key[4:]  # strip "MCX:" prefix
 
             # Resolver dispatch — kept even for the open-exchange branch
             # so tests can verify a single code path for the triad.
@@ -1499,6 +1515,9 @@ class WatchlistController(Controller):
                 "exchange": exchange,
                 "price_source": source,
                 "is_animating": animating,
+                # Carry the resolved contract symbol so _combine_movers +
+                # MoverRow construction can propagate it to the frontend.
+                "quote_symbol": row_quote_symbol,
             }
 
             if underlying in _session_movers:
@@ -1509,6 +1528,8 @@ class WatchlistController(Controller):
                 entry["previous_close"] = prev_close
                 entry["price_source"] = source
                 entry["is_animating"] = animating
+                if row_quote_symbol:
+                    entry["quote_symbol"] = row_quote_symbol
                 if abs(change_pct) > abs(entry["peak_pct"]):
                     entry["peak_pct"] = change_pct
             elif abs(change_pct) >= MOVER_THRESHOLD_PCT:
@@ -1522,6 +1543,7 @@ class WatchlistController(Controller):
                     "exchange": exchange,
                     "price_source": source,
                     "is_animating": animating,
+                    "quote_symbol": row_quote_symbol,
                 }
 
         # Combine → directional-fair top-N (see _combine_movers docstring
@@ -1549,6 +1571,7 @@ class WatchlistController(Controller):
                 price_source=entry.get("price_source", "live"),
                 current_price=entry.get("current_price", entry["last_price"]),
                 is_animating=entry.get("is_animating", True),
+                quote_symbol=entry.get("quote_symbol") or None,
             ))
 
         rows.sort(key=lambda r: abs(r.change_pct), reverse=True)

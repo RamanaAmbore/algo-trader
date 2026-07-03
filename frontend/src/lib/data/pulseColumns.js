@@ -71,8 +71,19 @@ export function mkPnlCellClass({ RA, getMpFlash, getLtpFlashUp, getLtpFlashDown 
 export function mkResolveCellLtp({ getLiveLtpSnap }) {
   return (p) => {
     if (!p?.data) return null;
+    const snap = getLiveLtpSnap();
+    // For MCX mover rows, tradingsymbol is the bare commodity root
+    // (CRUDEOIL) while SSE ticks are keyed on the resolved front-month
+    // contract (CRUDEOIL26JUNFUT). Try quote_symbol first so the LTP
+    // cell reads the sub-second SSE value rather than falling through
+    // to the 30 s polled last_price.
+    const quoteSym = p.data.quote_symbol ? String(p.data.quote_symbol).toUpperCase() : null;
+    if (quoteSym) {
+      const liveBySym = snap[quoteSym];
+      if (typeof liveBySym === 'number' && liveBySym > 0) return liveBySym;
+    }
     const sym  = String(p.data.tradingsymbol || '').toUpperCase();
-    const live = getLiveLtpSnap()[sym];
+    const live = snap[sym];
     if (typeof live === 'number' && live > 0) return live;
     const polled = Number(p.data.ltp);
     if (Number.isFinite(polled) && polled > 0) return polled;
