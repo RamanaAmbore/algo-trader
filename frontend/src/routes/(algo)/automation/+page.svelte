@@ -567,7 +567,7 @@
     <h1 class="page-title-chip">
       Automation
       {#if simActive}
-        <span class="ml-2 align-middle text-[0.6rem] px-1.5 py-0.5 rounded bg-[#4ade80]/20 text-[#4ade80] border border-[#4ade80]/40 font-mono">
+        <span class="ml-2 align-middle text-[0.6rem] px-1.5 py-0.5 rounded bg-[var(--c-long)]/20 text-[var(--c-long)] border border-[var(--c-long)]/40 font-mono">
           SIMULATOR EVENTS
         </span>
       {/if}
@@ -702,9 +702,9 @@
                operator can scan "what does this agent do" without
                expanding the row. -->
           <span class="flex-1 min-w-0 flex flex-col leading-tight">
-            <span class="text-xs text-[#fbbf24] truncate">{agent.name}</span>
+            <span class="text-xs text-[var(--c-action)] truncate">{agent.name}</span>
             {#if agent.long_name}
-              <span class="text-[0.55rem] text-[#7e97b8] font-mono truncate">{agent.long_name}</span>
+              <span class="text-[0.55rem] text-[var(--c-muted)] font-mono truncate">{agent.long_name}</span>
             {/if}
           </span>
           <!-- Notify-channel icon strip — one tiny emoji per enabled
@@ -828,11 +828,11 @@
                     ]} />
                   {#if lifespanChip(agent)}
                     {@const _ls = lifespanChip(agent)}
-                    <div class="text-[0.55rem] text-[#7e97b8] mt-1" title={_ls.tooltip}>
+                    <div class="text-[0.55rem] text-[var(--c-muted)] mt-1" title={_ls.tooltip}>
                       Current: <span class={'lifespan-chip lifespan-chip-' + _ls.color}>{_ls.label}</span>
                     </div>
                   {:else if agent.lifespan_type === 'persistent'}
-                    <div class="text-[0.55rem] text-[#7e97b8] mt-1 italic">
+                    <div class="text-[0.55rem] text-[var(--c-muted)] mt-1 italic">
                       Persistent — fires until manually deactivated.
                     </div>
                   {/if}
@@ -1109,7 +1109,7 @@
               {/if}
 
               <div class="text-[0.6rem] text-[#c8d8f0]/75 mt-2 mb-1 flex items-center flex-wrap gap-x-2 gap-y-0.5">
-                <span class="text-[#7e97b8]">Alert via:</span> <span>{channelSummary(agent.events)}</span>
+                <span class="text-[var(--c-muted)]">Alert via:</span> <span>{channelSummary(agent.events)}</span>
                 {#if agent.tier && agent.tier !== 'medium'}
                   <span class={'tier-badge tier-badge-' + agent.tier}
                         title="Severity tier — drives topic-scoped suppression in run_cycle.">
@@ -1144,7 +1144,7 @@
               {:else}
                 <div class="text-[0.6rem] text-[#c8d8f0]/60 italic">alert-only (no actions)</div>
               {/if}
-              <div class="flex items-center justify-between text-[0.55rem] text-[#7e97b8] mt-2">
+              <div class="flex items-center justify-between text-[0.55rem] text-[var(--c-muted)] mt-2">
                 <span>
                   Last fire: {agent.last_triggered_at ? logTime(new Date(agent.last_triggered_at)) : '—'}
                   <span class="mx-1">|</span>
@@ -1166,14 +1166,14 @@
                   <button type="button"
                     onclick={(e) => { e.stopPropagation(); runInSim(agent); }}
                     title="Dry-fire this agent in the Simulator (bypasses schedule / cooldown / baseline)"
-                    class="text-[#4ade80] hover:underline">Run in Simulator</button>
+                    class="text-[var(--c-long)] hover:underline">Run in Simulator</button>
                   {:else}
                   <span title="Demo: sim disabled"
-                    class="text-[#7e97b8] cursor-not-allowed opacity-50 select-none">Run in Simulator</span>
+                    class="text-[var(--c-muted)] cursor-not-allowed opacity-50 select-none">Run in Simulator</span>
                   {/if}
                   <button type="button"
                     onclick={(e) => { e.stopPropagation(); startEdit(agent); }}
-                    class="text-[#fbbf24] hover:underline">Edit</button>
+                    class="text-[var(--c-action)] hover:underline">Edit</button>
                 </span>
               </div>
             </div>
@@ -1303,8 +1303,8 @@
   .ai-btn:disabled { opacity: 0.45; cursor: not-allowed; }
   .ai-btn-save {
     border-color: rgba(74,222,128,0.45);
-    background: rgba(74,222,128,0.10);
-    color: #4ade80;
+    background: var(--c-long-10);
+    color: var(--c-long);
   }
   .ai-btn-save:hover:not(:disabled) { background: rgba(74,222,128,0.20); }
   .ai-slug {
@@ -1328,13 +1328,13 @@
   }
   .ai-warns, .ai-errs { margin: 0.4rem 0 0; padding-left: 0.4rem; list-style: none; }
   .ai-warns li {
-    color: #fbbf24;
+    color: var(--c-action);
     font-size: var(--fs-sm);
     font-family: var(--font-numeric);
     padding: 0.08rem 0;
   }
   .ai-errs li {
-    color: #f87171;
+    color: var(--c-short);
     font-size: var(--fs-sm);
     font-family: var(--font-numeric);
     padding: 0.08rem 0;
@@ -1410,7 +1410,7 @@
     margin-bottom: 0.5rem;
   }
   .preview-header { margin-bottom: 0.5rem; }
-  .preview-title { font-weight: 700; color: #fbbf24; font-size: var(--fs-xl); }
+  .preview-title { font-weight: 700; color: var(--c-action); font-size: var(--fs-xl); }
   .preview-desc  { font-style: italic; color: var(--algo-slate)aa; font-size: var(--fs-sm); margin-top: 0.1rem; }
   .preview-meta  { font-size: var(--fs-xs); color: var(--algo-muted); margin-top: 0.2rem; }
   .preview-sep   { margin: 0 0.35rem; color: var(--algo-muted)40; }
@@ -1418,15 +1418,15 @@
     font-size: var(--fs-xs);
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: #fbbf24;
+    color: var(--c-action);
     margin: 0.65rem 0 0.3rem;
     border-bottom: 1px solid rgba(251,191,36,0.15);
     padding-bottom: 0.1rem;
   }
   .preview-muted { color: var(--algo-muted); font-style: italic; }
   .preview-error {
-    color: #f87171;
-    background: rgba(248,113,113,0.1);
+    color: var(--c-short);
+    background: var(--c-short-10);
     border: 1px solid rgba(248,113,113,0.35);
     padding: 0.3rem 0.5rem;
     border-radius: 4px;
@@ -1440,9 +1440,9 @@
     padding: 0.15rem 0 0.15rem 0.5rem;
     margin: 0.15rem 0;
   }
-  :global(.tree-node-all) { border-left-color: #4ade80; }
-  :global(.tree-node-any) { border-left-color: #fbbf24; }
-  :global(.tree-node-not) { border-left-color: #f87171; }
+  :global(.tree-node-all) { border-left-color: var(--c-long); }
+  :global(.tree-node-any) { border-left-color: var(--c-action); }
+  :global(.tree-node-not) { border-left-color: var(--c-short); }
   :global(.tree-op) {
     font-size: var(--fs-2xs);
     letter-spacing: 0.12em;
@@ -1451,9 +1451,9 @@
     color: inherit;
     margin-bottom: 0.1rem;
   }
-  :global(.tree-node-all .tree-op) { color: #4ade80; }
-  :global(.tree-node-any .tree-op) { color: #fbbf24; }
-  :global(.tree-node-not .tree-op) { color: #f87171; }
+  :global(.tree-node-all .tree-op) { color: var(--c-long); }
+  :global(.tree-node-any .tree-op) { color: var(--c-action); }
+  :global(.tree-node-not .tree-op) { color: var(--c-short); }
   :global(.tree-children) { padding-left: 0.25rem; }
   :global(.tree-leaf) {
     font-size: var(--fs-sm);
@@ -1475,7 +1475,7 @@
     border: 1px solid;
     font-family: var(--font-numeric);
   }
-  .chip-on  { background: rgba(74,222,128,0.15);  color: #4ade80; border-color: rgba(74,222,128,0.4); }
+  .chip-on  { background: rgba(74,222,128,0.15);  color: var(--c-long); border-color: rgba(74,222,128,0.4); }
   .chip-off { background: rgba(180,200,230,0.08); color: var(--algo-muted); border-color: rgba(180,200,230,0.2); }
   .preview-action {
     background: rgba(251,191,36,0.06);
@@ -1483,7 +1483,7 @@
     border-radius: 3px;
     padding: 0.3rem 0.4rem;
   }
-  .preview-action-type { color: #fbbf24; font-weight: 700; font-family: var(--font-numeric); font-size: var(--fs-sm); }
+  .preview-action-type { color: var(--c-action); font-weight: 700; font-family: var(--font-numeric); font-size: var(--fs-sm); }
 
   /* Lifespan chip — shows next to row meta when an agent is non-
      persistent. Uses the sky-blue utility palette so it reads as an
@@ -1516,8 +1516,8 @@
     cursor: help;
   }
   .lifespan-chip-sky   { color: #7dd3fc; border-color: rgba(125,211,252,0.45); background: rgba(125,211,252,0.10); }
-  .lifespan-chip-amber { color: #fbbf24; border-color: rgba(251,191,36,0.55);  background: rgba(251,191,36,0.10); }
-  .lifespan-chip-red   { color: #f87171; border-color: rgba(248,113,113,0.55); background: rgba(248,113,113,0.12); }
+  .lifespan-chip-amber { color: var(--c-action); border-color: rgba(251,191,36,0.55);  background: rgba(251,191,36,0.10); }
+  .lifespan-chip-red   { color: var(--c-short); border-color: rgba(248,113,113,0.55); background: rgba(248,113,113,0.12); }
   .lifespan-chip-grey  { color: #94a3b8; border-color: rgba(148,163,184,0.40); background: rgba(148,163,184,0.10); }
   .preview-action-params {
     font-size: var(--fs-xs);
@@ -1583,9 +1583,9 @@
   .tier-pill:hover { color: var(--algo-slate); border-color: rgba(255,255,255,0.3); }
   /* When ON, pill picks its severity colour. Match the algo palette
      (red/orange/amber/grey for crit/high/med/low). */
-  .tier-pill-critical.on { background: rgba(248,113,113,0.18); color: #f87171; border-color: #f87171; }
-  .tier-pill-high.on     { background: rgba(251,191,36,0.18);  color: #fbbf24; border-color: #fbbf24; }
-  .tier-pill-medium.on   { background: rgba(251,191,36,0.18);  color: #fbbf24; border-color: #fbbf24; }
+  .tier-pill-critical.on { background: rgba(248,113,113,0.18); color: var(--c-short); border-color: var(--c-short); }
+  .tier-pill-high.on     { background: rgba(251,191,36,0.18);  color: var(--c-action); border-color: var(--c-action); }
+  .tier-pill-medium.on   { background: rgba(251,191,36,0.18);  color: var(--c-action); border-color: var(--c-action); }
   .tier-pill-low.on      { background: rgba(125,211,252,0.16); color: #7dd3fc; border-color: #7dd3fc; }
 
   /* Tier badge — non-editable mini-pill rendered in each agent's row to
@@ -1603,8 +1603,8 @@
     border: 1px solid;
     text-transform: lowercase;
   }
-  .tier-badge-critical { background: rgba(248,113,113,0.15); color: #f87171; border-color: rgba(248,113,113,0.55); }
-  .tier-badge-high     { background: rgba(251,191,36,0.15);  color: #fbbf24; border-color: rgba(251,191,36,0.55); }
+  .tier-badge-critical { background: rgba(248,113,113,0.15); color: var(--c-short); border-color: rgba(248,113,113,0.55); }
+  .tier-badge-high     { background: rgba(251,191,36,0.15);  color: var(--c-action); border-color: rgba(251,191,36,0.55); }
   .tier-badge-low      { background: rgba(125,211,252,0.15); color: #7dd3fc; border-color: rgba(125,211,252,0.55); }
 
   /* Topic badge — secondary identifier shown alongside the tier so the
@@ -1648,7 +1648,7 @@
   }
   .channel-label {
     font-weight: 700;
-    color: #fbbf24;
+    color: var(--c-action);
     letter-spacing: 0.02em;
   }
   .channel-desc {
@@ -1671,15 +1671,15 @@
     white-space: nowrap;
     transition: background-color 0.08s, border-color 0.08s;
   }
-  .action-add-close  { background: rgba(248,113,113,0.12); color: #f87171; border-color: rgba(248,113,113,0.4); }
-  .action-add-close:hover  { background: rgba(248,113,113,0.25); border-color: #f87171; }
-  .action-add-place  { background: rgba(74,222,128,0.12);  color: #4ade80; border-color: rgba(74,222,128,0.4); }
-  .action-add-place:hover  { background: rgba(74,222,128,0.25); border-color: #4ade80; }
+  .action-add-close  { background: rgba(248,113,113,0.12); color: var(--c-short); border-color: rgba(248,113,113,0.4); }
+  .action-add-close:hover  { background: rgba(248,113,113,0.25); border-color: var(--c-short); }
+  .action-add-place  { background: rgba(74,222,128,0.12);  color: var(--c-long); border-color: rgba(74,222,128,0.4); }
+  .action-add-place:hover  { background: rgba(74,222,128,0.25); border-color: var(--c-long); }
   /* `.action-add-place-tpl` removed in audit pass 6 — the
      +place_order pill now ships with template_slug="default-bull" in
      the skeleton so a separate "templated" variant was redundant. */
-  .action-add-chase  { background: rgba(251,191,36,0.12);  color: #fbbf24; border-color: rgba(251,191,36,0.4); }
-  .action-add-chase:hover  { background: rgba(251,191,36,0.25); border-color: #fbbf24; }
+  .action-add-chase  { background: rgba(251,191,36,0.12);  color: var(--c-action); border-color: rgba(251,191,36,0.4); }
+  .action-add-chase:hover  { background: rgba(251,191,36,0.25); border-color: var(--c-action); }
   .action-add-cancel { background: rgba(148,163,184,0.12); color: var(--algo-slate); border-color: rgba(148,163,184,0.35); }
   .action-add-cancel:hover { background: rgba(148,163,184,0.25); border-color: #94a3b8; }
   .action-add-log    { background: rgba(125,211,252,0.12); color: #7dd3fc; border-color: rgba(125,211,252,0.4); }

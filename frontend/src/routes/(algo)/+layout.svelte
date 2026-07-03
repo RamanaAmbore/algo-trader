@@ -461,11 +461,11 @@
   // shadow orange) visually distinct from the dangerous one.
   const MODE_COLOR = {
     idle:   '#94a3b8',   // slate-400 — engine dormant (dev only)
-    sim:    '#4ade80',   // green-400 — matches replay (both safe/sandbox)
-    replay: '#4ade80',   // pos-green
+    sim:    'var(--c-long)',   // green-400 — matches replay (both safe/sandbox)
+    replay: 'var(--c-long)',   // pos-green
     paper:  '#7dd3fc',   // info-sky
     shadow: '#fb923c',   // short-orange
-    live:   '#f87171',   // red-400 — danger / real broker
+    live:   'var(--c-short)',   // red-400 — danger / real broker
   };
   // ── Persistence refresh-cycle mode (slice AK) ───────────────────
   // Admin-only — surfaces when the operator has flipped persistence
@@ -1361,7 +1361,7 @@
   .algo-brand-name {
     font-size: var(--fs-lg);
     font-weight: 800;
-    color: #fbbf24;
+    color: var(--c-action);
     letter-spacing: 0.08em;
     font-family: var(--font-numeric);
     /* Match the bull's box height so the text's line-box and the
@@ -1450,8 +1450,8 @@
   }
   :global(.algo-nav-btn:hover) {
     background: rgba(251,191,36,0.1);
-    color: #fbbf24;
-    border-left-color: #fbbf24;
+    color: var(--c-action);
+    border-left-color: var(--c-action);
   }
   /* "Hire Me" button — demo-only nav CTA. Amber-on-amber so it reads
      as a primary affordance without competing with the active-nav
@@ -1461,8 +1461,8 @@
      not "billboard". */
   :global(.algo-nav-btn.algo-hire-btn) {
     background: rgba(251, 191, 36, 0.16);
-    color: #fbbf24;
-    border-left-color: #fbbf24;
+    color: var(--c-action);
+    border-left-color: var(--c-action);
     font-weight: 700;
     animation: algo-hire-glow 3.6s ease-in-out infinite;
   }
@@ -1479,14 +1479,14 @@
     :global(.algo-nav-btn.algo-hire-btn) { animation: none; }
   }
   :global(.algo-mobile-item.algo-hire-btn) {
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 700;
   }
   :global(.algo-nav-btn-active) {
     background: rgba(251,191,36,0.15);
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 700;
-    border-left-color: #fbbf24;
+    border-left-color: var(--c-action);
   }
 
   /* Back-to-investor-site link — amber-pill emphasis on dark, mirroring
@@ -1550,7 +1550,7 @@
     font-weight: 500;
     border-radius: 0.25rem;
     background: rgba(251,191,36,0.10);
-    color: #fbbf24;
+    color: var(--c-action);
     border: 1px solid rgba(251,191,36,0.32);
     cursor: pointer;
     font-family: var(--font-numeric);
@@ -1563,7 +1563,7 @@
   .algo-pub-link:hover {
     background: rgba(251,191,36,0.20);
     border-color: rgba(251,191,36,0.5);
-    color: #fbbf24;
+    color: var(--c-action);
   }
 
   /* User pill */
@@ -1584,7 +1584,7 @@
   }
   .algo-user-role {
     font-size: var(--fs-2xs);
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -1592,9 +1592,9 @@
   /* Designated tier — violet, matches the DESIGNATED badge in /admin. */
   .algo-user-role.algo-user-role-designated { color: #c084fc; }
   /* Admin tier — amber-400, canonical config/ops colour. */
-  .algo-user-role.algo-user-role-admin { color: #fbbf24; }
+  .algo-user-role.algo-user-role-admin { color: var(--c-action); }
   /* Trader — green-400 (BUY/long convention, active-trading role). */
-  .algo-user-role.algo-user-role-trader { color: #4ade80; }
+  .algo-user-role.algo-user-role-trader { color: var(--c-long); }
   /* Risk — amber-400 at slightly reduced alpha to distinguish from admin
      in dense contexts; same hue signals "caution/oversight" tier. */
   .algo-user-role.algo-user-role-risk { color: rgba(251,191,36,0.75); }
@@ -1663,11 +1663,11 @@
   }
   .algo-group-item:hover {
     background: rgba(251,191,36,0.12);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .algo-group-item-active {
     background: rgba(251,191,36,0.18);
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 700;
   }
 
@@ -1725,8 +1725,8 @@
     outline: none;
   }
   .algo-mobile-item:last-child { border-bottom: none; }
-  .algo-mobile-item:hover { background: rgba(251,191,36,0.1); color: #fbbf24; }
-  .algo-mobile-active { color: #fbbf24; background: rgba(251,191,36,0.1); }
+  .algo-mobile-item:hover { background: rgba(251,191,36,0.1); color: var(--c-action); }
+  .algo-mobile-active { color: var(--c-action); background: rgba(251,191,36,0.1); }
 
   /* Group caption inside the mobile drawer — small all-caps label that
      marks each section (Monitor / Analyze / Modes / Build / Config).
@@ -1751,7 +1751,7 @@
      row, not another tab. Symmetric with the public-side mobile
      menu's gold-pill algo-site link. */
   .algo-mobile-site {
-    color: #fbbf24;
+    color: var(--c-action);
     font-size: var(--fs-lg);
     font-weight: 500;
     background: rgba(251,191,36,0.10);
@@ -1846,7 +1846,7 @@
     text-decoration: none;
     border-bottom: 1px dotted rgba(251,191,36,0.45);
   }
-  .algo-footer-link:hover { color: #fbbf24; border-bottom-color: #fbbf24; }
+  .algo-footer-link:hover { color: var(--c-action); border-bottom-color: var(--c-action); }
 
   /* Visible scrollbars on algo pages. Default browser scrollbars on
      dark themes are so low-contrast they're easy to miss when content
@@ -1878,7 +1878,7 @@
   }
   :global(.algo-viewport ::-webkit-scrollbar-thumb:hover),
   :global(.algo-content ::-webkit-scrollbar-thumb:hover) {
-    background: #fbbf24;
+    background: var(--c-action);
     background-clip: padding-box;
   }
 
@@ -2092,17 +2092,17 @@
     color-scheme: dark;
     accent-color: #fbbf24;
   }
-  :global(.algo-content .field-input:focus) { border-color: #fbbf24 !important; }
+  :global(.algo-content .field-input:focus) { border-color: var(--c-action) !important; }
 
   /* .field-input sets border-color shorthand which overwrites the amber
      left rule shipped with .cmd-input — restore it inside algo pages so
      the Terminal textarea and any other cmd-input surface keep the
      Bloomberg-style amber accent that the Orders command bar uses. */
   :global(.algo-content .cmd-input) {
-    border-left: 3px solid #fbbf24 !important;
+    border-left: 3px solid var(--c-action) !important;
   }
   :global(.algo-content .cmd-input:focus) {
-    border-left-color: #fbbf24 !important;
+    border-left-color: var(--c-action) !important;
   }
 
   /* .cmd-surface left-accent rule retired — operator reverted the
@@ -2143,25 +2143,25 @@
   :global(.algo-content select.field-input option:checked),
   :global(.algo-content select option:checked) {
     background-color: #273552;
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 700;
   }
   :global(.algo-content select.field-input option:hover),
   :global(.algo-content select option:hover) {
     background-color: rgba(251,191,36,0.15);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   /* section-heading in algo context: align to canonical .algo-card-title
      typography so every card / section header reads with the same amber
      intensity + monospace stack. Operator (2026-07-01): "header text
      color is not consistent. GREEKS is good — make them uniform." */
   :global(.algo-content .section-heading) {
-    color: #fbbf24;
+    color: var(--c-action);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     letter-spacing: 0.04em;
   }
   :global(.algo-content .page-title-chip) {
-    color: #fbbf24;
+    color: var(--c-action);
     border-bottom: none;
     padding-bottom: 0;
     /* h1 default browser margin (~0.67em top/bottom) inflated the
@@ -2180,11 +2180,11 @@
   :global(.algo-content .btn-secondary:hover:not(:disabled)) {
     background: rgba(251,191,36,0.1);
     border-color: rgba(251,191,36,0.5);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   :global(.algo-content .btn-tertiary) { color: var(--algo-slate); }
-  :global(.algo-content .btn-tertiary:hover) { background: rgba(251,191,36,0.1); color: #fbbf24; }
-  :global(.algo-content .btn-tertiary.active) { color: #fbbf24; background: rgba(251,191,36,0.15); }
+  :global(.algo-content .btn-tertiary:hover) { background: rgba(251,191,36,0.1); color: var(--c-action); }
+  :global(.algo-content .btn-tertiary.active) { color: var(--c-action); background: rgba(251,191,36,0.15); }
 
   /* ── Execution-mode combobox ─────────────────────────────────────────── */
   .mode-combo-wrap {
@@ -2214,11 +2214,11 @@
   .algo-mode-badge[data-mode='paper']  { color:#7dd3fc; background:rgba(125,211,252,0.10);  border-color:#7dd3fc; }
   /* LIVE: red palette — see MODE_COLOR comment. Heavier fill alpha
      than the safer modes so the pill reads as ALARMED on a glance. */
-  .algo-mode-badge[data-mode='live']   { color:#f87171; background:rgba(248,113,113,0.22); border-color:#f87171; }
+  .algo-mode-badge[data-mode='live']   { color:var(--c-short); background:var(--c-short-22); border-color:var(--c-short); }
   .algo-mode-badge[data-mode='shadow'] { color:#fb923c; background:rgba(251,146,60,0.10);  border-color:#fb923c; }
   /* SIM uses green — matches REPLAY and CLAUDE.md spec: "SIM/REPLAY green". */
-  .algo-mode-badge[data-mode='sim']    { color:#4ade80; background:rgba(74,222,128,0.10);  border-color:#4ade80; }
-  .algo-mode-badge[data-mode='replay'] { color:#4ade80; background:rgba(74,222,128,0.10);  border-color:#4ade80; }
+  .algo-mode-badge[data-mode='sim']    { color:var(--c-long); background:var(--c-long-10);  border-color:var(--c-long); }
+  .algo-mode-badge[data-mode='replay'] { color:var(--c-long); background:var(--c-long-10);  border-color:var(--c-long); }
 
   /* Full-viewport invisible overlay so clicking outside closes the dropdown.
      Must sit just below the dropdown itself, but above the order modal
@@ -2274,7 +2274,7 @@
     right: 0;
     background: rgba(248,113,113,0.12);
     border: 1px solid rgba(248, 113, 113, 0.45);
-    color: #f87171;
+    color: var(--c-short);
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
     padding: 0.2rem 0.5rem;
@@ -2313,18 +2313,18 @@
     background: currentColor;
   }
   .broker-chip-ok {
-    color: #4ade80;
+    color: var(--c-long);
     background: rgba(74, 222, 128, 0.12);
     border: 1px solid rgba(74, 222, 128, 0.5);
   }
   .broker-chip-partial {
-    color: #fbbf24;
+    color: var(--c-action);
     background: rgba(251, 191, 36, 0.12);
     border: 1px solid rgba(251, 191, 36, 0.5);
     animation: algo-mode-dot 2s ease-in-out infinite;
   }
   .broker-chip-down {
-    color: #f87171;
+    color: var(--c-short);
     background: rgba(248, 113, 113, 0.14);
     border: 1px solid rgba(248, 113, 113, 0.55);
     animation: algo-mode-dot 2s ease-in-out infinite;
@@ -2352,7 +2352,7 @@
     font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.07em;
-    color: #fbbf24;
+    color: var(--c-action);
     background: rgba(251, 191, 36, 0.12);
     border: 1px solid rgba(251, 191, 36, 0.5);
     cursor: pointer;
@@ -2393,12 +2393,12 @@
   }
   .persist-chip:hover { filter: brightness(1.15); }
   .persist-chip-soft {
-    color: #fbbf24;
+    color: var(--c-action);
     background: rgba(251, 191, 36, 0.12);
     border: 1px solid rgba(251, 191, 36, 0.5);
   }
   .persist-chip-hard {
-    color: #f87171;
+    color: var(--c-short);
     background: rgba(248, 113, 113, 0.14);
     border: 1px solid rgba(248, 113, 113, 0.55);
   }
@@ -2436,7 +2436,7 @@
   }
   :global(.algo-status-card[data-status="running"]) {
     border-color: rgba(251,191,36,0.65);
-    border-left-color: #fbbf24;
+    border-left-color: var(--c-action);
     box-shadow: 0 2px 8px rgba(0,0,0,0.45), 0 0 0 1px rgba(251,191,36,0.18);
   }
   :global(.algo-status-card[data-status="cooldown"]) {
@@ -2445,7 +2445,7 @@
   }
   :global(.algo-status-card[data-status="error"]) {
     border-color: rgba(248,113,113,0.85);
-    border-left-color: #f87171;
+    border-left-color: var(--c-short);
     box-shadow: 0 2px 8px rgba(0,0,0,0.45), 0 0 0 1px rgba(248,113,113,0.28);
   }
 

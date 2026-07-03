@@ -624,7 +624,7 @@
   {#if loading}
     <LoadingSkeleton variant="block" rows={5} height="2.5rem" />
   {:else if !users.length}
-    <p class="text-xs text-[#7e97b8]">No users registered.</p>
+    <p class="text-xs text-[var(--c-muted)]">No users registered.</p>
   {:else}
     <div class="space-y-3 content-fade-in">
       {#each users as user}
@@ -636,23 +636,23 @@
           <!-- Header row -->
           <div class="flex items-center justify-between mb-2">
             <div class="flex items-center flex-wrap gap-1.5">
-              <span class="font-semibold text-xs text-[#fbbf24]">{user.display_name}</span>
+              <span class="font-semibold text-xs text-[var(--c-action)]">{user.display_name}</span>
               <span class="text-xs text-[#c8d8f0]/70">@{user.username}</span>
               {#if isSelf}
                 <span class="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 text-[0.6rem] font-semibold uppercase border border-sky-500/40">You</span>
               {/if}
-              <span class="text-[0.6rem] text-[#7e97b8] font-mono">{user.account_id}</span>
+              <span class="text-[0.6rem] text-[var(--c-muted)] font-mono">{user.account_id}</span>
               <span class="px-1.5 py-0.5 rounded text-[0.6rem] font-semibold uppercase border
                 {user.role === 'designated'
                   ? 'bg-violet-500/15 text-[#c084fc] border-violet-500/40'
                   : user.role === 'admin'
                     ? 'bg-amber-500/15 text-amber-400 border-amber-500/40'
                     : user.role === 'trader'
-                      ? 'bg-green-500/15 text-[#4ade80] border-green-500/40'
+                      ? 'bg-green-500/15 text-[var(--c-long)] border-green-500/40'
                       : user.role === 'risk'
                         ? 'bg-amber-500/15 text-amber-400/75 border-amber-500/30'
                         : user.role === 'partner'
-                          ? 'bg-green-500/10 text-[#4ade80]/60 border-green-500/25'
+                          ? 'bg-green-500/10 text-[var(--c-long)]/60 border-green-500/25'
                           : 'bg-slate-500/15 text-slate-400 border-slate-500/40'}">
                 {user.role}
               </span>
@@ -948,11 +948,11 @@
   <!-- History panel -->
   {#if showEmailHistory}
     <div class="mb-4 rounded border border-[rgba(125,211,252,0.25)] bg-[rgba(14,22,44,0.5)] p-3">
-      <div class="text-[0.6rem] text-[#7e97b8] uppercase font-bold mb-2 tracking-wider">Recent send history</div>
+      <div class="text-[0.6rem] text-[var(--c-muted)] uppercase font-bold mb-2 tracking-wider">Recent send history</div>
       {#if emailEventsLoading}
-        <div class="text-xs text-[#7e97b8] animate-pulse">Loading…</div>
+        <div class="text-xs text-[var(--c-muted)] animate-pulse">Loading…</div>
       {:else if emailEvents.length === 0}
-        <div class="text-xs text-[#7e97b8]">No sends yet.</div>
+        <div class="text-xs text-[var(--c-muted)]">No sends yet.</div>
       {:else}
         <div class="space-y-1.5">
           {#each emailEvents as ev}
@@ -961,7 +961,7 @@
               {hasFail ? 'text-red-300' : 'text-[#c8d8f0]/80'}">
               <span class="tabular-nums opacity-70">{_relTime(ev.created_at)}</span>
               <span>·</span>
-              <span class="text-[#fbbf24]/80">{ev.actor ?? '—'}</span>
+              <span class="text-[var(--c-action)]/80">{ev.actor ?? '—'}</span>
               <span>→</span>
               <span>{ev.recipients_label ?? ev.recipients ?? '—'}</span>
               <span>·</span>
@@ -1001,7 +1001,7 @@
       maxlength="200"
       class="field-input w-full"
       placeholder="Email subject…" />
-    <div class="text-[0.58rem] text-[#7e97b8] text-right tabular-nums mt-0.5">{emailSubject.length}/200</div>
+    <div class="text-[0.58rem] text-[var(--c-muted)] text-right tabular-nums mt-0.5">{emailSubject.length}/200</div>
   </div>
 
   <!-- Body -->
@@ -1013,7 +1013,7 @@
       maxlength="50000"
       class="field-input w-full resize-y font-mono text-[0.65rem]"
       placeholder="Message body…"></textarea>
-    <div class="text-[0.58rem] text-[#7e97b8] flex justify-between tabular-nums mt-0.5">
+    <div class="text-[0.58rem] text-[var(--c-muted)] flex justify-between tabular-nums mt-0.5">
       <span>{emailBody.split('\n').length} lines</span>
       <span>{emailBody.length}/50000</span>
     </div>
@@ -1026,7 +1026,7 @@
       disabled={!emailReady || sending}
       class="btn-primary text-[0.65rem] py-1.5 px-5 disabled:opacity-40 flex items-center gap-2">
       {#if sending}
-        <span class="inline-block h-3 w-3 rounded-full border-2 border-[#fbbf24] border-t-transparent animate-spin"></span>
+        <span class="inline-block h-3 w-3 rounded-full border-2 border-[var(--c-action)] border-t-transparent animate-spin"></span>
         Sending…
       {:else}
         Send to {
@@ -1039,7 +1039,7 @@
       {/if}
     </button>
     {#if lastSentSummary && !emailResult}
-      <span class="text-[0.6rem] text-[#7e97b8] tabular-nums font-mono">
+      <span class="text-[0.6rem] text-[var(--c-muted)] tabular-nums font-mono">
         last sent: {_relTime(lastSentSummary.at.toISOString())} — sent {lastSentSummary.sent}/{lastSentSummary.total}
       </span>
     {/if}
@@ -1143,7 +1143,7 @@
       <section class="ip-modal-list">
         <div class="ip-modal-section-head">
           Existing tokens
-          {#if portalLoading}<span class="text-[0.6rem] text-[#7e97b8]"> · loading…</span>{/if}
+          {#if portalLoading}<span class="text-[0.6rem] text-[var(--c-muted)]"> · loading…</span>{/if}
         </div>
         {#if !portalLoading && portalTokens.length === 0}
           <div class="ip-modal-empty">No tokens minted yet.</div>
@@ -1276,7 +1276,7 @@
       <section class="ip-modal-list">
         <div class="ip-modal-section-head">
           Event log
-          {#if evLoading}<span class="text-[0.6rem] text-[#7e97b8]"> · loading…</span>{/if}
+          {#if evLoading}<span class="text-[0.6rem] text-[var(--c-muted)]"> · loading…</span>{/if}
         </div>
         <div class="ip-modal-mint-row" style="margin-bottom:0.5rem;">
           <div class="ip-modal-field">
@@ -1372,7 +1372,7 @@
     font-family: var(--font-numeric);
   }
   .ip-modal-subtitle {
-    font-size: var(--fs-md); color: #7e97b8; margin-top: 0.15rem;
+    font-size: var(--fs-md); color: var(--c-muted); margin-top: 0.15rem;
     font-family: var(--font-numeric);
   }
   /* Thin wrapper for the AlgoTabs strip inside the portal modal.
@@ -1399,7 +1399,7 @@
     font-size: var(--fs-lg); margin-bottom: 0.7rem;
   }
   .ip-modal-fresh {
-    background: rgba(74, 222, 128, 0.10);
+    background: var(--c-long-10);
     border: 1px solid rgba(74, 222, 128, 0.35);
     border-radius: 6px;
     padding: 0.7rem 0.9rem;
@@ -1407,7 +1407,7 @@
   }
   .ip-modal-fresh-lbl {
     font-size: var(--fs-xs); font-weight: 800; letter-spacing: 0.06em;
-    text-transform: uppercase; color: #4ade80;
+    text-transform: uppercase; color: var(--c-long);
     margin-bottom: 0.35rem;
   }
   .ip-modal-fresh-url-row {
@@ -1425,7 +1425,7 @@
   }
   .ip-modal-fresh-hint {
     margin-top: 0.4rem;
-    font-size: var(--fs-sm); color: #7e97b8; line-height: 1.5;
+    font-size: var(--fs-sm); color: var(--c-muted); line-height: 1.5;
   }
 
   .ip-modal-section-head {
@@ -1442,15 +1442,15 @@
   .ip-modal-field.grow { flex: 1 1 12rem; }
   .ip-modal-yr { width: 6rem; }
   .ip-modal-field-lbl {
-    font-size: var(--fs-xs); color: #7e97b8; letter-spacing: 0.04em;
+    font-size: var(--fs-xs); color: var(--c-muted); letter-spacing: 0.04em;
     text-transform: uppercase; font-weight: 700;
   }
   .ip-modal-field-suffix {
-    font-size: var(--fs-sm); color: #7e97b8;
+    font-size: var(--fs-sm); color: var(--c-muted);
   }
 
   .ip-modal-empty {
-    padding: 1rem; text-align: center; color: #7e97b8;
+    padding: 1rem; text-align: center; color: var(--c-muted);
     font-size: var(--fs-lg); font-style: italic;
   }
   .ip-modal-tbl-wrap {
@@ -1475,7 +1475,7 @@
   .ip-modal-tbl td.td-mono { font-family: var(--font-numeric); font-size: var(--fs-md); }
   .ip-modal-tbl td.td-num  { text-align: right; font-variant-numeric: tabular-nums; }
   .ip-modal-tbl td.td-actions { text-align: right; }
-  .ip-modal-tbl tr.revoked td { color: #7e97b8; }
+  .ip-modal-tbl tr.revoked td { color: var(--c-muted); }
   .ip-modal-note { max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   .ip-pill {
@@ -1483,7 +1483,7 @@
     font-size: var(--fs-2xs); font-weight: 800; letter-spacing: 0.06em;
     text-transform: uppercase; border-radius: 2px;
   }
-  .ip-pill-active  { background: rgba(74, 222, 128, 0.15); color: #4ade80; border: 1px solid rgba(74,222,128,0.4); }
+  .ip-pill-active  { background: rgba(74, 222, 128, 0.15); color: var(--c-long); border: 1px solid rgba(74,222,128,0.4); }
   .ip-pill-revoked { background: rgba(248, 113, 113, 0.12); color: #fca5a5; border: 1px solid rgba(248,113,113,0.35); }
   .ip-pill-expired { background: rgba(126, 151, 184, 0.12); color: #c8d8f0; border: 1px solid rgba(126,151,184,0.3); }
 </style>

@@ -437,21 +437,21 @@
     background: rgba(34, 47, 75, 0.30);
   }
   .audit-table tbody tr:hover td {
-    background: rgba(34, 211, 238, 0.08);
+    background: var(--c-info-08);
   }
 
   .audit-empty-row {
     text-align: center; padding: 1.5rem !important;
-    color: #7e97b8; font-style: italic;
+    color: var(--c-muted); font-style: italic;
   }
 
   .audit-ts        { color: #94a3b8; white-space: nowrap; }
-  .audit-actor     { color: #fbbf24; font-weight: 700; }
+  .audit-actor     { color: var(--c-action); font-weight: 700; }
   .audit-action    { color: #c8d8f0; }
   .audit-target-type { color: #67e8f9; font-weight: 700; margin-right: 0.3rem; }
   .audit-target-id   { color: #c8d8f0; }
   .audit-summary   { max-width: 18rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .audit-req-id    { color: #7e97b8; font-size: var(--fs-sm); }
+  .audit-req-id    { color: var(--c-muted); font-size: var(--fs-sm); }
   .audit-ip        { color: #94a3b8; font-size: var(--fs-sm); white-space: nowrap; }
 
   .audit-status {
@@ -461,9 +461,9 @@
     font-size: var(--fs-sm);
     font-weight: 800;
   }
-  .audit-st-ok    { background: rgba(74, 222, 128, 0.18); color: #4ade80; }
-  .audit-st-warn  { background: rgba(251, 191, 36, 0.22); color: #fbbf24; }
-  .audit-st-err   { background: rgba(248, 113, 113, 0.22); color: #f87171; }
+  .audit-st-ok    { background: rgba(74, 222, 128, 0.18); color: var(--c-long); }
+  .audit-st-warn  { background: var(--c-action-22); color: var(--c-action); }
+  .audit-st-err   { background: var(--c-short-22); color: var(--c-short); }
 
   .audit-role {
     display: inline-block;
@@ -477,10 +477,10 @@
     background: rgba(126, 151, 184, 0.18);
     border: 1px solid rgba(126, 151, 184, 0.32);
   }
-  .audit-role-admin      { background: rgba(251, 191, 36, 0.16); border-color: rgba(251, 191, 36, 0.45); color: #fbbf24; }
+  .audit-role-admin      { background: rgba(251, 191, 36, 0.16); border-color: rgba(251, 191, 36, 0.45); color: var(--c-action); }
   .audit-role-designated { background: rgba(192, 132, 252, 0.16); border-color: rgba(192, 132, 252, 0.45); color: #c084fc; }
-  .audit-role-trader     { background: rgba(74, 222, 128, 0.18); border-color: rgba(74, 222, 128, 0.45); color: #4ade80; }
-  .audit-role-risk       { background: rgba(251, 191, 36, 0.18); border-color: rgba(251, 191, 36, 0.45); color: #fbbf24; }
+  .audit-role-trader     { background: rgba(74, 222, 128, 0.18); border-color: rgba(74, 222, 128, 0.45); color: var(--c-long); }
+  .audit-role-risk       { background: rgba(251, 191, 36, 0.18); border-color: rgba(251, 191, 36, 0.45); color: var(--c-action); }
   .audit-role-partner    { background: rgba(74, 222, 128, 0.13); border-color: rgba(74, 222, 128, 0.35); color: #86efac; }
   .audit-role-demo       { background: rgba(168, 85, 247, 0.18); border-color: rgba(168, 85, 247, 0.45); color: #c084fc; }
   .audit-role-system     { background: rgba(196, 192, 168, 0.18); border-color: rgba(196, 192, 168, 0.45); color: #d4d0a8; }
@@ -538,9 +538,9 @@
     cursor: pointer;
     font-family: var(--font-numeric);
   }
-  .audit-quick:hover { background: rgba(34, 211, 238, 0.08); color: #c8d8f0; }
+  .audit-quick:hover { background: var(--c-info-08); color: #c8d8f0; }
   .audit-quick.active {
-    background: rgba(34, 211, 238, 0.14);
+    background: var(--c-info-14);
     border-color: rgba(34, 211, 238, 0.55);
     color: #67e8f9;
   }
@@ -552,12 +552,12 @@
   .audit-quick.audit-quick-errors.active {
     background: rgba(248, 113, 113, 0.16);
     border-color: rgba(248, 113, 113, 0.55);
-    color: #f87171;
+    color: var(--c-short);
   }
   .audit-quick.audit-quick-mine.active {
     background: rgba(251, 191, 36, 0.16);
     border-color: rgba(251, 191, 36, 0.55);
-    color: #fbbf24;
+    color: var(--c-action);
   }
 
   /* Category badge in the table row — single source of truth for
@@ -576,9 +576,9 @@
     border: 1px solid rgba(126, 151, 184, 0.32);
     font-family: var(--font-numeric);
   }
-  .audit-cat-order   { background: rgba(74, 222, 128, 0.18); border-color: rgba(74, 222, 128, 0.45); color: #4ade80; }
+  .audit-cat-order   { background: rgba(74, 222, 128, 0.18); border-color: rgba(74, 222, 128, 0.45); color: var(--c-long); }
   .audit-cat-agent   { background: rgba(34, 211, 238, 0.16); border-color: rgba(34, 211, 238, 0.45); color: #67e8f9; }
-  .audit-cat-user    { background: rgba(251, 191, 36, 0.18); border-color: rgba(251, 191, 36, 0.45); color: #fbbf24; }
+  .audit-cat-user    { background: rgba(251, 191, 36, 0.18); border-color: rgba(251, 191, 36, 0.45); color: var(--c-action); }
   .audit-cat-config  { background: rgba(168, 85, 247, 0.18); border-color: rgba(168, 85, 247, 0.45); color: #c084fc; }
   .audit-cat-system  { background: rgba(196, 192, 168, 0.18); border-color: rgba(196, 192, 168, 0.45); color: #d4d0a8; }
 
