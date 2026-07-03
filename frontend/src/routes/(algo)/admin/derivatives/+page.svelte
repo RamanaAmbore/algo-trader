@@ -49,6 +49,7 @@
   import {
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
+  import { baseDayPnlForPosition } from '$lib/data/nav';
   import ChartModal from '$lib/ChartModal.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
@@ -945,29 +946,9 @@
       const g = ensure(root);
       const qty = Number(p.quantity ?? p.qty) || 0;
       const pnl = Number(p.pnl) || 0;
-      // Day P&L for NEW positions — when the position has NO overnight
-      // carry (operator opened today), Day must reference COST PRICE
-      // (avg_price), not yesterday's close_price. The full position
-      // P&L IS today's day P&L — the position didn't exist yesterday,
-      // so there's no "intraday move from yesterday's close" to
-      // measure. Backend's decomposed formula already gives the right
-      // value when day_buy/sell are populated, BUT some backends
-      // report (day_change_val=0, overnight_quantity=0, pnl != 0) for
-      // freshly-opened positions whose decomposition didn't land —
-      // fall through to `pnl` in that case. Operator: "for new
-      // positions added it is showing incorrect data. it should
-      // consider cost price, not yesterday's price for new positions."
-      const _overnightQty = Number(p.overnight_quantity ?? 0);
-      let day = Number(p.day_change_val) || 0;
-      if (_overnightQty === 0 && pnl !== 0) {
-        // No overnight carry → Day === total position P&L. This is the
-        // mathematical identity (cost basis is the only reference;
-        // close_price is meaningless for a position that didn't exist
-        // yesterday). Overrides backend's day_change_val too — it
-        // computes against close_price + buy/sell legs and may diverge
-        // from `pnl` when broker hasn't refreshed all intraday fields.
-        day = pnl;
-      }
+      // baseDayPnlForPosition is the SSOT for the new-position override.
+      // Operator: "for new positions added it is showing incorrect data."
+      const day = baseDayPnlForPosition(p);
       g.qty_fno += qty;
       g.legs_with++;
       g.legs_without++;
@@ -2455,14 +2436,12 @@
       const ep = _expiryPnl(c, spot);
       if (ep != null && isFinite(ep)) return ep;
     }
-    let day = Number(c?.day_change_val ?? 0);
-    // New-position override: overnight_quantity=0 means the position was
-    // opened today, so day P&L equals total P&L (no prior-close reference).
-    // Mirrors _byUnderlyingTotals's override (operator 2026-07-01).
-    const oq = Number(c?.overnight_quantity ?? 0);
-    const pnl = Number(c?.pnl ?? 0);
-    if (oq === 0 && pnl !== 0) day = pnl;
-    return day;
+    // baseDayPnlForPosition is the SSOT for the new-position override
+    // (overnight_quantity=0 → day = total pnl). All surfaces that show
+    // per-position Day P&L must funnel through this helper so the formula
+    // is applied uniformly: NavStrip P slot 1 (positionsPnlFiltered),
+    // Snapshot rows, Legs grid, Exp Close, and this Payoff overlay path.
+    return baseDayPnlForPosition(c);
   }
 
   /** @param {any} c - candidate row

@@ -41,6 +41,11 @@ import { mergeSymbolBatch } from './symbolStore.svelte.js';
 import { cachedDelete } from './persistentCache.js';
 import { browser } from '$app/environment';
 import { marketAwareInterval } from '$lib/stores';
+// Hardening: dev-only runtime shape assertions on backend responses.
+// Vite dead-code-eliminates the assertion body in production so the
+// operator's browser pays zero cost.
+import { assertMoverRows } from './moverShape.js';
+import { assertSparklineResponse } from './sparklineShape.js';
 
 // One-time migration: drop the legacy `md.watchQuotes` localStorage
 // blob that BH4 stopped writing (the wrapper store was deleted in
@@ -423,6 +428,9 @@ export const moversStore = createDataStore({
         _moverDirection: pct >= 0 ? 'winners' : 'losers',
       });
     }
+    // Hardening: dev-only shape check (Vite strips in prod).
+    // Throws with field-attribution if backend payload drifts.
+    assertMoverRows(rows);
     return rows;
   },
   /** @param {any} r */
@@ -446,8 +454,9 @@ export const moversStore = createDataStore({
  * sessions read from the new key and paint instantly.
  */
 export const activeListsStore = createDataStore({
-  key:     'md.activeLists',
-  ttl:     TTL.minute,
+  key:              'md.activeLists',
+  ttl:              TTL.week,
+  keepStaleOnEmpty: true,
   /** @param {number[] | undefined} ids */
   fetcher: async (ids) => {
     if (!ids || ids.length === 0) return [];
@@ -551,6 +560,10 @@ export const sparklinesStore = createDataStore({
       const slice = pairs.slice(i, i + CHUNK);
       try {
         const res = await fetchSparklines(slice, 5);
+        // Hardening: dev-only shape check (Vite strips in prod).
+        // Throws with field-attribution if backend response drifts
+        // (e.g. .data becomes array, series carries NaN, refreshed_at drops).
+        assertSparklineResponse(res);
         if (res?.data && typeof res.data === 'object') {
           // Per-symbol stale-better merge instead of blind Object.assign.
           // See _mergeSparkSeries doc above for the rule set.

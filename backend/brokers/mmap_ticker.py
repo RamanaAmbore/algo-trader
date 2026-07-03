@@ -31,6 +31,13 @@ import threading
 import time
 from typing import Iterable, Optional
 
+# ---------------------------------------------------------------------------
+# Throttled log helpers — emit at most once per (key, 60s) to avoid
+# log spam when the sym→token registry gap is widespread at boot.
+# ---------------------------------------------------------------------------
+_MMAP_LOG_TTL_S = 60.0
+_mmap_missing_sym_last: dict[int, float] = {}  # token → last_log_monotonic
+
 from backend.brokers.tick_buffer import (
     DEFAULT_PATH,
     TickBufferReader,
@@ -264,9 +271,20 @@ class MmapTickReader:
                         if prev == lp:
                             continue
                         self._last_ltp[tok] = lp
+                        sym_str = self._token_to_sym.get(tok, "")
+                        if not sym_str:
+                            # Throttled: log at most once per token per 60s
+                            _now = time.monotonic()
+                            if _now - _mmap_missing_sym_last.get(tok, 0.0) > _MMAP_LOG_TTL_S:
+                                _mmap_missing_sym_last[tok] = _now
+                                logger.warning(
+                                    "[MMAP-MISSING-SYM] token=%d "
+                                    "reason=local_token_not_registered",
+                                    tok,
+                                )
                         self._bus.publish({
                             "tok": tok,
-                            "sym": self._token_to_sym.get(tok, ""),
+                            "sym": sym_str,
                             "ltp": lp,
                             "ts":  ts,
                         })

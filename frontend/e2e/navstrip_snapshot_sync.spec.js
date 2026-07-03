@@ -69,17 +69,22 @@ test.describe('Code-level SSOT guards', () => {
     expect(src).toContain('exp: _snapshotTotalExp');
   });
 
-  test('PositionStrip reads snapshotTotals with ?? fallback (no forced bypass)', async () => {
+  test('PositionStrip reads snapshotTotals with != null guard (not ?? which swallows 0)', async () => {
     const fs   = await import('fs');
     const path = await import('path');
     const src  = fs.readFileSync(
       path.resolve(import.meta.dirname, '../src/lib/PositionStrip.svelte'),
       'utf8',
     );
-    // All three slots use ?. null-safe read
-    expect(src).toContain('$snapshotTotals?.day');
-    expect(src).toContain('$snapshotTotals?.pnl');
-    expect(src).toContain('$snapshotTotals?.exp');
+    // All three slots use explicit != null ternary (fixed from ?? in 2026-07-02)
+    // so a stored value of 0 (stale derivatives visit) does not suppress the live compute
+    expect(src).toContain('$snapshotTotals != null ? $snapshotTotals.day');
+    expect(src).toContain('$snapshotTotals != null ? $snapshotTotals.pnl');
+    expect(src).toContain('$snapshotTotals != null ? $snapshotTotals.exp');
+    // The ?? operator must NOT be used on snapshotTotals slots (regression guard)
+    expect(src).not.toContain('$snapshotTotals?.day ??');
+    expect(src).not.toContain('$snapshotTotals?.pnl ??');
+    expect(src).not.toContain('$snapshotTotals?.exp ??');
     // No untrack() wrapping snapshotTotals read (would stale-cache it)
     expect(src).not.toMatch(/untrack\s*\(\s*\(\)\s*=>\s*\$snapshotTotals/);
   });
@@ -93,7 +98,7 @@ test.describe('NavStrip P pill — structure', () => {
   });
 
   test('P pill has 3 slash-separated values on /pulse', async ({ page }) => {
-    await page.goto(`${BASE}/pulse`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
     const strip = page.locator('.ps-strip');
     await expect(strip).toBeVisible({ timeout: TIMEOUT });
     const pPill = strip.locator('.ps-agg').first();
@@ -159,7 +164,7 @@ test.describe('NavStrip P pill — mobile viewport', () => {
   });
 
   test('P pill visible and not overflowing on 390px', async ({ page }) => {
-    await page.goto(`${BASE}/pulse`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
     const strip = page.locator('.ps-strip');
     await expect(strip).toBeVisible({ timeout: TIMEOUT });
     const box = await strip.boundingBox();
