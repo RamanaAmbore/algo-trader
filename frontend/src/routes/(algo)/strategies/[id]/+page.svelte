@@ -84,6 +84,9 @@
   });
   onDestroy(() => { _teardown?.(); });
 
+  // Kept local: aggCompact uses uppercase K/L/C with no '₹' prefix and
+  // 2-decimal L. This surface uses lowercase 'k', 1-decimal 'k', no Cr
+  // band, and a '₹' prefix — intentional compact style for strategy detail.
   function _fmtInr(/** @type {number|null} */ v) {
     if (v == null || !isFinite(v)) return '—';
     if (Math.abs(v) >= 100000) return `₹${(v/100000).toFixed(2)}L`;

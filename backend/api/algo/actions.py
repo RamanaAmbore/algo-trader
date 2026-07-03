@@ -1651,6 +1651,38 @@ async def _action_send_summary(context: dict, params: dict):
         )
 
 
+async def _fetch_ltp(
+    broker,
+    exchange: str,
+    symbol: str,
+    loop,
+    context: str = "ltp_fetch",
+) -> "float | None":
+    """Fetch LTP for (exchange, symbol) from a broker. Returns None on failure.
+
+    Wraps the sync ``broker.ltp(...)`` call in ``loop.run_in_executor`` and
+    defensively returns None on any exception (broker session down, symbol not
+    found, etc.).
+
+    Args:
+        broker:   A broker adapter (Kite / Dhan / Groww).
+        exchange: Exchange string, e.g. ``"NFO"``.
+        symbol:   Trading symbol string.
+        loop:     Running asyncio event loop (from ``asyncio.get_running_loop()``).
+        context:  Short label that appears in the warning log on failure, so
+                  callers can distinguish ``'place_order'`` from ``'close_position'``.
+    """
+    key = f"{exchange}:{symbol}"
+    try:
+        ltp_data = await loop.run_in_executor(None, broker.ltp, [key])
+        return float((ltp_data.get(key) or {}).get("last_price") or 0) or None
+    except Exception as e:
+        logger.warning(
+            f"[LIVE] {context} LTP fetch failed, proceeding with None price: {e}"
+        )
+        return None
+
+
 async def _action_place_order(context: dict, params: dict):
     """
     Place an order using the chase engine (live mode).
@@ -1687,11 +1719,7 @@ async def _action_place_order(context: dict, params: dict):
         try:
             broker = get_broker(account)
             loop = asyncio.get_running_loop()
-            ltp_data = await loop.run_in_executor(
-                None, broker.ltp, [f"{exchange}:{symbol}"]
-            )
-            key = f"{exchange}:{symbol}"
-            price = float((ltp_data.get(key) or {}).get("last_price") or 0) or None
+            price = await _fetch_ltp(broker, exchange, symbol, loop, context="place_order")
         except Exception as ltp_e:
             logger.warning(f"[LIVE] place_order LTP fetch failed, proceeding with None price: {ltp_e}")
 
@@ -1888,11 +1916,7 @@ async def _action_live_close_position(agent, context: dict, params: dict):
     try:
         broker = get_broker(account)
         loop = asyncio.get_running_loop()
-        ltp_data = await loop.run_in_executor(
-            None, broker.ltp, [f"{exchange}:{symbol}"]
-        )
-        key = f"{exchange}:{symbol}"
-        price = float((ltp_data.get(key) or {}).get("last_price") or 0) or None
+        price = await _fetch_ltp(broker, exchange, symbol, loop, context="close_position")
     except Exception as e:
         logger.warning(f"[LIVE] close_position LTP fetch failed, proceeding with None price: {e}")
 

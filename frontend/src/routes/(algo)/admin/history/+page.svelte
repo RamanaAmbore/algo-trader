@@ -176,6 +176,10 @@
     return `/admin/audit?request_id=${encodeURIComponent(r.request_id)}`;
   }
 
+  // Kept local: diverges from aggCompact in three ways — (1) '₹' prefix,
+  // (2) 'Cr' suffix (aggCompact uses 'C'), (3) en-IN grouping for values
+  // below 1L instead of the K-compact form. History grid uses 'Cr' to
+  // match the operator's convention elsewhere on the history surface.
   function _fmtInr(/** @type {number|null|undefined} */ v) {
     if (v == null || !isFinite(v)) return '—';
     const abs = Math.abs(v);

@@ -62,7 +62,7 @@
   import CardControls from '$lib/CardControls.svelte';
   import { createPerformanceSocket } from '$lib/ws';
   import { lastRefreshAt, formatDualTz } from '$lib/stores';
-  import { priceFmt, pctFmt, aggCompact, qtyFmt, directional } from '$lib/format';
+  import { priceFmt, pctFmt, aggCompact, qtyFmt, directional, fmtPctScaled } from '$lib/format';
   import { acctColor, leadAccount } from '$lib/account';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import MultiSelect from '$lib/MultiSelect.svelte';
@@ -3794,7 +3794,7 @@
       const dir = pct != null && pct >= 0 ? 'pos' : 'neg';
       const arrow = pct != null && pct >= 0 ? '↑' : '↓';
       const sticky = row._mover_sticky ? ' (sticky)' : '';
-      const label = pct != null ? `${pct >= 0 ? '+' : ''}${Number(pct).toFixed(2)}%` : '';
+      const label = pct != null ? fmtPctScaled(pct, 2, true) : '';
       badges.push(`<span class="sym-badge badge-m badge-m-${dir}" title="Top mover ${label}${sticky}">M${arrow}</span>`);
     }
     const badgeHtml = badges.length ? `<span class="sym-badges">${badges.join('')}</span>` : '';
