@@ -2538,10 +2538,75 @@ async def _task_sparkline_warm(state: dict) -> None:
         remaining   = max(0, cap - len(book_pairs))
         return book_pairs + mover_pairs[:remaining]
 
+    async def _register_universe_with_ticker(
+        symbols: list[tuple[str, str]],
+        label: str,
+    ) -> int:
+        """Resolve tokens for all universe symbols and register them in the
+        ticker's local sym→token map.  This ensures `_token_to_sym.get(tok)`
+        returns a valid sym string in `_poll_loop`, so SSE tick payloads carry
+        a non-empty `sym` field and the frontend never drops them.
+
+        Processes all symbols in chunks of 50 (matching the per-tick cap) but
+        runs ALL chunks sequentially at startup — no budget concern here since
+        this is a one-time registration, not a hot path.
+
+        Returns the count of newly-registered symbols."""
+        try:
+            from backend.brokers.kite_ticker import get_ticker as _gt
+            from backend.api.routes.quote import _resolve_token_for_sym as _rts
+            _tk = _gt()
+            need = [
+                (sym, exch) for sym, exch in symbols
+                if not _tk.has_sym(sym)
+            ]
+            if not need:
+                logger.info(
+                    f"sparkline warm: ticker universe registration ({label}) — "
+                    f"all {len(symbols)} symbols already registered"
+                )
+                return 0
+            registered = 0
+            chunk_size = 50
+            for i in range(0, len(need), chunk_size):
+                chunk = need[i : i + chunk_size]
+                try:
+                    toks = await asyncio.gather(
+                        *(_rts(s, e) for s, e in chunk),
+                        return_exceptions=True,
+                    )
+                    batch = [
+                        (tok, sym)
+                        for (sym, _exch), tok in zip(chunk, toks)
+                        if tok is not None and not isinstance(tok, BaseException)
+                    ]
+                    if batch:
+                        _tk.subscribe_with_sym(batch)
+                        registered += len(batch)
+                except Exception as _ce:
+                    logger.debug(
+                        f"sparkline warm: ticker register chunk {i} failed: {_ce}"
+                    )
+            logger.info(
+                f"sparkline warm: ticker universe registration ({label}) — "
+                f"{registered}/{len(need)} newly registered "
+                f"(universe={len(symbols)})"
+            )
+            return registered
+        except Exception as e:
+            logger.warning(f"sparkline warm: ticker universe registration failed: {e}")
+            return 0
+
     async def _do_warm(label: str) -> int:
         logger.info(f"sparkline warm: starting ({label})")
         try:
             symbols = await _collect_symbols()
+            # Register all universe symbols in the ticker's sym→token map
+            # BEFORE warming the sparkline cache.  This closes the gap where
+            # the mmap poller ships `sym: ""` for tokens not yet known to the
+            # main API process, causing the frontend to drop tick payloads and
+            # cells to flicker between live and close_price.
+            await _register_universe_with_ticker(symbols, label)
             count = await warm_sparkline_cache(symbols, days=5)
             logger.info(f"sparkline warm: {label} complete — {count} symbols cached")
             return count
