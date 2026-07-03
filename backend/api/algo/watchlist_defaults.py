@@ -10,18 +10,18 @@ Item-naming policy:
   - Indices stored as the broker quote key (e.g. "NIFTY 50") — stable.
   - ETFs stored as the NSE tradingsymbol (e.g. GOLDBEES) — stable.
   - MCX commodities stored as the bare commodity ROOT (e.g. CRUDEOIL,
-    GOLDM, NATURALGAS). The frontend's _pinLabel + the quote endpoint
-    BOTH resolve these to the current near-month future via the
-    instruments cache (CRUDEOIL → CRUDEOIL26JUNFUT, GOLDM →
-    GOLDM26JUNFUT, etc.). The operator never has to roll contracts
-    month-over-month — the resolver follows the front-month expiry.
-  - GOLD / SILVER bare names have been replaced with the M-mini
-    variants (GOLDM / SILVERM) per operator request.
+    NATURALGAS). The frontend's _pinLabel + the quote endpoint BOTH
+    resolve these to the current near-month future via the instruments
+    cache (CRUDEOIL → CRUDEOIL26JUNFUT, etc.). The operator never has
+    to roll contracts month-over-month — the resolver follows the
+    front-month expiry.
+  - Gold + silver exposure is via NSE ETFs (GOLDBEES / SILVERBEES),
+    not MCX minis. GOLDM and USDINR were removed from the pinned seed.
 """
 
 # Each entry: (tradingsymbol, exchange). The order here is the
 # `sort_order` the symbols land at — indices first, then ETFs, then
-# MCX commodities (alphabetical), then CDS.
+# MCX commodities (alphabetical).
 MARKETS_DEFAULT: list[tuple[str, str]] = [
     # Indices — quote endpoint maps these via broker.quote() keys
     # like NSE:NIFTY 50. Stable across months.
@@ -41,12 +41,8 @@ MARKETS_DEFAULT: list[tuple[str, str]] = [
     # month future at quote / chart time.
     ("COPPER",              "MCX"),
     ("CRUDEOIL",            "MCX"),
-    ("GOLDM",               "MCX"),
     ("NATURALGAS",          "MCX"),
     ("SILVERM",             "MCX"),
-
-    # CDS currency future.
-    ("USDINR",              "CDS"),
 ]
 
 
