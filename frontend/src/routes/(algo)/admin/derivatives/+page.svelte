@@ -313,11 +313,15 @@
       // Picker is populated and selection is valid — stop polling.
       _autoSelectPollId?.();
       _autoSelectPollId = null;
-      // Delayed arrival: picker was absent on first poll tick — the
-      // reactive chain ran earlier with empty legs and resolved to a
-      // no-op. Kick a forced refresh so analytics/payoff load without
-      // waiting for the next marketAwareInterval cycle (up to 5 s).
-      if (_autoSelectAttempts > 1) {
+      // Force payoff + legs refresh when:
+      //   (a) selection was invalid and we swapped to the first item
+      //       (fast-path: ticker 1, slow-path: ticker > 1), OR
+      //   (b) picker arrived late (delayed path) — reactive chain may
+      //       have already fired with empty legs and resolved to a no-op.
+      // Two refreshes are acceptable: the first render on mount (may be
+      // empty / stale-cache state) + this forced second one after the
+      // dropdown list and valid selection are confirmed.
+      if (!isValid || _autoSelectAttempts > 1) {
         untrack(() => { loadStrategy({ force: true }); });
       }
     }, 300);
@@ -4434,7 +4438,10 @@
       if (d.strategy)                  strategy  = d.strategy;
       if (Array.isArray(d.drafts))     drafts    = d.drafts;
       if (Array.isArray(d.selectedAccounts)) selectedAccounts = d.selectedAccounts;
-      if (typeof d.selectedUnderlying === 'string') selectedUnderlying = d.selectedUnderlying;
+      // URL param (set by onMount #1 which runs before this onMount #2)
+      // takes precedence over the sessionStorage snapshot. Only restore the
+      // cached underlying when the URL did NOT already seed one.
+      if (typeof d.selectedUnderlying === 'string' && !selectedUnderlying) selectedUnderlying = d.selectedUnderlying;
       if (Array.isArray(d.selectedExpiries))          selectedExpiries  = d.selectedExpiries;
       if (d.enabledSymbols && typeof d.enabledSymbols === 'object') {
         enabledSymbols = d.enabledSymbols;
