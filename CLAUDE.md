@@ -890,6 +890,64 @@ Options research: underlying-driven re-pricing, Black-Scholes, implied-vol calib
 
 ---
 
+## Symbol resolution + virtual roots (MCX / CDS)
+
+MCX commodity futures and CDS currency futures never expose raw contract names
+(e.g. `CRUDEOIL26JUNFUT`) in the UI. Instead, two virtual first-class symbols
+exist per commodity:
+
+| Virtual | Maps to |
+|---|---|
+| `CRUDEOIL` | front-month (current expiry) |
+| `CRUDEOIL_NEXT` | back-month (next expiry) |
+| `CRUDEOIL26AUGFUT` | far-month — passes through raw (expiry chip visible) |
+
+**Canonical module**: `backend/api/algo/symbol_resolver.py` — SSOT for all
+resolver logic. Three functions:
+- `list_active_futures(root, exchange, limit)` — filters `inst.x > today_iso (IST)`.
+  Returns up to *limit* active contracts sorted ascending by expiry.
+- `resolve_symbol(virtual, exchange)` — forward resolver. Bare root → futures[0],
+  `ROOT_NEXT` → futures[1] (fallback to futures[0] when only one contract listed).
+  Non-virtual symbols (real contracts, equities, non-MCX/CDS) pass through unchanged.
+- `root_of(contract, exchange)` — reverse resolver. front-month → bare root,
+  back-month → `ROOT_NEXT`, far-month → raw contract.
+
+**Supported virtual roots**: MCX: CRUDEOIL, CRUDEOILM, NATURALGAS, NATGASMINI,
+GOLD, GOLDM, GOLDGUINEA, GOLDPETAL, SILVER, SILVERM, SILVERMIC, COPPER, ZINC,
+LEAD, ALUMINIUM, NICKEL, MENTHAOIL, COTTON, CPO.
+CDS: USDINR, EURINR, GBPINR, JPYINR.
+
+**API endpoints** (auth-gated, demo allowed):
+- `GET /api/symbols/resolve?symbol=CRUDEOIL&exchange=MCX` →
+  `{virtual, exchange, resolved, is_front, is_back, is_passthrough}`
+- `GET /api/symbols/root_of?contract=CRUDEOIL26JUNFUT&exchange=MCX` →
+  `{contract, exchange, root, is_front, is_back, is_far}`
+
+**Frontend helper** `frontend/src/lib/data/rootOf.js`:
+- `seedRootMapFromInstruments(items)` — called from `_buildIndexes` in `instruments.js`
+  after instruments cache load; builds MCX + CDS front/back-month maps.
+- `rootOf(contract, exchange)` — sync, no fetch; returns "CRUDEOIL" / "CRUDEOIL_NEXT"
+  or raw contract for far-month.
+- `rootOfLabel(contract, exchange)` — human label: "CRUDEOIL • NEXT".
+- `resolveVirtual(virtual, exchange)` — forward direction sync helper.
+
+**Frontend wiring**: `_pulseFmtSym` (MarketPulse), `_fmtSymCached` (PerformancePage),
+`LegLabel.svelte` (exchange prop + `_virtualLabel` derived), `OrderTicket.svelte`
+(passes exchange to LegLabel), derivatives candidates panel, ChartModal aria-label.
+Symbol cache (`_pulseSymFmtCache`, `_symFmtCache`) uses `"sym|exch"` composite key
+and is cleared on `instrumentsCacheVersion` bump (so virtual labels appear after
+first instruments load without a page reload).
+
+**Rollover**: `inst.x > today_iso (IST)` rule — settling contracts excluded on expiry
+day. Fallback for all-expired cache lag: `_list_all_futures_fallback` includes expiring-
+today contracts; `_resolve_mcx_commodity` / `_resolve_cds_currency` return the last-listed
+(highest expiry) to preserve the pre-refactor `candidates[-1].s` semantic.
+
+**Tests**: `backend/tests/test_root_next_resolver.py` — 22 tests covering forward,
+reverse, round-trip, expiry-day rollover, CDS pair, SSOT guards.
+
+---
+
 ## Proxy hedges
 
 DB-backed cross-reference between holdings (GOLDBEES, NIFTYBEES, …) and option roots they hedge (GOLD, NIFTY, …).
@@ -1479,6 +1537,8 @@ immediately (within one event-loop tick) before resuming its normal cadence.
 | Chart self-heal threshold | `/admin/settings` → Persistence → `chart_self_heal_coverage_threshold` (default 0.70). Auto-fetch from broker if <70% of requested days present in DB. |
 | Backfill admin endpoint | `POST /api/admin/persistence/backfill?kind=daily\|intraday\|both` (admin-guarded). Starts async coverage repair for 300-symbol universe. |
 | Backfill CLI (immediate) | `scripts/persistence_mode.py off\|soft\|hard\|status` (reads operator login) + `scripts/backfill_ohlcv.py --daily --intraday` for prod defect-recovery. |
+| Virtual root display (MCX/CDS) | `backend/api/algo/symbol_resolver.py` — `list_active_futures`, `resolve_symbol`, `root_of`. Frontend: `frontend/src/lib/data/rootOf.js`. Add new MCX roots to `MCX_VIRTUAL_ROOTS` frozenset; add CDS pairs to `CDS_VIRTUAL_ROOTS`. New instruments auto-resolve (uses live cache). |
+| MCX lot-size overrides | `backend/api/routes/instruments.py` `_MCX_LOT_OVERRIDES` dict — Kite reports lot_size=1 for all MCX; override here. |
 
 ---
 
