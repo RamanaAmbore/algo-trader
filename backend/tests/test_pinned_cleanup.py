@@ -2,21 +2,28 @@
 Tests for seed_global_pinned: retired-symbol cleanup + default top-up.
 
 Five quality dimensions:
-  1. SSOT     — MARKETS_DEFAULT has no F&O (MCX bare roots gone). Migration
-                marker keys are the SSOT for cleanup waves.
+  1. SSOT     — MARKETS_DEFAULT contains exactly the canonical 16 symbols.
+                NATURALGAS is NOT seeded (still excluded). Migration marker
+                keys are the SSOT for cleanup waves.
   2. Perf     — each wave is O(|wave|) targeted DELETEs (filter by symbol+exch),
                 not a full-table scan or truncation.
-  3. Stale    — GOLDM, USDINR, COPPER, CRUDEOIL, NATURALGAS, SILVERM absent
-                from MARKETS_DEFAULT.
+  3. Stale    — NATURALGAS absent from MARKETS_DEFAULT (only non-restored MCX root).
+                SILVER/SILVERM/GOLD/GOLDM/CRUDEOIL/COPPER/USDINR present as
+                first-class bare roots.
   4. Reuse    — seed_global_pinned is the single call-site for cleanup + top-up.
   5. Correctness — scenario matrix:
-       a. GOLDM + USDINR present → removed after seed (wave 1).
-       b. MCX bare roots present → removed after seed (wave 2).
+       a. GOLDM + USDINR present AND migration markers not set → wave 1 deletes
+          then top-up re-adds them (net: still present, markers recorded).
+       b. MCX bare roots present AND wave-2 marker not set → wave 2 deletes
+          then top-up re-adds COPPER/CRUDEOIL/SILVERM; NATURALGAS removed and
+          NOT re-added (not in MARKETS_DEFAULT).
        c. GOLDBEES / SILVERBEES absent → added after seed (top-up).
        d. Second seed run is idempotent (no double-inserts, no errors).
        e. Operator-curated extras (e.g. TATASTEEL NSE) untouched by cleanup.
-       f. Migration is one-shot: marker present → DELETE not re-executed.
-       g. Operator re-adds CRUDEOIL after wave-2 cleanup → preserved on next boot.
+       f. Migration is one-shot: marker present → DELETE not re-executed (so
+          operator-re-added symbols survive).
+       g. Operator re-adds NATURALGAS after wave-2 cleanup → preserved on next boot.
+       h. Empty global Pinned → 16-item Pinned after seed.
 """
 
 from __future__ import annotations
@@ -49,41 +56,53 @@ def _wl_text() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Dimension 3 — retired symbols NOT in MARKETS_DEFAULT
+# Dimension 3 — NATURALGAS still NOT in MARKETS_DEFAULT (only excluded root)
 # ---------------------------------------------------------------------------
-
-def test_goldm_removed_from_markets_default():
-    src = _defaults_text()
-    assert '("GOLDM"' not in src, (
-        "GOLDM must not appear in MARKETS_DEFAULT after the pinned-cleanup edit"
-    )
-
-
-def test_usdinr_removed_from_markets_default():
-    src = _defaults_text()
-    assert '("USDINR"' not in src, (
-        "USDINR must not appear in MARKETS_DEFAULT after the pinned-cleanup edit"
-    )
-
-
-def test_copper_removed_from_markets_default():
-    src = _defaults_text()
-    assert '("COPPER"' not in src, "COPPER must not appear in MARKETS_DEFAULT"
-
-
-def test_crudeoil_removed_from_markets_default():
-    src = _defaults_text()
-    assert '("CRUDEOIL"' not in src, "CRUDEOIL must not appear in MARKETS_DEFAULT"
-
 
 def test_naturalgas_removed_from_markets_default():
     src = _defaults_text()
-    assert '("NATURALGAS"' not in src, "NATURALGAS must not appear in MARKETS_DEFAULT"
+    assert '("NATURALGAS"' not in src, (
+        "NATURALGAS must not appear in MARKETS_DEFAULT — still excluded"
+    )
 
 
-def test_silverm_removed_from_markets_default():
-    src = _defaults_text()
-    assert '("SILVERM"' not in src, "SILVERM must not appear in MARKETS_DEFAULT"
+# ---------------------------------------------------------------------------
+# Dimension 3 — 7 restored bare roots ARE in MARKETS_DEFAULT
+# ---------------------------------------------------------------------------
+
+def test_silver_in_markets_default():
+    from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
+    assert ("SILVER", "MCX") in MARKETS_DEFAULT, "SILVER MCX must be present in MARKETS_DEFAULT"
+
+
+def test_silverm_in_markets_default():
+    from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
+    assert ("SILVERM", "MCX") in MARKETS_DEFAULT, "SILVERM MCX must be present in MARKETS_DEFAULT"
+
+
+def test_gold_in_markets_default():
+    from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
+    assert ("GOLD", "MCX") in MARKETS_DEFAULT, "GOLD MCX must be present in MARKETS_DEFAULT"
+
+
+def test_goldm_in_markets_default():
+    from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
+    assert ("GOLDM", "MCX") in MARKETS_DEFAULT, "GOLDM MCX must be present in MARKETS_DEFAULT"
+
+
+def test_crudeoil_in_markets_default():
+    from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
+    assert ("CRUDEOIL", "MCX") in MARKETS_DEFAULT, "CRUDEOIL MCX must be present in MARKETS_DEFAULT"
+
+
+def test_copper_in_markets_default():
+    from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
+    assert ("COPPER", "MCX") in MARKETS_DEFAULT, "COPPER MCX must be present in MARKETS_DEFAULT"
+
+
+def test_usdinr_in_markets_default():
+    from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
+    assert ("USDINR", "CDS") in MARKETS_DEFAULT, "USDINR CDS must be present in MARKETS_DEFAULT"
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +124,19 @@ def test_silverbees_in_markets_default():
 
 
 # ---------------------------------------------------------------------------
+# Dimension 1 — MARKETS_DEFAULT has exactly 16 entries
+# ---------------------------------------------------------------------------
+
+def test_markets_default_count():
+    from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
+    assert len(MARKETS_DEFAULT) == 16, (
+        f"MARKETS_DEFAULT must have 16 entries; got {len(MARKETS_DEFAULT)}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Dimension 3 — migration marker keys exist in watchlist.py (SSOT check)
+#               Markers stay recorded as historical audit — must NOT be removed
 # ---------------------------------------------------------------------------
 
 def test_wave1_migration_key_present():
@@ -136,12 +167,16 @@ def test_wave2_migration_key_present():
 # Dimension 4 — sa_delete not duplicated outside the seed function
 # ---------------------------------------------------------------------------
 
-def test_no_dangling_cds_section_comment():
-    """The '# CDS currency future.' comment was only relevant while USDINR
-    was in the seed. After removal, the comment must also be gone."""
-    src = _defaults_text()
-    assert "# CDS currency future." not in src, (
-        "Dangling CDS section comment must be removed alongside USDINR"
+def test_cleanup_uses_targeted_deletes():
+    """Each retired symbol is deleted with a specific tradingsymbol + exchange
+    filter, not a bulk DELETE-all or table truncation."""
+    src = _wl_text()
+    # Both conditions must be in the WHERE clause path
+    assert "WatchlistItem.tradingsymbol == _sym" in src, (
+        "Cleanup DELETE must filter by tradingsymbol"
+    )
+    assert "WatchlistItem.exchange == _exch" in src, (
+        "Cleanup DELETE must filter by exchange"
     )
 
 
@@ -265,11 +300,14 @@ async def _make_global_pinned(db_session: AsyncSession) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Dimension 5a — GOLDM + USDINR present → removed after seed (wave 1)
+# Dimension 5a — GOLDM + USDINR present, wave-1 not run → wave fires, but
+# top-up immediately re-adds them (both are back in MARKETS_DEFAULT)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_retired_symbols_removed_after_seed(db_session):
+async def test_retired_symbols_restored_after_seed(db_session):
+    """Wave-1 cleanup fires (removes GOLDM/USDINR), then top-up re-adds
+    them because they are now in MARKETS_DEFAULT. Net: they survive."""
     wl_id = await _make_global_pinned(db_session)
     await _insert_items(db_session, wl_id, [
         ("GOLDM", "MCX"),
@@ -280,13 +318,44 @@ async def test_retired_symbols_removed_after_seed(db_session):
     await _run_seed(db_session)
 
     syms = await _symbols(db_session)
-    assert ("GOLDM", "MCX") not in syms, "GOLDM must be removed by cleanup"
-    assert ("USDINR", "CDS") not in syms, "USDINR must be removed by cleanup"
+    # Restored in MARKETS_DEFAULT → top-up re-adds after wave-1 delete
+    assert ("GOLDM", "MCX") in syms, "GOLDM must be present (restored to MARKETS_DEFAULT)"
+    assert ("USDINR", "CDS") in syms, "USDINR must be present (restored to MARKETS_DEFAULT)"
     assert ("NIFTY 50", "NSE") in syms, "NIFTY 50 must be preserved"
 
 
 # ---------------------------------------------------------------------------
-# Dimension 5b — GOLDBEES / SILVERBEES absent → added after seed
+# Dimension 5b (wave 2) — MCX bare roots removed by wave, then re-added.
+# NATURALGAS is NOT in MARKETS_DEFAULT so it stays removed.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_mcx_roots_restored_naturalgas_removed(db_session):
+    """Wave-2 fires and deletes all MCX roots including NATURALGAS.
+    Top-up re-adds COPPER/CRUDEOIL/SILVERM (back in MARKETS_DEFAULT)
+    but NATURALGAS stays removed (still excluded)."""
+    wl_id = await _make_global_pinned(db_session)
+    await _insert_items(db_session, wl_id, [
+        ("COPPER",      "MCX"),
+        ("CRUDEOIL",    "MCX"),
+        ("NATURALGAS",  "MCX"),
+        ("SILVERM",     "MCX"),
+        ("NIFTY 50",    "NSE"),
+    ])
+
+    await _run_seed(db_session)
+
+    syms = await _symbols(db_session)
+    # Restored symbols come back via top-up
+    for sym in ("COPPER", "CRUDEOIL", "SILVERM"):
+        assert (sym, "MCX") in syms, f"{sym} MCX must be present (restored to MARKETS_DEFAULT)"
+    # NATURALGAS remains excluded
+    assert ("NATURALGAS", "MCX") not in syms, "NATURALGAS MCX must remain removed"
+    assert ("NIFTY 50", "NSE") in syms, "NIFTY 50 must be preserved"
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5c — GOLDBEES / SILVERBEES absent → added after seed
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -302,11 +371,13 @@ async def test_goldbees_silverbees_added_when_missing(db_session):
 
 
 # ---------------------------------------------------------------------------
-# Dimension 5c — GOLDM + GOLDBEES both present → GOLDM removed, GOLDBEES kept
+# Dimension 5c (ext) — GOLDM and GOLDBEES both present: both survive
+# GOLDM is now first-class (in MARKETS_DEFAULT) so the wave-1 delete fires
+# then top-up re-adds it. GOLDBEES is unaffected throughout.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_goldm_removed_goldbees_preserved(db_session):
+async def test_goldm_and_goldbees_both_preserved(db_session):
     wl_id = await _make_global_pinned(db_session)
     await _insert_items(db_session, wl_id, [
         ("GOLDM", "MCX"),
@@ -316,7 +387,7 @@ async def test_goldm_removed_goldbees_preserved(db_session):
     await _run_seed(db_session)
 
     syms = await _symbols(db_session)
-    assert ("GOLDM", "MCX") not in syms, "GOLDM must be removed"
+    assert ("GOLDM", "MCX") in syms, "GOLDM must be present (restored)"
     assert ("GOLDBEES", "NSE") in syms, "GOLDBEES must survive cleanup"
 
 
@@ -346,7 +417,7 @@ async def test_seed_is_idempotent(db_session):
     )
 
     syms = await _symbols(db_session)
-    assert ("GOLDM", "MCX") not in syms
+    assert ("GOLDM", "MCX") in syms, "GOLDM must be present after idempotent seed"
 
 
 # ---------------------------------------------------------------------------
@@ -365,52 +436,12 @@ async def test_operator_extras_untouched(db_session):
 
     syms = await _symbols(db_session)
     assert ("TATASTEEL", "NSE") in syms, "Operator-curated TATASTEEL must not be removed"
-    assert ("GOLDM", "MCX") not in syms, "GOLDM must still be removed"
-
-
-# ---------------------------------------------------------------------------
-# Dimension 2 — Perf: cleanup block is O(|RETIRED|), not a full-table scan
-# (static check — ensure the DELETE uses an equality WHERE, not LIKE/IN-all)
-# ---------------------------------------------------------------------------
-
-def test_cleanup_uses_targeted_deletes():
-    """Each retired symbol is deleted with a specific tradingsymbol + exchange
-    filter, not a bulk DELETE-all or table truncation."""
-    src = _wl_text()
-    # Both conditions must be in the WHERE clause path
-    assert "WatchlistItem.tradingsymbol == _sym" in src, (
-        "Cleanup DELETE must filter by tradingsymbol"
-    )
-    assert "WatchlistItem.exchange == _exch" in src, (
-        "Cleanup DELETE must filter by exchange"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Dimension 5b (wave 2) — MCX bare roots removed after seed
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_mcx_futures_removed_after_seed(db_session):
-    wl_id = await _make_global_pinned(db_session)
-    await _insert_items(db_session, wl_id, [
-        ("COPPER",      "MCX"),
-        ("CRUDEOIL",    "MCX"),
-        ("NATURALGAS",  "MCX"),
-        ("SILVERM",     "MCX"),
-        ("NIFTY 50",    "NSE"),
-    ])
-
-    await _run_seed(db_session)
-
-    syms = await _symbols(db_session)
-    for sym in ("COPPER", "CRUDEOIL", "NATURALGAS", "SILVERM"):
-        assert (sym, "MCX") not in syms, f"{sym} MCX must be removed by wave-2 cleanup"
-    assert ("NIFTY 50", "NSE") in syms, "NIFTY 50 must be preserved"
+    assert ("GOLDM", "MCX") in syms, "GOLDM must be present (restored)"
 
 
 # ---------------------------------------------------------------------------
 # Dimension 5f — Migration is one-shot: marker present → DELETE not re-run
+# (operator re-added symbol preserved when migration marker already set)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -458,20 +489,22 @@ async def test_wave2_migration_is_one_shot(db_session):
 
 
 # ---------------------------------------------------------------------------
-# Dimension 5g — Operator re-adds after cleanup is preserved on next boot
+# Dimension 5g — Operator re-adds NATURALGAS after cleanup → preserved on
+# next boot (NATURALGAS is NOT in MARKETS_DEFAULT so stays once marker set)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_operator_readd_after_cleanup_preserved(db_session):
-    """Full lifecycle: seed removes MCX roots, operator re-adds NATURALGAS,
-    next boot (marker set) leaves it in place."""
+    """Full lifecycle: seed removes NATURALGAS (wave 2 fires + not in
+    MARKETS_DEFAULT so top-up doesn't re-add), operator re-adds it, next
+    boot (marker set) leaves it in place."""
     wl_id = await _make_global_pinned(db_session)
     await _insert_items(db_session, wl_id, [
         ("NATURALGAS", "MCX"),
         ("NIFTY 50",   "NSE"),
     ])
 
-    # First boot — wave 2 fires, removes NATURALGAS
+    # First boot — wave 2 fires, removes NATURALGAS; top-up does NOT re-add it
     await _run_seed(db_session)
     syms_after_first = await _symbols(db_session)
     assert ("NATURALGAS", "MCX") not in syms_after_first, (
@@ -487,3 +520,23 @@ async def test_operator_readd_after_cleanup_preserved(db_session):
     assert ("NATURALGAS", "MCX") in syms_after_second, (
         "Operator re-added NATURALGAS must survive second boot (marker already set)"
     )
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5h — Empty global Pinned → exactly 16 items after seed
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_empty_pinned_seeds_to_16_items(db_session):
+    """Fresh DB with no items: seed must produce exactly 16 canonical entries."""
+    await _make_global_pinned(db_session)
+
+    await _run_seed(db_session)
+
+    from sqlalchemy import select, func
+    from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
+    count = (await db_session.execute(
+        select(func.count()).select_from(_WatchlistItem)
+    )).scalar()
+    assert count == 16, f"Expected 16 items from empty seed, got {count}"
+    assert len(MARKETS_DEFAULT) == 16
