@@ -42,6 +42,116 @@ _spark_db_only_last_log: float = 0.0
 _spark_empty_last_log: dict[tuple[str, str], float] = {}
 
 
+# ── Closed-hours cold-start warm state ────────────────────────────────────────
+# _closed_hours_warm_signatures is the SET of key-set signatures already warmed
+# in the current IST day.  A signature is the concatenation of resolved broker
+# keys (sorted, joined by ',').  Signatures reset at midnight IST via
+# _closed_hours_warm_day.  Guarded by _closed_hours_warm_lock.
+_closed_hours_warm_signatures: set[str] = set()
+_closed_hours_warm_day: str = ""
+_closed_hours_warm_lock = threading.Lock()
+
+
+def _record_good_ltp_live(sym: str, ltp: float) -> None:
+    """Thin wrapper so batch_quote's live path can persist LKG LTP without
+    importing broker_apis at module top (circular-import risk)."""
+    try:
+        from backend.brokers.broker_apis import record_good_ltp
+        record_good_ltp(sym, ltp)
+    except Exception:
+        pass
+
+
+def _record_good_quote_live(sym: str, payload: dict) -> None:
+    """Thin wrapper so batch_quote's live path can persist LKG non-LTP fields
+    without importing broker_apis at module top (circular-import risk)."""
+    try:
+        from backend.brokers.broker_apis import record_good_quote
+        record_good_quote(sym, payload)
+    except Exception:
+        pass
+
+
+async def _maybe_warm_closed_hours_quotes(keys: list[str], key_map) -> None:
+    """One-shot broker.quote() warm for closed-hours cold-start scenarios.
+
+    When the process restarts during closed hours (typical after a redeploy
+    that lands post-15:30 IST), the in-memory LKG quote cache is empty and
+    every /api/quote/batch response would drop open/close/volume/oi to null.
+    This helper fires ONE broker.quote() per (day, key-set signature) so the
+    LKG cache warms up for every subsequent closed-hours poll.
+
+    The signature is per key-set so distinct pages (pinned universe vs.
+    positions universe) each get their own warm without cross-blocking.
+    Guarded by _closed_hours_warm_lock + a per-IST-day reset so we don't
+    burn broker quota on every 30 s /pulse poll.
+
+    Silently no-ops on any error (broker unreachable, resolver failure) —
+    the caller falls through to empty-fields rows, same as the pre-warm
+    baseline behaviour.
+    """
+    global _closed_hours_warm_day
+    if not key_map or not getattr(key_map, "broker_keys", None):
+        return
+    today = _ist_today()
+    sig = ",".join(sorted(key_map.broker_keys))
+    with _closed_hours_warm_lock:
+        if _closed_hours_warm_day != today:
+            _closed_hours_warm_signatures.clear()
+            _closed_hours_warm_day = today
+        if sig in _closed_hours_warm_signatures:
+            return
+        _closed_hours_warm_signatures.add(sig)
+
+    try:
+        from backend.brokers.registry import get_market_data_broker
+        from backend.brokers.broker_apis import record_good_ltp, record_good_quote
+        broker = get_market_data_broker()
+        quote_data = await asyncio.to_thread(broker.quote, key_map.broker_keys) or {}
+    except Exception as exc:
+        logger.debug(f"batch_quote: closed-hours warm skipped: {exc}")
+        return
+
+    _persisted = 0
+    for bkey, q in quote_data.items():
+        if not q:
+            continue
+        try:
+            _, sym_only = bkey.split(":", 1) if ":" in bkey else ("", bkey)
+            ohlc = q.get("ohlc") or {}
+            _ltp = float(q.get("last_price") or 0.0)
+            _close = float(ohlc.get("close") or 0.0) or None
+            _open  = float(ohlc.get("open")  or 0.0) or None
+            _vol   = int(q.get("volume") or 0)
+            _oi    = int(q.get("oi") or 0)
+            _change = (_ltp - _close) if (_close and _ltp) else 0.0
+            _chg_pct = (_change / _close * 100.0) if _close else 0.0
+            depth = q.get("depth") or {}
+            buys  = depth.get("buy") or []
+            sells = depth.get("sell") or []
+            _bid = float(buys[0]["price"])  if buys  and (buys[0].get("price") or 0)  else None
+            _ask = float(sells[0]["price"]) if sells and (sells[0].get("price") or 0) else None
+            if _ltp > 0:
+                record_good_ltp(sym_only, _ltp)
+            record_good_quote(sym_only, {
+                "open":       _open,
+                "close":      _close,
+                "volume":     _vol,
+                "oi":         _oi,
+                "change":     _change,
+                "change_pct": _chg_pct,
+                "bid":        _bid,
+                "ask":        _ask,
+            })
+            _persisted += 1
+        except Exception:
+            continue
+    if _persisted:
+        logger.info(
+            f"batch_quote: closed-hours warm — persisted LKG for {_persisted}/{len(quote_data)} symbols"
+        )
+
+
 # ── Closed-hours helper ───────────────────────────────────────────────────────
 
 def _exchanges_from_keys(keys: list[str]) -> set[str]:
@@ -168,14 +278,32 @@ class QuoteResponse(msgspec.Struct):
     volume: int = 0
 
 
-def _fetch_ltp(exchange: str, tradingsymbol: str) -> QuoteResponse:
+def _fetch_ltp(
+    broker_exchange: str,
+    broker_tradingsymbol: str,
+    display_exchange: str | None = None,
+    display_tradingsymbol: str | None = None,
+) -> QuoteResponse:
     # Shared market-data fetch — route through get_market_data_broker() so
     # the operator's `connections.price_account` setting decides which
     # account's API handle services chart-data calls. Broker-agnostic
     # path; any vendor's adapter will work the same.
+    #
+    # Virtual MCX/CDS root resolution is handled by the ASYNC caller
+    # (get_quote) which resolves before calling here.  _fetch_ltp is
+    # purely sync — no event-loop interaction allowed.  Scheduling async
+    # work from here would deadlock (the calling thread IS the event loop).
+    #
+    # broker_exchange / broker_tradingsymbol   — resolved contract key sent to broker.
+    # display_exchange / display_tradingsymbol — original operator-facing symbol
+    #   returned in QuoteResponse so the frontend row-lookup still matches.
+    #   Defaults to broker_* when not supplied (non-virtual symbols).
     from backend.brokers.registry import get_market_data_broker
+
+    broker_key = f"{broker_exchange.upper()}:{broker_tradingsymbol.upper()}"
+    disp_exchange = (display_exchange or broker_exchange)
+    disp_sym      = (display_tradingsymbol or broker_tradingsymbol)
     broker = get_market_data_broker()
-    key = f"{exchange}:{tradingsymbol}"
 
     bid = ask = None
     depth_buy: list[DepthLevel] = []
@@ -184,7 +312,7 @@ def _fetch_ltp(exchange: str, tradingsymbol: str) -> QuoteResponse:
     ltp = 0.0
 
     try:
-        full = broker.quote([key]).get(key) or {}
+        full = broker.quote([broker_key]).get(broker_key) or {}
         ltp = float(full.get("last_price") or 0.0)
         volume = int(full.get("volume") or 0)
         depth = full.get("depth") or {}
@@ -202,17 +330,17 @@ def _fetch_ltp(exchange: str, tradingsymbol: str) -> QuoteResponse:
             ask = depth_sell[0].price
     except Exception as e:
         # Fallback to ltp-only
-        logger.warning(f"Quote depth failed for {key}: {e}")
+        logger.warning(f"Quote depth failed for {broker_key}: {e}")
         try:
-            data = broker.ltp([key])
-            row = data.get(key) or {}
+            data = broker.ltp([broker_key])
+            row = data.get(broker_key) or {}
             ltp = float(row.get("last_price") or 0.0)
         except Exception as e2:
-            logger.error(f"Quote LTP fallback failed for {key}: {e2}")
+            logger.error(f"Quote LTP fallback failed for {broker_key}: {e2}")
 
     return QuoteResponse(
-        tradingsymbol=tradingsymbol,
-        exchange=exchange,
+        tradingsymbol=disp_sym,    # always the operator-facing symbol
+        exchange=disp_exchange,
         ltp=ltp,
         tick_size=0.05,
         bid=bid,
@@ -266,8 +394,15 @@ class QuoteController(Controller):
         exchange: str = Parameter(required=True),
         tradingsymbol: str = Parameter(required=True),
     ) -> QuoteResponse:
+        from backend.api.algo.symbol_resolver import resolve_market_data_keys
         try:
-            return _fetch_ltp(exchange, tradingsymbol)
+            input_key = f"{exchange.upper()}:{tradingsymbol.upper()}"
+            key_map = await resolve_market_data_keys([input_key])
+            broker_key = key_map.input_to_broker.get(input_key, input_key)
+            b_exch, b_sym = broker_key.split(":", 1) if ":" in broker_key else (exchange, tradingsymbol)
+            return await asyncio.to_thread(
+                _fetch_ltp, b_exch, b_sym, exchange, tradingsymbol
+            )
         except Exception as e:
             logger.error(f"Quote API error: {e}")
             raise HTTPException(status_code=500, detail=str(e))
@@ -279,6 +414,12 @@ class QuoteController(Controller):
         live LTP / day-change for positions + holdings + underlyings
         without N round-trips.
 
+        Virtual MCX/CDS root symbols (e.g. ``MCX:CRUDEOIL``) are resolved
+        to their front-month futures contract before the broker call.
+        Response rows are keyed on the ORIGINAL operator-facing symbol so
+        the frontend row-lookup (``cMap[exchange:tradingsymbol]``) always
+        matches, regardless of which contract is live.
+
         When all requested exchanges are closed the route skips the broker
         call and returns the last-known-good LTP from the in-process
         _LAST_GOOD_LTP cache (populated during the last market session).
@@ -288,11 +429,18 @@ class QuoteController(Controller):
         import asyncio
         from datetime import datetime, timezone
         from backend.brokers.registry import get_market_data_broker
+        from backend.api.algo.symbol_resolver import resolve_market_data_keys
 
         keys = list({k.strip() for k in (data.keys or []) if k and ":" in k})
         # Soft cap — Kite quote() handles ~500 keys but the UI shouldn't
         # ask for more than this in one tab. Trim silently.
         keys = keys[:300]
+
+        # ── Virtual root resolution ────────────────────────────────────────
+        # Resolve MCX/CDS bare roots to front-month contracts so broker calls
+        # succeed. key_map carries both directions so we can emit response rows
+        # keyed on the original operator symbol.
+        key_map = await resolve_market_data_keys(keys)
 
         # ── Closed-hours fast-path ─────────────────────────────────────────
         # When every exchange in the requested set is currently closed, skip
@@ -306,9 +454,25 @@ class QuoteController(Controller):
         quote_data: dict = {}
 
         if market_closed:
-            # Read last-known-good LTPs; mark all rows as stale.
-            from backend.brokers.broker_apis import get_last_good_ltp
-            logger.debug(f"batch_quote: market closed — serving LKG LTP for {len(keys)} keys")
+            # Read last-known-good LTP + non-LTP snapshot fields; mark rows as
+            # stale. LKG lookup uses the RESOLVED symbol since that's what was
+            # recorded during the live session.
+            #
+            # Cold-start warm: if the LKG quote cache is empty for the
+            # requested universe (process restarted during closed hours, or
+            # the previous session ended before the batch endpoint ran), do a
+            # ONE-SHOT broker.quote() to populate open/close/volume/oi/change
+            # for this response and every subsequent closed-hours request.
+            # Guarded by a module-level "warmed today" flag so we don't burn
+            # broker quota on every closed-hours poll.
+            from backend.brokers.broker_apis import (
+                get_last_good_ltp, get_last_good_quote, record_good_quote, record_good_ltp,
+            )
+            logger.debug(f"batch_quote: market closed — serving LKG for {len(keys)} keys")
+
+            # Cold-start warm — one broker.quote() per IST day per key-set signature.
+            await _maybe_warm_closed_hours_quotes(keys, key_map)
+
             items: list[BatchQuoteRow] = []
             as_of_str = datetime.now(timezone.utc).isoformat(timespec="seconds")
             for k in keys:
@@ -316,10 +480,34 @@ class QuoteController(Controller):
                     exch, sym = k.split(":", 1)
                 except ValueError:
                     continue
-                ltp = get_last_good_ltp(sym, max_age_s=86400.0) or 0.0
+                # Prefer LKG from the resolved contract symbol, fall back to
+                # the raw input symbol (for non-virtual pass-throughs).
+                broker_key = key_map.input_to_broker.get(k, k)
+                _, resolved_sym = broker_key.split(":", 1) if ":" in broker_key else ("", sym)
+                ltp = (
+                    get_last_good_ltp(resolved_sym, max_age_s=86400.0) or
+                    get_last_good_ltp(sym, max_age_s=86400.0) or
+                    0.0
+                )
+                # LKG non-LTP snapshot — open/close/volume/oi/change/change_pct/bid/ask.
+                # Prefer resolved contract symbol (matches live-path record key);
+                # fall back to raw input symbol for non-virtual pass-throughs.
+                snap = (
+                    get_last_good_quote(resolved_sym, max_age_s=86400.0) or
+                    get_last_good_quote(sym, max_age_s=86400.0) or
+                    {}
+                )
                 items.append(BatchQuoteRow(
-                    exchange=exch, tradingsymbol=sym,
+                    exchange=exch, tradingsymbol=sym,  # always original key
                     ltp=ltp,
+                    bid=snap.get("bid"),
+                    ask=snap.get("ask"),
+                    open=snap.get("open"),
+                    close=snap.get("close"),
+                    change=float(snap.get("change") or 0.0),
+                    change_pct=float(snap.get("change_pct") or 0.0),
+                    volume=int(snap.get("volume") or 0),
+                    oi=int(snap.get("oi") or 0),
                     stale=True,
                 ))
             return BatchQuoteResponse(
@@ -329,10 +517,10 @@ class QuoteController(Controller):
             )
 
         # ── Live path (market open) ────────────────────────────────────────
-        if keys:
+        if key_map.broker_keys:
             try:
                 broker = get_market_data_broker()
-                quote_data = await asyncio.to_thread(broker.quote, keys) or {}
+                quote_data = await asyncio.to_thread(broker.quote, key_map.broker_keys) or {}
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"Batch quote failed: {exc}")
                 quote_data = {}
@@ -345,13 +533,18 @@ class QuoteController(Controller):
         # The sparkline tail in the renderer reads _liveLtpSnap[sym]; if
         # SSE never subscribed the symbol, the tail stays pinned at the
         # poll-time LTP and the curve looks frozen.
+        # seen_pairs tracks ORIGINAL (operator-facing) symbols so the
+        # ticker subscribe uses the same sym key that SSE listeners
+        # registered for.
         seen_pairs: list[tuple[str, str]] = []
         for k in keys:
-            q = quote_data.get(k) or {}
             try:
                 exch, sym = k.split(":", 1)
             except ValueError:
                 continue
+            # Look up broker data via the resolved key.
+            broker_key = key_map.input_to_broker.get(k, k)
+            q = quote_data.get(broker_key) or {}
             ltp    = float(q.get("last_price") or 0.0)
             ohlc   = q.get("ohlc") or {}
             close  = float(ohlc.get("close") or 0.0) or None
@@ -363,15 +556,39 @@ class QuoteController(Controller):
             ask    = float(sells[0]["price"]) if sells and (sells[0].get("price") or 0) else None
             change = (ltp - close) if (close and ltp) else 0.0
             chg_pct = (change / close * 100.0) if close else 0.0
+            _vol = int(q.get("volume") or 0)
+            _oi  = int(q.get("oi") or 0)
             items.append(BatchQuoteRow(
-                exchange=exch, tradingsymbol=sym,
+                exchange=exch, tradingsymbol=sym,  # always original operator-facing key
                 ltp=ltp, bid=bid, ask=ask, open=open_, close=close,
                 change=change, change_pct=chg_pct,
-                volume=int(q.get("volume") or 0),
-                oi=int(q.get("oi") or 0),
+                volume=_vol,
+                oi=_oi,
                 stale=(not q),
             ))
             seen_pairs.append((exch.upper(), sym.upper()))
+
+            # Record LKG for closed-hours fallback.  Key by the RESOLVED
+            # broker symbol so virtual roots (MCX:CRUDEOIL → CRUDEOIL26JUNFUT)
+            # persist under the same key both live-path and closed-hours
+            # readers use.  record_good_ltp uses the sym-only key (no
+            # exchange) to match the existing LTP cache convention.
+            if q:
+                _, resolved_sym_only = (
+                    broker_key.split(":", 1) if ":" in broker_key else ("", sym)
+                )
+                if ltp and ltp > 0:
+                    _record_good_ltp_live(resolved_sym_only, ltp)
+                _record_good_quote_live(resolved_sym_only, {
+                    "open":       open_,
+                    "close":      close,
+                    "volume":     _vol,
+                    "oi":         _oi,
+                    "change":     change,
+                    "change_pct": chg_pct,
+                    "bid":        bid,
+                    "ask":        ask,
+                })
 
         # Subscribe the queried universe to the live ticker so SSE starts
         # streaming LTP for these symbols immediately. subscribe_with_sym
