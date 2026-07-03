@@ -254,6 +254,27 @@ chicken-and-egg at boot when `rebuild_from_db` is still minting Kite tokens.
 Main API LTP read from mmap (zero quota, zero latency). Sparkline historical 1
 call on cache miss (3 req/sec budget, pre-warmed).
 
+**Universe registration invariant** — `MmapTickReader._sym_to_token` MUST be
+populated for every symbol in the operator's active universe before the first
+mmap tick arrives. Without registration, `_poll_loop` ships `sym: ""` and
+`quoteStream.js` drops those ticks (falsy sym guard at line 118), leaving
+`_liveLtpSnap[sym]` undefined → cells fall back to polled `row.ltp`
+(= `close_price` in thin-tick windows) → visible LTP/close flicker.
+
+Implementation: `_task_sparkline_warm._register_universe_with_ticker` runs
+inside `_do_warm` immediately at startup and at each segment-open boundary
+(00:30 IST, 09:00 MCX, 09:15 NSE). It collects the same 300-symbol universe
+as `_collect_symbols`, resolves tokens via `_resolve_token_for_sym` in 50-symbol
+chunks, and calls `subscribe_with_sym` for any symbol not already in
+`_sym_to_token`. The per-tick book-subscribe sweep in `_task_performance`
+(background.py:638-698) handles intraday additions (new positions).
+
+Observability: `[MMAP-MISSING-SYM] token=X reason=local_token_not_registered`
+fires at most once per token per 60 s when a tick arrives for an unregistered
+token. `[LTP-GAP] sym=X source=Y close=Z reason=no_local_token` fires at most
+once per (sym, source) per 60 s in `apply_ltp_patch` when the broker LTP and
+`close_price` are indistinguishable (`|Δ| < 0.005`) and the ticker has no sample.
+
 **Health surface** (`GET /api/admin/health`) — `ticker.stale_count`, `ticker.max_age_seconds`,
 `ticker.stale_top` (up to 20 worst-offender entries formatted `"SYMBOL@<age>s"` or
 `"SYMBOL@never"`). Distinguishes "subscribed but Kite stopped emitting" from
@@ -1284,6 +1305,8 @@ immediately (within one event-loop tick) before resuming its normal cadence.
 
 **Day P&L formula** — Decomposed intraday (not naive `(LTP−close)×qty`). Positions: `overnight_qty × (LTP − prev_close) + day_buy/sell legs`. Holdings: `broker.pnl − (close − cost) × opening_qty`. MCX guard: apply lot_size to intraday qty too.
 
+**Frontend Day P&L SSOT** — `baseDayPnlForPosition(p)` in `frontend/src/lib/data/nav.js` is the canonical new-position override: when `overnight_quantity=0 && pnl≠0`, Kite returns `day_change_val=0` and the real value is in `pnl`. All 6 frontend Day P&L surfaces (NavStrip P slot 1, MarketPulse position card, MarketPulse TOTAL row, Snapshot rows, Legs grid, Payoff overlay) MUST call this helper — never read `day_change_val` directly in a position-row loop.
+
 ---
 
 ## Common Tasks — Where to Make Changes
@@ -1309,7 +1332,7 @@ immediately (within one event-loop tick) before resuming its normal cadence.
 | Add MCP tool | `backend/mcp/kite_server.py` @app.tool() + update `/admin/research` TOOLS const |
 | Tune MCP audit | `/admin/settings` → `mcp.audit_retention_days` (default 90) |
 | Update macro data | `backend/config/backend_config.yaml` `macros:` block (preserved on deploy) |
-| Day P&L formula | `backend/api/algo/pnl_math.py` — `decomposed_intraday_pnl` + `naive_day_pnl`. Both polars (broker_apis) and pandas (positions route) call it. |
+| Day P&L formula | `backend/api/algo/pnl_math.py` — `decomposed_intraday_pnl` + `naive_day_pnl`. Both polars (broker_apis) and pandas (positions route) call it. Frontend SSOT for the new-position override: `baseDayPnlForPosition(p)` in `frontend/src/lib/data/nav.js` — when `overnight_quantity=0 && pnl≠0` returns `pnl` (broker DCV is stale 0 for opened-today positions). All 6 Day P&L surfaces (NavStrip P slot 1, pulse position card, pulse TOTAL, Snapshot, Legs, Payoff overlay) must funnel through this helper. |
 | NAV breakdown (frontend) | `frontend/src/lib/data/nav.js` — `navByAccount` + `navTotalRow`. PerformancePage + NavBreakdown consume. Backend equivalent: `backend/api/algo/nav.py:compute_firm_nav`. |
 | LTP-override scaffold | `backend/api/helpers/ltp_patch.py` — `apply_ltp_patch(df, policy)` shared by positions + holdings routes. Each route passes its own `policy(current, tick_ltp) -> Decision`. |
 | Mask account in text | `backend/shared/helpers/utils.py:mask_account_in_text` — JSON-string scrubber for non-admin viewers. Routes every match through canonical `mask_account()`. |
