@@ -838,6 +838,50 @@ class PositionsController(Controller):
             else:
                 # ?fresh=1 — bypass closed-hours gate entirely
                 resp = await _broker_fn()
+            # ── mode=both — merge paper rows into the live response ─────────
+            # Paper rows tagged mode='paper'; live rows default mode='live'.
+            # Summary is recomputed over the combined set so totals are correct.
+            if mode == "both":
+                paper_resp = await _build_paper_positions_response()
+                if paper_resp.rows:
+                    import msgspec as _msgspec
+                    # Tag live rows explicitly so frontend can distinguish them.
+                    live_rows_tagged = [
+                        _msgspec.structs.replace(r, mode="live") for r in resp.rows
+                    ]
+                    merged_rows = live_rows_tagged + list(paper_resp.rows)
+                    # Recompute summary over merged set.
+                    _pnl_by_acct: dict[str, float] = {}
+                    _dcv_by_acct: dict[str, float] = {}
+                    _prev_by_acct: dict[str, float] = {}
+                    for _r in merged_rows:
+                        _a = _r.account
+                        _pnl_by_acct[_a]  = _pnl_by_acct.get(_a, 0.0) + _r.pnl
+                        _dcv_by_acct[_a]  = _dcv_by_acct.get(_a, 0.0) + _r.day_change_val
+                        _prev_by_acct[_a] = _prev_by_acct.get(_a, 0.0) + abs(_r.close_price * _r.quantity)
+                    _merged_summary: list[PositionsSummaryRow] = []
+                    _t_pnl = 0.0
+                    _t_dcv = 0.0
+                    for _a, _p in _pnl_by_acct.items():
+                        _d = _dcv_by_acct.get(_a, 0.0)
+                        _pv = _prev_by_acct.get(_a, 0.0)
+                        _pct = _d / _pv * 100.0 if _pv else 0.0
+                        _merged_summary.append(PositionsSummaryRow(
+                            account=_a, pnl=_p, day_change_val=_d,
+                            day_change_percentage=_pct, day_prev_val=_pv,
+                        ))
+                        _t_pnl += _p
+                        _t_dcv += _d
+                    _t_pv = sum(_prev_by_acct.values())
+                    _merged_summary.append(PositionsSummaryRow(
+                        account="TOTAL", pnl=_t_pnl, day_change_val=_t_dcv,
+                        day_change_percentage=_t_dcv / _t_pv * 100.0 if _t_pv else 0.0,
+                        day_prev_val=_t_pv,
+                    ))
+                    resp = _msgspec.structs.replace(
+                        resp, rows=merged_rows, summary=_merged_summary,
+                    )
+
             # Horizontal scoping. Trader-role callers see only
             # positions on their `assigned_accounts`; firm-wide roles
             # (designated / risk / admin / partner / demo) see every

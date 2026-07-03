@@ -108,6 +108,9 @@ class PositionRow(msgspec.Struct):
     # (both PriceBroker.quote and KiteTicker returned 0 or raised).
     # Frontend can surface a small staleness indicator on these rows.
     last_price_stale: bool = False
+    # "live" for broker-fetched rows; "paper" for synthesized paper rows.
+    # Default "live" preserves backward compatibility with all existing callers.
+    mode: str = "live"
 
 
 class PositionsSummaryRow(msgspec.Struct):
