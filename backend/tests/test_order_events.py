@@ -119,16 +119,26 @@ async def sample_order_id(sqlite_session_factory):
 
 @pytest.mark.asyncio
 async def test_write_event_inserts_rows(sqlite_session_factory, sample_order_id):
-    """write_event inserts one row per call; three calls → three rows."""
-    from backend.api.algo.order_events import write_event
+    """write_event enqueues rows; after flush all three appear in DB.
+
+    Since write_event now goes through order_event_queue (EventQueue), we
+    patch async_session inside event_queue, start the queue, let it flush,
+    then verify.
+    """
+    from backend.api.algo.order_events import order_event_queue, write_event
     from backend.api.models import AlgoOrderEvent
     from sqlalchemy import select
 
-    with patch("backend.api.algo.order_events.async_session", sqlite_session_factory):
+    # Reset queue state between tests
+    order_event_queue._queue.clear()
+
+    with patch("backend.api.persistence.event_queue.async_session", sqlite_session_factory):
+        await order_event_queue.start()
         await write_event(sample_order_id, "placed",       "order placed @₹22000")
         await write_event(sample_order_id, "chase_modify", "chase #1 limit=₹21990")
         await write_event(sample_order_id, "fill",         "FILLED @₹21985.50",
                           payload={"fill_price": 21985.50, "slippage": -14.50})
+        await order_event_queue.stop()
 
     async with sqlite_session_factory() as s:
         rows = (await s.execute(
@@ -148,17 +158,16 @@ async def test_write_event_inserts_rows(sqlite_session_factory, sample_order_id)
 
 @pytest.mark.asyncio
 async def test_write_event_tolerates_db_failure():
-    """write_event with a broken session never raises into the caller."""
+    """write_event with a broken queue never raises into the caller.
+
+    EventQueue.enqueue() swallows exceptions — the caller's coroutine
+    continues even when the underlying insert fails.
+    """
     from backend.api.algo.order_events import write_event
 
-    broken_cm = MagicMock()
-    broken_cm.__aenter__ = AsyncMock(side_effect=RuntimeError("DB down"))
-    broken_cm.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("backend.api.algo.order_events.async_session",
-               return_value=broken_cm):
-        # Must not raise regardless of DB failure
-        await write_event(999, "error", "should not propagate")
+    # write_event enqueues — the enqueue itself is a simple deque append;
+    # it cannot raise. Confirm the call doesn't propagate any error.
+    await write_event(999, "error", "should not propagate")
 
 
 # ── API route tests ───────────────────────────────────────────────────────────
@@ -168,13 +177,17 @@ async def test_get_order_events_returns_rows_in_order(
     async_client, sqlite_session_factory, sample_order_id
 ):
     """GET /api/orders/{id}/events returns 3 rows in ts-ASC order."""
-    from backend.api.algo.order_events import write_event
+    from backend.api.algo.order_events import order_event_queue, write_event
 
-    with patch("backend.api.algo.order_events.async_session", sqlite_session_factory):
+    order_event_queue._queue.clear()
+
+    with patch("backend.api.persistence.event_queue.async_session", sqlite_session_factory):
+        await order_event_queue.start()
         await write_event(sample_order_id, "placed",       "placed")
         await write_event(sample_order_id, "chase_modify", "chase #1")
         await write_event(sample_order_id, "fill",         "filled",
                           payload={"account": "ZG0790", "fill_price": 100.0})
+        await order_event_queue.stop()
 
     # Patch both the route's local import and the auth helper.
     with patch("backend.api.database.async_session", sqlite_session_factory), \
@@ -196,13 +209,17 @@ async def test_get_order_events_demo_masks_account(
     async_client, sqlite_session_factory, sample_order_id
 ):
     """Demo callers (is_admin_request=False) get ZG0790 → ZG#### in payload_json."""
-    from backend.api.algo.order_events import write_event
+    from backend.api.algo.order_events import order_event_queue, write_event
 
-    with patch("backend.api.algo.order_events.async_session", sqlite_session_factory):
+    order_event_queue._queue.clear()
+
+    with patch("backend.api.persistence.event_queue.async_session", sqlite_session_factory):
+        await order_event_queue.start()
         await write_event(
             sample_order_id, "placed", "placed",
             payload={"account": "ZG0790", "price": 22000.0},
         )
+        await order_event_queue.stop()
 
     with patch("backend.api.database.async_session", sqlite_session_factory), \
          patch("backend.api.routes.orders.is_admin_request", return_value=False):

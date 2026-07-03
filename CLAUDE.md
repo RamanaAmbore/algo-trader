@@ -539,9 +539,25 @@ Mode is runtime-only (resets to `off` on process restart).
 - Coalesce: last-write-wins on duplicate keys, 500-row batches or 500ms timeout.
 - On queue full: warn + drop, next read re-fetches from broker.
 
+**Event queues** — `backend/api/persistence/event_queue.py`:
+Generic `EventQueue` class for high-frequency append-only writers that previously
+opened one `async_session()` per row. Uses SQLAlchemy bulk `executemany` INSERT
+(not `add_all`) for true batch efficiency. Re-queues on transient DB failure.
+
+| Queue name | Table | on_full | Location |
+|---|---|---|---|
+| `algo_event_queue` | `algo_events` | drop | `routes/algo.py` |
+| `agent_event_queue` | `agent_events` | drop | `algo/events.py` |
+| `order_event_queue` | `algo_order_events` | drop | `algo/order_events.py` |
+| `mcp_audit_queue` | `mcp_audit` | sync | `routes/research.py` |
+
+All four started at app startup in `app.py` (`_start_event_queues`) and stopped
+gracefully at shutdown (`_stop_event_queues` flushes remaining rows).
+
 **Metrics** (`GET /api/admin/health`):
 - Per-store: `tier1_hits`, `tier2_hits`, `tier3_fetches`, `tier3_errors`, `hit_rate`.
 - Write workers: `disk_queue.depth`, `db_queue.depth`, `last_flush_epoch`, `worker_alive`.
+- Event queues: `persistence.queues.{algo_event,agent_event,order_event,mcp_audit}` — `depth`, `dropped`, `last_flush_epoch`, `last_batch_size`, `worker_alive`.
 
 **Invalidation** (selective cache wipe):
 - `POST /api/admin/persistence/invalidate?store=ohlcv_daily&symbol=NIFTY50`
