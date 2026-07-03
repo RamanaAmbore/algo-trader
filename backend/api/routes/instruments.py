@@ -109,26 +109,71 @@ def _fetch_instruments() -> InstrumentsResponse:
     schema (no `instrument_type` / `name` fields) which would leave every
     instrument with t='' and break the movers underlyings universe.
     When RAMBOQ_USE_CONN_SERVICE=1, get_broker() returns RemoteBroker stubs
-    that proxy through conn_service, so the Kite filter still applies."""
-    from backend.brokers.registry import _loaded_accounts, _broker_id_for, get_market_data_broker
+    that proxy through conn_service, so the Kite filter still applies.
+
+    Kite-only walk (Jul 2026 defect fix): Prior implementation routed through
+    `get_market_data_broker()` (PriceBroker with cross-broker failover) which
+    silently fell over to Dhan when Kite hit its per-account rate-limit
+    cool-off. Dhan's `instruments()` returns rows with schema
+    ``{tradingsymbol, security_id, instrument_token, exchange, exchange_segment,
+    lot_size, tick_size}`` — no `instrument_type`, `name`, `expiry`, or `strike`.
+    The cache then had 156K rows with `t=''` / `u=None` / `x=None`, which broke
+    every downstream call site that filters `inst.t == "FUT" and inst.u ==
+    root` (symbol_resolver.list_active_futures / _list_all_futures_fallback,
+    movers underlyings, chart historical fallback, MCX/CDS virtual-root
+    resolution). Symptom in browser: MCX bare-root rows (CRUDEOIL, GOLDM,
+    GOLD, SILVER, USDINR) rendered with blank LTP / sparkline / OHLCV
+    because virtual resolution silently failed and LKG cache read the wrong
+    key.
+
+    Fix: iterate ALL loaded Kite accounts explicitly, break on first success
+    per exchange. When every Kite account is rate-limited on a given
+    exchange we skip that exchange (log-warn); the daily 08:00 IST re-warm
+    picks it up on the next pass. NEVER fall over to Dhan/Groww — a partial
+    Kite cache is strictly better than a poisoned Dhan cache.
+    """
+    from backend.brokers.registry import _loaded_accounts, _broker_id_for, get_broker
     accts = _loaded_accounts()
     kite_accts = [a for a in accts if _broker_id_for(a) in {"zerodha_kite", "kite"}]
     if not kite_accts:
         logger.warning("Instruments: no Kite account loaded — dump unavailable")
         return InstrumentsResponse(cycle_date="", count=0, items=[])
-    # Route through the primary market-data broker (honours
-    # connections.price_account pin + priority sort) rather than
-    # hard-coding kite_accts[0]. Within a request this returns the same
-    # PriceBroker that quote / sparkline / historical calls will use, so
-    # all callsites share one broker session per request.
-    broker = get_market_data_broker()
 
     items: list[Instrument] = []
     for exch in _EXCHANGES:
-        try:
-            raw = broker.instruments(exch)
-        except Exception as e:
-            logger.warning(f"Instruments: {exch} fetch failed: {e}")
+        raw = None
+        _last_err: Exception | None = None
+        # Walk every Kite account; stop at the first one that returns a
+        # non-empty Kite-shape response. This gives us cross-account
+        # failover for Kite rate-limits without ever landing on Dhan's
+        # stripped schema.
+        for _acct in kite_accts:
+            try:
+                broker = get_broker(_acct)
+                _resp = broker.instruments(exch)
+            except Exception as e:
+                _last_err = e
+                continue
+            if not _resp:
+                continue
+            # Kite-shape sanity check: the first row must carry
+            # `instrument_type` (present on every real Kite instrument row).
+            # Guards against a future broker adapter silently substituting
+            # its own stripped schema.
+            if not isinstance(_resp[0], dict) or "instrument_type" not in _resp[0]:
+                logger.warning(
+                    f"Instruments: {exch} on {_acct} returned non-Kite shape "
+                    f"({list(_resp[0].keys()) if isinstance(_resp[0], dict) else type(_resp[0]).__name__}) "
+                    f"— trying next account"
+                )
+                continue
+            raw = _resp
+            break
+        if raw is None:
+            if _last_err is not None:
+                logger.warning(f"Instruments: {exch} fetch failed on every Kite account: {_last_err}")
+            else:
+                logger.warning(f"Instruments: {exch} returned no usable data on any Kite account")
             continue
 
         # MCX diagnostic: log the first CE, PE, and FUT row per fetch cycle
