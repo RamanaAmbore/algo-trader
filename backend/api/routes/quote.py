@@ -553,6 +553,83 @@ class SparklineResponse(msgspec.Struct):
     as_of: Optional[str] = None
 
 
+# ---------------------------------------------------------------------------
+# Unified sparkline series composer (hardening: single-source truth + reason)
+# ---------------------------------------------------------------------------
+
+def compose_sparkline_series(
+    past: list[float],
+    today_bars: list[float],
+    ltp_val: Optional[float],
+    market_closed: bool,
+) -> tuple[list[float], str]:
+    """Compose the final sparkline series for a single symbol + return the
+    reason label attributing the outcome.
+
+    Pure function so unit tests can hand it fixture inputs (no I/O, no
+    logger, no cache lookups). The batch endpoint is responsible for
+    populating the three input slots via ohlcv_store / intraday_store /
+    ticker respectively; this helper owns the fallback ladder that turns
+    them into a renderable series.
+
+    Ladder (top wins):
+      past >= 1 AND (today_bars >= 1 OR ltp_val > 0):
+        → past + today_bars + [ltp_val if open], reason='live'
+      past >= 1 AND market closed:
+        → past + today_bars, reason='snapshot'
+      past == 0 AND ltp_val > 0:
+        → [ltp_val, ltp_val] flat baseline, reason='ltp_only_flat_pad'
+      len(series) == 1:
+        → [x, x] pad, reason='single_point_pad'
+      empty everywhere:
+        → [], reason attributes to which tier failed:
+          - warm_universe_empty (market closed, no cache, no LTP)
+          - historical_fetch_fail (market open, no cache, no LTP)
+          - spark_past_cache_miss (today ok, past empty)
+          - spark_today_cache_miss (past ok, today empty, no LTP)
+
+    Reason 'live' == "actually rendered from live-ish data".
+    Reason 'snapshot' == "actually rendered from stale cache" — still
+    displayable but the frontend can label it "as of <time>".
+    """
+    # Live LTP tail only when market is open (mirrors existing batch endpoint
+    # semantics: appending stale LTP overnight would create a misleading
+    # "current" data point on top of good history).
+    tail_ltp = (ltp_val if (ltp_val and ltp_val > 0) else None) if not market_closed else None
+
+    series = list(past) + list(today_bars)
+    if tail_ltp is not None:
+        series = series + [tail_ltp]
+
+    if series and (past or today_bars):
+        # Have real historical data — that's the primary render.
+        reason = "snapshot" if market_closed else "live"
+        # Pad single-point (broker rate-limit → past=[], only tail_ltp) to 2.
+        if len(series) == 1:
+            series = series + series
+            reason = "single_point_pad"
+        return series, reason
+
+    # No historical data. See if LTP fallback can produce a flat baseline.
+    if not series and ltp_val and ltp_val > 0:
+        return [ltp_val, ltp_val], "ltp_only_flat_pad"
+
+    # Rare guard: series has exactly 1 point (past=[], today=[ltp] combo).
+    if len(series) == 1:
+        return series + series, "single_point_pad"
+
+    # Truly empty: attribute reason to which tier failed.
+    if len(past) == 0 and len(today_bars) == 0:
+        reason = "warm_universe_empty" if market_closed else "historical_fetch_fail"
+    elif len(past) == 0:
+        reason = "spark_past_cache_miss"
+    elif len(today_bars) == 0:
+        reason = "spark_today_cache_miss"
+    else:
+        reason = "unknown"
+    return [], reason
+
+
 class SparklineController(Controller):
     path = "/api/quotes"
     guards = [auth_or_demo_guard]
@@ -896,6 +973,11 @@ class SparklineController(Controller):
         )
 
         # ── Step 4: Compose result series ────────────────────────────────────
+        # Delegate to compose_sparkline_series() — pure helper owns the
+        # fallback ladder and the reason attribution. This route stays
+        # responsible only for the closed-hours last-good-LTP lookup (which
+        # needs the last-good store) and the empty-branch structured log
+        # (which needs the throttled dict).
         result: dict[str, list[float]] = {}
         for sym_obj in norm_syms:
             sym  = sym_obj.tradingsymbol
@@ -911,79 +993,33 @@ class SparklineController(Controller):
                 _cached_ltp = _get_last_ltp(sym, max_age_s=86400.0)
                 if _cached_ltp and _cached_ltp > 0:
                     ltp_val = _cached_ltp
-            # When market is closed, do not append a live LTP tail to an
-            # existing series — the last close in `past` already represents
-            # the EOD value. Appending a stale LTP would create a
-            # misleading "current" data point on top of good history.
-            # However, if BOTH past AND today_bars are empty (cold-cache
-            # scenario: new deploy + db_only skipped broker), the ticker
-            # snapshot (ltp_val from mmap/last-known-good) is the only
-            # price we have. In that case, use it as a 2-point flat
-            # baseline rather than returning nothing — "flat but priced"
-            # is more useful than a "—" em-dash for every symbol.
-            tail_ltp = (ltp_val if (ltp_val and ltp_val > 0) else None) if not spark_market_closed else None
-            # Series order: past daily closes (oldest first), then today's
-            # 30-min intraday closes, then current LTP. Off-hours today_bars
-            # is empty → collapses to past + [ltp] (same as before).
-            series = past + today_bars
-            if tail_ltp is not None:
-                series = series + [tail_ltp]
-            # Cold-cache fallback: when series is still empty but the ticker
-            # snapshot has a last-known price (from mmap buffer / prior
-            # session), emit [ltp, ltp] so the sparkline cell shows a flat
-            # line instead of an em-dash.  This covers "new deploy, market
-            # closed, ohlcv_store Tier 1+2 cold, broker call skipped
-            # (db_only)".  A flat line communicates "priced but no trend
-            # visible yet" — much better than a blank cell.
-            if not series and ltp_val and ltp_val > 0:
-                series = [ltp_val, ltp_val]
-            # Frontend sparkline renderer needs ≥ 2 points (it draws a
-            # polyline between consecutive closes; 1 point can't make a
-            # line). When the operator's universe rotates a new mover in
-            # and the broker rate-limits the historical_data call, we
-            # end up with just [ltp]. Pad to [ltp, ltp] so the cell
-            # renders a flat horizontal line — communicates "we have the
-            # current price but no history" instead of an em-dash that
-            # looks like "data missing entirely". Operator: "when the
-            # data for sparkline comes from db and cache, why it is not
-            # showing all sparklines in pulse?" — the answer was the
-            # broker rate-limit + frontend's <2-point em-dash. Padding
-            # here fixes the cell render without waiting for the warm
-            # task to repopulate the cache.
-            if len(series) == 1:
-                series = series + series
+
+            series, _compose_reason = compose_sparkline_series(
+                past=past,
+                today_bars=today_bars,
+                ltp_val=ltp_val,
+                market_closed=spark_market_closed,
+            )
+
             if not series:
-                # Structured [SPARK-EMPTY] tag — one canonical grep target so
-                # the operator can find every empty-sparkline path with a
-                # single log query. Reason maps the empty state to which
-                # layer of the three-tier read hierarchy failed:
-                #   spark_past_cache_miss  — ohlcv_store returned nothing
-                #                            (Tier 1 mem + Tier 2 DB both cold).
-                #   spark_today_cache_miss — intraday_store returned nothing
-                #                            (only relevant while market open).
-                #   historical_fetch_fail  — market open, both tiers empty AND
-                #                            no live LTP tail available.
-                #   warm_universe_empty    — market closed, both tiers empty
-                #                            AND no last-known-good LTP.
+                # Structured [SPARK-EMPTY] tag — reason attributed by the
+                # canonical compose_sparkline_series() helper above so the
+                # route + helper can never drift on reason semantics. The
+                # cache_layer label is derived from reason for grep-ability.
+                _layer_map = {
+                    "warm_universe_empty":    "tier1_2_cache",
+                    "historical_fetch_fail":  "tier3_broker",
+                    "spark_past_cache_miss":  "tier1_past_cache",
+                    "spark_today_cache_miss": "tier1_today_cache",
+                }
+                _layer = _layer_map.get(_compose_reason, "unknown")
                 _now = _time_mod.monotonic()
                 _key = (sym, sym_obj.exchange)
-                if len(past) == 0 and len(today_bars) == 0:
-                    _reason = "warm_universe_empty" if spark_market_closed else "historical_fetch_fail"
-                    _layer = "tier1_2_cache" if spark_market_closed else "tier3_broker"
-                elif len(past) == 0:
-                    _reason = "spark_past_cache_miss"
-                    _layer = "tier1_past_cache"
-                elif len(today_bars) == 0:
-                    _reason = "spark_today_cache_miss"
-                    _layer = "tier1_today_cache"
-                else:
-                    _reason = "unknown"
-                    _layer = "unknown"
                 if _now - _spark_empty_last_log.get(_key, 0.0) >= 3600:
                     _spark_empty_last_log[_key] = _now
                     logger.info(
                         f"[SPARK-EMPTY] symbol={sym_obj.exchange}:{sym} "
-                        f"reason={_reason} cache_layer={_layer} "
+                        f"reason={_compose_reason} cache_layer={_layer} "
                         f"past={len(past)} today={len(today_bars)} "
                         f"ltp={ltp_val} market_closed={spark_market_closed}"
                     )
