@@ -1,8 +1,10 @@
 """
-Tests for the per-exchange close-snapshot lifecycle (Jul 2026).
+Tests for the per-exchange close-snapshot lifecycle + unified animation
+model (Jul 2026).
 
 Scope:
-  1. Row-level `ltp_source` tagging on PositionRow / HoldingRow.
+  1. Row-level `price_source` / `current_price` / `is_animating` tagging
+     on PositionRow / HoldingRow.
   2. `is_exchange_closed_now` per-exchange gate helper.
   3. `latest_snapshot_ltp_map` reuses the same latest-batch CTE the
      per-route snapshot readers use (SSOT).
@@ -17,7 +19,8 @@ Five quality dimensions per house style:
   Stale      — no dead code paths left over from the pre-lifecycle design.
   Reusable   — helpers are shared between positions.py + holdings.py.
   Correctness (UX) — mixed-live+snap during NSE-closed / MCX-open windows;
-                     both-closed → all snap + `?skip_ltp=1` accepted.
+                     both-closed → all snap + `?skip_ltp=1` accepted;
+                     `is_animating=False` on every snapshot-served row.
 """
 
 from __future__ import annotations
@@ -81,8 +84,10 @@ def test_positions_overlay_helper_uses_map():
 def test_positions_overlay_fast_path_when_all_open():
     """No snapshot lookup when every row's exchange is currently open."""
     src = _src(_POS)
-    # A short-circuit check followed by a live-tag return.
-    assert "ltp_source=\"live\"" in src
+    # A short-circuit check followed by a live-tag return under the
+    # unified animation model (price_source + is_animating).
+    assert "price_source=\"live\"" in src
+    assert "is_animating=True" in src
 
 
 def test_holdings_overlay_helper_uses_map():
@@ -112,20 +117,23 @@ def test_no_legacy_inline_close_snapshot_helpers():
 # Dimension 4 — Reusable: same schema field, shared helper module
 # ===========================================================================
 
-def test_position_row_has_ltp_source_field():
-    """PositionRow carries an ltp_source column (default 'live')."""
+def test_position_row_has_unified_animation_fields():
+    """PositionRow carries the unified animation-model triad:
+        price_source (default 'live'), current_price, is_animating."""
     src = _src(_SCH)
-    # Find the PositionRow class and check for ltp_source with default "live"
     assert "class PositionRow" in src
-    # Should have the field with a default value
-    assert 'ltp_source: str = "live"' in src
+    assert 'price_source: str = "live"' in src
+    assert "current_price: float = 0.0" in src
+    assert "is_animating: bool = True" in src
 
 
-def test_holding_row_has_ltp_source_field():
-    """HoldingRow carries an ltp_source column (default 'live')."""
+def test_holding_row_has_unified_animation_fields():
+    """HoldingRow carries the unified animation-model triad."""
     src = _src(_SCH)
     assert "class HoldingRow" in src
-    assert 'ltp_source: str = "live"' in src
+    assert 'price_source: str = "live"' in src
+    assert "current_price: float = 0.0" in src
+    assert "is_animating: bool = True" in src
 
 
 def test_routes_accept_skip_ltp_param():
@@ -156,7 +164,8 @@ async def test_exchange_to_gate_map_covers_common_exchanges():
 
 @pytest.mark.asyncio
 async def test_overlay_snapshot_tags_rows_live_when_all_open():
-    """When both markets open, every row is tagged ltp_source='live'."""
+    """When both markets open, every row is tagged price_source='live',
+    is_animating=True, and current_price mirrors last_price."""
     from backend.api.routes.positions import _overlay_snapshot_for_closed_exchanges
     from backend.api.schemas import PositionRow
 
@@ -181,7 +190,9 @@ async def test_overlay_snapshot_tags_rows_live_when_all_open():
 
     assert len(out) == 2
     for r in out:
-        assert r.ltp_source == "live"
+        assert r.price_source == "live"
+        assert r.is_animating is True
+        assert r.current_price == r.last_price
 
 
 @pytest.mark.asyncio
@@ -221,19 +232,24 @@ async def test_overlay_snapshot_tags_closed_exchange_rows_as_snapshot():
     assert len(out) == 2
     nifty = next(r for r in out if r.tradingsymbol == "NIFTY26JULFUT")
     crude = next(r for r in out if r.tradingsymbol == "CRUDEOIL26JULFUT")
-    # NSE row — snapshot LTP overlaid, tagged snapshot
-    assert nifty.ltp_source == "snapshot"
+    # NSE row — snapshot LTP overlaid, tagged snapshot_settled, no animation
+    assert nifty.price_source == "snapshot_settled"
     assert nifty.last_price == 22050.0
-    # MCX row — untouched, still live
-    assert crude.ltp_source == "live"
+    assert nifty.current_price == 22050.0
+    assert nifty.is_animating is False
+    # MCX row — untouched, still live + animating
+    assert crude.price_source == "live"
     assert crude.last_price == 6850.0
+    assert crude.current_price == 6850.0
+    assert crude.is_animating is True
 
 
 @pytest.mark.asyncio
 async def test_overlay_snapshot_closed_row_without_snapshot_still_tagged():
     """When a row is on a closed exchange but no snapshot exists yet
-    (first deploy for a newly-listed contract), keep broker LTP but still
-    tag ltp_source='snapshot' so the frontend renders the SNAP chip."""
+    (first deploy for a newly-listed contract, or pre-settled window),
+    keep broker LTP but tag price_source='snapshot_unsettled' + freeze
+    animation so the frontend renders a static SNAP chip."""
     from backend.api.routes.positions import _overlay_snapshot_for_closed_exchanges
     from backend.api.schemas import PositionRow
 
@@ -254,9 +270,11 @@ async def test_overlay_snapshot_closed_row_without_snapshot_still_tagged():
         out = await _overlay_snapshot_for_closed_exchanges(rows, kind="positions")
 
     assert len(out) == 1
-    assert out[0].ltp_source == "snapshot"
-    # LTP untouched (no snapshot value to overlay)
+    assert out[0].price_source == "snapshot_unsettled"
+    assert out[0].is_animating is False
+    # LTP untouched (no snapshot value to overlay); current_price alias set.
     assert out[0].last_price == 105.0
+    assert out[0].current_price == 105.0
 
 
 @pytest.mark.asyncio
@@ -287,8 +305,10 @@ async def test_holdings_overlay_recomputes_cur_val_on_overlay():
 
     assert len(out) == 1
     r = out[0]
-    assert r.ltp_source == "snapshot"
+    assert r.price_source == "snapshot_settled"
+    assert r.is_animating is False
     assert r.last_price == 1650.0
+    assert r.current_price == 1650.0
     # cur_val recomputed from snapshot LTP × qty
     assert r.cur_val == 165000.0
 
