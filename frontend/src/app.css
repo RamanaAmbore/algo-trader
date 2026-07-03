@@ -750,6 +750,27 @@
 .ag-theme-algo .ag-row.row-pos .ag-col-sym {
   background-color: rgba(148,163,184,0.08) !important;
 }
+
+/* Account-level stale row (Jul 2026) — a row substituted from
+   broker_apis' last-known-good frame cache because the account's
+   circuit breaker was OPEN. Slate desaturation + subtle diagonal
+   hatch pattern reads as "these are placeholder values". Distinct
+   from `last_price_stale` (LTP-only) which does not use this class.
+   Row still renders in canonical bucket position so the operator
+   sees DH6847 persistently instead of flickering to empty. */
+.ag-theme-algo .ag-row.row-account-stale {
+  opacity: 0.62;
+  background-image: linear-gradient(
+    135deg,
+    rgba(148, 163, 184, 0.06) 0,
+    rgba(148, 163, 184, 0.06) 3px,
+    transparent 3px,
+    transparent 8px
+  );
+}
+.ag-theme-algo .ag-row.row-account-stale .ag-col-fill {
+  background-color: rgba(148, 163, 184, 0.14) !important;
+}
 /* Right-border indicator on symbol cells — encodes POSITION DIRECTION
    (long vs short) on Positions, or HOLDING DIRECTION (up vs down P&L)
    on Holdings. Single 2 px-wide vertical line flush against the cell's
@@ -2512,4 +2533,82 @@ button:not(:disabled):active,
   .cp-pulse-b {
     animation: none;
   }
+}
+
+/* ── Shared chart tooltip ─────────────────────────────────────────────────
+   Used by ChartWorkspace (OHLCV popup) and OptionsPayoff (spot/P&L popup).
+   Both charts position a .chart-tooltip div absolutely inside their
+   `position:relative` wrapper. Override only what differs per chart context
+   via local <style> — do NOT inline styles on the element.
+   ────────────────────────────────────────────────────────────────────────── */
+.chart-tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: rgba(15, 25, 45, 0.95);
+  border: 1px solid rgba(125, 211, 252, 0.45);
+  border-radius: 4px;
+  padding: 0.3rem 0.45rem;
+  font-family: var(--font-numeric);
+  font-size: var(--fs-sm);
+  color: var(--algo-slate);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  z-index: 10;
+  min-width: 9rem;
+  max-width: 13rem;
+}
+/* Pinned variant — brighter cyan border, pointer-events enabled so the
+   close button (×) or the div itself is clickable. */
+.chart-tooltip-pinned {
+  pointer-events: auto;
+  border-color: rgba(125, 211, 252, 0.85);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(125, 211, 252, 0.20);
+}
+.chart-tooltip-ts {
+  color: var(--c-action);
+  font-weight: 800;
+  font-size: var(--fs-xs);
+  margin-bottom: 0.2rem;
+  padding-bottom: 0.18rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  white-space: nowrap;
+}
+.chart-tooltip-row {
+  display: flex;
+  gap: 0.35rem;
+  align-items: baseline;
+  margin-top: 0.12rem;
+}
+.chart-tooltip-label {
+  color: var(--algo-muted);
+  font-weight: 700;
+  min-width: 1.2rem;
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+}
+.chart-tooltip-value {
+  color: var(--algo-slate);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-sm);
+}
+.chart-tooltip-value.up   { color: var(--c-long); }
+.chart-tooltip-value.down { color: var(--c-short); }
+.chart-tooltip-close {
+  position: absolute;
+  top: 0.15rem;
+  right: 0.2rem;
+  width: 0.95rem;
+  height: 0.95rem;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: rgba(248, 113, 113, 0.85);
+  font-family: monospace;
+  font-size: var(--fs-lg);
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.chart-tooltip-close:hover {
+  color: var(--c-short);
+  background: rgba(248, 113, 113, 0.12);
 }
