@@ -906,7 +906,7 @@
     // symbol must be in the open-lot set or it's dropped.
     const matchStrategy = (sym) => {
       if ($selectedStrategyId == null) return true;
-      if ($strategyOpenSymbols.size === 0) return false;
+      if ($strategyOpenSymbols.size === 0) return true; // fail-open: still loading or empty strategy
       return $strategyOpenSymbols.has(String(sym || '').toUpperCase());
     };
     const groups = new Map();
@@ -1092,7 +1092,7 @@
       || _wantedAccts.has(String(acct || '').trim().toUpperCase());
     const matchStrategy = (sym) => {
       if ($selectedStrategyId == null) return true;
-      if ($strategyOpenSymbols.size === 0) return false;
+      if ($strategyOpenSymbols.size === 0) return true; // fail-open: still loading or empty strategy
       return $strategyOpenSymbols.has(String(sym || '').toUpperCase());
     };
     const ensure = (root) => out[root] || (out[root] = { with: 0, without: 0 });
@@ -1222,7 +1222,7 @@
   function _makeStrategyMatcher() {
     return (sym) => {
       if ($selectedStrategyId == null) return true;
-      if ($strategyOpenSymbols.size === 0) return false;
+      if ($strategyOpenSymbols.size === 0) return true; // fail-open: still loading or empty strategy
       return $strategyOpenSymbols.has(String(sym || '').toUpperCase());
     };
   }
@@ -1379,7 +1379,7 @@
       || _wantedAccts.has(String(acct || '').trim().toUpperCase());
     const matchStrategy = (sym) => {
       if ($selectedStrategyId == null) return true;
-      if ($strategyOpenSymbols.size === 0) return false;
+      if ($strategyOpenSymbols.size === 0) return true; // fail-open: still loading or empty strategy
       return $strategyOpenSymbols.has(String(sym || '').toUpperCase());
     };
     const ensure = (root) => out[root] || (out[root] = { with: 0, without: 0 });
