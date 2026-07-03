@@ -45,11 +45,17 @@ let _token = /** @type {string|null} */ (null);
 async function loginAsAdmin(page) {
   if (!_token) {
     for (const u of [USER, 'ambore', 'rambo']) {
-      const r = await page.request.post(`${BASE}/api/auth/login`, {
-        data: { username: u, password: PASS },
-        headers: { 'Content-Type': 'application/json' },
-      });
-      if (r.ok()) { _token = (await r.json()).access_token; break; }
+      let r;
+      // Retry up to 3 times on 429 (rate-limit) with a short backoff.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        r = await page.request.post(`${BASE}/api/auth/login`, {
+          data: { username: u, password: PASS },
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (r.status() !== 429) break;
+        await page.waitForTimeout(3000 * (attempt + 1));
+      }
+      if (r && r.ok()) { _token = (await r.json()).access_token; break; }
     }
     if (!_token) throw new Error(`loginAsAdmin: no valid credentials for ${BASE}`);
   }
@@ -265,7 +271,9 @@ test.describe('URL param beats sessionStorage cache', () => {
     await loginAsAdmin(page);
 
     // Seed sessionStorage with BANKNIFTY (different from URL param).
-    await page.addInitScript(() => {
+    // Use page.context().addInitScript so it runs in the same context that
+    // loginAsAdmin already set up the auth token in.
+    await page.context().addInitScript(() => {
       try {
         const payload = {
           ts: Date.now(),
@@ -314,6 +322,11 @@ test.describe('Unknown URL param → first-item fallback + strategy loads', () =
   test('?u=UNKNOWNSYM falls back to first item and triggers strategy', async ({ page }) => {
     await loginAsAdmin(page);
 
+    // Clear any cached underlying so the unknown param is the only hint.
+    await page.context().addInitScript(() => {
+      try { sessionStorage.removeItem('ramboq:options-state'); } catch (_) {}
+    });
+
     const strategyRequests = /** @type {number[]} */ ([]);
     page.on('request', (req) => {
       if (req.url().includes('/api/options/strategy-analytics')) {
@@ -348,7 +361,7 @@ test.describe('Fast path + no context → first item picked + strategy loads', (
     await loginAsAdmin(page);
 
     // Clear sessionStorage for this test — ensure no cached underlying.
-    await page.addInitScript(() => {
+    await page.context().addInitScript(() => {
       try { sessionStorage.removeItem('ramboq:options-state'); } catch (_) {}
     });
 
