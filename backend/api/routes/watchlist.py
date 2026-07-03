@@ -376,7 +376,7 @@ async def _force_movers_snapshot() -> int:
         from backend.api.cache import get_or_fetch
         from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS as _INST_TTL
         from backend.api.algo.derivatives import underlying_ltp_key, is_mcx_underlying
-        from backend.brokers.registry import get_price_broker
+        from backend.brokers.registry import get_market_data_broker
         from backend.shared.helpers.date_time_utils import timestamp_indian
 
         ist_now = timestamp_indian()
@@ -404,7 +404,7 @@ async def _force_movers_snapshot() -> int:
         # Fresh quote batch (bypass per-route 30s cache at close time).
         keys = list(key_to_underlying.keys())
         try:
-            broker = get_price_broker()
+            broker = get_market_data_broker()
             quote_data: dict = await _asyncio.to_thread(broker.quote, keys) or {}
         except Exception as exc:
             logger.warning(f"_force_movers_snapshot: quote fetch failed: {exc}")
@@ -546,9 +546,18 @@ async def _resolve_mcx_commodity(commodity_name: str) -> Optional[str]:
     """Map a bare MCX commodity name (e.g. 'GOLD') to the nearest-month
     future tradingsymbol. Reads the shared instruments cache (24h TTL,
     warmed at startup + 08:00 IST). Returns None when no MCX FUT is
-    found for that commodity (cache cold or broker fetch failed)."""
+    found for that commodity (cache cold or broker fetch failed).
+
+    On the expiry date itself, the expiring contract is skipped (its
+    quote is the settlement price, not a tradable spot). Matches
+    ``lookup_mcx_front_month_future`` which uses the same
+    ``inst.x > today_iso (IST)`` rule. Falls back to the most-recent
+    listed contract only when the instruments cache hasn't yet included
+    the next-month contract (rare; cache warmed at startup + 08:00 IST).
+    """
     from backend.api.cache import get_or_fetch
     from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+    from datetime import datetime as _dt
     try:
         resp = await get_or_fetch("instruments", _fetch_instruments,
                                    ttl_seconds=_TTL_SECONDS)
@@ -557,6 +566,11 @@ async def _resolve_mcx_commodity(commodity_name: str) -> Optional[str]:
         items = []
     if not items:
         return None
+    try:
+        from zoneinfo import ZoneInfo
+        _today_iso = _dt.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    except Exception:
+        _today_iso = _dt.utcnow().date().isoformat()
     target_u = commodity_name.upper()
     candidates = [
         inst for inst in items
@@ -569,15 +583,29 @@ async def _resolve_mcx_commodity(commodity_name: str) -> Optional[str]:
         return None
     # Earliest expiry first — that's the near-month future.
     candidates.sort(key=lambda i: i.x or "")
-    return candidates[0].s
+    # Skip any contract whose expiry is on or before today IST — it is
+    # settling today and its quote is the settlement price, not a live spot.
+    for inst in candidates:
+        if inst.x > _today_iso:
+            return inst.s
+    # All listed contracts expired (instruments cache lag) — return the
+    # last known contract so callers get a non-None symbol rather than
+    # silently dropping the row. The stale quote is better than no quote.
+    return candidates[-1].s
 
 
 async def _resolve_cds_currency(currency_name: str) -> Optional[str]:
     """Map a bare CDS currency pair name (e.g. 'USDINR') to the nearest-month
     future tradingsymbol. Mirrors _resolve_mcx_commodity for the CDS exchange.
-    Returns None when no CDS FUT is found (cache cold or broker fetch failed)."""
+    Returns None when no CDS FUT is found (cache cold or broker fetch failed).
+
+    On the expiry date itself the expiring contract is skipped — the CDS
+    segment closes at 17:00 IST and the settlement price is not a tradable
+    spot. Uses the same ``inst.x > today_iso (IST)`` rule as the MCX path.
+    """
     from backend.api.cache import get_or_fetch
     from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+    from datetime import datetime as _dt
     try:
         resp = await get_or_fetch("instruments", _fetch_instruments,
                                    ttl_seconds=_TTL_SECONDS)
@@ -586,6 +614,11 @@ async def _resolve_cds_currency(currency_name: str) -> Optional[str]:
         items = []
     if not items:
         return None
+    try:
+        from zoneinfo import ZoneInfo
+        _today_iso = _dt.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+    except Exception:
+        _today_iso = _dt.utcnow().date().isoformat()
     target_u = currency_name.upper()
     candidates = [
         inst for inst in items
@@ -598,7 +631,12 @@ async def _resolve_cds_currency(currency_name: str) -> Optional[str]:
         return None
     # Earliest expiry first — that's the near-month future.
     candidates.sort(key=lambda i: i.x or "")
-    return candidates[0].s
+    # Skip contracts whose expiry is on or before today IST.
+    for inst in candidates:
+        if inst.x > _today_iso:
+            return inst.s
+    # Instruments cache lag fallback — return latest known contract.
+    return candidates[-1].s
 
 
 async def _build_quote_key(item: WatchlistItem) -> tuple[str, str]:
@@ -678,7 +716,7 @@ async def _fetch_quotes(items: list[WatchlistItem]) -> list[WatchlistQuote]:
     runs the sync broker call in a thread so the event loop isn't
     blocked on the network round-trip."""
     import asyncio
-    from backend.brokers.registry import get_price_broker
+    from backend.brokers.registry import get_market_data_broker
 
     key_map: dict[int, tuple[str, str]] = {}
     for it in items:
@@ -689,7 +727,7 @@ async def _fetch_quotes(items: list[WatchlistItem]) -> list[WatchlistQuote]:
     quote_data: dict = {}
     if distinct_keys:
         try:
-            broker = get_price_broker()
+            broker = get_market_data_broker()
             quote_data = await asyncio.to_thread(broker.quote, distinct_keys) or {}
         except Exception as exc:  # noqa: BLE001
             logger.warning(f"Watchlist quote fetch failed: {exc}")
@@ -1305,7 +1343,7 @@ class WatchlistController(Controller):
         from backend.api.cache import get_or_fetch
         from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS as _INST_TTL
         from backend.api.algo.derivatives import underlying_ltp_key, is_mcx_underlying
-        from backend.brokers.registry import get_price_broker
+        from backend.brokers.registry import get_market_data_broker
         from backend.shared.helpers.date_time_utils import is_market_open, timestamp_indian
         from backend.brokers.broker_apis import fetch_holidays
         from backend.api.helpers.price_resolver import resolve_current_price
@@ -1453,7 +1491,7 @@ class WatchlistController(Controller):
             if not keys:
                 return {}
             try:
-                broker = get_price_broker()
+                broker = get_market_data_broker()
                 return await asyncio.to_thread(broker.quote, keys) or {}
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"Movers unified quote fetch failed: {exc}")

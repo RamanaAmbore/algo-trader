@@ -169,12 +169,12 @@ class QuoteResponse(msgspec.Struct):
 
 
 def _fetch_ltp(exchange: str, tradingsymbol: str) -> QuoteResponse:
-    # Shared market-data fetch — route through get_price_broker() so
+    # Shared market-data fetch — route through get_market_data_broker() so
     # the operator's `connections.price_account` setting decides which
     # account's API handle services chart-data calls. Broker-agnostic
     # path; any vendor's adapter will work the same.
-    from backend.brokers.registry import get_price_broker
-    broker = get_price_broker()
+    from backend.brokers.registry import get_market_data_broker
+    broker = get_market_data_broker()
     key = f"{exchange}:{tradingsymbol}"
 
     bid = ask = None
@@ -287,7 +287,7 @@ class QuoteController(Controller):
         """
         import asyncio
         from datetime import datetime, timezone
-        from backend.brokers.registry import get_price_broker
+        from backend.brokers.registry import get_market_data_broker
 
         keys = list({k.strip() for k in (data.keys or []) if k and ":" in k})
         # Soft cap — Kite quote() handles ~500 keys but the UI shouldn't
@@ -331,7 +331,7 @@ class QuoteController(Controller):
         # ── Live path (market open) ────────────────────────────────────────
         if keys:
             try:
-                broker = get_price_broker()
+                broker = get_market_data_broker()
                 quote_data = await asyncio.to_thread(broker.quote, keys) or {}
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"Batch quote failed: {exc}")

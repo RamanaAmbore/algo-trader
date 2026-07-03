@@ -505,16 +505,14 @@ class PaperTradeEngine:
                              underlyings: dict[str, str]) -> None:
         # Underlying spots (NIFTY 50, NIFTY BANK, etc.) aren't
         # account-scoped — they're public market data. Route through
-        # `get_price_broker()` which honors the
-        # `connections.price_account` setting, so the operator can
-        # centralize "which Kite handle do we use for shared data" in
-        # /admin/settings. Fall back to whatever account opened the
-        # first order if the setting hasn't been set + the pinned
-        # account isn't configured.
+        # `get_market_data_broker()` which honours the contextvar cache
+        # (request-lifetime SSOT) and the `connections.price_account`
+        # setting. Fall back to whatever account opened the first order
+        # if contextvar resolution fails.
         try:
-            from backend.brokers.registry import get_price_broker, get_broker
+            from backend.brokers.registry import get_market_data_broker, get_broker
             try:
-                broker = get_price_broker()
+                broker = get_market_data_broker()
             except Exception:
                 if not account:
                     return

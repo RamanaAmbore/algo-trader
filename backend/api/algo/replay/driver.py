@@ -188,10 +188,10 @@ class ReplayDriver:
         interval: str,
     ) -> None:
         """Batch-fetch historical candles for all symbols."""
-        from backend.brokers.registry import get_price_broker
+        from backend.brokers.registry import get_market_data_broker
 
         try:
-            broker = get_price_broker()
+            broker = get_market_data_broker()
         except Exception as e:
             raise RuntimeError(f"Cannot get price broker: {e}")
 

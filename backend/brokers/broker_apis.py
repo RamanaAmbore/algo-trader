@@ -1594,8 +1594,8 @@ def backfill_market_data(df) -> int:
 
     _q: dict = {}
     try:
-        from backend.brokers.registry import get_price_broker
-        _pb = get_price_broker()
+        from backend.brokers.registry import get_market_data_broker
+        _pb = get_market_data_broker()
         _q = _pb.quote(_unique_keys) or {}
     except Exception as _e:
         logger.warning(

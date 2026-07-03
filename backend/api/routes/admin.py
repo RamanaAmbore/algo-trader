@@ -1153,7 +1153,7 @@ class AdminController(Controller):
                        f"Valid: {', '.join(BENCHMARK_TOKENS)}",
             )
 
-        from backend.brokers.registry import get_price_broker
+        from backend.brokers.registry import get_market_data_broker
 
         def _fetch_one(symbol: str) -> PnlBenchmarkSeries:
             cache_key = _benchmark_cache_key(symbol, from_str, to_str)
@@ -1163,13 +1163,13 @@ class AdminController(Controller):
 
             _, token = BENCHMARK_TOKENS[symbol]
             try:
-                # Route through the PriceBroker abstraction (auto-failover
-                # across configured brokers). The earlier code reached for
-                # `broker.kite.historical_data(...)` from when the only
+                # Route through get_market_data_broker() (contextvar-cached,
+                # honours connections.price_account). The earlier code reached
+                # for `broker.kite.historical_data(...)` from when the only
                 # broker was Kite Connect directly — PriceBroker doesn't
                 # expose `.kite` and the call silently 500'd, leaving the
                 # dashboard NIFTY / SENSEX overlay blank.
-                broker = get_price_broker()
+                broker = get_market_data_broker()
                 raw    = broker.historical_data(
                     token,
                     d_from,

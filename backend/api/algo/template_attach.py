@@ -429,8 +429,8 @@ async def _pick_wing_by_premium(
     quote_keys = [f"{c['exch']}:{c['ts']}" for c in candidates]
     try:
         import asyncio as _aio
-        from backend.brokers.registry import get_price_broker
-        broker = get_price_broker()
+        from backend.brokers.registry import get_market_data_broker
+        broker = get_market_data_broker()
         quote_data = (
             await _aio.to_thread(broker.quote, quote_keys)
         ) or {}
