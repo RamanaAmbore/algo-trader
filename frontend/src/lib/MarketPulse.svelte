@@ -6103,12 +6103,23 @@
      value-level direction). */
   :global(.ag-theme-algo .mp-total-row) {
     font-weight: 700;
+    /* Canonical TOTAL typography — uppercase amber monospace so the row
+       reads as an aggregate footer, not a data row. Matches the TOTAL
+       treatment on PerformancePage and the audit canonical spec. */
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #fbbf24;
     /* Stronger amber stratum so TOTAL stands out over data-row
        directional tints + (incoming) LTP heat cells. Operator:
        "total row should have a different background color scheme." */
     background: var(--algo-amber-bg-strong) !important;
     border-top: 2px solid rgba(251, 191, 36, 0.70) !important;
-    border-bottom: 1px solid var(--algo-amber-border-soft) !important;
+    border-bottom: 1px solid rgba(251, 191, 36, 0.55) !important;
+  }
+  /* TOTAL row cell dividers — amber hairline so the aggregate row
+     reads as one visual unit with clear column boundaries. */
+  :global(.ag-theme-algo .mp-total-row .ag-cell) {
+    border-right: 1px solid rgba(251, 191, 36, 0.30) !important;
   }
   /* TOTAL row symbol cell — amber tint instead of the per-row
      direction tint so the row reads as an aggregate, not as a
