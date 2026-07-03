@@ -25,7 +25,7 @@ import pandas as pd
 
 from backend.shared.helpers.date_time_utils import timestamp_indian, is_market_open, timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import config, get_nearest_time, get_cycle_date, mask_column
+from backend.shared.helpers.utils import config, get_nearest_time, get_cycle_date
 
 logger = get_logger(__name__)
 
@@ -2864,7 +2864,7 @@ async def _task_visitor_log_daily() -> None:
             # different loop than the upsert futures expected, producing
             # the chronic "Future attached to a different loop" errors
             # py-spy + log review caught.
-            from backend.scripts.visitor_report import arun_daily, _summary_block
+            from backend.scripts.visitor_report import arun_daily
             report_path = await arun_daily()
             logger.info(f"Background: visitor log report → {report_path}")
 
