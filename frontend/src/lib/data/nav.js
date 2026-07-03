@@ -67,14 +67,44 @@ export function navByAccount(accounts, funds, positions, holdings) {
 export const FO_EXCHANGES = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
 
 /**
+ * Canonical base Day P&L for a single position row.
+ *
+ * Applies the new-position override: when `overnight_quantity === 0` and
+ * `pnl !== 0`, the position was opened today and has no prior-close reference.
+ * In that case, total P&L IS today's P&L. This is a frontend safety net for
+ * brokers (e.g. Dhan/Groww) that don't always populate the decomposed
+ * buy/sell fields, causing `day_change_val` to read 0 even on an open position.
+ * Backend `decomposed_intraday_pnl` handles this correctly when the fields
+ * are present; the override catches the gap when they're not.
+ *
+ * Mirrors the same guard used in:
+ *   - derivatives/+page.svelte `_dayPnlForLeg` (non-expired branch)
+ *   - derivatives/+page.svelte `_byUnderlyingTotals` loop
+ *
+ * Every frontend surface that renders a per-position Day P&L MUST call this
+ * function (or a wrapper that calls it) instead of reading `p.day_change_val`
+ * directly.
+ *
+ * @param {{ day_change_val?: number|null, overnight_quantity?: number|null, pnl?: number|null }} p
+ * @returns {number}
+ */
+export function baseDayPnlForPosition(p) {
+  const oq  = Number(p?.overnight_quantity ?? 0);
+  const pnl = Number(p?.pnl ?? 0);
+  const dcv = Number(p?.day_change_val ?? 0);
+  if (oq === 0 && pnl !== 0) return pnl;
+  return dcv;
+}
+
+/**
  * Compute today's day P&L and lifetime P&L for F&O/derivative positions only.
  * Excludes equity (NSE/BSE) positions to avoid double-counting with the H pill.
  *
- * Fields used: `p.pnl` for lifetime (works on both live and closed-hours
- * snapshot — `unrealised + realised` would return 0 on snapshots where those
- * fields default to 0.0). `p.day_change_val` for intraday.
+ * Applies `baseDayPnlForPosition` so the new-position override (`oq=0 → pnl`)
+ * is consistent with the derivatives Snapshot / Legs / Exp Close / Payoff
+ * overlay surfaces that all call `_dayPnlForLeg`.
  *
- * @param {Array<{exchange?: string, pnl?: number, day_change_val?: number}>} positions
+ * @param {Array<{exchange?: string, pnl?: number, day_change_val?: number, overnight_quantity?: number}>} positions
  * @returns {{ pnlTotal: number, dayTotal: number }}
  */
 export function positionsPnlFiltered(positions) {
@@ -84,7 +114,7 @@ export function positionsPnlFiltered(positions) {
     const exch = String(p?.exchange || '').toUpperCase();
     if (!FO_EXCHANGES.has(exch)) continue;
     pnlTotal += Number(p?.pnl || 0);
-    dayTotal  += Number(p?.day_change_val || 0);
+    dayTotal  += baseDayPnlForPosition(p);
   }
   return { pnlTotal, dayTotal };
 }
