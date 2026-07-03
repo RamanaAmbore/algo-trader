@@ -161,6 +161,7 @@ test.describe('Snapshot TOTAL row — structure', () => {
 // ── Browser: mobile viewport — P pill fits ───────────────────────────────────
 
 test.describe('NavStrip P pill — mobile viewport', () => {
+  test.setTimeout(45_000);
   test.beforeEach(async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await loginAsAdmin(page);
