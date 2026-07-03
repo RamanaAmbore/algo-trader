@@ -7969,4 +7969,28 @@
     .chain-basket-toast { animation: none; }
     .order-toast { animation: none; }
   }
+
+  /* ── Payoff fullscreen chrome — align to ChartModal canonical ────────────
+     When the payoff card is in fullscreen (.fs-card-on already supplies the
+     amber ring box-shadow via app.css:1785-1786) we swap the outer border to
+     the same amber 1px as .canonical-modal-panel (app.css:445), and give the
+     header section the same cyan gradient bg + cyan title as .cm-header in
+     ChartModal.svelte.  Non-fullscreen payoff card keeps its default
+     .algo-status-card white-alpha border + amber opt-section-h underline. */
+
+  /* 1. Outer border — matches .canonical-modal-panel border exactly. */
+  :global(.opt-payoff.fs-card-on) {
+    border: 1px solid rgba(251, 191, 36, 0.40) !important;
+  }
+
+  /* 2. Header accent — scoped to payoff fullscreen only.
+        Gradient bg + cyan title match .cm-header; hairline border-bottom
+        matches app.css comment intent (low-alpha separator). */
+  :global(.opt-payoff.fs-card-on) .opt-section-h {
+    background: linear-gradient(180deg,
+                  rgba(34, 211, 238, 0.18) 0%,
+                  rgba(34, 211, 238, 0.06) 100%);
+    color: #67e8f9;
+    border-bottom-color: rgba(34, 211, 238, 0.40);
+  }
 </style>
