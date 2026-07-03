@@ -123,7 +123,9 @@ async def _holdings_snapshot() -> Optional[HoldingsResponse]:
             day_change_val=day_pnl_f,
             day_change_percentage=day_pct,
             last_price_stale=True,
-            ltp_source="snapshot",
+            price_source="snapshot_settled",
+            current_price=ltp_f,
+            is_animating=False,
         )
         rows.append(row)
 
@@ -245,8 +247,10 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
 
 
 async def _overlay_snapshot_for_closed_exchanges(rows: list) -> list:
-    """Per-exchange close-snapshot overlay for holdings rows. See
-    positions._overlay_snapshot_for_closed_exchanges for full rationale.
+    """Per-exchange close-snapshot overlay for holdings rows under the
+    unified animation model (Jul 2026 refactor). See
+    positions._overlay_snapshot_for_closed_exchanges for the full model
+    rationale (`price_source`, `current_price`, `is_animating`).
 
     Holdings are eq-only (NSE/BSE) so the closed-exchange gate almost
     always resolves to "NSE closed" during 15:30-23:30 IST. MCX holdings
@@ -265,14 +269,25 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list) -> list:
 
     if not any(_closed(getattr(r, "exchange", "")) for r in rows):
         import msgspec as _msc
-        return [_msc.structs.replace(r, ltp_source="live") for r in rows]
+        return [
+            _msc.structs.replace(
+                r, price_source="live",
+                current_price=float(getattr(r, "last_price", 0.0) or 0.0),
+                is_animating=True,
+            )
+            for r in rows
+        ]
 
     snap_map = await latest_snapshot_ltp_map("holdings")
     import msgspec as _msc
     out: list = []
     for r in rows:
         if not _closed(getattr(r, "exchange", "")):
-            out.append(_msc.structs.replace(r, ltp_source="live"))
+            out.append(_msc.structs.replace(
+                r, price_source="live",
+                current_price=float(getattr(r, "last_price", 0.0) or 0.0),
+                is_animating=True,
+            ))
             continue
         key = (getattr(r, "account", ""), getattr(r, "tradingsymbol", ""))
         snap_ltp = snap_map.get(key)
@@ -283,10 +298,17 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list) -> list:
             new_cur_val = float(snap_ltp) * qty
             out.append(_msc.structs.replace(
                 r, last_price=float(snap_ltp), cur_val=new_cur_val,
-                close_price=float(snap_ltp), ltp_source="snapshot",
+                close_price=float(snap_ltp),
+                current_price=float(snap_ltp),
+                price_source="snapshot_settled",
+                is_animating=False,
             ))
         else:
-            out.append(_msc.structs.replace(r, ltp_source="snapshot"))
+            out.append(_msc.structs.replace(
+                r, current_price=float(getattr(r, "last_price", 0.0) or 0.0),
+                price_source="snapshot_unsettled",
+                is_animating=False,
+            ))
     return out
 
 
@@ -436,8 +458,9 @@ class HoldingsController(Controller):
                         pass
                 _resp = await get_or_fetch("holdings", _fetch, ttl_seconds=_TTL)
                 # Per-exchange overlay — closed exchanges get snapshot LTP
-                # + ltp_source="snapshot". Runs on the broker path so
-                # NSE-closed / MCX-open windows serve mixed live+snap.
+                # + price_source="snapshot_*" + is_animating=False. Runs
+                # on the broker path so NSE-closed / MCX-open windows serve
+                # mixed live+snap.
                 _new_rows = await _overlay_snapshot_for_closed_exchanges(list(_resp.rows))
                 import msgspec as _msc
                 return _msc.structs.replace(_resp, rows=_new_rows)
@@ -446,9 +469,9 @@ class HoldingsController(Controller):
             # normal broker path so holdings metadata refreshes (qty +
             # avg_cost change on corporate actions, dividend credits,
             # delivery-to-holdings transitions); the row-level overlay
-            # in _broker_fn tags every closed-exchange row as
-            # ltp_source='snapshot' and freezes its last_price to the
-            # daily_book close_settled value. Funds stays on its own
+            # in _broker_fn tags every closed-exchange row with
+            # price_source='snapshot_*' and freezes its last_price to
+            # the daily_book close_settled value. Funds stays on its own
             # broker path in parallel.
             if skip_ltp:
                 resp = await _broker_fn()

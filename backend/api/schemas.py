@@ -48,14 +48,27 @@ class HoldingRow(msgspec.Struct):
     # account. Non-empty only when account_stale=True. Frontend renders
     # this as a small "STALE @ HH:MM" badge next to the account name.
     account_stale_since: str = ""
-    # Per-row LTP source tag — "live" (broker or live ticker) or
-    # "snapshot" (daily_book close_settled snapshot). Populated by the
-    # per-exchange close-snapshot lifecycle (Jul 2026): when the row's
-    # exchange is currently closed (e.g. NSE row during 15:30-23:30
-    # window while MCX still open), the last_price + close_price are
-    # taken from the DB snapshot and this tag flips to "snapshot". The
-    # frontend renders a "SNAP" chip next to LTP + freezes tick-flash.
-    ltp_source: str = "live"
+    # Per-row price source tag — three values under the unified animation
+    # model (Jul 2026):
+    #   • "live"                 — exchange open, broker/ticker LTP
+    #   • "snapshot_settled"     — exchange closed and Kite has published
+    #                              close_price (post-45m settled window)
+    #   • "snapshot_unsettled"   — exchange closed but broker close_price
+    #                              not yet available (pre-settled window)
+    # Legacy value "snapshot" is still accepted by consumers until Commit 2
+    # ships the resolver — treat it as equivalent to "snapshot_settled".
+    price_source: str = "live"
+    # Unified-model alias for last_price. Populated alongside last_price
+    # in the route overlay so consumers can migrate off the LTP-specific
+    # name gradually. Zero here means "unset" (frontend falls back to
+    # last_price for backward compat).
+    current_price: float = 0.0
+    # Whether cells on this row should render tick-flash / freshness
+    # shimmer animations. True while the row's exchange is currently
+    # open; False on closed-exchange snapshot rows so cells render
+    # static (no green/red pulse on the frozen close_price). Frontend's
+    # tick-flash cellClass reads this to gate the flash primitive.
+    is_animating: bool = True
 
 
 class HoldingsSummaryRow(msgspec.Struct):
@@ -146,14 +159,27 @@ class PositionRow(msgspec.Struct):
     # "live" for broker-fetched rows; "paper" for synthesized paper rows.
     # Default "live" preserves backward compatibility with all existing callers.
     mode: str = "live"
-    # Per-row LTP source tag — "live" (broker or live ticker) or
-    # "snapshot" (daily_book close_settled snapshot). Populated by the
-    # per-exchange close-snapshot lifecycle (Jul 2026): when the row's
-    # exchange is currently closed (e.g. NSE row during 15:30-23:30
-    # window while MCX still open), the last_price + close_price are
-    # taken from the DB snapshot and this tag flips to "snapshot". The
-    # frontend renders a "SNAP" chip next to LTP + freezes tick-flash.
-    ltp_source: str = "live"
+    # Per-row price source tag — three values under the unified animation
+    # model (Jul 2026):
+    #   • "live"                 — exchange open, broker/ticker LTP
+    #   • "snapshot_settled"     — exchange closed and Kite has published
+    #                              close_price (post-45m settled window)
+    #   • "snapshot_unsettled"   — exchange closed but broker close_price
+    #                              not yet available (pre-settled window)
+    # Legacy value "snapshot" is still accepted by consumers until Commit 2
+    # ships the resolver — treat it as equivalent to "snapshot_settled".
+    price_source: str = "live"
+    # Unified-model alias for last_price. Populated alongside last_price
+    # in the route overlay so consumers can migrate off the LTP-specific
+    # name gradually. Zero here means "unset" (frontend falls back to
+    # last_price for backward compat).
+    current_price: float = 0.0
+    # Whether cells on this row should render tick-flash / freshness
+    # shimmer animations. True while the row's exchange is currently
+    # open; False on closed-exchange snapshot rows so cells render
+    # static (no green/red pulse on the frozen close_price). Frontend's
+    # tick-flash cellClass reads this to gate the flash primitive.
+    is_animating: bool = True
 
 
 class PositionsSummaryRow(msgspec.Struct):
