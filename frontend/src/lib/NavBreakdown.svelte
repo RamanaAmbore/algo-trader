@@ -251,6 +251,11 @@
     border: 1.5px solid rgba(255, 255, 255, 0.10);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
                 inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    /* Defensive background seal — prevents parent bleed if wrapper
+       ever gains padding or a gap between child rows. Uses the
+       elevated token so it matches algo-grid-chrome / ag-root-wrapper
+       (the same surface family as the inner table rows). */
+    background: var(--card-bg-elevated);
   }
 
   .nav-bd-table {
