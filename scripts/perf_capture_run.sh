@@ -45,10 +45,12 @@ fi
 
 echo "[perf_capture_run] target: $BASE_URL  project: $PROJECT"
 
-# Reachability probe. curl -f fails on 4xx/5xx so a "dev cluster down"
-# state exits early instead of waiting for Playwright's own timeout.
-if ! curl -sSf -m 10 -o /dev/null -I "$BASE_URL/"; then
-  echo "[perf_capture_run] ERROR: $BASE_URL not reachable (curl -I failed)." >&2
+# Reachability probe. Use GET on /signin (a real page) instead of HEAD on
+# root — HEAD is rejected by many app-tier frameworks with 405 even when
+# the server is fully healthy. -f fails on 4xx/5xx so a genuine "cluster
+# down" state exits early instead of waiting for Playwright's own timeout.
+if ! curl -sSf -m 10 -o /dev/null "$BASE_URL/signin"; then
+  echo "[perf_capture_run] ERROR: $BASE_URL/signin not reachable." >&2
   exit 3
 fi
 

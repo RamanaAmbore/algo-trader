@@ -1,0 +1,77 @@
+{
+  "captured_at": "2026-07-03T04:32:07Z",
+  "commit": "27a6fce0",
+  "frontend": {
+    "pages": {
+      "/pulse": {
+        "runtime": {
+          "load_ms": 1723,
+          "dom_content_ms": 364,
+          "lcp_ms": 568,
+          "heap_mb": 23.37,
+          "long_task_ms": 128,
+          "long_task_max_ms": 70,
+          "tbt_ms": 28,
+          "ws_connections": 4,
+          "refresh_click_ms": 58
+        }
+      },
+      "/dashboard": {
+        "runtime": {
+          "load_ms": 1336,
+          "dom_content_ms": 963,
+          "lcp_ms": 2216,
+          "heap_mb": 9.54,
+          "long_task_ms": 69,
+          "long_task_max_ms": 69,
+          "tbt_ms": 19,
+          "ws_connections": 4,
+          "refresh_click_ms": 35
+        }
+      },
+      "/performance": {
+        "runtime": {
+          "load_ms": 2129,
+          "dom_content_ms": 1486,
+          "lcp_ms": 2392,
+          "heap_mb": 9.54,
+          "long_task_ms": 0,
+          "long_task_max_ms": 0,
+          "tbt_ms": 0,
+          "ws_connections": 2,
+          "refresh_click_ms": 38
+        }
+      },
+      "/admin/derivatives": {
+        "runtime": {
+          "load_ms": 1123,
+          "dom_content_ms": 359,
+          "lcp_ms": 1380,
+          "heap_mb": 9.54,
+          "long_task_ms": 103,
+          "long_task_max_ms": 53,
+          "tbt_ms": 3,
+          "ws_connections": 4,
+          "refresh_click_ms": 29
+        }
+      },
+      "/charts": {
+        "runtime": {
+          "load_ms": 992,
+          "dom_content_ms": 402,
+          "lcp_ms": 1080,
+          "heap_mb": 9.54,
+          "long_task_ms": 0,
+          "long_task_max_ms": 0,
+          "tbt_ms": 0,
+          "ws_connections": 4,
+          "refresh_click_ms": 174592
+        }
+      }
+    },
+    "bundle_size_kb": null
+  },
+  "backend": {
+    "routes": {}
+  }
+}
