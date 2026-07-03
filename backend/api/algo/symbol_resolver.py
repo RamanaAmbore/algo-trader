@@ -40,10 +40,8 @@ Caching
 -------
 ``list_active_futures`` reads the instruments cache (24-hour TTL, warmed at
 startup + 08:00 IST).  It does NOT add a second layer — the instruments
-cache is already the canonical data source.  A per-call date-keyed dict
-(``_ACTIVE_CACHE``) memoises results for the duration of a single IST day;
-it is keyed by ``(root.upper(), exchange.upper(), limit, today_iso)`` so it
-invalidates automatically at midnight.
+cache is already the canonical data source and is the only caching layer
+used by this module.
 
 Design note
 -----------
