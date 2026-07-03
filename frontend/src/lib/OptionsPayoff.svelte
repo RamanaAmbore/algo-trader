@@ -1070,78 +1070,13 @@
         </text>
       {/if}
 
-      <!-- Hover crosshair + tooltip. Styling mirrors the top-left
-           `.payoff-stats` overlay: same dark-navy/amber-22%-border
-           shell, same SPOT/TDAY/EXP key/value layout, same muted-
-           slate key colour + value tints. The two boxes read as a
-           consistent family — the stat overlay shows numerics at
-           the live spot, the tooltip shows them at hover-spot. -->
+      <!-- Hover crosshair — vertical line only; SPOT/TDAY/EXP values
+           are rendered in the HTML .chart-tooltip overlay below,
+           matching ChartWorkspace's popup approach so both chart
+           surfaces share the same canonical styling. -->
       {#if hover}
-        <!-- Hover tooltip — operator: "leave extra space between
-             label and number". Box widened 130 → 165 so labels
-             (left, x=tx+10) and values (right-anchored x=tx+155)
-             have ~30 px of breathing room even when the value is
-             wide ("-₹1,500,000"). Fonts unchanged from previous
-             slimming pass (11 / 14). -->
-        {@const tx = Math.min(W - 165 - PAD_R, Math.max(PAD_L, (hover?.x ?? 0) + 10))}
-        {@const ty = Math.max(PAD_T, (hover?.y ?? 0) - 58)}
-        {@const tdCol = (hover?.today  ?? 0) >= 0 ? 'var(--c-long)' : 'var(--c-short)'}
-        {@const expCol = (hover?.expiry ?? 0) >= 0 ? 'var(--c-long)' : 'var(--c-short)'}
         <line x1={hover?.x} x2={hover?.x} y1={PAD_T} y2={height - PAD_B}
               stroke="rgba(255,255,255,0.20)" stroke-width="1"/>
-        <g>
-          <!-- Click-anywhere-on-tooltip-to-close (operator: "instead
-               of using X, pressing on the tooltip should close it").
-               The visible × button is gone; the rect itself is the
-               dismiss target. stopPropagation on pointerdown blocks
-               the SVG-level pan setup so the click reliably reaches
-               this rect's onclick handler. Cursor: pointer makes the
-               affordance visible on hover.
-               Row baselines back to 18 / 36 / 54 (no header strip
-               needed without the ×); box height back to 60. -->
-          <!-- O4: flat fill matching the stat overlay -->
-          <rect x={tx} y={ty} width="165" height="54" rx="6"
-                fill="#0f172a"
-                stroke="rgba(125,211,252,0.30)" stroke-width="1"
-                style="cursor: pointer;"
-                pointer-events="all"
-                onclick={(e) => { e.stopPropagation(); _dismissHover(); }}
-                onpointerdown={(e) => { e.stopPropagation(); _dismissHover(); }}
-                onkeydown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ' || e.key === 'Escape') {
-                    e.preventDefault();
-                    _dismissHover();
-                  }
-                }}
-                role="button" tabindex="0"
-                aria-label="Close tooltip — press anywhere"/>
-          <!-- SPOT row — key in muted-slate, value in sky-cyan. -->
-          <text x={tx + 10} y={ty + 16} fill="#fbbf24" fill-opacity="0.85"
-                font-size="11" font-weight="700" font-family="monospace"
-                letter-spacing="0.5"
-                pointer-events="none">SPOT</text>
-          <text x={tx + 155} y={ty + 16} fill="#7dd3fc"
-                font-size="14" font-weight="700" text-anchor="end"
-                font-family="monospace"
-                pointer-events="none">{fmtSpot(hover?.spot)}</text>
-          <!-- TDAY / EXP rows — value coloured by sign (green/red). -->
-          <text x={tx + 10} y={ty + 33} fill="#fbbf24" fill-opacity="0.85"
-                font-size="11" font-weight="700" font-family="monospace"
-                letter-spacing="0.5"
-                pointer-events="none">TDAY</text>
-          <text x={tx + 155} y={ty + 33} fill={tdCol}
-                font-size="14" font-weight="700" text-anchor="end"
-                font-family="monospace"
-                pointer-events="none">{fmtMoney(hover?.today)}</text>
-          <text x={tx + 10} y={ty + 50} fill="#fbbf24" fill-opacity="0.85"
-                font-size="11" font-weight="700" font-family="monospace"
-                letter-spacing="0.5"
-                pointer-events="none">EXP</text>
-          <text x={tx + 155} y={ty + 50} fill={expCol}
-                font-size="14" font-weight="700" text-anchor="end"
-                font-family="monospace"
-                pointer-events="none">{fmtMoney(hover?.expiry)}</text>
-        </g>
       {/if}
     </svg>
     <!-- Foreground SVG — just the curves + the live spot dot,
@@ -1190,6 +1125,46 @@
                 pointer-events="none"/>
       {/if}
     </svg>
+    <!-- HTML hover tooltip overlay — SPOT / TDAY / EXP values at hover
+         spot. Positioned absolutely inside .payoff-svg-stack (position:
+         relative) using percentage coordinates derived from the viewBox
+         dimensions so the box tracks the crosshair across viewport widths.
+         Click-anywhere-to-close preserved: pointer-events:auto on the div
+         itself; stopPropagation on pointerdown so the SVG pan handler
+         never fires when tapping the popup. -->
+    {#if hover}
+      {@const _tx = Math.min(W - 165 - PAD_R, Math.max(PAD_L, (hover?.x ?? 0) + 10))}
+      {@const _ty = Math.max(PAD_T, (hover?.y ?? 0) - 58)}
+      <div class="chart-tooltip chart-tooltip-pinned payoff-hover-tooltip"
+           style="left: {(_tx / W) * 100}%; top: {(_ty / height) * 100}%;"
+           role="button" tabindex="0"
+           aria-label="Close tooltip — press anywhere"
+           onclick={(e) => { e.stopPropagation(); _dismissHover(); }}
+           onpointerdown={(e) => { e.stopPropagation(); _dismissHover(); }}
+           onkeydown={(e) => {
+             if (e.key === 'Enter' || e.key === ' ' || e.key === 'Escape') {
+               e.preventDefault();
+               _dismissHover();
+             }
+           }}>
+        <div class="chart-tooltip-row">
+          <span class="chart-tooltip-label">SPOT</span>
+          <span class="chart-tooltip-value payoff-tt-spot">{fmtSpot(hover?.spot)}</span>
+        </div>
+        <div class="chart-tooltip-row">
+          <span class="chart-tooltip-label">TDAY</span>
+          <span class="chart-tooltip-value" class:up={(hover?.today ?? 0) >= 0} class:down={(hover?.today ?? 0) < 0}>
+            {fmtMoney(hover?.today)}
+          </span>
+        </div>
+        <div class="chart-tooltip-row">
+          <span class="chart-tooltip-label">EXP</span>
+          <span class="chart-tooltip-value" class:up={(hover?.expiry ?? 0) >= 0} class:down={(hover?.expiry ?? 0) < 0}>
+            {fmtMoney(hover?.expiry)}
+          </span>
+        </div>
+      </div>
+    {/if}
     </div>
     <div class="payoff-legend">
       <!-- Legend leg-label list retired per operator request — the
@@ -1560,5 +1535,20 @@
     color: var(--c-action);
     background: var(--algo-amber-bg);
     border-color: rgba(251, 191, 36, 0.42);
+  }
+  /* ── Payoff chart hover tooltip local overrides ───────────────────────
+     Canonical shell + colors come from app.css (.chart-tooltip family).
+     Local additions: z-index above the fg SVG layer (z:4), pointer
+     cursor, and min-width to accommodate the wide SPOT/TDAY/EXP labels.
+     The .payoff-tt-spot sky-cyan color overrides the default slate value
+     so SPOT reads as a reference/info value, matching the stat overlay. */
+  .payoff-hover-tooltip {
+    cursor: pointer;
+    z-index: 6;
+    min-width: 10rem;
+    max-width: 14rem;
+  }
+  .payoff-tt-spot {
+    color: #7dd3fc;
   }
 </style>
