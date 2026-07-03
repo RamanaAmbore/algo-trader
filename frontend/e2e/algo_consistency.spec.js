@@ -120,6 +120,105 @@ test.describe('algo consistency — SSOT stale-code guard', () => {
   });
 });
 
+/* ── Phase 1 palette-token grep guard (2026-07-02) ──────────────────── *
+ *
+ * Asserts that the 5 Phase-1 migration target files:
+ *   1. Contain NO raw palette hex literals from the migrated set.
+ *   2. Each use var(--algo-*) at least as many times as the migration
+ *      delivered (floor counts; the guard is a regression fence, not
+ *      an exact snapshot).
+ *
+ * "Near-match" rgba values that were intentionally left raw (each
+ * appearing <3× with a non-standard alpha) are NOT listed here —
+ * they are Phase 2 candidates and not yet tokenised.
+ * ─────────────────────────────────────────────────────────────────── */
+
+const PHASE1_FILES = [
+  path.join('src/lib', 'MarketPulse.svelte'),
+  path.join('src/lib', 'PerformancePage.svelte'),
+  path.join('src/routes/(algo)/dashboard', '+page.svelte'),
+  path.join('src/routes/(algo)/admin/derivatives', '+page.svelte'),
+  path.join('src/lib', 'NavCard.svelte'),
+];
+
+/** Palette hex literals that must NOT appear in Phase-1 files. */
+const BANNED_HEX = [
+  '#4ade80',
+  '#f87171',
+  '#22d3ee',
+  '#fbbf24',
+  '#7dd3fc',
+  '#7e97b8',
+];
+
+/** Minimum var(--algo-*) + var(--c-*) token call count per file. */
+const TOKEN_FLOOR = {
+  'MarketPulse.svelte':  40,
+  'PerformancePage.svelte': 10,
+  '+page.svelte (dashboard)': 55,
+  '+page.svelte (derivatives)': 120,
+  'NavCard.svelte': 1,
+};
+
+test.describe('algo consistency — Phase 1 palette migration guard', () => {
+  test('no raw palette hex in Phase-1 migrated files', () => {
+    const offenders = [];
+    for (const rel of PHASE1_FILES) {
+      const abs = path.join(process.cwd(), rel);
+      let src;
+      try { src = fs.readFileSync(abs, 'utf-8'); } catch { continue; }
+      // Strip comments so doc-example literals in /* … */ don't trip the guard
+      const stripped = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/<!--[\s\S]*?-->/g, '');
+      for (const hex of BANNED_HEX) {
+        if (stripped.includes(hex)) {
+          offenders.push(`${path.basename(rel)}: contains raw ${hex}`);
+        }
+      }
+    }
+    expect(offenders,
+      `Palette hex literals must use var(--algo-*) tokens. Regression in:\n${offenders.join('\n')}`
+    ).toEqual([]);
+  });
+
+  test('Phase-1 files meet minimum --algo-* token usage floors', () => {
+    const failures = [];
+    for (const rel of PHASE1_FILES) {
+      const abs = path.join(process.cwd(), rel);
+      let src;
+      try { src = fs.readFileSync(abs, 'utf-8'); } catch { continue; }
+      // Count all var(--algo-*) + var(--c-*) occurrences
+      const matches = (src.match(/var\(--(?:algo|c)-/g) || []).length;
+      // Identify the floor entry by filename
+      const key = rel.includes('dashboard')
+        ? '+page.svelte (dashboard)'
+        : rel.includes('derivatives')
+          ? '+page.svelte (derivatives)'
+          : path.basename(rel);
+      const floor = TOKEN_FLOOR[key] ?? 1;
+      if (matches < floor) {
+        failures.push(`${key}: ${matches} token usages (floor ${floor}) — possible regression`);
+      }
+    }
+    expect(failures,
+      `Token usage below floor — files may have regressed:\n${failures.join('\n')}`
+    ).toEqual([]);
+  });
+
+  test('app.css defines the 15 --c-* semantic alias tokens', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/app.css'), 'utf-8');
+    const required = [
+      '--c-long', '--c-short', '--c-info', '--c-action', '--c-muted',
+      '--c-long-08', '--c-long-14', '--c-long-22',
+      '--c-short-08', '--c-short-14', '--c-short-22',
+      '--c-info-08', '--c-info-14', '--c-info-22',
+      '--c-action-14', '--c-action-22',
+    ];
+    for (const t of required) {
+      expect(src, `${t} must be declared in app.css`).toContain(t + ':');
+    }
+  });
+});
+
 /* ── SSOT tokens defined ────────────────────────────────────────────── */
 
 test.describe('algo consistency — token definitions present', () => {
