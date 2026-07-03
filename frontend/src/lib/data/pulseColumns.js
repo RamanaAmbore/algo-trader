@@ -169,15 +169,16 @@ function _normalisePriceSource(row) {
 
 // Under the unified model, `is_animating` is the SINGLE decision point
 // for cell animation. Rows on a currently-open exchange animate; rows
-// carrying a close-snapshot LTP freeze. Falls back to the legacy
-// `ltp_source !== 'snapshot'` check when the field is absent (cached
-// response during deploy window). Defaults to true (animating) so an
-// unknown row keeps its historical behaviour.
+// carrying a close-snapshot LTP freeze. Defaults to true (animating) so
+// rows without the field (movers, watchlist) keep live-flash behaviour
+// rather than being incorrectly frozen. The legacy price_source fallback
+// is removed — it produced false-negatives during market hours when the
+// field was absent (e.g. movers rows), which suppressed tick-flash and
+// added the ltp-snap class even on live-price rows.
 function _isAnimating(row) {
   if (!row) return true;
   if (typeof row.is_animating === 'boolean') return row.is_animating;
-  const ps = _normalisePriceSource(row);
-  return ps === 'live';
+  return true;
 }
 
 export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, numFmt, RA, numericHdr }) {
