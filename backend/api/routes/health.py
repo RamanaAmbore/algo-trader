@@ -678,6 +678,10 @@ class BrokerHealthResponse(msgspec.Struct):
     # Per-Groww-account segment entitlement-denied counts.
     # Shape: {account: {segment: count}}.  Empty when no denials recorded.
     groww_entitlement_denied: dict = {}  # type: ignore[assignment]
+    # The account ID of the current primary market-data broker (the first
+    # underlying broker in the PriceBroker chain that `get_market_data_broker()`
+    # would pick for a fresh request).  Empty string if not resolvable.
+    primary_market_data_account: str = ""
 
 
 def _broker_id_to_label(broker_id: str) -> str:
@@ -890,7 +894,20 @@ class BrokerHealthController(Controller):
         except Exception:
             pass
 
+        # Primary market-data account — the first underlying broker that
+        # get_market_data_broker() would pick for a fresh request. Surfaced
+        # here so the /admin/broker-health UI can annotate the active
+        # market-data session. Non-fatal: empty string if not resolvable.
+        primary_mdb_account = ""
+        try:
+            from backend.brokers.registry import get_price_broker as _gpb
+            _pb = _gpb()
+            primary_mdb_account = str(getattr(_pb, "account", "") or "")
+        except Exception:
+            pass
+
         return BrokerHealthResponse(
             accounts=accounts,
             groww_entitlement_denied=entitlement_denied,
+            primary_market_data_account=primary_mdb_account,
         )
