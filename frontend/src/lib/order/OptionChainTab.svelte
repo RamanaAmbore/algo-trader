@@ -1043,7 +1043,7 @@
   .oct-label {
     display: block;
     font-size: var(--fs-sm);
-    color: #fbbf24;
+    color: var(--c-action);
     text-transform: uppercase;
     letter-spacing: 0.08em;
     font-weight: 700;
@@ -1063,7 +1063,7 @@
      the empty-state hint that used to render inside it. */
   .oct-acct-warn {
     font-size: var(--fs-sm);
-    color: #fbbf24;
+    color: var(--c-action);
     background: var(--algo-amber-bg-soft);
     border: 1px solid rgba(251, 191, 36, 0.28);
     border-radius: 3px;
@@ -1105,7 +1105,7 @@
     flex-shrink: 0;
   }
   .oct-expiry-dte-warn {
-    color: #fbbf24;
+    color: var(--c-action);
     background: var(--algo-amber-bg);
     border-color: rgba(251, 191, 36, 0.42);
   }
@@ -1165,7 +1165,7 @@
      platform (card-control trio, Refresh, etc.). */
   .oct-mode-btn.on {
     background: rgba(34, 211, 238, 0.18);
-    color: var(--algo-cyan, #22d3ee);
+    color: var(--algo-cyan, var(--c-info));
   }
 
   .oct-spot-row { margin-bottom: 0.25rem; }
@@ -1235,8 +1235,8 @@
   .chain-col-ce     { width: 42%; }
   .chain-col-strike { width: 16%; }
   .chain-col-pe     { width: 42%; }
-  .chain-th-ce      { text-align: left;   color: #4ade80; padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
-  .chain-th-pe      { text-align: right;  color: #f87171; padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
+  .chain-th-ce      { text-align: left;   color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
+  .chain-th-pe      { text-align: right;  color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
   .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.3rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
@@ -1266,7 +1266,7 @@
      on every quote update, creating visual jitter that obscures
      the spread. */
   .chain-td-strike  { text-align: center; color: var(--algo-slate); font-weight: 700; font-variant-numeric: tabular-nums; }
-  .chain-td-strike-atm { color: #fbbf24; font-weight: 800; letter-spacing: 0.04em; }
+  .chain-td-strike-atm { color: var(--c-action); font-weight: 800; letter-spacing: 0.04em; }
   .chain-cell-quote {
     display: inline-flex;
     align-items: baseline;
@@ -1278,8 +1278,8 @@
     text-align: center;
     font-variant-numeric: tabular-nums;
   }
-  .chain-cell-bid { color: var(--algo-green, #4ade80); }
-  .chain-cell-ask { color: var(--algo-red, #f87171); }
+  .chain-cell-bid { color: var(--algo-green, var(--c-long)); }
+  .chain-cell-ask { color: var(--algo-red, var(--c-short)); }
   .chain-cell-sep { color: var(--algo-muted); opacity: 0.7; margin: 0 0.18rem; }
   .chain-side-action { display: inline-flex; align-items: center; }
   /* Audit fix — align ITM row tints to CE/PE palette. Pre-fix ITM
@@ -1288,8 +1288,8 @@
      used by the chain headers one row above. Now the ITM tint reads
      "the call/put on this row is in the money" in the same color
      family as the header. */
-  .chain-row-itm-call > td { background: rgba(74,222,128,0.06); }
-  .chain-row-itm-put  > td { background: rgba(248,113,113,0.06); }
+  .chain-row-itm-call > td { background: var(--c-long-06); }
+  .chain-row-itm-put  > td { background: var(--c-short-06); }
   .chain-row-atm > td {
     background: rgba(251,191,36,0.18);
     border-top:    1px solid rgba(251,191,36,0.55);
@@ -1333,7 +1333,7 @@
     padding: 1px 6px; border-radius: 2px;
     border: 1px solid rgba(251,191,36,0.55);
     background: rgba(251,191,36,0.10);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .chain-btn {
     font-family: monospace; font-size: var(--fs-xs); font-weight: 700;
@@ -1343,13 +1343,13 @@
     line-height: 1.3;
   }
   .chain-btn-pair { display: inline-flex; gap: 3px; }
-  .chain-btn-buy  { color: #4ade80; }
-  .chain-btn-sell { color: #f87171; }
-  .chain-btn-buy:hover  { background: rgba(74,222,128,0.10); }
-  .chain-btn-sell:hover { background: rgba(248,113,113,0.10); }
+  .chain-btn-buy  { color: var(--c-long); }
+  .chain-btn-sell { color: var(--c-short); }
+  .chain-btn-buy:hover  { background: var(--c-long-10); }
+  .chain-btn-sell:hover { background: var(--c-short-10); }
   .chain-quick-toast {
     display: inline-block; padding: 2px 8px; border-radius: 2px;
-    background: rgba(74,222,128,0.18); color: #4ade80;
+    background: rgba(74,222,128,0.18); color: var(--c-long);
     font-family: monospace; font-size: var(--fs-sm); font-weight: 700;
     letter-spacing: 0.04em; margin-left: 0.3rem;
     animation: chain-quick-fade 0.9s ease-out forwards;
@@ -1369,14 +1369,14 @@
     font-family: monospace; font-size: var(--fs-sm); line-height: 1.5;
     cursor: pointer; user-select: none; transition: background 0.12s, transform 0.05s;
   }
-  .chain-basket-leg:hover:not(.is-disabled) { background: rgba(248,113,113,0.10); transform: translateY(-1px); }
+  .chain-basket-leg:hover:not(.is-disabled) { background: var(--c-short-10); transform: translateY(-1px); }
   .chain-basket-leg.is-disabled { cursor: progress; opacity: 0.55; }
-  .chain-basket-leg-buy  { color: #4ade80; background: rgba(74,222,128,0.06); }
-  .chain-basket-leg-sell { color: #f87171; background: rgba(248,113,113,0.06); }
-  .chain-basket-leg-type-ce  { border-left-color: #4ade80; }
-  .chain-basket-leg-type-pe  { border-left-color: #f87171; }
+  .chain-basket-leg-buy  { color: var(--c-long); background: var(--c-long-06); }
+  .chain-basket-leg-sell { color: var(--c-short); background: var(--c-short-06); }
+  .chain-basket-leg-type-ce  { border-left-color: var(--c-long); }
+  .chain-basket-leg-type-pe  { border-left-color: var(--c-short); }
   .chain-basket-leg-type-fut { border-left-color: #7dd3fc; }
-  .chain-basket-leg-type-eq  { border-left-color: #fbbf24; }
+  .chain-basket-leg-type-eq  { border-left-color: var(--c-action); }
   .chain-basket-side { font-weight: 800; letter-spacing: 0.04em; }
   .chain-basket-sym { color: var(--algo-slate); font-weight: 600; }
   .chain-basket-qty { color: var(--text-muted); font-size: var(--fs-xs); opacity: 0.85; font-variant-numeric: tabular-nums; }
@@ -1388,8 +1388,8 @@
   }
   .chain-basket-step:hover:not(:disabled) { background: rgba(255,255,255,0.05); }
   .chain-basket-step:disabled { opacity: 0.4; cursor: not-allowed; }
-  .chain-basket-lots { min-width: 1.1rem; text-align: center; color: #fbbf24; font-family: monospace; font-weight: 700; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
-  .chain-basket-limit-static { color: #fbbf24; font-family: monospace; font-size: var(--fs-sm); font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
+  .chain-basket-lots { min-width: 1.1rem; text-align: center; color: var(--c-action); font-family: monospace; font-weight: 700; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+  .chain-basket-limit-static { color: var(--c-action); font-family: monospace; font-size: var(--fs-sm); font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
   .chain-basket-chase { display: inline-flex; align-items: center; gap: 0.15rem; margin-left: 0.15rem; }
   .chain-basket-chase-pill {
     width: 1rem; height: 1rem; padding: 0;
@@ -1406,8 +1406,8 @@
      ascending urgency. Aligned to LOW=sky, MED=amber, HIGH=red on
      both surfaces. */
   .chain-basket-chase-pill-low.on  { background: rgba(125,211,252,0.20); color: #7dd3fc; border-color: rgba(125,211,252,0.55); }
-  .chain-basket-chase-pill-med.on  { background: rgba(251,191,36,0.20);  color: #fbbf24; border-color: rgba(251,191,36,0.55); }
-  .chain-basket-chase-pill-high.on { background: rgba(248,113,113,0.20); color: #f87171; border-color: rgba(248,113,113,0.55); }
+  .chain-basket-chase-pill-med.on  { background: rgba(251,191,36,0.20);  color: var(--c-action); border-color: rgba(251,191,36,0.55); }
+  .chain-basket-chase-pill-high.on { background: rgba(248,113,113,0.20); color: var(--c-short); border-color: rgba(248,113,113,0.55); }
   .chain-basket-actions { display: inline-flex; align-items: center; gap: 0.4rem; margin-left: auto; flex-wrap: wrap; }
   /* Template selector — small inline label + dropdown. Sized to sit
      next to Clear / Place without dominating the action row. */
@@ -1468,14 +1468,14 @@
   }
   .chain-basket-clear { color: var(--text-muted); }
   .chain-basket-clear:hover { background: rgba(163,185,208,0.08); }
-  .chain-basket-place { color: #fbbf24; background: rgba(251,191,36,0.10); }
+  .chain-basket-place { color: var(--c-action); background: rgba(251,191,36,0.10); }
   .chain-basket-place:hover { background: rgba(251,191,36,0.20); }
   .chain-basket-place:disabled,
   .chain-basket-clear:disabled { opacity: 0.55; cursor: progress; }
-  .chain-basket-err { flex: 1 1 100%; color: #f87171; font-family: monospace; font-size: var(--fs-sm); margin-top: 0.2rem; }
+  .chain-basket-err { flex: 1 1 100%; color: var(--c-short); font-family: monospace; font-size: var(--fs-sm); margin-top: 0.2rem; }
   .chain-basket-toast {
     margin-top: 0.5rem; padding: 0.3rem 0.5rem; border-radius: 2px;
-    background: rgba(74,222,128,0.14); color: #4ade80;
+    background: rgba(74,222,128,0.14); color: var(--c-long);
     font-family: monospace; font-size: var(--fs-md); font-weight: 700; text-align: center;
     animation: chain-quick-fade 2.2s ease-out forwards;
   }

@@ -2620,7 +2620,7 @@
     font-size: var(--fs-lg);
     line-height: 1;
   }
-  .ot-close:hover { border-color: #f87171; color: #f87171; }
+  .ot-close:hover { border-color: var(--c-short); color: var(--c-short); }
 
   .ot-row {
     display: flex;
@@ -2670,7 +2670,7 @@
     background: rgba(251, 191, 36, 0.10);
     border: 1px solid rgba(251, 191, 36, 0.35);
     border-radius: 3px;
-    color: #fbbf24;
+    color: var(--c-action);
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
     font-weight: 800;
@@ -2685,7 +2685,7 @@
   .ot-sym-chip-warn {
     background: rgba(248, 113, 113, 0.08);
     border-color: rgba(248, 113, 113, 0.35);
-    color: #f87171;
+    color: var(--c-short);
   }
   .ot-label {
     /* Section-header treatment so labels read as form structure
@@ -2696,7 +2696,7 @@
        from others in the order window with depth". */
     display: block;
     font-size: var(--fs-sm);
-    color: #fbbf24;
+    color: var(--c-action);
     text-transform: uppercase;
     letter-spacing: 0.08em;
     font-weight: 700;
@@ -2760,8 +2760,8 @@
     justify-content: center;
     line-height: 1;
   }
-  .ot-side-buy.on  { background: rgba(74,222,128,0.18);  color: #4ade80; }
-  .ot-side-sell.on { background: rgba(248,113,113,0.18); color: #f87171; }
+  .ot-side-buy.on  { background: rgba(74,222,128,0.18);  color: var(--c-long); }
+  .ot-side-sell.on { background: rgba(248,113,113,0.18); color: var(--c-short); }
 
   /* Stacks label above the [−] N [+] row so the block lines up with
      the sibling .ot-side-block (also label-on-top). Previously the
@@ -2827,7 +2827,7 @@
     border-radius: 3px;
     border: 1px solid rgba(251,191,36,0.45);
     background: rgba(251,191,36,0.10);
-    color: #fbbf24;
+    color: var(--c-action);
     font-family: monospace;
     font-size: var(--fs-xl);
     font-weight: 700;
@@ -2846,7 +2846,7 @@
     user-select: none;
   }
   .ot-lots-step:hover:not(:disabled) {
-    background: rgba(251,191,36,0.22);
+    background: var(--c-action-22);
     border-color: rgba(251,191,36,0.75);
   }
   .ot-lots-step:disabled {
@@ -2864,7 +2864,7 @@
     padding: 0 0.35rem;
     height: 1.4rem;
     flex: 0 0 auto;
-    color: #fbbf24;
+    color: var(--c-action);
     font-family: monospace;
     font-weight: 700;
     font-size: var(--fs-xl);
@@ -2882,7 +2882,7 @@
     font-size: var(--fs-lg);
     font-family: monospace;
   }
-  .ot-input:focus { outline: none; border-color: #fbbf24; }
+  .ot-input:focus { outline: none; border-color: var(--c-action); }
   .ot-num { text-align: right; }
 
   /* Pill toggles (Type, Product, Variety) */
@@ -2903,7 +2903,7 @@
   .ot-pill.on {
     background: rgba(251,191,36,0.18);
     border-color: rgba(251,191,36,0.55);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   /* Disabled-pill — visible but unreachable. Used for Variety BO + ICE
      where backend wiring isn't done yet; operator sees them on the
@@ -2966,7 +2966,7 @@
     margin-left: 0.35rem;
     padding: 0.05rem 0.32rem;
     border-radius: 3px;
-    background: rgba(34, 211, 238, 0.14);
+    background: var(--c-info-14);
     border: 1px solid rgba(34, 211, 238, 0.32);
     color: #67e8f9;
     font-family: var(--font-numeric);
@@ -3029,8 +3029,8 @@
     background: rgba(255, 255, 255, 0.06);
     color: #cbd5e1;
   }
-  .ot-side-toggle-compact .ot-side-btn.ot-side-buy.on  { background: var(--algo-green-bg-strong); color: #4ade80; }
-  .ot-side-toggle-compact .ot-side-btn.ot-side-sell.on { background: var(--algo-red-bg-strong);   color: #f87171; }
+  .ot-side-toggle-compact .ot-side-btn.ot-side-buy.on  { background: var(--algo-green-bg-strong); color: var(--c-long); }
+  .ot-side-toggle-compact .ot-side-btn.ot-side-sell.on { background: var(--algo-red-bg-strong);   color: var(--c-short); }
   .ot-side-toggle-compact .ot-side-btn[disabled] { opacity: 0.4; cursor: not-allowed; }
 
   /* Mode row */
@@ -3064,7 +3064,7 @@
     border: 1px solid rgba(180,200,230,0.20);
   }
   .ot-mode-hint-paper  { color: #7dd3fc; border-color: rgba(125,211,252,0.50); background: rgba(125,211,252,0.10); }
-  .ot-mode-hint-live   { color: #f87171; border-color: rgba(248,113,113,0.55); background: rgba(248,113,113,0.10); }
+  .ot-mode-hint-live   { color: var(--c-short); border-color: rgba(248,113,113,0.55); background: var(--c-short-10); }
   .ot-mode-hint-draft  { color: #c084fc; border-color: rgba(192,132,252,0.50); background: rgba(192,132,252,0.10); }
   .ot-mode-hint-shadow { color: #fb923c; border-color: rgba(251,146,60,0.50);  background: rgba(251,146,60,0.10); }
   .ot-mode-hint-src    { color: rgba(180,200,230,0.45); font-size: var(--fs-xs); }
@@ -3101,7 +3101,7 @@
   .ot-chase-label.on {
     background: rgba(251,191,36,0.18);
     border-color: rgba(251,191,36,0.55);
-    color: #fbbf24;
+    color: var(--c-action);
   }
 
   /* Aggressiveness segment — three square pills (L · M · H) sitting
@@ -3141,13 +3141,13 @@
      Pre-fix, switching from Ticket to Chain tab caused the same three
      pills to gain/lose visible borders. */
   .ot-chase-agg-low.on  { background: rgba(125,211,252,0.20); color: #7dd3fc; border-color: rgba(125,211,252,0.55); }
-  .ot-chase-agg-med.on  { background: rgba(251,191,36,0.20);  color: #fbbf24; border-color: rgba(251,191,36,0.55); }
-  .ot-chase-agg-high.on { background: rgba(248,113,113,0.20); color: #f87171; border-color: rgba(248,113,113,0.55); }
+  .ot-chase-agg-med.on  { background: rgba(251,191,36,0.20);  color: var(--c-action); border-color: rgba(251,191,36,0.55); }
+  .ot-chase-agg-high.on { background: rgba(248,113,113,0.20); color: var(--c-short); border-color: rgba(248,113,113,0.55); }
 
   .ot-err {
-    background: rgba(248,113,113,0.10);
+    background: var(--c-short-10);
     border: 1px solid rgba(248,113,113,0.4);
-    color: #f87171;
+    color: var(--c-short);
     padding: 0.35rem 0.55rem;
     border-radius: 3px;
     font-size: var(--fs-sm);
@@ -3159,7 +3159,7 @@
      dropped as dead code (audit defect #12). */
   /* Preflight blockers (segment inactive, freeze qty, etc.) */
   .ot-margin-blocked {
-    color: #f87171;
+    color: var(--c-short);
     font-size: var(--fs-xs);
     margin-top: 0.2rem;
     line-height: 1.35;
@@ -3173,9 +3173,9 @@
      than the prior block-level version) so the footer doesn't shove
      the form fields off-screen. */
   .ot-ok {
-    background: rgba(74,222,128,0.10);
+    background: var(--c-long-10);
     border: 1px solid rgba(74,222,128,0.45);
-    color: #4ade80;
+    color: var(--c-long);
     padding: 0.3rem 0.5rem;
     border-radius: 3px;
     font-size: var(--fs-md);
@@ -3230,10 +3230,10 @@
     opacity: 0.5;
   }
   .ot-funds-low {
-    background: rgba(248,113,113,0.10);
+    background: var(--c-short-10);
     border-color: rgba(248,113,113,0.35);
   }
-  .ot-funds-low .ot-funds-v { color: #f87171; }
+  .ot-funds-low .ot-funds-v { color: var(--c-short); }
 
   /* Footer is a column: action buttons on top, margin / cost preview
      beneath. IB TWS, ToS, and Sensibull all stack the impact line
@@ -3292,7 +3292,7 @@
   .ot-basket {
     background: rgba(251,191,36,0.10);
     border-color: rgba(251,191,36,0.55);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .ot-basket:hover:not(:disabled) {
     background: rgba(251,191,36,0.20);
@@ -3300,11 +3300,11 @@
   }
   .ot-basket:disabled { opacity: 0.45; cursor: not-allowed; }
   .ot-submit {
-    background: #fbbf24;
+    background: var(--c-action);
     color: #0c1830;
   }
-  .ot-submit-buy  { background: #4ade80; }
-  .ot-submit-sell { background: #f87171; }
+  .ot-submit-buy  { background: var(--c-long); }
+  .ot-submit-sell { background: var(--c-short); }
   /* Demo variant — amber to match the Hire Me / Tour CTAs. Reads as
      "this is informational, not a money-mover". Tooltip + click → modal
      fires regardless of which side the operator picked, so we override
@@ -3312,7 +3312,7 @@
   .ot-submit.ot-submit-demo {
     background: rgba(251, 191, 36, 0.20);
     border: 1px solid rgba(251, 191, 36, 0.65);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .ot-submit.ot-submit-demo:hover {
     background: rgba(251, 191, 36, 0.35);
@@ -3323,11 +3323,11 @@
      green/red fill so the operator reads "stage, don't fire yet". */
   .ot-submit-basket-mode {
     background: rgba(74,222,128,0.12);
-    color: #4ade80;
+    color: var(--c-long);
     border: 1px solid rgba(74,222,128,0.55);
   }
   .ot-submit-basket-mode:hover:not(:disabled) {
-    background: rgba(74,222,128,0.22);
+    background: var(--c-long-22);
     border-color: rgba(74,222,128,0.85);
   }
   .ot-submit:disabled { opacity: 0.45; cursor: not-allowed; }
@@ -3368,7 +3368,7 @@
     border-radius: 3px;
     font-size: var(--fs-sm);
     line-height: 1.25;
-    color: #fbbf24;
+    color: var(--c-action);
     background: rgba(251, 191, 36, 0.10);
     border: 1px solid rgba(251, 191, 36, 0.40);
   }
@@ -3382,7 +3382,7 @@
     margin-top: 0.15rem;
     padding: 0.3rem 0.45rem;
     background: rgba(34,211,238,0.06);
-    border: 1px solid rgba(34,211,238,0.22);
+    border: 1px solid var(--c-info-22);
     border-radius: 3px;
     font-size: var(--fs-sm);
     line-height: 1.35;
@@ -3403,17 +3403,17 @@
     border: 1px solid rgba(180,200,230,0.20);
   }
   .ot-tpl-preview-chip.tp {
-    color: #4ade80;
-    background: rgba(74,222,128,0.10);
+    color: var(--c-long);
+    background: var(--c-long-10);
     border-color: rgba(74,222,128,0.40);
   }
   .ot-tpl-preview-chip.sl {
-    color: #f87171;
-    background: rgba(248,113,113,0.10);
+    color: var(--c-short);
+    background: var(--c-short-10);
     border-color: rgba(248,113,113,0.40);
   }
   .ot-tpl-preview-chip.both {
-    color: #fbbf24;
+    color: var(--c-action);
     background: rgba(251,191,36,0.10);
     border-color: rgba(251,191,36,0.40);
   }
@@ -3480,12 +3480,12 @@
     color: #94a3b8; font-size: 1.2rem; cursor: pointer; line-height: 1;
     border-radius: 3px;
   }
-  .ot-demo-close:hover { background: rgba(255,255,255,0.10); color: #fbbf24; }
+  .ot-demo-close:hover { background: rgba(255,255,255,0.10); color: var(--c-action); }
   .ot-demo-title {
     margin: 0 0 0.55rem;
     font-size: var(--fs-xl);
     font-weight: 800;
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .ot-demo-body {
     margin: 0 0 0.7rem;
@@ -3494,7 +3494,7 @@
     color: #c8d8f0;
   }
   .ot-demo-body code {
-    background: rgba(34, 211, 238, 0.14);
+    background: var(--c-info-14);
     border: 1px solid rgba(34, 211, 238, 0.30);
     border-radius: 3px;
     padding: 0 0.25rem;
@@ -3519,20 +3519,20 @@
     transition: background 0.1s, color 0.1s, border-color 0.1s;
   }
   .ot-demo-btn-secondary {
-    background: rgba(34, 211, 238, 0.14);
+    background: var(--c-info-14);
     border: 1px solid rgba(34, 211, 238, 0.45);
     color: #67e8f9;
     display: inline-flex; align-items: center;
   }
   .ot-demo-btn-secondary:hover {
-    background: rgba(34, 211, 238, 0.22);
+    background: var(--c-info-22);
     border-color: rgba(34, 211, 238, 0.75);
     color: #a5f3fc;
   }
   .ot-demo-btn-primary {
     background: rgba(251, 191, 36, 0.20);
     border: 1px solid rgba(251, 191, 36, 0.65);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .ot-demo-btn-primary:hover {
     background: rgba(251, 191, 36, 0.35);

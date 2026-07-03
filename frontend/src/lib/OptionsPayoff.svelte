@@ -835,9 +835,9 @@
         {@const isCenter    = xt.sigma === 0}
         {@const absSigma    = xt.sigma != null ? Math.abs(xt.sigma) : null}
         {@const isMilestone = absSigma === 1 || absSigma === 2 || absSigma === 2.5}
-        {@const mColor      = absSigma === 1   ? '#4ade80'
-                            : absSigma === 2   ? '#fbbf24'
-                            : absSigma === 2.5 ? '#f87171'
+        {@const mColor      = absSigma === 1   ? 'var(--c-long)'
+                            : absSigma === 2   ? 'var(--c-action)'
+                            : absSigma === 2.5 ? 'var(--c-short)'
                             : null}
         {#if !isCenter}
           {#if isMilestone}
@@ -1085,8 +1085,8 @@
              slimming pass (11 / 14). -->
         {@const tx = Math.min(W - 165 - PAD_R, Math.max(PAD_L, (hover?.x ?? 0) + 10))}
         {@const ty = Math.max(PAD_T, (hover?.y ?? 0) - 58)}
-        {@const tdCol = (hover?.today  ?? 0) >= 0 ? '#4ade80' : '#f87171'}
-        {@const expCol = (hover?.expiry ?? 0) >= 0 ? '#4ade80' : '#f87171'}
+        {@const tdCol = (hover?.today  ?? 0) >= 0 ? 'var(--c-long)' : 'var(--c-short)'}
+        {@const expCol = (hover?.expiry ?? 0) >= 0 ? 'var(--c-long)' : 'var(--c-short)'}
         <line x1={hover?.x} x2={hover?.x} y1={PAD_T} y2={height - PAD_B}
               stroke="rgba(255,255,255,0.20)" stroke-width="1"/>
         <g>
@@ -1341,7 +1341,7 @@
     border-radius: 2px;
     border: 1px solid rgba(251,191,36,0.45);
     background: rgba(251,191,36,0.10);
-    color: #fbbf24;
+    color: var(--c-action);
     cursor: pointer;
     /* SVG has z-index: 2 — reset must sit above it too. */
     z-index: 5;
@@ -1430,12 +1430,12 @@
     width: 16px;
     height: 0;
   }
-  .legend-today  { border-top: 2px solid #fbbf24; }
+  .legend-today  { border-top: 2px solid var(--c-action); }
   .legend-expiry { border-top: 1.5px dashed #7dd3fc; }
   /* Intermediate-DTE swatch — the stroke colour comes inline via
      `style="border-top-color: …"` because each slice gets its own
      interpolated hsl(). Dashed, matching the chart curve. */
-  .legend-mid    { border-top: 1.5px dashed #fbbf24; }
+  .legend-mid    { border-top: 1.5px dashed var(--c-action); }
   .legend-mark {
     display: inline-block;
     width: 0;
@@ -1481,7 +1481,7 @@
   .ps-k {
     /* Amber label tier — bumped to 0.6rem (was 9px literal) so the
        overlay text is at the ~10px legibility floor on default DPI. */
-    color: #fbbf24;
+    color: var(--c-action);
     letter-spacing: 0.08em;
     font-size: var(--fs-sm);
     font-weight: 700;
@@ -1509,11 +1509,11 @@
   /* Day-direction tint on the SPOT readout — green when above
      yesterday's close, red below. Falls through to the neutral
      cyan (`ps-spot-flat`) when prev_close is unavailable. */
-  .ps-v.ps-spot-pos  { color: #4ade80; }
-  .ps-v.ps-spot-neg  { color: #f87171; }
+  .ps-v.ps-spot-pos  { color: var(--c-long); }
+  .ps-v.ps-spot-neg  { color: var(--c-short); }
   .ps-v.ps-spot-flat { color: #7dd3fc; }
-  .ps-v.ps-pos  { color: #4ade80; }
-  .ps-v.ps-neg  { color: #f87171; }
+  .ps-v.ps-pos  { color: var(--c-long); }
+  .ps-v.ps-neg  { color: var(--c-short); }
   /* PREV row sits between SPOT and TDAY; neutral cyan so the eye
      reads SPOT (directional colour) → PREV (anchor) without
      re-tinting itself. */
@@ -1557,7 +1557,7 @@
   }
   /* Amber roll-warning state */
   .payoff-anchor-chip--amber {
-    color: #fbbf24;
+    color: var(--c-action);
     background: var(--algo-amber-bg);
     border-color: rgba(251, 191, 36, 0.42);
   }

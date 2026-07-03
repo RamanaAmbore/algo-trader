@@ -291,8 +291,8 @@
   // Color palette per leg side. Industry pattern (TOS/Tastytrade):
   // longs in cool blues, shorts in warm oranges. Each leg within a
   // side gets a distinct hue cycle position for legend disambiguation.
-  const _LONG_HUES  = ['#7dd3fc', '#38bdf8', '#22d3ee', '#67e8f9', '#06b6d4'];
-  const _SHORT_HUES = ['#fb923c', '#f97316', '#fb7185', '#f87171', '#facc15'];
+  const _LONG_HUES  = ['#7dd3fc', '#38bdf8', 'var(--c-info)', '#67e8f9', '#06b6d4'];
+  const _SHORT_HUES = ['#fb923c', '#f97316', '#fb7185', 'var(--c-short)', '#facc15'];
   function _legColor(/** @type {any} */ p, /** @type {number} */ idxWithinSide) {
     const palette = (Number(p.quantity) || 0) >= 0 ? _LONG_HUES : _SHORT_HUES;
     return palette[idxWithinSide % palette.length];
@@ -671,7 +671,7 @@
 {/if}
 
 {#if armedAgent}
-  <div class="mb-3 p-2 rounded bg-[#fbbf24]/15 text-[#fbbf24] text-[0.65rem] border border-[#fbbf24]/50">
+  <div class="mb-3 p-2 rounded bg-[var(--c-action)]/15 text-[var(--c-action)] text-[0.65rem] border border-[var(--c-action)]/50">
     Isolated run armed — will dry-fire <b>#{armedAgent?.id} {armedAgent?.name}</b>
     (bypasses schedule / cooldown / baseline gates).
     <button type="button" onclick={() => { agentId = ''; }}
@@ -688,31 +688,31 @@
      data-status={status.active ? 'triggered' : 'inactive'}>
   <div class="flex items-center flex-wrap gap-2 text-[0.7rem]">
     <span class="w-2 h-2 rounded-full {status.active ? 'bg-red-500 animate-pulse' : 'bg-slate-500'}"></span>
-    <span class="text-[#fbbf24] font-semibold">{status.active ? 'RUNNING' : 'idle'}</span>
+    <span class="text-[var(--c-action)] font-semibold">{status.active ? 'RUNNING' : 'idle'}</span>
     {#if status.scenario}
       <span class="font-mono text-[#7dd3fc]">scenario: {status.scenario}</span>
-      <span class="text-[#7e97b8]">|</span>
+      <span class="text-[var(--c-muted)]">|</span>
       <span>seed: {status.seed_mode}</span>
-      <span class="text-[#7e97b8]">|</span>
+      <span class="text-[var(--c-muted)]">|</span>
       <span>tick {status.tick_index}/{status.total_ticks}</span>
-      <span class="text-[#7e97b8]">|</span>
+      <span class="text-[var(--c-muted)]">|</span>
       <span>rate: {status.rate_ms}ms</span>
-      <span class="text-[#7e97b8]">|</span>
+      <span class="text-[var(--c-muted)]">|</span>
       <span title="Positions refresh every N ticks">
         cadence P:{status.positions_every_n_ticks}
       </span>
-      <span class="text-[#7e97b8]">|</span>
+      <span class="text-[var(--c-muted)]">|</span>
       <span title="Simulated market state — segment flags + minutes-since-open drive time-aware agents">
         market: <span class="text-[#fde68a]">{status.market_state_preset ?? 'mid_session'}</span>
       </span>
-      <span class="text-[#7e97b8]">|</span>
+      <span class="text-[var(--c-muted)]">|</span>
       <span title={status.started_at ? logTime(status.started_at) : ''}>
         started:
         {#if status.started_at}{@html dualTsHtml(status.started_at)}{:else}—{/if}
       </span>
       {#if status.only_agent_ids?.length}
-        <span class="text-[#7e97b8]">|</span>
-        <span class="text-[#fbbf24]">agents=[{status.only_agent_ids.join(',')}]</span>
+        <span class="text-[var(--c-muted)]">|</span>
+        <span class="text-[var(--c-action)]">agents=[{status.only_agent_ids.join(',')}]</span>
       {/if}
     {/if}
   </div>
@@ -1409,7 +1409,7 @@
             onclick={addCustomRow}>+ Add row</button>
   </div>
   {#if !customRows.length}
-    <div class="text-[0.6rem] text-[#7e97b8] mt-1">
+    <div class="text-[0.6rem] text-[var(--c-muted)] mt-1">
       No custom positions. Click <b>+ Add row</b> to layer synthetic
       positions on top of the seeded book.
     </div>
@@ -1444,7 +1444,7 @@
         </div>
       {/each}
     </div>
-    <div class="text-[0.55rem] text-[#7e97b8] mt-1">
+    <div class="text-[0.55rem] text-[var(--c-muted)] mt-1">
       Negative qty = short. F&O symbols re-price coherently when an
       <span class="font-mono">underlying_*</span> move fires.
     </div>
@@ -1534,7 +1534,7 @@
     user-select: none;
   }
   :global(.sim-collapsible-chevron) {
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 800;
     font-size: var(--fs-lg);
     line-height: 1;
@@ -1543,7 +1543,7 @@
   :global(.sim-collapsible-running) {
     background: rgba(248, 113, 113, 0.15);
     border: 1px solid rgba(248, 113, 113, 0.45);
-    color: #f87171;
+    color: var(--c-short);
     padding: 0.06rem 0.4rem;
     border-radius: 999px;
     font-size: var(--fs-2xs);
@@ -1733,7 +1733,7 @@
     background: rgba(16,185,129,0.15); color: #6ee7b7; border-color: rgba(16,185,129,0.5);
   }
   :global(.sim-btn-load:hover) {
-    background: rgba(74,222,128,0.25); border-color: #4ade80;
+    background: rgba(74,222,128,0.25); border-color: var(--c-long);
   }
   :global(.sim-btn-step) {
     background: rgba(125,211,252,0.15); color: #7dd3fc; border-color: rgba(125,211,252,0.5);
@@ -1742,16 +1742,16 @@
     background: rgba(125,211,252,0.25); border-color: #7dd3fc;
   }
   :global(.sim-btn-cycle) {
-    background: rgba(251,191,36,0.15); color: #fbbf24; border-color: rgba(251,191,36,0.5);
+    background: rgba(251,191,36,0.15); color: var(--c-action); border-color: rgba(251,191,36,0.5);
   }
   :global(.sim-btn-cycle:hover) {
-    background: rgba(251,191,36,0.25); border-color: #fbbf24;
+    background: rgba(251,191,36,0.25); border-color: var(--c-action);
   }
   :global(.sim-btn-danger) {
-    background: rgba(248,113,113,0.1); color: #f87171; border-color: rgba(248,113,113,0.5);
+    background: var(--c-short-10); color: var(--c-short); border-color: rgba(248,113,113,0.5);
   }
   :global(.sim-btn-danger:hover) {
-    background: rgba(248,113,113,0.2); border-color: #f87171;
+    background: rgba(248,113,113,0.2); border-color: var(--c-short);
   }
   .sim-pills {
     display: flex;
@@ -1791,18 +1791,18 @@
   .sim-pill-short { border-color: rgba(251,146,60,0.45); }
   .sim-pill-chase { border-color: rgba(251,191,36,0.45); background: rgba(251,191,36,0.06); }
   .sim-pill-side-buy  { background: rgba(110,231,183,0.22); color: #6ee7b7; }
-  .sim-pill-side-sell { background: rgba(248,113,113,0.22);  color: #fda4af; }
+  .sim-pill-side-sell { background: var(--c-short-22);  color: #fda4af; }
   .sim-pill-sym { color: #fde68a; font-weight: 600; }
   .sim-pill-qty { color: var(--algo-slate); }
   .sim-pill-limit { color: #7dd3fc; }
   .sim-pill-attempts {
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 700;
     border-left: 1px solid rgba(251,191,36,0.35);
     padding-left: 0.35rem;
     margin-left: 0.1rem;
   }
-  .sim-pill-pnl.neg { color: #f87171; }
+  .sim-pill-pnl.neg { color: var(--c-short); }
   /* ── Per-underlying payoff card ────────────────────────────────
      Replaces the per-position pill row. Each card carries one
      OptionsPayoff chart (combined net payoff curve) + a color-
@@ -1824,7 +1824,7 @@
     font-size: var(--fs-sm);
   }
   .sim-payoff-name {
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 700;
     letter-spacing: 0.05em;
     font-size: var(--fs-lg);
@@ -1841,8 +1841,8 @@
     padding: 0 0.35rem;
     border-radius: 3px;
   }
-  .sim-payoff-pnl.pos { color: #4ade80; background: var(--algo-green-bg); }
-  .sim-payoff-pnl.neg { color: #f87171; background: var(--algo-red-bg); }
+  .sim-payoff-pnl.pos { color: var(--c-long); background: var(--algo-green-bg); }
+  .sim-payoff-pnl.neg { color: var(--c-short); background: var(--algo-red-bg); }
 
   /* SCRUB tag next to the spot value — surfaces that the displayed
      spot/PnL are historical at the scrubbed timestamp, not live. */
@@ -1852,7 +1852,7 @@
     padding: 0 0.3rem;
     border-radius: 999px;
     background: rgba(251, 191, 36, 0.16);
-    color: #fbbf24;
+    color: var(--c-action);
     font-family: var(--font-numeric);
     font-size: var(--fs-2xs);
     font-weight: 800;
@@ -1947,7 +1947,7 @@
     font-variant-numeric: tabular-nums;
   }
   .sim-leg-acct   { color: var(--algo-muted); font-size: var(--fs-xs); }
-  .sim-pill-pnl.pos { color: #4ade80; }
+  .sim-pill-pnl.pos { color: var(--c-long); }
   .sim-charts {
     margin-top: 0.4rem;
     display: grid;
@@ -2008,7 +2008,7 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: #fbbf24;
+    color: var(--c-action);
   }
   /* Indices snapshot row — compact per-index pill (name · spot · Δ%). */
   .sim-indices-row {
@@ -2031,15 +2031,15 @@
   }
   .sim-index-pill.up   { border-color: rgba(74, 222, 128, 0.45); }
   .sim-index-pill.down { border-color: rgba(248, 113, 113, 0.45); }
-  .sim-index-name { color: #fbbf24; font-weight: 700; letter-spacing: 0.04em; }
+  .sim-index-name { color: var(--c-action); font-weight: 700; letter-spacing: 0.04em; }
   .sim-index-spot { font-variant-numeric: tabular-nums; color: #fde68a; }
   .sim-index-pct  {
     font-variant-numeric: tabular-nums;
     font-weight: 700;
     color: var(--algo-slate);
   }
-  .sim-index-pill.up   .sim-index-pct { color: #4ade80; }
-  .sim-index-pill.down .sim-index-pct { color: #f87171; }
+  .sim-index-pill.up   .sim-index-pct { color: var(--c-long); }
+  .sim-index-pill.down .sim-index-pct { color: var(--c-short); }
   /* Summary grids — small inline ag-Grid-style table; matches the
      /dashboard cream-on-navy summary panels without dragging in a
      full ag-Grid instance. */
@@ -2068,8 +2068,8 @@
     text-align: right;
     font-variant-numeric: tabular-nums;
   }
-  .sim-summary-grid .sim-num.up   { color: #4ade80; }
-  .sim-summary-grid .sim-num.down { color: #f87171; }
+  .sim-summary-grid .sim-num.up   { color: var(--c-long); }
+  .sim-summary-grid .sim-num.down { color: var(--c-short); }
   .sim-summary-total td {
     font-weight: 700;
     color: #fde68a;
@@ -2133,7 +2133,7 @@
     border: 1px solid rgba(232, 121, 249, 0.35);
   }
   .sim-activity-chip-order {
-    color: #fbbf24;
+    color: var(--c-action);
     background: rgba(251, 191, 36, 0.10);
     border: 1px solid rgba(251, 191, 36, 0.35);
   }
@@ -2160,7 +2160,7 @@
     background: rgba(251, 191, 36, 0.06);
   }
   .sim-past-slug a {
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 700;
     text-decoration: none;
   }
@@ -2173,7 +2173,7 @@
     appearance: none;
     background: var(--algo-green-bg);
     border: 1px solid rgba(74, 222, 128, 0.40);
-    color: #4ade80;
+    color: var(--c-long);
     font-family: var(--font-numeric);
     font-size: var(--fs-xs);
     font-weight: 700;
@@ -2195,10 +2195,10 @@
     font-weight: 700;
   }
   .sim-past-end-book_empty,
-  .sim-past-end-scenario_complete { color: #4ade80; }
+  .sim-past-end-scenario_complete { color: var(--c-long); }
   .sim-past-end-time_limit,
-  .sim-past-end-stopped           { color: #fbbf24; }
-  .sim-past-end-failed            { color: #f87171; }
+  .sim-past-end-stopped           { color: var(--c-action); }
+  .sim-past-end-failed            { color: var(--c-short); }
   .sim-past-end-pending           { color: #7dd3fc; }
   .sim-past-all {
     display: inline-block;
@@ -2208,7 +2208,7 @@
     color: #7dd3fc;
     text-decoration: none;
   }
-  .sim-past-all:hover { color: #fbbf24; }
+  .sim-past-all:hover { color: var(--c-action); }
   .custom-pos-header {
     display: flex;
     align-items: center;
@@ -2247,7 +2247,7 @@
     border-radius: 3px;
     border: 1px solid rgba(248,113,113,0.4);
     background: rgba(248,113,113,0.08);
-    color: #f87171;
+    color: var(--c-short);
     font-size: var(--fs-xl);
     line-height: 1;
     cursor: pointer;
@@ -2280,7 +2280,7 @@
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
     font-weight: 700;
-    color: #fbbf24;
+    color: var(--c-action);
     text-transform: uppercase;
     letter-spacing: 0.08em;
   }
@@ -2291,7 +2291,7 @@
     color: #7dd3fc;
     text-decoration: none;
   }
-  .iter-history-link:hover { color: #fbbf24; }
+  .iter-history-link:hover { color: var(--c-action); }
   /* Cross-underlying correlation chip — read-only badge that surfaces
      the default beta table so operators see what propagation fires
      when a scenario moves NIFTY/BANKNIFTY/FINNIFTY. Click the (?)
@@ -2326,9 +2326,9 @@
   .iter-banner-warn {
     margin-bottom: 0.5rem;
     padding: 0.4rem 0.6rem;
-    background: rgba(248,113,113,0.10);
+    background: var(--c-short-10);
     border: 1px solid rgba(248,113,113,0.35);
-    color: #f87171;
+    color: var(--c-short);
     border-radius: 3px;
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
@@ -2358,7 +2358,7 @@
     appearance: none;
     background: transparent;
     border: none;
-    color: #fbbf24;
+    color: var(--c-action);
     font-family: var(--font-numeric);
     font-size: var(--fs-xl);
     font-weight: 700;

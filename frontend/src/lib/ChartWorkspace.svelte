@@ -2080,9 +2080,9 @@
         {:else if _chartType === 'candle'}
           {#each _candles as c}
             <line x1={c.x} x2={c.x} y1={c.wickTop} y2={c.wickBot}
-                  stroke={c.up ? '#4ade80' : '#f87171'} stroke-width="1"/>
+                  stroke={c.up ? 'var(--c-long)' : 'var(--c-short)'} stroke-width="1"/>
             <rect x={c.x - c.w / 2} y={c.bodyY} width={c.w} height={c.bodyH}
-                  fill={c.up ? '#4ade80' : '#f87171'}/>
+                  fill={c.up ? 'var(--c-long)' : 'var(--c-short)'}/>
           {/each}
         {:else if _chartType === 'plot'}
           {#each _plotPoints as p}
@@ -2366,13 +2366,13 @@
             </text>
           {/each}
           <path d={_t2path} fill="none"
-                stroke={_tickKind === 'underlying' ? '#7dd3fc' : '#fbbf24'}
+                stroke={_tickKind === 'underlying' ? '#7dd3fc' : 'var(--c-action)'}
                 stroke-width="1.4"/>
           {#each _events as ev}
             {#if ev.ts >= _ticks[0].ts && ev.ts <= _ticks[_ticks.length - 1].ts}
               {@const cx = _t2xOf(ev.ts)}
               {@const cy = _t2yOf(ev.price ?? _ticks[_ticks.length - 1].ltp)}
-              {@const evColor = ev.kind === 'filled' ? '#4ade80' : ev.kind === 'unfilled' ? '#f87171' : '#fbbf24'}
+              {@const evColor = ev.kind === 'filled' ? 'var(--c-long)' : ev.kind === 'unfilled' ? 'var(--c-short)' : 'var(--c-action)'}
               <circle {cx} {cy} r="4" fill={evColor} fill-opacity="0.25" stroke={evColor} stroke-width="1.5"/>
               <circle {cx} {cy} r="2" fill={evColor}/>
             {/if}
@@ -2727,9 +2727,9 @@
     cursor: pointer;
     border-radius: 2px;
   }
-  .cw-hp-close:hover { color: #f87171; background: rgba(248, 113, 113, 0.12); }
+  .cw-hp-close:hover { color: var(--c-short); background: rgba(248, 113, 113, 0.12); }
   .cw-hp-ts {
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 800;
     font-size: var(--fs-xs);
     margin-bottom: 0.2rem;
@@ -2753,8 +2753,8 @@
     color: var(--algo-slate);
     font-variant-numeric: tabular-nums;
   }
-  .cw-hp-val.up   { color: #4ade80; }
-  .cw-hp-val.down { color: #f87171; }
+  .cw-hp-val.up   { color: var(--c-long); }
+  .cw-hp-val.down { color: var(--c-short); }
 
   .cw-reset-zoom {
     /* SSOT chart-toolbar height — Reset rides the same --chart-toolbar-h
@@ -2774,11 +2774,11 @@
     border-radius: 3px;
     border: 1px solid rgba(251,191,36,0.50);
     background: rgba(251,191,36,0.12);
-    color: #fbbf24;
+    color: var(--c-action);
     cursor: pointer;
     margin-left: auto;
   }
-  .cw-reset-zoom:hover { background: rgba(251,191,36,0.22); }
+  .cw-reset-zoom:hover { background: var(--c-action-22); }
 
   /* ── Chart container + SVG ───────────────────────────────── */
   /* flex:1 makes this absorb ALL available vertical space. The chain
@@ -2837,7 +2837,7 @@
     width: 1.4rem;
     height: 1.4rem;
     border: 2px solid rgba(251, 191, 36, 0.18);
-    border-top-color: #fbbf24;
+    border-top-color: var(--c-action);
     border-radius: 50%;
     animation: cw-fetch-spin 0.9s linear infinite;
   }
@@ -2845,7 +2845,7 @@
     to { transform: rotate(360deg); }
   }
   .cw-fetch-msg {
-    color: #fbbf24;
+    color: var(--c-action);
     font-size: var(--fs-lg);
     font-weight: 600;
     letter-spacing: 0.03em;
@@ -2910,8 +2910,8 @@
     text-align: center;
   }
   .cw-state-sm { min-height: 80px; height: auto; }
-  .cw-err { color: #f87171; }
-  .cw-err-text { color: #f87171; font-size: var(--fs-xs); font-family: monospace; }
+  .cw-err { color: var(--c-short); }
+  .cw-err-text { color: var(--c-short); font-size: var(--fs-xs); font-family: monospace; }
 
   /* ── Intraday section ────────────────────────────────────── */
   .cw-intraday-section {
@@ -2941,8 +2941,8 @@
     border-radius: 2px;
     border: 1px solid currentColor;
   }
-  .cw-mode-live  { color: #4ade80; }
-  .cw-mode-sim   { color: #fbbf24; }
+  .cw-mode-live  { color: var(--c-long); }
+  .cw-mode-sim   { color: var(--c-action); }
   .cw-mode-paper { color: #7dd3fc; }
   .cw-intraday-source {
     font-weight: 700;
@@ -2950,7 +2950,7 @@
     padding: 1px 5px;
     border-radius: 2px;
     border: 1px solid var(--algo-amber-border);
-    color: #fbbf24;
+    color: var(--c-action);
     letter-spacing: 0.04em;
   }
   .cw-intraday-svg {
@@ -2975,8 +2975,8 @@
   .cw-info-sym   { color: #7dd3fc; font-weight: 700; }
   .cw-info-close { color: var(--algo-slate); font-variant-numeric: tabular-nums; }
   .cw-info-pct   { font-variant-numeric: tabular-nums; font-weight: 700; }
-  .cw-pos { color: #4ade80; }
-  .cw-neg { color: #f87171; }
+  .cw-pos { color: var(--c-long); }
+  .cw-neg { color: var(--c-short); }
   .cw-info-meta { color: var(--algo-muted); }
   .cw-meta-text { color: var(--algo-muted); font-size: var(--fs-xs); font-family: monospace; }
   .cw-info-root {
@@ -3022,7 +3022,7 @@
   }
   /* Amber roll-warning variant — expiry ≤ 3 days */
   .cw-fm-chip.cw-fm-rolling {
-    color: #fbbf24;
+    color: var(--c-action);
     background: var(--algo-amber-bg);
     border-color: rgba(251, 191, 36, 0.42);
   }
@@ -3073,7 +3073,7 @@
     font-variant-numeric: tabular-nums;
     color: var(--algo-slate);
   }
-  .cw-gk-amber { color: #fbbf24; }
+  .cw-gk-amber { color: var(--c-action); }
   .cw-gk-sky   { color: #7dd3fc; }
 
   @media (max-width: 600px) {

@@ -1962,8 +1962,8 @@
   // ORDER_TABS is the shared id/label source of truth from $lib/order/tabs.js.
   const TABS = ORDER_TABS.map(t => ({
     ...t,
-    ...(t.id === 'chain'   ? { dot: '#4ade80', activeTxt: '#4ade80', activeBorder: '#4ade80', activeBg: 'rgba(74,222,128,0.14)'  } :
-        t.id === 'ticket'  ? { dot: '#fbbf24', activeTxt: '#fbbf24', activeBorder: '#fbbf24', activeBg: 'rgba(251,191,36,0.14)'  } :
+    ...(t.id === 'chain'   ? { dot: 'var(--c-long)', activeTxt: 'var(--c-long)', activeBorder: 'var(--c-long)', activeBg: 'rgba(74,222,128,0.14)'  } :
+        t.id === 'ticket'  ? { dot: 'var(--c-action)', activeTxt: 'var(--c-action)', activeBorder: 'var(--c-action)', activeBg: 'var(--c-action-14)'  } :
                              { dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' }),
   }));
 
@@ -3143,7 +3143,7 @@
   .oes-modal-name {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: var(--fs-sm);
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -3227,7 +3227,7 @@
     border: 1px solid rgba(255, 255, 255, 0.10);
     border-radius: 3px;
     padding: 0.18rem 0.45rem;
-    color: #fbbf24;
+    color: var(--c-action);
     font-size: var(--fs-xl);
     font-weight: 800;
     font-family: var(--font-numeric);
@@ -3280,7 +3280,7 @@
   }
   .oes-sym-row:hover {
     background: rgba(251, 191, 36, 0.12);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .oes-sym-row-sym {
     font-weight: 700;
@@ -3314,7 +3314,7 @@
     margin-left: auto;
     background: transparent;
     border: 1px solid rgba(251,191,36,0.45);
-    color: #fbbf24;
+    color: var(--c-action);
     padding: 0.18rem 0.55rem;
     border-radius: 3px;
     cursor: pointer;
@@ -3342,8 +3342,8 @@
     letter-spacing: 0.04em;
     white-space: nowrap;
   }
-  .oes-wl-toast.ok  { color: #4ade80; background: rgba(74,222,128,0.16); }
-  .oes-wl-toast.err { color: #f87171; background: rgba(248,113,113,0.16); }
+  .oes-wl-toast.ok  { color: var(--c-long); background: rgba(74,222,128,0.16); }
+  .oes-wl-toast.err { color: var(--c-short); background: rgba(248,113,113,0.16); }
 
   /* Chart icon button — opens ChartModal for the current symbol.
      Same 1.4rem × 1.4rem dimensions + cyan-400 palette as the
@@ -3354,10 +3354,10 @@
     justify-content: center;
     width: 1.4rem;
     height: 1.4rem;
-    background: rgba(34, 211, 238, 0.14);
+    background: var(--c-info-14);
     border: 1px solid rgba(34, 211, 238, 0.40);
     border-radius: 3px;
-    color: #22d3ee;
+    color: var(--c-info);
     cursor: pointer;
     flex-shrink: 0;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
@@ -3383,7 +3383,7 @@
     margin-left: auto;
     background: none;
     border: 1px solid rgba(248, 113, 113, 0.35);
-    color: #f87171;
+    color: var(--c-short);
     width: 1.4rem;
     height: 1.4rem;
     border-radius: 3px;
@@ -3433,15 +3433,15 @@
     font-family: var(--font-numeric);
     border: 1px solid;
   }
-  .bms-row-ok    { border-color: rgba(74,222,128,0.35); background: rgba(74,222,128,0.08); color: #4ade80; }
-  .bms-row-warn  { border-color: rgba(251,191,36,0.35); background: rgba(251,191,36,0.08); color: #fbbf24; }
-  .bms-row-short { border-color: rgba(248,113,113,0.45); background: rgba(248,113,113,0.10); color: #f87171; }
-  .bms-row-err   { border-color: rgba(248,113,113,0.35); background: rgba(248,113,113,0.08); color: #f87171; }
+  .bms-row-ok    { border-color: rgba(74,222,128,0.35); background: rgba(74,222,128,0.08); color: var(--c-long); }
+  .bms-row-warn  { border-color: rgba(251,191,36,0.35); background: rgba(251,191,36,0.08); color: var(--c-action); }
+  .bms-row-short { border-color: rgba(248,113,113,0.45); background: var(--c-short-10); color: var(--c-short); }
+  .bms-row-err   { border-color: rgba(248,113,113,0.35); background: rgba(248,113,113,0.08); color: var(--c-short); }
   .bms-acct { font-weight: 700; margin-right: 0.15rem; }
   .bms-kv   { display: inline-flex; gap: 0.15rem; }
   .bms-k    { opacity: 0.65; }
   .bms-v    { font-variant-numeric: tabular-nums; }
-  .bms-kv-short .bms-v { color: #f87171; }
+  .bms-kv-short .bms-v { color: var(--c-short); }
   .bms-err  { opacity: 0.85; }
 
   /* On-fill template picker row — lifted out of .oes-basket-bar in
@@ -3546,7 +3546,7 @@
   }
   .oes-basket-tpl-param > input:focus {
     outline: none;
-    border-color: var(--algo-amber, #fbbf24);
+    border-color: var(--algo-amber, var(--c-action));
     background: rgba(28, 22, 8, 0.92);
     box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.55),
                 0 0 0 2px rgba(251, 191, 36, 0.20);
@@ -3567,7 +3567,7 @@
     text-transform: uppercase;
     letter-spacing: 0.08em;
     font-weight: 800;
-    color: var(--algo-amber, #fbbf24);
+    color: var(--algo-amber, var(--c-action));
     font-size: var(--fs-sm);
   }
   /* Default / None two-pill toggle — mirrors the Side toggle in
@@ -3624,7 +3624,7 @@
   }
   .oes-tpl-btn-default.on {
     background: rgba(251, 191, 36, 0.24);
-    color: var(--algo-amber, #fbbf24);
+    color: var(--algo-amber, var(--c-action));
     text-shadow: 0 0 8px rgba(251, 191, 36, 0.45);
   }
   .oes-tpl-btn-none.on {
@@ -3661,7 +3661,7 @@
     border-radius: 3px;
     font-size: var(--fs-sm);
     line-height: 1.25;
-    color: #fbbf24;
+    color: var(--c-action);
     background: rgba(251, 191, 36, 0.10);
     border: 1px solid rgba(251, 191, 36, 0.40);
   }
@@ -3674,7 +3674,7 @@
     margin-top: 0.25rem;
     padding: 0.3rem 0.45rem;
     background: rgba(34, 211, 238, 0.06);
-    border: 1px solid rgba(34, 211, 238, 0.22);
+    border: 1px solid var(--c-info-22);
     border-radius: 3px;
     font-size: var(--fs-sm);
     line-height: 1.35;
@@ -3687,7 +3687,7 @@
     cursor: pointer;
   }
   .oes-tpl-preview-clickable:hover {
-    background: rgba(34, 211, 238, 0.14);
+    background: var(--c-info-14);
     border-color: rgba(34, 211, 238, 0.45);
   }
   .oes-tpl-preview-clickable:focus-visible {
@@ -3710,17 +3710,17 @@
     border: 1px solid rgba(180, 200, 230, 0.20);
   }
   .oes-tpl-preview-chip.tp {
-    color: #4ade80;
-    background: rgba(74, 222, 128, 0.10);
+    color: var(--c-long);
+    background: var(--c-long-10);
     border-color: rgba(74, 222, 128, 0.40);
   }
   .oes-tpl-preview-chip.sl {
-    color: #f87171;
-    background: rgba(248, 113, 113, 0.10);
+    color: var(--c-short);
+    background: var(--c-short-10);
     border-color: rgba(248, 113, 113, 0.40);
   }
   .oes-tpl-preview-chip.both {
-    color: #fbbf24;
+    color: var(--c-action);
     background: rgba(251, 191, 36, 0.10);
     border-color: rgba(251, 191, 36, 0.40);
   }
@@ -3797,7 +3797,7 @@
     flex-wrap: wrap;
     gap: 0.4rem 0.7rem;
     padding: 0.55rem 1rem;
-    border-top: 2px solid #4ade80;
+    border-top: 2px solid var(--c-long);
     background: rgba(74,222,128,0.18);
     box-shadow: inset 0 4px 12px rgba(0,0,0,0.25);
     flex-shrink: 0;
@@ -3877,7 +3877,7 @@
     background:   rgba(103,232,249,0.10);
   }
   .oes-basket-pill-sell {
-    color:        #fbbf24;
+    color:        var(--c-action);
     border-color: rgba(251,191,36,0.55);
     background:   rgba(251,191,36,0.10);
   }
@@ -3954,7 +3954,7 @@
     margin-left: 0.1rem;
     line-height: 1;
   }
-  .oes-basket-pill-remove:hover:not(:disabled) { color: #f87171; }
+  .oes-basket-pill-remove:hover:not(:disabled) { color: var(--c-short); }
   .oes-basket-pill-remove:disabled { opacity: 0.35; cursor: not-allowed; }
   /* Wing-attach indicator chip — sits inline inside a SELL option
      pill, before the × remove button. Purple palette matches the
@@ -4118,7 +4118,7 @@
   }
   .oes-leg-editor-field > input:focus {
     outline: none;
-    border-color: var(--algo-cyan, #22d3ee);
+    border-color: var(--algo-cyan, var(--c-info));
     background: rgba(12, 24, 40, 0.92);
     box-shadow: inset 0 0 0 1px rgba(34, 211, 238, 0.45);
   }
@@ -4192,7 +4192,7 @@
   }
   .oes-basket-pill-limit-warn {
     border-color: rgba(248,113,113,0.7);
-    color: #f87171;
+    color: var(--c-short);
   }
   /* .oes-basket-clear / .oes-basket-submit retired with the
      duplicate-buttons drop (656be671); the common footer's
@@ -4367,12 +4367,12 @@
     flex-shrink: 0;
   }
   .oes-event-kind-placed          { color: #38bdf8; }
-  .oes-event-kind-chase_modify    { color: #fbbf24; }
-  .oes-event-kind-fill            { color: #4ade80; }
-  .oes-event-kind-unfill          { color: #f87171; }
-  .oes-event-kind-reject          { color: #f87171; }
+  .oes-event-kind-chase_modify    { color: var(--c-action); }
+  .oes-event-kind-fill            { color: var(--c-long); }
+  .oes-event-kind-unfill          { color: var(--c-short); }
+  .oes-event-kind-reject          { color: var(--c-short); }
   .oes-event-kind-preflight_ok    { color: #94a3b8; }
-  .oes-event-kind-preflight_block { color: #f87171; }
+  .oes-event-kind-preflight_block { color: var(--c-short); }
   .oes-event-kind-cancel          { color: #94a3b8; }
   .oes-event-kind-postback        { color: #c084fc; }
   /* Agent-sourced event kinds — violet/pink palette so "rule fired"
@@ -4415,7 +4415,7 @@
   .oes-card-px   { color: var(--algo-slate); font-variant-numeric: tabular-nums; }
   .oes-card-chase {
     font-size: var(--fs-xs);
-    color: #fbbf24;
+    color: var(--c-action);
     border: 1px solid rgba(251,191,36,0.4);
     padding: 0 0.3rem;
     border-radius: 2px;
@@ -4433,11 +4433,11 @@
   .oes-status-open,
   .oes-status-pending,
   .oes-status-trigger-pending,
-  .oes-status-validation-pending  { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid rgba(251,191,36,0.4); }
+  .oes-status-validation-pending  { background: rgba(251,191,36,0.15); color: var(--c-action); border: 1px solid rgba(251,191,36,0.4); }
   .oes-status-complete,
-  .oes-status-filled              { background: rgba(74,222,128,0.12);  color: #4ade80; border: 1px solid rgba(74,222,128,0.4); }
+  .oes-status-filled              { background: rgba(74,222,128,0.12);  color: var(--c-long); border: 1px solid rgba(74,222,128,0.4); }
   .oes-status-unfilled,
-  .oes-status-rejected            { background: rgba(248,113,113,0.12);  color: #f87171; border: 1px solid rgba(248,113,113,0.4); }
+  .oes-status-rejected            { background: rgba(248,113,113,0.12);  color: var(--c-short); border: 1px solid rgba(248,113,113,0.4); }
   .oes-status-cancelled           { background: rgba(148,163,184,0.1); color: #94a3b8; border: 1px solid rgba(148,163,184,0.3); }
   /* LOCAL chip — marks algo_order rows that never reached Kite (preflight blocks). */
   .oes-local-chip {
@@ -4448,7 +4448,7 @@
     padding: 0.1rem 0.3rem;
     border-radius: 2px;
     background: rgba(251,191,36,0.12);
-    color: #fbbf24;
+    color: var(--c-action);
     border: 1px solid rgba(251,191,36,0.35);
   }
 
@@ -4461,8 +4461,8 @@
     padding: 0.1rem 0.3rem;
     border-radius: 2px;
   }
-  .oes-side-buy  { background: rgba(74,222,128,0.12); color: #4ade80; border: 1px solid rgba(74,222,128,0.35); }
-  .oes-side-sell { background: rgba(248,113,113,0.12); color: #f87171; border: 1px solid rgba(248,113,113,0.35); }
+  .oes-side-buy  { background: rgba(74,222,128,0.12); color: var(--c-long); border: 1px solid rgba(74,222,128,0.35); }
+  .oes-side-sell { background: rgba(248,113,113,0.12); color: var(--c-short); border: 1px solid rgba(248,113,113,0.35); }
 
   /* ── Common action footer (modal-mode only) ─────────────────────── */
   /* Two-row stack: buttons on top, margin row below. */
@@ -4555,7 +4555,7 @@
      against the resting/hover sky tones — distinct from the muted
      sky-blue inactive treatment. */
   .oes-common-basket-toggle-icon.on {
-    color: #fbbf24;
+    color: var(--c-action);
     background: rgba(251, 191, 36, 0.20);
     border-color: rgba(251, 191, 36, 0.65);
   }
@@ -4635,12 +4635,12 @@
     background: rgba(255,255,255,0.04);
   }
   .oes-footer-side-btn-single.on-buy {
-    color: #4ade80;
+    color: var(--c-long);
     background: rgba(74, 222, 128, 0.18);
     border-color: rgba(74, 222, 128, 0.70);
   }
   .oes-footer-side-btn-single.on-sell {
-    color: #f87171;
+    color: var(--c-short);
     background: rgba(248, 113, 113, 0.18);
     border-color: rgba(248, 113, 113, 0.70);
   }
@@ -4681,7 +4681,7 @@
     font-weight: 700;
     letter-spacing: 0.06em;
   }
-  .oes-common-chase-label.on { color: #fbbf24; }
+  .oes-common-chase-label.on { color: var(--c-action); }
 
   .oes-common-chase-agg {
     display: inline-flex;
@@ -4701,10 +4701,10 @@
     cursor: pointer;
   }
   .oes-common-chase-agg-pill:last-child { border-right: 0; }
-  .oes-common-chase-agg-pill:hover { color: #fbbf24; background: rgba(251,191,36,0.08); }
+  .oes-common-chase-agg-pill:hover { color: var(--c-action); background: rgba(251,191,36,0.08); }
   .oes-common-chase-agg-pill.on {
     color: #0c1830;
-    background: #fbbf24;
+    background: var(--c-action);
   }
 
   /* Margin strip — sits BELOW the action buttons. MARGIN · Avail ·
@@ -4730,8 +4730,8 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .oes-notice-err  { background: rgba(248,113,113,0.18); border-color: rgba(248,113,113,0.55); color: #f87171; }
-  .oes-notice-warn { background: rgba(251,191,36,0.16); border-color: rgba(251,191,36,0.50); color: #fbbf24; }
+  .oes-notice-err  { background: rgba(248,113,113,0.18); border-color: rgba(248,113,113,0.55); color: var(--c-short); }
+  .oes-notice-warn { background: rgba(251,191,36,0.16); border-color: rgba(251,191,36,0.50); color: var(--c-action); }
   .oes-notice-info { background: rgba(56,189,248,0.16); border-color: rgba(56,189,248,0.50); color: #38bdf8; }
 
   /* Sticky result line — same shape as notice; replaces the
@@ -4755,7 +4755,7 @@
   .oes-sticky-result-ok {
     background: rgba(74,222,128,0.18);
     border-color: rgba(74,222,128,0.55);
-    color: #4ade80;
+    color: var(--c-long);
   }
   /* Audit fix — basket partial-failure warn level. Amber palette so
      the operator sees "some succeeded, some failed" as distinct from
@@ -4763,12 +4763,12 @@
   .oes-sticky-result-warn {
     background: rgba(251,191,36,0.18);
     border-color: rgba(251,191,36,0.55);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .oes-sticky-result-err {
     background: rgba(248,113,113,0.18);
     border-color: rgba(248,113,113,0.55);
-    color: #f87171;
+    color: var(--c-short);
   }
 
   /* Funds summary line above the action row — Avail margin · Cash ·
@@ -4786,7 +4786,7 @@
     font-size: var(--fs-sm);
     color: var(--algo-slate);
   }
-  .oes-funds-line-low { color: #f87171; }
+  .oes-funds-line-low { color: var(--c-short); }
   .oes-funds-k {
     text-transform: uppercase;
     font-weight: 700;
@@ -4870,12 +4870,12 @@
   .oes-margin-pill-warn {
     background: rgba(251, 191, 36, 0.16);
     border-color: rgba(251, 191, 36, 0.50);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .oes-margin-pill-err {
     background: rgba(248, 113, 113, 0.18);
     border-color: var(--algo-red-border);
-    color: #f87171;
+    color: var(--c-short);
   }
   .oes-margin-pill-neutral {
     background: rgba(126, 151, 184, 0.12);
@@ -4923,7 +4923,7 @@
     font-weight: 700;
     letter-spacing: 0.04em;
   }
-  .oes-common-clear-inline:hover { background: rgba(248, 113, 113, 0.10); }
+  .oes-common-clear-inline:hover { background: var(--c-short-10); }
   .oes-common-basket:hover:not(.is-disabled) { background: var(--algo-sky-bg); }
   /* Grayed-out +Basket on Chain tab — affordance stays visible so
      the operator knows the basket flow exists; clicking it would
@@ -4932,19 +4932,19 @@
     cursor: not-allowed;
     opacity: 0.45;
   }
-  .oes-common-side-buy  { border-color: var(--algo-green-border); color: #4ade80; }
-  .oes-common-side-sell { border-color: var(--algo-red-border); color: #f87171; }
+  .oes-common-side-buy  { border-color: var(--algo-green-border); color: var(--c-long); }
+  .oes-common-side-sell { border-color: var(--algo-red-border); color: var(--c-short); }
   .oes-common-side-buy:hover  { background: rgba(74, 222, 128, 0.12); }
   .oes-common-side-sell:hover { background: rgba(248, 113, 113, 0.12); }
   .oes-common-submit-buy {
     background: rgba(74, 222, 128, 0.18);
     border-color: rgba(74, 222, 128, 0.65);
-    color: #4ade80;
+    color: var(--c-long);
   }
   .oes-common-submit-sell {
     background: rgba(248, 113, 113, 0.18);
     border-color: rgba(248, 113, 113, 0.65);
-    color: #f87171;
+    color: var(--c-short);
   }
   .oes-common-submit-buy:hover  { background: rgba(74, 222, 128, 0.28); }
   .oes-common-submit-sell:hover { background: rgba(248, 113, 113, 0.28); }
@@ -4953,7 +4953,7 @@
   .oes-common-submit-basket {
     background: rgba(34, 211, 238, 0.18);
     border-color: rgba(34, 211, 238, 0.65);
-    color: #22d3ee;
+    color: var(--c-info);
   }
   .oes-common-submit-basket:hover { background: rgba(34, 211, 238, 0.28); }
   /* Clear-basket — neutral outline. */
