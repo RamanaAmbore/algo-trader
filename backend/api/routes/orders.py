@@ -1439,14 +1439,16 @@ class OrdersController(Controller):
 
 class AccountsController(Controller):
     path = "/api/accounts"
-    guards = [jwt_guard]
+    guards = [auth_or_demo_guard]
 
     @get("/")
     async def list_accounts(self, request: Request) -> AccountsResponse:
         # Raw account codes gated to admin/designated only. Partner JWTs
-        # get masked codes (ZG####), symmetric with mask_column() in
-        # row endpoints (positions/holdings/funds). Demo never reaches
-        # this endpoint — controller guard is jwt_guard.
+        # and demo (anonymous) sessions get masked codes (ZG####, D1####, …),
+        # symmetric with mask_column() in row endpoints (positions/holdings/funds).
+        # auth_or_demo_guard allows anonymous sessions on prod so the demo UI
+        # can populate the account dropdown with all broker accounts (incl.
+        # Dhan / Groww) even when those brokers have zero positions/holdings.
         conn = Connections().conn
         # Cutover branch — when conn_service owns the sessions, local
         # Connections.conn is empty. Fetch the canonical account list
