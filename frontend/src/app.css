@@ -196,6 +196,59 @@
      gradient look. The 15 inline `linear-gradient(180deg, #1d2a44 …)`
      declarations across lib/ + routes/ all resolve to this. */
   --card-bg-gradient: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
+
+  /* ── Phase 1 semantic aliases — `--c-*` layer (2026-07-02) ──────────────
+     Thin semantic aliases over the existing `--algo-*` palette. The
+     `--algo-*` family holds the raw hex values and computed alpha
+     variants; `--c-*` adds intent-labelled shortcuts so call sites can
+     express "long / short / info / action" rather than colour names.
+
+     Relationship to existing tokens:
+       --c-long   = BUY direction / positive P&L / up flash  → --algo-green
+       --c-short  = SELL direction / negative P&L / dn flash → --algo-red
+       --c-info   = interactive affordance / cyan controls   → --algo-cyan
+       --c-action = attention / TOTAL rows / warnings        → --algo-amber
+       --c-muted  = secondary labels / axis text             → --algo-muted
+
+     Background alpha aliases — mapped to the closest exact existing
+     alpha level in the --algo-* set. Near-match alphas (<3 occurrences
+     across the 5 Phase-1 target files) stay raw and are deferred to
+     Phase 2 (see CLAUDE.md Palette token audit notes).
+
+       green/red bg levels: 0.06 (soft) · 0.10 (standard) · 0.22 (strong)
+       cyan/amber/sky bg levels: 0.08 (soft) · 0.14 (standard) · 0.22 (strong)
+
+     The `--c-*-08` / `--c-*-14` names in the alias set match the
+     operator spec for the long/short layer; the underlying value is
+     the nearest existing `--algo-*` alpha (e.g. --c-long-08 is
+     actually 0.06 green-bg-soft, not 0.08). The name reflects
+     intent; the value preserves the existing visual.  */
+
+  /* Solid semantic aliases */
+  --c-long:   var(--algo-green);   /* #4ade80 — long / up / buy fills     */
+  --c-short:  var(--algo-red);     /* #f87171 — short / down / sell fills  */
+  --c-info:   var(--algo-cyan);    /* #22d3ee — interactive affordance     */
+  --c-action: var(--algo-amber);   /* #fbbf24 — TOTAL rows, warnings       */
+  --c-muted:  var(--algo-muted);   /* #7e97b8 — muted labels, axis text    */
+
+  /* Long (green) alpha aliases */
+  --c-long-08: var(--algo-green-bg-soft);    /* rgba(74, 222, 128, 0.06) */
+  --c-long-14: var(--algo-green-bg);         /* rgba(74, 222, 128, 0.10) */
+  --c-long-22: var(--algo-green-bg-strong);  /* rgba(74, 222, 128, 0.22) */
+
+  /* Short (red) alpha aliases */
+  --c-short-08: var(--algo-red-bg-soft);     /* rgba(248, 113, 113, 0.06) */
+  --c-short-14: var(--algo-red-bg);          /* rgba(248, 113, 113, 0.10) */
+  --c-short-22: var(--algo-red-bg-strong);   /* rgba(248, 113, 113, 0.22) */
+
+  /* Info (cyan) alpha aliases */
+  --c-info-08: var(--algo-cyan-bg-soft);     /* rgba(34, 211, 238, 0.08) */
+  --c-info-14: var(--algo-cyan-bg);          /* rgba(34, 211, 238, 0.14) */
+  --c-info-22: var(--algo-cyan-bg-strong);   /* rgba(34, 211, 238, 0.22) */
+
+  /* Action (amber) alpha aliases */
+  --c-action-14: var(--algo-amber-bg);       /* rgba(251, 191, 36, 0.14) */
+  --c-action-22: var(--algo-amber-bg-strong); /* rgba(251, 191, 36, 0.22) */
 }
 
 /* ── Canonical .algo-modal recipe ─────────────────────────────────────────
