@@ -362,7 +362,7 @@
   {#if !loading && tradeRows.length === 0}
     <EmptyState title="No trades match" hint="Try adjusting the date range or filters." icon="search" />
   {/if}
-  <div class="hist-table-wrap" style:display={!loading && tradeRows.length === 0 ? 'none' : undefined}>
+  <div class="hist-table-wrap algo-grid-chrome" style:display={!loading && tradeRows.length === 0 ? 'none' : undefined}>
     <table class="hist-table">
       <thead>
         <tr>
@@ -423,7 +423,7 @@
   {#if !loading && fundsRows.length === 0}
     <EmptyState title="No funds rows" hint="No data in this date range. Use Pull ledger to backfill Dhan, or wait for the daily capture." icon="chart" />
   {/if}
-  <div class="hist-table-wrap" style:display={!loading && fundsRows.length === 0 ? 'none' : undefined}>
+  <div class="hist-table-wrap algo-grid-chrome" style:display={!loading && fundsRows.length === 0 ? 'none' : undefined}>
     <table class="hist-table">
       <thead>
         <tr>
@@ -520,17 +520,9 @@
   .hist-pill-info       { background: rgba(34, 211, 238, 0.13);  border-color: rgba(34,211,238,0.45); color: #67e8f9; }
   .hist-pill-warn       { background: rgba(251, 191, 36, 0.12);  border-color: rgba(251,191,36,0.4);  color: var(--c-action); }
 
+  /* Chrome delegated to .algo-grid-chrome class on each element. */
   .hist-table-wrap {
     overflow-x: auto;
-    /* Canonical outer chrome — matches .algo-grid-chrome / ag-theme-algo /
-       NavBreakdown so the History tables read as the same visual family.
-       Upgraded from 1px muted border + no shadow to 1.5px slate + navy
-       inset shadow + gradient bg. */
-    border: 1.5px solid rgba(255, 255, 255, 0.10);
-    border-radius: 4px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                inset 0 1px 0 rgba(255, 255, 255, 0.08);
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     margin-bottom: 0.6rem;
   }
   .hist-table {

@@ -2927,42 +2927,6 @@
     margin-bottom: 0.3rem;
   }
 
-  /* ── P&L Analysis collapsible ────────────────────────────────────── */
-  /* Summary bar carries the same card chrome as every other section
-     even when collapsed, so the surface reads as a closed accordion
-     panel — not a hairline. Hover lifts the border to amber as before. */
-  .dash-pnl-summary {
-    display: flex;
-    align-items: center;
-    gap: 0.55rem;
-    cursor: pointer;
-    list-style: none;
-    user-select: none;
-    padding: 0.5rem 0.7rem;
-    border-radius: 6px;
-    border: 1.5px solid rgba(255, 255, 255, 0.10);
-    background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                inset 0 1px 0 rgba(255, 255, 255, 0.08);
-    transition: border-color 0.15s, box-shadow 0.15s;
-  }
-  .dash-pnl-summary::-webkit-details-marker { display: none; }
-  .dash-pnl-summary:hover {
-    border-color: rgba(251, 191, 36, 0.50);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                0 0 0 1px rgba(251, 191, 36, 0.18);
-  }
-  .dash-pnl-toggle {
-    margin-left: auto;
-    color: var(--c-muted);
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    letter-spacing: 0.04em;
-  }
-  .dash-pnl-body {
-    margin-top: 0.4rem;
-  }
-
   /* Demo banner */
   .demo-banner {
     display: flex;

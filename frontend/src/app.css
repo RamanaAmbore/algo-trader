@@ -197,6 +197,13 @@
      declarations across lib/ + routes/ all resolve to this. */
   --card-bg-gradient: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
 
+  /* Elevated card surface — lighter navy gradient used by bucket-card,
+     algo-grid-chrome, mp-bucket-wrap, and any hand-rolled table wrapper
+     that reads as the same visual family as ag-theme-algo. One level
+     brighter than --card-bg-gradient to distinguish interactive card
+     surfaces from inset / nested backgrounds. */
+  --card-bg-elevated: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+
   /* ── Phase 1 semantic aliases — `--c-*` layer (2026-07-02) ──────────────
      Thin semantic aliases over the existing `--algo-*` palette. The
      `--algo-*` family holds the raw hex values and computed alpha
@@ -2017,7 +2024,7 @@
    every card across the workspace now reads as a flat panel. */
 .algo-card {
   background: var(--card-bg-gradient);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1.5px solid rgba(255, 255, 255, 0.10);
   border-radius: 4px;
   padding: 0.55rem 0.7rem;
 }
@@ -2062,7 +2069,7 @@
   width: 100%;
   min-width: 0;
   padding: 0.55rem 0.65rem 0.6rem 0.8rem;
-  background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+  background: var(--card-bg-elevated);
   border: 1.5px solid rgba(255, 255, 255, 0.10);
   border-radius: 6px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
@@ -2105,7 +2112,7 @@
   border-radius: 4px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
               inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
+  background: var(--card-bg-elevated);
 }
 
 /* ── AlgoTabs — canonical tab-strip base shared across all algo pages ── */
