@@ -54,6 +54,69 @@ def _is_exchange_open_at(exchange: str, now_ist: datetime) -> bool:
         return _MCX_OPEN_T <= t <= _MCX_CLOSE_T
     return _NSE_OPEN_T <= t <= _NSE_CLOSE_T
 
+
+def _extract_snapshot_extras(r: dict, ltp_val: float | None,
+                             settled: bool) -> dict:
+    """Extract OHLC + volume + OI + day-change fields from a broker row
+    into a stable, JSONB-serialisable dict. Attached to `payload_json` as
+    a nested `snapshot_extras` block. Consumers (positions.py / holdings.py
+    close-override, movers page, sparkline cache readers) read from this
+    block when `daily_book.payload_json` is available.
+
+    Fields:
+      • open, high, low        — day OHLC (`ohlc` sub-dict on Kite payload)
+      • close_settled          — Kite adjusted close (weighted avg last 30 min)
+      • prev_close             — prior session close (used by frontend
+                                 delta-to-prev display)
+      • volume                 — day volume (int)
+      • oi                     — open interest (F&O; None on equity)
+      • day_change_val         — Kite `day_change` (rupees delta)
+      • day_change_pct         — Kite `day_change_percentage`
+      • ltp                    — last traded price (mirrored here for
+                                 downstream readers that only load the
+                                 payload without walking to `daily_book.ltp`)
+      • settled                — True when produced by close_settled path;
+                                 False for close (or unsettled) capture.
+
+    None-safe — every field is optional. A row builder that doesn't have
+    a value just leaves it None. Downstream readers must tolerate absence.
+    """
+    ohlc = r.get("ohlc") or {}
+
+    def _f(v):
+        try:
+            return float(v) if v is not None else None
+        except Exception:
+            return None
+
+    return {
+        "open":            _f(ohlc.get("open")),
+        "high":            _f(ohlc.get("high")),
+        "low":             _f(ohlc.get("low")),
+        "close_settled":   _f(ohlc.get("close")) if settled else None,
+        "prev_close":      _f(r.get("close_price")),
+        "volume":          (int(r.get("volume")) if r.get("volume") is not None else None),
+        "oi":              (int(r.get("oi"))     if r.get("oi")     is not None else None),
+        "day_change_val":  _f(r.get("day_change")),
+        "day_change_pct":  _f(r.get("day_change_percentage")),
+        "ltp":             _f(ltp_val),
+        "settled":         bool(settled),
+    }
+
+
+def _row_payload_with_extras(r: dict, ltp_val: float | None,
+                             settled: bool) -> str:
+    """Build the `payload_json` string with an embedded `snapshot_extras`
+    block. Returns a JSON-encoded str. Ensures broker's raw row is still
+    the top-level object (backwards compatible with any existing reader
+    that json-loads payload_json and expects Kite-shape keys)."""
+    body = dict(r)
+    try:
+        body["snapshot_extras"] = _extract_snapshot_extras(r, ltp_val, settled)
+    except Exception:
+        pass  # never let payload enrichment fail the snapshot
+    return json.dumps(body, default=str)
+
 # Reuse background.py's executor when called from there; create a local one
 # for the admin endpoint path.
 _local_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ramboq-snap")
@@ -170,6 +233,7 @@ def _is_zero_payload_row(row: dict, ltp: Optional[float], day_pnl: Optional[floa
 
 def _holdings_rows(
     account: str, target_date: date, raw: list[dict], now_ist: datetime,
+    *, settled: bool = False,
 ) -> list[dict]:
     rows = []
     skipped = 0
@@ -213,7 +277,7 @@ def _holdings_rows(
             "ltp":          ltp_val,
             "day_pnl":      day_pnl_v,
             "total_pnl":    total_pnl_v,
-            "payload_json": json.dumps(r, default=str),
+            "payload_json": _row_payload_with_extras(r, ltp_val, settled),
         })
     if skipped:
         logger.warning(
@@ -225,6 +289,7 @@ def _holdings_rows(
 
 def _positions_rows(
     account: str, target_date: date, raw: list[dict], now_ist: datetime,
+    *, settled: bool = False,
 ) -> list[dict]:
     from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl
 
@@ -310,7 +375,7 @@ def _positions_rows(
             "ltp":          ltp_val,
             "day_pnl":      day_pnl,
             "total_pnl":    float(r["pnl"])           if r.get("pnl")           is not None else None,
-            "payload_json": json.dumps(r, default=str),
+            "payload_json": _row_payload_with_extras(r, ltp_val, settled),
         })
     if skipped:
         logger.warning(
@@ -430,10 +495,18 @@ def _get_connections():
     return Connections()
 
 
-async def snapshot_daily_book(target_date: Optional[date] = None) -> dict:
+async def snapshot_daily_book(target_date: Optional[date] = None,
+                              *, settled: bool = False) -> dict:
     """
     Capture every loaded account's holdings + positions + trades for
     target_date (defaults to today IST). Upserts into daily_book.
+
+    ``settled=True`` flags the row payload's ``snapshot_extras.settled``
+    field, which downstream readers (positions.py / holdings.py) use to
+    prefer this row's `ltp` as the authoritative close_price. Set by
+    ``market_lifecycle_handlers._handle_close_settled`` when the
+    ``<exch>:close_settled`` event fires ~15 min after close and the
+    broker has published its adjusted (weighted-avg-last-30-min) close.
 
     Returns:
         {
@@ -480,8 +553,8 @@ async def snapshot_daily_book(target_date: Optional[date] = None) -> dict:
                 _local_executor, _fetch_account_data, broker, account, target_date
             )
 
-            h_rows = _holdings_rows(account,  target_date, raw["holdings"],  now_ist)
-            p_rows = _positions_rows(account, target_date, raw["positions"], now_ist)
+            h_rows = _holdings_rows(account,  target_date, raw["holdings"],  now_ist, settled=settled)
+            p_rows = _positions_rows(account, target_date, raw["positions"], now_ist, settled=settled)
             t_rows = _trades_rows(account,    target_date, raw["trades"])
             f_rows = _funds_rows(account,     target_date, raw["funds"])
 
@@ -531,3 +604,136 @@ async def snapshot_daily_book(target_date: Optional[date] = None) -> dict:
         "funds_rows":     totals["funds_rows"],
         "errors":         errors,
     }
+
+
+# ---------------------------------------------------------------------------
+# Sparkline snapshot — per-symbol closing-bar series for closed-hours reads
+# ---------------------------------------------------------------------------
+
+async def snapshot_sparkline(*, settled: bool = False) -> dict:
+    """Persist the last-N-day close-bar series for the sparkline universe
+    into ``daily_book`` with ``kind='sparkline'``, one row per (account,
+    symbol) using ``account='__firm__'`` as the market-wide sentinel.
+
+    Payload is a JSON blob ``{"points": [{"t": "YYYY-MM-DD", "ltp": <float>},
+    ...], "settled": <bool>, "captured_at": <iso>}``. Ordered oldest → newest.
+
+    Trigger points:
+      • ``<exch>:close`` → first-cut sparkline captured (settled=False).
+      • ``<exch>:close_settled`` → final closing bar appended (settled=True).
+
+    Frontend cell renderer reads this row when ``is_animating === false``
+    (post-close, no live ticks) and draws the sparkline from `points`
+    without touching the live SSE stream.
+
+    Universe: read from ``watchlists`` + ``holdings`` + ``positions``
+    tables via ``_sparkline_universe_symbols`` — matches the operator
+    book (watched + owned) rather than the market-wide mover list.
+    Cap 500 symbols so a single UPSERT stays under a few MB.
+    """
+    now_ist = timestamp_indian()
+    target_date = now_ist.date()  # type: ignore[attr-defined]
+
+    try:
+        universe = await _sparkline_universe_symbols(cap=500)
+    except Exception as e:
+        logger.warning(f"snapshot_sparkline: universe fetch failed: {e}")
+        return {"symbols": 0, "errors": [str(e)]}
+
+    if not universe:
+        return {"symbols": 0, "errors": []}
+
+    # Read close-bar series from ohlcv_store for each symbol (5-day tail).
+    from backend.api.persistence import ohlcv_store as _oh
+    rows: list[dict] = []
+    for (sym, exch) in universe:
+        try:
+            bars = await _oh.get_or_fetch_daily(
+                sym, exch, days=5, db_only=True,
+            )
+        except Exception:
+            bars = None
+        if not bars:
+            continue
+        points = []
+        for b in bars:
+            try:
+                d = b.get("date") if isinstance(b, dict) else None
+                c = b.get("close") if isinstance(b, dict) else None
+                if d is None or c is None:
+                    continue
+                points.append({"t": str(d), "ltp": float(c)})
+            except Exception:
+                continue
+        if not points:
+            continue
+        rows.append({
+            "date":         target_date,
+            "account":      "__firm__",
+            "segment":      "equity" if exch in ("NSE", "BSE") else "derivatives",
+            "kind":         "sparkline",
+            "symbol":       sym,
+            "exchange":     exch,
+            "qty":          0,
+            "avg_cost":     None,
+            "ltp":          points[-1]["ltp"] if points else None,
+            "day_pnl":      None,
+            "total_pnl":    None,
+            "payload_json": json.dumps({
+                "points":      points,
+                "settled":     bool(settled),
+                "captured_at": now_ist.isoformat(),
+            }, default=str),
+        })
+
+    if not rows:
+        return {"symbols": 0, "errors": []}
+
+    written = await _upsert_rows(rows)
+    return {"symbols": written, "errors": []}
+
+
+async def _sparkline_universe_symbols(cap: int = 500) -> list[tuple[str, str]]:
+    """Return de-duplicated list of (tradingsymbol, exchange) for the
+    sparkline snapshot. Reads from watchlists + open holdings + open
+    positions so the persisted sparkline covers the operator book.
+
+    Cheap query — one round-trip per source table with SELECT DISTINCT.
+    """
+    from sqlalchemy import select as sql_select, distinct
+    seen: set[tuple[str, str]] = set()
+
+    try:
+        from backend.api.models import WatchlistItem
+        async with async_session() as s:
+            rows = (await s.execute(
+                sql_select(distinct(
+                    WatchlistItem.tradingsymbol,
+                )).where(WatchlistItem.tradingsymbol.isnot(None))
+            )).all()
+            for (sym,) in rows:
+                if sym:
+                    # Default watchlist to NSE — WatchlistItem doesn't
+                    # store an explicit exchange column.
+                    seen.add((str(sym).upper(), "NSE"))
+    except Exception:
+        pass
+
+    # Holdings + positions — join through daily_book most-recent-row lookup
+    # so we don't require live broker.
+    try:
+        async with async_session() as s:
+            rows = (await s.execute(text("""
+                SELECT DISTINCT symbol, exchange
+                FROM daily_book
+                WHERE kind IN ('positions', 'holdings')
+                  AND date = (SELECT MAX(date) FROM daily_book WHERE kind IN ('positions','holdings'))
+            """))).all()
+            for (sym, exch) in rows:
+                if sym and exch:
+                    seen.add((str(sym).upper(), str(exch).upper()))
+    except Exception:
+        pass
+
+    out = sorted(seen)[:cap]
+    return out

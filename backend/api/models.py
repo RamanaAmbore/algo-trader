@@ -2087,3 +2087,42 @@ class MarketLifecycleEvent(Base):
         Index("ix_lifecycle_fired_at", "fired_at"),
         Index("ix_lifecycle_exch_type_fired", "exchange", "event_type", "fired_at"),
     )
+
+
+class MarketHoliday(Base):
+    """Trading-holiday calendar per exchange, persisted for durable lookup.
+
+    Populated by the daily `_task_holiday_refresh` cron (04:00 IST) which
+    calls `fetch_holidays(exchange)` — that in turn hits the NSE public API
+    (`nseindia.com/api/holiday-master?type=trading`) and normalises the
+    payload into (exchange, date) rows. Idempotent UPSERT on the composite
+    PK; a row disappearing from the NSE payload does NOT auto-delete the
+    stored row (holidays only accrete during a year — a removal would be an
+    exchange-side error and should be operator-reviewed, not silently
+    swallowed).
+
+    Read path (Tier 3 of `fetch_holidays`) queries by `exchange` filtered
+    to the current IST calendar year. On a cold boot with an empty table
+    the code falls back to Tier 4 (direct NSE HTTP fetch) and the cron
+    populates the table on its next run.
+
+    `source` values:
+      • `'nse_auto'`     — populated by the automated cron (default)
+      • `'operator'`     — hand-edited via /admin/settings (future)
+      • `'legacy_seed'`  — imported from `_HOLIDAY_CACHE` on first boot
+    """
+    __tablename__ = "market_holidays"
+
+    exchange: Mapped[str]  = mapped_column(String(10), nullable=False, primary_key=True)
+    date: Mapped[datetime] = mapped_column(Date, nullable=False, primary_key=True)
+    reason: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+    source: Mapped[str]    = mapped_column(String(20), nullable=False, default="nse_auto")
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_market_holidays_exchange_date", "exchange", "date"),
+    )

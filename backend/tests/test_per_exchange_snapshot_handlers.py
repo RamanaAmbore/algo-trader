@@ -176,25 +176,37 @@ async def test_register_default_handlers_idempotent():
 @pytest.mark.asyncio
 async def test_close_then_settled_uses_same_handler():
     """When close fires, then settled fires, the snapshot helper is
-    invoked twice — UPSERT path overwrites on the second call."""
+    invoked twice — UPSERT path overwrites on the second call.
+
+    Also asserts the `settled` kwarg is threaded through — False on the
+    initial close, True on the settled follow-up. Downstream row
+    builders use this to gate `snapshot_extras.close_settled`.
+    """
     from backend.api.algo import market_lifecycle_handlers as mh
 
-    call_count = {"n": 0}
+    calls: list[dict] = []
 
-    async def _fake_snap():
-        call_count["n"] += 1
+    async def _fake_snap(*, settled: bool = False):
+        calls.append({"settled": settled})
         return {
             "accounts": ["ZG0790"], "holdings_rows": 1,
             "positions_rows": 1, "trades_rows": 0, "funds_rows": 1,
         }
 
+    async def _fake_sparkline(*, settled: bool = False):
+        return {"symbols": 0, "errors": []}
+
     with patch("backend.api.algo.daily_snapshot.snapshot_daily_book",
-               side_effect=_fake_snap):
+               side_effect=_fake_snap), \
+         patch("backend.api.algo.daily_snapshot.snapshot_sparkline",
+               side_effect=_fake_sparkline):
         await mh._snapshot_close("nse", "close")
         await mh._snapshot_close("nse", "close_settled")
-    # Two passes — first writes initial close_price, second overwrites
-    # with the broker's settled close_price.
-    assert call_count["n"] == 2
+    # Two passes — first writes initial close_price (settled=False),
+    # second overwrites with the broker's settled close_price (settled=True).
+    assert len(calls) == 2
+    assert calls[0]["settled"] is False
+    assert calls[1]["settled"] is True
 
 
 @pytest.mark.asyncio

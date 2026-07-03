@@ -55,12 +55,22 @@ async def _snapshot_close(exchange: str, event_type: str) -> None:
     not exchange. The 23:35 IST follow-up scheduled snapshot keeps
     running for MCX EOD parity; this hook is the event-driven path that
     fires the instant a session boundary is crossed.
+
+    ``settled`` flag: True when this fire came from ``<exch>:close_settled``
+    (~15 min after close). Plumbs through ``snapshot_daily_book`` into the
+    row's ``payload_json.snapshot_extras.settled`` so downstream readers
+    can prefer settled-close rows over the initial close capture.
+
+    Also fires a sparkline snapshot on the same event so the frontend's
+    tick-flash / animation gate has a durable 5-day close-bar series.
     """
     try:
         from backend.api.algo.daily_snapshot import snapshot_daily_book
-        result = await snapshot_daily_book()
+        settled = (event_type == "close_settled")
+        result = await snapshot_daily_book(settled=settled)
         logger.info(
-            f"market_lifecycle[{exchange}:{event_type}] daily_book snapshot — "
+            f"market_lifecycle[{exchange}:{event_type}] daily_book snapshot "
+            f"settled={settled} — "
             f"accounts={result.get('accounts')} "
             f"h={result.get('holdings_rows')} "
             f"p={result.get('positions_rows')} "
@@ -71,6 +81,22 @@ async def _snapshot_close(exchange: str, event_type: str) -> None:
         logger.warning(
             f"market_lifecycle[{exchange}:{event_type}] "
             f"snapshot_daily_book failed: {e}"
+        )
+
+    # Sparkline snapshot — persist per-symbol closing-bar series for
+    # frontend cell renderer's non-animating path. Idempotent.
+    try:
+        from backend.api.algo.daily_snapshot import snapshot_sparkline
+        settled = (event_type == "close_settled")
+        result = await snapshot_sparkline(settled=settled)
+        logger.info(
+            f"market_lifecycle[{exchange}:{event_type}] sparkline snapshot "
+            f"settled={settled} — symbols={result.get('symbols', 0)}"
+        )
+    except Exception as e:
+        logger.warning(
+            f"market_lifecycle[{exchange}:{event_type}] "
+            f"sparkline snapshot failed: {e}"
         )
 
 

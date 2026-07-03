@@ -308,34 +308,42 @@ async def test_close_transition_fires_event(
 
 
 @pytest.mark.asyncio
-async def test_close_settled_fires_45min_after_close(
+async def test_close_settled_fires_after_settled_offset(
     lifecycle, stub_segments, stub_holidays, freeze_audit, freeze_now,
 ):
-    """close_settled fires exactly 45 min after the close."""
+    """close_settled fires exactly `_settled_offset_minutes()` after
+    close. Default is 15 min (post-operator update Jul 2026); the test
+    pins the offset to a known value so it's independent of the default.
+    """
     from backend.api.algo import market_lifecycle as ml_mod
-    # Seed open.
-    ml_mod._test_state_fn = lambda exch, now: True
-    await lifecycle.poll()
+    # Pin the offset to 15 min for a deterministic test — the settings
+    # layer default is also 15 min but a future settings change should
+    # not silently move this test.
+    from unittest.mock import patch as _patch
+    with _patch.object(ml_mod, "_settled_offset_minutes", lambda: 15):
+        # Seed open.
+        ml_mod._test_state_fn = lambda exch, now: True
+        await lifecycle.poll()
 
-    # Close at frozen time.
-    ml_mod._test_state_fn = lambda exch, now: False
-    settled_called = []
-    async def cb(e, t): settled_called.append((e, t))
-    lifecycle.register("nse:close_settled", cb)
+        # Close at frozen time.
+        ml_mod._test_state_fn = lambda exch, now: False
+        settled_called = []
+        async def cb(e, t): settled_called.append((e, t))
+        lifecycle.register("nse:close_settled", cb)
 
-    await lifecycle.poll()  # fires close
-    assert settled_called == []
+        await lifecycle.poll()  # fires close
+        assert settled_called == []
 
-    # Advance 30 min — not yet.
-    freeze_now["now"] = freeze_now["now"] + timedelta(minutes=30)
-    await lifecycle.poll()
-    assert settled_called == [], "settled fired too early"
+        # Advance 10 min — not yet.
+        freeze_now["now"] = freeze_now["now"] + timedelta(minutes=10)
+        await lifecycle.poll()
+        assert settled_called == [], "settled fired too early"
 
-    # Advance to 46 min total — should fire.
-    freeze_now["now"] = freeze_now["now"] + timedelta(minutes=16)
-    res = await lifecycle.poll()
-    assert ("nse", "close_settled") in settled_called
-    assert any(e["event_type"] == "close_settled" for e in res["events"])
+        # Advance to 16 min total — should fire.
+        freeze_now["now"] = freeze_now["now"] + timedelta(minutes=6)
+        res = await lifecycle.poll()
+        assert ("nse", "close_settled") in settled_called
+        assert any(e["event_type"] == "close_settled" for e in res["events"])
 
 
 @pytest.mark.asyncio
