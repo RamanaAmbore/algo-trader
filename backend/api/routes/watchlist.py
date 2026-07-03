@@ -547,8 +547,9 @@ async def _resolve_mcx_commodity(commodity_name: str) -> Optional[str]:
     future tradingsymbol.
 
     Delegates to the canonical resolver in ``symbol_resolver.py``.
-    Falls back to the most-recently listed contract on instruments-cache
-    lag (so the caller gets a non-None symbol rather than a silent row drop).
+    Falls back to the most-recently listed (highest expiry) contract on
+    instruments-cache lag (so the caller gets a non-None symbol rather than
+    a silent row drop).
     """
     from backend.api.algo.symbol_resolver import (
         list_active_futures, _list_all_futures_fallback,
@@ -556,9 +557,10 @@ async def _resolve_mcx_commodity(commodity_name: str) -> Optional[str]:
     futures = await list_active_futures(commodity_name, "MCX", limit=1)
     if futures:
         return futures[0]
-    # Cache lag: include expiring-today contracts as last resort
-    fallback = await _list_all_futures_fallback(commodity_name, "MCX", limit=1)
-    return fallback[0] if fallback else None
+    # Cache lag: fetch all listed contracts (including expiring-today) and
+    # return the LAST one (highest expiry) — same semantic as original logic.
+    fallback = await _list_all_futures_fallback(commodity_name, "MCX", limit=100)
+    return fallback[-1] if fallback else None
 
 
 async def _resolve_cds_currency(currency_name: str) -> Optional[str]:
@@ -574,8 +576,8 @@ async def _resolve_cds_currency(currency_name: str) -> Optional[str]:
     futures = await list_active_futures(currency_name, "CDS", limit=1)
     if futures:
         return futures[0]
-    fallback = await _list_all_futures_fallback(currency_name, "CDS", limit=1)
-    return fallback[0] if fallback else None
+    fallback = await _list_all_futures_fallback(currency_name, "CDS", limit=100)
+    return fallback[-1] if fallback else None
 
 
 async def _build_quote_key(item: WatchlistItem) -> tuple[str, str]:
