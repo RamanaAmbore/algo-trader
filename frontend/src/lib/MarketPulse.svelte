@@ -3092,11 +3092,18 @@
         row.account_stale = true;
         if (r.account_stale_since) row.account_stale_since = r.account_stale_since;
       }
-      // Per-exchange close-snapshot lifecycle (Jul 2026): any contributing
-      // leg with ltp_source==='snapshot' tags the whole unified row.
-      // Frontend cell renderer surfaces a "SNAP" chip on the LTP cell
-      // + freezes tick-flash. See PositionRow.ltp_source in schemas.py.
-      if (r.ltp_source === 'snapshot') row.ltp_source = 'snapshot';
+      // Per-exchange close-snapshot lifecycle (Jul 2026, unified
+      // animation model): any contributing leg tagged as snapshot
+      // (either legacy `ltp_source` or new `price_source`) tags the
+      // whole unified row so the frontend cell renderer surfaces the
+      // SNAP chip + freezes tick-flash. Also propagate `is_animating`
+      // — a single non-animating leg freezes the merged row.
+      const _rpsPos = r.price_source ?? r.ltp_source;
+      if (_rpsPos && _rpsPos !== 'live') {
+        row.price_source = row.price_source && row.price_source !== 'live'
+          ? row.price_source : _rpsPos;
+      }
+      if (r.is_animating === false) row.is_animating = false;
       fill(row, sym);
     }
 
@@ -3194,8 +3201,14 @@
         row.account_stale = true;
         if (r.account_stale_since) row.account_stale_since = r.account_stale_since;
       }
-      // Per-exchange close-snapshot lifecycle (Jul 2026): see positions branch above.
-      if (r.ltp_source === 'snapshot') row.ltp_source = 'snapshot';
+      // Per-exchange close-snapshot lifecycle (Jul 2026 unified model):
+      // see positions branch above for the merge semantics.
+      const _rpsHold = r.price_source ?? r.ltp_source;
+      if (_rpsHold && _rpsHold !== 'live') {
+        row.price_source = row.price_source && row.price_source !== 'live'
+          ? row.price_source : _rpsHold;
+      }
+      if (r.is_animating === false) row.is_animating = false;
       fill(row, sym);
     }
 
