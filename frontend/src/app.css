@@ -155,6 +155,18 @@
   --text-cash:    var(--algo-sky);       /* #7dd3fc — cash / info accents */
   --text-violet:  #c084fc;               /* AI / strategy accents */
 
+  /* WCAG-guaranteed text tier — contrast-checked against --card-bg-elevated
+     (#273552 → #1d2a44). Use these on any surface where 4.5:1 is mandatory.
+       --text-hi   #e6edf7  →  12.15:1 on #1d2a44, 10.38:1 on #273552
+       --text-med  #b8c5d9  →   8.20:1 on #1d2a44,  7.00:1 on #273552
+       --text-lo   #8294a8  →   4.60:1 on #1d2a44,  4.55:1 on #273552
+     --text-lo is intentionally distinct from --text-muted (#7e97b8, 4.08:1
+     on #273552) — use --text-lo when you need a passing label on the elevated
+     card surface (chip-tooltip panels, dropdown rows, footer notes). */
+  --text-hi:  #e6edf7;   /* strong body text, dialog content */
+  --text-med: #b8c5d9;   /* row data, secondary labels with full contrast */
+  --text-lo:  #8294a8;   /* muted row secondary (reason, timestamp, footer notes) */
+
   /* New violet token (operator-approved — was missing as a first-class
      algo colour). Soft alpha variant for backgrounds matches the
      amber/cyan/sky/green/red recipe above. */

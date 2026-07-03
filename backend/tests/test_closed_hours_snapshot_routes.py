@@ -424,40 +424,70 @@ def test_all_exchanges_closed_when_one_open():
 
 
 # ---------------------------------------------------------------------------
-# Dimension 5a — batch_quote: closed → LKG LTP, broker NOT called
+# Dimension 5a — batch_quote: closed → LKG LTP, broker at most once (cold warm)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_batch_quote_closed_returns_lkg_no_broker():
-    """batch_quote returns LKG LTPs without broker.quote() when market is closed."""
-    from backend.api.routes.quote import QuoteController, BatchQuoteRequest
+    """batch_quote returns LKG LTPs during closed hours.
 
-    mock_broker_quote = MagicMock()
+    Post 2026-07-03 hardening: the closed-hours branch fires ONE broker.quote()
+    per (IST day, key-set signature) as a cold-start warm so open/close/volume/oi
+    are hydrated into the LKG cache when the process restarts during closed
+    hours.  Steady-state (warm cache) subsequent calls still make zero broker
+    calls.  This test verifies:
+      (a) Response carries LKG LTP + stale=True.
+      (b) The SECOND call for the same key-set makes zero additional broker
+          calls (steady-state guarantee).
+    """
+    from backend.api.routes.quote import (
+        QuoteController, BatchQuoteRequest, _closed_hours_warm_signatures,
+    )
+
+    # Reset the warm-signature dedup so the test is deterministic across runs.
+    _closed_hours_warm_signatures.clear()
+
+    mock_broker_quote = MagicMock(return_value={})  # empty response, warm still fires
 
     with patch("backend.api.routes.quote._all_exchanges_closed", return_value=True), \
          patch(
              "backend.brokers.broker_apis.get_last_good_ltp",
              side_effect=lambda sym, max_age_s=3600.0: 1234.5 if sym == "RELIANCE" else 0.0,
          ), \
+         patch(
+             "backend.brokers.broker_apis.get_last_good_quote",
+             return_value=None,  # cold cache — snapshot fields will be null
+         ), \
          patch("backend.brokers.registry.get_price_broker") as mock_registry:
         mock_registry.return_value.quote = mock_broker_quote
 
         handler_fn = QuoteController.batch_quote.fn
         req = BatchQuoteRequest(keys=["NSE:RELIANCE", "NSE:INFY"])
+        # First call: cold cache — expect ONE broker.quote() for the warm.
         resp = await handler_fn(None, req)
 
-    assert resp.as_of is not None, "as_of must be set for closed-hours batch_quote"
-    assert len(resp.items) == 2
-    # Find RELIANCE row
-    rel_row = next((r for r in resp.items if r.tradingsymbol == "RELIANCE"), None)
-    assert rel_row is not None
-    assert rel_row.ltp == 1234.5
-    assert rel_row.stale is True  # explicitly marked stale during closed hours
-    # Broker quote was never called
-    assert mock_broker_quote.call_count == 0, (
-        f"broker.quote() called {mock_broker_quote.call_count} times — "
-        "should be 0 during closed hours"
-    )
+        assert resp.as_of is not None, "as_of must be set for closed-hours batch_quote"
+        assert len(resp.items) == 2
+        # Find RELIANCE row
+        rel_row = next((r for r in resp.items if r.tradingsymbol == "RELIANCE"), None)
+        assert rel_row is not None
+        assert rel_row.ltp == 1234.5
+        assert rel_row.stale is True  # explicitly marked stale during closed hours
+
+        # First-call cold warm: exactly ONE broker.quote() (per key-set signature).
+        first_call_count = mock_broker_quote.call_count
+        assert first_call_count == 1, (
+            f"cold-start warm should call broker.quote() exactly once; "
+            f"got {first_call_count}"
+        )
+
+        # Second identical call: warm-signature dedup must skip the broker.
+        resp2 = await handler_fn(None, req)
+        assert mock_broker_quote.call_count == first_call_count, (
+            f"second call for same key-set should make ZERO additional broker "
+            f"calls; total went {first_call_count} → {mock_broker_quote.call_count}"
+        )
+        assert len(resp2.items) == 2
 
 
 # ---------------------------------------------------------------------------
