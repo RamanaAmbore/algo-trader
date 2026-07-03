@@ -18,12 +18,12 @@
   // ── Kind → color mapping ──────────────────────────────────────────────
   const KIND_COLOR = {
     placed:           '#38bdf8',   // sky
-    chase_modify:     '#fbbf24',   // amber
-    fill:             '#4ade80',   // emerald
-    unfill:           '#f87171',   // red
-    reject:           '#f87171',   // red
+    chase_modify:     'var(--c-action)',   // amber
+    fill:             'var(--c-long)',   // emerald
+    unfill:           'var(--c-short)',   // red
+    reject:           'var(--c-short)',   // red
     preflight_ok:     '#6b7280',   // grey
-    preflight_block:  '#f87171',   // red
+    preflight_block:  'var(--c-short)',   // red
     cancel:           '#94a3b8',   // slate
     postback:         '#a78bfa',   // violet
   };
@@ -231,7 +231,7 @@
     font-family: var(--font-numeric);
     font-size: var(--fs-lg);
     font-weight: 700;
-    color: #fbbf24;
+    color: var(--c-action);
     letter-spacing: 0.06em;
     text-transform: uppercase;
   }
@@ -247,7 +247,7 @@
     transition: color 0.08s;
     outline: none;
   }
-  .otd-close:hover { color: #f87171; }
+  .otd-close:hover { color: var(--c-short); }
 
   /* Scrollable body */
   .otd-body {
@@ -359,12 +359,12 @@
   }
 
   /* Side colors — matches ChaseCard .cc-side-buy / .cc-side-sell */
-  .otd-side-buy  { color: var(--algo-green, #4ade80); }
-  .otd-side-sell { color: var(--algo-red,   #f87171); }
+  .otd-side-buy  { color: var(--algo-green, var(--c-long)); }
+  .otd-side-sell { color: var(--algo-red,   var(--c-short)); }
 
   /* Mode pill colors — matches LogPanel + CLAUDE.md palette */
-  .otd-mode-sim     { color: #fbbf24; background: rgba(251,191,36,0.15);  border-color: #fbbf24; }
+  .otd-mode-sim     { color: var(--c-action); background: rgba(251,191,36,0.15);  border-color: var(--c-action); }
   .otd-mode-paper   { color: #38bdf8; background: rgba(56,189,248,0.15);  border-color: #38bdf8; }
-  .otd-mode-live    { color: #4ade80; background: rgba(74,222,128,0.15);  border-color: #4ade80; }
+  .otd-mode-live    { color: var(--c-long); background: rgba(74,222,128,0.15);  border-color: var(--c-long); }
   .otd-mode-unknown { color: #94a3b8; background: rgba(148,163,184,0.15); border-color: #94a3b8; }
 </style>

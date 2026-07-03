@@ -432,7 +432,7 @@
     appearance: none;
     background: transparent;
     border: none;
-    color: #fbbf24;
+    color: var(--c-action);
     font-family: var(--font-numeric);
     font-size: var(--fs-xl);
     font-weight: 700;
@@ -462,20 +462,20 @@
   }
 
   .sim-banner        { padding: 0.5rem 0.75rem; border-radius: 0.375rem; font-size: var(--fs-lg); margin-bottom: 0.75rem; }
-  .sim-banner-warn   { background: rgba(251,191,36,0.10); color: #fbbf24; border: 1px solid rgba(251,191,36,0.20); }
-  .sim-banner-error  { background: rgba(248,113,113,0.10); color: #f87171; border: 1px solid rgba(248,113,113,0.20); }
+  .sim-banner-warn   { background: rgba(251,191,36,0.10); color: var(--c-action); border: 1px solid rgba(251,191,36,0.20); }
+  .sim-banner-error  { background: var(--c-short-10); color: var(--c-short); border: 1px solid rgba(248,113,113,0.20); }
 
   .sim-btn           { padding: 0.4rem 1rem; border-radius: 0.375rem; font-size: var(--fs-lg); font-weight: 600;
                         cursor: pointer; border: 1px solid transparent; transition: all 0.15s; }
   .sim-btn:disabled  { opacity: 0.4; cursor: not-allowed; }
-  .sim-btn-start     { background: rgba(74,222,128,0.15); color: #4ade80; border-color: rgba(74,222,128,0.3); }
+  .sim-btn-start     { background: rgba(74,222,128,0.15); color: var(--c-long); border-color: rgba(74,222,128,0.3); }
   .sim-btn-start:hover:not(:disabled) { background: rgba(74,222,128,0.25); }
-  .sim-btn-stop      { background: rgba(248,113,113,0.15); color: #f87171; border-color: rgba(248,113,113,0.3); }
+  .sim-btn-stop      { background: rgba(248,113,113,0.15); color: var(--c-short); border-color: rgba(248,113,113,0.3); }
   .sim-btn-clear     { background: rgba(148,163,184,0.10); color: #94a3b8; border-color: rgba(148,163,184,0.2); }
 
   .sim-progress      { margin-bottom: 0; }
   .sim-progress-bar  { height: 6px; background: rgba(148,163,184,0.15); border-radius: 3px; overflow: hidden; }
-  .sim-progress-fill { height: 100%; background: #4ade80; border-radius: 3px; transition: width 0.3s; }
+  .sim-progress-fill { height: 100%; background: var(--c-long); border-radius: 3px; transition: width 0.3s; }
   .sim-progress-label { font-size: var(--fs-md); color: #94a3b8; margin-top: 0.25rem; display: block; }
 
   .replay-charts {
@@ -495,7 +495,7 @@
   .sim-buy           { color: #38bdf8; }
   .sim-sell          { color: #fb923c; }
   .sim-pill          { font-size: var(--fs-sm); font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 9999px; }
-  .sim-pill-replay   { color: #4ade80; background: rgba(74,222,128,0.12); }
+  .sim-pill-replay   { color: var(--c-long); background: rgba(74,222,128,0.12); }
   .sim-empty-charts  { font-size: var(--fs-md); color: #64748b; font-style: italic; margin-bottom: 0.75rem; }
 
   @media (max-width: 768px) {

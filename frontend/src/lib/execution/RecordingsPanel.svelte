@@ -296,7 +296,7 @@
     color: rgba(200,216,240,0.92);
   }
   .rec-paused {
-    color: #fbbf24;
+    color: var(--c-action);
     font-weight: 700;
     letter-spacing: 0.05em;
   }
@@ -336,8 +336,8 @@
     color: #d8b4fe;
   }
   .rec-btn-danger {
-    color: #f87171;
-    background: rgba(248,113,113,0.10);
+    color: var(--c-short);
+    background: var(--c-short-10);
     border-color: rgba(248,113,113,0.45);
   }
   .rec-btn-danger:hover {
@@ -416,14 +416,14 @@
   }
   .rec-row-del:hover {
     color: #fca5a5;
-    background: rgba(248,113,113,0.10);
+    background: var(--c-short-10);
   }
 
   .rec-err {
     font-size: var(--fs-sm);
     color: #fca5a5;
     padding: 0.3rem 0.5rem;
-    background: rgba(248,113,113,0.10);
+    background: var(--c-short-10);
     border: 1px solid rgba(248,113,113,0.30);
     border-radius: 3px;
   }

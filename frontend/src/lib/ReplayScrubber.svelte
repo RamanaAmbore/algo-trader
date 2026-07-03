@@ -128,12 +128,12 @@
   .rs-mode-live {
     background: rgba(74,222,128,0.15);
     border: 1px solid rgba(74,222,128,0.45);
-    color: #4ade80;
+    color: var(--c-long);
   }
   .rs-mode-scrub {
     background: rgba(251,191,36,0.15);
     border: 1px solid rgba(251,191,36,0.45);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .rs-pos {
     color: var(--algo-muted);
@@ -163,13 +163,13 @@
   }
   .rs-btn:hover:not(:disabled) {
     border-color: rgba(251,191,36,0.6);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .rs-btn:disabled { opacity: 0.35; cursor: not-allowed; }
   .rs-btn-live.on {
-    border-color: #4ade80;
-    color: #4ade80;
-    background: rgba(74,222,128,0.10);
+    border-color: var(--c-long);
+    color: var(--c-long);
+    background: var(--c-long-10);
   }
   .rs-slider {
     width: 100%;

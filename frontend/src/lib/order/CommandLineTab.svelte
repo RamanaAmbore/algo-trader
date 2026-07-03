@@ -498,13 +498,13 @@
     background: rgba(251, 191, 36, 0.06);
     border-color: rgba(251, 191, 36, 0.25);
   }
-  .clt-chip-margin .clt-chip-label { color: #fbbf24; }
+  .clt-chip-margin .clt-chip-label { color: var(--c-action); }
   .clt-chip-ok      { border-color: rgba(74, 222, 128, 0.45); }
-  .clt-chip-ok .clt-chip-val      { color: #4ade80; }
+  .clt-chip-ok .clt-chip-val      { color: var(--c-long); }
   .clt-chip-warn    { border-color: var(--algo-amber-border); }
-  .clt-chip-warn .clt-chip-val    { color: #fbbf24; }
+  .clt-chip-warn .clt-chip-val    { color: var(--c-action); }
   .clt-chip-err     { border-color: var(--algo-red-border); background: var(--algo-red-bg-soft); }
-  .clt-chip-err .clt-chip-val     { color: #f87171; }
+  .clt-chip-err .clt-chip-val     { color: var(--c-short); }
   .clt-chip-loading .clt-chip-val { color: #94a3b8; }
 
   /* Compact clear button — replaces the wider "Clear" text button.
@@ -533,14 +533,14 @@
 
   /* + Basket button — green outline matching the basket palette. */
   :global(.sim-btn-basket) {
-    background: rgba(74,222,128,0.10);
-    color: #4ade80;
+    background: var(--c-long-10);
+    color: var(--c-long);
     border-color: rgba(74,222,128,0.55);
     font-weight: 700;
   }
   :global(.sim-btn-basket:hover:not(:disabled)) {
     background: rgba(74,222,128,0.20);
-    border-color: #4ade80;
+    border-color: var(--c-long);
   }
 
   .clt-history {
@@ -568,7 +568,7 @@
     font-family: monospace;
     font-size: var(--fs-md);
     font-weight: 600;
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .clt-result {
     font-family: monospace;

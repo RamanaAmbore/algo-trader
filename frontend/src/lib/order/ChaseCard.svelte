@@ -335,19 +335,19 @@
     border-radius: 8px;
     background: rgba(248, 113, 113, 0.18);
     border: 1px solid rgba(248, 113, 113, 0.45);
-    color: #f87171;
+    color: var(--c-short);
     font-size: var(--fs-xs);
     font-weight: 800;
     font-variant-numeric: tabular-nums;
   }
   .cc-spacer { flex: 1 1 0; }
   .cc-err {
-    color: #f87171;
+    color: var(--c-short);
     font-size: var(--fs-xs);
     font-family: monospace;
   }
   .cc-reconcile-msg {
-    color: #4ade80;
+    color: var(--c-long);
     font-size: var(--fs-xs);
     font-family: monospace;
   }
@@ -448,8 +448,8 @@
     font-size: var(--fs-xs);
     font-weight: 600;
   }
-  .cc-side-buy  { color: #4ade80; font-weight: 700; }
-  .cc-side-sell { color: #f87171; font-weight: 700; }
+  .cc-side-buy  { color: var(--c-long); font-weight: 700; }
+  .cc-side-sell { color: var(--c-short); font-weight: 700; }
   .cc-mode {
     font-size: var(--fs-2xs);
     font-weight: 800;
@@ -458,9 +458,9 @@
     text-align: center;
     border: 1px solid currentColor;
   }
-  .cc-mode-live   { color: #4ade80; }
+  .cc-mode-live   { color: var(--c-long); }
   .cc-mode-paper  { color: #7dd3fc; }
-  .cc-mode-shadow { color: #fbbf24; }
+  .cc-mode-shadow { color: var(--c-action); }
   .cc-col-actions { text-align: right; }
   .cc-kill {
     padding: 0.18rem 0.5rem;
@@ -477,7 +477,7 @@
   }
   .cc-kill:hover:not(:disabled) {
     background: rgba(248, 113, 113, 0.12);
-    color: #f87171;
+    color: var(--c-short);
   }
   .cc-kill:disabled { opacity: 0.45; cursor: progress; }
 </style>

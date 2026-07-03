@@ -177,7 +177,7 @@
     opacity: 0.7;
   }
   .ot-depth-ltp {
-    color: var(--algo-amber, #fbbf24);
+    color: var(--algo-amber, var(--c-action));
     font-weight: 700;
     font-size: var(--fs-sm);
     text-transform: none;
@@ -216,8 +216,8 @@
     text-align: right;
     color: var(--algo-slate);
   }
-  .ot-depth-bid     { color: var(--algo-green, #4ade80); }
-  .ot-depth-bid-qty { color: var(--algo-green, #4ade80); opacity: 0.7; }
-  .ot-depth-ask     { color: var(--algo-red, #f87171); }
-  .ot-depth-ask-qty { color: var(--algo-red, #f87171); opacity: 0.7; }
+  .ot-depth-bid     { color: var(--algo-green, var(--c-long)); }
+  .ot-depth-bid-qty { color: var(--algo-green, var(--c-long)); opacity: 0.7; }
+  .ot-depth-ask     { color: var(--algo-red, var(--c-short)); }
+  .ot-depth-ask-qty { color: var(--algo-red, var(--c-short)); opacity: 0.7; }
 </style>

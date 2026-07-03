@@ -316,22 +316,22 @@
   :global(.log-chip-slip) { color: #94a3b8; }
 
   /* Tag colour-coding — manual ticket = sky-blue, agent-fired = amber. */
-  :global(.tag-manual)       { color: #67e8f9; background: rgba(34, 211, 238, 0.14); }
-  :global(.tag-agent)        { color: #fbbf24; background: rgba(251, 191, 36, 0.10); }
+  :global(.tag-manual)       { color: #67e8f9; background: var(--c-info-14); }
+  :global(.tag-agent)        { color: var(--c-action); background: rgba(251, 191, 36, 0.10); }
   /* TP / parent / basket linkage chips */
-  :global(.log-chip-tp)      { color: #4ade80; background: var(--algo-green-bg); }
+  :global(.log-chip-tp)      { color: var(--c-long); background: var(--algo-green-bg); }
   :global(.log-chip-template) { color: #c084fc; background: rgba(192, 132, 252, 0.12); }
   :global(.log-chip-parent)  { color: #7dd3fc; background: rgba(125, 211, 252, 0.10); }
   :global(.log-chip-child)   { color: #c084fc; background: rgba(192, 132, 252, 0.12); }
-  :global(.log-chip-basket)  { color: #fbbf24; background: rgba(251, 191, 36, 0.10); }
+  :global(.log-chip-basket)  { color: var(--c-action); background: rgba(251, 191, 36, 0.10); }
 
   /* Re-attach button — same chip shape as the rest of the row so it
      visually slots in next to the template chip. Cyan-400 (cyan)
      palette since it's an active action (vs purple's "informational"
      template chip). Disabled while in-flight. */
   :global(.log-chip-retry-attach) {
-    color: #22d3ee;
-    background: rgba(34, 211, 238, 0.14);
+    color: var(--c-info);
+    background: var(--c-info-14);
     border: 1px solid rgba(34, 211, 238, 0.45);
     cursor: pointer;
   }
