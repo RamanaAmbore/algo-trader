@@ -628,12 +628,20 @@ async def _task_performance(state: dict) -> None:
             # (F&O positions, held equities) which changes intraday.
             # subscribe() is idempotent — re-subscribing known tokens is a
             # no-op. We never unsubscribe stale symbols (Phase 2 simplicity).
+            #
+            # Backstop: when an account's circuit-breaker is open (e.g.
+            # Dhan auth failure), its DataFrame is empty.  Union the live
+            # pairs with the last-known symbols from daily_book so Kite
+            # ticker subscriptions are maintained across breaker-open
+            # periods.  _snapshot_book_symbols() is DB-backed and survives
+            # conn_service restart + any unhealthy broker account.
             try:
                 from backend.brokers.kite_ticker import get_ticker as _get_ticker
                 from backend.api.routes.quote import _resolve_token_for_sym as _rts
                 _ticker = _get_ticker()
                 # Collect tradingsymbol+exchange pairs from both DataFrames.
                 _book_pairs: list[tuple[str, str]] = []
+                _book_seen: set[tuple[str, str]] = set()
                 for _df, _default_exch in (
                     (df_holdings, "NSE"),
                     (df_positions, "NFO"),
@@ -643,7 +651,19 @@ async def _task_performance(state: dict) -> None:
                             _sym  = str(getattr(_row, "tradingsymbol", None) or "").strip().upper()
                             _exch = str(getattr(_row, "exchange", None) or _default_exch).strip().upper()
                             if _sym:
-                                _book_pairs.append((_sym, _exch))
+                                _k = (_sym, _exch)
+                                if _k not in _book_seen:
+                                    _book_seen.add(_k)
+                                    _book_pairs.append(_k)
+                # Backstop: union daily_book snapshot for breaker-open accounts.
+                try:
+                    _snap = await _snapshot_book_symbols(days=7)
+                    for _k in _snap:
+                        if _k not in _book_seen:
+                            _book_seen.add(_k)
+                            _book_pairs.append(_k)
+                except Exception as _se:
+                    logger.debug(f"Background: snapshot book symbols skipped in perf: {_se}")
                 # Resolve tokens for symbols not yet in the ticker.
                 # Batch into one exchange→instruments call per unique exchange.
                 _need_resolve = [
