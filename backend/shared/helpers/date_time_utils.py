@@ -188,29 +188,85 @@ def is_trading_day(d, holiday_set: set | None = None,
 
 def is_market_open(now, holiday_set: set, market_start: dtime = dtime(9, 15),
                    market_end: dtime = dtime(15, 30),
-                   exchange: str | None = None) -> bool:
+                   exchange: str | None = None,
+                   *,
+                   sessions: list | None = None,
+                   evening_open_on_holidays: bool = False) -> bool:
     """
     Returns True if the market is currently open.
+
+    Two calling conventions — both supported so pre-existing callsites
+    keep working while new code can pass a full session list:
+
+    Legacy (positional): ``is_market_open(now, holidays, start, end, exchange)``
+      A single session window is inferred from ``market_start`` and
+      ``market_end``. This is the shape used by every callsite prior to
+      the multi-session change; kept indefinitely so downstream code
+      does not need to churn.
+
+    Multi-session (keyword): ``is_market_open(now, holidays,
+                                              sessions=[{start,end}, ...],
+                                              evening_open_on_holidays=True)``
+      When ``sessions`` is provided it overrides ``market_start`` /
+      ``market_end``. The segment is treated as open if ``now`` falls in
+      ANY session window.
+
+    Holiday handling:
+      • Non-holiday date → run standard clock + calendar path.
+      • Holiday date + ``evening_open_on_holidays=True`` → the calendar
+        is treated as "closed" for the daytime portion, but ``now.time()
+        >= 17:00`` re-opens the evening portion (models the MCX evening
+        session on days flagged as commodity holidays). Kept explicit
+        rather than deferred to the live-quote probe so unit tests can
+        reason about it deterministically.
+      • Holiday date + ``evening_open_on_holidays=False`` → closed.
+
+    The live-quote probe (``probe_market_active``) still fires for
+    calendar-closed dates inside the published window via
+    ``is_trading_day`` — that catches Muhurat / special sessions that
+    the calendar doesn't know about. The explicit
+    ``evening_open_on_holidays`` rule short-circuits BEFORE the probe.
+
     - now: timezone-aware datetime in IST
     - holiday_set: set of date objects from fetch_holidays(exchange)
-    - exchange (optional): when passed, the gate consults a live
-      Kite-quote probe (market_probe.probe_market_active) on calendar-
-      closed days so MCX evening sessions and Muhurat are caught
-      without an operator override.
-
-    Cheapest-first ordering: clock → calendar → probe. Outside the
-    exchange's published session window the function returns False
-    in nanoseconds without touching holidays or probes; inside the
-    window on a weekday non-holiday it returns True via the calendar
-    fast-path; the probe only fires on calendar-closed dates inside
-    the session window.
+    - exchange (optional): forwarded to ``is_trading_day`` so the probe
+      layer can identify which exchange to poll.
     """
-    # ① Clock — outside published hours, definitely closed.
     t = now.time().replace(second=0, microsecond=0)
-    if not (market_start <= t <= market_end):
+
+    # Resolve session windows — sessions list wins when provided.
+    if sessions:
+        windows: list[tuple[dtime, dtime]] = []
+        for s in sessions:
+            try:
+                sh, sm = (int(x) for x in str(s.get("start", "09:15")).split(":", 1))
+                eh, em = (int(x) for x in str(s.get("end",   "15:30")).split(":", 1))
+                windows.append((dtime(sh, sm), dtime(eh, em)))
+            except Exception:
+                continue
+        if not windows:
+            windows = [(market_start, market_end)]
+    else:
+        windows = [(market_start, market_end)]
+
+    # ① Clock — must be inside AT LEAST ONE window. If not, definitely closed.
+    in_window = any(w_start <= t <= w_end for (w_start, w_end) in windows)
+
+    # ② Calendar — a holiday date can still be "open" when
+    #    evening_open_on_holidays=True AND clock >= 17:00. Handle that first
+    #    so we don't spuriously call the probe on MCX evening-open holidays.
+    today = now.date()
+    if today in holiday_set:
+        if evening_open_on_holidays and t >= dtime(17, 0):
+            # Also require the clock to be in a published session window.
+            return in_window
         return False
-    # ② Calendar + probe (probe gated to in-window only).
-    return is_trading_day(now.date(), holiday_set,
+
+    if not in_window:
+        return False
+
+    # ③ Non-holiday, in-window — standard calendar + probe check.
+    return is_trading_day(today, holiday_set,
                           exchange=exchange, now=now)
 
 
@@ -243,16 +299,23 @@ def is_any_segment_open(now) -> bool:
     segments = _cfg.get("market_segments", {}) or {}
     for seg_name, seg_cfg in segments.items():
         try:
-            h_s, m_s = map(int, seg_cfg.get("hours_start", "09:15").split(":"))
-            h_e, m_e = map(int, seg_cfg.get("hours_end",   "15:30").split(":"))
+            sessions = (seg_cfg or {}).get("sessions") or None
+            evening  = bool((seg_cfg or {}).get("evening_open_on_holidays", False))
+            exch     = (seg_cfg or {}).get("holiday_exchange", "NSE")
+            # Legacy shape fallback — sessions is optional; existing
+            # `hours_start`/`hours_end` keys still work when absent.
+            h_s, m_s = map(int, (seg_cfg or {}).get("hours_start", "09:15").split(":"))
+            h_e, m_e = map(int, (seg_cfg or {}).get("hours_end",   "15:30").split(":"))
             seg_start = dtime(h_s, m_s)
             seg_end   = dtime(h_e, m_e)
-            exch      = seg_cfg.get("holiday_exchange", "NSE")
             try:
                 holidays = fetch_holidays(exch)
             except Exception:
                 holidays = set()
-            if is_market_open(now, holidays, seg_start, seg_end, exchange=exch):
+            if is_market_open(
+                now, holidays, seg_start, seg_end, exchange=exch,
+                sessions=sessions, evening_open_on_holidays=evening,
+            ):
                 return True
         except Exception:
             continue

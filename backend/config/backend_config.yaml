@@ -66,20 +66,47 @@ deploy_branch: main
 # boots safely even before the settings cache is loaded. The DB seeder
 # writes those same defaults on first boot.
 
-# Market segments — used to determine fetch window and open/close summaries
-# holiday_exchange: exchange name passed to kite.holidays()
-# exchanges: list of kite position exchange values belonging to this segment
+# Market segments — used to determine fetch window and open/close summaries.
+# holiday_exchange       : exchange name for holiday-calendar lookup
+# exchanges              : list of kite position exchange values in this segment
+# sessions               : list of {start, end} windows. `is_market_open` treats
+#                          the segment as open if `now` falls in ANY session.
+#                          Present-day segments each have a single session, but
+#                          the list shape is preserved so future changes (e.g.
+#                          adding a Muhurat window) don't require a signature
+#                          bump. The legacy `hours_start`/`hours_end` keys are
+#                          still read as a compatibility fallback when
+#                          `sessions` is absent.
+# evening_open_on_holidays: when true, if the calendar marks today as a holiday
+#                          for `holiday_exchange` the segment is still considered
+#                          open when `now.time() >= 17:00`. Models MCX's evening
+#                          session on days when the daytime session was
+#                          holiday-closed (single continuous MCX session 09:00-
+#                          23:30 means the calendar cannot flag the whole day
+#                          closed without collapsing the evening leg).
 market_segments:
   equity:
-    hours_start: "09:15"
-    hours_end: "15:30"
     holiday_exchange: "NSE"
     exchanges: ["NSE", "BSE", "NFO", "CDS"]
+    sessions:
+      - {start: "09:15", end: "15:30"}
+    evening_open_on_holidays: false
+    # legacy shape — kept for readers that predate the sessions list.
+    hours_start: "09:15"
+    hours_end:   "15:30"
   commodity:
-    hours_start: "09:00"
-    hours_end: "23:30"
     holiday_exchange: "MCX"
     exchanges: ["MCX"]
+    sessions:
+      - {start: "09:00", end: "23:30"}
+    evening_open_on_holidays: true
+    # legacy shape — kept for readers that predate the sessions list.
+    hours_start: "09:00"
+    hours_end:   "23:30"
+
+# Daily holiday refresh cron (fires `_task_holiday_refresh`). Time in IST,
+# HH:MM. Retries every 30 min until 08:00 IST on any failure.
+holiday_refresh_time: "04:00"
 
 # Algo agent (chase + expiry) — every knob moved to DB:
 #   algo.chase_interval_seconds, algo.aggression_step, algo.max_attempts
