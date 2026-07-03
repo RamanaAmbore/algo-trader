@@ -2474,9 +2474,9 @@
     min-height: 0;
     box-sizing: border-box;
     background: var(--card-bg-gradient);
-    border: 1px solid var(--algo-amber-border-soft);
+    border: 1.5px solid rgba(255, 255, 255, 0.10);
     border-radius: 6px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(251, 191, 36, 0.05) inset;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08);
     /* overflow: visible so the Overlays MultiSelect dropdown panel
        (position:absolute) is not clipped by the rounded card edge.
        The chart container below has its own `overflow: hidden` so the
