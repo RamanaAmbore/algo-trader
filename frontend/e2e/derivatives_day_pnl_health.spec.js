@@ -48,38 +48,33 @@ const SRC = path.resolve(
 
 // ── Static source checks ─────────────────────────────────────────────────────
 
-test('SSOT: _dayPnlForLeg contains new-position override', () => {
+test('SSOT: _dayPnlForLeg delegates to baseDayPnlForPosition from nav.js', () => {
   const src = fs.readFileSync(SRC, 'utf8');
 
-  // The new-position override block must be present
+  // baseDayPnlForPosition must be imported from $lib/data/nav
   expect(
-    src.includes('if (oq === 0 && pnl !== 0) day = pnl'),
-    'new-position override "if (oq === 0 && pnl !== 0) day = pnl" missing from _dayPnlForLeg'
+    src.includes("import { baseDayPnlForPosition }") && src.includes("$lib/data/nav"),
+    'baseDayPnlForPosition must be imported from $lib/data/nav in derivatives page'
   ).toBe(true);
 
-  // The bare-return pattern (old broken form) must be gone
-  // Old code: `return Number(c?.day_change_val ?? 0);` as the ONLY return
-  // in _dayPnlForLeg (i.e. no override before it). We detect this by
-  // checking that the function body no longer ends with a bare-return
-  // immediately after the expired branch — extract just the function block.
+  // _dayPnlForLeg must exist and call baseDayPnlForPosition (the SSOT)
   const fnStart = src.indexOf('function _dayPnlForLeg(');
   expect(fnStart, '_dayPnlForLeg function must exist').toBeGreaterThan(0);
-  // Extract up to the closing brace (first `\n  }` after fnStart)
+  // Extract up to the closing brace
   const fnEnd = src.indexOf('\n  }', fnStart) + 4;
   const fnBody = src.slice(fnStart, fnEnd);
 
-  // The old single-line terminal return is the only return after the expired
-  // block. The fix adds `let day = ...` before it.
   expect(
-    fnBody.includes('let day = Number(c?.day_change_val ?? 0)'),
-    '_dayPnlForLeg should use `let day = ...` not direct `return Number(...)`'
+    fnBody.includes('baseDayPnlForPosition'),
+    '_dayPnlForLeg must delegate to baseDayPnlForPosition (SSOT for new-position override)'
   ).toBe(true);
 
-  // overnight_quantity fields must be read
+  // The old inline override block must be gone from _dayPnlForLeg
+  // (it is now in baseDayPnlForPosition in nav.js)
   expect(
-    fnBody.includes('overnight_quantity'),
-    '_dayPnlForLeg should read overnight_quantity for the new-position override'
-  ).toBe(true);
+    fnBody.includes('let day = Number(c?.day_change_val'),
+    '_dayPnlForLeg must NOT have the old inline "let day = Number(c?.day_change_val" pattern — delegate to baseDayPnlForPosition instead'
+  ).toBe(false);
 });
 
 test('SSOT: _dayPnlByRootMap delegates to _dayPnlForLeg via _perRootReduce', () => {
