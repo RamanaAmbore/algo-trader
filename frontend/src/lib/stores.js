@@ -1153,10 +1153,29 @@ export function startConnStatusPoller() {
     // skip the fetch entirely. The badge stays hidden — same UX as
     // a fresh install with no broker config.
     if (!authStore.getToken()) {
-      connStatus.set({
-        loaded: 0, total: 0, backendOk: true,
-        failingAccounts: [], accounts: [],
-      });
+      // Anonymous demo session — /api/admin/brokers is admin-guarded so we
+      // skip it (avoids 401 flipping backendOk=false and showing the grey `?`
+      // badge). Instead, fetch the masked account list from /api/accounts/
+      // which is now served to demo sessions with masking applied (D1####,
+      // ZG####, etc.). Keeping total=0 preserves the "no badge" contract so
+      // the RefreshButton chip stays hidden for anonymous viewers.
+      try {
+        const { fetchAccounts } = await import('$lib/api');
+        const data = await fetchAccounts();
+        const accountCodes = (data?.accounts || [])
+          .map((a) => String(a?.account_id || ''))
+          .filter(Boolean);
+        connStatus.set({
+          loaded: 0, total: 0, backendOk: true,
+          failingAccounts: [], accounts: accountCodes,
+        });
+      } catch {
+        // Non-fatal — demo still shows positions/holdings accounts from rows.
+        connStatus.set({
+          loaded: 0, total: 0, backendOk: true,
+          failingAccounts: [], accounts: [],
+        });
+      }
       return;
     }
     try {

@@ -281,7 +281,11 @@ export const fetchFunds     = ({ fresh = false } = {}) =>
 
 // ── Protected endpoints (require JWT — order mutations) ───────────────────────
 export const fetchOrders    = () => _get('/orders/',    { auth: true });
-export const fetchAccounts  = () => _get('/accounts/', { auth: true });
+// auth: optional — demo sessions (no JWT) can now reach /api/accounts/ via
+// auth_or_demo_guard and receive masked account codes. Passing the token when
+// present ensures admin callers get unmasked codes; anonymous viewers get
+// D1####/ZG####/etc. so the account picker is populated on demo pages.
+export const fetchAccounts  = () => _get('/accounts/', { auth: _hasToken() });
 
 // ── Public endpoints (no JWT needed) ─────────────────────────────────────────
 export const fetchMarket = () => _get('/market/');
