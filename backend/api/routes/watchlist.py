@@ -1141,6 +1141,14 @@ async def _get_movers_mcx_live(
 
     rows.sort(key=lambda r: abs(r.change_pct), reverse=True)
 
+    _lw = sum(1 for e in live_snapshot.values() if e["last_pct"] > 0)
+    _ll = sum(1 for e in live_snapshot.values() if e["last_pct"] < 0)
+    logger.info(
+        f"MCX Movers: result — live_winners={_lw} live_losers={_ll} "
+        f"session_mcx={len(_session_movers_mcx)} combined={len(combined)} "
+        f"rows_returned={len(rows)}"
+    )
+
     if not rows:
         logger.info(
             f"[MOVERS-EMPTY] reason=no_mcx_matches "
