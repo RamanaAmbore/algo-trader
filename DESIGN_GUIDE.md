@@ -1,5 +1,14 @@
 # RamboQuant — Complete Design Guide
 
+## Version
+
+| | | |
+|---|---|---|
+| **Generated** | **Revision** | **Branch & Pages** |
+| See PDF cover | See `git log` | `main` / `dev` — 42 sections |
+| **Website** | **Profile** | **Tech Stack** |
+| [ramboq.com](https://ramboq.com) | [ramanaambore.me](https://ramanaambore.me) | SvelteKit · Litestar · PostgreSQL · KiteTicker · Kite/Dhan/Groww · MCP · Gemini |
+
 ## About the author
 
 **Ramana R Ambore, FRM** — Principal FinTech Engineer & Quantitative Developer, platform engineer for **RamboQuant LLP**.
