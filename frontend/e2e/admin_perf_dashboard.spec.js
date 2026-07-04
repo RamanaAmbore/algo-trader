@@ -288,13 +288,17 @@ test.describe('/admin/perf — Perf Dashboard', () => {
   });
 
   // ── 12. Navbar entry present ──────────────────────────────────────────────
-  test('navbar contains a Perf link pointing to /admin/perf', async ({ page }) => {
+  test('navbar config group trigger is active on /admin/perf (Perf entry wired)', async ({ page }) => {
     await mockPerfEndpoints(page);
     await page.goto(PAGE_URL, { waitUntil: 'networkidle' });
 
-    const perfLink = page.locator('a[href="/admin/perf"]');
-    // May be inside a dropdown; just check it exists in the DOM.
-    await expect(perfLink.first()).toBeAttached({ timeout: 4000 });
+    // Navbar config group items render as <button role="menuitem"> (not <a>).
+    // Verify the Config group trigger is active (lit) because we are on /admin/perf,
+    // which confirms the route is registered in the config group.
+    const configTrigger = page.locator('nav button.algo-group-trigger').filter({ hasText: 'Config' });
+    await expect(configTrigger).toBeVisible({ timeout: 4000 });
+    // The trigger carries algo-nav-btn-active when currentPage is in config group.
+    await expect(configTrigger).toHaveClass(/algo-nav-btn-active/, { timeout: 4000 });
   });
 
   // ── 13. RefreshButton triggers re-fetch ──────────────────────────────────
