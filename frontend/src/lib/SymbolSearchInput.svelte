@@ -85,7 +85,7 @@
   // "symbol not updatable" bug).
   $effect(() => {
     const v = value;
-    if (v && v !== untrack(() => _symQuery)) _symQuery = v;
+    if (v && displaySymbol(v) !== untrack(() => _symQuery)) _symQuery = displaySymbol(v);
   });
 
   // Re-run search when the type filter changes from the outside.
