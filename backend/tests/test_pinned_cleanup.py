@@ -2,14 +2,14 @@
 Tests for seed_global_pinned: retired-symbol cleanup + default top-up.
 
 Five quality dimensions:
-  1. SSOT     — MARKETS_DEFAULT contains exactly the canonical 16 symbols.
-                NATURALGAS is NOT seeded (still excluded). Migration marker
-                keys are the SSOT for cleanup waves.
+  1. SSOT     — MARKETS_DEFAULT contains exactly the canonical 15 symbols.
+                NATURALGAS and SILVER (MCX) are NOT seeded (excluded). Migration
+                marker keys are the SSOT for cleanup waves.
   2. Perf     — each wave is O(|wave|) targeted DELETEs (filter by symbol+exch),
                 not a full-table scan or truncation.
-  3. Stale    — NATURALGAS absent from MARKETS_DEFAULT (only non-restored MCX root).
-                SILVER/SILVERM/GOLD/GOLDM/CRUDEOIL/COPPER/USDINR present as
-                first-class bare roots.
+  3. Stale    — NATURALGAS + SILVER absent from MARKETS_DEFAULT.
+                SILVERM/GOLD/GOLDM/CRUDEOIL/COPPER/USDINR present as first-class
+                bare roots.
   4. Reuse    — seed_global_pinned is the single call-site for cleanup + top-up.
   5. Correctness — scenario matrix:
        a. GOLDM + USDINR present AND migration markers not set → wave 1 deletes
@@ -23,7 +23,11 @@ Five quality dimensions:
        f. Migration is one-shot: marker present → DELETE not re-executed (so
           operator-re-added symbols survive).
        g. Operator re-adds NATURALGAS after wave-2 cleanup → preserved on next boot.
-       h. Empty global Pinned → 16-item Pinned after seed.
+       h. Empty global Pinned → 15-item Pinned after seed.
+       i. SILVER (MCX) present AND wave-3 marker not set → wave 3 deletes it;
+          NOT re-added by top-up (SILVER absent from MARKETS_DEFAULT).
+       j. CDS expansion (_expand_root_items_to_futures) produces 1 row for
+          USDINR CDS, with alias=bare-root-name and tradingsymbol=contract.
 """
 
 from __future__ import annotations
@@ -66,14 +70,17 @@ def test_naturalgas_removed_from_markets_default():
     )
 
 
-# ---------------------------------------------------------------------------
-# Dimension 3 — 7 restored bare roots ARE in MARKETS_DEFAULT
-# ---------------------------------------------------------------------------
-
-def test_silver_in_markets_default():
+def test_silver_removed_from_markets_default():
+    """SILVER MCX was removed in wave 3 (operator confirmed mistake)."""
     from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
-    assert ("SILVER", "MCX") in MARKETS_DEFAULT, "SILVER MCX must be present in MARKETS_DEFAULT"
+    assert ("SILVER", "MCX") not in MARKETS_DEFAULT, (
+        "SILVER MCX must NOT be in MARKETS_DEFAULT — removed in wave 3"
+    )
 
+
+# ---------------------------------------------------------------------------
+# Dimension 3 — 6 restored bare roots ARE in MARKETS_DEFAULT
+# ---------------------------------------------------------------------------
 
 def test_silverm_in_markets_default():
     from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
@@ -124,13 +131,13 @@ def test_silverbees_in_markets_default():
 
 
 # ---------------------------------------------------------------------------
-# Dimension 1 — MARKETS_DEFAULT has exactly 16 entries
+# Dimension 1 — MARKETS_DEFAULT has exactly 15 entries (SILVER removed wave 3)
 # ---------------------------------------------------------------------------
 
 def test_markets_default_count():
     from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
-    assert len(MARKETS_DEFAULT) == 16, (
-        f"MARKETS_DEFAULT must have 16 entries; got {len(MARKETS_DEFAULT)}"
+    assert len(MARKETS_DEFAULT) == 15, (
+        f"MARKETS_DEFAULT must have 15 entries; got {len(MARKETS_DEFAULT)}"
     )
 
 
@@ -161,6 +168,35 @@ def test_wave2_migration_key_present():
     assert '"CRUDEOIL"' in src, "Wave 2 cleanup must reference CRUDEOIL"
     assert '"NATURALGAS"' in src, "Wave 2 cleanup must reference NATURALGAS"
     assert '"SILVERM"' in src, "Wave 2 cleanup must reference SILVERM"
+
+
+def test_wave3_migration_key_present():
+    src = _wl_text()
+    assert "migrations.pinned_remove_silver_mcx_v1" in src, (
+        "Wave-3 migration key must be present in seed_global_pinned"
+    )
+    assert '"SILVER"' in src, "Wave 3 cleanup must reference SILVER"
+    assert '"MCX"' in src, "Wave 3 cleanup must reference MCX exchange"
+
+
+# ---------------------------------------------------------------------------
+# Dimension 3 — CDS expansion produces 1 row aliased to the bare root name
+# (SSOT check — verify _expand_root_items_to_futures docstring + code)
+# ---------------------------------------------------------------------------
+
+def test_cds_expansion_virtual_root_behaviour_in_source():
+    """_expand_root_items_to_futures source must document 1-row CDS expansion
+    and alias-to-root-name behaviour."""
+    src = _wl_text()
+    assert "CDS currency roots" in src, (
+        "_expand_root_items_to_futures must document CDS virtual-root behaviour"
+    )
+    assert "alias=stored_alias if stored_alias else sym" in src, (
+        "CDS expansion must auto-alias to bare root name when no stored alias"
+    )
+    assert "lookup_cds_futures_list(sym, limit=1)" in src, (
+        "CDS expansion must request only 1 contract (front month)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -523,12 +559,13 @@ async def test_operator_readd_after_cleanup_preserved(db_session):
 
 
 # ---------------------------------------------------------------------------
-# Dimension 5h — Empty global Pinned → exactly 16 items after seed
+# Dimension 5h — Empty global Pinned → exactly 15 items after seed
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_empty_pinned_seeds_to_16_items(db_session):
-    """Fresh DB with no items: seed must produce exactly 16 canonical entries."""
+async def test_empty_pinned_seeds_to_15_items(db_session):
+    """Fresh DB with no items: seed must produce exactly 15 canonical entries
+    (16 − 1 for SILVER MCX removed in wave 3)."""
     await _make_global_pinned(db_session)
 
     await _run_seed(db_session)
@@ -538,5 +575,59 @@ async def test_empty_pinned_seeds_to_16_items(db_session):
     count = (await db_session.execute(
         select(func.count()).select_from(_WatchlistItem)
     )).scalar()
-    assert count == 16, f"Expected 16 items from empty seed, got {count}"
-    assert len(MARKETS_DEFAULT) == 16
+    assert count == 15, f"Expected 15 items from empty seed, got {count}"
+    assert len(MARKETS_DEFAULT) == 15
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5i — SILVER MCX present + wave-3 not run → deleted + NOT re-added
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_silver_removed_by_wave3(db_session):
+    """Wave-3 fires and deletes SILVER MCX. Top-up does NOT re-add it
+    (SILVER absent from MARKETS_DEFAULT)."""
+    wl_id = await _make_global_pinned(db_session)
+    await _insert_items(db_session, wl_id, [
+        ("SILVER",   "MCX"),
+        ("NIFTY 50", "NSE"),
+    ])
+
+    await _run_seed(db_session)
+
+    syms = await _symbols(db_session)
+    assert ("SILVER", "MCX") not in syms, (
+        "SILVER MCX must be removed by wave-3 migration"
+    )
+    assert ("NIFTY 50", "NSE") in syms, "NIFTY 50 must be preserved"
+
+
+@pytest.mark.asyncio
+async def test_wave3_is_one_shot(db_session):
+    """If wave-3 marker is already set, a subsequent seed does NOT delete
+    SILVER MCX if operator manually re-added it."""
+    wl_id = await _make_global_pinned(db_session)
+
+    # Pre-set all three wave markers
+    now_ts = datetime.now(timezone.utc)
+    for key in [
+        "migrations.pinned_remove_goldm_usdinr_v1",
+        "migrations.pinned_remove_mcx_futures_v1",
+        "migrations.pinned_remove_silver_mcx_v1",
+    ]:
+        db_session.add(_Setting(
+            category="migrations", key=key, value_type="string",
+            value="1", default_value="0",
+            description="pre-seeded for test", updated_at=now_ts,
+        ))
+    await db_session.flush()
+
+    # Operator manually re-added SILVER after wave-3 cleanup
+    await _insert_items(db_session, wl_id, [("SILVER", "MCX")])
+
+    await _run_seed(db_session)
+
+    syms = await _symbols(db_session)
+    assert ("SILVER", "MCX") in syms, (
+        "Operator re-added SILVER MCX must survive seed when wave-3 marker is set"
+    )
