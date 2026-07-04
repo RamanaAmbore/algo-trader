@@ -1160,166 +1160,62 @@ async def _resolve_spot(underlying: str, override: Optional[float],
     When even the fallback isn't supplied AND every quote path fails,
     raises 502 — without `expiry_hint` we have no way to pick a
     futures contract for commodities.
+
+    Sub-steps delegated to options_helpers: _resolve_spot_from_sim,
+    _resolve_spot_ticker, _resolve_commodity_spot.
     """
+    from backend.api.routes.options_helpers import (
+        _resolve_spot_from_sim,
+        _resolve_spot_ticker,
+        _resolve_commodity_spot,
+    )
+
+    # 1. Operator override.
     if override is not None and override > 0:
-        # Operator overrides don't carry a prev_close; the UI just shows
-        # the value as-is without a sign cue.
         return (float(override), "override", None, None)
-    try:
-        from backend.api.algo.sim.driver import get_driver
-        drv = get_driver()
-        if drv.active and underlying in drv._underlyings:
-            return (float(drv._underlyings[underlying]), "sim", None, None)
-    except Exception:
-        pass
+
+    # 2. Active SimDriver.
+    sim_px = await _resolve_spot_from_sim(underlying)
+    if sim_px is not None:
+        return (sim_px, "sim", None, None)
 
     from backend.brokers.registry import get_market_data_broker
     broker = get_market_data_broker()
     is_commodity = is_mcx_underlying(underlying)
 
-    # 3. Spot ticker — only meaningful for indices/stocks. Commodities
-    #    have no NSE spot, so skip straight to step 4 instead of
-    #    spending a round-trip on a key that's guaranteed to miss.
+    # 3. Spot ticker — skipped for MCX commodities (no NSE spot).
     if not is_commodity:
-        key = underlying_ltp_key(underlying)
-        try:
-            resp = await asyncio.to_thread(broker.quote, [key]) or {}
-            quote_dict = resp.get(key) or {}
-            px, src = _ltp_from_quote(quote_dict)
-            if px is not None:
-                prev = _prev_close_from_quote(quote_dict)
-                _spot_cache_put(underlying, px, src, prev, None)
-                return (px, src, prev, None)
-        except Exception as e:
-            logger.warning(f"options spot quote for {underlying} failed: {e}")
+        ticker_result = await _resolve_spot_ticker(
+            underlying, broker, _spot_cache_put, _ltp_from_quote, _prev_close_from_quote,
+        )
+        if ticker_result is not None:
+            return ticker_result
 
-    # 4. Futures fallback. For commodities this is the canonical path;
-    #    for indices/stocks it's a defensive secondary when the spot
-    #    ticker miss-fires.
-    #
-    #    For MCX commodities, prefer an instruments-cache lookup over
-    #    the constructed symbol: Kite's actual tradingsymbols sometimes
-    #    include a day-of-month suffix (e.g. CRUDEOIL26MAY19FUT) that
-    #    ``futures_symbol_for_expiry`` cannot predict.  We match on the
-    #    option's contract month/year; if nothing matches we accept the
-    #    near-month future returned by the cache.  Only on a full cache
-    #    miss do we fall through to the walk-forward below.
-    #    Calendar-aware per-expiry lookup when expiry_hint is provided: a
-    #    Sep option is anchored against the Sep future, not the Jun
-    #    front-month. Jun->Sep basis spread can be 200-500 on a 6800
-    #    CRUDEOIL base -- a material IV miscalibration. Falls back to
-    #    front-month when expiry_hint is None or no match is found.
-    # Compute the operator's INTENDED anchor for this query. For MCX
-    # commodities the matching-month future IS the anchor; for NSE/NFO
-    # there's no per-month anchor (one spot ticker per underlying), so
-    # anchor stays None. Stored even when the live broker query below
-    # fails so the cache fallback at the end of the function can read
-    # the right per-month entry instead of whatever month was last
-    # cached. Without this, a JUN-option query whose live fetch fails
-    # would return a JUL-cached spot — wrong basis.
-    resolved_sym: Optional[str] = None
-    if is_commodity:
-        if option_symbol:
-            resolved_sym = await lookup_future_for_option(option_symbol)
-        if not resolved_sym and expiry_hint is not None:
-            resolved_sym = await lookup_mcx_future_for_expiry(underlying, expiry_hint)
-        if not resolved_sym:
-            resolved_sym = await lookup_mcx_front_month_future(underlying)
-        if resolved_sym:
-            full_key = f"MCX:{resolved_sym}"
-            try:
-                resp = await asyncio.to_thread(broker.quote, [full_key]) or {}
-                quote_dict = resp.get(full_key) or {}
-                px, _src = _ltp_from_quote(quote_dict)
-                if px is not None:
-                    prev = _prev_close_from_quote(quote_dict)
-                    _spot_cache_put(underlying, px, "futures", prev, resolved_sym)
-                    return (px, "futures", prev, resolved_sym)
-            except Exception as e:
-                logger.warning(
-                    f"options MCX spot for {underlying} "
-                    f"({full_key}) failed: {e}"
-                )
+    # 4. Futures (instruments-cache lookup + walk-forward).
+    #    Also determines the cache anchor for the last-known-spot lookup.
+    px, src, prev, resolved_sym, anchor = await _resolve_commodity_spot(
+        underlying, expiry_hint, option_symbol,
+        broker, _spot_cache_put, _ltp_from_quote, _prev_close_from_quote,
+    )
+    if px is not None:
+        return (px, src, prev, anchor)
 
-    #    Walk forward up to 3 months: matched month → next → next+1,
-    #    returning the first quote that comes back populated.
-    #    (For MCX commodities this block is only reached when the
-    #    instruments cache is cold or the quote call above failed.)
-    if expiry_hint is not None:
-        exchanges = ("MCX", "NFO") if is_commodity else ("NFO", "MCX")
-        from datetime import timedelta
-        cursor = expiry_hint
-        for _step in range(3):
-            fut_sym = futures_symbol_for_expiry(underlying, cursor)
-            for ex in exchanges:
-                full_key = f"{ex}:{fut_sym}"
-                try:
-                    resp = await asyncio.to_thread(broker.quote, [full_key]) or {}
-                    quote_dict = resp.get(full_key) or {}
-                    px, _src = _ltp_from_quote(quote_dict)
-                    if px is not None:
-                        # Tag uniformly as 'futures' regardless of which
-                        # leg of the quote produced the value — the UI
-                        # just needs to know the spot came from the
-                        # futures proxy, not the index.
-                        prev = _prev_close_from_quote(quote_dict)
-                        anchor = fut_sym if is_commodity else None
-                        _spot_cache_put(underlying, px, "futures", prev, anchor)
-                        return (px, "futures", prev, anchor)
-                except Exception as e:
-                    logger.warning(
-                        f"options futures-spot quote for {underlying} "
-                        f"({full_key}) failed: {e}"
-                    )
-            # Walk to the first day of the following month so the YY
-            # rolls correctly across year boundaries.
-            cursor = (cursor.replace(day=1) + timedelta(days=32)).replace(day=1)
-
-    # Last-known-spot cache — broker-data succeeded earlier in the
-    # session, then a later request lost the futures lookup (rate
-    # limit / cache cold / Kite blip). The cached value is the most
-    # recent real broker reading for this underlying, fresh within
-    # 24 h. Operator-preferred to the median-strike synthetic, which
-    # paints a misleading 9000 spot for a CRUDEOIL book whose actual
-    # underlying is ~7000.
-    #
-    # Cache lookup is keyed by (underlying, anchor). For commodities the
-    # `resolved_sym` we computed above carries the operator's intended
-    # anchor (the matching-month future). For NSE/NFO anchor=None. This
-    # keeps a JUN-option query from returning a JUL-cached spot when
-    # the live JUN fetch fails.
+    # Last-known-spot cache — keyed by (underlying, anchor) so per-month
+    # MCX entries don't collide.
     cache_anchor = resolved_sym if is_commodity else None
     cached = _spot_cache_get(underlying, cache_anchor)
     if cached is not None:
         return cached  # (px, "cached", prev_close, anchor)
 
-    # DB-backed close fallback — inserted BEFORE the median-strike synthetic.
-    # During after-hours windows the live quote + futures lookups both return
-    # zero / fail (token broken, exchange closed). Instead of painting the
-    # option's median strike as "spot" (meaningless for stocks like IDFCFIRSTB),
-    # try two DB tiers:
-    #   1. daily_book.holdings ltp where symbol=underlying and kind='holdings'
-    #      and ltp > 0 — this is the operator's actual last in-session LTP,
-    #      more authoritative than broker ohlc.close (which lags overnight).
-    #   2. ohlcv_daily.close for the most recent NSE/BSE date — the prior-close
-    #      that the broker would eventually serve once the overnight window ends.
-    # Source token 'close-db' so telemetry distinguishes from the broker's
-    # 'close' path and the synthetic 'fallback'. UI treats it identically to
-    # 'close' (no special chip rendering needed).
+    # DB-backed close fallback — daily_book.holdings.ltp then ohlcv_daily.close.
     db_close = await _close_from_db(underlying)
     if db_close is not None:
         logger.info(
             "options spot for %s resolved via close-db: %.4f", underlying, db_close
         )
-        # Return db_close as both spot and prev_close — UI will show it
-        # as the close marker. Anchor stays None (stocks have no futures anchor).
         return (db_close, "close-db", db_close, None)
 
     if fallback is not None and fallback > 0:
-        # Last resort: use the option's strike as a degenerate spot. The
-        # payoff diagram still draws sensibly (strike-centred); the
-        # operator gets a 'fallback' chip so they know the spot is
-        # synthetic and shouldn't be trusted for absolute P&L.
         logger.warning(
             "strategy spot for %s fell through to source='fallback' "
             "(spot=%.2f, anchor=None). Live + futures lookups failed; "
@@ -2273,30 +2169,16 @@ class OptionsController(Controller):
             raise HTTPException(status_code=502,
                 detail=f"resolved spot is non-positive: {spot}")
 
-        # 2. Resolve all CE/PE contracts for the (underlying, expiry).
-        from backend.api.cache import get_or_fetch
-        from backend.api.routes.instruments import _fetch_instruments
-        try:
-            inst_resp = await get_or_fetch(
-                "instruments", _fetch_instruments, ttl_seconds=86400)
-        except Exception as e:
-            logger.warning(f"chain-snapshot instruments fetch failed: {e}")
-            raise HTTPException(status_code=502, detail="instruments cache unavailable")
+        from backend.api.routes.options_helpers import (
+            _chain_snapshot_instruments,
+            _chain_snapshot_batch_quote,
+            _chain_snapshot_compute_rows,
+        )
 
-        sym_by_strike: dict[float, dict[str, str]] = {}
-        for inst in inst_resp.items:
-            if (inst.u or "").upper() != und:
-                continue
-            if inst.x != exp:
-                continue
-            if inst.t not in ("CE", "PE"):
-                continue
-            if inst.k is None:
-                continue
-            sym_by_strike.setdefault(
-                float(inst.k), {"CE": "", "PE": ""}
-            )[inst.t] = inst.s
-
+        # 2+3. Instruments fetch + ATM window.
+        sym_by_strike, atm_strike, window_strikes = await _chain_snapshot_instruments(
+            und, exp, spot, atm_window,
+        )
         if not sym_by_strike:
             return ChainSnapshotResponse(
                 underlying=und, expiry=exp, spot=spot, spot_source=src,
@@ -2306,87 +2188,19 @@ class OptionsController(Controller):
                 atm_strike=None, rows=[],
             )
 
-        # 3. Window to ATM ± atm_window strikes (sorted by distance).
-        all_strikes = sorted(sym_by_strike.keys())
-        atm_idx = min(range(len(all_strikes)),
-                      key=lambda i: abs(all_strikes[i] - spot))
-        atm_strike = all_strikes[atm_idx]
-        lo = max(0, atm_idx - atm_window)
-        hi = min(len(all_strikes), atm_idx + atm_window + 1)
-        window_strikes = all_strikes[lo:hi]
+        # 4. Batch broker quote.
+        quote_resp, _key_meta = await _chain_snapshot_batch_quote(
+            und, exp, sym_by_strike, window_strikes,
+        )
 
-        # 4. Single batch quote() for all selected CE+PE keys.
-        keys: list[str] = []
-        key_meta: dict[str, tuple[float, str]] = {}
-        for strike in window_strikes:
-            for side, sym in sym_by_strike[strike].items():
-                if not sym:
-                    continue
-                qk = option_quote_key(sym)
-                keys.append(qk)
-                key_meta[qk] = (strike, side)
-
-        from backend.brokers.registry import get_market_data_broker
-        quote_resp: dict = {}
-        if keys:
-            try:
-                quote_resp = await asyncio.to_thread(get_market_data_broker().quote, keys) or {}
-            except Exception as e:
-                logger.warning(f"chain-snapshot quote() failed for {und}/{exp}: {e}")
-
-        # 5. Time-to-expiry — same convention as everywhere else.
+        # 5. Time-to-expiry.
         T_yrs = days_to_expiry(expiry_d) / 365.0 if expiry_d else 0.0
 
-        def _best(book: list) -> float | None:
-            for level in (book or []):
-                p = level.get("price")
-                if p not in (None, 0, 0.0):
-                    return float(p)
-            return None
-
-        # 6. Per-strike: compute Greeks for both sides.
-        rows: list[ChainSnapshotRow] = []
-        for strike in window_strikes:
-            sides: dict[str, ChainSnapshotLeg] = {}
-            for side in ("CE", "PE"):
-                sym = sym_by_strike[strike].get(side) or ""
-                qk = option_quote_key(sym) if sym else None
-                q = (quote_resp.get(qk) if qk else None) or {}
-                depth = q.get("depth") or {}
-                ltp = q.get("last_price") or None
-                bid = _best(depth.get("buy"))
-                ask = _best(depth.get("sell"))
-
-                iv: float | None = None
-                g: dict | None = None
-                if ltp and ltp > 0 and T_yrs > 0:
-                    # Calibrate IV from LTP; greeks then use it.
-                    try:
-                        iv = implied_vol(
-                            ltp, spot, float(strike), T_yrs,
-                            DEFAULT_RISK_FREE, side,
-                        )
-                    except Exception:
-                        iv = None
-                    sigma_eff = iv if iv else DEFAULT_IV
-                    try:
-                        g = greeks(spot, float(strike), T_yrs,
-                                   DEFAULT_RISK_FREE, sigma_eff, side)
-                    except Exception:
-                        g = None
-                sides[side] = ChainSnapshotLeg(
-                    ltp=ltp, bid=bid, ask=ask, iv=iv,
-                    delta=(g or {}).get("delta") if g else None,
-                    gamma=(g or {}).get("gamma") if g else None,
-                    theta=(g or {}).get("theta") if g else None,
-                    vega =(g or {}).get("vega")  if g else None,
-                    rho  =(g or {}).get("rho")   if g else None,
-                )
-            rows.append(ChainSnapshotRow(
-                k=float(strike),
-                atm_distance=float(strike) - spot,
-                ce=sides["CE"], pe=sides["PE"],
-            ))
+        # 6. Per-strike IV + greeks.
+        rows = _chain_snapshot_compute_rows(
+            sym_by_strike, window_strikes, quote_resp, spot, T_yrs,
+            ChainSnapshotLeg, ChainSnapshotRow,
+        )
 
         return ChainSnapshotResponse(
             underlying=und, expiry=exp, spot=spot, spot_source=src,
@@ -2440,356 +2254,62 @@ class OptionsController(Controller):
         if _cached is not None:
             return _cached
 
+        from backend.api.routes.options_helpers import (
+            _historical_ohlcv_store,
+            _historical_intraday_store,
+            _historical_closed_guard,
+            _historical_broker_loop,
+        )
+
         # ── Tier-1/2/3 store for daily bars (interval="day") ─────────
         # Immutable once the day closes — serve from DB/memory cache
         # instead of re-hitting the broker on every cold open or deploy.
+        # Use yesterday as the upper-bound (today's bar not yet final).
         if interval == "day":
-            from datetime import date as _date
-            from backend.api.persistence.ohlcv_store import get_or_fetch_daily
-            import datetime as _dt
-            # Use yesterday as the upper-bound for the ohlcv_store lookup.
-            # Today's daily bar is not yet finalized while the session is
-            # open (the close price is still the live LTP), so the
-            # _is_complete_range check requires dates_sorted[-1] == today
-            # which fails during and shortly after market hours, forcing
-            # every request to Tier 3 (broker) instead of Tier 2 (DB).
-            # Equities like BEL showed intermittent "No data available"
-            # because the completeness check always rejected the cached
-            # range and the broker returned empty bars on rate-limit.
-            # Setting to_d = yesterday lets the boundary check pass for
-            # confirmed past bars; today's (live) bar falls through to the
-            # broker path below and is NOT persisted into ohlcv_daily
-            # (immutable-day semantics per CLAUDE.md).
-            to_d_daily   = _date.today() - _dt.timedelta(days=1)
-            from_d_daily = to_d_daily - _dt.timedelta(days=days + 5)
-            resolved_exch = (exchange or "NFO").upper()
-            try:
-                store_bars = await get_or_fetch_daily(sym, resolved_exch, from_d_daily, to_d_daily)
-
-                # ── Self-heal: force broker fetch when DB coverage is thin ──
-                # If the store returned fewer than _SELF_HEAL_COVERAGE_THRESHOLD
-                # of the requested trading days (e.g. 48 bars for a 365-day
-                # request = 13% coverage), bypass the cache tier and pull the
-                # full range from the broker unconditionally.  This fires in
-                # the default "off" mode — operator does not need to flip
-                # runtime_state manually.
-                #
-                # Cool-off gate: if every historical broker is in rate-limit
-                # cool-off, skip the retry and return what we have with
-                # partial=True so the frontend retries after the TTL.
-                _heal_attempted = False
-                if len(store_bars) < _SELF_HEAL_COVERAGE_THRESHOLD * days:
-                    from backend.brokers.registry import get_historical_brokers as _ghb
-                    _brokers_available = bool(_ghb())
-                    if _brokers_available:
-                        _self_heal_log_once(sym, resolved_exch, len(store_bars), days)
-                        store_bars = await get_or_fetch_daily(
-                            sym, resolved_exch, from_d_daily, to_d_daily,
-                            bypass_cache=True,
-                        )
-                        _heal_attempted = True
-
-                if store_bars:
-                    bars = [
-                        HistoricalBar(
-                            ts=b["date"],
-                            open=float(b["open"]),
-                            high=float(b["high"]),
-                            low=float(b["low"]),
-                            close=float(b["close"]),
-                            volume=int(b["volume"]),
-                        )
-                        for b in store_bars
-                    ]
-                    # After a self-heal retry that still returned under-coverage,
-                    # surface partial=True so the frontend knows to show a hint.
-                    _still_partial = (
-                        _heal_attempted
-                        and len(store_bars) < _SELF_HEAL_COVERAGE_THRESHOLD * days
-                    )
-                    result = HistoricalResponse(symbol=sym, instrument_token=None,
-                                                interval=interval, bars=bars,
-                                                partial=_still_partial)
-                    _hist_cache_put(cache_key, result,
-                                    _HIST_CACHE_TTL_EMPTY if _still_partial
-                                    else _HIST_CACHE_TTL_OK)
-                    if _ohlcv_trace_enabled():
-                        logger.info(
-                            f"[ohlcv-route] symbol={sym} exch={resolved_exch} "
-                            f"from={from_d_daily} to={to_d_daily} bars={len(bars)} "
-                            f"source=ohlcv_store heal={_heal_attempted}"
-                        )
-                    return result
-                else:
-                    if _ohlcv_trace_enabled():
-                        logger.info(
-                            f"[ohlcv-route] symbol={sym} exch={resolved_exch} "
-                            f"from={from_d_daily} to={to_d_daily} bars=0 "
-                            "source=ohlcv_store — falling through to broker loop"
-                        )
-            except Exception as _store_exc:
-                logger.warning(
-                    f"options historical: ohlcv_store failed for {sym}/{resolved_exch}: "
-                    f"{_store_exc} — falling through to broker"
-                )
+            result = await _historical_ohlcv_store(
+                sym, exchange, days,
+                _hist_cache_put, _ohlcv_trace_enabled,
+                _self_heal_log_once, _SELF_HEAL_COVERAGE_THRESHOLD,
+                _HIST_CACHE_TTL_OK, _HIST_CACHE_TTL_EMPTY,
+                HistoricalBar, HistoricalResponse,
+            )
+            if result is not None:
+                return result
 
         # ── Tier-1/2/3 store for intraday bars (5/15/30/60-minute) ───
-        # Operator: "even chart data can go through refresh cycle."
-        # ChartWorkspace 1D / 1W views request intraday intervals and
-        # used to go direct to broker.historical_data. Now they walk
-        # the intraday_store per-date (memory → DB → broker) so the
-        # historical bars (yesterday and prior) hit cache + heal the
-        # DB; only today's bars (5-min TTL) ever touch the broker
-        # after the first warm.
-        #
-        # Per-day store calls dedup via the store's fetch lock, so
+        # Per-day store calls dedup via the store's fetch lock so
         # concurrent operators on the same chart share one broker
         # round-trip per date.
         if interval in ("5minute", "15minute", "30minute", "60minute"):
-            from datetime import date as _date, timedelta as _td
-            from backend.api.persistence.intraday_store import get_or_fetch_intraday
-            resolved_exch = (exchange or "NFO").upper()
-            to_d_intra    = _date.today()
-            from_d_intra  = to_d_intra - _td(days=days)
-            try:
-                merged: list[HistoricalBar] = []
-                cur = from_d_intra
-                while cur <= to_d_intra:
-                    day_bars = await get_or_fetch_intraday(
-                        sym, resolved_exch, cur, interval=interval,
-                    )
-                    if day_bars:
-                        for b in day_bars:
-                            merged.append(HistoricalBar(
-                                ts=str(b["bar_ts"]),
-                                open=float(b["open"]),
-                                high=float(b["high"]),
-                                low=float(b["low"]),
-                                close=float(b["close"]),
-                                volume=int(b.get("volume", 0)),
-                            ))
-                    cur += _td(days=1)
-
-                # ── Self-heal: retry with bypass_cache when today is empty ─
-                # If the store returned no bars at all (cold deploy, first
-                # open of a new symbol, or stale DB entry for today), check
-                # whether brokers are available and force a fresh fetch.
-                # Applies only when the market for the resolved exchange is
-                # currently open — closed-hours fallback is handled below.
-                if not merged:
-                    from backend.brokers.registry import get_historical_brokers as _ghb
-                    if _ghb():
-                        _self_heal_log_once(sym, resolved_exch, 0, days)
-                        merged_retry: list[HistoricalBar] = []
-                        cur2 = from_d_intra
-                        while cur2 <= to_d_intra:
-                            day_bars2 = await get_or_fetch_intraday(
-                                sym, resolved_exch, cur2, interval=interval,
-                                bypass_cache=True,
-                            )
-                            if day_bars2:
-                                for b in day_bars2:
-                                    merged_retry.append(HistoricalBar(
-                                        ts=str(b["bar_ts"]),
-                                        open=float(b["open"]),
-                                        high=float(b["high"]),
-                                        low=float(b["low"]),
-                                        close=float(b["close"]),
-                                        volume=int(b.get("volume", 0)),
-                                    ))
-                            cur2 += _td(days=1)
-                        merged = merged_retry
-
-                if merged:
-                    result = HistoricalResponse(symbol=sym, instrument_token=None,
-                                                interval=interval, bars=merged)
-                    _hist_cache_put(cache_key, result, _HIST_CACHE_TTL_OK)
-                    return result
-            except Exception as _store_exc:
-                logger.warning(
-                    f"options historical: intraday_store failed for {sym}/{resolved_exch}/"
-                    f"{interval}: {_store_exc} — falling through to broker"
-                )
+            result = await _historical_intraday_store(
+                sym, exchange, days, interval,
+                _hist_cache_put, _self_heal_log_once,
+                _HIST_CACHE_TTL_OK,
+                HistoricalBar, HistoricalResponse,
+            )
+            if result is not None:
+                return result
 
         # ── Closed-hours guard — prevent live broker historical_data calls ──
-        # For intraday intervals: if the market for the resolved exchange is
-        # currently closed AND the store already had bars (merged was non-empty),
-        # the caller would have returned above.  If we reach here with an
-        # intraday interval AND the market is closed, there are no bars in the
-        # store (off-session weekend / first deploy).  Return an empty response
-        # rather than hitting the broker — Kite historical_data will return 0
-        # bars for a closed session anyway, and the call consumes quota.
-        # Daily bars are cached in ohlcv_store; reaching the broker loop for
-        # `interval="day"` only happens on store miss, which is legitimate
-        # (e.g. a new symbol).  We only gate intraday here.
-        if interval in ("5minute", "15minute", "30minute", "60minute"):
-            try:
-                from backend.shared.helpers.date_time_utils import (
-                    is_any_segment_open, timestamp_indian,
-                )
-                if not is_any_segment_open(timestamp_indian()):
-                    logger.debug(
-                        f"options historical: market closed — skipping broker "
-                        f"for intraday {sym}/{interval}"
-                    )
-                    result = HistoricalResponse(symbol=sym, instrument_token=None,
-                                                interval=interval, bars=[])
-                    _hist_cache_put(cache_key, result, _HIST_CACHE_TTL_EMPTY)
-                    return result
-            except Exception:
-                pass  # fail-open: proceed to broker loop
+        # For intraday intervals when the store returned nothing and markets
+        # are closed, return an empty response rather than wasting quota.
+        guard_result = _historical_closed_guard(
+            sym, interval, _hist_cache_put, cache_key,
+            _HIST_CACHE_TTL_EMPTY, HistoricalResponse,
+        )
+        if guard_result is not None:
+            return guard_result
 
-        # ── Account-fallback loop ─────────────────────────────────────
+        # ── Account-fallback broker loop ──────────────────────────────
         # get_historical_brokers() returns the prioritised list of eligible
         # accounts (historical_data_enabled=True, not in rate-limit cool-off).
-        # When account A hits "Too many requests", _mark_rate_limited removes
-        # it from the list for _RATE_LIMIT_COOLOFF_SECONDS (30 s) and we
-        # try account B before giving up.
-        from backend.brokers.registry import (
-            get_historical_brokers, _mark_rate_limited,
+        return await _historical_broker_loop(
+            sym, exchange, days, interval,
+            _hist_cache_put, _ohlcv_trace_enabled, _record_first_cold_empty,
+            cache_key, _HIST_CACHE_TTL_OK, _HIST_CACHE_TTL_EMPTY,
+            HistoricalBar, HistoricalResponse,
+            _instruments_cache_get, _instruments_cache_put,
         )
-
-        if exchange:
-            exchange_arms: tuple[str, ...] = (exchange,)
-        else:
-            exchange_arms = ("NFO", "BFO", "NSE", "BSE", "MCX", "CDS")
-
-        brokers = get_historical_brokers()
-        if not brokers:
-            # No eligible account (all disabled or all in cool-off).
-            # `partial=True` signals to the frontend that this empty result
-            # is transient (cool-off will lift in 30s) — keep loading state
-            # up and retry instead of showing "No data available."
-            logger.warning(
-                f"options historical: no eligible brokers for {sym} "
-                f"(all historical_data_enabled=False or in rate-limit cool-off)"
-            )
-            result = HistoricalResponse(symbol=sym, instrument_token=None,
-                                        interval=interval, bars=[], partial=True)
-            _hist_cache_put(cache_key, result, _HIST_CACHE_TTL_EMPTY)
-            _record_first_cold_empty(sym)
-            return result
-
-        to_d   = datetime.now()
-        from_d = to_d - timedelta(days=days)
-
-        for broker in brokers:
-            broker_key = f"{broker.broker_id}/{broker.account}"
-            token: int | None = None
-            try:
-                # ── Instrument-token lookup ────────────────────────────
-                # When the caller passes an explicit exchange (e.g. "MCX"
-                # for commodity pins, "NSE" for underlying spot) we only
-                # try that one exchange — no need to walk 6 arms.  An
-                # empty exchange falls back to the full walk for discovery.
-                #
-                # Cached path: _INSTRUMENTS_CACHE holds {sym → token} per
-                # (broker_account, exchange) for 6 h. First miss does the
-                # full dump fetch; subsequent O(1) lookups skip Kite entirely
-                # and avoid the rate-limit storm that was killing chain-pulls.
-                for ex in exchange_arms:
-                    token_map = _instruments_cache_get(broker.account, ex)
-                    if token_map is None:
-                        insts = await asyncio.to_thread(broker.instruments, ex) or []
-                        # Build the FULL exchange-wide token map in one pass
-                        # so every subsequent option/future lookup in that
-                        # exchange hits cache.
-                        token_map = {}
-                        for inst in insts:
-                            ts = str(inst.get("tradingsymbol") or "").upper()
-                            tk = inst.get("instrument_token")
-                            if ts and tk:
-                                token_map[ts] = int(tk)
-                        _instruments_cache_put(broker.account, ex, token_map)
-                    tk = token_map.get(sym)
-                    if tk is not None:
-                        token = tk
-                        break
-
-                if not token:
-                    # This broker's instruments dump doesn't have the symbol.
-                    # Try the next broker (their dump may be fresher / different
-                    # exchange coverage). If every broker misses it we exit the
-                    # loop and return empty bars.
-                    continue
-
-                # ── Historical bars fetch ──────────────────────────────
-                raw = await asyncio.to_thread(
-                    broker.historical_data, token, from_d, to_d, interval
-                ) or []
-
-            except Exception as e:
-                msg = str(e).lower()
-                if "too many requests" in msg:
-                    _mark_rate_limited(broker_key)
-                    logger.warning(
-                        f"options historical: {broker.account} rate-limited, "
-                        f"falling through to next eligible account"
-                    )
-                else:
-                    logger.warning(
-                        f"options historical: {broker.account} error for "
-                        f"{sym}: {str(e)[:160]}"
-                    )
-                continue  # try the next broker
-
-            # ── Success — build response and cache it ──────────────────
-            bars = [
-                HistoricalBar(
-                    ts=str(b["date"]) if not isinstance(b.get("date"), datetime)
-                                      else b["date"].isoformat(),
-                    open=float(b.get("open") or 0),
-                    high=float(b.get("high") or 0),
-                    low=float(b.get("low") or 0),
-                    close=float(b.get("close") or 0),
-                    volume=int(b.get("volume") or 0),
-                )
-                for b in raw
-            ]
-            # `partial=True` when the broker round-trip returned zero bars —
-            # often a transient instruments-map miss or rate-limit blip on
-            # a single account; the next try (after the empty-cache TTL
-            # expires) usually succeeds. Frontend uses this to keep the
-            # loading state up rather than flash "No data available."
-            result = HistoricalResponse(symbol=sym, instrument_token=token,
-                                        interval=interval, bars=bars,
-                                        partial=not bool(bars))
-            _hist_cache_put(cache_key, result,
-                            _HIST_CACHE_TTL_OK if bars else _HIST_CACHE_TTL_EMPTY)
-            if not bars:
-                _record_first_cold_empty(sym)
-            if _ohlcv_trace_enabled():
-                logger.info(
-                    f"[ohlcv-route] symbol={sym} exchange={exchange or 'auto'} "
-                    f"days={days} interval={interval} bars={len(bars)} "
-                    f"source=broker_loop broker={broker.account}"
-                )
-            return result
-
-        # All brokers tried and none succeeded. If every broker missed the
-        # symbol (no token found on any) vs all errored, the outcome is
-        # the same — return graceful empty bars with a short-TTL cache so
-        # the next request retries quickly once cool-offs expire.
-        # `partial=True` because this CAN be transient (instruments map
-        # cold across both brokers + the next minute will succeed). The
-        # frontend retries once on partial; if the second response is also
-        # partial-empty, only THEN does it show "No data available."
-        _tried = exchange if exchange else "NFO/BFO/NSE/BSE/MCX/CDS"
-        logger.info(
-            f"options historical: '{sym}' not found or all brokers failed "
-            f"(exchanges={_tried}, brokers tried={[b.account for b in brokers]})"
-        )
-        result = HistoricalResponse(symbol=sym, instrument_token=None,
-                                    interval=interval, bars=[], partial=True)
-        _hist_cache_put(cache_key, result, _HIST_CACHE_TTL_EMPTY)
-        _record_first_cold_empty(sym)
-        if _ohlcv_trace_enabled():
-            logger.info(
-                f"[ohlcv-route] symbol={sym} exchange={exchange or 'auto'} "
-                f"days={days} interval={interval} bars=0 "
-                "source=broker_loop status=all_brokers_failed"
-            )
-        return result
 
     # ── Multi-leg strategy analytics (POST) ────────────────────────────
 
