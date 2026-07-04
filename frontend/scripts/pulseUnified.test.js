@@ -35,6 +35,11 @@ import {
   INDEX_TO_UNDERLYING,
 } from '../src/lib/data/pulseUnified.js';
 
+import {
+  baseDayPnlForPosition,
+  livePositionDayPnl,
+} from '../src/lib/data/nav.js';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FRONTEND_SRC = resolve(__dirname, '..', 'src');
 
@@ -748,7 +753,180 @@ describe('Reuse: import guard', () => {
   });
 });
 
-// ── 15. UX: edge cases ────────────────────────────────────────────────────────
+// ── 15. SSOT: MCX stale-ticker Day P&L — virtual-root regression ─────────────
+//
+// Reproduces the reported symptom: "adding CRUDEOIL to positions in Pulse
+// causes Day P&L to become 0."
+//
+// The stale-ticker fingerprint (MCX CRUDEOIL): broker ships last_price ===
+// close_price so day_change_val collapses to 0. With an overnight position
+// (oq > 0) baseDayPnlForPosition returns 0 (not the pnl fallback which
+// only fires when oq === 0). Day P&L is non-zero only when a live SSE tick
+// rescues it via livePositionDayPnl.
+//
+// Four permutations test the discriminating dimensions:
+//   A  market closed, no live tick  → day_pnl MUST be 0 (stale fingerprint)
+//   B  market open,  no live tick   → day_pnl MUST be 0 (tick not yet arrived)
+//   C  market open,  live tick      → day_pnl MUST be non-zero (rescued)
+//   D  RELIANCE control — unaffected in all permutations
+//
+// Watchlist-presence test: preceding mergeWatchlistRows with a CRUDEOIL
+// virtual-root entry must NOT change mergePositionRows output — confirming
+// the helpers are decoupled and the bug (if it reproduces) lives elsewhere.
+
+describe('MCX stale-ticker Day P&L (virtual-root regression)', () => {
+  // Stale overnight MCX position: last_price === close_price → dcv = 0.
+  const CRUDE_ROW = {
+    tradingsymbol: 'CRUDEOIL26JUNFUT',
+    exchange: 'MCX',
+    quantity: 100,
+    average_price: 6000,
+    last_price: 6050,
+    close_price: 6050,   // stale: same as last_price → dcv = 0 at broker
+    day_change_val: 0,
+    overnight_quantity: 100,
+    pnl: 5000,
+    realised: 0,
+    account: 'ZG',
+  };
+
+  // Control equity position — unaffected by MCX stale path.
+  const RELIANCE_ROW = {
+    tradingsymbol: 'RELIANCE',
+    exchange: 'NSE',
+    quantity: 10,
+    average_price: 3000,
+    last_price: 3100,
+    close_price: 3050,
+    day_change_val: 500,
+    overnight_quantity: 10,
+    pnl: 1000,
+    realised: 0,
+    account: 'ZG',
+  };
+
+  // Helper builds a posCtx with the REAL nav.js functions.
+  function realCtx(marketOpen) {
+    return {
+      snapOf: () => null,
+      getInst: null,
+      isMarketOpen: () => marketOpen,
+      baseDayPnlForPosition,  // real implementation from nav.js
+      directional: (cp) => cp,
+      leadAccount: (row) => row.accounts && row.accounts.size > 0 ? [...row.accounts][0] : null,
+      acctColor: () => null,
+    };
+  }
+
+  // ── A: market CLOSED, no live tick ──────────────────────────────────────────
+  test('A — closed market, stale MCX: day_pnl is 0', () => {
+    const byKey = makeByKey();
+    mergePositionRows(byKey, [CRUDE_ROW], true, {}, realCtx(false));
+    const row = byKey[`CRUDEOIL26JUNFUT${MAJOR_SUFFIX.positions}`];
+    assert.ok(row, 'row created');
+    // baseDayPnlForPosition: oq=100 > 0, so returns dcv = 0. No live tick.
+    assert.equal(row.day_pnl, 0, 'closed market + no tick → day_pnl 0');
+    assert.equal(row._broker_day_pnl, 0, '_broker_day_pnl 0 (dcv=0, oq>0)');
+  });
+
+  // ── B: market OPEN, no live tick ────────────────────────────────────────────
+  test('B — open market, stale MCX, no live tick: day_pnl is 0', () => {
+    const byKey = makeByKey();
+    mergePositionRows(byKey, [CRUDE_ROW], true, {}, realCtx(true));
+    const row = byKey[`CRUDEOIL26JUNFUT${MAJOR_SUFFIX.positions}`];
+    // legLiveLtp = null (empty cq), so livePositionDayPnl returns brokerDcv = 0.
+    assert.equal(row.day_pnl, 0, 'open market + no live tick → still 0');
+    assert.equal(row._broker_day_pnl, 0);
+  });
+
+  // ── C: market OPEN, live tick available → rescue path ───────────────────────
+  test('C — open market, live tick: day_pnl rescued from (ltp - close) * qty', () => {
+    const byKey = makeByKey();
+    // Simulate a live SSE tick: ltp has moved to 6080 vs close 6050.
+    const liveTick = 6080;
+    const cq = { 'MCX:CRUDEOIL26JUNFUT': { ltp: liveTick } };
+    mergePositionRows(byKey, [CRUDE_ROW], true, cq, realCtx(true));
+    const row = byKey[`CRUDEOIL26JUNFUT${MAJOR_SUFFIX.positions}`];
+    // Expected: realisedToday = dcv - (pollLtp - closePx)*qty = 0 - (6050-6050)*100 = 0
+    //           result = 0 + (6080 - 6050) * 100 = 3000
+    const expected = (liveTick - CRUDE_ROW.close_price) * CRUDE_ROW.quantity;
+    assert.equal(row.day_pnl, expected, 'live tick rescues day_pnl');
+    // _broker_day_pnl mirrors raw broker snapshot — remains 0.
+    assert.equal(row._broker_day_pnl, 0, '_broker_day_pnl stays 0 (broker dcv=0)');
+  });
+
+  // ── D: RELIANCE control — unaffected in all permutations ────────────────────
+  test('D — RELIANCE control: day_pnl = dcv = 500 regardless of MCX state', () => {
+    const byKey = makeByKey();
+    mergePositionRows(byKey, [RELIANCE_ROW], true, {}, realCtx(true));
+    const row = byKey[`RELIANCE${MAJOR_SUFFIX.positions}`];
+    // baseDayPnlForPosition: oq=10 > 0, dcv=500, returns dcv. No live tick.
+    assert.equal(row.day_pnl, 500, 'RELIANCE day_pnl = dcv');
+    assert.equal(row._broker_day_pnl, 500);
+  });
+
+  // ── E: watchlist CRUDEOIL virtual-root does NOT affect position row ──────────
+  test('E — watchlist CRUDEOIL presence does NOT change position Day P&L', () => {
+    // Without watchlist row.
+    const byKeyNoWl = makeByKey();
+    mergePositionRows(byKeyNoWl, [CRUDE_ROW, RELIANCE_ROW], true, {}, realCtx(true));
+
+    // With watchlist row for virtual root CRUDEOIL.
+    const byKeyWl = makeByKey();
+    const actLists = [{
+      id: 99, is_pinned: false,
+      items: [{ tradingsymbol: 'CRUDEOIL', exchange: 'MCX', id: 99, alias: null }],
+    }];
+    mergeWatchlistRows(byKeyWl, actLists, { snapOf: () => null, getInst: null });
+    mergePositionRows(byKeyWl, [CRUDE_ROW, RELIANCE_ROW], true, {}, realCtx(true));
+
+    const crudePosKey    = `CRUDEOIL26JUNFUT${MAJOR_SUFFIX.positions}`;
+    const reliancePosKey = `RELIANCE${MAJOR_SUFFIX.positions}`;
+
+    // Position day_pnl must be identical whether or not watchlist has CRUDEOIL.
+    assert.equal(
+      byKeyWl[crudePosKey].day_pnl,
+      byKeyNoWl[crudePosKey].day_pnl,
+      'CRUDEOIL watchlist entry does not alter CRUDEOIL26JUNFUT position day_pnl',
+    );
+    assert.equal(
+      byKeyWl[reliancePosKey].day_pnl,
+      byKeyNoWl[reliancePosKey].day_pnl,
+      'CRUDEOIL watchlist entry does not alter RELIANCE position day_pnl',
+    );
+
+    // Virtual-root watchlist row exists; actual-contract watchlist row does not.
+    const crudeWlKey = `CRUDEOIL${MAJOR_SUFFIX.watchlist}`;
+    assert.ok(byKeyWl[crudeWlKey], 'CRUDEOIL watchlist row present');
+    assert.equal(byKeyWl[crudePosKey]._majorGroup, 'positions', 'positions row is positions');
+  });
+
+  // ── F: fresh MCX intraday position (oq=0) — pnl-fallback fires ──────────────
+  test('F — new intraday MCX position (oq=0, dcv=0): uses pnl fallback', () => {
+    const intradayRow = {
+      tradingsymbol: 'CRUDEOIL26JUNFUT',
+      exchange: 'MCX',
+      quantity: 100,
+      average_price: 6000,
+      last_price: 6100,
+      close_price: 0,      // opened today — no prior close
+      day_change_val: 0,
+      overnight_quantity: 0,
+      pnl: 10000,
+      realised: 0,
+      account: 'ZG',
+    };
+    const byKey = makeByKey();
+    mergePositionRows(byKey, [intradayRow], true, {}, realCtx(true));
+    const row = byKey[`CRUDEOIL26JUNFUT${MAJOR_SUFFIX.positions}`];
+    // baseDayPnlForPosition: oq=0 && dcv=0 && pnl=10000 → returns pnl=10000.
+    assert.equal(row._broker_day_pnl, 10000, 'pnl fallback fires for oq=0 intraday');
+    // day_pnl also = 10000 when no live tick (livePositionDayPnl falls through to brokerDcv).
+    assert.equal(row.day_pnl, 10000, 'day_pnl = pnl fallback');
+  });
+});
+
+// ── 16. UX: edge cases ────────────────────────────────────────────────────────
 
 describe('UX: edge cases', () => {
   test('empty inputs produce no rows', () => {
