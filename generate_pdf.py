@@ -233,12 +233,15 @@ FRONT_MATTER = rf"""
     ([xshift=0.9in,yshift=-1.2in]current page.west)
     -- ([xshift=2.9in,yshift=-1.2in]current page.west);
 
-  % Author name + RamboQuant role — below rule.
-  \node[anchor=west] at ([xshift=0.9in,yshift=-1.55in]current page.west) {{%
+  % Author name + RamboQuant role + Claude-Code tagline — below rule.
+  \node[anchor=west] at ([xshift=0.9in,yshift=-1.5in]current page.west) {{%
     \color{{white}}\sffamily\LARGE\bfseries Ramana R Ambore, \textcolor{{ramboqamber}}{{FRM}}
   }};
-  \node[anchor=west] at ([xshift=0.9in,yshift=-1.9in]current page.west) {{%
-    \color{{ramboqcream}}\sffamily\large Forward Deployment Engineer \& Quant Developer
+  \node[anchor=west] at ([xshift=0.9in,yshift=-1.85in]current page.west) {{%
+    \color{{ramboqcream}}\sffamily\large Solo Engineer \& Quant Developer
+  }};
+  \node[anchor=west] at ([xshift=0.9in,yshift=-2.2in]current page.west) {{%
+    \color{{ramboqamber}}\sffamily\normalsize AI-augmented \textcolor{{ramboqcream}}{{$\bullet$}} built with Claude Code
   }};
 
   % Bottom rule.
@@ -367,11 +370,12 @@ The RamboQuant \textbf{{Complete Design Guide}} is a top-to-bottom developer + o
 \noindent
 {{\color{{ramboqnavy}}\sffamily\huge\bfseries Ramana R Ambore}}\ %
 \raisebox{{2pt}}{{\tikz{{\node[fill=ramboqamber,text=ramboqnavy,inner sep=2pt,inner xsep=5pt,rounded corners=2pt,font=\sffamily\small\bfseries]{{FRM}};}}}}\\[2pt]
-{{\color{{ramboqcopper}}\sffamily\normalsize\bfseries Forward Deployment Engineer \& Quantitative Developer --- RamboQuant LLP}}\\[2pt]
+{{\color{{ramboqcopper}}\sffamily\normalsize\bfseries Solo Engineer \& Quantitative Developer --- RamboQuant LLP}}\ %
+\raisebox{{1pt}}{{\tikz{{\node[fill=ramboqcopper,text=white,inner sep=1.5pt,inner xsep=5pt,rounded corners=2pt,font=\sffamily\footnotesize\bfseries]{{AI-AUGMENTED \textbullet\ CLAUDE CODE}};}}}}\\[2pt]
 {{\color{{ramboqamber}}\rule{{0.28\linewidth}}{{0.8pt}}}}\\[4pt]
 
 {{\color{{ramboqslate}}\sffamily\small
-\textbf{{30+ years}} across mainframe modernization and cloud-native financial platforms. Currently \textbf{{Principal System Analyst}} at \textbf{{Fidelity Investments}} --- leading billing-platform modernization on AWS + Snowflake and distributed fee-calculation engines --- and concurrently the \textbf{{Forward Deployment Engineer \& Quantitative Developer}} building \textbf{{RamboQuant}} end-to-end (live at \textbf{{ramboq.com}}).
+\textbf{{30+ years}} across mainframe modernization and cloud-native financial platforms. Currently \textbf{{Principal System Analyst}} at \textbf{{Fidelity Investments}} --- leading billing-platform modernization on AWS + Snowflake and distributed fee-calculation engines --- and concurrently the \textbf{{solo engineer + quantitative developer}} building \textbf{{RamboQuant}} end-to-end (live at \textbf{{ramboq.com}}), leveraging \textbf{{Claude Code}} as a force multiplier for platform-scale solo output.
 
 \vspace{{2pt}}
 \textbf{{FRM}} (GARP, 2022) and \textbf{{CFA Level~2}} candidate: the derivatives-risk, options-pricing (Black-Scholes / Greeks), and portfolio-analytics theory from those programs materialize directly as RamboQuant's derivatives layer, hedge-proxy $\beta$ regression, and units-based NAV accounting. The Master's in Computer Science + Fidelity engineering discipline (distributed systems, event-driven architecture, legacy-modernization patterns) keeps a multi-broker, real-time, single-operator platform correct and fast. \textbf{{NTT Innovation Award}} recipient (top-40 global innovator). Based in Merrimack, NH.
