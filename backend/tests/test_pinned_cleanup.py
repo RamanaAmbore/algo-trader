@@ -2,14 +2,16 @@
 Tests for seed_global_pinned: retired-symbol cleanup + default top-up.
 
 Five quality dimensions:
-  1. SSOT     — MARKETS_DEFAULT contains exactly the canonical 15 symbols.
-                NATURALGAS and SILVER (MCX) are NOT seeded (excluded). Migration
-                marker keys are the SSOT for cleanup waves.
+  1. SSOT     — MARKETS_DEFAULT contains exactly the canonical 23 symbols.
+                NATURALGAS is NOT seeded (excluded). SILVER MCX re-added as virtual
+                root in wave 5. _NEXT variants appear immediately after their roots.
+                Migration marker keys are the SSOT for cleanup waves.
   2. Perf     — each wave is O(|wave|) targeted DELETEs (filter by symbol+exch),
                 not a full-table scan or truncation.
-  3. Stale    — NATURALGAS + SILVER absent from MARKETS_DEFAULT.
-                SILVERM/GOLD/GOLDM/CRUDEOIL/COPPER/USDINR present as first-class
-                bare roots. CDS roots use bare-root convention (no alias expansion).
+  3. Stale    — NATURALGAS absent from MARKETS_DEFAULT.
+                SILVERM/GOLD/GOLDM/CRUDEOIL/COPPER/SILVER/USDINR present as first-class
+                bare roots, each with their _NEXT back-month variant adjacent.
+                CDS roots use bare-root convention (no alias expansion).
   4. Reuse    — seed_global_pinned is the single call-site for cleanup + top-up.
   5. Correctness — scenario matrix:
        a. GOLDM + USDINR present AND migration markers not set → wave 1 deletes
@@ -23,11 +25,13 @@ Five quality dimensions:
        f. Migration is one-shot: marker present → DELETE not re-executed (so
           operator-re-added symbols survive).
        g. Operator re-adds NATURALGAS after wave-2 cleanup → preserved on next boot.
-       h. Empty global Pinned → 15-item Pinned after seed.
+       h. Empty global Pinned → 23-item Pinned after seed.
        i. SILVER (MCX) present AND wave-3 marker not set → wave 3 deletes it;
-          NOT re-added by top-up (SILVER absent from MARKETS_DEFAULT).
+          wave 5 re-adds it (SILVER now in MARKETS_DEFAULT as virtual root).
        j. USDINR contract rows (USDINR26JULFUT etc.) removed by wave 4; bare-root
           USDINR CDS re-added by top-up. Wave 4 is one-shot (marker guards re-fire).
+       k. Wave 5: _NEXT variants inserted adjacent to their roots; existing canonical
+          rows re-stamped to canonical sort_orders; operator extras pushed above band.
 """
 
 from __future__ import annotations
@@ -70,11 +74,14 @@ def test_naturalgas_removed_from_markets_default():
     )
 
 
-def test_silver_removed_from_markets_default():
-    """SILVER MCX was removed in wave 3 (operator confirmed mistake)."""
+def test_silver_back_in_markets_default_as_virtual_root():
+    """SILVER MCX was re-added in wave 5 as a virtual root (both root + _NEXT)."""
     from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
-    assert ("SILVER", "MCX") not in MARKETS_DEFAULT, (
-        "SILVER MCX must NOT be in MARKETS_DEFAULT — removed in wave 3"
+    assert ("SILVER", "MCX") in MARKETS_DEFAULT, (
+        "SILVER MCX must be in MARKETS_DEFAULT — re-added as virtual root in wave 5"
+    )
+    assert ("SILVER_NEXT", "MCX") in MARKETS_DEFAULT, (
+        "SILVER_NEXT MCX must be in MARKETS_DEFAULT — back-month pair of SILVER"
     )
 
 
@@ -131,14 +138,44 @@ def test_silverbees_in_markets_default():
 
 
 # ---------------------------------------------------------------------------
-# Dimension 1 — MARKETS_DEFAULT has exactly 15 entries (SILVER removed wave 3)
+# Dimension 1 — MARKETS_DEFAULT has exactly 23 entries (wave 5 adds _NEXT variants)
 # ---------------------------------------------------------------------------
 
 def test_markets_default_count():
     from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
-    assert len(MARKETS_DEFAULT) == 15, (
-        f"MARKETS_DEFAULT must have 15 entries; got {len(MARKETS_DEFAULT)}"
+    assert len(MARKETS_DEFAULT) == 23, (
+        f"MARKETS_DEFAULT must have 23 entries; got {len(MARKETS_DEFAULT)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Dimension 1 — _NEXT adjacency invariant: every _NEXT must immediately follow root
+# ---------------------------------------------------------------------------
+
+def test_next_variants_adjacent_to_roots():
+    """Each FOO_NEXT entry must appear immediately after FOO in MARKETS_DEFAULT."""
+    from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
+    for i, (sym, exch) in enumerate(MARKETS_DEFAULT):
+        if sym.endswith("_NEXT"):
+            bare_root = sym[:-5]
+            assert i > 0, f"{sym}: _NEXT entry at index 0 has no root before it"
+            prev_sym, prev_exch = MARKETS_DEFAULT[i - 1]
+            assert prev_sym == bare_root and prev_exch == exch, (
+                f"{sym} at index {i} must be immediately after {bare_root} ({exch}); "
+                f"got {prev_sym} ({prev_exch}) at index {i - 1}"
+            )
+
+
+def test_sort_order_uses_index_times_ten():
+    """markets_default_rows() must assign sort_order = index × 10."""
+    from backend.api.algo.watchlist_defaults import markets_default_rows, MARKETS_DEFAULT
+    rows = markets_default_rows()
+    assert len(rows) == len(MARKETS_DEFAULT)
+    for i, row in enumerate(rows):
+        assert row["sort_order"] == i * 10, (
+            f"Entry {i} ({row['tradingsymbol']}): expected sort_order={i * 10}, "
+            f"got {row['sort_order']}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +247,14 @@ def test_wave4_migration_key_present():
     )
     assert "USDINR" in src and "CDS" in src, (
         "Wave-4 cleanup must reference USDINR CDS"
+    )
+
+
+def test_wave5_migration_key_present():
+    """Wave-5 marker seeds _NEXT variants and re-stamps sort_orders for adjacency."""
+    src = _wl_text()
+    assert "migrations.pinned_seed_next_variants_v1" in src, (
+        "Wave-5 migration key must be present in seed_global_pinned"
     )
 
 
@@ -573,13 +618,13 @@ async def test_operator_readd_after_cleanup_preserved(db_session):
 
 
 # ---------------------------------------------------------------------------
-# Dimension 5h — Empty global Pinned → exactly 15 items after seed
+# Dimension 5h — Empty global Pinned → exactly 23 items after seed
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_empty_pinned_seeds_to_15_items(db_session):
-    """Fresh DB with no items: seed must produce exactly 15 canonical entries
-    (16 − 1 for SILVER MCX removed in wave 3)."""
+async def test_empty_pinned_seeds_to_23_items(db_session):
+    """Fresh DB with no items: seed must produce exactly 23 canonical entries
+    (7 indices + 2 ETFs + 6 MCX pairs + 1 CDS pair = 23)."""
     await _make_global_pinned(db_session)
 
     await _run_seed(db_session)
@@ -589,18 +634,19 @@ async def test_empty_pinned_seeds_to_15_items(db_session):
     count = (await db_session.execute(
         select(func.count()).select_from(_WatchlistItem)
     )).scalar()
-    assert count == 15, f"Expected 15 items from empty seed, got {count}"
-    assert len(MARKETS_DEFAULT) == 15
+    assert count == 23, f"Expected 23 items from empty seed, got {count}"
+    assert len(MARKETS_DEFAULT) == 23
 
 
 # ---------------------------------------------------------------------------
-# Dimension 5i — SILVER MCX present + wave-3 not run → deleted + NOT re-added
+# Dimension 5i — SILVER MCX present + wave-3 not run → deleted by wave 3,
+# then re-added by wave 5 (SILVER now back in MARKETS_DEFAULT as virtual root)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_silver_removed_by_wave3(db_session):
-    """Wave-3 fires and deletes SILVER MCX. Top-up does NOT re-add it
-    (SILVER absent from MARKETS_DEFAULT)."""
+async def test_silver_removed_by_wave3_then_readded_by_wave5(db_session):
+    """Wave-3 fires and deletes SILVER MCX. Wave-5 re-adds it because SILVER
+    is now back in MARKETS_DEFAULT as a virtual root (bare root + _NEXT pair)."""
     wl_id = await _make_global_pinned(db_session)
     await _insert_items(db_session, wl_id, [
         ("SILVER",   "MCX"),
@@ -610,8 +656,12 @@ async def test_silver_removed_by_wave3(db_session):
     await _run_seed(db_session)
 
     syms = await _symbols(db_session)
-    assert ("SILVER", "MCX") not in syms, (
-        "SILVER MCX must be removed by wave-3 migration"
+    # Wave 5 re-adds SILVER + SILVER_NEXT (both now in MARKETS_DEFAULT)
+    assert ("SILVER", "MCX") in syms, (
+        "SILVER MCX must be re-added by wave-5 (now in MARKETS_DEFAULT as virtual root)"
+    )
+    assert ("SILVER_NEXT", "MCX") in syms, (
+        "SILVER_NEXT MCX must be inserted by wave-5 (_NEXT pair for SILVER)"
     )
     assert ("NIFTY 50", "NSE") in syms, "NIFTY 50 must be preserved"
 
@@ -746,3 +796,126 @@ async def test_bare_root_usdinr_not_touched_by_wave4(db_session):
         "Bare-root USDINR CDS must not be deleted by wave-4"
     )
     assert ("NIFTY 50", "NSE") in syms
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5k — Wave 5: _NEXT adjacency + sort_order stamp + extras pushed
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_wave5_inserts_next_variants(db_session):
+    """Wave-5 inserts missing _NEXT variants for every MCX/CDS root and
+    stamps canonical sort_orders (index × 10) on existing rows."""
+    wl_id = await _make_global_pinned(db_session)
+    # Start with only bare roots (no _NEXT variants)
+    await _insert_items(db_session, wl_id, [
+        ("GOLD",     "MCX"),
+        ("USDINR",   "CDS"),
+        ("NIFTY 50", "NSE"),
+    ])
+
+    await _run_seed(db_session)
+
+    syms = await _symbols(db_session)
+    assert ("GOLD_NEXT",    "MCX") in syms, "GOLD_NEXT must be inserted by wave-5"
+    assert ("USDINR_NEXT",  "CDS") in syms, "USDINR_NEXT must be inserted by wave-5"
+    assert ("GOLD",         "MCX") in syms, "GOLD bare root must be preserved"
+    assert ("USDINR",       "CDS") in syms, "USDINR bare root must be preserved"
+    assert ("NIFTY 50",     "NSE") in syms, "NIFTY 50 must be preserved"
+
+
+@pytest.mark.asyncio
+async def test_wave5_next_adjacent_to_root(db_session):
+    """After wave-5, every _NEXT variant must have sort_order exactly 10 more
+    than its bare root (adjacent in the canonical scheme)."""
+    wl_id = await _make_global_pinned(db_session)
+
+    await _run_seed(db_session)
+
+    from sqlalchemy import select as sa_select
+    rows = (await db_session.execute(
+        sa_select(_WatchlistItem).where(_WatchlistItem.watchlist_id == wl_id)
+    )).scalars().all()
+    sort_by_sym = {(r.tradingsymbol.upper(), r.exchange.upper()): r.sort_order
+                   for r in rows}
+
+    from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
+    for i, (sym, exch) in enumerate(MARKETS_DEFAULT):
+        if sym.endswith("_NEXT"):
+            bare = sym[:-5]
+            root_key  = (bare.upper(), exch.upper())
+            next_key  = (sym.upper(),  exch.upper())
+            assert root_key in sort_by_sym, f"{bare} ({exch}) must exist after seed"
+            assert next_key in sort_by_sym, f"{sym} ({exch}) must exist after seed"
+            assert sort_by_sym[next_key] == sort_by_sym[root_key] + 10, (
+                f"{sym} sort_order ({sort_by_sym[next_key]}) must be "
+                f"{bare} sort_order ({sort_by_sym[root_key]}) + 10"
+            )
+
+
+@pytest.mark.asyncio
+async def test_wave5_operator_extras_pushed_above_canonical_band(db_session):
+    """Operator extras with sort_order < canonical_max must be pushed above
+    len(MARKETS_DEFAULT) × 10 + 100 by wave-5."""
+    wl_id = await _make_global_pinned(db_session)
+    # Insert operator extra at a low sort_order that would collide with canonical
+    now = datetime.now(timezone.utc)
+    db_session.add(_WatchlistItem(
+        watchlist_id=wl_id,
+        tradingsymbol="TATASTEEL",
+        exchange="NSE",
+        sort_order=5,   # low — in canonical range
+        added_at=now,
+    ))
+    await db_session.flush()
+
+    await _run_seed(db_session)
+
+    from sqlalchemy import select as sa_select
+    from backend.api.algo.watchlist_defaults import MARKETS_DEFAULT
+    rows = (await db_session.execute(
+        sa_select(_WatchlistItem).where(
+            _WatchlistItem.watchlist_id == wl_id,
+            _WatchlistItem.tradingsymbol == "TATASTEEL",
+        )
+    )).scalars().all()
+    assert len(rows) == 1, "TATASTEEL must still exist (not deleted by wave-5)"
+    canonical_max = len(MARKETS_DEFAULT) * 10 + 100
+    assert rows[0].sort_order >= canonical_max, (
+        f"TATASTEEL sort_order ({rows[0].sort_order}) must be ≥ {canonical_max} "
+        f"(pushed above canonical band by wave-5)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_wave5_is_idempotent(db_session):
+    """Running seed twice after wave-5 must not create duplicate rows or
+    shift sort_orders on the second run."""
+    wl_id = await _make_global_pinned(db_session)
+
+    await _run_seed(db_session)
+
+    # Snapshot sort_orders after first run
+    from sqlalchemy import select as sa_select
+    rows_first = (await db_session.execute(
+        sa_select(_WatchlistItem).where(_WatchlistItem.watchlist_id == wl_id)
+    )).scalars().all()
+    sorts_first = {(r.tradingsymbol.upper(), r.exchange.upper()): r.sort_order
+                   for r in rows_first}
+    count_first = len(rows_first)
+
+    await _run_seed(db_session)
+
+    rows_second = (await db_session.execute(
+        sa_select(_WatchlistItem).where(_WatchlistItem.watchlist_id == wl_id)
+    )).scalars().all()
+    sorts_second = {(r.tradingsymbol.upper(), r.exchange.upper()): r.sort_order
+                    for r in rows_second}
+
+    assert len(rows_second) == count_first, (
+        f"Row count must not change on second seed: {count_first} → {len(rows_second)}"
+    )
+    for key, so in sorts_first.items():
+        assert sorts_second.get(key) == so, (
+            f"{key} sort_order changed on second seed: {so} → {sorts_second.get(key)}"
+        )
