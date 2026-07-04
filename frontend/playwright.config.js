@@ -7,6 +7,9 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   workers: process.env.CI ? 1 : undefined,
   reporter: process.env.CI ? 'github' : 'list',
+  // Default per-test timeout. beforeAll hooks with loginAsAdmin + slow
+  // dev-server pages (SSE keeps networkidle busy) need headroom beyond 30 s.
+  timeout: 90_000,
 
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5174',
