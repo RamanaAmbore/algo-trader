@@ -2,15 +2,34 @@
 
 ## About the author
 
-**Ramana Ambore** — platform engineer for **RamboQuant LLP**.
+**Ramana R Ambore, FRM** — Principal FinTech Engineer & Quantitative Developer, platform engineer for **RamboQuant LLP**.
+
+Principal FinTech engineer and quantitative developer with **30+ years** across mainframe modernization and cloud-native financial platforms. **FRM** (GARP, 2022) and **CFA Level 2** candidate with a Master's in Computer Science. Currently **Principal System Analyst** at **Fidelity Investments**, leading billing-platform modernization on AWS + Snowflake, alongside proprietary legacy modernization tooling. Deep specialism in derivatives risk and options pricing — Black-Scholes, Greeks modeling, multi-leg strategy analytics — carried directly into RamboQuant's derivatives layer. **NTT Innovation Award** recipient (top-40 global innovator). Based in Merrimack, NH.
+
+### Experience & recognition
+
+| | |
+|---|---|
+| **Current role** | Principal System Analyst · Fidelity Investments — billing-platform modernization on AWS + Snowflake; distributed fee-calculation engines. |
+| **Industry depth** | 30+ years FinTech, mainframe to cloud-native — derivatives risk, options pricing (Black-Scholes, Greeks), multi-leg strategy analytics. |
+| **Recognition** | NTT Innovation Award — top-40 global innovator, selected for financial-services engineering. |
+
+### Credentials
+
+FRM (GARP, 2022) · CFA Level 2 · Master's, Computer Science · Six Sigma Green Belt · IBM Certified DB2 DBA · Sun Certified Java Programmer.
+
+### Links
+
+- **Website**: [ramboq.com](https://ramboq.com)
+- **Profile**: [ramanaambore.me](https://ramanaambore.me)
+- **Contact**: through the ramboq.com contact page
+- **Repo**: private; access via RamboQuant LLP
+
+### RamboQuant platform scope
 
 Builds and maintains the RamboQuant platform end-to-end: a production application covering multi-broker order routing, real-time market data pipelines, options analytics, portfolio tracking, and operator + investor-facing tooling.
 
-Full-stack scope: SvelteKit + Svelte 5 frontend, Litestar / Python async API, PostgreSQL, Kite / Dhan / Groww broker adapters, KiteTicker WebSocket + shared-memory tick pipeline, Gemini-driven market summaries, MCP-integrated research tooling, and web-vitals-tracked deploys.
-
-- **Website**: [ramboq.com](https://ramboq.com)
-- **Repo**: private; access via RamboQuant LLP
-- **Contact**: through the ramboq.com contact page
+**Tech Stack**: SvelteKit + Svelte 5 frontend · Litestar / Python async API · PostgreSQL with async SQLAlchemy 2.x · Kite / Dhan / Groww broker adapters · KiteTicker WebSocket + shared-memory tick pipeline · Gemini-driven market summaries · MCP-integrated research tooling · web-vitals-tracked deploys.
 
 ## About this document
 
