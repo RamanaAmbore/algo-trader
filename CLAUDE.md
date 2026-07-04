@@ -1599,6 +1599,7 @@ immediately (within one event-loop tick) before resuming its normal cadence.
 | Chart self-heal threshold | `/admin/settings` → Persistence → `chart_self_heal_coverage_threshold` (default 0.70). Auto-fetch from broker if <70% of requested days present in DB. |
 | Backfill admin endpoint | `POST /api/admin/persistence/backfill?kind=daily\|intraday\|both` (admin-guarded). Starts async coverage repair for 300-symbol universe. |
 | Backfill CLI (immediate) | `scripts/persistence_mode.py off\|soft\|hard\|status` (reads operator login) + `scripts/backfill_ohlcv.py --daily --intraday` for prod defect-recovery. |
+| Perf dashboard | `frontend/src/routes/(algo)/admin/perf/+page.svelte` — reads `/api/admin/perf/{latest,history,regressions}`. Card grid per (side, page_or_route), top 8 FE + BE by LOC. Regression badges amber (10-25%) / red (>25%). Two 60px hand-rolled SVG sparklines per card (cc_max + LCP/p95). `frontend/src/lib/api.js` — `fetchPerfLatest`, `fetchPerfHistory`, `fetchPerfRegressions`. Data refreshed nightly at 04:00 IST by `_task_perf_snapshot` (background.py). |
 | Virtual root display (MCX/CDS) | `backend/api/algo/symbol_resolver.py` — `list_active_futures`, `resolve_symbol`, `root_of`. Frontend: `frontend/src/lib/data/rootOf.js`. Add new MCX roots to `MCX_VIRTUAL_ROOTS` frozenset; add CDS pairs to `CDS_VIRTUAL_ROOTS`. New instruments auto-resolve (uses live cache). |
 | MCX lot-size overrides | `backend/api/routes/instruments.py` `_MCX_LOT_OVERRIDES` dict — Kite reports lot_size=1 for all MCX; override here. |
 
