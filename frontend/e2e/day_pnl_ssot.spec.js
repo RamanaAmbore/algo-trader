@@ -12,14 +12,20 @@
  *
  * Fix: both reads now go through baseDayPnlForPosition(r) from $lib/data/nav.
  * baseDayPnlForPosition is the frontend SSOT for the new-position override:
- *   oq === 0 && pnl !== 0  →  day = pnl   (opened today, broker's dcv is stale 0)
- *   else                   →  day = day_change_val
+ *   oq === 0 && dcv === 0 && pnl !== 0  →  day = pnl   (opened today, broker dcv stale 0)
+ *   else                                →  day = day_change_val
+ *
+ * After commit f378ce53 "Refactor: MarketPulse.svelte — migrate buildUnified to
+ * pulseUnified helpers", the Day P&L logic moved from MarketPulse.svelte to
+ * src/lib/data/pulseUnified.js. The static-source guards below check the new
+ * file locations. MarketPulse.svelte still imports baseDayPnlForPosition (passed
+ * as ctx to helpers) so the import check stays in MarketPulse.svelte.
  *
  * Quality dimensions:
  *   SSOT     — grep confirms baseDayPnlForPosition is imported in MarketPulse
- *               and called for both `brokerDcv` and `_broker_day_pnl`
+ *               and called for brokerDcv + _broker_day_pnl in pulseUnified.js
  *   Perf     — no XHR budget regression on /pulse
- *   Stale    — grep confirms raw `r.day_change_val` reads in positions loop
+ *   Stale    — grep confirms raw r.day_change_val reads in positions loop
  *               are replaced; holdings loop is unaffected (no overnight_quantity)
  *   Reusable — same import path as derivatives page and PositionStrip
  *   UX       — pulse position card and NavStrip P slot 1 show consistent values
@@ -35,6 +41,11 @@ const BASE = process.env.PLAYWRIGHT_BASE_URL || 'https://dev.ramboq.com';
 const MP_SRC = path.resolve(
   process.cwd(),
   'src/lib/MarketPulse.svelte'
+);
+
+const PULSE_UNIFIED_SRC = path.resolve(
+  process.cwd(),
+  'src/lib/data/pulseUnified.js'
 );
 
 const NAV_SRC = path.resolve(
@@ -53,33 +64,33 @@ test('SSOT: MarketPulse imports baseDayPnlForPosition from $lib/data/nav', () =>
   ).toBe(true);
 });
 
-test('SSOT: MarketPulse brokerDcv uses baseDayPnlForPosition, not raw day_change_val', () => {
-  const src = fs.readFileSync(MP_SRC, 'utf8');
+test('SSOT: pulseUnified brokerDcv uses baseDayPnlForPosition, not raw day_change_val', () => {
+  // After f378ce53 the Day P&L accumulation logic lives in pulseUnified.js,
+  // not MarketPulse.svelte. Check the helper module.
+  const src = fs.readFileSync(PULSE_UNIFIED_SRC, 'utf8');
 
-  // The old raw read pattern
+  // The old raw read pattern must not appear in the positions section
   expect(
     src.includes('const brokerDcv = Number(r.day_change_val) || 0'),
-    'Old "const brokerDcv = Number(r.day_change_val) || 0" must be removed from MarketPulse'
+    'Old "const brokerDcv = Number(r.day_change_val) || 0" must not be in pulseUnified'
   ).toBe(false);
 
   // The new SSOT pattern
   expect(
     src.includes('const brokerDcv = baseDayPnlForPosition(r)'),
-    'MarketPulse must use "const brokerDcv = baseDayPnlForPosition(r)"'
+    'pulseUnified must use "const brokerDcv = baseDayPnlForPosition(r)"'
   ).toBe(true);
 });
 
-test('SSOT: MarketPulse _broker_day_pnl positions-loop mirror uses baseDayPnlForPosition', () => {
-  const src = fs.readFileSync(MP_SRC, 'utf8');
+test('SSOT: pulseUnified _broker_day_pnl positions-loop mirror uses baseDayPnlForPosition', () => {
+  // After f378ce53 the _broker_day_pnl assignments live in pulseUnified.js.
+  // There are two assignment sites in that file:
+  //   1. mergePositionRows — MUST use baseDayPnlForPosition(r) (the fix)
+  //   2. mergeHoldingRows  — keeps raw day_change_val (correct; no overnight_quantity on holdings)
+  const src = fs.readFileSync(PULSE_UNIFIED_SRC, 'utf8');
 
-  // There are two _broker_day_pnl assignment sites:
-  //   1. Positions loop — MUST use baseDayPnlForPosition(r) (the fix)
-  //   2. Holdings loop  — keeps raw day_change_val (correct; no overnight_quantity on holdings)
-  //
-  // Verify the positions-loop occurrence (first) uses baseDayPnlForPosition.
-  // Strategy: split on the first occurrence and check that it contains baseDayPnlForPosition.
   const firstOccIdx = src.indexOf('row._broker_day_pnl =');
-  expect(firstOccIdx, 'First _broker_day_pnl assignment must exist').toBeGreaterThan(0);
+  expect(firstOccIdx, 'First _broker_day_pnl assignment must exist in pulseUnified').toBeGreaterThan(0);
 
   const firstOccLine = src.slice(firstOccIdx, firstOccIdx + 120);
   expect(
@@ -102,10 +113,12 @@ test('SSOT: nav.js defines baseDayPnlForPosition with new-position override', ()
     'nav.js must export baseDayPnlForPosition'
   ).toBe(true);
 
-  // The override: oq=0 && pnl!=0 -> return pnl
+  // The override: oq=0 && dcv=0 && pnl!=0 -> return pnl
+  // (dcv === 0 guard was added in 59b8fbc1 to defend against the overnight-snapshot
+  // path where overnight_quantity=0 but day_change_val is non-zero and correct)
   expect(
-    src.includes('if (oq === 0 && pnl !== 0) return pnl'),
-    'baseDayPnlForPosition must contain the new-position override: if (oq === 0 && pnl !== 0) return pnl'
+    src.includes('if (oq === 0 && dcv === 0 && pnl !== 0) return pnl'),
+    'baseDayPnlForPosition must contain: if (oq === 0 && dcv === 0 && pnl !== 0) return pnl'
   ).toBe(true);
 
   // Falls back to day_change_val
@@ -115,34 +128,33 @@ test('SSOT: nav.js defines baseDayPnlForPosition with new-position override', ()
   ).toBe(true);
 });
 
-test('STALE: MarketPulse holdings loop still uses raw day_change_val (correct — no overnight_quantity)', () => {
-  const src = fs.readFileSync(MP_SRC, 'utf8');
-
+test('STALE: pulseUnified holdings loop still uses raw day_change_val (correct — no overnight_quantity)', () => {
+  // After f378ce53 the _broker_day_pnl assignments live in pulseUnified.js.
   // Holdings rows don't carry overnight_quantity so baseDayPnlForPosition
-  // is not applicable (it would just return day_change_val anyway via the dcv
-  // fallback — but keeping it explicit avoids confusion).
-  // The holdings _broker_day_pnl mirror line (line ~3193) should remain
-  // using raw Number(r.day_change_val) || 0.
-  // This test ensures the holdings loop was NOT accidentally changed.
+  // is not applicable (it would return day_change_val via the dcv fallback anyway,
+  // but keeping it explicit in mergeHoldingRows avoids confusion).
+  // This test ensures the holdings loop in pulseUnified was NOT accidentally changed.
   //
-  // Strategy: count occurrences of `_broker_day_pnl` — there should be exactly
-  // 2 (one in positions loop, one in holdings loop). The positions one uses
-  // baseDayPnlForPosition, the holdings one uses raw day_change_val.
+  // Strategy: count occurrences in pulseUnified — should be exactly 2
+  // (mergePositionRows and mergeHoldingRows). Positions uses baseDayPnlForPosition;
+  // holdings uses raw day_change_val.
+  const src = fs.readFileSync(PULSE_UNIFIED_SRC, 'utf8');
+
   const brokerDayPnlCount = (src.match(/row\._broker_day_pnl\s*=/g) || []).length;
   expect(
     brokerDayPnlCount,
-    '_broker_day_pnl should be assigned exactly twice (positions + holdings loops)'
+    'pulseUnified: _broker_day_pnl should be assigned exactly twice (positions + holdings)'
   ).toBe(2);
 
   // The holdings assignment (second occurrence) still uses raw day_change_val
   const firstOccurrence = src.indexOf('row._broker_day_pnl =');
   const secondOccurrence = src.indexOf('row._broker_day_pnl =', firstOccurrence + 1);
-  expect(secondOccurrence, 'Second _broker_day_pnl assignment must exist').toBeGreaterThan(0);
+  expect(secondOccurrence, 'Second _broker_day_pnl assignment must exist in pulseUnified').toBeGreaterThan(0);
 
   const secondLine = src.slice(secondOccurrence, secondOccurrence + 120);
   expect(
     secondLine.includes('day_change_val'),
-    'Holdings _broker_day_pnl assignment should still use raw day_change_val'
+    'Holdings _broker_day_pnl in pulseUnified must still use raw day_change_val'
   ).toBe(true);
 });
 
