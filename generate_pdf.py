@@ -320,7 +320,8 @@ The RamboQuant \textbf{{Complete Design Guide}} is a top-to-bottom developer + o
       {{\color{{ramboqcopper}}\sffamily\small\bfseries \href{{https://ramboq.com}}{{ramboq.com}}}} \\[8pt]
       \multicolumn{{3}}{{@{{}}p{{0.965\linewidth}}@{{}}}}{{%
         {{\color{{ramboqnavy}}\sffamily\small\bfseries Tech Stack}}\newline
-        {{\color{{ramboqslate}}\sffamily\small SvelteKit \textcolor{{ramboqcopper}}{{$\bullet$}} Litestar \textcolor{{ramboqcopper}}{{$\bullet$}} PostgreSQL \textcolor{{ramboqcopper}}{{$\bullet$}} async SQLAlchemy 2.x \textcolor{{ramboqcopper}}{{$\bullet$}} KiteTicker WebSocket \textcolor{{ramboqcopper}}{{$\bullet$}} Kite / Dhan / Groww adapters \textcolor{{ramboqcopper}}{{$\bullet$}} MCP \textcolor{{ramboqcopper}}{{$\bullet$}} Gemini}}
+        {{\color{{ramboqslate}}\sffamily\small SvelteKit \textcolor{{ramboqcopper}}{{$\bullet$}} Litestar \textcolor{{ramboqcopper}}{{$\bullet$}} PostgreSQL \textcolor{{ramboqcopper}}{{$\bullet$}} async SQLAlchemy 2.x \textcolor{{ramboqcopper}}{{$\bullet$}} KiteTicker WebSocket \textcolor{{ramboqcopper}}{{$\bullet$}} Kite / Dhan / Groww adapters \textcolor{{ramboqcopper}}{{$\bullet$}} MCP \textcolor{{ramboqcopper}}{{$\bullet$}} Gemini}}%
+        \vspace{{4pt}}
       }} \\
     \end{{tabular}}
   }};
