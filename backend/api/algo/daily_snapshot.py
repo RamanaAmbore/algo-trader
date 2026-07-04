@@ -144,6 +144,102 @@ def kite_seg_from_exchange(exchange: str) -> str:
 # Per-account fetch helpers (sync — run in executor)
 # ---------------------------------------------------------------------------
 
+def _backfill_market_data_dicts(rows: list[dict], *, qty_col: str = "opening_quantity") -> int:
+    """Groww / Dhan often ship holdings + positions with `last_price=0`
+    and `close_price=0` when their own market-data cache is cold. The
+    live routes (`/api/holdings`, `/api/positions`) run
+    `broker_apis.backfill_market_data(df)` after `pd.concat` so Kite
+    quote() patches the missing fields before the P&L math runs.
+
+    The snapshot writer used to skip that step, so Groww holdings +
+    positions rows landed at the `_is_zero_payload_row` guard (avg_cost
+    > 0 AND ltp=0 AND day_pnl=0 AND total_pnl=0 — a token-failure
+    fingerprint) and were dropped from `daily_book`. Public
+    `/performance` reads from the snapshot during closed hours and
+    therefore lost the entire Groww breakdown (GR87DF row absent from
+    Holdings grid + NAV grid).
+
+    This helper mirrors `backfill_market_data` for a list-of-dicts
+    payload. Builds a temporary pandas DataFrame, delegates to the
+    canonical patcher (same PriceBroker.quote fan-out, same last-good
+    fallback), then writes `last_price` + `close_price` back onto each
+    dict by positional index. In-place mutation matches the live route
+    convention.
+
+    Returns the number of rows patched (informational; the caller
+    doesn't need to react).
+    """
+    if not rows:
+        return 0
+    try:
+        import pandas as _pd
+        from backend.brokers.broker_apis import backfill_market_data as _bf
+    except Exception:
+        return 0
+    df = _pd.DataFrame(rows)
+    if df.empty:
+        return 0
+    # Ensure the columns backfill inspects exist — Groww holdings ships
+    # both `last_price` + `close_price`; Groww positions the same. If
+    # a broker skipped a column entirely, fill with zeros so the
+    # missing-value gate ( <= 0 ) still fires.
+    for _col in ("last_price", "close_price", "tradingsymbol", "exchange"):
+        if _col not in df.columns:
+            df[_col] = 0 if _col in ("last_price", "close_price") else ""
+    # backfill expects an `opening_quantity` column for the day_change
+    # recompute; positions ship `quantity` instead. Provide it as an
+    # alias so the recompute succeeds — no impact on our dicts (we only
+    # copy `last_price` / `close_price` back).
+    if qty_col == "quantity" and "opening_quantity" not in df.columns:
+        df["opening_quantity"] = df["quantity"] if "quantity" in df.columns else 0
+
+    try:
+        _bf(df)
+    except Exception as e:
+        logger.debug(f"snapshot backfill_market_data failed: {e}")
+        return 0
+
+    patched = 0
+    # Write the patched fields back onto the original dicts. iloc keeps
+    # us in sync with pandas' row order (which mirrors input list order
+    # from DataFrame constructor).
+    for i, r in enumerate(rows):
+        try:
+            _new_ltp = float(df.iloc[i]["last_price"] or 0)
+            _new_cls = float(df.iloc[i]["close_price"] or 0)
+        except (KeyError, IndexError, ValueError, TypeError):
+            continue
+        _old_ltp = float(r.get("last_price") or 0)
+        _old_cls = float(r.get("close_price") or 0)
+        if _new_ltp > 0 and _new_ltp != _old_ltp:
+            r["last_price"] = _new_ltp
+            patched += 1
+        if _new_cls > 0 and _new_cls != _old_cls:
+            r["close_price"] = _new_cls
+        # Recompute day_change / pnl on Groww-shape rows where the
+        # normaliser derived them from (ltp - close) but both were
+        # zero at that moment. After backfill lands both numbers,
+        # rewrite so the writer's `_is_zero_payload_row` doesn't
+        # filter the row on a stale zero.
+        try:
+            _avg = float(r.get("average_price") or 0)
+            # For holdings the qty column is `opening_quantity`; for
+            # positions it's `quantity`. Prefer the caller-specified
+            # column, fall back to whichever is present.
+            _qty = int(r.get(qty_col) or r.get("quantity")
+                        or r.get("opening_quantity") or 0)
+        except (ValueError, TypeError):
+            _avg = 0.0
+            _qty = 0
+        _cur_ltp = float(r.get("last_price") or 0)
+        _cur_cls = float(r.get("close_price") or 0)
+        if _cur_ltp > 0 and _avg > 0 and _qty and not r.get("pnl"):
+            r["pnl"] = (_cur_ltp - _avg) * _qty
+        if _cur_ltp > 0 and _cur_cls > 0 and not r.get("day_change"):
+            r["day_change"] = _cur_ltp - _cur_cls
+    return patched
+
+
 def _fetch_account_data(broker, account: str, target_date: date) -> dict:
     """
     Fetch holdings, positions, and (if target_date == today) trades for one
@@ -174,6 +270,26 @@ def _fetch_account_data(broker, account: str, target_date: date) -> dict:
         out["positions"] = raw_pos.get("net", [])
     except Exception as e:
         logger.warning(f"Snapshot [{account}] positions fetch failed: {e}")
+
+    # Market-data backfill — critical for Groww + Dhan where holdings /
+    # positions rows ship with `last_price=0` + `close_price=0` when
+    # the broker's own market-data cache is cold. Without this, the
+    # `_is_zero_payload_row` guard downstream drops every Groww row
+    # (avg_cost > 0 AND ltp=0 AND pnl=0 = token-failure fingerprint),
+    # which manifests operator-visibly as "Groww account breakdown
+    # missing from public /performance page". Mirrors the live routes
+    # (`/api/holdings`, `/api/positions`) which run the same backfill
+    # right after `pd.concat`.
+    try:
+        n_h = _backfill_market_data_dicts(out["holdings"], qty_col="opening_quantity")
+        n_p = _backfill_market_data_dicts(out["positions"], qty_col="quantity")
+        if n_h or n_p:
+            logger.info(
+                f"Snapshot [{account}] backfilled market data — "
+                f"holdings={n_h} positions={n_p} rows patched"
+            )
+    except Exception as e:
+        logger.warning(f"Snapshot [{account}] backfill failed (non-fatal): {e}")
 
     if is_today:
         try:
