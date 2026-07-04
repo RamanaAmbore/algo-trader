@@ -69,6 +69,7 @@ from backend.api.routes.live import LiveController
 from backend.api.routes.execution import ExecutionController
 from backend.api.routes.logs import LogsController
 from backend.api.routes.metrics import MetricsController
+from backend.api.routes.perf import PerfController
 from backend.api.routes.watchlist import WatchlistController
 from backend.api.routes.symbols import SymbolsController
 from backend.api.routes.ws import performance_ws_handler
@@ -218,6 +219,7 @@ _route_handlers = [
     ExecutionController,
     LogsController,
     MetricsController,
+    PerfController,
     ChartsController,
     OptionsController,
     BrokersController,
