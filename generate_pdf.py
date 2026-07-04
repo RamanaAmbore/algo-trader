@@ -233,9 +233,12 @@ FRONT_MATTER = rf"""
     ([xshift=0.9in,yshift=-1.2in]current page.west)
     -- ([xshift=2.9in,yshift=-1.2in]current page.west);
 
-  % Author name — below rule. Role/company line removed per operator.
+  % Author name + RamboQuant role — below rule.
   \node[anchor=west] at ([xshift=0.9in,yshift=-1.55in]current page.west) {{%
     \color{{white}}\sffamily\LARGE\bfseries Ramana R Ambore, \textcolor{{ramboqamber}}{{FRM}}
+  }};
+  \node[anchor=west] at ([xshift=0.9in,yshift=-1.9in]current page.west) {{%
+    \color{{ramboqcream}}\sffamily\large Forward Deployment Engineer \& Quant Developer
   }};
 
   % Bottom rule.
