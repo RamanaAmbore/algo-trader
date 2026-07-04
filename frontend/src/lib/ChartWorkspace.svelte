@@ -107,6 +107,7 @@
   } from '$lib/data/instruments';
   import { resolveUnderlying, MCX_COMMODITIES, CDS_CURRENCIES, INDEX_LTP_KEY } from '$lib/data/resolveUnderlying';
   import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';
+  import { displaySymbol } from '$lib/data/displaySymbol.js';
   import { visibleInterval } from '$lib/stores';
   import { priceFmt } from '$lib/format';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -2386,7 +2387,7 @@
   <div class="cw-info-strip">
     <span class="cw-info-sym">{_frontMonthInfo ? _frontMonthInfo.contract : (symbol || '—')}</span>
     {#if _frontMonthInfo && symbol !== _frontMonthInfo.contract}
-      <span class="cw-info-root">({symbol})</span>
+      <span class="cw-info-root">({displaySymbol(symbol)})</span>
     {/if}
     {#if _lastClose != null}
       <span class="cw-info-close">₹{priceFmt(_lastClose)}</span>
