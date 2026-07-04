@@ -163,6 +163,15 @@ HEADER = r"""
 
 % Slightly larger inter-paragraph spacing so tables + code breathe.
 \setlength{\parskip}{4pt plus 1pt}
+
+% Ensure the auto-generated TOC starts on its own page and the body
+% starts on a fresh page after the TOC (no shared page with content).
+\let\origTOC\tableofcontents
+\renewcommand{\tableofcontents}{%
+  \clearpage
+  \origTOC
+  \clearpage
+}
 """
 
 HEADER_FILE = Path("/tmp/ramboq_pdf_header.tex")
@@ -441,9 +450,21 @@ FRONT_MATTER_FILE = Path("/tmp/ramboq_pdf_front.tex")
 FRONT_MATTER_FILE.write_text(FRONT_MATTER)
 
 
-# Lua filter — forces explicit column widths on every table so `p{...}`
-# columns wrap long cells instead of overflowing the right margin.
+# Lua filter — two responsibilities:
+# (a) Force explicit p{...} column widths on every table so long cells
+#     wrap instead of overflowing the right margin.
+# (b) Strip MD sections that are already rendered in the TikZ front
+#     matter (About the author / About this document / Version / manual
+#     Table of contents). Keeps the MD file readable on GitHub while
+#     preventing duplication in the PDF.
 LUA_FILTER = r"""
+local skip_titles = {
+  ["About the author"] = true,
+  ["About this document"] = true,
+  ["Table of contents"] = true,
+  ["Version"] = true,
+}
+
 function Table(tbl)
   local ncols = #tbl.colspecs
   if ncols == 2 then
@@ -465,6 +486,48 @@ function Table(tbl)
     end
   end
   return tbl
+end
+
+-- Strip H2 sections whose title appears in skip_titles. Also strips
+-- non-header blocks (version metadata table etc.) that appear before
+-- the first kept H2 — they duplicate the TikZ front matter on page 2.
+-- The doc's H1 title is always kept and does NOT flip the leading gate.
+function Pandoc(doc)
+  local out = {}
+  local skipping = false
+  local past_leading = false
+
+  for _, block in ipairs(doc.blocks) do
+    if block.t == "Header" then
+      if block.level == 1 then
+        -- H1 title — keep; does not affect leading/skipping state.
+        skipping = false
+      elseif block.level == 2 then
+        local title = pandoc.utils.stringify(block)
+        skipping = false
+        for stop_title, _ in pairs(skip_titles) do
+          if title == stop_title or title:sub(1, #stop_title) == stop_title then
+            skipping = true
+            break
+          end
+        end
+        if not skipping then
+          past_leading = true
+        end
+      end
+      -- H3+ inherits current skipping state.
+    else
+      -- Non-header block before first kept H2 → strip.
+      if not past_leading then
+        goto skip_this
+      end
+    end
+    if not skipping then
+      table.insert(out, block)
+    end
+    ::skip_this::
+  end
+  return pandoc.Pandoc(out, doc.meta)
 end
 """
 LUA_FILTER_FILE = Path("/tmp/ramboq_pdf_tables.lua")

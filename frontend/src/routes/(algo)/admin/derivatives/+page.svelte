@@ -64,6 +64,13 @@
     annotateOptionCandidates, computeExpiryBands,
     rollupByUnderlying, perRootReduce,
   } from '$lib/data/derivativesMath.js';
+  import {
+    isFOSymbol, buildExpiryMatcher, buildCandidatePositions,
+    buildPositionRowFromBroker, buildHoldingRowFromBroker, bumpExcluded,
+    splitClosedReopened,
+    buildCleanLegs, computeLegsKey, didUnderlyingChange,
+    synthCacheKey, synthEquityOnlyStrategy,
+  } from '$lib/derivatives/pageLoad.js';
 
   // Row-level chart modal for Candidates panel rows.
   let _chartModalSym  = $state('');
@@ -1721,113 +1728,18 @@
   /** @type {{symbol:string,account:string,qty:number,opening_qty?:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,realised?:number,day_change_val?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string,proxy_for?:string,proxy_kind?:string}[]} */
   const candidatePositions = $derived.by(() => {
     if (!selectedUnderlying) return [];
-    const target = selectedUnderlying.toUpperCase();
-    // Hoisted regexes — constructed once per re-derivation rather than
-    // once per position/draft. The literal /FUT$/ and /(CE|PE)$/ are
-    // already cached at parse time; the dynamic prefix regex is the
-    // only one that needs hoisting.
-    const prefixRe = new RegExp(`^${target}\\d`, 'i');
-    /** @type {any[]} */
-    const out = [];
-    // Source filter — when a sim is active, work off the sim book only;
-    // otherwise the live book. Drafts are always visible regardless.
-    const wantedSource = simActive ? 'sim' : 'live';
-    const matchExpiry = /** @param {string} sym */ (sym) => {
-      if (!selectedExpiries.length) return true;
-      const inst = getInstrument(String(sym || '').toUpperCase());
-      return selectedExpiries.includes(inst?.x);
-    };
-    const matchAccount = /** @param {string} acct */ (acct) => {
-      if (!selectedAccounts.length) return true;
-      return selectedAccounts.includes(String(acct || ''));
-    };
-    for (const p of positions) {
-      if (p.source !== wantedSource) continue;
-      if (!matchAccount(p.account)) continue;
-      const sym = p.symbol;
-      if (!prefixRe.test(sym)) continue;
-      const isFut = /FUT$/i.test(sym);
-      const isOpt = /(CE|PE)$/i.test(sym);
-      if (!isFut && !isOpt) continue;
-      if (!matchExpiry(sym)) continue;
-      out.push({
-        ...p,
-        kind: isFut ? 'fut' : 'opt',
-      });
-    }
-    // Cash-equity holdings of the underlying — surface as long-stock
-    // legs (kind='eq') so covered calls / collars / synthetic-short
-    // setups plot the full payoff. A holding of RELIANCE while the
-    // operator analyses RELIANCE options should appear alongside the
-    // option legs with delta=1 per share linear behaviour. Matches the
-    // underlying symbol exactly (no prefix walk — holdings are on the
-    // bare equity). Operator: "in legs, if you have underlyings in
-    // holdings, include that in legs and plot it together in payoff."
-    for (const h of holdings) {
-      const sym = String(h.symbol || '').toUpperCase();
-      if (sym !== target) continue;
-      if (!matchAccount(h.account)) continue;
-      out.push({
-        ...h,
-        source: 'live',
-        kind:   'eq',
-      });
-    }
-    // Proxy hedges (GOLDBEES → GOLD, NIFTYBEES → NIFTY etc.). Same
-    // shape as the direct eq merge above but stamps the row with
-    // proxy metadata so _equityLegs + _mergedPayoff can apply the
-    // runtime-derived conversion factor. Operator: "is there anyway
-    // you determine qty and lot size based current value of total
-    // silverbees and goldbees holdings … no need to have a separate
-    // table." Factor = proxy_LTP / target_spot, computed lazily
-    // when strategy.spot is in hand.
     void proxyTableReady;   // re-derive when the proxy table loads
-    const _allowedProxies = new Set(proxiesForTarget(target));
-    if (_allowedProxies.size) {
-      for (const h of holdings) {
-        const sym = String(h.symbol || '').toUpperCase();
-        if (!_allowedProxies.has(sym)) continue;
-        if (!matchAccount(h.account)) continue;
-        out.push({
-          ...h,
-          source: 'live',
-          kind:   'eq',
-          proxy_for: target,
-        });
-      }
-    }
-    // Drafts — matched by symbol prefix; no account filter (drafts
-    // aren't tied to a broker account).
-    for (const d of drafts) {
-      const sym = String(d.symbol || '').toUpperCase();
-      if (!sym || !prefixRe.test(sym)) continue;
-      const isFut = /FUT$/i.test(sym);
-      const isOpt = /(CE|PE)$/i.test(sym);
-      if (!isFut && !isOpt) continue;
-      if (!matchExpiry(sym)) continue;
-      const qty = d.qty === '' || d.qty == null ? 0 : Number(d.qty);
-      const cost = d.avg_cost === '' || d.avg_cost == null ? null : Number(d.avg_cost);
-      const ltp  = d.ltp      === '' || d.ltp      == null ? null : Number(d.ltp);
-      out.push({
-        symbol: sym,
-        account: '',
-        qty,
-        avg_cost: cost,
-        ltp,
-        source: 'draft',
-        kind: isFut ? 'fut' : 'opt',
-        draftId: d.id,
-      });
-    }
-    // Closed positions (qty=0 — Kite returns these so realised P/L
-    // stays visible) sort to the END of the legs list. Live exposure
-    // first, history last; stable order otherwise.
-    out.sort((a, b) => {
-      const ac = (Number(a?.qty || 0) === 0) ? 1 : 0;
-      const bc = (Number(b?.qty || 0) === 0) ? 1 : 0;
-      return ac - bc;
+    return buildCandidatePositions({
+      positions,
+      holdings,
+      drafts,
+      target:           selectedUnderlying.toUpperCase(),
+      selectedExpiries,
+      selectedAccounts,
+      simActive,
+      proxiesForTarget,
+      getInstrument,
     });
-    return out;
   });
 
   /** Count of opt/fut/eq rows that would have matched the underlying +
@@ -1836,22 +1748,18 @@
    *  the silent-hide bug the line 1066 comment block used to describe. */
   const hiddenByAccount = $derived.by(() => {
     if (!selectedAccounts.length || !selectedUnderlying) return { rows: 0, accts: 0 };
-    const target = selectedUnderlying.toUpperCase();
-    const prefixRe = new RegExp(`^${target}\\d`, 'i');
+    const target       = selectedUnderlying.toUpperCase();
+    const prefixRe     = new RegExp(`^${target}\\d`, 'i');
     const wantedSource = simActive ? 'sim' : 'live';
-    const inFilter = (acct) => selectedAccounts.includes(String(acct || ''));
-    const inExpiry = (sym) => {
-      if (!selectedExpiries.length) return true;
-      const inst = getInstrument(String(sym || '').toUpperCase());
-      return selectedExpiries.includes(inst?.x);
-    };
+    const inFilter     = buildAcctMatcher(selectedAccounts);
+    const inExpiry     = buildExpiryMatcher(selectedExpiries, getInstrument);
     const accts = new Set();
     let rows = 0;
     for (const p of positions) {
       if (p.source !== wantedSource) continue;
       const sym = p.symbol;
       if (!prefixRe.test(sym)) continue;
-      if (!/FUT$|(CE|PE)$/i.test(sym)) continue;
+      if (!isFOSymbol(sym)) continue;
       if (!inExpiry(sym)) continue;
       if (inFilter(p.account)) continue;
       rows++; accts.add(String(p.account || ''));
@@ -3431,156 +3339,22 @@
   // operator perceived as "sometimes showing all underlyings."
   let _positionsLoaded = $state(false);
 
-  /**
-   * Split a broker-consolidated position into separate display rows
-   * when it had intraday close/reopen activity. Operator: "if positions
-   * are closed and the same positions are opened same or different qty,
-   * you have to show them as different rows".
-   *
-   * Trigger (Variant 1, with partial-reduction): `overnight ≠ 0` AND
-   * (`day_buy > 0` OR `day_sell > 0`).
-   *
-   * The split produces:
-   *   • Closed row    — qty = 0, P&L = realised on the portion of the
-   *                     overnight position that was closed today.
-   *                     Realised = (today's exit price − yesterday's
-   *                     close) × closed_qty.
-   *   • Open row      — qty = current_qty (signed), P&L = unrealised
-   *                     on what's currently open, day_change_val = the
-   *                     total leg P∆ minus the closed-row realised.
-   *
-   * Sum of the two rows' Day P&L Δ equals the original total day
-   * change so the TOTAL row at the bottom still reconciles to the
-   * strip's P∆ chip. The closed row keeps the original symbol /
-   * account so the operator can still scan + filter; a small "closed"
-   * tag on the row label distinguishes it visually.
-   */
-  function splitClosedReopened(/** @type {any} */ p) {
-    const oq  = Number(p.overnight_quantity || 0);
-    const dbq = Number(p.day_buy_quantity   || 0);
-    const dsq = Number(p.day_sell_quantity  || 0);
-    const dbv = Number(p.day_buy_value      || 0);
-    const dsv = Number(p.day_sell_value     || 0);
-    const close = Number(p.prev_close ?? 0);
-    // No split when overnight was zero (pure intraday open or fresh
-    // round-trip — already a single semantic event) or there were no
-    // intraday trades (pure overnight hold).
-    if (oq === 0 || (dbq === 0 && dsq === 0)) return [p];
-
-    // Side-of-close — long overnight closes via sells; short via buys.
-    // closed_qty is the unsigned magnitude that was closed today, capped
-    // at |overnight_quantity|.
-    const closed_qty = oq > 0 ? Math.min(oq, dsq) : Math.min(-oq, dbq);
-    if (closed_qty <= 0) return [p];   // intraday only added more, no close
-
-    // Today's exit price for the closed portion. For closing a LONG
-    // overnight: it was sold today at avg = dsv / dsq. For covering a
-    // SHORT: it was bought back at avg = dbv / dbq.
-    const exit_price = oq > 0
-      ? (dsq > 0 ? dsv / dsq : 0)
-      : (dbq > 0 ? dbv / dbq : 0);
-
-    // Day P&L contribution from the closed portion — anchors against
-    // yesterday's close, same convention as day_change_val. For a long
-    // sold today: (exit − close) × closed. For a short covered today:
-    // (close − exit) × closed. Reflects today's mark-to-market move,
-    // not the lifetime realised.
-    const closed_day_pnl = oq > 0
-      ? (exit_price - close) * closed_qty
-      : (close - exit_price) * closed_qty;
-
-    // LIFETIME realised P&L on the closed lots — anchors against the
-    // cost basis (avg_cost), same as Kite's `pnl` formula. This is
-    // what the operator sees as the actual realised gain since the
-    // position was opened, NOT just today's contribution. Fix path
-    // for the closed GOLDM-148000-CE bug (operator: "still in legs
-    // goldm closed position shows 8k profit, which is not correct"
-    // — actual realised was ₹1.52L = the broker's lifetime `p.pnl`).
-    //
-    // For a FULLY closed position (brokerQty === 0): Kite zeroes
-    // avg_price so the (avg − exit) × qty formula collapses; trust
-    // broker.pnl directly which carries the full realised cash.
-    // For a PARTIAL close: avg_price is the cost basis of both the
-    // remaining + closed lots, so realised = (avg − exit) × closed
-    // for short, (exit − avg) × closed for long.
-    const brokerQty = Math.abs(Number(p.qty || 0));
-    const avg_cost = Number(p.avg_cost || 0);
-    const closed_lifetime_pnl = brokerQty === 0
-      ? Number(p.pnl || 0)
-      : (oq > 0
-          ? (exit_price - avg_cost) * closed_qty
-          : (avg_cost - exit_price) * closed_qty);
-
-    // Open row's day_change_val = total leg P∆ minus the closed
-    // portion's day contribution, so the two rows sum back to the
-    // original day P&L.
-    const open_dcv = Number(p.day_change_val || 0) - closed_day_pnl;
-
-    const closedRow = {
-      ...p,
-      // qty=0 means "closed" everywhere downstream (cand-row tinting,
-      // P&L cell shows realised, no chart-icon for trade-action).
-      qty: 0,
-      pnl: closed_lifetime_pnl,
-      day_change_val: closed_day_pnl,
-      // Mark the row visually as the closed half via a synthesized
-      // key suffix; cand-row `c.source + '|' + c.account + '|' +
-      // c.symbol` key gets a unique tail so Svelte tracks the two
-      // halves as different rows.
-      _splitTag: 'closed',
-    };
-    // Broker net quantity reflects what's CURRENTLY held. When
-    // overnight=4 and operator sold all 4 today, broker reports
-    // quantity=0 — the closed row alone fully describes the day and
-    // there is no actual "open" portion. Emitting an OPEN-tagged row
-    // with qty=0 misled the operator into thinking there was still
-    // something on the book to act on. Suppress it.
-    if (brokerQty === 0) return [closedRow];
-
-    const openRow = {
-      ...p,
-      // Re-attribute total leg P&L: closed row gets the lifetime
-      // realised; the open row keeps the remaining unrealised
-      // (broker's pnl − closed lifetime already attributed). The
-      // two rows sum back to broker.pnl.
-      pnl: Number(p.pnl || 0) - closed_lifetime_pnl,
-      // Zero out realised on the open half — the closed half already
-      // carries it as its pnl. Without this, the per-row P&L formula
-      // `(ltp − cost) × qty + realised` would double-count the
-      // realised on the open row.
-      realised: 0,
-      day_change_val: open_dcv,
-      _splitTag: 'open',
-    };
-    return [closedRow, openRow];
-  }
+  // splitClosedReopened — imported from $lib/derivatives/pageLoad.js
+  // (moved for cc reduction; see pageLoad.js for the full implementation + docs)
 
   async function loadPositions({ fresh = false } = {}) {
     // Hydrate the module-level store singletons concurrently with this
     // page's own fetch so PositionStrip / dashboard benefit from the
-    // round-trip without doubling network cost. The stores' inflight dedup
-    // ensures that if another component already issued positionsStore.load()
-    // within the same tick, both callers share the same Promise.
+    // round-trip without doubling network cost.
     positionsStore.load();
     holdingsStore.load();
 
     /** @type {Array<any>} */
     const merged = [];
-    // Reset the excluded-row totals for this load. Equity intraday
-    // positions (dropped by the F&O regex below) get accumulated into
-    // _excludedByAccount[acct].pos_* so the Snapshot TOTAL can add
-    // them back to match the navbar PositionStrip.
+    // Equity intraday positions (excluded from F&O view) are accumulated
+    // here so the Snapshot TOTAL can reconcile with the navbar PositionStrip.
     /** @type {Record<string, {pos_pnl:number,pos_day:number,hold_pnl:number,hold_day:number}>} */
     const _excluded = {};
-    const _bumpExcluded = (/** @type {string} */ acct,
-                          /** @type {Partial<{pos_pnl:number,pos_day:number,hold_pnl:number,hold_day:number}>} */ delta) => {
-      const a = String(acct || '').toUpperCase();
-      if (!_excluded[a]) _excluded[a] = { pos_pnl: 0, pos_day: 0, hold_pnl: 0, hold_day: 0 };
-      _excluded[a].pos_pnl  += Number(delta.pos_pnl  || 0);
-      _excluded[a].pos_day  += Number(delta.pos_day  || 0);
-      _excluded[a].hold_pnl += Number(delta.hold_pnl || 0);
-      _excluded[a].hold_day += Number(delta.hold_day || 0);
-    };
 
     // Live broker positions
     try {
@@ -3589,41 +3363,15 @@
       for (const p of (r?.rows || [])) {
         const sym = p?.tradingsymbol || p?.symbol;
         if (!sym) continue;
-        // Only options + futures (skip cash equities — this page is
-        // options-only). Equity intraday positions still contribute to
-        // the navbar PositionStrip via /api/positions, so we capture
-        // their P&L + day_change here for the Snapshot TOTAL reconcile.
-        if (!/(CE|PE|FUT)$/i.test(String(sym))) {
-          _bumpExcluded(p?.account, {
+        if (!isFOSymbol(sym)) {
+          // Equity intraday — excluded from F&O panel; capture for TOTAL reconcile
+          bumpExcluded(_excluded, p?.account, {
             pos_pnl: Number(p?.pnl || 0),
             pos_day: Number(p?.day_change_val || 0),
           });
           continue;
         }
-        const baseRow = {
-          symbol:   String(sym).toUpperCase(),
-          account:  String(p?.account || ''),
-          qty:      Number(p?.quantity || 0),
-          source:   'live',
-          avg_cost: p?.average_price != null ? Number(p.average_price) : null,
-          ltp:      p?.last_price    != null ? Number(p.last_price)    : null,
-          prev_close: p?.close_price != null ? Number(p.close_price) : null,
-          pnl:      p?.pnl != null ? Number(p.pnl) : 0,
-          realised: p?.realised != null ? Number(p.realised) : 0,
-          day_change_val: p?.day_change_val != null ? Number(p.day_change_val) : 0,
-          overnight_quantity: Number(p?.overnight_quantity || 0),
-          day_buy_quantity:   Number(p?.day_buy_quantity || 0),
-          day_sell_quantity:  Number(p?.day_sell_quantity || 0),
-          day_buy_value:      Number(p?.day_buy_value || 0),
-          day_sell_value:     Number(p?.day_sell_value || 0),
-        };
-        // Split closed-and-reopened legs into separate display rows
-        // (operator: "if positions are closed and the same positions
-        // are opened same or different qty, you have to show them as
-        // different rows"). Variant 1: trigger when overnight ≠ 0 AND
-        // either day_buy > 0 or day_sell > 0 (also covers partial
-        // reduction). Pure overnight (no day trades) or pure intraday
-        // round-trip (overnight = 0) stay as one row.
+        const baseRow = buildPositionRowFromBroker(p, 'live');
         for (const row of splitClosedReopened(baseRow)) merged.push(row);
       }
     } catch (e) {
@@ -3632,44 +3380,22 @@
       positionsLoadErr = e?.message || 'Broker positions unavailable.';
     }
 
-    // Sim positions — capture last_price + average_price from the
-    // driver state at click time so the strategy endpoint can compute
-    // analytics without round-tripping back to the broker.
+    // Sim positions — inline ltp so strategy endpoint can compute
+    // analytics without an extra broker round-trip.
     try {
       const s = await fetchSimStatus();
       for (const p of (s?.positions || [])) {
         const sym = p?.symbol;
-        if (!sym) continue;
-        if (!/(CE|PE|FUT)$/i.test(String(sym))) continue;
-        const baseRow = {
-          symbol:   String(sym).toUpperCase(),
-          account:  String(p?.account || ''),
-          qty:      Number(p?.quantity || 0),
-          source:   'sim',
-          avg_cost: p?.average_price != null ? Number(p.average_price) : null,
-          ltp:      p?.last_price    != null ? Number(p.last_price)    : null,
-          prev_close: p?.close_price != null ? Number(p.close_price) : null,
-          pnl:      p?.pnl != null ? Number(p.pnl) : 0,
-          realised: p?.realised != null ? Number(p.realised) : 0,
-          day_change_val: p?.day_change_val != null ? Number(p.day_change_val) : 0,
-          overnight_quantity: Number(p?.overnight_quantity || 0),
-          day_buy_quantity:   Number(p?.day_buy_quantity || 0),
-          day_sell_quantity:  Number(p?.day_sell_quantity || 0),
-          day_buy_value:      Number(p?.day_buy_value || 0),
-          day_sell_value:     Number(p?.day_sell_value || 0),
-        };
+        if (!sym || !isFOSymbol(sym)) continue;
+        const baseRow = buildPositionRowFromBroker(p, 'sim');
         for (const row of splitClosedReopened(baseRow)) merged.push(row);
       }
     } catch (_) { /* ignore */ }
 
     positions = merged;
 
-    // Cash-equity holdings — pulled in so the operator's COVERED CALL
-    // / collar setup plots correctly. Operator: "in legs, if you have
-    // underlyings in holdings, include that in legs and plot it
-    // together in payoff." Skipped during sim runs (sim doesn't model
-    // equity book). Only EQ rows are kept; derivative holdings (rare)
-    // would already be picked up by the positions pass above.
+    // Cash-equity holdings — skipped in sim (sim doesn't model equity book).
+    // Only EQ rows are kept; derivative holdings are picked up by positions.
     if (!simActive) {
       try {
         const r = await fetchHoldings();
@@ -3677,51 +3403,15 @@
         for (const h of (r?.rows || [])) {
           const sym = h?.tradingsymbol || h?.symbol;
           if (!sym) continue;
-          // Skip anything that smells like a derivative — only cash
-          // equity holdings should layer as a long-stock leg. Captured
-          // into _excluded so the Snapshot TOTAL can reconcile to the
-          // navbar PositionStrip which includes ALL holdings.
-          if (/(CE|PE|FUT)$/i.test(String(sym))) {
-            _bumpExcluded(h?.account, {
+          if (isFOSymbol(sym)) {
+            bumpExcluded(_excluded, h?.account, {
               hold_pnl: Number(h?.pnl || 0),
               hold_day: Number(h?.day_change_val || 0),
             });
             continue;
           }
-          // Backend HoldingRow drops `quantity` to 0 after an intraday
-          // full-sell while `opening_quantity` keeps the start-of-day
-          // amount. Two distinct cases:
-          //
-          //   qty > 0          → still held. Linear contribution
-          //                      `(spot − cost) × qty` to the payoff.
-          //   qty = 0, opq > 0 → fully sold today. Realized profit is
-          //                      locked in regardless of where spot goes
-          //                      from here. Apply as a CONSTANT offset
-          //                      `pnl` (the broker's realized P&L on the
-          //                      sold shares) to every point of the
-          //                      payoff curve.
-          //   qty = 0, opq = 0 → nothing — skip.
-          //
-          // Operator: "include underlying from holdings in legs. show
-          // the cost price on it profit to offset option return in
-          // payoff graph." Use case: operator was running a covered call
-          // (long BHEL + short BHEL CE), sold BHEL intraday, now holds a
-          // naked CE — but the locked-in stock profit still offsets the
-          // option exposure in net P&L terms.
-          const qty = Number(h?.quantity || 0);
-          const openingQty = Number(h?.opening_quantity || 0);
-          if (!qty && !openingQty) continue;
-          rows.push({
-            symbol:     String(sym).toUpperCase(),
-            account:    String(h?.account || ''),
-            qty,
-            opening_qty: openingQty,
-            avg_cost:   h?.average_price != null ? Number(h.average_price) : null,
-            ltp:        h?.last_price    != null ? Number(h.last_price)    : null,
-            prev_close: h?.close_price != null ? Number(h.close_price) : null,
-            pnl:        h?.pnl != null ? Number(h.pnl) : 0,
-            day_change_val: h?.day_change_val != null ? Number(h.day_change_val) : 0,
-          });
+          const row = buildHoldingRowFromBroker(h);
+          if (row) rows.push(row);
         }
         holdings = rows;
       } catch (_) { /* ignore — holdings layer is additive */ }
@@ -3729,21 +3419,12 @@
       holdings = [];
     }
 
-    // Persist excluded-row totals so the Snapshot TOTAL can add them
-    // back when reconciling with the navbar PositionStrip.
     _excludedByAccount = _excluded;
+    _positionsLoaded   = true;
 
-    // Latch: positions have been fetched at least once. The
-    // underlying picker's hedge-opportunity tier (tier 4) waits
-    // for this before appearing so the dropdown doesn't momentarily
-    // list all held stocks before F&O positions arrive.
-    _positionsLoaded = true;
-
-    // Do NOT include enabledSymbols in the positions-poll snapshot.
-    // If the operator has unchecked rows, a 30 s poll would overwrite
-    // the prior (all-checked) sessionStorage entry with the unchecked
-    // state, causing the next page-visit to open with all rows unchecked.
-    // enabledSymbols is correctly persisted by the strategy-success path.
+    // Do NOT include enabledSymbols in the positions-poll snapshot —
+    // the strategy-success path persists selections; polls must not
+    // overwrite an unchecked state with an all-checked snapshot.
     _saveCache({ includeSelections: false });
   }
 
@@ -3768,226 +3449,65 @@
   // via the broker fetch path. Used to short-circuit duplicate
   // round-trips on the 5 s poll when nothing has changed.
   let _stratLastKey = '';
-  function _synthCacheKey(eqs) {
-    const parts = [selectedUnderlying || ''];
-    for (const e of eqs) {
-      parts.push(`${e.symbol || ''}:${Number(e.qty) || 0}:${Number(e.avg_cost) || 0}:${Number(e.ltp) || 0}`);
-    }
-    return parts.join('|');
-  }
-
-  /** Build a strategy-shaped object for an equity-only basket so the
-   *  payoff card renders a linear long-stock curve when the operator
-   *  has enabled eq legs but no options/futures. Spot anchor comes
-   *  from the first eq leg with a usable LTP (falls back to avg_cost
-   *  when the broker quote is stale). The payoff curve is a 41-point
-   *  ZERO baseline over ±15% of spot; `_mergedPayoff` overlays the
-   *  per-leg linear contribution on top via the existing eq-layering
-   *  branch, and `_mergedRisk` / `_mergedGreeks` recompute the chips
-   *  from the merged curve. Returns null when no eq leg has a usable
-   *  spot anchor. */
-  function _synthEquityOnlyStrategy(eqs) {
-    if (!Array.isArray(eqs) || eqs.length === 0) return null;
-    const primary = eqs.find(e => Number(e.ltp) > 0) || eqs[0];
-    const spot = Number(primary.ltp) || Number(primary.avg_cost) || 0;
-    if (spot <= 0) return null;
-    const prevClose = Number(primary.prev_close) || spot;
-    const spanPct = 0.15;
-    const N = 41;
-    const lo = spot * (1 - spanPct);
-    const hi = spot * (1 + spanPct);
-    const payoff = [];
-    for (let i = 0; i < N; i++) {
-      const s = lo + (i / (N - 1)) * (hi - lo);
-      payoff.push({ spot: s, today_value: 0, expiry_value: 0 });
-    }
-    let netCost = 0;
-    for (const e of eqs) {
-      const qty  = Number(e.qty) || Number(e.opening_qty) || 0;
-      const cost = Number(e.avg_cost) || 0;
-      netCost += qty * cost;
-    }
-    return {
-      payoff,
-      spot,
-      spot_prev_close: prevClose,
-      spot_source:     'live',
-      spot_anchor_contract: null,
-      underlying:      selectedUnderlying || '',
-      legs:            [],
-      multi_expiry:    false,
-      expiry:          null,
-      days_to_expiry:  0,
-      span_sigmas:     0,
-      span_pct:        spanPct,
-      iv_proxy:        0,
-      net_cost:        netCost,
-      intermediate_curves: [],
-      risk: {
-        max_profit: 0,
-        max_loss:   0,
-        breakevens: [],
-        rr_ratio:   null,
-        ev:         null,
-        ev_pct:     null,
-        pop:        null,
-      },
-      aggregate_greeks: {
-        delta: 0, gamma: 0, theta: 0, vega: 0, rho: 0,
-      },
-    };
-  }
+  // synthCacheKey, synthEquityOnlyStrategy — imported from $lib/derivatives/pageLoad.js
+  // (renamed: synthCacheKey(underlying, eqs), synthEquityOnlyStrategy(eqs, underlying))
 
   async function loadStrategy(opts = { force: false }) {
-    const cleanLegs = legs
-      // Equity-holding legs are layered onto the rendered payoff at the
-      // chart level (see _mergedPayoff). The backend strategy endpoint
-      // only accepts option / futures contracts; sending an equity
-      // ticker would 400.
-      .filter(l => l.kind !== 'eq')
-      .map(l => {
-        const sym = String(l.symbol || '').trim().toUpperCase();
-        // Look up the contract's actual expiry from the instruments
-        // cache. Kite stores per-contract expiries on the `x` field —
-        // authoritative for every exchange. Critical for MCX
-        // commodities (GOLDM/CRUDEOIL/etc.) where the backend's
-        // symbol parser would otherwise infer the NSE-F&O last-
-        // Thursday rule and land 1-3 days off the real expiry.
-        const inst    = sym ? getInstrument(sym) : null;
-        const expiry  = inst?.x || null;
-        return {
-          symbol:   sym,
-          qty:      l.qty === '' || l.qty == null ? 0 : Number(l.qty),
-          avg_cost: l.avg_cost === '' || l.avg_cost == null ? null : Number(l.avg_cost),
-          // Only inline ltp for sources whose price isn't on the wire
-          // (sim driver state, operator drafts). For live broker
-          // positions, drop ltp so the backend re-fetches a fresh
-          // quote every poll — otherwise the stale `last_price` from
-          // the 30s position poll overrides every subsequent broker
-          // fetch and the chart's spot/Greeks/EV freeze even though
-          // analytics is polling at 5s.
-          ltp: (l.source === 'sim' || l.source === 'draft')
-            ? (l.ltp === '' || l.ltp == null ? null : Number(l.ltp))
-            : null,
-          expiry,
-        };
-      })
-      .filter(l => l.symbol && l.qty);
+    // Build clean legs (exclude eq kind, inline ltp for sim/draft, look up expiry).
+    const cleanLegs = buildCleanLegs(legs, getInstrument);
+
     if (!cleanLegs.length) {
-      // Equity-only path — operator has enabled eq legs (stock holding /
-      // proxy hedge) but no options/futures. Synthesize a strategy
-      // shell with a zero-baseline payoff curve + minimal anchor
-      // fields. `_mergedPayoff` already overlays eq legs onto any
-      // base curve, so this lets the chart render a pure linear
-      // long-stock payoff with no backend round-trip. Operator:
-      // "payoff will just show the payoff for whatever is in legs."
-      // Gated by `_includeHoldings` — when OFF, eq legs don't render
-      // and strategy stays null (no chart).
+      // Equity-only path — synthesize a zero-baseline strategy shell so
+      // _mergedPayoff can layer the linear long-stock contribution on top.
       const enabledEqs = _includeHoldings
         ? candidatePositions.filter(c => c.kind === 'eq' && _isLegEnabled(c))
         : [];
       if (enabledEqs.length > 0) {
-        // Memoized synth — if the cache key matches, reuse the
-        // previous synth object so downstream derives skip the
-        // re-render. New object only when inputs actually changed.
-        const key = _synthCacheKey(enabledEqs);
+        // Memoize by (underlying, per-leg signature) to skip re-render when
+        // the 5s poll brings no relevant change.
+        const key = synthCacheKey(selectedUnderlying, enabledEqs);
         if (!_synthCache || _synthCache.key !== key) {
-          _synthCache = { key, value: _synthEquityOnlyStrategy(enabledEqs) };
+          _synthCache = { key, value: synthEquityOnlyStrategy(enabledEqs, selectedUnderlying) };
         }
-        if (strategy !== _synthCache.value) {
-          strategy = _synthCache.value;
-        }
+        if (strategy !== _synthCache.value) strategy = _synthCache.value;
       } else {
-        // Only blank strategy when there are truly NO enabled non-eq legs.
-        // If there are enabled non-eq legs but all have qty=0 (positions
-        // closed today), keep the previous strategy visible — an old chart
-        // is more useful than the blank "no legs selected" state. The
-        // empty-state panel surfaces a "positions closed" hint instead.
-        // Blanking only when legs is genuinely empty (operator unchecked
-        // all rows, or no positions exist at all) is safe and intentional.
+        // Blank only when legs is genuinely empty — keeps old chart for
+        // closed-position-only sets (old chart > blank "no legs" state).
         const _hasEnabledLegs = legs.some(l => l.kind !== 'eq');
-        if (!_hasEnabledLegs && strategy !== null) {
-          strategy = null;
-        }
+        if (!_hasEnabledLegs && strategy !== null) strategy = null;
         _synthCache = null;
       }
       strategyErr = ''; _stratFails = 0;
-      // Only persist when the synth actually produced something new.
-      // Repeated _saveCache calls during idle polling were burning
-      // JSON.stringify + sessionStorage write on every 5s tick.
       return;
     }
-    // Detect underlying change between the previous strategy fetch
-    // and this one. When the operator switches from GOLDM to
-    // CRUDEOIL (or any other inter-underlying flip), the previous
-    // response carries the OLD underlying's spot_anchor_contract,
-    // spot value, payoff curve x-range and the OptionsPayoff
-    // component renders all of that until the new fetch resolves
-    // — operator sees GOLDM anchor chip + GOLDM spot marker on a
-    // CRUDEOIL-titled card for the duration of the request.
-    // Clear strategy immediately so the chart goes blank
-    // (loading state) instead of lying about the underlying.
-    const newU = decomposeSymbol(cleanLegs[0].symbol).root;
-    const oldU = strategy?.legs?.length ? decomposeSymbol(strategy.legs[0].symbol).root : '';
-    if (newU && oldU && newU !== oldU) {
-      // Reset the last-key so the fetch actually fires (identity guard).
-      // We do NOT clear `strategy` here — the next successful loadStrategy
-      // overwrites atomically, and blanking causes the payoff card to
-      // unmount ("disappearing payoff chart" defect).
+
+    // Detect underlying switch — reset memo key so the fetch fires even
+    // if legs key happens to be identical across the switch.
+    if (didUnderlyingChange(cleanLegs, strategy, decomposeSymbol)) {
       _stratLastKey = '';
     }
-    // Legs-signature memo — the 5 s `marketAwareInterval` polls
-    // this function whether or not the leg set actually changed.
-    // When it hasn't (steady-state book, no new fills), the
-    // backend re-fetches broker quotes + recomputes BS IV +
-    // builds a 41-point payoff curve for the same inputs and
-    // sends back what the chart already has. Compare the
-    // cleanLegs signature to the last successful fetch; if
-    // identical, skip the network round-trip entirely. Same
-    // pattern the equity-only synth path already uses.
-    //
-    // The `strategy &&` guard is critical here: the memo must ONLY
-    // apply when we already have a valid chart (strategy !== null).
-    // Without it, a single transient first-load failure sets
-    // `_stratLastKey = legsKey` (see catch block below) and all
-    // subsequent polls hit the early-return — strategy stays null
-    // forever and the operator sees "No legs selected" permanently
-    // until a manual force=true refresh. With it: null-strategy
-    // path always allows a retry, and the 5 s market-open interval
-    // naturally self-heals on the next successful tick. The
-    // _stratFails >= 2 gate in the catch block still escalates to
-    // the strategyErr banner after two consecutive failures so the
-    // operator knows when the broker is persistently unavailable.
-    const legsKey = cleanLegs.map(l =>
-      `${l.symbol}:${l.qty}:${l.avg_cost ?? ''}:${l.ltp ?? ''}:${l.expiry ?? ''}`
-    ).join('|');
+
+    // Legs-signature memo: skip round-trip when inputs are unchanged and
+    // a chart is already rendered. The `strategy &&` guard is critical:
+    // without it a single failure sets the key and recovery never fires.
+    const legsKey = computeLegsKey(cleanLegs);
     if (!opts?.force && strategy && legsKey === _stratLastKey) {
       strategyErr = ''; _stratFails = 0;
       return;
     }
+
     loading = true;
     try {
-      strategy = await fetchStrategyAnalytics(cleanLegs);
+      strategy      = await fetchStrategyAnalytics(cleanLegs);
       _stratLastKey = legsKey;
-      strategyErr = '';
-      _stratFails = 0;
+      strategyErr   = '';
+      _stratFails   = 0;
       _saveCache();
     } catch (e) {
-      _stratFails += 1;
-      // Record the attempted key even on failure so that during closed
-      // hours (broken token, broker offline) repeated polls with
-      // IDENTICAL legs don't keep hammering the backend. The force=true
-      // path (manual Refresh, position_filled postback) bypasses this so
-      // legitimate retries still land. The key resets on underlying switch
-      // (line above) and on successful fetch, so an idle-hours key never
-      // stifles a post-open fresh fetch.
+      _stratFails  += 1;
+      // Record key on failure to suppress repeated hammering during closed
+      // hours. force=true bypasses so manual retries always fire.
       _stratLastKey = legsKey;
-      // Banner shows only when (a) we have no prior chart to fall
-      // back on AND (b) we've failed at least twice in a row. A
-      // first-load transient — common on tab reopen during a deploy
-      // or after a wifi reconnect — stays silent and the next poll
-      // brings the chart in cleanly. The api-layer logger still
-      // records the raw error in the browser console for debugging.
       if (!strategy && _stratFails >= 2) {
         strategyErr = /** @type {any} */ (e).message || String(e);
       }
