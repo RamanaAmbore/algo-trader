@@ -3895,7 +3895,14 @@
     const badges = [];
     if (row.src?.p) {
       const q = Number(row.qty_pos) || 0;
-      badges.push(`<span class="sym-badge badge-p" title="Position">P ${qtyFmt(q)}</span>`);
+      // F&O positions: show lots via SSOT lotsForRow so the badge is
+      // consistent with the Lots column. E.g. CRUDEOIL 100 contracts =
+      // 1 lot → "P 1L". Cash equity shows raw qty (no lot context).
+      const _pLots = lotsForRow(row);
+      const _pLabel = (_pLots != null && _pLots > 0)
+        ? `${fmtLots(_pLots)}L`
+        : qtyFmt(q);
+      badges.push(`<span class="sym-badge badge-p" title="Position (${qtyFmt(q)} contracts)">P ${_pLabel}</span>`);
     }
     if (row.src?.h) {
       const q = Number(row.qty_hold) || 0;
