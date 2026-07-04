@@ -31,6 +31,12 @@
   import LegLabel from '$lib/LegLabel.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { placeTicketOrder, previewOrderMargin, fetchAccounts, modifyOrder, previewTicketTemplate, fetchStrategies } from '$lib/api';
+  import {
+    buildModifyPayload,
+    buildOnSubmitPayload,
+    buildPlacePayload,
+    formatPlacementOk,
+  } from './orderTicketSubmit.js';
   import { fundsStore } from '$lib/data/marketDataStores.svelte.js';
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import { capWarningFor } from '$lib/data/brokerCapWarnings';
@@ -1558,13 +1564,10 @@
       return;
     }
     if (validationErr) return;
+
     // ── action='modify' branch ─────────────────────────────────
-    // Modifying an existing working order — bypass the
-    // place/ticket pipeline entirely. Calls PUT /api/orders/{id}
-    // with whatever fields the operator changed (price, qty,
-    // order_type, trigger). Mode pills + chase + L/M/H don't
-    // apply (those are place-time concerns). Account, symbol,
-    // and side are locked in the UI.
+    // Modifying an existing working order — bypass the place/ticket
+    // pipeline entirely. Mode pills + chase + L/M/H don't apply.
     if (action === 'modify') {
       if (!orderId) {
         submitErr = 'Modify path requires an order id.';
@@ -1572,22 +1575,24 @@
       }
       submitting = true; submitErr = ''; submitOk = '';
       try {
-        const payload = {
-          account:       _account,
-          quantity:      Number(_qty) || undefined,
-          price:         showLimit   ? _roundToTick(_price)   : null,
-          trigger_price: showTrigger ? _roundToTick(_trigger) : null,
-          order_type:    _type,
-          variety:       _variety,
-          validity:      _validity,
-        };
-        await modifyOrder(orderId, payload);
+        const modPayload = buildModifyPayload({
+          account: _account,
+          qty: _qty,
+          showLimit,
+          showTrigger,
+          roundToTick: _roundToTick,
+          price: _price,
+          trigger: _trigger,
+          type: _type,
+          variety: _variety,
+          validity: _validity,
+        });
+        await modifyOrder(orderId, modPayload);
         submitOk = `Order #${orderId} modified`;
         // Surface the diff to the caller so the page can refresh
         // its order list / log the change. Modal stays open with the
-        // Exit button until the operator dismisses it (was 1.2 s auto-
-        // close; operator couldn't read the confirmation in time).
-        await onSubmit({ action: 'modify', orderId, ...payload });
+        // Exit button until the operator dismisses it.
+        await onSubmit({ action: 'modify', orderId, ...modPayload });
       } catch (e) {
         submitErr = /** @type {any} */ (e)?.message || String(e);
       } finally {
@@ -1596,32 +1601,37 @@
       return;
     }
 
+    // ── paper / live / draft path ───────────────────────────────
     // LIVE submits straight through — no confirm dialog. The pre-submit
     // margin/cost row above the Submit button already tells the operator
     // exactly what they're committing to. Backend still enforces both
     // gates (prod-branch + execution.paper_trading_mode=False) before
     // any broker call, so accidental clicks on dev or in paper mode
     // can't reach Kite.
-    const payload = {
-      mode:           _mode,
+    const submitCtx = {
+      mode: _mode,
       action,
       symbol,
       exchange,
-      side:           _side,
-      quantity:       Number(_qty),
-      product:        _product,
-      order_type:     _type,
-      variety:        _variety,
-      validity:       _validity,
-      price:          showLimit   ? _roundToTick(_price)   : null,
-      trigger_price:  showTrigger ? _roundToTick(_trigger) : null,
-      account:        _account,
+      side: _side,
+      qty: _qty,
+      product: _product,
+      type: _type,
+      variety: _variety,
+      validity: _validity,
+      showLimit,
+      showTrigger,
+      roundToTick: _roundToTick,
+      price: _price,
+      trigger: _trigger,
+      account: _account,
       // Chase only carries on price-bearing order types; MARKET /
       // SL-M ignore it on the backend, but we still ship the flag
       // so the AlgoOrder row records the intent for replay.
-      chase:               showLimit ? _chase : false,
-      chase_aggressiveness: showLimit && _chase ? _chaseAgg : 'low',
+      chase: _chase,
+      chaseAgg: _chaseAgg,
     };
+    const payload = buildOnSubmitPayload(submitCtx);
     submitting = true; submitErr = ''; submitOk = '';
     /** @type {any} */
     let brokerResp = null;
@@ -1629,60 +1639,33 @@
       // PAPER + LIVE both route through the backend. DRAFT hands off
       // to the caller's onSubmit only (no API call).
       if (_mode === 'paper' || _mode === 'live') {
-        brokerResp = await placeTicketOrder({
-          mode:             _mode,
-          side:             _side,
-          tradingsymbol:    _resolvedSymbol || symbol,
-          exchange:         _exchange || _resolvedExchange || exchange || 'NFO',
-          quantity:         Number(_qty),
-          // lot_size_hint: the resolved lot_size from the instruments cache.
-          // Backend uses this as a cross-check for MCX/NCO where lot_size
-          // is critical for qty→lots translation. Sending it here prevents
-          // the backend from being blocked when its own cache is cold.
-          lot_size_hint:    _lotSize > 0 ? Number(_lotSize) : null,
-          // Intent: "close" when the operator's side flips against the
-          // existing position (long → SELL = close; short → BUY = close).
-          // Backend bypasses the 5-lot fat-finger cap for close intent
-          // so large existing positions can be unwound in one order.
-          // Operator 2026-07-01: "for closing an existing order, qty
-          // should not be an issue. the guard should not apply for
-          // closing position."
-          intent: (Number(currentQty) > 0 && _side === 'SELL') ||
-                  (Number(currentQty) < 0 && _side === 'BUY')
-                    ? 'close' : 'open',
-          product:          _product,
-          order_type:       _type,
-          variety:          _variety,
-          validity:         _validity,
-          price:            showLimit   ? _roundToTick(_price)   : null,
-          trigger_price:    showTrigger ? _roundToTick(_trigger) : null,
-          account:          _account,
-          chase:                showLimit ? _chase : false,
-          chase_aggressiveness: showLimit && _chase ? _chaseAgg : 'low',
-          // v2 template attachment — apply_template_to_order runs the
-          // unified pipeline (sim or live) after the entry persists.
-          // Legacy target_pct still flows for back-compat when no
-          // template is chosen.
-          template_id:                  templateId,
-          tp_pct_override:              tpOverride !== '' ? Number(tpOverride) : null,
-          sl_pct_override:              slOverride !== '' ? Number(slOverride) : null,
-          wing_premium_pct_override:    wingPremPctOverride !== '' ? Number(wingPremPctOverride) : null,
-          wing_strike_offset_override:  wingStrikeOffsetOverride !== '' ? Number(wingStrikeOffsetOverride) : null,
-          // Slice 7b — attribution. Null when operator didn't pick
-          // a strategy; backend writes NULL strategy_id on the
-          // AlgoOrder row, lot ledger skip on fill.
-          strategy_id:                  _strategyId,
-        });
+        const placeCtx = {
+          ...submitCtx,
+          resolvedSymbol: _resolvedSymbol,
+          resolvedExchange: _resolvedExchange || '',
+          lotSize: _lotSize,
+          currentQty,
+          templateId,
+          tpOverride,
+          slOverride,
+          wingPremPctOverride,
+          wingStrikeOffsetOverride,
+          strategyId: _strategyId,
+        };
+        brokerResp = await placeTicketOrder(buildPlacePayload(placeCtx));
         // Show inline confirmation so the operator sees the order
         // landed; modal stays open until the operator clicks Exit.
-        // Backend returns {order_id, mode, status, detail} — surface
-        // a verbose summary line with side / qty / symbol / price.
-        const oid   = brokerResp?.order_id || '?';
-        const px    = showLimit && _price ? `@₹${_roundToTick(_price)}` : '@MKT';
-        submitOk = (
-          `${(_mode || '').toUpperCase()} ${_side} ${_qty} ${formatSymbol(symbol)} ${px} · ` +
-          `#${oid}`
-        );
+        // Backend returns {order_id, mode, status, detail}.
+        submitOk = formatPlacementOk({
+          mode:         _mode,
+          side:         _side,
+          qty:          _qty,
+          symbolLabel:  formatSymbol(symbol),
+          showLimit,
+          price:        _price,
+          roundedPrice: _roundToTick(_price),
+          orderId:      brokerResp?.order_id || '?',
+        });
       }
       // Record the symbol + account as the operator's most recent
       // pick so the next /orders or /charts page open lands on
@@ -1715,7 +1698,7 @@
 
   // Cleanup handle for the conditional Esc listener (CRIT 1).
   /** @type {(() => void) | null} */
-  let _escCleanup = null;
+  let _escCleanup = $state(/** @type {(() => void) | null} */ (null));
 
   // Esc to close + backstop /api/accounts/ self-fetch. Runs when
   // the caller didn't supply real accounts (the chain picker pre-
