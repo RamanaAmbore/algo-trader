@@ -1070,6 +1070,42 @@ export function closeActivityModal() {
   activityModal.update((s) => ({ ...s, open: false }));
 }
 
+// ── Order-ticket modal control ───────────────────────────────────────
+// Keyboard shortcut `t` (trade) writes to this store; PageHeaderActions
+// subscribes and calls _openOrder(). Pages without PageHeaderActions
+// mounted treat the event as a no-op — consistent with the activity-modal
+// pattern. Shape: { open: bool }
+export const orderTicketModal = writable(
+  /** @type {{ open: boolean }} */
+  ({ open: false })
+);
+
+/** Open the order-ticket modal from any context (e.g. keyboard `t`). */
+export function openOrderTicketModal() {
+  orderTicketModal.set({ open: true });
+}
+/** Close the order-ticket modal. */
+export function closeOrderTicketModal() {
+  orderTicketModal.set({ open: false });
+}
+
+// ── Chart modal control ──────────────────────────────────────────────
+// Keyboard shortcut `k` (kline) writes to this store; PageHeaderActions
+// subscribes and calls _openChart(). Shape: { open: bool }
+export const chartModalTrigger = writable(
+  /** @type {{ open: boolean }} */
+  ({ open: false })
+);
+
+/** Open the chart modal from any context (e.g. keyboard `k`). */
+export function openChartModalTrigger() {
+  chartModalTrigger.set({ open: true });
+}
+/** Close the chart modal trigger store (after component has consumed it). */
+export function closeChartModalTrigger() {
+  chartModalTrigger.set({ open: false });
+}
+
 // ── Connection-status store ──────────────────────────────────────────
 // Single global health snapshot surfaced as a badge + tooltip on every
 // RefreshButton. Polled every 15 s — auto-retries forever via

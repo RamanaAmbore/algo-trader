@@ -1141,6 +1141,68 @@ Every algo page card follows ONE structure:
 
 ---
 
+## Keyboard shortcuts (slice AU)
+
+All keyboard handling lives in ONE place: `(algo)/+layout.svelte` `_onGlobalKeydown`. No per-page duplication. Discovery via `?` (cheatsheet modal in `ShortcutCheatsheet.svelte`).
+
+**Rules**:
+- Shortcuts pause when `document.activeElement` is `INPUT / TEXTAREA / SELECT / contenteditable`.
+- `Esc` defocuses the active input (does not navigate).
+- `Cmd+K / Ctrl+K` fires even while typing (command-palette exception; above the input-focus gate).
+- Modifier combos other than `Cmd+K` pass through to the browser.
+- `?` is case-sensitive (requires Shift); all letter keys are case-insensitive.
+
+**Navigation (Bloomberg two-key `g`+letter, 800ms window)**:
+
+| Keys | Destination |
+|---|---|
+| `g p` | /pulse |
+| `g d` | /dashboard |
+| `g o` | /orders |
+| `g e` | /admin/derivatives |
+| `g c` | /charts |
+| `g v` | /performance |
+| `g a` | /automation |
+| `g h` | /admin/history |
+| `g m` | /pulse#movers |
+
+**Actions**:
+
+| Key | Effect |
+|---|---|
+| `t` | Open order ticket (`openOrderTicketModal()` store signal → `PageHeaderActions`) |
+| `h` | Open activity/log modal (`openActivityModal('order')`) |
+| `k` | Open chart modal (`openChartModalTrigger()` store signal → `PageHeaderActions`) |
+| `/` | Focus symbol search input (`.oes-sym-input` → `.cmd-input` → first text/search) |
+| `r` | Dispatch `CustomEvent('refresh-page')` on `window`; each `RefreshButton` self-handles |
+| `?` | Toggle `ShortcutCheatsheet` modal |
+| `Esc` | Close cheatsheet (or defocus input) |
+| `⌘K` | Phase 3 stub — opens activity modal until command palette is built |
+
+**Grid contextual (only when an ag-Grid cell has focus)**:
+
+| Key | Effect |
+|---|---|
+| `j` | Dispatch `ArrowDown` on focused cell → ag-Grid moves row selection down |
+| `k` | Dispatch `ArrowUp` on focused cell → ag-Grid moves row selection up |
+| `Enter` | Dispatch `contextmenu` MouseEvent on focused cell → opens row action menu |
+| `f` | Click `.fs-btn` of nearest `.algo-card` ancestor → fullscreen toggle |
+| `c` | Click `.collapse-btn` of nearest `.algo-card` ancestor → collapse toggle |
+
+**Store signals** (in `stores.js`):
+- `orderTicketModal` / `openOrderTicketModal()` / `closeOrderTicketModal()`
+- `chartModalTrigger` / `openChartModalTrigger()` / `closeChartModalTrigger()`
+`PageHeaderActions.svelte` subscribes in `onMount`, fires modal open, then immediately resets the store.
+
+**Refresh wiring** (`RefreshButton.svelte`):
+Each instance listens `window.addEventListener('refresh-page', …)` in `onMount`, cleaned up in `onDestroy`. Falls back to `goto(invalidateAll)` when no `.rf-btn` present on the page.
+
+**Escape audit** — every modal in the algo surface must handle `Escape`. `BrokerHealthBadge.svelte` Esc gap was closed (has `<svelte:window onkeydown>` conditional on `open`). If adding a new modal component, follow this pattern.
+
+**E2E spec**: `frontend/e2e/keyboard_shortcuts.spec.js` — covers nav (`g d/p/e/c/o/a`), cheatsheet open/close/content, `r` network intercept, input-focus gate, Esc-in-input, perf guard (< 2 s), mobile viewport.
+
+---
+
 ## Order placement + multi-account basket
 
 **OrderTicket.svelte** — unified modal. DRAFT/PAPER/LIVE routes. Account required. Qty validated (must be lot multiple). Pre-fills from calling page context. Success feedback inline (green `✓`) before auto-close.

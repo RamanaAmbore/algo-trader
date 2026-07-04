@@ -86,6 +86,8 @@
   let _refiring = $state(false);
   /** @type {(() => void) | null} */
   let _unsubRefiring = null;
+  /** @type {(() => void) | null} */
+  let _onRefreshKey = null;
 
   onMount(() => {
     // 1. Ensure the global connection-status poller is running. Idempotent —
@@ -98,6 +100,15 @@
       _mcxOpen = isMcxOpen();
     };
     _mktTimer = visibleInterval(tick, 30_000);
+
+    // Keyboard shortcut `r` — layout dispatches a `refresh-page` custom
+    // event on `window`; every mounted RefreshButton fires its own click
+    // handler so the active page's load() runs. Multiple RefreshButtons
+    // on the same page (e.g. /admin/derivatives has three) all fire, but
+    // that is harmless — each drives a different data slice.
+    // Stored as module-scoped var so onDestroy (below) can tear it down.
+    _onRefreshKey = () => _handleClick();
+    window.addEventListener('refresh-page', _onRefreshKey);
 
     // 3. Subscribe inside onMount (not $effect) so the subscription is
     //    registered ONCE on mount; the callback firing per tick does not
@@ -237,6 +248,7 @@
     _unsubLast?.();
     _unsubConn?.();
     _unsubRefiring?.();
+    if (_onRefreshKey) window.removeEventListener('refresh-page', _onRefreshKey);
   });
 
   // Palette class — drives the three-bucket colour swap on the button.

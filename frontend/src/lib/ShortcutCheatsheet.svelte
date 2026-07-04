@@ -12,22 +12,35 @@
   /** @type {{ open: boolean, onClose: () => void }} */
   let { open = false, onClose = () => {} } = $props();
 
-  // Two grouped sections keep the cheat-sheet scannable.
+  // Four grouped sections keep the cheat-sheet scannable.
+  // Nav uses Bloomberg `g` + letter pattern (800 ms window).
   const NAV = [
-    { key: 'g p', label: 'Go to Pulse' },
-    { key: 'g d', label: 'Go to Dashboard' },
-    { key: 'g o', label: 'Go to Orders' },
-    { key: 'g r', label: 'Go to Derivatives' },
-    { key: 'g h', label: 'Go to History' },
-    { key: 'g a', label: 'Go to Automation' },
-    { key: 'g s', label: 'Go to Settings' },
+    { key: 'g p', label: 'Pulse' },
+    { key: 'g d', label: 'Dashboard' },
+    { key: 'g o', label: 'Orders' },
+    { key: 'g e', label: 'Derivatives' },
+    { key: 'g c', label: 'Charts' },
+    { key: 'g v', label: 'Performance' },
+    { key: 'g a', label: 'Automation' },
+    { key: 'g h', label: 'History' },
+    { key: 'g m', label: 'Pulse — movers' },
   ];
   const ACTIONS = [
-    { key: 'O',        label: 'Open order ticket' },
-    { key: '/',        label: 'Focus search / symbol picker' },
-    { key: 'R',        label: 'Refresh the page' },
-    { key: '?',        label: 'Show this cheat-sheet' },
-    { key: 'Esc',      label: 'Close modal / cheat-sheet' },
+    { key: 't',        label: 'Order ticket' },
+    { key: 'h',        label: 'Activity / log' },
+    { key: 'k',        label: 'Chart modal (kline)' },
+    { key: '/',        label: 'Focus symbol search' },
+    { key: 'r',        label: 'Refresh page' },
+    { key: '?',        label: 'This cheat-sheet' },
+    { key: 'Esc',      label: 'Close modal / defocus' },
+    { key: '⌘K',       label: 'Command palette (soon)' },
+  ];
+  const GRID = [
+    { key: 'j',     label: 'Row down' },
+    { key: 'k',     label: 'Row up' },
+    { key: 'Enter', label: 'Context menu' },
+    { key: 'f',     label: 'Fullscreen card' },
+    { key: 'c',     label: 'Collapse card' },
   ];
 
   function _onKey(e) {
@@ -71,10 +84,19 @@
           </div>
         {/each}
       </section>
+      <section class="sc-section">
+        <div class="sc-section-h">Grid (when focused)</div>
+        {#each GRID as s}
+          <div class="sc-row">
+            <kbd class="sc-kbd">{s.key}</kbd>
+            <span class="sc-lbl">{s.label}</span>
+          </div>
+        {/each}
+      </section>
     </div>
     <div class="sc-foot">
       Letters are case-insensitive. Shortcuts pause while typing in a
-      field — focus an input to type normally.
+      field — Esc defocuses. Grid shortcuts activate when a grid cell has focus.
     </div>
   </div>
 {/if}
@@ -94,7 +116,7 @@
     left: 50%;
     transform: translate(-50%, -50%);
     z-index: 9997;
-    width: min(32rem, calc(100vw - 1rem));
+    width: min(44rem, calc(100vw - 1rem));
     max-height: calc(100vh - 2rem);
     overflow-y: auto;
     background: linear-gradient(180deg, var(--algo-bg-elev2) 0%, var(--algo-bg-elev1) 100%);
@@ -134,11 +156,14 @@
 
   .sc-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 1fr 1fr;
     gap: 0;
     padding: 0.45rem 0.55rem;
   }
-  @media (max-width: 540px) {
+  @media (max-width: 700px) {
+    .sc-grid { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 480px) {
     .sc-grid { grid-template-columns: 1fr; }
   }
   .sc-section {

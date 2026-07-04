@@ -447,7 +447,18 @@ async def test_batch_quote_closed_returns_lkg_no_broker():
     # Reset the warm-signature dedup so the test is deterministic across runs.
     _closed_hours_warm_signatures.clear()
 
-    mock_broker_quote = MagicMock(return_value={})  # empty response, warm still fires
+    # Broker returns one valid symbol so _persisted > 0 → sig gets added after warm.
+    # (Post-fix change: empty-response warm does NOT add sig — that's intentional so
+    # a broker race on cold start retries; dedup only fires when warm actually landed.)
+    mock_broker_quote = MagicMock(return_value={
+        "NSE:RELIANCE": {
+            "last_price": 2540.5,
+            "ohlc": {"open": 2530.0, "close": 2532.0},
+            "volume": 1_234_567,
+            "oi": 0,
+            "depth": {},
+        }
+    })
 
     with patch("backend.api.routes.quote._all_exchanges_closed", return_value=True), \
          patch(
@@ -458,6 +469,8 @@ async def test_batch_quote_closed_returns_lkg_no_broker():
              "backend.brokers.broker_apis.get_last_good_quote",
              return_value=None,  # cold cache — snapshot fields will be null
          ), \
+         patch("backend.brokers.broker_apis.record_good_ltp"), \
+         patch("backend.brokers.broker_apis.record_good_quote"), \
          patch("backend.brokers.registry.get_price_broker") as mock_registry:
         mock_registry.return_value.quote = mock_broker_quote
 
@@ -488,6 +501,119 @@ async def test_batch_quote_closed_returns_lkg_no_broker():
             f"calls; total went {first_call_count} → {mock_broker_quote.call_count}"
         )
         assert len(resp2.items) == 2
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5a-ii — batch_quote: broker exception must NOT poison warm signature
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_batch_quote_closed_warm_not_poisoned_on_broker_failure():
+    """Signature-poisoning fix — a broker exception on the first warm attempt
+    must NOT add the signature to _closed_hours_warm_signatures.
+
+    Pre-fix behaviour (bug): _closed_hours_warm_signatures.add(sig) ran
+    BEFORE the broker.quote() call.  On broker failure (conn-service cold,
+    network error) the signature was marked 'warmed' all day — every
+    subsequent closed-hours response returned volume=0/oi=0 with no retry
+    until midnight IST rollover.
+
+    Post-fix behaviour (correct): add(sig) only executes inside the
+    `if _persisted:` block, AFTER at least one symbol is successfully
+    persisted.  A broker exception leaves the signature absent so the
+    NEXT closed-hours call re-attempts the warm.
+
+    Test plan:
+      Call 1 — broker.quote() raises RuntimeError (simulate cold start).
+               Signature must NOT appear in _closed_hours_warm_signatures.
+      Call 2 — broker.quote() succeeds and returns one valid symbol.
+               Broker must be invoked (proof that the signature was absent).
+               Signature IS added after successful persisted write.
+      Call 3 — Same key-set. Broker must NOT be called (dedup now active).
+    """
+    from backend.api.routes.quote import (
+        _maybe_warm_closed_hours_quotes,
+        _closed_hours_warm_signatures,
+    )
+
+    # Build a minimal key_map stub with the required `broker_keys` attribute.
+    class _FakeKeyMap:
+        broker_keys = ["NSE:RELIANCE", "MCX:CRUDEOIL"]
+
+    key_map = _FakeKeyMap()
+    sig = ",".join(sorted(key_map.broker_keys))
+
+    # Reset state so the test is deterministic across runs.
+    _closed_hours_warm_signatures.discard(sig)
+
+    call_count = 0
+
+    async def _fake_to_thread(fn, *args):
+        """Dispatch fn(*args) — needed because _maybe_warm uses asyncio.to_thread."""
+        return fn(*args)
+
+    # ── Call 1: broker raises ─────────────────────────────────────────────────
+    def _broker_raise(*_a, **_kw):
+        raise RuntimeError("conn-service unavailable")
+
+    mock_broker_1 = MagicMock()
+    mock_broker_1.quote = MagicMock(side_effect=_broker_raise)
+
+    with patch("backend.brokers.registry.get_market_data_broker", return_value=mock_broker_1), \
+         patch("asyncio.to_thread", side_effect=_fake_to_thread):
+        await _maybe_warm_closed_hours_quotes(key_map.broker_keys, key_map)
+
+    # Signature must NOT be present after a broker failure.
+    assert sig not in _closed_hours_warm_signatures, (
+        "Broker exception must not poison the warm signature — "
+        "sig was added before the broker call (pre-fix bug)"
+    )
+
+    # ── Call 2: broker succeeds ───────────────────────────────────────────────
+    def _broker_ok(*_a, **_kw):
+        return {
+            "NSE:RELIANCE": {
+                "last_price": 2540.5,
+                "ohlc": {"open": 2530.0, "close": 2532.0},
+                "volume": 1_234_567,
+                "oi": 0,
+                "depth": {},
+            }
+        }
+
+    mock_broker_2 = MagicMock()
+    mock_broker_2.quote = MagicMock(side_effect=_broker_ok)
+
+    with patch("backend.brokers.registry.get_market_data_broker", return_value=mock_broker_2), \
+         patch("asyncio.to_thread", side_effect=_fake_to_thread), \
+         patch("backend.brokers.broker_apis.record_good_ltp"), \
+         patch("backend.brokers.broker_apis.record_good_quote"):
+        await _maybe_warm_closed_hours_quotes(key_map.broker_keys, key_map)
+
+    # Broker MUST have been called on call 2 (signature was absent after call 1).
+    assert mock_broker_2.quote.call_count == 1, (
+        f"Second call should invoke broker.quote() because signature was absent "
+        f"after broker failure; call_count={mock_broker_2.quote.call_count}"
+    )
+
+    # Signature IS now present (successful persisted write).
+    assert sig in _closed_hours_warm_signatures, (
+        "After successful warm, signature must be added to prevent redundant broker calls"
+    )
+
+    # ── Call 3: dedup fires ───────────────────────────────────────────────────
+    mock_broker_3 = MagicMock()
+    mock_broker_3.quote = MagicMock(side_effect=_broker_ok)
+
+    with patch("backend.brokers.registry.get_market_data_broker", return_value=mock_broker_3), \
+         patch("asyncio.to_thread", side_effect=_fake_to_thread):
+        await _maybe_warm_closed_hours_quotes(key_map.broker_keys, key_map)
+
+    # Broker must NOT be called — signature dedup is active.
+    assert mock_broker_3.quote.call_count == 0, (
+        f"Third call for same key-set must make zero broker calls (dedup); "
+        f"call_count={mock_broker_3.quote.call_count}"
+    )
 
 
 # ---------------------------------------------------------------------------

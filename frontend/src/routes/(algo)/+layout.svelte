@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { onMount, onDestroy, setContext } from 'svelte';
   import { get } from 'svelte/store';
-  import { authStore, visibleInterval, executionMode, connStatus, startConnStatusPoller, startMarketStatusPoller, brokerHealthStore, startBrokerHealthPoller, activityModal, openActivityModal, closeActivityModal, setHibernationIdleMinutes } from '$lib/stores';
+  import { authStore, visibleInterval, executionMode, connStatus, startConnStatusPoller, startMarketStatusPoller, brokerHealthStore, startBrokerHealthPoller, activityModal, openActivityModal, closeActivityModal, setHibernationIdleMinutes, openOrderTicketModal, openChartModalTrigger } from '$lib/stores';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import {
     fetchSimStatus, fetchPaperStatus,
@@ -110,22 +110,33 @@
       _cheatsheetOpen = false;
       return;
     }
+    // Cmd+K / Ctrl+K works even while typing — command palette exception.
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      // Phase 3 stub — future Cmd+K command palette.
+      e.preventDefault();
+      // TODO: open command palette when built; for now open activity modal
+      // as the closest "search all actions" surface.
+      openActivityModal('order');
+      return;
+    }
     // Pause when the operator is typing in a field. document.activeElement
     // returns the focused control; we treat input / textarea / select /
-    // contenteditable as "operator wants this key".
+    // contenteditable as "operator wants this key". Esc defocuses.
     const ae = /** @type {HTMLElement|null} */ (document.activeElement);
     if (ae) {
       const tag = ae.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
-          || ae.isContentEditable) return;
+          || ae.isContentEditable) {
+        if (e.key === 'Escape') {
+          // Defocus the input so the next key press is not blocked.
+          (/** @type {HTMLElement} */ (ae)).blur();
+        }
+        return;
+      }
     }
-    // Don't intercept modifier-key combos other than Cmd+K (reserved
-    // for future command palette). Plain `O` should not fire when the
-    // operator hits Ctrl+O / Cmd+O (browser "Open file").
-    if (e.altKey || (e.metaKey && e.key.toLowerCase() !== 'k')
-        || (e.ctrlKey && e.key.toLowerCase() !== 'k')) {
-      return;
-    }
+    // Don't intercept modifier-key combos (Cmd+K handled above; all others
+    // pass through to the browser). Plain `O` must not fire on Ctrl+O etc.
+    if (e.altKey || e.metaKey || e.ctrlKey) return;
 
     const k = e.key;
 
@@ -133,14 +144,18 @@
     if (_gPending) {
       const target = k.toLowerCase();
       _clearG();
+      // Bloomberg-style two-key navigation. `g m` scrolls to the movers
+      // section on /pulse via the anchor fragment.
       const route =
         target === 'p' ? '/pulse'
       : target === 'd' ? '/dashboard'
       : target === 'o' ? '/orders'
-      : target === 'r' ? '/admin/derivatives'
-      : target === 'h' ? '/admin/history'
+      : target === 'e' ? '/admin/derivatives'
+      : target === 'c' ? '/charts'
+      : target === 'v' ? '/performance'
       : target === 'a' ? '/automation'
-      : target === 's' ? '/admin/settings'
+      : target === 'h' ? '/admin/history'
+      : target === 'm' ? '/pulse#movers'
       : null;
       if (route) { e.preventDefault(); goto(route); }
       return;
@@ -161,24 +176,91 @@
       if (target) { e.preventDefault(); target.focus(); target.select?.(); }
       return;
     }
-    if (k.toLowerCase() === 'o') {
-      e.preventDefault();
-      goto('/orders');
-      return;
-    }
     if (k.toLowerCase() === 'r') {
       e.preventDefault();
-      // Trigger a soft reload of the current SvelteKit route — preserves
-      // the SPA cache for non-page resources, just re-runs the load.
-      goto(window.location.pathname + window.location.search,
-           { invalidateAll: true });
+      // Dispatch `refresh-page` event — every mounted RefreshButton hears
+      // it and fires its own onClick. Falls back to SvelteKit invalidateAll
+      // when no RefreshButton is present on the page.
+      const hadButton = document.querySelector('.rf-btn') !== null;
+      window.dispatchEvent(new CustomEvent('refresh-page'));
+      if (!hadButton) {
+        goto(window.location.pathname + window.location.search,
+             { invalidateAll: true });
+      }
       return;
     }
-    if ((e.metaKey || e.ctrlKey) && k.toLowerCase() === 'k') {
-      // Reserved for future Cmd+K command palette. For now route to
-      // /orders (closest to a "global command launcher" today).
+    // `t` = trade → order ticket modal.
+    if (k.toLowerCase() === 't') {
       e.preventDefault();
-      goto('/orders');
+      openOrderTicketModal();
+      return;
+    }
+    // `h` = history/log → activity modal.
+    if (k.toLowerCase() === 'h') {
+      e.preventDefault();
+      openActivityModal('order');
+      return;
+    }
+
+    // ── Grid contextual shortcuts ──────────────────────────────────────
+    // `j` = vim-style down navigation on a focused ag-Grid.
+    // Outside a grid: reserved (no-op).
+    if (k.toLowerCase() === 'j') {
+      const aej = /** @type {HTMLElement|null} */ (document.activeElement);
+      if (aej?.closest('.ag-root-wrapper')) {
+        e.preventDefault();
+        aej.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'ArrowDown', code: 'ArrowDown',
+          bubbles: true, cancelable: true,
+        }));
+      }
+      return;
+    }
+    // `k` (plain, no modifier) = kline → chart modal outside a grid;
+    // inside a grid, dispatch ArrowUp so ag-Grid moves its own selection.
+    if (k.toLowerCase() === 'k') {
+      const aek = /** @type {HTMLElement|null} */ (document.activeElement);
+      if (aek?.closest('.ag-root-wrapper')) {
+        e.preventDefault();
+        aek.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'ArrowUp', code: 'ArrowUp',
+          bubbles: true, cancelable: true,
+        }));
+      } else {
+        e.preventDefault();
+        openChartModalTrigger();
+      }
+      return;
+    }
+
+    // `f` = fullscreen toggle on the nearest algo-card ancestor.
+    if (k.toLowerCase() === 'f') {
+      const afocus = /** @type {HTMLElement|null} */ (document.activeElement);
+      const card = afocus?.closest('.algo-card');
+      const fsBtn = /** @type {HTMLButtonElement|null} */ (card?.querySelector('.fs-btn'));
+      if (fsBtn) { e.preventDefault(); fsBtn.click(); }
+      return;
+    }
+    // `c` = collapse toggle on the nearest algo-card ancestor.
+    if (k.toLowerCase() === 'c') {
+      const afocus2 = /** @type {HTMLElement|null} */ (document.activeElement);
+      const card2 = afocus2?.closest('.algo-card');
+      const colBtn = /** @type {HTMLButtonElement|null} */ (card2?.querySelector('.collapse-btn'));
+      if (colBtn) { e.preventDefault(); colBtn.click(); }
+      return;
+    }
+    // `Enter` on a focused ag-Grid cell = open context menu if available.
+    if (k === 'Enter') {
+      const aenter = /** @type {HTMLElement|null} */ (document.activeElement);
+      if (aenter?.closest('.ag-root-wrapper')) {
+        // ag-Grid handles Enter natively for cell editing; emit a synthetic
+        // ContextMenu event so row-action menus open via keyboard.
+        aenter.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true, cancelable: true,
+          clientX: aenter.getBoundingClientRect().left,
+          clientY: aenter.getBoundingClientRect().top,
+        }));
+      }
       return;
     }
   }

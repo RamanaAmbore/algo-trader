@@ -59,6 +59,8 @@
   }
 </script>
 
+<svelte:window onkeydown={open ? (e) => { if (e.key === 'Escape') { e.preventDefault(); open = false; } } : null} />
+
 {#if open}
   <!-- Modal overlay -->
   <div class="bh-overlay" role="presentation" onclick={() => open = false}></div>
