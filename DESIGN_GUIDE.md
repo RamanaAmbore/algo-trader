@@ -38,7 +38,20 @@ FRM (GARP, 2022) · CFA Level 2 · Master's, Computer Science · Six Sigma Green
 
 Builds and maintains the RamboQuant platform end-to-end: a production application covering multi-broker order routing, real-time market data pipelines, options analytics, portfolio tracking, and operator + investor-facing tooling.
 
-**Tech Stack**: SvelteKit + Svelte 5 frontend · Litestar / Python async API · PostgreSQL with async SQLAlchemy 2.x · Kite / Dhan / Groww broker adapters · KiteTicker WebSocket + shared-memory tick pipeline · Gemini-driven market summaries · MCP-integrated research tooling · web-vitals-tracked deploys.
+**Full tech stack**:
+
+| Layer | Technologies |
+|---|---|
+| **Frontend** | SvelteKit · Svelte 5 (runes) · Vite · ag-grid-community · @tanstack/svelte-query · Tailwind · Playwright (e2e) |
+| **API** | Litestar 2.x · **msgspec.Struct** schemas (10× faster than pydantic) · uvicorn (single-worker) · asyncio |
+| **Persistence** | PostgreSQL 17 · async SQLAlchemy 2.x · asyncpg · **polars** (routes) · pandas (broker SDK boundary only) |
+| **IPC** | **mmap** at `/dev/shm/ramboq_ticks` (KiteTicker → API tick pipeline) · UDS at `/tmp/ramboq_conn.sock` (main API ↔ conn_service) · SSE (live LTP push) · WebSocket · in-process BroadcastBus |
+| **Queues** | In-process asyncio + `EventQueue` (algo/agent/order/mcp_audit) + `write_queue` (disk + db bulk-batched workers) · **ARQ + Redis** background worker as a separate systemd unit (`ramboq_worker.service`) |
+| **Brokers** | kiteconnect · dhanhq · growwapi · pyotp (Kite 2FA TOTP) · KiteTicker WebSocket · Fernet-encrypted credentials at rest |
+| **Intelligence** | Gemini (`google-genai`) market summaries · MCP server (17 read + 2 persist + 6 write-gated tools) · fpdf2 (monthly investor statements) · babel (i18n / number formatting) |
+| **Security** | JWT HS256 (24h TTL) · PBKDF2-SHA256 password hashing · `cryptography.Fernet` (broker creds encryption) · maxminddb (visitor geolocation) |
+| **Deploy** | systemd (`ramboq_api`, `ramboq_conn`, `ramboq_dev_api`, `ramboq_worker`, `ramboq_hook`) · nginx reverse proxy · Cloudflare DNS · `webhook.ramboq.com` HMAC-authenticated auto-deploy hook |
+| **Observability** | Perf-snapshot cron + admin dashboard · web-vitals runtime capture (Playwright) · radon (cyclomatic complexity) · pytest-json-report (test-duration tracking) · vulture (dead-code detection) |
 
 ## About this document
 
@@ -225,6 +238,32 @@ Everything API-facing is `async def` over asyncpg. Broker SDK calls are sync —
 ### 3.5 Demo mode = signed-out + prod branch
 
 Demo isn't a separate code path — it's a runtime guard at the API boundary (`backend/api/auth_guard.py`) plus a frontend flag pulled from context. The same routes serve authenticated + demo traffic; the guard masks accounts and blocks writes. This means **a feature works in demo the moment it works for read-only sessions** — there's no separate "demo enablement" step to forget.
+
+### 3.6 Singleton pattern — one instance, everywhere
+
+Several long-lived, expensive-to-construct components are implemented as **process-wide singletons**. The pattern is used deliberately where all of the following are true: (a) construction is expensive (network handshake, mmap open, DB warm), (b) there is exactly one canonical instance per process, (c) many callers need the *same* instance so state stays consistent. Fits nicely with the single-uvicorn-worker guarantee from §4.1 — no cross-worker cache-coherence problem.
+
+**Canonical singletons**:
+
+| Singleton | Module | Purpose |
+|---|---|---|
+| `Connections` | `backend/brokers/connections.py` | Broker session manager (Kite / Dhan / Groww). Owns credentials (decrypted from `broker_accounts` table via Fernet), 2FA, token refresh, IPv6 binding. `connections.Connections()` returns the same instance every time; `rebuild_from_db()` mutates in place. |
+| `TickerManager` | `backend/brokers/kite_ticker.py` | KiteTicker WebSocket wrapper. **One WebSocket per process** — Kite rejects duplicates. Lives inside conn_service when `RAMBOQ_USE_CONN_SERVICE=1`; owns the mmap tick writer at `/dev/shm/ramboq_ticks`. |
+| `MmapTickReader` | `backend/brokers/mmap_ticker.py` | Main-API tick reader. `get_mmap_reader()` returns the module-level `_singleton`. Polls the shared-memory version-word every 50ms; publishes deltas to `BroadcastBus`. |
+| `BroadcastBus` | `backend/api/broadcast.py` | In-process pub/sub. Every SSE client + WebSocket connection subscribes to the same bus for tick + `book_changed` + `position_filled` events. |
+| `GrammarRegistry` | `backend/api/algo/grammar_registry.py` | Agent condition-tree token catalog. Reloaded on `/api/admin/grammar/reload` (mutates the singleton in place; existing agents pick up the new tokens on their next `run_cycle`). |
+| `MarketLifecycle` | `backend/api/algo/market_lifecycle.py` | Per-exchange open / close / close_settled event bus. Polled every 30s by `_task_market_lifecycle`. Handlers registered via `market_lifecycle.register(event, callback)` at import time. |
+| `MetricRegistry` (perf) | `backend/api/persistence/perf_snapshots.py` | Perf-snapshot writer coordinator — buffers metrics until nightly `_task_perf_snapshot` flushes them. |
+
+**Convention**: singleton modules expose a lowercase accessor (`connections.Connections()`, `get_mmap_reader()`, `broadcast_bus()`) rather than a bare module-level global — the accessor lets us swap the implementation in tests (e.g., replace `_singleton` with a fake) and defers construction until first use.
+
+**Anti-patterns to avoid**:
+
+- **Don't** create local instances of these classes anywhere in route handlers or background tasks. Always go through the accessor. Multiple `Connections()` instances would each mint a fresh Kite session and the second one would evict the first from Kite's session registry.
+- **Don't** cache the singleton reference across `rebuild_from_db()` boundaries — the accessor is cheap; long-lived local references miss config changes.
+- **Don't** rely on singleton state during startup — `on_startup` order matters. See `backend/api/app.py::on_startup` for the canonical wire-up sequence.
+
+**Testing note**: pytest fixtures reset `_singleton = None` in `conftest.py::_reset_singletons` between tests so isolation holds. Tests that need a real singleton use the `real_connections` fixture.
 
 ---
 
