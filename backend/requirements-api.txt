@@ -45,3 +45,9 @@ fpdf2~=2.8
 radon>=6.0
 vulture>=2.10
 pytest-json-report>=1.5
+
+# DESIGN_GUIDE.pdf generation (`generate_pdf.py`). pandoc + xelatex
+# (BasicTeX / MacTeX) provide the LaTeX engine; pikepdf compresses
+# the output. Optional at runtime — the script falls back gracefully
+# if pikepdf is absent.
+pikepdf>=8.0
