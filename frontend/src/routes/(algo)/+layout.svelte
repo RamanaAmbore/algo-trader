@@ -110,22 +110,33 @@
       _cheatsheetOpen = false;
       return;
     }
+    // Cmd+K / Ctrl+K works even while typing — command palette exception.
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      // Phase 3 stub — future Cmd+K command palette.
+      e.preventDefault();
+      // TODO: open command palette when built; for now open activity modal
+      // as the closest "search all actions" surface.
+      openActivityModal('order');
+      return;
+    }
     // Pause when the operator is typing in a field. document.activeElement
     // returns the focused control; we treat input / textarea / select /
-    // contenteditable as "operator wants this key".
+    // contenteditable as "operator wants this key". Esc defocuses.
     const ae = /** @type {HTMLElement|null} */ (document.activeElement);
     if (ae) {
       const tag = ae.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
-          || ae.isContentEditable) return;
+          || ae.isContentEditable) {
+        if (e.key === 'Escape') {
+          // Defocus the input so the next key press is not blocked.
+          (/** @type {HTMLElement} */ (ae)).blur();
+        }
+        return;
+      }
     }
-    // Don't intercept modifier-key combos other than Cmd+K (reserved
-    // for future command palette). Plain `O` should not fire when the
-    // operator hits Ctrl+O / Cmd+O (browser "Open file").
-    if (e.altKey || (e.metaKey && e.key.toLowerCase() !== 'k')
-        || (e.ctrlKey && e.key.toLowerCase() !== 'k')) {
-      return;
-    }
+    // Don't intercept modifier-key combos (Cmd+K handled above; all others
+    // pass through to the browser). Plain `O` must not fire on Ctrl+O etc.
+    if (e.altKey || e.metaKey || e.ctrlKey) return;
 
     const k = e.key;
 
@@ -190,31 +201,66 @@
       openActivityModal('order');
       return;
     }
-    // `k` = kline → chart modal (when no grid is focused; grid up-arrow
-    // when a grid row has focus handled via `k` conflict rule below).
-    // Cmd+K / Ctrl+K is handled separately below — skip here.
-    if (k.toLowerCase() === 'k' && !e.metaKey && !e.ctrlKey) {
-      // If an ag-Grid row has focus, let the grid handle navigation natively.
-      const ae2 = /** @type {HTMLElement|null} */ (document.activeElement);
-      if (ae2?.closest('.ag-root-wrapper')) return;
-      e.preventDefault();
-      openChartModalTrigger();
-      return;
-    }
-    // `j` = vim down / `k` already handled above. ag-Grid rows use arrow
-    // keys natively; `j` scrolls the focused grid row down one step.
+
+    // ── Grid contextual shortcuts ──────────────────────────────────────
+    // `j` = vim-style down navigation on a focused ag-Grid.
+    // Outside a grid: reserved (no-op).
     if (k.toLowerCase() === 'j') {
-      const ae3 = /** @type {HTMLElement|null} */ (document.activeElement);
-      if (ae3?.closest('.ag-root-wrapper')) return; // grid handles it
-      // No non-grid target for `j` yet — reserved for future use.
+      const aej = /** @type {HTMLElement|null} */ (document.activeElement);
+      if (aej?.closest('.ag-root-wrapper')) {
+        e.preventDefault();
+        aej.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'ArrowDown', code: 'ArrowDown',
+          bubbles: true, cancelable: true,
+        }));
+      }
       return;
     }
-    if ((e.metaKey || e.ctrlKey) && k.toLowerCase() === 'k') {
-      // Phase 3 stub — future Cmd+K command palette.
-      e.preventDefault();
-      // TODO: open command palette when built; for now open activity modal
-      // as the closest "search all actions" surface.
-      openActivityModal('order');
+    // `k` (plain, no modifier) = kline → chart modal outside a grid;
+    // inside a grid, dispatch ArrowUp so ag-Grid moves its own selection.
+    if (k.toLowerCase() === 'k') {
+      const aek = /** @type {HTMLElement|null} */ (document.activeElement);
+      if (aek?.closest('.ag-root-wrapper')) {
+        e.preventDefault();
+        aek.dispatchEvent(new KeyboardEvent('keydown', {
+          key: 'ArrowUp', code: 'ArrowUp',
+          bubbles: true, cancelable: true,
+        }));
+      } else {
+        e.preventDefault();
+        openChartModalTrigger();
+      }
+      return;
+    }
+
+    // `f` = fullscreen toggle on the nearest algo-card ancestor.
+    if (k.toLowerCase() === 'f') {
+      const afocus = /** @type {HTMLElement|null} */ (document.activeElement);
+      const card = afocus?.closest('.algo-card');
+      const fsBtn = /** @type {HTMLButtonElement|null} */ (card?.querySelector('.fs-btn'));
+      if (fsBtn) { e.preventDefault(); fsBtn.click(); }
+      return;
+    }
+    // `c` = collapse toggle on the nearest algo-card ancestor.
+    if (k.toLowerCase() === 'c') {
+      const afocus2 = /** @type {HTMLElement|null} */ (document.activeElement);
+      const card2 = afocus2?.closest('.algo-card');
+      const colBtn = /** @type {HTMLButtonElement|null} */ (card2?.querySelector('.collapse-btn'));
+      if (colBtn) { e.preventDefault(); colBtn.click(); }
+      return;
+    }
+    // `Enter` on a focused ag-Grid cell = open context menu if available.
+    if (k === 'Enter') {
+      const aenter = /** @type {HTMLElement|null} */ (document.activeElement);
+      if (aenter?.closest('.ag-root-wrapper')) {
+        // ag-Grid handles Enter natively for cell editing; emit a synthetic
+        // ContextMenu event so row-action menus open via keyboard.
+        aenter.dispatchEvent(new MouseEvent('contextmenu', {
+          bubbles: true, cancelable: true,
+          clientX: aenter.getBoundingClientRect().left,
+          clientY: aenter.getBoundingClientRect().top,
+        }));
+      }
       return;
     }
   }

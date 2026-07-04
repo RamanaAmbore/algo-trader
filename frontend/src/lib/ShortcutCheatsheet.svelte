@@ -12,7 +12,7 @@
   /** @type {{ open: boolean, onClose: () => void }} */
   let { open = false, onClose = () => {} } = $props();
 
-  // Three grouped sections keep the cheat-sheet scannable.
+  // Four grouped sections keep the cheat-sheet scannable.
   // Nav uses Bloomberg `g` + letter pattern (800 ms window).
   const NAV = [
     { key: 'g p', label: 'Pulse' },
@@ -32,8 +32,15 @@
     { key: '/',        label: 'Focus symbol search' },
     { key: 'r',        label: 'Refresh page' },
     { key: '?',        label: 'This cheat-sheet' },
-    { key: 'Esc',      label: 'Close modal / sheet' },
+    { key: 'Esc',      label: 'Close modal / defocus' },
     { key: '⌘K',       label: 'Command palette (soon)' },
+  ];
+  const GRID = [
+    { key: 'j',     label: 'Row down' },
+    { key: 'k',     label: 'Row up' },
+    { key: 'Enter', label: 'Context menu' },
+    { key: 'f',     label: 'Fullscreen card' },
+    { key: 'c',     label: 'Collapse card' },
   ];
 
   function _onKey(e) {
@@ -77,10 +84,19 @@
           </div>
         {/each}
       </section>
+      <section class="sc-section">
+        <div class="sc-section-h">Grid (when focused)</div>
+        {#each GRID as s}
+          <div class="sc-row">
+            <kbd class="sc-kbd">{s.key}</kbd>
+            <span class="sc-lbl">{s.label}</span>
+          </div>
+        {/each}
+      </section>
     </div>
     <div class="sc-foot">
       Letters are case-insensitive. Shortcuts pause while typing in a
-      field — focus an input to type normally.
+      field — Esc defocuses. Grid shortcuts activate when a grid cell has focus.
     </div>
   </div>
 {/if}
@@ -100,7 +116,7 @@
     left: 50%;
     transform: translate(-50%, -50%);
     z-index: 9997;
-    width: min(32rem, calc(100vw - 1rem));
+    width: min(44rem, calc(100vw - 1rem));
     max-height: calc(100vh - 2rem);
     overflow-y: auto;
     background: linear-gradient(180deg, var(--algo-bg-elev2) 0%, var(--algo-bg-elev1) 100%);
@@ -140,11 +156,14 @@
 
   .sc-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 1fr 1fr;
     gap: 0;
     padding: 0.45rem 0.55rem;
   }
-  @media (max-width: 540px) {
+  @media (max-width: 700px) {
+    .sc-grid { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 480px) {
     .sc-grid { grid-template-columns: 1fr; }
   }
   .sc-section {
