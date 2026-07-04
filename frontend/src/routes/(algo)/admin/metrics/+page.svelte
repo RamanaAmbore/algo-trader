@@ -25,6 +25,8 @@
   import EmptyState from '$lib/EmptyState.svelte';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import { userRole } from '$lib/rbac';
+  import InfoHint from '$lib/InfoHint.svelte';
+  import { METRIC_META } from '$lib/data/metricMetadata.js';
 
   /** Core metrics the operator wants charted side-by-side. Each entry
    * maps a CodeMetricsSnapshot column (or virtual test sub-key) to a
@@ -235,7 +237,12 @@
       {@const latest = latestValue(pts)}
       <div class="metrics-tile">
         <div class="metrics-tile-head">
-          <span class="metrics-tile-label">{tile.label}</span>
+          <span class="metrics-tile-label">
+            {tile.label}
+            {#if METRIC_META[tile.key]}
+              <InfoHint content={METRIC_META[tile.key]} popup={true} maxWidth="26rem" />
+            {/if}
+          </span>
           <span class="metrics-tile-latest">
             {fmtNum(latest)}{tile.unit}
           </span>
@@ -271,16 +278,16 @@
         <tr>
           <th>Release</th>
           <th>Captured</th>
-          <th class="num">BE LOC</th>
-          <th class="num">BE cx avg</th>
-          <th class="num">BE cx max</th>
-          <th class="num">BE stale</th>
-          <th class="num">BE cov %</th>
-          <th class="num">FE LOC</th>
-          <th class="num">FE cx avg</th>
-          <th class="num">FE dup</th>
-          <th class="num">FE stale</th>
-          <th class="num">Bugs</th>
+          <th class="num"><span class="metric-label">BE LOC<InfoHint content={METRIC_META.backend_loc} popup={true} maxWidth="26rem" /></span></th>
+          <th class="num"><span class="metric-label">BE cx avg<InfoHint content={METRIC_META.backend_complexity_avg} popup={true} maxWidth="26rem" /></span></th>
+          <th class="num"><span class="metric-label">BE cx max<InfoHint content={METRIC_META.backend_complexity_max} popup={true} maxWidth="26rem" /></span></th>
+          <th class="num"><span class="metric-label">BE stale<InfoHint content={METRIC_META.backend_stale_count} popup={true} maxWidth="26rem" /></span></th>
+          <th class="num"><span class="metric-label">BE cov %<InfoHint content={METRIC_META.backend_coverage_pct} popup={true} maxWidth="26rem" /></span></th>
+          <th class="num"><span class="metric-label">FE LOC<InfoHint content={METRIC_META.frontend_loc} popup={true} maxWidth="26rem" /></span></th>
+          <th class="num"><span class="metric-label">FE cx avg<InfoHint content={METRIC_META.frontend_complexity_avg} popup={true} maxWidth="26rem" /></span></th>
+          <th class="num"><span class="metric-label">FE dup<InfoHint content={METRIC_META.frontend_duplicated_lines} popup={true} maxWidth="26rem" /></span></th>
+          <th class="num"><span class="metric-label">FE stale<InfoHint content={METRIC_META.frontend_stale_count} popup={true} maxWidth="26rem" /></span></th>
+          <th class="num"><span class="metric-label">Bugs<InfoHint content={METRIC_META.bug_count_since_last_release} popup={true} maxWidth="26rem" /></span></th>
           <th></th>
         </tr>
       </thead>
@@ -414,6 +421,9 @@
     gap: 0.4rem;
   }
   .metrics-tile-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
     font-size: var(--fs-lg);
     color: var(--text-soft, #94a3b8);
     line-height: 1.2;
@@ -473,6 +483,13 @@
   }
   .metrics-table th { color: var(--text-soft, #94a3b8); font-weight: 500; }
   .metrics-table td.num, .metrics-table th.num { text-align: right; }
+  /* Inline metric label + InfoHint chip in table headers. */
+  .metric-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    white-space: nowrap;
+  }
   .metrics-tag code { font-size: var(--fs-xl); color: #67e8f9; }
   .metrics-sha {
     margin-left: 0.4rem;

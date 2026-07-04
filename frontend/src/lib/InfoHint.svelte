@@ -8,30 +8,47 @@
   //   - popup (popup=true)    — floating absolute-positioned tooltip
   //                            (preferred for compact stat panels)
   //
-  // Content delivery: pass either a `text` prop (string, may include
-  // HTML) OR a children snippet. `text` wins when both are provided.
+  // Content delivery (priority order):
+  //   1. content prop — structured {what, ideal, impact, fix} object,
+  //      rendered as a 4-row grid.  Preferred for metric tooltips.
+  //   2. text prop — raw HTML string.
+  //   3. children snippet.
   // The text-prop path is the safer one for stable rendering across
   // SvelteKit hydration / SSR — children snippets occasionally lose
   // their content during the SSR → CSR handoff in this codebase.
 
+  import { onMount } from 'svelte';
+
   /** @type {{
    *   children?: any,
    *   text?: string,
+   *   content?: { what: string, ideal: string, impact: string, fix: string },
    *   label?: string,
    *   maxWidth?: string,
    *   align?: 'left'|'right',
    *   defaultOpen?: boolean,
    *   popup?: boolean,
+   *   id?: string,
    * }} */
   let {
     children,
     text = '',
+    content = null,
     label = 'i',
-    maxWidth = '36rem',
+    maxWidth = content ? '28rem' : '36rem',
     align = 'left',
     defaultOpen = false,
     popup = false,
+    id = '',
   } = $props();
+
+  // Unique id for aria-describedby. Generated in onMount to avoid
+  // SSR/CSR id mismatch (server and client would use different counters).
+  let _uid = $state('');
+  onMount(() => {
+    _uid = id || `infohint-${Math.random().toString(36).slice(2, 8)}`;
+  });
+  const _popoutId = $derived(_uid || 'infohint-pending');
 
   // intentional: defaultOpen is a one-time seed; operator toggles thereafter
   // svelte-ignore state_referenced_locally
@@ -124,6 +141,7 @@
           class="info-btn"
           class:open
           aria-expanded={open}
+          aria-describedby={visible ? _popoutId : undefined}
           aria-label={open ? 'Hide details' : 'Show details'}
           title={open ? 'Hide details' : 'Show details'}
           onclick={() => { open = !open; if (!open) hovered = false; }}
@@ -134,8 +152,29 @@
           class:info-popout-popup={popup}
           class:info-popout-pinned={popup && open}
           style="max-width: {maxWidth}"
+          id={_popoutId}
+          role="tooltip"
           bind:this={popoutEl}>
-      {#if text}
+      {#if content}
+        <dl class="info-struct" data-testid="metric-popover">
+          <div class="info-row">
+            <dt class="info-dt">What</dt>
+            <dd class="info-dd">{content.what}</dd>
+          </div>
+          <div class="info-row">
+            <dt class="info-dt">Ideal</dt>
+            <dd class="info-dd info-dd-mono">{content.ideal}</dd>
+          </div>
+          <div class="info-row">
+            <dt class="info-dt">Impact</dt>
+            <dd class="info-dd">{content.impact}</dd>
+          </div>
+          <div class="info-row">
+            <dt class="info-dt">Fix</dt>
+            <dd class="info-dd">{content.fix}</dd>
+          </div>
+        </dl>
+      {:else if text}
         {@html text}
       {:else if children}
         {@render children()}
@@ -244,4 +283,39 @@
   :global(.info-popout .font-mono) { color: #7dd3fc; }
   :global(.info-popout b),
   :global(.info-popout strong) { color: var(--c-action); font-weight: 700; }
+
+  /* Structured 4-row metric popover layout. */
+  .info-struct {
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .info-row {
+    display: grid;
+    grid-template-columns: 3.4rem 1fr;
+    gap: 0 0.5rem;
+    align-items: baseline;
+  }
+  .info-dt {
+    font-size: var(--fs-md);
+    font-weight: 700;
+    color: var(--c-action);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    line-height: 1.5;
+    white-space: nowrap;
+  }
+  .info-dd {
+    margin: 0;
+    font-size: var(--fs-lg);
+    color: var(--text-hi, #f1f5f9);
+    line-height: 1.5;
+  }
+  .info-dd-mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: var(--fs-md);
+    color: #7dd3fc;
+  }
 </style>
