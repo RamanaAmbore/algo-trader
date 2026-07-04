@@ -296,6 +296,22 @@ SEEDS: list[tuple] = [
      "0 disables.",
      "days", {"min": 0, "max": 1825, "step": 1}),
 
+    # ── Perf snapshot ────────────────────────────────────────────────────
+    ("perf_snapshot", "perf_snapshot.runtime_enabled", "bool", False,
+     "Enable the nightly Playwright runtime-capture step in "
+     "_task_perf_snapshot (04:00 IST). When True, "
+     "scripts/perf_capture_run.sh is run against dev.ramboq.com after the "
+     "static baseline to populate LCP/TBT/heap_mb columns. Disable if "
+     "Playwright infrastructure is flaky or dev.ramboq.com is unreachable. "
+     "Static rows are always inserted regardless of this flag.",
+     None, None),
+    ("perf_snapshot", "perf_snapshot.runtime_timeout_s", "int", 600,
+     "Maximum seconds to wait for the Playwright runtime-capture subprocess "
+     "before giving up and inserting static-only rows. Playwright runs "
+     "typically complete in 2-4 minutes; 600 s (10 min) provides a "
+     "comfortable ceiling. Increase if Playwright CI is slow on the server.",
+     "s", {"min": 60, "max": 1800, "step": 30}),
+
     # ── Hedge proxies — Stage 4 ──────────────────────────────────────
     # Category matches the CRUD section header on /admin/settings so
     # both surfaces (settings rows + pair table) render inside one
