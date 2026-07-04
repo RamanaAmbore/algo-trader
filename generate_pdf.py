@@ -70,6 +70,36 @@ HEADER = r"""
 \usetikzlibrary{calc,fadings,shadings}
 \usepackage{lastpage}
 \usepackage{hyperref}
+\usepackage{xurl}                 % break long URLs on any character
+\usepackage{etoolbox}             % AtBeginEnvironment for tables
+
+% Wrap long lines in verbatim / code blocks. fvextra is the pandoc-native
+% way to get line-breaking inside the Highlighting environment.
+\usepackage{fvextra}
+\DefineVerbatimEnvironment{Highlighting}{Verbatim}{
+  breaklines=true,
+  breakanywhere=true,
+  breaksymbolleft={},
+  breakautoindent=false,
+  fontsize=\small,
+  commandchars=\\\{\}
+}
+% Same for plain verbatim (no highlighting).
+\fvset{breaklines=true,breakanywhere=true,fontsize=\small}
+
+% Tables get \footnotesize so 2-column glossary/index rows stop
+% overflowing the right margin. Also raise \tabcolsep for breathing room.
+\AtBeginEnvironment{longtable}{\footnotesize}
+\AtBeginEnvironment{tabular}{\footnotesize}
+\AtBeginEnvironment{tabularx}{\footnotesize}
+\setlength{\tabcolsep}{5pt}
+
+% Prose overflow — allow LaTeX to stretch inter-word spacing more
+% aggressively before it gives up and prints past the margin. \sloppy
+% relaxes the badness threshold. Together these clean up the vast
+% majority of overfull-hbox warnings from long inline-code spans.
+\setlength{\emergencystretch}{6em}
+\sloppy
 
 % Hyperlink colors — no more cyan. Deep copper amber for both intra + external.
 \hypersetup{
@@ -364,6 +394,35 @@ FRONT_MATTER_FILE = Path("/tmp/ramboq_pdf_front.tex")
 FRONT_MATTER_FILE.write_text(FRONT_MATTER)
 
 
+# Lua filter — forces explicit column widths on every table so `p{...}`
+# columns wrap long cells instead of overflowing the right margin.
+LUA_FILTER = r"""
+function Table(tbl)
+  local ncols = #tbl.colspecs
+  if ncols == 2 then
+    tbl.colspecs[1][2] = 0.24
+    tbl.colspecs[2][2] = 0.72
+  elseif ncols == 3 then
+    tbl.colspecs[1][2] = 0.22
+    tbl.colspecs[2][2] = 0.35
+    tbl.colspecs[3][2] = 0.37
+  elseif ncols == 4 then
+    tbl.colspecs[1][2] = 0.20
+    tbl.colspecs[2][2] = 0.25
+    tbl.colspecs[3][2] = 0.25
+    tbl.colspecs[4][2] = 0.26
+  else
+    local share = 0.96 / ncols
+    for i, col in ipairs(tbl.colspecs) do
+      col[2] = share
+    end
+  end
+  return tbl
+end
+"""
+LUA_FILTER_FILE = Path("/tmp/ramboq_pdf_tables.lua")
+LUA_FILTER_FILE.write_text(LUA_FILTER)
+
 cmd = [
     "pandoc",
     str(md_file),
@@ -372,6 +431,7 @@ cmd = [
     "--toc-depth=3",
     "--pdf-engine=xelatex",
     "--highlight-style=tango",
+    "--lua-filter", str(LUA_FILTER_FILE),
     "-H", str(HEADER_FILE),
     "-B", str(FRONT_MATTER_FILE),
     "-V", "documentclass=article",
