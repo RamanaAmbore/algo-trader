@@ -9,9 +9,11 @@
 
 ## About the author
 
-**Ramana R Ambore, FRM** — Principal FinTech Engineer & Quantitative Developer, platform engineer for **RamboQuant LLP**.
+**Ramana R Ambore, FRM** — Forward Deployment Engineer for **RamboQuant LLP**.
 
-Principal FinTech engineer and quantitative developer with **30+ years** across mainframe modernization and cloud-native financial platforms. **FRM** (GARP, 2022) and **CFA Level 2** candidate with a Master's in Computer Science. Currently **Principal System Analyst** at **Fidelity Investments**, leading billing-platform modernization on AWS + Snowflake, alongside proprietary legacy modernization tooling. Deep specialism in derivatives risk and options pricing — Black-Scholes, Greeks modeling, multi-leg strategy analytics — carried directly into RamboQuant's derivatives layer. **NTT Innovation Award** recipient (top-40 global innovator). Based in Merrimack, NH.
+**Forward Deployment Engineer** with **30+ years** across mainframe modernization and cloud-native financial platforms, currently applying that pedigree end-to-end to **RamboQuant** — a production algorithmic trading platform live at **ramboq.com**. **FRM** (GARP, 2022) and **CFA Level 2** candidate: the derivatives-risk, options-pricing (Black-Scholes / Greeks), and portfolio-analytics theory from those programs materialize directly as RamboQuant's derivatives layer, hedge-proxy β regression, and units-based NAV accounting.
+
+Master's in Computer Science plus tenure as **Principal System Analyst** at **Fidelity Investments** — billing-platform modernization on AWS + Snowflake, distributed fee-calculation engines — supply the engineering discipline (distributed systems, event-driven architecture, legacy-modernization patterns) that keep a multi-broker, real-time, single-operator platform correct and fast. **NTT Innovation Award** recipient (top-40 global innovator). Based in Merrimack, NH.
 
 **Profile**: [ramanaambore.me](https://ramanaambore.me)
 
