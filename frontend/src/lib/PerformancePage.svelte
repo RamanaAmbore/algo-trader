@@ -581,12 +581,15 @@
     const exch = String(params.data?.exchange || 'NFO');
     const span = document.createElement('span');
     span.style.cssText = 'display:inline-flex;align-items:center;gap:0;width:100%';
-    span.textContent = sym === 'TOTAL' ? sym : _fmtSymCached(sym, exch);
+    const _dispTxtPos = sym === 'TOTAL' ? sym : _fmtSymCached(sym, exch);
+    span.textContent = _dispTxtPos;
     if (sym && sym !== 'TOTAL') {
       // data attrs for context menu delegation
       span.setAttribute('data-sym',  sym);
       span.setAttribute('data-exch', exch);
       span.className = 'perf-sym-cell';
+      // Virtual-root tooltip: show raw contract when label is abbreviated.
+      if (_dispTxtPos !== sym) span.setAttribute('title', sym);
       // Options deep-link (admin dashboard only)
       if (enableOptionsLink && /(?:CE|PE|FUT)$/.test(sym)) {
         const href = `/admin/derivatives?symbol=${encodeURIComponent(sym)}&account=${encodeURIComponent(acct)}`;

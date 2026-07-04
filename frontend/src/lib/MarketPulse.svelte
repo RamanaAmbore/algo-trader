@@ -30,7 +30,7 @@
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
-  import { rootOfLabel } from '$lib/data/rootOf.js';
+  import { rootOfLabel, resolveVirtual } from '$lib/data/rootOf.js';
 
   // Module-scope cache for hyphenated symbol display. The cellRenderer
   // re-runs for every row × redraw; parsing each symbol once per session
@@ -3949,7 +3949,20 @@
       if (q > 0) dirLabel = '<span class="sr-only">Long position</span>';
       else if (q < 0) dirLabel = '<span class="sr-only">Short position</span>';
     }
-    return `<span class="sym-main ${optClass}">${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}`;
+    // Virtual-root tooltip — when the displayed label is a short alias
+    // (e.g. "GOLDM", "GOLDM.NEXT") the operator can hover to see the
+    // actual contract it resolves to (e.g. "GOLDM26JULFUT").
+    // resolveVirtual is a safe no-op on raw contracts (contains digits →
+    // /^[A-Z]+$/ guard returns input unchanged); for bare-root mover rows
+    // it returns the front-month contract. We only emit the title attribute
+    // when the resolved value differs from the displayed label so equities
+    // (RELIANCE → RELIANCE) get no redundant tooltip.
+    const _rawSym = String(row.tradingsymbol || '');
+    const _resolvedContract = resolveVirtual(_rawSym, row.exchange || '');
+    const _symTitle = (_resolvedContract && _resolvedContract !== main)
+      ? ` title="${_resolvedContract}"`
+      : '';
+    return `<span class="sym-main ${optClass}"${_symTitle}>${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}`;
   }
 
   /**

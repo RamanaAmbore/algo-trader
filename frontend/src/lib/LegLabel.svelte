@@ -68,8 +68,9 @@
     CRUDEOIL-16JUN26-FUT      (far-month, pass-through)
 -->
 {#if _virtualLabel}
-  <!-- Virtual MCX/CDS root label — single chip, no expiry suffix needed -->
-  <span class="leg-label">
+  <!-- Virtual MCX/CDS root label — single chip, no expiry suffix needed.
+       title shows the actual contract so hovering "GOLDM" reveals "GOLDM26JULFUT". -->
+  <span class="leg-label" title={sym}>
     <span class="leg-root">{_virtualLabel}</span>
   </span>
 {:else}

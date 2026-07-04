@@ -4888,7 +4888,11 @@
                 use:longPress={(ev) => {
                   _ctxMenu = { symbol: c.symbol, exchange: c.exchange || 'NFO', x: ev.clientX, y: ev.clientY };
                 }}>
-                <span class="sym-main {_optClass}">{(() => { const rl = rootOfLabel(c.symbol, c.exchange || ''); return rl !== c.symbol ? rl : formatSymbol(c.symbol); })()}</span>
+                {#if (() => { const rl = rootOfLabel(c.symbol, c.exchange || ''); return rl !== c.symbol; })()}
+                  <span class="sym-main {_optClass}" title={c.symbol}>{rootOfLabel(c.symbol, c.exchange || '')}</span>
+                {:else}
+                  <span class="sym-main {_optClass}">{formatSymbol(c.symbol)}</span>
+                {/if}
                 {#if c.kind === 'eq'}
                   <!-- Equity-holding leg tag — operator scanning the
                        Candidates panel sees at a glance which row is
