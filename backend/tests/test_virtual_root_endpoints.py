@@ -529,3 +529,146 @@ def test_fetch_ltp_has_no_run_coroutine_threadsafe():
         "_fetch_ltp must not use run_coroutine_threadsafe (deadlocks on running loop). "
         "Resolution must happen in get_quote (async) before calling _fetch_ltp."
     )
+
+
+# ---------------------------------------------------------------------------
+# 7. _NEXT back-month virtual root resolution (Defect 2 regression)
+# ---------------------------------------------------------------------------
+# Before the fix, `_is_virtual("GOLDM_NEXT")` returned False because the
+# underscore breaks the .isalpha() guard.  All three entry points
+# (resolve_market_data_keys, _build_quote_key in watchlist, batch_sparkline
+# in quote) must now strip the _NEXT suffix and check the bare root.
+
+def test_strip_next_returns_root_and_flag():
+    """_strip_next('GOLDM_NEXT') → ('GOLDM', True); no-suffix → ('GOLDM', False)."""
+    from backend.api.algo.symbol_resolver import _strip_next
+    root, is_next = _strip_next("GOLDM_NEXT")
+    assert root == "GOLDM"
+    assert is_next is True
+
+    root2, is_next2 = _strip_next("GOLDM")
+    assert root2 == "GOLDM"
+    assert is_next2 is False
+
+    root3, is_next3 = _strip_next("CRUDEOIL_NEXT")
+    assert root3 == "CRUDEOIL"
+    assert is_next3 is True
+
+
+def test_is_virtual_bare_root_only():
+    """_is_virtual must return False for _NEXT variants (underscore fails isalpha);
+    callers must strip before checking."""
+    from backend.api.algo.symbol_resolver import _is_virtual
+    # Bare roots are virtual
+    assert _is_virtual("GOLDM") is True
+    assert _is_virtual("CRUDEOIL") is True
+    # _NEXT suffix makes isalpha() return False — callers must strip first
+    assert _is_virtual("GOLDM_NEXT") is False, (
+        "_is_virtual must return False for _NEXT variants; callers strip first"
+    )
+
+
+def test_resolve_market_data_keys_handles_next_suffix():
+    """MCX:GOLDM_NEXT must be resolved to the back-month contract, not
+    passed as-is to the broker.  The fix in symbol_resolver.py strips
+    _NEXT before the _is_virtual guard so the branch is taken."""
+    from backend.api.algo.symbol_resolver import resolve_market_data_keys
+
+    async def _mock_resolve(virtual: str, exchange: str) -> str:
+        # Simulate: GOLDM → front, GOLDM_NEXT → back-month
+        if virtual.upper() == "GOLDM_NEXT" and exchange == "MCX":
+            return "GOLDM26AUGFUT"
+        if virtual.upper() == "GOLDM" and exchange == "MCX":
+            return "GOLDM26JULFUT"
+        return virtual
+
+    with patch("backend.api.algo.symbol_resolver.resolve_symbol", side_effect=_mock_resolve):
+        result = asyncio.run(
+            resolve_market_data_keys(["MCX:GOLDM_NEXT", "MCX:GOLDM", "NSE:RELIANCE"])
+        )
+
+    # Back-month
+    assert result.input_to_broker["MCX:GOLDM_NEXT"] == "MCX:GOLDM26AUGFUT", (
+        "MCX:GOLDM_NEXT must resolve to its back-month contract"
+    )
+    # Front-month
+    assert result.input_to_broker["MCX:GOLDM"] == "MCX:GOLDM26JULFUT"
+    # Non-virtual passes through unchanged
+    assert result.input_to_broker["NSE:RELIANCE"] == "NSE:RELIANCE"
+
+    # broker_keys must contain ONLY resolved keys
+    assert "MCX:GOLDM_NEXT" not in result.broker_keys
+    assert "MCX:GOLDM" not in result.broker_keys
+    assert "MCX:GOLDM26AUGFUT" in result.broker_keys
+    assert "MCX:GOLDM26JULFUT" in result.broker_keys
+
+
+@pytest.mark.asyncio
+async def test_batch_quote_goldm_next_resolved_to_back_month():
+    """POST /api/quote/batch with MCX:GOLDM_NEXT must resolve to the back-month
+    contract before the broker call.  Response row must be keyed 'GOLDM_NEXT',
+    not the resolved contract name."""
+    from backend.api.routes.quote import QuoteController, BatchQuoteRequest
+
+    resolved_contract = "GOLDM26AUGFUT"
+    resolved_key      = f"MCX:{resolved_contract}"
+    input_key         = "MCX:GOLDM_NEXT"
+
+    broker_keys_seen: list[list] = []
+
+    def _tracking_quote(keys):
+        broker_keys_seen.append(list(keys))
+        return _make_kite_quote_resp(resolved_key, ltp=9200.0)
+
+    async def _mock_resolve(virtual: str, exchange: str) -> str:
+        if virtual.upper() == "GOLDM_NEXT" and exchange == "MCX":
+            return resolved_contract
+        return virtual
+
+    with (
+        patch("backend.api.algo.symbol_resolver.resolve_symbol", side_effect=_mock_resolve),
+        patch("backend.brokers.registry.get_market_data_broker",
+              return_value=MagicMock(quote=_tracking_quote)),
+        patch("backend.api.routes.quote._all_exchanges_closed", return_value=False),
+        patch("backend.api.routes.quote._get_today_token_map", return_value={}),
+        patch("asyncio.to_thread", side_effect=_fake_to_thread),
+    ):
+        handler_fn = QuoteController.batch_quote.fn
+        result = await handler_fn(None, BatchQuoteRequest(keys=[input_key]))
+
+    # Broker must have received the RESOLVED back-month key
+    assert broker_keys_seen, "broker.quote was not called"
+    assert resolved_key in broker_keys_seen[0], (
+        f"Expected resolved key {resolved_key}; got {broker_keys_seen[0]}"
+    )
+    assert input_key not in broker_keys_seen[0], (
+        "GOLDM_NEXT must not reach the broker (underscore breaks broker key)"
+    )
+
+    # Response tradingsymbol must be the original operator-facing key
+    assert len(result.items) == 1
+    row = result.items[0]
+    assert row.tradingsymbol == "GOLDM_NEXT", (
+        f"Response tradingsymbol must be 'GOLDM_NEXT', got '{row.tradingsymbol}'"
+    )
+    assert row.exchange == "MCX"
+    assert row.ltp == 9200.0
+    assert not row.stale
+
+
+def test_symbol_resolver_source_strips_next_before_is_virtual():
+    """symbol_resolver.py must call _strip_next(sym) before _is_virtual in
+    resolve_market_data_keys.  This is the fix for the _NEXT regression."""
+    import inspect
+    from backend.api.algo import symbol_resolver as sr_mod
+
+    src = inspect.getsource(sr_mod.resolve_market_data_keys)
+    # The fix pattern: strip _NEXT, check root
+    assert "_strip_next" in src, (
+        "resolve_market_data_keys must call _strip_next before _is_virtual "
+        "to handle GOLDM_NEXT / CRUDEOIL_NEXT back-month roots"
+    )
+    # Confirm _is_virtual is then called on the stripped root (not the full sym)
+    assert "_is_virtual" in src, (
+        "resolve_market_data_keys must still call _is_virtual on the stripped root"
+    )
