@@ -255,16 +255,16 @@ FRONT_MATTER = rf"""
 \restoregeometry
 
 % ============================================================
-% PAGE 2 — About the Guide / About the Author (full-width bio) /
-% Experience & Recognition / Credentials / Version (full-width box)
+% PAGE 2 — About the Guide / Version / About the Author /
+% Experience & Recognition / Credentials
 %
 % Layout invariants (durable across future edits):
-% - Section order top-to-bottom: About guide → Author bio →
-%   Experience → Credentials → Version.
+% - Section order top-to-bottom: About guide → Version → Author bio →
+%   Experience → Credentials.
 % - Every section spans the full text width (no side columns).
 % - Section labels use \sffamily\footnotesize\bfseries in ramboqamber.
 % - All boxes span 0.965\linewidth for consistent right-edge alignment.
-% - Copper-bordered cream boxes for reference data (Credentials, Version);
+% - Copper-bordered cream boxes for reference data (Version, Credentials);
 %   solid navy cards for narrative highlights (Experience & Recognition).
 % ============================================================
 \thispagestyle{{empty}}
@@ -284,7 +284,39 @@ The RamboQuant \textbf{{Complete Design Guide}} is a top-to-bottom developer + o
 
 \vspace{{7pt}}
 
-% -- (2) Author bio — full width --------------------------------
+% -- (2) Version — full-width, left-aligned, 3-column grid inside -
+{{\color{{ramboqamber}}\sffamily\footnotesize\bfseries VERSION}}\\[2pt]
+\noindent
+\begin{{tikzpicture}}
+  \node[
+    draw=ramboqcopper,
+    line width=0.6pt,
+    fill=callbg,
+    inner sep=10pt,
+    text width=0.965\linewidth,
+    rounded corners=3pt,
+    align=left,
+  ]{{%
+    \begin{{tabular}}{{@{{}}p{{0.28\linewidth}}p{{0.34\linewidth}}p{{0.34\linewidth}}@{{}}}}
+      {{\color{{ramboqnavy}}\sffamily\small\bfseries Generated}} &
+      {{\color{{ramboqnavy}}\sffamily\small\bfseries Revision}} &
+      {{\color{{ramboqnavy}}\sffamily\small\bfseries Branch \& Pages}} \\
+      {{\color{{ramboqslate}}\sffamily\small \today}} &
+      {{\color{{ramboqslate}}\sffamily\small v\,{COMMIT_COUNT} \ ({COMMIT_SHA})}} &
+      {{\color{{ramboqslate}}\sffamily\small {BRANCH} \ \textcolor{{ramboqcopper}}{{$\bullet$}} \ \pageref*{{LastPage}} pages}} \\[8pt]
+      {{\color{{ramboqnavy}}\sffamily\small\bfseries Website}} &
+      {{\color{{ramboqnavy}}\sffamily\small\bfseries Profile}} &
+      {{\color{{ramboqnavy}}\sffamily\small\bfseries Tech Stack}} \\
+      {{\color{{ramboqcopper}}\sffamily\small\bfseries \href{{https://ramboq.com}}{{ramboq.com}}}} &
+      {{\color{{ramboqcopper}}\sffamily\small\bfseries \href{{https://ramanaambore.me}}{{ramanaambore.me}}}} &
+      {{\color{{ramboqslate}}\sffamily\footnotesize SvelteKit \textcolor{{ramboqcopper}}{{$\bullet$}} Litestar \textcolor{{ramboqcopper}}{{$\bullet$}} PostgreSQL \textcolor{{ramboqcopper}}{{$\bullet$}} KiteTicker \textcolor{{ramboqcopper}}{{$\bullet$}} Kite/Dhan/Groww \textcolor{{ramboqcopper}}{{$\bullet$}} MCP \textcolor{{ramboqcopper}}{{$\bullet$}} Gemini}} \\
+    \end{{tabular}}
+  }};
+\end{{tikzpicture}}
+
+\vspace{{7pt}}
+
+% -- (3) Author bio — full width --------------------------------
 {{\color{{ramboqamber}}\sffamily\footnotesize\bfseries THE AUTHOR}}\\[1pt]
 {{\color{{ramboqnavy}}\sffamily\Large\bfseries Ramana R Ambore, \textcolor{{ramboqcopper}}{{FRM}}}}\\[1pt]
 {{\color{{ramboqcopper}}\sffamily\small Principal FinTech Engineer \& Quantitative Developer}}\\[4pt]
@@ -295,14 +327,19 @@ Principal FinTech engineer and quantitative developer with \textbf{{30+ years}} 
 
 \vspace{{7pt}}
 
-% -- (3) Experience & Recognition — three navy cards, full width --
+% -- (4) Experience & Recognition — three navy cards, full width --
+% Cards use \minipage side-by-side (not tikz \hspace which leaves
+% invisible margin whitespace at the right edge). This lets us hit
+% the full 0.965\linewidth cleanly across three ~32%-width cards.
 {{\color{{ramboqamber}}\sffamily\footnotesize\bfseries EXPERIENCE \& RECOGNITION}}\\[2pt]
-\noindent
+\noindent\hspace*{{0pt}}%
+\begin{{minipage}}[t]{{0.318\linewidth}}
 \begin{{tikzpicture}}
   \node[
     fill=ramboqnavy,
     inner sep=9pt,
-    text width=0.312\linewidth,
+    text width=\linewidth,
+    minimum height=1.15in,
     rounded corners=3pt,
     align=left,
   ]{{%
@@ -311,11 +348,15 @@ Principal FinTech engineer and quantitative developer with \textbf{{30+ years}} 
     {{\color{{ramboqcream}}\sffamily\footnotesize Fidelity Investments}}\\[3pt]
     {{\color{{white}}\sffamily\scriptsize Billing platform modernization on AWS + Snowflake; distributed fee-calculation engines.}}
   }};
-  \hspace{{2pt}}
+\end{{tikzpicture}}
+\end{{minipage}}\hfill
+\begin{{minipage}}[t]{{0.318\linewidth}}
+\begin{{tikzpicture}}
   \node[
     fill=ramboqnavy,
     inner sep=9pt,
-    text width=0.312\linewidth,
+    text width=\linewidth,
+    minimum height=1.15in,
     rounded corners=3pt,
     align=left,
   ]{{%
@@ -324,11 +365,15 @@ Principal FinTech engineer and quantitative developer with \textbf{{30+ years}} 
     {{\color{{ramboqcream}}\sffamily\footnotesize Mainframe to cloud-native}}\\[3pt]
     {{\color{{white}}\sffamily\scriptsize Derivatives risk, options pricing (Black-Scholes, Greeks), multi-leg strategy analytics.}}
   }};
-  \hspace{{2pt}}
+\end{{tikzpicture}}
+\end{{minipage}}\hfill
+\begin{{minipage}}[t]{{0.318\linewidth}}
+\begin{{tikzpicture}}
   \node[
     fill=ramboqnavy,
     inner sep=9pt,
-    text width=0.312\linewidth,
+    text width=\linewidth,
+    minimum height=1.15in,
     rounded corners=3pt,
     align=left,
   ]{{%
@@ -338,10 +383,11 @@ Principal FinTech engineer and quantitative developer with \textbf{{30+ years}} 
     {{\color{{white}}\sffamily\scriptsize Selected globally for innovation contributions in financial-services engineering.}}
   }};
 \end{{tikzpicture}}
+\end{{minipage}}
 
 \vspace{{7pt}}
 
-% -- (4) Credentials — full-width copper strip -------------------
+% -- (5) Credentials — full-width copper strip -------------------
 {{\color{{ramboqamber}}\sffamily\footnotesize\bfseries CREDENTIALS}}\\[2pt]
 \noindent
 \begin{{tikzpicture}}
@@ -362,39 +408,6 @@ Principal FinTech engineer and quantitative developer with \textbf{{30+ years}} 
       IBM Certified DB2 DBA \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
       Sun Certified Java Programmer
     }}
-  }};
-\end{{tikzpicture}}
-
-\vspace{{7pt}}
-
-% -- (5) Version — full-width, left-aligned, 3-column grid inside -
-{{\color{{ramboqamber}}\sffamily\footnotesize\bfseries VERSION}}\\[2pt]
-\noindent
-\begin{{tikzpicture}}
-  \node[
-    draw=ramboqcopper,
-    line width=0.6pt,
-    fill=callbg,
-    inner sep=10pt,
-    text width=0.965\linewidth,
-    rounded corners=3pt,
-    align=left,
-  ]{{%
-    % 3-column grid: uses tabular to keep columns aligned to left edge.
-    \begin{{tabular}}{{@{{}}p{{0.28\linewidth}}p{{0.34\linewidth}}p{{0.34\linewidth}}@{{}}}}
-      {{\color{{ramboqnavy}}\sffamily\small\bfseries Generated}} &
-      {{\color{{ramboqnavy}}\sffamily\small\bfseries Revision}} &
-      {{\color{{ramboqnavy}}\sffamily\small\bfseries Branch \& Pages}} \\
-      {{\color{{ramboqslate}}\sffamily\small \today}} &
-      {{\color{{ramboqslate}}\sffamily\small v\,{COMMIT_COUNT} \ ({COMMIT_SHA})}} &
-      {{\color{{ramboqslate}}\sffamily\small {BRANCH} \ \textcolor{{ramboqcopper}}{{$\bullet$}} \ \pageref*{{LastPage}} pages}} \\[8pt]
-      {{\color{{ramboqnavy}}\sffamily\small\bfseries Website}} &
-      {{\color{{ramboqnavy}}\sffamily\small\bfseries Profile}} &
-      {{\color{{ramboqnavy}}\sffamily\small\bfseries Tech Stack}} \\
-      {{\color{{ramboqcopper}}\sffamily\small\bfseries \href{{https://ramboq.com}}{{ramboq.com}}}} &
-      {{\color{{ramboqcopper}}\sffamily\small\bfseries \href{{https://ramanaambore.me}}{{ramanaambore.me}}}} &
-      {{\color{{ramboqslate}}\sffamily\footnotesize SvelteKit \textcolor{{ramboqcopper}}{{$\bullet$}} Litestar \textcolor{{ramboqcopper}}{{$\bullet$}} PostgreSQL \textcolor{{ramboqcopper}}{{$\bullet$}} KiteTicker \textcolor{{ramboqcopper}}{{$\bullet$}} Kite/Dhan/Groww \textcolor{{ramboqcopper}}{{$\bullet$}} MCP \textcolor{{ramboqcopper}}{{$\bullet$}} Gemini}} \\
-    \end{{tabular}}
   }};
 \end{{tikzpicture}}
 
