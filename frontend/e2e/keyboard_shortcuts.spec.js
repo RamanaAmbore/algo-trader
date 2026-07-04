@@ -8,11 +8,11 @@
  * 4. Reuse  — shortcut infrastructure lives in (algo)/+layout.svelte (no per-page copy)
  * 5. UX     — input focus disables shortcuts; Esc closes modals; cheatsheet visible
  *
- * Auth strategy: ONE login per module via ensureJwt + loginAsAdmin (form-based,
- * rate-limit-tolerant). Each test seeds the cached JWT into sessionStorage via
- * addInitScript — zero /api/auth/login calls beyond the first beforeAll.
- * Only chromium-desktop: keyboard shortcuts have no semantic meaning on touch
- * viewports; mobile project would add spurious rate-limit churn.
+ * Auth strategy: ONE login per describe-group via beforeAll + loginAsAdmin
+ * (form-based, rate-limit-tolerant). Each individual test injects the cached
+ * JWT via addInitScript to skip the /api/auth/login call entirely.
+ * Only chromium-desktop project: keyboard shortcuts are desktop-only behaviour;
+ * running under mobile-portrait/mobile-landscape would add spurious failures.
  */
 
 import { test, expect } from '@playwright/test';
@@ -32,8 +32,9 @@ async function seedToken(page, token) {
   }, token);
 }
 
-// Module-level token — shared across both describe groups (same worker scope)
-// so we log in at most ONCE per Playwright worker.
+// Module-level token — shared across both describe groups so we only
+// log in ONCE per worker. Playwright workers have separate module scopes,
+// but two describe groups in the same module share the same scope.
 /** @type {string} */
 let _sharedJwt = '';
 
@@ -53,17 +54,16 @@ async function ensureJwt(browser) {
 test.describe('keyboard shortcuts — desktop', () => {
   test.use({ viewport: { width: 1366, height: 768 } });
   // Skip on non-chromium projects — keyboard shortcuts are desktop-only.
-  test.skip(({ browserName }) => browserName !== 'chromium',
-    'keyboard shortcuts are chromium-desktop only');
+  test.skip(({ browserName }) => browserName !== 'chromium', 'keyboard shortcuts are chromium-desktop only');
 
   test.beforeAll(async ({ browser }) => {
     await ensureJwt(browser);
-  }, 90_000); // generous: slow dev-server signin + loginAsAdmin retries
+  }, 90_000); // generous timeout: slow dev server signin + loginAsAdmin retries
 
   test('g d navigates to /dashboard', async ({ page }) => {
     await seedToken(page, _sharedJwt);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('.algo-nav-btn', { timeout: 20_000 });
+    await page.waitForSelector('.algo-nav-btn', { timeout: 15_000 });
 
     await page.keyboard.press('g');
     await page.keyboard.press('d');
@@ -75,7 +75,7 @@ test.describe('keyboard shortcuts — desktop', () => {
   test('g p navigates to /pulse', async ({ page }) => {
     await seedToken(page, _sharedJwt);
     await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('.algo-nav-btn', { timeout: 20_000 });
+    await page.waitForSelector('.algo-nav-btn', { timeout: 15_000 });
 
     await page.keyboard.press('g');
     await page.keyboard.press('p');
@@ -87,7 +87,7 @@ test.describe('keyboard shortcuts — desktop', () => {
   test('g e navigates to /admin/derivatives', async ({ page }) => {
     await seedToken(page, _sharedJwt);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('.algo-nav-btn', { timeout: 20_000 });
+    await page.waitForSelector('.algo-nav-btn', { timeout: 15_000 });
 
     await page.keyboard.press('g');
     await page.keyboard.press('e');
@@ -99,7 +99,7 @@ test.describe('keyboard shortcuts — desktop', () => {
   test('g c navigates to /charts', async ({ page }) => {
     await seedToken(page, _sharedJwt);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('.algo-nav-btn', { timeout: 20_000 });
+    await page.waitForSelector('.algo-nav-btn', { timeout: 15_000 });
 
     await page.keyboard.press('g');
     await page.keyboard.press('c');
@@ -111,7 +111,7 @@ test.describe('keyboard shortcuts — desktop', () => {
   test('g o navigates to /orders', async ({ page }) => {
     await seedToken(page, _sharedJwt);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('.algo-nav-btn', { timeout: 20_000 });
+    await page.waitForSelector('.algo-nav-btn', { timeout: 15_000 });
 
     await page.keyboard.press('g');
     await page.keyboard.press('o');
@@ -123,7 +123,7 @@ test.describe('keyboard shortcuts — desktop', () => {
   test('g a navigates to /automation', async ({ page }) => {
     await seedToken(page, _sharedJwt);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('.algo-nav-btn', { timeout: 20_000 });
+    await page.waitForSelector('.algo-nav-btn', { timeout: 15_000 });
 
     await page.keyboard.press('g');
     await page.keyboard.press('a');
@@ -135,7 +135,7 @@ test.describe('keyboard shortcuts — desktop', () => {
   test('? opens cheatsheet modal', async ({ page }) => {
     await seedToken(page, _sharedJwt);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('.algo-nav-btn', { timeout: 20_000 });
+    await page.waitForSelector('.algo-nav-btn', { timeout: 15_000 });
 
     await page.keyboard.press('?');
 
@@ -148,7 +148,7 @@ test.describe('keyboard shortcuts — desktop', () => {
   test('Esc closes cheatsheet modal', async ({ page }) => {
     await seedToken(page, _sharedJwt);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('.algo-nav-btn', { timeout: 20_000 });
+    await page.waitForSelector('.algo-nav-btn', { timeout: 15_000 });
 
     await page.keyboard.press('?');
     const modal = page.locator('[role="dialog"][aria-labelledby="sc-title"]');
@@ -161,13 +161,13 @@ test.describe('keyboard shortcuts — desktop', () => {
   test('cheatsheet shows expected shortcut sections', async ({ page }) => {
     await seedToken(page, _sharedJwt);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('.algo-nav-btn', { timeout: 20_000 });
+    await page.waitForSelector('.algo-nav-btn', { timeout: 15_000 });
 
     await page.keyboard.press('?');
     const modal = page.locator('[role="dialog"][aria-labelledby="sc-title"]');
     await expect(modal).toBeVisible({ timeout: 2_000 });
 
-    // Navigation section — Bloomberg g+letter combos
+    // Navigation section must list the Bloomberg g+letter combos
     await expect(modal).toContainText('g p');
     await expect(modal).toContainText('g e');   // derivatives (not g r)
     await expect(modal).toContainText('g c');   // charts
@@ -178,7 +178,7 @@ test.describe('keyboard shortcuts — desktop', () => {
     await expect(modal).toContainText('h');     // activity / log
     await expect(modal).toContainText('k');     // chart modal
 
-    // Grid section (slice AU Phase 2+)
+    // Grid section (slice AU — all three phases shipped)
     await expect(modal).toContainText('j');     // row down
     await expect(modal).toContainText('f');     // fullscreen card
     await expect(modal).toContainText('c');     // collapse card
@@ -187,7 +187,7 @@ test.describe('keyboard shortcuts — desktop', () => {
   test('r shortcut fires the page refresh (network request)', async ({ page }) => {
     await seedToken(page, _sharedJwt);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('.rf-btn', { timeout: 20_000 });
+    await page.waitForSelector('.rf-btn', { timeout: 15_000 });
 
     // Intercept any /api/positions or /api/holdings call as refresh signal
     let refreshCalled = false;
@@ -208,16 +208,20 @@ test.describe('keyboard shortcuts — desktop', () => {
   });
 
   // ── UX: input focus disables shortcuts ─────────────────────────────
+  // Use /charts which renders a symbol search input immediately in the DOM.
+  // /pulse uses ag-Grid column filters that only mount on interaction.
   test('shortcuts disabled while typing in a text input', async ({ page }) => {
     await seedToken(page, _sharedJwt);
-    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${BASE}/charts`, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('.algo-nav-btn', { timeout: 20_000 });
 
     const initialUrl = page.url();
 
-    // Focus the search input (/ shortcut focus target)
-    const input = page.locator('input[type="text"], input[type="search"]').first();
-    await input.focus();
+    // / shortcut targets .oes-sym-input which is the symbol picker on /charts.
+    // Press / to focus, then g+p — should not navigate while focused.
+    await page.keyboard.press('/');
+    const input = page.locator('.oes-sym-input, input[type="search"], input[type="text"]').first();
+    await expect(input).toBeFocused({ timeout: 2_000 });
 
     // Press g then p — should not navigate
     await page.keyboard.press('g');
@@ -230,12 +234,13 @@ test.describe('keyboard shortcuts — desktop', () => {
 
   test('Esc in a text input defocuses but does not navigate', async ({ page }) => {
     await seedToken(page, _sharedJwt);
-    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${BASE}/charts`, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('.algo-nav-btn', { timeout: 20_000 });
 
-    const input = page.locator('input[type="text"], input[type="search"]').first();
-    await input.focus();
-    await expect(input).toBeFocused();
+    // Use / to focus the symbol input, then Esc to blur it.
+    await page.keyboard.press('/');
+    const input = page.locator('.oes-sym-input, input[type="search"], input[type="text"]').first();
+    await expect(input).toBeFocused({ timeout: 2_000 });
 
     // Esc blurs the input (slice AU: blur on Esc-in-input behaviour)
     await page.keyboard.press('Escape');
@@ -244,14 +249,14 @@ test.describe('keyboard shortcuts — desktop', () => {
     // Input must no longer have focus after Esc
     await expect(input).not.toBeFocused();
     // No navigation should have occurred
-    expect(page.url()).toContain('/pulse');
+    expect(page.url()).toContain('/charts');
   });
 
   // ── Perf: g-key navigation < 2 s ──────────────────────────────────
   test('g d navigation completes in < 2 s', async ({ page }) => {
     await seedToken(page, _sharedJwt);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('.algo-nav-btn', { timeout: 20_000 });
+    await page.waitForSelector('.algo-nav-btn', { timeout: 15_000 });
 
     const t0 = Date.now();
     await page.keyboard.press('g');
@@ -264,12 +269,11 @@ test.describe('keyboard shortcuts — desktop', () => {
 });
 
 // ── Mobile viewport suite ─────────────────────────────────────────────
-// Cheatsheet layout checked at 390px via Playwright keyboard API.
-// Only chromium-desktop project (keyboard makes no sense on touch).
+// Cheatsheet layout verified at 390px but via Playwright keyboard API
+// (works headlessly). Only chromium-desktop project.
 test.describe('keyboard shortcuts — mobile viewport', () => {
   test.use({ viewport: { width: 390, height: 844 } });
-  test.skip(({ browserName }) => browserName !== 'chromium',
-    'keyboard shortcuts are chromium-desktop only');
+  test.skip(({ browserName }) => browserName !== 'chromium', 'keyboard shortcuts are chromium-desktop only');
 
   // Re-use the shared module-level JWT — no second login needed.
   test.beforeAll(async ({ browser }) => {
@@ -279,6 +283,8 @@ test.describe('keyboard shortcuts — mobile viewport', () => {
   test('? opens cheatsheet on mobile viewport', async ({ page }) => {
     await seedToken(page, _sharedJwt);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
+    // Wait for the layout to mount so the keyboard handler is wired.
+    await page.waitForSelector('.algo-nav-btn', { timeout: 20_000 });
 
     await page.keyboard.press('?');
     const modal = page.locator('[role="dialog"][aria-labelledby="sc-title"]');
@@ -288,6 +294,8 @@ test.describe('keyboard shortcuts — mobile viewport', () => {
   test('cheatsheet stacks single column on 390px viewport', async ({ page }) => {
     await seedToken(page, _sharedJwt);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
+    // Wait for layout mount before pressing keyboard shortcut.
+    await page.waitForSelector('.algo-nav-btn', { timeout: 20_000 });
 
     await page.keyboard.press('?');
     const modal = page.locator('[role="dialog"][aria-labelledby="sc-title"]');
