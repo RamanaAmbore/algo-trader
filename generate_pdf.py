@@ -378,7 +378,7 @@ The RamboQuant \textbf{{Complete Design Guide}} is a top-to-bottom developer + o
 \textbf{{30+ years}} across mainframe modernization and cloud-native financial platforms. Currently \textbf{{Principal System Analyst}} at \textbf{{Fidelity Investments}} --- leading billing-platform modernization on AWS + Snowflake and distributed fee-calculation engines --- and concurrently the \textbf{{platform architect + quantitative developer}} building \textbf{{RamboQuant}} end-to-end (live at \textbf{{ramboq.com}}), leveraging \textbf{{Claude Code}} as a force multiplier for platform-scale solo output.
 
 \vspace{{2pt}}
-\textbf{{FRM}} (GARP, 2022) and \textbf{{CFA Level~2}} candidate: the derivatives-risk, options-pricing (Black-Scholes / Greeks), and portfolio-analytics theory from those programs materialize directly as RamboQuant's derivatives layer, hedge-proxy $\beta$ regression, and units-based NAV accounting. The Master's in Computer Science + Fidelity engineering discipline (distributed systems, event-driven architecture, legacy-modernization patterns) keeps a multi-broker, real-time, single-operator platform correct and fast. \textbf{{NTT Innovation Award}} recipient (top-40 global innovator). Based in Merrimack, NH.
+\textbf{{FRM}} (GARP, 2022) and \textbf{{CFA Level~3}} candidate: the derivatives-risk, options-pricing (Black-Scholes / Greeks), and portfolio-analytics theory from those programs materialize directly as RamboQuant's derivatives layer, hedge-proxy $\beta$ regression, and units-based NAV accounting. The Master's in Computer Science + Fidelity engineering discipline (distributed systems, event-driven architecture, legacy-modernization patterns) keeps a multi-broker, real-time, single-operator platform correct and fast. \textbf{{NTT Innovation Award}} recipient (top-40 global innovator). Based in Merrimack, NH.
 }}
 
 \vspace{{7pt}}
@@ -465,7 +465,7 @@ The RamboQuant \textbf{{Complete Design Guide}} is a top-to-bottom developer + o
   ]{{%
     {{\color{{ramboqnavy}}\sffamily\small
       \textbf{{FRM}} (GARP, 2022) \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
-      \textbf{{CFA Level~2}} \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      \textbf{{CFA Level~3}} \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
       \textbf{{Master's, Computer Science}} \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
       Six Sigma Green Belt \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
       IBM Certified DB2 DBA \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
