@@ -408,9 +408,9 @@ test.describe('BrokerHealthBadge popup — Snapshot palette consistency', () => 
     expect(hasHealthClass, `chip class "${cls}" must include a health-state variant`).toBe(true);
   });
 
-  // ── 10. Popup broker names — no "unknown" present ────────────────────────
+  // ── 10. Popup broker names — non-empty and one of the valid labels ──────────
 
-  test('popup broker column contains no "unknown" text', async () => {
+  test('popup broker column is non-empty and one of kite/dhan/groww', async () => {
     const found = await openBrokerPopup();
     if (!found) {
       test.info().annotations.push({ type: 'skip', description: 'Broker chip not found' });
@@ -424,13 +424,62 @@ test.describe('BrokerHealthBadge popup — Snapshot palette consistency', () => 
       return;
     }
 
+    const VALID_BROKERS = new Set(['kite', 'dhan', 'groww']);
     for (let i = 0; i < count; i++) {
       const text = (await brokerCells.nth(i).textContent() ?? '').trim().toLowerCase();
+      expect(text, `popup broker cell ${i} must not be empty`).not.toBe('');
+      expect(text, `popup broker cell ${i} must not be "—"`).not.toBe('—');
       expect(text, `popup broker cell ${i} must not be "unknown"`).not.toBe('unknown');
+      expect(VALID_BROKERS.has(text), `popup broker cell ${i} ("${text}") must be kite/dhan/groww`).toBe(true);
     }
 
     // Close popup
     const closeBtn = P.locator('.bh-close').first();
     if (await closeBtn.count()) await closeBtn.click();
+  });
+
+  // ── 11. Frontend guard: missing broker field defaults to "kite" ───────────
+
+  test('broker cell shows "kite" when backend broker field is missing/empty', async () => {
+    // Mock a response where broker field is absent (simulates DB query failure
+    // path where broker_label_map is empty and fallback was formerly "—").
+    await P.route('**/api/admin/broker-health', route => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        accounts: [{
+          account: 'ZG0790', broker: '', state: 'green',
+          reason: 'healthy', last_good_at: new Date().toISOString(),
+          last_check_at: new Date().toISOString(),
+        }],
+        groww_entitlement_denied: {},
+        primary_market_data_account: 'ZG0790',
+      }),
+    }));
+
+    await P.goto('/dashboard', { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
+    const chip = P.locator('button.broker-chip').first();
+    if (!await chip.count()) {
+      test.info().annotations.push({ type: 'skip', description: 'No broker chip' });
+      return;
+    }
+    await chip.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+    await chip.click();
+
+    const popup = P.locator('.bh-modal').first();
+    await popup.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT }).catch(() => null);
+    if (!await popup.count()) {
+      test.info().annotations.push({ type: 'skip', description: 'Popup not found' });
+      return;
+    }
+
+    const brokerCell = P.locator('.bh-row-broker').first();
+    if (await brokerCell.count()) {
+      const text = (await brokerCell.textContent() ?? '').trim().toLowerCase();
+      expect(text, 'empty broker field must render as "kite" (frontend guard)').toBe('kite');
+    }
+
+    // Unroute so subsequent tests get real responses
+    await P.unroute('**/api/admin/broker-health');
   });
 });
