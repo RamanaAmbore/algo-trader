@@ -898,26 +898,43 @@ class SparklineController(Controller):
             _resolve_cds_currency,
         )
         norm_syms: list[SparklineSymbol] = []
-        # orig_to_resolved maps bare watchlist name → resolved contract name
-        # e.g. "CRUDEOIL" → "CRUDEOIL26JUNFUT". Used in Step 4 to also store
-        # the result under the original bare key so the frontend renderer can
-        # look up sparklines[row.tradingsymbol] and find the series even when
-        # the row carries the bare commodity/currency name from the watchlist.
+        # orig_to_resolved maps bare/virtual watchlist name → resolved contract
+        # e.g. "CRUDEOIL" → "CRUDEOIL26JUNFUT", "GOLDM_NEXT" → "GOLDM26AUGFUT".
+        # Used in Step 4 to also store the result under the original key so the
+        # frontend renderer can look up sparklines[row.tradingsymbol] and find
+        # the series even when the row carries the virtual name from the watchlist.
+        from backend.api.algo.symbol_resolver import resolve_symbol, _strip_next
         orig_to_resolved: dict[str, str] = {}
         for sym_obj in syms:
             sym  = sym_obj.tradingsymbol.upper().strip()
             exch = (sym_obj.exchange or "NSE").upper().strip()
             original_sym = sym
-            if exch == "MCX" and sym.isalpha() and len(sym) <= 12:
-                resolved = await _resolve_mcx_commodity(sym)
-                if resolved:
-                    sym = resolved.upper().strip()
-                    orig_to_resolved[original_sym] = sym
-            elif exch == "CDS" and sym.isalpha() and len(sym) <= 12:
-                resolved = await _resolve_cds_currency(sym)
-                if resolved:
-                    sym = resolved.upper().strip()
-                    orig_to_resolved[original_sym] = sym
+            # Strip _NEXT suffix for the alpha/length guard so back-month
+            # virtual roots (GOLDM_NEXT, CRUDEOIL_NEXT) are also resolved.
+            root, is_next = _strip_next(sym)
+            is_bare_root = root.isalpha() and len(root) <= 12
+            if exch == "MCX" and is_bare_root:
+                if is_next:
+                    resolved = await resolve_symbol(sym, "MCX")
+                    if resolved and resolved != sym:
+                        sym = resolved.upper().strip()
+                        orig_to_resolved[original_sym] = sym
+                else:
+                    resolved = await _resolve_mcx_commodity(root)
+                    if resolved:
+                        sym = resolved.upper().strip()
+                        orig_to_resolved[original_sym] = sym
+            elif exch == "CDS" and is_bare_root:
+                if is_next:
+                    resolved = await resolve_symbol(sym, "CDS")
+                    if resolved and resolved != sym:
+                        sym = resolved.upper().strip()
+                        orig_to_resolved[original_sym] = sym
+                else:
+                    resolved = await _resolve_cds_currency(root)
+                    if resolved:
+                        sym = resolved.upper().strip()
+                        orig_to_resolved[original_sym] = sym
             norm_syms.append(SparklineSymbol(tradingsymbol=sym, exchange=exch))
 
         # ── Step 1: Past daily closes via ohlcv_store ────────────────────────
