@@ -31,6 +31,7 @@
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
   import { rootOfLabel, resolveVirtual } from '$lib/data/rootOf.js';
+  import { displaySymbol } from '$lib/data/displaySymbol.js';
 
   // Module-scope cache for hyphenated symbol display. The cellRenderer
   // re-runs for every row × redraw; parsing each symbol once per session
@@ -3744,16 +3745,24 @@
     const sym = String(inst.s || '').toUpperCase();
     if (sym.endsWith('CE'))       typeInput = 'CE';
     else if (sym.endsWith('PE'))  typeInput = 'PE';
-    else if (sym.endsWith('FUT')) typeInput = 'FU';
+    else if (sym.endsWith('FUT') || inst.virtual) typeInput = 'FU';
     else                          typeInput = 'EQ';
-    // If the picked symbol is an underlying (has CE/PE chains), open the
-    // inline option picker instead of adding directly. Close the
-    // search modal first so the option picker isn't visually stacked
-    // behind it.
+    // Virtual roots (GOLD, GOLD_NEXT) must be added directly — they are
+    // intentionally the auto-roll watchlist entry, not a signal to open
+    // the option chain picker. An unguarded openOptionPicker(inst.s, inst.e)
+    // on "GOLD" would route into the CE/PE chain flow and never save the
+    // virtual root row the operator actually chose.
     searchOpen = false;
-    const opened = await openOptionPicker(inst.s, inst.e);
-    if (opened) return;
-    // Direct-add path: equities, futures, CDS, and anything without a chain.
+    if (!inst.virtual) {
+      // If the picked symbol is an underlying (has CE/PE chains), open the
+      // inline option picker instead of adding directly. Close the
+      // search modal first so the option picker isn't visually stacked
+      // behind it.
+      const opened = await openOptionPicker(inst.s, inst.e);
+      if (opened) return;
+    }
+    // Direct-add path: equities, futures, CDS, virtual roots, and anything
+    // without an option chain.
     const targetId = await _resolveTargetListId();
     if (targetId == null) return;
     try {
@@ -5294,8 +5303,10 @@
             {#each typeahead as inst}
               <button onclick={() => pickFromTypeahead(inst)}
                 class="search-typeahead-item">
-                <span class="font-mono text-[var(--c-action)]">{inst.s}</span>
-                <span class="text-[0.6rem] text-[var(--c-muted)] ml-2">{inst.e}</span>
+                <!-- displaySymbol renders GOLD_NEXT → GOLD.NEXT for virtual roots;
+                     real contracts pass through unchanged. -->
+                <span class="font-mono text-[var(--c-action)]">{displaySymbol(inst.s)}</span>
+                <span class="text-[0.6rem] text-[var(--c-muted)] ml-2">{inst.e}{inst.virtual ? ' · virtual' : ''}</span>
               </button>
             {/each}
           </div>

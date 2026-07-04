@@ -18,6 +18,7 @@
   import { loadInstruments, searchByPrefix } from '$lib/data/instruments';
   import { loadWatchlistSymbols } from '$lib/data/watchlistSymbols';
   import { _BARE_UNDERLYINGS } from '$lib/data/accounts';
+  import { displaySymbol } from '$lib/data/displaySymbol.js';
 
   /** True when sym is a bare non-tradable underlying (CRUDEOIL, NIFTY, …). */
   function _isBareRoot(/** @type {string} */ sym) {
@@ -124,7 +125,10 @@
         // Drop bare underlying roots — they're not directly tradable.
         // EQ rows whose tradingsymbol exactly matches a bare root are
         // excluded (e.g. the equity "NIFTY" entry for the index name).
+        // Virtual roots (GOLD, GOLD_NEXT) injected by searchByPrefix are
+        // intentionally tradable picks — do NOT drop them via _isBareRoot.
         const tradable = typed.filter(r => {
+          if (r?.virtual) return true;
           const sym = String(r?.s || r?.sym || r?.tradingsymbol || '').toUpperCase();
           return !_isBareRoot(sym);
         });
@@ -153,11 +157,13 @@
     // returned "no data available".
     const sym = String(inst?.s || inst?.sym || inst?.tradingsymbol || _symQuery).toUpperCase();
     value = sym;
-    _symQuery = sym;
+    // Show display form in the text box (GOLD.NEXT); store the internal key
+    // (GOLD_NEXT) in `value` so callers receive the canonical identifier.
+    _symQuery = displaySymbol(sym);
     _symOpen = false;
     _symSuggestions = [];
     _activePin = '';
-    onPick(sym, { exchange: inst?.e || '', type: inst?.t || '' });
+    onPick(sym, { exchange: inst?.e || '', type: inst?.t || '', virtual: inst?.virtual ?? false });
   }
 
   /** Pick a pinned label — optionally resolved to a tradeable symbol. */
@@ -243,8 +249,8 @@
                  `sym`/`tradingsymbol`. Without the `inst.s` fallback
                  the row rendered as empty + only the exchange/type
                  meta line was visible. -->
-            <span class="ssi-row-sym">{inst.s || inst.sym || inst.tradingsymbol || ''}</span>
-            <span class="ssi-row-meta">{inst.e || ''}{inst.t ? ' · ' + inst.t : ''}</span>
+            <span class="ssi-row-sym">{displaySymbol(inst.s || inst.sym || inst.tradingsymbol || '')}</span>
+            <span class="ssi-row-meta">{inst.e || ''}{inst.t ? ' · ' + inst.t : ''}{inst.virtual ? ' · virtual' : ''}</span>
           </button>
         {/each}
       {/if}
