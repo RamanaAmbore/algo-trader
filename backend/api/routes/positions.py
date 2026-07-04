@@ -68,7 +68,6 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                 JOIN latest_batch lb
                   ON db.account = lb.account AND db.captured_at = lb.max_at
                 WHERE db.kind = 'positions'
-                  AND db.ltp IS NOT NULL
                   AND NOT (db.ltp = 0 AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
                            AND db.avg_cost IS NOT NULL AND db.avg_cost > 0)
                 ORDER BY db.account, db.symbol
