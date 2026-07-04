@@ -406,3 +406,166 @@ def test_ssot_watchlist_no_inline_filter():
         "watchlist.py still contains the inline inst.x filter — "
         "_resolve_mcx_commodity / _resolve_cds_currency should delegate to "
         "symbol_resolver.list_active_futures")
+
+
+# ---------------------------------------------------------------------------
+# Weekly-vs-monthly cadence — CDS lists both; resolver must pick monthlies
+# ---------------------------------------------------------------------------
+
+# USDINR mixed universe — CDS lists weeklies (numeric MMDD) alongside monthlies.
+# Kite tradingsymbols observed on live dev cache (2026-07-02):
+#   Weekly:  USDINR26703FUT, USDINR26710FUT (YY + MMDD)
+#   Monthly: USDINR26JULFUT, USDINR26AUGFUT (YY + MON)
+# The root+NEXT convention is monthly-cadence — weeklies MUST be filtered out
+# so USDINR → USDINR26JULFUT (not USDINR26703FUT).
+_USDINR_MIXED = [
+    _make_fut("USDINR26703FUT", "USDINR", "CDS", "2026-07-03"),  # weekly (skip)
+    _make_fut("USDINR26710FUT", "USDINR", "CDS", "2026-07-10"),  # weekly (skip)
+    _make_fut("USDINR26717FUT", "USDINR", "CDS", "2026-07-17"),  # weekly (skip)
+    _make_fut("USDINR26JULFUT", "USDINR", "CDS", "2026-07-29"),  # monthly front
+    _make_fut("USDINR26AUGFUT", "USDINR", "CDS", "2026-08-27"),  # monthly back
+    _make_fut("USDINR26SEPFUT", "USDINR", "CDS", "2026-09-28"),  # monthly far
+]
+
+
+def test_list_active_futures_cds_skips_weeklies():
+    """CDS mixed universe: weeklies (YYMMDD-cadence) are filtered out; only
+    monthly (YYMONFUT) contracts are returned by list_active_futures."""
+    from backend.api.algo.symbol_resolver import list_active_futures
+
+    with ExitStack() as stack:
+        for cm in _patch_resolver(_USDINR_MIXED, "2026-07-01"):
+            stack.enter_context(cm)
+        result = asyncio.run(list_active_futures("USDINR", "CDS", limit=3))
+
+    assert result == ["USDINR26JULFUT", "USDINR26AUGFUT", "USDINR26SEPFUT"], (
+        f"Weeklies must be filtered; expected monthly-only, got {result}")
+
+
+def test_resolve_symbol_cds_picks_monthly_front():
+    """USDINR resolves to monthly front-month, NOT the nearest weekly."""
+    from backend.api.algo.symbol_resolver import resolve_symbol
+
+    with ExitStack() as stack:
+        for cm in _patch_resolver(_USDINR_MIXED, "2026-07-01"):
+            stack.enter_context(cm)
+        result = asyncio.run(resolve_symbol("USDINR", "CDS"))
+
+    assert result == "USDINR26JULFUT", (
+        f"USDINR must skip weeklies and pick monthly front, got {result!r}")
+
+
+def test_resolve_symbol_cds_next_picks_monthly_back():
+    """USDINR_NEXT resolves to monthly back-month, NOT the second weekly."""
+    from backend.api.algo.symbol_resolver import resolve_symbol
+
+    with ExitStack() as stack:
+        for cm in _patch_resolver(_USDINR_MIXED, "2026-07-01"):
+            stack.enter_context(cm)
+        result = asyncio.run(resolve_symbol("USDINR_NEXT", "CDS"))
+
+    assert result == "USDINR26AUGFUT", (
+        f"USDINR_NEXT must be monthly back, got {result!r}")
+
+
+def test_root_of_cds_monthly_round_trip_with_weeklies_present():
+    """Reverse resolver still identifies front/back correctly when weeklies
+    are also listed in the instruments cache. Weeklies pass through as raw
+    contracts (they're not part of the root+NEXT convention)."""
+    from backend.api.algo.symbol_resolver import root_of
+
+    with ExitStack() as stack:
+        for cm in _patch_resolver(_USDINR_MIXED, "2026-07-01"):
+            stack.enter_context(cm)
+        front  = asyncio.run(root_of("USDINR26JULFUT", "CDS"))
+        back   = asyncio.run(root_of("USDINR26AUGFUT", "CDS"))
+        weekly = asyncio.run(root_of("USDINR26710FUT", "CDS"))
+
+    assert front == "USDINR"
+    assert back  == "USDINR_NEXT"
+    # Weekly tradingsymbol doesn't match _FUT_RE (needs 3-letter month) so
+    # falls through to raw pass-through — correct behaviour.
+    assert weekly == "USDINR26710FUT"
+
+
+# ---------------------------------------------------------------------------
+# Parametrized 7-root convention check — covers every MARKETS_DEFAULT
+# MCX/CDS bare root and asserts front+back both resolve non-null.
+# ---------------------------------------------------------------------------
+
+def _mixed_universe_for(root: str, exchange: str) -> list:
+    """Build a synthetic 3-contract monthly-cadence fixture for *root* on
+    *exchange*.  Every root gets the same shape (JUL/AUG/SEP 2026) so the
+    parametrized test can assert deterministic front/back values."""
+    return [
+        _make_fut(f"{root}26JULFUT", root, exchange, "2026-07-29"),
+        _make_fut(f"{root}26AUGFUT", root, exchange, "2026-08-27"),
+        _make_fut(f"{root}26SEPFUT", root, exchange, "2026-09-28"),
+    ]
+
+
+_PINNED_ROOTS: list[tuple[str, str]] = [
+    ("SILVER",   "MCX"),
+    ("SILVERM",  "MCX"),
+    ("GOLD",     "MCX"),
+    ("GOLDM",    "MCX"),
+    ("CRUDEOIL", "MCX"),
+    ("COPPER",   "MCX"),
+    ("USDINR",   "CDS"),
+]
+
+
+def test_pinned_roots_all_resolve_front_and_back():
+    """Every pinned MCX/CDS root must resolve front (root) + back (_NEXT)
+    to non-null monthly-cadence contracts.  If any root fails this check
+    it must be removed from MARKETS_DEFAULT."""
+    from backend.api.algo.symbol_resolver import resolve_symbol
+
+    for root, exchange in _PINNED_ROOTS:
+        universe = _mixed_universe_for(root, exchange)
+        with ExitStack() as stack:
+            for cm in _patch_resolver(universe, "2026-07-01"):
+                stack.enter_context(cm)
+            front = asyncio.run(resolve_symbol(root, exchange))
+            back  = asyncio.run(resolve_symbol(f"{root}_NEXT", exchange))
+
+        assert front == f"{root}26JULFUT", (
+            f"{root}/{exchange} front-month convention broken; got {front!r}")
+        assert back == f"{root}26AUGFUT", (
+            f"{root}/{exchange} _NEXT back-month convention broken; got {back!r}")
+
+
+def test_pinned_roots_all_round_trip():
+    """Every pinned root: resolve_symbol → root_of round-trips cleanly for
+    both front and back-month. This is the invariant that makes the display-
+    label ↔ ticker-subscription contract work end-to-end."""
+    from backend.api.algo.symbol_resolver import resolve_symbol, root_of
+
+    for root, exchange in _PINNED_ROOTS:
+        universe = _mixed_universe_for(root, exchange)
+        for virtual in (root, f"{root}_NEXT"):
+            with ExitStack() as stack:
+                for cm in _patch_resolver(universe, "2026-07-01"):
+                    stack.enter_context(cm)
+                real = asyncio.run(resolve_symbol(virtual, exchange))
+                back = asyncio.run(root_of(real, exchange))
+            assert back == virtual, (
+                f"Round-trip failed for {root}/{exchange}: "
+                f"{virtual!r} → {real!r} → {back!r}")
+
+
+def test_pinned_roots_next_falls_back_when_only_one_contract():
+    """During transition weeks a root may have only ONE active monthly
+    contract in the instruments cache.  _NEXT must fall back to the front
+    month (not None) so the row stays visible until the new back-month lists."""
+    from backend.api.algo.symbol_resolver import resolve_symbol
+
+    for root, exchange in _PINNED_ROOTS:
+        universe = [_make_fut(f"{root}26JULFUT", root, exchange, "2026-07-29")]
+        with ExitStack() as stack:
+            for cm in _patch_resolver(universe, "2026-07-01"):
+                stack.enter_context(cm)
+            back = asyncio.run(resolve_symbol(f"{root}_NEXT", exchange))
+        assert back == f"{root}26JULFUT", (
+            f"{root}/{exchange} _NEXT must fall back to front-month during "
+            f"transition weeks; got {back!r}")

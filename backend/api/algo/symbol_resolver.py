@@ -80,6 +80,21 @@ CDS_VIRTUAL_ROOTS: frozenset[str] = frozenset({
 # Exchanges that support virtual-root resolution
 _VIRTUAL_EXCHANGES: frozenset[str] = frozenset({"MCX", "CDS"})
 
+# Monthly-cadence tradingsymbol pattern for MCX/CDS futures:
+#   ROOT + YY + MON + "FUT"   e.g. CRUDEOIL26JUNFUT, USDINR26JULFUT
+#
+# CDS lists BOTH monthly and weekly contracts for majors (USDINR).  Weeklies
+# use a numeric MMDD suffix instead of the 3-letter month code (e.g.
+# USDINR26710FUT expires 2026-07-10).  The root+NEXT convention is monthly-
+# cadence semantics — weeklies must be filtered out so
+#     resolve_symbol("USDINR")      → USDINR26JULFUT (not USDINR26710FUT)
+#     resolve_symbol("USDINR_NEXT") → USDINR26AUGFUT
+# and the reverse resolver in ``root_of`` (which also uses this pattern via
+# ``_FUT_RE`` below) can round-trip cleanly.  MCX rows are all monthly so
+# the filter is a no-op there.
+import re as _re
+_MONTHLY_FUT_RE = _re.compile(r"^[A-Z]+\d{2}[A-Z]{3}FUT$")
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -151,7 +166,8 @@ async def list_active_futures(
             and inst.t == "FUT"
             and (inst.u or "").upper() == target_u
             and inst.x
-            and inst.x > today_iso)
+            and inst.x > today_iso
+            and _MONTHLY_FUT_RE.match((inst.s or "").upper()))
     ]
     if not candidates:
         return []
@@ -243,7 +259,8 @@ async def _list_all_futures_fallback(
         if (inst.e == exch_upper
             and inst.t == "FUT"
             and (inst.u or "").upper() == target_u
-            and inst.x)
+            and inst.x
+            and _MONTHLY_FUT_RE.match((inst.s or "").upper()))
     ]
     if not candidates:
         return []
