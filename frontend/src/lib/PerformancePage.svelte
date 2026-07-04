@@ -367,6 +367,22 @@
     return cls;
   };
 
+  // avgClsWithDir — like avgVsLtpCls but for the Avg column only.
+  // Adds cell-pos/cell-neg from the position/holding quantity so the
+  // Avg cell carries directional tint (long = green, short = red) in
+  // addition to the ltp-vs-avg heat. LTP column keeps avgVsLtpCls
+  // unchanged (no qty-direction class on the price cell).
+  const avgClsWithDir = (params) => {
+    const base = avgVsLtpCls(params);
+    if (!params?.data || params.data._isTotal ||
+        params.data.tradingsymbol === 'TOTAL' || params.data.account === 'TOTAL') {
+      return base;
+    }
+    const qty = Number(params.data?.quantity);
+    const dirCls = qty > 0 ? 'cell-pos' : qty < 0 ? 'cell-neg' : 'cell-flat';
+    return Array.isArray(base) ? [...base, dirCls] : [base, dirCls].filter(Boolean);
+  };
+
   const defaultCol = { resizable: true, sortable: true, filter: true, suppressHeaderMenuButton: true, flex: 1, minWidth: 55 };
 
   const getRowClass = (params) => {
@@ -491,7 +507,7 @@
   const holdingsCols = [
     { field: 'tradingsymbol',         headerName: 'Symbol',   width: 132, pinned: 'left', cellClass: symFill, headerClass: symFill, cellRenderer: _symWithChartRenderer },
     { field: 'last_price',            headerName: 'LTP',      width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
-    { field: 'average_price',         headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
+    { field: 'average_price',         headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgClsWithDir },
     { field: 'day_change_val',        headerName: 'Day P&L',  width: 78, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('day_change_val'), type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage', headerName: 'Day %',    width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                   headerName: 'P&L',      width: 78, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('pnl'), type: 'numericColumn', headerClass: numericHdr },
@@ -601,7 +617,7 @@
     // 140 when options link active (extra room for the pill), 130 otherwise.
     positionsSymbolCol,
     { field: 'last_price',           headerName: 'LTP',       width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
-    { field: 'average_price',        headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgVsLtpCls },
+    { field: 'average_price',        headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgClsWithDir },
     { field: 'day_change_val',       headerName: 'Day P&L',   width: 88, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('day_change_val'), type: 'numericColumn', headerClass: numericHdr },
     { field: 'day_change_percentage',headerName: 'Day %',     width: 64, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl',                  headerName: 'P&L',       width: 88, valueFormatter: aggFmtGrid, cellClass: pnlClsFlash('pnl'), type: 'numericColumn', headerClass: numericHdr },

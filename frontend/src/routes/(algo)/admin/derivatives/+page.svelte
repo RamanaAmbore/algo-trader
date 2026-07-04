@@ -4999,7 +4999,7 @@
                   ? (ltp > c.prev_close ? 'ltp-vs-prev-up' : ltp < c.prev_close ? 'ltp-vs-prev-down' : 'ltp-vs-prev-flat')
                   : ''}">{ltp != null ? priceFmt(ltp) : '—'}</span>
               <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
-              <span class="num">{cost != null ? priceFmt(cost) : '—'}</span>
+              <span class="num {displayQty > 0 ? 'cell-pos' : displayQty < 0 ? 'cell-neg' : 'cell-flat'}">{cost != null ? priceFmt(cost) : '—'}</span>
               <span class="num tf-cell cand-pnl {pnl == null ? '' : pnl > 0 ? 'cell-pos' : pnl < 0 ? 'cell-neg' : 'cell-flat'} {pnl == null ? '' : flash.classOf(`${_legFlashKey}:pnl`)}">
                 {pnl == null ? '—' : aggCompact(pnl)}
               </span>
