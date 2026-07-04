@@ -10,12 +10,11 @@
    * AgentToast (auto-fire toast) is a separate concern and is NOT replaced here.
    */
 
-  import { getContext, onMount } from 'svelte';
-  import { executionMode } from '$lib/stores';
+  import { getContext, onMount, onDestroy } from 'svelte';
+  import { executionMode, openActivityModal, orderTicketModal, chartModalTrigger, closeOrderTicketModal, closeChartModalTrigger } from '$lib/stores';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import ChartModal from '$lib/ChartModal.svelte';
   import { prefetchChartBars } from '$lib/ChartWorkspace.svelte';
-  import { openActivityModal } from '$lib/stores';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   // Symbol-resolver imports retired — operators pick tradeable
   // symbols directly (no NIFTY 50 → NIFTY26JUNFUT mapping). Operator:
@@ -103,6 +102,23 @@
   // surfaces (this button, the navbar broker-status chip) don't end
   // up stacking duplicate instances. Operator: navbar 5/5 chip should
   // open Activity with the conn tab selected.
+
+  // ── Global keyboard-shortcut bridge ────────────────────────────────
+  // `t` (trade) → order ticket. `k` (kline) → chart modal.
+  // Both stores are written by the layout's _onGlobalKeydown; we
+  // react here because PageHeaderActions owns the modal render trees.
+  // Subscriptions use onDestroy cleanup to prevent listener leaks.
+  let _unsubOrder = /** @type {(() => void) | null} */ (null);
+  let _unsubChart = /** @type {(() => void) | null} */ (null);
+  onMount(() => {
+    _unsubOrder = orderTicketModal.subscribe((v) => {
+      if (v.open) { _openOrder(); closeOrderTicketModal(); }
+    });
+    _unsubChart = chartModalTrigger.subscribe((v) => {
+      if (v.open) { _openChart(); closeChartModalTrigger(); }
+    });
+  });
+  onDestroy(() => { _unsubOrder?.(); _unsubChart?.(); });
 
   async function _openOrder() {
     _chartOpen = false;
