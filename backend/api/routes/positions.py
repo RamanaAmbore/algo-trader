@@ -126,6 +126,15 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
             pnl_percentage=pnl_pct,
             day_change_val=day_pnl_f,
             day_change_percentage=day_pct,
+            # Snapshot represents session-end holdings — every held qty IS
+            # overnight qty for the next session. Without this, the frontend
+            # `baseDayPnlForPosition` new-position override (`oq === 0 &&
+            # pnl !== 0 → day = pnl`) fires on every closed-hours row and
+            # inflates Day P&L from the settled `day_change_val` (e.g.
+            # ₹0.6) to the LIFETIME `pnl` (e.g. ₹14670) — cascading through
+            # NavStrip P slot 1, /admin/derivatives Snapshot per-row + TOTAL,
+            # Legs grid, and MarketPulse Positions grid.
+            overnight_quantity=qty_i,
             last_price_stale=True,
             price_source="snapshot_settled",
             current_price=ltp_f,

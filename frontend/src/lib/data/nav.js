@@ -69,13 +69,22 @@ export const FO_EXCHANGES = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
 /**
  * Canonical base Day P&L for a single position row.
  *
- * Applies the new-position override: when `overnight_quantity === 0` and
- * `pnl !== 0`, the position was opened today and has no prior-close reference.
- * In that case, total P&L IS today's P&L. This is a frontend safety net for
- * brokers (e.g. Dhan/Groww) that don't always populate the decomposed
- * buy/sell fields, causing `day_change_val` to read 0 even on an open position.
- * Backend `decomposed_intraday_pnl` handles this correctly when the fields
- * are present; the override catches the gap when they're not.
+ * Applies the missing-decomposition override: when `overnight_quantity === 0`
+ * AND `day_change_val === 0` AND `pnl !== 0`, the broker didn't ship the
+ * decomposed intraday fields (Dhan/Groww) AND `day_change_val` came back as
+ * zero, so we can't distinguish "actually flat today" from "field missing".
+ * Fall back to lifetime `pnl` as the safest approximation.
+ *
+ * The `dcv === 0` guard is critical: the closed-hours snapshot path in
+ * `backend/api/routes/positions.py:_positions_snapshot` used to emit rows
+ * with `overnight_quantity = 0` (msgspec default) and non-zero settled
+ * `day_change_val` (e.g. ₹0.6 for a ₹14670 lifetime pnl row). Without the
+ * `dcv === 0` clause, the override fired on every snapshot row and inflated
+ * Day P&L to lifetime pnl by ~24000× — cascading through NavStrip P slot 1,
+ * /admin/derivatives Snapshot per-row + TOTAL, Legs grid, MarketPulse
+ * Positions grid, and the public investor site. Fixed 2026-07-03 with a
+ * paired backend fix that now populates `overnight_quantity` on snapshot
+ * rows; this frontend guard is defence-in-depth against a future regression.
  *
  * Mirrors the same guard used in:
  *   - derivatives/+page.svelte `_dayPnlForLeg` (non-expired branch)
@@ -92,7 +101,7 @@ export function baseDayPnlForPosition(p) {
   const oq  = Number(p?.overnight_quantity ?? 0);
   const pnl = Number(p?.pnl ?? 0);
   const dcv = Number(p?.day_change_val ?? 0);
-  if (oq === 0 && pnl !== 0) return pnl;
+  if (oq === 0 && dcv === 0 && pnl !== 0) return pnl;
   return dcv;
 }
 

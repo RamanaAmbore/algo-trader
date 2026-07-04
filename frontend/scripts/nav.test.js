@@ -29,6 +29,7 @@ import { dirname, resolve } from 'node:path';
 
 import {
   navRowForAccount, navByAccount, navTotalRow,
+  baseDayPnlForPosition, positionsPnlFiltered,
 } from '../src/lib/data/nav.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -123,6 +124,65 @@ describe('navByAccount + navTotalRow', () => {
 
   test('navByAccount with empty accounts returns []', () => {
     assert.deepEqual(navByAccount([], funds, positions, holdings), []);
+  });
+});
+
+
+// ── baseDayPnlForPosition — new-position override guard ─────────────────────
+
+describe('baseDayPnlForPosition — override guard', () => {
+  test('normal overnight row: returns day_change_val', () => {
+    const p = { overnight_quantity: 10, day_change_val: 250, pnl: 1500 };
+    assert.equal(baseDayPnlForPosition(p), 250);
+  });
+
+  test('opened-today row with decomposed dcv: returns dcv (not pnl)', () => {
+    // Live-path row: overnight=0 but broker computed dcv via decomposed formula
+    // (bq*ltp - bv term). dcv is authoritative — do NOT override with pnl.
+    const p = { overnight_quantity: 0, day_change_val: 800, pnl: 800 };
+    assert.equal(baseDayPnlForPosition(p), 800);
+  });
+
+  test('regression 2026-07-03: closed-hours snapshot row with settled dcv trusted', () => {
+    // Pre-fix bug: overnight_quantity=0 (msgspec default on _positions_snapshot)
+    // + non-zero pnl → old override returned pnl (14670). New guard requires
+    // dcv === 0 for override, so settled dcv (0.6) is now trusted.
+    const p = { overnight_quantity: 0, day_change_val: 0.6, pnl: 14670 };
+    assert.equal(baseDayPnlForPosition(p), 0.6);
+  });
+
+  test('Dhan/Groww broker missing decomposed fields: fallback to pnl', () => {
+    // The only legitimate case for the override: broker didn't ship any
+    // intraday decomposition (oq=0, dcv=0) AND pnl is non-zero, so we
+    // approximate day P&L with lifetime pnl.
+    const p = { overnight_quantity: 0, day_change_val: 0, pnl: 500 };
+    assert.equal(baseDayPnlForPosition(p), 500);
+  });
+
+  test('closed position (all fields zero): returns 0', () => {
+    const p = { overnight_quantity: 0, day_change_val: 0, pnl: 0 };
+    assert.equal(baseDayPnlForPosition(p), 0);
+  });
+
+  test('handles missing fields (null / undefined) safely', () => {
+    assert.equal(baseDayPnlForPosition({}), 0);
+    assert.equal(baseDayPnlForPosition({ pnl: null, day_change_val: null }), 0);
+    assert.equal(baseDayPnlForPosition({ pnl: 1000 }), 1000);  // legacy fallback path
+  });
+
+  test('positionsPnlFiltered sums F&O settled dcv, not lifetime pnl', () => {
+    // Two F&O snapshot rows + one equity row (excluded from P pill).
+    // Pre-fix: dayTotal would return Σ pnl = 21870 (wrong).
+    // Post-fix: dayTotal returns Σ dcv = 0.6 - 18 = -17.4 (correct settled).
+    const positions = [
+      { exchange: 'MCX', overnight_quantity: 0, day_change_val: 0.6, pnl: 14670 },
+      { exchange: 'MCX', overnight_quantity: 0, day_change_val: -18, pnl: -15230 },
+      { exchange: 'NSE', overnight_quantity: 10, day_change_val: 500, pnl: 3000 }, // filtered out
+    ];
+    const { dayTotal, pnlTotal } = positionsPnlFiltered(positions);
+    assert.ok(Math.abs(dayTotal - (-17.4)) < 1e-6,
+      `dayTotal=${dayTotal} expected -17.4 (settled dcv sum, not lifetime pnl)`);
+    assert.equal(pnlTotal, 14670 + -15230);  // -560
   });
 });
 
