@@ -3873,19 +3873,14 @@
         const symStr = String(row.tradingsymbol || '').toUpperCase();
         const lot = symStr ? _fnoLotFor(symStr) : 0;
         if (lot > 0) {
-          const qHold = Math.abs(Number(row.qty_hold) || 0);
-          // Round to one decimal place. Operator: "if lot size is
-          // fraction, show that with one decimal point precision …
-          // if decimal point is 0, don't show decimal point and
-          // fraction part." So 70/100 = 0.7L (DIXON-style sub-lot),
-          // 100/100 = 1L (whole lot), 150/100 = 1.5L. Threshold of
-          // 0.1 hides noise from negligible holdings (e.g. 1 share
-          // of a 100-lot stock = 0.0L would clutter the row).
-          const lotsRounded = Math.round((qHold / lot) * 10) / 10;
+          // SSOT: lotsForRow + fmtLots (shared with Position badge, Lots
+          // column, PerformancePage, Dashboard) — same math, one source.
+          // Holdings rows are EQ so lotsForRow routes through the
+          // getOptionUnderlyingLot / qty_hold path (identical to `qHold/lot`).
+          // Threshold ≥ 0.1 hides noise from negligible holdings.
+          const lotsRounded = lotsForRow(row) ?? 0;
           if (lotsRounded >= 0.1) {
-            const lotsStr = lotsRounded % 1 === 0
-              ? lotsRounded.toFixed(0)
-              : lotsRounded.toFixed(1);
+            const lotsStr = fmtLots(lotsRounded);
             const _hasPos = _underlyingsWithActivePositions.has(symStr);
             const _cls = _hasPos ? 'badge-fno-lot badge-fno-lot-pos'
                                  : 'badge-fno-lot';
