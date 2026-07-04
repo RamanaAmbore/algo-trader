@@ -59,6 +59,7 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 4.6. [Database schema overview](#46-database-schema-overview)
 4.7. [Table relationships](#47-table-relationships)
 4.8. [Retention policies](#48-retention-policies)
+4.9. [Metrics + Performance tracking](#49-metrics--performance-tracking)
 
 ### Part VII — Operations
 23. [How to add a new template field](#23-how-to-add-a-new-template-field)
@@ -698,6 +699,174 @@ Data retention is staggered — critical audit trails kept longer than ephemeral
 **Cleanup mechanism:** nightly cron (`03:10 IST` and staggered) runs `DELETE FROM <table> WHERE created_at < now() - interval`. Per-table cleanup is idempotent — multiple runs don't corrupt state.
 
 **Operator override:** Set retention to `0` in `/admin/settings` to disable deletion for that table (useful during active investigation).
+
+---
+
+## 4.9 Metrics + Performance tracking
+
+RamboQuant tracks two orthogonal signals: **static code health** (per-file metrics)
+and **runtime Web Vitals** (per-page response times, JavaScript heap pressure). Both
+are persisted nightly to `perf_snapshots` and visualized in `/admin/perf`.
+
+⚙ **TECH — Why centralized metrics** — `WHY` Operator feedback (Jun 2026):
+"dropdown lag", "refresh button stuck", "frontend heap keeps growing". A single
+dashboard surfacing cyclomatic complexity + LCP + JS heap reveals systemic issues
+(subscription leaks, long tasks, state bloat) before they degrade UX. `WHAT` Nightly
+snapshot of static + runtime metrics, persisted with ISO8601 timestamp + page_or_route
+tag. `HOW` `scripts/perf_baseline.py` computes static via `radon cc` + line-count;
+`scripts/perf_capture_run.sh` runs Playwright against dev to harvest LCP/TBT/heap via
+`performance.timing` + Chrome DevTools Protocol. Cron orchestrator (`_task_perf_snapshot`
+at 04:00 IST) executes both; inserts row via `POST /api/admin/perf/snapshot` (internal,
+no auth required from cron). `WHERE` `backend/api/models.py::PerfSnapshot`,
+`backend/api/routes/admin.py`, `scripts/perf_*.py`.
+
+### Static metrics (per file)
+
+| Metric | Ideal | How | Notes |
+|---|---|---|---|
+| **LOC** | Components < 1500, Pages < 3000 | `wc -l` (excludes blank + comment-only) | Baseline for cognitive load |
+| **cc_max** | < 20 | Cyclomatic complexity of most complex function in file via `radon cc` | Red flag at > 50: hard to maintain, high defect risk |
+| **cc_avg** | < 8 | Mean complexity across all functions | Safe zone; > 15 indicates refactor candidate |
+| **$effect count** | < 20 per Svelte file | Regex boundary match `$effect(` declarations | Too many effects = hard to trace reactivity |
+| **$state count** | < 50 per Svelte file | Regex boundary match `$state(` declarations | Large state trees risk stale-cache bugs |
+| **$derived count** | Monitor trend | Regex boundary match `$derived` declarations | No hard limit; watch for explosion as sign of over-reactivity |
+
+**Cyclomatic complexity thresholds** (colour coding):
+- Green: `cc < 10` — safe, easy to read
+- Yellow: `cc 10–20` — moderately complex, watch carefully
+- Red: `cc > 20` — hard to maintain, high defect risk
+- Critical: `cc > 50` — refactor mandatory before merge
+
+### Runtime metrics (Web Vitals)
+
+| Metric | Ideal | How measured | Notes |
+|---|---|---|---|
+| **LCP** | < 2500 ms | Largest Contentful Paint — largest above-fold element render time | Chrome DevTools via Playwright |
+| **TBT** | < 200 ms | Total Blocking Time — sum of long-task durations during page load | Chrome DevTools via Playwright |
+| **JS Heap** | < 50 MB | V8 heap size after page settles (Chrome only) | Leak detector; baseline should not grow session-over-session |
+| **Route p50** | < 200 ms | Median backend request latency (per endpoint) | Sampled from access logs |
+| **Route p95** | < 500 ms | 95th-percentile tail latency | Catches outlier slow requests |
+| **QPS** | < 20 typical | Requests per second per route | Expected load during market hours |
+
+### Data flow
+
+**Static compute** — `scripts/perf_baseline.py --with-cyclomatic --no-build`:
+- Walks `backend/` + `frontend/src` recursively
+- For each `.py` file: LOC count + `radon cc` function list
+- For each `.svelte` file: LOC count + regex boundary match for `$effect(`, `$state(`,
+  `$derived` declarations (regex patterns in the script handle `$derived.by(...)` and
+  `$props({...})`)
+- Outputs JSON with per-file metrics
+
+**Runtime capture** — `scripts/perf_capture_run.sh`:
+- Spins up Playwright against `dev.ramboq.com`
+- For each route in a curated list (positions, holdings, orders, dashboard, etc):
+  - Navigate → wait for settle (3s idle) → capture `window.performance.timing.navigationStart`,
+    `performance.memory.usedJSHeapSize` (Chrome only)
+  - Extract LCP via `PerformanceObserver` + `'largest-contentful-paint'` entrypoint
+  - Sum `performance.getEntriesByType('longtask')` duration for TBT
+- Outputs JSON per route
+
+**Nightly persist** — `_task_perf_snapshot` (04:00 IST):
+1. Calls `perf_baseline.py --with-cyclomatic --no-build`
+2. Calls `perf_capture_run.sh`
+3. Merges static + runtime JSONs
+4. `POST /api/admin/perf/snapshot` with `{page_or_route, static_metrics, runtime_metrics}`
+5. Inserts `PerfSnapshot(captured_at=now(), page_or_route=..., metrics_json=...,
+   static_metrics_json=...)` row
+
+### DB schema
+
+```python
+class PerfSnapshot(Base):
+    __tablename__ = "perf_snapshots"
+
+    id                  : int (PK)
+    page_or_route       : str (e.g. "GET /api/positions", "/orders", "/dashboard")
+    metrics_json        : dict (JSONB — runtime metrics: lcp_ms, tbt_ms, heap_mb, qps, ...)
+    static_metrics_json : dict (JSONB — static metrics: loc, cc_max, cc_avg, ...)
+    captured_at         : datetime (UTC, unique per (page_or_route, day))
+
+    __table_args__ = (
+        Index("ix_perf_snapshots_route_ts", page_or_route, captured_at.desc()),
+    )
+```
+
+**Retention:** 365 days (config: `retention.perf_snapshots_days`, default 365).
+
+### Admin endpoints
+
+- `GET /api/admin/perf/latest` — latest snapshot per page/route (no history).
+- `GET /api/admin/perf/history?page=<route>&days=30` — time series for a single
+  page_or_route over N days. Returns `[{captured_at, metrics_json, static_metrics_json}]`.
+- `GET /api/admin/perf/regressions?days=7&threshold_pct=10` — detect pages where
+  any metric exceeded 7-day median by > 10%. Returns list with regression alert.
+- `POST /api/admin/perf/snapshot` — internal cron endpoint. No auth; HMAC signature
+  (`X-PERF-SIGNATURE` header, signed with `api_secret`) required.
+
+All endpoints are `admin`-guarded except `/snapshot`.
+
+### Frontend surface
+
+**`/admin/perf` dashboard** — card grid layout:
+- **Code Health Card** — time-series chart of cc_max + LOC trend (30-day window)
+- **Runtime Card** — time-series chart of LCP + TBT + heap (30-day window)
+- **Regression Alert** — sticky callout at top if regressions detected in last 7 days
+- **Metrics Glossary** — info tooltips (hover on metric label → show WHAT/IDEAL/IMPACT/FIX)
+
+**Metric metadata SSOT** — `frontend/src/lib/data/metricMetadata.js` exports `METRIC_META`:
+
+```javascript
+export const METRIC_META = {
+  cc_max: {
+    WHAT: "Highest cyclomatic complexity of any function in the file",
+    IDEAL: "< 20 for maintainability",
+    IMPACT: "High cc means more defects, longer review cycles",
+    FIX: "Extract complex functions into helpers, simplify boolean logic"
+  },
+  lcp_ms: {
+    WHAT: "Largest Contentful Paint — largest above-fold element render time",
+    IDEAL: "< 2500 ms",
+    IMPACT: "Poor LCP = operator sees blank page for seconds",
+    FIX: "Lazy-load off-viewport components, defer non-critical JS"
+  },
+  // ... per metric
+};
+```
+
+**InfoHint component** (reused everywhere) displays this tooltip on hover.
+
+### `#major` tag workflow
+
+When operator adds `#major` prefix to any ask, the concurrent refactor flow is triggered:
+
+1. Audit agent fetches top-3 cyclomatic/LOC hotspots from last 30 days of
+   `perf_snapshots`
+2. Identify regressions flagged in last 7 days
+3. Parallel refactor tasks per hotspot
+4. Recompute metrics after changes + assert no regression vs baseline
+
+Example:
+
+```
+#major add a new route
+
+→ audit sees cc_max creeping from 18→22 in chase.py over 2w
+→ refactor: extract _chase_place_order, _chase_poll, _chase_status into focused
+  functions (break one 60-line function into 3 functions × ~20 lines each)
+→ recompute: cc_max now 14, tests pass
+→ merge
+```
+
+### Key files
+
+- `backend/api/models.py::PerfSnapshot` — schema
+- `backend/api/routes/admin.py::perf_snapshot` — cron endpoint
+- `scripts/perf_baseline.py` — static metrics compute
+- `scripts/perf_capture_run.sh` — runtime capture via Playwright
+- `backend/api/background.py::_task_perf_snapshot` — orchestrator (04:00 IST)
+- `frontend/src/lib/data/metricMetadata.js` — METRIC_META glossary
+- `frontend/src/routes/(algo)/admin/perf/+page.svelte` — dashboard
 
 ---
 
