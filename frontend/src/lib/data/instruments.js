@@ -319,7 +319,12 @@ export async function searchByPrefix(prefix, limit = 12) {
     }
     if (eq.length + fut.length + ct.length >= limit * 3) break;  // bound the walk
   }
-  return [...virt, ...eq, ...fut, ...ct].slice(0, limit);
+  // Sort real futures by expiry ascending (nearest-month first) so the
+  // front-month contract appears at the top of each family group.
+  fut.sort((a, b) => (a.x || '').localeCompare(b.x || ''));
+  // Order: virtual roots → real futures (nearest first) → equities/ETFs → options.
+  // Operator spec (2026-07-03): "virtual root → NEXT → real futures → equity/ETF → options".
+  return [...virt, ...fut, ...eq, ...ct].slice(0, limit);
 }
 
 /** List option contracts for an underlying + type (CE/PE). Returns sorted by expiry then strike. */
