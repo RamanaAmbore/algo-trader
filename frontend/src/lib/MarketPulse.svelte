@@ -977,22 +977,33 @@
     try {
       // loadPulse({ force: true }) re-fetches positions + holdings even if
       // in-flight requests are already running (operator expects fresh data
-      // on explicit Refresh). The batchQuote + underlying-anchor pass at
-      // the tail of loadPulse still runs so underlyings stay in sync.
-      // skipLtp=true routes positions/holdings to the snapshot path AND
-      // skips the quote / sparkline pollers that would otherwise fan out
-      // broker LTP fetches for the watchlist + movers.
-      // Sequence: movers first so batchQuote in loadPulse sees current
-      // winner/loser symbols and fetches their vol/oi. Same race as mount.
-      await Promise.allSettled([
-        skipLtp ? Promise.resolve() : loadQuotes(),
-        showFunds ? loadFunds() : Promise.resolve(),
-        (enableMovers && !skipLtp) ? loadMovers() : Promise.resolve(),
-      ]);
-      await Promise.allSettled([
-        loadPulse({ force: true, skipLtp }),
-        skipLtp ? Promise.resolve() : loadSparklines(),
-      ]);
+      // on explicit Refresh). skipLtp=true routes positions/holdings to
+      // the snapshot path AND skips the quote / sparkline pollers that
+      // would otherwise fan out broker LTP fetches for the watchlist +
+      // movers.
+      //
+      // Parallel handshake: kick off loadMovers() eagerly and stash the
+      // promise in `_pendingMoversP`. loadPulse awaits it inline just
+      // before the mover-add loop (see :mover-await), so positions +
+      // holdings + underlying resolution + contract/watchlist batchQuote
+      // key assembly all overlap with movers RTT. Funds + quotes fire
+      // fully parallel — neither depends on movers.
+      _pendingMoversP = (enableMovers && !skipLtp)
+        ? loadMovers().catch(() => null)
+        : null;
+      try {
+        await Promise.allSettled([
+          skipLtp ? Promise.resolve() : loadQuotes(),
+          showFunds ? loadFunds() : Promise.resolve(),
+          _pendingMoversP || Promise.resolve(),
+          loadPulse({ force: true, skipLtp }),
+          skipLtp ? Promise.resolve() : loadSparklines(),
+        ]);
+      } finally {
+        // Clear handshake so idle _runTick ticks after this refresh
+        // don't await a resolved promise (harmless but noisy).
+        _pendingMoversP = null;
+      }
     } finally {
       _refreshing = false;
     }
@@ -1279,23 +1290,20 @@
       ? loadLists().then(() => (activeIds.size > 0 ? loadActive() : null))
       : Promise.resolve();
     const fundsP  = showFunds ? loadFunds() : Promise.resolve();
-    // Load movers BEFORE loadPulse so that mover symbols are present in
-    // `movers` when loadPulse's batchQuote pass assembles allKeys.
-    // Without sequencing, loadPulse and loadMovers started concurrently:
-    // loadPulse reached the batchQuote section before loadMovers resolved,
-    // mover symbols were absent from allKeys, batchQuote never fetched
-    // their vol/oi, and symbolStore had no entry — Winners/Losers cells
-    // rendered "—". During open hours _runTick's 10 s cadence self-healed
-    // within two ticks; during closed hours marketAwareInterval suspends
-    // _runTick so the blank was permanent until a manual refresh (which had
-    // the same race in its own Promise.allSettled).
+    // Parallel handshake: kick off movers eagerly and stash the promise
+    // in `_pendingMoversP`. loadPulse awaits it inline just before the
+    // mover-add loop (see :mover-await in loadPulse) so positions +
+    // holdings + underlying resolution + contract/watchlist batchQuote
+    // key assembly all overlap with the movers RTT. Prior wave (serial
+    // `await movers → loadPulse`) held first paint hostage to the movers
+    // fetch even though only the mover-add loop consumed it.
+    _pendingMoversP = enableMovers
+      ? loadMovers().catch(() => null)
+      : null;
     await Promise.allSettled([instrumentsP, accountsP, listsP, fundsP,
-      enableMovers ? loadMovers() : Promise.resolve()]);
-    // Now that movers (and lists/positions) are in their stores, run
-    // loadPulse so the batchQuote includes mover + watchlist symbols.
-    // force=true: ensure positions + holdings + batchQuote all fire on
-    // first paint even if the book poller already has a value cached.
-    await loadPulse({ force: true });
+      _pendingMoversP || Promise.resolve(),
+      loadPulse({ force: true })]);
+    _pendingMoversP = null;
     // Sparkline bootstrap — ensure positions + holdings are in the store
     // before we snapshot unifiedRows for the pairs list.
     //
@@ -1458,6 +1466,15 @@
       }
     }
   }
+
+  // Handshake for parallel refresh: refreshAllNow / mount kick off
+  // loadMovers() and stash its promise here BEFORE calling loadPulse.
+  // loadPulse then runs positions + holdings + underlying resolution +
+  // batchQuote key-assembly in parallel with movers, and only awaits
+  // this promise immediately before the mover-add loop (:mover-await).
+  // This eliminates the serialized `movers → loadPulse` chain that
+  // held funds / positions / holdings hostage to the movers RTT.
+  let _pendingMoversP = /** @type {Promise<any> | null} */ (null);
 
   // Pinned-top group — any watchlist row whose underlying is in
   // this set bypasses column sort via ag-Grid's pinnedTopRowData.
@@ -2736,6 +2753,18 @@
           if (wSym && wExch) allKeys.add(`${wExch}:${wSym}`);
         }
       }
+      // :mover-await — synchronise with the parallel loadMovers() the
+      // caller (refreshAllNow / mount) kicked off before invoking us.
+      // Position+holding fetches, underlying resolution, and the
+      // contract/watchlist batchQuote-key assembly above ran in parallel
+      // with movers; we only need `movers` populated for the mover-add
+      // loop below, so awaiting here (not at the top of loadPulse)
+      // maximises overlap. When there's no handshake (idle _runTick
+      // ticks) `_pendingMoversP` is null → the await is a no-op.
+      if (_pendingMoversP) {
+        try { await _pendingMoversP; } catch (_) { /* movers store logs */ }
+      }
+
       // Add mover rows (winners/losers) to the batchQuote universe.
       // Without this, mover-only symbols (HCLTECH, LODHA, ZYDUSLIFE …
       // — the top-N stocks by day % change) never enter symbolStore
