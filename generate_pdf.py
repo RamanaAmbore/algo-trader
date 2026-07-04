@@ -281,20 +281,36 @@ The RamboQuant \textbf{{Complete Design Guide}} is a top-to-bottom developer + o
 
 \vspace{{7pt}}
 
+% All page-2 boxes use \boxwidth for a consistent outer width. Setting
+% it here ensures Version, Experience cards row, and Credentials all
+% align to identical left + right edges.
+\newlength{{\boxwidth}}
+\setlength{{\boxwidth}}{{0.965\linewidth}}
+
 % -- (2) Version box — full-width, no label. Layout:
 %     Generated | Revision | Website          (top row, 3 columns)
 %     Tech Stack . . . . . . . . . . . . . .  (bottom row, full width)
+%
+% Nesting `\begin{{minipage}}` around the tikz node lets the internal
+% \linewidth reference \boxwidth, and defeats the global \rowcolors
+% zebra shading (would otherwise tint the Tech Stack row differently
+% from the top row).
 \noindent
+\begin{{minipage}}{{\boxwidth}}
 \begin{{tikzpicture}}
   \node[
     draw=ramboqcopper,
     line width=0.6pt,
     fill=callbg,
-    inner sep=10pt,
-    text width=0.965\linewidth,
+    inner sep=9pt,
+    text width=\linewidth,
     rounded corners=3pt,
     align=left,
   ]{{%
+    % Reset row colors so every row inside this tabular carries the
+    % same callbg cream as the enclosing box (the global rowcolors
+    % rule would otherwise alternate white / rowshade on rows 2+).
+    \rowcolors{{1}}{{callbg}}{{callbg}}%
     \begin{{tabular}}{{@{{}}p{{0.30\linewidth}}p{{0.33\linewidth}}p{{0.33\linewidth}}@{{}}}}
       {{\color{{ramboqnavy}}\sffamily\small\bfseries Generated}} &
       {{\color{{ramboqnavy}}\sffamily\small\bfseries Revision}} &
@@ -302,13 +318,14 @@ The RamboQuant \textbf{{Complete Design Guide}} is a top-to-bottom developer + o
       {{\color{{ramboqslate}}\sffamily\small \today}} &
       {{\color{{ramboqslate}}\sffamily\small v\,{COMMIT_COUNT} \ ({COMMIT_SHA})}} &
       {{\color{{ramboqcopper}}\sffamily\small\bfseries \href{{https://ramboq.com}}{{ramboq.com}}}} \\[8pt]
-      \multicolumn{{3}}{{@{{}}p{{0.96\linewidth}}@{{}}}}{{%
+      \multicolumn{{3}}{{@{{}}p{{0.965\linewidth}}@{{}}}}{{%
         {{\color{{ramboqnavy}}\sffamily\small\bfseries Tech Stack}}\newline
         {{\color{{ramboqslate}}\sffamily\small SvelteKit \textcolor{{ramboqcopper}}{{$\bullet$}} Litestar \textcolor{{ramboqcopper}}{{$\bullet$}} PostgreSQL \textcolor{{ramboqcopper}}{{$\bullet$}} async SQLAlchemy 2.x \textcolor{{ramboqcopper}}{{$\bullet$}} KiteTicker WebSocket \textcolor{{ramboqcopper}}{{$\bullet$}} Kite / Dhan / Groww adapters \textcolor{{ramboqcopper}}{{$\bullet$}} MCP \textcolor{{ramboqcopper}}{{$\bullet$}} Gemini}}
       }} \\
     \end{{tabular}}
   }};
 \end{{tikzpicture}}
+\end{{minipage}}
 
 \vspace{{7pt}}
 
@@ -328,13 +345,13 @@ Principal FinTech engineer and quantitative developer with \textbf{{30+ years}} 
 
 \vspace{{7pt}}
 
-% -- (4) Experience & Recognition — three navy cards, full width --
-% Cards use \minipage side-by-side (not tikz \hspace which leaves
-% invisible margin whitespace at the right edge). This lets us hit
-% the full 0.965\linewidth cleanly across three ~32%-width cards.
+% -- (4) Experience & Recognition — three navy cards, all wrapped in
+% a single \boxwidth-wide minipage so the outer edges match Version
+% and Credentials exactly.
 {{\color{{ramboqamber}}\sffamily\footnotesize\bfseries EXPERIENCE \& RECOGNITION}}\\[2pt]
-\noindent\hspace*{{0pt}}%
-\begin{{minipage}}[t]{{0.318\linewidth}}
+\noindent
+\begin{{minipage}}{{\boxwidth}}
+\begin{{minipage}}[t]{{0.322\linewidth}}
 \begin{{tikzpicture}}
   \node[
     fill=ramboqnavy,
@@ -351,7 +368,7 @@ Principal FinTech engineer and quantitative developer with \textbf{{30+ years}} 
   }};
 \end{{tikzpicture}}
 \end{{minipage}}\hfill
-\begin{{minipage}}[t]{{0.318\linewidth}}
+\begin{{minipage}}[t]{{0.322\linewidth}}
 \begin{{tikzpicture}}
   \node[
     fill=ramboqnavy,
@@ -368,7 +385,7 @@ Principal FinTech engineer and quantitative developer with \textbf{{30+ years}} 
   }};
 \end{{tikzpicture}}
 \end{{minipage}}\hfill
-\begin{{minipage}}[t]{{0.318\linewidth}}
+\begin{{minipage}}[t]{{0.322\linewidth}}
 \begin{{tikzpicture}}
   \node[
     fill=ramboqnavy,
@@ -385,19 +402,21 @@ Principal FinTech engineer and quantitative developer with \textbf{{30+ years}} 
   }};
 \end{{tikzpicture}}
 \end{{minipage}}
+\end{{minipage}}
 
 \vspace{{7pt}}
 
 % -- (5) Credentials — full-width copper strip -------------------
 {{\color{{ramboqamber}}\sffamily\footnotesize\bfseries CREDENTIALS}}\\[2pt]
 \noindent
+\begin{{minipage}}{{\boxwidth}}
 \begin{{tikzpicture}}
   \node[
     draw=ramboqcopper,
     line width=0.6pt,
     fill=callbg,
-    inner sep=8pt,
-    text width=0.965\linewidth,
+    inner sep=9pt,
+    text width=\linewidth,
     rounded corners=3pt,
     align=left,
   ]{{%
@@ -411,6 +430,7 @@ Principal FinTech engineer and quantitative developer with \textbf{{30+ years}} 
     }}
   }};
 \end{{tikzpicture}}
+\end{{minipage}}
 
 \restoregeometry
 \newpage
