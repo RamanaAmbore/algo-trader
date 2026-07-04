@@ -474,6 +474,227 @@ class TestClosedHoursRouteReturnsSnapshot:
         assert math.isclose(row.pnl, 14670.00, rel_tol=1e-6)
 
     @pytest.mark.asyncio
+    async def test_positions_snapshot_extras_fallback_when_day_pnl_null(self):
+        """Reader falls back to `payload_json.snapshot_extras.day_change_val`
+        when the top-level `day_pnl` column is NULL.
+
+        Regression 2026-07-04: the writer's `_is_exchange_open_at` gate in
+        daily_snapshot._positions_rows checks time-of-day only (no weekday
+        check). On a Saturday 15:35 IST snapshot MCX rows land with
+        `day_pnl=NULL` (MCX 09:00–23:30 IST window is "mid-session" by
+        time-of-day) even though the market is actually closed. The 15:35
+        IST batch then UPSERTs and clobbers Friday's good MCX day_pnl
+        values. Reader falls back to `snapshot_extras.day_change_val` —
+        the raw Kite `day_change` field captured at snapshot time — so the
+        frozen close-time value surfaces during closed hours instead of a
+        blanket zero across the frontend Day P&L cells.
+
+        Cascading surfaces protected: NavStrip P slot 1, /admin/derivatives
+        Snapshot per-row + TOTAL, Legs grid, MarketPulse Positions grid.
+        """
+        import json as _json
+        from datetime import datetime as _dt, timezone as _tz
+        from decimal import Decimal
+        from unittest.mock import MagicMock as _MM
+
+        fake_captured = _dt(2026, 7, 4, 10, 5, tzinfo=_tz.utc)
+
+        # Exactly the shape that lands in prod: mid-session-gated MCX row
+        # with NULL day_pnl but populated snapshot_extras.day_change_val.
+        # Row taken from prod: ZG0790 CRUDEOIL26JUL6300PE with
+        # extras.day_change_val = -0.20 on 2026-07-04 10:05 UTC.
+        payload = {
+            # Broker's raw row (top-level Kite shape kept for forensics)
+            "tradingsymbol": "CRUDEOIL26JUL6300PE",
+            "exchange": "MCX",
+            # Nested extras block — the fallback source
+            "snapshot_extras": {
+                "day_change_val":  -0.20,
+                "day_change_pct":  -0.255,
+                "prev_close":      78.30,
+                "settled":         False,
+            },
+        }
+
+        fake_rows = [(
+            "ZG0790",                       # account
+            "CRUDEOIL26JUL6300PE",          # symbol
+            "MCX",                          # exchange
+            -3,                             # qty
+            Decimal("127.40"),              # avg_cost
+            Decimal("78.50"),               # ltp
+            None,                           # day_pnl — NULL (writer's mid-session gate)
+            Decimal("14670.00"),            # total_pnl (lifetime)
+            _json.dumps(payload),           # payload_json
+            fake_captured,                  # captured_at
+        )]
+
+        mock_result = _MM()
+        mock_result.all = _MM(return_value=fake_rows)
+        mock_session = _MM()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        with patch(
+            "backend.api.database.async_session",
+            return_value=mock_session,
+        ):
+            from backend.api.routes.positions import _positions_snapshot
+            resp = await _positions_snapshot()
+
+        assert resp is not None
+        assert len(resp.rows) == 1
+        row = resp.rows[0]
+        # Primary invariant: day_change_val was pulled from snapshot_extras
+        # since the top-level day_pnl column was NULL. Without the fallback
+        # this would render as 0.0 and Day P&L across the closed-hours
+        # frontend would be a blanket zero.
+        assert math.isclose(row.day_change_val, -0.20, rel_tol=1e-6), (
+            f"day_change_val={row.day_change_val} — expected -0.20 from "
+            f"snapshot_extras.day_change_val (top-level day_pnl was NULL). "
+            f"Reader must fall back to extras when writer's mid-session "
+            f"gate nulls day_pnl on weekend/holiday snapshot cycles."
+        )
+        # day_change_percentage also pulled from extras
+        assert math.isclose(row.day_change_percentage, -0.255, rel_tol=1e-6)
+        # Overnight_quantity still populated (prior fix — unchanged)
+        assert row.overnight_quantity == row.quantity == -3
+        # Lifetime pnl untouched
+        assert math.isclose(row.pnl, 14670.00, rel_tol=1e-6)
+        # Summary aggregates use the extras-fallback value too
+        assert len(resp.summary) == 2  # one account + TOTAL
+        zg = next(s for s in resp.summary if s.account == "ZG0790")
+        total = next(s for s in resp.summary if s.account == "TOTAL")
+        assert math.isclose(zg.day_change_val, -0.20, rel_tol=1e-6), (
+            f"Account summary day_change_val={zg.day_change_val} — must "
+            f"reflect the extras-fallback value on the underlying row"
+        )
+        assert math.isclose(total.day_change_val, -0.20, rel_tol=1e-6)
+
+    @pytest.mark.asyncio
+    async def test_positions_snapshot_prefers_day_pnl_column_over_extras(self):
+        """When both `day_pnl` (column) and `extras.day_change_val` are set,
+        the top-level column wins.
+
+        The column carries the decomposed-intraday-pnl value computed by
+        the writer from stored close_price — the canonical formula. Extras
+        carries Kite's raw `day_change` which may drift on stale-payload
+        weekends. Reader must NOT prefer extras over a legitimate column
+        value (including a real 0.0)."""
+        import json as _json
+        from datetime import datetime as _dt, timezone as _tz
+        from decimal import Decimal
+        from unittest.mock import MagicMock as _MM
+
+        fake_captured = _dt(2026, 7, 3, 18, 5, tzinfo=_tz.utc)  # Fri 23:35 IST
+
+        payload = {
+            "tradingsymbol": "NIFTY26JULFUT",
+            "exchange": "NFO",
+            "snapshot_extras": {
+                "day_change_val":  -999.99,   # decoy — must NOT be used
+                "day_change_pct":  -1.11,
+                "settled":         True,
+            },
+        }
+
+        fake_rows = [(
+            "ZJ6294",                       # account
+            "NIFTY26JULFUT",                # symbol
+            "NFO",                          # exchange
+            50,                             # qty
+            Decimal("23000.00"),            # avg_cost
+            Decimal("23150.00"),            # ltp
+            Decimal("2500.00"),             # day_pnl — populated (wins)
+            Decimal("7500.00"),             # total_pnl
+            _json.dumps(payload),           # payload_json
+            fake_captured,                  # captured_at
+        )]
+
+        mock_result = _MM()
+        mock_result.all = _MM(return_value=fake_rows)
+        mock_session = _MM()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        with patch(
+            "backend.api.database.async_session",
+            return_value=mock_session,
+        ):
+            from backend.api.routes.positions import _positions_snapshot
+            resp = await _positions_snapshot()
+
+        assert resp is not None and len(resp.rows) == 1
+        row = resp.rows[0]
+        # Column value wins over extras (decoy -999.99 must be ignored)
+        assert math.isclose(row.day_change_val, 2500.00, rel_tol=1e-6), (
+            f"day_change_val={row.day_change_val} — column value 2500 must "
+            f"win over extras decoy -999.99 when day_pnl column is populated"
+        )
+
+    @pytest.mark.asyncio
+    async def test_positions_snapshot_handles_malformed_payload_json(self):
+        """Reader tolerates malformed / missing / non-dict payload_json.
+
+        Defensive: extras extraction wrapped in try/except so a bad row
+        cannot poison the entire snapshot response. Falls back to 0.0 for
+        the affected row (best available)."""
+        from datetime import datetime as _dt, timezone as _tz
+        from decimal import Decimal
+        from unittest.mock import MagicMock as _MM
+
+        fake_captured = _dt(2026, 7, 4, 10, 5, tzinfo=_tz.utc)
+
+        # Three degenerate payloads across three rows — each must
+        # gracefully leave day_change_val at 0.0 (no extras available).
+        fake_rows = [
+            ("ZG0790", "SYM1", "MCX", -1, Decimal("100"), Decimal("50"),
+             None, Decimal("500"), "not-valid-json{{",       fake_captured),
+            ("ZG0790", "SYM2", "MCX", -1, Decimal("100"), Decimal("50"),
+             None, Decimal("500"), "[1, 2, 3]",              fake_captured),
+            ("ZG0790", "SYM3", "MCX", -1, Decimal("100"), Decimal("50"),
+             None, Decimal("500"), None,                     fake_captured),
+        ]
+
+        mock_result = _MM()
+        mock_result.all = _MM(return_value=fake_rows)
+        mock_session = _MM()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        with patch(
+            "backend.api.database.async_session",
+            return_value=mock_session,
+        ):
+            from backend.api.routes.positions import _positions_snapshot
+            resp = await _positions_snapshot()
+
+        assert resp is not None and len(resp.rows) == 3
+        for row in resp.rows:
+            # No extras extractable → day_change_val stays at 0.0
+            assert row.day_change_val == 0.0
+            # But total_pnl still comes through — snapshot isn't broken
+            assert math.isclose(row.pnl, 500.0, rel_tol=1e-6)
+
+    def test_positions_snapshot_source_contains_extras_fallback(self):
+        """SSOT — the extras-fallback block is present in _positions_snapshot.
+        Guards against a future refactor accidentally removing the fallback
+        (which would silently regress the closed-hours Day P&L pipeline)."""
+        src = _src(_POS_SRC)
+        # The fallback path must reference snapshot_extras key lookup
+        assert "snapshot_extras" in src, (
+            "_positions_snapshot must reference snapshot_extras — "
+            "the extras-fallback path was removed"
+        )
+        # And must specifically pull day_change_val from extras
+        assert 'extras.get("day_change_val")' in src or "extras.get('day_change_val')" in src, (
+            "_positions_snapshot must read day_change_val from extras"
+        )
+
+    @pytest.mark.asyncio
     async def test_positions_open_market_calls_broker(self):
         """Market open → live path runs (no snapshot shortcut)."""
         from backend.api.schemas import PositionsResponse
