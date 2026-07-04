@@ -2993,3 +2993,109 @@ If you can't tick every box, hold the commit. The cost of pausing is low; the co
 | Lab + MCP-driven research workflow | `LAB_MCP_GUIDE.md` |
 | Operator's-eye-view of every page | `CLAUDE.md` (large, but indexed) |
 | **Architecture + change recipes** | **This document** |
+
+---
+
+## Glossary
+
+Curated index of the terms that appear repeatedly in this guide. Alphabetized so you can jump-lookup without scrolling the TOC.
+
+| Term | Meaning |
+|---|---|
+| **Action** | Side-effect an agent performs when its condition fires — place order, close position, alert. See §34. |
+| **AgentEngine** | Declarative rule runner. Reads `agents` table + built-in `BUILTIN_AGENTS`, evaluates conditions each cycle, dispatches actions. §22.5, §34. |
+| **Alert** | Runtime event produced when an agent condition fires. Persisted to `agent_events`; may or may not have a Notify or Action. Distinct from **Notify**. |
+| **Basket order** | Multi-account / multi-leg order dispatched atomically. `POST /api/orders/basket` groups by account and fans out via `asyncio.gather`. §6, §22.10. |
+| **Broker abstraction** | Uniform Python interface (Kite / Dhan / Groww adapters) so route handlers stay broker-agnostic. `backend/brokers/adapters/`. §14. |
+| **Chase loop** | Adaptive limit-order engine that re-quotes toward the touch until filled or capped. Spread-aware. §7, §12. |
+| **cap_in_dev** | Nested dict of capability flags in `backend_config.yaml`. All True on `main`, per-branch on dev. Gated via `is_enabled('<cap>')`. |
+| **close_settled** | Second phase of the snapshot lifecycle — fires 15 min after `<exch>:close`. UPSERTs broker's weighted-avg-last-30-min close price. |
+| **conn_service** | Standalone Litestar app on `/tmp/ramboq_conn.sock` that owns broker sessions (Kite WebSocket, Dhan/Groww tokens). Restart independent of the main API. |
+| **Demo mode** | Signed-out + prod branch — read-only + PII-masked. Write paths return 403 or degrade to paper. §22. |
+| **Firm NAV** | `cash_sod + option_premium + Σ position.unrealised + Σ holdings.cur_val`. Canonical formula (v4) in `backend/api/algo/nav.py:compute_firm_nav`. |
+| **GTT** | Good-Till-Triggered order — broker-side conditional order. Kite native; Dhan OCO leg; Groww emulated. §9. |
+| **@for_all_accounts** | Decorator that fans out a broker call across every account and concatenates the results. `pd.concat(..., ignore_index=True)` at call site. |
+| **Idempotency guard** | Column like `attached_gtts_json IS NULL` that ensures a side-effect fires at most once even under postback retries. §3.2. |
+| **KiteTicker** | Persistent Kite WebSocket. One per conn_service process. Ticks land in `/dev/shm/ramboq_ticks` mmap; main API reads via `MmapTickReader`. |
+| **LP unit** | Limited-Partner accounting unit. `units_held × nav_per_unit = slice`. §22.6. |
+| **MarketPulse** | Two-side ag-Grid page (`/pulse`) — pinned watchlists + movers left, positions + holdings right. Canonical operator surface. |
+| **MCP** | Model Context Protocol — Claude-Code integration exposing 25 platform tools (17 read-only + 2 persist + 6 write-gated). |
+| **Notify** | Delivery channel wrapping an Alert — telegram / email / websocket / log. Vocabulary chain: Agent → Alert → Notify → Action. |
+| **OHLCV** | Open-High-Low-Close-Volume daily bars. Cached in `ohlcv_store` (3-tier: LRU → PostgreSQL → broker). 5-year retention. |
+| **Paper mode** | Live-quote execution against `PaperTradeEngine` — no broker orders. Mode 2 of the confidence ladder (sim → paper → shadow → live). |
+| **PBKDF2** | Password hash algorithm (SHA-256, 210k iters). JWT signing separate — HS256. |
+| **Preflight** | Fat-finger + lot-multiple guards before order placement (G1, G2). Parallelized via `asyncio.gather`. §22.10. |
+| **Proxy hedge** | Cross-reference between holdings and option roots. β-regressed. `hedge_proxies` table. |
+| **Refresh cycle mode** | Persistence override — `off` / `soft` / `hard`. Bypasses cache tiers when defect-recovering. Runtime-only, resets on restart. |
+| **Shadow mode** | Log-only mode — validates payload against real broker but does not execute. Mode 5, prod-only. |
+| **snapshot_extras** | Payload block in `daily_book.payload_json` carrying open/high/low/close_settled/day_change_val/... for closed-hours reads. |
+| **Snapshot lifecycle** | Per-exchange event sequence — `open` → `close` (first-cut snapshot) → `close_settled` (broker's settled close). |
+| **SSOT** | Single Source Of Truth. See `baseDayPnlForPosition` (Day P&L), `compute_firm_nav` (NAV), `resolve_current_price` (LTP resolver). |
+| **Template attach** | Post-fill automation — attaches GTT exits and take-profit legs to a filled parent. Idempotent via `parent_order_id`. §9. |
+| **Ticker mmap** | `/dev/shm/ramboq_ticks` — fixed 4096-slot shared-memory buffer, version-word atomic, lock-free reads. Main API tails it via `MmapTickReader`. |
+| **Trail stop** | Stop-loss that ratchets toward the touch on favorable moves. Broker-side (Kite trail_gtt) or emulated. §13. |
+| **Virtual root** | MCX/CDS synthetic symbol (e.g. `CRUDEOIL` = front-month, `CRUDEOIL_NEXT` = back-month). Resolver: `symbol_resolver.py`. |
+
+---
+
+## Alphabetical section index
+
+Quick-jump index by first significant word — useful when you remember a name but not the section number.
+
+| Section | § |
+|---|---|
+| Architecture overview | §1 |
+| Audit log — forensic trail | §22.7 |
+| Background task topology | §20 |
+| Broker abstraction | §14 |
+| Broker abstraction — implementation detail | §14.5 |
+| Broker gotchas | §16 |
+| Chart indicator system | §22.15 |
+| Chase loop invariants | §12 |
+| Chase loop lifecycle | §7 |
+| Concurrency model | §4 |
+| Core architectural principles | §3 |
+| Cross-cutting checklist before every commit | §42 |
+| Data layer — implementation detail | §4.5 |
+| Data refresh — PositionStrip + Dashboard | §21 |
+| Database schema overview | §4.6 |
+| Demo mode | §22 |
+| Deployment notes | §26 |
+| History — orders / trades / funds | §22.9 |
+| Investor portal — token-as-credential | §22.5 |
+| Investor portal — units-based NAV math | §22.6 |
+| Logging discipline | §25 |
+| Market-status probe | §22.14 |
+| Metrics + performance tracking | §4.9 |
+| Navbar audit — rename + resequence | §22.11 |
+| Operator's mental model | §30 |
+| Order placement — basket (Chain tab) | §6 |
+| Order placement — single ticket | §5 |
+| Order placement latency | §22.10 |
+| Postback fan-out — book_changed bus | §22.8 |
+| Reading order for a new developer | §28 |
+| Recipe — add a background task | §33 |
+| Recipe — add a broker capability flag | §36 |
+| Recipe — add a column to a table | §32 |
+| Recipe — add a new agent action | §34 |
+| Recipe — add a new page | §37 |
+| Recipe — add a new route | §31 |
+| Recipe — add a new template field | §35 |
+| Recipe — add a setting | §38 |
+| Recipe — change a default template | §39 |
+| Recipe — ship a fix to dev + main | §41 |
+| Recipe — wire a notification channel | §40 |
+| Retention policies | §4.8 |
+| Sprint history + audit fixes | §27 |
+| Table relationships | §4.7 |
+| Tech stack — at a glance | §2 |
+| Template attach pipeline | §9 |
+| Template matrix (4 defaults) | §10 |
+| Template override merge | §11 |
+| Testing philosophy | §24 |
+| The order/chase/template tripod | §8 |
+| The preview pipeline | §19 |
+| Trail-stop subsystem | §13 |
+| UX audit slice D | §22.13 |
+| When in doubt | §29 |
+| \#audit workflow + postback scaffold | §22.12 |
