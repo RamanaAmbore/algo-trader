@@ -409,6 +409,71 @@ class TestClosedHoursRouteReturnsSnapshot:
         assert mock_broker_fetch.call_count == 0
 
     @pytest.mark.asyncio
+    async def test_positions_snapshot_populates_overnight_quantity(self):
+        """Closed-hours snapshot rows must carry overnight_quantity == quantity.
+
+        Regression 2026-07-03: _positions_snapshot was building PositionRow
+        without setting overnight_quantity, so msgspec defaulted it to 0.
+        That tripped the frontend `baseDayPnlForPosition` new-position override
+        (`oq === 0 && pnl !== 0 → day = pnl`), inflating Day P&L from the
+        settled `day_change_val` (e.g. ₹0.6) to LIFETIME `pnl` (e.g. ₹14670)
+        across NavStrip P slot 1, /admin/derivatives Snapshot, Legs, MarketPulse.
+
+        The snapshot represents session-end holdings, so all held qty IS
+        overnight qty for the next session — asserted here.
+        """
+        from datetime import datetime as _dt, timezone as _tz
+        from decimal import Decimal
+        from unittest.mock import MagicMock as _MM
+
+        fake_captured = _dt(2026, 7, 3, 10, 45, tzinfo=_tz.utc)
+
+        # A row that would trip the old bug: overnight position (avg=127.4,
+        # qty=-3) with tiny settled day_change_val (₹0.6) but large lifetime
+        # pnl (₹14670). Pre-fix: oq defaulted to 0 → frontend override →
+        # day rendered as 14670 instead of 0.6.
+        fake_rows = [(
+            "ZG0790",                     # account
+            "CRUDEOIL26JUL6300PE",        # symbol
+            "MCX",                        # exchange
+            -3,                           # qty
+            Decimal("127.40"),            # avg_cost
+            Decimal("78.50"),             # ltp
+            Decimal("0.60"),              # day_pnl (settled)
+            Decimal("14670.00"),          # total_pnl (lifetime)
+            "{}",                         # payload_json
+            fake_captured,                # captured_at
+        )]
+
+        mock_result = _MM()
+        mock_result.all = _MM(return_value=fake_rows)
+        mock_session = _MM()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        mock_session.execute = AsyncMock(return_value=mock_result)
+
+        with patch(
+            "backend.api.database.async_session",
+            return_value=mock_session,
+        ):
+            from backend.api.routes.positions import _positions_snapshot
+            resp = await _positions_snapshot()
+
+        assert resp is not None
+        assert len(resp.rows) == 1
+        row = resp.rows[0]
+        # Primary invariant: overnight_quantity == quantity so the frontend
+        # override cannot fire on snapshot rows.
+        assert row.overnight_quantity == row.quantity, (
+            f"overnight_quantity={row.overnight_quantity} must equal "
+            f"quantity={row.quantity} on snapshot rows so frontend "
+            f"baseDayPnlForPosition doesn't hit the new-position override"
+        )
+        # Sanity: day_change_val is the small settled value, not lifetime pnl.
+        assert math.isclose(row.day_change_val, 0.60, rel_tol=1e-6)
+        assert math.isclose(row.pnl, 14670.00, rel_tol=1e-6)
+
+    @pytest.mark.asyncio
     async def test_positions_open_market_calls_broker(self):
         """Market open → live path runs (no snapshot shortcut)."""
         from backend.api.schemas import PositionsResponse
