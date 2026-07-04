@@ -11,7 +11,7 @@
 
 **Ramana R Ambore, FRM** — Platform Architect & Quantitative Developer for **RamboQuant LLP** · *AI-augmented · built with Claude Code*.
 
-**30+ years** across mainframe modernization and cloud-native financial platforms. Currently **Principal System Analyst** at **Fidelity Investments** — leading billing-platform modernization on AWS + Snowflake and distributed fee-calculation engines — and concurrently the **platform architect + quantitative developer** building **RamboQuant** end-to-end (live at **ramboq.com**), leveraging **Claude Code** as a force multiplier for platform-scale solo output.
+**30+ years** across mainframe modernization and cloud-native financial platforms. Currently **Principal System Analyst** at **Fidelity Investments** — leading billing-platform modernization on AWS + Snowflake and distributed fee-calculation engines — and concurrently the **platform architect + quantitative developer** building **RamboQuant** end-to-end (live at **ramboq.com**), applying a **forward-deployment-engineer ethos** (end-to-end ownership, tight feedback loops, ship-what-works) and leveraging **Claude Code** as a force multiplier for platform-scale solo output.
 
 **FRM** (GARP, 2022) and **CFA Level 3** candidate: the derivatives-risk, options-pricing (Black-Scholes / Greeks), and portfolio-analytics theory from those programs materialize directly as RamboQuant's derivatives layer, hedge-proxy β regression, and units-based NAV accounting. The Master's in Computer Science + Fidelity engineering discipline (distributed systems, event-driven architecture, legacy-modernization patterns) keeps a multi-broker, real-time, single-operator platform correct and fast. **NTT Innovation Award** recipient (top-40 global innovator). Based in Merrimack, NH.
 
