@@ -982,11 +982,15 @@
       // skipLtp=true routes positions/holdings to the snapshot path AND
       // skips the quote / sparkline pollers that would otherwise fan out
       // broker LTP fetches for the watchlist + movers.
+      // Sequence: movers first so batchQuote in loadPulse sees current
+      // winner/loser symbols and fetches their vol/oi. Same race as mount.
       await Promise.allSettled([
         skipLtp ? Promise.resolve() : loadQuotes(),
-        loadPulse({ force: true, skipLtp }),
         showFunds ? loadFunds() : Promise.resolve(),
         (enableMovers && !skipLtp) ? loadMovers() : Promise.resolve(),
+      ]);
+      await Promise.allSettled([
+        loadPulse({ force: true, skipLtp }),
         skipLtp ? Promise.resolve() : loadSparklines(),
       ]);
     } finally {
@@ -1274,22 +1278,24 @@
     const listsP = enableWatchlists
       ? loadLists().then(() => (activeIds.size > 0 ? loadActive() : null))
       : Promise.resolve();
-    const pulseP  = loadPulse({ force: true }); // force on mount: ensure fresh data + batchQuote runs
     const fundsP  = showFunds ? loadFunds() : Promise.resolve();
-    const moversP = enableMovers ? loadMovers() : Promise.resolve();
-
-    // Block onMount only on the data the first paint actually needs.
-    // Sparklines run fire-and-forget (cosmetic; missing them shows the
-    // grid without the inline trend column for ≤1 s).
-    // Broker accounts are sourced from connStatus (polled every 15 s by
-    // the layout's startConnStatusPoller) — no separate fetch needed here.
-    //
-    // Sleep audit Jun 2026: Promise.all → Promise.allSettled so a
-    // failed cold-load (e.g. broker hiccup on first connect) doesn't
-    // throw out of onMount and prevent the interval below from being
-    // scheduled. The page would otherwise sit frozen with cached data
-    // until a manual refresh.
-    await Promise.allSettled([instrumentsP, accountsP, listsP, pulseP, fundsP, moversP]);
+    // Load movers BEFORE loadPulse so that mover symbols are present in
+    // `movers` when loadPulse's batchQuote pass assembles allKeys.
+    // Without sequencing, loadPulse and loadMovers started concurrently:
+    // loadPulse reached the batchQuote section before loadMovers resolved,
+    // mover symbols were absent from allKeys, batchQuote never fetched
+    // their vol/oi, and symbolStore had no entry — Winners/Losers cells
+    // rendered "—". During open hours _runTick's 10 s cadence self-healed
+    // within two ticks; during closed hours marketAwareInterval suspends
+    // _runTick so the blank was permanent until a manual refresh (which had
+    // the same race in its own Promise.allSettled).
+    await Promise.allSettled([instrumentsP, accountsP, listsP, fundsP,
+      enableMovers ? loadMovers() : Promise.resolve()]);
+    // Now that movers (and lists/positions) are in their stores, run
+    // loadPulse so the batchQuote includes mover + watchlist symbols.
+    // force=true: ensure positions + holdings + batchQuote all fire on
+    // first paint even if the book poller already has a value cached.
+    await loadPulse({ force: true });
     // Sparkline bootstrap — ensure positions + holdings are in the store
     // before we snapshot unifiedRows for the pairs list.
     //
@@ -3895,7 +3901,14 @@
     const badges = [];
     if (row.src?.p) {
       const q = Number(row.qty_pos) || 0;
-      badges.push(`<span class="sym-badge badge-p" title="Position">P ${qtyFmt(q)}</span>`);
+      // F&O positions: show lots via SSOT lotsForRow so the badge is
+      // consistent with the Lots column. E.g. CRUDEOIL 100 contracts =
+      // 1 lot → "P 1L". Cash equity shows raw qty (no lot context).
+      const _pLots = lotsForRow(row);
+      const _pLabel = (_pLots != null && _pLots > 0)
+        ? `${fmtLots(_pLots)}L`
+        : qtyFmt(q);
+      badges.push(`<span class="sym-badge badge-p" title="Position (${qtyFmt(q)} contracts)">P ${_pLabel}</span>`);
     }
     if (row.src?.h) {
       const q = Number(row.qty_hold) || 0;

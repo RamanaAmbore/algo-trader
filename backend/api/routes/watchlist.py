@@ -917,6 +917,24 @@ async def seed_global_pinned() -> None:
             await _mark_migration(_W2_KEY)
             logger.info("Watchlist: one-shot cleanup wave 2 (MCX futures) done")
 
+        # Wave 3 — SILVER (MCX) removed Jul 2026
+        # Operator confirmed SILVER MCX was added by mistake (a single
+        # near-month future was appearing in the pinned grid). Remove it
+        # from the global Pinned; the operator can re-add explicitly if
+        # wanted. SILVER is not in MARKETS_DEFAULT so top-up will NOT
+        # re-add it on subsequent boots.
+        _W3_KEY = "migrations.pinned_remove_silver_mcx_v1"
+        if not await _migration_done(_W3_KEY):
+            await session.execute(
+                sa_delete(WatchlistItem).where(
+                    WatchlistItem.watchlist_id == global_row.id,
+                    WatchlistItem.tradingsymbol == "SILVER",
+                    WatchlistItem.exchange == "MCX",
+                )
+            )
+            await _mark_migration(_W3_KEY)
+            logger.info("Watchlist: one-shot cleanup wave 3 (SILVER MCX) done")
+
         # 5. Top up the global Pinned with any MARKETS_DEFAULT item
         #    that isn't already in it. Additive — never removes the
         #    operator's curated extras. The (tradingsymbol, exchange)
@@ -987,15 +1005,26 @@ def _item_info(it: WatchlistItem) -> WatchlistItemInfo:
 
 async def _expand_root_items_to_futures(items) -> list[WatchlistItemInfo]:
     """For every stored item whose tradingsymbol is a bare MCX commodity
-    root or CDS currency root (no FUT suffix), replace it with up-to-2
-    actual contract items resolved via the instruments cache (front
-    month + next month). Items that already carry a tradeable contract
-    name (FUT suffix, NSE equity, ETF, index) pass through unchanged.
+    root or CDS currency root (no FUT suffix), replace it with actual
+    contract item(s) resolved via the instruments cache.
 
-    The expanded items use the parent row's id with the suffix
-    appended as a sort key — frontend treats each as a normal item;
-    delete operations against the parent id still target the stored
-    bare-root row."""
+    MCX commodity roots (GOLD, CRUDEOIL, etc.): expand to front + next
+    month (up to 2 rows). Rollover is automatic — the stored root never
+    needs to change.
+
+    CDS currency roots (USDINR, etc.): expand to front month only
+    (1 row). The row alias is set to the bare root name (e.g. "USDINR")
+    so the frontend displays the virtual root label rather than the dated
+    contract name. This keeps USDINR as a single "virtual root" entry in
+    the pinned grid — the underlying tradingsymbol is still the real
+    broker contract so SSE ticks and symbolStore keying work correctly.
+
+    Items that already carry a tradeable contract name (FUT suffix, NSE
+    equity, ETF, index) pass through unchanged.
+
+    The expanded items use the parent row's id with a suffix appended as
+    a sort key — frontend treats each as a normal item; delete operations
+    against the parent id still target the stored bare-root row."""
     from backend.api.algo.derivatives import (
         lookup_mcx_futures_list, lookup_cds_futures_list,
     )
@@ -1008,14 +1037,35 @@ async def _expand_root_items_to_futures(items) -> list[WatchlistItemInfo]:
         if "FUT" in sym or exch not in ("MCX", "CDS"):
             out.append(_item_info(it))
             continue
-        # Resolve the front + next month future for this commodity /
-        # currency root. Empty list ⇒ instruments cache cold or the
-        # root has no listed futures; pass the raw row through so the
-        # operator still sees something (worst case the cell renders
-        # the bare name until the next API roundtrip).
-        resolver = (lookup_mcx_futures_list if exch == "MCX"
-                    else lookup_cds_futures_list)
-        futures = await resolver(sym, limit=2)
+        # CDS currency roots: front-month only, aliased to the bare root
+        # name so the grid shows the virtual root label (e.g. "USDINR")
+        # instead of the dated contract. One row per root.
+        if exch == "CDS":
+            futures = await lookup_cds_futures_list(sym, limit=1)
+            if not futures:
+                out.append(_item_info(it))
+                continue
+            fsym = futures[0]
+            stored_alias = getattr(it, "alias", None)
+            out.append(WatchlistItemInfo(
+                id=it.id * 1000,
+                watchlist_id=it.watchlist_id,
+                tradingsymbol=fsym,
+                exchange=exch,
+                # Use stored alias if operator set one; otherwise default
+                # to the bare root name as the virtual-root display label.
+                alias=stored_alias if stored_alias else sym,
+                sort_order=it.sort_order * 10,
+                added_at=it.added_at.isoformat() if it.added_at else "",
+            ))
+            continue
+        # MCX commodity roots: front + next month (up to 2 rows).
+        # Resolve the front + next month future for this commodity root.
+        # Empty list ⇒ instruments cache cold or the root has no listed
+        # futures; pass the raw row through so the operator still sees
+        # something (worst case the cell renders the bare name until the
+        # next API roundtrip).
+        futures = await lookup_mcx_futures_list(sym, limit=2)
         if not futures:
             out.append(_item_info(it))
             continue
