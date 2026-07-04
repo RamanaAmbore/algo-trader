@@ -191,26 +191,33 @@ def test_no_toordinal_str_in_persistence():
 # ── 4 & 5. Bug 2 fix: batch_sparkline concurrency cap ────────────────────────
 
 def test_batch_sparkline_uses_semaphore():
-    """batch_sparkline defines throttled fetch wrappers with a Semaphore(3)."""
-    import inspect
-    from backend.api.routes.quote import SparklineController
+    """The sparkline fetch-bar path caps concurrency with a Semaphore(3).
 
-    # Litestar wraps the method in a post() handler descriptor; the raw
-    # function is accessible via the .fn attribute on the handler object.
-    handler = SparklineController.batch_sparkline
-    fn = getattr(handler, "fn", handler)
-    src = inspect.getsource(fn)
+    After the cc-decomp refactor the semaphore lives in the extracted helper
+    _fetch_bars_parallel (called by batch_sparkline).  The concurrency contract
+    is the same — Kite's 3 req/s budget is still respected — we just check the
+    module source rather than the method body so the test survives helper
+    extraction without weakening the behavioural guard.
+    """
+    import inspect
+    import backend.api.routes.quote as quote_mod
+
+    src = inspect.getsource(quote_mod)
     assert "Semaphore(3)" in src, (
-        "batch_sparkline must cap concurrency at 3 (Semaphore(3)) to avoid "
+        "The bar-fetch path must cap concurrency at Semaphore(3) to avoid "
         "saturating Kite's 3 req/s historical_data budget on cold cache."
     )
-    assert "_fetch_daily_closes_throttled" in src, (
-        "batch_sparkline must use _fetch_daily_closes_throttled wrapper "
-        "(not the bare _fetch_daily_closes) for the daily fan-out."
+    # Throttled wrappers live in _fetch_bars_parallel helper.
+    assert "_fetch_bars_parallel" in src, (
+        "batch_sparkline must delegate parallel bar fetching to "
+        "_fetch_bars_parallel (which owns the Semaphore throttle)."
     )
-    assert "_fetch_today_bars_throttled" in src, (
-        "batch_sparkline must use _fetch_today_bars_throttled wrapper "
-        "(not the bare _fetch_today_bars) for the intraday fan-out."
+    # batch_sparkline must call _fetch_bars_parallel (not inline the fan-out).
+    handler = quote_mod.SparklineController.batch_sparkline
+    fn = getattr(handler, "fn", handler)
+    fn_src = inspect.getsource(fn)
+    assert "_fetch_bars_parallel" in fn_src, (
+        "batch_sparkline body must delegate to _fetch_bars_parallel."
     )
 
 

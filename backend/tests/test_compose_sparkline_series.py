@@ -139,13 +139,22 @@ def test_batch_endpoint_delegates_no_duplicate_ladder():
     assert "def compose_sparkline_series(" in src, \
         "compose_sparkline_series helper missing"
 
-    # The batch endpoint must delegate.
-    assert "compose_sparkline_series(" in src.split("def batch_sparkline")[-1], \
-        "batch_sparkline no longer calls compose_sparkline_series"
+    # The module must contain _compose_and_dual_write which calls compose_sparkline_series.
+    # After the cc-decomp refactor the direct call lives in the extracted helper
+    # _compose_and_dual_write; batch_sparkline delegates to that helper.
+    assert "def _compose_and_dual_write(" in src, \
+        "_compose_and_dual_write helper missing — compose_sparkline_series delegation broken"
+    assert "compose_sparkline_series(" in src.split("def _compose_and_dual_write")[-1].split("def batch_sparkline")[0], \
+        "_compose_and_dual_write must call compose_sparkline_series (SSOT delegation broken)"
 
-    # And must not carry the old inline pad-of-single-point AFTER the delegate call.
-    # (Search only in the batch endpoint body — helper defn legitimately has it.)
-    endpoint_body = src.split("def batch_sparkline")[-1].split("def compose_sparkline_series")[0]
+    # batch_sparkline body must call _compose_and_dual_write (not inline the ladder).
+    batch_body = src.split("def batch_sparkline")[-1]
+    assert "_compose_and_dual_write(" in batch_body, \
+        "batch_sparkline must delegate to _compose_and_dual_write (not inline the fallback ladder)"
+
+    # And must not carry the old inline pad-of-single-point in the batch_sparkline body.
+    # (Helper defn legitimately contains it, so scope to the batch_sparkline section.)
+    endpoint_body = batch_body.split("def compose_sparkline_series")[0]
     inline_pad_re = re.compile(r"if\s+len\(series\)\s*==\s*1\s*:\s*\n\s*series\s*=\s*series\s*\+\s*series")
     assert not inline_pad_re.search(endpoint_body), \
         "batch_sparkline still has inline single-point pad — helper composition drifted"
