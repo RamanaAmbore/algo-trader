@@ -406,6 +406,9 @@ test.describe('BrokerHealthBadge popup — Snapshot palette consistency', () => 
     const cls = await chip.getAttribute('class') ?? '';
     const hasHealthClass = /broker-chip-ok|broker-chip-partial|broker-chip-down/.test(cls);
     expect(hasHealthClass, `chip class "${cls}" must include a health-state variant`).toBe(true);
+
+    // Unroute so subsequent tests exercise the real backend response.
+    await P.unroute('**/api/admin/broker-health');
   });
 
   // ── 10. Popup broker names — non-empty and one of the valid labels ──────────
