@@ -936,36 +936,38 @@ async def seed_global_pinned() -> None:
             logger.info("Watchlist: one-shot cleanup wave 3 (SILVER MCX) done")
 
         # Wave 4 — USDINR contract rows replaced with bare root (Jul 2026)
-        # Prior code stored USDINR as the dated contract name
-        # (e.g. USDINR26JULFUT) with alias=USDINR. The frontend alias
-        # path caused the grid to render "USDINR → USDINR-26JUL-FUT",
-        # surfacing the dated contract name alongside the virtual root
-        # label. CDS roots now follow the same bare-root convention as
-        # MCX (GOLD, CRUDEOIL etc.) — the resolver handles the
-        # root→contract translation at quote / tick time.
-        # This wave deletes any contract-name USDINR row (monthly
-        # YY+MON pattern or weekly YY+MMDD pattern) and ensures the bare
-        # root is present. Top-up will re-add bare USDINR CDS via
-        # MARKETS_DEFAULT if it was absent.
-        import re as _re
+        # CDS roots follow the same bare-root convention as MCX (GOLD,
+        # CRUDEOIL) — the resolver translates root→contract at quote /
+        # tick time. Drop any contract-name USDINR row so top-up can
+        # seed the bare root cleanly.
         _W4_KEY = "migrations.pinned_usdinr_bare_root_v1"
         if not await _migration_done(_W4_KEY):
-            all_cds = (await session.execute(
-                select(WatchlistItem).where(
-                    WatchlistItem.watchlist_id == global_row.id,
-                    WatchlistItem.exchange == "CDS",
-                )
-            )).scalars().all()
+            # Single bulk DELETE — matches waves 1-3's SSOT (no per-row
+            # DELETE storm). Regex applied Python-side because SQLite
+            # (test dialect) lacks native REGEXP; the CDS row-set is
+            # tiny (<20 rows) so the extra load-then-DELETE is cheap.
+            # Pattern covers monthly YY+MON (`USDINR26JULFUT`) and
+            # weekly YY+MMDD (`USDINR260703FUT`) contract naming.
+            import re as _re
             _CONTRACT_PAT = _re.compile(
                 r'^USDINR\d{2}(?:[A-Z]{3}|\d{3,4})FUT$', _re.IGNORECASE
             )
-            for _row in all_cds:
-                if _CONTRACT_PAT.match(_row.tradingsymbol or ""):
-                    await session.execute(
-                        sa_delete(WatchlistItem).where(
-                            WatchlistItem.id == _row.id,
-                        )
+            all_cds = (await session.execute(
+                select(WatchlistItem.id, WatchlistItem.tradingsymbol).where(
+                    WatchlistItem.watchlist_id == global_row.id,
+                    WatchlistItem.exchange == "CDS",
+                )
+            )).all()
+            _victim_ids = [
+                _id for (_id, _sym) in all_cds
+                if _CONTRACT_PAT.match(_sym or "")
+            ]
+            if _victim_ids:
+                await session.execute(
+                    sa_delete(WatchlistItem).where(
+                        WatchlistItem.id.in_(_victim_ids),
                     )
+                )
             await _mark_migration(_W4_KEY)
             logger.info("Watchlist: one-shot cleanup wave 4 (USDINR bare root) done")
 
