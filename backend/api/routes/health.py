@@ -830,8 +830,11 @@ class BrokerHealthController(Controller):
                             getattr(row, "circuit_breaker_enabled", False)
                         ),
                     }
-        except Exception:
-            pass
+        except Exception as _label_exc:
+            logger.warning(
+                "broker-health: broker_label_map DB query failed — "
+                "broker column will fall back to 'kite': %s", _label_exc
+            )
 
         # Resolve which Kite account is currently the active ticker so
         # the frontend can render a chip next to that row. Non-fatal:
@@ -858,7 +861,7 @@ class BrokerHealthController(Controller):
             _pp = poll_priority_map.get(acct, {})
             accounts.append(BrokerAccountHealth(
                 account=acct,
-                broker=broker_label_map.get(acct, "—"),
+                broker=broker_label_map.get(acct, "kite"),
                 state=state,
                 reason=reason,
                 last_good_at=_ts_to_iso(last_ok if last_ok else None),
