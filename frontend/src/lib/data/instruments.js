@@ -279,27 +279,47 @@ export function listExchangesForSymbol(tradingsymbol) {
 
 /**
  * Search instruments by tradingsymbol prefix (case-insensitive).
- * Equity / index symbols are surfaced first (shorter); contracts
- * (CE/PE/FUT) come second. Returns up to `limit` matches.
- * Used by the watchlist add-symbol typeahead.
+ * Results are returned in four buckets (priority order):
+ *   1. Virtual roots (GOLD, GOLD_NEXT for MCX/CDS) — auto-roll convention
+ *   2. Equity / index symbols (shorter, tradable spot)
+ *   3. Real futures contracts (FUT)
+ *   4. Option contracts (CE / PE)
+ *
+ * Returns up to `limit` matches. Used by the watchlist add-symbol typeahead
+ * and SymbolSearchInput.
  */
 export async function searchByPrefix(prefix, limit = 12) {
   await loadInstruments();
   if (!_byTradingsymbol) return [];
   const p = String(prefix || '').toUpperCase();
   if (!p) return [];
-  const eq = [];   // equities / indices first
-  const ct = [];   // contracts after
+
+  // Bucket 1: virtual roots from the seeded MCX + CDS root maps.
+  // Injected before real instrument rows so the operator can pick
+  // GOLD / GOLD_NEXT at the top without scrolling past all contracts.
+  const { getVirtualRoots } = await import('./rootOf.js');
+  const virt = [];
+  for (const exch of ['MCX', 'CDS']) {
+    for (const v of getVirtualRoots(exch)) {
+      if (v.s.startsWith(p)) virt.push(v);
+    }
+  }
+
+  const eq = [];   // equities / indices
+  const fut = [];  // real futures
+  const ct = [];   // options (CE / PE)
   for (const [sym, inst] of _byTradingsymbol) {
     if (!sym.startsWith(p)) continue;
     if (inst.t === 'EQ' || inst.t === '') {
       eq.push(inst);
+    } else if (inst.t === 'FUT') {
+      fut.push(inst);
     } else {
       ct.push(inst);
     }
-    if (eq.length + ct.length >= limit * 3) break;  // bound the walk
+    if (eq.length + fut.length + ct.length >= limit * 3) break;  // bound the walk
   }
-  return [...eq, ...ct].slice(0, limit);
+  return [...virt, ...eq, ...fut, ...ct].slice(0, limit);
 }
 
 /** List option contracts for an underlying + type (CE/PE). Returns sorted by expiry then strike. */

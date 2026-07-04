@@ -245,3 +245,39 @@ export function resolveVirtual(virtual, exchange) {
     ? (slots[1] ?? slots[0] ?? virtual)
     : (slots[0] ?? virtual);
 }
+
+// ---------------------------------------------------------------------------
+// Virtual-root catalogue for search augmentation
+// ---------------------------------------------------------------------------
+
+/**
+ * Return all virtual root entries for the given exchange, sorted by name.
+ * Each entry is a synthetic instrument row suitable for injecting into
+ * searchByPrefix results.
+ *
+ * Shape matches the compact Instrument format used by instruments.js:
+ *   { s: 'GOLD', e: 'MCX', t: 'FUT', u: 'GOLD', virtual: true }
+ *   { s: 'GOLD_NEXT', e: 'MCX', t: 'FUT', u: 'GOLD', virtual: true }
+ *
+ * Only roots that appear in the seeded front-month map are returned —
+ * no synthetic entry for a root that has no active contracts.
+ *
+ * @param {string} exchange  'MCX' or 'CDS'
+ * @returns {Array<{s: string, e: string, t: string, u: string, virtual: boolean}>}
+ */
+export function getVirtualRoots(exchange) {
+  const exch = (exchange || '').toUpperCase();
+  const map = _mapFor(exch);
+  const out = [];
+  for (const root of Object.keys(map).sort()) {
+    const slots = map[root];
+    if (!slots || slots.length === 0) continue;
+    // Front-month virtual root
+    out.push({ s: root, e: exch, t: 'FUT', u: root, virtual: true });
+    // Back-month virtual root — only when a back-month slot exists
+    if (slots[1]) {
+      out.push({ s: `${root}_NEXT`, e: exch, t: 'FUT', u: root, virtual: true });
+    }
+  }
+  return out;
+}
