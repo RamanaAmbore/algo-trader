@@ -124,7 +124,7 @@
               <span class="bh-circuit-chip bh-circuit-half" title="Circuit half-open — probing on next fetch">PROBE</span>
             {/if}
           </span>
-          <span class="bh-row-broker">{acct.broker}</span>
+          <span class="bh-row-broker">{acct.broker || 'kite'}</span>
           <span class="bh-row-state bh-row-state-{acct.state}">{acct.state.toUpperCase()}</span>
           <span class="bh-row-reason">{acct.reason}</span>
           <span class="bh-row-ts" title="Last good check">
