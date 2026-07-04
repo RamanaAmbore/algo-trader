@@ -3881,7 +3881,7 @@ def _parse_perf_snapshot_rows(snap: dict) -> list:
         cc_avg: Optional[float] = row.get("cyclomatic_avg")
         cc_max: Optional[int]   = row.get("cyclomatic_max")
         hotspots = row.get("cyclomatic_hotspots") or None
-        # Runtime block (present only with --with-runtime)
+        # Runtime block (present only when _merge_runtime_into_rows() was called)
         rt = row.get("runtime") or {}
         lcp_ms:  Optional[int]   = rt.get("lcp_ms")
         tbt_ms:  Optional[int]   = rt.get("tbt_ms")
@@ -3918,17 +3918,70 @@ def _parse_perf_snapshot_rows(snap: dict) -> list:
     return rows
 
 
+def _merge_runtime_into_rows(rows: list, capture_json: dict) -> int:
+    """Patch LCP/TBT/heap from a ``perf_capture_latest.json`` blob into the
+    already-parsed PerfSnapshot ORM row list.
+
+    Module-level so tests can import and exercise it directly.
+
+    The capture JSON has the same ``frontend.pages.<route>.runtime.*`` shape
+    as ``perf_baseline.py``'s ``--with-runtime`` merge step.  We match by
+    ``page_or_route`` (FE side only) and set the three runtime fields in
+    place.
+
+    Args:
+        rows:         List of ``PerfSnapshot`` instances from
+                      :func:`_parse_perf_snapshot_rows`.
+        capture_json: Parsed ``.log/perf_capture_latest.json``.
+
+    Returns:
+        Number of FE rows that received at least one non-None runtime field.
+    """
+    cap_pages: dict = (
+        capture_json.get("frontend", {}).get("pages", {})
+    )
+    patched = 0
+    for row in rows:
+        if row.side != "FE":
+            continue
+        rt = cap_pages.get(row.page_or_route, {}).get("runtime") or {}
+        if not rt:
+            continue
+        lcp  = rt.get("lcp_ms")
+        tbt  = rt.get("tbt_ms")
+        heap = rt.get("heap_mb")
+        if lcp is None and tbt is None and heap is None:
+            continue
+        row.lcp_ms  = lcp
+        row.tbt_ms  = tbt
+        row.heap_mb = heap
+        patched += 1
+    return patched
+
+
 async def _task_perf_snapshot() -> None:
     """Daily 04:00 IST — run perf_baseline.py and persist results to perf_snapshots.
 
-    Parses the JSON emitted by ``scripts/perf_baseline.py
-    --with-cyclomatic --no-build`` and inserts one ``PerfSnapshot`` row per
-    page/route. Frontend rows populate static Svelte-rune counts + optional
-    cyclomatic complexity; backend rows populate LOC + async_fn count.
+    Two-step execution for graceful degradation:
 
-    Runtime metrics (LCP/TBT/heap) are populated only when the optional
-    ``perf_snapshot_with_runtime`` config flag is True AND the dev server
-    URL is reachable — Playwright is then invoked via ``--with-runtime``.
+    **Step 1 — static baseline (~5 s)**
+    ``scripts/perf_baseline.py --with-cyclomatic --no-build`` is run first.
+    It writes ``.log/perf_baseline_<ts>.json`` to disk. If this step fails
+    no rows are inserted for this cycle and the error is logged.
+
+    **Step 2 — Playwright runtime capture (~2-4 min, optional)**
+    When ``perf_snapshot.runtime_enabled`` is True in the settings DB,
+    ``scripts/perf_capture_run.sh`` is executed as a separate subprocess with
+    ``PLAYWRIGHT_USER`` / ``PLAYWRIGHT_PASS`` injected from ``secrets.yaml``.
+    Its output ``.log/perf_capture_latest.json`` is then merged into the
+    static rows via :func:`_merge_runtime_into_rows` before the DB insert.
+
+    **Graceful degradation**:
+    - Playwright timeout (``perf_snapshot.runtime_timeout_s``, default 600)
+      → static-only rows are inserted; a WARNING is logged.
+    - Playwright non-zero exit or network unreachable → same static-only path.
+    - ``runtime_enabled = False`` → static-only (no subprocess launched).
+    - Static step failure → no rows inserted; error logged.
 
     Startup backfill: any ``.log/perf_baseline_*.json`` files found at boot
     that have not yet been ingested are imported once. After that the cron
@@ -3937,6 +3990,8 @@ async def _task_perf_snapshot() -> None:
     run inserts fresh rows); the /latest endpoint uses DISTINCT ON to
     surface the most recent.
     """
+    import json as _json
+    import os as _os
     from pathlib import Path
     from backend.api.database import async_session
     from backend.shared.helpers.settings import get_int, get_bool
@@ -3944,14 +3999,18 @@ async def _task_perf_snapshot() -> None:
     ROOT = Path(__file__).resolve().parent.parent.parent
     LOG_DIR = ROOT / ".log"
     SCRIPT = ROOT / "scripts" / "perf_baseline.py"
+    RT_SCRIPT = ROOT / "scripts" / "perf_capture_run.sh"
     VENV_PY = ROOT / "venv" / "bin" / "python"
     PYTHON = str(VENV_PY) if VENV_PY.exists() else "python"
 
-    async def _run_and_insert(with_runtime: bool) -> None:
+    async def _run_static() -> Optional[dict]:
+        """Run perf_baseline.py --with-cyclomatic --no-build.
+
+        Returns the parsed JSON dict on success, None on any failure.
+        The JSON is written to .log/ by the script before we read it.
+        """
         cmd = [PYTHON, str(SCRIPT), "--with-cyclomatic", "--no-build"]
-        if with_runtime:
-            cmd.append("--with-runtime")
-        logger.info("Background: _task_perf_snapshot running %s", " ".join(cmd))
+        logger.info("Background: _task_perf_snapshot static: %s", " ".join(cmd))
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -3960,14 +4019,18 @@ async def _task_perf_snapshot() -> None:
                 stderr=asyncio.subprocess.PIPE,
             )
             try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+                _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
             except asyncio.TimeoutError:
                 proc.kill()
-                logger.error("Background: _task_perf_snapshot subprocess timed out after 600s")
-                return
+                logger.error(
+                    "Background: _task_perf_snapshot static step timed out after 120s"
+                )
+                return None
         except Exception as exc:
-            logger.error("Background: _task_perf_snapshot subprocess launch failed: %s", exc)
-            return
+            logger.error(
+                "Background: _task_perf_snapshot static step launch failed: %s", exc
+            )
+            return None
 
         if proc.returncode != 0:
             logger.error(
@@ -3975,9 +4038,9 @@ async def _task_perf_snapshot() -> None:
                 proc.returncode,
                 (stderr or b"").decode("utf-8", "replace")[:500],
             )
-            return
+            return None
 
-        # Find the freshest perf_baseline_*.json written just now.
+        # Find the freshest perf_baseline_*.json written by this run.
         try:
             latest = max(
                 LOG_DIR.glob("perf_baseline_*.json"),
@@ -3986,11 +4049,108 @@ async def _task_perf_snapshot() -> None:
             )
             if latest is None:
                 logger.warning("Background: _task_perf_snapshot — no baseline JSON found")
-                return
-            import json as _json
-            snap = _json.loads(latest.read_text(encoding="utf-8"))
+                return None
+            return _json.loads(latest.read_text(encoding="utf-8"))
         except Exception as exc:
-            logger.error("Background: _task_perf_snapshot failed to read JSON: %s", exc)
+            logger.error(
+                "Background: _task_perf_snapshot failed to read static JSON: %s", exc
+            )
+            return None
+
+    async def _run_runtime(timeout_s: int) -> Optional[dict]:
+        """Run scripts/perf_capture_run.sh against dev.ramboq.com.
+
+        Returns the parsed perf_capture_latest.json dict on success,
+        None on timeout / non-zero exit / missing JSON.  Merging into
+        static rows is the caller's responsibility.
+        """
+        if not RT_SCRIPT.exists():
+            logger.warning(
+                "Background: _task_perf_snapshot runtime: %s missing — skipping",
+                RT_SCRIPT.name,
+            )
+            return None
+
+        from backend.shared.helpers.utils import secrets as _secrets
+        pw_user = (_secrets.get("playwright_user") or "rambo")
+        pw_pass = (_secrets.get("playwright_pass") or "admin1234")
+
+        # Merge env — keep full PATH (cron may have a stripped environment).
+        runtime_env = {
+            **_os.environ,
+            "PLAYWRIGHT_USER": pw_user,
+            "PLAYWRIGHT_PASS": pw_pass,
+            "PLAYWRIGHT_BASE_URL": "https://dev.ramboq.com",
+            "PERF_CAPTURE_QUIET": "1",
+        }
+
+        logger.info(
+            "Background: _task_perf_snapshot runtime: bash %s (timeout %ds)",
+            RT_SCRIPT.name, timeout_s,
+        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "bash", str(RT_SCRIPT),
+                cwd=str(ROOT),
+                env=runtime_env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                _stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=float(timeout_s)
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                logger.warning(
+                    "Background: _task_perf_snapshot runtime timed out after %ds"
+                    " — inserting static-only rows",
+                    timeout_s,
+                )
+                return None
+        except Exception as exc:
+            logger.error(
+                "Background: _task_perf_snapshot runtime launch failed: %s", exc
+            )
+            return None
+
+        if proc.returncode not in (0, 1):
+            # Exit 1 = partial run (spec completed but individual pages errored).
+            # The script still writes perf_capture_latest.json in that case —
+            # attempt a best-effort read. Exits 2/3/4 are hard failures.
+            logger.warning(
+                "Background: perf_capture_run.sh exited %d — stderr: %s",
+                proc.returncode,
+                (stderr or b"").decode("utf-8", "replace")[:400],
+            )
+            if proc.returncode >= 2:
+                return None
+
+        cap_latest = LOG_DIR / "perf_capture_latest.json"
+        if not cap_latest.exists():
+            logger.warning(
+                "Background: _task_perf_snapshot — perf_capture_latest.json"
+                " missing after runtime run; inserting static-only rows"
+            )
+            return None
+        try:
+            return _json.loads(cap_latest.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.error(
+                "Background: _task_perf_snapshot failed to read capture JSON: %s", exc
+            )
+            return None
+
+    async def _run_and_insert() -> None:
+        """Full nightly cycle: static → optional runtime → DB insert."""
+        from backend.shared.helpers.settings import get_int, get_bool
+
+        # ── Step 1: static (always) ────────────────────────────────────────
+        snap = await _run_static()
+        if snap is None:
+            logger.error(
+                "Background: _task_perf_snapshot static step failed — skipping cycle"
+            )
             return
 
         orm_rows = _parse_perf_snapshot_rows(snap)
@@ -3998,13 +4158,34 @@ async def _task_perf_snapshot() -> None:
             logger.warning("Background: _task_perf_snapshot — empty row set from JSON")
             return
 
+        # ── Step 2: runtime (optional) ────────────────────────────────────
+        runtime_enabled = get_bool("perf_snapshot.runtime_enabled", False)
+        runtime_count = 0
+        if runtime_enabled:
+            timeout_s = get_int("perf_snapshot.runtime_timeout_s", 600)
+            cap_json = await _run_runtime(timeout_s=timeout_s)
+            if cap_json is not None:
+                runtime_count = _merge_runtime_into_rows(orm_rows, cap_json)
+                logger.info(
+                    "Background: _task_perf_snapshot runtime merged %d FE row(s)",
+                    runtime_count,
+                )
+            else:
+                logger.info(
+                    "Background: _task_perf_snapshot runtime unavailable"
+                    " — inserting static-only rows"
+                )
+
+        # ── Step 3: insert ────────────────────────────────────────────────
         async with async_session() as session:
             session.add_all(orm_rows)
             await session.commit()
         logger.info(
-            "Background: _task_perf_snapshot inserted %d row(s) for capture %s",
+            "Background: _task_perf_snapshot inserted %d row(s) for capture %s"
+            " (%d with runtime metrics)",
             len(orm_rows),
             snap.get("captured_at", "?"),
+            runtime_count,
         )
 
     async def _backfill_from_disk() -> None:
@@ -4030,7 +4211,6 @@ async def _task_perf_snapshot() -> None:
             logger.info("Background: perf_snapshot backfill — no .log/perf_baseline_*.json found")
             return
 
-        import json as _json
         total = 0
         for f in files:
             try:
@@ -4069,8 +4249,7 @@ async def _task_perf_snapshot() -> None:
         )
         await asyncio.sleep(sleep_s)
         try:
-            with_runtime = get_bool("perf_snapshot.with_runtime", False)
-            await _run_and_insert(with_runtime=with_runtime)
+            await _run_and_insert()
         except Exception as exc:
             logger.error("Background: _task_perf_snapshot iteration failed: %s", exc)
 

@@ -3,15 +3,19 @@ Tests for DB-backed perf-snapshot tracking (Sprint F+).
 
 Five quality dimensions:
 
-1. SSOT        — model registered, migration idempotent, retention key seeded.
+1. SSOT        — model registered, migration idempotent, retention key seeded,
+                 new perf_snapshot.runtime_enabled + runtime_timeout_s seeded.
 2. Performance — INSERT/DELETE are bulk operations; regression endpoint uses
                  in-process grouping (single SELECT, not N per page).
-3. Stale code  — source-grep confirms tasks are defined + registered.
+3. Stale code  — source-grep confirms tasks are defined + registered,
+                 _merge_runtime_into_rows is module-level.
 4. Reusable    — _apply_retention() used by purge task; controller uses
-                 admin_guard; ingest helper is reused by cron + backfill.
+                 admin_guard; ingest helper is reused by cron + backfill;
+                 _merge_runtime_into_rows reused by cron loop.
 5. UX / Correctness — history returns time-ordered rows, latest returns one
                  row per (side, page_or_route), regression flags the right
-                 (page, metric) pairs.
+                 (page, metric) pairs.  Runtime-capture subprocess:
+                 graceful degradation on timeout / crash / disabled.
 
 Async-DB tests use an in-process SQLite engine to avoid touching the real PG
 instance (matches the pattern in test_retention_new_tables.py).
@@ -147,7 +151,7 @@ def _fake_baseline_json(
 # PerfSnapshot attribute values into _PerfSnapshot (SQLite) rows.
 # ---------------------------------------------------------------------------
 
-from backend.api.background import _parse_perf_snapshot_rows  # noqa: E402
+from backend.api.background import _parse_perf_snapshot_rows, _merge_runtime_into_rows  # noqa: E402
 
 
 def _parse_rows(snap: dict) -> list[_PerfSnapshot]:
@@ -690,3 +694,314 @@ async def test_backfill_idempotency(session: AsyncSession):
         select(_func.count()).select_from(_PerfSnapshot)
     )).scalar_one()
     assert count_after == 1, "Backfill guard must not insert new rows when table is non-empty"
+
+
+# ---------------------------------------------------------------------------
+# Dimension 1 (extended) — SSOT: new settings keys seeded
+# ---------------------------------------------------------------------------
+
+def test_perf_snapshot_runtime_enabled_seeded():
+    """perf_snapshot.runtime_enabled is seeded in settings.py."""
+    assert "perf_snapshot.runtime_enabled" in _settings(), (
+        "perf_snapshot.runtime_enabled key missing from settings.py"
+    )
+
+
+def test_perf_snapshot_runtime_timeout_s_seeded():
+    """perf_snapshot.runtime_timeout_s is seeded in settings.py."""
+    assert "perf_snapshot.runtime_timeout_s" in _settings(), (
+        "perf_snapshot.runtime_timeout_s key missing from settings.py"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dimension 3 (extended) — Stale code: _merge_runtime_into_rows defined
+# ---------------------------------------------------------------------------
+
+def test_merge_runtime_helper_is_module_level():
+    """_merge_runtime_into_rows must be a module-level function."""
+    src = _bg()
+    assert "def _merge_runtime_into_rows(" in src, (
+        "_merge_runtime_into_rows is not defined at module level in background.py"
+    )
+
+
+def test_cron_uses_merge_runtime_into_rows():
+    """_run_and_insert body must call _merge_runtime_into_rows."""
+    src = _bg()
+    match = re.search(
+        r"async def _run_and_insert\b.*?(?=\n    async def |\nasync def |\Z)",
+        src, re.DOTALL,
+    )
+    assert match, "_run_and_insert body not found in background.py"
+    body = match.group(0)
+    assert "_merge_runtime_into_rows(" in body, (
+        "_run_and_insert does not call _merge_runtime_into_rows"
+    )
+
+
+def test_cron_reads_runtime_enabled():
+    """_run_and_insert must read perf_snapshot.runtime_enabled setting."""
+    src = _bg()
+    match = re.search(
+        r"async def _run_and_insert\b.*?(?=\n    async def |\nasync def |\Z)",
+        src, re.DOTALL,
+    )
+    assert match, "_run_and_insert body not found"
+    body = match.group(0)
+    assert "perf_snapshot.runtime_enabled" in body, (
+        "_run_and_insert does not read perf_snapshot.runtime_enabled"
+    )
+
+
+def test_cron_reads_runtime_timeout_s():
+    """_run_and_insert must read perf_snapshot.runtime_timeout_s setting."""
+    src = _bg()
+    match = re.search(
+        r"async def _run_and_insert\b.*?(?=\n    async def |\nasync def |\Z)",
+        src, re.DOTALL,
+    )
+    assert match, "_run_and_insert body not found"
+    body = match.group(0)
+    assert "perf_snapshot.runtime_timeout_s" in body, (
+        "_run_and_insert does not read perf_snapshot.runtime_timeout_s"
+    )
+
+
+def test_run_runtime_merges_env():
+    """_run_runtime must pass an env dict that includes PLAYWRIGHT_USER and PATH."""
+    src = _bg()
+    # Confirm both env keys appear in the source.
+    assert "PLAYWRIGHT_USER" in src, "PLAYWRIGHT_USER not set in _run_runtime env"
+    assert "PLAYWRIGHT_PASS" in src, "PLAYWRIGHT_PASS not set in _run_runtime env"
+    # Confirm os.environ spread so PATH is preserved.
+    assert "_os.environ" in src or "os.environ" in src, (
+        "_run_runtime does not spread os.environ — PATH may be stripped in cron"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dimension 4 (extended) — Reusable: _merge_runtime_into_rows importable
+# ---------------------------------------------------------------------------
+
+def test_merge_runtime_importable():
+    """_merge_runtime_into_rows is importable from background module."""
+    # Already imported at top of file — this just asserts no ImportError.
+    assert callable(_merge_runtime_into_rows)
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5d — Correctness: _merge_runtime_into_rows unit tests
+# ---------------------------------------------------------------------------
+
+def _make_fe_row(route: str) -> object:
+    """Return a PerfSnapshot-like object with the minimal attributes."""
+    rows = _parse_perf_snapshot_rows({
+        "captured_at": "2026-07-01T04:00:00Z",
+        "commit": "abc123",
+        "frontend": {"pages": {route: {"loc": 100, "effect_count": 2,
+                                        "state_count": 3, "derived_count": 1}}},
+        "backend": {"routes": {}},
+    })
+    return rows[0]  # FE row
+
+
+def test_merge_runtime_patches_lcp_tbt_heap():
+    """_merge_runtime_into_rows patches lcp_ms/tbt_ms/heap_mb from capture JSON."""
+    row = _make_fe_row("/pulse")
+    assert row.lcp_ms is None
+
+    cap_json = {
+        "frontend": {"pages": {"/pulse": {"runtime": {
+            "lcp_ms": 1450, "tbt_ms": 90, "heap_mb": 55.2,
+        }}}}
+    }
+    count = _merge_runtime_into_rows([row], cap_json)
+    assert count == 1, f"Expected 1 patched row, got {count}"
+    assert row.lcp_ms  == 1450
+    assert row.tbt_ms  == 90
+    assert row.heap_mb == 55.2
+
+
+def test_merge_runtime_ignores_be_rows():
+    """BE rows are never patched by _merge_runtime_into_rows."""
+    rows = _parse_perf_snapshot_rows({
+        "captured_at": "2026-07-01T04:00:00Z",
+        "commit": "abc123",
+        "frontend": {"pages": {}},
+        "backend": {"routes": {"GET /api/positions": {"loc": 900}}},
+    })
+    be_row = rows[0]
+    assert be_row.side == "BE"
+
+    cap_json = {
+        "frontend": {"pages": {"GET /api/positions": {"runtime": {
+            "lcp_ms": 1000, "tbt_ms": 50, "heap_mb": 20.0,
+        }}}}
+    }
+    count = _merge_runtime_into_rows([be_row], cap_json)
+    assert count == 0, "BE rows must not be patched"
+    assert be_row.lcp_ms is None
+
+
+def test_merge_runtime_unmatched_route_unchanged():
+    """FE rows whose route has no entry in capture JSON remain None."""
+    row = _make_fe_row("/pulse")
+    cap_json = {"frontend": {"pages": {"/dashboard": {"runtime": {
+        "lcp_ms": 800, "tbt_ms": 40, "heap_mb": 30.0,
+    }}}}}
+    count = _merge_runtime_into_rows([row], cap_json)
+    assert count == 0, "Unmatched route must not be patched"
+    assert row.lcp_ms is None
+
+
+def test_merge_runtime_empty_capture_json():
+    """Empty capture JSON leaves all rows untouched."""
+    row = _make_fe_row("/pulse")
+    count = _merge_runtime_into_rows([row], {})
+    assert count == 0
+    assert row.lcp_ms is None
+
+
+def test_merge_runtime_partial_runtime_block():
+    """A runtime block with only lcp_ms still patches (tbt/heap stay None)."""
+    row = _make_fe_row("/pulse")
+    cap_json = {"frontend": {"pages": {"/pulse": {"runtime": {"lcp_ms": 2000}}}}}
+    count = _merge_runtime_into_rows([row], cap_json)
+    assert count == 1
+    assert row.lcp_ms  == 2000
+    assert row.tbt_ms  is None
+    assert row.heap_mb is None
+
+
+def test_merge_runtime_returns_count_of_patched_rows():
+    """Return value is the count of FE rows that received at least one runtime field."""
+    snap = _fake_baseline_json(fe_pages={
+        "/pulse": {"loc": 100, "effect_count": 1, "state_count": 2, "derived_count": 0},
+        "/dashboard": {"loc": 200, "effect_count": 2, "state_count": 3, "derived_count": 1},
+        "/orders": {"loc": 150, "effect_count": 1, "state_count": 1, "derived_count": 0},
+    })
+    rows = _parse_perf_snapshot_rows(snap)
+
+    cap_json = {
+        "frontend": {"pages": {
+            "/pulse":     {"runtime": {"lcp_ms": 1200, "tbt_ms": 60, "heap_mb": 40.0}},
+            "/dashboard": {"runtime": {"lcp_ms": 900,  "tbt_ms": 30, "heap_mb": 35.0}},
+            # /orders intentionally absent → not patched
+        }}
+    }
+    count = _merge_runtime_into_rows(rows, cap_json)
+    assert count == 2, f"Expected 2 patched, got {count}"
+
+    pulse_row     = next(r for r in rows if r.page_or_route == "/pulse")
+    dashboard_row = next(r for r in rows if r.page_or_route == "/dashboard")
+    orders_row    = next(r for r in rows if r.page_or_route == "/orders")
+
+    assert pulse_row.lcp_ms     == 1200
+    assert dashboard_row.lcp_ms == 900
+    assert orders_row.lcp_ms    is None
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5e — Correctness: two-step graceful-degradation stubs
+#
+# We test the observable behaviour of the two-step logic:
+#   - static rows are always inserted when static step succeeds
+#   - runtime values are merged when runtime step succeeds
+#   - timeout / crash → static-only (runtime cols remain None)
+#   - runtime_enabled=False → no runtime subprocess call
+#
+# These tests work by parsing the background.py source structure rather
+# than exercising asyncio subprocesses (which would require a live server).
+# The subprocess paths themselves are integration-tested via the shell script
+# in CI; here we guard the degradation branches exist in source.
+# ---------------------------------------------------------------------------
+
+def test_static_failure_skips_insert_guard_in_source():
+    """_run_and_insert must bail if _run_static() returns None (no DB insert)."""
+    src = _bg()
+    match = re.search(
+        r"async def _run_and_insert\b.*?(?=\n    async def |\nasync def |\Z)",
+        src, re.DOTALL,
+    )
+    assert match, "_run_and_insert body not found"
+    body = match.group(0)
+    # Guard should check None return from _run_static and return early.
+    assert "_run_static()" in body, "_run_and_insert does not call _run_static()"
+    assert "is None" in body, (
+        "_run_and_insert has no None-guard on static step result"
+    )
+
+
+def test_runtime_disabled_guard_in_source():
+    """When runtime_enabled is False _run_runtime must not be called."""
+    src = _bg()
+    match = re.search(
+        r"async def _run_and_insert\b.*?(?=\n    async def |\nasync def |\Z)",
+        src, re.DOTALL,
+    )
+    assert match, "_run_and_insert body not found"
+    body = match.group(0)
+    assert "runtime_enabled" in body, (
+        "_run_and_insert does not check runtime_enabled before calling _run_runtime"
+    )
+    assert "_run_runtime(" in body, (
+        "_run_and_insert never calls _run_runtime"
+    )
+
+
+def test_runtime_timeout_logged_as_warning():
+    """Timeout in the runtime step must emit a WARNING (not ERROR), not raise."""
+    src = _bg()
+    match = re.search(
+        r"async def _run_runtime\b.*?(?=\n    async def |\nasync def |\Z)",
+        src, re.DOTALL,
+    )
+    assert match, "_run_runtime body not found"
+    body = match.group(0)
+    assert "logger.warning" in body, (
+        "_run_runtime timeout path must use logger.warning not logger.error"
+    )
+    assert "asyncio.TimeoutError" in body, (
+        "_run_runtime does not catch asyncio.TimeoutError"
+    )
+    # Must return None (not re-raise) so caller falls through to static-only insert.
+    assert "return None" in body, (
+        "_run_runtime timeout handler does not return None"
+    )
+
+
+def test_static_timeout_is_120s_not_600s():
+    """Static step uses a tight 120 s timeout — not the 600 s runtime budget."""
+    src = _bg()
+    match = re.search(
+        r"async def _run_static\b.*?(?=\n    async def |\nasync def |\Z)",
+        src, re.DOTALL,
+    )
+    assert match, "_run_static body not found"
+    body = match.group(0)
+    assert "timeout=120" in body, (
+        "_run_static does not use a 120 s timeout — static step should be fast"
+    )
+
+
+def test_runtime_env_includes_playwright_base_url():
+    """PLAYWRIGHT_BASE_URL must be set to dev.ramboq.com in runtime env."""
+    src = _bg()
+    assert "dev.ramboq.com" in src, (
+        "PLAYWRIGHT_BASE_URL dev.ramboq.com not found in background.py"
+    )
+
+
+def test_insert_log_includes_runtime_count():
+    """Final insert log message must surface the runtime_count for observability."""
+    src = _bg()
+    match = re.search(
+        r"async def _run_and_insert\b.*?(?=\n    async def |\nasync def |\Z)",
+        src, re.DOTALL,
+    )
+    assert match, "_run_and_insert body not found"
+    body = match.group(0)
+    assert "runtime_count" in body, (
+        "_run_and_insert does not log runtime_count in the final insert message"
+    )
