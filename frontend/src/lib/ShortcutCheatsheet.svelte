@@ -12,22 +12,28 @@
   /** @type {{ open: boolean, onClose: () => void }} */
   let { open = false, onClose = () => {} } = $props();
 
-  // Two grouped sections keep the cheat-sheet scannable.
+  // Three grouped sections keep the cheat-sheet scannable.
+  // Nav uses Bloomberg `g` + letter pattern (800 ms window).
   const NAV = [
-    { key: 'g p', label: 'Go to Pulse' },
-    { key: 'g d', label: 'Go to Dashboard' },
-    { key: 'g o', label: 'Go to Orders' },
-    { key: 'g r', label: 'Go to Derivatives' },
-    { key: 'g h', label: 'Go to History' },
-    { key: 'g a', label: 'Go to Automation' },
-    { key: 'g s', label: 'Go to Settings' },
+    { key: 'g p', label: 'Pulse' },
+    { key: 'g d', label: 'Dashboard' },
+    { key: 'g o', label: 'Orders' },
+    { key: 'g e', label: 'Derivatives' },
+    { key: 'g c', label: 'Charts' },
+    { key: 'g v', label: 'Performance' },
+    { key: 'g a', label: 'Automation' },
+    { key: 'g h', label: 'History' },
+    { key: 'g m', label: 'Pulse — movers' },
   ];
   const ACTIONS = [
-    { key: 'O',        label: 'Open order ticket' },
-    { key: '/',        label: 'Focus search / symbol picker' },
-    { key: 'R',        label: 'Refresh the page' },
-    { key: '?',        label: 'Show this cheat-sheet' },
-    { key: 'Esc',      label: 'Close modal / cheat-sheet' },
+    { key: 't',        label: 'Order ticket' },
+    { key: 'h',        label: 'Activity / log' },
+    { key: 'k',        label: 'Chart modal (kline)' },
+    { key: '/',        label: 'Focus symbol search' },
+    { key: 'r',        label: 'Refresh page' },
+    { key: '?',        label: 'This cheat-sheet' },
+    { key: 'Esc',      label: 'Close modal / sheet' },
+    { key: '⌘K',       label: 'Command palette (soon)' },
   ];
 
   function _onKey(e) {
