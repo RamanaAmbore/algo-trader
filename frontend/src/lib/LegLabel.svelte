@@ -6,7 +6,7 @@
   //   sym      — tradingsymbol to render (e.g. "NIFTY26JUN22000CE")
   //   exchange — optional exchange (MCX / CDS) for virtual-root display.
   //              When provided for MCX/CDS futures, shows the virtual root
-  //              label (e.g. "CRUDEOIL" or "CRUDEOIL • NEXT") instead of
+  //              label (e.g. "CRUDEOIL" or "CRUDEOIL.NEXT") instead of
   //              the raw contract form "CRUDEOIL-16JUN26-FUT".
   //   compact  — when true, omits [ ] brackets around the month token;
   //              intended for narrow basket-pill contexts.
@@ -64,7 +64,7 @@
     NIFTY-26JUN-FUT           (future)
   For MCX/CDS futures when `exchange` is provided, shows the virtual root:
     CRUDEOIL                  (front-month)
-    CRUDEOIL • NEXT           (back-month)
+    CRUDEOIL.NEXT             (back-month)
     CRUDEOIL-16JUN26-FUT      (far-month, pass-through)
 -->
 {#if _virtualLabel}

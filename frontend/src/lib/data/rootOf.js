@@ -11,7 +11,7 @@
  * Two entry points:
  *
  *   rootOf(contract, exchange)        → virtual root string (pure, sync)
- *   rootOfLabel(contract, exchange)   → human-readable label (e.g. "CRUDEOIL • NEXT")
+ *   rootOfLabel(contract, exchange)   → display label (e.g. "GOLDM.NEXT", "CRUDEOIL")
  *
  * The pure JS implementation mirrors backend/api/algo/symbol_resolver.py's
  * root_of() function and uses the same two-slot instrument store that
@@ -45,6 +45,8 @@
  * need reactivity should bind to the instruments-cache version stamp and
  * re-derive the label inside a `$derived()`.
  */
+
+import { displaySymbol } from './displaySymbol.js';
 
 // ---------------------------------------------------------------------------
 // Internal state
@@ -196,9 +198,12 @@ export function rootOf(contract, exchange) {
 /**
  * Human-readable label for the virtual root.
  *
- * "CRUDEOIL"       → "CRUDEOIL"
- * "CRUDEOIL_NEXT"  → "CRUDEOIL • NEXT"
+ * "CRUDEOIL"         → "CRUDEOIL"
+ * "CRUDEOIL_NEXT"    → "CRUDEOIL.NEXT"   (dot separator, operator spec 2026-07-03)
  * "CRUDEOIL26JUNFUT" (far-month) → "CRUDEOIL26JUNFUT"
+ *
+ * Internal machine key stays `_NEXT` (symbolStore keys, API bodies, rootOf()).
+ * The dot form is render-only — applied here via displaySymbol().
  *
  * @param {string} contract
  * @param {string} exchange
@@ -206,11 +211,7 @@ export function rootOf(contract, exchange) {
  */
 export function rootOfLabel(contract, exchange) {
   const r = rootOf(contract, exchange);
-  if (r.endsWith('_NEXT')) {
-    const base = r.slice(0, -5);
-    return `${base} • NEXT`;   // e.g. "CRUDEOIL • NEXT"
-  }
-  return r;
+  return displaySymbol(r);
 }
 
 /**

@@ -590,20 +590,40 @@ async def _resolve_cds_currency(currency_name: str) -> Optional[str]:
 
 async def _build_quote_key(item: WatchlistItem) -> tuple[str, str]:
     """Returns (broker_key, quote_symbol). MCX bare commodity names get
-    resolved to the near-month future; everything else passes through."""
+    resolved to the near-month future; everything else passes through.
+
+    Also handles back-month virtual roots (GOLDM_NEXT, CRUDEOIL_NEXT) which
+    contain an underscore and fail the isalpha() guard.  The _NEXT suffix is
+    stripped for the alpha check; the full symbol (with suffix) is passed to
+    resolve_symbol which maps it to the back-month contract."""
+    from backend.api.algo.symbol_resolver import resolve_symbol, _strip_next
     sym, exch = item.tradingsymbol, item.exchange
-    # Heuristic: MCX commodity names are short + uppercase + no digits.
-    # Real futures look like GOLDM25APRFUT / CRUDEOILM25MAY etc.
-    if exch == "MCX" and sym.isalpha() and len(sym) <= 12:
-        resolved = await _resolve_mcx_commodity(sym)
-        if resolved:
-            return f"MCX:{resolved}", resolved
-    # CDS currency pair names are short + uppercase + no digits.
-    # Real futures look like USDINR25MAYFUT.
-    if exch == "CDS" and sym.isalpha() and len(sym) <= 12:
-        resolved = await _resolve_cds_currency(sym)
-        if resolved:
-            return f"CDS:{resolved}", resolved
+    sym_upper = sym.upper()
+
+    # Strip _NEXT suffix to get the bare root for the alpha check.
+    root, is_next = _strip_next(sym_upper)
+    is_bare_root = root.isalpha() and len(root) <= 12
+
+    # MCX commodity names (bare root or _NEXT back-month variant).
+    if exch == "MCX" and is_bare_root:
+        if is_next:
+            resolved = await resolve_symbol(sym_upper, "MCX")
+            if resolved and resolved != sym_upper:
+                return f"MCX:{resolved}", resolved
+        else:
+            resolved = await _resolve_mcx_commodity(root)
+            if resolved:
+                return f"MCX:{resolved}", resolved
+    # CDS currency pair names (bare root or _NEXT back-month variant).
+    if exch == "CDS" and is_bare_root:
+        if is_next:
+            resolved = await resolve_symbol(sym_upper, "CDS")
+            if resolved and resolved != sym_upper:
+                return f"CDS:{resolved}", resolved
+        else:
+            resolved = await _resolve_cds_currency(root)
+            if resolved:
+                return f"CDS:{resolved}", resolved
     return f"{exch}:{sym}", sym
 
 

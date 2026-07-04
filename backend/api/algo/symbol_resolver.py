@@ -395,7 +395,12 @@ async def resolve_market_data_keys(keys: list[str]) -> "MarketDataKeyMap":
         exch, sym = key.split(":", 1)
         exch_upper = exch.upper()
 
-        if exch_upper in _VIRTUAL_EXCHANGES and _is_virtual(sym):
+        # Virtual roots include bare alpha symbols (CRUDEOIL) AND back-month
+        # variants (CRUDEOIL_NEXT / GOLDM_NEXT).  The _NEXT suffix contains an
+        # underscore so isalpha() fails; strip the suffix before the check.
+        sym_root, _ = _strip_next(sym)
+        is_virtual_sym = exch_upper in _VIRTUAL_EXCHANGES and _is_virtual(sym_root)
+        if is_virtual_sym:
             try:
                 resolved_sym = await resolve_symbol(sym, exch_upper)
             except Exception:
@@ -403,7 +408,7 @@ async def resolve_market_data_keys(keys: list[str]) -> "MarketDataKeyMap":
 
             resolved_key = f"{exch_upper}:{resolved_sym}"
 
-            if resolved_sym != sym:
+            if resolved_sym != sym.upper():
                 logger.info(
                     f"[MARKET-DATA-VIRTUAL-RESOLVE] input={sym} "
                     f"exchange={exch_upper} resolved={resolved_sym}"
