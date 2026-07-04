@@ -112,7 +112,7 @@ async def init_db() -> None:
     in a separate call below.
     """
     async with engine.begin() as conn:
-        from backend.api.models import User, Agent, AgentEvent, AlgoOrderEvent, MarketReport, NewsHeadline, GrammarToken, Setting, DailyBook, Watchlist, WatchlistItem, VisitorLog, CodeMetricsSnapshot, MarketLifecycleEvent, MarketHoliday, MarketSpecialSession, BrokerAccount  # noqa: F401 — ensure model registered
+        from backend.api.models import User, Agent, AgentEvent, AlgoOrderEvent, MarketReport, NewsHeadline, GrammarToken, Setting, DailyBook, Watchlist, WatchlistItem, VisitorLog, CodeMetricsSnapshot, MarketLifecycleEvent, MarketHoliday, MarketSpecialSession, BrokerAccount, PerfSnapshot  # noqa: F401 — ensure model registered
         _branch_local_tables = [
             t for t in Base.metadata.sorted_tables
             if t.name != BrokerAccount.__tablename__
@@ -865,6 +865,23 @@ async def init_db() -> None:
             "ALTER TABLE code_metrics_snapshots "
             "ADD COLUMN IF NOT EXISTS test_response_times JSONB"
         ))
+        # perf_snapshots — nightly static + runtime perf metrics (Sprint F+).
+        # Table created by Base.metadata.create_all above (model registered
+        # in the import list); index DDLs are idempotent guards for installs
+        # where the table pre-exists without the indexes.
+        for _stmt in (
+            "CREATE INDEX IF NOT EXISTS ix_perf_snapshots_page_captured "
+            "ON perf_snapshots (page_or_route, captured_at)",
+            "CREATE INDEX IF NOT EXISTS ix_perf_snapshots_captured_at "
+            "ON perf_snapshots (captured_at DESC)",
+        ):
+            try:
+                await conn.execute(text(_stmt))
+            except Exception as _ps_err:
+                logger.warning(
+                    "init_db: perf_snapshots index migration skipped — %s "
+                    "(stmt=%s)", _ps_err, _stmt[:80],
+                )
     logger.info("Database: tables verified")
 
     # broker_accounts schema lives on the SHARED engine (ramboq DB) — always

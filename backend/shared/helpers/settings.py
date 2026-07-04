@@ -290,6 +290,11 @@ SEEDS: list[tuple] = [
      "investigated; 90 days covers two full statement cycles. "
      "0 disables.",
      "days", {"min": 0, "max": 730, "step": 1}),
+    ("retention", "retention.perf_snapshots_days", "int", 365,
+     "perf_snapshots rows older than this are purged daily (04:05 IST). "
+     "365 days gives a full year of nightly static + runtime perf trends. "
+     "0 disables.",
+     "days", {"min": 0, "max": 1825, "step": 1}),
 
     # ── Hedge proxies — Stage 4 ──────────────────────────────────────
     # Category matches the CRUD section header on /admin/settings so

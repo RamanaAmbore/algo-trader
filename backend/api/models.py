@@ -2030,6 +2030,61 @@ class CodeMetricsSnapshot(Base):
     raw_payload: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
 
+class PerfSnapshot(Base):
+    """Per-page / per-route static + runtime perf metrics snapshot.
+
+    Captured nightly at 04:00 IST by ``_task_perf_snapshot`` in
+    ``background.py`` (runs ``scripts/perf_baseline.py``). One row per
+    ``(side, page_or_route)`` per run — the writer inserts a fresh row
+    on every cron tick; retention is 365 days (configurable via
+    ``retention.perf_snapshots_days`` in settings).
+
+    Frontend rows carry ``lcp_ms / tbt_ms / heap_mb`` when the optional
+    ``--with-runtime`` Playwright pass succeeds; backend rows leave these
+    NULL. Backend rows carry ``route_p50_ms / route_p95_ms / route_qps``
+    when available (future load-test integration); frontend rows leave
+    them NULL.
+
+    ``hotspots_json`` stores the top-5 cyclomatic-complexity hotspots as
+    ``[{fn_name, cc, line}]`` — the raw list from radon / Svelte heuristic.
+    """
+    __tablename__ = "perf_snapshots"
+    __table_args__ = (
+        Index("ix_perf_snapshots_page_captured", "page_or_route", "captured_at"),
+        Index("ix_perf_snapshots_captured_at", "captured_at"),
+    )
+
+    id: Mapped[int]             = mapped_column(primary_key=True, autoincrement=True)
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    commit_sha: Mapped[Optional[str]] = mapped_column(String(40), nullable=True)
+    # 'FE' = frontend page / lib component; 'BE' = backend route controller
+    side: Mapped[str]           = mapped_column(String(2), nullable=False)
+    # '/pulse' | 'lib::MarketPulse' | 'GET /api/quote'
+    page_or_route: Mapped[str]  = mapped_column(String(160), nullable=False)
+
+    # ── Static complexity metrics ────────────────────────────────────
+    loc: Mapped[Optional[int]]          = mapped_column(Integer, nullable=True)
+    effect_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    state_count: Mapped[Optional[int]]  = mapped_column(Integer, nullable=True)
+    derived_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cc_max: Mapped[Optional[int]]       = mapped_column(Integer, nullable=True)
+    cc_avg: Mapped[Optional[float]]     = mapped_column(Float,   nullable=True)
+    hotspots_json: Mapped[Optional[dict]] = mapped_column(JSONB,  nullable=True)
+
+    # ── Frontend runtime (Playwright — only when --with-runtime ran) ─
+    lcp_ms: Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    tbt_ms: Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    heap_mb: Mapped[Optional[float]] = mapped_column(Float,  nullable=True)
+
+    # ── Backend runtime (load-test integration — future) ────────────
+    route_p50_ms: Mapped[Optional[int]]  = mapped_column(Integer, nullable=True)
+    route_p95_ms: Mapped[Optional[int]]  = mapped_column(Integer, nullable=True)
+    route_qps: Mapped[Optional[float]]   = mapped_column(Float,   nullable=True)
+
+
 class MoversSnapshot(Base):
     """Last-good winners/losers snapshot for off-hours display.
 
