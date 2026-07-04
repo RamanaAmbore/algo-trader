@@ -1124,7 +1124,7 @@ flowchart TD
     GTT3 --> AGG
     WO --> AGG
     AGG -->|attached_gtts_json| DB[(algo_orders.attached_gtts_json)]
-    AGG --> RES[AttachResult<br/>{ok, errors[], notes[]}]
+    AGG --> RES["AttachResult<br/>ok · errors · notes"]
 ```
 
 **Key files:**
@@ -1465,7 +1465,7 @@ flowchart TD
         SA[_sharedAccount]
         ST[_sharedTemplateId]
         SO[_sharedTpOverride / Sl / Wing×2]
-        BL[basketLegs[]]
+        BL["basketLegs[]"]
         FK[_focusedLegKey]
     end
 

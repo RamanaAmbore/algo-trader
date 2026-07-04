@@ -9,6 +9,9 @@ Design goals:
  - Footer: "page N of TOTAL" via lastpage package
 """
 
+import hashlib
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +23,83 @@ pdf_file = Path("DESIGN_GUIDE.pdf")
 if not md_file.exists():
     print(f"Error: {md_file} not found")
     sys.exit(1)
+
+
+# --- Mermaid pre-render ------------------------------------------------
+# Pandoc → LaTeX has no native mermaid support; on GitHub the MD blocks
+# render fine, but in the PDF they show up as raw source text. This
+# helper extracts every ```mermaid``` fence, runs mmdc against it to
+# produce a PNG, and rewrites the fence with a Markdown image tag.
+#
+# Requires `@mermaid-js/mermaid-cli` installed globally (`mmdc` binary).
+# Renders are cached by content hash so re-runs skip unchanged diagrams.
+
+MERMAID_CACHE_DIR = Path(".log/mermaid")
+MERMAID_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Puppeteer config — some macOS setups need Chromium spawn hints; the
+# default is fine for a straightforward `mmdc` invocation from CLI.
+_MMDC_BIN = "/opt/homebrew/bin/mmdc"
+
+
+def _render_mermaid_block(src: str) -> Path:
+    """Render one mermaid block to a PNG (cached by content hash)."""
+    digest = hashlib.sha256(src.encode()).hexdigest()[:16]
+    out_png = MERMAID_CACHE_DIR / f"mermaid_{digest}.png"
+    if out_png.exists() and out_png.stat().st_size > 0:
+        return out_png
+
+    src_mmd = MERMAID_CACHE_DIR / f"mermaid_{digest}.mmd"
+    src_mmd.write_text(src)
+    cmd = [
+        _MMDC_BIN, "-i", str(src_mmd), "-o", str(out_png),
+        "-w", "1400",           # width — higher = crisper PDF embed
+        "-s", "2",              # scale — retina density
+        "-b", "white",          # bg — matches PDF page
+        "-t", "default",        # theme (default has good contrast)
+        "-f",                   # fit — auto-scale to width
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=45)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        stderr = getattr(e, "stderr", "") or ""
+        print(f"[mermaid] render failed for {digest}: {stderr[:400]}")
+        return None
+    return out_png if out_png.exists() else None
+
+
+def _preprocess_mermaid(md_text: str) -> str:
+    """Replace ```mermaid``` fences with ![](path) image refs."""
+    pattern = re.compile(r"^```mermaid\s*$(.+?)^```\s*$", re.DOTALL | re.MULTILINE)
+    rendered = 0
+    skipped = 0
+
+    def repl(match):
+        nonlocal rendered, skipped
+        src = match.group(1).strip()
+        png = _render_mermaid_block(src)
+        if png is None:
+            skipped += 1
+            # Fall back to a fenced code block so at least the source is
+            # visible — better than a broken image tag.
+            return f"\n```\n{src}\n```\n"
+        rendered += 1
+        # Blank lines around the image are required so pandoc treats it
+        # as a standalone block. Without them, an immediately-following
+        # `### heading` gets glued into the same paragraph and rendered
+        # as literal `### text`.
+        return f"\n\n![]({png.resolve()}){{width=5.5in}}\n\n"
+
+    result = pattern.sub(repl, md_text)
+    print(f"[mermaid] rendered {rendered} diagrams · skipped {skipped}")
+    return result
+
+
+# Pre-process the MD into a scratch file that pandoc will consume.
+_scratch_md = Path("/tmp/ramboq_design_guide_preprocessed.md")
+_original = md_file.read_text()
+_scratch_md.write_text(_preprocess_mermaid(_original))
+_input_for_pandoc = _scratch_md
 
 
 # --- Repo metadata for the version card ---
@@ -73,19 +153,19 @@ HEADER = r"""
 \usepackage{xurl}                 % break long URLs on any character
 \usepackage{etoolbox}             % AtBeginEnvironment for tables
 
-% Wrap long lines in verbatim / code blocks. fvextra is the pandoc-native
-% way to get line-breaking inside the Highlighting environment.
+% Wrap long lines in verbatim / code blocks. fvextra + breaklines gives
+% us line-wrapping. NOTE: earlier we combined this with `breakanywhere`
+% + embedded images, which exploded .aux via lineno tracking. Dropping
+% breakanywhere keeps lineno quiet.
 \usepackage{fvextra}
 \DefineVerbatimEnvironment{Highlighting}{Verbatim}{
-  breaklines=true,
-  breakanywhere=true,
-  breaksymbolleft={},
-  breakautoindent=false,
   fontsize=\small,
-  commandchars=\\\{\}
+  commandchars=\\\{\},
+  breaklines=true,
+  breakautoindent=false,
+  numbers=none,
 }
-% Same for plain verbatim (no highlighting).
-\fvset{breaklines=true,breakanywhere=true,fontsize=\small}
+\fvset{fontsize=\small,breaklines=true,numbers=none}
 
 % Tables get \footnotesize so 2-column glossary/index rows stop
 % overflowing the right margin. Also raise \tabcolsep for breathing room.
@@ -566,12 +646,18 @@ end
 LUA_FILTER_FILE = Path("/tmp/ramboq_pdf_tables.lua")
 LUA_FILTER_FILE.write_text(LUA_FILTER)
 
-cmd = [
+# Stage 1 — pandoc → LaTeX. We ask for standalone .tex output rather
+# than a direct PDF, because pandoc's single-pass xelatex call doesn't
+# resolve the \pageref{LastPage} that our footer uses. We drive xelatex
+# ourselves with two passes below.
+tex_out = Path("/tmp/ramboq_design_guide.tex")
+cmd_pandoc = [
     "pandoc",
-    str(md_file),
-    "-o", str(pdf_file),
+    str(_input_for_pandoc),
+    "-o", str(tex_out),
     "--toc",
     "--toc-depth=3",
+    "--standalone",
     "--pdf-engine=xelatex",
     "--highlight-style=tango",
     "--lua-filter", str(LUA_FILTER_FILE),
@@ -584,12 +670,42 @@ cmd = [
     "-V", "toccolor=[HTML]{1d2a44}",
 ]
 
-print(f"Generating {pdf_file}...")
-result = subprocess.run(cmd, capture_output=True, text=True)
-
+print(f"Generating LaTeX intermediate...")
+result = subprocess.run(cmd_pandoc, capture_output=True, text=True)
 if result.returncode != 0:
     print(f"Error running pandoc: {result.stderr}")
     sys.exit(1)
+
+# Post-process — cap image height so tall mermaid diagrams don't blow
+# up pagination. Pandoc emits width=6.5in,height=\textheight,keepaspectratio
+# by default; a diagram with a portrait aspect ratio then scales to
+# ~9.5in tall (whole page), and LaTeX can't find a break for it, so
+# the page counter runs away past 65536 and the build dies. 5.5in cap
+# keeps every diagram within a normal text column.
+tex_content = tex_out.read_text()
+tex_content = tex_content.replace(
+    "height=\\textheight,keepaspectratio",
+    "height=5.5in,keepaspectratio",
+)
+tex_out.write_text(tex_content)
+
+# Stage 2 — xelatex ×2 so \pageref{LastPage} resolves.
+tex_dir = tex_out.parent
+tex_name = tex_out.name
+xelatex_cmd = ["xelatex", "-interaction=nonstopmode", "-halt-on-error", tex_name]
+for pass_num in (1, 2):
+    result = subprocess.run(
+        xelatex_cmd, cwd=str(tex_dir), capture_output=True, text=True, timeout=120,
+    )
+    if result.returncode != 0:
+        print(f"xelatex pass {pass_num} failed:")
+        # Surface the last ~30 lines of stdout for diagnosis.
+        print("\n".join(result.stdout.splitlines()[-30:]))
+        sys.exit(1)
+
+# Move produced PDF into place.
+produced_pdf = tex_dir / tex_out.with_suffix(".pdf").name
+produced_pdf.rename(pdf_file)
 
 print(f"✓ Generated {pdf_file}")
 
