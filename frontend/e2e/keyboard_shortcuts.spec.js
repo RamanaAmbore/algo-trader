@@ -283,8 +283,9 @@ test.describe('keyboard shortcuts — mobile viewport', () => {
   test('? opens cheatsheet on mobile viewport', async ({ page }) => {
     await seedToken(page, _sharedJwt);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
-    // Wait for the layout to mount so the keyboard handler is wired.
-    await page.waitForSelector('.algo-nav-btn', { timeout: 20_000 });
+    // On mobile, nav buttons are in a drawer (hidden). Use state: 'attached'
+    // to confirm the layout mounted without requiring them to be visible.
+    await page.waitForSelector('.algo-nav-btn', { state: 'attached', timeout: 20_000 });
 
     await page.keyboard.press('?');
     const modal = page.locator('[role="dialog"][aria-labelledby="sc-title"]');
@@ -294,8 +295,8 @@ test.describe('keyboard shortcuts — mobile viewport', () => {
   test('cheatsheet stacks single column on 390px viewport', async ({ page }) => {
     await seedToken(page, _sharedJwt);
     await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
-    // Wait for layout mount before pressing keyboard shortcut.
-    await page.waitForSelector('.algo-nav-btn', { timeout: 20_000 });
+    // On mobile, nav buttons are in a drawer (hidden). Use state: 'attached'.
+    await page.waitForSelector('.algo-nav-btn', { state: 'attached', timeout: 20_000 });
 
     await page.keyboard.press('?');
     const modal = page.locator('[role="dialog"][aria-labelledby="sc-title"]');
