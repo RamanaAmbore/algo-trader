@@ -9,11 +9,11 @@
 
 ## About the author
 
-**Ramana R Ambore, FRM** — Forward Deployment Engineer for **RamboQuant LLP**.
+**Ramana R Ambore, FRM** — Forward Deployment Engineer & Quantitative Developer for **RamboQuant LLP**.
 
-**Forward Deployment Engineer** with **30+ years** across mainframe modernization and cloud-native financial platforms, currently applying that pedigree end-to-end to **RamboQuant** — a production algorithmic trading platform live at **ramboq.com**. **FRM** (GARP, 2022) and **CFA Level 2** candidate: the derivatives-risk, options-pricing (Black-Scholes / Greeks), and portfolio-analytics theory from those programs materialize directly as RamboQuant's derivatives layer, hedge-proxy β regression, and units-based NAV accounting.
+**30+ years** across mainframe modernization and cloud-native financial platforms. Currently **Principal System Analyst** at **Fidelity Investments** — leading billing-platform modernization on AWS + Snowflake and distributed fee-calculation engines — and concurrently the **Forward Deployment Engineer & Quantitative Developer** building **RamboQuant** end-to-end (live at **ramboq.com**).
 
-Master's in Computer Science plus tenure as **Principal System Analyst** at **Fidelity Investments** — billing-platform modernization on AWS + Snowflake, distributed fee-calculation engines — supply the engineering discipline (distributed systems, event-driven architecture, legacy-modernization patterns) that keep a multi-broker, real-time, single-operator platform correct and fast. **NTT Innovation Award** recipient (top-40 global innovator). Based in Merrimack, NH.
+**FRM** (GARP, 2022) and **CFA Level 2** candidate: the derivatives-risk, options-pricing (Black-Scholes / Greeks), and portfolio-analytics theory from those programs materialize directly as RamboQuant's derivatives layer, hedge-proxy β regression, and units-based NAV accounting. The Master's in Computer Science + Fidelity engineering discipline (distributed systems, event-driven architecture, legacy-modernization patterns) keeps a multi-broker, real-time, single-operator platform correct and fast. **NTT Innovation Award** recipient (top-40 global innovator). Based in Merrimack, NH.
 
 **Profile**: [ramanaambore.me](https://ramanaambore.me)
 

@@ -364,14 +364,14 @@ The RamboQuant \textbf{{Complete Design Guide}} is a top-to-bottom developer + o
 \noindent
 {{\color{{ramboqnavy}}\sffamily\huge\bfseries Ramana R Ambore}}\ %
 \raisebox{{2pt}}{{\tikz{{\node[fill=ramboqamber,text=ramboqnavy,inner sep=2pt,inner xsep=5pt,rounded corners=2pt,font=\sffamily\small\bfseries]{{FRM}};}}}}\\[2pt]
-{{\color{{ramboqcopper}}\sffamily\normalsize\bfseries Forward Deployment Engineer --- RamboQuant LLP}}\\[2pt]
+{{\color{{ramboqcopper}}\sffamily\normalsize\bfseries Forward Deployment Engineer \& Quantitative Developer --- RamboQuant LLP}}\\[2pt]
 {{\color{{ramboqamber}}\rule{{0.28\linewidth}}{{0.8pt}}}}\\[4pt]
 
 {{\color{{ramboqslate}}\sffamily\small
-Forward Deployment Engineer with \textbf{{30+ years}} across mainframe modernization and cloud-native financial platforms, currently applying that pedigree end-to-end to \textbf{{RamboQuant}} --- a production algorithmic trading platform live at \textbf{{ramboq.com}}. \textbf{{FRM}} (GARP, 2022) and \textbf{{CFA Level~2}} candidate: the derivatives-risk, options-pricing (Black-Scholes / Greeks), and portfolio-analytics theory from those programs materialize directly as RamboQuant's derivatives layer, hedge-proxy $\beta$ regression, and units-based NAV accounting.
+\textbf{{30+ years}} across mainframe modernization and cloud-native financial platforms. Currently \textbf{{Principal System Analyst}} at \textbf{{Fidelity Investments}} --- leading billing-platform modernization on AWS + Snowflake and distributed fee-calculation engines --- and concurrently the \textbf{{Forward Deployment Engineer \& Quantitative Developer}} building \textbf{{RamboQuant}} end-to-end (live at \textbf{{ramboq.com}}).
 
 \vspace{{2pt}}
-Master's in Computer Science plus tenure as \textbf{{Principal System Analyst}} at \textbf{{Fidelity Investments}} --- billing-platform modernization on AWS + Snowflake, distributed fee-calculation engines --- supply the engineering discipline (distributed systems, event-driven architecture, legacy-modernization patterns) that keep a multi-broker, real-time, single-operator platform correct and fast. \textbf{{NTT Innovation Award}} recipient (top-40 global innovator). Based in Merrimack, NH.
+\textbf{{FRM}} (GARP, 2022) and \textbf{{CFA Level~2}} candidate: the derivatives-risk, options-pricing (Black-Scholes / Greeks), and portfolio-analytics theory from those programs materialize directly as RamboQuant's derivatives layer, hedge-proxy $\beta$ regression, and units-based NAV accounting. The Master's in Computer Science + Fidelity engineering discipline (distributed systems, event-driven architecture, legacy-modernization patterns) keeps a multi-broker, real-time, single-operator platform correct and fast. \textbf{{NTT Innovation Award}} recipient (top-40 global innovator). Based in Merrimack, NH.
 }}
 
 \vspace{{7pt}}
