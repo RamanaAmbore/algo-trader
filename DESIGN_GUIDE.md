@@ -1,19 +1,19 @@
 # RamboQuant — Complete Design Guide
 
-## Version
-
 | | | |
 |---|---|---|
-| **Generated** | **Revision** | **Branch & Pages** |
-| See PDF cover | See `git log` | `main` / `dev` — 42 sections |
-| **Website** | **Profile** | **Tech Stack** |
-| [ramboq.com](https://ramboq.com) | [ramanaambore.me](https://ramanaambore.me) | SvelteKit · Litestar · PostgreSQL · KiteTicker · Kite/Dhan/Groww · MCP · Gemini |
+| **Generated** | **Revision** | **Website** |
+| See PDF cover | See `git log` | [ramboq.com](https://ramboq.com) |
+
+**Tech Stack** — SvelteKit · Litestar · PostgreSQL · async SQLAlchemy 2.x · KiteTicker WebSocket · Kite / Dhan / Groww adapters · MCP · Gemini.
 
 ## About the author
 
 **Ramana R Ambore, FRM** — Principal FinTech Engineer & Quantitative Developer, platform engineer for **RamboQuant LLP**.
 
 Principal FinTech engineer and quantitative developer with **30+ years** across mainframe modernization and cloud-native financial platforms. **FRM** (GARP, 2022) and **CFA Level 2** candidate with a Master's in Computer Science. Currently **Principal System Analyst** at **Fidelity Investments**, leading billing-platform modernization on AWS + Snowflake, alongside proprietary legacy modernization tooling. Deep specialism in derivatives risk and options pricing — Black-Scholes, Greeks modeling, multi-leg strategy analytics — carried directly into RamboQuant's derivatives layer. **NTT Innovation Award** recipient (top-40 global innovator). Based in Merrimack, NH.
+
+**Profile**: [ramanaambore.me](https://ramanaambore.me)
 
 ### Experience & recognition
 

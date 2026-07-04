@@ -224,12 +224,9 @@ FRONT_MATTER = rf"""
     ([xshift=0.9in,yshift=-1.2in]current page.west)
     -- ([xshift=2.9in,yshift=-1.2in]current page.west);
 
-  % Author name + role — below rule.
+  % Author name — below rule. Role/company line removed per operator.
   \node[anchor=west] at ([xshift=0.9in,yshift=-1.55in]current page.west) {{%
     \color{{white}}\sffamily\LARGE\bfseries Ramana R Ambore, \textcolor{{ramboqamber}}{{FRM}}
-  }};
-  \node[anchor=west] at ([xshift=0.9in,yshift=-1.9in]current page.west) {{%
-    \color{{ramboqcream}}\sffamily\large Platform Engineer --- RamboQuant LLP
   }};
 
   % Bottom rule.
@@ -284,8 +281,9 @@ The RamboQuant \textbf{{Complete Design Guide}} is a top-to-bottom developer + o
 
 \vspace{{7pt}}
 
-% -- (2) Version — full-width, left-aligned, 3-column grid inside -
-{{\color{{ramboqamber}}\sffamily\footnotesize\bfseries VERSION}}\\[2pt]
+% -- (2) Version box — full-width, no label. Layout:
+%     Generated | Revision | Website          (top row, 3 columns)
+%     Tech Stack . . . . . . . . . . . . . .  (bottom row, full width)
 \noindent
 \begin{{tikzpicture}}
   \node[
@@ -297,19 +295,17 @@ The RamboQuant \textbf{{Complete Design Guide}} is a top-to-bottom developer + o
     rounded corners=3pt,
     align=left,
   ]{{%
-    \begin{{tabular}}{{@{{}}p{{0.28\linewidth}}p{{0.34\linewidth}}p{{0.34\linewidth}}@{{}}}}
+    \begin{{tabular}}{{@{{}}p{{0.30\linewidth}}p{{0.33\linewidth}}p{{0.33\linewidth}}@{{}}}}
       {{\color{{ramboqnavy}}\sffamily\small\bfseries Generated}} &
       {{\color{{ramboqnavy}}\sffamily\small\bfseries Revision}} &
-      {{\color{{ramboqnavy}}\sffamily\small\bfseries Branch \& Pages}} \\
+      {{\color{{ramboqnavy}}\sffamily\small\bfseries Website}} \\
       {{\color{{ramboqslate}}\sffamily\small \today}} &
       {{\color{{ramboqslate}}\sffamily\small v\,{COMMIT_COUNT} \ ({COMMIT_SHA})}} &
-      {{\color{{ramboqslate}}\sffamily\small {BRANCH} \ \textcolor{{ramboqcopper}}{{$\bullet$}} \ \pageref*{{LastPage}} pages}} \\[8pt]
-      {{\color{{ramboqnavy}}\sffamily\small\bfseries Website}} &
-      {{\color{{ramboqnavy}}\sffamily\small\bfseries Profile}} &
-      {{\color{{ramboqnavy}}\sffamily\small\bfseries Tech Stack}} \\
-      {{\color{{ramboqcopper}}\sffamily\small\bfseries \href{{https://ramboq.com}}{{ramboq.com}}}} &
-      {{\color{{ramboqcopper}}\sffamily\small\bfseries \href{{https://ramanaambore.me}}{{ramanaambore.me}}}} &
-      {{\color{{ramboqslate}}\sffamily\footnotesize SvelteKit \textcolor{{ramboqcopper}}{{$\bullet$}} Litestar \textcolor{{ramboqcopper}}{{$\bullet$}} PostgreSQL \textcolor{{ramboqcopper}}{{$\bullet$}} KiteTicker \textcolor{{ramboqcopper}}{{$\bullet$}} Kite/Dhan/Groww \textcolor{{ramboqcopper}}{{$\bullet$}} MCP \textcolor{{ramboqcopper}}{{$\bullet$}} Gemini}} \\
+      {{\color{{ramboqcopper}}\sffamily\small\bfseries \href{{https://ramboq.com}}{{ramboq.com}}}} \\[8pt]
+      \multicolumn{{3}}{{@{{}}p{{0.96\linewidth}}@{{}}}}{{%
+        {{\color{{ramboqnavy}}\sffamily\small\bfseries Tech Stack}}\newline
+        {{\color{{ramboqslate}}\sffamily\small SvelteKit \textcolor{{ramboqcopper}}{{$\bullet$}} Litestar \textcolor{{ramboqcopper}}{{$\bullet$}} PostgreSQL \textcolor{{ramboqcopper}}{{$\bullet$}} async SQLAlchemy 2.x \textcolor{{ramboqcopper}}{{$\bullet$}} KiteTicker WebSocket \textcolor{{ramboqcopper}}{{$\bullet$}} Kite / Dhan / Groww adapters \textcolor{{ramboqcopper}}{{$\bullet$}} MCP \textcolor{{ramboqcopper}}{{$\bullet$}} Gemini}}
+      }} \\
     \end{{tabular}}
   }};
 \end{{tikzpicture}}
@@ -324,6 +320,11 @@ The RamboQuant \textbf{{Complete Design Guide}} is a top-to-bottom developer + o
 {{\color{{ramboqslate}}\sffamily\small
 Principal FinTech engineer and quantitative developer with \textbf{{30+ years}} across mainframe modernization and cloud-native financial platforms. \textbf{{FRM}} (GARP, 2022) and \textbf{{CFA Level~2}} candidate with a Master's in Computer Science. Currently \textbf{{Principal System Analyst}} at \textbf{{Fidelity Investments}}, leading billing-platform modernization on AWS + Snowflake, alongside proprietary legacy modernization tooling. Deep specialism in derivatives risk and options pricing --- Black-Scholes, Greeks modeling, multi-leg strategy analytics --- carried directly into RamboQuant's derivatives layer. \textbf{{NTT Innovation Award}} recipient (top-40 global innovator). Based in Merrimack, NH.
 }}
+
+\vspace{{7pt}}
+
+% -- (3.5) Profile link — plain-text, above Experience ---------
+\noindent{{\color{{ramboqslate}}\sffamily\small\bfseries Profile:}} \ {{\color{{ramboqcopper}}\sffamily\small\bfseries \href{{https://ramanaambore.me}}{{ramanaambore.me}}}}
 
 \vspace{{7pt}}
 
