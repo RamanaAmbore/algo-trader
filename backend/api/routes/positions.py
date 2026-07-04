@@ -4,13 +4,8 @@ import pandas as pd
 import polars as pl
 from litestar import Controller, Request, get
 from litestar.exceptions import HTTPException
-from typing import Optional, Literal
+from typing import Optional
 
-from backend.api.auth_guard import is_admin_request
-from backend.api.rbac import (
-    resolve_role_from_connection, user_scope_for_connection,
-    normalise_role,
-)
 from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl, recompute_row_percentages
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.helpers.ltp_patch import apply_ltp_patch, positions_policy
@@ -18,11 +13,17 @@ from backend.api.helpers.price_resolver import resolve_current_price
 from backend.api.helpers.snapshot_gate import (
     closed_hours_or_broker, is_exchange_closed_now, latest_snapshot_ltp_map,
 )
+from backend.api.routes.positions_helpers import (
+    apply_scope_and_mask,
+    build_snapshot_position_row,
+    build_summary_from_rows,
+    extract_snapshot_extras,
+    merge_paper_into_live,
+)
 from backend.api.schemas import PositionsResponse, PositionRow, PositionsSummaryRow
 from backend.brokers import broker_apis
 from backend.shared.helpers.date_time_utils import timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import mask_account
 
 logger = get_logger(__name__)
 
@@ -80,27 +81,11 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
     if not raw_rows:
         return None
 
-    # captured_at of the most-recent snapshot row (first row after ORDER DESC)
     snap_captured_at: str = raw_rows[0][9].isoformat() if raw_rows[0][9] else ""
-
-    # Build per-account sums for the summary
-    pnl_by_account: dict[str, float] = {}
-    dcv_by_account: dict[str, float] = {}
-    prev_by_account: dict[str, float] = {}
-
-    import json as _json
 
     rows: list[PositionRow] = []
     for (account, symbol, exchange, qty, avg_cost, ltp,
          day_pnl, total_pnl, payload_json, captured_at) in raw_rows:
-        # Reconstruct a minimal PositionRow from the snapshot columns.
-        # The payload_json holds the original broker row for forensics but
-        # we rebuild from the stored aggregates to keep the struct correct.
-        avg_cost_f = float(avg_cost) if avg_cost is not None else 0.0
-        ltp_f      = float(ltp) if ltp is not None else 0.0
-        total_pnl_f = float(total_pnl) if total_pnl is not None else 0.0
-        day_pnl_f   = float(day_pnl) if day_pnl is not None else 0.0
-
         # ------------------------------------------------------------------
         # `snapshot_extras` fallback — the top-level `day_pnl` column is set
         # to NULL by daily_snapshot._positions_rows when the row was captured
@@ -113,116 +98,13 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
         # frozen close-time value surfaces during closed hours instead of a
         # blanket zero. See test_snapshot_day_change_extras_fallback.
         # ------------------------------------------------------------------
-        extras: dict = {}
-        if payload_json:
-            try:
-                _pj = payload_json if isinstance(payload_json, dict) else _json.loads(payload_json)
-                if isinstance(_pj, dict):
-                    _e = _pj.get("snapshot_extras")
-                    if isinstance(_e, dict):
-                        extras = _e
-            except Exception:
-                extras = {}
-
-        # Prefer the top-level day_pnl column (writer-computed via
-        # decomposed_intraday_pnl / naive_day_pnl). Fall back to the raw
-        # Kite `day_change_val` from extras only when the column is
-        # NULL/absent — protects against writer's mid-session gate erasing
-        # good rows on weekend / holiday snapshot cycles. Preserves
-        # legitimate zeros (a real 0.0 day_pnl from the writer wins over
-        # extras).
-        if day_pnl is None:
-            _ex_dcv = extras.get("day_change_val")
-            if _ex_dcv is not None:
-                try:
-                    day_pnl_f = float(_ex_dcv)
-                except (TypeError, ValueError):
-                    pass
-
-        # close_price not stored separately; use avg_cost as a proxy so the
-        # row is well-formed (the snapshot's pnl figures are authoritative).
-        qty_i = int(qty) if qty is not None else 0
-        # pnl_percentage: pnl / |avg × qty| × 100
-        inv_val = abs(avg_cost_f * qty_i)
-        pnl_pct = (total_pnl_f / inv_val * 100.0) if inv_val else 0.0
-        # day_change_percentage: prefer extras.day_change_pct (Kite's raw
-        # value) when the top-level day_pnl was NULL — a computed pct off
-        # ltp × qty collapses to 0 when the raw dcv came in via extras but
-        # ltp is out of sync with Kite's day_change_percentage source.
-        _ex_pct = extras.get("day_change_pct") if day_pnl is None else None
-        if _ex_pct is not None:
-            try:
-                day_pct = float(_ex_pct)
-            except (TypeError, ValueError):
-                _ex_pct = None
-        if _ex_pct is None:
-            # day_change_percentage: day_change_val / |close × qty| × 100
-            # EOD LTP is the closest proxy for prior-session close in the snapshot.
-            # Fall back to |avg × qty| when ltp is zero (opened-today rows).
-            close_notional = abs(ltp_f * qty_i)
-            day_pct = (day_pnl_f / close_notional * 100.0) if close_notional else (
-                day_pnl_f / inv_val * 100.0 if inv_val else 0.0
-            )
-        row = PositionRow(
-            account=str(account),
-            tradingsymbol=str(symbol),
-            exchange=str(exchange or ""),
-            product="NRML",
-            quantity=qty_i,
-            average_price=avg_cost_f,
-            close_price=ltp_f,  # EOD LTP serves as prior-session close
-            last_price=ltp_f,
-            pnl=total_pnl_f,
-            pnl_percentage=pnl_pct,
-            day_change_val=day_pnl_f,
-            day_change_percentage=day_pct,
-            # Snapshot represents session-end holdings — every held qty IS
-            # overnight qty for the next session. Without this, the frontend
-            # `baseDayPnlForPosition` new-position override (`oq === 0 &&
-            # pnl !== 0 → day = pnl`) fires on every closed-hours row and
-            # inflates Day P&L from the settled `day_change_val` (e.g.
-            # ₹0.6) to the LIFETIME `pnl` (e.g. ₹14670) — cascading through
-            # NavStrip P slot 1, /admin/derivatives Snapshot per-row + TOTAL,
-            # Legs grid, and MarketPulse Positions grid.
-            overnight_quantity=qty_i,
-            last_price_stale=True,
-            price_source="snapshot_settled",
-            current_price=ltp_f,
-            is_animating=False,
-        )
-        rows.append(row)
-
-        acct = str(account)
-        pnl_by_account[acct] = pnl_by_account.get(acct, 0.0) + total_pnl_f
-        dcv_by_account[acct]  = dcv_by_account.get(acct, 0.0) + day_pnl_f
-        prev_by_account[acct] = prev_by_account.get(acct, 0.0) + abs(ltp_f * (int(qty) if qty else 0))
-
-    from backend.api.schemas import PositionsSummaryRow
-    summary: list[PositionsSummaryRow] = []
-    total_pnl_sum = 0.0
-    total_dcv_sum = 0.0
-    for acct, pnl_sum in pnl_by_account.items():
-        dcv_sum  = dcv_by_account.get(acct, 0.0)
-        prev_sum = prev_by_account.get(acct, 0.0)
-        pct = dcv_sum / prev_sum * 100.0 if prev_sum else 0.0
-        summary.append(PositionsSummaryRow(
-            account=acct,
-            pnl=pnl_sum,
-            day_change_val=dcv_sum,
-            day_change_percentage=pct,
-            day_prev_val=prev_sum,
+        extras = extract_snapshot_extras(payload_json)
+        rows.append(build_snapshot_position_row(
+            account, symbol, exchange, qty, avg_cost, ltp,
+            day_pnl, total_pnl, extras,
         ))
-        total_pnl_sum += pnl_sum
-        total_dcv_sum += dcv_sum
-    # TOTAL row
-    total_prev = sum(prev_by_account.values())
-    summary.append(PositionsSummaryRow(
-        account="TOTAL",
-        pnl=total_pnl_sum,
-        day_change_val=total_dcv_sum,
-        day_change_percentage=total_dcv_sum / total_prev * 100.0 if total_prev else 0.0,
-        day_prev_val=total_prev,
-    ))
+
+    summary = build_summary_from_rows(rows)
 
     return PositionsResponse(
         rows=rows,
@@ -362,6 +244,62 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> li
     return out
 
 
+def _build_stale_since_map(per_acct: list) -> dict[str, str]:
+    """Extract account → "HH:MM IST" map from stale-substituted DataFrames.
+
+    Must be called BEFORE pd.concat (which drops DataFrame.attrs).
+    Returns {} when no frames are stale or per_acct is empty.
+    """
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    result: dict[str, str] = {}
+    for _df in (per_acct or []):
+        _ss = _df.attrs.get("stale_since")
+        if not _ss or _df.empty or "account" not in _df.columns:
+            continue
+        _acct = str(_df["account"].iloc[0])
+        try:
+            result[_acct] = datetime.fromtimestamp(
+                float(_ss), tz=ZoneInfo("Asia/Kolkata")
+            ).strftime("%H:%M IST")
+        except Exception:
+            pass
+    return result
+
+
+def _build_polars_summary(df: "pl.DataFrame") -> "pl.DataFrame":
+    """Build a per-account + TOTAL summary DataFrame from the live-positions polars frame.
+
+    The day_change_percentage denominator is Σ|close × qty| per account —
+    the same formula the snapshot path uses via `build_summary_from_rows`.
+    Returns a polars DataFrame with columns:
+      account, pnl, day_change_val, day_change_percentage, day_prev_val
+    """
+    df = df.with_columns(
+        (pl.col('close_price') * pl.col('quantity')).abs().alias('_prev_val')
+    )
+    sum_cols = [c for c in ('pnl', 'day_change_val', '_prev_val') if c in df.columns]
+    if sum_cols:
+        grouped = df.group_by('account').agg([pl.col(c).sum() for c in sum_cols])
+    else:
+        grouped = pl.DataFrame({'account': []})
+    for col in ('pnl', 'day_change_val', '_prev_val'):
+        if col not in grouped.columns:
+            grouped = grouped.with_columns(pl.lit(0.0).alias(col))
+    totals = pl.DataFrame([{
+        'account': 'TOTAL',
+        'pnl': grouped['pnl'].sum(),
+        'day_change_val': grouped['day_change_val'].sum(),
+        '_prev_val': grouped['_prev_val'].sum(),
+    }])
+    summary_df = pl.concat([grouped, totals], how='diagonal').fill_nan(0).fill_null(0)
+    return summary_df.with_columns(
+        (pl.col('day_change_val') / pl.col('_prev_val').replace(0, None) * 100)
+        .fill_nan(0).fill_null(0)
+        .alias('day_change_percentage')
+    ).rename({'_prev_val': 'day_prev_val'})
+
+
 async def _fetch() -> PositionsResponse:
     # Three sync broker_apis calls below — each holds the event loop
     # (~50ms each typical, up to 500-1000ms on cold UDS hits). Wrap
@@ -379,24 +317,10 @@ async def _fetch() -> PositionsResponse:
     # false "Positions feed unavailable" banner on /admin/derivatives.
     if per_acct and all(df.attrs.get('fetch_failed', False) for df in per_acct):
         raise Exception("Broker (Kite) returned no positions data — upstream Bad Gateway / outage")
-    # Build account → "HH:MM IST" map for stale-substituted frames BEFORE
-    # concat (which drops all DataFrame.attrs). Each LKG-substituted frame
-    # carries attrs["stale_since"] (unix epoch of last successful fetch)
-    # and at least one row with the account in the "account" column.
-    _acct_stale_since: dict[str, str] = {}
-    if per_acct:
-        for _df in per_acct:
-            _ss = _df.attrs.get("stale_since")
-            if _ss and not _df.empty and "account" in _df.columns:
-                _acct = str(_df["account"].iloc[0])
-                try:
-                    from zoneinfo import ZoneInfo
-                    from datetime import datetime
-                    _acct_stale_since[_acct] = datetime.fromtimestamp(
-                        float(_ss), tz=ZoneInfo("Asia/Kolkata")
-                    ).strftime("%H:%M IST")
-                except Exception:
-                    pass
+
+    # Build stale-since map BEFORE concat (attrs dropped after concat).
+    _acct_stale_since = _build_stale_since_map(per_acct)
+
     raw = pd.concat(per_acct, ignore_index=True) if per_acct else pd.DataFrame()
     # Legitimate empty book — no positions on any account. Return a
     # well-formed empty response so /admin/derivatives renders zero
@@ -404,7 +328,6 @@ async def _fetch() -> PositionsResponse:
     # banner (which only fires on actual outage 5xx now).
     if raw.empty:
         return PositionsResponse(rows=[], summary=[], refreshed_at=timestamp_display())
-    # Account masking removed — admin-only pages show real account IDs
 
     # Backfill missing market data (close_price + last_price) for
     # adapters that don't populate them (Dhan v2 positions endpoint
@@ -420,23 +343,12 @@ async def _fetch() -> PositionsResponse:
     # Kite's /positions REST endpoint sometimes lags behind the WS
     # feed by minutes — observed on 2026-06-22 around 09:30 IST where
     # CRUDEOIL options showed last_price === close_price (stuck on
-    # yesterday's EOD) even though MCX had been open 30 min. With
-    # last_price = close_price the day_change_val formula collapses
-    # to 0, so the Snapshot grid Day column stayed at zero all
-    # session. Override using the streamed tick BEFORE close-override
-    # so the day_change_val recompute below sees the fresh LTP.
+    # yesterday's EOD) even though MCX had been open 30 min.
     _override_stale_ltp_from_ticker(raw)
 
     # Override stale close_price with yesterday's daily_book snapshot.
-    # Why: Kite's positions.close_price (and quote.ohlc.close) lag the
-    # actual previous-session close — observed on 2026-06-19 at 00:30
-    # IST showing close=7089 for GOLDM26JUN145000CE when the true 6/18
-    # EOD was 3402 (one full Kite roll behind). Without this override,
-    # the decomposed day_pnl formula computes (LTP - stale_close) × qty
-    # against a 2-session-old reference, producing the +1.33L phantom
-    # gain the operator reported. The snapshot is captured at our
-    # daemon's startup + 15:35 IST — the most recent one is the actual
-    # EOD of the prior session.
+    # See CLAUDE.md §"Kite close_price stale overnight" and the
+    # 2026-06-19 +1.33L phantom gain incident.
     await _override_stale_close_from_snapshot(raw)
 
     numeric = raw.select_dtypes(include='number').columns
@@ -445,37 +357,7 @@ async def _fetch() -> PositionsResponse:
 
     row_cols = [c for c in _ROW_COLS if c in df.columns]
     df_rows = df.select(row_cols)
-
-    # Compute prev_val per row so we can sum it per account and derive a
-    # meaningful day_change_percentage on the summary (sum Δ / sum prev).
-    df = df.with_columns(
-        (pl.col('close_price') * pl.col('quantity')).abs().alias('_prev_val')
-    )
-    sum_cols = [c for c in ('pnl', 'day_change_val', '_prev_val') if c in df.columns]
-    if sum_cols:
-        grouped = df.group_by('account').agg([pl.col(c).sum() for c in sum_cols])
-    else:
-        grouped = pl.DataFrame({'account': []})
-    # Ensure all sum columns exist even when absent from the broker frame
-    for col in ('pnl', 'day_change_val', '_prev_val'):
-        if col not in grouped.columns:
-            grouped = grouped.with_columns(pl.lit(0.0).alias(col))
-    totals = pl.DataFrame([{
-        'account': 'TOTAL',
-        'pnl': grouped['pnl'].sum(),
-        'day_change_val': grouped['day_change_val'].sum(),
-        '_prev_val': grouped['_prev_val'].sum(),
-    }])
-    summary_df = pl.concat([grouped, totals], how='diagonal').fill_nan(0).fill_null(0)
-    # day_change_percentage = Σ day_change_val / Σ |close × qty|, per-row's
-    # absolute denominator captured above. Rename _prev_val to the
-    # public field day_prev_val so the frontend can sum it for a
-    # filtered-subset TOTAL row.
-    summary_df = summary_df.with_columns(
-        (pl.col('day_change_val') / pl.col('_prev_val').replace(0, None) * 100)
-        .fill_nan(0).fill_null(0)
-        .alias('day_change_percentage')
-    ).rename({'_prev_val': 'day_prev_val'})
+    summary_df = _build_polars_summary(df)
 
     rows = [
         PositionRow(**{k: (v if v is not None else 0) for k, v in r.items()})
@@ -496,23 +378,12 @@ async def _fetch() -> PositionsResponse:
     # /performance + /dashboard grids can surface them as columns without
     # round-tripping through /api/options/analytics per symbol.
     await _asyncio.to_thread(_enrich_position_greeks, rows)
-    # Per-exchange close-snapshot overlay (Jul 2026 unified animation
-    # model). If NSE has closed but MCX is still open, rows on
-    # NSE/BSE/NFO/BFO exchanges get their LTP frozen at the daily_book
-    # close_settled snapshot value and are tagged with `price_source`
-    # ∈ {"snapshot_settled","snapshot_unsettled"} + `is_animating=False`.
-    # Rows on still-open exchanges get `price_source="live"` +
-    # `is_animating=True`. `current_price` alias populated on every row.
-    # Runs after Greeks + LKG threading so the tag is authoritative for
-    # what the frontend renders.
+    # Per-exchange close-snapshot overlay (Jul 2026 unified animation model).
     rows = await _overlay_snapshot_for_closed_exchanges(rows, kind="positions")
     summary = [
         PositionsSummaryRow(**{k: (v if v is not None else 0) for k, v in r.items()})
         for r in summary_df.to_dicts()
     ]
-    # Response-level stale_accounts list — every account whose rows were
-    # substituted from broker_apis' LKG frame cache. NavStrip + TOTAL
-    # rollups read this to surface "stale @ HH:MM" without walking rows.
     stale_accts = sorted({r.account for r in rows if r.account_stale})
     return PositionsResponse(
         rows=rows,
@@ -783,51 +654,15 @@ async def _build_paper_positions_response() -> PositionsResponse:
     raw[numeric] = raw[numeric].fillna(0)
 
     rows: list[PositionRow] = []
+    valid = set(PositionRow.__struct_fields__)
     for r in raw.to_dict(orient='records'):
         kwargs = {k: (r[k] if r[k] is not None else 0) for k in r}
-        # Rename column-name 'last_price_stale' default
         kwargs.setdefault('last_price_stale', False)
         kwargs['mode'] = 'paper'
-        # Only pass fields PositionRow knows about
-        valid = {f for f in PositionRow.__struct_fields__}
         kwargs = {k: v for k, v in kwargs.items() if k in valid}
         rows.append(PositionRow(**kwargs))
 
-    # Build summary — per-account aggregates.
-    pnl_by_account: dict[str, float] = {}
-    dcv_by_account: dict[str, float] = {}
-    prev_by_account: dict[str, float] = {}
-    for row in rows:
-        acct = row.account
-        pnl_by_account[acct]  = pnl_by_account.get(acct, 0.0) + row.pnl
-        dcv_by_account[acct]  = dcv_by_account.get(acct, 0.0) + row.day_change_val
-        prev_by_account[acct] = prev_by_account.get(acct, 0.0) + abs(row.close_price * row.quantity)
-
-    summary: list[PositionsSummaryRow] = []
-    total_pnl_sum = 0.0
-    total_dcv_sum = 0.0
-    for acct, pnl_sum in pnl_by_account.items():
-        dcv_sum  = dcv_by_account.get(acct, 0.0)
-        prev_sum = prev_by_account.get(acct, 0.0)
-        pct = dcv_sum / prev_sum * 100.0 if prev_sum else 0.0
-        summary.append(PositionsSummaryRow(
-            account=acct,
-            pnl=pnl_sum,
-            day_change_val=dcv_sum,
-            day_change_percentage=pct,
-            day_prev_val=prev_sum,
-        ))
-        total_pnl_sum += pnl_sum
-        total_dcv_sum += dcv_sum
-    total_prev = sum(prev_by_account.values())
-    summary.append(PositionsSummaryRow(
-        account="TOTAL",
-        pnl=total_pnl_sum,
-        day_change_val=total_dcv_sum,
-        day_change_percentage=total_dcv_sum / total_prev * 100.0 if total_prev else 0.0,
-        day_prev_val=total_prev,
-    ))
-
+    summary = build_summary_from_rows(rows)
     return PositionsResponse(rows=rows, summary=summary, refreshed_at=timestamp_display())
 
 
@@ -919,6 +754,74 @@ def _enrich_position_greeks(rows: list) -> None:
             logger.debug(f"Greeks compute failed for {row.tradingsymbol}", exc_info=True)
 
 
+async def _resolve_positions_source(
+    request: Request,
+    fresh: bool,
+    skip_ltp: bool,
+) -> PositionsResponse:
+    """Resolve whether to serve a DB snapshot or a live broker fetch.
+
+    Encapsulates the closed_hours_or_broker gate, ?fresh=1 cache invalidation,
+    ?skip_ltp=1 bypass, and the first-deploy fallback (snapshot returns None).
+    Returns a PositionsResponse — caller applies scope/mask afterwards.
+    """
+    async def _snapshot_fn() -> PositionsResponse:
+        snap = await _positions_snapshot()
+        if snap is None:
+            return PositionsResponse(rows=[], summary=[], refreshed_at=timestamp_display())
+        return snap
+
+    async def _broker_fn() -> PositionsResponse:
+        if fresh:
+            invalidate("positions")
+            try:
+                from backend.brokers.broker_apis import (
+                    _raw_cache_invalidate, dhan_next_poll_clear,
+                    _use_conn_service,
+                )
+                _raw_cache_invalidate("positions")
+                # Reset the Dhan interval gate so ?fresh=1 bypasses
+                # cold/warm cadence and always hits the broker.
+                # Under conn-service the _dhan_next_poll dict lives in
+                # conn_service's process — proxy the reset over UDS.
+                if _use_conn_service():
+                    from backend.brokers.client.api import dhan_poll_reset_remote
+                    await dhan_poll_reset_remote()
+                else:
+                    dhan_next_poll_clear()
+            except Exception:
+                pass
+        return await get_or_fetch("positions", _fetch, ttl_seconds=_TTL)
+
+    # ?skip_ltp=1 — RefreshButton's both-closed click. Runs the
+    # normal broker path so metadata (qty / avg_cost / product /
+    # intraday split) refreshes; the row-level overlay tags every
+    # closed-exchange row as price_source='snapshot_*' and freezes
+    # its last_price to the daily_book close_settled value.
+    if skip_ltp or fresh:
+        return await _broker_fn()
+
+    resp, source = await closed_hours_or_broker(
+        exchange="NSE",
+        snapshot_fn=_snapshot_fn,
+        broker_fn=_broker_fn,
+        fallback_to_snapshot_on_broker_error=True,
+        route_key="positions",
+    )
+    # When market is closed and the DB has a genuine snapshot (as_of
+    # is set), return it directly — scope/mask applied by caller.
+    if source not in ("live", "stale-live") and getattr(resp, "as_of", None):
+        logger.info(
+            f"positions: market closed ({source}) — serving daily_book snapshot"
+        )
+        return resp
+    # Market is open or stale-live — resp is already the broker response.
+    if source in ("live", "stale-live"):
+        return resp
+    # Market closed but no snapshot yet (first deploy) — fall back live.
+    return await _broker_fn()
+
+
 class PositionsController(Controller):
     path = "/api/positions"
 
@@ -944,222 +847,27 @@ class PositionsController(Controller):
         if mode == "paper":
             try:
                 resp = await _build_paper_positions_response()
-                role = normalise_role(resolve_role_from_connection(request))
-                if role == "trader":
-                    allowed, _ = await user_scope_for_connection(request)
-                    allowed_set = {str(a).upper() for a in (allowed or [])}
-                    import msgspec
-                    resp = msgspec.structs.replace(
-                        resp,
-                        rows=[r for r in resp.rows
-                              if str(getattr(r, "account", "")).upper() in allowed_set],
-                        summary=[s for s in resp.summary
-                                 if str(getattr(s, "account", "")).upper() in allowed_set
-                                 or str(getattr(s, "account", "")).upper() == "TOTAL"],
-                    )
-                if not is_admin_request(request):
-                    import msgspec
-                    def _mask_paper_row(row):
-                        return msgspec.structs.replace(row, account=mask_account(row.account))
-                    resp = msgspec.structs.replace(
-                        resp,
-                        rows=[_mask_paper_row(r) for r in resp.rows],
-                        summary=[_mask_paper_row(s) for s in resp.summary],
-                    )
-                return resp
+                return await apply_scope_and_mask(resp, request)
             except Exception as e:
                 logger.error(f"Paper positions API error: {e}")
                 raise HTTPException(status_code=500, detail=str(e))
 
         try:
-            # ── Closed-hours gate via canonical helper ──────────────────────
-            # closed_hours_or_broker is the single gate for "should I call the
-            # broker or serve the daily_book snapshot?".  `?fresh=1` bypasses
-            # the gate so the operator can force a live fetch (e.g. after an
-            # AMO fill).
-            #
-            # _positions_snapshot() returns None when no DB row exists yet
-            # (first-ever deploy). The snapshot_fn wrapper converts that to
-            # an empty PositionsResponse so the helper can always return T.
-            # The route then checks `as_of` to distinguish "real snapshot" from
-            # "no snapshot exists" and falls through to the live path in the
-            # latter case.
+            resp = await _resolve_positions_source(request, fresh, skip_ltp)
 
-            async def _snapshot_fn() -> PositionsResponse:
-                snap = await _positions_snapshot()
-                if snap is None:
-                    return PositionsResponse(rows=[], summary=[], refreshed_at=timestamp_display())
-                return snap
-
-            async def _broker_fn() -> PositionsResponse:
-                if fresh:
-                    invalidate("positions")
-                    try:
-                        from backend.brokers.broker_apis import (
-                            _raw_cache_invalidate, dhan_next_poll_clear,
-                            _use_conn_service,
-                        )
-                        _raw_cache_invalidate("positions")
-                        # Reset the Dhan interval gate so ?fresh=1 bypasses
-                        # cold/warm cadence and always hits the broker.
-                        # Under conn-service the _dhan_next_poll dict lives in
-                        # conn_service's process — proxy the reset over UDS.
-                        if _use_conn_service():
-                            from backend.brokers.client.api import dhan_poll_reset_remote
-                            await dhan_poll_reset_remote()
-                        else:
-                            dhan_next_poll_clear()
-                    except Exception:
-                        pass
-                return await get_or_fetch("positions", _fetch, ttl_seconds=_TTL)
-
-            # ?skip_ltp=1 — RefreshButton's both-closed click. Runs the
-            # normal broker path so metadata (qty / avg_cost / product /
-            # intraday split) refreshes; the row-level overlay in
-            # _broker_fn tags every closed-exchange row as
-            # price_source='snapshot_*' and freezes its last_price to the
-            # daily_book close_settled value. When both markets are
-            # closed (the RefreshButton's trigger condition) every row's
-            # exchange is closed → every LTP is snapshot-served
-            # regardless of what the broker's REST payload said.
-            # Funds/margins stay on their own broker paths in parallel.
-            if skip_ltp:
-                resp = await _broker_fn()
-            elif not fresh:
-                resp, source = await closed_hours_or_broker(
-                    exchange="NSE",
-                    snapshot_fn=_snapshot_fn,
-                    broker_fn=_broker_fn,
-                    fallback_to_snapshot_on_broker_error=True,
-                    route_key="positions",
-                )
-                # When market is closed and the DB has a genuine snapshot
-                # (as_of is set), return it with masking applied.
-                # stale-live means market is open but broker transient-failed;
-                # we serve the last-known live payload — no snapshot branch.
-                if source not in ("live", "stale-live") and getattr(resp, "as_of", None):
-                    logger.info(
-                        f"positions: market closed ({source}) — serving daily_book snapshot"
-                    )
-                    role = normalise_role(resolve_role_from_connection(request))
-                    if role == "trader":
-                        allowed, _ = await user_scope_for_connection(request)
-                        allowed_set = {str(a).upper() for a in (allowed or [])}
-                        import msgspec
-                        resp = msgspec.structs.replace(
-                            resp,
-                            rows=[r for r in resp.rows
-                                  if str(getattr(r, "account", "")).upper() in allowed_set],
-                            summary=[s for s in resp.summary
-                                     if str(getattr(s, "account", "")).upper() in allowed_set
-                                     or str(getattr(s, "account", "")).upper() == "TOTAL"],
-                        )
-                    if not is_admin_request(request):
-                        import msgspec
-                        def _mask_snap(row):
-                            return msgspec.structs.replace(row, account=mask_account(row.account))
-                        resp = msgspec.structs.replace(
-                            resp,
-                            rows=[_mask_snap(r) for r in resp.rows],
-                            summary=[_mask_snap(s) for s in resp.summary],
-                        )
-                    return resp
-                # Market is open (or stale-live), or no snapshot exists yet —
-                # continue to live path (resp already holds the broker response
-                # from _broker_fn or the anti-flicker stale-live copy).
-                if source in ("live", "stale-live"):
-                    pass  # resp is already the broker/stale-live response
-                else:
-                    # Market closed but no snapshot (first deploy) — fall back live.
-                    resp = await _broker_fn()
-            else:
-                # ?fresh=1 — bypass closed-hours gate entirely
-                resp = await _broker_fn()
             # ── mode=both — merge paper rows into the live response ─────────
             # Paper rows tagged mode='paper'; live rows default mode='live'.
             # Summary is recomputed over the combined set so totals are correct.
             if mode == "both":
                 paper_resp = await _build_paper_positions_response()
-                if paper_resp.rows:
-                    import msgspec as _msgspec
-                    # Tag live rows explicitly so frontend can distinguish them.
-                    live_rows_tagged = [
-                        _msgspec.structs.replace(r, mode="live") for r in resp.rows
-                    ]
-                    merged_rows = live_rows_tagged + list(paper_resp.rows)
-                    # Recompute summary over merged set.
-                    _pnl_by_acct: dict[str, float] = {}
-                    _dcv_by_acct: dict[str, float] = {}
-                    _prev_by_acct: dict[str, float] = {}
-                    for _r in merged_rows:
-                        _a = _r.account
-                        _pnl_by_acct[_a]  = _pnl_by_acct.get(_a, 0.0) + _r.pnl
-                        _dcv_by_acct[_a]  = _dcv_by_acct.get(_a, 0.0) + _r.day_change_val
-                        _prev_by_acct[_a] = _prev_by_acct.get(_a, 0.0) + abs(_r.close_price * _r.quantity)
-                    _merged_summary: list[PositionsSummaryRow] = []
-                    _t_pnl = 0.0
-                    _t_dcv = 0.0
-                    for _a, _p in _pnl_by_acct.items():
-                        _d = _dcv_by_acct.get(_a, 0.0)
-                        _pv = _prev_by_acct.get(_a, 0.0)
-                        _pct = _d / _pv * 100.0 if _pv else 0.0
-                        _merged_summary.append(PositionsSummaryRow(
-                            account=_a, pnl=_p, day_change_val=_d,
-                            day_change_percentage=_pct, day_prev_val=_pv,
-                        ))
-                        _t_pnl += _p
-                        _t_dcv += _d
-                    _t_pv = sum(_prev_by_acct.values())
-                    _merged_summary.append(PositionsSummaryRow(
-                        account="TOTAL", pnl=_t_pnl, day_change_val=_t_dcv,
-                        day_change_percentage=_t_dcv / _t_pv * 100.0 if _t_pv else 0.0,
-                        day_prev_val=_t_pv,
-                    ))
-                    resp = _msgspec.structs.replace(
-                        resp, rows=merged_rows, summary=_merged_summary,
-                    )
+                resp = merge_paper_into_live(resp, paper_resp)
 
-            # Horizontal scoping. Trader-role callers see only
-            # positions on their `assigned_accounts`; firm-wide roles
-            # (designated / risk / admin / partner / demo) see every
-            # account. Empty assigned-list for a trader = empty
-            # result (fail-safe — a freshly-onboarded trader sees
-            # nothing until designated grants accounts).
-            #
-            # MUST run BEFORE masking — once accounts get masked to
-            # `ZG####` the trader's assigned-account match can't run.
-            role = normalise_role(resolve_role_from_connection(request))
-            if role == "trader":
-                allowed, _ = await user_scope_for_connection(request)
-                allowed_set = {str(a).upper() for a in (allowed or [])}
-                import msgspec
-                resp = msgspec.structs.replace(
-                    resp,
-                    rows=[r for r in resp.rows
-                          if str(getattr(r, "account", "")).upper() in allowed_set],
-                    summary=[s for s in resp.summary
-                             if str(getattr(s, "account", "")).upper() in allowed_set
-                             or str(getattr(s, "account", "")).upper() == "TOTAL"],
-                )
-            # Mask account IDs for everyone who is NOT admin/designated.
-            # CRITICAL — copy resp.rows / resp.summary BEFORE mutating;
-            # the cache returns the same object reference across every
-            # request, so an in-place mutation by a demo caller poisons
-            # the cached payload and subsequent admin requests see
-            # masked codes until the TTL expires (operator hit this
-            # when transitioning from demo to signed-in).
-            if not is_admin_request(request):
-                import msgspec
-                def _mask(row):
-                    return msgspec.structs.replace(
-                        row, account=mask_account(row.account)
-                    )
-                return msgspec.structs.replace(
-                    resp,
-                    rows=[_mask(r) for r in resp.rows],
-                    summary=[_mask(s) for s in resp.summary],
-                )
-            return resp
+            # Horizontal scoping + masking.
+            # MUST run BEFORE masking — once accounts are masked to `ZG####`
+            # the trader's assigned-account match can't run.
+            # CRITICAL: apply_scope_and_mask uses msgspec.structs.replace so
+            # the cached object reference is never mutated in place.
+            return await apply_scope_and_mask(resp, request)
         except Exception as e:
             logger.error(f"Positions API error: {e}")
             if _is_broker_outage(e):
