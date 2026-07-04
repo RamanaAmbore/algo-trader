@@ -3842,6 +3842,284 @@ async def _task_warm_backfill() -> None:
         logger.error(f"backfill warm: intraday_today failed: {exc}")
 
 
+def _parse_perf_snapshot_rows(snap: dict) -> list:
+    """Convert a perf_baseline JSON dict to a list of PerfSnapshot ORM rows.
+
+    Module-level so it can be imported directly by tests and other callers
+    without pulling in the full background-task machinery.
+
+    Args:
+        snap: Parsed JSON from ``scripts/perf_baseline.py``. Expected shape::
+
+            {
+                "captured_at": "2026-07-01T04:00:00Z",
+                "commit": "<sha>",
+                "frontend": {"pages": {"<route>": {...}}},
+                "backend":  {"routes": {"<label>": {...}}},
+            }
+
+    Returns:
+        List of unsaved ``PerfSnapshot`` instances ready for
+        ``session.add_all(...)``.
+    """
+    from backend.api.models import PerfSnapshot
+
+    rows: list[PerfSnapshot] = []
+    try:
+        raw_ts = snap.get("captured_at", "")
+        # Normalise trailing Z → +00:00 for fromisoformat on Python ≤ 3.10
+        captured_at = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        captured_at = datetime.now(timezone.utc)
+
+    commit_sha: Optional[str] = snap.get("commit") or None
+    if commit_sha and len(commit_sha) > 40:
+        commit_sha = commit_sha[:40]
+
+    # Frontend pages + lib components
+    for route, row in snap.get("frontend", {}).get("pages", {}).items():
+        cc_avg: Optional[float] = row.get("cyclomatic_avg")
+        cc_max: Optional[int]   = row.get("cyclomatic_max")
+        hotspots = row.get("cyclomatic_hotspots") or None
+        # Runtime block (present only with --with-runtime)
+        rt = row.get("runtime") or {}
+        lcp_ms:  Optional[int]   = rt.get("lcp_ms")
+        tbt_ms:  Optional[int]   = rt.get("tbt_ms")
+        heap_mb: Optional[float] = rt.get("heap_mb")
+        rows.append(PerfSnapshot(
+            captured_at=captured_at,
+            commit_sha=commit_sha,
+            side="FE",
+            page_or_route=route,
+            loc=row.get("loc"),
+            effect_count=row.get("effect_count"),
+            state_count=row.get("state_count"),
+            derived_count=row.get("derived_count"),
+            cc_max=cc_max,
+            cc_avg=cc_avg,
+            hotspots_json=hotspots,
+            lcp_ms=lcp_ms,
+            tbt_ms=tbt_ms,
+            heap_mb=heap_mb,
+        ))
+
+    # Backend routes
+    for route, row in snap.get("backend", {}).get("routes", {}).items():
+        rows.append(PerfSnapshot(
+            captured_at=captured_at,
+            commit_sha=commit_sha,
+            side="BE",
+            page_or_route=route,
+            loc=row.get("loc"),
+            cc_max=row.get("cyclomatic_max"),
+            cc_avg=row.get("cyclomatic_avg"),
+            hotspots_json=row.get("cyclomatic_hotspots") or None,
+        ))
+    return rows
+
+
+async def _task_perf_snapshot() -> None:
+    """Daily 04:00 IST — run perf_baseline.py and persist results to perf_snapshots.
+
+    Parses the JSON emitted by ``scripts/perf_baseline.py
+    --with-cyclomatic --no-build`` and inserts one ``PerfSnapshot`` row per
+    page/route. Frontend rows populate static Svelte-rune counts + optional
+    cyclomatic complexity; backend rows populate LOC + async_fn count.
+
+    Runtime metrics (LCP/TBT/heap) are populated only when the optional
+    ``perf_snapshot_with_runtime`` config flag is True AND the dev server
+    URL is reachable — Playwright is then invoked via ``--with-runtime``.
+
+    Startup backfill: any ``.log/perf_baseline_*.json`` files found at boot
+    that have not yet been ingested are imported once. After that the cron
+    is the sole writer. Idempotency: a (captured_at, side, page_or_route)
+    combination can appear multiple times without constraint (each nightly
+    run inserts fresh rows); the /latest endpoint uses DISTINCT ON to
+    surface the most recent.
+    """
+    from pathlib import Path
+    from backend.api.database import async_session
+    from backend.shared.helpers.settings import get_int, get_bool
+
+    ROOT = Path(__file__).resolve().parent.parent.parent
+    LOG_DIR = ROOT / ".log"
+    SCRIPT = ROOT / "scripts" / "perf_baseline.py"
+    VENV_PY = ROOT / "venv" / "bin" / "python"
+    PYTHON = str(VENV_PY) if VENV_PY.exists() else "python"
+
+    async def _run_and_insert(with_runtime: bool) -> None:
+        cmd = [PYTHON, str(SCRIPT), "--with-cyclomatic", "--no-build"]
+        if with_runtime:
+            cmd.append("--with-runtime")
+        logger.info("Background: _task_perf_snapshot running %s", " ".join(cmd))
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(ROOT),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=600)
+            except asyncio.TimeoutError:
+                proc.kill()
+                logger.error("Background: _task_perf_snapshot subprocess timed out after 600s")
+                return
+        except Exception as exc:
+            logger.error("Background: _task_perf_snapshot subprocess launch failed: %s", exc)
+            return
+
+        if proc.returncode != 0:
+            logger.error(
+                "Background: perf_baseline.py exited %d — stderr: %s",
+                proc.returncode,
+                (stderr or b"").decode("utf-8", "replace")[:500],
+            )
+            return
+
+        # Find the freshest perf_baseline_*.json written just now.
+        try:
+            latest = max(
+                LOG_DIR.glob("perf_baseline_*.json"),
+                key=lambda p: p.stat().st_mtime,
+                default=None,
+            )
+            if latest is None:
+                logger.warning("Background: _task_perf_snapshot — no baseline JSON found")
+                return
+            import json as _json
+            snap = _json.loads(latest.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.error("Background: _task_perf_snapshot failed to read JSON: %s", exc)
+            return
+
+        orm_rows = _parse_perf_snapshot_rows(snap)
+        if not orm_rows:
+            logger.warning("Background: _task_perf_snapshot — empty row set from JSON")
+            return
+
+        async with async_session() as session:
+            session.add_all(orm_rows)
+            await session.commit()
+        logger.info(
+            "Background: _task_perf_snapshot inserted %d row(s) for capture %s",
+            len(orm_rows),
+            snap.get("captured_at", "?"),
+        )
+
+    async def _backfill_from_disk() -> None:
+        """One-shot: ingest any existing .log/perf_baseline_*.json files.
+
+        Runs only when the perf_snapshots table is empty. Idempotent:
+        once any row is present the backfill is skipped on subsequent
+        boots.
+        """
+        async with async_session() as session:
+            from sqlalchemy import select as _sel, func as _func
+            count = (await session.execute(
+                _sel(_func.count()).select_from(PerfSnapshot)
+            )).scalar_one()
+        if count > 0:
+            logger.info(
+                "Background: perf_snapshot backfill skipped (%d rows already present)", count
+            )
+            return
+
+        files = sorted(LOG_DIR.glob("perf_baseline_*.json"), key=lambda p: p.name)
+        if not files:
+            logger.info("Background: perf_snapshot backfill — no .log/perf_baseline_*.json found")
+            return
+
+        import json as _json
+        total = 0
+        for f in files:
+            try:
+                snap = _json.loads(f.read_text(encoding="utf-8"))
+                orm_rows = _parse_perf_snapshot_rows(snap)
+                if orm_rows:
+                    async with async_session() as session:
+                        session.add_all(orm_rows)
+                        await session.commit()
+                    total += len(orm_rows)
+                    logger.info(
+                        "Background: perf_snapshot backfill: ingested %s (%d rows)",
+                        f.name, len(orm_rows),
+                    )
+            except Exception as exc:
+                logger.warning("Background: perf_snapshot backfill: error on %s: %s", f.name, exc)
+
+        logger.info("Background: perf_snapshot backfill complete — %d total rows inserted", total)
+
+    # Startup: one-shot disk backfill (deferred 120s to let DB settle).
+    await asyncio.sleep(120)
+    try:
+        await _backfill_from_disk()
+    except Exception as exc:
+        logger.error("Background: perf_snapshot backfill failed: %s", exc)
+
+    # Daily cron at 04:00 IST.
+    while True:
+        now = timestamp_indian()
+        next_run = now.replace(hour=4, minute=0, second=0, microsecond=0)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+        sleep_s = (next_run - now).total_seconds()
+        logger.info(
+            "Background: _task_perf_snapshot sleeping %.1fh until 04:00 IST", sleep_s / 3600
+        )
+        await asyncio.sleep(sleep_s)
+        try:
+            with_runtime = get_bool("perf_snapshot.with_runtime", False)
+            await _run_and_insert(with_runtime=with_runtime)
+        except Exception as exc:
+            logger.error("Background: _task_perf_snapshot iteration failed: %s", exc)
+
+
+async def _task_purge_perf_snapshots() -> None:
+    """Daily 04:05 IST — purge old perf_snapshots rows.
+
+    Scheduled 5 minutes after ``_task_perf_snapshot`` (04:00) so the
+    nightly insert lands before the purge window fires.
+
+    Setting ``retention.perf_snapshots_days = 0`` disables the purge
+    so the table grows indefinitely (useful for long-term trend analysis).
+    """
+    from backend.api.database import async_session
+    from backend.shared.helpers.settings import get_int
+
+    async def _purge_once():
+        days = get_int("retention.perf_snapshots_days", 365)
+        if days <= 0:
+            logger.info("Background: perf_snapshots retention disabled (days=0)")
+            return
+        try:
+            async with async_session() as session:
+                deleted = await _apply_retention(session, "perf_snapshots", "captured_at", days)
+                await session.commit()
+            logger.info(
+                "Background: perf_snapshots purged %d row(s) older than %d days",
+                deleted, days,
+            )
+        except Exception as exc:
+            logger.error("Background: perf_snapshots purge failed: %s", exc)
+
+    await asyncio.sleep(300)  # startup settle — 5 min after process start
+
+    await _purge_once()
+
+    while True:
+        now = timestamp_indian()
+        next_run = now.replace(hour=4, minute=5, second=0, microsecond=0)
+        if now >= next_run:
+            next_run += timedelta(days=1)
+        sleep_s = (next_run - now).total_seconds()
+        logger.info(
+            "Background: perf_snapshots purge sleeping %.1fh until 04:05 IST", sleep_s / 3600
+        )
+        await asyncio.sleep(sleep_s)
+        await _purge_once()
+
+
 async def on_startup(app) -> None:
     """Start all background tasks. Called by Litestar on startup."""
     state: dict = {}
@@ -3876,6 +4154,8 @@ async def on_startup(app) -> None:
         asyncio.create_task(_task_market_lifecycle(),    name="bg-market-lifecycle"),
         asyncio.create_task(_task_funds_offhours(),      name="bg-funds-offhours"),
         asyncio.create_task(_task_warm_backfill(),       name="bg-warm-backfill"),
+        asyncio.create_task(_task_perf_snapshot(),       name="bg-perf-snapshot"),
+        asyncio.create_task(_task_purge_perf_snapshots(), name="bg-purge-perf-snapshots"),
     ]
     # Mode 2 (real-data paper) runs on BOTH main and dev branches.
     # The PaperTradeEngine singleton processes its open-order book against
