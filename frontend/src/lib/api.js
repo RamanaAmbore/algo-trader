@@ -494,6 +494,19 @@ export const fetchCodeMetricsDetail = (releaseTag) =>
 export const fetchCodeMetricsTrend = (metric, limit = 50) =>
   _get(`/admin/code-metrics/trends?metric=${encodeURIComponent(metric)}&limit=${limit}`, { auth: true });
 
+// ── Perf snapshots (admin) ──────────────────────────────────────────────
+/** GET /api/admin/perf/history?page=<name>&days=<N>
+ *  Returns { page_or_route, rows: [{captured_at, loc, cc_max, ...}] }
+ */
+export const fetchPerfHistory = (page, days = 30) =>
+  _get(`/admin/perf/history?page=${encodeURIComponent(page)}&days=${days}`, { auth: true });
+/** GET /api/admin/perf/latest — one row per (side, page_or_route). */
+export const fetchPerfLatest = () =>
+  _get('/admin/perf/latest', { auth: true });
+/** GET /api/admin/perf/regressions?days=7&threshold_pct=10 */
+export const fetchPerfRegressions = (days = 7, threshold_pct = 10) =>
+  _get(`/admin/perf/regressions?days=${days}&threshold_pct=${threshold_pct}`, { auth: true });
+
 // ── Settings (admin) ────────────────────────────────────────────────────
 export const fetchSettings     = () => _get('/admin/settings/', { auth: true });
 export const updateSetting     = (key, value) =>

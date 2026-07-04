@@ -20,6 +20,8 @@
 // Shared utilities (also exported for unit tests):
 //   parseSymbolFallback, parseSymbol, fillSymbolMeta, makeRowFactory
 
+import { livePositionDayPnl } from './nav.js';
+
 // ── Shared constants ─────────────────────────────────────────────────────────
 
 export const MAJOR_ORDER = { pinned: 0, watchlist: 1, positions: 2, holdings: 3, movers: 4 };
@@ -245,26 +247,25 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     } else if (row.ltp == null) {
       row.ltp = r.last_price ?? null;
     }
-    // Day P&L recompute with realised-today carry.
-    const _mktOpen = isMarketOpen();
-    const livePos = (_mktOpen && Number(liveQ?.ltp) > 0) ? Number(liveQ.ltp) : null;
-    const closePx = Number(r.close_price) || 0;
-    const pollLtp = Number(r.last_price) || 0;
-    const brokerDcv = baseDayPnlForPosition(r);
-    const realisedToday = (pollLtp > 0 && closePx > 0 && q !== 0)
-      ? brokerDcv - (pollLtp - closePx) * q
-      : 0;
-    if (livePos != null && closePx > 0 && q !== 0) {
-      row.day_pnl = (row.day_pnl ?? 0) + realisedToday + (livePos - closePx) * q;
-    } else if (_mktOpen && livePos != null && closePx === 0 && avg > 0 && q !== 0) {
-      // Contract A — position opened today; no prior close_price.
-      row.day_pnl = (row.day_pnl ?? 0) + (livePos - avg) * q;
-    } else {
-      row.day_pnl = (row.day_pnl ?? 0) + brokerDcv;
-    }
+    // Day P&L recompute — delegates to livePositionDayPnl (nav.js SSOT).
+    // Normalise raw broker field names to the canonical param bag so the
+    // helper works identically for both Pulse and Derivatives consumers.
+    const _mktOpen  = isMarketOpen();
+    const legLiveLtp = (_mktOpen && Number(liveQ?.ltp) > 0) ? Number(liveQ.ltp) : null;
+    row.day_pnl = (row.day_pnl ?? 0) + livePositionDayPnl(
+      {
+        closePx: Number(r.close_price) || 0,
+        pollLtp: Number(r.last_price)  || 0,
+        qty:     q,
+        avg,
+        dcvRow:  r,
+      },
+      legLiveLtp,
+      { marketOpen: _mktOpen },
+    );
     // Total P&L live recompute.
-    if (livePos != null && avg > 0 && q !== 0) {
-      row.pnl = (row.pnl ?? 0) + (livePos - avg) * q + (Number(r.realised) || 0);
+    if (legLiveLtp != null && avg > 0 && q !== 0) {
+      row.pnl = (row.pnl ?? 0) + (legLiveLtp - avg) * q + (Number(r.realised) || 0);
     } else {
       row.pnl = (row.pnl ?? 0) + (Number(r.pnl) || 0);
     }

@@ -394,6 +394,7 @@
     { href: '/admin/history',    label: 'History',   adminOnly: true, group: 'config' },
     { href: '/admin/audit',      label: 'Audit',     adminOnly: true, group: 'config' },
     { href: '/admin/metrics',    label: 'Metrics',   adminOnly: true, group: 'config' },
+    { href: '/admin/perf',       label: 'Perf',      adminOnly: true, group: 'config' },
     { href: '/admin/health',     label: 'Health',    adminOnly: true, group: 'config' },
   ];
   // Branch-aware + demo-aware + mode-aware filter.
