@@ -124,7 +124,7 @@ HEADER = r"""
 \fancyhead[L]{\color{ramboqmuted}\small\sffamily RamboQuant \textbf{Design Guide}}
 \fancyhead[R]{\color{ramboqmuted}\small\sffamily Ramana Ambore}
 \fancyfoot[L]{\color{ramboqmuted}\scriptsize\sffamily ramboq.com}
-\fancyfoot[C]{\color{ramboqnavy}\small\sffamily\bfseries \thepage\ \normalfont\color{ramboqmuted}of \pageref*{LastPage}}
+\fancyfoot[C]{\color{ramboqmuted}\small\sffamily page \color{ramboqnavy}\bfseries\thepage\ \normalfont\color{ramboqmuted}of \pageref*{LastPage}}
 \fancyfoot[R]{\color{ramboqmuted}\scriptsize\sffamily RamboQuant LLP}
 \renewcommand{\headrulewidth}{0.6pt}
 \renewcommand{\footrulewidth}{0.3pt}
@@ -174,29 +174,31 @@ FRONT_MATTER = rf"""
   }};
 
   % Hero title — platform name.
-  % Line 1: "RamboQuant" — big.
-  \node[anchor=west,xshift=1in] at ([yshift=0.7in]current page.center) {{%
-    \color{{white}}\sffamily\fontsize{{68}}{{78}}\selectfont\bfseries RamboQuant
+  % Anchor from page.west (left edge) + 0.9in so the long titles never
+  % run into the amber wedge on the right. Fonts sized to fit.
+  % Line 1: "RamboQuant" — 60pt white.
+  \node[anchor=west] at ([xshift=0.9in,yshift=0.9in]current page.west) {{%
+    \color{{white}}\sffamily\fontsize{{60}}{{68}}\selectfont\bfseries RamboQuant
   }};
-  % Line 2: "Algo Trading" — medium amber.
-  \node[anchor=west,xshift=1in] at ([yshift=-0.35in]current page.center) {{%
-    \color{{ramboqamber}}\sffamily\fontsize{{40}}{{46}}\selectfont\bfseries Algo Trading
+  % Line 2: "Algo Trading" — 34pt amber.
+  \node[anchor=west] at ([xshift=0.9in,yshift=-0.05in]current page.west) {{%
+    \color{{ramboqamber}}\sffamily\fontsize{{34}}{{40}}\selectfont\bfseries Algo Trading
   }};
-  % Line 3: "Platform" — medium white.
-  \node[anchor=west,xshift=1in] at ([yshift=-1.05in]current page.center) {{%
-    \color{{white}}\sffamily\fontsize{{40}}{{46}}\selectfont\bfseries Platform
+  % Line 3: "Platform" — 34pt white.
+  \node[anchor=west] at ([xshift=0.9in,yshift=-0.65in]current page.west) {{%
+    \color{{white}}\sffamily\fontsize{{34}}{{40}}\selectfont\bfseries Platform
   }};
 
   % Amber rule.
   \draw[ramboqamber,line width=1.8pt]
-    ([xshift=1in,yshift=-1.65in]current page.center)
-    -- ([xshift=3in,yshift=-1.65in]current page.center);
+    ([xshift=0.9in,yshift=-1.2in]current page.west)
+    -- ([xshift=2.9in,yshift=-1.2in]current page.west);
 
   % Author name + role — below rule.
-  \node[anchor=west,xshift=1in] at ([yshift=-2in]current page.center) {{%
+  \node[anchor=west] at ([xshift=0.9in,yshift=-1.55in]current page.west) {{%
     \color{{white}}\sffamily\LARGE\bfseries Ramana R Ambore, \textcolor{{ramboqamber}}{{FRM}}
   }};
-  \node[anchor=west,xshift=1in] at ([yshift=-2.35in]current page.center) {{%
+  \node[anchor=west] at ([xshift=0.9in,yshift=-1.9in]current page.west) {{%
     \color{{ramboqcream}}\sffamily\large Platform Engineer --- RamboQuant LLP
   }};
 
@@ -259,15 +261,15 @@ Deep specialism in derivatives risk and options pricing --- Black-Scholes, Greek
 \begin{{minipage}}[t]{{0.36\linewidth}}
 \begin{{tikzpicture}}
   \node[
-    draw=ramboqamber,
-    line width=1.2pt,
+    draw=ramboqcopper,
+    line width=0.6pt,
     fill=callbg,
-    inner sep=10pt,
+    inner sep=9pt,
     rounded corners=3pt,
     text width=0.94\linewidth,
     align=left,
   ]{{%
-    {{\color{{ramboqamber}}\sffamily\footnotesize\bfseries VERSION}}\\[4pt]
+    {{\color{{ramboqamber}}\sffamily\footnotesize\bfseries VERSION}}\\[3pt]
     {{\color{{ramboqnavy}}\sffamily\small\bfseries Generated}}\\
     {{\color{{ramboqslate}}\sffamily\small \today}}\\[3pt]
     {{\color{{ramboqnavy}}\sffamily\small\bfseries Revision}}\\
@@ -277,7 +279,9 @@ Deep specialism in derivatives risk and options pricing --- Black-Scholes, Greek
     {{\color{{ramboqnavy}}\sffamily\small\bfseries Website}}\\
     {{\color{{ramboqcopper}}\sffamily\small\bfseries \href{{https://ramboq.com}}{{ramboq.com}}}}\\[3pt]
     {{\color{{ramboqnavy}}\sffamily\small\bfseries Profile}}\\
-    {{\color{{ramboqcopper}}\sffamily\small\bfseries \href{{https://ramanaambore.me}}{{ramanaambore.me}}}}
+    {{\color{{ramboqcopper}}\sffamily\small\bfseries \href{{https://ramanaambore.me}}{{ramanaambore.me}}}}\\[3pt]
+    {{\color{{ramboqnavy}}\sffamily\small\bfseries Tech Stack}}\\
+    {{\color{{ramboqslate}}\sffamily\footnotesize SvelteKit \textcolor{{ramboqcopper}}{{$\bullet$}} Litestar \textcolor{{ramboqcopper}}{{$\bullet$}} PostgreSQL \textcolor{{ramboqcopper}}{{$\bullet$}} KiteTicker \textcolor{{ramboqcopper}}{{$\bullet$}} Kite/Dhan/Groww \textcolor{{ramboqcopper}}{{$\bullet$}} MCP \textcolor{{ramboqcopper}}{{$\bullet$}} Gemini}}
   }};
 \end{{tikzpicture}}
 \end{{minipage}}
@@ -300,7 +304,6 @@ Deep specialism in derivatives risk and options pricing --- Black-Scholes, Greek
       \textbf{{FRM}} (GARP, 2022) \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
       \textbf{{CFA Level~2}} \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
       \textbf{{Master's, Computer Science}} \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
-      PMP \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
       Six Sigma Green Belt \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
       IBM Certified DB2 DBA \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
       Sun Certified Java Programmer
@@ -350,37 +353,6 @@ Deep specialism in derivatives risk and options pricing --- Black-Scholes, Greek
     {{\color{{white}}\sffamily\small\bfseries NTT Innovation Award}}\\
     {{\color{{ramboqcream}}\sffamily\footnotesize Top-40 global innovator}}\\[2pt]
     {{\color{{white}}\sffamily\scriptsize Selected globally for financial-services engineering innovation.}}
-  }};
-\end{{tikzpicture}}
-
-\vspace{{6pt}}
-
-% Technical stack strip.
-{{\color{{ramboqamber}}\sffamily\footnotesize\bfseries TECHNICAL STACK}}\\[2pt]
-\begin{{tikzpicture}}
-  \node[
-    draw=ramboqcopper,
-    line width=0.6pt,
-    fill=callbg,
-    inner sep=7pt,
-    text width=0.965\linewidth,
-    rounded corners=3pt,
-    align=left,
-  ]{{%
-    {{\color{{ramboqnavy}}\sffamily\small
-      Python \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
-      Java \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
-      AWS \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
-      Snowflake \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
-      Spark \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
-      Terraform \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
-      Spring Boot \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
-      SvelteKit \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
-      Litestar \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
-      PostgreSQL \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
-      COBOL \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
-      Quantitative Finance
-    }}
   }};
 \end{{tikzpicture}}
 
