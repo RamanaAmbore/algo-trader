@@ -32,6 +32,7 @@ import pytest
 _SNAP_SRC    = Path(__file__).parent.parent / "api" / "algo" / "daily_snapshot.py"
 _HANDLERS_SRC = Path(__file__).parent.parent / "api" / "algo" / "market_lifecycle_handlers.py"
 _POS_SRC     = Path(__file__).parent.parent / "api" / "routes" / "positions.py"
+_POS_HELPERS_SRC = Path(__file__).parent.parent / "api" / "routes" / "positions_helpers.py"
 _HOL_SRC     = Path(__file__).parent.parent / "api" / "routes" / "holdings.py"
 _PULSE_SRC   = Path(__file__).parent.parent.parent / "frontend" / "src" / "lib" / "MarketPulse.svelte"
 
@@ -328,10 +329,10 @@ class TestClosedHoursRouteReturnsSnapshot:
             handler_fn = PositionsController.get_positions.fn
 
             mock_request = MagicMock()
-            with patch("backend.api.routes.positions.is_admin_request", return_value=True), \
-                 patch("backend.api.routes.positions.resolve_role_from_connection",
+            with patch("backend.api.routes.positions_helpers.is_admin_request", return_value=True), \
+                 patch("backend.api.routes.positions_helpers.resolve_role_from_connection",
                        return_value="admin"), \
-                 patch("backend.api.routes.positions.normalise_role", return_value="admin"):
+                 patch("backend.api.routes.positions_helpers.normalise_role", return_value="admin"):
                 resp = await handler_fn(None, mock_request, fresh=False)
 
         # 1. Snapshot returned
@@ -680,18 +681,24 @@ class TestClosedHoursRouteReturnsSnapshot:
             assert math.isclose(row.pnl, 500.0, rel_tol=1e-6)
 
     def test_positions_snapshot_source_contains_extras_fallback(self):
-        """SSOT — the extras-fallback block is present in _positions_snapshot.
+        """SSOT — the extras-fallback block is present in _positions_snapshot or
+        its extracted helper (positions_helpers.py).
         Guards against a future refactor accidentally removing the fallback
         (which would silently regress the closed-hours Day P&L pipeline)."""
-        src = _src(_POS_SRC)
+        # After the cc-reduction refactor, this logic lives in positions_helpers.py
+        # (resolve_snapshot_day_pnl / extract_snapshot_extras). Accept either file.
+        combined_src = _src(_POS_SRC) + _src(_POS_HELPERS_SRC)
         # The fallback path must reference snapshot_extras key lookup
-        assert "snapshot_extras" in src, (
+        assert "snapshot_extras" in combined_src, (
             "_positions_snapshot must reference snapshot_extras — "
             "the extras-fallback path was removed"
         )
         # And must specifically pull day_change_val from extras
-        assert 'extras.get("day_change_val")' in src or "extras.get('day_change_val')" in src, (
-            "_positions_snapshot must read day_change_val from extras"
+        assert (
+            'extras.get("day_change_val")' in combined_src
+            or "extras.get('day_change_val')" in combined_src
+        ), (
+            "_positions_snapshot (or its helpers) must read day_change_val from extras"
         )
 
     @pytest.mark.asyncio
@@ -712,10 +719,10 @@ class TestClosedHoursRouteReturnsSnapshot:
             handler_fn = PositionsController.get_positions.fn
 
             mock_request = MagicMock()
-            with patch("backend.api.routes.positions.is_admin_request", return_value=True), \
-                 patch("backend.api.routes.positions.resolve_role_from_connection",
+            with patch("backend.api.routes.positions_helpers.is_admin_request", return_value=True), \
+                 patch("backend.api.routes.positions_helpers.resolve_role_from_connection",
                        return_value="admin"), \
-                 patch("backend.api.routes.positions.normalise_role", return_value="admin"):
+                 patch("backend.api.routes.positions_helpers.normalise_role", return_value="admin"):
                 resp = await handler_fn(None, mock_request, fresh=False)
 
         assert resp.as_of is None, "as_of must be None on live-market response"
