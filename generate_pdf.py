@@ -329,7 +329,25 @@ The RamboQuant \textbf{{Complete Design Guide}} is a top-to-bottom developer + o
       {{\color{{ramboqcopper}}\sffamily\small\bfseries \href{{https://ramboq.com}}{{ramboq.com}}}} \\[8pt]
       \multicolumn{{3}}{{@{{}}p{{0.965\linewidth}}@{{}}}}{{%
         {{\color{{ramboqnavy}}\sffamily\small\bfseries Tech Stack}}\newline
-        {{\color{{ramboqslate}}\sffamily\small SvelteKit \textcolor{{ramboqcopper}}{{$\bullet$}} Litestar \textcolor{{ramboqcopper}}{{$\bullet$}} PostgreSQL \textcolor{{ramboqcopper}}{{$\bullet$}} async SQLAlchemy 2.x \textcolor{{ramboqcopper}}{{$\bullet$}} KiteTicker WebSocket \textcolor{{ramboqcopper}}{{$\bullet$}} Kite / Dhan / Groww adapters \textcolor{{ramboqcopper}}{{$\bullet$}} MCP \textcolor{{ramboqcopper}}{{$\bullet$}} Gemini}}%
+        {{\color{{ramboqslate}}\sffamily\footnotesize
+        \textbf{{Frontend:}} SvelteKit \textcolor{{ramboqcopper}}{{$\bullet$}} Svelte~5 runes \textcolor{{ramboqcopper}}{{$\bullet$}} Vite \textcolor{{ramboqcopper}}{{$\bullet$}} ag-grid \textcolor{{ramboqcopper}}{{$\bullet$}} @tanstack/svelte-query \textcolor{{ramboqcopper}}{{$\bullet$}} Tailwind \textcolor{{ramboqcopper}}{{$\bullet$}} Playwright
+        \newline
+        \textbf{{API:}} Litestar 2.x \textcolor{{ramboqcopper}}{{$\bullet$}} msgspec.Struct \textcolor{{ramboqcopper}}{{$\bullet$}} uvicorn \textcolor{{ramboqcopper}}{{$\bullet$}} async SQLAlchemy 2.x \textcolor{{ramboqcopper}}{{$\bullet$}} asyncpg \textcolor{{ramboqcopper}}{{$\bullet$}} httpx \textcolor{{ramboqcopper}}{{$\bullet$}} PyJWT (HS256)
+        \newline
+        \textbf{{Data:}} PostgreSQL 17 \textcolor{{ramboqcopper}}{{$\bullet$}} polars \textcolor{{ramboqcopper}}{{$\bullet$}} pandas (broker boundary)
+        \newline
+        \textbf{{IPC:}} mmap /dev/shm/ramboq\_ticks \textcolor{{ramboqcopper}}{{$\bullet$}} UDS /tmp/ramboq\_conn.sock \textcolor{{ramboqcopper}}{{$\bullet$}} SSE \textcolor{{ramboqcopper}}{{$\bullet$}} WebSocket \textcolor{{ramboqcopper}}{{$\bullet$}} BroadcastBus
+        \newline
+        \textbf{{Queues:}} in-process EventQueue + write\_queue \textcolor{{ramboqcopper}}{{$\bullet$}} ARQ + Redis worker (separate systemd unit)
+        \newline
+        \textbf{{Brokers:}} kiteconnect \textcolor{{ramboqcopper}}{{$\bullet$}} dhanhq \textcolor{{ramboqcopper}}{{$\bullet$}} growwapi \textcolor{{ramboqcopper}}{{$\bullet$}} pyotp (2FA) \textcolor{{ramboqcopper}}{{$\bullet$}} KiteTicker WebSocket
+        \newline
+        \textbf{{Intelligence:}} Gemini (google-genai) \textcolor{{ramboqcopper}}{{$\bullet$}} MCP server \textcolor{{ramboqcopper}}{{$\bullet$}} fpdf2 (investor statements) \textcolor{{ramboqcopper}}{{$\bullet$}} babel (i18n)
+        \newline
+        \textbf{{Security:}} cryptography.Fernet (broker credential encryption) \textcolor{{ramboqcopper}}{{$\bullet$}} maxminddb (geo)
+        \newline
+        \textbf{{Deploy:}} systemd (api / conn / worker / hook) \textcolor{{ramboqcopper}}{{$\bullet$}} nginx \textcolor{{ramboqcopper}}{{$\bullet$}} Cloudflare \textcolor{{ramboqcopper}}{{$\bullet$}} webhook.ramboq.com auto-deploy
+        }}%
         \vspace{{4pt}}
       }} \\
     \end{{tabular}}
