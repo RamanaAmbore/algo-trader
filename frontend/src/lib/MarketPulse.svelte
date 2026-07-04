@@ -1290,20 +1290,23 @@
       ? loadLists().then(() => (activeIds.size > 0 ? loadActive() : null))
       : Promise.resolve();
     const fundsP  = showFunds ? loadFunds() : Promise.resolve();
-    // Parallel handshake: kick off movers eagerly and stash the promise
-    // in `_pendingMoversP`. loadPulse awaits it inline just before the
-    // mover-add loop (see :mover-await in loadPulse) so positions +
-    // holdings + underlying resolution + contract/watchlist batchQuote
-    // key assembly all overlap with the movers RTT. Prior wave (serial
-    // `await movers → loadPulse`) held first paint hostage to the movers
-    // fetch even though only the mover-add loop consumed it.
-    _pendingMoversP = enableMovers
-      ? loadMovers().catch(() => null)
-      : null;
+    // Load movers BEFORE loadPulse so mover symbols are in the store when
+    // loadPulse's batchQuote pass assembles allKeys. During closed hours
+    // marketAwareInterval suspends _runTick so a mount race means blank
+    // Winners/Losers vol/oi cells until manual refresh.
+    //
+    // Mount stays sequential — activeLists (from listsP) must be populated
+    // before loadPulse's watchlist-add loop runs, or pinned/watchlist symbols
+    // miss the same batchQuote pass. refreshAllNow uses a `_pendingMoversP`
+    // handshake instead (see loadMovers block) since by refresh time both
+    // instruments + activeLists are already hot.
     await Promise.allSettled([instrumentsP, accountsP, listsP, fundsP,
-      _pendingMoversP || Promise.resolve(),
-      loadPulse({ force: true })]);
-    _pendingMoversP = null;
+      enableMovers ? loadMovers() : Promise.resolve()]);
+    // Now that movers (and lists/positions) are in their stores, run
+    // loadPulse so the batchQuote includes mover + watchlist symbols.
+    // force=true: ensure positions + holdings + batchQuote all fire on
+    // first paint even if the book poller already has a value cached.
+    await loadPulse({ force: true });
     // Sparkline bootstrap — ensure positions + holdings are in the store
     // before we snapshot unifiedRows for the pairs list.
     //
