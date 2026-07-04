@@ -106,6 +106,67 @@ export function baseDayPnlForPosition(p) {
 }
 
 /**
+ * Live-LTP-aware Day P&L for a single position.
+ *
+ * Extends `baseDayPnlForPosition` with a live-tick rescue path for the
+ * MCX stale-ticker fingerprint: when the broker REST endpoint ships
+ * `last_price === close_price` (KiteTicker lag observed for CRUDEOIL
+ * options around session open), `day_change_val` collapses to 0. Pulse
+ * rescues this by recomputing via `(liveLtp − closePx) × qty` when a
+ * live SSE tick is available; Derivatives was not applying the same
+ * rescue — causing 0 instead of the correct Day P&L. This helper is
+ * the canonical implementation shared by both surfaces so they cannot
+ * drift.
+ *
+ * Recompute path (applied only when ALL of these hold):
+ *   - `marketOpen` is true
+ *   - `liveLtp` is a positive finite number (from SSE / symbolStore)
+ *   - `closePx` > 0 and `qty` ≠ 0
+ *
+ * When the recompute applies:
+ *   realisedToday = brokerDcv − (pollLtp − closePx) × qty
+ *   result        = realisedToday + (liveLtp − closePx) × qty
+ *
+ * Fallback: contracts opened today (closePx = 0, avg > 0):
+ *   result = (liveLtp − avg) × qty
+ *
+ * Otherwise: `baseDayPnlForPosition(dcvRow)`.
+ *
+ * IMPORTANT — the two callers use different field names:
+ *   - Pulse (raw broker row): close_price, last_price, quantity, average_price
+ *   - Derivatives (normalised candidate): prev_close, ltp, qty, avg_cost
+ * Both callers normalise to explicit params before calling this helper.
+ *
+ * @param {{
+ *   closePx:  number,  // prev session close  (r.close_price / c.prev_close)
+ *   pollLtp:  number,  // LTP at last broker poll (r.last_price / c.ltp)
+ *   qty:      number,  // signed net qty
+ *   avg:      number,  // average cost per unit
+ *   dcvRow:   object,  // raw row for baseDayPnlForPosition (needs day_change_val / overnight_quantity / pnl)
+ * }} fields
+ * @param {number|null|undefined} liveLtp  - live SSE tick LTP for this leg's own symbol
+ * @param {{ marketOpen: boolean }} opts
+ * @returns {number}
+ */
+export function livePositionDayPnl({ closePx, pollLtp, qty, avg, dcvRow }, liveLtp, { marketOpen }) {
+  const brokerDcv = baseDayPnlForPosition(dcvRow);
+  const live = (marketOpen && Number(liveLtp) > 0) ? Number(liveLtp) : null;
+  if (live != null && closePx > 0 && qty !== 0) {
+    // Realised-today component: broker's dcv minus the overnight mark-to-close
+    // residual, so adding the live residual gives the full intraday P&L.
+    const realisedToday = (pollLtp > 0 && closePx > 0)
+      ? brokerDcv - (pollLtp - closePx) * qty
+      : 0;
+    return realisedToday + (live - closePx) * qty;
+  }
+  if (marketOpen && live != null && closePx === 0 && avg > 0 && qty !== 0) {
+    // Position opened today — no prior close, track from avg_cost.
+    return (live - avg) * qty;
+  }
+  return brokerDcv;
+}
+
+/**
  * Compute today's day P&L and lifetime P&L for F&O/derivative positions only.
  * Excludes equity (NSE/BSE) positions to avoid double-counting with the H pill.
  *

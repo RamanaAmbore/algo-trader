@@ -50,7 +50,7 @@
   import {
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
-  import { baseDayPnlForPosition } from '$lib/data/nav';
+  import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav';
   import ChartModal from '$lib/ChartModal.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
@@ -2034,12 +2034,25 @@
       const ep = _expiryPnl(c, spot);
       if (ep != null && isFinite(ep)) return ep;
     }
-    // baseDayPnlForPosition is the SSOT for the new-position override
-    // (overnight_quantity=0 → day = total pnl). All surfaces that show
-    // per-position Day P&L must funnel through this helper so the formula
-    // is applied uniformly: NavStrip P slot 1 (positionsPnlFiltered),
-    // Snapshot rows, Legs grid, Exp Close, and this Payoff overlay path.
-    return baseDayPnlForPosition(c);
+    // livePositionDayPnl is the SSOT for Day P&L with live-tick rescue.
+    // It wraps baseDayPnlForPosition and additionally rescues the MCX
+    // stale-ticker fingerprint (last_price === close_price → dcv = 0)
+    // by recomputing via (liveLtp − close) × qty when an SSE tick is
+    // available — the same logic Pulse uses in mergePositionRows.
+    // untrack() on getSnapshot prevents the 4 Hz _throttledTick gate
+    // from being bypassed (mirrors the pattern at candidatesDayPnl line).
+    const legLiveLtp = untrack(() => getSnapshot(String(c.symbol || '').toUpperCase())?.ltp);
+    return livePositionDayPnl(
+      {
+        closePx: Number(c.prev_close ?? 0),
+        pollLtp: Number(c.ltp ?? 0),
+        qty:     Number(c.qty ?? 0),
+        avg:     Number(c.avg_cost ?? 0),
+        dcvRow:  c,
+      },
+      legLiveLtp,
+      { marketOpen: isMarketOpen() },
+    );
   }
 
   /** @param {any} c - candidate row
