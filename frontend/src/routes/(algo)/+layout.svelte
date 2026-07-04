@@ -3,7 +3,7 @@
   import { page } from '$app/state';
   import { onMount, onDestroy, setContext } from 'svelte';
   import { get } from 'svelte/store';
-  import { authStore, visibleInterval, executionMode, connStatus, startConnStatusPoller, startMarketStatusPoller, brokerHealthStore, startBrokerHealthPoller, activityModal, openActivityModal, closeActivityModal, setHibernationIdleMinutes } from '$lib/stores';
+  import { authStore, visibleInterval, executionMode, connStatus, startConnStatusPoller, startMarketStatusPoller, brokerHealthStore, startBrokerHealthPoller, activityModal, openActivityModal, closeActivityModal, setHibernationIdleMinutes, openOrderTicketModal, openChartModalTrigger } from '$lib/stores';
   import ActivityLogModal from '$lib/ActivityLogModal.svelte';
   import {
     fetchSimStatus, fetchPaperStatus,
@@ -133,14 +133,18 @@
     if (_gPending) {
       const target = k.toLowerCase();
       _clearG();
+      // Bloomberg-style two-key navigation. `g m` scrolls to the movers
+      // section on /pulse via the anchor fragment.
       const route =
         target === 'p' ? '/pulse'
       : target === 'd' ? '/dashboard'
       : target === 'o' ? '/orders'
-      : target === 'r' ? '/admin/derivatives'
-      : target === 'h' ? '/admin/history'
+      : target === 'e' ? '/admin/derivatives'
+      : target === 'c' ? '/charts'
+      : target === 'v' ? '/performance'
       : target === 'a' ? '/automation'
-      : target === 's' ? '/admin/settings'
+      : target === 'h' ? '/admin/history'
+      : target === 'm' ? '/pulse#movers'
       : null;
       if (route) { e.preventDefault(); goto(route); }
       return;
@@ -161,24 +165,56 @@
       if (target) { e.preventDefault(); target.focus(); target.select?.(); }
       return;
     }
-    if (k.toLowerCase() === 'o') {
-      e.preventDefault();
-      goto('/orders');
-      return;
-    }
     if (k.toLowerCase() === 'r') {
       e.preventDefault();
-      // Trigger a soft reload of the current SvelteKit route — preserves
-      // the SPA cache for non-page resources, just re-runs the load.
-      goto(window.location.pathname + window.location.search,
-           { invalidateAll: true });
+      // Dispatch `refresh-page` event — every mounted RefreshButton hears
+      // it and fires its own onClick. Falls back to SvelteKit invalidateAll
+      // when no RefreshButton is present on the page.
+      const hadButton = document.querySelector('.rf-btn') !== null;
+      window.dispatchEvent(new CustomEvent('refresh-page'));
+      if (!hadButton) {
+        goto(window.location.pathname + window.location.search,
+             { invalidateAll: true });
+      }
+      return;
+    }
+    // `t` = trade → order ticket modal.
+    if (k.toLowerCase() === 't') {
+      e.preventDefault();
+      openOrderTicketModal();
+      return;
+    }
+    // `h` = history/log → activity modal.
+    if (k.toLowerCase() === 'h') {
+      e.preventDefault();
+      openActivityModal('order');
+      return;
+    }
+    // `k` = kline → chart modal (when no grid is focused; grid up-arrow
+    // when a grid row has focus handled via `k` conflict rule below).
+    // Cmd+K / Ctrl+K is handled separately below — skip here.
+    if (k.toLowerCase() === 'k' && !e.metaKey && !e.ctrlKey) {
+      // If an ag-Grid row has focus, let the grid handle navigation natively.
+      const ae2 = /** @type {HTMLElement|null} */ (document.activeElement);
+      if (ae2?.closest('.ag-root-wrapper')) return;
+      e.preventDefault();
+      openChartModalTrigger();
+      return;
+    }
+    // `j` = vim down / `k` already handled above. ag-Grid rows use arrow
+    // keys natively; `j` scrolls the focused grid row down one step.
+    if (k.toLowerCase() === 'j') {
+      const ae3 = /** @type {HTMLElement|null} */ (document.activeElement);
+      if (ae3?.closest('.ag-root-wrapper')) return; // grid handles it
+      // No non-grid target for `j` yet — reserved for future use.
       return;
     }
     if ((e.metaKey || e.ctrlKey) && k.toLowerCase() === 'k') {
-      // Reserved for future Cmd+K command palette. For now route to
-      // /orders (closest to a "global command launcher" today).
+      // Phase 3 stub — future Cmd+K command palette.
       e.preventDefault();
-      goto('/orders');
+      // TODO: open command palette when built; for now open activity modal
+      // as the closest "search all actions" surface.
+      openActivityModal('order');
       return;
     }
   }
