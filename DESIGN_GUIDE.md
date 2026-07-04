@@ -1,91 +1,112 @@
 # RamboQuant — Complete Design Guide
 
-The full developer onboarding document. Read top-to-bottom to understand the codebase end-to-end; reference specific sections for ongoing work. Flow diagrams use Mermaid. Tech-stack rationale (why/what/how/where) is interleaved with each subsystem rather than collected separately — easier to learn in context.
+## About the author
 
-**Goal:** anybody who reads + understands this document should be able to modify and enhance features by making the actual code changes. Each subsystem section names the files; **Part IX** at the end is a cookbook of common change recipes with exact-diff-level guidance.
+**Ramana Ambore** — platform engineer for **RamboQuant LLP**.
+
+Builds and maintains the RamboQuant platform end-to-end: a production application covering multi-broker order routing, real-time market data pipelines, options analytics, portfolio tracking, and operator + investor-facing tooling.
+
+Full-stack scope: SvelteKit + Svelte 5 frontend, Litestar / Python async API, PostgreSQL, Kite / Dhan / Groww broker adapters, KiteTicker WebSocket + shared-memory tick pipeline, Gemini-driven market summaries, MCP-integrated research tooling, and web-vitals-tracked deploys.
+
+- **Website**: [ramboq.com](https://ramboq.com)
+- **Repo**: private; access via RamboQuant LLP
+- **Contact**: through the ramboq.com contact page
+
+## About this document
+
+The full developer onboarding document. Read top-to-bottom to understand the codebase end-to-end; reference specific sections for ongoing work. Flow diagrams use Mermaid. Tech-stack rationale (why / what / how / where) is interleaved with each subsystem rather than collected separately — easier to learn in context.
+
+**Goal:** anybody who reads and understands this document should be able to modify and enhance features by making the actual code changes. Each subsystem section names the files; **Part IX** at the end is a cookbook of common change recipes with exact-diff-level guidance.
 
 ---
 
 ## Table of contents
 
-### Part I — Foundation
-1. [Architecture overview](#1-architecture-overview)
-2. [Tech stack — at a glance](#2-tech-stack--at-a-glance)
-3. [Core architectural principles](#3-core-architectural-principles)
-4. [Concurrency model](#4-concurrency-model)
-4.5. [Data layer — implementation detail](#45-data-layer--implementation-detail)
+**Part I — Foundation**
 
-### Part II — Order lifecycle
-5. [Order placement — single ticket (Ticket tab)](#5-order-placement--single-ticket-ticket-tab)
-6. [Order placement — basket (Chain tab)](#6-order-placement--basket-chain-tab)
-7. [Chase loop lifecycle](#7-chase-loop-lifecycle)
-8. [The order/chase/template tripod](#8-the-orderchasetemplate-tripod)
+- §1. [Architecture overview](#1-architecture-overview)
+- §2. [Tech stack — at a glance](#2-tech-stack--at-a-glance)
+- §3. [Core architectural principles](#3-core-architectural-principles)
+- §4. [Concurrency model](#4-concurrency-model)
+- §4.5. [Data layer — implementation detail](#45-data-layer--implementation-detail)
+- §4.6. [Database schema overview](#46-database-schema-overview)
+- §4.7. [Table relationships](#47-table-relationships)
+- §4.8. [Retention policies](#48-retention-policies)
+- §4.9. [Metrics + performance tracking](#49-metrics--performance-tracking)
 
-### Part III — Templates + exits
-9. [Template attach pipeline](#9-template-attach-pipeline)
-10. [4-default template matrix](#10-4-default-template-matrix)
-11. [Template override merge](#11-template-override-merge)
-12. [Chase loop invariants](#12-chase-loop-invariants)
-13. [Trail-stop subsystem](#13-trail-stop-subsystem)
+**Part II — Order lifecycle**
 
-### Part IV — Brokers
-14. [Broker abstraction](#14-broker-abstraction)
-14.5. [Broker abstraction — implementation detail](#145-broker-abstraction--implementation-detail)
-15. [How to add a new broker](#15-how-to-add-a-new-broker)
-16. [Broker gotchas](#16-broker-gotchas)
+- §5. [Order placement — single ticket (Ticket tab)](#5-order-placement--single-ticket-ticket-tab)
+- §6. [Order placement — basket (Chain tab)](#6-order-placement--basket-chain-tab)
+- §7. [Chase loop lifecycle](#7-chase-loop-lifecycle)
+- §8. [The order/chase/template tripod](#8-the-orderchasetemplate-tripod)
 
-### Part V — Frontend
-17. [Frontend modal state](#17-frontend-modal-state)
-18. [Frontend state architecture](#18-frontend-state-architecture)
-19. [The preview pipeline](#19-the-preview-pipeline)
+**Part III — Templates + exits**
 
-### Part VI — Runtime
-20. [Background task topology](#20-background-task-topology)
-21. [Data refresh — PositionStrip + Dashboard](#21-data-refresh--positionstrip--dashboard)
-22. [Demo mode](#22-demo-mode)
-22.5. [Investor portal — token-as-credential](#225-investor-portal--token-as-credential)
-22.6. [Investor portal — units-based NAV math](#226-investor-portal--units-based-nav-math)
-22.7. [Audit log — forensic trail](#227-audit-log--forensic-trail)
-22.8. [Postback fan-out — book_changed bus](#228-postback-fan-out--book_changed-bus)
-22.9. [History — multi-day orders / trades / funds](#229-history--multi-day-orders--trades--funds)
-22.10. [Order placement latency — preflight + tick cache + paper-skip](#2210-order-placement-latency--preflight--tick-cache--paper-skip)
-22.11. [Navbar audit — rename + resequence](#2211-navbar-audit--rename--resequence)
-22.12. [#audit workflow + Dhan / Groww postback scaffold](#2212-audit-workflow--dhan--groww-postback-scaffold)
-22.13. [Audit slice D — UX consistency + palette consolidation + 2 defects](#2213-audit-slice-d--ux-consistency--palette-consolidation--2-defects)
-22.14. [Market-status — broker API beats bellwether-quote probe](#2214-market-status--broker-api-beats-bellwether-quote-probe)
-22.15. [Chart indicator system — pure module + overlay persistence](#2215-chart-indicator-system--pure-module--overlay-persistence)
+- §9. [Template attach pipeline](#9-template-attach-pipeline)
+- §10. [4-default template matrix](#10-4-default-template-matrix)
+- §11. [Template override merge](#11-template-override-merge)
+- §12. [Chase loop invariants](#12-chase-loop-invariants)
+- §13. [Trail-stop subsystem](#13-trail-stop-subsystem)
 
-### Part VI.5 — Database schema
-4.6. [Database schema overview](#46-database-schema-overview)
-4.7. [Table relationships](#47-table-relationships)
-4.8. [Retention policies](#48-retention-policies)
-4.9. [Metrics + Performance tracking](#49-metrics--performance-tracking)
+**Part IV — Brokers**
 
-### Part VII — Operations
-23. [How to add a new template field](#23-how-to-add-a-new-template-field)
-24. [Testing philosophy](#24-testing-philosophy)
-25. [Logging discipline](#25-logging-discipline)
-26. [Deployment notes](#26-deployment-notes)
-27. [Sprint history + audit fixes](#27-sprint-history--audit-fixes)
+- §14. [Broker abstraction](#14-broker-abstraction)
+- §14.5. [Broker abstraction — implementation detail](#145-broker-abstraction--implementation-detail)
+- §15. [How to add a new broker](#15-how-to-add-a-new-broker)
+- §16. [Broker gotchas](#16-broker-gotchas)
 
-### Part VIII — Wrap-up
-28. [Reading order for a new developer](#28-reading-order-for-a-new-developer)
-29. [When in doubt](#29-when-in-doubt)
-30. [Operator's mental model](#30-operators-mental-model)
+**Part V — Frontend**
 
-### Part IX — Change recipes (cookbook)
-31. [Recipe: add a new route](#31-recipe-add-a-new-route)
-32. [Recipe: add a column to an existing table](#32-recipe-add-a-column-to-an-existing-table)
-33. [Recipe: add a new background task](#33-recipe-add-a-new-background-task)
-34. [Recipe: add a new agent action](#34-recipe-add-a-new-agent-action)
-35. [Recipe: add a new template field (worked example)](#35-recipe-add-a-new-template-field-worked-example)
-36. [Recipe: add a new broker capability flag](#36-recipe-add-a-new-broker-capability-flag)
-37. [Recipe: add a new page](#37-recipe-add-a-new-page)
-38. [Recipe: add a setting](#38-recipe-add-a-setting)
-39. [Recipe: change an existing default template](#39-recipe-change-an-existing-default-template)
-40. [Recipe: wire a new notification channel](#40-recipe-wire-a-new-notification-channel)
-41. [Recipe: ship a fix to dev + main](#41-recipe-ship-a-fix-to-dev--main)
-42. [Cross-cutting checklist before every commit](#42-cross-cutting-checklist-before-every-commit)
+- §17. [Frontend modal state](#17-frontend-modal-state)
+- §18. [Frontend state architecture](#18-frontend-state-architecture)
+- §19. [The preview pipeline](#19-the-preview-pipeline)
+
+**Part VI — Runtime**
+
+- §20. [Background task topology](#20-background-task-topology)
+- §21. [Data refresh — PositionStrip + Dashboard](#21-data-refresh--positionstrip--dashboard)
+- §22. [Demo mode](#22-demo-mode)
+- §22.5. [Investor portal — token-as-credential](#225-investor-portal--token-as-credential)
+- §22.6. [Investor portal — units-based NAV math](#226-investor-portal--units-based-nav-math)
+- §22.7. [Audit log — forensic trail](#227-audit-log--forensic-trail)
+- §22.8. [Postback fan-out — book_changed bus](#228-postback-fan-out--book_changed-bus)
+- §22.9. [History — multi-day orders / trades / funds](#229-history--multi-day-orders--trades--funds)
+- §22.10. [Order placement latency — preflight + tick cache + paper-skip](#2210-order-placement-latency--preflight--tick-cache--paper-skip)
+- §22.11. [Navbar audit — rename + resequence](#2211-navbar-audit--rename--resequence)
+- §22.12. [#audit workflow + Dhan / Groww postback scaffold](#2212-audit-workflow--dhan--groww-postback-scaffold)
+- §22.13. [Audit slice D — UX consistency + palette consolidation + 2 defects](#2213-audit-slice-d--ux-consistency--palette-consolidation--2-defects)
+- §22.14. [Market-status — broker API beats bellwether-quote probe](#2214-market-status--broker-api-beats-bellwether-quote-probe)
+- §22.15. [Chart indicator system — pure module + overlay persistence](#2215-chart-indicator-system--pure-module--overlay-persistence)
+
+**Part VII — Operations**
+
+- §23. [How to add a new template field](#23-how-to-add-a-new-template-field)
+- §24. [Testing philosophy](#24-testing-philosophy)
+- §25. [Logging discipline](#25-logging-discipline)
+- §26. [Deployment notes](#26-deployment-notes)
+- §27. [Sprint history + audit fixes](#27-sprint-history--audit-fixes)
+
+**Part VIII — Wrap-up**
+
+- §28. [Reading order for a new developer](#28-reading-order-for-a-new-developer)
+- §29. [When in doubt](#29-when-in-doubt)
+- §30. [Operator's mental model](#30-operators-mental-model)
+
+**Part IX — Change recipes (cookbook)**
+
+- §31. [Recipe: add a new route](#31-recipe-add-a-new-route)
+- §32. [Recipe: add a column to an existing table](#32-recipe-add-a-column-to-an-existing-table)
+- §33. [Recipe: add a new background task](#33-recipe-add-a-new-background-task)
+- §34. [Recipe: add a new agent action](#34-recipe-add-a-new-agent-action)
+- §35. [Recipe: add a new template field (worked example)](#35-recipe-add-a-new-template-field-worked-example)
+- §36. [Recipe: add a new broker capability flag](#36-recipe-add-a-new-broker-capability-flag)
+- §37. [Recipe: add a new page](#37-recipe-add-a-new-page)
+- §38. [Recipe: add a setting](#38-recipe-add-a-setting)
+- §39. [Recipe: change an existing default template](#39-recipe-change-an-existing-default-template)
+- §40. [Recipe: wire a new notification channel](#40-recipe-wire-a-new-notification-channel)
+- §41. [Recipe: ship a fix to dev + main](#41-recipe-ship-a-fix-to-dev--main)
+- §42. [Cross-cutting checklist before every commit](#42-cross-cutting-checklist-before-every-commit)
 
 > Tech-stack rationale boxes appear inline as ⚙ **TECH: WHY · WHAT · HOW · WHERE** callouts throughout. Look for the gear glyph.
 
