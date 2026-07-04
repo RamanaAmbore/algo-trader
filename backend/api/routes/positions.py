@@ -89,6 +89,8 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
     dcv_by_account: dict[str, float] = {}
     prev_by_account: dict[str, float] = {}
 
+    import json as _json
+
     rows: list[PositionRow] = []
     for (account, symbol, exchange, qty, avg_cost, ltp,
          day_pnl, total_pnl, payload_json, captured_at) in raw_rows:
@@ -100,19 +102,68 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
         total_pnl_f = float(total_pnl) if total_pnl is not None else 0.0
         day_pnl_f   = float(day_pnl) if day_pnl is not None else 0.0
 
+        # ------------------------------------------------------------------
+        # `snapshot_extras` fallback — the top-level `day_pnl` column is set
+        # to NULL by daily_snapshot._positions_rows when the row was captured
+        # mid-session (the writer's `_is_exchange_open_at` gate is time-of-day
+        # only, so on a Saturday 15:35 IST snapshot MCX rows land as NULL
+        # even though the market is actually closed). The 15:35 IST batch
+        # then UPSERTs and clobbers Friday's good MCX day_pnl values. Reader
+        # falls back to `payload_json.snapshot_extras.day_change_val` — the
+        # raw Kite `day_change` field captured at snapshot time — so the
+        # frozen close-time value surfaces during closed hours instead of a
+        # blanket zero. See test_snapshot_day_change_extras_fallback.
+        # ------------------------------------------------------------------
+        extras: dict = {}
+        if payload_json:
+            try:
+                _pj = payload_json if isinstance(payload_json, dict) else _json.loads(payload_json)
+                if isinstance(_pj, dict):
+                    _e = _pj.get("snapshot_extras")
+                    if isinstance(_e, dict):
+                        extras = _e
+            except Exception:
+                extras = {}
+
+        # Prefer the top-level day_pnl column (writer-computed via
+        # decomposed_intraday_pnl / naive_day_pnl). Fall back to the raw
+        # Kite `day_change_val` from extras only when the column is
+        # NULL/absent — protects against writer's mid-session gate erasing
+        # good rows on weekend / holiday snapshot cycles. Preserves
+        # legitimate zeros (a real 0.0 day_pnl from the writer wins over
+        # extras).
+        if day_pnl is None:
+            _ex_dcv = extras.get("day_change_val")
+            if _ex_dcv is not None:
+                try:
+                    day_pnl_f = float(_ex_dcv)
+                except (TypeError, ValueError):
+                    pass
+
         # close_price not stored separately; use avg_cost as a proxy so the
         # row is well-formed (the snapshot's pnl figures are authoritative).
         qty_i = int(qty) if qty is not None else 0
         # pnl_percentage: pnl / |avg × qty| × 100
         inv_val = abs(avg_cost_f * qty_i)
         pnl_pct = (total_pnl_f / inv_val * 100.0) if inv_val else 0.0
-        # day_change_percentage: day_change_val / |close × qty| × 100
-        # EOD LTP is the closest proxy for prior-session close in the snapshot.
-        # Fall back to |avg × qty| when ltp is zero (opened-today rows).
-        close_notional = abs(ltp_f * qty_i)
-        day_pct = (day_pnl_f / close_notional * 100.0) if close_notional else (
-            day_pnl_f / inv_val * 100.0 if inv_val else 0.0
-        )
+        # day_change_percentage: prefer extras.day_change_pct (Kite's raw
+        # value) when the top-level day_pnl was NULL — a computed pct off
+        # ltp × qty collapses to 0 when the raw dcv came in via extras but
+        # ltp is out of sync with Kite's day_change_percentage source.
+        _ex_pct = extras.get("day_change_pct") if day_pnl is None else None
+        if _ex_pct is not None:
+            try:
+                day_pct = float(_ex_pct)
+            except (TypeError, ValueError):
+                _ex_pct = None
+        if _ex_pct is None:
+            # day_change_percentage: day_change_val / |close × qty| × 100
+            # EOD LTP is the closest proxy for prior-session close in the snapshot.
+            # Fall back to |avg × qty| when ltp is zero (opened-today rows).
+            close_notional = abs(ltp_f * qty_i)
+            day_pct = (day_pnl_f / close_notional * 100.0) if close_notional else (
+                day_pnl_f / inv_val * 100.0 if inv_val else 0.0
+            )
         row = PositionRow(
             account=str(account),
             tradingsymbol=str(symbol),
