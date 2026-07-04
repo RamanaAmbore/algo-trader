@@ -55,6 +55,11 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 22.14. [Market-status — broker API beats bellwether-quote probe](#2214-market-status--broker-api-beats-bellwether-quote-probe)
 22.15. [Chart indicator system — pure module + overlay persistence](#2215-chart-indicator-system--pure-module--overlay-persistence)
 
+### Part VI.5 — Database schema
+4.6. [Database schema overview](#46-database-schema-overview)
+4.7. [Table relationships](#47-table-relationships)
+4.8. [Retention policies](#48-retention-policies)
+
 ### Part VII — Operations
 23. [How to add a new template field](#23-how-to-add-a-new-template-field)
 24. [Testing philosophy](#24-testing-philosophy)
@@ -510,6 +515,189 @@ async def list_orders(self, request: Request) -> list[OrderInfo]:
 ```
 
 This keeps the data layer free of presentation concerns and avoids subtle bugs (e.g. ORM expressions seeing masked values during a JOIN).
+
+---
+
+## 4.6 Database schema overview
+
+RamboQuant's data model spans 35+ SQLAlchemy tables, split into logical domains.
+Two PostgreSQL databases: `ramboq` (prod, main branch) and `ramboq_dev` (dev branches).
+All tables live in the branch-local DB except `broker_accounts`, which is shared.
+
+### Table categories
+
+**Auth + User Management** — User identity, email verification, roles, compliance:
+
+| Table | Purpose | Key columns |
+|---|---|---|
+| `users` | Operator profiles + LP investor records. Unified table for internal staff + external LPs. | id (PK), account_id (unique), username, role (designated/trader/risk/admin/partner), email, pan, kyc_verified, contribution_date, share_pct, assigned_accounts, assigned_strategies, token_version (for force-logout) |
+| `auth_tokens` | One-time email verification + password-reset tokens. Single table with `purpose` discriminator. | id (PK), user_id (FK), purpose (verify\|reset), token (unique), expires_at, used_at |
+| `impersonation_events` | Audit of admin/designated impersonating a partner. Tracks session start + end. | id (PK), actor_username, target_username, started_at, ended_at, end_reason |
+| `investor_tokens` | Long-lived URL tokens for LP-facing portal access. Token IS the credential. | id (PK), user_id (FK), token (unique), expires_at, revoked_at, last_visit_at, visit_count |
+| `investor_events` | LP capital ledger — subscriptions, redemptions, bootstrap events. Source of truth for units-based NAV math. | id (PK), user_id (FK), event_type (subscription\|redemption\|bootstrap), event_date, amount, nav_per_unit, units_delta |
+| `monthly_statements` | Audit of auto-emailed LP statements. One row per (user, period_year, period_month). | id (PK), user_id (FK), period_year, period_month, generated_at, sent_at, recipients_json, pdf_size_bytes, error |
+
+**Broker Connection** — Account credentials + market metadata:
+
+| Table | Purpose | Key columns |
+|---|---|---|
+| `broker_accounts` | Shared table (ramboq DB only) storing encrypted broker credentials for all branches. | id (PK), account (unique, e.g. ZG0790), broker_id (kite\|dhan\|groww), user_id (FK), api_key_enc, access_token_enc, source_ip, priority, poll_priority, circuit_breaker_enabled, display_order |
+| `market_holidays` | Exchange holiday calendar (NSE/MCX/CDS). Seeded from broker API, cached. | id (PK), exchange, holiday_date (unique per exchange) |
+| `market_special_sessions` | Special trading sessions (e.g. Muhurat trading). Operator-editable overrides. | id (PK), exchange, date, start_time, end_time, reason |
+
+**Watchlists** — User-defined symbol groups:
+
+| Table | Purpose | Key columns |
+|---|---|---|
+| `watchlists` | Named list containers. Global rows (is_global=True, user_id=NULL) shared across all users. | id (PK), user_id (FK nullable), name, is_global, is_default, is_pinned, sort_order |
+| `watchlist_items` | Individual symbols in a watchlist. Includes operator-supplied alias. | id (PK), watchlist_id (FK), tradingsymbol, exchange, alias (optional label), sort_order |
+
+**Orders + Execution** — Core order lifecycle and attribution:
+
+| Table | Purpose | Key columns |
+|---|---|---|
+| `algo_orders` | Master order row. Spans manual + agent-fired + template-attached + chase iterations. Mode: sim/paper/live/replay/shadow. | id (PK), account, symbol, exchange, transaction_type (BUY/SELL), quantity, filled_quantity (cumulative across partials), initial_price, current_limit (re-quoted during chase), fill_price, status (OPEN/FILLED/REJECTED/CANCELLED), mode, engine (manual/sim/paper/live/replay/shadow/expiry), agent_id (FK nullable), broker_order_id, template_id (FK), attached_gtts_json (JSON list of {kind, label, id, ...}), basket_tag, parent_order_id (for TP/SL children), strategy_id (FK), request_id (for audit drill-through) |
+| `algo_order_events` | Append-only timeline per order. One row per state transition (placed, chase_modify, fill, unfill, reject, cancel). | id (PK), order_id (FK), ts, kind (placed\|chase_modify\|fill\|unfill\|reject\|cancel\|postback\|...), message, payload_json |
+| `algo_events` | Legacy event log (pre-AgentEvent era). Deprecated; kept for compatibility. | id (PK), algo_order_id (FK nullable), event_type, detail, timestamp |
+| `strategies` | Named bucket for order attribution. Owns lots + provides per-strategy P&L rollup. | id (PK), slug (unique), name, description, owner_user_id (FK nullable), capacity_cap_inr, target_volatility, is_active |
+| `strategy_lots` | Per-strategy FIFO lot ledger. Opens on fill, closes when counter-direction consumes it. Authoritative for per-strategy P&L. | id (PK), strategy_id (FK), open_order_id (FK nullable), account, symbol, exchange, side (B/S), qty, remaining_qty, open_price, close_price, realized_pnl, opened_at, closed_at |
+
+**Agents + Conditions** — Rule engine and alert infrastructure:
+
+| Table | Purpose | Key columns |
+|---|---|---|
+| `agents` | Declarative rules: condition tree → alert → actions. Includes loss alerts, expiry alerts, user-defined custom agents. | id (PK), slug (unique), name, long_name (3-part descriptor), description, conditions (JSONB tree), events (alert channels), actions (order/cancel/close side-effects), scope (per_account\|all_accounts), schedule (market_hours\|continuous\|...), cooldown_minutes, fire_at_time (gate to HH:MM window), trade_mode (paper\|live per-agent override), status (active\|inactive\|cooldown\|completed), lifespan_type (persistent\|one_shot\|n_fires\|until_date), tier (critical\|high\|medium\|low for noise reduction), topic (agent grouping tag), digest_window_sec (buffer outgoing alerts), debounce_minutes, condition_first_true_at, tags (JSONB list), blackout_windows (quiet hours) |
+| `agent_events` | Alert events fired by agents. Persisted for operator inspection + MCP queries. | id (PK), agent_id (FK), event_type (fired\|suppressed\|error\|...), trigger_condition (the condition leaf that fired), detail, sim_mode (simulator flag), timestamp |
+| `grammar_tokens` | Token catalog (metrics, scopes, operators, channels, actions). Extensible alphabet for condition/alert/action trees. | id (PK), grammar_kind (condition\|notify\|action), token_kind, token (name), value_type, resolver (dotted path to function), params_schema, enum_values (JSONB), is_active, is_system |
+
+**NAV + Performance** — Investor slicing and daily metrics:
+
+| Table | Purpose | Key columns |
+|---|---|---|
+| `nav_daily` | Daily firm-level NAV snapshot. Written after broker positions settle. Authoritative for all investor slicing. | id (PK), as_of_date (unique), nav, cash_total, positions_mtm, holdings_mtm, accounts_snapshot (JSONB list), note |
+| `strategy_snapshots` | Daily per-strategy P&L rollup. Charts the strategy performance curve. | id (PK), strategy_id (FK), as_of_date, open_lots_count, open_notional, realised_pnl, unrealised_pnl, margin_allocated |
+| `perf_snapshots` | Nightly static + runtime metrics per page. Used for trend analysis + performance budgets. | id (PK), page_or_route, metrics_json (JSONB), static_metrics_json, captured_at |
+
+**Data Snapshots** — Intraday market state + persistent cache:
+
+| Table | Purpose | Key columns |
+|---|---|---|
+| `daily_book` | Intraday snapshot of positions, holdings, or funds per account per symbol. Captured at market close, useful when markets closed. | id (PK), kind (positions\|holdings\|funds), account, symbol, exchange, qty, avg_price, ltp, pnl, pnl_pct, date, captured_at, segment (NSE\|MCX\|...) |
+| `ohlcv_daily` | 5-year OHLCV history. Persistence tier 2 fallback for chart data. | symbol, exchange (PK), date (PK), open, high, low, close, volume |
+| `instruments_snapshot` | Per-exchange symbol→token map. Refreshed daily. | id (PK), exchange, date, payload (JSONB full instruments dict), row_count |
+| `holidays_snapshot` | Exchange holiday sets per year. Immutable once year closes. | id (PK), exchange, year, dates_json (JSONB list) |
+| `intraday_bars` | 5/15/30/60-minute bars. 90-day rolling retention. | id (PK), symbol, exchange, date, interval (5min\|15min\|30min\|60min), bar_ts, open, high, low, close, volume |
+| `movers_snapshots` | Nightly snapshot of top movers (NIFTY, NIFTYNXT50, etc). Pre-computed so /pulse doesn't timeout. | id (PK), index_symbol, snapshop_date, movers_json (JSONB list) |
+
+**Audit + Compliance** — Forensic trails:
+
+| Table | Purpose | Key columns |
+|---|---|---|
+| `audit_log` | HTTP request + mutation audit trail. Every write captured by middleware + explicit handlers. | id (PK), actor_user_id, username, role, action, category (order.place\|order.fill\|agent.action\|system.nav\|...), method, path, target_type, target_id, status_code, summary, request_id (FK to al go_orders for drill-through), client_ip, created_at |
+| `mcp_audit` | Mutations initiated via MCP (Claude Code research mode). Tracks tool calls + results. | id (PK), user_id (FK), tool_name, args_redacted, result_status, result_summary, request_id, created_at |
+| `admin_email_events` | Audit of admin-triggered alert sends (e.g. manual test notifications). | id (PK), admin_user_id, recipient_email, subject, body_preview, sent_at, error |
+| `visitor_log` | Minimal analytics — timestamps of /auth/login + visitor count. | id (PK), visitor_ip, last_seen_at, visitor_count |
+
+**Market Lifecycle + Background Jobs** — System state:
+
+| Table | Purpose | Key columns |
+|---|---|---|
+| `market_lifecycle_events` | Audit log of market open/close transitions per exchange. Indexed for operator drill-down. | id (PK), exchange, event_type (nse:open\|nse:close\|nse:close_settled\|...), fired_at, captured_at |
+| `code_metrics_snapshots` | Captured per release (commit SHA). Query count, test counts, response times. | id (PK), release_version, static_metrics_json, runtime_metrics_json, captured_at |
+
+**Configuration + Extensibility**:
+
+| Table | Purpose | Key columns |
+|---|---|---|
+| `settings` | DB-backed tunables: alert cooldown, retry counts, market hours, etc. Operator-editable via `/admin/settings`. | id (PK), category, key (unique), value_type (int\|float\|bool\|string), value (operator-editable), default_value, description, schema (JSON validation), units |
+| `order_templates` | Reusable bracket recipes. System templates (default-bull, default-bear, etc) seeded at boot; operator saves custom copies. | id (PK), user_id (FK nullable), name, slug, owner_user_id (FK nullable), tp_pct, sl_pct, wing_premium_pct, wing_strike_offset, wing_qty, tp_scales_json, tp_order_type, sl_trail_pct, is_system |
+| `hedge_proxies` | Cross-reference between holdings (GOLDBEES) and option roots they hedge (GOLD). Includes β regression. | id (PK), proxy_symbol, target_root, is_active, note, beta, correlation, regression_at |
+| `research_threads` | Persistent Chat threads in `/admin/research` (MCP Lab). One row per thread; messages stored as JSON. | id (PK), created_by_user_id (FK), title, slug, messages_json (JSONB), summary, created_at, updated_at |
+| `sim_recordings` | Deterministic event logs for replay. Captures every state mutation so operator can re-run identical scenarios. | id (PK), label, scenario, seed_mode, started_at, ended_at, duration_sec, tick_count, event_count, payload (JSONB event stream), owner_user_id (FK) |
+| `sim_iterations` | Multi-run coordinator. First iteration references itself; others reference iteration 1 via `parent_run_id`. | id (PK), slug (unique), parent_run_id (FK self-ref nullable), iteration_index, iterations_total, regime, seed, started_at, ended_at, end_reason, params_json, summary_json |
+
+**News + Market Reports**:
+
+| Table | Purpose | Key columns |
+|---|---|---|
+| `market_report` | Single-row cache (id=1) for daily market summary from Gemini API. | id (PK, always 1), content, cycle_date, refreshed_at, generated_at |
+| `news_headlines` | RSS headlines cache. Pre-filtered on /market page. | id (PK), link (unique), title, summary, published_at, source, category |
+
+---
+
+## 4.7 Table relationships
+
+Simplified ERD (ASCII, readable in PDF):
+
+```
+users ─────────┬─── broker_accounts (shared DB)
+               ├─── algo_orders ─── algo_order_events
+               │         ├─ agent_id → agents
+               │         ├─ strategy_id → strategies ─── strategy_lots
+               │         ├─ template_id → order_templates
+               │         └─ parent_order_id → algo_orders (self-ref TP/SL)
+               ├─── agent_events ← agents
+               ├─── watchlists ─── watchlist_items
+               ├─── investor_events (capital ledger)
+               ├─── investor_tokens (URL credentials)
+               ├─── monthly_statements
+               ├─── sim_recordings
+               ├─── research_threads
+               └─── auth_tokens
+
+nav_daily ───────── (master NAV — no FK, firm aggregate)
+strategy_snapshots ─ strategies
+daily_book ────────── (account/symbol/kind snapshot, no FK)
+perf_snapshots ────── (page metrics, no FK)
+
+market_lifecycle_events, code_metrics_snapshots, settings, 
+order_templates, hedge_proxies, grammar_tokens ─── (configuration, mostly no FK)
+
+Persistence:
+  ohlcv_daily, instruments_snapshot, holidays_snapshot, 
+  intraday_bars, movers_snapshots ─── (market data cache, no FK)
+
+Audit:
+  audit_log ─ request_id → algo_orders (drill-through)
+  mcp_audit ─ user_id → users
+  admin_email_events ─ admin_user_id → users
+```
+
+**Key foreign-key patterns:**
+- `algo_orders.agent_id` → agents.id: `ON DELETE SET NULL` (preserve order history if agent deleted)
+- `agent_events.agent_id` → agents.id: `ON DELETE CASCADE` (retire agent history when agent deleted)
+- `algo_orders.parent_order_id` → algo_orders.id: `ON DELETE SET NULL` (self-ref for TP/SL children)
+- `algo_order_events.order_id` → algo_orders.id: `ON DELETE CASCADE` (timeline only meaningful with parent)
+- `investor_events.user_id` → users.id: `ON DELETE RESTRICT` (capital ledger is audit trail; explicit operator action required to delete LP)
+- User.id: multiple targets use `ON DELETE CASCADE` (auth_tokens, investor_tokens, monthly_statements) or `SET NULL` (impersonation, strategy owner)
+
+---
+
+## 4.8 Retention policies
+
+Data retention is staggered — critical audit trails kept longer than ephemeral cache. Configured via `settings` table; operator can adjust retention via `/admin/settings` → Retention.
+
+| Table | Retention | Config key | Rationale |
+|---|---|---|---|
+| `ohlcv_daily` | 5 years | (hardcoded) | SEBI Cat-III backtest horizon |
+| `instruments_snapshot` | 7 days | (hardcoded) | Symbol token changes rarely; old snapshots are cheap to drop |
+| `holidays_snapshot` | Forever | (hardcoded) | Reference data — rarely used but occasionally queried for audits |
+| `intraday_bars` | 90 days | (hardcoded) | Intraday charts old after 3 months; 90-day window covers quarterly strategy review |
+| `algo_events` | 30 days | `retention.algo_events_days` | Operational log; older entries rarely queried |
+| `algo_order_events` | 90 days | `retention.algo_order_events_days` | Order timeline — longer window for compliance disputes |
+| `auth_tokens` | 7 days after expiry | `retention.auth_tokens_days` | One-time verify/reset tokens; ephemeral by design |
+| `mcp_audit` | 90 days | `mcp.audit_retention_days` | MCP tool calls (research mode) — compliance audit trail |
+| `audit_log` | 365 days | `retention.audit_log_days` | User action audit trail — 1-year window for disputes |
+| `nav_daily` | Forever | (hardcoded) | Investor reporting — Cat-III requires 8-year retention |
+| `daily_book` | Forever | (hardcoded) | Intraday snapshots become the P&L source after market close |
+| `investor_events` | Forever | (hardcoded) | Capital ledger — units-based NAV depends on full history |
+| `monthly_statements` | Forever | (hardcoded) | Investor statements are permanent records |
+| `strategy_snapshots` | Forever | (hardcoded) | Strategy performance is historical record |
+| All others | Forever | — | Configuration, metadata, non-critical operational logs kept for full history |
+
+**Cleanup mechanism:** nightly cron (`03:10 IST` and staggered) runs `DELETE FROM <table> WHERE created_at < now() - interval`. Per-table cleanup is idempotent — multiple runs don't corrupt state.
+
+**Operator override:** Set retention to `0` in `/admin/settings` to disable deletion for that table (useful during active investigation).
 
 ---
 
