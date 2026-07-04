@@ -11,7 +11,7 @@
  * Two entry points:
  *
  *   rootOf(contract, exchange)        → virtual root string (pure, sync)
- *   rootOfLabel(contract, exchange)   → human-readable label (e.g. "CRUDEOIL • NEXT")
+ *   rootOfLabel(contract, exchange)   → display label (e.g. "CRUDEOIL_NEXT", "CRUDEOIL")
  *
  * The pure JS implementation mirrors backend/api/algo/symbol_resolver.py's
  * root_of() function and uses the same two-slot instrument store that
@@ -206,10 +206,8 @@ export function rootOf(contract, exchange) {
  */
 export function rootOfLabel(contract, exchange) {
   const r = rootOf(contract, exchange);
-  if (r.endsWith('_NEXT')) {
-    const base = r.slice(0, -5);
-    return `${base} • NEXT`;   // e.g. "CRUDEOIL • NEXT"
-  }
+  // Return the virtual root string unchanged — GOLDM_NEXT, CRUDEOIL_NEXT, etc.
+  // Operator convention: underscore-joined, no spaces or bullet separators.
   return r;
 }
 

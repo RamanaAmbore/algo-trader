@@ -42,7 +42,7 @@
   /**
    * Format a symbol for the Pulse cell renderer.
    * For MCX/CDS futures the virtual root label is shown (e.g. "CRUDEOIL",
-   * "CRUDEOIL • NEXT") instead of the raw contract name.
+   * "CRUDEOIL_NEXT") instead of the raw contract name.
    * All other symbols go through the Dhan-style hyphenated formatter.
    *
    * @param {string} s         tradingsymbol
@@ -56,7 +56,7 @@
     if (v === undefined) {
       const eUp = (exch || '').toUpperCase();
       if (eUp === 'MCX' || eUp === 'CDS') {
-        // Returns "CRUDEOIL", "CRUDEOIL • NEXT", or raw contract for far-month
+        // Returns "CRUDEOIL", "CRUDEOIL_NEXT", or raw contract for far-month
         const rl = rootOfLabel(s, eUp);
         // Only use virtual label when it differs from the raw contract.
         // If rootOfLabel returns the raw contract (far-month), fall through
