@@ -21,15 +21,16 @@ Migration history (markers in seed_global_pinned):
   - GOLDM, USDINR — removed Jun 2026 (wave 1)
   - COPPER, CRUDEOIL, NATURALGAS, SILVERM (MCX) — removed Jul 2026 (wave 2)
   - SILVER (MCX) — removed Jul 2026 (wave 3); operator confirmed mistake
+  - USDINR contract rows (e.g. USDINR26JULFUT) → bare root Jul 2026 (wave 4)
   Migration markers stay recorded as historical audit. NATURALGAS and
   SILVER remain excluded (operator adds explicitly if wanted). All other
   MCX/CDS roots restored as first-class bare-root symbols (wave markers
   prevent the one-shot DELETE from re-firing; top-up loop re-adds them).
 
-CDS currency roots (USDINR) display as virtual roots: the grid shows the
-bare root label (USDINR) via an auto-generated alias while the underlying
-resolved contract (USDINR26JULFUT) drives LTP and SSE ticks. Only the
-front month is shown (1 row, not 2) for CDS roots.
+CDS currency roots (USDINR) are first-class bare-root entries, same
+convention as MCX roots (GOLD, CRUDEOIL, etc.). The resolver translates
+bare root → active near-month contract at quote / tick time. The grid
+shows "USDINR" with no dated contract alias.
 """
 
 # Each entry: (tradingsymbol, exchange). The order here is the

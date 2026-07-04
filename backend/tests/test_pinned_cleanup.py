@@ -9,7 +9,7 @@ Five quality dimensions:
                 not a full-table scan or truncation.
   3. Stale    — NATURALGAS + SILVER absent from MARKETS_DEFAULT.
                 SILVERM/GOLD/GOLDM/CRUDEOIL/COPPER/USDINR present as first-class
-                bare roots.
+                bare roots. CDS roots use bare-root convention (no alias expansion).
   4. Reuse    — seed_global_pinned is the single call-site for cleanup + top-up.
   5. Correctness — scenario matrix:
        a. GOLDM + USDINR present AND migration markers not set → wave 1 deletes
@@ -26,8 +26,8 @@ Five quality dimensions:
        h. Empty global Pinned → 15-item Pinned after seed.
        i. SILVER (MCX) present AND wave-3 marker not set → wave 3 deletes it;
           NOT re-added by top-up (SILVER absent from MARKETS_DEFAULT).
-       j. CDS expansion (_expand_root_items_to_futures) produces 1 row for
-          USDINR CDS, with alias=bare-root-name and tradingsymbol=contract.
+       j. USDINR contract rows (USDINR26JULFUT etc.) removed by wave 4; bare-root
+          USDINR CDS re-added by top-up. Wave 4 is one-shot (marker guards re-fire).
 """
 
 from __future__ import annotations
@@ -180,22 +180,36 @@ def test_wave3_migration_key_present():
 
 
 # ---------------------------------------------------------------------------
-# Dimension 3 — CDS expansion produces 1 row aliased to the bare root name
-# (SSOT check — verify _expand_root_items_to_futures docstring + code)
+# Dimension 3 — CDS bare-root convention (no alias expansion)
+# (SSOT check — verify _expand_root_items_to_futures + wave-4 marker)
 # ---------------------------------------------------------------------------
 
-def test_cds_expansion_virtual_root_behaviour_in_source():
-    """_expand_root_items_to_futures source must document 1-row CDS expansion
-    and alias-to-root-name behaviour."""
+def test_cds_bare_root_convention_in_source():
+    """_expand_root_items_to_futures must NOT expand CDS roots into dated
+    contracts with an alias. CDS bare roots pass through unchanged, same
+    convention as MCX bare roots. The alias expansion (lookup_cds_futures_list
+    + alias=sym) must be absent from the source."""
     src = _wl_text()
-    assert "CDS currency roots" in src, (
-        "_expand_root_items_to_futures must document CDS virtual-root behaviour"
+    # The old alias-based expansion must be gone.
+    assert "alias=stored_alias if stored_alias else sym" not in src, (
+        "Old CDS alias-expansion code must be removed — CDS uses bare-root convention"
     )
-    assert "alias=stored_alias if stored_alias else sym" in src, (
-        "CDS expansion must auto-alias to bare root name when no stored alias"
+    assert "lookup_cds_futures_list(sym, limit=1)" not in src, (
+        "CDS must not be expanded to dated contracts in _expand_root_items_to_futures"
     )
-    assert "lookup_cds_futures_list(sym, limit=1)" in src, (
-        "CDS expansion must request only 1 contract (front month)"
+    # Wave-4 marker must be present.
+    assert "migrations.pinned_usdinr_bare_root_v1" in src, (
+        "Wave-4 migration key must be present in seed_global_pinned"
+    )
+
+
+def test_wave4_migration_key_present():
+    src = _wl_text()
+    assert "migrations.pinned_usdinr_bare_root_v1" in src, (
+        "Wave-4 migration key must be present in seed_global_pinned"
+    )
+    assert "USDINR" in src and "CDS" in src, (
+        "Wave-4 cleanup must reference USDINR CDS"
     )
 
 
@@ -631,3 +645,104 @@ async def test_wave3_is_one_shot(db_session):
     assert ("SILVER", "MCX") in syms, (
         "Operator re-added SILVER MCX must survive seed when wave-3 marker is set"
     )
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5j — Wave 4: USDINR contract rows removed; bare root re-added
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_usdinr_contract_removed_by_wave4(db_session):
+    """Wave-4 deletes dated USDINR contract rows (USDINR26JULFUT etc.).
+    Top-up re-adds bare-root USDINR CDS (present in MARKETS_DEFAULT)."""
+    wl_id = await _make_global_pinned(db_session)
+    await _insert_items(db_session, wl_id, [
+        ("USDINR26JULFUT",  "CDS"),
+        ("NIFTY 50",        "NSE"),
+    ])
+
+    await _run_seed(db_session)
+
+    syms = await _symbols(db_session)
+    # Contract row must be gone
+    assert ("USDINR26JULFUT", "CDS") not in syms, (
+        "USDINR contract row must be removed by wave-4 migration"
+    )
+    # Bare root must be present (re-added by top-up via MARKETS_DEFAULT)
+    assert ("USDINR", "CDS") in syms, (
+        "Bare-root USDINR CDS must be added by top-up after wave-4 removes contract row"
+    )
+    assert ("NIFTY 50", "NSE") in syms, "NIFTY 50 must be preserved"
+
+
+@pytest.mark.asyncio
+async def test_usdinr_weekly_contract_removed_by_wave4(db_session):
+    """Wave-4 also deletes weekly USDINR contract rows (USDINR26703FUT)."""
+    wl_id = await _make_global_pinned(db_session)
+    await _insert_items(db_session, wl_id, [
+        ("USDINR26703FUT", "CDS"),
+        ("USDINR26710FUT", "CDS"),
+    ])
+
+    await _run_seed(db_session)
+
+    syms = await _symbols(db_session)
+    assert ("USDINR26703FUT", "CDS") not in syms, (
+        "USDINR weekly contract must be removed by wave-4"
+    )
+    assert ("USDINR26710FUT", "CDS") not in syms, (
+        "USDINR weekly contract must be removed by wave-4"
+    )
+    # Bare root re-added by top-up
+    assert ("USDINR", "CDS") in syms, "Bare-root USDINR must be present after wave-4"
+
+
+@pytest.mark.asyncio
+async def test_wave4_is_one_shot(db_session):
+    """If wave-4 marker is already set, seed does NOT delete a USDINR
+    contract row that the operator manually added after the migration."""
+    wl_id = await _make_global_pinned(db_session)
+
+    # Pre-set all four wave markers
+    now_ts = datetime.now(timezone.utc)
+    for key in [
+        "migrations.pinned_remove_goldm_usdinr_v1",
+        "migrations.pinned_remove_mcx_futures_v1",
+        "migrations.pinned_remove_silver_mcx_v1",
+        "migrations.pinned_usdinr_bare_root_v1",
+    ]:
+        db_session.add(_Setting(
+            category="migrations", key=key, value_type="string",
+            value="1", default_value="0",
+            description="pre-seeded for test", updated_at=now_ts,
+        ))
+    await db_session.flush()
+
+    # Operator manually added a dated contract (unusual but valid) after cleanup
+    await _insert_items(db_session, wl_id, [("USDINR26JULFUT", "CDS")])
+
+    await _run_seed(db_session)
+
+    syms = await _symbols(db_session)
+    assert ("USDINR26JULFUT", "CDS") in syms, (
+        "Operator-added USDINR contract must survive when wave-4 marker is already set"
+    )
+
+
+@pytest.mark.asyncio
+async def test_bare_root_usdinr_not_touched_by_wave4(db_session):
+    """Bare-root USDINR CDS must not be deleted by wave-4 (pattern only
+    matches dated contracts, not the bare root)."""
+    wl_id = await _make_global_pinned(db_session)
+    await _insert_items(db_session, wl_id, [
+        ("USDINR", "CDS"),
+        ("NIFTY 50", "NSE"),
+    ])
+
+    await _run_seed(db_session)
+
+    syms = await _symbols(db_session)
+    assert ("USDINR", "CDS") in syms, (
+        "Bare-root USDINR CDS must not be deleted by wave-4"
+    )
+    assert ("NIFTY 50", "NSE") in syms

@@ -935,6 +935,40 @@ async def seed_global_pinned() -> None:
             await _mark_migration(_W3_KEY)
             logger.info("Watchlist: one-shot cleanup wave 3 (SILVER MCX) done")
 
+        # Wave 4 — USDINR contract rows replaced with bare root (Jul 2026)
+        # Prior code stored USDINR as the dated contract name
+        # (e.g. USDINR26JULFUT) with alias=USDINR. The frontend alias
+        # path caused the grid to render "USDINR → USDINR-26JUL-FUT",
+        # surfacing the dated contract name alongside the virtual root
+        # label. CDS roots now follow the same bare-root convention as
+        # MCX (GOLD, CRUDEOIL etc.) — the resolver handles the
+        # root→contract translation at quote / tick time.
+        # This wave deletes any contract-name USDINR row (monthly
+        # YY+MON pattern or weekly YY+MMDD pattern) and ensures the bare
+        # root is present. Top-up will re-add bare USDINR CDS via
+        # MARKETS_DEFAULT if it was absent.
+        import re as _re
+        _W4_KEY = "migrations.pinned_usdinr_bare_root_v1"
+        if not await _migration_done(_W4_KEY):
+            all_cds = (await session.execute(
+                select(WatchlistItem).where(
+                    WatchlistItem.watchlist_id == global_row.id,
+                    WatchlistItem.exchange == "CDS",
+                )
+            )).scalars().all()
+            _CONTRACT_PAT = _re.compile(
+                r'^USDINR\d{2}(?:[A-Z]{3}|\d{3,4})FUT$', _re.IGNORECASE
+            )
+            for _row in all_cds:
+                if _CONTRACT_PAT.match(_row.tradingsymbol or ""):
+                    await session.execute(
+                        sa_delete(WatchlistItem).where(
+                            WatchlistItem.id == _row.id,
+                        )
+                    )
+            await _mark_migration(_W4_KEY)
+            logger.info("Watchlist: one-shot cleanup wave 4 (USDINR bare root) done")
+
         # 5. Top up the global Pinned with any MARKETS_DEFAULT item
         #    that isn't already in it. Additive — never removes the
         #    operator's curated extras. The (tradingsymbol, exchange)
@@ -1005,19 +1039,18 @@ def _item_info(it: WatchlistItem) -> WatchlistItemInfo:
 
 async def _expand_root_items_to_futures(items) -> list[WatchlistItemInfo]:
     """For every stored item whose tradingsymbol is a bare MCX commodity
-    root or CDS currency root (no FUT suffix), replace it with actual
-    contract item(s) resolved via the instruments cache.
+    root (no FUT suffix), replace it with actual contract item(s) resolved
+    via the instruments cache.
 
     MCX commodity roots (GOLD, CRUDEOIL, etc.): expand to front + next
     month (up to 2 rows). Rollover is automatic — the stored root never
     needs to change.
 
-    CDS currency roots (USDINR, etc.): expand to front month only
-    (1 row). The row alias is set to the bare root name (e.g. "USDINR")
-    so the frontend displays the virtual root label rather than the dated
-    contract name. This keeps USDINR as a single "virtual root" entry in
-    the pinned grid — the underlying tradingsymbol is still the real
-    broker contract so SSE ticks and symbolStore keying work correctly.
+    CDS currency roots (USDINR, etc.): pass through unchanged as bare
+    roots. The quote pipeline (_build_quote_key) and SSE subscription
+    path each resolve the bare root to the active near-month contract at
+    call time — no frontend alias needed. Convention matches MCX bare
+    roots: the grid shows "USDINR", not the dated contract name.
 
     Items that already carry a tradeable contract name (FUT suffix, NSE
     equity, ETF, index) pass through unchanged.
@@ -1025,39 +1058,16 @@ async def _expand_root_items_to_futures(items) -> list[WatchlistItemInfo]:
     The expanded items use the parent row's id with a suffix appended as
     a sort key — frontend treats each as a normal item; delete operations
     against the parent id still target the stored bare-root row."""
-    from backend.api.algo.derivatives import (
-        lookup_mcx_futures_list, lookup_cds_futures_list,
-    )
+    from backend.api.algo.derivatives import lookup_mcx_futures_list
     out: list[WatchlistItemInfo] = []
     for it in items:
         sym = (it.tradingsymbol or "").upper()
         exch = (it.exchange or "").upper()
         # Anything already with FUT in its name, or anything on NSE/BSE/
-        # NFO etc., is already tradeable — pass through.
-        if "FUT" in sym or exch not in ("MCX", "CDS"):
+        # NFO/CDS etc., is already tradeable (or a bare CDS root that
+        # passes through as-is) — pass through.
+        if "FUT" in sym or exch != "MCX":
             out.append(_item_info(it))
-            continue
-        # CDS currency roots: front-month only, aliased to the bare root
-        # name so the grid shows the virtual root label (e.g. "USDINR")
-        # instead of the dated contract. One row per root.
-        if exch == "CDS":
-            futures = await lookup_cds_futures_list(sym, limit=1)
-            if not futures:
-                out.append(_item_info(it))
-                continue
-            fsym = futures[0]
-            stored_alias = getattr(it, "alias", None)
-            out.append(WatchlistItemInfo(
-                id=it.id * 1000,
-                watchlist_id=it.watchlist_id,
-                tradingsymbol=fsym,
-                exchange=exch,
-                # Use stored alias if operator set one; otherwise default
-                # to the bare root name as the virtual-root display label.
-                alias=stored_alias if stored_alias else sym,
-                sort_order=it.sort_order * 10,
-                added_at=it.added_at.isoformat() if it.added_at else "",
-            ))
             continue
         # MCX commodity roots: front + next month (up to 2 rows).
         # Resolve the front + next month future for this commodity root.
