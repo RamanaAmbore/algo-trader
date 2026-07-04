@@ -436,6 +436,175 @@ class BatchQuoteResponse(msgspec.Struct):
     as_of: Optional[str] = None
 
 
+# ── batch_quote helpers ───────────────────────────────────────────────────────
+
+def _normalize_batch_keys(raw_keys: list[str]) -> list[str]:
+    """Deduplicate, strip, filter to 'EXCHANGE:SYMBOL' shape, cap at 300."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for k in (raw_keys or []):
+        k = k.strip()
+        if k and ":" in k and k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out[:300]
+
+
+async def _serve_closed_hours_batch(
+    keys: list[str],
+    key_map,
+) -> "BatchQuoteResponse":
+    """Return a BatchQuoteResponse served entirely from LKG cache.
+
+    Fires a one-shot broker.quote() warm (cold-start guard) then builds rows
+    from get_last_good_ltp / get_last_good_quote.  All rows carry stale=True
+    and the as_of field is set so the frontend can show a staleness hint.
+    """
+    from datetime import datetime, timezone
+    from backend.brokers.broker_apis import (
+        get_last_good_ltp, get_last_good_quote,
+    )
+
+    logger.debug(f"batch_quote: market closed — serving LKG for {len(keys)} keys")
+
+    # Cold-start warm — one broker.quote() per IST day per key-set signature.
+    await _maybe_warm_closed_hours_quotes(keys, key_map)
+
+    as_of_str = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    items: list[BatchQuoteRow] = []
+    for k in keys:
+        try:
+            exch, sym = k.split(":", 1)
+        except ValueError:
+            continue
+        broker_key = key_map.input_to_broker.get(k, k)
+        _, resolved_sym = broker_key.split(":", 1) if ":" in broker_key else ("", sym)
+        ltp = (
+            get_last_good_ltp(resolved_sym, max_age_s=86400.0) or
+            get_last_good_ltp(sym, max_age_s=86400.0) or
+            0.0
+        )
+        snap = (
+            get_last_good_quote(resolved_sym, max_age_s=86400.0) or
+            get_last_good_quote(sym, max_age_s=86400.0) or
+            {}
+        )
+        items.append(BatchQuoteRow(
+            exchange=exch, tradingsymbol=sym,
+            ltp=ltp,
+            bid=snap.get("bid"),
+            ask=snap.get("ask"),
+            open=snap.get("open"),
+            close=snap.get("close"),
+            change=float(snap.get("change") or 0.0),
+            change_pct=float(snap.get("change_pct") or 0.0),
+            volume=int(snap.get("volume") or 0),
+            oi=int(snap.get("oi") or 0),
+            stale=True,
+        ))
+    return BatchQuoteResponse(
+        refreshed_at=as_of_str,
+        items=items,
+        as_of=as_of_str,
+    )
+
+
+def _extract_bid_ask(q: dict) -> tuple["Optional[float]", "Optional[float]"]:
+    """Extract best bid and ask from a broker.quote() response dict.
+
+    Returns (bid, ask) — both None when depth is absent or has zero price.
+    """
+    depth = q.get("depth") or {}
+    buys  = depth.get("buy") or []
+    sells = depth.get("sell") or []
+    bid = float(buys[0]["price"])  if buys  and (buys[0].get("price") or 0)  else None
+    ask = float(sells[0]["price"]) if sells and (sells[0].get("price") or 0) else None
+    return bid, ask
+
+
+def _build_live_batch_row(k: str, quote_data: dict, key_map) -> "BatchQuoteRow":
+    """Build one BatchQuoteRow from the broker.quote() response dict.
+
+    Returns a stale=True row with ltp=0 when the broker had no data for the key.
+    """
+    exch, sym = k.split(":", 1)
+    broker_key = key_map.input_to_broker.get(k, k)
+    q = quote_data.get(broker_key) or {}
+    ltp    = float(q.get("last_price") or 0.0)
+    ohlc   = q.get("ohlc") or {}
+    close  = float(ohlc.get("close") or 0.0) or None
+    open_  = float(ohlc.get("open")  or 0.0) or None
+    bid, ask = _extract_bid_ask(q)
+    change  = (ltp - close) if (close and ltp) else 0.0
+    chg_pct = (change / close * 100.0) if close else 0.0
+    return BatchQuoteRow(
+        exchange=exch, tradingsymbol=sym,
+        ltp=ltp, bid=bid, ask=ask, open=open_, close=close,
+        change=change, change_pct=chg_pct,
+        volume=int(q.get("volume") or 0),
+        oi=int(q.get("oi") or 0),
+        stale=(not q),
+    )
+
+
+def _record_live_batch_lkg(
+    broker_key: str,
+    sym: str,
+    ltp: float,
+    open_: "Optional[float]",
+    close: "Optional[float]",
+    vol: int,
+    oi: int,
+    change: float,
+    chg_pct: float,
+    bid: "Optional[float]",
+    ask: "Optional[float]",
+) -> None:
+    """Persist LKG LTP + quote snapshot for the closed-hours fallback path."""
+    _, resolved_sym_only = (
+        broker_key.split(":", 1) if ":" in broker_key else ("", sym)
+    )
+    if ltp and ltp > 0:
+        _record_good_ltp_live(resolved_sym_only, ltp)
+    _record_good_quote_live(resolved_sym_only, {
+        "open":       open_,
+        "close":      close,
+        "volume":     vol,
+        "oi":         oi,
+        "change":     change,
+        "change_pct": chg_pct,
+        "bid":        bid,
+        "ask":        ask,
+    })
+
+
+async def _subscribe_batch_universe_to_ticker(seen_pairs: list[tuple[str, str]]) -> None:
+    """Subscribe the queried universe to the live ticker.
+
+    subscribe_with_sym is idempotent + cheap; safe to call on every batch
+    request. Errors swallowed — ticker subscribe is best-effort.
+    """
+    if not seen_pairs:
+        return
+    try:
+        from backend.brokers.registry import get_sparkline_broker
+        _bk = get_sparkline_broker()
+        _full_map = await asyncio.to_thread(_get_today_token_map, _bk)
+        _sub_pairs: list[tuple[int, str]] = []
+        for exch, sym in seen_pairs:
+            pref = [exch] + [e for e in _SPARKLINE_EXCHANGES if e != exch]
+            for _ex in pref:
+                tok = _full_map.get((sym, _ex))
+                if tok is not None:
+                    _sub_pairs.append((tok, sym))
+                    break
+        if _sub_pairs:
+            from backend.brokers.kite_ticker import get_ticker
+            get_ticker().subscribe_with_sym(_sub_pairs)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(f"batch_quote: ticker subscribe skipped: {exc}")
+
+
 class QuoteController(Controller):
     path = "/api/quote"
     guards = [auth_or_demo_guard]
@@ -478,15 +647,12 @@ class QuoteController(Controller):
         The `as_of` field in the response is set so the frontend can
         show a staleness hint.
         """
-        import asyncio
         from datetime import datetime, timezone
         from backend.brokers.registry import get_market_data_broker
         from backend.api.algo.symbol_resolver import resolve_market_data_keys
 
-        keys = list({k.strip() for k in (data.keys or []) if k and ":" in k})
-        # Soft cap — Kite quote() handles ~500 keys but the UI shouldn't
-        # ask for more than this in one tab. Trim silently.
-        keys = keys[:300]
+        # ── Normalise keys ─────────────────────────────────────────────────
+        keys = _normalize_batch_keys(data.keys or [])
 
         # ── Virtual root resolution ────────────────────────────────────────
         # Resolve MCX/CDS bare roots to front-month contracts so broker calls
@@ -495,80 +661,12 @@ class QuoteController(Controller):
         key_map = await resolve_market_data_keys(keys)
 
         # ── Closed-hours fast-path ─────────────────────────────────────────
-        # When every exchange in the requested set is currently closed, skip
-        # the broker.quote() call and serve last-known-good LTPs from the
-        # in-process cache instead.  Ticker + broker calls zero; the cache
-        # already holds EOD values from the prior session.
         req_exchanges = _exchanges_from_keys(keys)
-        market_closed = _all_exchanges_closed(req_exchanges)
-
-        as_of_str: Optional[str] = None
-        quote_data: dict = {}
-
-        if market_closed:
-            # Read last-known-good LTP + non-LTP snapshot fields; mark rows as
-            # stale. LKG lookup uses the RESOLVED symbol since that's what was
-            # recorded during the live session.
-            #
-            # Cold-start warm: if the LKG quote cache is empty for the
-            # requested universe (process restarted during closed hours, or
-            # the previous session ended before the batch endpoint ran), do a
-            # ONE-SHOT broker.quote() to populate open/close/volume/oi/change
-            # for this response and every subsequent closed-hours request.
-            # Guarded by a module-level "warmed today" flag so we don't burn
-            # broker quota on every closed-hours poll.
-            from backend.brokers.broker_apis import (
-                get_last_good_ltp, get_last_good_quote, record_good_quote, record_good_ltp,
-            )
-            logger.debug(f"batch_quote: market closed — serving LKG for {len(keys)} keys")
-
-            # Cold-start warm — one broker.quote() per IST day per key-set signature.
-            await _maybe_warm_closed_hours_quotes(keys, key_map)
-
-            items: list[BatchQuoteRow] = []
-            as_of_str = datetime.now(timezone.utc).isoformat(timespec="seconds")
-            for k in keys:
-                try:
-                    exch, sym = k.split(":", 1)
-                except ValueError:
-                    continue
-                # Prefer LKG from the resolved contract symbol, fall back to
-                # the raw input symbol (for non-virtual pass-throughs).
-                broker_key = key_map.input_to_broker.get(k, k)
-                _, resolved_sym = broker_key.split(":", 1) if ":" in broker_key else ("", sym)
-                ltp = (
-                    get_last_good_ltp(resolved_sym, max_age_s=86400.0) or
-                    get_last_good_ltp(sym, max_age_s=86400.0) or
-                    0.0
-                )
-                # LKG non-LTP snapshot — open/close/volume/oi/change/change_pct/bid/ask.
-                # Prefer resolved contract symbol (matches live-path record key);
-                # fall back to raw input symbol for non-virtual pass-throughs.
-                snap = (
-                    get_last_good_quote(resolved_sym, max_age_s=86400.0) or
-                    get_last_good_quote(sym, max_age_s=86400.0) or
-                    {}
-                )
-                items.append(BatchQuoteRow(
-                    exchange=exch, tradingsymbol=sym,  # always original key
-                    ltp=ltp,
-                    bid=snap.get("bid"),
-                    ask=snap.get("ask"),
-                    open=snap.get("open"),
-                    close=snap.get("close"),
-                    change=float(snap.get("change") or 0.0),
-                    change_pct=float(snap.get("change_pct") or 0.0),
-                    volume=int(snap.get("volume") or 0),
-                    oi=int(snap.get("oi") or 0),
-                    stale=True,
-                ))
-            return BatchQuoteResponse(
-                refreshed_at=as_of_str,
-                items=items,
-                as_of=as_of_str,
-            )
+        if _all_exchanges_closed(req_exchanges):
+            return await _serve_closed_hours_batch(keys, key_map)
 
         # ── Live path (market open) ────────────────────────────────────────
+        quote_data: dict = {}
         if key_map.broker_keys:
             try:
                 broker = get_market_data_broker()
@@ -577,95 +675,34 @@ class QuoteController(Controller):
                 logger.warning(f"Batch quote failed: {exc}")
                 quote_data = {}
 
-        items = []
-        # Build (exch, sym) pairs alongside items so we can subscribe the
-        # universe to the live ticker below — without this, /pulse's
-        # winners/losers sparklines only get an SSE feed AFTER the next
-        # loadSparklines call (up to 30s after the mover set rotates).
-        # The sparkline tail in the renderer reads _liveLtpSnap[sym]; if
-        # SSE never subscribed the symbol, the tail stays pinned at the
-        # poll-time LTP and the curve looks frozen.
+        # Build rows + seen_pairs (for ticker subscribe) in one pass.
         # seen_pairs tracks ORIGINAL (operator-facing) symbols so the
         # ticker subscribe uses the same sym key that SSE listeners
         # registered for.
+        items: list[BatchQuoteRow] = []
         seen_pairs: list[tuple[str, str]] = []
         for k in keys:
-            try:
-                exch, sym = k.split(":", 1)
-            except ValueError:
+            if ":" not in k:
                 continue
-            # Look up broker data via the resolved key.
-            broker_key = key_map.input_to_broker.get(k, k)
-            q = quote_data.get(broker_key) or {}
-            ltp    = float(q.get("last_price") or 0.0)
-            ohlc   = q.get("ohlc") or {}
-            close  = float(ohlc.get("close") or 0.0) or None
-            open_  = float(ohlc.get("open")  or 0.0) or None
-            depth  = q.get("depth") or {}
-            buys   = depth.get("buy") or []
-            sells  = depth.get("sell") or []
-            bid    = float(buys[0]["price"])  if buys  and (buys[0].get("price") or 0)  else None
-            ask    = float(sells[0]["price"]) if sells and (sells[0].get("price") or 0) else None
-            change = (ltp - close) if (close and ltp) else 0.0
-            chg_pct = (change / close * 100.0) if close else 0.0
-            _vol = int(q.get("volume") or 0)
-            _oi  = int(q.get("oi") or 0)
-            items.append(BatchQuoteRow(
-                exchange=exch, tradingsymbol=sym,  # always original operator-facing key
-                ltp=ltp, bid=bid, ask=ask, open=open_, close=close,
-                change=change, change_pct=chg_pct,
-                volume=_vol,
-                oi=_oi,
-                stale=(not q),
-            ))
+            row = _build_live_batch_row(k, quote_data, key_map)
+            items.append(row)
+            exch, sym = k.split(":", 1)
             seen_pairs.append((exch.upper(), sym.upper()))
 
             # Record LKG for closed-hours fallback.  Key by the RESOLVED
             # broker symbol so virtual roots (MCX:CRUDEOIL → CRUDEOIL26JUNFUT)
             # persist under the same key both live-path and closed-hours
-            # readers use.  record_good_ltp uses the sym-only key (no
-            # exchange) to match the existing LTP cache convention.
-            if q:
-                _, resolved_sym_only = (
-                    broker_key.split(":", 1) if ":" in broker_key else ("", sym)
+            # readers use.
+            broker_key = key_map.input_to_broker.get(k, k)
+            if quote_data.get(broker_key):
+                _record_live_batch_lkg(
+                    broker_key, sym, row.ltp, row.open, row.close,
+                    row.volume, row.oi, row.change, row.change_pct, row.bid, row.ask,
                 )
-                if ltp and ltp > 0:
-                    _record_good_ltp_live(resolved_sym_only, ltp)
-                _record_good_quote_live(resolved_sym_only, {
-                    "open":       open_,
-                    "close":      close,
-                    "volume":     _vol,
-                    "oi":         _oi,
-                    "change":     change,
-                    "change_pct": chg_pct,
-                    "bid":        bid,
-                    "ask":        ask,
-                })
 
         # Subscribe the queried universe to the live ticker so SSE starts
-        # streaming LTP for these symbols immediately. subscribe_with_sym
-        # is idempotent + cheap; safe to call on every batch request.
-        # Mover symbols rotating into the winners/losers tabs need this so
-        # their sparkline tail tracks live ticks without waiting for the
-        # next sparkline endpoint round-trip.
-        if seen_pairs:
-            try:
-                from backend.brokers.registry import get_sparkline_broker
-                _bk = get_sparkline_broker()
-                _full_map = await asyncio.to_thread(_get_today_token_map, _bk)
-                _sub_pairs: list[tuple[int, str]] = []
-                for exch, sym in seen_pairs:
-                    pref = [exch] + [e for e in _SPARKLINE_EXCHANGES if e != exch]
-                    for _ex in pref:
-                        tok = _full_map.get((sym, _ex))
-                        if tok is not None:
-                            _sub_pairs.append((tok, sym))
-                            break
-                if _sub_pairs:
-                    from backend.brokers.kite_ticker import get_ticker
-                    get_ticker().subscribe_with_sym(_sub_pairs)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug(f"batch_quote: ticker subscribe skipped: {exc}")
+        # streaming LTP for these symbols immediately.
+        await _subscribe_batch_universe_to_ticker(seen_pairs)
 
         return BatchQuoteResponse(
             refreshed_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -899,6 +936,389 @@ def compose_sparkline_series(
     return [], reason
 
 
+# ── batch_sparkline helpers ───────────────────────────────────────────────────
+
+async def _normalize_sparkline_symbols(
+    syms: list["SparklineSymbol"],
+) -> tuple[list["SparklineSymbol"], dict[str, str]]:
+    """Resolve MCX/CDS bare roots to front-month contracts.
+
+    Returns ``(norm_syms, orig_to_resolved)`` where orig_to_resolved maps
+    original bare symbol → resolved contract symbol for dual-write in Step 4.
+    """
+    from backend.api.routes.watchlist import (
+        _resolve_mcx_commodity,
+        _resolve_cds_currency,
+    )
+    from backend.api.algo.symbol_resolver import resolve_symbol, _strip_next
+
+    norm_syms: list[SparklineSymbol] = []
+    orig_to_resolved: dict[str, str] = {}
+    for sym_obj in syms:
+        sym  = sym_obj.tradingsymbol.upper().strip()
+        exch = (sym_obj.exchange or "NSE").upper().strip()
+        original_sym = sym
+        root, is_next = _strip_next(sym)
+        is_bare_root = root.isalpha() and len(root) <= 12
+        if exch == "MCX" and is_bare_root:
+            if is_next:
+                resolved = await resolve_symbol(sym, "MCX")
+                if resolved and resolved != sym:
+                    sym = resolved.upper().strip()
+                    orig_to_resolved[original_sym] = sym
+            else:
+                resolved = await _resolve_mcx_commodity(root)
+                if resolved:
+                    sym = resolved.upper().strip()
+                    orig_to_resolved[original_sym] = sym
+        elif exch == "CDS" and is_bare_root:
+            if is_next:
+                resolved = await resolve_symbol(sym, "CDS")
+                if resolved and resolved != sym:
+                    sym = resolved.upper().strip()
+                    orig_to_resolved[original_sym] = sym
+            else:
+                resolved = await _resolve_cds_currency(root)
+                if resolved:
+                    sym = resolved.upper().strip()
+                    orig_to_resolved[original_sym] = sym
+        norm_syms.append(SparklineSymbol(tradingsymbol=sym, exchange=exch))
+    return norm_syms, orig_to_resolved
+
+
+async def _fetch_bars_parallel(
+    norm_syms: list["SparklineSymbol"],
+    from_daily: "date",
+    yesterday: "date",
+    today_date: "date",
+    days: int,
+    db_only: bool,
+) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
+    """Fetch daily closes and today's 30-min bars in parallel for all symbols.
+
+    Returns ``(past_result, today_result)`` dicts keyed by tradingsymbol.
+    """
+    from backend.api.persistence import ohlcv_store as _ohlcv_store
+    from backend.api.persistence import intraday_store as _intraday_store
+
+    async def _fetch_daily(sym_obj: SparklineSymbol) -> tuple[str, list[float]]:
+        try:
+            bars = await _ohlcv_store.get_or_fetch_daily(
+                sym_obj.tradingsymbol, sym_obj.exchange,
+                from_d=from_daily, to_d=yesterday,
+                db_only=db_only,
+            )
+            closes = [b["close"] for b in bars]
+            if len(closes) > (days - 1):
+                closes = closes[-(days - 1):]
+            return sym_obj.tradingsymbol, closes
+        except Exception as exc:
+            logger.debug(f"sparkline: ohlcv_store miss for {sym_obj.tradingsymbol}: {exc}")
+            return sym_obj.tradingsymbol, []
+
+    async def _fetch_intraday(sym_obj: SparklineSymbol) -> tuple[str, list[float]]:
+        try:
+            bars = await _intraday_store.get_or_fetch_intraday(
+                sym_obj.tradingsymbol, sym_obj.exchange,
+                on_date=today_date, interval="30minute",
+                db_only=db_only,
+            )
+            closes = [b["close"] for b in bars]
+            return sym_obj.tradingsymbol, closes
+        except Exception as exc:
+            logger.debug(f"sparkline: intraday_store miss for {sym_obj.tradingsymbol}: {exc}")
+            return sym_obj.tradingsymbol, []
+
+    # Cap concurrency at 3 so a cold cache with 100 symbols doesn't fire 200
+    # simultaneous broker calls and saturate Kite's 3 req/s quota.
+    _req_sem = asyncio.Semaphore(3)
+
+    async def _daily_throttled(s: SparklineSymbol) -> tuple[str, list[float]]:
+        async with _req_sem:
+            return await _fetch_daily(s)
+
+    async def _intraday_throttled(s: SparklineSymbol) -> tuple[str, list[float]]:
+        async with _req_sem:
+            return await _fetch_intraday(s)
+
+    daily_res, intraday_res = await asyncio.gather(
+        asyncio.gather(*[_daily_throttled(s) for s in norm_syms]),
+        asyncio.gather(*[_intraday_throttled(s) for s in norm_syms]),
+    )
+    return dict(daily_res), dict(intraday_res)
+
+
+async def _self_heal_empty_bars(
+    norm_syms: list["SparklineSymbol"],
+    past_result: dict[str, list[float]],
+    today_result: dict[str, list[float]],
+    from_daily: "date",
+    yesterday: "date",
+    today_date: "date",
+    days: int,
+) -> None:
+    """Step 1b: bypass db_only guard for symbols with no data at all.
+
+    Mutates past_result / today_result in-place. Fires broker calls only when
+    broker is not in rate-limit cool-off. Guards: one-time structured log per
+    (sym, exch) per 60 s via _self_heal_log_once.
+    """
+    from backend.api.helpers.self_heal_log import _self_heal_log_once
+    from backend.api.persistence.backfill import _price_broker_in_cooloff
+    from backend.api.persistence import ohlcv_store as _ohlcv_store
+    from backend.api.persistence import intraday_store as _intraday_store
+
+    if await asyncio.to_thread(_price_broker_in_cooloff):
+        return
+
+    heal_syms = [
+        s for s in norm_syms
+        if not past_result.get(s.tradingsymbol)
+        and not today_result.get(s.tradingsymbol)
+    ]
+    if not heal_syms:
+        return
+
+    async def _heal_daily(sym_obj: SparklineSymbol) -> tuple[str, list[float]]:
+        try:
+            bars = await _ohlcv_store.get_or_fetch_daily(
+                sym_obj.tradingsymbol, sym_obj.exchange,
+                from_d=from_daily, to_d=yesterday,
+                bypass_cache=True,
+            )
+            closes = [b["close"] for b in bars]
+            if len(closes) > (days - 1):
+                closes = closes[-(days - 1):]
+            return sym_obj.tradingsymbol, closes
+        except Exception as exc:
+            logger.debug(f"sparkline self-heal: ohlcv miss for {sym_obj.tradingsymbol}: {exc}")
+            return sym_obj.tradingsymbol, []
+
+    async def _heal_intraday(sym_obj: SparklineSymbol) -> tuple[str, list[float]]:
+        try:
+            bars = await _intraday_store.get_or_fetch_intraday(
+                sym_obj.tradingsymbol, sym_obj.exchange,
+                on_date=today_date, interval="30minute",
+                bypass_cache=True,
+            )
+            closes = [b["close"] for b in bars]
+            return sym_obj.tradingsymbol, closes
+        except Exception as exc:
+            logger.debug(f"sparkline self-heal: intraday miss for {sym_obj.tradingsymbol}: {exc}")
+            return sym_obj.tradingsymbol, []
+
+    _heal_sem = asyncio.Semaphore(2)
+
+    async def _heal_daily_throttled(s: SparklineSymbol) -> tuple[str, list[float]]:
+        async with _heal_sem:
+            return await _heal_daily(s)
+
+    async def _heal_intraday_throttled(s: SparklineSymbol) -> tuple[str, list[float]]:
+        async with _heal_sem:
+            return await _heal_intraday(s)
+
+    daily_res, intraday_res = await asyncio.gather(
+        asyncio.gather(*[_heal_daily_throttled(s) for s in heal_syms]),
+        asyncio.gather(*[_heal_intraday_throttled(s) for s in heal_syms]),
+    )
+    for sym_str, closes in daily_res:
+        if closes:
+            past_result[sym_str] = closes
+    for sym_str, closes in intraday_res:
+        if closes:
+            today_result[sym_str] = closes
+
+    for s in heal_syms:
+        _self_heal_log_once(s.tradingsymbol, s.exchange, 0, days)
+
+
+async def _build_spark_token_map(
+    norm_syms: list["SparklineSymbol"],
+) -> dict[str, int]:
+    """Step 2: build {tradingsymbol → instrument_token} map and subscribe to ticker.
+
+    CRITICAL: uses subscribe_with_sym so the ticker's _token_to_sym map is
+    populated — without it SSE tick payloads carry sym="" and the frontend
+    quoteStream filter silently drops every tick.
+    Returns an empty dict on any failure (best-effort).
+    """
+    from backend.brokers.kite_ticker import get_ticker
+
+    token_map: dict[str, int] = {}
+    try:
+        from backend.brokers.registry import get_sparkline_broker as _sb
+        _bk = _sb()
+        _full_map = await asyncio.to_thread(_get_today_token_map, _bk)
+        for s in norm_syms:
+            if s.tradingsymbol in token_map:
+                continue
+            pref = [s.exchange] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != s.exchange]
+            for _ex in pref:
+                tok = _full_map.get((s.tradingsymbol, _ex))
+                if tok is not None:
+                    token_map[s.tradingsymbol] = tok
+                    break
+    except Exception as _exc:
+        logger.warning(f"sparkline: token lookup failed: {_exc}")
+
+    ticker = get_ticker()
+    if token_map:
+        ticker.subscribe_with_sym(
+            [(tok, sym) for sym, tok in token_map.items()]
+        )
+    return token_map
+
+
+async def _fill_ltp_from_broker(
+    miss_keys: list[str],
+    spark_market_closed: bool,
+    ltp_map: dict[str, float],
+) -> None:
+    """Step 3 Pass 2: broker.ltp() for tick-map misses.
+
+    Mutates ltp_map in-place. Skipped when market is closed.
+    """
+    from backend.brokers.broker_apis import record_good_ltp as _record_ltp
+
+    if not miss_keys or spark_market_closed:
+        if miss_keys and spark_market_closed:
+            logger.debug(
+                f"sparkline: market closed — skipping broker.ltp() for {len(miss_keys)} misses"
+            )
+        return
+    try:
+        from backend.brokers.registry import get_sparkline_broker as _get_sp_broker
+        ltp_broker = _get_sp_broker()
+        raw_ltp = await asyncio.to_thread(ltp_broker.ltp, miss_keys) or {}
+        for key, val in raw_ltp.items():
+            lp = val.get("last_price") if isinstance(val, dict) else val
+            try:
+                lp_f = float(lp) if lp is not None else 0.0
+                ltp_map[key] = lp_f
+                if lp_f > 0:
+                    sym_only = key.split(":", 1)[-1]
+                    _record_ltp(sym_only, lp_f)
+            except (TypeError, ValueError):
+                pass
+    except Exception as exc:
+        logger.warning(f"sparkline: ltp fallback batch failed: {exc}")
+
+
+async def _resolve_spark_ltps(
+    norm_syms: list["SparklineSymbol"],
+    spark_market_closed: bool,
+) -> dict[str, float]:
+    """Steps 2+3 orchestrator: token map → tick_map pass → broker.ltp fallback.
+
+    Returns ``ltp_map`` keyed by ``'EXCHANGE:SYMBOL'`` strings.
+    """
+    from backend.brokers.kite_ticker import get_ticker
+    from backend.brokers.broker_apis import record_good_ltp as _record_ltp
+
+    # Step 2: build token map + subscribe ticker
+    token_map = await _build_spark_token_map(norm_syms)
+
+    key_to_token: dict[str, int] = {
+        f"{s.exchange}:{s.tradingsymbol}": token_map[s.tradingsymbol]
+        for s in norm_syms
+        if s.tradingsymbol in token_map
+    }
+    quote_keys = [f"{s.exchange}:{s.tradingsymbol}" for s in norm_syms]
+    ltp_map: dict[str, float] = {}
+
+    # Step 3 Pass 1: tick map (zero Kite quota)
+    ticker = get_ticker()
+    ticker_hits: list[str] = []
+    miss_keys: list[str] = []
+    for qk in quote_keys:
+        tok = key_to_token.get(qk)
+        if tok is not None:
+            ltp_val = ticker.get_ltp(tok)
+            if ltp_val is not None:
+                ltp_map[qk] = ltp_val
+                ticker_hits.append(qk)
+                _record_ltp(qk.split(":", 1)[-1], ltp_val)
+            else:
+                miss_keys.append(qk)
+        else:
+            miss_keys.append(qk)
+
+    if ticker_hits:
+        logger.debug(
+            f"sparkline: {len(ticker_hits)} LTP(s) from tick_map, "
+            f"{len(miss_keys)} fallback to broker.ltp()"
+        )
+
+    # Step 3 Pass 2: broker.ltp() for misses
+    await _fill_ltp_from_broker(miss_keys, spark_market_closed, ltp_map)
+    return ltp_map
+
+
+def _compose_and_dual_write(
+    norm_syms: list["SparklineSymbol"],
+    past_result: dict[str, list[float]],
+    today_result: dict[str, list[float]],
+    ltp_map: dict[str, float],
+    orig_to_resolved: dict[str, str],
+    spark_market_closed: bool,
+) -> dict[str, list[float]]:
+    """Step 4: compose result series and dual-write original bare names.
+
+    Returns the result dict keyed by tradingsymbol (including aliases).
+    Emits throttled [SPARK-EMPTY] structured log when a symbol has no data.
+    """
+    from backend.brokers.broker_apis import get_last_good_ltp as _get_last_ltp
+
+    result: dict[str, list[float]] = {}
+    for sym_obj in norm_syms:
+        sym  = sym_obj.tradingsymbol
+        past = past_result.get(sym, [])
+        today_bars = today_result.get(sym, [])
+        ltp_key = f"{sym_obj.exchange}:{sym}"
+        ltp_val = ltp_map.get(ltp_key)
+        # Closed-hours: if ltp_map has no entry try the 24-hour LKG cache.
+        if (ltp_val is None or ltp_val == 0) and spark_market_closed:
+            _cached_ltp = _get_last_ltp(sym, max_age_s=86400.0)
+            if _cached_ltp and _cached_ltp > 0:
+                ltp_val = _cached_ltp
+
+        series, _compose_reason = compose_sparkline_series(
+            past=past,
+            today_bars=today_bars,
+            ltp_val=ltp_val,
+            market_closed=spark_market_closed,
+        )
+
+        if not series:
+            _layer_map = {
+                "warm_universe_empty":    "tier1_2_cache",
+                "historical_fetch_fail":  "tier3_broker",
+                "spark_past_cache_miss":  "tier1_past_cache",
+                "spark_today_cache_miss": "tier1_today_cache",
+            }
+            _layer = _layer_map.get(_compose_reason, "unknown")
+            _now = _time_mod.monotonic()
+            _key = (sym, sym_obj.exchange)
+            if _now - _spark_empty_last_log.get(_key, 0.0) >= 3600:
+                _spark_empty_last_log[_key] = _now
+                logger.info(
+                    f"[SPARK-EMPTY] symbol={sym_obj.exchange}:{sym} "
+                    f"reason={_compose_reason} cache_layer={_layer} "
+                    f"past={len(past)} today={len(today_bars)} "
+                    f"ltp={ltp_val} market_closed={spark_market_closed}"
+                )
+        if series:
+            result[sym] = series
+            # Dual-write: also store under the original bare watchlist name
+            # so the frontend renderer's sparklines[row.tradingsymbol] lookup
+            # hits for MCX/CDS symbols whose tradingsymbol on the grid is the
+            # bare commodity/currency name, not the resolved front-month contract.
+            for bare, resolved_name in orig_to_resolved.items():
+                if resolved_name == sym:
+                    result[bare] = series
+    return result
+
+
 class SparklineController(Controller):
     path = "/api/quotes"
     guards = [auth_or_demo_guard]
@@ -931,76 +1351,14 @@ class SparklineController(Controller):
         days = max(1, min(int(data.days), 90))
         today = _ist_today()
         today_date = date.fromisoformat(today)
-        # yesterday = most recent completed trading day for past-closes window
-        yesterday = today_date - timedelta(days=1)
+        yesterday  = today_date - timedelta(days=1)
         from_daily = today_date - timedelta(days=days + 5)  # +5 buffer for weekends/holidays
 
-        # Normalise symbol list. Bare MCX commodity names ("CRUDEOIL",
-        # "GOLDM") + CDS currency names ("USDINR") aren't real Kite
-        # instruments — the tradable contract is the front-month future
-        # (CRUDEOIL26JUNFUT). The watchlist quotes endpoint already
-        # resolves these via `_resolve_mcx_commodity` /
-        # `_resolve_cds_currency`; the sparkline endpoint must do the
-        # same or the token-lookup misses, the symbol is silently
-        # dropped, and the operator sees an empty 5d sparkline column
-        # on pinned MCX/CDS rows even when the rest of the row data
-        # arrives via the watchlist REST poll.
-        from backend.api.routes.watchlist import (
-            _resolve_mcx_commodity,
-            _resolve_cds_currency,
-        )
-        norm_syms: list[SparklineSymbol] = []
-        # orig_to_resolved maps bare/virtual watchlist name → resolved contract
-        # e.g. "CRUDEOIL" → "CRUDEOIL26JUNFUT", "GOLDM_NEXT" → "GOLDM26AUGFUT".
-        # Used in Step 4 to also store the result under the original key so the
-        # frontend renderer can look up sparklines[row.tradingsymbol] and find
-        # the series even when the row carries the virtual name from the watchlist.
-        from backend.api.algo.symbol_resolver import resolve_symbol, _strip_next
-        orig_to_resolved: dict[str, str] = {}
-        for sym_obj in syms:
-            sym  = sym_obj.tradingsymbol.upper().strip()
-            exch = (sym_obj.exchange or "NSE").upper().strip()
-            original_sym = sym
-            # Strip _NEXT suffix for the alpha/length guard so back-month
-            # virtual roots (GOLDM_NEXT, CRUDEOIL_NEXT) are also resolved.
-            root, is_next = _strip_next(sym)
-            is_bare_root = root.isalpha() and len(root) <= 12
-            if exch == "MCX" and is_bare_root:
-                if is_next:
-                    resolved = await resolve_symbol(sym, "MCX")
-                    if resolved and resolved != sym:
-                        sym = resolved.upper().strip()
-                        orig_to_resolved[original_sym] = sym
-                else:
-                    resolved = await _resolve_mcx_commodity(root)
-                    if resolved:
-                        sym = resolved.upper().strip()
-                        orig_to_resolved[original_sym] = sym
-            elif exch == "CDS" and is_bare_root:
-                if is_next:
-                    resolved = await resolve_symbol(sym, "CDS")
-                    if resolved and resolved != sym:
-                        sym = resolved.upper().strip()
-                        orig_to_resolved[original_sym] = sym
-                else:
-                    resolved = await _resolve_cds_currency(root)
-                    if resolved:
-                        sym = resolved.upper().strip()
-                        orig_to_resolved[original_sym] = sym
-            norm_syms.append(SparklineSymbol(tradingsymbol=sym, exchange=exch))
+        # ── Normalise + resolve virtual MCX/CDS roots ─────────────────────
+        norm_syms, orig_to_resolved = await _normalize_sparkline_symbols(syms)
 
-        # ── Step 1: Past daily closes via ohlcv_store ────────────────────────
-        # Request [from_daily, yesterday] from the store. The store handles
-        # Tier 1 → Tier 2 → Tier 3 (broker) transparently and write-backs
-        # to the queue. We then trim to the (days-1) most recent closes.
-        from backend.api.persistence import ohlcv_store as _ohlcv_store
-        from backend.api.persistence import intraday_store as _intraday_store
-
-        # Determine db_only mode: when no market segment is open, skip all
-        # broker calls in the store fetchers — the DB already holds today's
-        # bars and yesterday's closes; no new data would arrive from a broker
-        # call during closed hours, so the round-trip only burns rate-limit
-        # budget.  The flag is computed once here and shared by both closures.
+        # ── Determine db_only mode ─────────────────────────────────────────
+        # When no segment is open, skip broker calls in store fetchers.
         _mkt_open: bool = await asyncio.to_thread(_any_segment_open)
         db_only: bool = not _mkt_open
         if db_only:
@@ -1013,318 +1371,33 @@ class SparklineController(Controller):
                     "serving Tier 1+2 only (no broker calls)"
                 )
 
-        async def _fetch_daily_closes(sym_obj: SparklineSymbol) -> tuple[str, list[float]]:
-            try:
-                bars = await _ohlcv_store.get_or_fetch_daily(
-                    sym_obj.tradingsymbol, sym_obj.exchange,
-                    from_d=from_daily, to_d=yesterday,
-                    db_only=db_only,
-                )
-                closes = [b["close"] for b in bars]
-                if len(closes) > (days - 1):
-                    closes = closes[-(days - 1):]
-                return sym_obj.tradingsymbol, closes
-            except Exception as exc:
-                logger.debug(f"sparkline: ohlcv_store miss for {sym_obj.tradingsymbol}: {exc}")
-                return sym_obj.tradingsymbol, []
-
-        async def _fetch_today_bars(sym_obj: SparklineSymbol) -> tuple[str, list[float]]:
-            try:
-                bars = await _intraday_store.get_or_fetch_intraday(
-                    sym_obj.tradingsymbol, sym_obj.exchange,
-                    on_date=today_date, interval="30minute",
-                    db_only=db_only,
-                )
-                closes = [b["close"] for b in bars]
-                return sym_obj.tradingsymbol, closes
-            except Exception as exc:
-                logger.debug(f"sparkline: intraday_store miss for {sym_obj.tradingsymbol}: {exc}")
-                return sym_obj.tradingsymbol, []
-
-        # Fan-out both daily + intraday fetches in parallel across all symbols.
-        # Cap concurrency at 6 (3 daily + 3 intraday in parallel) so a cold
-        # cache with 100 symbols doesn't fire 200 simultaneous broker
-        # historical_data calls and saturate Kite's 3 req/s quota.  On a warm
-        # cache (Tier 1 hits), each task resolves in <1 ms so the semaphore
-        # never queues; response time is unaffected for the common hot path.
-        _req_sem = asyncio.Semaphore(3)
-
-        async def _fetch_daily_closes_throttled(sym_obj: SparklineSymbol) -> tuple[str, list[float]]:
-            async with _req_sem:
-                return await _fetch_daily_closes(sym_obj)
-
-        async def _fetch_today_bars_throttled(sym_obj: SparklineSymbol) -> tuple[str, list[float]]:
-            async with _req_sem:
-                return await _fetch_today_bars(sym_obj)
-
-        daily_tasks    = [_fetch_daily_closes_throttled(s) for s in norm_syms]
-        intraday_tasks = [_fetch_today_bars_throttled(s) for s in norm_syms]
-        daily_results, intraday_results = await asyncio.gather(
-            asyncio.gather(*daily_tasks),
-            asyncio.gather(*intraday_tasks),
+        # ── Step 1: Past daily closes + today's intraday bars (parallel) ──
+        past_result, today_result = await _fetch_bars_parallel(
+            norm_syms, from_daily, yesterday, today_date, days, db_only,
         )
 
-        past_result:  dict[str, list[float]] = dict(daily_results)
-        today_result: dict[str, list[float]] = dict(intraday_results)
-
-        # ── Step 1b: Self-heal — Tier 1+2 empty AND closed hours ─────────────
-        # During closed hours `db_only=True` prevents broker calls in the store
-        # fetchers.  When BOTH past closes AND today's intraday bars are empty
-        # for a symbol (fresh install, cleared DB, prior db_worker write bug)
-        # the db_only guard is counter-productive: the sparkline stays blank
-        # forever.  Self-heal: retry those symbols with `bypass_cache=True`
-        # (full 3-tier: Tier 1 → Tier 2 → Tier 3/broker) so the broker fills
-        # both stores and the write-back queue heals the DB.
-        #
-        # Guard: only fire when broker is NOT in rate-limit cool-off so we
-        # don't amplify a throttle event.  If the broker call fails (Kite 502
-        # etc.) we fall through silently — the symbol stays empty this request
-        # and the next request retries.
+        # ── Step 1b: Self-heal — db_only guard, empty on both tiers ───────
         if db_only:
-            from backend.api.helpers.self_heal_log import _self_heal_log_once
-            from backend.api.persistence.backfill import _price_broker_in_cooloff
-
-            _broker_in_cooloff: bool = await asyncio.to_thread(_price_broker_in_cooloff)
-
-            if not _broker_in_cooloff:
-                _heal_syms = [
-                    s for s in norm_syms
-                    if not past_result.get(s.tradingsymbol)
-                    and not today_result.get(s.tradingsymbol)
-                ]
-
-                if _heal_syms:
-                    async def _self_heal_daily(sym_obj: SparklineSymbol) -> tuple[str, list[float]]:
-                        try:
-                            bars = await _ohlcv_store.get_or_fetch_daily(
-                                sym_obj.tradingsymbol, sym_obj.exchange,
-                                from_d=from_daily, to_d=yesterday,
-                                bypass_cache=True,
-                            )
-                            closes = [b["close"] for b in bars]
-                            if len(closes) > (days - 1):
-                                closes = closes[-(days - 1):]
-                            return sym_obj.tradingsymbol, closes
-                        except Exception as exc:
-                            logger.debug(f"sparkline self-heal: ohlcv miss for {sym_obj.tradingsymbol}: {exc}")
-                            return sym_obj.tradingsymbol, []
-
-                    async def _self_heal_intraday(sym_obj: SparklineSymbol) -> tuple[str, list[float]]:
-                        try:
-                            bars = await _intraday_store.get_or_fetch_intraday(
-                                sym_obj.tradingsymbol, sym_obj.exchange,
-                                on_date=today_date, interval="30minute",
-                                bypass_cache=True,
-                            )
-                            closes = [b["close"] for b in bars]
-                            return sym_obj.tradingsymbol, closes
-                        except Exception as exc:
-                            logger.debug(f"sparkline self-heal: intraday miss for {sym_obj.tradingsymbol}: {exc}")
-                            return sym_obj.tradingsymbol, []
-
-                    # Rate-limit guard: cap at 2 concurrent heals.
-                    _heal_sem = asyncio.Semaphore(2)
-
-                    async def _heal_daily_throttled(s: SparklineSymbol) -> tuple[str, list[float]]:
-                        async with _heal_sem:
-                            return await _self_heal_daily(s)
-
-                    async def _heal_intraday_throttled(s: SparklineSymbol) -> tuple[str, list[float]]:
-                        async with _heal_sem:
-                            return await _self_heal_intraday(s)
-
-                    _heal_daily_res, _heal_intraday_res = await asyncio.gather(
-                        asyncio.gather(*[_heal_daily_throttled(s) for s in _heal_syms]),
-                        asyncio.gather(*[_heal_intraday_throttled(s) for s in _heal_syms]),
-                    )
-
-                    for sym_str, closes in _heal_daily_res:
-                        if closes:
-                            past_result[sym_str] = closes
-                    for sym_str, closes in _heal_intraday_res:
-                        if closes:
-                            today_result[sym_str] = closes
-
-                    # Log once per (sym, exch) per 60 s — throttled by shared helper.
-                    for s in _heal_syms:
-                        combined = len(past_result.get(s.tradingsymbol, [])) + len(today_result.get(s.tradingsymbol, []))
-                        _self_heal_log_once(s.tradingsymbol, s.exchange, 0, days)
-
-        # ── Step 2: Build token_map for LTP lookup + ticker subscription ─────
-        # We need the instrument_token for every normalised symbol to:
-        #   a) read live LTP from the ticker's _tick_map (zero quota)
-        #   b) push tokens to the ticker for future SSE ticks
-        #   c) fall back to broker.ltp() for symbols not yet in the tick stream
-        token_map: dict[str, int] = {}
-        try:
-            from backend.brokers.registry import get_sparkline_broker as _sb
-            _bk = _sb()
-            _full_map = await asyncio.to_thread(_get_today_token_map, _bk)
-            for s in norm_syms:
-                if s.tradingsymbol in token_map:
-                    continue
-                pref = [s.exchange] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != s.exchange]
-                for _ex in pref:
-                    tok = _full_map.get((s.tradingsymbol, _ex))
-                    if tok is not None:
-                        token_map[s.tradingsymbol] = tok
-                        break
-        except Exception as _exc:
-            logger.warning(f"sparkline: token lookup failed: {_exc}")
-
-        # ── Step 3: LTP for ALL symbols — tick map first, broker.ltp() fallback
-        from backend.brokers.kite_ticker import get_ticker
-        ticker = get_ticker()
-
-        # CRITICAL: use subscribe_with_sym so the ticker's _token_to_sym map
-        # is populated — without it SSE tick payloads carry sym="" and the
-        # frontend quoteStream filter silently drops every tick.
-        if token_map:
-            ticker.subscribe_with_sym(
-                [(tok, sym) for sym, tok in token_map.items()]
+            await _self_heal_empty_bars(
+                norm_syms, past_result, today_result,
+                from_daily, yesterday, today_date, days,
             )
 
-        key_to_token: dict[str, int] = {
-            f"{s.exchange}:{s.tradingsymbol}": token_map[s.tradingsymbol]
-            for s in norm_syms
-            if s.tradingsymbol in token_map
-        }
-        quote_keys = [f"{s.exchange}:{s.tradingsymbol}" for s in norm_syms]
-        ltp_map: dict[str, float] = {}
-
-        # Pass 1 — tick map (zero Kite quota).
-        from backend.brokers.broker_apis import record_good_ltp as _record_ltp, get_last_good_ltp as _get_last_ltp
-        ticker_hits: list[str] = []
-        miss_keys: list[str] = []
-        for qk in quote_keys:
-            tok = key_to_token.get(qk)
-            if tok is not None:
-                ltp_val = ticker.get_ltp(tok)
-                if ltp_val is not None:
-                    ltp_map[qk] = ltp_val
-                    ticker_hits.append(qk)
-                    # Persist so closed-hours / cold-cache path can use last-known price.
-                    sym_only = qk.split(":", 1)[-1]
-                    _record_ltp(sym_only, ltp_val)
-                else:
-                    miss_keys.append(qk)
-            else:
-                miss_keys.append(qk)
-
-        if ticker_hits:
-            logger.debug(
-                f"sparkline: {len(ticker_hits)} LTP(s) from tick_map, "
-                f"{len(miss_keys)} fallback to broker.ltp()"
-            )
-
-        # ── Closed-hours guard: skip broker.ltp() when market is closed ──────
-        # Determine whether all requested exchanges are currently closed.
-        # If so: skip Pass 2 (broker.ltp()); do not append a live-LTP tail;
-        # set `as_of` in the response so the frontend can show a staleness hint.
-        # Daily closes (ohlcv_store) and intraday bars (intraday_store) are
-        # already served from DB — they never triggered a broker call here.
+        # ── Steps 2+3: token map + LTP (tick_map → broker.ltp fallback) ───
         req_exchs_spark = {s.exchange.upper() for s in norm_syms}
         spark_market_closed = _all_exchanges_closed(req_exchs_spark)
-
-        # Pass 2 — broker.ltp() for misses only.  Skipped when market is closed.
-        if miss_keys and not spark_market_closed:
-            try:
-                from backend.brokers.registry import get_sparkline_broker as _get_sp_broker
-                ltp_broker = _get_sp_broker()
-                raw_ltp = await asyncio.to_thread(ltp_broker.ltp, miss_keys) or {}
-                for key, val in raw_ltp.items():
-                    if isinstance(val, dict):
-                        lp = val.get("last_price")
-                    else:
-                        lp = val
-                    try:
-                        lp_f = float(lp) if lp is not None else 0.0
-                        ltp_map[key] = lp_f
-                        if lp_f > 0:
-                            # Persist so closed-hours / cold-cache path can use last-known price.
-                            sym_only = key.split(":", 1)[-1]
-                            _record_ltp(sym_only, lp_f)
-                    except (TypeError, ValueError):
-                        pass
-            except Exception as exc:
-                logger.warning(f"sparkline: ltp fallback batch failed: {exc}")
-        elif miss_keys and spark_market_closed:
-            logger.debug(
-                f"sparkline: market closed — skipping broker.ltp() for {len(miss_keys)} misses"
-            )
+        ltp_map = await _resolve_spark_ltps(norm_syms, spark_market_closed)
 
         sparkline_as_of: Optional[str] = (
             datetime.now(timezone.utc).isoformat(timespec="seconds")
             if spark_market_closed else None
         )
 
-        # ── Step 4: Compose result series ────────────────────────────────────
-        # Delegate to compose_sparkline_series() — pure helper owns the
-        # fallback ladder and the reason attribution. This route stays
-        # responsible only for the closed-hours last-good-LTP lookup (which
-        # needs the last-good store) and the empty-branch structured log
-        # (which needs the throttled dict).
-        result: dict[str, list[float]] = {}
-        for sym_obj in norm_syms:
-            sym  = sym_obj.tradingsymbol
-            past = past_result.get(sym, [])
-            today_bars = today_result.get(sym, [])
-            ltp_key = f"{sym_obj.exchange}:{sym}"
-            ltp_val = ltp_map.get(ltp_key)
-            # Closed-hours: if ltp_map has no entry (ticker not subscribed,
-            # broker.ltp() skipped) try the 24-hour last-good-LTP cache.
-            # This covers pure mover symbols that never pass through
-            # positions/holdings enrichment and thus never get recorded there.
-            if (ltp_val is None or ltp_val == 0) and spark_market_closed:
-                _cached_ltp = _get_last_ltp(sym, max_age_s=86400.0)
-                if _cached_ltp and _cached_ltp > 0:
-                    ltp_val = _cached_ltp
-
-            series, _compose_reason = compose_sparkline_series(
-                past=past,
-                today_bars=today_bars,
-                ltp_val=ltp_val,
-                market_closed=spark_market_closed,
-            )
-
-            if not series:
-                # Structured [SPARK-EMPTY] tag — reason attributed by the
-                # canonical compose_sparkline_series() helper above so the
-                # route + helper can never drift on reason semantics. The
-                # cache_layer label is derived from reason for grep-ability.
-                _layer_map = {
-                    "warm_universe_empty":    "tier1_2_cache",
-                    "historical_fetch_fail":  "tier3_broker",
-                    "spark_past_cache_miss":  "tier1_past_cache",
-                    "spark_today_cache_miss": "tier1_today_cache",
-                }
-                _layer = _layer_map.get(_compose_reason, "unknown")
-                _now = _time_mod.monotonic()
-                _key = (sym, sym_obj.exchange)
-                if _now - _spark_empty_last_log.get(_key, 0.0) >= 3600:
-                    _spark_empty_last_log[_key] = _now
-                    logger.info(
-                        f"[SPARK-EMPTY] symbol={sym_obj.exchange}:{sym} "
-                        f"reason={_compose_reason} cache_layer={_layer} "
-                        f"past={len(past)} today={len(today_bars)} "
-                        f"ltp={ltp_val} market_closed={spark_market_closed}"
-                    )
-            if series:
-                result[sym] = series
-                # Dual-write: also store under the original bare watchlist name
-                # (e.g. "CRUDEOIL") so the frontend renderer's
-                # sparklines[row.tradingsymbol] lookup hits for MCX/CDS symbols
-                # whose tradingsymbol on the grid row is the bare commodity/
-                # currency name, not the resolved front-month contract.
-                # Without this, sparklines["CRUDEOIL"] is always undefined while
-                # sparklines["CRUDEOIL26JUNFUT"] is populated — causing the
-                # sparkline cell to show "—" for every MCX/CDS watchlist row.
-                # The frontend prune (active Set built from pairs.tradingsymbol)
-                # also correctly retains the bare-name entry on subsequent calls
-                # because pairs carry the original bare name from unifiedRows.
-                for bare, resolved_name in orig_to_resolved.items():
-                    if resolved_name == sym:
-                        result[bare] = series
+        # ── Step 4: Compose result series + dual-write bare names ─────────
+        result = _compose_and_dual_write(
+            norm_syms, past_result, today_result,
+            ltp_map, orig_to_resolved, spark_market_closed,
+        )
 
         return SparklineResponse(
             data=result,
