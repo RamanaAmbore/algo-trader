@@ -523,17 +523,28 @@ async def test_batch_quote_closed_warm_not_poisoned_on_broker_failure():
     persisted.  A broker exception leaves the signature absent so the
     NEXT closed-hours call re-attempts the warm.
 
+    Post-simplify-review update: a broker failure now records a ~60 s cool-
+    off in `_closed_hours_warm_failed_until` (broker-storm throttle).  The
+    "not poisoned" invariant still holds — the sig is NOT added to
+    `_signatures`, so once cool-off expires the retry runs.  Test clears
+    the cool-off between calls to prove immediate retry is possible when
+    unthrottled.
+
     Test plan:
       Call 1 — broker.quote() raises RuntimeError (simulate cold start).
                Signature must NOT appear in _closed_hours_warm_signatures.
-      Call 2 — broker.quote() succeeds and returns one valid symbol.
-               Broker must be invoked (proof that the signature was absent).
-               Signature IS added after successful persisted write.
+               Signature IS in _closed_hours_warm_failed_until (cool-off).
+      Call 2 — After clearing cool-off, broker.quote() succeeds and returns
+               one valid symbol.  Broker must be invoked (proof that
+               `_signatures` was still absent).  Signature IS added after
+               successful persisted write.
       Call 3 — Same key-set. Broker must NOT be called (dedup now active).
     """
     from backend.api.routes.quote import (
         _maybe_warm_closed_hours_quotes,
         _closed_hours_warm_signatures,
+        _closed_hours_warm_in_progress,
+        _closed_hours_warm_failed_until,
     )
 
     # Build a minimal key_map stub with the required `broker_keys` attribute.
@@ -545,6 +556,8 @@ async def test_batch_quote_closed_warm_not_poisoned_on_broker_failure():
 
     # Reset state so the test is deterministic across runs.
     _closed_hours_warm_signatures.discard(sig)
+    _closed_hours_warm_in_progress.discard(sig)
+    _closed_hours_warm_failed_until.pop(sig, None)
 
     call_count = 0
 
@@ -568,6 +581,13 @@ async def test_batch_quote_closed_warm_not_poisoned_on_broker_failure():
         "Broker exception must not poison the warm signature — "
         "sig was added before the broker call (pre-fix bug)"
     )
+    # Broker-storm throttle records a cool-off so back-to-back failures
+    # don't hammer the broker.  Clear it here so call 2's immediate retry
+    # proves the "not poisoned" invariant (sig retriable once cool-off ends).
+    assert sig in _closed_hours_warm_failed_until, (
+        "Broker failure must record a cool-off timestamp (broker-storm throttle)"
+    )
+    _closed_hours_warm_failed_until.pop(sig, None)
 
     # ── Call 2: broker succeeds ───────────────────────────────────────────────
     def _broker_ok(*_a, **_kw):

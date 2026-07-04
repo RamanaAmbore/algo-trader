@@ -46,10 +46,27 @@ _spark_empty_last_log: dict[tuple[str, str], float] = {}
 # _closed_hours_warm_signatures is the SET of key-set signatures already warmed
 # in the current IST day.  A signature is the concatenation of resolved broker
 # keys (sorted, joined by ',').  Signatures reset at midnight IST via
-# _closed_hours_warm_day.  Guarded by _closed_hours_warm_lock.
+# _closed_hours_warm_day.
+#
+# _closed_hours_warm_in_progress is the SET of signatures currently mid-warm.
+# Held between check-in and broker call so a second concurrent caller sees the
+# sig as "already claimed" and exits without duplicating the broker.quote()
+# fetch (TOCTOU dedup — the lock is released before the broker call so it
+# cannot span the check + fetch atomically).
+#
+# _closed_hours_warm_failed_until throttles broker-storm during outages: a
+# failed warm marks the sig unreachable for ~60 s so we don't hammer the
+# broker on every 30 s poll during a sustained connection issue.
+# All three are guarded by _closed_hours_warm_lock.
 _closed_hours_warm_signatures: set[str] = set()
+_closed_hours_warm_in_progress: set[str] = set()
+_closed_hours_warm_failed_until: dict[str, float] = {}
 _closed_hours_warm_day: str = ""
 _closed_hours_warm_lock = threading.Lock()
+
+# Cool-off window (seconds) after a failed warm attempt before we retry the
+# broker.  Bounds broker-storm without leaving vol/oi blank all day.
+_CLOSED_HOURS_WARM_FAIL_COOLOFF_S: float = 60.0
 
 
 def _record_good_ltp_live(sym: str, ltp: float) -> None:
@@ -95,69 +112,96 @@ async def _maybe_warm_closed_hours_quotes(keys: list[str], key_map) -> None:
         return
     today = _ist_today()
     sig = ",".join(sorted(key_map.broker_keys))
+    now_epoch = _time_mod.time()
     with _closed_hours_warm_lock:
         if _closed_hours_warm_day != today:
             _closed_hours_warm_signatures.clear()
+            _closed_hours_warm_in_progress.clear()
+            _closed_hours_warm_failed_until.clear()
             _closed_hours_warm_day = today
         if sig in _closed_hours_warm_signatures:
             return
-        # NOTE: do NOT add sig here — only add after a successful warm so a
-        # broker failure or empty response doesn't poison the signature for
-        # the rest of the IST day (preventing all future retry attempts).
+        # TOCTOU dedup — another coroutine holds the warm for this sig.
+        # Exit early rather than duplicate the broker.quote() fetch.
+        if sig in _closed_hours_warm_in_progress:
+            return
+        # Broker-storm throttle — recent failure still in cool-off.
+        fail_until = _closed_hours_warm_failed_until.get(sig, 0.0)
+        if fail_until > now_epoch:
+            return
+        # Claim the sig for the duration of the broker call.  Released in the
+        # `finally` below regardless of success / failure; the SUCCESS path
+        # additionally promotes it to `_closed_hours_warm_signatures` (the
+        # steady-state dedup set — see block near end of function).
+        _closed_hours_warm_in_progress.add(sig)
 
     try:
-        from backend.brokers.registry import get_market_data_broker
-        from backend.brokers.broker_apis import record_good_ltp, record_good_quote
-        broker = get_market_data_broker()
-        quote_data = await asyncio.to_thread(broker.quote, key_map.broker_keys) or {}
-    except Exception as exc:
-        logger.debug(f"batch_quote: closed-hours warm skipped: {exc}")
-        return
-
-    _persisted = 0
-    for bkey, q in quote_data.items():
-        if not q:
-            continue
         try:
-            _, sym_only = bkey.split(":", 1) if ":" in bkey else ("", bkey)
-            ohlc = q.get("ohlc") or {}
-            _ltp = float(q.get("last_price") or 0.0)
-            _close = float(ohlc.get("close") or 0.0) or None
-            _open  = float(ohlc.get("open")  or 0.0) or None
-            _vol   = int(q.get("volume") or 0)
-            _oi    = int(q.get("oi") or 0)
-            _change = (_ltp - _close) if (_close and _ltp) else 0.0
-            _chg_pct = (_change / _close * 100.0) if _close else 0.0
-            depth = q.get("depth") or {}
-            buys  = depth.get("buy") or []
-            sells = depth.get("sell") or []
-            _bid = float(buys[0]["price"])  if buys  and (buys[0].get("price") or 0)  else None
-            _ask = float(sells[0]["price"]) if sells and (sells[0].get("price") or 0) else None
-            if _ltp > 0:
-                record_good_ltp(sym_only, _ltp)
-            record_good_quote(sym_only, {
-                "open":       _open,
-                "close":      _close,
-                "volume":     _vol,
-                "oi":         _oi,
-                "change":     _change,
-                "change_pct": _chg_pct,
-                "bid":        _bid,
-                "ask":        _ask,
-            })
-            _persisted += 1
-        except Exception:
-            continue
-    if _persisted:
-        # Mark warm ONLY after at least one symbol persisted successfully.
-        # Marking before the broker call (previous behaviour) poisoned the
-        # signature on broker failure — no retry until IST day rollover,
-        # leaving vol/oi blank all day for pinned MCX symbols.
+            from backend.brokers.registry import get_market_data_broker
+            from backend.brokers.broker_apis import record_good_ltp, record_good_quote
+            broker = get_market_data_broker()
+            quote_data = await asyncio.to_thread(broker.quote, key_map.broker_keys) or {}
+        except Exception as exc:
+            # Broker failed — mark sig unreachable for ~60 s (bounds storm)
+            # then bail.  Next request after cool-off will retry.
+            with _closed_hours_warm_lock:
+                _closed_hours_warm_failed_until[sig] = (
+                    _time_mod.time() + _CLOSED_HOURS_WARM_FAIL_COOLOFF_S
+                )
+            logger.debug(f"batch_quote: closed-hours warm skipped: {exc}")
+            return
+
+        _persisted = 0
+        for bkey, q in quote_data.items():
+            if not q:
+                continue
+            try:
+                _, sym_only = bkey.split(":", 1) if ":" in bkey else ("", bkey)
+                ohlc = q.get("ohlc") or {}
+                _ltp = float(q.get("last_price") or 0.0)
+                _close = float(ohlc.get("close") or 0.0) or None
+                _open  = float(ohlc.get("open")  or 0.0) or None
+                _vol   = int(q.get("volume") or 0)
+                _oi    = int(q.get("oi") or 0)
+                _change = (_ltp - _close) if (_close and _ltp) else 0.0
+                _chg_pct = (_change / _close * 100.0) if _close else 0.0
+                depth = q.get("depth") or {}
+                buys  = depth.get("buy") or []
+                sells = depth.get("sell") or []
+                _bid = float(buys[0]["price"])  if buys  and (buys[0].get("price") or 0)  else None
+                _ask = float(sells[0]["price"]) if sells and (sells[0].get("price") or 0) else None
+                if _ltp > 0:
+                    record_good_ltp(sym_only, _ltp)
+                record_good_quote(sym_only, {
+                    "open":       _open,
+                    "close":      _close,
+                    "volume":     _vol,
+                    "oi":         _oi,
+                    "change":     _change,
+                    "change_pct": _chg_pct,
+                    "bid":        _bid,
+                    "ask":        _ask,
+                })
+                _persisted += 1
+            except Exception:
+                continue
+        if _persisted:
+            # Promote sig only on successful warm — add to steady-state
+            # dedup set in the same lock as the in-progress release below
+            # so an incoming caller sees either (a) sig in _in_progress
+            # (skip), or (b) sig in _signatures (skip), never a window
+            # where both sets are empty and a duplicate broker fetch runs.
+            with _closed_hours_warm_lock:
+                _closed_hours_warm_signatures.add(sig)
+            logger.info(
+                f"batch_quote: closed-hours warm — persisted LKG for {_persisted}/{len(quote_data)} symbols"
+            )
+    finally:
+        # Always release the in-progress claim.  Ordering guarantee: on
+        # success, `_signatures.add(sig)` above ran BEFORE this discard,
+        # so no window exists where the sig is absent from both sets.
         with _closed_hours_warm_lock:
-            _closed_hours_warm_signatures.add(sig)
-        logger.info(
-            f"batch_quote: closed-hours warm — persisted LKG for {_persisted}/{len(quote_data)} symbols"
-        )
+            _closed_hours_warm_in_progress.discard(sig)
 
 
 # ── Closed-hours helper ───────────────────────────────────────────────────────
