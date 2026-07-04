@@ -971,11 +971,90 @@ async def seed_global_pinned() -> None:
             await _mark_migration(_W4_KEY)
             logger.info("Watchlist: one-shot cleanup wave 4 (USDINR bare root) done")
 
-        # 5. Top up the global Pinned with any MARKETS_DEFAULT item
+        # Wave 5 — _NEXT back-month variants added adjacent to their roots
+        # (Jul 2026). Enforces sort_order = index*10 for all MARKETS_DEFAULT
+        # rows so root and _NEXT are always consecutive in the Pinned grid.
+        # Also inserts missing _NEXT rows. SILVER MCX re-added as virtual root.
+        #
+        # Sort-order scheme: canonical sort_order = MARKETS_DEFAULT index * 10.
+        # Operator-added extras that happen to sit in the 0..max_canonical
+        # range are pushed above len(MARKETS_DEFAULT)*10+100 so they don't
+        # collide with the canonical slots. This is the only wave that
+        # *modifies* existing rows (all prior waves only DELETE).
+        _W5_KEY = "migrations.pinned_seed_next_variants_v1"
+        if not await _migration_done(_W5_KEY):
+            from backend.api.algo.watchlist_defaults import (
+                MARKETS_DEFAULT as _MD,
+                markets_default_rows as _mdr,
+            )
+            _canonical_rows = _mdr()
+            # lookup: (SYM_UPPER, EXCH_UPPER) -> canonical sort_order
+            _canonical_sort: dict[tuple[str, str], int] = {
+                (r["tradingsymbol"].upper(), r["exchange"].upper()): r["sort_order"]
+                for r in _canonical_rows
+            }
+            _canonical_max = len(_MD) * 10  # e.g. 23*10 = 230
+
+            _all_items_w5 = (await session.execute(
+                select(WatchlistItem)
+                .where(WatchlistItem.watchlist_id == global_row.id)
+            )).scalars().all()
+
+            _existing_keys_w5 = {
+                (it.tradingsymbol.upper(), it.exchange.upper())
+                for it in _all_items_w5
+            }
+
+            # Step A: push operator extras out of the canonical range.
+            # Extra = row NOT in canonical AND sort_order < canonical_max+100.
+            _extra_base = _canonical_max + 100
+            _extra_seq = _extra_base
+            for _it in sorted(_all_items_w5, key=lambda r: r.sort_order):
+                _key = (_it.tradingsymbol.upper(), _it.exchange.upper())
+                if _key in _canonical_sort:
+                    continue
+                if _it.sort_order < _extra_base:
+                    _it.sort_order = _extra_seq
+                    _extra_seq += 10
+
+            # Step B: stamp canonical sort_orders on existing canonical rows.
+            for _it in _all_items_w5:
+                _key = (_it.tradingsymbol.upper(), _it.exchange.upper())
+                if _key in _canonical_sort:
+                    _it.sort_order = _canonical_sort[_key]
+
+            # Step C: insert missing canonical rows (incl. all _NEXT variants).
+            _inserted_w5 = 0
+            for _cr in _canonical_rows:
+                _key = (_cr["tradingsymbol"].upper(), _cr["exchange"].upper())
+                if _key in _existing_keys_w5:
+                    continue
+                _existing_keys_w5.add(_key)
+                session.add(WatchlistItem(
+                    watchlist_id=global_row.id,
+                    tradingsymbol=_cr["tradingsymbol"],
+                    exchange=_cr["exchange"],
+                    sort_order=_cr["sort_order"],
+                    added_at=now,
+                ))
+                _inserted_w5 += 1
+
+            await _mark_migration(_W5_KEY)
+            logger.info(
+                "Watchlist: wave 5 (_NEXT adjacency) done — inserted %d new rows",
+                _inserted_w5,
+            )
+
+        # 6. Top up the global Pinned with any MARKETS_DEFAULT item
         #    that isn't already in it. Additive — never removes the
         #    operator's curated extras. The (tradingsymbol, exchange)
-        #    pair is the dedupe key.
+        #    pair is the dedupe key. Uses canonical sort_order from
+        #    markets_default_rows() for new entries.
         from backend.api.algo.watchlist_defaults import markets_default_rows
+        _topup_canonical: dict[tuple[str, str], int] = {
+            (r["tradingsymbol"].upper(), r["exchange"].upper()): r["sort_order"]
+            for r in markets_default_rows()
+        }
         current_pairs = {
             (r.tradingsymbol.upper(), r.exchange.upper())
             for r in (await session.execute(
@@ -987,21 +1066,23 @@ async def seed_global_pinned() -> None:
             select(func.coalesce(func.max(WatchlistItem.sort_order), -1))
             .where(WatchlistItem.watchlist_id == global_row.id)
         )).scalar() or -1
-        next_sort = int(max_sort) + 1
+        next_sort = int(max_sort) + 10
         added = 0
         for row in markets_default_rows():
             key = (row["tradingsymbol"].upper(), row["exchange"].upper())
             if key in current_pairs:
                 continue
             current_pairs.add(key)
+            sort_val = _topup_canonical.get(key, next_sort)
             session.add(WatchlistItem(
                 watchlist_id=global_row.id,
                 tradingsymbol=row["tradingsymbol"],
                 exchange=row["exchange"],
-                sort_order=next_sort,
+                sort_order=sort_val,
                 added_at=now,
             ))
-            next_sort += 1
+            if sort_val == next_sort:
+                next_sort += 10
             added += 1
         if added:
             logger.info(
