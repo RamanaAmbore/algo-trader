@@ -142,7 +142,7 @@ HEADER_FILE.write_text(HEADER)
 # --- Front matter: cover (page 1) + about page (page 2) ---
 FRONT_MATTER = rf"""
 % ============================================================
-% PAGE 1 — full-bleed navy cover, hero name
+% PAGE 1 — full-bleed navy cover, platform hero title
 % ============================================================
 \begin{{titlepage}}
 \thispagestyle{{empty}}
@@ -151,7 +151,7 @@ FRONT_MATTER = rf"""
   % Full-page navy fill.
   \fill[ramboqnavy] (current page.north west) rectangle (current page.south east);
 
-  % Subtle diagonal accent — amber wedge in the top-right corner.
+  % Diagonal amber wedge — top-right accent.
   \fill[ramboqamber,opacity=0.14]
     (current page.north east)
     -- ([xshift=-3.5in]current page.north east)
@@ -159,9 +159,9 @@ FRONT_MATTER = rf"""
     -- ([yshift=-2.6in]current page.north east)
     -- cycle;
 
-  % Concentric-ring watermark bottom-right (very low opacity).
+  % Concentric-ring watermark bottom-right.
   \foreach \i in {{1,...,22}} {{
-    \draw[white,opacity=0.03,line width=0.5pt]
+    \draw[white,opacity=0.035,line width=0.5pt]
       ([xshift=-2.2in,yshift=2.2in]current page.south east) circle (\i*3.6mm);
   }}
 
@@ -173,25 +173,31 @@ FRONT_MATTER = rf"""
     \color{{ramboqamber}}\sffamily\footnotesize\bfseries DESIGN GUIDE \ \color{{white}}\textbullet\ \color{{white}}\normalfont v\,{COMMIT_COUNT}
   }};
 
-  % Hero name — huge, two-line, amber accent on surname.
-  \node[anchor=west,xshift=1in] at ([yshift=0.4in]current page.center) {{%
-    \color{{white}}\sffamily\fontsize{{78}}{{86}}\selectfont\bfseries Ramana
+  % Hero title — platform name.
+  % Line 1: "RamboQuant" — big.
+  \node[anchor=west,xshift=1in] at ([yshift=0.7in]current page.center) {{%
+    \color{{white}}\sffamily\fontsize{{68}}{{78}}\selectfont\bfseries RamboQuant
   }};
-  \node[anchor=west,xshift=1in] at ([yshift=-0.8in]current page.center) {{%
-    \color{{ramboqamber}}\sffamily\fontsize{{78}}{{86}}\selectfont\bfseries Ambore
+  % Line 2: "Algo Trading" — medium amber.
+  \node[anchor=west,xshift=1in] at ([yshift=-0.35in]current page.center) {{%
+    \color{{ramboqamber}}\sffamily\fontsize{{40}}{{46}}\selectfont\bfseries Algo Trading
+  }};
+  % Line 3: "Platform" — medium white.
+  \node[anchor=west,xshift=1in] at ([yshift=-1.05in]current page.center) {{%
+    \color{{white}}\sffamily\fontsize{{40}}{{46}}\selectfont\bfseries Platform
   }};
 
-  % Amber accent rule under the name.
-  \draw[ramboqamber,line width=2pt]
-    ([xshift=1in,yshift=-1.55in]current page.center)
-    -- ([xshift=3in,yshift=-1.55in]current page.center);
+  % Amber rule.
+  \draw[ramboqamber,line width=1.8pt]
+    ([xshift=1in,yshift=-1.65in]current page.center)
+    -- ([xshift=3in,yshift=-1.65in]current page.center);
 
-  % Role line.
-  \node[anchor=west,xshift=1in] at ([yshift=-1.9in]current page.center) {{%
-    \color{{white}}\sffamily\Large Platform Engineer
+  % Author name + role — below rule.
+  \node[anchor=west,xshift=1in] at ([yshift=-2in]current page.center) {{%
+    \color{{white}}\sffamily\LARGE\bfseries Ramana R Ambore, \textcolor{{ramboqamber}}{{FRM}}
   }};
-  \node[anchor=west,xshift=1in] at ([yshift=-2.2in]current page.center) {{%
-    \color{{ramboqcream}}\sffamily\large RamboQuant LLP
+  \node[anchor=west,xshift=1in] at ([yshift=-2.35in]current page.center) {{%
+    \color{{ramboqcream}}\sffamily\large Platform Engineer --- RamboQuant LLP
   }};
 
   % Bottom rule.
@@ -199,7 +205,7 @@ FRONT_MATTER = rf"""
     ([xshift=1in,yshift=1in]current page.south west)
     -- ([xshift=-1in,yshift=1in]current page.south east);
 
-  % Bottom row — website left, date right.
+  % Bottom row.
   \node[anchor=south west,xshift=1in,yshift=0.55in] at (current page.south west) {{%
     \color{{ramboqamber}}\sffamily\footnotesize\bfseries WEBSITE
   }};
@@ -217,105 +223,164 @@ FRONT_MATTER = rf"""
 \restoregeometry
 
 % ============================================================
-% PAGE 2 — About the Guide / About the Author / Version
+% PAGE 2 — About the Guide / About the Author / Credentials / Experience / Tech
+% Layout is deliberately dense — everything fits on one page.
 % ============================================================
 \thispagestyle{{empty}}
-\newgeometry{{top=0.8in,bottom=0.9in,left=0.9in,right=0.9in}}
+\newgeometry{{top=0.55in,bottom=0.55in,left=0.75in,right=0.75in}}
 
 \begin{{tikzpicture}}[remember picture,overlay]
-  \fill[ramboqamber] ([xshift=0.9in,yshift=-0.55in]current page.north west) rectangle ([xshift=1.1in,yshift=-1.15in]current page.north west);
+  \fill[ramboqamber] ([xshift=0.75in,yshift=-0.35in]current page.north west) rectangle ([xshift=0.95in,yshift=-0.85in]current page.north west);
 \end{{tikzpicture}}
 
-{{\color{{ramboqamber}}\sffamily\footnotesize\bfseries THE DOCUMENT}}\\[3pt]
-{{\color{{ramboqnavy}}\sffamily\huge\bfseries About this guide}}\\[10pt]
+{{\color{{ramboqamber}}\sffamily\footnotesize\bfseries THE DOCUMENT}}\\[1pt]
+{{\color{{ramboqnavy}}\sffamily\Large\bfseries About this guide}}\\[4pt]
 
 {{\color{{ramboqslate}}\sffamily\small
-The RamboQuant \textbf{{Complete Design Guide}} is a top-to-bottom developer + operator onboarding manual for a production trading platform. Read cover-to-cover to build a full mental model of the codebase --- or jump to any of the 42 sections for focused work.
-
-\vspace{{6pt}}
-Every subsystem section names the exact files, every architectural decision states its trade-off, and \textbf{{Part IX}} at the end is a cookbook of common change recipes with exact-diff-level guidance. The goal: anyone who reads and understands this document can modify and extend the platform confidently.
+The RamboQuant \textbf{{Complete Design Guide}} is a top-to-bottom developer + operator onboarding manual for a production algorithmic trading platform. Read cover-to-cover to build a full mental model of the codebase, or jump to any of the 42 sections for focused work. Every subsystem names the exact files; every architectural decision states its trade-off; \textbf{{Part IX}} is a cookbook of change recipes with exact-diff-level guidance.
 }}
 
-\vspace{{18pt}}
+\vspace{{8pt}}
 
-% Two-column split — About Author + Version.
+% Two-column: author bio + version card.
 \noindent
 \begin{{minipage}}[t]{{0.58\linewidth}}
-{{\color{{ramboqamber}}\sffamily\footnotesize\bfseries THE AUTHOR}}\\[3pt]
-{{\color{{ramboqnavy}}\sffamily\LARGE\bfseries Ramana Ambore}}\\[3pt]
-{{\color{{ramboqcopper}}\sffamily\normalsize Platform engineer --- RamboQuant LLP}}\\[10pt]
+{{\color{{ramboqamber}}\sffamily\footnotesize\bfseries THE AUTHOR}}\\[1pt]
+{{\color{{ramboqnavy}}\sffamily\Large\bfseries Ramana R Ambore, \textcolor{{ramboqcopper}}{{FRM}}}}\\[1pt]
+{{\color{{ramboqcopper}}\sffamily\small Principal FinTech Engineer \& Quantitative Developer}}\\[4pt]
 
 {{\color{{ramboqslate}}\sffamily\small
-Builds and maintains the RamboQuant platform end-to-end: multi-broker order routing, real-time market data pipelines, options analytics, portfolio tracking, and operator plus investor-facing tooling.
+Principal FinTech engineer and quantitative developer with \textbf{{30+ years}} across mainframe modernization and cloud-native financial platforms. \textbf{{FRM}} (GARP, 2022) and \textbf{{CFA Level~2}} candidate with a Master's in Computer Science. Currently \textbf{{Principal System Analyst}} at \textbf{{Fidelity Investments}}, leading billing-platform modernization on AWS + Snowflake.
 
-\vspace{{4pt}}
-Full-stack scope --- SvelteKit + Svelte~5 frontend, Litestar / Python async API, PostgreSQL with async SQLAlchemy 2.x, Kite / Dhan / Groww broker adapters, KiteTicker WebSocket with a shared-memory tick pipeline, Gemini-driven market summaries, MCP-integrated research tooling, and web-vitals-tracked deploys.
+\vspace{{2pt}}
+Deep specialism in derivatives risk and options pricing --- Black-Scholes, Greeks modeling, multi-leg strategy analytics --- carried directly into RamboQuant's derivatives layer. \textbf{{NTT Innovation Award}} recipient (top-40 global innovator). Based in Merrimack, NH.
 }}
 \end{{minipage}}\hfill
 \begin{{minipage}}[t]{{0.36\linewidth}}
-% Version card — cream box with amber border.
 \begin{{tikzpicture}}
   \node[
     draw=ramboqamber,
     line width=1.2pt,
     fill=callbg,
-    inner sep=12pt,
+    inner sep=10pt,
     rounded corners=3pt,
     text width=0.94\linewidth,
     align=left,
   ]{{%
-    {{\color{{ramboqamber}}\sffamily\footnotesize\bfseries VERSION}}\\[5pt]
+    {{\color{{ramboqamber}}\sffamily\footnotesize\bfseries VERSION}}\\[4pt]
     {{\color{{ramboqnavy}}\sffamily\small\bfseries Generated}}\\
-    {{\color{{ramboqslate}}\sffamily\small \today}}\\[6pt]
+    {{\color{{ramboqslate}}\sffamily\small \today}}\\[3pt]
     {{\color{{ramboqnavy}}\sffamily\small\bfseries Revision}}\\
-    {{\color{{ramboqslate}}\sffamily\small v\,{COMMIT_COUNT} \ ({COMMIT_SHA})}}\\[6pt]
-    {{\color{{ramboqnavy}}\sffamily\small\bfseries Branch}}\\
-    {{\color{{ramboqslate}}\sffamily\small {BRANCH}}}\\[6pt]
-    {{\color{{ramboqnavy}}\sffamily\small\bfseries Pages}}\\
-    {{\color{{ramboqslate}}\sffamily\small \pageref*{{LastPage}} total}}\\[6pt]
+    {{\color{{ramboqslate}}\sffamily\small v\,{COMMIT_COUNT} \ ({COMMIT_SHA})}}\\[3pt]
+    {{\color{{ramboqnavy}}\sffamily\small\bfseries Branch \& Pages}}\\
+    {{\color{{ramboqslate}}\sffamily\small {BRANCH} \ \textcolor{{ramboqcopper}}{{$\bullet$}} \ \pageref*{{LastPage}} pages}}\\[3pt]
     {{\color{{ramboqnavy}}\sffamily\small\bfseries Website}}\\
-    {{\color{{ramboqcopper}}\sffamily\small\bfseries \href{{https://ramboq.com}}{{ramboq.com}}}}
+    {{\color{{ramboqcopper}}\sffamily\small\bfseries \href{{https://ramboq.com}}{{ramboq.com}}}}\\[3pt]
+    {{\color{{ramboqnavy}}\sffamily\small\bfseries Profile}}\\
+    {{\color{{ramboqcopper}}\sffamily\small\bfseries \href{{https://ramanaambore.me}}{{ramanaambore.me}}}}
   }};
 \end{{tikzpicture}}
 \end{{minipage}}
 
-\vspace{{24pt}}
+\vspace{{7pt}}
 
-% Bottom feature strip — three highlight cards showing "what's inside".
-\noindent
-{{\color{{ramboqamber}}\sffamily\footnotesize\bfseries WHAT'S INSIDE}}\\[5pt]
+% Credentials strip — single row, copper-bordered cream.
+{{\color{{ramboqamber}}\sffamily\footnotesize\bfseries CREDENTIALS}}\\[2pt]
+\begin{{tikzpicture}}
+  \node[
+    draw=ramboqcopper,
+    line width=0.6pt,
+    fill=callbg,
+    inner sep=7pt,
+    text width=0.965\linewidth,
+    rounded corners=3pt,
+    align=left,
+  ]{{%
+    {{\color{{ramboqnavy}}\sffamily\small
+      \textbf{{FRM}} (GARP, 2022) \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      \textbf{{CFA Level~2}} \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      \textbf{{Master's, Computer Science}} \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      PMP \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      Six Sigma Green Belt \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      IBM Certified DB2 DBA \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      Sun Certified Java Programmer
+    }}
+  }};
+\end{{tikzpicture}}
+
+\vspace{{6pt}}
+
+% Experience — three navy cards in one row.
+{{\color{{ramboqamber}}\sffamily\footnotesize\bfseries EXPERIENCE \& RECOGNITION}}\\[2pt]
 \begin{{tikzpicture}}
   \node[
     fill=ramboqnavy,
-    inner sep=10pt,
-    text width=0.28\linewidth,
+    inner sep=8pt,
+    text width=0.31\linewidth,
     rounded corners=3pt,
     align=left,
   ]{{%
-    {{\color{{ramboqamber}}\sffamily\footnotesize\bfseries 42 SECTIONS}}\\[3pt]
-    {{\color{{white}}\sffamily\small Architecture, order lifecycle, brokers, frontend, runtime, and operations --- each mapped to the exact files.}}
+    {{\color{{ramboqamber}}\sffamily\scriptsize\bfseries CURRENT ROLE}}\\[2pt]
+    {{\color{{white}}\sffamily\small\bfseries Principal System Analyst}}\\
+    {{\color{{ramboqcream}}\sffamily\footnotesize Fidelity Investments}}\\[2pt]
+    {{\color{{white}}\sffamily\scriptsize Billing platform modernization on AWS + Snowflake.}}
   }};
-  \hspace{{6pt}}
+  \hspace{{3pt}}
   \node[
     fill=ramboqnavy,
-    inner sep=10pt,
-    text width=0.28\linewidth,
+    inner sep=8pt,
+    text width=0.31\linewidth,
     rounded corners=3pt,
     align=left,
   ]{{%
-    {{\color{{ramboqamber}}\sffamily\footnotesize\bfseries 12 RECIPES}}\\[3pt]
-    {{\color{{white}}\sffamily\small Change cookbooks --- add a route, template field, background task, broker capability, notification channel.}}
+    {{\color{{ramboqamber}}\sffamily\scriptsize\bfseries INDUSTRY DEPTH}}\\[2pt]
+    {{\color{{white}}\sffamily\small\bfseries 30+ years FinTech}}\\
+    {{\color{{ramboqcream}}\sffamily\footnotesize Mainframe to cloud-native}}\\[2pt]
+    {{\color{{white}}\sffamily\scriptsize Distributed fee engines, derivatives risk, options pricing (BS/Greeks).}}
   }};
-  \hspace{{6pt}}
+  \hspace{{3pt}}
   \node[
     fill=ramboqnavy,
-    inner sep=10pt,
-    text width=0.28\linewidth,
+    inner sep=8pt,
+    text width=0.31\linewidth,
     rounded corners=3pt,
     align=left,
   ]{{%
-    {{\color{{ramboqamber}}\sffamily\footnotesize\bfseries FULL STACK}}\\[3pt]
-    {{\color{{white}}\sffamily\small SvelteKit + Litestar + PostgreSQL + KiteTicker + MCP --- production patterns, not toy code.}}
+    {{\color{{ramboqamber}}\sffamily\scriptsize\bfseries RECOGNITION}}\\[2pt]
+    {{\color{{white}}\sffamily\small\bfseries NTT Innovation Award}}\\
+    {{\color{{ramboqcream}}\sffamily\footnotesize Top-40 global innovator}}\\[2pt]
+    {{\color{{white}}\sffamily\scriptsize Selected globally for financial-services engineering innovation.}}
+  }};
+\end{{tikzpicture}}
+
+\vspace{{6pt}}
+
+% Technical stack strip.
+{{\color{{ramboqamber}}\sffamily\footnotesize\bfseries TECHNICAL STACK}}\\[2pt]
+\begin{{tikzpicture}}
+  \node[
+    draw=ramboqcopper,
+    line width=0.6pt,
+    fill=callbg,
+    inner sep=7pt,
+    text width=0.965\linewidth,
+    rounded corners=3pt,
+    align=left,
+  ]{{%
+    {{\color{{ramboqnavy}}\sffamily\small
+      Python \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      Java \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      AWS \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      Snowflake \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      Spark \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      Terraform \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      Spring Boot \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      SvelteKit \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      Litestar \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      PostgreSQL \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      COBOL \ \textcolor{{ramboqcopper}}{{$\bullet$}} \
+      Quantitative Finance
+    }}
   }};
 \end{{tikzpicture}}
 
