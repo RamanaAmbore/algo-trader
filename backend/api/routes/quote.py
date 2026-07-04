@@ -101,7 +101,9 @@ async def _maybe_warm_closed_hours_quotes(keys: list[str], key_map) -> None:
             _closed_hours_warm_day = today
         if sig in _closed_hours_warm_signatures:
             return
-        _closed_hours_warm_signatures.add(sig)
+        # NOTE: do NOT add sig here — only add after a successful warm so a
+        # broker failure or empty response doesn't poison the signature for
+        # the rest of the IST day (preventing all future retry attempts).
 
     try:
         from backend.brokers.registry import get_market_data_broker
@@ -147,6 +149,12 @@ async def _maybe_warm_closed_hours_quotes(keys: list[str], key_map) -> None:
         except Exception:
             continue
     if _persisted:
+        # Mark warm ONLY after at least one symbol persisted successfully.
+        # Marking before the broker call (previous behaviour) poisoned the
+        # signature on broker failure — no retry until IST day rollover,
+        # leaving vol/oi blank all day for pinned MCX symbols.
+        with _closed_hours_warm_lock:
+            _closed_hours_warm_signatures.add(sig)
         logger.info(
             f"batch_quote: closed-hours warm — persisted LKG for {_persisted}/{len(quote_data)} symbols"
         )
