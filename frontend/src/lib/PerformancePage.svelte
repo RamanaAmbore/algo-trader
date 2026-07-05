@@ -837,70 +837,63 @@
     };
   }
 
-  function applyAccountFilter() {
-    if (!holdingsAllGrid) return;
-    // ACCOUNT filter scopes every grid (detail + summary + funds). With a
-    // specific account picked we drop other accounts AND the TOTAL row.
-    // Symbol filter retired — GridSearchButton on each detail grid
-    // handles the equivalent.
-    const keepAcct = (r) => selectedAccounts.length === 0
+  /** Predicate: row belongs to the current account selection (or all). */
+  function _keepAcct(r) {
+    return selectedAccounts.length === 0
       ? true
       : selectedAccounts.includes(String(r.account || ''));
-    // Stable sort with closed (qty=0) rows at the end. Kite returns
-    // closed intraday positions / sold-off holdings with quantity=0
-    // so realised P/L stays visible — operators want them grouped
-    // last, not interleaved with live exposure.
-    const closedLast = (a, b) => {
-      const ac = (Number(a?.quantity || 0) === 0) ? 1 : 0;
-      const bc = (Number(b?.quantity || 0) === 0) ? 1 : 0;
-      return ac - bc;
+  }
+
+  /** Comparator: stable sort — zero-qty (closed) rows at the end. */
+  function _closedLast(a, b) {
+    const ac = (Number(a?.quantity || 0) === 0) ? 1 : 0;
+    const bc = (Number(b?.quantity || 0) === 0) ? 1 : 0;
+    return ac - bc;
+  }
+
+  /** Comparator: sort rows by account for cross-grid consistency. */
+  const _byAcct = (a, b) => String(a.account || '').localeCompare(String(b.account || ''));
+
+  /** Predicate: identifies TOTAL aggregate rows. */
+  const _isTotalRow = (/** @type {any} */ r) =>
+    r?.tradingsymbol === 'TOTAL' || r?.account === 'TOTAL';
+
+  /**
+   * Split an array into { body, total } where TOTAL rows are pinned
+   * and body rows are sorted by account for cross-grid row-order parity.
+   */
+  function _splitByTotal(rows) {
+    return {
+      body:  rows.filter(r => !_isTotalRow(r)).slice().sort(_byAcct),
+      total: rows.filter(_isTotalRow),
     };
-    const hRows = rawHoldings.filter(keepAcct).slice().sort(closedLast);
-    const pRows = rawPositions.filter(keepAcct).slice().sort(closedLast);
-    // Recompute total cur_val so the Weight % column always reflects
-    // the currently-filtered view (per-account picks change the base).
-    _holdingsTotalCurVal = hRows.reduce(
-      (s, r) => s + (Number(r.cur_val) || 0), 0);
-    const hSummary  = rawHoldingsSummary.filter(keepAcct);
-    const pSummary  = rawPositionsSummary.filter(keepAcct);
-    const fRows     = rawFunds.filter(keepAcct);
-    const hTotals   = makeHoldingsTotals(hRows);
-    const pTotals   = makePositionsTotals(pRows);
-    // Split TOTAL out of summary + funds data sets and pin to the
-    // bottom — pinned-bottom rows in AG Grid are immune to sort, so
-    // the TOTAL always anchors the last row regardless of which
-    // column the operator clicks on.
-    const isTotalRow = (/** @type {any} */ r) =>
-      r?.tradingsymbol === 'TOTAL' || r?.account === 'TOTAL';
-    // Sort every per-account body by account so the row order matches
-    // across Funds, Positions Summary, Holdings Summary, and the NAV
-    // grid (also sorted below). Operator: "the account order sequence
-    // should be same in all grids."
-    const byAcct = (a, b) => String(a.account || '').localeCompare(String(b.account || ''));
-    const hSummaryBody  = hSummary.filter(r => !isTotalRow(r)).slice().sort(byAcct);
-    const hSummaryTotal = hSummary.filter(isTotalRow);
-    const pSummaryBody  = pSummary.filter(r => !isTotalRow(r)).slice().sort(byAcct);
-    const pSummaryTotal = pSummary.filter(isTotalRow);
-    const fBody         = fRows.filter(r => !isTotalRow(r)).slice().sort(byAcct);
-    const fTotal        = fRows.filter(isTotalRow);
-    updateGrid(holdingsSummaryGrid, hSummaryBody);
-    holdingsSummaryGrid.setGridOption('pinnedBottomRowData', hSummaryTotal);
-    updateGrid(positionsSummaryGrid, pSummaryBody);
-    positionsSummaryGrid.setGridOption('pinnedBottomRowData', pSummaryTotal);
-    // Tick-flash: seed _perfFlash.update() for per-row P&L fields before
-    // pushing rows to the detail grids. First call per key seeds baseline
-    // (no flash on mount). TOTAL rows are excluded. The primitive's
-    // threshold=0.001 epsilon prevents false flashes on identical values.
-    // Wrapped in untrack() so the $state write inside flash.update() does
-    // NOT register as a reactive dep when called from a $effect context,
-    // preventing the infinite re-schedule loop.
+  }
+
+  /**
+   * refreshCells on an ag-Grid for the three flash columns, with a
+   * 400ms deferred second call so pnlClsFlash callbacks pick up the
+   * new flash state both immediately and after the next tick cycle.
+   */
+  function _refreshFlashCells(grid) {
+    if (!grid) return;
+    const cols = ['last_price', 'day_change_val', 'pnl'];
+    try { grid.refreshCells({ columns: cols, force: true }); } catch (_) {}
+    setTimeout(() => {
+      try { grid.refreshCells({ columns: cols, force: true }); } catch (_) {}
+    }, 400);
+  }
+
+  /**
+   * Seed tick-flash baseline for holdings + positions rows.
+   * Wrapped in untrack() so $state writes inside flash.update() do
+   * not register as reactive deps from an $effect call site.
+   */
+  function _seedFlash(hRows, pRows) {
     untrack(() => {
       for (const r of hRows) {
         if (r.tradingsymbol === 'TOTAL' || r.account === 'TOTAL') continue;
         const k = r.tradingsymbol ? `${r.account}|${r.tradingsymbol}` : r.account;
         if (!k) continue;
-        // LTP flash — fires on poll-cycle LTP change. Cascade direction tracked
-        // per key so pnlClsFlash can emit ltp-flash-up/down on absolute columns.
         if (r.last_price     != null) _perfFlash.update(`${k}:last_price`,    Number(r.last_price));
         if (r.day_change_val != null) _perfFlash.update(`${k}:day_change_val`, Number(r.day_change_val));
         if (r.pnl            != null) _perfFlash.update(`${k}:pnl`,            Number(r.pnl));
@@ -914,62 +907,73 @@
         if (r.pnl            != null) _perfFlash.update(`${k}:pnl`,            Number(r.pnl));
       }
     });
-    updateGrid(holdingsAllGrid, hRows);
-    holdingsAllGrid.setGridOption('pinnedBottomRowData', hTotals ? [hTotals] : []);
-    // Trigger a refreshCells so pnlClsFlash callbacks pick up the new flash state.
-    // last_price included so LTP column + cascade columns repaint together.
-    if (holdingsAllGrid) {
-      try { holdingsAllGrid.refreshCells({ columns: ['last_price', 'day_change_val', 'pnl'], force: true }); } catch (_) {}
-      setTimeout(() => {
-        try { holdingsAllGrid.refreshCells({ columns: ['last_price', 'day_change_val', 'pnl'], force: true }); } catch (_) {}
-      }, 400);
-    }
-    updateGrid(positionsAllGrid, pRows);
-    positionsAllGrid.setGridOption('pinnedBottomRowData', pTotals ? [pTotals] : []);
-    if (positionsAllGrid) {
-      try { positionsAllGrid.refreshCells({ columns: ['last_price', 'day_change_val', 'pnl'], force: true }); } catch (_) {}
-      setTimeout(() => {
-        try { positionsAllGrid.refreshCells({ columns: ['last_price', 'day_change_val', 'pnl'], force: true }); } catch (_) {}
-      }, 400);
-    }
-    updateGrid(fundsGrid, fBody);
-    fundsGrid.setGridOption('pinnedBottomRowData', fTotal);
-    // NAV grid — per-account wealth aggregated from the same three
-    // raw arrays. Same arithmetic as scripts/nav_breakdown.py.
-    // Use the page-wide `accounts` list (derived from the union of
-    // rawFunds + rawHoldings + rawPositions at fetch time) so the NAV
-    // grid lists EVERY account that has data in any source — not just
-    // accounts present in the per-render filtered subset. An account
-    // with only holdings (no positions, no funds — e.g. Groww when
-    // its funds API is auth-failed but holdings cache is warm) still
-    // surfaces as a NAV row. Already in canonical display order from
-    // `accounts` (sortAccountsBy on line 971) — no secondary sort.
+  }
+
+  /**
+   * Compute NAV grid rows and TOTAL pinned row.
+   * Uses the page-wide accounts list so accounts with holdings-only
+   * (no positions/funds that cycle) still surface as a NAV row.
+   * Renames cash → net to match the pre-existing ag-Grid column schema.
+   */
+  function _buildNavRows() {
     const navAccts = accounts
       .filter(a => selectedAccounts.length === 0 || selectedAccounts.includes(a));
-    // Canonical NAV breakdown via `$lib/data/nav` — same math as
-    // NavBreakdown.svelte + backend nav.py:compute_firm_nav. Renames
-    // `cash` → `net` to match this page's pre-existing ag-Grid column
-    // schema (the column header reads "Cash" but the field is `net`,
-    // see colDef around line 612).
-    const _navRaw = navByAccount(navAccts, rawFunds, rawPositions, rawHoldings);
-    const navByAcct = _navRaw.map(r => ({
-      account: r.account,
-      net: r.cash,
-      pos_m2m: r.pos_m2m,
-      holdings_mtm: r.holdings_mtm,
-      nav: r.nav,
+    const _navRaw  = navByAccount(navAccts, rawFunds, rawPositions, rawHoldings);
+    const rows = _navRaw.map(r => ({
+      account: r.account, net: r.cash,
+      pos_m2m: r.pos_m2m, holdings_mtm: r.holdings_mtm, nav: r.nav,
     }));
     const _totRaw = navTotalRow(_navRaw);
-    const navTotal = _totRaw ? {
-      account: 'TOTAL',
-      net: _totRaw.cash,
-      pos_m2m: _totRaw.pos_m2m,
-      holdings_mtm: _totRaw.holdings_mtm,
-      nav: _totRaw.nav,
+    const total = _totRaw ? {
+      account: 'TOTAL', net: _totRaw.cash,
+      pos_m2m: _totRaw.pos_m2m, holdings_mtm: _totRaw.holdings_mtm, nav: _totRaw.nav,
     } : null;
+    return { rows, total };
+  }
+
+  function applyAccountFilter() {
+    if (!holdingsAllGrid) return;
+    // ACCOUNT filter scopes every grid (detail + summary + funds). With a
+    // specific account picked we drop other accounts AND the TOTAL row.
+    // Symbol filter retired — GridSearchButton on each detail grid
+    // handles the equivalent.
+    const hRows = rawHoldings.filter(_keepAcct).slice().sort(_closedLast);
+    const pRows = rawPositions.filter(_keepAcct).slice().sort(_closedLast);
+    // Recompute total cur_val so the Weight % column always reflects
+    // the currently-filtered view (per-account picks change the base).
+    _holdingsTotalCurVal = hRows.reduce(
+      (s, r) => s + (Number(r.cur_val) || 0), 0);
+    const hTotals = makeHoldingsTotals(hRows);
+    const pTotals = makePositionsTotals(pRows);
+    // Split TOTAL out of summary + funds data sets and pin to the
+    // bottom — pinned-bottom rows in AG Grid are immune to sort, so
+    // the TOTAL always anchors the last row regardless of which
+    // column the operator clicks on.
+    const hSum = _splitByTotal(rawHoldingsSummary.filter(_keepAcct));
+    const pSum = _splitByTotal(rawPositionsSummary.filter(_keepAcct));
+    const fSplit = _splitByTotal(rawFunds.filter(_keepAcct));
+    updateGrid(holdingsSummaryGrid, hSum.body);
+    holdingsSummaryGrid.setGridOption('pinnedBottomRowData', hSum.total);
+    updateGrid(positionsSummaryGrid, pSum.body);
+    positionsSummaryGrid.setGridOption('pinnedBottomRowData', pSum.total);
+    // Seed tick-flash baseline before pushing to detail grids. First call
+    // per key seeds baseline (no flash on mount). threshold=0.001 prevents
+    // false flashes on identical values.
+    _seedFlash(hRows, pRows);
+    updateGrid(holdingsAllGrid, hRows);
+    holdingsAllGrid.setGridOption('pinnedBottomRowData', hTotals ? [hTotals] : []);
+    // refreshCells so pnlClsFlash callbacks pick up the new flash state.
+    _refreshFlashCells(holdingsAllGrid);
+    updateGrid(positionsAllGrid, pRows);
+    positionsAllGrid.setGridOption('pinnedBottomRowData', pTotals ? [pTotals] : []);
+    _refreshFlashCells(positionsAllGrid);
+    updateGrid(fundsGrid, fSplit.body);
+    fundsGrid.setGridOption('pinnedBottomRowData', fSplit.total);
+    // NAV grid — per-account wealth aggregated from the same three raw arrays.
+    const nav = _buildNavRows();
     if (navGrid) {
-      updateGrid(navGrid, navByAcct);
-      navGrid.setGridOption('pinnedBottomRowData', navTotal ? [navTotal] : []);
+      updateGrid(navGrid, nav.rows);
+      navGrid.setGridOption('pinnedBottomRowData', nav.total ? [nav.total] : []);
     }
     // Account column hides across every grid when exactly ONE account
     // is picked (no need to repeat the same account on every row).
