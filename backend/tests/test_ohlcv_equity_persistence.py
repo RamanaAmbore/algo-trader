@@ -362,14 +362,14 @@ def test_options_historical_route_uses_yesterday_for_daily_store():
     Source-level assertion guards against a future refactor reverting the
     boundary back to date.today(), which was the root cause of the equity
     cache-miss bug."""
-    from backend.api.routes.options import OptionsController
+    from backend.api.routes.options_helpers import _historical_ohlcv_store
 
-    src = inspect.getsource(OptionsController)
-    assert "timedelta(days=1)" in src, (
-        "OptionsController.historical must subtract timedelta(days=1) from today "
-        "to derive to_d_daily. Missing this means the ohlcv_store completeness "
+    src = inspect.getsource(_historical_ohlcv_store)
+    assert "days=1)" in src, (
+        "_historical_ohlcv_store must subtract timedelta(days=1) from today "
+        "to derive to_d. Missing this means the ohlcv_store completeness "
         "check always fails (today's bar absent) → every request hits Tier 3."
     )
-    assert "to_d_daily" in src, (
-        "to_d_daily variable must be present in OptionsController.historical"
+    assert "to_d" in src, (
+        "to_d variable must be present in _historical_ohlcv_store"
     )

@@ -85,11 +85,13 @@ def test_quote_has_exchange_closed_helpers():
 
 
 def test_options_historical_has_closed_guard():
-    """options.py has a closed-hours guard before the broker loop for intraday intervals."""
-    src = _src(_OPT_SRC)
-    assert "is_any_segment_open" in src, "options.py should import is_any_segment_open for guard"
-    assert "skipping broker" in src.lower() or "market closed" in src.lower(), (
-        "options.py historical should log a market-closed skip message"
+    """options_helpers.py has a closed-hours guard before the broker loop for intraday intervals."""
+    # After refactor: helpers moved to options_helpers.py
+    opt_helpers_src = Path(__file__).parent.parent / "api" / "routes" / "options_helpers.py"
+    src = _src(opt_helpers_src)
+    assert "is_any_segment_open" in src, "options_helpers.py should import is_any_segment_open for guard"
+    assert "market closed" in src.lower(), (
+        "options_helpers.py historical should log a market-closed skip message"
     )
 
 
