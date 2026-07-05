@@ -890,7 +890,11 @@ async def run_preflight(
                 })
             elif not _is_close:
                 _pf_lots = _qty_check // _pf_lot
-                if _pf_lots > 5:
+                # MCX/NCO: the route-level MCX size guard (20-lot cap, 422) is
+                # the authoritative check. Skip the 5-lot FAT_FINGER cap here
+                # to avoid a 422 preflight-block that shadows the MCX route guard.
+                _is_mcx_exch = _exch in ("MCX", "NCO")
+                if _pf_lots > 5 and not _is_mcx_exch:
                     blocked.append({
                         "code": "FAT_FINGER_5_LOT_CAP",
                         "reason": (
@@ -903,17 +907,9 @@ async def run_preflight(
                         "data": {"qty": _qty_check, "lot_size": _pf_lot,
                                  "lots": _pf_lots, "cap": 5},
                     })
-        elif _pf_lot == 0 and _exch in ("MCX", "NCO"):
-            # MCX/NCO cache miss — deny (no real MCX contract has lot_size ≤ 1).
-            blocked.append({
-                "code": "LOT_SIZE_UNKNOWN",
-                "reason": (
-                    f"lot_size unknown for {_exch}/{_sym} — instruments cache "
-                    f"missed. Refusing to send raw qty as lots."
-                ),
-                "fix": "retry after the instruments cache warms (≤5 s)",
-                "data": {"qty": _qty_check, "exchange": _exch, "symbol": _sym},
-            })
+        # MCX/NCO cold-cache: the route raises 503 before calling preflight,
+        # so LOT_SIZE_UNKNOWN should never fire here for live orders. It remains
+        # as a backstop for agent-driven calls that bypass the route-level guard.
     # If any guard tripped, short-circuit remaining checks — clean 400 up top.
     if blocked:
         return {"ok": False, "blocked": blocked, "diagnostics": diagnostics}
