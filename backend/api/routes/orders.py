@@ -222,6 +222,137 @@ def _chase_process_live_row(
     return True, 0, 0
 
 
+def _retry_parse_overrides(overrides_json) -> dict:
+    """Best-effort parse of the row's persisted per-submit overrides.
+    Returns `{}` on any failure — the retry pipeline just re-runs
+    without the overrides in that case.
+    """
+    if not overrides_json:
+        return {}
+    try:
+        import json as _json_parse
+        _parsed = _json_parse.loads(overrides_json)
+        return _parsed if isinstance(_parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _retry_build_gtt_entry(spec, gid: str, plan, product: str) -> dict:
+    """Build one `attached_gtts_json` GTT entry mirroring the exact
+    shape `_fire_template_attach_on_fill` writes. Split out so both
+    surfaces can't drift.
+
+    Populates the trail-stop scaffolding (`sl_trail_pct`,
+    `current_trigger`, `highest_ltp`, `lowest_ltp`, `tp_trigger`) and
+    the parent metadata block downstream pollers (`trail-stop poller`,
+    OCO pair-watcher) rely on.
+    """
+    _entry: dict = {
+        "kind":           "gtt",
+        "label":          spec.label,
+        "id":             gid,
+        "trigger_values": list(spec.trigger_values or []),
+        "trigger_type":   str(spec.trigger_type),
+    }
+    _is_two_leg = (str(spec.trigger_type) == "two-leg"
+                   and len(spec.trigger_values or []) >= 2)
+    if spec.sl_trail_pct is not None and spec.trigger_values:
+        _entry["sl_trail_pct"]    = float(spec.sl_trail_pct)
+        _entry["current_trigger"] = float(spec.trigger_values[-1])
+        if _is_two_leg:
+            _entry["tp_trigger"]  = float(spec.trigger_values[0])
+        _entry["highest_ltp"]     = float(plan.parent_fill_price)
+        _entry["lowest_ltp"]      = float(plan.parent_fill_price)
+    elif _is_two_leg:
+        # Non-trail two-leg still wants tp_trigger for any modify_gtt
+        # round-trip the operator might trigger later.
+        _entry["tp_trigger"]      = float(spec.trigger_values[0])
+    # Parent metadata — needed by both trail-stop poller
+    # (rebuild orders_payload) and OCO pair-watcher (sibling
+    # cancel routing).
+    _entry["parent_side"]     = str(plan.parent_side)
+    _entry["parent_symbol"]   = str(plan.parent_symbol)
+    _entry["parent_exchange"] = str(plan.parent_exchange)
+    _entry["parent_account"]  = str(plan.parent_account)
+    _entry["parent_qty"]      = int(plan.parent_qty)
+    _entry["parent_product"]  = str(product or "NRML")
+    return _entry
+
+
+def _retry_build_attached_payload(result, product: str) -> list:
+    """Build the full `attached_gtts_json` list from an attach result.
+    One dict per GTT (via `_retry_build_gtt_entry`) plus a `wing`
+    entry when the plan issued a wing order.
+    """
+    payload: list = []
+    if result.plan and result.gtt_ids:
+        for _spec, _gid in zip(result.plan.gtts, result.gtt_ids):
+            payload.append(_retry_build_gtt_entry(
+                _spec, _gid, result.plan, product,
+            ))
+    if result.wing_order_id:
+        payload.append({
+            "kind":  "wing",
+            "label": "Wing",
+            "id":    result.wing_order_id,
+        })
+    return payload
+
+
+def _retry_effective_parent_qty(row) -> int:
+    """Prefer accumulated `filled_quantity` when non-zero so a partial
+    fill doesn't oversize the exit GTT (mirrors the postback path).
+    Falls back to original quantity when no partial fill was captured.
+    """
+    filled = int(row.filled_quantity or 0)
+    if filled > 0:
+        return filled
+    return int(row.quantity or 0)
+
+
+def _retry_build_result_response(result, attached_now: bool) -> dict:
+    """Materialise the retry outcome into the operator-facing dict.
+    When the plan resolved cleanly but produced neither GTTs nor a wing,
+    treat that as a failure with a clear reason (Sc.5c) rather than a
+    silent "ok: true, attached: false".
+    """
+    _notes = result.plan.notes if result.plan else []
+    _errors = result.errors or []
+    if not attached_now and not _errors:
+        return {
+            "ok":            False,
+            "reason":        "Template produced no GTTs and no wing — nothing to attach (check overrides + chain-scan filters)",
+            "wing_order_id": result.wing_order_id,
+            "gtt_ids":       result.gtt_ids,
+            "notes":         _notes,
+            "errors":        result.errors,
+            "attached":      False,
+        }
+    return {
+        "ok":            True,
+        "wing_order_id": result.wing_order_id,
+        "gtt_ids":       result.gtt_ids,
+        "notes":         _notes,
+        "errors":        result.errors,
+        "attached":      attached_now,
+    }
+
+
+def _retry_precheck_row(row) -> Optional[dict]:
+    """Return an early-exit response dict when the row shouldn't be
+    retried; `None` when the retry may proceed.
+    """
+    if row.template_id is None:
+        return {"ok": False, "reason": "no template attached to this order"}
+    if row.attached_gtts_json:
+        return {"ok": False, "reason":
+                "template already attached — nothing to retry"}
+    if (row.status or "").upper() != "FILLED":
+        return {"ok": False,
+                "reason": f"parent must be FILLED to attach (status={row.status})"}
+    return None
+
+
 def _chase_row_to_info(r, masked_acct, child_map: dict) -> "AlgoOrderInfo":
     """Materialise an AlgoOrder ORM row into the API response Struct.
     Extracted so the list_active_chases + list_orders response builders
@@ -657,12 +788,9 @@ class OrdersController(Controller):
             )).scalar_one_or_none()
             if row is None:
                 raise HTTPException(status_code=404, detail="order not found")
-            if row.template_id is None:
-                return {"ok": False, "reason": "no template attached to this order"}
-            if row.attached_gtts_json:
-                return {"ok": False, "reason": "template already attached — nothing to retry"}
-            if (row.status or "").upper() != "FILLED":
-                return {"ok": False, "reason": f"parent must be FILLED to attach (status={row.status})"}
+            _precheck = _retry_precheck_row(row)
+            if _precheck is not None:
+                return _precheck
 
             # Sanity-check the template row still exists before
             # dispatching — apply_template_to_order does its own load via
@@ -681,15 +809,7 @@ class OrdersController(Controller):
             # mode flows through SimDriver.
             apply_path = "sim" if (row.mode or "").lower() == "sim" else "live"
             # Re-use the per-submit overrides persisted on the row.
-            _retry_overrides: dict = {}
-            if row.template_overrides_json:
-                try:
-                    import json as _json2
-                    _parsed = _json2.loads(row.template_overrides_json)
-                    if isinstance(_parsed, dict):
-                        _retry_overrides = _parsed
-                except Exception:
-                    pass
+            _retry_overrides = _retry_parse_overrides(row.template_overrides_json)
             result = await apply_template_to_order(
                 template_id=row.template_id,
                 template_slug=None,
@@ -707,9 +827,7 @@ class OrdersController(Controller):
                 # GTT at the original 50 — over-hedging on a SELL or
                 # over-flattening on a BUY. Same fix-pattern as the
                 # postback path.
-                parent_qty=(int(row.filled_quantity)
-                            if int(row.filled_quantity or 0) > 0
-                            else int(row.quantity or 0)),
+                parent_qty=_retry_effective_parent_qty(row),
                 parent_exchange=row.exchange or "NFO",
                 parent_fill_price=float(row.fill_price or row.initial_price or 0),
                 parent_product=row.product or "NRML",
@@ -725,58 +843,11 @@ class OrdersController(Controller):
             # retry doubled at broker, and (b) omitted `current_trigger`
             # + `sl_trail_pct` entries so the trail-stop poller silently
             # refused to ratchet retry-attached SLs forever.
-            import json as _json_retry
-            _attached_payload = []
-            if result.plan and result.gtt_ids:
-                for _spec, _gid in zip(result.plan.gtts, result.gtt_ids):
-                    _entry = {
-                        "kind":          "gtt",
-                        "label":         _spec.label,
-                        "id":            _gid,
-                        "trigger_values": list(_spec.trigger_values or []),
-                        "trigger_type":  str(_spec.trigger_type),
-                    }
-                    # Sc.5a / 5b — trail-stop scaffolding. The trail
-                    # poller reads `sl_trail_pct` to decide whether to
-                    # ratchet + `current_trigger` to know what to beat.
-                    # For two-leg OCO the SL trigger sits at
-                    # trigger_values[-1] (orders[1] index), single-SL is
-                    # the only trigger ([0]). Mirrors lines 826-857 in
-                    # the on-fill wrapper exactly.
-                    if _spec.sl_trail_pct is not None and _spec.trigger_values:
-                        _entry["sl_trail_pct"]    = float(_spec.sl_trail_pct)
-                        _last_trig = float(_spec.trigger_values[-1])
-                        _entry["current_trigger"] = _last_trig
-                        if str(_spec.trigger_type) == "two-leg" \
-                                and len(_spec.trigger_values) >= 2:
-                            _entry["tp_trigger"]  = float(_spec.trigger_values[0])
-                        _entry["highest_ltp"]     = float(result.plan.parent_fill_price)
-                        _entry["lowest_ltp"]      = float(result.plan.parent_fill_price)
-                    elif str(_spec.trigger_type) == "two-leg" \
-                            and len(_spec.trigger_values) >= 2:
-                        # Non-trail two-leg still wants tp_trigger for
-                        # any modify_gtt round-trip the operator might
-                        # trigger later (e.g. cancel + recreate flow).
-                        _entry["tp_trigger"]      = float(_spec.trigger_values[0])
-                    # Parent metadata — needed by both trail-stop poller
-                    # (rebuild orders_payload) and OCO pair-watcher
-                    # (sibling cancel routing). Always populated so the
-                    # downstream consumers don't need to look up the
-                    # parent row again.
-                    _entry["parent_side"]     = str(result.plan.parent_side)
-                    _entry["parent_symbol"]   = str(result.plan.parent_symbol)
-                    _entry["parent_exchange"] = str(result.plan.parent_exchange)
-                    _entry["parent_account"]  = str(result.plan.parent_account)
-                    _entry["parent_qty"]      = int(result.plan.parent_qty)
-                    _entry["parent_product"]  = str(row.product or "NRML")
-                    _attached_payload.append(_entry)
-            if result.wing_order_id:
-                _attached_payload.append({
-                    "kind":  "wing",
-                    "label": "Wing",
-                    "id":    result.wing_order_id,
-                })
+            _attached_payload = _retry_build_attached_payload(
+                result, row.product or "NRML",
+            )
             if _attached_payload:
+                import json as _json_retry
                 row.attached_gtts_json = _json_retry.dumps(_attached_payload)
                 if result.errors:
                     row.detail = ((row.detail or "")[:200]
@@ -790,25 +861,9 @@ class OrdersController(Controller):
         # rejected by overrides or chain-scan), the response previously
         # claimed `ok: true, attached: false` which read like a success.
         # Treat the empty-payload case as a failure with a clear reason.
-        _attached_now = row.attached_gtts_json is not None
-        if not _attached_now and not (result.errors or []):
-            return {
-                "ok":            False,
-                "reason":        "Template produced no GTTs and no wing — nothing to attach (check overrides + chain-scan filters)",
-                "wing_order_id": result.wing_order_id,
-                "gtt_ids":       result.gtt_ids,
-                "notes":         result.plan.notes if result.plan else [],
-                "errors":        result.errors,
-                "attached":      False,
-            }
-        return {
-            "ok": True,
-            "wing_order_id": result.wing_order_id,
-            "gtt_ids":       result.gtt_ids,
-            "notes":         result.plan.notes if result.plan else [],
-            "errors":        result.errors,
-            "attached":      _attached_now,
-        }
+        return _retry_build_result_response(
+            result, row.attached_gtts_json is not None,
+        )
 
     @post("/algo/reconcile")
     async def reconcile_algo_orders(self, request: Request) -> dict:
