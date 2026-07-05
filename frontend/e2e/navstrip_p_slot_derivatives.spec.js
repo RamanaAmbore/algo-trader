@@ -2,10 +2,12 @@
  * navstrip_p_slot_derivatives.spec.js
  *
  * Regression guard: NavStrip P pill slot 1 ("today" Day P&L) must NOT
- * drop to 0 when /admin/derivatives is opened, and must recover after
- * navigating away from it.
+ * drop to 0 when /admin/derivatives is opened, when the user picks a
+ * different underlying in the picker, or after navigating away.
  *
- * Root cause (fixed 2026-07-04):
+ * Root causes fixed:
+ *
+ *   2026-07-04 (mount-time zero):
  *   derivatives/+page.svelte wrote to the shared `snapshotTotals` store
  *   inside a `$effect` that ran BEFORE the first `loadPositions()` call
  *   completed.  At that point `positions = []`, so all three derived
@@ -13,22 +15,29 @@
  *   store is non-null, so it displayed 0 instead of the real intraday
  *   P&L.  Additionally, `onDestroy` never cleared the store, so the
  *   filtered F&O-only value lingered on subsequent pages.
+ *   Fix: gate the `$effect` publish on `_positionsLoaded`; clear the
+ *   store to null in `onDestroy`.
  *
- * Fix: gate the `$effect` publish on `_positionsLoaded`; clear the
- * store to null in `onDestroy`.
+ *   2026-07-04 (symbol-select zero — dead code SSOT violation):
+ *   `_byUnderlyingDay` was a `$derived.by()` that read raw
+ *   `p.day_change_val` without routing through `baseDayPnlForPosition`.
+ *   It was never wired to any consumer in the template but was a latent
+ *   SSOT violation.  Removed in refactor(derivatives) commit.
  *
  * Five quality dimensions:
  * 1. SSOT   — `snapshotTotals` has exactly one non-null write site
- *             (derivatives page $effect, guarded by _positionsLoaded).
+ *             (derivatives page $effect, guarded by _positionsLoaded);
+ *             `_byUnderlyingDay` dead-code with SSOT violation is absent.
  * 2. Perf   — no new long-task (>200 ms) introduced during route
  *             transitions that touch the derivatives page.
  * 3. Stale  — grep confirms no second non-null write site outside
- *             the derivatives page.
+ *             the derivatives page; `_byUnderlyingDay` fully removed.
  * 4. Reuse  — derivatives page imports `livePositionDayPnl` (which
  *             wraps `baseDayPnlForPosition`) rather than re-implementing
  *             the Day P&L formula inline.
- * 5. UX     — P slot 1 has a direction class (ps-pos/ps-neg/ps-flat)
- *             and is never blank when visible.
+ * 5. UX     — P slot 1 has a direction class (ps-pos/ps-neg/ps-flat),
+ *             is never blank when visible, and does NOT drop to ₹0
+ *             when the operator changes the underlying picker selection.
  */
 
 import { test, expect } from '@playwright/test';
@@ -94,6 +103,24 @@ test.describe('snapshotTotals static guards', () => {
     expect(setIdx).toBeGreaterThan(0);
     const surrounding = content.slice(Math.max(0, setIdx - 600), setIdx + 200);
     expect(surrounding).toContain('_positionsLoaded');
+  });
+
+  test('_byUnderlyingDay dead-code SSOT-violation is fully removed from derivatives page', () => {
+    // _byUnderlyingDay was a $derived.by() that read raw p.day_change_val
+    // without routing through baseDayPnlForPosition — an SSOT violation.
+    // It was never consumed by any template expression, making it dead code.
+    // This guard ensures it is not re-introduced.
+    const derivFile = path.join(
+      __dirname, '..', 'src', 'routes', '(algo)', 'admin', 'derivatives', '+page.svelte',
+    );
+    const content = readFileSync(derivFile, 'utf8');
+    // The identifier must not appear as a declaration (= $derived.by).
+    // A comment reference is acceptable only if it doesn't declare or assign.
+    const declarationPattern = /const\s+_byUnderlyingDay\s*=/;
+    expect(declarationPattern.test(content)).toBe(false);
+    // The identifier must not appear in any template expression.
+    const templatePattern = /\{[^}]*_byUnderlyingDay[^}]*\}/;
+    expect(templatePattern.test(content)).toBe(false);
   });
 });
 
@@ -175,6 +202,73 @@ test.describe('NavStrip P slot 1 — derivatives page regression', () => {
     }
     // And the values must match (same data source).
     expect(derivText).toBe(baselineText);
+  });
+
+  test('P slot 1 does NOT drop to ₹0 when underlying picker changes symbol', async ({ page }) => {
+    test.skip(!_sharedJwt, 'Server unreachable — skipping browser test');
+
+    await seedToken(page);
+
+    // ── 1. Open derivatives and wait for positions to load ─────────
+    await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'networkidle' });
+    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
+    // Extra tick so the gated $effect publishes snapshotTotals.
+    await page.waitForTimeout(500);
+
+    const slot1 = getPSlot1(page);
+    await expect(slot1).toBeVisible({ timeout: 5_000 });
+
+    // Capture the stable baseline value AFTER positions are loaded.
+    const beforePick = (await slot1.textContent())?.trim() ?? '';
+
+    // ── 2. Open the Underlying picker and pick the SECOND option ──
+    // (#opt-und .rbq-select-trigger opens the panel; the second
+    // .rbq-select-option is a different underlying from whatever
+    // auto-selected on mount.)
+    const trigger = page.locator('#opt-und .rbq-select-trigger');
+    await expect(trigger).toBeVisible({ timeout: 5_000 });
+    await trigger.click();
+
+    // Wait for the panel to open (options list visible).
+    const options = page.locator('#opt-und .rbq-select-option');
+    await expect(options.first()).toBeVisible({ timeout: 3_000 });
+    const count = await options.count();
+
+    // Skip test gracefully when the picker has fewer than 2 options
+    // (no live F&O book + watchlist too small).
+    if (count < 2) {
+      test.skip(true, 'Picker has < 2 underlying options — skipping symbol-select regression');
+      return;
+    }
+
+    // Pick the second option (index 1) — different from whatever was
+    // auto-selected on load.
+    await options.nth(1).click();
+
+    // Allow the Svelte reactive graph to flush: _dayPnlByRootMap re-derives
+    // → _snapshotTotalDay re-derives → $effect publishes snapshotTotals.
+    await page.waitForTimeout(400);
+
+    // ── 3. Core assertion: P slot 1 must NOT have dropped to ₹0 ──
+    const afterPick = (await slot1.textContent())?.trim() ?? '';
+
+    // If the baseline was already ₹0 (no F&O positions), both will be ₹0
+    // and the test is vacuously passing — that's OK.
+    if (beforePick !== '₹0') {
+      expect(afterPick).not.toBe('₹0');
+    }
+
+    // The value must also equal the pre-pick value — symbol-select should
+    // NOT change the total because _dayPnlByRootMap sums ALL positions
+    // (not just the selected underlying).
+    expect(afterPick).toBe(beforePick);
+
+    // Direction class must still be present (not ps-flat from a zero write).
+    const cls = await slot1.getAttribute('class');
+    if (beforePick !== '₹0') {
+      expect(cls).not.toMatch(/ps-flat/);
+    }
+    expect(cls).toMatch(/ps-pos|ps-neg|ps-flat/);
   });
 
   test('P slot 1 has direction class (not bare text) on /orders after leaving derivatives', async ({ page }) => {
