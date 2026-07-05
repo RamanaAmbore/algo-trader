@@ -1,6 +1,24 @@
 # CLAUDE.md — RamboQuant Project Reference
 
-For Claude Code. Durable architecture + file map to avoid re-exploring from scratch.
+For Claude Code. Durable architecture + file map to avoid re-exploring from scratch. Sprint diaries + completed-slice history live in [CLAUDE_HISTORY.md](CLAUDE_HISTORY.md).
+
+---
+
+## Contents
+
+**Orientation** — [Multi-agent coordination](#multi-agent-coordination-read-first) · [Project Overview](#project-overview) · [Deployment](#deployment) · [Key File Map](#key-file-map)
+
+**Runtime domains** — [Alert and Notification System](#alert-and-notification-system) · [Market Segments](#market-segments) · [Background Tasks](#background-tasks-backendapibackgroundpy) · [Market lifecycle events](#market-lifecycle-events) · [KiteTicker / SSE live-LTP pipeline](#kiteticker-sse-live-ltp-pipeline) · [Frontend persistent cache layer](#frontend-persistent-cache-layer)
+
+**Brokers** — [Broker accounts (DB-backed CRUD)](#broker-accounts-db-backed-crud) · [Multi-Account IPv6 Source Binding](#multi-account-ipv6-source-binding-kite-dhan) · [Broker resilience](#broker-resilience)
+
+**Data + persistence** — [Key Patterns](#key-patterns) · [Persistence pipeline](#persistence-pipeline-cache-db-broker)
+
+**API + surfaces** — [API Architecture](#api-architecture-litestar-sveltekit) · [Execution Modes](#execution-modes-1-5) · [Agents Framework](#agents-framework) · [Simulator](#simulator) · [Derivatives Analytics](#derivatives-analytics) · [Symbol resolution + virtual roots](#symbol-resolution-virtual-roots-mcx-cds) · [Proxy hedges](#proxy-hedges) · [Chart Workspace](#chart-workspace) · [MarketPulse + PerformancePage](#marketpulse-performancepage) · [Activity surface](#activity-surface-architecture) · [Card-header rule](#canonical-card-header-rule) · [Algo navbar + Agent tabs](#algo-navbar-agent-workspace-tabs) · [Keyboard shortcuts](#keyboard-shortcuts-slice-au) · [Order placement + basket](#order-placement-multi-account-basket) · [Post-fill + postback](#post-fill-handling-postback-scaffold) · [MCP server + Lab](#mcp-server-lab-page) · [Investor portal + NAV](#investor-portal-nav) · [Audit log + History](#audit-log-history) · [Settings](#settings-db-backed-tunables)
+
+**Perf** — [Performance measurement](#performance-measurement)
+
+**Guards + reference** — [Things to Avoid](#things-to-avoid) · [Critical math guards](#critical-math-guards) · [Common Tasks](#common-tasks-where-to-make-changes) · [History](#history)
 
 ---
 
@@ -599,49 +617,6 @@ Tests: `backend/tests/test_broker_priority.py` (12 tests). E2E: `frontend/e2e/br
 
 ---
 
-## Broker isolation (slices 1–4)
-
-**Architecture**: Broker code isolated in `backend/brokers/` with separate
-systemd service (`ramboq_conn.service`) that owns all sessions (Kite WebSocket,
-Dhan/Groww tokens). Main API opts in via `RAMBOQ_USE_CONN_SERVICE=1` env flag.
-
-**Four slices**:
-
-1. **File reorganization** — `backend/shared/brokers/` → `backend/brokers/adapters/`;
-   `backend/shared/helpers/{connections,broker_apis,kite_ticker}.py` → `backend/brokers/`;
-   `backend/conn_service/` → `backend/brokers/service/`; `backend/conn_client/` →
-   `backend/brokers/client/`.
-
-2. **Separate UDS service** — `/etc/systemd/system/ramboq_conn.service` (Litestar
-   app on `/tmp/ramboq_conn.sock`) owns broker lifecycle. Restart independent of
-   ramboq_api. Implements `/health`, `/rebuild`, `/ticker/status`, `/ticker/subscribe`,
-   `/postback` endpoints. HMAC-protected for postback route.
-
-3. **Main API changes**: When `RAMBOQ_USE_CONN_SERVICE=1`:
-   - `Connections.rebuild_from_db()` skips local logins; returns RemoteBroker stubs.
-   - `registry.get_broker(account)` proxies calls over UDS via `broker_client`.
-   - `broker_apis.fetch_holdings/positions/margins` → `@for_all_accounts` still works;
-     internally routes through RemoteBroker proxies.
-   - `get_ticker()` returns `MmapTickReader` instead of `TickerManager` (reads
-     `/dev/shm/ramboq_ticks` at byte-read latency).
-   - Postback HMAC verification stays in conn_service (api_secret never leaves).
-
-4. **Shared-memory ticks** — KiteTicker writes to `/dev/shm/ramboq_ticks`
-   (fixed 4096 slots, version-word atomic for lock-free reads). Background poller
-   (50ms) tails version word, publishes deltas to local BroadcastBus. SSE clients
-   unaffected; frontend subscriptions still work.
-
-**Dev setup**: `ramboq_dev_api` uses same `/tmp/ramboq_conn.sock` as prod.
-No parallel Dhan logins (avoids single-IP-token-per-app limits). Set
-`RAMBOQ_USE_CONN_SERVICE=1` on both services via drop-in config files
-(`webhook/ramboq_api.service.d-conn.conf` and `webhook/ramboq_dev_api.service.d-conn.conf`).
-
-**Deploy integration**: `deploy.sh` sets `CONN_TOUCHED=true` only when files under
-`backend/brokers/` or `webhook/ramboq_conn.service` change. Otherwise conn_service
-stays warm across API restarts. Frontend-only pushes touch neither service.
-
----
-
 ## Things to Avoid
 
 - Don't mock broker API calls — `@for_all_accounts` and singleton behave differently
@@ -761,13 +736,6 @@ Logs one healing per symbol per 60s to avoid spam. Coverage threshold tunable vi
   (admin-guarded).
 - CLI: `scripts/persistence_mode.py off|soft|hard|status` (reads operator login)
   and `scripts/backfill_ohlcv.py --daily --intraday` for immediate prod fix.
-
-**Coverage backfill** (`backend/api/persistence/backfill.py`):
-- `backfill_ohlcv_daily(symbols, target_days=365)` — force-fetch 365-day window for symbols with < 70% coverage; skips broker in cooloff.
-- `backfill_intraday_today(symbols, interval="30minute")` — force-fetch today's bars; defers when markets closed.
-- Startup hook `_task_warm_backfill` (60 s delay, once per process) fires both for the 300-symbol universe.
-- On-demand: `POST /api/admin/persistence/backfill?kind=daily|intraday|both` (admin-guarded).
-- CLI: `scripts/backfill_ohlcv.py --daily --intraday` for operator immediate prod fix.
 
 ---
 
@@ -1341,63 +1309,6 @@ use intraday_equity deque path (unchanged).
 
 ---
 
-## Frontend perf budgets + audit (Jul 2026)
-
-Comprehensive frontend perf audit closed three systemic regression classes
-flagged by repeated operator complaints ("dropdown lag", "refresh button
-stuck"). Patches at `frontend/src/lib/ws.js`,
-`frontend/src/lib/RefreshButton.svelte`,
-`frontend/src/lib/CollapseButton.svelte`,
-`frontend/src/routes/(algo)/admin/derivatives/+page.svelte`. Guards in
-`frontend/e2e/main_thread_perf.spec.js`.
-
-**Subscription leak hygiene** — RefreshButton + CollapseButton used to
-`.subscribe()` Svelte stores at module-top-level with no unsub pair.
-With 1-3 RefreshButtons + dozens of CollapseButtons per algo page and
-route transitions never destroying them, the listener lists grew
-unbounded. Every conn-status poll (15 s) + every `lastRefreshAt.set`
-fan-out paid for N dead consumers. Bind subscribes inside onMount + tear
-them down in onDestroy. **Audit rule**: any `.subscribe()` call outside
-a singleton module MUST have a paired unsub in the component's
-onDestroy.
-
-**Singleton WebSocket pool** — `createPerformanceSocket` / `createAlgoSocket`
-previously opened a fresh `new WebSocket()` per call. Algo pages
-routinely had 3-5 parallel `/ws/performance` connections, each with its
-own 25 s heartbeat ping. Replaced with a ref-counted singleton subscriber
-pool — one socket per endpoint, fan-out to all callers, auto-close when
-the last subscriber unsubs. **Operator-facing contract preserved**: each
-caller still gets an `unsub` function from the same factory.
-
-**Dropdown click-to-feedback** — Select pick on `/admin/derivatives`
-fired `goto({replaceState:true})` synchronously inside the `$effect`
-watching `selectedUnderlying`. goto() walks the route tree and fires
-nav lifecycle hooks even on a same-route replace, costing 200-700 ms.
-Now debounced to 150 ms so a flurry of picks queues a single goto.
-
-**RefreshButton click defer** — Click handler queues the parent
-`onClick` via `queueMicrotask`. The button's disabled / spinner state
-paints BEFORE the parent's onClick body begins synchronous bookkeeping
-(Promise.allSettled wiring, legsKey signature compute, etc.). Operator:
-"refresh button getting stuck still is an issue" — the stall was the
-gap between click and next paint when the parent's onClick body did
-tens of ms of work before its first await.
-
-**Perf budgets** (assertions in main_thread_perf.spec.js):
-
-| Dimension | Budget | Guard |
-|---|---|---|
-| Max long-task during interaction | <100 ms | RAIL |
-| Click-to-feedback latency | <350 ms | Per-page |
-| JS heap growth idle | <5 MB/min | Per-page leak check |
-| `/ws/performance` connections per tab | ≤2 | WS singleton |
-| Dropdown pick → panel-close | <400 ms | Derivatives Select |
-| Dropdown pick max long-task | <150 ms | Derivatives Select |
-| Cross-page nav heap growth (5-page lap) | <8 MB | Subscription-leak guard |
-| Cross-page nav new-WS-opens (2nd lap) | ≤2 | WS pool reuse |
-
----
-
 ## Performance measurement
 
 Four-tool scaffold for iterative perf work — capture a snapshot, ship a change, capture again, diff. Every result is a JSON file in `.log/`; nothing writes to DB or config.
@@ -1509,41 +1420,6 @@ RAMBOQ_PERF_STATS=1 ./venv/bin/uvicorn backend.api.app:app --workers 1
 ```
 
 **Zero prod cost** — perf_stats middleware is not registered when the flag is off. Baseline + capture are external — nothing runs inside the API process. Diff is a pure JSON reader.
-
----
-
-## Visibility-aware polling (Option A, Jun 2026)
-
-**Design (operator-approved)**: ALL pollers + visual updates stop when
-`document.visibilityState === 'hidden'`. WebSocket stays open (ref-counted
-pool — closes only when last subscriber leaves) so `position_filled` /
-`book_changed` events land. Telegram + email cover fills / agent events
-during background periods. On tab return, every poller fires ONCE
-immediately (within one event-loop tick) before resuming its normal cadence.
-
-**Implementation** — `visibleInterval(fn, ms, mode = 'pause')` in `frontend/src/lib/stores.js`:
-- `mode: 'pause'` (default) — clears the interval on hidden, restarts + fires `fn()` immediately on visible.
-- `mode: 'throttle:<ms>'` — reduces cadence while hidden (future use, not active under Option A).
-- `marketAwareInterval(fn, ms)` delegates to `visibleInterval` for the same behaviour inside the market-hours gate.
-
-**Pollers converted to visibleInterval** (raw `setInterval` eliminated):
-- `stores.js` — `nowStamp` 60 s clock + Intl format-cache 60 s purge
-- `UnifiedLog.svelte` — 3 s data poll
-- `LogPanel.svelte` — all tab pollers (agents / orders / system / conn / sim)
-- `RefreshButton.svelte` — 30 s market-state tick (NSE/MCX session boundaries)
-- `PositionStrip.svelte` — 30 s market-boundary watcher
-- `PriceChart.svelte` — configurable price-history poll (was fully ungated)
-- `SymbolPanel.svelte` — 3 s orders poll in bottom panel
-- `market/+page.svelte` — 30 min market-summary + 10 min news polls
-
-**Animations** — `createFreshnessShimmer.notify()` already guards `document.visibilityState === 'hidden'`. `createTickFlash` timers are 350 ms one-shots only triggered by pollers; pausing pollers prevents any new flash calls while hidden.
-
-**WebSocket** — `ws.js` ref-counted pool closes the socket when the last subscriber leaves (page unmount). Tab background with page still mounted keeps the WS alive. Reconnects within 200 ms on tab return via the pool's existing backoff logic.
-
-**Test guard** — `frontend/e2e/main_thread_perf.spec.js` `'visibility hibernation'` describe:
-- Phase hidden 30 s → assert ZERO `/api/positions` + news requests.
-- Phase visible → assert at least one immediate refire within 250 ms.
-- Runs on both chromium-desktop + chromium-mobile.
 
 ---
 
