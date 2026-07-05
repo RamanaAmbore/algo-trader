@@ -142,20 +142,6 @@ export function mkSparkCol({ sparkRenderer }) {
 
 // ─── LTP column ──────────────────────────────────────────────────────
 
-/**
- * LTP column with real-time SSE tick, directional flash, and vs-avg/vs-prev
- * heat encoding. Snapshot rows (is_animating=false) render a static LTP
- * number without any visible chip — tick-flash is still gated on is_animating.
- *
- * @param {{
- *   getLiveLtpSnap: () => Record<string, number>,
- *   getLtpFlashUp: () => Set<string>,
- *   getLtpFlashDown: () => Set<string>,
- *   numFmt: (p: { value: any }) => string,
- *   RA: string,
- *   numericHdr: string,
- * }} opts
- */
 // Legacy `ltp_source` value → normalised `price_source` value. The
 // backend renamed the field in Jul 2026 (unified animation model);
 // the old value only appears on cached responses served during the
@@ -181,6 +167,20 @@ function _isAnimating(row) {
   return true;
 }
 
+/**
+ * LTP column with real-time SSE tick, directional flash, and vs-avg/vs-prev
+ * heat encoding. Snapshot rows (is_animating=false) render a static LTP
+ * number without any visible chip — tick-flash is still gated on is_animating.
+ *
+ * @param {{
+ *   getLiveLtpSnap: () => Record<string, number>,
+ *   getLtpFlashUp: () => Set<string>,
+ *   getLtpFlashDown: () => Set<string>,
+ *   numFmt: (p: { value: any }) => string,
+ *   RA: string,
+ *   numericHdr: string,
+ * }} opts
+ */
 export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, numFmt, RA, numericHdr }) {
   const resolveCellLtp = mkResolveCellLtp({ getLiveLtpSnap });
   return {
