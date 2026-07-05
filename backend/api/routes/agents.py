@@ -425,6 +425,28 @@ def _agent_to_info(a: Agent) -> AgentInfo:
     )
 
 
+def _extract_ai_prompt(raw: str, prefix_pattern: str) -> str:
+    """Strip the fixed command prefix (case-insensitive) and any
+    surrounding matched quotes from a natural-language `agent ai …`
+    payload. Returns "" when the prompt is empty after cleanup so the
+    caller can render a usage hint.
+
+    Args:
+      raw: the full trimmed command line, e.g. `'agent ai create "hedge"'`
+      prefix_pattern: raw regex string for the prefix to strip. Must
+        include trailing `\\s+` — the caller controls whether the slug
+        is part of the prefix (refine) or not (create).
+    """
+    m = re.match(prefix_pattern, raw, re.IGNORECASE)
+    prompt = raw[m.end():].strip() if m else ""
+    if len(prompt) >= 2 and (
+        (prompt[0] == '"' and prompt[-1] == '"') or
+        (prompt[0] == "'" and prompt[-1] == "'")
+    ):
+        prompt = prompt[1:-1].strip()
+    return prompt
+
+
 # ---------------------------------------------------------------------------
 # Controller
 # ---------------------------------------------------------------------------
@@ -753,70 +775,78 @@ class AgentController(Controller):
         """Parse and execute a terminal agent command."""
         parts = data.command.strip().split()
         if not parts or parts[0].lower() != "agent":
-            return InterpretResponse(output="Usage: agent <command> [args]", success=False)
+            return InterpretResponse(
+                output="Usage: agent <command> [args]", success=False,
+            )
 
         action = parts[1].lower() if len(parts) > 1 else "help"
 
         if action == "list":
             return await self._cmd_list()
-        elif action == "status" and len(parts) > 2:
+        if action == "status" and len(parts) > 2:
             return await self._cmd_status(parts[2])
-        elif action == "activate" and len(parts) > 2:
+        if action == "activate" and len(parts) > 2:
             await self.activate_agent(parts[2])
             return InterpretResponse(output=f"Agent '{parts[2]}' activated")
-        elif action == "deactivate" and len(parts) > 2:
+        if action == "deactivate" and len(parts) > 2:
             await self.deactivate_agent(parts[2])
             return InterpretResponse(output=f"Agent '{parts[2]}' deactivated")
-        elif action == "events" and len(parts) > 2:
+        if action == "events" and len(parts) > 2:
             return await self._cmd_events(parts[2])
-        elif action == "config" and len(parts) > 2:
+        if action == "config" and len(parts) > 2:
             return await self._cmd_config(parts[2:])
-        elif action == "fire" and len(parts) > 2:
+        if action == "fire" and len(parts) > 2:
             return await self._cmd_fire(parts[2])
-        elif action == "ai":
-            # Forms:
-            #   agent ai create "<natural language prompt>"
-            #   agent ai refine <slug> "<natural language refinement>"
-            sub = parts[2].lower() if len(parts) > 2 else ""
-            raw = data.command.strip()
-            if sub == "create":
-                prefix_match = re.match(r"^agent\s+ai\s+create\s+", raw, re.IGNORECASE)
-                prompt = raw[prefix_match.end():].strip() if prefix_match else ""
-                if (prompt.startswith('"') and prompt.endswith('"')) or \
-                   (prompt.startswith("'") and prompt.endswith("'")):
-                    prompt = prompt[1:-1].strip()
-                if not prompt:
-                    return InterpretResponse(
-                        output="Usage: agent ai create \"<prompt>\"",
-                        success=False,
-                    )
-                return await self._cmd_ai_create(prompt)
-            elif sub == "refine" and len(parts) > 3:
-                slug = parts[3]
-                # Strip 'agent ai refine <slug>' to recover the prompt verbatim.
-                pat = re.compile(r"^agent\s+ai\s+refine\s+\S+\s+", re.IGNORECASE)
-                m = pat.match(raw)
-                prompt = raw[m.end():].strip() if m else ""
-                if (prompt.startswith('"') and prompt.endswith('"')) or \
-                   (prompt.startswith("'") and prompt.endswith("'")):
-                    prompt = prompt[1:-1].strip()
-                if not prompt:
-                    return InterpretResponse(
-                        output="Usage: agent ai refine <slug> \"<refinement prompt>\"",
-                        success=False,
-                    )
-                return await self._cmd_ai_refine(slug, prompt)
-            else:
+        if action == "ai":
+            return await self._dispatch_ai_command(parts, data.command.strip())
+        if action == "help":
+            return InterpretResponse(output=self._help_text())
+        return InterpretResponse(
+            output=f"Unknown command: agent {action}\n\n{self._help_text()}",
+            success=False,
+        )
+
+    async def _dispatch_ai_command(
+        self, parts: list[str], raw: str,
+    ) -> InterpretResponse:
+        """Route `agent ai create ...` / `agent ai refine <slug> ...` to
+        the create + refine handlers respectively. Common quote-strip
+        + empty-prompt guard live in _extract_ai_prompt.
+
+        Forms:
+          agent ai create "<natural-language prompt>"
+          agent ai refine <slug> "<natural-language refinement>"
+        """
+        sub = parts[2].lower() if len(parts) > 2 else ""
+        if sub == "create":
+            prompt = _extract_ai_prompt(
+                raw, r"^agent\s+ai\s+create\s+",
+            )
+            if not prompt:
                 return InterpretResponse(
-                    output=("Usage:\n"
-                            "  agent ai create \"<prompt>\"\n"
-                            "  agent ai refine <slug> \"<prompt>\""),
+                    output="Usage: agent ai create \"<prompt>\"",
                     success=False,
                 )
-        elif action == "help":
-            return InterpretResponse(output=self._help_text())
-        else:
-            return InterpretResponse(output=f"Unknown command: agent {action}\n\n{self._help_text()}", success=False)
+            return await self._cmd_ai_create(prompt)
+        if sub == "refine" and len(parts) > 3:
+            slug = parts[3]
+            prompt = _extract_ai_prompt(
+                raw, r"^agent\s+ai\s+refine\s+\S+\s+",
+            )
+            if not prompt:
+                return InterpretResponse(
+                    output="Usage: agent ai refine <slug> \"<refinement prompt>\"",
+                    success=False,
+                )
+            return await self._cmd_ai_refine(slug, prompt)
+        return InterpretResponse(
+            output=(
+                "Usage:\n"
+                "  agent ai create \"<prompt>\"\n"
+                "  agent ai refine <slug> \"<prompt>\""
+            ),
+            success=False,
+        )
 
     async def _cmd_list(self) -> InterpretResponse:
         agents = await self.list_agents()
