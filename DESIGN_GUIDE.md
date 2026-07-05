@@ -609,6 +609,202 @@ This keeps the data layer free of presentation concerns and avoids subtle bugs (
 
 ---
 
+## 4.5.12 Backend runtime object graph
+
+The class diagram below is the high-level shape of the backend runtime.
+Every box is a real class you can grep. Method sets are the operationally-
+important surface (not every method on every class — those live in the
+source).
+
+Two clusters:
+- **Broker layer** (`backend/brokers/`) — Connections singleton owns all
+  broker sessions; adapters implement the Broker ABC; local vs remote
+  proxy split lets the same route code run against in-process brokers
+  OR a UDS conn_service (see §14.5).
+- **Persistence layer** (`backend/api/persistence/`) — `PersistentStoreBase`
+  is the three-tier read/write scaffold; four concrete stores share it.
+  Two write-back workers (`cache_worker` + `db_worker`) drain the
+  in-process write queues.
+
+```mermaid
+classDiagram
+    direction LR
+
+    class SingletonBase {
+        <<abstract>>
+        +Connections instance
+    }
+
+    class Connections {
+        +dict conn
+        +price_account: str
+        +rebuild_from_db()
+        +ipv6_bind(account)
+        +get_broker(account) Broker
+    }
+    SingletonBase <|-- Connections
+
+    class Broker {
+        <<abstract>>
+        +place_order(...)
+        +modify_order(...)
+        +cancel_order(...)
+        +orders() list
+        +positions() list
+        +holdings() list
+        +funds() dict
+        +quote(symbols) dict
+        +ltp(symbols) dict
+        +historical_data(...) list
+        +place_gtt(...) str
+        +translate_qty(exchange, qty, lot) int
+    }
+
+    class KiteBroker {
+        +_kite: KiteConnect
+        +_normalise_order()
+        +_truncate_tag()
+    }
+    class DhanBroker {
+        +_dhan: DhanContext
+        +_normalise_status()
+        +_DHAN_STATUS_TO_KITE
+    }
+    class GrowwBroker {
+        +_groww: GrowwAPI
+        +_normalise_gtt()
+    }
+    class RemoteBroker {
+        +account: str
+        +_client: ConnClient
+        +every method proxies over UDS
+    }
+    Broker <|-- KiteBroker
+    Broker <|-- DhanBroker
+    Broker <|-- GrowwBroker
+    Broker <|-- RemoteBroker
+    Broker <|-- PriceBroker
+
+    class PriceBroker {
+        +candidates: list~Broker~
+        +_try(method, args) Any
+        +_RATE_LIMIT_COOLOFF
+    }
+
+    class TickerManager {
+        +_tick_map: dict
+        +_tick_lock: threading.Lock
+        +subscribe(tokens)
+        +get_ltp(token) float
+        +_on_tick() on Twisted
+    }
+    class MmapTickReader {
+        +_sym_to_token: dict
+        +subscribe_with_sym(sym, token)
+        +_poll_loop()
+        +get_ltp(sym) float
+    }
+    class BroadcastBus {
+        +subscribers: set
+        +publish(event, payload)
+        +subscribe() queue
+    }
+    TickerManager --> BroadcastBus : publishes ticks
+    MmapTickReader --> BroadcastBus : publishes ticks
+
+    Connections o-- Broker : "map[account]"
+
+    class PersistentStoreBase {
+        <<abstract>>
+        +_mem_cache: OrderedDict
+        +_key_locks: dict~Key,asyncio.Lock~
+        +get_or_fetch(key, bypass_cache, db_only) T
+        +_read_from_tier2(key) T
+        +_write_back(key, value)
+        +_check_completeness(value) bool
+    }
+    class OHLCVStore {
+        +get_or_fetch_daily(sym, exch, start, end)
+        +_fetch_slice() list~OHLCVBar~
+    }
+    class InstrumentsStore {
+        +purge_stale()
+        +get_or_fetch(exchange, date)
+    }
+    class HolidaysStore {
+        +get_or_fetch(exchange, year)
+    }
+    class IntradayStore {
+        +get_or_fetch_intraday(sym, exch, interval, day)
+    }
+    PersistentStoreBase <|-- OHLCVStore
+    PersistentStoreBase <|-- InstrumentsStore
+    PersistentStoreBase <|-- HolidaysStore
+    PersistentStoreBase <|-- IntradayStore
+
+    class WriteQueue {
+        +disk_queue: asyncio.Queue
+        +db_queue: asyncio.Queue
+        +put(item)
+        +drain()
+    }
+    class CacheWorker {
+        +start()
+        +stop()
+        +_flush_disk_json()
+    }
+    class DbWorker {
+        +start()
+        +stop()
+        +_flush_batches(500 rows or 500ms)
+    }
+    PersistentStoreBase --> WriteQueue : write-back
+    WriteQueue --> CacheWorker : disk_queue drain
+    WriteQueue --> DbWorker : db_queue drain
+
+    class EventQueue {
+        +name: str
+        +on_full: "drop|sync"
+        +put(row)
+        +_flush_bulk_insert()
+    }
+    class GrammarRegistry {
+        +tokens: dict
+        +reload()
+        +resolve(kind, token) Resolver
+    }
+    class MarketLifecycle {
+        +register(event, callback)
+        +poll_once()
+        +_dispatch(event, exchange)
+    }
+
+    KiteBroker ..> PriceBroker : fallback candidate
+    DhanBroker ..> PriceBroker : fallback candidate
+    GrowwBroker ..> PriceBroker : fallback candidate
+    PriceBroker --> Broker : delegates via _try
+```
+
+**Grep map** — every class name above resolves to a single file:
+
+| Class | Module |
+|---|---|
+| `Connections` (+ `_IPv6SourceAdapter`) | `backend/brokers/connections.py` |
+| `Broker` ABC | `backend/brokers/base.py` |
+| `KiteBroker` / `DhanBroker` / `GrowwBroker` | `backend/brokers/adapters/{kite,dhan,groww}.py` |
+| `PriceBroker` + `get_broker` + `get_market_data_broker` | `backend/brokers/registry.py` |
+| `RemoteBroker` + `ConnClient` | `backend/brokers/client/remote_broker.py` + `client.py` |
+| `TickerManager` + `BroadcastBus` | `backend/brokers/kite_ticker.py` |
+| `MmapTickReader` | `backend/brokers/mmap_ticker.py` |
+| `PersistentStoreBase` | `backend/api/persistence/store_base.py` |
+| `OHLCVStore` / `InstrumentsStore` / `HolidaysStore` / `IntradayStore` | `backend/api/persistence/{ohlcv,instruments,holidays,intraday}_store.py` |
+| `WriteQueue` / `CacheWorker` / `DbWorker` | `backend/api/persistence/{write_queue,cache_worker,db_worker}.py` |
+| `EventQueue` | `backend/api/persistence/event_queue.py` |
+| `GrammarRegistry` | `backend/api/algo/grammar_registry.py` |
+| `MarketLifecycle` | `backend/api/algo/market_lifecycle.py` |
+
+---
+
 ## 4.6 Database schema overview
 
 RamboQuant's data model spans 35+ SQLAlchemy tables, split into logical domains.
@@ -718,41 +914,407 @@ All tables live in the branch-local DB except `broker_accounts`, which is shared
 
 ## 4.7 Table relationships
 
-Simplified ERD (ASCII, readable in PDF):
+The full schema spans 35+ tables. To keep the ERD readable we render it
+in four domain-scoped panels — auth/user + orders/execution, agents +
+NAV + investor slice, persistence + market data, and audit +
+configuration. Every table in §4.6 appears in exactly one panel; foreign
+keys that cross panels are annotated in prose after each diagram.
 
+### 4.7.1 Panel A — Auth · users · orders · execution
+
+```mermaid
+erDiagram
+    users ||--o{ broker_accounts : "owns"
+    users ||--o{ auth_tokens : "verify/reset"
+    users ||--o{ investor_tokens : "URL creds"
+    users ||--o{ investor_events : "capital ledger"
+    users ||--o{ monthly_statements : "emailed to"
+    users ||--o{ impersonation_events : "actor OR target"
+    users ||--o{ watchlists : "owns (nullable)"
+    users ||--o{ algo_orders : "actor"
+    users ||--o{ agents : "actor"
+    users ||--o{ research_threads : "author"
+
+    watchlists ||--o{ watchlist_items : "contains"
+
+    algo_orders ||--o{ algo_order_events : "timeline"
+    algo_orders ||--o{ algo_events : "legacy events"
+    algo_orders ||--o{ algo_orders : "TP/SL child (parent_order_id)"
+    strategies ||--o{ algo_orders : "strategy_id"
+    strategies ||--o{ strategy_lots : "FIFO ledger"
+    strategies ||--o{ strategy_snapshots : "daily P&L"
+    order_templates ||--o{ algo_orders : "template_id"
+
+    users {
+        int id PK
+        string account_id UK
+        string role "designated|trader|risk|admin|partner"
+        int token_version "force-logout"
+    }
+    broker_accounts {
+        int id PK
+        string account UK "e.g. ZG0790"
+        string broker_id "kite|dhan|groww"
+        bytes api_key_enc "Fernet"
+        bytes access_token_enc
+        int display_order
+        bool circuit_breaker_enabled
+        string poll_priority "hot|warm|cold"
+    }
+    algo_orders {
+        int id PK
+        string account
+        string symbol
+        string exchange
+        string transaction_type "BUY|SELL"
+        int quantity
+        int filled_quantity
+        string status "OPEN|COMPLETE|CANCELLED|REJECTED|EXPIRED"
+        string mode "sim|paper|live|replay|shadow"
+        string engine "manual|sim|paper|live|replay|shadow|expiry"
+        int agent_id FK "nullable"
+        int strategy_id FK "nullable"
+        int template_id FK "nullable"
+        int parent_order_id FK "TP/SL self-ref"
+        string broker_order_id
+        json attached_gtts_json "TP/SL/Wing"
+        string basket_tag
+        string request_id "audit drill"
+    }
+    algo_order_events {
+        int id PK
+        int order_id FK
+        string kind "placed|chase_modify|fill|unfill|reject|cancel"
+        json payload_json
+    }
+    strategies {
+        int id PK
+        string slug UK
+        int owner_user_id FK
+        int capacity_cap_inr
+    }
+    strategy_lots {
+        int id PK
+        int strategy_id FK
+        int open_order_id FK "nullable"
+        int qty
+        int remaining_qty
+        decimal realized_pnl
+    }
+    order_templates {
+        int id PK
+        int user_id FK "nullable — system row"
+        string slug
+        decimal tp_pct
+        decimal sl_pct
+        decimal wing_premium_pct
+        bool is_system
+    }
+    watchlists {
+        int id PK
+        int user_id FK "nullable — global"
+        bool is_global
+    }
 ```
-users ─────────┬─── broker_accounts (shared DB)
-               ├─── algo_orders ─── algo_order_events
-               │         ├─ agent_id → agents
-               │         ├─ strategy_id → strategies ─── strategy_lots
-               │         ├─ template_id → order_templates
-               │         └─ parent_order_id → algo_orders (self-ref TP/SL)
-               ├─── agent_events ← agents
-               ├─── watchlists ─── watchlist_items
-               ├─── investor_events (capital ledger)
-               ├─── investor_tokens (URL credentials)
-               ├─── monthly_statements
-               ├─── sim_recordings
-               ├─── research_threads
-               └─── auth_tokens
 
-nav_daily ───────── (master NAV — no FK, firm aggregate)
-strategy_snapshots ─ strategies
-daily_book ────────── (account/symbol/kind snapshot, no FK)
-perf_snapshots ────── (page metrics, no FK)
+### 4.7.2 Panel B — Agents · alerts · NAV · investor slice
 
-market_lifecycle_events, code_metrics_snapshots, settings, 
-order_templates, hedge_proxies, grammar_tokens ─── (configuration, mostly no FK)
+```mermaid
+erDiagram
+    agents ||--o{ agent_events : "fired"
+    agents ||--o{ algo_orders : "actor (agent_id)"
+    grammar_tokens }o--o{ agents : "condition tokens"
 
-Persistence:
-  ohlcv_daily, instruments_snapshot, holidays_snapshot, 
-  intraday_bars, movers_snapshots ─── (market data cache, no FK)
+    users ||--o{ investor_events : "capital ledger"
+    users ||--o{ monthly_statements : "PDF audit"
 
-Audit:
-  audit_log ─ request_id → algo_orders (drill-through)
-  mcp_audit ─ user_id → users
-  admin_email_events ─ admin_user_id → users
+    nav_daily ||..|| strategy_snapshots : "date parity"
+
+    agents {
+        int id PK
+        string slug UK
+        string long_name
+        json conditions "condition tree"
+        json events "alert channels"
+        json actions "side effects"
+        string scope "per_account|all_accounts"
+        string schedule "market_hours|continuous"
+        int cooldown_minutes
+        string trade_mode "paper|live"
+        string status "active|inactive|cooldown|completed"
+        string lifespan_type "persistent|one_shot|n_fires|until_date"
+        string tier "critical|high|medium|low"
+        string topic
+    }
+    agent_events {
+        int id PK
+        int agent_id FK
+        string event_type "fired|suppressed|error"
+        json trigger_condition
+        bool sim_mode
+    }
+    grammar_tokens {
+        int id PK
+        string grammar_kind "condition|notify|action"
+        string token_kind
+        string token
+        string resolver "dotted path"
+        json enum_values
+        bool is_system
+    }
+    nav_daily {
+        int id PK
+        date as_of_date UK
+        decimal nav
+        decimal cash_total
+        decimal positions_mtm
+        decimal holdings_mtm
+        json accounts_snapshot
+    }
+    strategy_snapshots {
+        int id PK
+        int strategy_id FK
+        date as_of_date
+        decimal realised_pnl
+        decimal unrealised_pnl
+    }
+    investor_events {
+        int id PK
+        int user_id FK
+        string event_type "subscription|redemption|bootstrap"
+        date event_date
+        decimal amount
+        decimal nav_per_unit
+        decimal units_delta
+    }
+    investor_tokens {
+        int id PK
+        int user_id FK
+        string token UK "URL credential"
+        datetime expires_at
+        datetime last_visit_at
+        int visit_count
+    }
+    monthly_statements {
+        int id PK
+        int user_id FK
+        int period_year
+        int period_month
+        json recipients_json
+    }
 ```
+
+### 4.7.3 Panel C — Persistence · market data cache
+
+```mermaid
+erDiagram
+    ohlcv_daily {
+        string symbol PK
+        string exchange PK
+        date date PK
+        decimal open
+        decimal high
+        decimal low
+        decimal close
+        int volume
+    }
+    intraday_bars {
+        int id PK
+        string symbol
+        string exchange
+        date date
+        string interval "5min|15min|30min|60min"
+        datetime bar_ts
+        decimal close
+    }
+    instruments_snapshot {
+        int id PK
+        string exchange
+        date date
+        json payload "full symbol map"
+        int row_count
+    }
+    holidays_snapshot {
+        int id PK
+        string exchange
+        int year
+        json dates_json "immutable once closed"
+    }
+    market_holidays {
+        int id PK
+        string exchange
+        date holiday_date UK
+    }
+    market_special_sessions {
+        int id PK
+        string exchange
+        date date
+        time start_time
+        time end_time
+        string reason "Muhurat|override"
+    }
+    market_lifecycle_events {
+        int id PK
+        string exchange
+        string event_type "nse:open|nse:close|nse:close_settled"
+        datetime fired_at
+        datetime captured_at
+    }
+    daily_book {
+        int id PK
+        string kind "positions|holdings|funds|trades|sparkline"
+        string account
+        string symbol
+        string exchange
+        decimal qty
+        decimal avg_price
+        decimal ltp "NULL mid-session"
+        date date
+        datetime captured_at
+        json payload_json "snapshot_extras"
+    }
+    movers_snapshots {
+        int id PK
+        string index_symbol
+        date snapshop_date
+        json movers_json
+    }
+```
+
+Panel C has NO foreign keys (persistence stores are self-contained
+market-data cache). `daily_book` is the closed-hours snapshot anchor
+for every operator-visible surface (positions, holdings, NAV, sparklines);
+the latest-batch CTE in `snapshot_gate.latest_snapshot_ltp_map` reads from
+here. `market_lifecycle_events` audits every open / close / close_settled
+transition dispatched by the singleton `MarketLifecycle` bus.
+
+### 4.7.4 Panel D — Audit · configuration · extensibility
+
+```mermaid
+erDiagram
+    users ||--o{ audit_log : "actor"
+    users ||--o{ mcp_audit : "MCP caller"
+    users ||--o{ admin_email_events : "admin sender"
+    users ||--o{ sim_recordings : "owner"
+    algo_orders ||..o{ audit_log : "request_id drill"
+    sim_iterations ||--o{ sim_iterations : "parent_run_id self-ref"
+
+    audit_log {
+        int id PK
+        int actor_user_id FK
+        string action
+        string category "order.place|order.fill|agent.action|system.nav"
+        string method
+        string path
+        string request_id "drill to algo_orders"
+        int status_code
+        datetime created_at
+    }
+    mcp_audit {
+        int id PK
+        int user_id FK
+        string tool_name
+        string args_redacted
+        string result_status
+        string request_id
+    }
+    admin_email_events {
+        int id PK
+        int admin_user_id FK
+        string recipient_email
+        string subject
+        datetime sent_at
+    }
+    impersonation_events {
+        int id PK
+        string actor_username
+        string target_username
+        datetime started_at
+        datetime ended_at
+        string end_reason
+    }
+    visitor_log {
+        int id PK
+        string visitor_ip
+        datetime last_seen_at
+        int visitor_count
+    }
+    settings {
+        int id PK
+        string category
+        string key UK
+        string value_type "int|float|bool|string"
+        string value "operator edit"
+        string default_value
+        json schema
+    }
+    hedge_proxies {
+        int id PK
+        string proxy_symbol
+        string target_root
+        bool is_active
+        decimal beta
+        decimal correlation
+        datetime regression_at
+    }
+    perf_snapshots {
+        int id PK
+        string page_or_route
+        json metrics_json
+        json static_metrics_json
+        datetime captured_at
+    }
+    code_metrics_snapshots {
+        int id PK
+        string release_version
+        json static_metrics_json
+        json runtime_metrics_json
+    }
+    sim_recordings {
+        int id PK
+        string label
+        string scenario
+        int owner_user_id FK
+        json payload "event stream"
+    }
+    sim_iterations {
+        int id PK
+        int parent_run_id FK "self-ref"
+        int iteration_index
+        int iterations_total
+        string regime
+        int seed
+    }
+    research_threads {
+        int id PK
+        int created_by_user_id FK
+        string slug
+        json messages_json
+    }
+    market_report {
+        int id PK "always 1"
+        text content
+        date cycle_date
+    }
+    news_headlines {
+        int id PK
+        string link UK
+        string title
+        datetime published_at
+    }
+    auth_tokens {
+        int id PK
+        int user_id FK
+        string purpose "verify|reset"
+        string token UK
+        datetime expires_at
+    }
+```
+
+**Cross-panel foreign keys:**
+- `algo_orders.agent_id` (Panel A) → `agents.id` (Panel B) — `ON DELETE SET NULL`
+- `algo_orders.request_id` (Panel A) drill-through from `audit_log.request_id` (Panel D)
+- `agent_events.agent_id` (Panel B) → `agents.id` (Panel B) — `ON DELETE CASCADE`
 
 **Key foreign-key patterns:**
 - `algo_orders.agent_id` → agents.id: `ON DELETE SET NULL` (preserve order history if agent deleted)
@@ -1316,6 +1878,111 @@ flowchart TD
 
 ⚙ **TECH — PriceBroker fallback chain** — `WHY` Some brokers can answer quote/ltp/historical (Kite), some can't (Dhan returns `{}` by design for `quote`). Walking the chain lets the operator's chart still render even when their primary account is throttled. `WHAT` `PriceBroker._try(method_name, *args)` iterates eligible brokers, calls method, checks predicates (`_quote_has_data` / `_ltp_has_data` / `_historical_has_data`), returns first successful response. `HOW` Add a new method by name in the predicate map. Rate-limit cool-off (`_RATE_LIMIT_COOLOFF`) excludes throttled accounts for 30s. `WHERE` `backend/brokers/registry.py::PriceBroker`.
 
+### 14.1 Kite account flipping — market-data broker resolution
+
+`get_market_data_broker()` is the **single** resolution path for every
+quote / ltp / instruments / historical_data call in route handlers and
+background tasks. A `contextvars.ContextVar` (`_MDB_CTX`) caches the
+`PriceBroker` instance for the lifetime of one HTTP request so every
+callsite within the same handler picks the **same** broker session. On
+`PriceBroker._try()` failover: try broker A, on transient error / empty
+predicate, log `[MARKET-DATA-FALLBACK]`, try broker B, etc.
+
+Selection order:
+1. `connections.price_account` operator pin (setting)
+2. `broker_accounts.priority` ASC
+3. Insertion order
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant HTTP as HTTP request
+    participant HK as before_request hook
+    participant RT1 as route handler /api/quote
+    participant RT2 as internal call<br/>quote.py → chain.py
+    participant GMDB as get_market_data_broker
+    participant CTX as _MDB_CTX contextvar
+    participant SEL as _select_by_priority
+    participant SET as Setting<br/>connections.price_account
+    participant DB as broker_accounts.priority
+    participant PB as PriceBroker
+    participant A as Broker A (Kite ZG0790)
+    participant B as Broker B (Kite ZJ6294)
+    participant C as Broker C (Dhan DH3747)
+
+    HTTP->>HK: request enters Litestar
+    HK->>CTX: reset_market_data_broker_ctx()<br/>_MDB_CTX.set(None)
+    HK->>RT1: dispatch handler
+
+    RT1->>GMDB: get_market_data_broker()
+    GMDB->>CTX: _MDB_CTX.get(None)
+    CTX-->>GMDB: None (fresh request)
+    GMDB->>SET: get_string("connections.price_account")
+
+    alt Operator pin present + healthy
+        SET-->>GMDB: "ZG0790"
+        GMDB->>PB: PriceBroker([ZG0790, ZJ6294, DH3747])
+        note over GMDB: [MARKET-DATA-BROKER]<br/>account=ZG0790 reason=pinned
+    else No pin
+        GMDB->>DB: SELECT ... ORDER BY priority ASC
+        DB-->>SEL: priority-sorted list
+        SEL-->>GMDB: [ZG0790, ZJ6294, DH3747]
+        GMDB->>PB: PriceBroker(candidates)
+        note over GMDB: [MARKET-DATA-BROKER]<br/>account=ZG0790 reason=priority-sort
+    end
+
+    GMDB->>CTX: _MDB_CTX.set(broker)
+    GMDB-->>RT1: PriceBroker
+
+    RT1->>PB: broker.quote(["NIFTY 50"])
+    PB->>A: kite.quote(...)
+    A-->>PB: dict payload
+
+    alt Broker A returned data
+        PB-->>RT1: dict
+    else Broker A empty/error
+        note over PB: [MARKET-DATA-FALLBACK]<br/>from=ZG0790 next=ZJ6294<br/>reason=empty
+        PB->>B: kite.quote(...)
+        B-->>PB: dict payload
+
+        alt Broker B ok
+            PB-->>RT1: dict
+        else B also empty
+            note over PB: [MARKET-DATA-FALLBACK]<br/>from=ZJ6294 next=DH3747
+            PB->>C: dhan.ltp(...)
+            C-->>PB: {} (Dhan MCX quirk)
+            note over PB: predicate rejects empty →<br/>exhausted candidates
+            PB-->>RT1: {} (upstream 200 with empty payload)
+        end
+    end
+
+    RT1->>RT2: internal call within same request
+    RT2->>GMDB: get_market_data_broker()
+    GMDB->>CTX: _MDB_CTX.get()
+    CTX-->>GMDB: PriceBroker (cached)
+    note over GMDB: SAME broker as first call<br/>no new resolution log
+    GMDB-->>RT2: PriceBroker
+
+    RT2->>PB: broker.ltp(...)
+    PB->>A: kite.ltp(...)
+    A-->>PB: dict
+    PB-->>RT2: dict
+    RT2-->>RT1: chain response
+    RT1-->>HTTP: 200 OK
+
+    note over HTTP,C: Next HTTP request → before_request hook fires again<br/>→ _MDB_CTX resets → resolution re-runs.<br/>Background tasks share no request scope → fresh pick per call.
+```
+
+**Intentionally NOT wired to `_MDB_CTX`**:
+- `get_sparkline_broker()` — must spread the 3 req/sec Kite historical_data budget across accounts.
+- `get_historical_brokers()` — same reason; returns the full Kite-only list for round-robin OHLCV pulls.
+- `@for_all_accounts` fan-out (positions / holdings / margins) — fans out per-account by design; the contextvar is irrelevant.
+
+**Files:**
+- `backend/brokers/registry.py` — `_MDB_CTX`, `reset_market_data_broker_ctx`, `get_market_data_broker`, `get_price_broker`, `PriceBroker._try`
+- `backend/api/app.py` — `before_request` hook wiring
+- Wired callsites (15 files): `quote.py`, `watchlist.py`, `options.py`, `strategies.py`, `positions.py`, `orders_place.py`, `hedge_proxies.py`, `admin.py`, `instruments.py`, `background.py`, `lot_ledger.py`, `paper.py`, `template_attach.py`, `replay/driver.py`, `ohlcv_store.py`, `broker_apis.py`
+
 ---
 
 ## 14.5. Broker abstraction — implementation detail
@@ -1454,6 +2121,141 @@ Documented so you don't relearn them the hard way:
 
 ---
 
+## 16.1 Connection retries per account — login + circuit breaker
+
+Startup `Connections.rebuild_from_db()` iterates `broker_accounts` rows.
+Per account: decrypt secrets (Fernet), login via adapter, on failure the
+`@retry_kite_conn` decorator retries with backoff. If token refresh is
+needed, the 2FA flow re-mints. Post-startup, the runtime fetch path is
+guarded by two independent gates on `broker_apis._fetch_*_local`:
+
+1. **Circuit breaker** (`_is_circuit_open`, opt-in per row via
+   `circuit_breaker_enabled`) — CLOSED → normal fetch (increments
+   `consecutive_fail_count` on error) → OPEN after 3 consecutive fails
+   (cool-off 5m → 10m → 20m → 30m exponential) → HALF-OPEN probe → back
+   to CLOSED on success.
+2. **Dhan interval gate** (`_dhan_next_poll[account]`) — advances the
+   next-poll timestamp BEFORE the fetch runs, so a crash mid-fetch
+   doesn't cause a tight-retry loop. Non-Dhan accounts always pass.
+
+Auto-downgrade: when a Dhan account with both `circuit_breaker_enabled=True`
+AND `auto_downgrade_enabled=True` hits ≥5 breaker-OPEN events inside a
+15-min sliding window, `poll_priority` flips `hot → cold` and a 5-min
+cooloff prevents re-firing.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant BOOT as app.on_startup
+    participant CN as Connections singleton
+    participant DB as broker_accounts row
+    participant FN as Fernet decrypt
+    participant AD as KiteBroker adapter
+    participant RETRY as @retry_kite_conn
+    participant KITE as Kite API<br/>(login + 2FA)
+    participant FETCH as background._task_performance
+    participant BR as _is_circuit_open
+    participant DG as _is_dhan_interval_due
+    participant SDK as vendor SDK
+    participant HEALTH as _FETCH_HEALTH[account]
+
+    BOOT->>CN: rebuild_from_db()
+    loop for each active row
+        CN->>DB: SELECT ... WHERE is_active
+        DB-->>CN: api_key_enc, access_token_enc, source_ip
+        CN->>FN: Fernet.decrypt(cookie_secret → HKDF)
+        FN-->>CN: api_key, access_token
+
+        CN->>AD: KiteConnection(...)
+        AD->>RETRY: login() decorated
+        RETRY->>KITE: request_token / user_login
+        alt Login OK
+            KITE-->>RETRY: access_token
+            RETRY-->>AD: session ready
+        else Login fails (transient)
+            RETRY->>RETRY: sleep(retry_backoff)
+            RETRY->>KITE: retry (up to retry_count)
+            alt Retry succeeds
+                KITE-->>RETRY: session
+            else Token needs 2FA refresh
+                RETRY->>KITE: pyotp TOTP + submit
+                KITE-->>RETRY: fresh access_token
+                RETRY-->>AD: session
+            else Exhausted
+                RETRY-->>AD: raise LoginError
+                AD-->>CN: deferred (log + skip)
+            end
+        end
+        CN->>CN: conn[account] = adapter
+        CN->>HEALTH: seed last_ok_at
+    end
+
+    note over BOOT,HEALTH: STARTUP COMPLETE — runtime fetch begins
+
+    loop every 30s during market hours
+        FETCH->>BR: _is_circuit_open(account)?
+        alt Circuit CLOSED (or non-opt-in)
+            BR-->>FETCH: False
+            FETCH->>DG: _is_dhan_interval_due(account)?
+            alt Dhan account & now < _dhan_next_poll[account]
+                DG-->>FETCH: False (skip this tick)
+            else non-Dhan or interval elapsed
+                DG-->>FETCH: True
+                FETCH->>DG: _update_dhan_next_poll (pre-advance)
+                FETCH->>SDK: kite.positions() / dhan.positions()
+                alt Success
+                    SDK-->>FETCH: rows
+                    FETCH->>BR: _record_fetch(account, ok=True)
+                    BR->>HEALTH: consecutive_fail_count = 0<br/>last_ok_at = now
+                    alt Was HALF-OPEN probe
+                        BR->>HEALTH: state → CLOSED<br/>circuit_open_until = None<br/>reset cool-off exponent
+                    end
+                else Error
+                    SDK-->>FETCH: raise
+                    FETCH->>BR: _record_fetch(account, ok=False)
+                    BR->>HEALTH: consecutive_fail_count += 1
+                    alt consecutive_fail_count ≥ 3 AND opt-in
+                        BR->>HEALTH: state → OPEN<br/>circuit_open_until = now + cooloff<br/>cooloff = min(30m, 5m × 2^cycle)
+                        note over BR: [BREAKER] account=DH6847<br/>state=OPEN cooloff=5m
+                        BR->>HEALTH: check auto-downgrade sliding window
+                        alt ≥5 OPEN events in 15-min window
+                            BR->>DB: UPDATE poll_priority='cold'<br/>+ auto_downgraded_at=now
+                            BR->>BR: broadcast WS "broker_priority_changed"
+                        end
+                    end
+                end
+            end
+        else Circuit OPEN + still cooling
+            BR-->>FETCH: True (short-circuit)
+            FETCH->>FETCH: return empty df<br/>with attrs['circuit_open']=True
+            note over FETCH: SDK never called — 0 log noise
+        else Circuit OPEN + cooloff expired
+            BR->>HEALTH: state → HALF-OPEN
+            BR-->>FETCH: False (allow probe)
+            note over BR: Next iteration runs one probe<br/>success closes and failure re-opens<br/>at exponential next step
+        end
+    end
+```
+
+**Key gates & timings:**
+
+| Gate | File | Behaviour |
+|---|---|---|
+| `@retry_kite_conn` | `backend/shared/helpers/decorators.py` | Login retries with backoff; falls into 2FA flow on token expiry |
+| `_is_circuit_open(account)` | `backend/brokers/broker_apis.py` | Fast in-process dict lookup; O(1); non-opt-in accounts always return False |
+| `_record_fetch(account, ok, error)` | same file | Increments/resets `consecutive_fail_count`, opens/closes circuit, evaluates auto-downgrade window |
+| `_is_dhan_interval_due(account)` | same file | Dhan-only; checks `now >= _dhan_next_poll[account]` |
+| `_update_dhan_next_poll(account, broker)` | same file | Pre-advances timestamp BEFORE fetch (crash-safe) |
+| Cool-off schedule | same file | 5m → 10m → 20m → 30m exponential (cap 30m); resets on successful HALF-OPEN probe |
+| Auto-downgrade sliding window | same file | 5 OPEN events in 15 min → `poll_priority='cold'`; 5-min re-fire cooloff |
+| Restore endpoint | `POST /api/admin/brokers/{id}/restore-priority` | Operator resets to 'hot', clears stamps |
+
+**Surfaces:**
+- `/api/admin/broker-health` returns `circuit_state`, `consecutive_fail_count`, `circuit_open_until`, `circuit_breaker_enabled`, `poll_priority`, `auto_downgraded_at`, `auto_downgrade_reason` per account.
+- `BrokerHealthBadge.svelte` shows OPEN chip + "circuit open until HH:MM" tooltip for opt-in accounts; non-opt-in red badges show "retrying every poll".
+
+---
+
 # Part V — Frontend
 
 ## 17. Frontend modal state
@@ -1517,6 +2319,151 @@ flowchart TD
 ---
 
 ## 18. Frontend state architecture
+
+### 18.0 Frontend runtime object graph
+
+The class diagram below covers the load-bearing frontend runtime — the
+data-store factory, the singleton WebSocket pool, the polling helpers
+that hibernate on tab-hidden, and the tick-flash / symbol-store primitives
+that surface live prices in ag-Grid cells.
+
+```mermaid
+classDiagram
+    direction LR
+
+    class createDataStore {
+        <<factory>>
+        +key: string
+        +fetcher: async fn
+        +ttl: number
+        +parse(response) T
+        +equals(a, b) bool
+        +keepStaleOnEmpty: bool
+        +load() Promise
+        +value: T
+        +stale: bool
+        +_inFlight: Promise
+    }
+
+    class positionsStore
+    class holdingsStore
+    class fundsStore
+    class moversStore
+    class activeListsStore
+    class sparklinesStore
+    createDataStore <|.. positionsStore
+    createDataStore <|.. holdingsStore
+    createDataStore <|.. fundsStore
+    createDataStore <|.. moversStore
+    createDataStore <|.. activeListsStore
+    createDataStore <|.. sparklinesStore
+
+    class persistentCache {
+        <<module>>
+        +set(key, value, ttl)
+        +get(key) T
+        +TTL_day / TTL_hour / TTL_minute / TTL_short
+    }
+    createDataStore --> persistentCache : writes on load
+
+    class symbolStore {
+        <<SvelteMap>>
+        +get(sym) SymbolRow
+        +set(sym, row)
+        +publishPulseQuotes(rows)
+    }
+    class SymbolRow {
+        +tradingsymbol: string
+        +exchange: string
+        +ltp: number
+        +ohlc: object
+        +last_updated: number
+    }
+    symbolStore o-- SymbolRow
+
+    class liveLtp {
+        <<store>>
+        +get(sym) number
+        +set(sym, ltp)
+    }
+    class quoteStream {
+        +startMarketGatedQuoteStream()
+        +applyLtpPatch(rows, policy)
+        +_liveLtpSnap: dict
+    }
+    quoteStream --> liveLtp : writes ticks
+    quoteStream --> symbolStore : merges ticks
+
+    class visibleInterval {
+        <<helper>>
+        +fn: () => void
+        +ms: number
+        +mode: "pause|throttle:ms"
+        +pausesOn document.hidden
+        +firesOnce onVisible
+    }
+    class marketAwareInterval {
+        <<helper>>
+        +fn: () => void
+        +ms: number
+        +delegatesTo visibleInterval
+        +marketHoursGate()
+    }
+    visibleInterval <|.. marketAwareInterval
+
+    class createTickFlash {
+        <<factory>>
+        +threshold: number
+        +durationMs: 350
+        +update(key, prev, next)
+        +classOf(key) string
+    }
+
+    class WsPool {
+        <<singleton>>
+        +createPerformanceSocket(onMsg)
+        +createAlgoSocket(onMsg)
+        +refCount: number
+        +autoReconnect()
+    }
+    class bookChanged {
+        <<store>>
+        +counter: number
+        +subscribe()
+    }
+    WsPool --> bookChanged : increments on book_changed
+
+    class RefreshButton {
+        +onClick(opts)
+        +listens window "refresh-page"
+    }
+    class CollapseButton
+    class PageHeaderActions {
+        +opensOrderTicket()
+        +opensChartModal()
+        +opensActivityModal()
+    }
+    RefreshButton --> visibleInterval : polls health chip
+    PageHeaderActions --> WsPool : bookChanged wire
+    marketAwareInterval <-- positionsStore : cross-page book poller
+    marketAwareInterval <-- holdingsStore : cross-page book poller
+    marketAwareInterval <-- fundsStore : cross-page book poller
+```
+
+**Grep map** — every symbol above resolves to a single file:
+
+| Symbol | Module |
+|---|---|
+| `createDataStore` factory | `frontend/src/lib/data/dataStore.svelte.js` |
+| `positionsStore` / `holdingsStore` / `fundsStore` / `moversStore` / `activeListsStore` / `sparklinesStore` | `frontend/src/lib/data/marketDataStores.svelte.js` |
+| `persistentCache` | `frontend/src/lib/data/persistentCache.js` |
+| `symbolStore` + `publishPulseQuotes` | `frontend/src/lib/data/symbolStore.svelte.js` |
+| `liveLtp` + `quoteStream` | `frontend/src/lib/data/quoteStream.js` |
+| `visibleInterval` + `marketAwareInterval` | `frontend/src/lib/stores.js` |
+| `createTickFlash` | `frontend/src/lib/data/tickFlash.svelte.js` |
+| `createPerformanceSocket` / `createAlgoSocket` (WsPool) | `frontend/src/lib/ws.js` |
+| `bookChanged` counter | `frontend/src/lib/stores.js` |
+| `RefreshButton` / `CollapseButton` / `PageHeaderActions` | `frontend/src/lib/*.svelte` |
 
 ### 18.1 Why no global store for order state?
 
@@ -1636,6 +2583,192 @@ sequenceDiagram
 **`/admin/derivatives` Snapshot TOTAL reconciles to PositionStrip** by adding back the rows the page filters out (equity intraday positions + derivative-looking holdings) via `_excludedByAccount`. See `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` (search `_byUnderlyingTotal`).
 
 ⚙ **TECH — `marketAwareInterval` polling vs WebSocket** — `WHY` Position state changes when fills happen; we already get fills via KiteTicker, but positions are aggregated server-side. Polling is cheaper than rebuilding aggregations client-side. `WHAT` `marketAwareInterval(fn, 30000)` polls every 30s during market hours, pauses on `document.hidden`. `HOW` Use the helper from `$lib/stores`; never raw `setInterval`. `WHERE` `frontend/src/lib/stores.js::marketAwareInterval`.
+
+---
+
+## 21.5 Frontend → broker API — full round-trip
+
+Detailed sequence of a live `/api/positions` request when
+`RAMBOQ_USE_CONN_SERVICE=1`. Shows the `_MDB_CTX` contextvar reset,
+raw-broker-DataFrame cache (`_RAW_CACHE`, 30s TTL) on the return
+path, the closed-hours snapshot branch (`closed_hours_or_broker` gate),
+and the two-process split (main API ↔ conn_service over UDS).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor OP as Operator
+    participant BR as Browser
+    participant SK as SvelteKit route
+    participant HK as Litestar before_request hook
+    participant RT as routes/positions.py
+    participant GATE as snapshot_gate
+    participant CACHE as cache.get_or_fetch<br/>(msgspec.Struct)
+    participant RAW as _RAW_CACHE (30s TTL)
+    participant MDBR as get_market_data_broker
+    participant RB as RemoteBroker
+    participant UDS as UDS /tmp/ramboq_conn.sock
+    participant CS as conn_service
+    participant CN as Connections singleton
+    participant KITE as Kite SDK
+
+    OP->>BR: click Refresh
+    BR->>SK: fetch /api/positions
+    SK->>HK: HTTP request enters Litestar
+    HK->>HK: reset_market_data_broker_ctx()<br/>_MDB_CTX = None
+    HK->>RT: dispatch handler
+
+    RT->>GATE: closed_hours_or_broker(<br/>  "NSE", snapshot_fn, broker_fn)
+
+    alt Any segment OPEN
+        GATE->>CACHE: get_or_fetch("positions")
+        alt Cache hit (msgspec.Struct fresh)
+            CACHE-->>RT: cached response
+        else Cache miss
+            CACHE->>RAW: _raw_cache_get("positions")
+            alt _RAW_CACHE hit (30s TTL)
+                RAW-->>CACHE: list[pd.DataFrame]
+            else _RAW_CACHE miss
+                CACHE->>MDBR: get_market_data_broker()
+                MDBR->>MDBR: _MDB_CTX empty → resolve
+                MDBR->>MDBR: get_price_broker() → PriceBroker
+                MDBR->>MDBR: _MDB_CTX.set(broker)
+                MDBR-->>CACHE: PriceBroker
+                CACHE->>RB: broker.positions() via @for_all_accounts
+                RB->>UDS: HTTP POST /rpc/positions
+                UDS->>CS: dispatch to conn_service
+                CS->>CN: connections.conn["ZG0790"].positions()
+                CN->>KITE: kite.positions()
+                KITE-->>CN: dict payload
+                CN-->>CS: raw dict
+                CS-->>UDS: JSON response
+                UDS-->>RB: rows
+                RB-->>CACHE: list[pd.DataFrame]
+                CACHE->>RAW: _raw_cache_put(..., ttl=30s)
+            end
+            CACHE->>CACHE: apply_ltp_patch(df, policy)<br/>build msgspec.Struct
+            CACHE-->>RT: response
+        end
+        GATE-->>RT: (response, source="live")
+    else Markets CLOSED
+        note over GATE: broker_fn NEVER called<br/>when market is closed
+        GATE->>GATE: latest_snapshot_ltp_map("positions")
+        GATE->>GATE: read daily_book latest-batch CTE
+        GATE-->>RT: (snapshot, source="snapshot")
+    end
+
+    RT-->>SK: msgspec.Struct → JSON
+    SK-->>BR: 200 OK
+    BR-->>OP: Grid repaints, price_source chip shows LIVE/SNAP
+```
+
+**Key gates:**
+- `reset_market_data_broker_ctx()` fires in `app.py::before_request` for **every** HTTP dispatch. All calls within one request pick the same broker (§14 + §21.7).
+- `closed_hours_or_broker` — canonical gate for every live-data route. `broker_fn` is NEVER invoked when `_any_segment_open()` is False; snapshot path reads from `daily_book`.
+- `_RAW_CACHE` — 30s TTL raw-DataFrame cache in `broker_apis.py`. Route-level `get_or_fetch` memoises the FORMATTED response on top. Terminal-order postbacks call `_raw_cache_invalidate(key)` so fills surface immediately.
+
+**Files:**
+- `backend/api/app.py` — `before_request` hook wiring
+- `backend/api/helpers/snapshot_gate.py` — `closed_hours_or_broker`, `latest_snapshot_ltp_map`
+- `backend/brokers/registry.py` — `get_market_data_broker`, `_MDB_CTX`, `PriceBroker._try`
+- `backend/brokers/broker_apis.py` — `_RAW_CACHE`, `fetch_positions`, `@for_all_accounts`
+- `backend/brokers/client/remote_broker.py` — UDS proxy
+- `backend/brokers/service/app.py` — conn_service Litestar app
+
+---
+
+## 21.6 Persistence three-tier — cache → DB → broker
+
+Every OHLCV / instruments / holidays / intraday read walks Tier 1
+(in-memory LRU) → Tier 2 (PostgreSQL row) → Tier 3 (broker API). A
+per-key `asyncio.Lock` deduplicates concurrent in-flight fetches.
+Broker writes return immediately to the caller; persistence runs
+off-path via two parallel worker coroutines (`cache_worker`,
+`db_worker`). Refresh modes (off / soft / hard) let the operator
+force Tier 3 refetches.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant CALLER as route or task
+    participant STORE as PersistentStoreBase<br/>.get_or_fetch(key)
+    participant LOCK as per-key asyncio.Lock
+    participant T1 as Tier 1 — _mem_cache LRU
+    participant T2 as Tier 2 — PostgreSQL<br/>(ohlcv_daily, instruments_snapshot…)
+    participant COMP as _check_completeness
+    participant SUB as _fetch_slice()
+    participant T3 as Tier 3 — Broker API<br/>(kite.historical_data)
+    participant WQ as write_queue
+    participant CW as cache_worker<br/>(5s throttle)
+    participant DW as db_worker<br/>(500 rows / 500ms batch)
+    participant DISK as .log/*_cache.json
+
+    CALLER->>STORE: get_or_fetch(sym, exch, days=30)
+    STORE->>STORE: bypass_cache = runtime_state.is_bypass_on()
+
+    alt bypass_cache OR db_only mode
+        STORE->>SUB: fetch fresh (skip T1)
+    else normal path
+        STORE->>T1: _mem_cache[key]?
+        alt Tier 1 HIT + complete
+            T1-->>STORE: bars
+            STORE-->>CALLER: bars
+        else Tier 1 MISS
+            STORE->>LOCK: acquire(key)
+            note over LOCK: dedup — concurrent readers await one leader
+            STORE->>T2: SELECT bars WHERE (sym, exch, date range)
+            T2-->>STORE: DB rows
+            STORE->>COMP: complete? (gaps ≤ 4 days,<br/>boundary dates present)
+            alt Tier 2 HIT + complete
+                COMP-->>STORE: OK
+                STORE->>T1: promote to _mem_cache
+                STORE-->>CALLER: bars
+            else Tier 2 miss or gap
+                alt db_only mode
+                    STORE-->>CALLER: None (skip Tier 3)
+                else
+                    STORE->>SUB: _fetch_slice(gap)
+                    SUB->>T3: broker.historical_data(...)
+                    T3-->>SUB: fresh bars
+                    SUB-->>STORE: bars
+                    STORE->>WQ: enqueue write-back (T1 + T2)
+                    STORE->>T1: warm cache immediately
+                    STORE-->>CALLER: bars
+                end
+            end
+            STORE->>LOCK: release(key)
+        end
+    end
+
+    par cache_worker drain
+        WQ->>CW: disk_queue.get()
+        CW->>DISK: atomic write<br/>(5s throttle, batched)
+    and db_worker drain
+        WQ->>DW: db_queue.get()
+        DW->>T2: INSERT ... ON CONFLICT DO NOTHING<br/>(500 rows or 500ms)
+    end
+
+    note over STORE: Chart self-heal — when coverage < 70%<br/>get_or_fetch_daily forces bypass_cache=True<br/>on the recovery path (broker call cool-off aware)
+```
+
+**Refresh modes** (operator toggles via `POST /api/admin/persistence/mode/{off|soft|hard}`):
+- `off` — normal hierarchy (default, safe)
+- `soft` — Tier 1+2 bypass, fetch from broker, write-back heals both tiers
+- `hard` — soft + ticker recycle (unsubscribe → reconnect → resubscribe)
+
+**Write-back workers**:
+- `cache_worker` — drains `disk_queue`, flushes `.log/sparkline_cache.json` etc. Throttled to 5s; last-write-wins on duplicate keys.
+- `db_worker` — drains `db_queue`, batched SQL upserts per kind (500-row / 500ms boundary).
+- On queue full: warn + drop; next read re-fetches from broker.
+
+**Chart self-heal** (§4.5 companion) — `/api/options/historical` detects <70% coverage in DB (threshold `chart_self_heal_coverage_threshold` in settings, default 0.70) and auto-fetches from broker when ≥1 broker available. Response carries `partial: bool` for the frontend "partial data" hint.
+
+**Files:**
+- `backend/api/persistence/store_base.py` — `PersistentStoreBase.get_or_fetch`, per-key lock, completeness checks
+- `backend/api/persistence/ohlcv_store.py` — concrete OHLCV implementation
+- `backend/api/persistence/write_queue.py` — `disk_queue` + `db_queue`
+- `backend/api/persistence/cache_worker.py` / `db_worker.py` — background drainers
+- `backend/api/persistence/runtime_state.py` — `is_bypass_on()`, mode toggles
 
 ---
 
