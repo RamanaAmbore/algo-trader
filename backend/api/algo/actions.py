@@ -910,9 +910,15 @@ async def run_preflight(
         # MCX/NCO cold-cache: the route raises 503 before calling preflight,
         # so LOT_SIZE_UNKNOWN should never fire here for live orders. It remains
         # as a backstop for agent-driven calls that bypass the route-level guard.
-    # If any guard tripped, short-circuit remaining checks — clean 400 up top.
-    if blocked:
-        return {"ok": False, "blocked": blocked, "diagnostics": diagnostics}
+    # Early-return for hard blockers that make further broker checks meaningless:
+    # LOT_MULTIPLE (qty is not a valid multiple — freeze_qty irrelevant) and
+    # LOT_SIZE_UNKNOWN (MCX qty unknown — can't validate anything).
+    # FAT_FINGER_5_LOT_CAP does NOT short-circuit — broker instruments may
+    # also report QTY_FREEZE which must be surfaced alongside the lot cap.
+    _hard_step0 = [b for b in blocked
+                   if b["code"] in ("LOT_MULTIPLE", "LOT_SIZE_UNKNOWN")]
+    if _hard_step0:
+        return {"ok": False, "blocked": _hard_step0, "diagnostics": diagnostics}
 
     # ── 1. ACCOUNT_UNKNOWN ────────────────────────────────────────────────
     conns = Connections()
