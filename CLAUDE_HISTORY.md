@@ -146,6 +146,10 @@ No parallel Dhan logins (avoids single-IP-token-per-app limits). Set
 `RAMBOQ_USE_CONN_SERVICE=1` on both services via drop-in config files
 (`webhook/ramboq_api.service.d-conn.conf` and `webhook/ramboq_dev_api.service.d-conn.conf`).
 
+**Deploy integration**: `deploy.sh` sets `CONN_TOUCHED=true` only when files under
+`backend/brokers/` or `webhook/ramboq_conn.service` change. Otherwise conn_service
+stays warm across API restarts. Frontend-only pushes touch neither service.
+
 ---
 
 ## Frontend perf budgets + audit (Jul 2026)
