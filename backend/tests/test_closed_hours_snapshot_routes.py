@@ -201,10 +201,11 @@ async def test_positions_closed_hours_returns_snapshot_no_broker():
         mock_request.user = None
 
         # Patch auth helpers to admin so no masking interferes
-        with patch("backend.api.routes.positions.is_admin_request", return_value=True), \
-             patch("backend.api.routes.positions.resolve_role_from_connection",
+        # (they're imported into positions_helpers, not positions)
+        with patch("backend.api.routes.positions_helpers.is_admin_request", return_value=True), \
+             patch("backend.api.routes.positions_helpers.resolve_role_from_connection",
                    return_value="admin"), \
-             patch("backend.api.routes.positions.normalise_role", return_value="admin"):
+             patch("backend.api.routes.positions_helpers.normalise_role", return_value="admin"):
             resp = await handler_fn(None, mock_request, fresh=False)
 
     assert resp.as_of is not None, "as_of must be set on snapshot response"
@@ -240,10 +241,10 @@ async def test_positions_open_hours_calls_broker():
         handler_fn = PositionsController.get_positions.fn
 
         mock_request = MagicMock()
-        with patch("backend.api.routes.positions.is_admin_request", return_value=True), \
-             patch("backend.api.routes.positions.resolve_role_from_connection",
+        with patch("backend.api.routes.positions_helpers.is_admin_request", return_value=True), \
+             patch("backend.api.routes.positions_helpers.resolve_role_from_connection",
                    return_value="admin"), \
-             patch("backend.api.routes.positions.normalise_role", return_value="admin"):
+             patch("backend.api.routes.positions_helpers.normalise_role", return_value="admin"):
             resp = await handler_fn(None, mock_request, fresh=False)
 
     assert resp.as_of is None, "as_of must be None on live response"
@@ -303,10 +304,10 @@ async def test_holdings_closed_hours_returns_snapshot_no_broker():
         handler_fn = HoldingsController.get_holdings.fn
 
         mock_request = MagicMock()
-        with patch("backend.api.routes.holdings.is_admin_request", return_value=True), \
-             patch("backend.api.routes.holdings.resolve_role_from_connection",
+        with patch("backend.api.auth_guard.is_admin_request", return_value=True), \
+             patch("backend.api.rbac.resolve_role_from_connection",
                    return_value="admin"), \
-             patch("backend.api.routes.holdings.normalise_role", return_value="admin"):
+             patch("backend.api.rbac.normalise_role", return_value="admin"):
             resp = await handler_fn(None, mock_request, fresh=False)
 
     assert resp.as_of is not None
@@ -340,10 +341,10 @@ async def test_holdings_open_hours_calls_broker():
         handler_fn = HoldingsController.get_holdings.fn
 
         mock_request = MagicMock()
-        with patch("backend.api.routes.holdings.is_admin_request", return_value=True), \
-             patch("backend.api.routes.holdings.resolve_role_from_connection",
+        with patch("backend.api.auth_guard.is_admin_request", return_value=True), \
+             patch("backend.api.rbac.resolve_role_from_connection",
                    return_value="admin"), \
-             patch("backend.api.routes.holdings.normalise_role", return_value="admin"):
+             patch("backend.api.rbac.normalise_role", return_value="admin"):
             resp = await handler_fn(None, mock_request, fresh=False)
 
     assert resp.as_of is None
@@ -375,10 +376,10 @@ async def test_positions_closed_no_snapshot_falls_through():
         handler_fn = PositionsController.get_positions.fn
 
         mock_request = MagicMock()
-        with patch("backend.api.routes.positions.is_admin_request", return_value=True), \
-             patch("backend.api.routes.positions.resolve_role_from_connection",
+        with patch("backend.api.routes.positions_helpers.is_admin_request", return_value=True), \
+             patch("backend.api.routes.positions_helpers.resolve_role_from_connection",
                    return_value="admin"), \
-             patch("backend.api.routes.positions.normalise_role", return_value="admin"):
+             patch("backend.api.routes.positions_helpers.normalise_role", return_value="admin"):
             resp = await handler_fn(None, mock_request, fresh=False)
 
     # When no snapshot exists, the wrapper returns an empty PositionsResponse with
@@ -797,13 +798,15 @@ async def test_sparkline_open_calls_broker_ltp():
 # ---------------------------------------------------------------------------
 
 def test_options_historical_closed_guard_in_source():
-    """options.py historical handler has the market-closed guard before broker loop."""
-    src = _src(_OPT_SRC)
-    # The guard is placed before the account-fallback loop for intraday intervals
-    guard_idx   = src.find("is_any_segment_open(timestamp_indian())")
+    """options_helpers.py has the market-closed guard before broker loop."""
+    # After refactor: closed-hours guard moved to _historical_closed_guard in options_helpers
+    opt_helpers_path = Path(__file__).parent.parent / "api" / "routes" / "options_helpers.py"
+    src = _src(opt_helpers_path)
+    # The guard checks is_any_segment_open before returning early on closed markets
+    guard_idx   = src.find("is_any_segment_open")
     broker_loop = src.find("get_historical_brokers()")
-    assert guard_idx != -1, "options.py missing is_any_segment_open guard in historical handler"
-    assert broker_loop != -1, "options.py missing get_historical_brokers call"
+    assert guard_idx != -1, "options_helpers.py missing is_any_segment_open guard"
+    assert broker_loop != -1, "options_helpers.py missing get_historical_brokers call"
     assert guard_idx < broker_loop, (
         "closed-hours guard must appear BEFORE the broker account-fallback loop"
     )
@@ -893,10 +896,10 @@ async def test_positions_fresh_bypasses_closed_hours_guard():
         handler_fn = PositionsController.get_positions.fn
 
         mock_request = MagicMock()
-        with patch("backend.api.routes.positions.is_admin_request", return_value=True), \
-             patch("backend.api.routes.positions.resolve_role_from_connection",
+        with patch("backend.api.routes.positions_helpers.is_admin_request", return_value=True), \
+             patch("backend.api.routes.positions_helpers.resolve_role_from_connection",
                    return_value="admin"), \
-             patch("backend.api.routes.positions.normalise_role", return_value="admin"), \
+             patch("backend.api.routes.positions_helpers.normalise_role", return_value="admin"), \
              patch("backend.brokers.broker_apis._raw_cache_invalidate"):
             resp = await handler_fn(None, mock_request, fresh=True)
 
