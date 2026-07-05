@@ -1,5 +1,8 @@
 """Funds endpoint — returns margins / cash / available margin per account."""
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pandas as pd
 import polars as pl
 from litestar import Controller, Request, get
@@ -19,6 +22,12 @@ from backend.shared.helpers.utils import mask_account
 logger = get_logger(__name__)
 
 _TTL = 30
+_IST = ZoneInfo("Asia/Kolkata")
+
+_OUTAGE_NEEDLES = (
+    "bad gateway", "502", "503", "504",
+    "service unavailable", "gateway timeout",
+)
 
 
 def _is_broker_outage(err: Exception) -> bool:
@@ -28,10 +37,8 @@ def _is_broker_outage(err: Exception) -> bool:
     backend wobbles; the broker_apis helper logs them verbatim, so
     the resulting Exception string carries the marker text."""
     s = str(err).lower()
-    return any(needle in s for needle in (
-        'bad gateway', '502', '503', '504',
-        'service unavailable', 'gateway timeout',
-    ))
+    return any(needle in s for needle in _OUTAGE_NEEDLES)
+
 
 _COL_MAP = {
     'avail opening_balance': 'cash',
@@ -42,26 +49,85 @@ _COL_MAP = {
     'avail collateral':      'collateral',
 }
 
+_SUM_COLS = ['cash', 'live_cash', 'avail_margin', 'used_margin', 'option_premium', 'collateral']
+
+
+def _stale_since_map(per_acct: list) -> dict[str, str]:
+    """Build {account → 'HH:MM IST'} from LKG-substituted frames BEFORE
+    concat (which drops DataFrame.attrs). Mirrors positions/holdings."""
+    out: dict[str, str] = {}
+    if not per_acct:
+        return out
+    for _df in per_acct:
+        _ss = _df.attrs.get("stale_since")
+        if not (_ss and not _df.empty and "account" in _df.columns):
+            continue
+        _acct = str(_df["account"].iloc[0])
+        try:
+            out[_acct] = datetime.fromtimestamp(float(_ss), tz=_IST).strftime("%H:%M IST")
+        except Exception:
+            pass
+    return out
+
+
+def _rename_broker_cols(df: pl.DataFrame) -> pl.DataFrame:
+    """Rename broker column names to schema names per _COL_MAP."""
+    rename = {k: v for k, v in _COL_MAP.items() if k in df.columns}
+    return df.rename(rename)
+
+
+def _append_total_row(df: pl.DataFrame, present: list[str]) -> pl.DataFrame:
+    """Append TOTAL row after per-account rows."""
+    totals = df.select(present).sum().with_columns(pl.lit('TOTAL').alias('account'))
+    return pl.concat([df.select(['account', *present]), totals], how='diagonal') \
+             .fill_nan(0).fill_null(0)
+
+
+def _add_derived_columns(df_all: pl.DataFrame) -> pl.DataFrame:
+    """Compute derived columns after TOTAL aggregation so the TOTAL row
+    also carries correct derived values.
+
+      available_funds = avail_margin  (broker's "net" — free for new trades)
+      available_cash  = cash − option_premium  (SOD cash net of locked
+                        long-option premiums)
+    """
+    def _col(name):
+        return pl.col(name) if name in df_all.columns else pl.lit(0.0)
+
+    return df_all.with_columns([
+        _col('avail_margin').alias('available_funds'),
+        (_col('cash') - _col('option_premium')).alias('available_cash'),
+    ])
+
+
+def _stale_flag_map(df: pl.DataFrame) -> dict[str, bool]:
+    """Read {account → True} for rows flagged account_stale (breaker OPEN)."""
+    if 'account_stale' not in df.columns:
+        return {}
+    return {
+        r['account']: bool(r['account_stale'])
+        for r in df.select(['account', 'account_stale']).to_dicts()
+        if r.get('account_stale')
+    }
+
+
+def _hydrate_row(
+    r: dict, stale_map: dict[str, bool], stale_since: dict[str, str],
+) -> dict:
+    """Thread account_stale + account_stale_since onto a per-account row.
+    TOTAL row never stale — leaves fields untouched."""
+    acct = r.get('account', '')
+    if acct == 'TOTAL':
+        return r
+    r['account_stale'] = stale_map.get(acct, False)
+    if r['account_stale'] and acct in stale_since:
+        r['account_stale_since'] = stale_since[acct]
+    return r
+
 
 def _fetch() -> FundsResponse:
     per_acct = broker_apis.fetch_margins()
-    # Build account → "HH:MM IST" map from stale-substituted frames BEFORE
-    # concat (which drops all DataFrame.attrs). Mirrors the positions/holdings
-    # pattern — LKG-substituted frames carry attrs["stale_since"] (unix epoch).
-    _acct_stale_since: dict[str, str] = {}
-    if per_acct:
-        for _df in per_acct:
-            _ss = _df.attrs.get("stale_since")
-            if _ss and not _df.empty and "account" in _df.columns:
-                _acct = str(_df["account"].iloc[0])
-                try:
-                    from zoneinfo import ZoneInfo
-                    from datetime import datetime
-                    _acct_stale_since[_acct] = datetime.fromtimestamp(
-                        float(_ss), tz=ZoneInfo("Asia/Kolkata")
-                    ).strftime("%H:%M IST")
-                except Exception:
-                    pass
+    stale_since = _stale_since_map(per_acct)
     raw = pd.concat(per_acct, ignore_index=True)
     # broker_apis.fetch_margins swallows Kite HTTP errors internally and
     # returns empty per-account frames on outage. An empty concat result
@@ -70,58 +136,19 @@ def _fetch() -> FundsResponse:
     # route's _is_broker_outage detector flips us to a 503 + clear msg.
     if raw.empty:
         raise Exception("Broker (Kite) returned no margin data — upstream Bad Gateway / outage")
-    # Account masking removed — admin-only pages show real account IDs
 
-    numeric = raw.select_dtypes(include='number').columns
-    raw[numeric] = raw[numeric].fillna(0)
-    df = pl.from_pandas(raw)
+    numeric_cols = raw.select_dtypes(include='number').columns
+    raw[numeric_cols] = raw[numeric_cols].fillna(0)
+    df = _rename_broker_cols(pl.from_pandas(raw))
 
-    # Rename broker column names to schema names
-    rename = {k: v for k, v in _COL_MAP.items() if k in df.columns}
-    df = df.rename(rename)
+    present = [c for c in _SUM_COLS if c in df.columns]
+    df_all = _add_derived_columns(_append_total_row(df, present))
 
-    numeric = ['cash', 'live_cash', 'avail_margin', 'used_margin', 'option_premium', 'collateral']
-    present = [c for c in numeric if c in df.columns]
-
-    totals = df.select(present).sum().with_columns(pl.lit('TOTAL').alias('account'))
-    df_all = pl.concat([df.select(['account', *present]), totals], how='diagonal') \
-               .fill_nan(0).fill_null(0)
-
-    # Derived columns — computed after TOTAL aggregation so the TOTAL row
-    # also carries correct derived values.
-    #   available_funds = avail_margin  (broker's "net" — free margin for new trades)
-    #   available_cash  = cash − option_premium  (SOD cash net of locked long-option premiums)
-    cash_col   = pl.col('cash') if 'cash' in df_all.columns else pl.lit(0.0)
-    prem_col   = pl.col('option_premium') if 'option_premium' in df_all.columns else pl.lit(0.0)
-    avail_col  = pl.col('avail_margin') if 'avail_margin' in df_all.columns else pl.lit(0.0)
-    df_all = df_all.with_columns([
-        avail_col.alias('available_funds'),
-        (cash_col - prem_col).alias('available_cash'),
-    ])
-
-    # Carry through the account_stale column so the FundsRow schema
-    # receives it — broker_apis stamps this on stale-substituted frames
-    # when the account's circuit breaker was OPEN at fetch time.
-    if 'account_stale' in df.columns:
-        stale_map = {
-            r['account']: bool(r['account_stale'])
-            for r in df.select(['account', 'account_stale']).to_dicts()
-            if r.get('account_stale')
-        }
-    else:
-        stale_map = {}
-
-    rows: list[FundsRow] = []
-    for r in df_all.to_dicts():
-        acct = r.get('account', '')
-        # Only per-account rows carry account_stale; TOTAL row never stale.
-        if acct != 'TOTAL':
-            r['account_stale'] = stale_map.get(acct, False)
-            # Thread account_stale_since so the frontend can render
-            # "STALE @ HH:MM" without a separate endpoint.
-            if r['account_stale'] and acct in _acct_stale_since:
-                r['account_stale_since'] = _acct_stale_since[acct]
-        rows.append(FundsRow(**r))
+    stale_map = _stale_flag_map(df)
+    rows = [
+        FundsRow(**_hydrate_row(r, stale_map, stale_since))
+        for r in df_all.to_dicts()
+    ]
     stale_accts = sorted(k for k, v in stale_map.items() if v)
     return FundsResponse(
         rows=rows,
