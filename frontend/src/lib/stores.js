@@ -1192,9 +1192,14 @@ export function startConnStatusPoller() {
       // Anonymous demo session — /api/admin/brokers is admin-guarded so we
       // skip it (avoids 401 flipping backendOk=false and showing the grey `?`
       // badge). Instead, fetch the masked account list from /api/accounts/
-      // which is now served to demo sessions with masking applied (D1####,
-      // ZG####, etc.). Keeping total=0 preserves the "no badge" contract so
+      // which is served to demo sessions with masking applied (ZG####, DH####,
+      // etc.). Keeping total=0 preserves the "no badge" contract so
       // the RefreshButton chip stays hidden for anonymous viewers.
+      //
+      // Defense-in-depth: purge any prior-admin localStorage snapshot so real
+      // account IDs from a prior admin session don't paint on the first frame
+      // before this fetch resolves.
+      try { localStorage.removeItem(_CONN_LS_KEY); } catch { /* non-fatal */ }
       try {
         const { fetchAccounts } = await import('$lib/api');
         const data = await fetchAccounts();
