@@ -956,69 +956,74 @@
     return `<span class="${cls}"><span class="log-ts log-ts-fallback">${h.time || ''}</span> ${h.status} ${h.message} ${chips}</span>`;
   }
 
+  // Table-driven status → CSS class map. Colour by terminal state first,
+  // then by side. FILLED = green, UNFILLED = red, OPEN = amber.
+  const _ORDER_STATUS_CLASS = {
+    FILLED:          'log-agent-success',
+    UNFILLED:        'log-agent-failed',
+    OPEN:            'log-agent-alert',
+    CANCELLED:       'log-order-cancelled',
+    REJECTED:        'log-order-rejected',
+    SHADOW_OK:       'log-order-shadow-ok',
+    SHADOW_REJECTED: 'log-order-rejected',
+  };
+
+  /** Resolve CSS row class for an order row (status-first, side fallback). */
+  function _orderStatusClass(status, transactionType) {
+    return _ORDER_STATUS_CLASS[status]
+      ?? (transactionType === 'BUY' ? 'log-agent-success' : 'log-info');
+  }
+
+  /**
+   * Preflight verdict chip — ✓/✗ with title= carrying the detail.
+   * Returns '' for ambiguous states so it doesn't cry wolf on OPEN rows.
+   */
+  function _preflightChipHtml(status, detail) {
+    if (status === 'REJECTED' || status === 'SHADOW_REJECTED') {
+      const t = (detail || 'preflight blocked').replace(/"/g, '&quot;');
+      return ` <span class="log-pf log-pf-bad" title="${t}">✗</span>`;
+    }
+    if (status === 'FILLED' || status === 'SHADOW_OK') {
+      return ` <span class="log-pf log-pf-ok" title="Preflight OK">✓</span>`;
+    }
+    return '';
+  }
+
+  /**
+   * Symbol as a clickable span. data-sym / data-exch drive event
+   * delegation in the <pre> click + contextmenu handlers.
+   * Returns '' when no symbol is set.
+   */
+  function _orderSymSpan(sym, exch) {
+    if (!sym) return '';
+    return `<span class="log-sym-cell" role="button" tabindex="0" data-sym="${_escAttr(sym)}" data-exch="${_escAttr(exch || '')}" title="${_escAttr(sym)}">${_escAttr(sym)}</span>`;
+  }
+
   // Render one AlgoOrder row (mode=live or sim) for the Order tab. Keeps
   // order details — side, qty, symbol, price, account — on one line so
   // operators can scan placements the same way they'd read a broker blotter.
   function _orderRowHtml(o) {
-    // Live orders come from Kite (fetchOrders → broker rows) and carry
-    // `order_timestamp` rather than `created_at`. Algo / paper / sim
-    // rows carry `created_at`. Read whichever exists so LIVE rows in the
-    // Terminal tab don't lose their timestamp column.
-    const t    = _dualTsHtml(o.created_at || o.order_timestamp);
-    const tag  = _modePill(o.mode);
-    // Colour by terminal state first, then by side. FILLED = green,
-    // UNFILLED = red, OPEN (still chasing) = amber, everything else
-    // falls back to the old side-based cue.
+    // Live orders carry `order_timestamp`; algo/paper/sim carry `created_at`.
+    const t      = _dualTsHtml(o.created_at || o.order_timestamp);
+    const tag    = _modePill(o.mode);
     const status = (o.status || '').toUpperCase();
-    let rowCls = 'log-info';
-    if      (status === 'FILLED')          rowCls = 'log-agent-success';
-    else if (status === 'UNFILLED')        rowCls = 'log-agent-failed';
-    else if (status === 'OPEN')            rowCls = 'log-agent-alert';
-    else if (status === 'CANCELLED')       rowCls = 'log-order-cancelled';
-    else if (status === 'REJECTED')        rowCls = 'log-order-rejected';
-    else if (status === 'SHADOW_OK')       rowCls = 'log-order-shadow-ok';
-    else if (status === 'SHADOW_REJECTED') rowCls = 'log-order-rejected';
-    else if (o.transaction_type === 'BUY') rowCls = 'log-agent-success';
-    const fillPrice = (o.fill_price != null) ? '@' + priceFmt(o.fill_price) : null;
-    const initPrice = (o.initial_price != null) ? '@' + priceFmt(o.initial_price) : '';
-    // Prefer fill_price once the chase landed; otherwise show the initial
-    // limit price the operator submitted.
-    const price     = fillPrice || initPrice;
-    // Preflight verdict — a tiny ✓/✗ chip whose title= carries the
-    // detail. ✓ when the order made it past preflight (FILLED / OPEN
-    // / SHADOW_OK / FILLED-on-live). ✗ when REJECTED / SHADOW_REJECTED
-    // (basket_margin pushed back). The chip is invisible for ambiguous
-    // states so it doesn't cry wolf on transient OPEN rows.
-    let preflightChip = '';
-    if (status === 'REJECTED' || status === 'SHADOW_REJECTED') {
-      const t = (o.detail || 'preflight blocked').replace(/"/g, '&quot;');
-      preflightChip = ` <span class="log-pf log-pf-bad" title="${t}">✗</span>`;
-    } else if (status === 'FILLED' || status === 'SHADOW_OK') {
-      preflightChip = ` <span class="log-pf log-pf-ok" title="Preflight OK">✓</span>`;
-    }
-    // Detail chips — keyed via the shared chipsHtml helper so order rows
-    // and agent rows render the same key:value pattern. order param
-    // fixes display order ahead of chipsHtml's insertion-order default.
-    const chips = chipsHtml({
-      status:  o.status || null,
-      chase:   (o.attempts != null && o.attempts > 0) ? `#${o.attempts}` : null,
-      engine:  o.engine || null,
+    const rowCls = _orderStatusClass(status, o.transaction_type);
+    // Prefer fill_price once the chase landed; otherwise the initial limit price.
+    const price  = ((o.fill_price != null) ? '@' + priceFmt(o.fill_price) : null)
+                || ((o.initial_price != null) ? '@' + priceFmt(o.initial_price) : '');
+    const preflightChip = _preflightChipHtml(status, o.detail);
+    // Detail chips via shared chipsHtml helper. Agent-id chip stays bespoke
+    // (it's an <a>, not a plain span — chipsHtml deliberately doesn't emit anchors).
+    const chips     = chipsHtml({
+      status: o.status || null,
+      chase:  (o.attempts != null && o.attempts > 0) ? `#${o.attempts}` : null,
+      engine: o.engine || null,
     }, { order: ['status', 'chase', 'engine'] });
-    // Agent-id chip stays bespoke (it's an <a>, not a plain span — the
-    // chipsHtml helper deliberately doesn't emit anchors). No leading
-    // space — the .log-agent-chip CSS uses a tiny 0.02rem margin so it
-    // sits flush against the last log-chip, keeping the right-edge
-    // cluster compact.
-    const agentChip = o.agent_id
+    const agentChip  = o.agent_id
       ? `<a class="log-agent-chip" href="/automation?focus=${o.agent_id}">agent #${o.agent_id}</a>`
       : '';
     const chipsBlock = chips ? ' ' + chips : '';
-    // Symbol as a clickable/right-clickable span. data-sym / data-exch drive
-    // event delegation in the <pre> click + contextmenu handlers below.
-    const symSpan = o.symbol
-      ? `<span class="log-sym-cell" role="button" tabindex="0" data-sym="${_escAttr(o.symbol)}" data-exch="${_escAttr(o.exchange || '')}" title="${_escAttr(o.symbol)}">${_escAttr(o.symbol)}</span>`
-      : '';
-    const symBlock = o.symbol ? symSpan : '';
+    const symBlock   = _orderSymSpan(o.symbol, o.exchange);
     return `<span class="${rowCls}">${t} ${tag}◆ ${o.transaction_type} ${o.quantity} ${symBlock} ${price} · ${o.account}${preflightChip}${chipsBlock}${agentChip}</span>`;
   }
 
@@ -1043,13 +1048,18 @@
     return prefix ? detail.startsWith(prefix) : true;
   }
 
-  function _terminalHtml() {
-    // Each source contributes a row in the unified News-style grid
-    // (time · message · tag). Tag is the source family — CMD / ORDER /
-    // AGENT — so the operator can scan the Terminal stream at a glance.
-    // Rows are kept as {ts, html} pairs so the merged stream can be
-    // sorted latest-first across all three sources.
-    const cmdLines = cmdHistory.map(h => {
+  /** Terminal-specific order status class (subset used in merged stream). */
+  function _terminalOrderCls(status, transactionType) {
+    if (status === 'FILLED')          return 'log-agent-success';
+    if (status === 'UNFILLED')        return 'log-agent-failed';
+    if (status === 'OPEN')            return 'log-agent-alert';
+    if (transactionType === 'BUY')    return 'log-agent-success';
+    return 'log-info';
+  }
+
+  /** Build {ts, html}[] entries from the command history. */
+  function _terminalCmdLines() {
+    return cmdHistory.map(h => {
       const cls = h.status === '✓' ? 'log-agent-success'
                 : h.status === '✗' ? 'log-agent-failed'
                 : 'log-info';
@@ -1059,22 +1069,17 @@
       const content = `${h.status || ''} ${h.message || ''} ${chips}`.trim();
       return { ts: h.time, html: _logRow(h.time, content, 'CMD', cls) };
     });
-    // Order lines — filter by mode when gateByMode is active.
-    const orderLines = (orderRows || [])
-      .filter(o => {
-        if (!_gatingMode) return true;
-        return (o?.mode || 'live') === _gatingMode;
-      })
+  }
+
+  /** Build {ts, html}[] entries from the order rows (filtered by mode). */
+  function _terminalOrderLines() {
+    return (orderRows || [])
+      .filter(o => !_gatingMode || (o?.mode || 'live') === _gatingMode)
       .map(o => {
-        const status = (o.status || '').toUpperCase();
-        let cls = 'log-info';
-        if      (status === 'FILLED')          cls = 'log-agent-success';
-        else if (status === 'UNFILLED')        cls = 'log-agent-failed';
-        else if (status === 'OPEN')            cls = 'log-agent-alert';
-        else if (o.transaction_type === 'BUY') cls = 'log-agent-success';
-        const fillPrice = (o.fill_price != null) ? '@' + priceFmt(o.fill_price) : null;
-        const initPrice = (o.initial_price != null) ? '@' + priceFmt(o.initial_price) : '';
-        const price     = fillPrice || initPrice;
+        const status  = (o.status || '').toUpperCase();
+        const cls     = _terminalOrderCls(status, o.transaction_type);
+        const price   = ((o.fill_price != null) ? '@' + priceFmt(o.fill_price) : null)
+                     || ((o.initial_price != null) ? '@' + priceFmt(o.initial_price) : '');
         const sym = o.symbol
           ? `<span class="log-sym-cell" role="button" tabindex="0" data-sym="${_escAttr(o.symbol)}" data-exch="${_escAttr(o.exchange || '')}" title="${_escAttr(o.symbol)}">${_escAttr(formatSymbol(o.symbol))}</span>`
           : '';
@@ -1082,9 +1087,11 @@
         const ts = o.created_at || o.order_timestamp;
         return { ts, html: _logRow(ts, content, 'ORDER', cls) };
       });
-    // Agent lines — in sim mode show simLog entries; in real modes show agentLog.
-    // detail text is used for terminal gating (substring match on [TAG] prefix).
-    const agentLines = (agentLog || [])
+  }
+
+  /** Build {ts, html}[] entries from the agent log (filtered by mode prefix). */
+  function _terminalAgentLines() {
+    return (agentLog || [])
       .filter(e => {
         const detail = String(e.trigger_condition || e.detail || '');
         return _terminalMatchesMode(detail);
@@ -1093,9 +1100,20 @@
         const cond = chipsFromJson(e.trigger_condition) || (e.trigger_condition || '');
         return { ts: e.timestamp, html: _logRow(e.timestamp, cond, 'AGENT', 'log-agent-default') };
       });
-    const all = [...cmdLines, ...orderLines, ...agentLines]
-      .sort((a, b) => _tsKey(b.ts) - _tsKey(a.ts));
-    return all.length ? all.map(x => x.html).join('') : '<div class="log-row log-debug"><span class="log-row-msg">No events.</span></div>';
+  }
+
+  function _terminalHtml() {
+    // Each source contributes a row in the unified News-style grid
+    // (time · message · tag). Rows are kept as {ts, html} pairs so the
+    // merged stream can be sorted latest-first across all three sources.
+    const all = [
+      ..._terminalCmdLines(),
+      ..._terminalOrderLines(),
+      ..._terminalAgentLines(),
+    ].sort((a, b) => _tsKey(b.ts) - _tsKey(a.ts));
+    return all.length
+      ? all.map(x => x.html).join('')
+      : '<div class="log-row log-debug"><span class="log-row-msg">No events.</span></div>';
   }
 
 </script>
