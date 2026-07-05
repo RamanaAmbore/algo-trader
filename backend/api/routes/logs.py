@@ -12,6 +12,7 @@ Kept separate from orders.py to avoid the controller growing further.
 """
 
 import re
+from datetime import datetime, timezone
 
 import msgspec
 from litestar import Controller, Request, get
@@ -21,7 +22,6 @@ from backend.api.auth_guard import auth_or_demo_guard, is_admin_request
 from backend.api.database import async_session
 from backend.api.models import Agent, AgentEvent, AlgoOrder, AlgoOrderEvent
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import mask_column
 
 logger = get_logger(__name__)
 
@@ -65,6 +65,163 @@ def _mask_payload(raw: str | None) -> str | None:
     return _ACCOUNT_RE.sub(r'\1####', raw)
 
 
+# ---------------------------------------------------------------------------
+# Query-param parsing helpers
+# ---------------------------------------------------------------------------
+
+def _parse_csv_set(raw: str) -> set[str]:
+    """Split a comma-separated query param into a stripped, non-empty set."""
+    if not raw:
+        return set()
+    return {tok.strip() for tok in raw.split(",") if tok.strip()}
+
+
+def _parse_sim_filter(raw: str) -> bool | None:
+    """Return True (sim only), False (real only), or None (no filter).
+
+    '' = no filter (both real + sim), 'true' = sim only, 'false' = real
+    only. Used by the dashboard agent-activity panel to suppress
+    fabricated fires during a sim run.
+    """
+    val = raw.lower()
+    if val == "true":
+        return True
+    if val == "false":
+        return False
+    return None
+
+
+def _parse_since(raw: str) -> datetime | None:
+    """Parse an ISO-8601 `since=` param. Empty → None. Raises HTTP 400 on bad format."""
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid since= value: {raw!r}")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _identity(x):
+    return x
+
+
+# ---------------------------------------------------------------------------
+# Query builders
+# ---------------------------------------------------------------------------
+
+async def _fetch_order_events(
+    session, *, limit: int, kind_set: set[str], since_dt: datetime | None,
+):
+    from sqlalchemy import desc, select
+    q = (
+        select(AlgoOrderEvent, AlgoOrder.account)
+        .join(AlgoOrder, AlgoOrderEvent.order_id == AlgoOrder.id)
+        .order_by(desc(AlgoOrderEvent.ts))
+        .limit(limit * 2)
+    )
+    if since_dt:
+        q = q.where(AlgoOrderEvent.ts > since_dt)
+    if kind_set:
+        q = q.where(AlgoOrderEvent.kind.in_(kind_set))
+    return (await session.execute(q)).all()
+
+
+async def _fetch_agent_events(
+    session, *, limit: int, kind_set: set[str], since_dt: datetime | None,
+    sim_filter: bool | None,
+):
+    from sqlalchemy import desc, select
+    q = (
+        select(AgentEvent, Agent.slug)
+        .join(Agent, AgentEvent.agent_id == Agent.id)
+        .order_by(desc(AgentEvent.timestamp))
+        .limit(limit * 2)
+    )
+    if since_dt:
+        q = q.where(AgentEvent.timestamp > since_dt)
+    if kind_set:
+        # Map agent event_type to unified kind — same names used here
+        q = q.where(AgentEvent.event_type.in_(kind_set))
+    if sim_filter is not None:
+        q = q.where(AgentEvent.sim_mode.is_(sim_filter))
+    return (await session.execute(q)).all()
+
+
+# ---------------------------------------------------------------------------
+# Row builders
+# ---------------------------------------------------------------------------
+
+def _order_matches_account(account: str | None, payload_raw: str | None,
+                           acct_set: set[str]) -> bool:
+    """Return True when this order row survives the account filter."""
+    if not acct_set:
+        return True
+    raw = account or ""
+    payload = payload_raw or ""
+    return any(a in raw or a in payload for a in acct_set)
+
+
+def _build_order_row(oe, account, *, mask, mask_p) -> UnifiedLogRow:
+    return UnifiedLogRow(
+        id=oe.id,
+        source="order",
+        ts=oe.ts.isoformat() if oe.ts else "",
+        kind=oe.kind,
+        message=oe.message or "",
+        order_id=oe.order_id,
+        agent_slug=None,
+        account=mask(account),
+        payload_json=mask_p(oe.payload_json),
+        sim_mode=False,   # order events are real-broker only
+    )
+
+
+def _extract_agent_account(ae) -> str | None:
+    """Pull the account id (if any) out of an agent event's detail /
+    trigger_condition text.  Returns None when no account token found."""
+    detail_str = ae.detail or ae.trigger_condition or ""
+    m = re.search(r'\b([A-Z]{2}\d{4,8})\b', detail_str)
+    return m.group(1) if m else None
+
+
+def _build_agent_row(ae, slug, *, mask) -> UnifiedLogRow:
+    kind = ae.event_type or "agent_fire"
+    acct_raw = _extract_agent_account(ae)
+    return UnifiedLogRow(
+        id=ae.id,
+        source="agent",
+        ts=ae.timestamp.isoformat() if ae.timestamp else "",
+        kind=kind,
+        message=ae.detail or ae.trigger_condition or "",
+        order_id=None,
+        agent_slug=slug,
+        account=mask(acct_raw) if acct_raw else None,
+        payload_json=None,
+        sim_mode=bool(ae.sim_mode),
+    )
+
+
+def _agent_row_survives_filters(ae, *, kind_set: set[str], acct_set: set[str]) -> bool:
+    """Post-query filters that couldn't be pushed into SQL cleanly.
+
+    Kind check is redundant with the SQL WHERE but kept as a safety net
+    when SQL binds don't map perfectly to the unified 'agent_fire' default.
+    Account check is Python-only because the account token lives inside
+    a free-text `detail` column (extracted via regex).
+    """
+    kind = ae.event_type or "agent_fire"
+    if kind_set and kind not in kind_set:
+        return False
+    if acct_set:
+        acct_raw = _extract_agent_account(ae)
+        if acct_raw and acct_raw not in acct_set:
+            return False
+    return True
+
+
 class LogsController(Controller):
     path = "/api/logs"
     guards = [auth_or_demo_guard]
@@ -90,115 +247,35 @@ class LogsController(Controller):
           sim_mode — '' (default) returns both; 'true' returns sim-only;
                      'false' returns real-only (excludes sim).
         """
-        from datetime import datetime, timezone
-        from sqlalchemy import desc, select, or_, and_
-        from sqlalchemy.orm import joinedload
-
         limit = max(1, min(limit, 200))
-        kind_set = {k.strip() for k in kinds.split(",") if k.strip()} if kinds else set()
-        acct_set = {a.strip() for a in accounts.split(",") if a.strip()} if accounts else set()
-
-        # sim_mode parsing: '' = no filter (both real + sim), 'true' = sim
-        # only, 'false' = real only. Used by the dashboard agent-activity
-        # panel to suppress fabricated fires during a sim run.
-        sim_filter: bool | None = None
-        if sim_mode.lower() == "true":
-            sim_filter = True
-        elif sim_mode.lower() == "false":
-            sim_filter = False
-
-        since_dt = None
-        if since:
-            try:
-                since_dt = datetime.fromisoformat(since.replace("Z", "+00:00"))
-                if since_dt.tzinfo is None:
-                    since_dt = since_dt.replace(tzinfo=timezone.utc)
-            except ValueError:
-                raise HTTPException(status_code=400, detail=f"Invalid since= value: {since!r}")
+        kind_set = _parse_csv_set(kinds)
+        acct_set = _parse_csv_set(accounts)
+        sim_filter = _parse_sim_filter(sim_mode)
+        since_dt = _parse_since(since)
 
         do_mask = not is_admin_request(request)
-        mask = _mask_account if do_mask else (lambda x: x)
-        mask_p = _mask_payload if do_mask else (lambda x: x)
+        mask = _mask_account if do_mask else _identity
+        mask_p = _mask_payload if do_mask else _identity
 
-        # ── order events ──────────────────────────────────────────────
         async with async_session() as s:
-            oe_q = (
-                select(AlgoOrderEvent, AlgoOrder.account)
-                .join(AlgoOrder, AlgoOrderEvent.order_id == AlgoOrder.id)
-                .order_by(desc(AlgoOrderEvent.ts))
-                .limit(limit * 2)          # fetch more, filter + interleave below
+            oe_rows = await _fetch_order_events(
+                s, limit=limit, kind_set=kind_set, since_dt=since_dt,
             )
-            if since_dt:
-                oe_q = oe_q.where(AlgoOrderEvent.ts > since_dt)
-            if kind_set:
-                oe_q = oe_q.where(AlgoOrderEvent.kind.in_(kind_set))
-            oe_rows = (await s.execute(oe_q)).all()
-
-            # ── agent events + slug join ──────────────────────────────
-            ae_q = (
-                select(AgentEvent, Agent.slug)
-                .join(Agent, AgentEvent.agent_id == Agent.id)
-                .order_by(desc(AgentEvent.timestamp))
-                .limit(limit * 2)
+            ae_rows = await _fetch_agent_events(
+                s, limit=limit, kind_set=kind_set, since_dt=since_dt,
+                sim_filter=sim_filter,
             )
-            if since_dt:
-                ae_q = ae_q.where(AgentEvent.timestamp > since_dt)
-            if kind_set:
-                # Map agent event_type to unified kind — same names used here
-                ae_q = ae_q.where(AgentEvent.event_type.in_(kind_set))
-            if sim_filter is True:
-                ae_q = ae_q.where(AgentEvent.sim_mode.is_(True))
-            elif sim_filter is False:
-                ae_q = ae_q.where(AgentEvent.sim_mode.is_(False))
-            ae_rows = (await s.execute(ae_q)).all()
 
-        # ── build unified rows ────────────────────────────────────────
-        rows: list[UnifiedLogRow] = []
-
-        for oe, account in oe_rows:
-            acct_val = mask(account)
-            if acct_set:
-                raw = account or ""
-                payload_raw = oe.payload_json or ""
-                if not any(a in raw or a in payload_raw for a in acct_set):
-                    continue
-            rows.append(UnifiedLogRow(
-                id=oe.id,
-                source="order",
-                ts=oe.ts.isoformat() if oe.ts else "",
-                kind=oe.kind,
-                message=oe.message or "",
-                order_id=oe.order_id,
-                agent_slug=None,
-                account=acct_val,
-                payload_json=mask_p(oe.payload_json),
-                sim_mode=False,   # order events are real-broker only
-            ))
-
-        for ae, slug in ae_rows:
-            kind = ae.event_type or "agent_fire"
-            if kind_set and kind not in kind_set:
-                continue
-            # Extract account from detail / trigger_condition if present
-            acct_raw = None
-            detail_str = ae.detail or ae.trigger_condition or ""
-            m = re.search(r'\b([A-Z]{2}\d{4,8})\b', detail_str)
-            if m:
-                acct_raw = m.group(1)
-            if acct_set and acct_raw and acct_raw not in acct_set:
-                continue
-            rows.append(UnifiedLogRow(
-                id=ae.id,
-                source="agent",
-                ts=ae.timestamp.isoformat() if ae.timestamp else "",
-                kind=kind,
-                message=ae.detail or ae.trigger_condition or "",
-                order_id=None,
-                agent_slug=slug,
-                account=mask(acct_raw) if acct_raw else None,
-                payload_json=None,
-                sim_mode=bool(ae.sim_mode),
-            ))
+        rows: list[UnifiedLogRow] = [
+            _build_order_row(oe, account, mask=mask, mask_p=mask_p)
+            for oe, account in oe_rows
+            if _order_matches_account(account, oe.payload_json, acct_set)
+        ]
+        rows.extend(
+            _build_agent_row(ae, slug, mask=mask)
+            for ae, slug in ae_rows
+            if _agent_row_survives_filters(ae, kind_set=kind_set, acct_set=acct_set)
+        )
 
         # Sort merged list newest-first, cap to limit
         rows.sort(key=lambda r: r.ts, reverse=True)
