@@ -42,21 +42,114 @@ MERMAID_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 _MMDC_BIN = "/opt/homebrew/bin/mmdc"
 
 
+# Canonical mermaid theme — anchored on the same navy / amber / copper /
+# cream palette used by the LaTeX front matter (see `HEADER` below and
+# the ramboqnavy / ramboqamber / ramboqcopper / ramboqcream / callbg
+# color definitions). Injected into every mermaid block that does not
+# already carry an inline `%%{init...%%}` directive, so the six new
+# diagrams AND the existing 13 all render with the same palette.
+#
+# themeVariables keys are chosen to work across flowchart / sequence /
+# class / ER / state diagrams. Mermaid's variable coverage is uneven
+# per diagram type, so we include the common variants for each.
+_MERMAID_THEME = (
+    "%%{init: {"
+    "'theme':'base',"
+    "'themeVariables': {"
+    # --- core palette ---
+    "'background':'#ffffff',"
+    "'primaryColor':'#fef3c7',"        # node fill (cream)
+    "'primaryTextColor':'#1d2a44',"    # navy text on cream
+    "'primaryBorderColor':'#7c3f0d',"  # copper node border
+    "'secondaryColor':'#faf7f0',"      # subgraph fill (warm off-white)
+    "'tertiaryColor':'#f7f3ea',"       # secondary subgraph / labelbox
+    "'lineColor':'#7c3f0d',"           # edges — copper
+    # --- flowchart cluster / subgraph ---
+    "'clusterBkg':'#faf7f0',"
+    "'clusterBorder':'#a86a1e',"
+    "'titleColor':'#1d2a44',"
+    "'edgeLabelBackground':'#fef3c7',"
+    # --- sequence diagram ---
+    "'actorBkg':'#1d2a44',"            # actor box — navy
+    "'actorTextColor':'#ffffff',"
+    "'actorBorder':'#fbbf24',"         # amber trim
+    "'actorLineColor':'#1d2a44',"
+    "'signalColor':'#334155',"         # arrows — slate
+    "'signalTextColor':'#1d2a44',"
+    "'labelBoxBkgColor':'#fbbf24',"    # loop/opt/alt label — amber
+    "'labelBoxBorderColor':'#7c3f0d',"
+    "'labelTextColor':'#1d2a44',"
+    "'loopTextColor':'#1d2a44',"
+    "'noteBkgColor':'#fef3c7',"        # notes — cream
+    "'noteTextColor':'#1d2a44',"
+    "'noteBorderColor':'#a86a1e',"
+    "'activationBkgColor':'#fbbf24',"
+    "'activationBorderColor':'#7c3f0d',"
+    "'sequenceNumberColor':'#1d2a44',"
+    # --- state diagram ---
+    "'stateBkg':'#fef3c7',"
+    "'labelColor':'#1d2a44',"
+    "'transitionColor':'#7c3f0d',"
+    "'transitionLabelColor':'#1d2a44',"
+    # --- class + ER diagram ---
+    "'classText':'#1d2a44',"
+    "'nodeBorder':'#7c3f0d',"
+    "'mainBkg':'#fef3c7',"
+    "'nodeTextColor':'#1d2a44',"
+    "'attributeBackgroundColorOdd':'#faf7f0',"
+    "'attributeBackgroundColorEven':'#ffffff',"
+    # --- gantt (existing §20 diagram) ---
+    "'sectionBkgColor':'#faf7f0',"
+    "'altSectionBkgColor':'#f7f3ea',"
+    "'sectionBkgColor2':'#fef3c7',"
+    "'taskBkgColor':'#fbbf24',"
+    "'taskTextColor':'#1d2a44',"
+    "'taskTextDarkColor':'#1d2a44',"
+    "'taskTextOutsideColor':'#1d2a44',"
+    "'taskTextLightColor':'#ffffff',"
+    "'gridColor':'#e6ddc9',"
+    "'todayLineColor':'#7c3f0d'"
+    "}"
+    "}}%%"
+)
+
+
+def _themed(src: str) -> str:
+    """Inject the canonical %%{init...%%} block if not already present.
+
+    Leaves diagrams that already carry an inline theme override alone —
+    lets a future diagram opt out by declaring its own init block. Every
+    other block gets the RamboQuant navy+amber+copper palette applied
+    for PDF rendering. The MD source stays plain (readable on GitHub).
+    """
+    stripped = src.lstrip()
+    if stripped.startswith("%%{init"):
+        return src
+    return f"{_MERMAID_THEME}\n{src}"
+
+
 def _render_mermaid_block(src: str) -> Path:
-    """Render one mermaid block to a PNG (cached by content hash)."""
-    digest = hashlib.sha256(src.encode()).hexdigest()[:16]
+    """Render one mermaid block to a PNG (cached by content hash).
+
+    The content hash includes the theme prefix so a theme change
+    invalidates the cache and forces re-render.
+    """
+    themed = _themed(src)
+    digest = hashlib.sha256(themed.encode()).hexdigest()[:16]
     out_png = MERMAID_CACHE_DIR / f"mermaid_{digest}.png"
     if out_png.exists() and out_png.stat().st_size > 0:
         return out_png
 
     src_mmd = MERMAID_CACHE_DIR / f"mermaid_{digest}.mmd"
-    src_mmd.write_text(src)
+    src_mmd.write_text(themed)
     cmd = [
         _MMDC_BIN, "-i", str(src_mmd), "-o", str(out_png),
         "-w", "1400",           # width — higher = crisper PDF embed
         "-s", "2",              # scale — retina density
         "-b", "white",          # bg — matches PDF page
-        "-t", "default",        # theme (default has good contrast)
+        "-t", "default",        # theme — palette is fully overridden by the
+                                # inline %%{init: theme='base', themeVariables:...}%%
+                                # directive prepended by `_themed()`
         "-f",                   # fit — auto-scale to width
     ]
     try:
@@ -687,6 +780,23 @@ tex_content = tex_content.replace(
     "height=\\textheight,keepaspectratio",
     "height=5.5in,keepaspectratio",
 )
+
+# Center every mermaid PNG horizontally. Pandoc emits
+# `\includegraphics[...]{...mermaid_<hash>.png}` inline in a paragraph,
+# left-aligned. Wrap each such includegraphics in \begin{center}
+# ...\end{center} so narrower diagrams (sequence panels, class
+# diagrams) center in the text column instead of hugging the left
+# margin. The regex matches the pandoc-generated shape only — inline
+# includegraphics inside minipages / tikz nodes (front matter) is left
+# alone because that shape doesn't appear in the pandoc-emitted body.
+_MERMAID_INCLUDE_RE = re.compile(
+    r"(\\includegraphics\[[^\]]*\]\{[^}]*mermaid_[0-9a-f]+\.png\})"
+)
+tex_content = _MERMAID_INCLUDE_RE.sub(
+    r"\\begin{center}\1\\end{center}",
+    tex_content,
+)
+
 tex_out.write_text(tex_content)
 
 # Stage 2 — xelatex ×2 so \pageref{LastPage} resolves.

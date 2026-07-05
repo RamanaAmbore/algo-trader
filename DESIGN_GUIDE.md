@@ -1333,6 +1333,16 @@ flowchart TD
 6. **Capabilities immutable** — frozen dataclass with every field explicit per broker (no defaults). Used to render warning chips on OrderTicket when template asks for unsupported GTT shape.
 
 **PriceBroker fallback chain** — when a broker returns empty data (Dhan returns `{}` for MCX quotes by design), walk to the next broker. Rate-limit cool-off excludes throttled accounts for 30s.
+
+**Capability matrix — verbatim from `backend/brokers/capabilities.py`:**
+
+```python
+KITE_CAPS = BrokerCapabilities(
+    broker_id="kite", display_name="Kite (Zerodha)",
+    gtt_single=True, gtt_oco=True, gtt_modify=True,
+    gtt_cap_per_account=50, gtt_validity_days=365, gtt_supports_mcx=True,
+    bracket_order=False, cover_order=True, atomic_basket=True,
+    order_tag=True, margin_preview=True,
     postback_gtt="reliable", rate_limit_orders_sec=10,
 )
 DHAN_CAPS = BrokerCapabilities(
