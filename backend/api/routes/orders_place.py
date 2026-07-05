@@ -804,7 +804,11 @@ async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
                     ),
                 )
             _lots = qty // _lot
-            if not _is_close and _lots > 5:
+            # MCX/NCO use a 20-lot cap enforced later by the MCX size guard
+            # (raises 422). Exempt here so the live-mode MCX guard is the
+            # authoritative check for MCX orders.
+            _is_mcx = data.exchange in ("MCX", "NCO")
+            if not _is_close and not _is_mcx and _lots > 5:
                 logger.warning(
                     "[FAT-FINGER-GUARD] rejected: acct=%s sym=%s qty=%s "
                     "lot_size=%s → %d lots (cap: 5)",
@@ -879,6 +883,34 @@ async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
                         "Further attempts blocked until the breaker resets. "
                         "Check margin / segment scope, then wait or reset."),
             )
+
+        # ── MCX lot_size cold-cache guard ────────────────────────────────────
+        # Must run BEFORE preflight: when the instruments cache is cold,
+        # get_lot_size returns 0 for MCX. Preflight would add LOT_SIZE_UNKNOWN
+        # and return 422 (validation), but this is really a 503 (service
+        # temporarily unavailable — cache will warm in <5s). Check early and
+        # raise 503 so the frontend knows to retry rather than surface a
+        # validation error to the operator.
+        _mcx_ls_for_translate: int = 0
+        if (data.exchange or "NFO") in ("MCX", "NCO"):
+            from backend.brokers.adapters.kite import get_lot_size as _gls_pre
+            _mcx_ls_check = await _gls_pre((data.exchange or "NFO"), sym)
+            _mcx_ls_hint = int(data.lot_size_hint or 0)
+            _mcx_ls_for_translate = _mcx_ls_check if _mcx_ls_check > 0 else _mcx_ls_hint
+            if _mcx_ls_for_translate <= 0:
+                logger.error(
+                    f"[MCX-LOT-GUARD] lot_size unknown for {data.exchange}/{sym} "
+                    f"(cache returned {_mcx_ls_check}, no lot_size_hint in request). "
+                    f"Refusing {side} {qty} to prevent oversize order."
+                )
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        f"lot_size for {sym} on {data.exchange} is not available "
+                        f"(instruments cache cold). Retry in a moment — the cache "
+                        f"warms automatically at startup and market open."
+                    ),
+                )
 
         from backend.api.algo.actions import run_preflight as _run_preflight
         try:
@@ -959,26 +991,11 @@ async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
                           and data.price > 0)
 
         _ticket_exch = (data.exchange or "NFO")
-        _ls_for_translate: int = 0
+        # For MCX/NCO, lot_size was already resolved and cold-cache-checked
+        # above (pre-preflight). Reuse that value to avoid a second lookup.
+        _ls_for_translate: int = _mcx_ls_for_translate if _ticket_exch in ("MCX", "NCO") else 0
         if _ticket_exch in ("MCX", "NCO"):
-            from backend.brokers.adapters.kite import get_lot_size as _gls
-            _ls_check = await _gls(_ticket_exch, sym)
-            _ls_hint  = int(data.lot_size_hint or 0)
-            _ls_for_translate = _ls_check if _ls_check > 0 else _ls_hint
-            if _ls_for_translate <= 0:
-                logger.error(
-                    f"[MCX-LOT-GUARD] lot_size unknown for {_ticket_exch}/{sym} "
-                    f"(cache returned {_ls_check}, no lot_size_hint in request). "
-                    f"Refusing {side} {qty} to prevent oversize order."
-                )
-                raise HTTPException(
-                    status_code=503,
-                    detail=(
-                        f"lot_size for {sym} on {_ticket_exch} is not available "
-                        f"(instruments cache cold). Retry in a moment — the cache "
-                        f"warms automatically at startup and market open."
-                    ),
-                )
+            # _ls_for_translate > 0 guaranteed (cold-cache guard raised 503 above)
             _MCX_MAX_LOTS = 20
             _translated_lots = max(1, qty // _ls_for_translate)
             if _translated_lots > _MCX_MAX_LOTS:
