@@ -658,7 +658,7 @@
     const wantedSource = simActive ? 'sim' : 'live';
     // Delegates to rollupByUnderlying in derivativesMath.js.
     // buildAcctMatcher + buildStrategyMatcher eliminate the duplicated
-    // closure boilerplate that appears in _byUnderlyingExp, _byUnderlyingDay,
+    // closure boilerplate that appears in _byUnderlyingExp,
     // _hDayByRoot, _hPnlByRoot, _hExpByRoot, and _perRootReduce.
     const matchAccount  = buildAcctMatcher(selectedAccounts);
     const matchStrategy = buildStrategyMatcher($selectedStrategyId, $strategyOpenSymbols);
@@ -801,8 +801,8 @@
    *    - Proxy-target routing via targetsForProxy(h.symbol) → root credits
    *    - Account + source filter (live vs sim)
    *    - Strategy filter (matchStrategy) — MUST match _byUnderlyingTotals /
-   *      _byUnderlyingExp / _byUnderlyingDay to keep the Snapshot TOTAL row
-   *      and the snapshotTotals store in sync with the per-row data.
+   *      _byUnderlyingExp to keep the Snapshot TOTAL row and the
+   *      snapshotTotals store in sync with the per-row data.
    *
    *  Operator 2026-07-01: "day p & l should use the same calculation
    *  in overlay in payoff. ssot" + "p & l should use the same
@@ -836,8 +836,8 @@
   }
 
   /** Builds the same strategy-gate closure used by _byUnderlyingTotals /
-   *  _byUnderlyingExp / _byUnderlyingDay.  Call this inside a $derived.by()
-   *  so reads of $selectedStrategyId + $strategyOpenSymbols are tracked.
+   *  _byUnderlyingExp.  Call this inside a $derived.by() so reads of
+   *  $selectedStrategyId + $strategyOpenSymbols are tracked.
    *  Delegates to buildStrategyMatcher in derivativesMath.js. */
   function _makeStrategyMatcher() {
     return buildStrategyMatcher($selectedStrategyId, $strategyOpenSymbols);
@@ -963,77 +963,6 @@
       const credits = _targets.length ? _targets : [sym];
       for (const root of credits) {
         out[root] = (out[root] || 0) + dbase;
-      }
-    }
-    return out;
-  });
-
-  /** Per-underlying Day P&L — overlay-parity computation. Operator 2026-07-01:
-   *  "day p & l should match day overlay value for each symbol in snapshot."
-   *  Overlay uses _dayPnlForLeg(c, spot) + SSE-tick delta per leg
-   *  (see candidatesDayPnl). Snapshot per-row was reading raw
-   *  broker `p.day_change_val` which diverged from overlay for expired
-   *  legs (overlay promotes to intrinsic Exp P&L on expiry day) AND
-   *  for intraday tick movement between polls. This derived mirrors
-   *  overlay's math per root so every Snapshot row's Day P&L cell
-   *  matches its underlying's overlay Day P&L when that row is selected.
-   *  { with, without } — .with adds equity holdings' day-P&L
-   *  contribution ((spot − prev_close) × qty); .without is F&O only. */
-  const _byUnderlyingDay = $derived.by(() => {
-    void _throttledTick;   // re-derive at 4 Hz tick gate
-    /** @type {Record<string, { with: number, without: number }>} */
-    const out = {};
-    const wantedSource = simActive ? 'sim' : 'live';
-    const matchAccount  = buildAcctMatcher(selectedAccounts);
-    const matchStrategy = buildStrategyMatcher($selectedStrategyId, $strategyOpenSymbols);
-    const ensure = (root) => out[root] || (out[root] = { with: 0, without: 0 });
-
-    for (const _p of positions) {
-      const p = /** @type {any} */ (_p);
-      if (p.source !== wantedSource) continue;
-      if (!matchAccount(p.account)) continue;
-      if (!matchStrategy(p.symbol || p.tradingsymbol)) continue;
-      const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
-      if (!sym) continue;
-      const isFut = /FUT$/i.test(sym);
-      const isOpt = /(CE|PE)$/i.test(sym);
-      if (!isFut && !isOpt) continue;
-      const root = (decomposeSymbol(sym).root || sym).toUpperCase();
-      if (!root) continue;
-      const p_ul = Number(p.underlying_ltp || 0);
-      const spot = p_ul > 0 ? p_ul : untrack(() => _rootSpot(root));
-      const qty  = Number(p.quantity ?? p.qty) || 0;
-      const cost = Number(p.average_price ?? p.avg_cost) || 0;
-      // Matches overlay's `_dayPnlForLeg(c, spot)` exactly:
-      //   - non-expired: c.day_change_val (no SSE-tick delta because
-      //     overlay reads `c.ltp` which candidates don't carry — the
-      //     delta path is de-facto no-op in candidatesDayPnl too)
-      //   - expired: promoted to _expiryPnl(c, spot)
-      const cand = { symbol: sym, qty, avg_cost: cost, kind: isOpt ? 'opt' : 'fut' };
-      let dv;
-      if (_isLegExpired({ symbol: sym, kind: isOpt ? 'opt' : 'fut' })) {
-        const ep = _expiryPnl(cand, spot);
-        dv = (ep != null && isFinite(ep)) ? ep : Number(p.day_change_val) || 0;
-      } else {
-        dv = Number(p.day_change_val) || 0;
-      }
-      const g = ensure(root);
-      g.with    += dv;
-      g.without += dv;
-    }
-    for (const _h of holdings) {
-      const h = /** @type {any} */ (_h);
-      if (!matchAccount(h.account)) continue;
-      const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
-      if (!sym) continue;
-      // Broker's day_change_val — matches how the H pill sums holdings.
-      // No SSE-tick delta so the value matches overlay's snapshot value
-      // for the underlying at poll time.
-      const dbase = Number(h.day_change_val) || 0;
-      const _targets = targetsForProxy(sym);
-      const credits = _targets.length ? _targets : [sym];
-      for (const root of credits) {
-        ensure(root).with += dbase;
       }
     }
     return out;
