@@ -1,12 +1,14 @@
 """Holdings endpoint — returns per-account rows and summary."""
 
+from datetime import datetime
+from typing import Optional
+from zoneinfo import ZoneInfo
+
+import msgspec
 import pandas as pd
 import polars as pl
-from litestar import Controller, get
+from litestar import Controller, Request, get
 from litestar.exceptions import HTTPException
-from typing import Optional
-
-from litestar import Request
 
 from backend.api.auth_guard import is_admin_request
 from backend.api.rbac import (
@@ -26,6 +28,8 @@ from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import mask_account
 
 logger = get_logger(__name__)
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 
 # ---------------------------------------------------------------------------
@@ -335,97 +339,122 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list) -> list:
     return out
 
 
-def _fetch() -> HoldingsResponse:
-    per_acct = broker_apis.fetch_holdings()
-    # Outage detection: only raise when every per-account call failed
-    # (`fetch_failed` flag set in broker_apis.py). Empty without the
-    # flag = legitimate "no holdings" state — operator who hasn't
-    # taken delivery yet, or holds only F&O positions. Returning
-    # outage on this produced a false "Holdings unavailable" banner
-    # on /performance.
-    if per_acct and all(df.attrs.get('fetch_failed', False) for df in per_acct):
-        raise Exception("Broker (Kite) returned no holdings data — upstream Bad Gateway / outage")
-    # Build account → "HH:MM IST" map for stale-substituted frames BEFORE
-    # concat (which drops all DataFrame.attrs). See positions.py for rationale.
-    _acct_stale_since: dict[str, str] = {}
-    if per_acct:
-        for _df in per_acct:
-            _ss = _df.attrs.get("stale_since")
-            if _ss and not _df.empty and "account" in _df.columns:
-                _acct = str(_df["account"].iloc[0])
-                try:
-                    from zoneinfo import ZoneInfo
-                    from datetime import datetime
-                    _acct_stale_since[_acct] = datetime.fromtimestamp(
-                        float(_ss), tz=ZoneInfo("Asia/Kolkata")
-                    ).strftime("%H:%M IST")
-                except Exception:
-                    pass
+def _is_full_outage(per_acct: list) -> bool:
+    """Every per-account frame carries fetch_failed = a true outage.
+
+    Empty per_acct or ANY successful frame → legitimate 'no holdings' state
+    (operator who hasn't taken delivery, or holds only F&O).
+    """
+    return bool(per_acct) and all(
+        df.attrs.get("fetch_failed", False) for df in per_acct
+    )
+
+
+def _stale_since_map(per_acct: list) -> dict[str, str]:
+    """Build {account → 'HH:MM IST'} for stale-substituted frames BEFORE
+    concat (which drops all DataFrame.attrs)."""
+    out: dict[str, str] = {}
+    if not per_acct:
+        return out
+    for _df in per_acct:
+        _ss = _df.attrs.get("stale_since")
+        if not (_ss and not _df.empty and "account" in _df.columns):
+            continue
+        _acct = str(_df["account"].iloc[0])
+        try:
+            out[_acct] = datetime.fromtimestamp(
+                float(_ss), tz=_IST
+            ).strftime("%H:%M IST")
+        except Exception:
+            pass
+    return out
+
+
+def _prepare_raw_frame(per_acct: list) -> pd.DataFrame:
+    """Concat + backfill + LTP-override + numeric-fillna. Returns the
+    fully-hydrated pandas DataFrame ready for polars conversion."""
     raw = pd.concat(per_acct, ignore_index=True) if per_acct else pd.DataFrame()
     if raw.empty:
-        return HoldingsResponse(rows=[], summary=[], refreshed_at=timestamp_display())
-    # Account masking removed — admin-only pages show real account IDs
-
-    # Backfill missing market data (close_price + last_price) for
-    # adapters that don't populate them. Source brokers keep their
-    # account-specific facts (avg_price, qty, opening_qty, realised);
-    # market data routes through PriceBroker.quote (prefers Kite) so
-    # Dhan + Groww rows match Kite's Day P&L / Day % / Prev Close
-    # downstream. Single batched round-trip across every missing row.
+        return raw
+    # Backfill missing market data (close_price + last_price) for adapters
+    # that don't populate them (Dhan / Groww). Market data routes through
+    # PriceBroker.quote (prefers Kite) so cross-broker rows agree on Day
+    # P&L / Day % / Prev Close.
     broker_apis.backfill_market_data(raw)
-
-    # Patch any rows that still have last_price=0 after backfill
-    # (PriceBroker rate-limit cool-off, or symbol not in quote cache).
-    # Same live-ticker override pattern used by the positions route.
+    # Rows still at last_price=0 (rate-limit cool-off or missing quote) get
+    # patched from the live KiteTicker snapshot — same pattern as positions.
     _override_stale_ltp_from_ticker(raw)
-
-    numeric = raw.select_dtypes(include='number').columns
+    numeric = raw.select_dtypes(include="number").columns
     raw[numeric] = raw[numeric].fillna(0)
-    df = pl.from_pandas(raw)
+    return raw
 
+
+def _compute_summary_df(df: pl.DataFrame) -> pl.DataFrame:
+    """Group by account, add derived %s, append TOTAL row.
+
+    day_change_percentage uses YESTERDAY's value (cur_val - day_change_val)
+    as the denominator — Kite's convention for "today moved X% off the
+    previous close". Using cur_val (which already includes today's gain)
+    would understate on positive days and overstate on negative.
+    """
+    sum_cols = [c for c in ["inv_val", "cur_val", "pnl", "day_change_val"] if c in df.columns]
+    grouped = df.group_by("account").agg([pl.col(c).sum() for c in sum_cols])
+    derived = [
+        (pl.col("pnl") / pl.col("inv_val") * 100).alias("pnl_percentage"),
+        (pl.col("day_change_val") / (pl.col("cur_val") - pl.col("day_change_val")) * 100)
+            .alias("day_change_percentage"),
+    ]
+    grouped = grouped.with_columns(derived)
+    totals = grouped.select(sum_cols).sum().with_columns([
+        pl.lit("TOTAL").alias("account"), *derived
+    ])
+    return pl.concat([grouped, totals], how="diagonal").fill_nan(0).fill_null(0)
+
+
+def _apply_stale_since_map(
+    rows: list[HoldingRow], stale_since: dict[str, str],
+) -> list[HoldingRow]:
+    """Thread account_stale_since into rows where the account was
+    LKG-substituted (breaker-open cache path). See positions.py."""
+    if not stale_since:
+        return rows
+    return [
+        msgspec.structs.replace(r, account_stale_since=stale_since[r.account])
+        if r.account_stale and r.account in stale_since
+        else r
+        for r in rows
+    ]
+
+
+def _fetch() -> HoldingsResponse:
+    per_acct = broker_apis.fetch_holdings()
+    # Outage detection: fetch_failed flag set on every frame. Empty per_acct
+    # alone is a legitimate "no holdings" state — not an outage.
+    if _is_full_outage(per_acct):
+        raise Exception(
+            "Broker (Kite) returned no holdings data — upstream Bad Gateway / outage"
+        )
+    stale_since_by_acct = _stale_since_map(per_acct)
+    raw = _prepare_raw_frame(per_acct)
+    if raw.empty:
+        return HoldingsResponse(rows=[], summary=[], refreshed_at=timestamp_display())
+
+    df = pl.from_pandas(raw)
     row_cols = [c for c in _ROW_COLS if c in df.columns]
     df_rows = df.select(row_cols)
-
-    sum_cols = [c for c in ['inv_val', 'cur_val', 'pnl', 'day_change_val'] if c in df.columns]
-    grouped = (
-        df.group_by('account')
-          .agg([pl.col(c).sum() for c in sum_cols])
-    )
-    # day_change_percentage uses YESTERDAY's value (cur_val - day_change_val)
-    # as the denominator — Kite's convention for "today moved X% off the
-    # previous close". Using cur_val (which already includes today's gain)
-    # would understate the move on positive days and overstate on negative.
-    grouped = grouped.with_columns([
-        (pl.col('pnl')            / pl.col('inv_val')                                * 100).alias('pnl_percentage'),
-        (pl.col('day_change_val') / (pl.col('cur_val') - pl.col('day_change_val'))   * 100).alias('day_change_percentage'),
-    ])
-
-    totals = grouped.select(sum_cols).sum().with_columns([
-        pl.lit('TOTAL').alias('account'),
-        (pl.col('pnl')            / pl.col('inv_val')                                * 100).alias('pnl_percentage'),
-        (pl.col('day_change_val') / (pl.col('cur_val') - pl.col('day_change_val'))   * 100).alias('day_change_percentage'),
-    ])
-    summary_df = pl.concat([grouped, totals], how='diagonal').fill_nan(0).fill_null(0)
+    summary_df = _compute_summary_df(df)
 
     rows = [
         HoldingRow(**{k: (v if v is not None else 0) for k, v in r.items()})
         for r in df_rows.to_dicts()
     ]
-    # Thread account_stale_since into stale rows. See positions.py for rationale.
-    if _acct_stale_since:
-        import msgspec as _msc
-        rows = [
-            _msc.structs.replace(r, account_stale_since=_acct_stale_since[r.account])
-            if r.account_stale and r.account in _acct_stale_since
-            else r
-            for r in rows
-        ]
+    rows = _apply_stale_since_map(rows, stale_since_by_acct)
     summary = [
         HoldingsSummaryRow(**{k: (v if v is not None else 0) for k, v in r.items()})
         for r in summary_df.to_dicts()
     ]
-    # Response-level stale_accounts list — see PositionsResponse.stale_accounts
-    # for the rationale (breaker-open account rows served from LKG cache).
+    # Response-level stale_accounts — see PositionsResponse.stale_accounts
+    # (breaker-open account rows served from LKG cache).
     stale_accts = sorted({r.account for r in rows if r.account_stale})
     return HoldingsResponse(
         rows=rows,
