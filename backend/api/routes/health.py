@@ -418,6 +418,141 @@ class _InvalidateResponse(msgspec.Struct):
     rows_deleted: int
 
 
+# ── Backfill helpers (extracted from PersistenceAdminController.backfill._run_backfill) ──
+
+
+async def _backfill_collect_watchlist_symbols(
+    symbols: list[tuple[str, str]],
+    seen: set[tuple[str, str]],
+) -> None:
+    """Append every (symbol, exchange) row from the watchlist to
+    `symbols`, resolving MCX/CDS virtual roots to concrete contracts.
+    Safe under any single failure — logs and returns.
+    """
+    try:
+        from backend.api.database import async_session as _as
+        from backend.api.models import WatchlistItem
+        from sqlalchemy import select as _sa_select
+        from backend.api.routes.watchlist import (
+            _resolve_mcx_commodity, _resolve_cds_currency,
+        )
+        async with _as() as sess:
+            rows = (await sess.execute(
+                _sa_select(WatchlistItem.tradingsymbol, WatchlistItem.exchange)
+            )).all()
+        for row in rows:
+            sym  = (row.tradingsymbol or "").upper().strip()
+            exch = (row.exchange or "NSE").upper().strip()
+            if not sym:
+                continue
+            if exch == "MCX" and sym.isalpha() and len(sym) <= 12:
+                resolved = await _resolve_mcx_commodity(sym)
+                if resolved:
+                    sym = resolved.upper().strip()
+            elif exch == "CDS" and sym.isalpha() and len(sym) <= 12:
+                resolved = await _resolve_cds_currency(sym)
+                if resolved:
+                    sym = resolved.upper().strip()
+            key = (sym, exch)
+            if key not in seen:
+                seen.add(key)
+                symbols.append(key)
+    except Exception as exc:
+        logger.warning(f"backfill/route: watchlist collect failed: {exc}")
+
+
+def _backfill_collect_book_symbols(
+    symbols: list[tuple[str, str]],
+    seen: set[tuple[str, str]],
+) -> None:
+    """Append (tradingsymbol, exchange) from open holdings + positions to
+    `symbols`. Holdings default to NSE, positions to NFO when exchange
+    is missing. Safe under any single failure — logs and returns.
+    """
+    try:
+        import pandas as _pd
+        from backend.brokers import broker_apis as _ba
+        for fetch_fn, default_exch in (
+            (_ba.fetch_holdings, "NSE"),
+            (_ba.fetch_positions, "NFO"),
+        ):
+            dfs = fetch_fn()
+            df  = _pd.concat(dfs, ignore_index=True) if dfs else _pd.DataFrame()
+            if df.empty or "tradingsymbol" not in df.columns:
+                continue
+            _exch_col = (
+                df["exchange"] if "exchange" in df.columns
+                else _pd.Series([default_exch] * len(df))
+            )
+            for s, e in zip(df["tradingsymbol"], _exch_col):
+                sym  = str(s or "").upper().strip()
+                exch = str(e or default_exch).upper().strip()
+                if not sym:
+                    continue
+                k = (sym, exch)
+                if k not in seen:
+                    seen.add(k)
+                    symbols.append(k)
+    except Exception as exc:
+        logger.warning(f"backfill/route: holdings/positions collect failed: {exc}")
+
+
+def _backfill_apply_mover_cap(
+    symbols: list[tuple[str, str]],
+    seen: set[tuple[str, str]],
+    cap: int = 300,
+) -> list[tuple[str, str]]:
+    """Merge in mover pairs, prioritising the operator's book (already
+    in `symbols`) over mover fill-in when the total would exceed `cap`.
+    Returns the capped list.
+    """
+    try:
+        from backend.shared.helpers.mover_universe import mover_warm_pairs as _mwp
+        _mover_set  = set(_mwp())
+        book_pairs  = [p for p in symbols if p not in _mover_set]
+        mover_pairs = [p for p in symbols if p in _mover_set]
+        remaining   = max(0, cap - len(book_pairs))
+        symbols     = book_pairs + mover_pairs[:remaining]
+        for key in _mwp():
+            if key not in seen:
+                seen.add(key)
+                symbols.append(key)
+        return symbols[:cap]
+    except Exception as exc:
+        logger.warning(f"backfill/route: mover universe collect failed: {exc}")
+        return symbols[:cap]
+
+
+async def _backfill_run_daily(symbols: list[tuple[str, str]]) -> None:
+    """Fire ohlcv_daily backfill for the 365-day window. Errors logged."""
+    try:
+        from backend.api.persistence.backfill import backfill_ohlcv_daily
+        r = await backfill_ohlcv_daily(symbols, target_days=365, max_concurrent=3)
+        logger.info(f"backfill/route: ohlcv_daily done — {r}")
+    except Exception as exc:
+        logger.error(f"backfill/route: ohlcv_daily failed: {exc}")
+
+
+async def _backfill_run_intraday(symbols: list[tuple[str, str]]) -> None:
+    """Fire intraday_bars backfill for today. Skipped when no segment
+    open (avoids paying for a broker call the poller would refuse)."""
+    try:
+        from backend.api.persistence.backfill import backfill_intraday_today
+        from backend.shared.helpers.date_time_utils import (
+            is_any_segment_open, timestamp_indian,
+        )
+        now_ist = timestamp_indian()
+        if is_any_segment_open(now_ist):
+            r2 = await backfill_intraday_today(
+                symbols, interval="30minute", max_concurrent=3,
+            )
+            logger.info(f"backfill/route: intraday_today done — {r2}")
+        else:
+            logger.info("backfill/route: intraday_today skipped — no segment open")
+    except Exception as exc:
+        logger.error(f"backfill/route: intraday_today failed: {exc}")
+
+
 class PersistenceAdminController(Controller):
     """Defect-recovery surface for the refresh-cycle pipeline
     (cache → DB → broker API).
@@ -534,97 +669,17 @@ class PersistenceAdminController(Controller):
         _task_warm_backfill._fired = False  # type: ignore[attr-defined]
 
         async def _run_backfill() -> None:
-            from backend.api.persistence.backfill import (
-                backfill_ohlcv_daily,
-                backfill_intraday_today,
-            )
-            from backend.shared.helpers.date_time_utils import is_any_segment_open
-            from backend.shared.helpers.date_time_utils import timestamp_indian
-
             # Build universe (same logic as _task_warm_backfill).
             symbols: list[tuple[str, str]] = []
             seen: set[tuple[str, str]] = set()
-            try:
-                from backend.api.database import async_session as _as
-                from backend.api.models import WatchlistItem
-                from sqlalchemy import select as _sa_select
-                from backend.api.routes.watchlist import (
-                    _resolve_mcx_commodity, _resolve_cds_currency,
-                )
-                async with _as() as sess:
-                    rows = (await sess.execute(
-                        _sa_select(WatchlistItem.tradingsymbol, WatchlistItem.exchange)
-                    )).all()
-                for row in rows:
-                    sym  = (row.tradingsymbol or "").upper().strip()
-                    exch = (row.exchange or "NSE").upper().strip()
-                    if not sym:
-                        continue
-                    if exch == "MCX" and sym.isalpha() and len(sym) <= 12:
-                        resolved = await _resolve_mcx_commodity(sym)
-                        if resolved:
-                            sym = resolved.upper().strip()
-                    elif exch == "CDS" and sym.isalpha() and len(sym) <= 12:
-                        resolved = await _resolve_cds_currency(sym)
-                        if resolved:
-                            sym = resolved.upper().strip()
-                    key = (sym, exch)
-                    if key not in seen:
-                        seen.add(key)
-                        symbols.append(key)
-            except Exception as exc:
-                logger.warning(f"backfill/route: watchlist collect failed: {exc}")
-            try:
-                import pandas as _pd
-                from backend.brokers import broker_apis as _ba
-                for fetch_fn, default_exch in ((_ba.fetch_holdings, "NSE"), (_ba.fetch_positions, "NFO")):
-                    dfs = fetch_fn()
-                    df  = _pd.concat(dfs, ignore_index=True) if dfs else _pd.DataFrame()
-                    if not df.empty and "tradingsymbol" in df.columns:
-                        _exch_col = df["exchange"] if "exchange" in df.columns else _pd.Series([default_exch] * len(df))
-                        for s, e in zip(df["tradingsymbol"], _exch_col):
-                            sym  = str(s or "").upper().strip()
-                            exch = str(e or default_exch).upper().strip()
-                            if sym:
-                                k = (sym, exch)
-                                if k not in seen:
-                                    seen.add(k)
-                                    symbols.append(k)
-            except Exception as exc:
-                logger.warning(f"backfill/route: holdings/positions collect failed: {exc}")
-            try:
-                from backend.shared.helpers.mover_universe import mover_warm_pairs as _mwp
-                _mover_set  = set(_mwp())
-                book_pairs  = [p for p in symbols if p not in _mover_set]
-                mover_pairs = [p for p in symbols if p in _mover_set]
-                remaining   = max(0, 300 - len(book_pairs))
-                symbols     = book_pairs + mover_pairs[:remaining]
-                for key in _mwp():
-                    if key not in seen:
-                        seen.add(key)
-                        symbols.append(key)
-                symbols = symbols[:300]
-            except Exception as exc:
-                logger.warning(f"backfill/route: mover universe collect failed: {exc}")
-                symbols = symbols[:300]
+            await _backfill_collect_watchlist_symbols(symbols, seen)
+            _backfill_collect_book_symbols(symbols, seen)
+            symbols = _backfill_apply_mover_cap(symbols, seen, cap=300)
 
             if kind in ("daily", "both"):
-                try:
-                    r = await backfill_ohlcv_daily(symbols, target_days=365, max_concurrent=3)
-                    logger.info(f"backfill/route: ohlcv_daily done — {r}")
-                except Exception as exc:
-                    logger.error(f"backfill/route: ohlcv_daily failed: {exc}")
-
+                await _backfill_run_daily(symbols)
             if kind in ("intraday", "both"):
-                try:
-                    now_ist = timestamp_indian()
-                    if is_any_segment_open(now_ist):
-                        r2 = await backfill_intraday_today(symbols, interval="30minute", max_concurrent=3)
-                        logger.info(f"backfill/route: intraday_today done — {r2}")
-                    else:
-                        logger.info("backfill/route: intraday_today skipped — no segment open")
-                except Exception as exc:
-                    logger.error(f"backfill/route: intraday_today failed: {exc}")
+                await _backfill_run_intraday(symbols)
 
         task = _asyncio.create_task(_run_backfill(), name=f"admin-backfill-{kind}")
         return {"status": "started", "kind": kind, "task": task.get_name()}
