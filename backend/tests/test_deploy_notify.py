@@ -192,14 +192,21 @@ class TestDeploySh:
 # ---------------------------------------------------------------------------
 
 class TestDefaultConfig:
-    """Repo default backend_config.yaml has notify_on_deploy=True."""
+    """Repo default backend_config.yaml has notify_on_deploy=False on dev.
 
-    def test_repo_default_is_true(self):
+    Operator explicitly set this to False on dev branches (commit a434cd6e).
+    Prod (main) is always True regardless of cap_in_dev — the notify_deploy.py
+    gate for main bypasses the cap entirely (see test_main_branch_always_fires).
+    """
+
+    def test_repo_default_is_false(self):
+        # dev default is False per operator (a434cd6e); prod is True (branch gate bypasses cap)
         cfg_path = REPO_ROOT / "backend" / "config" / "backend_config.yaml"
         with open(cfg_path) as f:
             cfg = yaml.safe_load(f)
         cap = cfg.get("cap_in_dev", {})
-        assert cap.get("notify_on_deploy") is True, (
-            f"cap_in_dev.notify_on_deploy should default True in repo config, "
-            f"got {cap.get('notify_on_deploy')!r}"
+        assert cap.get("notify_on_deploy") is False, (
+            f"cap_in_dev.notify_on_deploy must be False in repo config (dev default, "
+            f"commit a434cd6e). Prod fires regardless via the branch gate. "
+            f"Got {cap.get('notify_on_deploy')!r}"
         )
