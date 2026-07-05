@@ -926,6 +926,14 @@
     Object.values(_expPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
   );
   $effect(() => {
+    // Guard: only publish after the first positions load completes.
+    // Before _positionsLoaded is true, positions = [] → all three
+    // sums are 0, which clobbers PositionStrip's own correct values.
+    // Swapping to or from the derivatives page must never write a
+    // stale 0 to snapshotTotals while the broker round-trip is in
+    // flight. _positionsLoaded is set to true at the end of
+    // loadPositions(), after both positions + holdings are resolved.
+    if (!_positionsLoaded) return;
     snapshotTotals.set({
       day: _snapshotTotalDay,
       pnl: _snapshotTotalPnl,
@@ -3770,6 +3778,12 @@
     teardown?.(); posTeardown?.(); simTeardown?.(); wsTeardown?.(); quotesTeardown?.();
     flash.dispose(); _unsubBook?.(); _unsubDerivsOrder?.();
     if (_urlSyncTimer) { clearTimeout(_urlSyncTimer); _urlSyncTimer = null; }
+    // Clear the shared snapshotTotals store so PositionStrip falls back
+    // to its own dispPositionsToday / _livePositionsPnl computation when
+    // this page is unmounted. Without this, the last derivatives-scoped
+    // value persists in the store and the strip on every subsequent page
+    // renders that filtered F&O-only subset rather than the full book.
+    snapshotTotals.set(null);
   });
 
   // Refresh underlying quotes whenever the Snapshot universe changes
