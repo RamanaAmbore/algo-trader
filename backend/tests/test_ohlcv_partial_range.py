@@ -817,26 +817,21 @@ def test_stale_code_partial_set_true_on_broker_empty_paths():
     import re
     from pathlib import Path
 
-    # Read raw source file (the historical method is wrapped by Litestar
-    # @get decorator so inspect.getsource on the bound method may fail).
-    options_path = Path(__file__).parent.parent / "api" / "routes" / "options.py"
-    full_src = options_path.read_text()
-    # Slice to the historical handler body via known anchor strings.
-    start = full_src.index('@get("/historical")')
-    end_anchor = "# ── Multi-leg strategy analytics"
-    end = full_src.index(end_anchor, start)
-    src = full_src[start:end]
+    # Read raw source file from options_helpers (post-refactor).
+    # The historical logic was extracted to three helper functions to reduce CC.
+    options_helpers_path = Path(__file__).parent.parent / "api" / "routes" / "options_helpers.py"
+    full_src = options_helpers_path.read_text()
 
-    # Three empty-return paths in the historical handler:
-    # 1. No eligible brokers — must have partial=True
-    # 2. Broker returned empty bars — must have partial=not bool(bars)
-    # 3. All brokers failed / not found — must have partial=True
+    # Three empty-return paths across the helpers:
+    # 1. _historical_ohlcv_store: no bars → partial=_still_partial
+    # 2. _historical_intraday_store: broker empty → partial=True
+    # 3. _historical_broker_loop: all brokers failed → partial=True
     # The pattern check: `bars=[]` (or `bars=bars`) accompanied by partial=...
-    partial_true_count = len(re.findall(r"partial\s*=\s*True", src))
-    partial_var_count  = len(re.findall(r"partial\s*=\s*not\s+bool\(bars\)", src))
+    partial_true_count = len(re.findall(r"partial\s*=\s*True", full_src))
+    partial_var_count  = len(re.findall(r"partial\s*=\s*not\s+bool\(bars\)", full_src))
     total = partial_true_count + partial_var_count
     assert total >= 3, (
-        f"Expected at least 3 empty-bars paths in OptionsController.historical "
+        f"Expected at least 3 empty-bars paths in options_helpers "
         f"to set partial=True (or partial=not bool(bars)). Found {partial_true_count} "
         f"`partial=True` + {partial_var_count} `partial=not bool(bars)`. "
         "Operator-caught race: every fallback-empty MUST signal partial=True so "
@@ -874,16 +869,15 @@ def test_stale_code_record_cold_empty_called_from_empty_paths():
     the operator-facing health metric stays accurate."""
     from pathlib import Path
 
-    options_path = Path(__file__).parent.parent / "api" / "routes" / "options.py"
-    full_src = options_path.read_text()
-    start = full_src.index('@get("/historical")')
-    end = full_src.index("# ── Multi-leg strategy analytics", start)
-    src = full_src[start:end]
-    # Each of the 3 fallback-empty paths must call _record_first_cold_empty.
-    call_count = src.count("_record_first_cold_empty(sym)")
+    # After refactor, record_first_cold_empty calls are in options_helpers.
+    options_helpers_path = Path(__file__).parent.parent / "api" / "routes" / "options_helpers.py"
+    full_src = options_helpers_path.read_text()
+    # The function parameter is named record_first_cold_empty (no leading underscore).
+    # It's called from 3 empty-bars paths in _historical_broker_loop.
+    call_count = full_src.count("record_first_cold_empty(sym)")
     assert call_count >= 2, (
-        f"_record_first_cold_empty(sym) must be called from the empty-bars "
-        f"return paths in OptionsController.historical. Found {call_count} call(s); "
+        f"record_first_cold_empty(sym) must be called from the empty-bars "
+        f"return paths in options_helpers historical functions. Found {call_count} call(s); "
         "expected ≥2 (no-eligible-brokers path + all-brokers-failed path)."
     )
 
