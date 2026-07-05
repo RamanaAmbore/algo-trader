@@ -616,23 +616,95 @@
   const _emptyRetryFired = new Set();
   let _emptyRetryTimer = null;
 
+  /**
+   * Build the module-level cache key for a historical data request.
+   * Includes interval so a future intraday toggle cannot serve daily bars.
+   */
+  function _buildChartCacheKey(fetchSym, fetchExch, days) {
+    const interval = 'day';
+    const under = _isDerivative ? (_underlying || '') : '';
+    return `${fetchSym}|${(fetchExch || '').toUpperCase()}|${days}|${interval}|${under}`;
+  }
+
+  /**
+   * Force a dimension re-measure after bars land. The ResizeObserver may
+   * have fired while the modal/portal was still laying out (container at
+   * zero width), leaving _chartW/_chartH stale. One rAF ensures the
+   * container has its final CSS dimensions.
+   */
+  function _measureChartContainer() {
+    requestAnimationFrame(() => {
+      const el = _chartContainerEl;
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const w = Math.max(360, Math.round(r.width));
+      const h = Math.max(200, Math.round(r.height));
+      if (w !== _chartW || h !== _chartH) { _chartW = w; _chartH = h; }
+    });
+  }
+
+  /**
+   * Handle the empty-bars case after a broker fetch.
+   * Returns true when the caller should early-return (retry scheduled
+   * or bars kept from previous good fetch); false when the caller
+   * should surface "No data available." and finish normally.
+   *
+   * Side-effects: may set _histRetrying, _histError, _emptyRetryTimer,
+   * _chartLoaded, _bars (guard keeps old bars on silent keep).
+   */
+  function _handleEmptyBars(hist, cacheKey, prevBars) {
+    // Guard: keep last-good bars rather than flashing "no data".
+    if (prevBars.length > 0) {
+      _chartLoaded = true;
+      return true; // caller should return early
+    }
+    // Empty response. Two cases:
+    //   1. partial=true → backend says "transient, retry soon".
+    //      Retry after the server empty-cache TTL has expired.
+    //   2. partial=false → backend confirmed no data — show error.
+    //
+    // The latch _emptyRetryFired ensures at most ONE retry per key.
+    const isPartial = !!hist?.partial;
+    const canRetry  = isPartial && !_emptyRetryFired.has(cacheKey);
+    if (canRetry) {
+      _emptyRetryFired.add(cacheKey);
+      _histError = '';
+      // _histRetrying keeps the loading branch active so the
+      // {:else if !_bars.length} "No data available" branch is NOT
+      // rendered during the 2300ms retry window (operator-reported
+      // BEL bug). 2300ms > backend _HIST_CACHE_TTL_EMPTY (2000ms)
+      // so the server's empty-cache entry is guaranteed expired.
+      _histRetrying = true;
+      if (_emptyRetryTimer) clearTimeout(_emptyRetryTimer);
+      _emptyRetryTimer = setTimeout(() => {
+        _emptyRetryTimer = null;
+        if (!_mounted) return;
+        if (!_bars.length) _loadHistorical(true);
+        else _histRetrying = false;
+      }, 2300);
+      _chartLoaded = true;
+      return true; // caller should return early
+    }
+    // Confirmed-no-data or retry exhausted.
+    _histRetrying = false;
+    _histError = 'No data available.';
+    return false;
+  }
+
   async function _loadHistorical(/** @type {boolean} */ force = false) {
     if (!symbol) return;
     if (!force && _chartLoaded) return;
     const token = ++_loadToken;
     _histLoading = true; _histError = '';
-    // Defer the visible spinner by ~150ms — long enough that warm
-    // cache-hits complete before it flips on (no flash), short
-    // enough that any broker round-trip shows the spinner promptly.
+    // Defer the visible spinner by ~150ms — warm cache-hits complete
+    // before it flips on (no flash); broker round-trips show it promptly.
     if (_histLoadingTimer) clearTimeout(_histLoadingTimer);
     _histLoadingSlow = false;
     _histLoadingTimer = setTimeout(() => {
       if (_histLoading) _histLoadingSlow = true;
     }, 150);
-    // Hard timeout — if a broker call hangs (e.g. Kite rate-limit retry
-    // loop on backend), Promise.race ensures _histLoading clears within
-    // 25s instead of stranding the page-header RefreshButton spinner
-    // forever. The error surfaces in _histError as a short banner.
+    // Hard timeout — prevents RefreshButton spinner from stranding when
+    // a broker call hangs (Kite rate-limit retry loop on backend).
     const TIMEOUT_MS = 25000;
     const timeout = new Promise((_, reject) =>
       setTimeout(() => reject(new Error('Slow response — try again.')), TIMEOUT_MS)
@@ -641,20 +713,13 @@
       // Map Kite index quote-keys to their tradeable future before any
       // backend call. NIFTY BANK / NIFTY 50 etc. would otherwise walk
       // every exchange arm and time out (~10s of broker calls).
-      // Awaited because the resolver may need to hydrate the
-      // instruments cache before findNearestFuture can return.
       const _resolved = await _resolveFetchSymbol(symbol);
       if (token !== _loadToken) return;
       const fetchSym  = _resolved.sym;
       const fetchExch = _resolved.exch || _resolvedExchange || exchange || undefined;
 
-      // Module-level cache lookup — see _BAR_CACHE comment in the
-      // <script module> block at top. Cache key includes interval
-      // (currently always "day" but future-proofed against an
-      // intraday/hourly toggle) so a 1h request can never serve
-      // cached daily bars.
-      const _interval = 'day';
-      const cacheKey = `${fetchSym}|${(fetchExch || '').toUpperCase()}|${_chartDays}|${_interval}|${_isDerivative ? (_underlying || '') : ''}`;
+      // Module-level cache lookup — see _BAR_CACHE comment above.
+      const cacheKey = _buildChartCacheKey(fetchSym, fetchExch, _chartDays);
       const _cached = _cacheGet(cacheKey);
       if (_cached) {
         _bars = _cached.bars;
@@ -676,123 +741,41 @@
       const [hist, spotHist] = /** @type {any} */ (
         await Promise.race([Promise.all(promises), timeout])
       );
-      if (token !== _loadToken) return;   // a newer call superseded this one
+      if (token !== _loadToken) return; // a newer call superseded this one
+
       const _nextBars = Array.isArray(hist?.bars) ? hist.bars : [];
-      // Empty-response guard: if a previous successful fetch on this
-      // component instance populated _bars, do NOT overwrite it with
-      // an empty result. An empty response on retry is almost always
-      // a transient backend miss (empty-cache TTL window post-cold,
-      // rate-limit blip, or instruments map mid-warm). Keeping the
-      // last-known-good bars on screen avoids the "data was there a
-      // second ago, now it's gone" flash the operator reported.
-      if (_nextBars.length === 0 && _bars.length > 0) {
-        // Silently keep current bars + don't surface the empty error.
-        _chartLoaded = true;
-        return;
-      }
-      _bars     = _nextBars;
-      _spotBars = spotHist ? (Array.isArray(spotHist.bars) ? spotHist.bars : []) : [];
-      if (!_bars.length) {
-        // Empty response. Two cases:
-        //   1. partial=true → backend says "transient, retry soon".
-        //      Keep loading state up + retry after the server empty-cache
-        //      TTL has expired (_HIST_CACHE_TTL_EMPTY = 2 s on server).
-        //   2. partial=false → backend confirmed no data exists for
-        //      this symbol. Show "No data available." immediately.
-        //
-        // partial defaults to false; the backend sets it true for cold
-        // broker_loop misses (instruments map not warm, rate-limit
-        // cool-off, etc.). The latch _emptyRetryFired guards against
-        // an infinite loop — at most ONE retry per (sym, exch, range).
-        const isPartial = !!hist?.partial;
-        const canRetry  = isPartial && !_emptyRetryFired.has(cacheKey);
-        if (canRetry) {
-          _emptyRetryFired.add(cacheKey);
-          _histError = '';
-          // Critical: _histRetrying keeps the loading branch active so
-          // the catchall {:else if !_bars.length} (No data available)
-          // is NOT rendered during the retry window. Without this, the
-          // operator sees "No data available" for the full retry delay
-          // and clicks away thinking the chart is broken — only to
-          // come back later and see the second-call data. That was the
-          // operator-reported BEL bug.
-          _histRetrying = true;
-          if (_emptyRetryTimer) clearTimeout(_emptyRetryTimer);
-          // 2300 ms — this MUST be greater than the backend's
-          // _HIST_CACHE_TTL_EMPTY (2000 ms). The prior value of 800 ms
-          // was the root cause of the still-recurring race: the retry
-          // arrived while the server's empty-cache entry was still live
-          // (expires at t+2000 ms), so the server returned the SAME
-          // cached empty+partial response. With _emptyRetryFired already
-          // set for this cacheKey, canRetry was false and "No data
-          // available" rendered immediately — identical to showing it
-          // with no retry at all. By waiting 2300 ms the empty-cache
-          // entry is guaranteed to have expired before the retry fires,
-          // so the server makes a fresh broker attempt. 300 ms headroom
-          // handles network RTT variance without being perceptible to
-          // the operator (the spinner stays visible the whole time via
-          // _histRetrying=true).
-          _emptyRetryTimer = setTimeout(() => {
-            _emptyRetryTimer = null;
-            if (!_mounted) return;
-            // Only re-fire if _bars is still empty (a concurrent
-            // success would already have flipped it).
-            if (!_bars.length) _loadHistorical(true);
-            else _histRetrying = false;
-          }, 2300);
-          _chartLoaded = true;
-          return;
-        }
-        // Either confirmed-no-data (partial=false) OR retry already
-        // exhausted. Clear retry flag + surface the error.
-        _histRetrying = false;
-        _histError = 'No data available.';
+      if (_nextBars.length === 0) {
+        // Snapshot the current bars before overwriting so _handleEmptyBars
+        // can decide whether to keep them or surface the error.
+        const prevBars = _bars;
+        _bars     = _nextBars;
+        _spotBars = spotHist ? (Array.isArray(spotHist.bars) ? spotHist.bars : []) : [];
+        if (_handleEmptyBars(hist, cacheKey, prevBars)) return;
       } else {
-        // Bars arrived — clear any pending retry state.
+        _bars     = _nextBars;
+        _spotBars = spotHist ? (Array.isArray(spotHist.bars) ? spotHist.bars : []) : [];
         _histRetrying = false;
       }
       _chartLoaded = true;
 
-      // Cache write — only when we got non-empty bars; empty results
-      // happen on rate-limit / preview blocked and shouldn't poison
-      // the next open. LRU eviction handled by _cachePut.
+      // Cache write — only non-empty bars; empty results (rate-limit /
+      // preview blocked) must not poison the next open.
       if (_bars.length) {
         _cachePut(cacheKey, _bars, _spotBars);
       }
     } catch (e) {
-      if (token !== _loadToken) return;   // newer call already in flight — its result is the canonical one
+      if (token !== _loadToken) return; // newer call in flight — its result is canonical
       _histError = /** @type {any} */ (e)?.message || 'Load failed';
       _histRetrying = false;
       _bars = [];
     } finally {
-      // Only the newest call flips loading off; older tokens are no-ops
-      // here so the spinner stays visible while the canonical fetch is
-      // still in flight.
+      // Only the newest call flips loading off.
       if (token === _loadToken) {
         _histLoading = false;
         _histLoadingSlow = false;
-        if (_histLoadingTimer) {
-          clearTimeout(_histLoadingTimer);
-          _histLoadingTimer = null;
-        }
+        if (_histLoadingTimer) { clearTimeout(_histLoadingTimer); _histLoadingTimer = null; }
       }
-      // Force a dimension re-measure after load. The ResizeObserver may
-      // have fired while the modal/portal was still laying out (container
-      // at zero width), leaving _chartW/_chartH stale and all SVG paths
-      // computed against a degenerate viewBox. One rAF after the bars
-      // land ensures the container has its final CSS dimensions.
-      requestAnimationFrame(() => {
-        const el = _chartContainerEl;
-        if (el) {
-          const r = el.getBoundingClientRect();
-          const w = Math.max(360, Math.round(r.width));
-          const h = Math.max(200, Math.round(r.height));
-          if (w !== _chartW || h !== _chartH) {
-            _chartW = w;
-            _chartH = h;
-          }
-        }
-      });
+      _measureChartContainer();
     }
   }
 
