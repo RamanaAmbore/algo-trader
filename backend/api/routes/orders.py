@@ -1466,7 +1466,12 @@ class AccountsController(Controller):
         do_mask = not is_admin_request(request)
         accounts = [
             AccountInfo(
-                account_id=account,
+                # Non-admin (demo / partner) callers get masked codes in BOTH
+                # fields so the raw broker ID never surfaces in JS memory.
+                # account_id == display for masked callers; downstream order-
+                # placement guards (auth_or_demo_guard + broker checks) prevent
+                # the masked code from being submitted as a real order target.
+                account_id=(mask_account(account) if do_mask else account),
                 display=(mask_account(account) if do_mask else account),
             )
             for account in loaded_accounts
