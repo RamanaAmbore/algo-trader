@@ -84,10 +84,11 @@ def test_positions_overlay_helper_uses_map():
 def test_positions_overlay_fast_path_when_all_open():
     """No snapshot lookup when every row's exchange is currently open."""
     src = _src(_POS)
-    # A short-circuit check followed by a live-tag return under the
-    # unified animation model (price_source + is_animating).
-    assert "price_source=\"live\"" in src
-    assert "is_animating=True" in src
+    # Fast path short-circuits when no exchanges are closed; calls resolve_current_price
+    # to tag rows with price_source + is_animating under the unified animation model.
+    assert "_overlay_snapshot_for_closed_exchanges" in src
+    assert "resolve_current_price" in src
+    assert "exchange_open=True" in src
 
 
 def test_holdings_overlay_helper_uses_map():
