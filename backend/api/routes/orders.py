@@ -124,6 +124,131 @@ from backend.api.routes.orders_postback import (  # noqa: E402
 import time as _time  # used by _postback_broadcast_fanout for ts fields
 
 
+# ── Chase-reconcile helpers (extracted from list_active_chases, reconcile_algo_orders, retry_template) ─
+_CHASE_LIVE_TERMINAL = frozenset({"COMPLETE", "CANCELLED", "REJECTED", "EXPIRED"})
+_CHASE_KITE_TO_ALGO = {
+    "COMPLETE":  "FILLED",
+    "CANCELLED": "CANCELLED",
+    "REJECTED":  "REJECTED",
+    "EXPIRED":   "UNFILLED",
+}
+
+
+def _chase_snapshot_paper_open_ids() -> Optional[set]:
+    """Snapshot paper engine's in-flight AlgoOrder ids, once per request.
+    Returns None when the engine can't be reached — callers use that
+    sentinel to skip the paper-row drop path.
+    """
+    try:
+        from backend.api.algo.paper import get_prod_paper_engine
+        _pe = get_prod_paper_engine()
+        return {o.get("algo_order_id") for o in _pe.open_order_details()}
+    except Exception:
+        return None
+
+
+async def _chase_snapshot_broker_status_by_id() -> dict[str, dict]:
+    """Snapshot the cached live broker order book keyed by order_id.
+    Values are `{"status": <UPPER>, "average_price": <float>}`. On
+    cache miss returns an empty dict — callers treat that as "broker
+    snapshot unavailable, keep row as OPEN".
+    """
+    out: dict[str, dict] = {}
+    try:
+        _ord_resp = await get_or_fetch("orders", _fetch_orders,
+                                       ttl_seconds=_ORDERS_TTL)
+        for _o in (_ord_resp.rows or []):
+            _bid = str(getattr(_o, "order_id", "") or "")
+            if _bid:
+                out[_bid] = {
+                    "status": str(getattr(_o, "status", "") or "").upper(),
+                    "average_price": float(getattr(_o, "average_price", 0) or 0),
+                }
+    except Exception as _oe:
+        logger.debug(f"chases/active broker snapshot failed: {_oe}")
+    return out
+
+
+def _chase_process_paper_row(r, _paper_open_ids: set) -> tuple[bool, int]:
+    """Handle one paper-mode row. Returns `(drop, dropped_paper_delta)`.
+    Only counts as `dropped_paper` when this call actually flipped the
+    row from OPEN → UNFILLED (concurrent step() may have raced us to a
+    terminal state — do NOT overcount those).
+    """
+    if r.id in _paper_open_ids:
+        return False, 0
+    if r.status == "OPEN":
+        r.status = "UNFILLED"
+        r.detail = ((r.detail or "")[:200]
+                    + " · paper engine no longer tracking")
+        return True, 1
+    return True, 0
+
+
+def _chase_process_live_row(
+    r,
+    _broker_status_by_id: dict[str, dict],
+    _reconciled_filled: list,
+) -> tuple[bool, int, int]:
+    """Handle one live-mode row. Returns
+    `(drop, dropped_live_delta, reconciled_live_delta)`. Appends to
+    `_reconciled_filled` when a row flips to FILLED so the caller can
+    fire template-attach post-commit.
+    """
+    if not (r.broker_order_id or "").strip():
+        r.status = "REJECTED"
+        r.detail = ((r.detail or "")[:200]
+                    + " · live placement never returned broker_order_id")
+        return True, 1, 0
+
+    _bo = _broker_status_by_id.get(str(r.broker_order_id))
+    if not _bo or _bo["status"] not in _CHASE_LIVE_TERMINAL:
+        return False, 0, 0
+
+    new_status = _CHASE_KITE_TO_ALGO[_bo["status"]]
+    if r.status != new_status:
+        r.status = new_status
+        if new_status == "FILLED":
+            if _bo["average_price"]:
+                try:
+                    r.fill_price = float(_bo["average_price"])
+                except (TypeError, ValueError):
+                    pass
+            r.filled_at = datetime.now(timezone.utc)
+            _reconciled_filled.append(r)
+        r.detail = ((r.detail or "")[:200]
+                    + f" · broker says {_bo['status']}")
+        return True, 0, 1
+    return True, 0, 0
+
+
+def _chase_row_to_info(r, masked_acct, child_map: dict) -> "AlgoOrderInfo":
+    """Materialise an AlgoOrder ORM row into the API response Struct.
+    Extracted so the list_active_chases + list_orders response builders
+    can share the same mapping.
+    """
+    return AlgoOrderInfo(
+        id=r.id, account=masked_acct(r.account), symbol=r.symbol,
+        exchange=r.exchange,
+        transaction_type=r.transaction_type, quantity=r.quantity,
+        initial_price=(float(r.initial_price) if r.initial_price is not None else None),
+        current_limit=(float(r.current_limit) if r.current_limit is not None else None),
+        fill_price=(float(r.fill_price) if r.fill_price is not None else None),
+        attempts=int(r.attempts or 0),
+        status=r.status, engine=r.engine, mode=r.mode,
+        detail=r.detail,
+        created_at=r.created_at.isoformat() if r.created_at else "",
+        target_pct=(float(r.target_pct) if r.target_pct is not None else None),
+        target_abs=(float(r.target_abs) if r.target_abs is not None else None),
+        parent_order_id=r.parent_order_id,
+        basket_tag=r.basket_tag,
+        template_id=r.template_id,
+        attached_gtts_json=r.attached_gtts_json,
+        filled_quantity=(int(r.filled_quantity) if r.filled_quantity is not None else None),
+        child_order_ids=child_map.get(r.id, []),
+    )
+
+
 def _postback_broadcast_fanout(
     *,
     status: str,
@@ -314,20 +439,12 @@ class OrdersController(Controller):
         thorough sweep.
         """
         from sqlalchemy import desc, select as sql_select
-        from datetime import datetime, timezone
         from backend.api.database import async_session
         from backend.api.models import AlgoOrder
 
         # Snapshot paper engine's open-order ids ONCE before the DB
         # query so we don't pay for the lock on every row.
-        try:
-            from backend.api.algo.paper import get_prod_paper_engine
-            _pe = get_prod_paper_engine()
-            _paper_open_ids = {
-                o.get("algo_order_id") for o in _pe.open_order_details()
-            }
-        except Exception:
-            _paper_open_ids = None  # engine unavailable → don't drop paper rows
+        _paper_open_ids = _chase_snapshot_paper_open_ids()
 
         # Snapshot live broker orders (cached 15 s in get_or_fetch).
         # Operator: "once chase reconciled and order completed it should
@@ -339,26 +456,7 @@ class OrdersController(Controller):
         # had the KiteConnection bug — separate fix in this commit).
         # Inline broker lookup uses the existing /api/orders cache so we
         # pay 1 broker.orders() per account per 15 s, not 1 per 3 s poll.
-        _LIVE_TERMINAL = {"COMPLETE", "CANCELLED", "REJECTED", "EXPIRED"}
-        _KITE_TO_ALGO = {
-            "COMPLETE":  "FILLED",
-            "CANCELLED": "CANCELLED",
-            "REJECTED":  "REJECTED",
-            "EXPIRED":   "UNFILLED",
-        }
-        _broker_status_by_id: dict[str, dict] = {}
-        try:
-            _ord_resp = await get_or_fetch("orders", _fetch_orders,
-                                           ttl_seconds=_ORDERS_TTL)
-            for _o in (_ord_resp.rows or []):
-                _bid = str(getattr(_o, "order_id", "") or "")
-                if _bid:
-                    _broker_status_by_id[_bid] = {
-                        "status": str(getattr(_o, "status", "") or "").upper(),
-                        "average_price": float(getattr(_o, "average_price", 0) or 0),
-                    }
-        except Exception as _oe:
-            logger.debug(f"chases/active broker snapshot failed: {_oe}")
+        _broker_status_by_id = await _chase_snapshot_broker_status_by_id()
 
         async with async_session() as s:
             # Audit fix (H-1) — also include CANCEL_FAILED rows so the
@@ -388,48 +486,17 @@ class OrdersController(Controller):
             for r in rows:
                 mode = (r.mode or "").lower()
                 if mode == "paper" and _paper_open_ids is not None:
-                    if r.id not in _paper_open_ids:
-                        # Guard: only flip to UNFILLED when the row is still
-                        # OPEN in the DB.  The engine's concurrent step() may
-                        # have already written FILLED; a plain assignment would
-                        # overwrite that terminal status.  SQLAlchemy ORM
-                        # doesn't expose UPDATE … WHERE clauses directly, so
-                        # only mutate if the refreshed instance still shows
-                        # OPEN (the SELECT above fetched it as OPEN, but a
-                        # concurrent commit could have raced us).
-                        if r.status == "OPEN":
-                            r.status = "UNFILLED"
-                            r.detail = ((r.detail or "")[:200]
-                                        + " · paper engine no longer tracking")
-                            dropped_paper += 1
+                    drop, d_delta = _chase_process_paper_row(r, _paper_open_ids)
+                    dropped_paper += d_delta
+                    if drop:
                         continue
                 elif mode == "live":
-                    if not (r.broker_order_id or "").strip():
-                        r.status = "REJECTED"
-                        r.detail = ((r.detail or "")[:200]
-                                    + " · live placement never returned broker_order_id")
-                        dropped_live += 1
-                        continue
-                    # Broker reconciliation — if the cached order book
-                    # shows this id at a terminal status, flip the row
-                    # and drop it from the response.
-                    _bo = _broker_status_by_id.get(str(r.broker_order_id))
-                    if _bo and _bo["status"] in _LIVE_TERMINAL:
-                        new_status = _KITE_TO_ALGO[_bo["status"]]
-                        if r.status != new_status:
-                            r.status = new_status
-                            if new_status == "FILLED":
-                                if _bo["average_price"]:
-                                    try:
-                                        r.fill_price = float(_bo["average_price"])
-                                    except (TypeError, ValueError):
-                                        pass
-                                r.filled_at = datetime.now(timezone.utc)
-                                # Queue for template-attach fire after commit.
-                                _reconciled_filled.append(r)
-                            r.detail = ((r.detail or "")[:200]
-                                        + f" · broker says {_bo['status']}")
-                            reconciled_live += 1
+                    drop, d_delta, r_delta = _chase_process_live_row(
+                        r, _broker_status_by_id, _reconciled_filled,
+                    )
+                    dropped_live += d_delta
+                    reconciled_live += r_delta
+                    if drop:
                         continue
                 kept.append(r)
             if dropped_paper or dropped_live or reconciled_live:
@@ -445,29 +512,7 @@ class OrdersController(Controller):
 
         do_mask = not is_admin_request(request)
         masked_acct = mask_account if do_mask else (lambda a: a)
-        return [
-            AlgoOrderInfo(
-                id=r.id, account=masked_acct(r.account), symbol=r.symbol,
-                exchange=r.exchange,
-                transaction_type=r.transaction_type, quantity=r.quantity,
-                initial_price=(float(r.initial_price) if r.initial_price is not None else None),
-                current_limit=(float(r.current_limit) if r.current_limit is not None else None),
-                fill_price=(float(r.fill_price) if r.fill_price is not None else None),
-                attempts=int(r.attempts or 0),
-                status=r.status, engine=r.engine, mode=r.mode,
-                detail=r.detail,
-                created_at=r.created_at.isoformat() if r.created_at else "",
-                target_pct=(float(r.target_pct) if r.target_pct is not None else None),
-                target_abs=(float(r.target_abs) if r.target_abs is not None else None),
-                parent_order_id=r.parent_order_id,
-                basket_tag=r.basket_tag,
-                template_id=r.template_id,
-                attached_gtts_json=r.attached_gtts_json,
-                filled_quantity=(int(r.filled_quantity) if r.filled_quantity is not None else None),
-                child_order_ids=child_map.get(r.id, []),
-            )
-            for r in kept
-        ]
+        return [_chase_row_to_info(r, masked_acct, child_map) for r in kept]
 
     @post("/chases/{algo_order_id:int}/kill", guards=[admin_guard])
     async def kill_chase(self, algo_order_id: int, request: Request) -> dict:
