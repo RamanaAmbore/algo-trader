@@ -89,6 +89,101 @@ def _record_good_quote_live(sym: str, payload: dict) -> None:
         pass
 
 
+def _closed_hours_warm_claim(sig: str, today, now_epoch: float) -> bool:
+    """Reserve the (day, sig) slot for the caller and return True when
+    the caller should proceed with the broker fetch. Returns False when
+    another coroutine is already warming this sig, when the sig was
+    warmed successfully today, or when we're inside a broker-failure
+    cool-off window.
+
+    Called under `_closed_hours_warm_lock` internally — the caller MUST
+    NOT hold the lock. On True the sig is placed in `_in_progress`; the
+    caller MUST release it via the `finally` block after the broker
+    round-trip.
+    """
+    global _closed_hours_warm_day
+    with _closed_hours_warm_lock:
+        if _closed_hours_warm_day != today:
+            _closed_hours_warm_signatures.clear()
+            _closed_hours_warm_in_progress.clear()
+            _closed_hours_warm_failed_until.clear()
+            _closed_hours_warm_day = today
+        if sig in _closed_hours_warm_signatures:
+            return False
+        if sig in _closed_hours_warm_in_progress:
+            return False
+        fail_until = _closed_hours_warm_failed_until.get(sig, 0.0)
+        if fail_until > now_epoch:
+            return False
+        _closed_hours_warm_in_progress.add(sig)
+        return True
+
+
+def _extract_top_price(side: list | None) -> float | None:
+    """Extract the top-of-book price from one side of a depth payload.
+    Returns None when the side is empty or the top row has no positive
+    price. Wraps price coercion so callers can stay linear.
+    """
+    if not side:
+        return None
+    top = side[0] or {}
+    price = top.get("price") or 0
+    if not price:
+        return None
+    try:
+        return float(price)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_lkg_payload_from_quote(q: dict) -> dict:
+    """Build the record_good_quote payload dict from a raw broker quote.
+    Pure — no cache writes. Callers handle both LTP + quote persistence.
+    """
+    ohlc = q.get("ohlc") or {}
+    _ltp = float(q.get("last_price") or 0.0)
+    _close = float(ohlc.get("close") or 0.0) or None
+    _open  = float(ohlc.get("open")  or 0.0) or None
+    _vol   = int(q.get("volume") or 0)
+    _oi    = int(q.get("oi") or 0)
+    _change = (_ltp - _close) if (_close and _ltp) else 0.0
+    _chg_pct = (_change / _close * 100.0) if _close else 0.0
+    depth = q.get("depth") or {}
+    return {
+        "last_price": _ltp,          # caller consumes separately for LTP record
+        "open":       _open,
+        "close":      _close,
+        "volume":     _vol,
+        "oi":         _oi,
+        "change":     _change,
+        "change_pct": _chg_pct,
+        "bid":        _extract_top_price(depth.get("buy")),
+        "ask":        _extract_top_price(depth.get("sell")),
+    }
+
+
+def _persist_one_closed_hours_quote(bkey: str, q: dict) -> bool:
+    """Persist one broker quote payload into the LKG cache. Returns True
+    on success, False when the payload was empty or malformed. Silently
+    swallows per-symbol errors so a bad row can't derail the whole warm.
+    """
+    if not q:
+        return False
+    try:
+        from backend.brokers.broker_apis import (
+            record_good_ltp, record_good_quote,
+        )
+        _, sym_only = bkey.split(":", 1) if ":" in bkey else ("", bkey)
+        payload = _build_lkg_payload_from_quote(q)
+        _ltp = payload.pop("last_price")
+        if _ltp > 0:
+            record_good_ltp(sym_only, _ltp)
+        record_good_quote(sym_only, payload)
+        return True
+    except Exception:
+        return False
+
+
 async def _maybe_warm_closed_hours_quotes(keys: list[str], key_map) -> None:
     """One-shot broker.quote() warm for closed-hours cold-start scenarios.
 
@@ -107,40 +202,22 @@ async def _maybe_warm_closed_hours_quotes(keys: list[str], key_map) -> None:
     the caller falls through to empty-fields rows, same as the pre-warm
     baseline behaviour.
     """
-    global _closed_hours_warm_day
     if not key_map or not getattr(key_map, "broker_keys", None):
         return
     today = _ist_today()
     sig = ",".join(sorted(key_map.broker_keys))
     now_epoch = _time_mod.time()
-    with _closed_hours_warm_lock:
-        if _closed_hours_warm_day != today:
-            _closed_hours_warm_signatures.clear()
-            _closed_hours_warm_in_progress.clear()
-            _closed_hours_warm_failed_until.clear()
-            _closed_hours_warm_day = today
-        if sig in _closed_hours_warm_signatures:
-            return
-        # TOCTOU dedup — another coroutine holds the warm for this sig.
-        # Exit early rather than duplicate the broker.quote() fetch.
-        if sig in _closed_hours_warm_in_progress:
-            return
-        # Broker-storm throttle — recent failure still in cool-off.
-        fail_until = _closed_hours_warm_failed_until.get(sig, 0.0)
-        if fail_until > now_epoch:
-            return
-        # Claim the sig for the duration of the broker call.  Released in the
-        # `finally` below regardless of success / failure; the SUCCESS path
-        # additionally promotes it to `_closed_hours_warm_signatures` (the
-        # steady-state dedup set — see block near end of function).
-        _closed_hours_warm_in_progress.add(sig)
+
+    if not _closed_hours_warm_claim(sig, today, now_epoch):
+        return
 
     try:
         try:
             from backend.brokers.registry import get_market_data_broker
-            from backend.brokers.broker_apis import record_good_ltp, record_good_quote
             broker = get_market_data_broker()
-            quote_data = await asyncio.to_thread(broker.quote, key_map.broker_keys) or {}
+            quote_data = await asyncio.to_thread(
+                broker.quote, key_map.broker_keys,
+            ) or {}
         except Exception as exc:
             # Broker failed — mark sig unreachable for ~60 s (bounds storm)
             # then bail.  Next request after cool-off will retry.
@@ -151,40 +228,10 @@ async def _maybe_warm_closed_hours_quotes(keys: list[str], key_map) -> None:
             logger.debug(f"batch_quote: closed-hours warm skipped: {exc}")
             return
 
-        _persisted = 0
-        for bkey, q in quote_data.items():
-            if not q:
-                continue
-            try:
-                _, sym_only = bkey.split(":", 1) if ":" in bkey else ("", bkey)
-                ohlc = q.get("ohlc") or {}
-                _ltp = float(q.get("last_price") or 0.0)
-                _close = float(ohlc.get("close") or 0.0) or None
-                _open  = float(ohlc.get("open")  or 0.0) or None
-                _vol   = int(q.get("volume") or 0)
-                _oi    = int(q.get("oi") or 0)
-                _change = (_ltp - _close) if (_close and _ltp) else 0.0
-                _chg_pct = (_change / _close * 100.0) if _close else 0.0
-                depth = q.get("depth") or {}
-                buys  = depth.get("buy") or []
-                sells = depth.get("sell") or []
-                _bid = float(buys[0]["price"])  if buys  and (buys[0].get("price") or 0)  else None
-                _ask = float(sells[0]["price"]) if sells and (sells[0].get("price") or 0) else None
-                if _ltp > 0:
-                    record_good_ltp(sym_only, _ltp)
-                record_good_quote(sym_only, {
-                    "open":       _open,
-                    "close":      _close,
-                    "volume":     _vol,
-                    "oi":         _oi,
-                    "change":     _change,
-                    "change_pct": _chg_pct,
-                    "bid":        _bid,
-                    "ask":        _ask,
-                })
-                _persisted += 1
-            except Exception:
-                continue
+        _persisted = sum(
+            1 for bkey, q in quote_data.items()
+            if _persist_one_closed_hours_quote(bkey, q)
+        )
         if _persisted:
             # Promote sig only on successful warm — add to steady-state
             # dedup set in the same lock as the in-progress release below
