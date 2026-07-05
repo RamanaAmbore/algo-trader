@@ -56,22 +56,25 @@ def test_batch_sparkline_imports_any_segment_open():
 # ── 2. SSOT: get_or_fetch_intraday is the sole public API, not a parallel path ──
 
 def test_batch_sparkline_uses_get_or_fetch_intraday():
-    """batch_sparkline._fetch_today_bars must call get_or_fetch_intraday.
+    """_fetch_bars_parallel must call get_or_fetch_intraday and get_or_fetch_daily.
 
     A parallel direct call to _intraday_store.get() would bypass the
     db_only plumbing added in Slice A and silently fall through to the
     broker during closed hours.
     """
-    from backend.api.routes.quote import SparklineController
-    handler = SparklineController.batch_sparkline
-    fn = getattr(handler, "fn", handler)
-    src = inspect.getsource(fn)
+    import backend.api.routes.quote as quote_mod
+    # _fetch_bars_parallel is a module-level helper; find it via getattr
+    fetch_fn = getattr(quote_mod, "_fetch_bars_parallel", None)
+    assert fetch_fn is not None, (
+        "quote.py must define _fetch_bars_parallel as a module-level helper"
+    )
+    src = inspect.getsource(fetch_fn)
     assert "get_or_fetch_intraday" in src, (
-        "batch_sparkline._fetch_today_bars must call "
+        "_fetch_bars_parallel must call "
         "intraday_store.get_or_fetch_intraday (not _intraday_store.get directly)"
     )
     assert "get_or_fetch_daily" in src, (
-        "batch_sparkline._fetch_daily_closes must call "
+        "_fetch_bars_parallel must call "
         "ohlcv_store.get_or_fetch_daily"
     )
 
@@ -102,13 +105,16 @@ def test_no_inline_market_open_in_batch_sparkline():
 # ── 4. db_only flag wired into both fetch closures ───────────────────────────────
 
 def test_batch_sparkline_threads_db_only():
-    """batch_sparkline must pass db_only=db_only to both fetch helpers."""
-    from backend.api.routes.quote import SparklineController
-    handler = SparklineController.batch_sparkline
-    fn = getattr(handler, "fn", handler)
-    src = inspect.getsource(fn)
+    """_fetch_bars_parallel must pass db_only=db_only to both fetch helpers."""
+    import backend.api.routes.quote as quote_mod
+    # _fetch_bars_parallel is a module-level helper
+    fetch_fn = getattr(quote_mod, "_fetch_bars_parallel", None)
+    assert fetch_fn is not None, (
+        "quote.py must define _fetch_bars_parallel as a module-level helper"
+    )
+    src = inspect.getsource(fetch_fn)
     assert "db_only=db_only" in src, (
-        "batch_sparkline must pass db_only=db_only to get_or_fetch_intraday "
+        "_fetch_bars_parallel must pass db_only=db_only to get_or_fetch_intraday "
         "and get_or_fetch_daily so closed-hours calls skip the broker"
     )
 
