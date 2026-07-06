@@ -15,7 +15,7 @@
   import { createPerformanceSocket } from '$lib/ws';
   import { bookChanged } from '$lib/data/bookChanged';
   import {
-    fetchPositions, fetchHoldings, fetchSimStatus, fetchStrategyAnalytics,
+    fetchSimStatus, fetchStrategyAnalytics,
     fetchAccounts, fetchOptionsSpot, fetchChainQuotes,
     placeTicketOrder, fetchLiveStatus,
     fetchWatchlists, fetchWatchlist, addWatchlistItem,
@@ -3258,11 +3258,15 @@
     /** @type {Record<string, {pos_pnl:number,pos_day:number,hold_pnl:number,hold_day:number}>} */
     const _excluded = {};
 
-    // Live broker positions
-    try {
-      const r = await fetchPositions({ fresh });
-      positionsLoadErr = '';
-      for (const p of (r?.rows || [])) {
+    // Live broker positions — route through positionsStore so NavStrip and
+    // this page share one SSOT fetch. Independent fetchPositions() calls
+    // caused symbolStore to be written twice per poll (once by positionsStore
+    // parse, once by publishPulseQuotes here), which oscillated liveLtp for
+    // MCX futures that appear as both a position and an underlying anchor.
+    await positionsStore.load(fresh ? { fresh: true } : undefined, { force: fresh });
+    positionsLoadErr = positionsStore.error ?? '';
+    if (!positionsStore.error) {
+      for (const p of (positionsStore.value ?? [])) {
         const sym = p?.tradingsymbol || p?.symbol;
         if (!sym) continue;
         if (!isFOSymbol(sym)) {
@@ -3276,10 +3280,6 @@
         const baseRow = buildPositionRowFromBroker(p, 'live');
         for (const row of splitClosedReopened(baseRow)) merged.push(row);
       }
-    } catch (e) {
-      // Don't blank the previous candidates on a transient failure —
-      // banner explains the staleness, the prior list keeps rendering.
-      positionsLoadErr = e?.message || 'Broker positions unavailable.';
     }
 
     // Sim positions — inline ltp so strategy endpoint can compute
@@ -3299,24 +3299,22 @@
     // Cash-equity holdings — skipped in sim (sim doesn't model equity book).
     // Only EQ rows are kept; derivative holdings are picked up by positions.
     if (!simActive) {
-      try {
-        const r = await fetchHoldings();
-        const rows = [];
-        for (const h of (r?.rows || [])) {
-          const sym = h?.tradingsymbol || h?.symbol;
-          if (!sym) continue;
-          if (isFOSymbol(sym)) {
-            bumpExcluded(_excluded, h?.account, {
-              hold_pnl: Number(h?.pnl || 0),
-              hold_day: Number(h?.day_change_val || 0),
-            });
-            continue;
-          }
-          const row = buildHoldingRowFromBroker(h);
-          if (row) rows.push(row);
+      await holdingsStore.load();
+      const rows = [];
+      for (const h of (holdingsStore.value ?? [])) {
+        const sym = h?.tradingsymbol || h?.symbol;
+        if (!sym) continue;
+        if (isFOSymbol(sym)) {
+          bumpExcluded(_excluded, h?.account, {
+            hold_pnl: Number(h?.pnl || 0),
+            hold_day: Number(h?.day_change_val || 0),
+          });
+          continue;
         }
-        holdings = rows;
-      } catch (_) { /* ignore — holdings layer is additive */ }
+        const row = buildHoldingRowFromBroker(h);
+        if (row) rows.push(row);
+      }
+      holdings = rows;
     } else {
       holdings = [];
     }
