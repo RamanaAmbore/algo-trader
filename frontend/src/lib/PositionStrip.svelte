@@ -325,7 +325,16 @@
     for (const row of positions) {
       if (!_appliesToRow(row)) continue;
       const sym  = String(row?.tradingsymbol || '').toUpperCase();
-      const live = untrack(() => getSnapshot(sym)?.ltp);
+      // Only apply the SSE-tick delta when an actual live tick has stamped
+      // ltp_ts > 0. REST publishers (publishPulseQuotes, _publishPositionsRows)
+      // both use ltp_ts=0 — when they race (e.g. derivatives page batchQuotes
+      // the same futures contract that is also a position), the last writer wins
+      // and liveLtp oscillates between two REST values, producing a phantom
+      // ±60k delta. Gating on ltp_ts > 0 prevents REST-sourced LTPs from
+      // contributing here; SSE ticks (ltp_ts=Date.now()) are unaffected.
+      const snap = untrack(() => getSnapshot(sym));
+      if (!snap || !(snap.ltp_ts > 0)) continue;
+      const live = snap.ltp;
       if (typeof live !== 'number' || !(live > 0)) continue;
       const pollLtp = Number(row?.last_price || 0);
       const qty     = Number(row?.quantity   || 0);
@@ -336,7 +345,9 @@
     for (const row of holdings) {
       if (!_appliesToRow(row)) continue;
       const sym  = String(row?.tradingsymbol || '').toUpperCase();
-      const live = untrack(() => getSnapshot(sym)?.ltp);
+      const snap = untrack(() => getSnapshot(sym));
+      if (!snap || !(snap.ltp_ts > 0)) continue;
+      const live = snap.ltp;
       if (typeof live !== 'number' || !(live > 0)) continue;
       const pollLtp = Number(row?.last_price || 0);
       const qty     = Number(row?.quantity   || 0);
