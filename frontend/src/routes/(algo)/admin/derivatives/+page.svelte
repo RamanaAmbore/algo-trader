@@ -50,7 +50,7 @@
   import {
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
-  import { baseDayPnlForPosition, livePositionDayPnl, positionsPnlFiltered } from '$lib/data/nav';
+  import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav';
   import ChartModal from '$lib/ChartModal.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
@@ -897,37 +897,16 @@
     return _perRootReduce((c, spot) => _expiryPnl(c, spot), ms);
   });
 
-  // Snapshot TOTAL sums — computed ONCE, published to the shared
-  // snapshotTotals store so NavStrip's P slots 1/2/3 render identical
-  // values without duplicated compute. Operator 2026-07-01: "now p
-  // three values should match the snapshot total row day p & l, p & l,
-  // exp p & l. again no duplicated code ssot."
-  const _snapshotTotalDay = $derived(
-    positionsPnlFiltered(positionsStore.value ?? []).dayTotal
-  );
+  // Snapshot TOTAL sums — P&L + Exp computed here (they only reference
+  // _pnlByRootMap/_expPnlByRootMap, both declared above). Day sum is
+  // declared below after `positions` (line ~3108) to avoid a forward
+  // reference; snapshotTotals $effect also lives there.
   const _snapshotTotalPnl = $derived(
     Object.values(_pnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
   );
   const _snapshotTotalExp = $derived(
     Object.values(_expPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
   );
-  $effect(() => {
-    // Guard: only publish after the first positions load completes.
-    // Before _positionsLoaded is true, positions = [] → all three
-    // sums are 0, which clobbers PositionStrip's own correct values.
-    // Swapping to or from the derivatives page must never write a
-    // stale 0 to snapshotTotals while the broker round-trip is in
-    // flight. _positionsLoaded is set to true at the end of
-    // loadPositions(), after both positions + holdings are resolved.
-    if (!_positionsLoaded) return;
-    if ((positionsStore.value?.length ?? 0) === 0) return;
-    snapshotTotals.set({
-      day: _snapshotTotalDay,
-      pnl: _snapshotTotalPnl,
-      exp: _snapshotTotalExp,
-      at:  Date.now(),
-    });
-  });
 
   /** Per-underlying H Day P&L — Day P&L from equity holdings on that root
    *  ONLY. Operator 2026-07-01: "you can h day p & l from holdings for
@@ -3104,8 +3083,34 @@
   // Position lists for the picker. Carries avg_cost + ltp so that
   // the strategy leg-builder can ship them inline (sim legs need this
   // because the backend can't fetch their ltp from the broker).
-  /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null}>} */
+  /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number, day_change_val:number, overnight_quantity:number, realised:number, day_buy_quantity:number, day_sell_quantity:number, day_buy_value:number, day_sell_value:number}>} */
   let positions = $state([]);
+
+  // _snapshotTotalDay is declared here (after `positions`) to keep all
+  // snapshotTotals declarations near the $effect that publishes them.
+  // Uses _dayPnlByRootMap (tick-aware, via livePositionDayPnl per leg)
+  // rather than positionsStore.value so the 5s cross-page poller can't
+  // clobber P1 with day_change_val=0 rows during stale REST windows.
+  const _snapshotTotalDay = $derived(
+    Object.values(_dayPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
+  );
+  $effect(() => {
+    // Guard: only publish after the first positions load completes.
+    // Before _positionsLoaded is true, positions = [] → all three
+    // sums are 0, which clobbers PositionStrip's own correct values.
+    // Swapping to or from the derivatives page must never write a
+    // stale 0 to snapshotTotals while the broker round-trip is in
+    // flight. _positionsLoaded is set to true at the end of
+    // loadPositions(), after both positions + holdings are resolved.
+    if (!_positionsLoaded || !positions.length) return;
+    snapshotTotals.set({
+      day: _snapshotTotalDay,
+      pnl: _snapshotTotalPnl,
+      exp: _snapshotTotalExp,
+      at:  Date.now(),
+    });
+  });
+
   /** Raw broker holdings keyed by symbol. When the operator picks an
    *  underlying that they ALSO hold the cash equity for, the holding
    *  appears as a long-equity leg in candidatePositions so the payoff
