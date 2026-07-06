@@ -1005,10 +1005,6 @@ export const lastRefreshAt = writable(0);
 // so slots 1 / 2 / 3 always match the Snapshot TOTAL row. When the
 // derivatives page isn't mounted the store retains its last-published
 // value (frozen snapshot semantics — same pattern as _stripFrozen).
-export const snapshotTotals = writable(
-  /** @type {{ day: number, pnl: number, exp: number, at: number } | null} */
-  (null)
-);
 
 // ── Include-Holdings toggle (shared with derivatives page) ──────────────
 // Backing localStorage key: 'opt.includeHoldings' (same as the

@@ -8,7 +8,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, nowStamp, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, snapshotTotals } from '$lib/stores';
+  import { authStore, nowStamp, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings } from '$lib/stores';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import { isMarketOpen } from '$lib/marketHours';
@@ -787,8 +787,8 @@
    *    - Proxy-target routing via targetsForProxy(h.symbol) → root credits
    *    - Account + source filter (live vs sim)
    *    - Strategy filter (matchStrategy) — MUST match _byUnderlyingTotals /
-   *      _byUnderlyingExp to keep the Snapshot TOTAL row and the
-   *      snapshotTotals store in sync with the per-row data.
+   *      _byUnderlyingExp to keep the Snapshot TOTAL row consistent with
+   *      per-row data.
    *
    *  Operator 2026-07-01: "day p & l should use the same calculation
    *  in overlay in payoff. ssot" + "p & l should use the same
@@ -880,8 +880,7 @@
   // same _perRootReduce iteration — the ONLY difference is the per-leg
   // value function, matching what the overlay uses for each metric.
   // SSOT: pass the strategy matcher so the TOTAL sums ONLY the same rows
-  // visible above it — fixes snapshotTotals / NavStrip P drift when a
-  // strategy filter is active (operator 2026-07-02).
+  // visible above it.
   const _dayPnlByRootMap = $derived.by(() => {
     void _throttledTick;
     const ms = _makeStrategyMatcher();
@@ -899,8 +898,7 @@
 
   // Snapshot TOTAL sums — P&L + Exp computed here (they only reference
   // _pnlByRootMap/_expPnlByRootMap, both declared above). Day sum is
-  // declared below after `positions` (line ~3108) to avoid a forward
-  // reference; snapshotTotals $effect also lives there.
+  // declared below after `positions` to avoid a forward reference.
   const _snapshotTotalPnl = $derived(
     Object.values(_pnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
   );
@@ -3086,30 +3084,11 @@
   /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number, day_change_val:number, overnight_quantity:number, realised:number, day_buy_quantity:number, day_sell_quantity:number, day_buy_value:number, day_sell_value:number}>} */
   let positions = $state([]);
 
-  // _snapshotTotalDay is declared here (after `positions`) to keep all
-  // snapshotTotals declarations near the $effect that publishes them.
-  // Uses _dayPnlByRootMap (tick-aware, via livePositionDayPnl per leg)
-  // rather than positionsStore.value so the 5s cross-page poller can't
-  // clobber P1 with day_change_val=0 rows during stale REST windows.
+  // _snapshotTotalDay uses _dayPnlByRootMap (tick-aware, via livePositionDayPnl
+  // per leg) for the Snapshot TOTAL row in the derivatives page UI.
   const _snapshotTotalDay = $derived(
     Object.values(_dayPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
   );
-  $effect(() => {
-    // Guard: only publish after the first positions load completes.
-    // Before _positionsLoaded is true, positions = [] → all three
-    // sums are 0, which clobbers PositionStrip's own correct values.
-    // Swapping to or from the derivatives page must never write a
-    // stale 0 to snapshotTotals while the broker round-trip is in
-    // flight. _positionsLoaded is set to true at the end of
-    // loadPositions(), after both positions + holdings are resolved.
-    if (!_positionsLoaded || !positions.length) return;
-    snapshotTotals.set({
-      day: _snapshotTotalDay,
-      pnl: _snapshotTotalPnl,
-      exp: _snapshotTotalExp,
-      at:  Date.now(),
-    });
-  });
 
   /** Raw broker holdings keyed by symbol. When the operator picks an
    *  underlying that they ALSO hold the cash equity for, the holding
@@ -3693,12 +3672,6 @@
     teardown?.(); posTeardown?.(); simTeardown?.(); wsTeardown?.(); quotesTeardown?.();
     flash.dispose(); _unsubBook?.(); _unsubDerivsOrder?.();
     if (_urlSyncTimer) { clearTimeout(_urlSyncTimer); _urlSyncTimer = null; }
-    // Clear the shared snapshotTotals store so PositionStrip falls back
-    // to its own dispPositionsToday / _livePositionsPnl computation when
-    // this page is unmounted. Without this, the last derivatives-scoped
-    // value persists in the store and the strip on every subsequent page
-    // renders that filtered F&O-only subset rather than the full book.
-    snapshotTotals.set(null);
   });
 
   // Refresh underlying quotes whenever the Snapshot universe changes
