@@ -133,16 +133,12 @@
   async function refresh() {
     historyData = {};
     await Promise.all([loadLatest(), loadRegressions()]);
+    const all = [...feCards, ...beCards];
+    if (all.length) loadHistory(all);
   }
 
   onMount(async () => {
     await refresh();
-  });
-
-  // Load history when card lists change (i.e. once latestRows populates).
-  $effect(() => {
-    const all = [...feCards, ...beCards];
-    if (all.length) loadHistory(all);
   });
 
   // ── SVG helpers (same approach as /admin/metrics) ─────────────────────

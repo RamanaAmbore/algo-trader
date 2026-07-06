@@ -920,6 +920,7 @@
     // flight. _positionsLoaded is set to true at the end of
     // loadPositions(), after both positions + holdings are resolved.
     if (!_positionsLoaded) return;
+    if ((positionsStore.value?.length ?? 0) === 0) return;
     snapshotTotals.set({
       day: _snapshotTotalDay,
       pnl: _snapshotTotalPnl,
@@ -3266,12 +3267,6 @@
   // (moved for cc reduction; see pageLoad.js for the full implementation + docs)
 
   async function loadPositions({ fresh = false } = {}) {
-    // Hydrate the module-level store singletons concurrently with this
-    // page's own fetch so PositionStrip / dashboard benefit from the
-    // round-trip without doubling network cost.
-    positionsStore.load();
-    holdingsStore.load();
-
     /** @type {Array<any>} */
     const merged = [];
     // Equity intraday positions (excluded from F&O view) are accumulated
