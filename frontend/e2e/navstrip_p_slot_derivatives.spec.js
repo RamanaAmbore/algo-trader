@@ -218,19 +218,24 @@ test.describe('NavStrip P slot 1 — derivatives page regression', () => {
     const slot1 = getPSlot1(page);
     await expect(slot1).toBeVisible({ timeout: 5_000 });
 
-    // Capture the stable baseline value AFTER positions are loaded.
+    // Capture BOTH text and direction class BEFORE picking.
+    // fmtMoney(0) returns '₹0.00' (not '₹0'), so we compare the
+    // actual rendered text string directly rather than guessing format.
     const beforePick = (await slot1.textContent())?.trim() ?? '';
+    const beforeCls  = await slot1.getAttribute('class') ?? '';
+    // Extract only the direction token (ps-pos / ps-neg / ps-flat).
+    const beforeDir  = (beforeCls.match(/\bps-(?:pos|neg|flat)\b/) || ['ps-flat'])[0];
 
     // ── 2. Open the Underlying picker and pick the SECOND option ──
-    // (#opt-und .rbq-select-trigger opens the panel; the second
-    // .rbq-select-option is a different underlying from whatever
-    // auto-selected on mount.)
-    const trigger = page.locator('#opt-und .rbq-select-trigger');
-    await expect(trigger).toBeVisible({ timeout: 5_000 });
+    // Select renders the id prop directly on the <button class="rbq-select-trigger">
+    // so #opt-und IS the trigger button — no descendant selector needed.
+    // Options live in a sibling .rbq-select-panel inside .opt-und-row.
+    const trigger = page.locator('#opt-und');
+    await expect(trigger).toBeVisible({ timeout: 15_000 });
     await trigger.click();
 
     // Wait for the panel to open (options list visible).
-    const options = page.locator('#opt-und .rbq-select-option');
+    const options = page.locator('.opt-und-row .rbq-select-option');
     await expect(options.first()).toBeVisible({ timeout: 3_000 });
     const count = await options.count();
 
@@ -249,26 +254,22 @@ test.describe('NavStrip P slot 1 — derivatives page regression', () => {
     // → _snapshotTotalDay re-derives → $effect publishes snapshotTotals.
     await page.waitForTimeout(400);
 
-    // ── 3. Core assertion: P slot 1 must NOT have dropped to ₹0 ──
+    // ── 3. Core assertion: both text AND direction class must be stable ──
     const afterPick = (await slot1.textContent())?.trim() ?? '';
+    const afterCls  = await slot1.getAttribute('class') ?? '';
+    const afterDir  = (afterCls.match(/\bps-(?:pos|neg|flat)\b/) || ['ps-flat'])[0];
 
-    // If the baseline was already ₹0 (no F&O positions), both will be ₹0
-    // and the test is vacuously passing — that's OK.
-    if (beforePick !== '₹0') {
-      expect(afterPick).not.toBe('₹0');
-    }
-
-    // The value must also equal the pre-pick value — symbol-select should
-    // NOT change the total because _dayPnlByRootMap sums ALL positions
-    // (not just the selected underlying).
+    // Text must not change (symbol-select is view-only; _dayPnlByRootMap
+    // sums ALL positions, not just the selected underlying).
     expect(afterPick).toBe(beforePick);
 
-    // Direction class must still be present (not ps-flat from a zero write).
-    const cls = await slot1.getAttribute('class');
-    if (beforePick !== '₹0') {
-      expect(cls).not.toMatch(/ps-flat/);
-    }
-    expect(cls).toMatch(/ps-pos|ps-neg|ps-flat/);
+    // Direction class must not change — this is the core regression check.
+    // Previously, picking a symbol could cause $snapshotTotals.day to
+    // briefly flip to 0, turning ps-pos/ps-neg into ps-flat.
+    expect(afterDir).toBe(beforeDir);
+
+    // Sanity: a direction class must always be present.
+    expect(afterDir).toMatch(/^ps-(?:pos|neg|flat)$/);
   });
 
   test('P slot 1 has direction class (not bare text) on /orders after leaving derivatives', async ({ page }) => {

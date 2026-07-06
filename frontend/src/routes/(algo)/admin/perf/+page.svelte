@@ -24,7 +24,7 @@
     --c-short  (#f87171) for LCP/p95 over-budget
 -->
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, untrack } from 'svelte';
   import { nowStamp } from '$lib/stores';
   import {
     fetchPerfLatest,
@@ -74,6 +74,15 @@
   /** True when we have ≥1 snapshot row. */
   const hasData = $derived(latestRows.length > 0);
 
+  /** O(1) worst-regression lookup per page name, keyed during render. */
+  const regressionMap = $derived(
+    regressions.reduce((m, r) => {
+      const e = m.get(r.page);
+      if (!e || r.delta_pct > e.delta_pct) m.set(r.page, r);
+      return m;
+    }, /** @type {Map<string,any>} */ (new Map()))
+  );
+
   // ── Data loading ──────────────────────────────────────────────────────
   async function loadLatest() {
     loadingLatest = true;
@@ -101,20 +110,20 @@
     }
   }
 
-  /** Fetch 30-day history for every visible card. Sequential to stay
-   *  within rate limits; each request is small. */
   async function loadHistory(cards) {
     if (!cards.length) return;
     loadingHistory = true;
-    const next = { ...historyData };
-    for (const card of cards) {
-      const key = card.page_or_route;
-      if (next[key]) continue; // already loaded
-      try {
-        const r = await fetchPerfHistory(key, 30);
-        next[key] = Array.isArray(r?.rows) ? r.rows : [];
-      } catch (_) {
-        next[key] = [];
+    const next = { ...untrack(() => historyData) };
+    const missing = cards.filter(c => !next[c.page_or_route]);
+    if (missing.length) {
+      const results = await Promise.allSettled(
+        missing.map(c => fetchPerfHistory(c.page_or_route, 30))
+      );
+      for (let i = 0; i < missing.length; i++) {
+        const r = results[i];
+        next[missing[i].page_or_route] = r.status === 'fulfilled' && Array.isArray(r.value?.rows)
+          ? r.value.rows
+          : [];
       }
     }
     historyData = next;
@@ -239,11 +248,9 @@
    * Returns null | 'amber' | 'red' and the worst delta_pct string.
    */
   function cardBadge(/** @type {string} */ pageName) {
-    const hits = regressions.filter(r => r.page === pageName);
-    if (!hits.length) return null;
-    const worst = hits.reduce((a, b) => a.delta_pct > b.delta_pct ? a : b);
-    const color = worst.delta_pct > 25 ? 'red' : 'amber';
-    return { color, delta_pct: worst.delta_pct, metric: worst.metric };
+    const worst = regressionMap.get(pageName);
+    if (!worst) return null;
+    return { color: worst.delta_pct > 25 ? 'red' : 'amber', delta_pct: worst.delta_pct, metric: worst.metric };
   }
 
   /** For the LCP / route_p95_ms chart color: are we over a threshold? */

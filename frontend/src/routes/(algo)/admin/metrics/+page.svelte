@@ -79,16 +79,16 @@
   async function loadTrends() {
     trendLoading = true;
     try {
+      const results = await Promise.allSettled(
+        TREND_TILES.map(tile => fetchCodeMetricsTrend(tile.key, 50))
+      );
       /** @type {Record<string, Array<{release_tag:string,captured_at:string,value:number|null}>>} */
       const next = {};
-      // Sequential to avoid a 10-burst on the backend; each call is small.
-      for (const tile of TREND_TILES) {
-        try {
-          const t = await fetchCodeMetricsTrend(tile.key, 50);
-          next[tile.key] = Array.isArray(t?.points) ? t.points : [];
-        } catch (e) {
-          next[tile.key] = [];
-        }
+      for (let i = 0; i < TREND_TILES.length; i++) {
+        const r = results[i];
+        next[TREND_TILES[i].key] = r.status === 'fulfilled' && Array.isArray(r.value?.points)
+          ? r.value.points
+          : [];
       }
       trendData = next;
     } finally {
@@ -189,9 +189,8 @@
     return null;
   }
 
-  onMount(async () => {
-    await load();
-    await loadTrends();
+  onMount(() => {
+    Promise.all([load(), loadTrends()]);
   });
 </script>
 
@@ -206,7 +205,7 @@
   <span class="algo-ts">{$nowStamp}</span>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
-    <RefreshButton onClick={async () => { await load(); await loadTrends(); }} loading={loading} label="code metrics" />
+    <RefreshButton onClick={() => Promise.all([load(), loadTrends()])} loading={loading} label="code metrics" />
     <PageHeaderActions />
   </span>
 </div>
@@ -254,9 +253,6 @@
           {#if drawn.path}
             <path d={drawn.path} class="metrics-line" />
           {/if}
-          {#each drawn.dots as d}
-            <circle cx={d.x} cy={d.y} r="1.5" class="metrics-dot" />
-          {/each}
         </svg>
         <div class="metrics-tile-meta">
           <span>{pts.length} pts</span>
@@ -446,9 +442,6 @@
     fill: none;
     stroke: var(--c-info);
     stroke-width: 1.4;
-  }
-  .metrics-dot {
-    fill: #67e8f9;
   }
   .metrics-tile-meta {
     display: flex;
