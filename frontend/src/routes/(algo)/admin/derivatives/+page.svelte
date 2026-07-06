@@ -50,7 +50,7 @@
   import {
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
-  import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav';
+  import { baseDayPnlForPosition, livePositionDayPnl, FO_EXCHANGES } from '$lib/data/nav';
   import ChartModal from '$lib/ChartModal.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
@@ -3084,11 +3084,24 @@
   /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number, day_change_val:number, overnight_quantity:number, realised:number, day_buy_quantity:number, day_sell_quantity:number, day_buy_value:number, day_sell_value:number}>} */
   let positions = $state([]);
 
-  // _snapshotTotalDay uses _dayPnlByRootMap (tick-aware, via livePositionDayPnl
-  // per leg) for the Snapshot TOTAL row in the derivatives page UI.
-  const _snapshotTotalDay = $derived(
-    Object.values(_dayPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
-  );
+  // _snapshotTotalDay — SSOT: same computation as NavStrip P slot 1.
+  // Reads raw positionsStore.value (unmodified broker rows) and applies
+  // baseDayPnlForPosition per F&O row, with account filter when selected.
+  // Using _dayPnlByRootMap here was wrong: it applies _expiryPnl for
+  // expired legs, substituting current-spot intrinsic for the actual
+  // realized day_change_val — closed positions (qty=0) contributed 0
+  // instead of their realized P&L, and open expired legs drifted vs broker.
+  const _snapshotTotalDay = $derived.by(() => {
+    const matchAccount = buildAcctMatcher(selectedAccounts);
+    let sum = 0;
+    for (const p of (positionsStore.value ?? [])) {
+      const exch = String(p?.exchange || '').toUpperCase();
+      if (!FO_EXCHANGES.has(exch)) continue;
+      if (!matchAccount(String(p?.account || ''))) continue;
+      sum += baseDayPnlForPosition(p);
+    }
+    return sum;
+  });
 
   /** Raw broker holdings keyed by symbol. When the operator picks an
    *  underlying that they ALSO hold the cash equity for, the holding
