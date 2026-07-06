@@ -50,7 +50,7 @@
   import {
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
-  import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav';
+  import { baseDayPnlForPosition, livePositionDayPnl, positionsPnlFiltered } from '$lib/data/nav';
   import ChartModal from '$lib/ChartModal.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
@@ -294,23 +294,17 @@
     // sometimes doesn't fire on the initial hydration transition
     // (Svelte 5 derived-dep chains through async store loads).
     // Poll every 300 ms (visibility-aware) until either:
-    //   - the operator manually picks a valid symbol
-    //   - the picker populates and we assign the first entry
+    //   - the picker populates (opts.length > 0)
     //   - 200 attempts elapsed (~60 s) — systemic broker outage, give up
     //   - the component unmounts (poll cleared via _autoSelectPollId)
     // Also validates the cached selection: if a stale symbol was
     // restored from sessionStorage but is NOT in the current picker,
-    // treat it as invalid and swap to the picker's first entry.
+    // swap to the picker's first entry.
     //
-    // Late-arrival refresh: when the picker list is delayed (opts empty
-    // on the first poll tick), the reactive chain ($effect legs →
-    // loadStrategy) may have already fired with an empty leg set and
-    // resolved to a no-op. When opts finally arrives and we auto-select
-    // (or confirm the cached pick is valid), force strategy + positions
-    // to refresh immediately instead of waiting for the next 5 s tick.
-    // `_autoSelectAttempts > 1` is the delayed-path guard — fast path
-    // (opts already populated on tick 1) relies on the reactive chain
-    // as normal and does not add an extra network round-trip.
+    // Once opts are populated and the selection is valid (or fixed),
+    // always call loadStrategy({ force: true }) and stop immediately.
+    // This ensures the strategy loads even when the reactive chain fired
+    // before the picker was ready (e.g. late broker response).
     let _autoSelectAttempts = 0;
     _autoSelectPollId = visibleInterval(() => {
       _autoSelectAttempts++;
@@ -323,20 +317,12 @@
       const cur  = selectedUnderlying;
       const isValid = cur && opts.some(o => o.value === cur);
       if (!isValid) selectedUnderlying = opts[0].value;
-      // Picker is populated and selection is valid — stop polling.
+      // Picker is populated and selection is confirmed valid (or fixed).
+      // Always force a strategy refresh and stop the poll — the reactive
+      // chain may have already fired with an empty/stale leg set.
       _autoSelectPollId?.();
       _autoSelectPollId = null;
-      // Force payoff + legs refresh when:
-      //   (a) selection was invalid and we swapped to the first item
-      //       (fast-path: ticker 1, slow-path: ticker > 1), OR
-      //   (b) picker arrived late (delayed path) — reactive chain may
-      //       have already fired with empty legs and resolved to a no-op.
-      // Two refreshes are acceptable: the first render on mount (may be
-      // empty / stale-cache state) + this forced second one after the
-      // dropdown list and valid selection are confirmed.
-      if (!isValid || _autoSelectAttempts > 1) {
-        untrack(() => { loadStrategy({ force: true }); });
-      }
+      untrack(() => { loadStrategy({ force: true }); });
     }, 300);
   });
 
@@ -917,7 +903,7 @@
   // three values should match the snapshot total row day p & l, p & l,
   // exp p & l. again no duplicated code ssot."
   const _snapshotTotalDay = $derived(
-    Object.values(_dayPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
+    positionsPnlFiltered(positionsStore.value ?? []).dayTotal
   );
   const _snapshotTotalPnl = $derived(
     Object.values(_pnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)

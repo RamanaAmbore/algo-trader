@@ -475,11 +475,27 @@
     (emailPreset !== '' || emailPicked.length > 0)
   );
 
+  /** Resolved email addresses for the selected preset (or empty array when manual). */
+  const emailResolvedRecipients = $derived(
+    emailPreset === 'all-partners'
+      ? users.filter(u => (u.role === 'partner' || u.role === 'designated') && (u.share_pct || 0) > 0 && u.is_active && u.email && u.email_verified).map(u => u.email)
+      : emailPreset === 'all-designated'
+      ? users.filter(u => u.role === 'designated' && (u.share_pct || 0) > 0 && u.is_active && u.email && u.email_verified).map(u => u.email)
+      : emailPreset === 'all'
+      ? users.filter(u => u.is_active && u.email && u.email_verified).map(u => u.email)
+      : []
+  );
+
+  /** Count label shown below the preset dropdown. */
+  const emailPresetCount = $derived(
+    emailPreset !== '' ? emailResolvedRecipients.length : emailPicked.length
+  );
+
   /** Computed recipient count label for the confirm dialog. */
   const emailRecipientLabel = $derived(() => {
-    if (emailPreset === 'all-partners')   return `all partners (${users.filter(u=>(u.role==='partner'||u.role==='designated')&&(u.share_pct||0)>0&&u.is_active&&u.email&&u.email_verified).length})`;
-    if (emailPreset === 'all-designated') return `all designated (${users.filter(u=>u.role==='designated'&&(u.share_pct||0)>0&&u.is_active&&u.email&&u.email_verified).length})`;
-    if (emailPreset === 'all')            return `all users (${users.filter(u=>u.is_active&&u.email&&u.email_verified).length})`;
+    if (emailPreset === 'all-partners')   return `all partners (${emailResolvedRecipients.length})`;
+    if (emailPreset === 'all-designated') return `all designated (${emailResolvedRecipients.length})`;
+    if (emailPreset === 'all')            return `all users (${emailResolvedRecipients.length})`;
     return `${emailPicked.length} partner(s)`;
   });
 
@@ -512,7 +528,7 @@
     if (emailResultTimer) { clearTimeout(emailResultTimer); emailResultTimer = null; }
     try {
       const body = {
-        recipients: emailPreset || emailPicked,
+        recipients: emailPreset ? emailResolvedRecipients : emailPicked,
         subject: emailSubject.trim(),
         body: emailBody.trim(),
       };
@@ -985,6 +1001,9 @@
       <span class="field-label">Preset recipients</span>
       <Select ariaLabel="Recipient preset" bind:value={emailPreset}
         options={PRESET_OPTIONS} />
+      {#if emailPreset !== ''}
+        <p class="text-[0.58rem] text-[var(--c-muted)] mt-0.5 tabular-nums">{emailPresetCount} email address{emailPresetCount === 1 ? '' : 'es'}</p>
+      {/if}
     </div>
     <div>
       <span class="field-label" class:opacity-40={emailPreset !== ''}>Or pick specific</span>
