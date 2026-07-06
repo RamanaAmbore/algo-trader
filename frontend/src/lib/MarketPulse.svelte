@@ -80,7 +80,7 @@
     moversStore, moversSnapshotAt, activeListsStore, sparklinesStore,
     publishWatchQuotes, publishPulseQuotes,
   } from '$lib/data/marketDataStores.svelte.js';
-  import { resolveUnderlying, INDEX_LTP_KEY, MCX_COMMODITIES, CDS_CURRENCIES } from '$lib/data/resolveUnderlying';
+  // resolveUnderlying helpers used by loadPulse are imported via pulseLoad.js.
   import CardControls from '$lib/CardControls.svelte';
   import { createPerformanceSocket } from '$lib/ws';
   import { lastRefreshAt, formatDualTz } from '$lib/stores';
@@ -108,6 +108,9 @@
     mergeUnderlyingAnchors, mergeMoverRows, tagWatchedIndices,
     finalizeRows, sortUnifiedRows,
   } from '$lib/data/pulseUnified';
+  import {
+    collectUnderlyings, assembleQuoteKeys, buildQuoteMaps, planAccountSeeding,
+  } from '$lib/data/pulseLoad';
 
   let {
     title              = 'Pulse',
@@ -2464,60 +2467,19 @@
     return results.flatMap(r => (r?.items || []));
   }
 
-  // Resolve underlying for an OPTION position. For MCX commodities the
-  // option's underlying is the same-month future (CRUDEOIL26JUN10500CE
-  // settles to CRUDEOIL26JUNFUT, not the front-month MAY future). For
-  // indices/stocks the spot is shared across all expiries so we just
-  // delegate to resolveUnderlying.
-  function resolveUnderlyingForOption(name, optionExpiryISO,
-                                       /** @type {((u: string) => any) | null} */ findNearestFut,
-                                       /** @type {((u: string) => any[]) | null} */ listFuts) {
-    const n = String(name || '').toUpperCase();
-    if (!n) return null;
-    if (MCX_COMMODITIES.has(n) && optionExpiryISO && listFuts) {
-      const ym = String(optionExpiryISO).slice(0, 7);  // YYYY-MM
-      const futs = listFuts(n) || [];
-      const same = futs.find(f => String(f.x || '').slice(0, 7) === ym);
-      if (same?.s && same?.e) {
-        return {
-          tradingsymbol: same.s,
-          exchange: same.e,
-          quoteKey: `${same.e}:${same.s}`,
-          // underlying_group keeps the month suffix so multiple option
-          // months for the same commodity each map to their own future
-          // (CRUDEOIL_2026-06 → CRUDEOIL26JUNFUT,
-          //  CRUDEOIL_2026-07 → CRUDEOIL26JULFUT). It's a per-anchor
-          // dedup key for the underlyingInfos Map only.
-          underlying_group: `${n}_${ym}`,
-          // displayUnderlying is the BARE commodity name — the value
-          // that goes onto row.underlying so the anchor groups with
-          // its option positions (which carry underlying='CRUDEOIL'
-          // from the instrument cache). Without this, the anchor
-          // ended up in its own 'CRUDEOIL_2026-06' group, floating
-          // off above/below the CRUDEOIL option block.
-          displayUnderlying: n,
-          kind: 'fut',
-        };
-      }
-    }
-    // Non-MCX or no same-month match → fall back to nearest-month
-    // (still useful — indices/stocks have a single spot, the U badge
-    // groups every option month under it).
-    return resolveUnderlying(n, findNearestFut);
-  }
-
   // Part 1 — Jun 2026: loadPulse accepts a force flag.
   // force=true  → operator Refresh or mount: re-fetch positions + holdings.
   // force=false → background tick: layout poller already fetched; read values.
   // Rate impact: ~24 req/min (layout poller only) vs ~36/min pre-migration.
+  //
+  // Heavy logic extracted to pulseLoad.js helpers:
+  //   collectUnderlyings, assembleQuoteKeys, buildQuoteMaps, planAccountSeeding.
   async function loadPulse(/** @type {{ force?: boolean, skipLtp?: boolean }} */ { force = false, skipLtp = false } = {}) {
     try {
       if (force) {
         // showSummary (dashboard mode) needs raw .summary from the API response;
         // the shared store discards it. Fetch in parallel with the store loads.
         // skipLtp (Jul 2026) — RefreshButton's both-markets-closed path.
-        // Positions + holdings route with `?skip_ltp=1` so broker LTP fetch
-        // is bypassed; funds still fetches fresh margins/cash independently.
         const summaryP = showSummary
           ? Promise.allSettled([
               fetchPositions({ skipLtp }).catch(() => null),
@@ -2545,14 +2507,11 @@
 
       const p_rows = positionsStore.value ?? [];
       const h_rows = holdingsStore.value  ?? [];
-      // Surface every account id we see across positions + holdings
-      // for the account-picker dropdown. Also UNION with the broker
-      // registry (loaded accounts that may have 0 positions / 0
-      // holdings — operator still wants to see them in the filter so
-      // they can confirm the row was added correctly). Deduplicated,
-      // sorted. _knownBrokerAccounts is populated by the parallel
-      // fetchBrokerAccounts() call in onMount + the visible-interval
-      // poll below.
+
+      // ── Account-picker seeding ──────────────────────────────────────
+      // Surface every account id seen across positions + holdings for the
+      // account-picker dropdown. Also UNION with the broker registry
+      // (loaded accounts that may have 0 positions / 0 holdings).
       if (accountPicker) {
         const accts = new Set();
         for (const r of p_rows) if (r.account) accts.add(String(r.account));
@@ -2560,208 +2519,52 @@
         for (const a of _knownBrokerAccounts) accts.add(String(a));
         const sorted = sortAccountsBy([...accts], _mpOrderMap);
         availableAccounts = sorted;
-        // Two-stage seeding:
-        //   (a) FIRST-LOAD seed (latched by `_seededFromBrokers`) — when
-        //       no persisted state exists in sessionStorage, populate
-        //       each picker with EVERY known account so positions /
-        //       holdings render immediately on a fresh session.
-        //   (b) LATE-ARRIVAL union (runs every poll) — accounts that
-        //       were NOT in `_seenAccounts` before but appear in `sorted`
-        //       now are unioned into BOTH pickers UNCONDITIONALLY. Fixes
-        //       the Dhan-not-visible bug: when an admin rebuilds
-        //       Connections to add Dhan after the operator's Pulse tab
-        //       is already running, the Dhan account code arrives in
-        //       `_knownBrokerAccounts` and `positions` rows but the
-        //       persisted positionsAccounts set doesn't include it — the
-        //       latch (a) would never re-seed. Stage (b) closes that gap
-        //       while still preserving operator manual exclusions on
-        //       previously-known accounts.
-        if (sorted.length > 0) {
-          // Stage (b): late-arrival accounts ALWAYS union in.
-          const newAccts = sorted.filter(a => !_seenAccounts.has(a));
-          if (newAccts.length > 0) {
-            // Skip stage (b) only on the very first sighting (when
-            // `_seenAccounts` is empty AND no persisted state exists) —
-            // stage (a) below handles that case with the same union.
-            const hasPersistedP = (() => {
-              try {
-                const cP = sessionStorage.getItem('mp.positionsAccounts');
-                if (cP) {
-                  const parsed = JSON.parse(cP);
-                  return Array.isArray(parsed) && parsed.length > 0;
-                }
-              } catch (_) {}
-              return false;
-            })();
-            const hasPersistedH = (() => {
-              try {
-                const cH = sessionStorage.getItem('mp.holdingsAccounts');
-                if (cH) {
-                  const parsed = JSON.parse(cH);
-                  return Array.isArray(parsed) && parsed.length > 0;
-                }
-              } catch (_) {}
-              return false;
-            })();
-            const seenAny = _seenAccounts.size > 0;
-            // Run the union when EITHER (i) we've seen accounts before
-            // (so this is a genuine late-arrival), OR (ii) there's
-            // persisted state (so the operator's session is mid-stream
-            // and a new account is joining).
-            if (seenAny || hasPersistedP || hasPersistedH) {
-              if (hasPersistedP || positionsAccounts.length > 0) {
-                const cur = new Set(positionsAccounts);
-                for (const a of newAccts) cur.add(a);
-                positionsAccounts = sortAccountsBy([...cur], _mpOrderMap);
-              }
-              if (hasPersistedH || holdingsAccounts.length > 0) {
-                const cur = new Set(holdingsAccounts);
-                for (const a of newAccts) cur.add(a);
-                holdingsAccounts = sortAccountsBy([...cur], _mpOrderMap);
-              }
+
+        // readPersisted shim: checks sessionStorage for a non-empty array.
+        const readPersisted = (/** @type {string} */ key) => {
+          try {
+            const raw = sessionStorage.getItem(key);
+            if (raw) {
+              const p = JSON.parse(raw);
+              return Array.isArray(p) && p.length > 0;
             }
-            // Mark every account in `sorted` (incl. the new arrivals)
-            // as seen, and persist the ledger so it survives a tab
-            // refresh. Done BEFORE stage (a) so stage (a)'s ADD-all
-            // path doesn't trip on the same accounts as "new" later.
-            for (const a of sorted) _seenAccounts.add(a);
-            try {
-              sessionStorage.setItem(
-                'mp.seenAccounts', JSON.stringify([..._seenAccounts]));
-            } catch (_) {}
-          }
-          // Stage (a): first-load latch. Operator: "all accounts should
-          // be default for positions and holdings in pulse." The picker
-          // intentionally STARTS EMPTY (= "All accounts" filter), so
-          // first-load just marks the ledger and latches without
-          // pre-filling. Stage (b) above handles late-arriving brokers
-          // when the operator has explicitly narrowed (non-empty
-          // selection); empty-selection sessions stay wide.
-          if (!_seededFromBrokers) {
-            for (const a of sorted) _seenAccounts.add(a);
-            try {
-              sessionStorage.setItem(
-                'mp.seenAccounts', JSON.stringify([..._seenAccounts]));
-            } catch (_) {}
-            if (_knownBrokerAccounts.length > 0) _seededFromBrokers = true;
-          }
-        }
-      }
-      const underlyingInfos = /** @type {Map<string, any>} */ (new Map());
-      const contractKeys = new Set();
-      const lookup = getInstrument;
-      const nearestFut = findNearestFuture;
-      const listFuts = listFutures;
-      // Keyed by underlying_group so MCX options with different
-      // contract months (CRUDEOIL26MAY vs CRUDEOIL26JUN) each map to
-      // their own same-month future. Indices/stocks share one key.
-      //
-      // Derivative-grouping rule: anchors are injected ONLY for
-      // options (CE/PE). Futures stand alone — each future is its own
-      // row, no underlying-anchor pulled in alongside. This stops a
-      // standalone NIFTY25APRFUT position from also surfacing a NIFTY
-      // anchor row (the future IS the tradable instrument; grouping
-      // it under spot adds no signal).
-      //
-      // The anchor row also carries the major group of its trigger
-      // (positions vs holdings) so buildUnified can land the anchor
-      // in the same major as its options. First wins — if NIFTY
-      // options exist in BOTH positions and holdings, the anchor
-      // gets the positions tag (priority: positions > holdings).
-      // Parse a Kite derivative tradingsymbol into underlying / expiry /
-      // kind without consulting the instruments cache. Handles both
-      // monthly-options (NIFTY25APR22000CE), weekly-options
-      // (NIFTY2540422000CE), monthly-futures (NIFTY25APRFUT), and the
-      // commodity variants (CRUDEOIL26JUNFUT, GOLDM26MAY152000PE).
-      // Returns null for equity tradingsymbols. Used as a fallback path
-      // for the anchor-creation loop when the instruments cache hasn't
-      // loaded this contract yet (race on cold start) — instead of
-      // bailing silently, we synthesize the minimum we need.
-      const _MONTH = { JAN:'01',FEB:'02',MAR:'03',APR:'04',MAY:'05',JUN:'06',
-                       JUL:'07',AUG:'08',SEP:'09',OCT:'10',NOV:'11',DEC:'12' };
-      const _parseDerivSym = (sym) => {
-        const s = String(sym || '').toUpperCase();
-        // Monthly opt:  PREFIX + YYMMM + STRIKE + CE|PE
-        let m = s.match(/^([A-Z]+)(\d{2})([A-Z]{3})\d+(CE|PE)$/);
-        if (m) return { underlying: m[1], expiry: `20${m[2]}-${_MONTH[m[3]] || '01'}-01`, kind: m[4] };
-        // Weekly opt: PREFIX + YY + MM + DD + STRIKE + CE|PE
-        m = s.match(/^([A-Z]+)(\d{2})(\d{1,2})(\d{1,2})\d+(CE|PE)$/);
-        if (m) return { underlying: m[1], expiry: `20${m[2]}-${String(m[3]).padStart(2,'0')}-${String(m[4]).padStart(2,'0')}`, kind: m[5] };
-        // Monthly fut:  PREFIX + YYMMM + FUT
-        m = s.match(/^([A-Z]+)(\d{2})([A-Z]{3})FUT$/);
-        if (m) return { underlying: m[1], expiry: `20${m[2]}-${_MONTH[m[3]] || '01'}-01`, kind: 'FUT' };
-        return null;
-      };
+          } catch (_) {}
+          return false;
+        };
 
-      const addUnderlying = (sym, triggerMajor, optInst) => {
-        // Bypass the instruments cache — parse the tradingsymbol
-        // directly. Without this, contracts missing from the cache
-        // (cold-start race, new strikes, weekly options Kite
-        // publishes late) silently lost their parent anchor row.
-        const parsed = _parseDerivSym(sym);
-        if (!parsed) return;
-        const { underlying: u, expiry, kind } = parsed;
-        const isOpt = (kind === 'CE' || kind === 'PE');
-        const isFut = (kind === 'FUT');
-        if (!isOpt && !isFut) return;
-        const info = isOpt
-          ? resolveUnderlyingForOption(u, expiry, nearestFut, listFuts)
-          : resolveUnderlying(u, nearestFut);
-        if (info && !underlyingInfos.has(info.underlying_group)) {
-          underlyingInfos.set(info.underlying_group, { ...info, _major: triggerMajor });
-        }
-      };
-      for (const r of p_rows) {
-        const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
-        const exch = r.exchange || 'NFO';
-        if (sym) {
-          addUnderlying(sym, 'positions');
-          contractKeys.add(`${exch}:${sym}`);
-        }
-      }
-      for (const r of h_rows) {
-        const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
-        const exch = r.exchange || 'NSE';
-        if (sym) {
-          addUnderlying(sym, 'holdings');
-          contractKeys.add(`${exch}:${sym}`);
-        }
-      }
-      // Watchlist option-anchor pass — when the operator has an
-      // option (CE/PE) in any active watchlist, synthesise an
-      // anchor row for that option's underlying so the option sits
-      // under a parent anchor instead of orphaning in the grid.
-      // First-trigger-wins via the underlyingInfos map; positions
-      // anchors (registered above) already in the map are NOT
-      // overwritten — a watchlist option for an underlying that
-      // ALSO appears in positions will still surface the anchor in
-      // the Positions major (the original semantics). The
-      // watchlist anchor only lands when no higher-priority source
-      // claimed the underlying first.
-      for (const list of (activeLists || [])) {
-        const major = list?.is_pinned ? 'pinned' : 'watchlist';
-        for (const it of (list?.items || [])) {
-          const sym = String(it.tradingsymbol || '').toUpperCase();
-          if (sym) addUnderlying(sym, major);
+        const plan = planAccountSeeding({
+          sorted,
+          seenAccounts: _seenAccounts,
+          positionsAccounts,
+          holdingsAccounts,
+          seededFromBrokers: _seededFromBrokers,
+          hasKnownBrokers: _knownBrokerAccounts.length > 0,
+          orderMap: _mpOrderMap,
+          readPersisted,
+        });
+        positionsAccounts = plan.positionsAccounts;
+        holdingsAccounts  = plan.holdingsAccounts;
+        _seenAccounts     = plan.seenAccounts;
+        _seededFromBrokers = plan.seededFromBrokers;
+        if (plan.persistSeen) {
+          try {
+            sessionStorage.setItem('mp.seenAccounts', JSON.stringify(plan.persistSeen));
+          } catch (_) {}
         }
       }
 
-      const allKeys = new Set(contractKeys);
-      for (const info of underlyingInfos.values()) allKeys.add(info.quoteKey);
-      // Add every active watchlist item (pinned + user lists) to the
-      // batchQuote universe. Without this, pinned indices (NIFTY 50,
-      // SENSEX) and watchlist-only symbols are excluded from
-      // publishPulseQuotes and only get their symbolStore entry
-      // refreshed via the loadQuotes path (30 s when SSE is up).
-      // Positions/holdings already land in contractKeys above, so the
-      // incremental cost is just the ~15-20 pinned symbols.
-      for (const list of (activeLists || [])) {
-        for (const it of (list?.items || [])) {
-          const wSym  = String(it.tradingsymbol || '').toUpperCase();
-          const wExch = String(it.exchange || 'NSE').toUpperCase();
-          if (wSym && wExch) allKeys.add(`${wExch}:${wSym}`);
-        }
-      }
+      // ── Underlying resolution + contract keys ───────────────────────
+      // collectUnderlyings walks positions, holdings, and activeLists to
+      // build the underlyingInfos map and contractKeys set.
+      const { underlyingInfos, contractKeys } = collectUnderlyings({
+        pRows: p_rows,
+        hRows: h_rows,
+        activeLists,
+        findNearestFut: findNearestFuture,
+        listFuts: listFutures,
+      });
+
+      // ── Assemble batchQuote universe ────────────────────────────────
       // :mover-await — synchronise with the parallel loadMovers() the
       // caller (refreshAllNow / mount) kicked off before invoking us.
       // Position+holding fetches, underlying resolution, and the
@@ -2774,26 +2577,14 @@
         try { await _pendingMoversP; } catch (_) { /* movers store logs */ }
       }
 
-      // Add mover rows (winners/losers) to the batchQuote universe.
-      // Without this, mover-only symbols (HCLTECH, LODHA, ZYDUSLIFE …
-      // — the top-N stocks by day % change) never enter symbolStore
-      // with open / high / low / volume / oi. The MoverRow backend
-      // schema only carries last_price / previous_close / change_pct,
-      // so _publishMoverRows can't populate OHLCV — the only path is
-      // this batchQuote pass. Pre-fix symptom: /pulse mover-grid rows
-      // rendered LTP + Day % correctly but Open / Volume / OI cells
-      // stayed at "—" indefinitely.
-      // Set semantics dedupe against contractKeys + watchlist entries
-      // (a mover that's also in the operator's watchlist adds no
-      // incremental cost). Cap the mover contribution at 60 symbols
-      // (winners + losers per major = 30 + 30) so allKeys.size stays
-      // well under batchQuoteChunked's per-call ceiling.
-      for (const m of (movers || [])) {
-        const mSym  = String(m?.tradingsymbol || '').toUpperCase();
-        const mExch = String(m?.exchange || 'NSE').toUpperCase();
-        if (mSym && mExch) allKeys.add(`${mExch}:${mSym}`);
-      }
+      const allKeys = assembleQuoteKeys({
+        contractKeys,
+        underlyingInfos,
+        activeLists,
+        movers,
+      });
 
+      // ── Batch quote + pulseQuotes assembly ──────────────────────────
       if (allKeys.size) {
         const items = await batchQuoteChunked([...allKeys]);
         // BH5: publish the broker-quote snapshot for every symbol in
@@ -2801,24 +2592,7 @@
         // sink — after this, every market-data poll on this page feeds
         // the same per-symbol cache.
         publishPulseQuotes(items);
-        const cMap = {};
-        for (const q of items) {
-          cMap[`${q.exchange}:${q.tradingsymbol}`] = q;
-        }
-        const uMap = {};
-        for (const [name, info] of underlyingInfos.entries()) {
-          const q = cMap[info.quoteKey];
-          // Always create the anchor — even when the broker quote
-          // endpoint didn't return a row for info.quoteKey. Without
-          // this, INDIGO (whose NSE quote can silently fail) and
-          // GOLDM (whose MCX future may not be in the instruments
-          // cache) lost their anchor rows entirely, leaving the
-          // option positions orphaned in the grid. Quote-less
-          // anchors render with an em-dash LTP — still better than
-          // a missing parent row.
-          uMap[name] = q ? { ...q, _resolved: info } : { _resolved: info };
-        }
-        pulseQuotes = { underlyings: uMap, contracts: cMap };
+        pulseQuotes = buildQuoteMaps(items, underlyingInfos);
       } else {
         pulseQuotes = { underlyings: {}, contracts: {} };
       }

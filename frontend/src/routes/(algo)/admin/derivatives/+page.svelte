@@ -8,14 +8,14 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, nowStamp, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings, snapshotTotals } from '$lib/stores';
+  import { authStore, nowStamp, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings } from '$lib/stores';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import { isMarketOpen } from '$lib/marketHours';
   import { createPerformanceSocket } from '$lib/ws';
   import { bookChanged } from '$lib/data/bookChanged';
   import {
-    fetchPositions, fetchHoldings, fetchSimStatus, fetchStrategyAnalytics,
+    fetchSimStatus, fetchStrategyAnalytics,
     fetchAccounts, fetchOptionsSpot, fetchChainQuotes,
     placeTicketOrder, fetchLiveStatus,
     fetchWatchlists, fetchWatchlist, addWatchlistItem,
@@ -294,23 +294,17 @@
     // sometimes doesn't fire on the initial hydration transition
     // (Svelte 5 derived-dep chains through async store loads).
     // Poll every 300 ms (visibility-aware) until either:
-    //   - the operator manually picks a valid symbol
-    //   - the picker populates and we assign the first entry
+    //   - the picker populates (opts.length > 0)
     //   - 200 attempts elapsed (~60 s) — systemic broker outage, give up
     //   - the component unmounts (poll cleared via _autoSelectPollId)
     // Also validates the cached selection: if a stale symbol was
     // restored from sessionStorage but is NOT in the current picker,
-    // treat it as invalid and swap to the picker's first entry.
+    // swap to the picker's first entry.
     //
-    // Late-arrival refresh: when the picker list is delayed (opts empty
-    // on the first poll tick), the reactive chain ($effect legs →
-    // loadStrategy) may have already fired with an empty leg set and
-    // resolved to a no-op. When opts finally arrives and we auto-select
-    // (or confirm the cached pick is valid), force strategy + positions
-    // to refresh immediately instead of waiting for the next 5 s tick.
-    // `_autoSelectAttempts > 1` is the delayed-path guard — fast path
-    // (opts already populated on tick 1) relies on the reactive chain
-    // as normal and does not add an extra network round-trip.
+    // Once opts are populated and the selection is valid (or fixed),
+    // always call loadStrategy({ force: true }) and stop immediately.
+    // This ensures the strategy loads even when the reactive chain fired
+    // before the picker was ready (e.g. late broker response).
     let _autoSelectAttempts = 0;
     _autoSelectPollId = visibleInterval(() => {
       _autoSelectAttempts++;
@@ -323,20 +317,12 @@
       const cur  = selectedUnderlying;
       const isValid = cur && opts.some(o => o.value === cur);
       if (!isValid) selectedUnderlying = opts[0].value;
-      // Picker is populated and selection is valid — stop polling.
+      // Picker is populated and selection is confirmed valid (or fixed).
+      // Always force a strategy refresh and stop the poll — the reactive
+      // chain may have already fired with an empty/stale leg set.
       _autoSelectPollId?.();
       _autoSelectPollId = null;
-      // Force payoff + legs refresh when:
-      //   (a) selection was invalid and we swapped to the first item
-      //       (fast-path: ticker 1, slow-path: ticker > 1), OR
-      //   (b) picker arrived late (delayed path) — reactive chain may
-      //       have already fired with empty legs and resolved to a no-op.
-      // Two refreshes are acceptable: the first render on mount (may be
-      // empty / stale-cache state) + this forced second one after the
-      // dropdown list and valid selection are confirmed.
-      if (!isValid || _autoSelectAttempts > 1) {
-        untrack(() => { loadStrategy({ force: true }); });
-      }
+      untrack(() => { loadStrategy({ force: true }); });
     }, 300);
   });
 
@@ -658,7 +644,7 @@
     const wantedSource = simActive ? 'sim' : 'live';
     // Delegates to rollupByUnderlying in derivativesMath.js.
     // buildAcctMatcher + buildStrategyMatcher eliminate the duplicated
-    // closure boilerplate that appears in _byUnderlyingExp, _byUnderlyingDay,
+    // closure boilerplate that appears in _byUnderlyingExp,
     // _hDayByRoot, _hPnlByRoot, _hExpByRoot, and _perRootReduce.
     const matchAccount  = buildAcctMatcher(selectedAccounts);
     const matchStrategy = buildStrategyMatcher($selectedStrategyId, $strategyOpenSymbols);
@@ -801,8 +787,8 @@
    *    - Proxy-target routing via targetsForProxy(h.symbol) → root credits
    *    - Account + source filter (live vs sim)
    *    - Strategy filter (matchStrategy) — MUST match _byUnderlyingTotals /
-   *      _byUnderlyingExp / _byUnderlyingDay to keep the Snapshot TOTAL row
-   *      and the snapshotTotals store in sync with the per-row data.
+   *      _byUnderlyingExp to keep the Snapshot TOTAL row consistent with
+   *      per-row data.
    *
    *  Operator 2026-07-01: "day p & l should use the same calculation
    *  in overlay in payoff. ssot" + "p & l should use the same
@@ -836,8 +822,8 @@
   }
 
   /** Builds the same strategy-gate closure used by _byUnderlyingTotals /
-   *  _byUnderlyingExp / _byUnderlyingDay.  Call this inside a $derived.by()
-   *  so reads of $selectedStrategyId + $strategyOpenSymbols are tracked.
+   *  _byUnderlyingExp.  Call this inside a $derived.by() so reads of
+   *  $selectedStrategyId + $strategyOpenSymbols are tracked.
    *  Delegates to buildStrategyMatcher in derivativesMath.js. */
   function _makeStrategyMatcher() {
     return buildStrategyMatcher($selectedStrategyId, $strategyOpenSymbols);
@@ -894,8 +880,7 @@
   // same _perRootReduce iteration — the ONLY difference is the per-leg
   // value function, matching what the overlay uses for each metric.
   // SSOT: pass the strategy matcher so the TOTAL sums ONLY the same rows
-  // visible above it — fixes snapshotTotals / NavStrip P drift when a
-  // strategy filter is active (operator 2026-07-02).
+  // visible above it.
   const _dayPnlByRootMap = $derived.by(() => {
     void _throttledTick;
     const ms = _makeStrategyMatcher();
@@ -911,36 +896,15 @@
     return _perRootReduce((c, spot) => _expiryPnl(c, spot), ms);
   });
 
-  // Snapshot TOTAL sums — computed ONCE, published to the shared
-  // snapshotTotals store so NavStrip's P slots 1/2/3 render identical
-  // values without duplicated compute. Operator 2026-07-01: "now p
-  // three values should match the snapshot total row day p & l, p & l,
-  // exp p & l. again no duplicated code ssot."
-  const _snapshotTotalDay = $derived(
-    Object.values(_dayPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
-  );
+  // Snapshot TOTAL sums — P&L + Exp computed here (they only reference
+  // _pnlByRootMap/_expPnlByRootMap, both declared above). Day sum is
+  // declared below after `positions` to avoid a forward reference.
   const _snapshotTotalPnl = $derived(
     Object.values(_pnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
   );
   const _snapshotTotalExp = $derived(
     Object.values(_expPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
   );
-  $effect(() => {
-    // Guard: only publish after the first positions load completes.
-    // Before _positionsLoaded is true, positions = [] → all three
-    // sums are 0, which clobbers PositionStrip's own correct values.
-    // Swapping to or from the derivatives page must never write a
-    // stale 0 to snapshotTotals while the broker round-trip is in
-    // flight. _positionsLoaded is set to true at the end of
-    // loadPositions(), after both positions + holdings are resolved.
-    if (!_positionsLoaded) return;
-    snapshotTotals.set({
-      day: _snapshotTotalDay,
-      pnl: _snapshotTotalPnl,
-      exp: _snapshotTotalExp,
-      at:  Date.now(),
-    });
-  });
 
   /** Per-underlying H Day P&L — Day P&L from equity holdings on that root
    *  ONLY. Operator 2026-07-01: "you can h day p & l from holdings for
@@ -963,77 +927,6 @@
       const credits = _targets.length ? _targets : [sym];
       for (const root of credits) {
         out[root] = (out[root] || 0) + dbase;
-      }
-    }
-    return out;
-  });
-
-  /** Per-underlying Day P&L — overlay-parity computation. Operator 2026-07-01:
-   *  "day p & l should match day overlay value for each symbol in snapshot."
-   *  Overlay uses _dayPnlForLeg(c, spot) + SSE-tick delta per leg
-   *  (see candidatesDayPnl). Snapshot per-row was reading raw
-   *  broker `p.day_change_val` which diverged from overlay for expired
-   *  legs (overlay promotes to intrinsic Exp P&L on expiry day) AND
-   *  for intraday tick movement between polls. This derived mirrors
-   *  overlay's math per root so every Snapshot row's Day P&L cell
-   *  matches its underlying's overlay Day P&L when that row is selected.
-   *  { with, without } — .with adds equity holdings' day-P&L
-   *  contribution ((spot − prev_close) × qty); .without is F&O only. */
-  const _byUnderlyingDay = $derived.by(() => {
-    void _throttledTick;   // re-derive at 4 Hz tick gate
-    /** @type {Record<string, { with: number, without: number }>} */
-    const out = {};
-    const wantedSource = simActive ? 'sim' : 'live';
-    const matchAccount  = buildAcctMatcher(selectedAccounts);
-    const matchStrategy = buildStrategyMatcher($selectedStrategyId, $strategyOpenSymbols);
-    const ensure = (root) => out[root] || (out[root] = { with: 0, without: 0 });
-
-    for (const _p of positions) {
-      const p = /** @type {any} */ (_p);
-      if (p.source !== wantedSource) continue;
-      if (!matchAccount(p.account)) continue;
-      if (!matchStrategy(p.symbol || p.tradingsymbol)) continue;
-      const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
-      if (!sym) continue;
-      const isFut = /FUT$/i.test(sym);
-      const isOpt = /(CE|PE)$/i.test(sym);
-      if (!isFut && !isOpt) continue;
-      const root = (decomposeSymbol(sym).root || sym).toUpperCase();
-      if (!root) continue;
-      const p_ul = Number(p.underlying_ltp || 0);
-      const spot = p_ul > 0 ? p_ul : untrack(() => _rootSpot(root));
-      const qty  = Number(p.quantity ?? p.qty) || 0;
-      const cost = Number(p.average_price ?? p.avg_cost) || 0;
-      // Matches overlay's `_dayPnlForLeg(c, spot)` exactly:
-      //   - non-expired: c.day_change_val (no SSE-tick delta because
-      //     overlay reads `c.ltp` which candidates don't carry — the
-      //     delta path is de-facto no-op in candidatesDayPnl too)
-      //   - expired: promoted to _expiryPnl(c, spot)
-      const cand = { symbol: sym, qty, avg_cost: cost, kind: isOpt ? 'opt' : 'fut' };
-      let dv;
-      if (_isLegExpired({ symbol: sym, kind: isOpt ? 'opt' : 'fut' })) {
-        const ep = _expiryPnl(cand, spot);
-        dv = (ep != null && isFinite(ep)) ? ep : Number(p.day_change_val) || 0;
-      } else {
-        dv = Number(p.day_change_val) || 0;
-      }
-      const g = ensure(root);
-      g.with    += dv;
-      g.without += dv;
-    }
-    for (const _h of holdings) {
-      const h = /** @type {any} */ (_h);
-      if (!matchAccount(h.account)) continue;
-      const sym = String(h.symbol || h.tradingsymbol || '').toUpperCase();
-      if (!sym) continue;
-      // Broker's day_change_val — matches how the H pill sums holdings.
-      // No SSE-tick delta so the value matches overlay's snapshot value
-      // for the underlying at poll time.
-      const dbase = Number(h.day_change_val) || 0;
-      const _targets = targetsForProxy(sym);
-      const credits = _targets.length ? _targets : [sym];
-      for (const root of credits) {
-        ensure(root).with += dbase;
       }
     }
     return out;
@@ -3188,8 +3081,15 @@
   // Position lists for the picker. Carries avg_cost + ltp so that
   // the strategy leg-builder can ship them inline (sim legs need this
   // because the backend can't fetch their ltp from the broker).
-  /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null}>} */
+  /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number, day_change_val:number, overnight_quantity:number, realised:number, day_buy_quantity:number, day_sell_quantity:number, day_buy_value:number, day_sell_value:number}>} */
   let positions = $state([]);
+
+  // _snapshotTotalDay uses _dayPnlByRootMap (tick-aware, via livePositionDayPnl
+  // per leg) for the Snapshot TOTAL row in the derivatives page UI.
+  const _snapshotTotalDay = $derived(
+    Object.values(_dayPnlByRootMap).reduce((s, v) => s + Number(v || 0), 0)
+  );
+
   /** Raw broker holdings keyed by symbol. When the operator picks an
    *  underlying that they ALSO hold the cash equity for, the holding
    *  appears as a long-equity leg in candidatePositions so the payoff
@@ -3351,12 +3251,6 @@
   // (moved for cc reduction; see pageLoad.js for the full implementation + docs)
 
   async function loadPositions({ fresh = false } = {}) {
-    // Hydrate the module-level store singletons concurrently with this
-    // page's own fetch so PositionStrip / dashboard benefit from the
-    // round-trip without doubling network cost.
-    positionsStore.load();
-    holdingsStore.load();
-
     /** @type {Array<any>} */
     const merged = [];
     // Equity intraday positions (excluded from F&O view) are accumulated
@@ -3364,11 +3258,15 @@
     /** @type {Record<string, {pos_pnl:number,pos_day:number,hold_pnl:number,hold_day:number}>} */
     const _excluded = {};
 
-    // Live broker positions
-    try {
-      const r = await fetchPositions({ fresh });
-      positionsLoadErr = '';
-      for (const p of (r?.rows || [])) {
+    // Live broker positions — route through positionsStore so NavStrip and
+    // this page share one SSOT fetch. Independent fetchPositions() calls
+    // caused symbolStore to be written twice per poll (once by positionsStore
+    // parse, once by publishPulseQuotes here), which oscillated liveLtp for
+    // MCX futures that appear as both a position and an underlying anchor.
+    await positionsStore.load(fresh ? { fresh: true } : undefined, { force: fresh });
+    positionsLoadErr = positionsStore.error ?? '';
+    if (!positionsStore.error) {
+      for (const p of (positionsStore.value ?? [])) {
         const sym = p?.tradingsymbol || p?.symbol;
         if (!sym) continue;
         if (!isFOSymbol(sym)) {
@@ -3382,10 +3280,6 @@
         const baseRow = buildPositionRowFromBroker(p, 'live');
         for (const row of splitClosedReopened(baseRow)) merged.push(row);
       }
-    } catch (e) {
-      // Don't blank the previous candidates on a transient failure —
-      // banner explains the staleness, the prior list keeps rendering.
-      positionsLoadErr = e?.message || 'Broker positions unavailable.';
     }
 
     // Sim positions — inline ltp so strategy endpoint can compute
@@ -3405,24 +3299,22 @@
     // Cash-equity holdings — skipped in sim (sim doesn't model equity book).
     // Only EQ rows are kept; derivative holdings are picked up by positions.
     if (!simActive) {
-      try {
-        const r = await fetchHoldings();
-        const rows = [];
-        for (const h of (r?.rows || [])) {
-          const sym = h?.tradingsymbol || h?.symbol;
-          if (!sym) continue;
-          if (isFOSymbol(sym)) {
-            bumpExcluded(_excluded, h?.account, {
-              hold_pnl: Number(h?.pnl || 0),
-              hold_day: Number(h?.day_change_val || 0),
-            });
-            continue;
-          }
-          const row = buildHoldingRowFromBroker(h);
-          if (row) rows.push(row);
+      await holdingsStore.load();
+      const rows = [];
+      for (const h of (holdingsStore.value ?? [])) {
+        const sym = h?.tradingsymbol || h?.symbol;
+        if (!sym) continue;
+        if (isFOSymbol(sym)) {
+          bumpExcluded(_excluded, h?.account, {
+            hold_pnl: Number(h?.pnl || 0),
+            hold_day: Number(h?.day_change_val || 0),
+          });
+          continue;
         }
-        holdings = rows;
-      } catch (_) { /* ignore — holdings layer is additive */ }
+        const row = buildHoldingRowFromBroker(h);
+        if (row) rows.push(row);
+      }
+      holdings = rows;
     } else {
       holdings = [];
     }
@@ -3778,12 +3670,6 @@
     teardown?.(); posTeardown?.(); simTeardown?.(); wsTeardown?.(); quotesTeardown?.();
     flash.dispose(); _unsubBook?.(); _unsubDerivsOrder?.();
     if (_urlSyncTimer) { clearTimeout(_urlSyncTimer); _urlSyncTimer = null; }
-    // Clear the shared snapshotTotals store so PositionStrip falls back
-    // to its own dispPositionsToday / _livePositionsPnl computation when
-    // this page is unmounted. Without this, the last derivatives-scoped
-    // value persists in the store and the strip on every subsequent page
-    // renders that filtered F&O-only subset rather than the full book.
-    snapshotTotals.set(null);
   });
 
   // Refresh underlying quotes whenever the Snapshot universe changes

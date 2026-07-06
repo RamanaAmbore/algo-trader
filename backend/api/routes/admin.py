@@ -1522,12 +1522,21 @@ class AdminController(Controller):
             elif isinstance(data.recipients, list):
                 if not data.recipients:
                     raise HTTPException(status_code=422, detail="recipients list is empty")
-                res = await session.execute(
-                    select(User).where(
-                        User.username.in_(data.recipients),
-                        User.is_active == True,
+                if any("@" in r for r in data.recipients):
+                    # Frontend resolved preset → email addresses; look up by email.
+                    res = await session.execute(
+                        select(User).where(
+                            User.email.in_(data.recipients),
+                            User.is_active == True,
+                        )
                     )
-                )
+                else:
+                    res = await session.execute(
+                        select(User).where(
+                            User.username.in_(data.recipients),
+                            User.is_active == True,
+                        )
+                    )
                 candidates = res.scalars().all()
 
             else:

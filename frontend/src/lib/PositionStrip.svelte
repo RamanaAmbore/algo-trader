@@ -6,7 +6,7 @@
   // Whole strip is a single link to /dashboard.
 
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { marketAwareInterval, visibleInterval, executionMode, snapshotTotals } from '$lib/stores';
+  import { marketAwareInterval, visibleInterval, executionMode } from '$lib/stores';
   import { aggCompact } from '$lib/format';
   import { getInstrument, loadInstruments, findNearestFuture } from '$lib/data/instruments';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
@@ -325,7 +325,16 @@
     for (const row of positions) {
       if (!_appliesToRow(row)) continue;
       const sym  = String(row?.tradingsymbol || '').toUpperCase();
-      const live = untrack(() => getSnapshot(sym)?.ltp);
+      // Only apply the SSE-tick delta when an actual live tick has stamped
+      // ltp_ts > 0. REST publishers (publishPulseQuotes, _publishPositionsRows)
+      // both use ltp_ts=0 — when they race (e.g. derivatives page batchQuotes
+      // the same futures contract that is also a position), the last writer wins
+      // and liveLtp oscillates between two REST values, producing a phantom
+      // ±60k delta. Gating on ltp_ts > 0 prevents REST-sourced LTPs from
+      // contributing here; SSE ticks (ltp_ts=Date.now()) are unaffected.
+      const snap = untrack(() => getSnapshot(sym));
+      if (!snap || !(snap.ltp_ts > 0)) continue;
+      const live = snap.ltp;
       if (typeof live !== 'number' || !(live > 0)) continue;
       const pollLtp = Number(row?.last_price || 0);
       const qty     = Number(row?.quantity   || 0);
@@ -336,7 +345,9 @@
     for (const row of holdings) {
       if (!_appliesToRow(row)) continue;
       const sym  = String(row?.tradingsymbol || '').toUpperCase();
-      const live = untrack(() => getSnapshot(sym)?.ltp);
+      const snap = untrack(() => getSnapshot(sym));
+      if (!snap || !(snap.ltp_ts > 0)) continue;
+      const live = snap.ltp;
       if (typeof live !== 'number' || !(live > 0)) continue;
       const pollLtp = Number(row?.last_price || 0);
       const qty     = Number(row?.quantity   || 0);
@@ -744,23 +755,16 @@
 
 <a class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_tickBorderClass ? ' ' + _tickBorderClass : '')} href="/dashboard"
    aria-label="Open the dashboard — full positions, holdings, and funds grids">
-  <!-- SSOT: read the three P slots from snapshotTotals when the
-       derivatives page has published (single source of truth shared
-       across Snapshot TOTAL row + NavStrip P pill). Falls back to
-       PositionStrip's own compute when derivatives hasn't been mounted
-       yet (or when the store is null on first render). Operator
-       2026-07-01: "now p three values should match the snapshot total
-       row day p & l, p & l, exp p & l. again no duplicated code ssot." -->
-  <span class="ps-agg" title="Positions: today's MTM move / lifetime P&L / F&O expiry profit at current spot (SSOT with Snapshot TOTAL)">
+  <span class="ps-agg" title="Positions: today's MTM move / lifetime P&L / F&O expiry profit at current spot">
     <span class="ps-agg-k">P</span>
-    <span class={'ps-agg-v ' + (($snapshotTotals != null ? $snapshotTotals.day : dispPositionsToday) > 0 ? 'ps-pos' : ($snapshotTotals != null ? $snapshotTotals.day : dispPositionsToday) < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
-      >{fmtMoney($snapshotTotals != null ? $snapshotTotals.day : dispPositionsToday)}</span
+    <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
+      >{fmtMoney(dispPositionsToday)}</span
     ><span class="ps-agg-sep">/</span
-    ><span class={'ps-agg-v ' + (($snapshotTotals != null ? $snapshotTotals.pnl : _livePositionsPnl) > 0 ? 'ps-pos' : ($snapshotTotals != null ? $snapshotTotals.pnl : _livePositionsPnl) < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}
-      >{fmtMoney($snapshotTotals != null ? $snapshotTotals.pnl : _livePositionsPnl)}</span
+    ><span class={'ps-agg-v ' + (_livePositionsPnl > 0 ? 'ps-pos' : _livePositionsPnl < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('P')}
+      >{fmtMoney(_livePositionsPnl)}</span
     ><span class="ps-agg-sep">/</span
     ><span class={'ps-agg-v ps-exp ' + flash.classOf('PE')}
-      >{fmtMoney($snapshotTotals != null ? $snapshotTotals.exp : _expiryProfit)}</span>
+      >{fmtMoney(_expiryProfit)}</span>
   </span>
   <!-- Margin pill: available / total (used + avail). Operator wants the
        "room I have / full capacity" framing rather than util %. -->
