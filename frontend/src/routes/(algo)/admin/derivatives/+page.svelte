@@ -1829,20 +1829,16 @@
     }
   }
 
-  /** Day P&L for a leg with expiry-day-promotion. On/after expiry, the
-   *  option's value is realized via settlement — the standard intraday
-   *  formula `(LTP − prev_close) × qty` only captures the residual move,
-   *  hiding the bulk realization that actually occurred today. Operator's
-   *  expectation: Day P&L on expiry-day = Exp P&L (intrinsic-based
-   *  settlement value). We promote to `_expiryPnl(c, spot)` so the
-   *  surface reads the same number on both sides.
+  /** Day P&L for a leg — SSOT: broker snapshot formula, matching NavStrip P1
+   *  and Pulse positions TOTAL. Expired-leg intrinsic (Exp P&L) belongs only
+   *  in the Exp P&L column via `_expiryPnl`; substituting it here inflated
+   *  Day P&L TOTAL to ~-54k by replacing the broker's actual settlement
+   *  day_change_val with a recomputed intrinsic that diverges from the
+   *  settled price. Same reasoning as NavStrip: read baseDayPnlForPosition,
+   *  add live SSE correction, no exchange filter, no expiry promotion.
    *  @param {any} c
    *  @param {number|null} spot */
   function _dayPnlForLeg(c, spot) {
-    if (_isLegExpired(c)) {
-      const ep = _expiryPnl(c, spot);
-      if (ep != null && isFinite(ep)) return ep;
-    }
     // livePositionDayPnl is the SSOT for Day P&L with live-tick rescue.
     // It wraps baseDayPnlForPosition and additionally rescues the MCX
     // stale-ticker fingerprint (last_price === close_price → dcv = 0)
