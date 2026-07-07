@@ -18,7 +18,7 @@
   import { expiryPnl } from '$lib/data/expiryPnl';
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
   import { batchQuote } from '$lib/api';
-  import { positionsPnlFiltered, FO_EXCHANGES, baseDayPnlForPosition } from '$lib/data/nav';
+  import { baseDayPnlForPosition } from '$lib/data/nav';
 
   // Reactive views into the three-tier stores. The stores pre-populate from
   // localStorage on module init so these are non-empty on first render.
@@ -398,25 +398,22 @@
   // throttle every tick would synchronously hit disk.
   let _stripFrozenLastWrite = 0;
 
-  // P pill slots 1 + 2: F&O-only positions (NFO/MCX/CDS/BFO), excluding
-  // equity (NSE/BSE). The H pill covers holdings day MTM separately;
-  // including equity would double-count same-day CNC buys that Kite
-  // surfaces in both the positions and holdings endpoints.
-  //
-  // positionsPnlFiltered (SSOT in $lib/data/nav) provides the REST-based
-  // pnl/dayTotal sums. SSE-tick delta added on top (F&O only, market-open
-  // gated) for live correction.
+  // P pill slots 1 + 2: ALL positions (no exchange filter), matching the
+  // MarketPulse positions TOTAL row (gold standard SSOT). Includes NSE/BSE
+  // equity intraday positions alongside F&O so the P pill stays in sync
+  // with the Pulse positions total on every page.
+  // baseDayPnlForPosition applies the new-position override (oq=0 → pnl).
+  // SSE-tick delta added on top for live correction (market-open gated).
   const _livePositionsPnl = $derived.by(() => {
-    const { pnlTotal } = positionsPnlFiltered(positions);
+    let pnlTotal = 0;
+    for (const p of positions) pnlTotal += Number(p?.pnl || 0);
     let delta = 0;
-    for (const p of positions) {
-      if (!FO_EXCHANGES.has(String(p?.exchange || '').toUpperCase())) continue;
-      delta += _delta(p, 'P');
-    }
+    for (const p of positions) delta += _delta(p, 'P');
     return pnlTotal + delta;
   });
   const _livePositionsToday = $derived.by(() => {
-    const { dayTotal } = positionsPnlFiltered(positions);
+    let dayTotal = 0;
+    for (const p of positions) dayTotal += baseDayPnlForPosition(p);
     // Gate the SSE-tick delta on market-open. During closed hours the
     // snapshot's day_change_val IS the authoritative last-session
     // value; adding a delta computed against symbolStore's LTP (which
@@ -426,10 +423,7 @@
     const _mktOpen = isNseOpen() || isMcxOpen();
     if (!_mktOpen) return dayTotal;
     let delta = 0;
-    for (const p of positions) {
-      if (!FO_EXCHANGES.has(String(p?.exchange || '').toUpperCase())) continue;
-      delta += _delta(p, 'P');
-    }
+    for (const p of positions) delta += _delta(p, 'P');
     return dayTotal + delta;
   });
   const _liveHoldingsToday = $derived.by(() => {

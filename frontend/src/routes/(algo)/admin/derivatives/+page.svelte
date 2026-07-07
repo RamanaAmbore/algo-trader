@@ -3080,11 +3080,11 @@
   /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number, day_change_val:number, overnight_quantity:number, realised:number, day_buy_quantity:number, day_sell_quantity:number, day_buy_value:number, day_sell_value:number}>} */
   let positions = $state([]);
 
-  // _snapshotTotalDay — SSOT: same computation as NavStrip P slot 1.
+  // _snapshotTotalDay — SSOT: MarketPulse positions TOTAL (gold standard).
   // Reads raw positionsStore.value (unmodified broker rows) and applies
-  // baseDayPnlForPosition for F&O rows only (NFO/MCX/CDS/BFO), matching
-  // NavStrip's positionsPnlFiltered formula. Account filter applied when
-  // accounts are selected.
+  // baseDayPnlForPosition over ALL positions (no exchange filter), matching
+  // NavStrip P1 and Pulse positions TOTAL exactly. Account filter applied
+  // when accounts are selected.
   // Using _dayPnlByRootMap here was wrong: it applies _expiryPnl for
   // expired legs, substituting current-spot intrinsic for the actual
   // realized day_change_val — closed positions (qty=0) contributed 0
@@ -3093,8 +3093,6 @@
     const matchAccount = buildAcctMatcher(selectedAccounts);
     let sum = 0;
     for (const p of (positionsStore.value ?? [])) {
-      const exch = String(p?.exchange || '').toUpperCase();
-      if (!FO_EXCHANGES.has(exch)) continue;
       if (!matchAccount(String(p?.account || ''))) continue;
       sum += baseDayPnlForPosition(p);
     }
