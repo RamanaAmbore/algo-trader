@@ -183,6 +183,11 @@ class TickerManager:
         # otherwise a 30 s network hiccup would burn a 5 min swap cool-off.
         # Reset to 0 on any healthy tick.
         self._consecutive_unhealthy: int = 0
+        # Set True when stop() catches ReactorNotRunning — the Twisted
+        # reactor stopped on its own and cannot be restarted in this process.
+        # The watchdog reads this flag and exits so systemd (Restart=always)
+        # spawns a fresh process with a clean reactor state.
+        self._reactor_dead: bool = False
         # Rolling in-memory history of swap timestamps (unix seconds). The
         # `status()` payload derives `swaps_last_hour` from this list so
         # the health surface can distinguish "auto-failover fired once
@@ -214,6 +219,11 @@ class TickerManager:
         """
         self._tick_buffer = buffer
 
+    def is_reactor_dead(self) -> bool:
+        """True when the Twisted reactor stopped independently and this
+        process can no longer host a KiteTicker WebSocket."""
+        return self._reactor_dead
+
     def start(self, api_key: str, access_token: str, account: str = "") -> None:
         """
         Connect to wss://ws.kite.trade for the given Kite credentials.
@@ -222,6 +232,15 @@ class TickerManager:
         this is a no-op. The Twisted reactor's built-in reconnect logic
         handles drops; we only ever call connect() once.
         """
+        if self._reactor_dead:
+            # Twisted singleton: reactor.run() will raise ReactorNotRestartable.
+            # Don't attempt — the connect thread would die silently, leaving
+            # _started=True but _connected=False forever. Let the watchdog exit.
+            logger.critical(
+                "KiteTicker: start() called but reactor is dead — skipping "
+                "(watchdog should exit and let systemd restart the process)"
+            )
+            return
         if self._started:
             return
         self._started = True
@@ -486,8 +505,24 @@ class TickerManager:
                 kws_stop = getattr(kws, "stop", None)
                 if kws_stop is not None:
                     kws_stop()
-            except Exception:
-                logger.exception("KiteTicker: ticker.stop() failed during shutdown")
+            except Exception as _stop_exc:
+                _exc_name = type(_stop_exc).__name__
+                if "ReactorNotRunning" in _exc_name or "ReactorNotRunning" in str(_stop_exc):
+                    # Reactor already stopped on its own (network failure /
+                    # Kite closed WS and Twisted's reconnect gave up).
+                    # Twisted's reactor is a process-level singleton — once
+                    # stopped, reactor.run() raises ReactorNotRestartable, so
+                    # every future connect(threaded=True) will silently fail.
+                    # Mark as dead so the watchdog can exit and let systemd
+                    # (Restart=always) spawn a fresh process.
+                    self._reactor_dead = True
+                    logger.critical(
+                        "KiteTicker: Twisted reactor stopped independently "
+                        "(ReactorNotRunning) — process restart required for recovery. "
+                        "Watchdog will trigger exit."
+                    )
+                else:
+                    logger.exception("KiteTicker: ticker.stop() failed during shutdown")
             # Brief grace so the CLOSE frame actually leaves the box.
             try:
                 time.sleep(0.5)

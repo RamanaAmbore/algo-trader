@@ -117,6 +117,11 @@ def _fetch_holdings_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     from backend.brokers import broker_apis
     raw = pd.concat(broker_apis.fetch_holdings(), ignore_index=True)
 
+    if raw.empty or 'account' not in raw.columns:
+        empty = pd.DataFrame(columns=['account', 'inv_val', 'cur_val', 'pnl', 'day_change_val',
+                                      'pnl_percentage', 'day_change_percentage'])
+        return raw, empty
+
     sum_cols = [c for c in ['inv_val', 'cur_val', 'pnl', 'day_change_val'] if c in raw.columns]
     grouped = raw.groupby('account')[sum_cols].sum().reset_index()
     if 'pnl' in grouped and 'inv_val' in grouped:
@@ -138,6 +143,9 @@ def _fetch_holdings_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
 def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     from backend.brokers import broker_apis
     raw = pd.concat(broker_apis.fetch_positions(), ignore_index=True)
+    if raw.empty or 'account' not in raw.columns:
+        empty = pd.DataFrame(columns=['account', 'pnl'])
+        return raw, empty
     grouped = raw.groupby('account')[['pnl']].sum().reset_index() if 'pnl' in raw.columns \
               else pd.DataFrame(columns=['account', 'pnl'])
     total   = pd.DataFrame([{'account': 'TOTAL', 'pnl': grouped['pnl'].sum()}])
