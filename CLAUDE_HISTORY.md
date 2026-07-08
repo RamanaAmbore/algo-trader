@@ -344,3 +344,254 @@ bootstrap, cumsum history), palette consolidation (4 waves), UX consistency
 `asyncio.gather` for any multi-step broker operations. Module-level caching
 (dicts with identity flip on refresh). Canonical components (AlgoTabs, Select,
 ConfirmModal, CollapseButton, RefreshButton).
+
+---
+
+## Implementation Deep-Dives (moved from CLAUDE.md 2026-07-08)
+
+### Unified animation model + per-exchange close-snapshot lifecycle (Jul 2026)
+
+One branch matrix, three surfaces (positions, holdings, movers) all dispatch through 
+the same resolver.
+
+**Schema triad** — `PositionRow` / `HoldingRow` / `MoverRow` all carry:
+- `price_source` ∈ `{"live","snapshot_settled","snapshot_unsettled"}`
+- `current_price: float` — unified-model alias for `last_price`
+- `is_animating: bool` — cell-animation gate (False on closed-exchange rows)
+
+Legacy field `ltp_source` renamed → `price_source`. Values split by whether broker's 
+`close_price` has published (post-45m settle window):
+- `snapshot_settled` — Kite has weighted-avg-last-30-min close_price
+- `snapshot_unsettled` — first-cut close snapshot without close
+
+**Resolver** (`backend/api/helpers/price_resolver.py`) — pure, O(1):
+
+```python
+resolve_current_price(exchange_open, live_ltp, snapshot_close,
+                     snapshot_last_ltp, settled) → (price, source, animating)
+```
+
+Branch matrix:
+- open                                → (live_ltp,          "live",              True)
+- closed + settled + close available  → (snapshot_close,    "snapshot_settled",  False)
+- closed + no settled close           → (snapshot_last_ltp, "snapshot_unsettled",False)
+- closed + no snapshot at all         → (None,              "snapshot_unsettled",False)
+
+**Route overlays** (positions.py + holdings.py + watchlist.py) — build the 
+closed-exchange snapshot LTP map ONCE per response via 
+`snapshot_gate.latest_snapshot_ltp_map(kind)` (same latest-batch CTE 
+the `_positions_snapshot` reader uses — SSOT). Per-row: call the 
+resolver, apply the triad. Holdings-specific: cur_val recompute when 
+snapshot LTP wins.
+
+**Unified movers** (`backend/api/routes/watchlist.py:get_movers`) — one 
+live-path body handles NSE-only / MCX-only / both-open scenarios. Same 
+resolver dispatch. `_get_movers_mcx_live`, `_session_movers_mcx`, 
+`_mcx_fut_map_cache` **deleted**. Session-sticky collapsed to one dict 
+keyed by symbol. Snapshot persistence filtered to NSE-exchange rows only 
+(via `nse_rows = [r for r in rows if r.exchange == "NSE"]`) so the NSE 
+15:29 close snapshot isn't overwritten by evening MCX data. Cache key 
+scoped by `len(key_to_meta)` — busts on NSE-only → NSE+MCX transitions.
+
+**Exchange gate map** (`snapshot_gate._EXCHANGE_TO_GATE`):
+NSE/BSE/NFO/BFO/CDS → NSE (09:15-15:30 IST), MCX → MCX (09:00-23:30 IST).
+
+**Frontend cell gate** — `pulseColumns.js:mkLtpCol` reads the triad. The 
+tick-flash cellClass is gated by `is_animating`; snapshot rows never 
+flash regardless of price change. SNAP chip variants:
+- `.ltp-snap-chip` — settled (standard amber)
+- `.ltp-snap-chip--unsettled` — pre-settle (broker close_price pending)
+
+`MarketPulse.svelte` unified-row merge propagates the triad: ANY leg 
+tagged non-live tags the merged row; ANY leg with `is_animating=False` 
+freezes the merged row.
+
+**`?skip_ltp=1`** — RefreshButton passes this during both-markets-closed 
+clicks so cash/margins/holdings-metadata refresh from the broker while 
+LTPs stay frozen at the snapshot value.
+
+**Snapshot lifecycle** — `<exch>:close` writes first-cut daily_book row 
+with live LTP; `<exch>:close_settled` UPSERTs 15 min later with broker's 
+weighted-avg-last-30-min close_price. Both events share the same 
+`_snapshot_close` handler → the second call is idempotent overwrite. 
+The handler also fires `snapshot_sparkline()` on each event so the 
+frontend cell renderer has a durable close-bar series to draw when 
+`is_animating === false`. Mid-session daily_book rows carry `ltp=None` 
+so the row-overlay skips them (`ltp IS NOT NULL AND ltp > 0` gate in 
+`latest_snapshot_ltp_map`).
+
+**Sparkline cache** — `_spark_past_cache` (past closes) + `_spark_today_cache` 
+(intraday 30m, 5min TTL) + LTP at response time. Disk-persisted to 
+`.log/sparkline_cache.json` (throttled 5s writes, atomic).
+
+**Warm symbol universe** — watchlist + holdings + positions + mover pairs 
+(NIFTY MIDCAP 100 / NIFTY SMLCAP 100 / F&O largecap / indices), capped 300. 
+Operator book always added first; movers drop if truncated.
+
+### Snapshot payload extras
+
+`daily_book.payload_json` now embeds a `snapshot_extras` block per 
+positions/holdings row: `open`, `high`, `low`, `close_settled`, `prev_close`, 
+`volume`, `oi`, `day_change_val`, `day_change_pct`, `ltp`, `settled`. 
+Extracted by `_extract_snapshot_extras` (single helper shared by holdings + 
+positions row builders in `daily_snapshot.py`). Legacy top-level Kite fields 
+preserved for readers that pre-date the extras block.
+
+### Chart Workspace indicator formulas + signal rules
+
+**Indicator sub-panels** (below price panel, same SVG):
+- `RSI 14` — Wilder-smoothed RSI with 30/70 reference lines
+- `MACD 12/26/9` — histogram (green/red bars) + MACD line (amber) + 
+  signal (red-dashed). Requires ≥27 bars; signal needs ≥36.
+
+**Indicator module** — `frontend/src/lib/chart/indicators.js` — pure 
+stateless functions (`sma`, `ema`, `vwap`, `bollinger`, `rsi`, `macd`) 
++ signal-detection helpers. No DOM/Svelte imports. Throw `RangeError` 
+for invalid periods.
+
+**Buy/sell signal markers** (TradingView-style) — for each active overlay 
+the signal-detection function returns `[{i, type: 'buy'|'sell'}]` events. 
+ChartWorkspace renders green-up triangle below bar low for buys, red-down 
+triangle above bar high for sells, plus a 9px monospace tag. Same-bar 
+markers stack vertically (16px offset). Density throttle: per-indicator 
+cap of 12 events on dense ranges (≥180 bars).
+
+**Signal rules**:
+- **EMA cross** (needs both EMA 20 + EMA 50) — fast crosses above/below slow (golden / death cross)
+- **VWAP** — close crosses above/below cumulative VWAP
+- **Bollinger** — close pierces lower (buy) / upper (sell) band; throttled to first bar of contiguous run
+- **RSI 14** — crosses 30 from below (buy) / 70 from above (sell)
+- **MACD 12/26/9** — line crosses signal line
+
+### LTP-flash cascade implementation
+
+Global CSS classes `ltp-flash-up` / `ltp-flash-down` deliver 350ms 
+green/red background pulse. Two tiers:
+
+1. **LTP cell** — raw `last_price` cell always carries 
+   `ltp-flash-up`/`ltp-flash-down` when SSE tick changes direction.
+2. **Derived cells (cascade)** — on pages where one LTP source maps 
+   unambiguously to a position row (MarketPulse, PerformancePage), 
+   SAME direction class pushed to all derived cells (Day P&L, P&L, 
+   Day %, P&L %, Exp P&L). SOURCE-based: LTP tick direction drives 
+   cascade regardless of derived cell sign. In PerformancePage via 
+   `pnlClsFlash(field)` which checks `_perfFlash.classOf(\`${k}:last_price\`)` 
+   first; if set, returns `ltp-flash-up`/`ltp-flash-down` (overrides 
+   per-field tf-up/tf-down). In MarketPulse, `_ltpFlashUp` / `_ltpFlashDown` 
+   are `$state(Set<string>)` populated from SSE tick diffs; `cellClass` 
+   callbacks emit cascade classes when set contains row symbol.
+
+**Derivatives exemption** — `/admin/derivatives` by-underlying rollup rows 
+use per-field poll-diff flash (`flash.update(\`${root}:day_w\`, ...)` etc.) 
+rather than LTP-source cascade. Rationale: each rollup row aggregates N 
+legs across multiple instruments — no single LTP event unambiguously dominates. 
+Applying cascade would require arbitrary tie-break + mislead operator. 
+Underlying Spot / Day % cells DO use `flash.update(\`${root}:ltp\`, ...)` 
+independently. Intentional deviation documented in source comment.
+
+### Write-queue + event-queue deep-dives
+
+**Write queues** — `write_queue.py`:
+- `disk_queue` (5K max) → batched JSON to `.log/sparkline_cache.json` (5s throttle)
+- `db_queue` (10K max) → batched SQL upserts per kind
+- Coalesce: last-write-wins on duplicate keys, 500-row batches or 500ms timeout
+- On queue full: warn + drop, next read re-fetches from broker
+
+**Event queues** — `backend/api/persistence/event_queue.py`:
+Generic `EventQueue` class for high-frequency append-only writers. Uses 
+SQLAlchemy bulk `executemany` INSERT (not `add_all`) for true batch efficiency. 
+Re-queues on transient DB failure.
+
+All four started at app startup in `app.py` (`_start_event_queues`) and 
+stopped gracefully at shutdown (`_stop_event_queues` flushes remaining rows).
+
+### Activity surface CSS multi-column layout
+
+**Multi-column layout** — CSS `column-count: 2` at ≥900px container width 
+(NewsList-style magazine flow). Single column below 900px. All four mounts 
+(modal / dashboard card / orders card / page) apply same responsive pattern. 
+NewsList accepts `columns={n}` (default 1) and `showSource={bool}` (default 
+true); activity-surface News tab passes `columns={2}, showSource={false}` 
+so per-row source pill collapses and title runs full row width.
+
+### Investor portal day-delta footnotes
+
+**Day delta** — slice(today) − slice(prior) via same event set. Subscriptions 
+between snapshots inflate both slice + cost_basis (no P&L double-count).
+
+**Auto-bootstrap** — for each eligible LP (is_active=True, share_pct > 0) 
+without events, inserts synthetic bootstrap event at contribution_date 
+(or created_at fallback).
+
+### Performance measurement full JSON schema
+
+**Baseline schema** (single JSON per snapshot):
+
+```json
+{
+  "captured_at": "2026-07-03T03:57:26Z",
+  "commit":      "5b841d2f",
+  "frontend": {
+    "pages": {
+      "/pulse": {
+        "file":             "frontend/src/lib/MarketPulse.svelte",
+        "loc":              6465,
+        "effect_count":     53,
+        "state_count":      109,
+        "derived_count":    69,
+        "subscribe_count":  4,
+        "cyclomatic_est":   1651,
+        "cyclomatic_hotspots": [
+          {"fn_name": "addSpotFromPicker", "cc": 75, "line": 332}
+        ],
+        "runtime": {
+          "lcp_ms":         840,
+          "load_ms":        1240,
+          "heap_mb":        44.2,
+          "long_task_ms":   120,
+          "tbt_ms":         42,
+          "ws_connections": 2,
+          "refresh_click_ms": 260
+        }
+      }
+    },
+    "bundle_size_kb": 1234
+  },
+  "backend": {
+    "routes": {
+      "GET /api/positions": {
+        "file":           "...",
+        "loc":            890,
+        "async_fn_count": 12,
+        "cyclomatic_avg": 10.8,
+        "cyclomatic_max": 49,
+        "cyclomatic_hotspots": [
+          {"fn_name": "PositionsController.get_positions", "cc": 49, "line": 709}
+        ]
+      }
+    }
+  }
+}
+```
+
+**Cyclomatic thresholds**: green < 10, yellow 10–20, red > 20. Applied at 
+report time; JSON stores raw scores. Backend uses `radon cc -a -j`; frontend 
+uses regex heuristic on extracted `<script>` block.
+
+**Runtime lane** — driven by `scripts/perf_capture_run.sh`. Fail-fast preflight requires:
+- `PLAYWRIGHT_USER` + `PLAYWRIGHT_PASS` (real dev.ramboq.com credentials)
+- `dev.ramboq.com` reachable (curl HEAD probe)
+
+### Keyboard shortcut store-signal wiring
+
+**Store signals** (in `frontend/src/lib/stores.js`):
+- `orderTicketModal` / `openOrderTicketModal()` / `closeOrderTicketModal()`
+- `chartModalTrigger` / `openChartModalTrigger()` / `closeChartModalTrigger()`
+
+`PageHeaderActions.svelte` subscribes in `onMount`, fires modal open, 
+then immediately resets store.
+
+**Refresh wiring** (`RefreshButton.svelte`):
+Each instance listens `window.addEventListener('refresh-page', …)` in 
+`onMount`, cleaned up in `onDestroy`. Falls back to `goto(invalidateAll)` 
+when no `.rf-btn` present on page.
