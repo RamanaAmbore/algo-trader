@@ -786,15 +786,15 @@
     ><span class={'ps-agg-v ' + (cashTotal > 0 ? 'ps-cash' : cashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cp')}
       >{fmtMoney(cashTotal)}</span>
   </span>
-  <span class="ps-agg" title="Holdings: today's MTM move / lifetime P&L / current value">
+  <span class="ps-agg" title="Holdings: today's MTM move / current value / lifetime P&L">
     <span class="ps-agg-k">H</span>
     <span class={'ps-agg-v ' + (dispHoldingsToday > 0 ? 'ps-pos' : dispHoldingsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('HDd')}
       >{fmtMoney(dispHoldingsToday)}</span
     ><span class="ps-agg-sep">/</span
-    ><span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos' : _liveHoldingsTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Hd')}
-      >{fmtMoney(_liveHoldingsTotal)}</span
+    ><span class={'ps-agg-v ps-cash ' + flash.classOf('H')}>{fmtMoney(_liveHoldingsValue)}</span
     ><span class="ps-agg-sep">/</span
-    ><span class={'ps-agg-v ps-cash ' + flash.classOf('H')}>{fmtMoney(_liveHoldingsValue)}</span>
+    ><span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos' : _liveHoldingsTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Hd')}
+      >{fmtMoney(_liveHoldingsTotal)}</span>
   </span>
 </a>
 
