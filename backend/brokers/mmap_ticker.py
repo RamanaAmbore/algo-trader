@@ -262,7 +262,35 @@ class MmapTickReader:
 
     async def _poll_loop(self) -> None:
         """Tail the mmap version word; on change, diff active slots and
-        publish each updated (token, ltp) to the local BroadcastBus."""
+        publish each updated (token, ltp) to the local BroadcastBus.
+
+        Zero-LTP guard — the mmap slot may transiently carry ``lp <= 0``
+        during a torn-read window (see ``TickBufferReader.get_ltp`` and
+        ``iter_active``). Publishing that to the local BroadcastBus would
+        poison ``symbolStore``: the frontend arbitration then refuses the
+        next positive poll (``incomingTs(0) < storedTs(NOW)`` rejects the
+        write) and the cell freezes at 0 until another live tick lands.
+        Filter here (belt + suspenders with the ``kite_ticker._on_ticks``
+        writer-side guard).
+
+        Empty-sym skip — when ``_token_to_sym`` has no entry for a token
+        (registration gap between ticker start and
+        ``_task_sparkline_warm._register_universe_with_ticker`` landing),
+        the previous code shipped ``sym: ""`` to the local BroadcastBus.
+        ``quoteStream.js`` drops falsy-sym ticks anyway, so the cell fell
+        back to the polled REST ``row.last_price`` (which equals
+        ``close_price`` in thin-tick windows) → visible LTP/close flicker
+        between poll cycles.
+
+        Fix (Jul 2026): skip the publish entirely for unregistered
+        tokens. The ``[MMAP-MISSING-SYM]`` warning still fires (throttled
+        to once per token per 60s) so the operator sees the gap. Also,
+        ``_last_ltp[tok]`` is updated ONLY after the sym check so the
+        NEXT tick after a mid-cycle sym registration lands still fires
+        the publish (otherwise the first tick after registration would
+        be diffed against the value we would have suppressed, silently
+        skipping it).
+        """
         while True:
             try:
                 r = self._open_reader()
@@ -274,10 +302,14 @@ class MmapTickReader:
                     self._last_version = v
                     ts = int(time.time())
                     for tok, lp, _pc, _av, _ts_ns in r.iter_active():
+                        # Zero-LTP guard — never publish a torn-read
+                        # zero or a stale-empty slot double. Matches the
+                        # writer-side guard in kite_ticker._on_ticks.
+                        if not (lp > 0):
+                            continue
                         prev = self._last_ltp.get(tok)
                         if prev == lp:
                             continue
-                        self._last_ltp[tok] = lp
                         sym_str = self._token_to_sym.get(tok, "")
                         if not sym_str:
                             # Throttled: log at most once per token per 60s
@@ -289,6 +321,11 @@ class MmapTickReader:
                                     "reason=local_token_not_registered",
                                     tok,
                                 )
+                            # Do NOT update _last_ltp — leave it so the
+                            # NEXT tick after a mid-cycle registration
+                            # fires as a fresh delta.
+                            continue
+                        self._last_ltp[tok] = lp
                         self._bus.publish({
                             "tok": tok,
                             "sym": sym_str,

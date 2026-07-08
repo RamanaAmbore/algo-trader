@@ -190,26 +190,50 @@ class TickBufferReader:
     def get_ltp(self, token: int) -> float | None:
         """Look up `token`'s last_price. None when not subscribed.
 
-        Torn-read notes: the current implementation does NOT re-check
-        the version word (see AUDIT NOTE below). In practice, tearing
-        for LTP-only reads is benign — the worst outcome is reading
-        the previous ltp value at a given slot while the writer is
-        mid-update. `struct.pack_into` of a single 8-byte double is
-        atomic on 64-bit CPython (single mov instruction on x86-64
-        + writeback via mmap PROT_WRITE), so the LTP double itself
-        is never observed torn. Only prev_close + avg_price could
-        cross a torn boundary — neither is read by get_ltp.
+        Torn-read protection (Jul 2026 — LTP oscillation fix):
+        Version-word check runs before AND after the slot read; on
+        mismatch we retry once. A mismatch means the writer bumped
+        version between our two samples — the slot we just read may
+        have been mid-write. Retrying with a fresh scan gives the
+        writer time to complete, so the second pass reads a fully-
+        landed slot.
 
-        AUDIT NOTE (Jul 2026): the outer `for _ in range(2)` and the
-        first docstring paragraph describe a version-check retry
-        loop that was never implemented. Left as-is because LTP-only
-        reads are torn-safe in practice; a full re-check would need
-        to sample `struct.unpack_from("<Q", self._mm, 0)` before AND
-        after the slot read and retry on mismatch. Deferred until a
-        concrete tearing bug is observed.
+        Rationale: on 64-bit x86 a single `double` write via
+        `struct.pack_into` is atomic (one 64-bit `mov`), so the LTP
+        field itself is never observed torn. However, the writer
+        does `pack_into(_SLOT_FMT, ...)` which is a MULTI-field
+        write: the token (uint32) lands first, then LTP, then the
+        rest of the slot. If a reader lands between "token written"
+        and "LTP written" for a NEW slot (was zero, now getting its
+        first tick), it can observe `token != 0 AND lp == 0.0` —
+        the LTP double still holding the previous zero from the
+        initial `_reset()`. That zero would then propagate to the
+        BroadcastBus and freeze the frontend cell at 0.
+
+        The version check catches this: the writer bumps version
+        AFTER the entire slot write (kite_ticker._on_ticks →
+        TickBufferWriter.upsert). If our before-version differs
+        from after-version, a write happened during our scan;
+        retry.
+
+        Returns:
+          * float (>0) — token found, LTP fully landed.
+          * None       — token not in table, or token in table but
+                         only observed with lp <= 0 (torn / cold-
+                         subscription). Caller treats None as
+                         "ticker has no sample" and falls back to
+                         REST / LKG.
+
+        Cost: two version reads (16 bytes total) plus at most one
+        retry. In steady state the first pass wins — retry only
+        fires on the microsecond-scale window a writer is
+        mid-upsert.
         """
         slot_count_off = _HEADER_SIZE
-        for _ in range(2):  # at most one retry — currently unused (see docstring)
+        for _ in range(2):  # one retry allowed on torn read
+            v_before = struct.unpack_from("<Q", self._mm, 0)[0]
+            found_lp: float | None = None
+            found_empty = False
             i = token % self.max_slots
             for _ in range(self.max_slots):
                 off = slot_count_off + i * _SLOT_SIZE
@@ -217,11 +241,31 @@ class TickBufferReader:
                     _SLOT_FMT, self._mm, off,
                 )
                 if cur_token == token:
-                    return lp
+                    found_lp = lp
+                    break
                 if cur_token == 0:
-                    return None
+                    found_empty = True
+                    break
                 i = (i + 1) % self.max_slots
-            return None
+            v_after = struct.unpack_from("<Q", self._mm, 0)[0]
+            if v_after == v_before:
+                # Stable read — trust the outcome.
+                if found_lp is not None:
+                    # Guard against reading a slot mid-initialise
+                    # (token landed, LTP double still 0.0). Return
+                    # None so caller falls back — a real cold-tick
+                    # zero is filtered at the writer (kite_ticker
+                    # _on_ticks zero-guard) so any zero we DO see
+                    # here is genuinely torn / stale.
+                    if found_lp > 0:
+                        return found_lp
+                    return None
+                if found_empty:
+                    return None
+                return None
+            # Version changed under us → retry once with the fresh
+            # writer state. If second pass still mismatches (writer
+            # is very hot), we fall through and return None (torn).
         return None
 
     def get_ltp_batch(self, tokens: list[int]) -> dict[int, float]:
