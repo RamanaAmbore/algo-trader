@@ -595,11 +595,10 @@ class TickerManager:
             covers the first-connect grace window) AND
           • no operator force-unhealthy window is active.
 
-        Market-closed hours: the caller (watchdog) applies its own
-        market-hours gate BEFORE checking health. When markets are
-        closed Kite legitimately closes the WS; this helper always
-        returns False during the closed window but the watchdog
-        ignores the signal.
+        Market-closed hours: the watchdog (Phase 2b in service/app.py)
+        applies a market-hours gate BEFORE calling this helper, so
+        during closed hours this helper is not invoked and its return
+        value doesn't matter. When called during open hours only.
         """
         now = time.time()
         with self._lock:
@@ -734,11 +733,25 @@ class TickerManager:
         prev_subs = set(self._subscribed) | set(self._pending)
         # Resolve credentials before stopping so we can reconnect against
         # the same account in one move.
+        #
+        # Invariant: recycle() is only called on a Kite-bound ticker so
+        # `conn` is always a KiteConnection with a `.kite` KiteConnect
+        # SDK handle. Guard against a non-Kite connection landing here
+        # (would only happen if the operator rebound the ticker to a
+        # non-Kite account, which is not currently possible via any code
+        # path). Returns False with a clear log line rather than raising
+        # AttributeError inside a stop()+start() cycle.
         try:
             from backend.brokers.connections import Connections
             conn = Connections().conn.get(prev_account)
             if conn is None:
                 logger.warning(f"KiteTicker: recycle() — no Connections handle for {prev_account}")
+                return False
+            if not hasattr(conn, "kite"):
+                logger.warning(
+                    f"KiteTicker: recycle() — {prev_account!r} connection has no "
+                    "kite SDK handle (non-Kite account bound to ticker?); skipping"
+                )
                 return False
             api_key      = conn.kite.api_key
             access_token = conn.kite.access_token

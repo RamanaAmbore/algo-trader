@@ -119,10 +119,17 @@ class MmapTickReader:
         if self._poll_task is not None:
             return
         if self._loop is None:
+            # Prefer the running-loop reference (Python 3.10+ correct call
+            # inside a coroutine; get_event_loop() emits DeprecationWarning
+            # under 3.12+). If we're called from sync context with no loop,
+            # try get_event_loop() as legacy fallback before giving up.
             try:
-                self._loop = asyncio.get_event_loop()
+                self._loop = asyncio.get_running_loop()
             except RuntimeError:
-                return
+                try:
+                    self._loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    return
         self._poll_task = self._loop.create_task(self._poll_loop())
         logger.info("MmapTickReader: poller started · path=%s", self._path)
 

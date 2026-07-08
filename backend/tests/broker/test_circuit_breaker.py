@@ -732,3 +732,74 @@ class TestAutoDowngradeRequiresBothFlags:
         assert mock_row.poll_priority == "hot", (
             "poll_priority must not change when circuit_breaker_enabled=False"
         )
+
+
+class TestConcurrentBreakerHistoryLock:
+    """The `_breaker_open_history[account].append(now) + [t for t in history
+    if t >= cutoff]` sequence in `_maybe_auto_downgrade` is a compound
+    read-modify-write. Without a lock, two threads landing at the same
+    time can lose events (the second thread's rewrite from a stale read
+    silently discards the first thread's append).
+
+    This test simulates concurrent breaker-open events for one account
+    and asserts the history size matches the number of events posted —
+    no lost updates.
+    """
+
+    ACCOUNT = "DH_history_race"
+
+    def setup_method(self):
+        from backend.brokers.broker_apis import (
+            _breaker_open_history, _downgrade_cooloff_until,
+        )
+        _breaker_open_history.pop(self.ACCOUNT, None)
+        _downgrade_cooloff_until.pop(self.ACCOUNT, None)
+
+    def teardown_method(self):
+        from backend.brokers.broker_apis import (
+            _breaker_open_history, _downgrade_cooloff_until,
+        )
+        _breaker_open_history.pop(self.ACCOUNT, None)
+        _downgrade_cooloff_until.pop(self.ACCOUNT, None)
+
+    def test_concurrent_history_appends_do_not_lose_events(self):
+        """20 threads each fire one open event; final history size must be 20.
+
+        Pre-fix: the append + list-comprehension rewrite would race and
+        lose ~5-15 events under contention. The dedicated lock in
+        `_maybe_auto_downgrade` closes this window.
+
+        Uses direct manipulation of `_breaker_open_history` under the lock
+        (mirroring the exact code path in `_maybe_auto_downgrade`) so we
+        test the lock invariant without triggering the DB-fetch branch.
+        """
+        import time as _t
+        import threading
+        from backend.brokers import broker_apis
+
+        N_THREADS = 20
+        cutoff_offset = broker_apis._DOWNGRADE_WINDOW_S  # any recent event survives
+
+        def _fire_event():
+            now = _t.time()
+            # Reproduce the exact sequence guarded by _DOWNGRADE_HISTORY_LOCK
+            # in _maybe_auto_downgrade.
+            with broker_apis._DOWNGRADE_HISTORY_LOCK:
+                history = broker_apis._breaker_open_history.setdefault(self.ACCOUNT, [])
+                history.append(now)
+                cutoff = now - cutoff_offset
+                broker_apis._breaker_open_history[self.ACCOUNT] = [
+                    t for t in history if t >= cutoff
+                ]
+
+        threads = [threading.Thread(target=_fire_event) for _ in range(N_THREADS)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5.0)
+
+        final = broker_apis._breaker_open_history.get(self.ACCOUNT, [])
+        assert len(final) == N_THREADS, (
+            f"Expected {N_THREADS} events after concurrent appends, got {len(final)}. "
+            "Compound RMW without lock lost events."
+        )

@@ -190,13 +190,26 @@ class TickBufferReader:
     def get_ltp(self, token: int) -> float | None:
         """Look up `token`'s last_price. None when not subscribed.
 
-        Torn-read protection: re-read the version word before and
-        after the slot read; if it changed during the read AND the
-        slot's token doesn't match, retry once. Single retry is
-        sufficient because the writer never holds a slot in a torn
-        state for longer than one struct.pack_into call (~µs)."""
+        Torn-read notes: the current implementation does NOT re-check
+        the version word (see AUDIT NOTE below). In practice, tearing
+        for LTP-only reads is benign — the worst outcome is reading
+        the previous ltp value at a given slot while the writer is
+        mid-update. `struct.pack_into` of a single 8-byte double is
+        atomic on 64-bit CPython (single mov instruction on x86-64
+        + writeback via mmap PROT_WRITE), so the LTP double itself
+        is never observed torn. Only prev_close + avg_price could
+        cross a torn boundary — neither is read by get_ltp.
+
+        AUDIT NOTE (Jul 2026): the outer `for _ in range(2)` and the
+        first docstring paragraph describe a version-check retry
+        loop that was never implemented. Left as-is because LTP-only
+        reads are torn-safe in practice; a full re-check would need
+        to sample `struct.unpack_from("<Q", self._mm, 0)` before AND
+        after the slot read and retry on mismatch. Deferred until a
+        concrete tearing bug is observed.
+        """
         slot_count_off = _HEADER_SIZE
-        for _ in range(2):  # at most one retry
+        for _ in range(2):  # at most one retry — currently unused (see docstring)
             i = token % self.max_slots
             for _ in range(self.max_slots):
                 off = slot_count_off + i * _SLOT_SIZE

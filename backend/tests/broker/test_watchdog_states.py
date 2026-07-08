@@ -390,3 +390,63 @@ class TestWatchdogLogicPhases:
 
         assert unhealthy_count == 1, \
             "unhealthy during open hours should bump counter toward failover"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TestWatchdogSpawnInvariant — critical: watchdog MUST spawn on every boot
+# path so auto-failover + reactor-dead detection are always active.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestWatchdogSpawnInvariant:
+    """The watchdog task must be created regardless of whether the inline
+    ticker start succeeds.
+
+    Pre-fix defect: `_start_kite_ticker` returned early on successful inline
+    start, so the watchdog was never spawned when boot succeeded — leaving
+    the ticker with NO auto-failover, NO health monitoring, and NO reactor-
+    dead recovery. This test suite locks the fix in place.
+    """
+
+    @pytest.mark.asyncio
+    async def test_watchdog_spawned_after_successful_start(self):
+        """Watchdog must be spawned even when _try_start_ticker() returns True."""
+        from backend.brokers.service import app as svc_app
+
+        with patch.object(svc_app, "_try_start_ticker", return_value=True) as _mock_start, \
+             patch.object(svc_app, "_ticker_watchdog") as _mock_watchdog:
+            # Simulate a Litestar app object
+            mock_litestar = MagicMock()
+            await svc_app._start_kite_ticker(mock_litestar)
+
+            _mock_start.assert_called_once()
+            # The watchdog coroutine MUST have been referenced (scheduled) —
+            # if the pre-fix regression returns, this call count would be 0.
+            _mock_watchdog.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_watchdog_spawned_after_failed_start(self):
+        """Watchdog must be spawned when _try_start_ticker() returns False."""
+        from backend.brokers.service import app as svc_app
+
+        with patch.object(svc_app, "_try_start_ticker", return_value=False) as _mock_start, \
+             patch.object(svc_app, "_ticker_watchdog") as _mock_watchdog:
+            mock_litestar = MagicMock()
+            await svc_app._start_kite_ticker(mock_litestar)
+
+            _mock_start.assert_called_once()
+            _mock_watchdog.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_watchdog_spawned_when_start_raises(self):
+        """Watchdog must be spawned even when _try_start_ticker() raises."""
+        from backend.brokers.service import app as svc_app
+
+        with patch.object(svc_app, "_try_start_ticker",
+                          side_effect=RuntimeError("boot blip")) as _mock_start, \
+             patch.object(svc_app, "_ticker_watchdog") as _mock_watchdog:
+            mock_litestar = MagicMock()
+            # Should NOT raise — exception is caught inside _start_kite_ticker.
+            await svc_app._start_kite_ticker(mock_litestar)
+
+            _mock_start.assert_called_once()
+            _mock_watchdog.assert_called_once()

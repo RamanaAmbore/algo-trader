@@ -166,7 +166,17 @@ def _try_start_ticker() -> bool:
         return False
 
     import asyncio as _asyncio
-    ticker.set_loop(_asyncio.get_event_loop())
+    # get_running_loop() is the Python 3.10+ correct call — get_event_loop()
+    # inside a coroutine is deprecated and emits DeprecationWarning. Startup
+    # + watchdog paths ALWAYS run inside a running loop (Litestar lifespan +
+    # asyncio task) so get_running_loop is always safe. On the (impossible)
+    # off-path where no loop is running, we fall through to get_event_loop
+    # so the ticker still starts rather than silently no-op'ing.
+    try:
+        _loop = _asyncio.get_running_loop()
+    except RuntimeError:
+        _loop = _asyncio.get_event_loop()
+    ticker.set_loop(_loop)
     ticker.start(api_key, access_token, account=ticker_account)
     log.info(
         "conn_service: KiteTicker started · account=%s · mmap=/dev/shm/ramboq_ticks",
@@ -183,26 +193,43 @@ async def _start_kite_ticker(app: Litestar) -> None:
     main process, no broker re-auth when ramboq_api restarts.
 
     First attempt happens inline so a successful boot doesn't waste
-    a 30s tick. If no Kite account is authenticated yet (chicken-and-egg
-    when rebuild_from_db just re-minted the token), the watchdog task
-    keeps trying every 30s until it succeeds or the process exits.
+    a 30s tick. Regardless of whether the inline start succeeds, the
+    watchdog task is ALWAYS spawned — it owns:
+      • Boot-time retry (chicken-and-egg when rebuild_from_db is still
+        minting tokens on cold-start)
+      • Ongoing health monitoring (auto-failover across Kite accounts
+        when one goes unhealthy)
+      • Reactor-dead detection (exit for systemd restart when the
+        Twisted reactor stops independently)
+
+    Pre-fix: an early `return` after successful inline start meant the
+    watchdog was never spawned when boot succeeded — leaving the ticker
+    with no failover / no reactor-dead recovery. Now the watchdog
+    always runs.
     """
     log = logger
     try:
         if _try_start_ticker():
-            return
-        log.warning(
-            "conn_service: no live Kite access_token at startup — "
-            "watchdog will retry every 30s until success"
-        )
+            log.info("conn_service: KiteTicker initial start succeeded")
+        else:
+            log.warning(
+                "conn_service: no live Kite access_token at startup — "
+                "watchdog will retry every 30s until success"
+            )
     except Exception:
         log.exception("conn_service: KiteTicker startup failed")
 
     # Spawn the watchdog. Use create_task on the running loop so the
     # task outlives this on_startup hook. Litestar's lifespan keeps
     # the loop alive for the process's lifetime.
+    # get_running_loop() is the Python 3.10+ correct call inside coroutines;
+    # this on_startup hook always runs under a running loop.
     import asyncio as _asyncio
-    _asyncio.get_event_loop().create_task(_ticker_watchdog())
+    try:
+        _loop = _asyncio.get_running_loop()
+    except RuntimeError:
+        _loop = _asyncio.get_event_loop()
+    _loop.create_task(_ticker_watchdog())
 
 
 async def _ticker_watchdog() -> None:
@@ -391,10 +418,15 @@ async def _ticker_watchdog() -> None:
                         "LTP REST poll fallback active (slowed cadence %.0fs)",
                         _slowed_interval_s(),
                     )
-                # Twisted reactor dead: the reactor stopped on its own and
-                # cannot be restarted in this process. Exit so systemd
-                # (Restart=always, RestartSec=5) spawns a fresh process with
-                # a clean reactor state. This is the only safe recovery path.
+                # Defensive belt+braces: the top-of-loop `is_reactor_dead()`
+                # check at line ~296 already handles reactor death via
+                # sys.exit(1) at the start of every iteration. This branch
+                # is only reachable when the reactor was alive at the top
+                # of the loop but died mid-iteration (e.g., via a stop()
+                # call inside restart_with_account triggered by a swap that
+                # then failed). If we're now in the "no eligible accounts"
+                # branch and the reactor is dead, exit immediately rather
+                # than looping through _try_start_ticker() forever.
                 if ticker.is_reactor_dead():
                     import sys
                     log.critical(

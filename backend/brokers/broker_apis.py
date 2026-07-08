@@ -482,6 +482,12 @@ _DOWNGRADE_COOLOFF_S: float = 300.0   # 5-min cooloff after a downgrade
 
 _breaker_open_history: dict[str, list[float]] = {}  # account → [epoch, ...]
 _downgrade_cooloff_until: dict[str, float] = {}     # account → epoch
+# Dedicated lock for the compound read-modify-write in _maybe_auto_downgrade:
+#   history.append(now) + list-comprehension rewrite is NOT GIL-safe when two
+#   threads hit the same account concurrently (background poll fan-out under
+#   ThreadPoolExecutor). Without this lock a fast-firing account could lose
+#   open-events between the append and the rewrite, delaying auto-downgrade.
+_DOWNGRADE_HISTORY_LOCK = threading.Lock()
 
 
 def _maybe_auto_downgrade(account: str) -> None:
@@ -511,13 +517,18 @@ def _maybe_auto_downgrade(account: str) -> None:
     if now < _downgrade_cooloff_until.get(account, 0.0):
         return
 
-    # Update open-event history (trim to window).
-    history = _breaker_open_history.setdefault(account, [])
-    history.append(now)
-    cutoff = now - _DOWNGRADE_WINDOW_S
-    _breaker_open_history[account] = [t for t in history if t >= cutoff]
+    # Update open-event history (trim to window) under a dedicated lock —
+    # the append + list-comprehension rewrite is a compound RMW that races
+    # under concurrent broker fan-out (multiple threads may call this in the
+    # same tick when several accounts fail together).
+    with _DOWNGRADE_HISTORY_LOCK:
+        history = _breaker_open_history.setdefault(account, [])
+        history.append(now)
+        cutoff = now - _DOWNGRADE_WINDOW_S
+        _breaker_open_history[account] = [t for t in history if t >= cutoff]
+        history_len = len(_breaker_open_history[account])
 
-    if len(_breaker_open_history[account]) < _DOWNGRADE_MIN_OPENS:
+    if history_len < _DOWNGRADE_MIN_OPENS:
         return  # Not enough opens yet.
 
     # Read account state from in-process cache to decide whether to downgrade.
@@ -889,19 +900,22 @@ def get_account_order_map() -> dict[str, int]:
                 )).all()
                 return {str(r.account): int(r.display_order) for r in rows}
 
+        # Use get_running_loop() to detect an async context; this is the
+        # Python 3.10+ correct pattern (get_event_loop() emits a Deprecation
+        # Warning inside coroutines and returns a NEW loop from a sync
+        # thread which is meaningless here — we care about whether the
+        # CURRENT thread has an active loop).
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # In an async context — use a ThreadPoolExecutor to run a
-                # fresh event loop without blocking the current one.
-                import concurrent.futures as _cf
-                with _cf.ThreadPoolExecutor(max_workers=1) as pool:
-                    order_map = pool.submit(
-                        lambda: asyncio.run(_load())
-                    ).result(timeout=5)
-            else:
-                order_map = loop.run_until_complete(_load())
+            asyncio.get_running_loop()
+            # Async context — offload to a threadpool that runs a fresh
+            # event loop so we don't block the caller's loop.
+            import concurrent.futures as _cf
+            with _cf.ThreadPoolExecutor(max_workers=1) as pool:
+                order_map = pool.submit(
+                    lambda: asyncio.run(_load())
+                ).result(timeout=5)
         except RuntimeError:
+            # No running loop in this thread — safe to run one inline.
             order_map = asyncio.run(_load())
     except Exception as _e:
         logger.debug("get_account_order_map: DB load failed (%s), using empty map", _e)
@@ -2129,16 +2143,21 @@ def _read_special_sessions_sync(exchange: str, today) -> list[dict]:
                 for r in rows
             ]
 
+    # Use get_running_loop() to detect an async context (Python 3.10+
+    # correct pattern; get_event_loop() emits DeprecationWarning inside
+    # coroutines and would create a NEW loop in sync thread contexts —
+    # meaningless here).
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
+        try:
+            asyncio.get_running_loop()
             # Inside an async context — run in thread to avoid blocking loop.
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 fut = pool.submit(asyncio.run, _async_read())
                 return fut.result(timeout=5)
-        else:
-            return loop.run_until_complete(_async_read())
+        except RuntimeError:
+            # No running loop — safe to run one inline.
+            return asyncio.run(_async_read())
     except Exception:
         return []
 
