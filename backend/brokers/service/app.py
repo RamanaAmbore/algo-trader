@@ -218,6 +218,12 @@ async def _ticker_watchdog() -> None:
          Healthy = WS connected AND at least one tick landed within
          the tick heartbeat window (default 60 s).
 
+      2b. Market-hours gate (checked after boot grace): if all segments
+          are closed (NSE + MCX + CDS all outside session windows),
+          tick silence is expected → reset unhealthy counter and idle.
+          Prevents false-positive failovers at NSE close (15:30 IST)
+          and MCX close (23:30 IST).
+
       3. Started + one bad cycle → bump the unhealthy counter. Try
          `_try_start_ticker()` against the SAME account (idempotent —
          Twisted's reconnect logic + KiteTicker's own retry loop
@@ -308,6 +314,19 @@ async def _ticker_watchdog() -> None:
 
             # ── Phase 2: boot grace ─────────────────────────────────────
             in_grace = ticker.supervisor_uptime_seconds() < BOOT_GRACE_S
+
+            # ── Phase 2b: market-hours gate ──────────────────────────────
+            # Kite legitimately sends no ticks when all segments are closed.
+            # Silence is expected — reset the counter and idle rather than
+            # treating it as an unhealthy connection and triggering failover.
+            # Prevents the false-positive swap storm that fires at NSE close
+            # (15:30 IST) and MCX close (23:30 IST) every session.
+            from backend.shared.helpers.date_time_utils import (
+                is_any_segment_open, timestamp_indian,
+            )
+            if not is_any_segment_open(timestamp_indian()):
+                ticker.reset_unhealthy()
+                continue
 
             # ── Phase 3: health check ───────────────────────────────────
             if ticker.is_active_ticker_healthy():

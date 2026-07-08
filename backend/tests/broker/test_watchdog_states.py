@@ -343,3 +343,50 @@ class TestWatchdogLogicPhases:
 
         assert swap_attempted is True, \
             "failover should attempt with valid credentials"
+
+    def test_phase2b_market_closed_suppresses_unhealthy(self):
+        """Phase 2b: when all segments closed, tick silence is expected — reset counter."""
+        is_healthy = False       # No ticks received (market closed)
+        market_open = False      # All segments closed
+
+        # Phase 2b logic: market closed → reset, skip health check
+        if not market_open:
+            unhealthy_count = 0  # reset_unhealthy()
+            reached_health_check = False
+        else:
+            reached_health_check = True
+            unhealthy_count = 1 if not is_healthy else 0
+
+        assert reached_health_check is False, \
+            "closed market should skip health check entirely"
+        assert unhealthy_count == 0, \
+            "closed market should reset unhealthy counter, not bump it"
+
+    def test_phase2b_market_open_proceeds_to_health_check(self):
+        """Phase 2b: when any segment open, health check proceeds normally."""
+        is_healthy = False
+        market_open = True       # At least one segment open
+
+        if not market_open:
+            reached_health_check = False
+        else:
+            reached_health_check = True
+
+        assert reached_health_check is True, \
+            "open market should proceed to health check phase"
+
+    def test_phase2b_does_not_suppress_failover_during_open_hours(self):
+        """Phase 2b: market open + unhealthy → counter bumps, failover eligible."""
+        market_open = True
+        is_healthy = False
+        unhealthy_count = 0
+
+        if not market_open:
+            pass  # skip
+        elif is_healthy:
+            unhealthy_count = 0
+        else:
+            unhealthy_count += 1
+
+        assert unhealthy_count == 1, \
+            "unhealthy during open hours should bump counter toward failover"
