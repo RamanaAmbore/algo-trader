@@ -280,6 +280,21 @@ async def _ticker_watchdog() -> None:
             await asyncio.sleep(_slowed_interval_s() if unavailable_mode else INTERVAL_S)
             ticker = get_ticker()
 
+            # ── Reactor-dead exit (must check before all other phases) ──
+            # Twisted reactor is a process-level singleton. Once it stops
+            # independently (ReactorNotRunning on kws.stop()), reactor.run()
+            # raises ReactorNotRestartable in every subsequent attempt — the
+            # connect thread dies silently, _started stays False, and no
+            # callbacks ever fire. The only recovery is a fresh process.
+            # systemd (Restart=always, RestartSec=5) handles the restart.
+            if ticker.is_reactor_dead():
+                import sys
+                log.critical(
+                    "ticker_watchdog: Twisted reactor dead (ReactorNotRunning) — "
+                    "exiting so systemd spawns a fresh process (Restart=always)"
+                )
+                sys.exit(1)
+
             # ── Phase 1: nothing running yet ────────────────────────────
             if not ticker.status().get("started"):
                 if _try_start_ticker():
@@ -357,6 +372,18 @@ async def _ticker_watchdog() -> None:
                         "LTP REST poll fallback active (slowed cadence %.0fs)",
                         _slowed_interval_s(),
                     )
+                # Twisted reactor dead: the reactor stopped on its own and
+                # cannot be restarted in this process. Exit so systemd
+                # (Restart=always, RestartSec=5) spawns a fresh process with
+                # a clean reactor state. This is the only safe recovery path.
+                if ticker.is_reactor_dead():
+                    import sys
+                    log.critical(
+                        "ticker_watchdog: Twisted reactor is dead and all Kite "
+                        "accounts are unavailable — exiting for systemd restart "
+                        "(Restart=always, RestartSec=5s)"
+                    )
+                    sys.exit(1)
                 # Keep trying the primary at the slowed cadence.
                 _try_start_ticker()
                 continue
