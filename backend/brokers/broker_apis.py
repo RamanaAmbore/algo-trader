@@ -581,48 +581,57 @@ def _maybe_auto_downgrade(account: str) -> None:
             logger.debug(f"[DHAN-AUTO-DOWNGRADE] account={account}: main loop not ready, skipping")
             return
 
+        # Fire-and-forget: schedule the DB check and attach a done_callback
+        # that carries out all downstream work. This avoids blocking the
+        # calling thread (which runs on the broker polling hot path) for
+        # up to 3 seconds on every breaker-open event.
         future = _asyncio.run_coroutine_threadsafe(_check_and_update(), _loop)
-        try:
-            outcome = future.result(timeout=3.0)
-        except Exception as _fe:
-            logger.warning(f"[DHAN-AUTO-DOWNGRADE] account={account} DB check failed: {_fe}")
-            return
 
-        if outcome is None:
-            return  # No downgrade needed.
+        def _on_done(fut: "_asyncio.Future") -> None:
+            # Runs on the event-loop thread (called by run_coroutine_threadsafe).
+            try:
+                outcome = fut.result()
+            except Exception as _fe:
+                logger.warning(f"[DHAN-AUTO-DOWNGRADE] account={account} DB check failed: {_fe}")
+                return
 
-        old_priority, reason = outcome
+            if outcome is None:
+                return  # No downgrade needed.
 
-        # Set cooloff so a 6th open within 5 min doesn't re-fire.
-        _downgrade_cooloff_until[account] = now + _DOWNGRADE_COOLOFF_S
-        # Update in-process cache so next interval-gate check sees 'cold'.
-        set_dhan_priority_cache(account, "cold")
-        # Reset next_poll to 0 so the next background cycle re-schedules
-        # the cold interval via _update_dhan_next_poll.
-        _dhan_next_poll[account] = 0.0
+            old_priority, reason = outcome
+            _now = _time.time()
 
-        logger.warning(
-            f"[DHAN-AUTO-DOWNGRADE] account={account} "
-            f"from={old_priority} to=cold reason={reason!r}"
-        )
+            # Set cooloff so a 6th open within 5 min doesn't re-fire.
+            _downgrade_cooloff_until[account] = _now + _DOWNGRADE_COOLOFF_S
+            # Update in-process cache so next interval-gate check sees 'cold'.
+            set_dhan_priority_cache(account, "cold")
+            # Reset next_poll to 0 so the next background cycle re-schedules
+            # the cold interval via _update_dhan_next_poll.
+            _dhan_next_poll[account] = 0.0
 
-        # Emit WS event so the frontend toast can fire.  Schedule as
-        # fire-and-forget on the main loop — we don't block on it.
-        try:
-            async def _broadcast():
-                from backend.api.routes.ws import broadcast as _ws_broadcast
-                await _ws_broadcast({
-                    "type": "broker_priority_changed",
-                    "account": account,
-                    "old_priority": old_priority,
-                    "new_priority": "cold",
-                    "reason": reason,
-                    "auto": True,
-                })
+            logger.warning(
+                f"[DHAN-AUTO-DOWNGRADE] account={account} "
+                f"from={old_priority} to=cold reason={reason!r}"
+            )
 
-            _asyncio.run_coroutine_threadsafe(_broadcast(), _loop)
-        except Exception as _ws_err:
-            logger.debug(f"[DHAN-AUTO-DOWNGRADE] WS broadcast failed: {_ws_err}")
+            # Emit WS event so the frontend toast can fire.
+            try:
+                async def _broadcast():
+                    from backend.api.routes.ws import broadcast as _ws_broadcast
+                    await _ws_broadcast({
+                        "type": "broker_priority_changed",
+                        "account": account,
+                        "old_priority": old_priority,
+                        "new_priority": "cold",
+                        "reason": reason,
+                        "auto": True,
+                    })
+
+                _asyncio.run_coroutine_threadsafe(_broadcast(), _loop)
+            except Exception as _ws_err:
+                logger.debug(f"[DHAN-AUTO-DOWNGRADE] WS broadcast failed: {_ws_err}")
+
+        future.add_done_callback(_on_done)
 
     except Exception as _exc:
         logger.warning(f"[DHAN-AUTO-DOWNGRADE] account={account} check failed: {_exc}")
@@ -949,6 +958,16 @@ _RAW_CACHE_LOCK = threading.Lock()
 _RAW_CACHE: dict[str, tuple[float, list[pd.DataFrame]]] = {}
 _RAW_TTL_S: float = 30.0  # matches the route-level cache TTL
 
+# In-flight sentinel dict — cache-stampede prevention.
+# When a cache miss is detected and a fetch is about to start, a
+# threading.Event is inserted here under the same key. Concurrent callers
+# that see the sentinel wait on it (up to 5 s) then re-check _RAW_CACHE.
+# The leader clears the sentinel via _raw_cache_put (success) or
+# _raw_cache_release (failure path). Both ops are serialised under
+# _RAW_CACHE_LOCK so there is no window where a new waiter races against
+# the clear.
+_RAW_INFLIGHT: dict[str, threading.Event] = {}
+
 
 def _raw_cache_get(key: str) -> list[pd.DataFrame] | None:
     """Return cached list[DataFrame] for `key` if still fresh, else None."""
@@ -962,8 +981,45 @@ def _raw_cache_get(key: str) -> list[pd.DataFrame] | None:
     return value
 
 
+def _raw_cache_reserve(key: str) -> tuple[list[pd.DataFrame] | None, bool]:
+    """Atomic cache-check + in-flight reservation.
+
+    Returns ``(cached_value, is_leader)`` under a single lock acquisition:
+    - If the cache is fresh → returns ``(value, False)`` (fast path, no fetch needed).
+    - If another thread is already fetching → waits on its Event then re-checks;
+      returns ``(value_or_None, False)`` so the caller skips its own fetch.
+    - If the cache is empty and no fetch is in-flight → inserts a new Event
+      and returns ``(None, True)``; the caller MUST follow up with
+      ``_raw_cache_put`` or ``_raw_cache_release``.
+    """
+    with _RAW_CACHE_LOCK:
+        entry = _RAW_CACHE.get(key)
+        if entry is not None:
+            expires_at, value = entry
+            if _time.monotonic() < expires_at:
+                return value, False  # cache hit
+
+        evt = _RAW_INFLIGHT.get(key)
+        if evt is not None:
+            # Another thread is fetching — release lock and wait.
+            pass
+        else:
+            # We are the leader for this key.
+            new_evt = threading.Event()
+            _RAW_INFLIGHT[key] = new_evt
+            return None, True
+
+    # Wait outside the lock so the leader thread can write.
+    evt.wait(timeout=5.0)
+
+    # Re-check after wait (leader may or may not have succeeded).
+    cached = _raw_cache_get(key)
+    return cached, False
+
+
 def _raw_cache_put(key: str, value: list[pd.DataFrame]) -> None:
-    """Store list[DataFrame] under `key` with the standard TTL.
+    """Store list[DataFrame] under `key` with the standard TTL and signal
+    any waiters that were blocked on _RAW_INFLIGHT[key].
 
     Stored value is the caller's reference — DataFrames are NOT deep-copied
     (would defeat the purpose). Callers that need to mutate must `.copy()`
@@ -972,6 +1028,21 @@ def _raw_cache_put(key: str, value: list[pd.DataFrame]) -> None:
     """
     with _RAW_CACHE_LOCK:
         _RAW_CACHE[key] = (_time.monotonic() + _RAW_TTL_S, value)
+        evt = _RAW_INFLIGHT.pop(key, None)
+    if evt is not None:
+        evt.set()
+
+
+def _raw_cache_release(key: str) -> None:
+    """Signal waiters after a fetch failure without storing a result.
+
+    Call this in the exception handler when the leader fetch raises so
+    waiters are unblocked (they will re-check the cache and find nothing,
+    then proceed to fetch on their own)."""
+    with _RAW_CACHE_LOCK:
+        evt = _RAW_INFLIGHT.pop(key, None)
+    if evt is not None:
+        evt.set()
 
 
 def _raw_cache_invalidate(key: str | None = None) -> None:
@@ -1009,19 +1080,23 @@ def fetch_holdings(*args, **kwargs):
     to handle the post-cache KiteTicker tick diff.
     """
     if not args and not kwargs:
-        cached = _raw_cache_get("holdings")
-        if cached is not None:
-            return cached
-    if _use_conn_service() and not args and not kwargs:
-        from backend.brokers.client import sync as conn_sync
-        result = conn_sync.fetch_holdings()
-        result = _apply_backfill_to_list(result, qty_col="opening_quantity")
-        _raw_cache_put("holdings", result)
-        return result
+        cached, is_leader = _raw_cache_reserve("holdings")
+        if not is_leader:
+            # Either a cache hit or waited for another thread's fetch.
+            return cached if cached is not None else _fetch_holdings_local(*args, **kwargs)
+        try:
+            if _use_conn_service():
+                from backend.brokers.client import sync as conn_sync
+                result = conn_sync.fetch_holdings()
+            else:
+                result = _fetch_holdings_local()
+            result = _apply_backfill_to_list(result, qty_col="opening_quantity")
+            _raw_cache_put("holdings", result)
+            return result
+        except Exception:
+            _raw_cache_release("holdings")
+            raise
     result = _fetch_holdings_local(*args, **kwargs)
-    if not args and not kwargs:
-        result = _apply_backfill_to_list(result, qty_col="opening_quantity")
-        _raw_cache_put("holdings", result)
     return result
 
 
@@ -1296,19 +1371,22 @@ def fetch_positions(*args, **kwargs):
     pnl values as the positions route.
     """
     if not args and not kwargs:
-        cached = _raw_cache_get("positions")
-        if cached is not None:
-            return cached
-    if _use_conn_service() and not args and not kwargs:
-        from backend.brokers.client import sync as conn_sync
-        result = conn_sync.fetch_positions()
-        result = _apply_backfill_to_list(result, qty_col="quantity")
-        _raw_cache_put("positions", result)
-        return result
+        cached, is_leader = _raw_cache_reserve("positions")
+        if not is_leader:
+            return cached if cached is not None else _fetch_positions_local(*args, **kwargs)
+        try:
+            if _use_conn_service():
+                from backend.brokers.client import sync as conn_sync
+                result = conn_sync.fetch_positions()
+            else:
+                result = _fetch_positions_local()
+            result = _apply_backfill_to_list(result, qty_col="quantity")
+            _raw_cache_put("positions", result)
+            return result
+        except Exception:
+            _raw_cache_release("positions")
+            raise
     result = _fetch_positions_local(*args, **kwargs)
-    if not args and not kwargs:
-        result = _apply_backfill_to_list(result, qty_col="quantity")
-        _raw_cache_put("positions", result)
     return result
 
 
@@ -1879,17 +1957,21 @@ def fetch_margins(*args, **kwargs):
     seconds — see `fetch_holdings` docstring for the rationale.
     """
     if not args and not kwargs:
-        cached = _raw_cache_get("margins")
-        if cached is not None:
-            return cached
-    if _use_conn_service() and not args and not kwargs:
-        from backend.brokers.client import sync as conn_sync
-        result = conn_sync.fetch_margins()
-        _raw_cache_put("margins", result)
-        return result
+        cached, is_leader = _raw_cache_reserve("margins")
+        if not is_leader:
+            return cached if cached is not None else _fetch_margins_local(*args, **kwargs)
+        try:
+            if _use_conn_service():
+                from backend.brokers.client import sync as conn_sync
+                result = conn_sync.fetch_margins()
+            else:
+                result = _fetch_margins_local()
+            _raw_cache_put("margins", result)
+            return result
+        except Exception:
+            _raw_cache_release("margins")
+            raise
     result = _fetch_margins_local(*args, **kwargs)
-    if not args and not kwargs:
-        _raw_cache_put("margins", result)
     return result
 
 

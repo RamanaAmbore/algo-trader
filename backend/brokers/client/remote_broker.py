@@ -79,6 +79,20 @@ class RemoteBroker(Broker):
                 path,
                 json={"args": list(args), "kwargs": kwargs},
             )
+            if not resp.is_success:
+                # Extract JSON error body before raise_for_status() so callers
+                # see the real error message (e.g. "token expired") rather than
+                # only the HTTP status code.
+                try:
+                    body = resp.json()
+                    detail = body.get("error") or body.get("detail") or resp.text[:200]
+                except Exception:
+                    detail = resp.text[:200]
+                raise httpx.HTTPStatusError(
+                    f"conn_service error {resp.status_code}: {detail}",
+                    request=resp.request,
+                    response=resp,
+                )
             resp.raise_for_status()
         except httpx.HTTPError as e:
             # Transport / 5xx — surface as RuntimeError so existing
