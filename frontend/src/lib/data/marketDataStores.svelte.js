@@ -698,6 +698,14 @@ let _bookPollerStarted = false;
 /** @type {(() => void) | null} */
 let _bookPollerTeardown = null;
 
+/**
+ * Reactive counter incremented after every successful book-poller cycle.
+ * PositionStrip watches this to fire its poll-stamp and flash animation
+ * at the book-poller cadence (default 5 s) instead of its own 30 s interval.
+ */
+let _bookPollerTick = $state(0);
+export const bookPollerTick = { get value() { return _bookPollerTick; } };
+
 /** Throttle (hidden / hibernation) cadence in ms. Critical book data —
  *  keep a slow heartbeat alive across a long backgrounded window so the
  *  operator returns to current numbers without a cold-start cycle. */
@@ -718,6 +726,9 @@ async function _tickBookPollers() {
       holdingsStore.load(),
       fundsStore.load(),
     ]);
+    // Signal completion so PositionStrip's flash animation fires at
+    // book-poller cadence (default 5 s) rather than its own 30 s interval.
+    _bookPollerTick++;
   } catch (_) { /* defensive — allSettled should never throw, but guard */ }
 }
 

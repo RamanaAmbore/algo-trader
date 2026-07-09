@@ -3243,7 +3243,12 @@
 
   // Surface a banner when /api/positions fails so the operator sees
   // WHY the page is empty (instead of an opaque "no candidates" hint).
+  // Consecutive-failure gate: mirror the _stratFails pattern — suppress
+  // the banner on a single transient hiccup (page open during a brief
+  // backend hiccup, race with book-poller's in-flight, etc.) and only
+  // escalate after 2+ consecutive failures.
   let positionsLoadErr = $state('');
+  let _posLoadFails = 0;
   // Latches to true after the first successful positions+holdings load.
   // Gates `_hedgeOpportunities` so it only appears in the underlying
   // picker AFTER we know which underlyings have actual derivative
@@ -3270,22 +3275,33 @@
     // parse, once by publishPulseQuotes here), which oscillated liveLtp for
     // MCX futures that appear as both a position and an underlying anchor.
     await positionsStore.load(undefined, { force: fresh });
-    positionsLoadErr = positionsStore.error ?? '';
-    if (!positionsStore.error) {
-      for (const p of (positionsStore.value ?? [])) {
-        const sym = p?.tradingsymbol || p?.symbol;
-        if (!sym) continue;
-        if (!isFOSymbol(sym)) {
-          // Equity intraday — excluded from F&O panel; capture for TOTAL reconcile
-          bumpExcluded(_excluded, p?.account, {
-            pos_pnl: Number(p?.pnl || 0),
-            pos_day: baseDayPnlForPosition(p),
-          });
-          continue;
-        }
-        const baseRow = buildPositionRowFromBroker(p, 'live');
-        for (const row of splitClosedReopened(baseRow)) merged.push(row);
+    // Stale-while-error: always process positionsStore.value even when
+    // an error is set — the store retains the last-good broker snapshot,
+    // so the dropdown and legs populate from cached data while a retry
+    // is pending rather than going blank. Mirror the _stratFails pattern:
+    // show the banner only after 2+ consecutive failures so a single
+    // transient hiccup (deploy window, book-poller race) doesn't flash
+    // a misleading red banner when the connection chip is green.
+    if (positionsStore.error) {
+      _posLoadFails++;
+      positionsLoadErr = _posLoadFails >= 2 ? positionsStore.error : '';
+    } else {
+      _posLoadFails = 0;
+      positionsLoadErr = '';
+    }
+    for (const p of (positionsStore.value ?? [])) {
+      const sym = p?.tradingsymbol || p?.symbol;
+      if (!sym) continue;
+      if (!isFOSymbol(sym)) {
+        // Equity intraday — excluded from F&O panel; capture for TOTAL reconcile
+        bumpExcluded(_excluded, p?.account, {
+          pos_pnl: Number(p?.pnl || 0),
+          pos_day: baseDayPnlForPosition(p),
+        });
+        continue;
       }
+      const baseRow = buildPositionRowFromBroker(p, 'live');
+      for (const row of splitClosedReopened(baseRow)) merged.push(row);
     }
 
     // Sim positions — inline ltp so strategy endpoint can compute

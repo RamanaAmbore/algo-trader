@@ -13,7 +13,7 @@
   import { cachedRead, cachedWrite, cachedDelete, TTL } from '$lib/data/persistentCache';
   import { getSnapshot, symbolStore, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
-  import { positionsStore, holdingsStore, fundsStore, publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
+  import { positionsStore, holdingsStore, fundsStore, publishPulseQuotes, bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
   import { expiryPnl } from '$lib/data/expiryPnl';
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
@@ -66,15 +66,21 @@
       ]);
       // After positions are fresh, refresh underlying spot quotes so
       // _expiryProfit can compute intrinsic values with current spots.
-      // Runs fire-and-forget in parallel with _pollCycleStamp increment
-      // (a batchQuote failure should not delay the strip paint).
+      // Runs fire-and-forget (a batchQuote failure should not delay
+      // the strip paint). _pollCycleStamp is now driven by bookPollerTick
+      // so the flash animation aligns with the book-poller cadence (5 s)
+      // rather than this 30 s interval.
       _loadUnderlyingSpots().catch(() => { /* silent */ });
-      // Signal that a poll cycle completed. The flash $effect watches
-      // this counter, not the live-LTP-derived sums, so flash fires
-      // at most once per 30s poll rather than on every SSE tick.
-      _pollCycleStamp += 1;
     } catch (_) { /* silent — strip stays at last-good values */ }
   }
+
+  // Fire the poll-cycle stamp at book-poller cadence (default 5 s) so the
+  // flash animation and freeze/thaw gate both run at the same frequency as
+  // the ticker rather than waiting for this strip's own 30 s interval.
+  $effect(() => {
+    void bookPollerTick.value;
+    untrack(() => { _pollCycleStamp += 1; });
+  });
 
   // Fetch underlying spot quotes for every F&O option position.
   // Mirrors derivatives/+page.svelte `loadUnderlyingQuotes()`:
