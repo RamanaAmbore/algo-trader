@@ -208,11 +208,12 @@ class TestCase3_FullyClosedIntraday:
         result = _enrich_positions(df)
         assert math.isclose(result.iloc[0]['pnl'], 200.0, abs_tol=1e-6)
 
-    def test_fully_closed_row_dcv_backstops_realised_when_ltp_zero(self):
+    def test_fully_closed_row_dcv_backstops_pnl_when_ltp_zero(self):
         """Case 3 route-layer backstop: when Kite ships last_price=0 for a
         closed row, `_enrich_positions` zeroes day_change_val via its
-        `_ltp > 0` gate. The route layer restores day_change_val = realised
-        so Day P&L and P&L agree on flat rows."""
+        `_ltp > 0` gate. The route layer restores day_change_val = pnl
+        (which equals realised on a flat row) so Day P&L and P&L agree
+        on flat rows."""
         # Simulate the pathological case: Kite closed the position and
         # dropped last_price = 0.
         raw = pd.DataFrame([{
@@ -235,38 +236,73 @@ class TestCase3_FullyClosedIntraday:
             'day_change_percentage': 0.0,
         }])
 
-        # Apply the route-layer Case 3 backstop by importing + running
-        # the flat-mask block via a small runner. We inline the logic here
-        # because it lives inside _fetch (async, broker-dependent). This
-        # test asserts the CONTRACT: after the backstop, dcv==realised.
+        # Apply the unified route-layer backstop by inlining the mask
+        # block from positions.py:_fetch. This test asserts the CONTRACT:
+        # after the backstop, dcv==pnl (== realised on a flat row).
         _qty_all = pd.to_numeric(raw['quantity'], errors='coerce').fillna(0)
-        _rea_all = pd.to_numeric(raw['realised'], errors='coerce').fillna(0)
-        _flat_mask = (_qty_all == 0) & (_rea_all != 0)
-        _dcv = pd.to_numeric(raw['day_change_val'], errors='coerce').fillna(0)
-        _backstop = _flat_mask & (_dcv == 0)
-        raw.loc[_backstop, 'day_change_val'] = _rea_all[_backstop]
+        _oq_all = pd.to_numeric(raw['overnight_quantity'], errors='coerce').fillna(0)
+        _pnl_all = pd.to_numeric(raw['pnl'], errors='coerce').fillna(0)
+        _dcv_all = pd.to_numeric(raw['day_change_val'], errors='coerce').fillna(0)
+        _rescue = (_oq_all == 0) & (_dcv_all == 0) & (_pnl_all != 0)
+        raw.loc[_rescue, 'day_change_val'] = _pnl_all[_rescue]
 
         assert math.isclose(raw.at[0, 'day_change_val'], 200.0, abs_tol=1e-6), (
-            "Case 3 backstop failed: day_change_val must equal realised for "
+            "Case 3 backstop failed: day_change_val must equal pnl for "
             "a fully-closed row when Kite shipped last_price=0"
         )
 
+    def test_fully_closed_row_dcv_backstops_pnl_when_realised_zero(self):
+        """Case 3 sub-case: MCX round-trip where Kite ships BOTH
+        last_price=0 AND realised=0 but pnl!=0. The old (realised-based)
+        backstop wouldn't fire — the unified (pnl-based) backstop does.
+        """
+        raw = pd.DataFrame([{
+            'tradingsymbol': 'CRUDEOIL26JULFUT',
+            'account': 'ZG0001',
+            'exchange': 'MCX',
+            'quantity': 0,
+            'overnight_quantity': 0,
+            'day_buy_quantity': 100,     # 1 lot × 100 mult
+            'day_sell_quantity': 100,
+            'day_buy_value': 590000.0,
+            'day_sell_value': 592500.0,
+            'last_price': 0.0,           # Kite dropped it
+            'close_price': 5900.0,
+            'average_price': 5900.0,
+            'pnl': 2500.0,               # broker-shipped pnl (round-trip profit)
+            'realised': 0.0,             # MCX accounting quirk — zeroed
+            'day_change_val': 0.0,       # Layer 1 gate produced 0
+        }])
+
+        _qty_all = pd.to_numeric(raw['quantity'], errors='coerce').fillna(0)
+        _oq_all = pd.to_numeric(raw['overnight_quantity'], errors='coerce').fillna(0)
+        _pnl_all = pd.to_numeric(raw['pnl'], errors='coerce').fillna(0)
+        _dcv_all = pd.to_numeric(raw['day_change_val'], errors='coerce').fillna(0)
+        _rescue = (_oq_all == 0) & (_dcv_all == 0) & (_pnl_all != 0)
+        raw.loc[_rescue, 'day_change_val'] = _pnl_all[_rescue]
+
+        assert math.isclose(raw.at[0, 'day_change_val'], 2500.0, abs_tol=1e-6), (
+            "Case 3 sub-case failed: pnl-based backstop must fire even "
+            "when Kite ships realised=0 on the flat row"
+        )
+
     def test_fully_closed_row_backstop_source_reflects_positions_route(self):
-        """SSOT — the Case 3 backstop lives in positions.py:_fetch.
+        """SSOT — the unified backstop lives in positions.py:_fetch.
         Loose grep: any future refactor is free to rename locals as long
-        as the (quantity, realised) invariant is preserved.
+        as the (overnight_quantity, day_change_val, pnl) invariant is
+        preserved.
         """
         src = (BACKEND_ROOT / "api" / "routes" / "positions.py").read_text(
             encoding="utf-8"
         )
-        # Case 3 backstop touches two columns together: quantity and realised.
-        assert "'realised'" in src and "'quantity'" in src, (
-            "Case 3 backstop must reference both `quantity` and `realised` "
-            "columns to detect fully-closed rows"
+        # Unified backstop keys off overnight_quantity + pnl (not realised).
+        assert "'overnight_quantity'" in src and "'pnl'" in src, (
+            "Unified backstop must reference `overnight_quantity` and `pnl` "
+            "columns to detect Case 1 (new) + Case 3 (closed) rows"
         )
         # And the day_change_val restore.
         assert "day_change_val" in src and "backstop" in src.lower(), (
-            "Case 3 backstop must document the day_change_val restore path"
+            "Unified backstop must document the day_change_val restore path"
         )
 
 
@@ -430,6 +466,156 @@ class TestCase3_SettledFlatNotAnimating:
             )
         assert out[0].is_animating is True
         assert out[0].price_source == "live"
+
+
+# ---------------------------------------------------------------------------
+# Case 1 — New position dcv rescue when Kite ships last_price = 0
+# ---------------------------------------------------------------------------
+
+class TestCase1_NewPositionDcvRescue:
+    """`overnight_quantity == 0 AND quantity != 0 AND day_change_val == 0
+    AND pnl != 0` — a position opened today for which Kite's REST endpoint
+    hasn't seen the first WS tick yet, so `last_price == 0` and the
+    enrichment layer's `_ltp > 0` gate zeros `day_change_val`.
+
+    The unified backstop uses broker-shipped `pnl` as the fallback
+    (mirrors frontend `baseDayPnlForPosition` in `frontend/src/lib/data/nav.js`).
+    """
+
+    def test_new_mcx_position_dcv_rescued_from_pnl(self):
+        """MCX new position with lot_size=100 (CRUDEOIL), 1 lot bought.
+        After broker fetch: quantity=100 (post-multiplier), oq=0, ltp=0,
+        pnl carries Kite's own-side computed value. Backstop → dcv=pnl.
+        """
+        raw = pd.DataFrame([{
+            'tradingsymbol': 'CRUDEOIL26JULFUT',
+            'account': 'ZG0001',
+            'exchange': 'MCX',
+            'quantity': 100,              # 1 lot × 100 mult (post fetch)
+            'overnight_quantity': 0,
+            'day_buy_quantity': 100,
+            'day_sell_quantity': 0,
+            'day_buy_value': 590000.0,    # 100 × 5900 fill
+            'day_sell_value': 0.0,
+            'last_price': 0.0,            # Kite REST lag pre-first-tick
+            'close_price': 5850.0,
+            'average_price': 5900.0,
+            'pnl': -400.0,                # Kite's own-side computed
+            'realised': 0.0,
+            'day_change_val': 0.0,        # zeroed by _ltp>0 gate
+        }])
+
+        _qty_all = pd.to_numeric(raw['quantity'], errors='coerce').fillna(0)
+        _oq_all = pd.to_numeric(raw['overnight_quantity'], errors='coerce').fillna(0)
+        _pnl_all = pd.to_numeric(raw['pnl'], errors='coerce').fillna(0)
+        _dcv_all = pd.to_numeric(raw['day_change_val'], errors='coerce').fillna(0)
+        _rescue = (_oq_all == 0) & (_dcv_all == 0) & (_pnl_all != 0)
+        raw.loc[_rescue, 'day_change_val'] = _pnl_all[_rescue]
+
+        assert math.isclose(raw.at[0, 'day_change_val'], -400.0, abs_tol=1e-6), (
+            "Case 1 backstop failed: dcv must fall back to pnl for a new "
+            "MCX position when Kite ships last_price=0"
+        )
+
+    def test_new_nse_position_dcv_rescued_when_ltp_zero(self):
+        """NSE F&O new position — same pattern applies (Kite REST lag)."""
+        raw = pd.DataFrame([{
+            'tradingsymbol': 'NIFTY26JULFUT',
+            'account': 'ZG0001',
+            'exchange': 'NFO',
+            'quantity': 50,               # 1 NIFTY lot
+            'overnight_quantity': 0,
+            'day_buy_quantity': 50,
+            'day_sell_quantity': 0,
+            'day_buy_value': 1000000.0,   # 50 × 20000 fill
+            'day_sell_value': 0.0,
+            'last_price': 0.0,
+            'close_price': 19950.0,
+            'average_price': 20000.0,
+            'pnl': -2500.0,
+            'realised': 0.0,
+            'day_change_val': 0.0,
+        }])
+
+        _qty_all = pd.to_numeric(raw['quantity'], errors='coerce').fillna(0)
+        _oq_all = pd.to_numeric(raw['overnight_quantity'], errors='coerce').fillna(0)
+        _pnl_all = pd.to_numeric(raw['pnl'], errors='coerce').fillna(0)
+        _dcv_all = pd.to_numeric(raw['day_change_val'], errors='coerce').fillna(0)
+        _rescue = (_oq_all == 0) & (_dcv_all == 0) & (_pnl_all != 0)
+        raw.loc[_rescue, 'day_change_val'] = _pnl_all[_rescue]
+
+        assert math.isclose(raw.at[0, 'day_change_val'], -2500.0, abs_tol=1e-6), (
+            "Case 1 backstop failed for NSE F&O new position"
+        )
+
+    def test_new_position_dcv_not_overwritten_when_nonzero(self):
+        """Regression guard: when the enrichment layer produced a valid
+        non-zero dcv (ltp was ticker-patched successfully), the backstop
+        must NOT overwrite it with pnl.
+        """
+        raw = pd.DataFrame([{
+            'tradingsymbol': 'NIFTY26JULFUT',
+            'account': 'ZG0001',
+            'exchange': 'NFO',
+            'quantity': 50,
+            'overnight_quantity': 0,
+            'day_buy_quantity': 50,
+            'day_sell_quantity': 0,
+            'day_buy_value': 1000000.0,
+            'day_sell_value': 0.0,
+            'last_price': 20050.0,        # ticker patched
+            'close_price': 19950.0,
+            'average_price': 20000.0,
+            'pnl': 2500.0,
+            'realised': 0.0,
+            'day_change_val': 2500.0,     # Layer 1 computed correctly
+        }])
+
+        _qty_all = pd.to_numeric(raw['quantity'], errors='coerce').fillna(0)
+        _oq_all = pd.to_numeric(raw['overnight_quantity'], errors='coerce').fillna(0)
+        _pnl_all = pd.to_numeric(raw['pnl'], errors='coerce').fillna(0)
+        _dcv_all = pd.to_numeric(raw['day_change_val'], errors='coerce').fillna(0)
+        _rescue = (_oq_all == 0) & (_dcv_all == 0) & (_pnl_all != 0)
+        raw.loc[_rescue, 'day_change_val'] = _pnl_all[_rescue]
+
+        assert math.isclose(raw.at[0, 'day_change_val'], 2500.0, abs_tol=1e-6), (
+            "Backstop must not overwrite a valid non-zero dcv"
+        )
+
+    def test_overnight_position_dcv_not_touched(self):
+        """Regression guard: rows with overnight_quantity != 0 use the
+        decomposed intraday formula, not the pnl backstop. The rescue mask
+        must NOT fire on overnight-carry rows.
+        """
+        raw = pd.DataFrame([{
+            'tradingsymbol': 'NIFTY26JULFUT',
+            'account': 'ZG0001',
+            'exchange': 'NFO',
+            'quantity': 50,
+            'overnight_quantity': 50,     # carried overnight
+            'day_buy_quantity': 0,
+            'day_sell_quantity': 0,
+            'day_buy_value': 0.0,
+            'day_sell_value': 0.0,
+            'last_price': 0.0,            # Kite lag; DO NOT rescue via pnl
+            'close_price': 19950.0,
+            'average_price': 19900.0,
+            'pnl': 5000.0,                # Kite-shipped lifetime pnl
+            'realised': 0.0,
+            'day_change_val': 0.0,        # Layer 1 zeroed via _ltp>0 gate
+        }])
+
+        _qty_all = pd.to_numeric(raw['quantity'], errors='coerce').fillna(0)
+        _oq_all = pd.to_numeric(raw['overnight_quantity'], errors='coerce').fillna(0)
+        _pnl_all = pd.to_numeric(raw['pnl'], errors='coerce').fillna(0)
+        _dcv_all = pd.to_numeric(raw['day_change_val'], errors='coerce').fillna(0)
+        _rescue = (_oq_all == 0) & (_dcv_all == 0) & (_pnl_all != 0)
+        raw.loc[_rescue, 'day_change_val'] = _pnl_all[_rescue]
+
+        assert math.isclose(raw.at[0, 'day_change_val'], 0.0, abs_tol=1e-6), (
+            "Overnight rows must not receive the pnl backstop — pnl is "
+            "lifetime, not intraday"
+        )
 
 
 # ---------------------------------------------------------------------------
