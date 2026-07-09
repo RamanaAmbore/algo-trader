@@ -206,8 +206,12 @@ class TestFetchPositionsEmptyGuard:
             raw, summary = _fetch_positions_direct()
 
             assert raw.empty, "raw should be empty"
-            assert list(summary.columns) == ['account', 'pnl'], \
-                f"summary should have ['account', 'pnl'], got {list(summary.columns)}"
+            # Empty-summary schema now carries day_change_val so the
+            # performance TOTAL row can surface the intraday delta that
+            # NavStrip P slot 1 renders (added when the Case 1/3 backstop
+            # was pushed into _fetch_positions_direct).
+            assert list(summary.columns) == ['account', 'pnl', 'day_change_val'], \
+                f"summary should have ['account', 'pnl', 'day_change_val'], got {list(summary.columns)}"
             assert summary.empty, "summary should be empty when guard fires"
 
     def test_no_account_column(self):
@@ -223,7 +227,7 @@ class TestFetchPositionsEmptyGuard:
             raw, summary = _fetch_positions_direct()
 
             assert 'account' not in raw.columns, "raw should lack 'account'"
-            assert list(summary.columns) == ['account', 'pnl']
+            assert list(summary.columns) == ['account', 'pnl', 'day_change_val']
             assert summary.empty, "summary should be empty when 'account' missing"
 
     def test_one_account_with_pnl(self):
@@ -269,7 +273,7 @@ class TestFetchPositionsEmptyGuard:
             raw, summary = _fetch_positions_direct()
 
             assert len(summary) == 0, f"summary should have 0 rows when guard fires, got {len(summary)}"
-            assert list(summary.columns) == ['account', 'pnl']
+            assert list(summary.columns) == ['account', 'pnl', 'day_change_val']
 
 
 # ─────────────────────────────────────────────────────────────────────────────

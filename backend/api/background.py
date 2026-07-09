@@ -142,13 +142,30 @@ def _fetch_holdings_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
 
 def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     from backend.brokers import broker_apis
+    from backend.api.algo.pnl_math import apply_day_change_backstop
     raw = pd.concat(broker_apis.fetch_positions(), ignore_index=True)
     if raw.empty or 'account' not in raw.columns:
-        empty = pd.DataFrame(columns=['account', 'pnl'])
+        empty = pd.DataFrame(columns=['account', 'pnl', 'day_change_val'])
         return raw, empty
-    grouped = raw.groupby('account')[['pnl']].sum().reset_index() if 'pnl' in raw.columns \
-              else pd.DataFrame(columns=['account', 'pnl'])
-    total   = pd.DataFrame([{'account': 'TOTAL', 'pnl': grouped['pnl'].sum()}])
+    # Apply the shared Case 1 + Case 3 Day P&L backstop so this task's
+    # summary agrees with the /api/positions route (both go through
+    # `apply_day_change_backstop`). Without this, the NavStrip P "today"
+    # slot ships lifetime pnl for new / fully-closed positions when
+    # Kite's REST endpoint ships last_price=0 and the polars enrichment
+    # gate zeroes day_change_val.
+    raw = apply_day_change_backstop(raw)
+    # Include day_change_val in the per-account groupby so the
+    # performance TOTAL row has the intraday delta that
+    # `_perf_extract_total_pnl_fields` feeds into NavStrip P slot 1.
+    sum_cols = [c for c in ('pnl', 'day_change_val') if c in raw.columns]
+    if sum_cols:
+        grouped = raw.groupby('account')[sum_cols].sum().reset_index()
+    else:
+        grouped = pd.DataFrame(columns=['account'] + sum_cols)
+    total_row = {'account': 'TOTAL'}
+    for _c in sum_cols:
+        total_row[_c] = grouped[_c].sum() if _c in grouped.columns else 0.0
+    total   = pd.DataFrame([total_row])
     summary = pd.concat([grouped, total], ignore_index=True)
     return raw, summary
 
