@@ -80,6 +80,7 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 **Part II — Order lifecycle**
 
 - §5. [Order placement — single ticket (Ticket tab)](#5-order-placement--single-ticket-ticket-tab)
+  - §5.1. [F&O order quantity convention (lots-first API)](#51-fo-order-quantity-convention-lots-first-api)
 - §6. [Order placement — basket (Chain tab)](#6-order-placement--basket-chain-tab)
 - §7. [Chase loop lifecycle](#7-chase-loop-lifecycle)
 - §8. [The order/chase/template tripod](#8-the-orderchasetemplate-tripod)
@@ -95,7 +96,9 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 **Part IV — Brokers**
 
 - §14. [Broker abstraction](#14-broker-abstraction)
+- §14.1. [Kite account flipping — market-data broker resolution](#141-kite-account-flipping--market-data-broker-resolution)
 - §14.5. [Broker abstraction — implementation detail](#145-broker-abstraction--implementation-detail)
+  - §14.5.9.5. [BSE ticker subscription and NSE→BSE equity token fallback](#14595-bse-ticker-subscription-and-nsebbse-equity-token-fallback)
 - §15. [How to add a new broker](#15-how-to-add-a-new-broker)
 - §16. [Broker gotchas](#16-broker-gotchas)
 
@@ -108,7 +111,10 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 **Part VI — Runtime**
 
 - §20. [Background task topology](#20-background-task-topology)
+  - §20.1. [Sparkline refresh pipeline](#201-sparkline-refresh-pipeline)
 - §21. [Data refresh — PositionStrip + Dashboard](#21-data-refresh--positionstrip--dashboard)
+- §21.5. [Frontend → broker API — full round-trip](#215-frontend--broker-api--full-round-trip)
+- §21.5.5. [Day P&L backstop — SSOT](#2155-day-pnl-backstop--ssot)
 - §22. [Demo mode](#22-demo-mode)
 - §22.5. [Investor portal — token-as-credential](#225-investor-portal--token-as-credential)
 - §22.6. [Investor portal — units-based NAV math](#226-investor-portal--units-based-nav-math)
@@ -128,6 +134,7 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 - §24. [Testing philosophy](#24-testing-philosophy)
 - §25. [Logging discipline](#25-logging-discipline)
 - §26. [Deployment notes](#26-deployment-notes)
+- §26.5. [Recent fixes and operational improvements (Jul 2026)](#265-recent-fixes-and-operational-improvements-jul-2026)
 - §27. [Sprint history + audit fixes](#27-sprint-history--audit-fixes)
 
 **Part VIII — Wrap-up**
@@ -1553,6 +1560,37 @@ sequenceDiagram
 
 **Race-window guard:** AlgoOrder commits with `broker_order_id=NULL` first. Fast IOC fill in this window is caught by postback-fallback matching `(account, symbol, side, qty, status=OPEN)` within 60s.
 
+### 5.1 F&O order quantity convention (lots-first API)
+
+**P0 commitment:** all F&O order APIs (`/ticket`, `/basket`, `/preview-ticket-template`) now accept **LOTS** as input for instruments with `lot_size > 1` (futures + options). The API converts lots → contracts at the request boundary using `contracts = lots × lot_size`.
+
+**Request shape**:
+- **F&O** (`lot_size > 1`): send `quantity: <lots>` (frontend builds `_lots` key)
+- **Equity** (`lot_size = 1`): send `quantity: <raw_qty>` (no change)
+
+**Guard chain** (G1, G2 — critical):
+
+| Guard | Check | Level | Applies to |
+|---|---|---|---|
+| **G1** `LOT_MULTIPLE` | `qty % lot_size == 0` | Removed from `_ticket_enforce_lot_and_fat_finger` | Dead (correct by construction) |
+| | | Kept in `_arm_take_profit` (live path, inline before broker call) | Live F&O close orders |
+| | | Kept in `apply_plan_live` GTT layer (top of function, sync check) | Template attach paths |
+| **G2** `FAT_FINGER_5_LOT_CAP` | `qty ≤ 5 lots` (NFO/CDS/BFO) or `≤ 20 lots` (MCX) | Main path, checked at `_ticket_validate_input` | All F&O places |
+| | `CLOSE intent bypass` | G2 skipped if `intent='close'` (operator kill) | Closes only |
+| **Adapter ceiling** (50-lot) | Hard block at `kite.py:place_order` | Applies to all quantities | Last-line defense (no bypass) |
+
+**Files:**
+- `backend/api/routes/orders_place.py::_ticket_validate_input` — lots → contracts conversion
+- `backend/api/routes/orders_place.py::_ticket_enforce_lot_and_fat_finger` — G2 check (G1 removed)
+- `backend/api/routes/orders_basket.py` — same conversion + guards for batch legs
+- `backend/api/algo/template_attach.py::apply_plan_live` — GTT layer G1 + G2 sync checks before `broker.translate_qty`
+- `backend/brokers/adapters/kite.py::translate_qty`, `place_order` — adapter-level qty handling
+- `frontend/src/lib/order/orderTicketSubmit.js::buildPlacePayload` — sends `_lots` for F&O
+
+**Cold-cache 503 guard** — extended from MCX-only to ALL F&O exchanges (NFO, CDS, BFO, BCD). When instruments cache is empty at startup or post-refresh, `/api/orders/ticket` returns 503 with a "cold start" message if it can't resolve the lot_size. The operator retries after 5-10s once warm.
+
+**Schema update** — `BasketLeg` msgspec.Struct adds optional `strategy_id: Optional[int] = None` field for future per-leg strategy attribution.
+
 ---
 
 ## 6. Order placement — basket (Chain tab)
@@ -2060,6 +2098,35 @@ These are documented inline in code, but listed here for orientation:
 | **Groww** | `cancel_gtt` needs exchange (numeric id collision risk) | M-4 fix raises if exchange missing |
 | **Groww** | No `historical_data` support | `historical_data=False` cap; sparkline + chart endpoints fall over to Kite |
 
+### 14.5.9.5 BSE ticker subscription and NSE→BSE equity token fallback
+
+**50-cap fix** — `_perf_subscribe_book_symbols` used a hard `[:50]` slice that truncated the unresolved-symbols list. BSE holdings appearing after the 50th NSE/NFO entry were never subscribed. Fix: replaced with chunked loop (`CHUNK=50`) that covers ALL unresolved symbols.
+
+**NSE→BSE equity companion** — for equity exchanges (NSE/BSE), `quote.py:_resolve_token_for_sym` now pairs companions immediately instead of walking derivatives first. Walk order:
+
+| Exchange | Token walk order |
+|---|---|
+| NSE | `[NSE, BSE, MCX, CDS, NFO, BFO]` |
+| BSE | `[BSE, NSE, MCX, CDS, NFO, BFO]` |
+| MCX/CDS/NFO/BFO | Check that exchange first, no companion pair |
+
+Same fix applied at three sites:
+1. `quote.py:_resolve_token_for_sym` (main ticker lookup)
+2. `batch_sparkline` token resolution
+3. `_task_sparkline_warm` token lookup
+
+**BFO (BSE F&O) verification:**
+- ✅ In `_SPARKLINE_EXCHANGES` — subscribed
+- ✅ Maps to "NSE" gate (09:15-15:30 IST)
+- ✅ Route lookup via `_symbol_exchange_open` → `ctx['nse_open']`
+- ✅ Kite segment mapping: BFO → "derivatives"
+- ✅ Token found at index 0 in walk order
+
+**Files:**
+- `backend/api/background.py::_perf_subscribe_book_symbols` — chunked loop
+- `backend/api/routes/quote.py::_resolve_token_for_sym` — companion pairing
+- `backend/api/routes/sparkline.py` — batch + warm token lookup
+
 ### 14.5.10 Modifying the broker layer — guard rails
 
 If you're touching anything in `backend/brokers/`:
@@ -2549,6 +2616,28 @@ gantt
 
 ⚙ **TECH — Why poll-based + not event-based** — `WHY` Vendor postbacks are unreliable (Dhan + Groww have no inbound webhook; Kite drops 0.5-2% in our experience). Polling is the conservative floor. `WHAT` Each task runs on its own asyncio cadence; no scheduler library. `HOW` Pick interval based on operator latency tolerance: trail-stop = 30s (slow ratchet OK), OCO watcher = 15s (faster because both legs settling within window means double-fire). `WHERE` `backend/api/background.py`.
 
+### 20.1 Sparkline refresh pipeline
+
+`_task_sparkline_warm` (startup + 00:30 IST + segment opens) populates KiteTicker subscription universe from three sources:
+
+1. **Daily book union** — all positions + holdings from past 7 days (backstop, survives conn_service restart)
+2. **Watchlist symbols** — from `WatchlistItem` table (TRADES, key: `tradingsymbol` + `exchange`)
+3. **Virtual root resolution** — MCX/CDS symbols resolved to active contract (e.g. `CRUDEOIL` → `CRUDEOIL26JULFUT`)
+
+**Three-part defect fix:**
+
+- **MCX/CDS watchlist symbols get correct exchange** — `_sparkline_universe_symbols` now queries `(tradingsymbol, exchange)` pair instead of loose `tradingsymbol` lookup
+- **Virtual roots resolved before OHLCV fetch** — `snapshot_sparkline` resolves MCX/CDS virtual roots via `symbol_resolver.resolve_symbol()` before calling `ohlcv_store.get_or_fetch_daily`
+- **Tier 4 fallback** — `batch_sparkline` added fallback to read from `daily_book WHERE kind='sparkline'` when ohlcv_store is cold (db_only mode)
+
+**Stale-better merge** — frontend `_mergeSparkSeries` keeps cached real curve over fresh flat/degenerate series to prevent chart collapse when broker feed lags.
+
+**Files:**
+- `backend/api/background.py::_task_sparkline_warm`
+- `backend/api/routes/sparkline.py::snapshot_sparkline`, `batch_sparkline`
+- `backend/api/algo/symbol_resolver.py::resolve_symbol`
+- `frontend/src/lib/PerformancePage.svelte::_mergeSparkSeries`
+
 ---
 
 ## 21. Data refresh — PositionStrip + Dashboard
@@ -2674,6 +2763,46 @@ sequenceDiagram
 - `backend/brokers/broker_apis.py` — `_RAW_CACHE`, `fetch_positions`, `@for_all_accounts`
 - `backend/brokers/client/remote_broker.py` — UDS proxy
 - `backend/brokers/service/app.py` — conn_service Litestar app
+
+---
+
+## 21.5.5 Day P&L backstop — SSOT
+
+Intraday P&L is complex because Kite sometimes omits `day_change_val` for new positions or fully-flat intraday legs. The **canonical SSOT** is `backend/api/algo/pnl_math.py::apply_day_change_backstop()`.
+
+**Two edge cases this fixes:**
+
+**Case 1** (new position): `overnight_quantity=0, day_change_val=0, pnl≠0`
+- Kite returns the real PnL in the `pnl` field but zeroes `day_change_val`.
+- **Fix:** override `day_change_val = pnl`
+
+**Case 3** (flat intraday): `quantity=0, day_change_val=0, pnl≠0`
+- Position fully closed within session; Kite again omits the day value.
+- **Fix:** same override.
+
+**Backend SSOT:**
+- `backend/api/algo/pnl_math.py::apply_day_change_backstop(raw: pd.DataFrame)` — checks for both cases, applies override
+- `backend/api/background.py::_fetch_positions_direct` — now sums **both** `day_change_val` AND `pnl` in `sum_cols`, then applies the backstop before groupby
+- Called by `/api/positions` → `background.py` → aggregation routes
+
+**Frontend SSOT:**
+- `baseDayPnlForPosition(r)` in `frontend/src/lib/data/nav.js` — canonical override for new positions
+- Returns: `r.overnight_quantity === 0 && r.pnl !== 0 ? r.pnl : r.day_change_val`
+- Used by:
+  - PerformancePage TOTAL row (sum of daily P&L)
+  - Derivatives page `_byUnderlyingTotal` loop (F&O aggregate)
+  - Dashboard hero P&L + position summary
+  - NavStrip P pill slot 1 (intraday P&L)
+  - MarketPulse position card
+  - Snapshot rows + Legs grid + Payoff overlay
+
+**Key rule:** never read `day_change_val` directly without checking `baseDayPnlForPosition(r)` first.
+
+**Files:**
+- `backend/api/algo/pnl_math.py::apply_day_change_backstop`
+- `backend/api/background.py::_fetch_positions_direct`
+- `frontend/src/lib/data/nav.js::baseDayPnlForPosition`
+- All callers listed above
 
 ---
 
@@ -3662,6 +3791,23 @@ GitHub push → webhook.ramboq.com → /etc/webhook/dispatch.sh
 
 ---
 
+## 26.5 Recent fixes and operational improvements (Jul 2026)
+
+| Item | Issue | Fix location |
+|---|---|---|
+| **Auth: `email_verified` silent drop** | Non-designated actors could attempt to change `email_verified` field on `PUT /admin/users/:username` without error | `backend/api/routes/admin.py::update_user_details` — added 403 check before PATCH |
+| **Startup: PerfSnapshot NameError** | `_backfill_from_disk` fired before `PerfSnapshot` imported | `backend/api/background.py::_backfill_from_disk` — added import inside function |
+| **F&O orders: lots-first API (P0)** | API now accepts LOTS for `lot_size > 1` instruments; converts to contracts at boundary | §5.1; `backend/api/routes/orders_place.py`, `orders_basket.py`, `template_attach.py` |
+| **Day P&L: edge-case backstop** | Kite omits `day_change_val` for new positions + flat-intraday legs | §21.5.5; `backend/api/algo/pnl_math.py::apply_day_change_backstop` + frontend `baseDayPnlForPosition` |
+| **Sparkline: MCX/CDS watchlist exchange** | MCX/CDS symbols lost correct exchange during universe warmup | §20.1; `_sparkline_universe_symbols` now queries `(tradingsymbol, exchange)` pair |
+| **Sparkline: virtual root resolution** | MCX/CDS watchlist items not resolved to active contract before OHLCV fetch | §20.1; `snapshot_sparkline` calls `symbol_resolver.resolve_symbol()` |
+| **Sparkline: Tier 4 fallback** | OHLCV store cold-starts had no fallback during db_only mode | §20.1; `batch_sparkline` added `_fill_from_daily_book_sparkline` path |
+| **BSE ticker: 50-cap truncation** | BSE holdings after 50th unresolved NSE entry weren't subscribed | §14.5.9.5; `_perf_subscribe_book_symbols` uses chunked loop, not `[:50]` slice |
+| **BSE equity token: NSE→BSE fallback** | Quote/sparkline lookup for equity exchanges didn't check companion immediately | §14.5.9.5; `_resolve_token_for_sym` pairs NSE↔BSE before derivatives walk |
+| **BFO F&O: routing verified** | Confirmed BSE F&O (BFO) wired correctly for subscription + gating | §14.5.9.5; BFO in sparkline exchanges, maps to NSE segment, token at index 0 |
+
+---
+
 ## 27. Sprint history + audit fixes
 
 Previous fixes are documented in-code via comments. Key milestones:
@@ -3671,6 +3817,7 @@ Previous fixes are documented in-code via comments. Key milestones:
 | Phase 0–3 | Template attach pipeline (resolve → plan → GTT place) | grep `Phase \d` |
 | Sprint A–E | Reconcile paths, partial fills, Dhan/Groww OCO, rate limits | grep `Sprint [A-E]` |
 | Gap closure (B–L) | 28 audit fixes across categories | `git log --grep="audit fix" -i` |
+| Jul 2026 | F&O lots convention, Day P&L SSOT, sparkline + BSE ticker fixes, auth/startup | See §26.5 + commit bodies |
 
 See commit bodies for specific gap IDs (e.g. B-1 = Dhan status map, C-3 = postback fallback window, H-5 = cap warnings). These are documented in code as defensive comments.
 
