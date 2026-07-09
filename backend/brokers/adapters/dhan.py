@@ -125,6 +125,43 @@ _XCHG_TO_DHAN_MARKET_STATUS: dict[str, tuple[str, ...]] = {
     "MCX": ("MCX_COMM",),
 }
 
+_DHAN_OPEN_STATUS_STRINGS = frozenset({"OPEN", "TRADING", "ACTIVE", "Y", "YES", "TRUE"})
+
+
+def _extract_dhan_status_rows(resp: Any, target_codes: tuple[str, ...]) -> list[dict] | None:
+    """Coerce Dhan's market-status response into a flat list of rows.
+
+    Accepts the documented `{status, data: [{exchangeSegment, status, ...}]}`
+    envelope AND the flat-dict-by-segment alternate observed across SDK
+    builds. Returns None when the shape is unparseable so the caller
+    can fall through to the next probe."""
+    rows = _unwrap(resp)
+    if rows:
+        return rows
+    if isinstance(resp, dict):
+        for code in target_codes:
+            v = resp.get(code) or resp.get(code.lower())
+            if isinstance(v, dict):
+                rows.append({"exchangeSegment": code, **v})
+            elif isinstance(v, (str, bool)):
+                rows.append({"exchangeSegment": code, "status": v})
+        return rows
+    return None
+
+
+def _dhan_row_indicates_open(row: dict, target_codes: tuple[str, ...]) -> bool:
+    """Return True when this row's segment matches AND its status
+    reads as open (boolean True or one of the accepted strings)."""
+    seg = str(row.get("exchangeSegment") or row.get("segment") or "").upper()
+    if seg not in target_codes:
+        return False
+    st = row.get("status")
+    if isinstance(st, bool):
+        return st
+    if isinstance(st, str):
+        return st.upper() in _DHAN_OPEN_STATUS_STRINGS
+    return False
+
 _dhan_instruments_lock = threading.Lock()
 _DHAN_INSTRUMENTS_DATE: str = ""            # IST date string when cache was built
 _DHAN_BY_EXCHANGE: dict[str, list[dict]] = {}   # kite_exchange → [instrument rows]
@@ -228,6 +265,84 @@ def _dhan_to_kite_symbol(raw: str) -> str:
     return s.replace("-", "").replace(" ", "").strip()
 
 
+def _parse_dhan_csv_header(lines: list[str]) -> tuple[dict[str, int], bool] | None:
+    """Parse the CSV header row and return (col_index, has_seg_col).
+
+    Returns None when required columns are missing (caller aborts cache load).
+    `has_seg_col` distinguishes the new schema (SEM_SEGMENT present) from the
+    legacy schema (segment code baked into SEM_EXM_EXCH_ID)."""
+    header = [h.strip() for h in lines[0].split(",")]
+    col = {name: idx for idx, name in enumerate(header)}
+    required = {"SEM_SMST_SECURITY_ID", "SEM_TRADING_SYMBOL", "SEM_EXM_EXCH_ID"}
+    if not required.issubset(col):
+        logger.warning(f"DhanBroker: instruments CSV missing columns "
+                       f"{required - set(col)}; cache aborted")
+        return None
+    return col, "SEM_SEGMENT" in col
+
+
+def _resolve_dhan_kite_exchange(
+    parts: list[str], col: dict[str, int], has_seg_col: bool,
+) -> tuple[str | None, str]:
+    """Map (SEM_EXM_EXCH_ID [, SEM_SEGMENT]) → Kite exchange string.
+
+    Returns (kite_exch, seg_raw). `kite_exch` is None when the row's
+    segment can't be mapped (caller should skip the row)."""
+    exch_raw = parts[col["SEM_EXM_EXCH_ID"]].strip()
+    if has_seg_col and len(parts) > col["SEM_SEGMENT"]:
+        seg_raw = parts[col["SEM_SEGMENT"]].strip()
+        kite_exch = _DHAN_EXCH_SEG_TO_EXCHANGE.get((exch_raw, seg_raw))
+    else:
+        # Old schema: segment code is in SEM_EXM_EXCH_ID itself.
+        kite_exch = _DHAN_SEGMENT_TO_EXCHANGE.get(exch_raw)
+        seg_raw = exch_raw  # for the row dict below
+    return kite_exch, seg_raw
+
+
+def _extract_dhan_lot_size(parts: list[str], col: dict[str, int]) -> int:
+    """Probe legacy + new column names for lot size.
+
+    Lot-size column: SEM_LOT_UNITS (new schema, Jun 2026) or
+    SM_LOT_SIZE / SEM_LOT_SIZE (old schema). Try new name first, then
+    legacy names. A schema rev that changes the column name would
+    otherwise silently zero every lot_size — triggering the MCX qty
+    mismatch class (Sprint D)."""
+    for lot_col in ("SEM_LOT_UNITS", "SM_LOT_SIZE", "SEM_LOT_SIZE", "LOT_SIZE"):
+        if lot_col in col and len(parts) > col[lot_col]:
+            try:
+                lot_size = int(float(parts[col[lot_col]].strip() or 0))
+                if lot_size > 0:
+                    return lot_size
+            except (ValueError, TypeError):
+                pass
+    return 0
+
+
+def _extract_dhan_tick_size(parts: list[str], col: dict[str, int]) -> float:
+    """Parse SEM_TICK_SIZE when present, else 0.0."""
+    if "SEM_TICK_SIZE" in col and len(parts) > col["SEM_TICK_SIZE"]:
+        try:
+            return float(parts[col["SEM_TICK_SIZE"]].strip() or 0)
+        except (ValueError, TypeError):
+            pass
+    return 0.0
+
+
+def _dhan_instrument_token(sid: str) -> int:
+    """`instrument_token` is the Kite-shape key every downstream
+    consumer reads (options.py historical-data caller's token_map,
+    kite.py::get_lot_size's _LOT_INDEX, …). Dhan's native identifier
+    is the `security_id` string; we expose BOTH so callers that
+    already speak `security_id` keep working AND Kite-shape callers
+    don't silently skip Dhan rows. Cast to int when numeric (Dhan IDs
+    are always numeric strings) and fall back to 0 when not — same
+    convention as `_normalise_holdings`."""
+    try:
+        return int(sid) if sid and str(sid).isdigit() else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def _load_dhan_instruments() -> None:
     """Fetch Dhan's master CSV and populate the module-level caches.
     Called under _dhan_instruments_lock. Silently no-ops on any failure
@@ -257,34 +372,19 @@ def _load_dhan_instruments() -> None:
         if not lines:
             logger.warning("DhanBroker: instruments CSV empty")
             return
-        # Parse header from first line
-        header = [h.strip() for h in lines[0].split(",")]
-        # Build column-index lookup for robustness against column reorder
-        col = {name: idx for idx, name in enumerate(header)}
-        required = {"SEM_SMST_SECURITY_ID", "SEM_TRADING_SYMBOL", "SEM_EXM_EXCH_ID"}
-        if not required.issubset(col):
-            logger.warning(f"DhanBroker: instruments CSV missing columns "
-                           f"{required - set(col)}; cache aborted")
+        parsed = _parse_dhan_csv_header(lines)
+        if parsed is None:
             return
-        # Detect schema version: new schema has SEM_SEGMENT; old has segment
-        # codes baked into SEM_EXM_EXCH_ID. We handle both.
-        has_seg_col = "SEM_SEGMENT" in col
+        col, has_seg_col = parsed
+        min_col = max(col.get("SEM_SMST_SECURITY_ID", 0),
+                      col.get("SEM_TRADING_SYMBOL", 0),
+                      col.get("SEM_EXM_EXCH_ID", 0))
 
         for line in lines[1:]:
             parts = line.split(",")
-            min_col = max(col.get("SEM_SMST_SECURITY_ID", 0),
-                          col.get("SEM_TRADING_SYMBOL", 0),
-                          col.get("SEM_EXM_EXCH_ID", 0))
             if len(parts) <= min_col:
                 continue
-            exch_raw = parts[col["SEM_EXM_EXCH_ID"]].strip()
-            if has_seg_col and len(parts) > col["SEM_SEGMENT"]:
-                seg_raw = parts[col["SEM_SEGMENT"]].strip()
-                kite_exch = _DHAN_EXCH_SEG_TO_EXCHANGE.get((exch_raw, seg_raw))
-            else:
-                # Old schema: segment code is in SEM_EXM_EXCH_ID itself.
-                kite_exch = _DHAN_SEGMENT_TO_EXCHANGE.get(exch_raw)
-                seg_raw = exch_raw  # for the row dict below
+            kite_exch, seg_raw = _resolve_dhan_kite_exchange(parts, col, has_seg_col)
             if not kite_exch:
                 continue
             # Translate Dhan's F&O tradingsymbol to the Kite-style canonical
@@ -300,47 +400,14 @@ def _load_dhan_instruments() -> None:
             sid = parts[col["SEM_SMST_SECURITY_ID"]].strip()
             if not ts or not sid:
                 continue
-            lot_size = 0
-            tick_size = 0.0
-            # Lot-size column: SEM_LOT_UNITS (new schema, Jun 2026) or
-            # SM_LOT_SIZE / SEM_LOT_SIZE (old schema). Try new name first,
-            # then legacy names. A schema rev that changes the column name
-            # would otherwise silently zero every lot_size — triggering the
-            # MCX qty mismatch class (Sprint D).
-            for _lot_col in ("SEM_LOT_UNITS", "SM_LOT_SIZE", "SEM_LOT_SIZE", "LOT_SIZE"):
-                if _lot_col in col and len(parts) > col[_lot_col]:
-                    try:
-                        lot_size = int(float(parts[col[_lot_col]].strip() or 0))
-                        if lot_size > 0:
-                            break
-                    except (ValueError, TypeError):
-                        pass
-            if "SEM_TICK_SIZE" in col and len(parts) > col["SEM_TICK_SIZE"]:
-                try:
-                    tick_size = float(parts[col["SEM_TICK_SIZE"]].strip() or 0)
-                except (ValueError, TypeError):
-                    pass
-            # `instrument_token` is the Kite-shape key every downstream
-            # consumer reads (options.py historical-data caller's
-            # token_map, kite.py::get_lot_size's _LOT_INDEX, …). Dhan's
-            # native identifier is the `security_id` string; we expose
-            # BOTH so callers that already speak `security_id` keep
-            # working AND Kite-shape callers don't silently skip Dhan
-            # rows. Cast to int when numeric (Dhan IDs are always
-            # numeric strings) and fall back to 0 when not — same
-            # convention as `_normalise_holdings`.
-            try:
-                inst_tok = int(sid) if sid and str(sid).isdigit() else 0
-            except (TypeError, ValueError):
-                inst_tok = 0
             row = {
                 "tradingsymbol":    ts,
                 "security_id":      sid,
-                "instrument_token": inst_tok,
+                "instrument_token": _dhan_instrument_token(sid),
                 "exchange":         kite_exch,
                 "exchange_segment": seg_raw,
-                "lot_size":         lot_size,
-                "tick_size":        tick_size,
+                "lot_size":         _extract_dhan_lot_size(parts, col),
+                "tick_size":        _extract_dhan_tick_size(parts, col),
             }
             by_exchange.setdefault(kite_exch, []).append(row)
             by_symbol[(kite_exch, ts)] = sid
@@ -998,10 +1065,28 @@ class DhanBroker(Broker):
             NSE_FNO / BSE_FNO → derivatives (NFO / BFO)
             MCX_COMM → commodity (MCX)
         """
+        resp = self._call_market_status_sdk(exchange)
+        if resp is None:
+            return None
+        target_codes = _XCHG_TO_DHAN_MARKET_STATUS.get((exchange or "").upper())
+        if not target_codes:
+            return None
+        rows = _extract_dhan_status_rows(resp, target_codes)
+        if rows is None:
+            # SDK returned an unparseable shape — fall through.
+            return None
+        for row in rows:
+            if _dhan_row_indicates_open(row, target_codes):
+                return True
+        # All mapped segments report closed.
+        return False
+
+    def _call_market_status_sdk(self, exchange: str) -> Any | None:
+        """Discover the SDK method by name (so _safe_call's retry path
+        picks up the FRESH SDK handle — same stale-handle pattern as
+        funds_ledger above) and invoke. Returns raw response or None
+        on miss/failure."""
         sdk = self.dhan
-        # Resolve the SDK method NAME (not the bound method) so
-        # _safe_call's retry path picks up the FRESH SDK handle.
-        # Same stale-handle pattern as funds_ledger above.
         status_method_name = next(
             (n for n in ("get_market_status", "market_status", "get_exchange_status")
              if getattr(sdk, n, None) is not None),
@@ -1010,49 +1095,12 @@ class DhanBroker(Broker):
         if status_method_name is None:
             return None
         try:
-            resp = self._safe_call(
+            return self._safe_call(
                 lambda d: getattr(d, status_method_name)()
             )
         except Exception as e:
             logger.debug(f"DhanBroker.market_status({exchange}) SDK call failed: {e}")
             return None
-
-        target_codes = _XCHG_TO_DHAN_MARKET_STATUS.get((exchange or "").upper())
-        if not target_codes:
-            return None
-
-        # Dhan response shape varies between SDK builds. Accept the
-        # documented `{status, data: [{exchangeSegment, status, ...}]}`
-        # envelope and a few common alternates.
-        rows = _unwrap(resp)
-        if not rows and isinstance(resp, dict):
-            # Some builds return a flat dict keyed by segment code.
-            for code in target_codes:
-                v = resp.get(code) or resp.get(code.lower())
-                if isinstance(v, dict):
-                    rows.append({"exchangeSegment": code, **v})
-                elif isinstance(v, (str, bool)):
-                    rows.append({"exchangeSegment": code, "status": v})
-        elif not rows:
-            # SDK returned an unparseable shape (bare list, string,
-            # None, …). Return None so the probe falls through to the
-            # next broker / bellwether path instead of claiming closed.
-            return None
-
-        for row in rows:
-            seg = str(row.get("exchangeSegment") or row.get("segment") or "").upper()
-            if seg not in target_codes:
-                continue
-            st = row.get("status")
-            if isinstance(st, bool):
-                if st:
-                    return True
-                continue
-            if isinstance(st, str):
-                if st.upper() in ("OPEN", "TRADING", "ACTIVE", "Y", "YES", "TRUE"):
-                    return True
-        # All mapped segments report closed.
-        return False
 
     # ── Order entry ───────────────────────────────────────────────────
 
