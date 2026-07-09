@@ -1880,7 +1880,7 @@
     // Delegates to the module-level store singleton. force=true bypasses
     // the inflight dedup so a manual refresh always gets a fresh broker
     // snapshot rather than riding an existing in-flight request.
-    fundsStore.load({ force: true });
+    fundsStore.load(undefined, { force: true });
   }
 
   // Host-triggered refresh — when refreshKey bumps, re-fetch funds so

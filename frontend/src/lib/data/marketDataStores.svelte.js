@@ -305,6 +305,40 @@ export const navStripPositionsStore = createDataStore({
   },
 });
 
+/**
+ * Dedicated positions store for MarketPulse / Pulse page.
+ * Isolated from positionsStore so loadPulse's { skipLtp } arg doesn't create
+ * a different dedup key in the shared store and race with the cross-page
+ * book poller's no-arg load().
+ */
+export const pulsePositionsStore = createDataStore({
+  key:     'md.pulse.positions',
+  fetcher: fetchPositions,
+  ttl:     TTL.minute,
+  /** @param {any} r */
+  parse:   (r) => {
+    const rows = r?.rows ?? [];
+    _publishPositionsRows(rows);
+    return rows;
+  },
+});
+
+/**
+ * Dedicated holdings store for MarketPulse / Pulse page.
+ * Isolated from holdingsStore for the same reason as pulsePositionsStore.
+ */
+export const pulseHoldingsStore = createDataStore({
+  key:     'md.pulse.holdings',
+  fetcher: fetchHoldings,
+  ttl:     TTL.minute,
+  /** @param {any} r */
+  parse:   (r) => {
+    const rows = r?.rows ?? [];
+    _publishHoldingsRows(rows);
+    return rows;
+  },
+});
+
 // ── Holdings ──────────────────────────────────────────────────────────────
 
 /**

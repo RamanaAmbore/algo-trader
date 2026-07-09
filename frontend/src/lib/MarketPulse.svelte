@@ -76,7 +76,8 @@
   import { getSnapshot, symbolStore, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
   import { bookChanged } from '$lib/data/bookChanged';
   import {
-    positionsStore, holdingsStore, fundsStore,
+    fundsStore,
+    pulsePositionsStore, pulseHoldingsStore,
     moversStore, moversSnapshotAt, activeListsStore, sparklinesStore,
     publishWatchQuotes, publishPulseQuotes,
   } from '$lib/data/marketDataStores.svelte.js';
@@ -164,13 +165,13 @@
   // the first selected list; updated when the operator clicks a tab
   // (set focus AND toggle inclusion in one click).
   let focusedListId = $state(/** @type {number | null} */ (null));
-  // Bridge positionsStore / holdingsStore through $effect → $state so that
-  // when loadPulse() calls positionsStore.set(), the downstream unifiedRows
-  // $derived.by (which runs buildUnified — a heavy computation) is scheduled
-  // by Svelte's microtask queue rather than firing synchronously inside the
-  // same long task as the store write. Without this bridge the synchronous
-  // $derived cascade blocks the main thread for >100 ms, freezing the
-  // RefreshButton spinner mid-animation (RAIL long-task violation).
+  // Bridge pulsePositionsStore / pulseHoldingsStore through $effect → $state
+  // so that when loadPulse() resolves, the downstream unifiedRows $derived.by
+  // (which runs buildUnified — a heavy computation) is scheduled by Svelte's
+  // microtask queue rather than firing synchronously inside the same long task
+  // as the store write. Without this bridge the synchronous $derived cascade
+  // blocks the main thread for >100 ms, freezing the RefreshButton spinner
+  // mid-animation (RAIL long-task violation).
   //
   // Hydration-race fix (Jun 2026): when the store's `.value` transiently
   // reverts to `null` (e.g. an invalidate() during a refresh-cycle mode
@@ -180,11 +181,11 @@
   // before the next store update repopulated. Now we explicitly skip
   // the mirror when the store goes null and keep the prior local
   // snapshot — stale-while-revalidate at the bridge.
-  let positions = $state(/** @type {any[]} */ (positionsStore.value ?? []));
-  let holdings  = $state(/** @type {any[]} */ (holdingsStore.value  ?? []));
+  let positions = $state(/** @type {any[]} */ (pulsePositionsStore.value ?? []));
+  let holdings  = $state(/** @type {any[]} */ (pulseHoldingsStore.value  ?? []));
   $effect(() => {
-    const p = positionsStore.value;
-    const h = holdingsStore.value;
+    const p = pulsePositionsStore.value;
+    const h = pulseHoldingsStore.value;
     untrack(() => {
       if (p != null) positions = p;
       if (h != null) holdings  = h;
@@ -1321,23 +1322,22 @@
     //
     // After the loadPulse-store-migration (Sprint F+, commit 50ed5e83),
     // loadPulse(force=false) no longer fetches positions on the initial
-    // mount call — it trusts the book poller to keep positionsStore hot.
-    // On a cold start (empty localStorage) positionsStore.value can still
-    // be null when the Promise.allSettled above resolves, because the book
-    // poller's first _tickBookPollers() is fire-and-forget and may still
-    // be in-flight. Without this wait, loadSparklines() reads unifiedRows
-    // with empty positions → pairs list is watchlist-only → position
-    // sparkline cells show "—" until the 60 s _TICK_SPARK cadence fires.
+    // mount call. On a cold start (empty localStorage) pulsePositionsStore.value
+    // can still be null when the Promise.allSettled above resolves because the
+    // pulse stores are populated only by MarketPulse's own load() calls.
+    // Without this wait, loadSparklines() reads unifiedRows with empty positions
+    // → pairs list is watchlist-only → position sparkline cells show "—" until
+    // the 60 s _TICK_SPARK cadence fires.
     //
-    // positionsStore.load() is safe to call concurrently: createDataStore
-    // deduplicates by args so if the book poller's load() is still in-flight
-    // we join its Promise (zero extra HTTP round-trips). If the poller has
-    // already resolved we short-circuit to the cached value synchronously.
-    // After the allSettled, positionsStore.value + holdingsStore.value are
-    // guaranteed populated (or errored — the store keeps the last-good value).
+    // pulsePositionsStore.load() is safe to call concurrently: createDataStore
+    // deduplicates by args so if a prior load() is still in-flight we join its
+    // Promise (zero extra HTTP round-trips). If already resolved we short-circuit
+    // to the cached value synchronously. After the allSettled,
+    // pulsePositionsStore.value + pulseHoldingsStore.value are guaranteed
+    // populated (or errored — the store keeps the last-good value).
     // await tick() flushes the $effect bridge that mirrors store values into
     // the `positions` / `holdings` $state variables that unifiedRows reads.
-    await Promise.allSettled([positionsStore.load(), holdingsStore.load()]);
+    await Promise.allSettled([pulsePositionsStore.load(), pulseHoldingsStore.load()]);
     await tick();
     loadSparklines();
     // 2 s retry covers any remaining watchlist-quote race: loadQuotes
@@ -2488,8 +2488,8 @@
           : Promise.resolve(null);
 
         await Promise.allSettled([
-          positionsStore.load({ skipLtp }, { force: true }),
-          holdingsStore.load({ skipLtp }, { force: true }),
+          pulsePositionsStore.load({ skipLtp }, { force: true }),
+          pulseHoldingsStore.load({ skipLtp }, { force: true }),
         ]);
 
         if (showSummary) {
@@ -2502,11 +2502,11 @@
       }
 
       // brokerErr: surface any error the last store-load cycle captured.
-      brokerErr = [positionsStore.error, holdingsStore.error]
+      brokerErr = [pulsePositionsStore.error, pulseHoldingsStore.error]
         .filter(Boolean).join(' · ');
 
-      const p_rows = positionsStore.value ?? [];
-      const h_rows = holdingsStore.value  ?? [];
+      const p_rows = pulsePositionsStore.value ?? [];
+      const h_rows = pulseHoldingsStore.value  ?? [];
 
       // ── Account-picker seeding ──────────────────────────────────────
       // Surface every account id seen across positions + holdings for the

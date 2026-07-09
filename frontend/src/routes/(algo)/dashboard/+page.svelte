@@ -1107,7 +1107,7 @@
       await Promise.allSettled([
         loadHero(),
         _fetchEquity(),
-        fundsStore.load({ force: true }),
+        fundsStore.load(undefined, { force: true }),
         _fetchNav(),
       ]);
     } finally {
