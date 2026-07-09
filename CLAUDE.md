@@ -364,6 +364,11 @@ Dashboard card (/dashboard — replaces legacy NEWS), /activity page (bookmarkab
 
 Log-level parsing: System/Conn extract `[LEVEL]`, Agent map `event_type`, Orders no token (all info).
 
+**Activity state store** — `activityStore.svelte.js` is the SSOT for tab selection and filter state. 
+All five mount points share the same store — tab persists across modal open/close. `openActivityModal(tab?)` 
+accepts an optional tab override for deep-links (e.g. BrokerHealthBadge → 'conn'); generic opens 
+pass no argument and leave the persisted tab unchanged.
+
 ---
 
 ## Chart Workspace
@@ -376,6 +381,12 @@ Indicators (price panel): SMA 20/50, EMA 20/50 (Wilder), VWAP (cyan, null on zer
 Bollinger Bands ±2σ (20-period). Sub-panels: RSI 14 (30/70 lines), MACD 12/26/9 (histogram + line + signal).
 
 Signals toggle (default ON) persisted to localStorage. Overlays persisted to `rbq.cache.chart-overlays.v1`.
+
+**Chart state store** — `chartStore.svelte.js` is the single-slot Svelte 5 `$state` SSOT for chart 
+UI (symbol, exchange, range, ohlcv, overlays, indicators). Both `ChartModal` and `/charts` page seed 
+from and write to this store. Symbol change calls `clearData()` which wipes ohlcv/lastFetched atomically; 
+overlays and indicators persist across symbol changes. 30s TTL via `isFresh()` prevents duplicate 
+fetches for same symbol+range.
 
 ---
 
@@ -406,6 +417,12 @@ Basket: `POST /api/orders/basket` groups by account, `asyncio.gather` dispatch p
 Shared `basket_tag=ramboq-basket-<uuid>`. Target profit: `AlgoOrder.target_pct/target_abs/parent_order_id/basket_tag` 
 auto-attach on parent fill (default 0.30). Preflight: `asyncio.gather` parallel (~300ms). 
 `_TICK_INDEX` dict: O(1) lookup from instruments cache.
+
+**OrderTicket prefill** — `orderTicketModal` in `stores.js` carries a `prefill` payload alongside `open`. 
+`openOrderTicketModal(prefill?)` accepts optional fields: symbol, exchange, side, qty, lots, price, product, 
+lotSize, currentQty, action, account, accounts, triggerSource. No-arg call opens a blank ticket (backward-compatible). 
+`closeOrderTicketModal()` resets prefill to null. Enables deep-link order entry from other surfaces 
+(chart, positions grid, alerts).
 
 ---
 
@@ -603,3 +620,6 @@ Snapshot rows, Legs grid, Payoff overlay. Never read `day_change_val` directly.
 | Perf dashboard | `frontend/src/routes/(algo)/admin/perf/+page.svelte` |
 | Virtual root display | `backend/api/algo/symbol_resolver.py` + `frontend/src/lib/data/rootOf.js` |
 | MCX lot-size overrides | `backend/api/routes/instruments.py` |
+| Chart state (symbol, range, OHLCV) | `frontend/src/lib/data/chartStore.svelte.js` |
+| Activity tab persistence | `frontend/src/lib/data/activityStore.svelte.js` |
+| Order ticket prefill | `frontend/src/lib/stores.js` |
