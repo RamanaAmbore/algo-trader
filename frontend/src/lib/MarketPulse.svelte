@@ -587,8 +587,8 @@
   let _moverSparkSig = /** @type {string} */ ('');
   $effect(() => {
     const sig = movers
-      .map(m => `${String(m?.exchange || 'NSE').toUpperCase()}:${String(m?.tradingsymbol || '').toUpperCase()}`)
-      .filter(Boolean)
+      .filter(m => m?.tradingsymbol)
+      .map(m => `${String(m?.exchange || 'NSE').toUpperCase()}:${String(m.tradingsymbol).toUpperCase()}`)
       .sort()
       .join(',');
     if (sig === _moverSparkSig) return;

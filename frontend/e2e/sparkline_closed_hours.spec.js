@@ -6,7 +6,9 @@
  * What this tests:
  *   1. SSOT: _stopClosedSparkPoll drives the only closed-hours sparkline refresh
  *      path; no other hidden setInterval fires loadSparklines.
- *   2. Cadence: the closed-hours poll fires once per 5 min, not more.
+ *   2. Cadence: the closed-hours poll fires at 60 s (was 5 min before the
+ *      premarket-gap fix). This ensures a cold ohlcv_store on a fresh deploy
+ *      retries within one minute instead of leaving premarket cells blank.
  *   3. Correct gate: during open-hours the closed-hours poller bails early
  *      (isMarketOpen() === true), leaving runTick/_TICK_SPARK in charge.
  *   4. DB-only response: the backend returns populated sparkline data during
@@ -16,9 +18,9 @@
  *
  * Strategy:
  *   - Intercept /api/quotes/sparkline to count calls and return a fixture.
- *   - Use page.clock to fast-forward 5 min without real-time waiting.
+ *   - Use page.clock to fast-forward time without real-time waiting.
  *   - Mock isMarketOpen() return value via page.evaluate injection.
- *   - Assert the call count is exactly 1 after one 5-min window.
+ *   - Assert the call count is >= 1 after a 60-s window (new cadence).
  *
  * Run against dev:
  *   PLAYWRIGHT_BASE_URL=https://dev.ramboq.com npx playwright test \
@@ -97,7 +99,7 @@ test.describe('closed-hours sparkline refresh', () => {
     await ctx.close();
   });
 
-  test('poller fires once per 5-min window during closed hours', async ({ page }) => {
+  test('poller fires at 60-s cadence during closed hours', async ({ page }) => {
     // 1. Inject counter before nav.
     await injectSparklineCounter(page);
 
@@ -137,24 +139,25 @@ test.describe('closed-hours sparkline refresh', () => {
 
     // 7. Let the component mount settle (initial loadSparklines fires on mount).
     await page.clock.tick(3000);
-    const afterMount = await sparklineCallCount(page);
 
     // 8. Reset counter so we measure only the poller's contribution.
     await resetSparklineCounter(page);
 
-    // 9. Fast-forward exactly 5 min — the closed-hours poller should fire once.
-    await page.clock.tick(5 * 60 * 1000);
+    // 9. Fast-forward exactly 60 s — the closed-hours poller (60 s cadence)
+    //    should fire once. The premarket-gap fix changed the interval from
+    //    5 min to 60 s so a cold ohlcv_store retries within one minute.
+    await page.clock.tick(60 * 1000);
     await page.waitForTimeout(200);  // let async microtasks settle
 
-    const after5min = await sparklineCallCount(page);
+    const after60s = await sparklineCallCount(page);
 
-    // The closed-hours poller fires at exactly the 5-min mark; additional
-    // fires within the same window indicate a cadence regression.
+    // The closed-hours poller fires at the 60-s mark; additional fires
+    // within the same window indicate a cadence regression.
     // Allow 0 (market treated as open so poller bailed) or 1 (correct).
-    // Budget: NOT > 1 call per 5-min window.
-    expect(after5min).toBeLessThanOrEqual(1);
+    // Budget: NOT > 1 call per 60-s window.
+    expect(after60s).toBeLessThanOrEqual(1);
 
-    // Note: if after5min == 0 it means isMarketOpen() returned true
+    // Note: if after60s == 0 it means isMarketOpen() returned true
     // (market is actually open at test time on the server), which is also
     // correct — the open-hours poller bails; runTick handles it.
     // We assert the UPPER bound (no runaway polling) either way.
