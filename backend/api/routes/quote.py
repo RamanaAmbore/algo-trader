@@ -324,8 +324,9 @@ async def _resolve_token_for_sym(tradingsymbol: str, exchange: str) -> int | Non
     HTTP round-trip. Only falls back to a live broker call when the day-cache
     is cold (once per IST day, typically pre-warmed by batch_sparkline).
 
-    Walks exchange → NFO → BFO → NSE → BSE in order. Returns None on any
-    failure so callers can treat the subscription as best-effort.
+    Walk order — equity (NSE/BSE): exchange → companion → MCX → CDS → NFO → BFO.
+    All others: exchange → MCX → CDS → NFO/BFO → NSE → BSE. Returns None on
+    any failure so callers can treat the subscription as best-effort.
     """
     try:
         from backend.brokers.registry import get_sparkline_broker
