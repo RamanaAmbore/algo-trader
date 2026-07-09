@@ -1,67 +1,25 @@
 <script module>
-  // Module-level OHLCV cache — operator reported chart re-fetches
-  // when re-opening the same symbol. Each ChartWorkspace instance
-  // fires _loadHistorical(true) more than once on mount, and a new
-  // instance is created every time ChartModal mounts; without this
-  // cache every open round-trips even when the backend returns the
-  // same bytes. Audit caught that previously this cache lived in
-  // the per-instance <script> block, making it a no-op — moved here
-  // so it's truly module-scoped.
+  // Module-level LRU cache removed (2026-07-09).
+  // Design: chart store holds ONE symbol at a time only. On symbol
+  // change chartStore.clearData() wipes ohlcv immediately so old
+  // bars never bleed into the new symbol's view. No per-symbol cache
+  // map — single slot, no LRU, no TTL accumulation across symbols.
   //
-  // Key: `${symbol}|${exchange}|${days}|${interval}|${underlying}`.
-  // The `interval` segment was missing originally — if the chart
-  // ever wires a 1h toggle the FE would serve daily bars for an
-  // hourly request without it.
-  /** @type {Map<string, {bars:any[], spotBars:any[], expiresAt:number}>} */
-  const _BAR_CACHE = new Map();
-  const _BAR_CACHE_TTL_MS = 60_000;
-  const _BAR_CACHE_MAX    = 60;
+  // prefetchChartBars is kept as a no-op export so callers
+  // (PageHeaderActions, MarketPulse) compile without changes.
+  // The hover-warmup UX is intentionally removed with the cache.
 
-  export function _cacheGet(/** @type {string} */ key) {
-    const e = _BAR_CACHE.get(key);
-    if (!e) return null;
-    if (Date.now() >= e.expiresAt) { _BAR_CACHE.delete(key); return null; }
-    // True LRU — touch on access so the next eviction targets the
-    // genuinely least-recently-used entry rather than oldest-by-
-    // insertion.
-    _BAR_CACHE.delete(key);
-    _BAR_CACHE.set(key, e);
-    return e;
-  }
-
-  export function _cachePut(/** @type {string} */ key,
-                            /** @type {any[]} */ bars,
-                            /** @type {any[]} */ spotBars) {
-    _BAR_CACHE.set(key, { bars, spotBars, expiresAt: Date.now() + _BAR_CACHE_TTL_MS });
-    if (_BAR_CACHE.size > _BAR_CACHE_MAX) {
-      const oldest = _BAR_CACHE.keys().next().value;
-      if (oldest != null) _BAR_CACHE.delete(oldest);
-    }
-  }
-
-  /** Pre-warm the OHLCV cache for a symbol — operator hovers the
-   *  chart-open affordance, we fetch the bars in the background, then
-   *  the click-to-open is instant (cache hit). Operator: "I see delay
-   *  chart plotting first time when I open the modal." Idempotent
-   *  per-symbol within the 60 s TTL; multiple hover events collapse
-   *  into one network round-trip.
-   *  @param {string} symbol
-   *  @param {string} [exchange]
-   *  @param {number} [days]
+  /**
+   * No-op stub — previously pre-warmed the module-level LRU cache.
+   * The cache has been removed per the single-slot design; this export
+   * stays so existing callers (PageHeaderActions.svelte,
+   * MarketPulse.svelte) don't need to change.
+   * @param {string} _symbol
+   * @param {string} [_exchange]
+   * @param {number} [_days]
    */
-  export async function prefetchChartBars(symbol, exchange = '', days = 30) {
-    if (!symbol) return;
-    const _interval = 'day';
-    const key = `${symbol.toUpperCase()}|${(exchange || '').toUpperCase()}|${days}|${_interval}|`;
-    if (_cacheGet(key)) return;  // already warm
-    try {
-      // Lazy-import to avoid a circular static-import graph between
-      // ChartWorkspace.svelte and api.js at module load.
-      const { fetchOptionsHistorical } = await import('$lib/api');
-      const hist = await fetchOptionsHistorical(symbol, { days, exchange: exchange || undefined });
-      const bars = Array.isArray(hist?.bars) ? hist.bars : [];
-      if (bars.length) _cachePut(key, bars, []);
-    } catch (_) { /* silent — best-effort prefetch */ }
+  export async function prefetchChartBars(_symbol, _exchange = '', _days = 30) {
+    // intentional no-op — single-slot design, no pre-warming cache
   }
 </script>
 
@@ -654,13 +612,13 @@
   let _emptyRetryTimer = null;
 
   /**
-   * Build the module-level cache key for a historical data request.
-   * Includes interval so a future intraday toggle cannot serve daily bars.
+   * Build a dedup key for the empty-response retry latch.
+   * Ensures at most one retry per (symbol, exchange, days) combination
+   * regardless of how many concurrent _loadHistorical calls fire.
    */
-  function _buildChartCacheKey(fetchSym, fetchExch, days) {
-    const interval = 'day';
+  function _buildRetryKey(fetchSym, fetchExch, days) {
     const under = _isDerivative ? (_underlying || '') : '';
-    return `${fetchSym}|${(fetchExch || '').toUpperCase()}|${days}|${interval}|${under}`;
+    return `${fetchSym}|${(fetchExch || '').toUpperCase()}|${days}|${under}`;
   }
 
   /**
@@ -689,7 +647,7 @@
    * Side-effects: may set _histRetrying, _histError, _emptyRetryTimer,
    * _chartLoaded, _bars (guard keeps old bars on silent keep).
    */
-  function _handleEmptyBars(hist, cacheKey, prevBars) {
+  function _handleEmptyBars(hist, retryKey, prevBars) {
     // Guard: keep last-good bars rather than flashing "no data".
     if (prevBars.length > 0) {
       _chartLoaded = true;
@@ -702,9 +660,9 @@
     //
     // The latch _emptyRetryFired ensures at most ONE retry per key.
     const isPartial = !!hist?.partial;
-    const canRetry  = isPartial && !_emptyRetryFired.has(cacheKey);
+    const canRetry  = isPartial && !_emptyRetryFired.has(retryKey);
     if (canRetry) {
-      _emptyRetryFired.add(cacheKey);
+      _emptyRetryFired.add(retryKey);
       _histError = '';
       // _histRetrying keeps the loading branch active so the
       // {:else if !_bars.length} "No data available" branch is NOT
@@ -730,9 +688,16 @@
 
   async function _loadHistorical(/** @type {boolean} */ force = false) {
     if (!symbol) return;
+    // Single-slot design: no cross-surface TTL cache.
+    // chartStore.clearData() is called on every symbol change so old
+    // bars never serve as a "fresh" hit for a new symbol.
+    // Intra-mount dedup only: onMount fires once; _firstSymEffect skips
+    // the initial effect run. force=true bypasses this (bump, range change,
+    // operator refresh, symbol-change effect).
     if (!force && _chartLoaded) return;
     const token = ++_loadToken;
     _histLoading = true; _histError = '';
+    chartStore.setLoading(true);
     // Defer the visible spinner by ~150ms — warm cache-hits complete
     // before it flips on (no flash); broker round-trips show it promptly.
     if (_histLoadingTimer) clearTimeout(_histLoadingTimer);
@@ -755,16 +720,10 @@
       const fetchSym  = _resolved.sym;
       const fetchExch = _resolved.exch || _resolvedExchange || exchange || undefined;
 
-      // Module-level cache lookup — see _BAR_CACHE comment above.
-      const cacheKey = _buildChartCacheKey(fetchSym, fetchExch, _chartDays);
-      const _cached = _cacheGet(cacheKey);
-      if (_cached) {
-        _bars = _cached.bars;
-        _spotBars = _cached.spotBars;
-        if (!_bars.length) _histError = 'No data available.';
-        _chartLoaded = true;
-        return;
-      }
+      // Dedup key — used only by the empty-response retry latch
+      // (_emptyRetryFired) to prevent an infinite retry loop on
+      // symbols that genuinely have no historical data.
+      const retryKey = _buildRetryKey(fetchSym, fetchExch, _chartDays);
 
       const promises = [
         fetchOptionsHistorical(fetchSym, { days: _chartDays, exchange: fetchExch }),
@@ -787,29 +746,27 @@
         const prevBars = _bars;
         _bars     = _nextBars;
         _spotBars = spotHist ? (Array.isArray(spotHist.bars) ? spotHist.bars : []) : [];
-        if (_handleEmptyBars(hist, cacheKey, prevBars)) return;
+        chartStore.setOhlcv(_bars, _spotBars);
+        if (_handleEmptyBars(hist, retryKey, prevBars)) return;
       } else {
         _bars     = _nextBars;
         _spotBars = spotHist ? (Array.isArray(spotHist.bars) ? spotHist.bars : []) : [];
+        chartStore.setOhlcv(_bars, _spotBars);
         _histRetrying = false;
       }
       _chartLoaded = true;
-
-      // Cache write — only non-empty bars; empty results (rate-limit /
-      // preview blocked) must not poison the next open.
-      if (_bars.length) {
-        _cachePut(cacheKey, _bars, _spotBars);
-      }
     } catch (e) {
       if (token !== _loadToken) return; // newer call in flight — its result is canonical
       _histError = /** @type {any} */ (e)?.message || 'Load failed';
       _histRetrying = false;
       _bars = [];
+      chartStore.setOhlcv(null);
     } finally {
       // Only the newest call flips loading off.
       if (token === _loadToken) {
         _histLoading = false;
         _histLoadingSlow = false;
+        chartStore.setLoading(false);
         if (_histLoadingTimer) { clearTimeout(_histLoadingTimer); _histLoadingTimer = null; }
       }
       _measureChartContainer();
@@ -1587,19 +1544,20 @@
   let _mounted = true;
 
   onMount(async () => {
-    // Hydrate overlay preferences from localStorage (can't do this at
-    // $state() init because that code runs on the server during SSR).
-    try {
-      const raw = localStorage.getItem(_OVERLAY_LS_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) {
-          const known = new Set(_OVERLAY_OPTS.map((o) => o.value));
-          const valid = parsed.filter((v) => known.has(v));
-          if (valid.length) _overlays = valid;
-        }
-      }
-    } catch (_) { /* localStorage unavailable — proceed with empty */ }
+    // Seed the store with this surface's symbol + exchange so the TTL
+    // check in _loadHistorical uses the right key.  The /charts page
+    // seeds the store before mounting ChartWorkspace; ChartModal seeds
+    // via its `symbol` prop.  Either way, this onMount write is the
+    // canonical "I am the active chart" signal.
+    chartStore.setSymbol(symbol);
+    chartStore.setExchange(exchange || '');
+
+    // Hydrate overlay preferences via chartStore — it reads the same
+    // localStorage key ('rbq.cache.chart-overlays.v1') and validates
+    // against the known overlay set.  Mirror into local _overlays so
+    // existing template bindings work unchanged.
+    chartStore.hydrateOverlays(_OVERLAY_OPTS.map((o) => o.value));
+    _overlays = chartStore.overlays.slice();
     _overlaysHydrated = true;
 
     // Hydrate signals toggle — operator may have turned markers off.
@@ -1696,17 +1654,18 @@
     void symbol; void exchange;
     if (!_mounted) return;
     if (_firstSymEffect) { _firstSymEffect = false; return; }
+    // Single-slot clear: wipe old symbol's bars from the store immediately
+    // so no render frame sees stale data under the new symbol.
+    // chartStore.clearData() sets ohlcv=null, loading=true, lastFetched=null.
+    chartStore.clearData();
+    chartStore.setSymbol(symbol);
+    chartStore.setExchange(exchange || '');
     _chartLoaded = false;
     zoom = null;
     _chartHover = null;
-    // Clear bars + prime loading flag atomically before calling
-    // _loadHistorical so no render frame can see (_bars=[] &&
-    // !_histLoading), which would flash "No data available." while
-    // the fetch is actually about to start. Setting _histLoading=true
-    // here (in the same synchronous batch) keeps the component in the
-    // "Loading…" branch (line: _histLoading && !_bars.length) during
-    // the brief window between the effect firing and _loadHistorical
-    // setting its own copy of the flag.
+    // Mirror store state into local reactive aliases atomically so the
+    // template stays in the "Loading…" branch during the brief window
+    // before _loadHistorical fires and sets its own copy of the flags.
     _histLoading = true;
     _histError = '';
     _histRetrying = false;
@@ -1716,6 +1675,9 @@
     // Cancel any pending empty-response retry from a previous symbol so
     // it doesn't fire AFTER the new symbol's fetch has already landed.
     if (_emptyRetryTimer) { clearTimeout(_emptyRetryTimer); _emptyRetryTimer = null; }
+    // Clear per-symbol retry latch so the new symbol gets a fresh retry
+    // budget (no stale keys from previous symbols bleed through).
+    _emptyRetryFired.clear();
     // 3-second gate: re-arm the suppression gate for the new symbol.
     // Cancel the previous timer, flip the gate active, then schedule
     // 3000 ms to open it. The template reads _emptyGateSuppressed ($state)

@@ -139,6 +139,19 @@ function createChartStore() {
     },
 
     /**
+     * Single-slot clear: wipe data, mark loading, reset fetch stamp.
+     * Call immediately when symbol changes so old symbol's bars are
+     * never visible under the new symbol even for a single frame.
+     * Overlays and indicators are user-preferences and are NOT cleared.
+     */
+    clearData() {
+      _ohlcv       = null;
+      _spotBars    = [];
+      _loading     = true;
+      _lastFetched = null;
+    },
+
+    /**
      * Set the overlays selection and persist to localStorage.
      * @param {string[]} v
      */
