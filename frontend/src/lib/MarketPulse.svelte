@@ -573,6 +573,32 @@
     showLosers    = selectedSources.includes('losers');
     showMovers    = showWinners || showLosers;
   });
+  // Mover-symbol-set change trigger for sparklines.
+  // When the set of winner/loser tradingsymbols rotates (new movers appear
+  // every 30 s), the next scheduled _TICK_SPARK is up to 60 s away —
+  // new rows show "—" for sparkline until then. This $effect computes a
+  // sorted signature of EXCH:SYM keys from the current movers list and
+  // calls loadSparklines() immediately when the signature changes.
+  //
+  // Guard: skip the very first run (identical to the mount-path call at
+  // line 1342) so we don't double-fetch on initial load. untrack() wraps
+  // loadSparklines so it doesn't re-subscribe to whatever stores
+  // loadSparklines reads internally.
+  let _moverSparkSig = /** @type {string} */ ('');
+  $effect(() => {
+    const sig = movers
+      .map(m => `${String(m?.exchange || 'NSE').toUpperCase()}:${String(m?.tradingsymbol || '').toUpperCase()}`)
+      .filter(Boolean)
+      .sort()
+      .join(',');
+    if (sig === _moverSparkSig) return;
+    const prev = _moverSparkSig;
+    _moverSparkSig = sig;
+    // Skip the first assignment (component boot — mount path already fires
+    // loadSparklines() after loadPulse completes).
+    if (!prev) return;
+    untrack(() => loadSparklines());
+  });
   // Account-picker state. Now a MultiSelect — operator can scope
   // positions / holdings INPUTS to buildUnified to any subset of
   // broker accounts. EMPTY array = all accounts (no filter); the
@@ -1397,17 +1423,20 @@
       }
     }, 60_000);
 
-    // Closed-hours sparkline safety net — 5 min cadence, visible-only.
+    // Closed-hours sparkline safety net — 60 s cadence, visible-only.
     // When the market is open, runTick already fires loadSparklines every
     // 60 s via _TICK_SPARK; bail early to avoid a duplicate fetch.
     // When the market is closed, marketAwareInterval suspends runTick so
     // this is the only path that keeps sparklines refreshed from DB.
     // The backend batch_sparkline endpoint runs in db_only mode during
     // closed hours (no broker calls), so this is cheap: Tier 1+2 only.
+    // 60 s (was 5 min) so a cold ohlcv_store on a fresh deploy retries
+    // within a minute rather than leaving premarket sparklines blank for
+    // up to 5 min.
     _stopClosedSparkPoll = visibleInterval(() => {
       if (isMarketOpen()) return; // open-hours: runTick handles it
       loadSparklines();
-    }, 5 * 60 * 1000);
+    }, 60 * 1000);
 
     // Real-time order-fill push — Kite postback fires a WS event
     // `position_filled` the moment an order fills. Subscribe so
