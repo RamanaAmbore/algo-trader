@@ -22,7 +22,7 @@
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
   import { rootOfLabel } from '$lib/data/rootOf.js';
-  import { navByAccount, navTotalRow } from '$lib/data/nav';
+  import { navByAccount, navTotalRow, baseDayPnlForPosition } from '$lib/data/nav';
 
   // Module-scope cache for hyphenated display strings. ag-Grid
   // re-runs cellRenderer on every redraw — a Map cache avoids
@@ -816,7 +816,11 @@
     // Aggregate denominators are absolute (qty can be ±) — short and
     // long positions both contribute to capital deployed.
     const total_pnl        = sum('pnl');
-    const total_day_change = sum('day_change_val');
+    // Use baseDayPnlForPosition for the new-position override: when
+    // overnight_quantity=0 && day_change_val=0 && pnl≠0, the broker
+    // returns 0 for dcv so we fall back to lifetime pnl. Matches
+    // PositionStrip P1 and Pulse positions TOTAL row.
+    const total_day_change = rows.reduce((s, r) => s + baseDayPnlForPosition(r), 0);
     const total_cost_basis = rows.reduce(
       (s, r) => s + Math.abs(Number(r.average_price) || 0) * Math.abs(Number(r.quantity) || 0), 0);
     const total_prev_val   = rows.reduce(
