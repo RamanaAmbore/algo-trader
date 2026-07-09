@@ -458,10 +458,16 @@ class AdminController(Controller):
                 raise HTTPException(status_code=409, detail="Username already exists")
             # Non-partner users created by an admin/designated actor are
             # explicitly vetted — skip the email-verification dance so
-            # trader/risk/admin rows can log in immediately. Partners keep
-            # email_verified=False (they self-register via the public form).
+            # trader/risk/admin rows can log in immediately.  Partners that
+            # self-register via the public form start with email_verified=False,
+            # but partners created HERE by a designated user with an email on
+            # file are also auto-verified: the operator is vouching for the
+            # address, so requiring a verify link is redundant friction.
             _INTERNAL_ROLES = ("designated", "trader", "risk", "admin")
-            admin_vetted = eff_role in _INTERNAL_ROLES
+            admin_vetted = (
+                eff_role in _INTERNAL_ROLES
+                or (is_designated and eff_role == "partner" and bool(data.email))
+            )
             user = User(
                 username=data.username,
                 password_hash=hash_password(data.password),

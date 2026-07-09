@@ -475,14 +475,17 @@
     (emailPreset !== '' || emailPicked.length > 0)
   );
 
-  /** Resolved email addresses for the selected preset (or empty array when manual). */
+  /** Resolved email addresses for the selected preset (or empty array when manual).
+   * email_verified is deliberately NOT filtered here — operator-directed blasts
+   * should reach all partners with an email on file, regardless of whether they
+   * completed the self-registration verification flow. */
   const emailResolvedRecipients = $derived(
     emailPreset === 'all-partners'
-      ? users.filter(u => (u.role === 'partner' || u.role === 'designated') && (u.share_pct || 0) > 0 && u.is_active && u.email && u.email_verified).map(u => u.email)
+      ? users.filter(u => (u.role === 'partner' || u.role === 'designated') && (u.share_pct || 0) > 0 && u.is_active && u.email).map(u => u.email)
       : emailPreset === 'all-designated'
-      ? users.filter(u => u.role === 'designated' && (u.share_pct || 0) > 0 && u.is_active && u.email && u.email_verified).map(u => u.email)
+      ? users.filter(u => u.role === 'designated' && (u.share_pct || 0) > 0 && u.is_active && u.email).map(u => u.email)
       : emailPreset === 'all'
-      ? users.filter(u => u.is_active && u.email && u.email_verified).map(u => u.email)
+      ? users.filter(u => u.is_active && u.email).map(u => u.email)
       : []
   );
 
@@ -1053,9 +1056,9 @@
         Sending…
       {:else}
         Send to {
-          emailPreset === 'all-partners'   ? `${users.filter(u=>(u.role==='partner'||u.role==='designated')&&(u.share_pct||0)>0&&u.is_active&&u.email&&u.email_verified).length} partner(s)` :
-          emailPreset === 'all-designated' ? `${users.filter(u=>u.role==='designated'&&(u.share_pct||0)>0&&u.is_active&&u.email&&u.email_verified).length} designated` :
-          emailPreset === 'all'            ? `${users.filter(u=>u.is_active&&u.email&&u.email_verified).length} user(s)` :
+          emailPreset === 'all-partners'   ? `${users.filter(u=>(u.role==='partner'||u.role==='designated')&&(u.share_pct||0)>0&&u.is_active&&u.email).length} partner(s)` :
+          emailPreset === 'all-designated' ? `${users.filter(u=>u.role==='designated'&&(u.share_pct||0)>0&&u.is_active&&u.email).length} designated` :
+          emailPreset === 'all'            ? `${users.filter(u=>u.is_active&&u.email).length} user(s)` :
           emailPicked.length > 0           ? `${emailPicked.length} partner(s)` :
           'partners'
         }
