@@ -680,81 +680,143 @@ async def _eod_fallback_map(
     return out
 
 
-async def _fetch_quotes(items: list[WatchlistItem]) -> list[WatchlistQuote]:
-    """One batched broker.quote() call for every distinct key. asyncio
-    runs the sync broker call in a thread so the event loop isn't
-    blocked on the network round-trip."""
-    import asyncio
-    from backend.brokers.registry import get_market_data_broker
-
+async def _build_watchlist_key_map(
+    items: list[WatchlistItem],
+) -> dict[int, tuple[str, str]]:
+    """Resolve every item to a `(broker_key, quote_symbol)` pair keyed by
+    watchlist_item.id. Extracted from `_fetch_quotes` for clarity."""
     key_map: dict[int, tuple[str, str]] = {}
     for it in items:
         broker_key, quote_sym = await _build_quote_key(it)
         key_map[it.id] = (broker_key, quote_sym)
+    return key_map
 
-    distinct_keys = sorted({k[0] for k in key_map.values() if k[0]})
-    quote_data: dict = {}
-    if distinct_keys:
-        try:
-            broker = get_market_data_broker()
-            quote_data = await asyncio.to_thread(broker.quote, distinct_keys) or {}
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"Watchlist quote fetch failed: {exc}")
-            quote_data = {}
 
-    # EOD fallback — when broker returned 0/stale for any item, look up
-    # the most recent close from ohlcv_daily so cold-mount paints with
-    # yesterday's EOD instead of 0. Built only for items the broker
-    # actually missed (skips the DB query when every quote was live).
+async def _batch_broker_quotes(distinct_keys: list[str]) -> dict:
+    """One `broker.quote()` call for every distinct key. Returns `{}` on
+    broker failure so the caller can fall back to EOD data."""
+    import asyncio
+    from backend.brokers.registry import get_market_data_broker
+
+    if not distinct_keys:
+        return {}
+    try:
+        broker = get_market_data_broker()
+        return await asyncio.to_thread(broker.quote, distinct_keys) or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Watchlist quote fetch failed: {exc}")
+        return {}
+
+
+def _collect_watchlist_eod_pairs(
+    items: list[WatchlistItem],
+    key_map: dict[int, tuple[str, str]],
+    quote_data: dict,
+) -> list[tuple[str, str]]:
+    """Return `(sym, exchange)` pairs that the broker missed so the caller
+    can look up prior-close data from `ohlcv_daily`."""
     eod_pairs: list[tuple[str, str]] = []
     for it in items:
         broker_key, quote_sym = key_map[it.id]
         q = quote_data.get(broker_key) or {}
         if not q or not float(q.get("last_price") or 0.0):
             eod_pairs.append((quote_sym.upper().strip(), it.exchange.upper().strip()))
+    return eod_pairs
+
+
+def _extract_depth_bid_ask(
+    depth: dict,
+) -> tuple[Optional[float], Optional[float]]:
+    """Pull best bid / best ask from a Kite-style depth block. Returns
+    `(None, None)` when the book is empty or the top-of-book price is 0."""
+    buys  = depth.get("buy") or []
+    sells = depth.get("sell") or []
+    bid   = float(buys[0]["price"])  if buys  and (buys[0].get("price") or 0)  else None
+    ask   = float(sells[0]["price"]) if sells and (sells[0].get("price") or 0) else None
+    return bid, ask
+
+
+def _apply_watchlist_eod_substitution(
+    ltp: float,
+    close: Optional[float],
+    ohlc: dict,
+    eod: Optional[dict],
+) -> tuple[float, Optional[float]]:
+    """Fill missing LTP / close / OHLC from ohlcv_daily's most recent bar.
+    The stale flag stays TRUE upstream — the frontend marks the row
+    accordingly. Returns the potentially-updated `(ltp, close)`."""
+    if not eod:
+        return ltp, close
+    if not ltp:   ltp   = float(eod.get("close") or 0.0)
+    if not close: close = eod.get("close")
+    if not ohlc.get("open"):  ohlc.setdefault("open",  eod.get("open"))
+    if not ohlc.get("high"):  ohlc.setdefault("high",  eod.get("high"))
+    if not ohlc.get("low"):   ohlc.setdefault("low",   eod.get("low"))
+    return ltp, close
+
+
+def _build_watchlist_quote_row(
+    it: WatchlistItem,
+    broker_key: str,
+    quote_sym: str,
+    quote_data: dict,
+    eod_map: dict,
+) -> WatchlistQuote:
+    """Per-item WatchlistQuote build. Mirrors the row-shape used by the
+    frontend grid; EOD data substitutes for a cold-mount / broker miss."""
+    q = quote_data.get(broker_key) or {}
+    ltp    = float(q.get("last_price") or 0.0)
+    ohlc   = q.get("ohlc") or {}
+    close  = float(ohlc.get("close") or 0.0) or None
+    bid, ask = _extract_depth_bid_ask(q.get("depth") or {})
+    # EOD substitution — only kicks in when broker gave us nothing.
+    # We set ltp = last close (so the grid paints a number) AND
+    # leave the stale flag TRUE so the frontend can subtly mark
+    # the row as "showing EOD, not live". The next live tick from
+    # SSE / next poll overwrites everything.
+    is_stale = not q or not ltp
+    eod = eod_map.get((quote_sym.upper().strip(), it.exchange.upper().strip())) if is_stale else None
+    ltp, close = _apply_watchlist_eod_substitution(ltp, close, ohlc, eod)
+    change = (ltp - close) if (close and ltp) else 0.0
+    chg_pct = (change / close * 100.0) if close else 0.0
+    return WatchlistQuote(
+        item_id=it.id,
+        tradingsymbol=it.tradingsymbol,
+        quote_symbol=quote_sym,
+        exchange=it.exchange,
+        ltp=ltp,
+        bid=bid, ask=ask,
+        open=(float(ohlc.get("open"))  if ohlc.get("open")  else None),
+        high=(float(ohlc.get("high"))  if ohlc.get("high")  else None),
+        low =(float(ohlc.get("low"))   if ohlc.get("low")   else None),
+        close=close,
+        change=change, change_pct=chg_pct,
+        volume=int(q.get("volume") or 0),
+        stale=is_stale,
+    )
+
+
+async def _fetch_quotes(items: list[WatchlistItem]) -> list[WatchlistQuote]:
+    """One batched broker.quote() call for every distinct key. asyncio
+    runs the sync broker call in a thread so the event loop isn't
+    blocked on the network round-trip."""
+    key_map = await _build_watchlist_key_map(items)
+
+    distinct_keys = sorted({k[0] for k in key_map.values() if k[0]})
+    quote_data = await _batch_broker_quotes(distinct_keys)
+
+    # EOD fallback — when broker returned 0/stale for any item, look up
+    # the most recent close from ohlcv_daily so cold-mount paints with
+    # yesterday's EOD instead of 0. Built only for items the broker
+    # actually missed (skips the DB query when every quote was live).
+    eod_pairs = _collect_watchlist_eod_pairs(items, key_map, quote_data)
     eod_map = await _eod_fallback_map(eod_pairs) if eod_pairs else {}
 
     out: list[WatchlistQuote] = []
     for it in items:
         broker_key, quote_sym = key_map[it.id]
-        q = quote_data.get(broker_key) or {}
-        ltp    = float(q.get("last_price") or 0.0)
-        ohlc   = q.get("ohlc") or {}
-        close  = float(ohlc.get("close") or 0.0) or None
-        depth  = q.get("depth") or {}
-        buys   = depth.get("buy") or []
-        sells  = depth.get("sell") or []
-        bid    = float(buys[0]["price"])  if buys  and (buys[0].get("price") or 0)  else None
-        ask    = float(sells[0]["price"]) if sells and (sells[0].get("price") or 0) else None
-        # EOD substitution — only kicks in when broker gave us nothing.
-        # We set ltp = last close (so the grid paints a number) AND
-        # leave the stale flag TRUE so the frontend can subtly mark
-        # the row as "showing EOD, not live". The next live tick from
-        # SSE / next poll overwrites everything.
-        is_stale = not q or not ltp
-        eod = eod_map.get((quote_sym.upper().strip(), it.exchange.upper().strip())) if is_stale else None
-        if eod:
-            if not ltp:   ltp   = float(eod.get("close") or 0.0)
-            if not close: close = eod.get("close")
-            if not ohlc.get("open"):  ohlc.setdefault("open",  eod.get("open"))
-            if not ohlc.get("high"):  ohlc.setdefault("high",  eod.get("high"))
-            if not ohlc.get("low"):   ohlc.setdefault("low",   eod.get("low"))
-        change = (ltp - close) if (close and ltp) else 0.0
-        chg_pct = (change / close * 100.0) if close else 0.0
-        out.append(WatchlistQuote(
-            item_id=it.id,
-            tradingsymbol=it.tradingsymbol,
-            quote_symbol=quote_sym,
-            exchange=it.exchange,
-            ltp=ltp,
-            bid=bid, ask=ask,
-            open=(float(ohlc.get("open"))  if ohlc.get("open")  else None),
-            high=(float(ohlc.get("high"))  if ohlc.get("high")  else None),
-            low =(float(ohlc.get("low"))   if ohlc.get("low")   else None),
-            close=close,
-            change=change, change_pct=chg_pct,
-            volume=int(q.get("volume") or 0),
-            stale=is_stale,
+        out.append(_build_watchlist_quote_row(
+            it, broker_key, quote_sym, quote_data, eod_map,
         ))
     return out
 
@@ -1194,6 +1256,294 @@ def _is_designated_role(request) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# get_movers helpers (extracted from WatchlistController.get_movers)
+# ---------------------------------------------------------------------------
+
+def _movers_probe_market_state(ist_now) -> tuple[bool, bool]:
+    """Fetch NSE + MCX holiday sets and probe both markets. Returns
+    `(nse_is_open, mcx_is_open)`. Falls back to `set()` on holiday
+    fetch failure so a broker-side outage never wedges the movers grid."""
+    from datetime import time as _dtime
+    from backend.brokers.broker_apis import fetch_holidays
+    from backend.shared.helpers.date_time_utils import is_market_open
+
+    try:
+        nse_holidays = fetch_holidays("NSE")
+    except Exception:
+        nse_holidays = set()
+    try:
+        mcx_holidays = fetch_holidays("MCX")
+    except Exception:
+        mcx_holidays = set()
+
+    nse_is_open = is_market_open(
+        ist_now, nse_holidays,
+        market_start=_dtime(9, 15), market_end=_dtime(15, 30),
+        exchange="NSE",
+    )
+    mcx_is_open = is_market_open(
+        ist_now, mcx_holidays,
+        market_start=_dtime(9, 0), market_end=_dtime(23, 30),
+        exchange="MCX",
+    )
+    return nse_is_open, mcx_is_open
+
+
+async def _movers_offhours_response(ist_today: str) -> "MoversResponse":
+    """Both exchanges closed → return NSE snapshot fallback or empty
+    response with logging."""
+    global _session_movers
+    snap_rows, reason = await _get_movers_now_off_hours()
+    if reason == "snapshot":
+        snap = await _load_latest_movers_snapshot()
+        return MoversResponse(
+            movers=snap_rows,
+            threshold_pct=MOVER_THRESHOLD_PCT,
+            session_date=snap.date.isoformat() if hasattr(snap.date, "isoformat") else str(snap.date),
+            captured_at=snap.captured_at.isoformat() if snap else None,
+        )
+    if reason == "snapshot_missing_off_hours":
+        logger.info(
+            f"[MOVERS-EMPTY] reason=snapshot_missing_off_hours "
+            f"universe_size=0 snapshot_present=False "
+            f"session_movers={len(_session_movers)}"
+        )
+    return MoversResponse(
+        movers=[], threshold_pct=MOVER_THRESHOLD_PCT, session_date=ist_today,
+    )
+
+
+async def _movers_rebuild_universes_if_needed(ist_today: str) -> None:
+    """Once-per-IST-day rebuild of NSE + MCX universe caches. Mutates
+    module-level `_underlyings_cache`, `_mcx_underlyings_cache`, and
+    `_mcx_fut_map`. No-op when both caches are current."""
+    from backend.api.cache import get_or_fetch
+    from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS as _INST_TTL
+    from backend.api.algo.derivatives import is_mcx_underlying
+
+    global _underlyings_cache, _underlyings_cache_date
+    global _mcx_underlyings_cache, _mcx_underlyings_cache_date, _mcx_fut_map
+
+    needs_rebuild = (
+        _underlyings_cache_date != ist_today or
+        _mcx_underlyings_cache_date != ist_today
+    )
+    if not needs_rebuild:
+        return
+    try:
+        resp = await get_or_fetch("instruments", _fetch_instruments,
+                                  ttl_seconds=_INST_TTL)
+        all_items = resp.items if resp else []
+    except Exception as _exc:
+        logger.warning(f"Movers: instruments fetch failed: {_exc}")
+        all_items = []
+
+    # NSE eq universe.
+    new_nse_set: set[str] = set()
+    for inst in all_items:
+        if inst.t in ("CE", "PE") and inst.u:
+            name = inst.u.upper()
+            if not is_mcx_underlying(name):
+                new_nse_set.add(name)
+    if new_nse_set:
+        _underlyings_cache = new_nse_set
+        _underlyings_cache_date = ist_today
+
+    # MCX universe (bare commodity roots + FUT symbol map).
+    new_mcx_set, new_mcx_fut = _build_mcx_universe(all_items)
+    if new_mcx_set:
+        _mcx_underlyings_cache = new_mcx_set
+        _mcx_fut_map = new_mcx_fut
+        _mcx_underlyings_cache_date = ist_today
+
+    logger.info(
+        f"Movers: universe build — items={len(all_items)} "
+        f"nse={len(new_nse_set)} mcx={len(new_mcx_set)} "
+        f"mcx_fut={len(new_mcx_fut)}"
+    )
+
+
+def _movers_build_key_to_meta(
+    nse_is_open: bool, mcx_is_open: bool,
+) -> dict[str, dict]:
+    """Assemble the `{broker_key: {underlying, exchange}}` map keyed by
+    exchange-open state. NSE keys omitted when NSE is closed; MCX keys
+    omitted when MCX is closed. Session-sticky entries from a closed
+    exchange still surface via `_combine_movers`."""
+    from backend.api.algo.derivatives import underlying_ltp_key
+    key_to_meta: dict[str, dict] = {}
+    if nse_is_open:
+        for name in _underlyings_cache:
+            key = underlying_ltp_key(name)
+            key_to_meta[key] = {"underlying": name, "exchange": "NSE"}
+    if mcx_is_open:
+        for root in _mcx_underlyings_cache:
+            fut_sym = _mcx_fut_map.get(root)
+            if fut_sym:
+                key_to_meta[f"MCX:{fut_sym}"] = {
+                    "underlying": root, "exchange": "MCX",
+                }
+    return key_to_meta
+
+
+async def _movers_fetch_quotes_cached(
+    key_to_meta: dict[str, dict],
+) -> dict:
+    """One `broker.quote()` call over the merged universe, cached for
+    30 s. Cache key includes universe size so an NSE-only → NSE+MCX
+    transition doesn't reuse a stale batch."""
+    import asyncio
+    import time as _time
+    from backend.api.cache import get_or_fetch as _gof
+    from backend.brokers.registry import get_market_data_broker
+
+    _MOVERS_QUOTE_TTL = 30
+
+    async def _fetch_unified_movers_quotes() -> dict:
+        keys = list(key_to_meta.keys())
+        if not keys:
+            return {}
+        try:
+            broker = get_market_data_broker()
+            return await asyncio.to_thread(broker.quote, keys) or {}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Movers unified quote fetch failed: {exc}")
+            return {}
+
+    cache_key = (
+        f"movers_quotes_{int(_time.time() // _MOVERS_QUOTE_TTL)}"
+        f"_{len(key_to_meta)}"
+    )
+    return await _gof(
+        cache_key, _fetch_unified_movers_quotes, ttl_seconds=_MOVERS_QUOTE_TTL,
+    )
+
+
+def _movers_process_symbol(
+    kite_key: str,
+    meta: dict,
+    quote_data: dict,
+    nse_is_open: bool,
+    mcx_is_open: bool,
+) -> Optional[tuple[str, dict]]:
+    """Per-symbol path: broker quote → resolver dispatch → change_pct.
+
+    Returns `(underlying, live_entry)` for the caller to fold into the
+    live snapshot, or `None` when no usable price was resolved. Mutates
+    the module-level `_session_movers` dict (last_price / price_source /
+    is_animating updates) as a side-effect."""
+    from datetime import datetime, timezone
+    from backend.api.helpers.price_resolver import resolve_current_price
+
+    global _session_movers
+
+    underlying = meta["underlying"]
+    exchange = meta["exchange"]
+    exch_is_open = (nse_is_open if exchange == "NSE" else mcx_is_open)
+    q = quote_data.get(kite_key) or {}
+    broker_ltp = float(q.get("last_price") or 0.0)
+    ohlc = q.get("ohlc") or {}
+    prev_close = float(ohlc.get("close") or 0.0)
+    # MCX kite_key is "MCX:{fut_sym}". Extract the resolved contract
+    # name so the frontend can key _liveLtpSnap lookups against the
+    # same symbol the SSE ticker uses (CRUDEOIL26JUNFUT, not CRUDEOIL).
+    # NSE kite_key has no prefix — leave quote_symbol None so
+    # tradingsymbol is used as the SSE lookup key unchanged.
+    row_quote_symbol: Optional[str] = None
+    if exchange == "MCX" and kite_key.startswith("MCX:"):
+        row_quote_symbol = kite_key[4:]  # strip "MCX:" prefix
+
+    # Resolver dispatch — kept even for the open-exchange branch
+    # so tests can verify a single code path for the triad.
+    price, source, animating = resolve_current_price(
+        exchange_open=exch_is_open,
+        live_ltp=(broker_ltp if broker_ltp > 0 else None),
+        snapshot_close=None,           # movers don't overlay close
+        snapshot_last_ltp=(broker_ltp if broker_ltp > 0 else None),
+        settled=False,
+    )
+
+    if not price or prev_close == 0.0:
+        # No usable price — update sticky last_price if we do have
+        # a broker LTP (partial quote), otherwise skip.
+        if underlying in _session_movers and broker_ltp:
+            _session_movers[underlying]["last_price"] = broker_ltp
+            _session_movers[underlying]["price_source"] = source
+            _session_movers[underlying]["is_animating"] = animating
+        return None
+
+    change_pct = (price - prev_close) / prev_close * 100.0
+    live_entry = {
+        "peak_pct": change_pct,
+        "last_pct": change_pct,
+        "last_price": price,
+        "current_price": price,
+        "previous_close": prev_close,
+        "exchange": exchange,
+        "price_source": source,
+        "is_animating": animating,
+        # Carry the resolved contract symbol so _combine_movers +
+        # MoverRow construction can propagate it to the frontend.
+        "quote_symbol": row_quote_symbol,
+    }
+
+    if underlying in _session_movers:
+        entry = _session_movers[underlying]
+        entry["last_pct"] = change_pct
+        entry["last_price"] = price
+        entry["current_price"] = price
+        entry["previous_close"] = prev_close
+        entry["price_source"] = source
+        entry["is_animating"] = animating
+        if row_quote_symbol:
+            entry["quote_symbol"] = row_quote_symbol
+        if abs(change_pct) > abs(entry["peak_pct"]):
+            entry["peak_pct"] = change_pct
+    elif abs(change_pct) >= MOVER_THRESHOLD_PCT:
+        _session_movers[underlying] = {
+            "first_seen_at": datetime.now(timezone.utc).isoformat(),
+            "peak_pct": change_pct,
+            "last_pct": change_pct,
+            "last_price": price,
+            "current_price": price,
+            "previous_close": prev_close,
+            "exchange": exchange,
+            "price_source": source,
+            "is_animating": animating,
+            "quote_symbol": row_quote_symbol,
+        }
+    return underlying, live_entry
+
+
+def _movers_build_rows(combined: dict[str, dict]) -> list["MoverRow"]:
+    """Assemble `MoverRow`s from the `_combine_movers` result and sort
+    by absolute change_pct desc."""
+    rows: list[MoverRow] = []
+    for underlying, entry in combined.items():
+        change_pct = entry["last_pct"]
+        rows.append(MoverRow(
+            tradingsymbol=underlying,
+            exchange=entry["exchange"],
+            last_price=entry["last_price"],
+            previous_close=entry["previous_close"],
+            change_pct=change_pct,
+            peak_pct=entry.get("peak_pct", change_pct),
+            sticky=(underlying in _session_movers
+                    and abs(change_pct) < MOVER_THRESHOLD_PCT),
+            # Unified animation triad (Jul 2026) — populated from the
+            # resolver output stashed on the entry during the loop above.
+            # Session-sticky rows carry the last-observed values (may be
+            # from an exchange that has since closed → is_animating=False).
+            price_source=entry.get("price_source", "live"),
+            current_price=entry.get("current_price", entry["last_price"]),
+            is_animating=entry.get("is_animating", True),
+            quote_symbol=entry.get("quote_symbol") or None,
+        ))
+    rows.sort(key=lambda r: abs(r.change_pct), reverse=True)
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # Controller
 # ---------------------------------------------------------------------------
 
@@ -1449,17 +1799,7 @@ class WatchlistController(Controller):
         fallback would then serve on an equity-context grid before 09:15).
         """
         import asyncio
-        import json as _json
-        from datetime import datetime, timezone
-        from zoneinfo import ZoneInfo
-        from backend.api.cache import get_or_fetch
-        from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS as _INST_TTL
-        from backend.api.algo.derivatives import underlying_ltp_key, is_mcx_underlying
-        from backend.brokers.registry import get_market_data_broker
-        from backend.shared.helpers.date_time_utils import is_market_open, timestamp_indian
-        from backend.brokers.broker_apis import fetch_holidays
-        from backend.api.helpers.price_resolver import resolve_current_price
-        from datetime import time as _dtime
+        from backend.shared.helpers.date_time_utils import timestamp_indian
 
         global _session_movers, _session_date, _mcx_fut_map
 
@@ -1472,50 +1812,11 @@ class WatchlistController(Controller):
             _session_date = ist_today
 
         # ── Market-state probe ────────────────────────────────────────
-        try:
-            _nse_holidays = fetch_holidays("NSE")
-        except Exception:
-            _nse_holidays = set()
-        try:
-            _mcx_holidays = fetch_holidays("MCX")
-        except Exception:
-            _mcx_holidays = set()
-
-        nse_is_open = is_market_open(
-            ist_now,
-            _nse_holidays,
-            market_start=_dtime(9, 15),
-            market_end=_dtime(15, 30),
-            exchange="NSE",
-        )
-        mcx_is_open = is_market_open(
-            ist_now,
-            _mcx_holidays,
-            market_start=_dtime(9, 0),
-            market_end=_dtime(23, 30),
-            exchange="MCX",
-        )
+        nse_is_open, mcx_is_open = _movers_probe_market_state(ist_now)
 
         # Branch 2: BOTH closed → NSE snapshot fallback (unchanged).
         if not nse_is_open and not mcx_is_open:
-            snap_rows, reason = await _get_movers_now_off_hours()
-            if reason == "snapshot":
-                snap = await _load_latest_movers_snapshot()
-                return MoversResponse(
-                    movers=snap_rows,
-                    threshold_pct=MOVER_THRESHOLD_PCT,
-                    session_date=snap.date.isoformat() if hasattr(snap.date, "isoformat") else str(snap.date),
-                    captured_at=snap.captured_at.isoformat() if snap else None,
-                )
-            if reason == "snapshot_missing_off_hours":
-                logger.info(
-                    f"[MOVERS-EMPTY] reason=snapshot_missing_off_hours "
-                    f"universe_size=0 snapshot_present=False "
-                    f"session_movers={len(_session_movers)}"
-                )
-            return MoversResponse(
-                movers=[], threshold_pct=MOVER_THRESHOLD_PCT, session_date=ist_today,
-            )
+            return await _movers_offhours_response(ist_today)
 
         # ── Branch 1: at least one exchange open → unified live path ──
 
@@ -1523,45 +1824,7 @@ class WatchlistController(Controller):
         # with a CE/PE chain (spot symbols like NIFTY, RELIANCE). MCX = bare
         # commodity roots with a CE/PE chain, keyed off the earliest-expiry
         # FUT tradingsymbol (broker.quote() returns nothing on the bare root).
-        global _underlyings_cache, _underlyings_cache_date
-        global _mcx_underlyings_cache, _mcx_underlyings_cache_date
-
-        needs_rebuild = (
-            _underlyings_cache_date != ist_today or
-            _mcx_underlyings_cache_date != ist_today
-        )
-        if needs_rebuild:
-            try:
-                resp = await get_or_fetch("instruments", _fetch_instruments,
-                                          ttl_seconds=_INST_TTL)
-                all_items = resp.items if resp else []
-            except Exception as _exc:
-                logger.warning(f"Movers: instruments fetch failed: {_exc}")
-                all_items = []
-
-            # NSE eq universe.
-            new_nse_set: set[str] = set()
-            for inst in all_items:
-                if inst.t in ("CE", "PE") and inst.u:
-                    name = inst.u.upper()
-                    if not is_mcx_underlying(name):
-                        new_nse_set.add(name)
-            if new_nse_set:
-                _underlyings_cache = new_nse_set
-                _underlyings_cache_date = ist_today
-
-            # MCX universe (bare commodity roots + FUT symbol map).
-            new_mcx_set, new_mcx_fut = _build_mcx_universe(all_items)
-            if new_mcx_set:
-                _mcx_underlyings_cache = new_mcx_set
-                _mcx_fut_map = new_mcx_fut
-                _mcx_underlyings_cache_date = ist_today
-
-            logger.info(
-                f"Movers: universe build — items={len(all_items)} "
-                f"nse={len(new_nse_set)} mcx={len(new_mcx_set)} "
-                f"mcx_fut={len(new_mcx_fut)}"
-            )
+        await _movers_rebuild_universes_if_needed(ist_today)
 
         # Build the unified key_to_meta map. Only include NSE keys when
         # NSE is open; MCX keys when MCX is open. When one exchange is
@@ -1569,18 +1832,7 @@ class WatchlistController(Controller):
         # `_session_movers` and continue to appear via `_combine_movers`
         # overlay (their `last_price` won't update — that's the intended
         # sticky behaviour).
-        key_to_meta: dict[str, dict] = {}
-        if nse_is_open:
-            for name in _underlyings_cache:
-                key = underlying_ltp_key(name)
-                key_to_meta[key] = {"underlying": name, "exchange": "NSE"}
-        if mcx_is_open:
-            for root in _mcx_underlyings_cache:
-                fut_sym = _mcx_fut_map.get(root)
-                if fut_sym:
-                    key_to_meta[f"MCX:{fut_sym}"] = {
-                        "underlying": root, "exchange": "MCX",
-                    }
+        key_to_meta = _movers_build_key_to_meta(nse_is_open, mcx_is_open)
 
         if not key_to_meta and not _session_movers:
             logger.info(
@@ -1596,28 +1848,7 @@ class WatchlistController(Controller):
         # Cached 30 s quote batch. Cache key is universe-scoped so that a
         # transition from NSE-only → NSE+MCX (11:00 IST) doesn't reuse the
         # NSE-only batch. Key components: TTL window + universe-size digest.
-        _MOVERS_QUOTE_TTL = 30
-
-        async def _fetch_unified_movers_quotes() -> dict:
-            keys = list(key_to_meta.keys())
-            if not keys:
-                return {}
-            try:
-                broker = get_market_data_broker()
-                return await asyncio.to_thread(broker.quote, keys) or {}
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(f"Movers unified quote fetch failed: {exc}")
-                return {}
-
-        from backend.api.cache import get_or_fetch as _gof
-        import time as _time
-        cache_key = (
-            f"movers_quotes_{int(_time.time() // _MOVERS_QUOTE_TTL)}"
-            f"_{len(key_to_meta)}"
-        )
-        quote_data: dict = await _gof(
-            cache_key, _fetch_unified_movers_quotes, ttl_seconds=_MOVERS_QUOTE_TTL,
-        )
+        quote_data = await _movers_fetch_quotes_cached(key_to_meta)
 
         if not quote_data and key_to_meta:
             logger.info(
@@ -1633,81 +1864,12 @@ class WatchlistController(Controller):
         # is_animating / price_source), then compute change_pct.
         live_snapshot: dict[str, dict] = {}
         for kite_key, meta in key_to_meta.items():
-            underlying = meta["underlying"]
-            exchange = meta["exchange"]
-            exch_is_open = (nse_is_open if exchange == "NSE" else mcx_is_open)
-            q = quote_data.get(kite_key) or {}
-            broker_ltp = float(q.get("last_price") or 0.0)
-            ohlc = q.get("ohlc") or {}
-            prev_close = float(ohlc.get("close") or 0.0)
-            # MCX kite_key is "MCX:{fut_sym}". Extract the resolved contract
-            # name so the frontend can key _liveLtpSnap lookups against the
-            # same symbol the SSE ticker uses (CRUDEOIL26JUNFUT, not CRUDEOIL).
-            # NSE kite_key has no prefix — leave quote_symbol None so
-            # tradingsymbol is used as the SSE lookup key unchanged.
-            row_quote_symbol: Optional[str] = None
-            if exchange == "MCX" and kite_key.startswith("MCX:"):
-                row_quote_symbol = kite_key[4:]  # strip "MCX:" prefix
-
-            # Resolver dispatch — kept even for the open-exchange branch
-            # so tests can verify a single code path for the triad.
-            price, source, animating = resolve_current_price(
-                exchange_open=exch_is_open,
-                live_ltp=(broker_ltp if broker_ltp > 0 else None),
-                snapshot_close=None,           # movers don't overlay close
-                snapshot_last_ltp=(broker_ltp if broker_ltp > 0 else None),
-                settled=False,
+            result = _movers_process_symbol(
+                kite_key, meta, quote_data, nse_is_open, mcx_is_open,
             )
-
-            if not price or prev_close == 0.0:
-                # No usable price — update sticky last_price if we do have
-                # a broker LTP (partial quote), otherwise skip.
-                if underlying in _session_movers and broker_ltp:
-                    _session_movers[underlying]["last_price"] = broker_ltp
-                    _session_movers[underlying]["price_source"] = source
-                    _session_movers[underlying]["is_animating"] = animating
-                continue
-
-            change_pct = (price - prev_close) / prev_close * 100.0
-            live_snapshot[underlying] = {
-                "peak_pct": change_pct,
-                "last_pct": change_pct,
-                "last_price": price,
-                "current_price": price,
-                "previous_close": prev_close,
-                "exchange": exchange,
-                "price_source": source,
-                "is_animating": animating,
-                # Carry the resolved contract symbol so _combine_movers +
-                # MoverRow construction can propagate it to the frontend.
-                "quote_symbol": row_quote_symbol,
-            }
-
-            if underlying in _session_movers:
-                entry = _session_movers[underlying]
-                entry["last_pct"] = change_pct
-                entry["last_price"] = price
-                entry["current_price"] = price
-                entry["previous_close"] = prev_close
-                entry["price_source"] = source
-                entry["is_animating"] = animating
-                if row_quote_symbol:
-                    entry["quote_symbol"] = row_quote_symbol
-                if abs(change_pct) > abs(entry["peak_pct"]):
-                    entry["peak_pct"] = change_pct
-            elif abs(change_pct) >= MOVER_THRESHOLD_PCT:
-                _session_movers[underlying] = {
-                    "first_seen_at": datetime.now(timezone.utc).isoformat(),
-                    "peak_pct": change_pct,
-                    "last_pct": change_pct,
-                    "last_price": price,
-                    "current_price": price,
-                    "previous_close": prev_close,
-                    "exchange": exchange,
-                    "price_source": source,
-                    "is_animating": animating,
-                    "quote_symbol": row_quote_symbol,
-                }
+            if result is not None:
+                underlying, live_entry = result
+                live_snapshot[underlying] = live_entry
 
         # Combine → directional-fair top-N (see _combine_movers docstring
         # for the invariant). Session-sticky entries overlay live rows.
@@ -1715,29 +1877,7 @@ class WatchlistController(Controller):
             live_snapshot, _session_movers, MOVER_TOP_N,
         )
 
-        rows: list[MoverRow] = []
-        for underlying, entry in combined.items():
-            change_pct = entry["last_pct"]
-            rows.append(MoverRow(
-                tradingsymbol=underlying,
-                exchange=entry["exchange"],
-                last_price=entry["last_price"],
-                previous_close=entry["previous_close"],
-                change_pct=change_pct,
-                peak_pct=entry.get("peak_pct", change_pct),
-                sticky=(underlying in _session_movers
-                        and abs(change_pct) < MOVER_THRESHOLD_PCT),
-                # Unified animation triad (Jul 2026) — populated from the
-                # resolver output stashed on the entry during the loop above.
-                # Session-sticky rows carry the last-observed values (may be
-                # from an exchange that has since closed → is_animating=False).
-                price_source=entry.get("price_source", "live"),
-                current_price=entry.get("current_price", entry["last_price"]),
-                is_animating=entry.get("is_animating", True),
-                quote_symbol=entry.get("quote_symbol") or None,
-            ))
-
-        rows.sort(key=lambda r: abs(r.change_pct), reverse=True)
+        rows = _movers_build_rows(combined)
 
         # Persist NSE-only rows to movers_snapshots. MCX rows are dropped
         # here (not by a separate write path) so the NSE 15:29 close

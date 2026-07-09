@@ -126,16 +126,34 @@ def test_route_calls_save_on_live_result():
 
 
 def test_route_calls_load_on_market_closed():
-    """get_movers calls _load_latest_movers_snapshot when market is closed."""
+    """The market-closed branch of get_movers calls
+    _load_latest_movers_snapshot. Since Jul 2026 this is extracted into
+    `_movers_offhours_response`, so we accept either the direct call in
+    get_movers OR the helper being wired through the closed-hours
+    branch."""
     src = _wl_source()
+    # Case A — inline (pre-refactor).
     match = re.search(
         r"async def get_movers\(self\).*?(?=\n    @|\nclass |\Z)",
         src, re.DOTALL,
     )
     assert match, "Could not find get_movers in watchlist.py"
     body = match.group(0)
-    assert "_load_latest_movers_snapshot(" in body, (
-        "get_movers does not call _load_latest_movers_snapshot"
+    if "_load_latest_movers_snapshot(" in body:
+        return
+    # Case B — extracted into `_movers_offhours_response`, which
+    # get_movers invokes on the both-closed branch.
+    assert "_movers_offhours_response(" in body, (
+        "get_movers does not delegate the closed-hours branch to "
+        "_movers_offhours_response"
+    )
+    helper_match = re.search(
+        r"async def _movers_offhours_response\(.*?(?=\nasync def |\ndef |\nclass |\Z)",
+        src, re.DOTALL,
+    )
+    assert helper_match, "_movers_offhours_response helper not found"
+    assert "_load_latest_movers_snapshot(" in helper_match.group(0), (
+        "_movers_offhours_response does not call _load_latest_movers_snapshot"
     )
 
 
@@ -409,7 +427,9 @@ async def test_retention_7_days(session: AsyncSession):
 # ---------------------------------------------------------------------------
 
 def test_off_hours_path_reads_db_and_returns_captured_at():
-    """get_movers body: when NSE is closed, it reads from DB and returns captured_at."""
+    """get_movers body: when NSE is closed, it reads from DB and returns captured_at.
+    Since Jul 2026 the off-hours branch is extracted into
+    `_movers_offhours_response`; accept the check in either location."""
     src = _wl_source()
     match = re.search(
         r"async def get_movers\(self\).*?(?=\n    @|\nclass |\Z)",
@@ -422,9 +442,17 @@ def test_off_hours_path_reads_db_and_returns_captured_at():
     assert "nse_is_open" in body, (
         "get_movers does not check nse_is_open — NSE-specific gate missing"
     )
-    # It must return captured_at from the snapshot
-    assert "captured_at" in body, (
-        "get_movers does not pass captured_at in off-hours response"
+    # It must return captured_at from the snapshot — check body first,
+    # then fall through to the extracted _movers_offhours_response helper.
+    if "captured_at" in body:
+        return
+    helper_match = re.search(
+        r"async def _movers_offhours_response\(.*?(?=\nasync def |\ndef |\nclass |\Z)",
+        src, re.DOTALL,
+    )
+    assert helper_match, "_movers_offhours_response helper not found"
+    assert "captured_at" in helper_match.group(0), (
+        "_movers_offhours_response does not pass captured_at from the snapshot"
     )
 
 

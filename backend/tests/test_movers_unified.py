@@ -156,23 +156,31 @@ def test_mover_row_carries_unified_triad():
 
 
 def test_mover_row_emission_populates_triad():
-    """The MoverRow(...) construction inside `get_movers` (the live path)
-    populates the unified triad. NOTE: _force_movers_snapshot (NSE close
-    capture) is a separate emission path that stays legacy-compatible;
-    this test targets only the live user-facing path."""
+    """The MoverRow(...) construction on the live path populates the
+    unified triad. Since Jul 2026 the emission was extracted to
+    `_movers_build_rows` for CC-hotspot cleanup; we accept either the
+    inline emission in get_movers OR the extracted helper.
+    NOTE: _force_movers_snapshot (NSE close capture) is a separate
+    emission path that stays legacy-compatible; this test targets only
+    the live user-facing path."""
     src = _src()
-    # Extract get_movers body only.
+    # Prefer the extracted helper location, fall back to get_movers.
     body_m = re.search(
-        r"async def get_movers\(self.*?(?=\n    async def |\n    def |\nclass )",
+        r"def _movers_build_rows\(.*?(?=\nasync def |\ndef |\nclass )",
         src, re.DOTALL,
     )
-    assert body_m, "get_movers body not located"
+    if not body_m:
+        body_m = re.search(
+            r"async def get_movers\(self.*?(?=\n    async def |\n    def |\nclass )",
+            src, re.DOTALL,
+        )
+    assert body_m, "MoverRow emission body not located (neither _movers_build_rows nor get_movers)"
     body = body_m.group(0)
     # Find the MoverRow construction by locating the substring — we know
     # it's a multi-line block with kwargs. Balance parens manually so
     # nested `entry.get("peak_pct", change_pct)` doesn't confuse the regex.
     start = body.find("MoverRow(")
-    assert start >= 0, "MoverRow emission inside get_movers not located"
+    assert start >= 0, "MoverRow emission not located"
     depth = 0
     end = start
     for i in range(start, len(body)):

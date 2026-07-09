@@ -689,33 +689,13 @@ async def _arm_take_profit(
 
 # ── Ticket order handler ──────────────────────────────────────────────────────
 
-async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
-    """
-    Full ticket-order logic extracted from OrdersController.ticket_order.
-
-    Accepts the same (data: TicketOrderRequest, request: Request) signature;
-    returns a TicketOrderResponse.  Delegated to by the thin controller shim.
-    """
-    from datetime import datetime  # noqa: F401
-    from litestar import Request
-    from litestar.exceptions import HTTPException
-    from backend.api.schemas import TicketOrderRequest, TicketOrderResponse
-    from backend.api.algo.paper import get_prod_paper_engine
-    from backend.api.database import async_session
-    from backend.api.models import AlgoOrder
+async def _ticket_validate_input(data, request) -> tuple[str, str, int]:
+    """Mode/demo gate, RBAC strategy scope, and enum validation for the
+    ticket payload. Returns `(side, sym, qty)`. Raises HTTPException on
+    any validation failure."""
     from backend.api.routes.orders_helpers import (
         _TXN_TYPES, _EXCHANGES, _PRODUCTS, _ORDER_TYPES, _VARIETIES,
-        _REJECTION_THRESHOLD,
-        _rejection_key, _rejection_count, _record_rejection,
-        _clear_rejections, _maybe_send_breaker_alert,
-        _align_price_to_tick, _start_live_chase, _broker_for,
-        _resolve_target_pct, _build_overrides_json,
     )
-    from backend.api.routes.orders_place import (
-        _enforce_capacity_guard, _maybe_attach_template_to_ticket,
-    )
-    from backend.api.auth_guard import is_admin_request
-    from backend.shared.helpers.utils import mask_account
 
     if data.mode == "draft":
         raise HTTPException(status_code=400,
@@ -772,70 +752,80 @@ async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
     if data.order_type in ("SL", "SL-M") and not data.trigger_price:
         raise HTTPException(status_code=400, detail="trigger_price is required for SL/SL-M")
 
+    return side, sym, qty
+
+
+def _ticket_validate_account(data) -> str:
+    """Resolve + validate account against `_loaded_accounts()`."""
     account = (data.account or "").strip()
     if not account:
         raise HTTPException(status_code=400, detail="Account is required.")
     from backend.brokers.registry import _loaded_accounts
     if account not in _loaded_accounts():
         raise HTTPException(status_code=400, detail=f"Unknown account: {account}.")
+    return account
 
+
+async def _ticket_enforce_lot_and_fat_finger(
+    data, account: str, sym: str, qty: int,
+) -> None:
+    """G1 (LOT_MULTIPLE) + G2 (FAT_FINGER_5_LOT_CAP) for exchange in
+    NFO/MCX/CDS/BFO. Close intent + MCX exempt from the fat-finger cap
+    (MCX enforces its own 20-lot cap downstream in the live path)."""
+    if data.exchange not in ("NFO", "MCX", "CDS", "BFO"):
+        return
     _is_close = (getattr(data, "intent", None) or "").lower() == "close"
-    if data.exchange in ("NFO", "MCX", "CDS", "BFO"):
-        from backend.brokers.adapters.kite import get_lot_size as _get_lot_size
-        try:
-            _lot = int(await _get_lot_size(data.exchange, sym) or 0)
-        except Exception:
-            _lot = 0
-        if _lot > 1:
-            if qty % _lot != 0:
-                _guess_lots = qty / _lot
-                logger.warning(
-                    "[LOT-MULTIPLE-GUARD] rejected: acct=%s sym=%s qty=%s "
-                    "lot_size=%s (not a multiple) — possible qty/lot confusion",
-                    account, sym, qty, _lot,
-                )
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Refusing order — qty={qty} is not a multiple of "
-                        f"lot_size={_lot} (would be {_guess_lots:.2f} lots). "
-                        f"If you meant 1 lot, send qty={_lot}. "
-                        f"For N lots, send qty=N×{_lot}."
-                    ),
-                )
-            _lots = qty // _lot
-            # MCX/NCO use a 20-lot cap enforced later by the MCX size guard
-            # (raises 422). Exempt here so the live-mode MCX guard is the
-            # authoritative check for MCX orders.
-            _is_mcx = data.exchange in ("MCX", "NCO")
-            if not _is_close and not _is_mcx and _lots > 5:
-                logger.warning(
-                    "[FAT-FINGER-GUARD] rejected: acct=%s sym=%s qty=%s "
-                    "lot_size=%s → %d lots (cap: 5)",
-                    account, sym, qty, _lot, _lots,
-                )
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"Refusing order — {_lots} lots exceeds the "
-                        f"5-lot safety cap (qty={qty}, lot_size={_lot}). "
-                        "Split into ≤5-lot orders or contact ops to raise "
-                        "the cap."
-                    ),
-                )
-
-    if data.strategy_id:
-        await _enforce_capacity_guard(
-            strategy_id=int(data.strategy_id),
-            account=account,
-            tradingsymbol=sym,
-            side_kite=side,
-            quantity=qty,
-            price_hint=(float(data.price)
-                        if data.price is not None else None),
+    from backend.brokers.adapters.kite import get_lot_size as _get_lot_size
+    try:
+        _lot = int(await _get_lot_size(data.exchange, sym) or 0)
+    except Exception:
+        _lot = 0
+    if _lot <= 1:
+        return
+    if qty % _lot != 0:
+        _guess_lots = qty / _lot
+        logger.warning(
+            "[LOT-MULTIPLE-GUARD] rejected: acct=%s sym=%s qty=%s "
+            "lot_size=%s (not a multiple) — possible qty/lot confusion",
+            account, sym, qty, _lot,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Refusing order — qty={qty} is not a multiple of "
+                f"lot_size={_lot} (would be {_guess_lots:.2f} lots). "
+                f"If you meant 1 lot, send qty={_lot}. "
+                f"For N lots, send qty=N×{_lot}."
+            ),
+        )
+    _lots = qty // _lot
+    # MCX/NCO use a 20-lot cap enforced later by the MCX size guard
+    # (raises 422). Exempt here so the live-mode MCX guard is the
+    # authoritative check for MCX orders.
+    _is_mcx = data.exchange in ("MCX", "NCO")
+    if not _is_close and not _is_mcx and _lots > 5:
+        logger.warning(
+            "[FAT-FINGER-GUARD] rejected: acct=%s sym=%s qty=%s "
+            "lot_size=%s → %d lots (cap: 5)",
+            account, sym, qty, _lot, _lots,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Refusing order — {_lots} lots exceeds the "
+                f"5-lot safety cap (qty={qty}, lot_size={_lot}). "
+                "Split into ≤5-lot orders or contact ops to raise "
+                "the cap."
+            ),
         )
 
+
+async def _ticket_gate_market_hours_and_align_price(data, sym: str) -> None:
+    """Reject orders on closed exchanges and align price + trigger_price
+    to the tick grid. Mutates `data.price` + `data.trigger_price`."""
     from backend.api.algo.agent_engine import _symbol_exchange_open, _build_now_ctx
+    from backend.api.routes.orders_helpers import _align_price_to_tick
+
     target_exchange = data.exchange or "NFO"
     if not _symbol_exchange_open(target_exchange, _build_now_ctx()):
         seg = (target_exchange or "").upper()
@@ -848,340 +838,448 @@ async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
     data.price         = await _align_price_to_tick(_exch_for_snap, sym, data.price)
     data.trigger_price = await _align_price_to_tick(_exch_for_snap, sym, data.trigger_price)
 
-    from backend.shared.helpers.utils import is_prod_branch, config
+
+async def _ticket_check_mcx_lot_cache(
+    data, sym: str, side: str, qty: int,
+) -> int:
+    """MCX cold-cache guard. Returns the lot_size to reuse for
+    translate_qty later, or raises 503 when the cache is cold and no
+    hint was provided. Returns 0 for non-MCX exchanges (skipped)."""
+    if (data.exchange or "NFO") not in ("MCX", "NCO"):
+        return 0
+    from backend.brokers.adapters.kite import get_lot_size as _gls_pre
+    _mcx_ls_check = await _gls_pre((data.exchange or "NFO"), sym)
+    _mcx_ls_hint = int(data.lot_size_hint or 0)
+    _mcx_ls_for_translate = _mcx_ls_check if _mcx_ls_check > 0 else _mcx_ls_hint
+    if _mcx_ls_for_translate <= 0:
+        logger.error(
+            f"[MCX-LOT-GUARD] lot_size unknown for {data.exchange}/{sym} "
+            f"(cache returned {_mcx_ls_check}, no lot_size_hint in request). "
+            f"Refusing {side} {qty} to prevent oversize order."
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"lot_size for {sym} on {data.exchange} is not available "
+                f"(instruments cache cold). Retry in a moment — the cache "
+                f"warms automatically at startup and market open."
+            ),
+        )
+    return _mcx_ls_for_translate
+
+
+async def _ticket_run_preflight(data, account: str, sym: str, side: str, qty: int) -> dict:
+    """Preflight the LIVE order via the actions engine. Raises 503 on
+    broker-side failure. Returns the preflight verdict dict."""
+    from backend.api.algo.actions import run_preflight as _run_preflight
+    try:
+        _pf = await _run_preflight(account, {
+            "exchange":         (data.exchange or "NFO"),
+            "tradingsymbol":    sym,
+            "quantity":         qty,
+            "order_type":       (data.order_type or "LIMIT"),
+            "product":          (data.product or "NRML"),
+            "variety":          (data.variety or "regular"),
+            "transaction_type": side,
+            "price":            data.price or 0,
+            "trigger_price":    data.trigger_price or 0,
+        })
+    except Exception as _pf_err:
+        logger.error(f"[LIVE-TICKET] preflight raised for {account} "
+                     f"{sym}: {_pf_err}")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Preflight check failed: {str(_pf_err)[:240]} — "
+                   "broker may be unreachable. Try again.",
+        ) from _pf_err
+    logger.info(
+        f"[LIVE-TICKET] preflight {('ok' if _pf['ok'] else 'BLOCKED')} "
+        f"acct={account} {sym} {side} qty={qty}"
+        + ("" if _pf["ok"]
+           else f" — {len(_pf['blocked'])} blocker(s): "
+                f"{', '.join(b.get('code','?') for b in _pf['blocked'])}")
+    )
+    return _pf
+
+
+async def _ticket_record_preflight_block(
+    data, account: str, sym: str, side: str, qty: int, pf: dict,
+) -> None:
+    """Persist a REJECTED AlgoOrder + preflight_block event when
+    preflight blocks the order. Best-effort — swallows persistence errors
+    so the caller still returns the 422 to the operator."""
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    try:
+        from backend.api.algo.agent_engine import get_agent_id_by_slug as _g_aid
+        from backend.api.algo.order_events import write_event as _write_ev
+        _live_manual_aid: int | None = None
+        try:
+            _live_manual_aid = await _g_aid("manual")
+        except Exception:
+            pass
+        async with async_session() as _s:
+            _row = AlgoOrder(
+                account=account, symbol=sym,
+                exchange=(data.exchange or "NFO"),
+                transaction_type=side, quantity=qty,
+                initial_price=(float(data.price)
+                               if data.price is not None else None),
+                status="REJECTED", engine="live", mode="live",
+                agent_id=_live_manual_aid,
+                strategy_id=data.strategy_id,
+                detail=f"preflight blocked: "
+                       f"{', '.join(b.get('code','?') for b in pf['blocked'])}",
+            )
+            _s.add(_row)
+            await _s.commit()
+            _algo_id = _row.id
+        await _write_ev(
+            _algo_id, "preflight_block",
+            f"{', '.join(b.get('reason','?') for b in pf['blocked'])[:300]}",
+            payload={"blocked": pf["blocked"],
+                     "diagnostics": pf.get("diagnostics", {})},
+        )
+    except Exception as _ev_err:
+        logger.warning(f"[LIVE-TICKET] preflight_block log failed: "
+                       f"{_ev_err}")
+
+
+def _ticket_check_mcx_size_cap(
+    data, sym: str, qty: int, ls_for_translate: int,
+) -> None:
+    """Hard 20-lot cap for MCX/NCO. `ls_for_translate` must be > 0 (the
+    cold-cache guard upstream already raised 503 otherwise)."""
+    _ticket_exch = (data.exchange or "NFO")
+    if _ticket_exch not in ("MCX", "NCO"):
+        return
+    _MCX_MAX_LOTS = 20
+    _translated_lots = max(1, qty // ls_for_translate)
+    if _translated_lots > _MCX_MAX_LOTS:
+        logger.error(
+            f"[MCX-SIZE-GUARD] {_ticket_exch}/{sym}: translated "
+            f"{qty} contracts ÷ lot_size={ls_for_translate} = "
+            f"{_translated_lots} lots — exceeds {_MCX_MAX_LOTS}-lot "
+            f"safety cap. Refusing order."
+        )
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Order size {_translated_lots} lots for {sym} exceeds "
+                f"the {_MCX_MAX_LOTS}-lot safety limit. If intentional, "
+                f"contact support to increase the limit."
+            ),
+        )
+
+
+async def _ticket_persist_live_algo_order(
+    data, request, account: str, sym: str, side: str, qty: int,
+) -> Optional[int]:
+    """Pre-persist an OPEN AlgoOrder row before firing the broker call.
+    Returns the row id, or None when persistence failed (broker call
+    proceeds either way — persistence failure is best-effort)."""
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    from backend.api.routes.orders_helpers import (
+        _resolve_target_pct, _build_overrides_json,
+    )
+    try:
+        from backend.api.algo.agent_engine import get_agent_id_by_slug as _g_aid
+        _live_manual_aid: int | None = None
+        try:
+            _live_manual_aid = await _g_aid("manual")
+        except Exception:
+            pass
+        _eff_target_pct = _resolve_target_pct(data.target_pct)
+        _req_id = (request.scope.get("state") or {}).get("request_id")
+        async with async_session() as _s_pre:
+            _live_row = AlgoOrder(
+                account=account, symbol=sym,
+                exchange=(data.exchange or "NFO"),
+                transaction_type=side, quantity=qty,
+                initial_price=(float(data.price)
+                               if data.price is not None else None),
+                status="OPEN", engine="live", mode="live",
+                agent_id=_live_manual_aid,
+                strategy_id=data.strategy_id,
+                broker_order_id=None,
+                request_id=_req_id,
+                target_pct=(_eff_target_pct
+                            if _eff_target_pct > 0 else None),
+                template_id=data.template_id,
+                template_overrides_json=_build_overrides_json(data),
+                product=(data.product or "NRML"),
+                detail=f"[LIVE-TICKET] manual {side} {qty} {sym}"
+                       f"{' @₹' + str(data.price) if data.price else ''}",
+            )
+            _s_pre.add(_live_row)
+            await _s_pre.commit()
+            return _live_row.id
+    except Exception as _e_pre:
+        logger.warning(
+            f"[LIVE-TICKET] AlgoOrder pre-persist failed: {_e_pre}"
+        )
+        return None
+
+
+async def _ticket_place_or_chase_live(
+    data, account: str, sym: str, side: str, qty: int,
+    live_algo_id: Optional[int], ls_for_translate: int,
+) -> tuple[object, bool]:
+    """Fire either the live chase loop or a direct broker.place_order.
+    Returns `(order_id, chase_eligible)`."""
+    from backend.api.routes.orders_helpers import _start_live_chase, _broker_for
+
+    order_type = (data.order_type or "LIMIT")
+    chase_eligible = (data.chase
+                      and order_type == "LIMIT"
+                      and data.price is not None
+                      and data.price > 0)
+    if chase_eligible:
+        order_id = await _start_live_chase(
+            account=account,
+            symbol=sym,
+            exchange=(data.exchange or "NFO"),
+            transaction_type=side,
+            quantity=qty,
+            aggressiveness=(data.chase_aggressiveness or "low"),
+            algo_order_id=live_algo_id,
+        )
+    else:
+        broker = _broker_for(account)
+        _kq_ticket = broker.translate_qty(
+            data.exchange or "NFO", qty, ls_for_translate)
+        order_id = broker.place_order(
+            variety=(data.variety or "regular"),
+            exchange=(data.exchange or "NFO"),
+            tradingsymbol=sym,
+            transaction_type=side,
+            quantity=_kq_ticket,
+            product=(data.product or "NRML"),
+            order_type=order_type,
+            price=data.price,
+            trigger_price=data.trigger_price,
+            validity="DAY",
+            tag="ramboq-ticket",
+        )
+    return order_id, chase_eligible
+
+
+async def _ticket_seed_broker_order_id(live_algo_id: int, order_id) -> None:
+    """Best-effort write of `broker_order_id` back onto the AlgoOrder row."""
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    try:
+        from sqlalchemy import select as _sel_seed
+        async with async_session() as _s_seed:
+            _r = (await _s_seed.execute(
+                _sel_seed(AlgoOrder).where(
+                    AlgoOrder.id == live_algo_id
+                )
+            )).scalar_one_or_none()
+            if _r is not None:
+                _r.broker_order_id = str(order_id)
+                await _s_seed.commit()
+    except Exception as _e_seed:
+        logger.debug(
+            f"[LIVE-TICKET] broker_order_id seed failed: {_e_seed}"
+        )
+
+
+async def _ticket_handle_live_place_error(
+    data, account: str, sym: str, side: str, qty: int, order_type: str,
+    e: Exception, bk_key: str,
+) -> None:
+    """Diagnose broker failure, log, alert, and record the rejection.
+    Never returns — always raises the final HTTPException(400) so the
+    caller propagates it."""
+    from backend.api.algo.actions import diagnose_live_failure
+    from backend.api.routes.orders_helpers import (
+        _REJECTION_THRESHOLD, _record_rejection, _maybe_send_breaker_alert,
+        _broker_for,
+    )
+    from backend.shared.helpers.utils import mask_account
+
+    masked_acct = mask_account(account)
+    kite_msg = str(e)
+    diag_order = {
+        "exchange": data.exchange or "NFO",
+        "symbol":   sym,
+        "side":     side,
+        "qty":      qty,
+        "order_type": order_type,
+        "product":  data.product or "NRML",
+        "price":    data.price or 0,
+        "variety":  data.variety or "regular",
+    }
+    try:
+        diag = await diagnose_live_failure(_broker_for(account), diag_order, kite_msg)
+    except Exception:
+        diag = "diagnosis unavailable"
+    logger.error(
+        f"[LIVE-TICKET] place_order failed for {masked_acct} "
+        f"{(data.exchange or 'NFO')}/{sym} {(data.product or 'NRML')} "
+        f"{side} {qty} {order_type}"
+        f"{f' @{data.price}' if data.price else ''}: "
+        f"{kite_msg} | diag: {diag}"
+    )
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        send_order_failure_alert(
+            account=account, symbol=sym,
+            exchange=(data.exchange or "NFO"), side=side,
+            qty=qty, mode="live", source="agent:manual:ticket",
+            error=kite_msg,
+        )
+    except Exception:
+        pass
+    try:
+        from backend.api.algo.agent_engine import record_manual_event
+        asyncio.create_task(record_manual_event(
+            outcome="action_failure", source=data.source or "ticket",
+            account=account, symbol=sym,
+            exchange=(data.exchange or "NFO"), side=side,
+            qty=qty, mode="live", error=kite_msg,
+        ))
+    except Exception:
+        pass
+    _new_count = _record_rejection(bk_key)
+    if _new_count >= _REJECTION_THRESHOLD:
+        _maybe_send_breaker_alert(bk_key, account, sym, side, qty,
+                                   kite_msg[:200])
+    raise HTTPException(
+        status_code=400,
+        detail=f"{kite_msg} ({diag})"[:400],
+    )
+
+
+async def _ticket_place_live(data, request, account: str, sym: str, side: str, qty: int):
+    """LIVE branch orchestrator. Runs all live-mode guards, preflight,
+    broker place, and success/failure book-keeping. Returns a
+    TicketOrderResponse or raises HTTPException."""
+    from backend.api.schemas import TicketOrderResponse
+    from backend.api.cache import invalidate
+    from backend.api.routes.orders_helpers import (
+        _REJECTION_THRESHOLD, _rejection_key, _rejection_count,
+        _record_rejection, _clear_rejections, _maybe_send_breaker_alert,
+    )
+    from backend.shared.helpers.utils import (
+        is_prod_branch, mask_account,
+    )
     from backend.shared.helpers.settings import get_bool
 
     _ptm_now = get_bool("execution.paper_trading_mode", False)
-    _shadow_now = get_bool("execution.shadow_mode", False)
-    logger.info(
-        f"[ticket-mode] requested={data.mode!r} "
-        f"paper_trading_mode={_ptm_now} shadow_mode={_shadow_now} "
-        f"branch={config.get('deploy_branch','?')!r}"
-    )
+    if not is_prod_branch():
+        raise HTTPException(status_code=403,
+            detail="LIVE mode is disabled on non-prod branches; use PAPER on dev.")
+    if _ptm_now:
+        raise HTTPException(status_code=403,
+            detail="LIVE disabled — paper_trading_mode is ON. Toggle in /admin/execution (LIVE mode).")
 
-    if data.mode == "live":
-        if not is_prod_branch():
-            raise HTTPException(status_code=403,
-                detail="LIVE mode is disabled on non-prod branches; use PAPER on dev.")
-        if _ptm_now:
-            raise HTTPException(status_code=403,
-                detail="LIVE disabled — paper_trading_mode is ON. Toggle in /admin/execution (LIVE mode).")
-
-        _bk_key = _rejection_key(account, sym, side, qty)
-        _bk_count = _rejection_count(_bk_key)
-        if _bk_count >= _REJECTION_THRESHOLD:
-            _maybe_send_breaker_alert(_bk_key, account, sym, side, qty,
-                                       f"{_bk_count} rejections in last hour")
-            logger.warning(
-                f"[BREAKER] BLOCKED ticket — {_bk_key} has "
-                f"{_bk_count} rejections in last hour"
-            )
-            raise HTTPException(
-                status_code=423,
-                detail=(f"Circuit breaker: {_REJECTION_THRESHOLD}+ rejections "
-                        f"in the last hour for {sym} {side} {qty} on {account}. "
-                        "Further attempts blocked until the breaker resets. "
-                        "Check margin / segment scope, then wait or reset."),
-            )
-
-        # ── MCX lot_size cold-cache guard ────────────────────────────────────
-        # Must run BEFORE preflight: when the instruments cache is cold,
-        # get_lot_size returns 0 for MCX. Preflight would add LOT_SIZE_UNKNOWN
-        # and return 422 (validation), but this is really a 503 (service
-        # temporarily unavailable — cache will warm in <5s). Check early and
-        # raise 503 so the frontend knows to retry rather than surface a
-        # validation error to the operator.
-        _mcx_ls_for_translate: int = 0
-        if (data.exchange or "NFO") in ("MCX", "NCO"):
-            from backend.brokers.adapters.kite import get_lot_size as _gls_pre
-            _mcx_ls_check = await _gls_pre((data.exchange or "NFO"), sym)
-            _mcx_ls_hint = int(data.lot_size_hint or 0)
-            _mcx_ls_for_translate = _mcx_ls_check if _mcx_ls_check > 0 else _mcx_ls_hint
-            if _mcx_ls_for_translate <= 0:
-                logger.error(
-                    f"[MCX-LOT-GUARD] lot_size unknown for {data.exchange}/{sym} "
-                    f"(cache returned {_mcx_ls_check}, no lot_size_hint in request). "
-                    f"Refusing {side} {qty} to prevent oversize order."
-                )
-                raise HTTPException(
-                    status_code=503,
-                    detail=(
-                        f"lot_size for {sym} on {data.exchange} is not available "
-                        f"(instruments cache cold). Retry in a moment — the cache "
-                        f"warms automatically at startup and market open."
-                    ),
-                )
-
-        from backend.api.algo.actions import run_preflight as _run_preflight
-        try:
-            _pf = await _run_preflight(account, {
-                "exchange":         (data.exchange or "NFO"),
-                "tradingsymbol":    sym,
-                "quantity":         qty,
-                "order_type":       (data.order_type or "LIMIT"),
-                "product":          (data.product or "NRML"),
-                "variety":          (data.variety or "regular"),
-                "transaction_type": side,
-                "price":            data.price or 0,
-                "trigger_price":    data.trigger_price or 0,
-            })
-        except Exception as _pf_err:
-            logger.error(f"[LIVE-TICKET] preflight raised for {account} "
-                         f"{sym}: {_pf_err}")
-            raise HTTPException(
-                status_code=503,
-                detail=f"Preflight check failed: {str(_pf_err)[:240]} — "
-                       "broker may be unreachable. Try again.",
-            ) from _pf_err
-        logger.info(
-            f"[LIVE-TICKET] preflight {('ok' if _pf['ok'] else 'BLOCKED')} "
-            f"acct={account} {sym} {side} qty={qty}"
-            + ("" if _pf["ok"]
-               else f" — {len(_pf['blocked'])} blocker(s): "
-                    f"{', '.join(b.get('code','?') for b in _pf['blocked'])}")
+    _bk_key = _rejection_key(account, sym, side, qty)
+    _bk_count = _rejection_count(_bk_key)
+    if _bk_count >= _REJECTION_THRESHOLD:
+        _maybe_send_breaker_alert(_bk_key, account, sym, side, qty,
+                                   f"{_bk_count} rejections in last hour")
+        logger.warning(
+            f"[BREAKER] BLOCKED ticket — {_bk_key} has "
+            f"{_bk_count} rejections in last hour"
         )
-        if not _pf["ok"]:
-            try:
-                from backend.api.algo.agent_engine import get_agent_id_by_slug as _g_aid
-                from backend.api.algo.order_events import write_event as _write_ev
-                _live_manual_aid: int | None = None
-                try:
-                    _live_manual_aid = await _g_aid("manual")
-                except Exception:
-                    pass
-                async with async_session() as _s:
-                    _row = AlgoOrder(
-                        account=account, symbol=sym,
-                        exchange=(data.exchange or "NFO"),
-                        transaction_type=side, quantity=qty,
-                        initial_price=(float(data.price)
-                                       if data.price is not None else None),
-                        status="REJECTED", engine="live", mode="live",
-                        agent_id=_live_manual_aid,
-                        strategy_id=data.strategy_id,
-                        detail=f"preflight blocked: "
-                               f"{', '.join(b.get('code','?') for b in _pf['blocked'])}",
-                    )
-                    _s.add(_row)
-                    await _s.commit()
-                    _algo_id = _row.id
-                await _write_ev(
-                    _algo_id, "preflight_block",
-                    f"{', '.join(b.get('reason','?') for b in _pf['blocked'])[:300]}",
-                    payload={"blocked": _pf["blocked"],
-                             "diagnostics": _pf.get("diagnostics", {})},
-                )
-            except Exception as _ev_err:
-                logger.warning(f"[LIVE-TICKET] preflight_block log failed: "
-                               f"{_ev_err}")
-            _new_count = _record_rejection(_bk_key)
-            if _new_count >= _REJECTION_THRESHOLD:
-                _reason = ', '.join(b.get('code', '?') for b in _pf['blocked'])
-                _maybe_send_breaker_alert(_bk_key, account, sym, side, qty, _reason)
-            raise HTTPException(
-                status_code=422,
-                detail={"blocked": _pf["blocked"],
-                        "diagnostics": _pf.get("diagnostics", {})},
-            )
+        raise HTTPException(
+            status_code=423,
+            detail=(f"Circuit breaker: {_REJECTION_THRESHOLD}+ rejections "
+                    f"in the last hour for {sym} {side} {qty} on {account}. "
+                    "Further attempts blocked until the breaker resets. "
+                    "Check margin / segment scope, then wait or reset."),
+        )
 
-        order_type = (data.order_type or "LIMIT")
-        chase_eligible = (data.chase
-                          and order_type == "LIMIT"
-                          and data.price is not None
-                          and data.price > 0)
+    # ── MCX lot_size cold-cache guard ────────────────────────────────────
+    # Must run BEFORE preflight: when the instruments cache is cold,
+    # get_lot_size returns 0 for MCX. Preflight would add LOT_SIZE_UNKNOWN
+    # and return 422 (validation), but this is really a 503 (service
+    # temporarily unavailable — cache will warm in <5s). Check early and
+    # raise 503 so the frontend knows to retry rather than surface a
+    # validation error to the operator.
+    _mcx_ls_for_translate = await _ticket_check_mcx_lot_cache(data, sym, side, qty)
 
-        _ticket_exch = (data.exchange or "NFO")
-        # For MCX/NCO, lot_size was already resolved and cold-cache-checked
-        # above (pre-preflight). Reuse that value to avoid a second lookup.
-        _ls_for_translate: int = _mcx_ls_for_translate if _ticket_exch in ("MCX", "NCO") else 0
-        if _ticket_exch in ("MCX", "NCO"):
-            # _ls_for_translate > 0 guaranteed (cold-cache guard raised 503 above)
-            _MCX_MAX_LOTS = 20
-            _translated_lots = max(1, qty // _ls_for_translate)
-            if _translated_lots > _MCX_MAX_LOTS:
-                logger.error(
-                    f"[MCX-SIZE-GUARD] {_ticket_exch}/{sym}: translated "
-                    f"{qty} contracts ÷ lot_size={_ls_for_translate} = "
-                    f"{_translated_lots} lots — exceeds {_MCX_MAX_LOTS}-lot "
-                    f"safety cap. Refusing order."
-                )
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"Order size {_translated_lots} lots for {sym} exceeds "
-                        f"the {_MCX_MAX_LOTS}-lot safety limit. If intentional, "
-                        f"contact support to increase the limit."
-                    ),
-                )
+    _pf = await _ticket_run_preflight(data, account, sym, side, qty)
+    if not _pf["ok"]:
+        await _ticket_record_preflight_block(data, account, sym, side, qty, _pf)
+        _new_count = _record_rejection(_bk_key)
+        if _new_count >= _REJECTION_THRESHOLD:
+            _reason = ', '.join(b.get('code', '?') for b in _pf['blocked'])
+            _maybe_send_breaker_alert(_bk_key, account, sym, side, qty, _reason)
+        raise HTTPException(
+            status_code=422,
+            detail={"blocked": _pf["blocked"],
+                    "diagnostics": _pf.get("diagnostics", {})},
+        )
 
+    order_type = (data.order_type or "LIMIT")
+    _ticket_exch = (data.exchange or "NFO")
+    # For MCX/NCO, lot_size was already resolved and cold-cache-checked
+    # above (pre-preflight). Reuse that value to avoid a second lookup.
+    _ls_for_translate: int = _mcx_ls_for_translate if _ticket_exch in ("MCX", "NCO") else 0
+    _ticket_check_mcx_size_cap(data, sym, qty, _ls_for_translate)
+
+    try:
+        _live_algo_id = await _ticket_persist_live_algo_order(
+            data, request, account, sym, side, qty,
+        )
+        order_id, chase_eligible = await _ticket_place_or_chase_live(
+            data, account, sym, side, qty, _live_algo_id, _ls_for_translate,
+        )
+        chase_tag = (f" CHASE[{(data.chase_aggressiveness or 'low').lower()}]"
+                     if chase_eligible else "")
+
+        if _live_algo_id is not None and order_id:
+            await _ticket_seed_broker_order_id(_live_algo_id, order_id)
+
+        invalidate("orders")
+        masked = mask_account(account)
+        logger.info(f"Ticket LIVE order: {order_id} [{masked}] "
+                    f"{side} {qty} {sym}{chase_tag}")
         try:
-            _live_algo_id: int | None = None
-            try:
-                from backend.api.algo.agent_engine import get_agent_id_by_slug as _g_aid
-                _live_manual_aid: int | None = None
-                try:
-                    _live_manual_aid = await _g_aid("manual")
-                except Exception:
-                    pass
-                _eff_target_pct = _resolve_target_pct(data.target_pct)
-                _req_id = (request.scope.get("state") or {}).get("request_id")
-                async with async_session() as _s_pre:
-                    _live_row = AlgoOrder(
-                        account=account, symbol=sym,
-                        exchange=(data.exchange or "NFO"),
-                        transaction_type=side, quantity=qty,
-                        initial_price=(float(data.price)
-                                       if data.price is not None else None),
-                        status="OPEN", engine="live", mode="live",
-                        agent_id=_live_manual_aid,
-                        strategy_id=data.strategy_id,
-                        broker_order_id=None,
-                        request_id=_req_id,
-                        target_pct=(_eff_target_pct
-                                    if _eff_target_pct > 0 else None),
-                        template_id=data.template_id,
-                        template_overrides_json=_build_overrides_json(data),
-                        product=(data.product or "NRML"),
-                        detail=f"[LIVE-TICKET] manual {side} {qty} {sym}"
-                               f"{' @₹' + str(data.price) if data.price else ''}",
-                    )
-                    _s_pre.add(_live_row)
-                    await _s_pre.commit()
-                    _live_algo_id = _live_row.id
-            except Exception as _e_pre:
-                logger.warning(
-                    f"[LIVE-TICKET] AlgoOrder pre-persist failed: {_e_pre}"
-                )
+            from backend.api.algo.agent_engine import record_manual_event
+            asyncio.create_task(record_manual_event(
+                outcome="action_success", source=data.source or "ticket",
+                account=account, symbol=sym,
+                exchange=(data.exchange or "NFO"), side=side,
+                qty=qty, mode="live", order_id=str(order_id),
+            ))
+        except Exception:
+            pass
+        _clear_rejections(_bk_key)
+        return TicketOrderResponse(
+            order_id=str(order_id),
+            mode="live",
+            status="OPEN",
+            detail=(f"Live broker order #{order_id} placed at {account}"
+                    + (f" — chasing [{(data.chase_aggressiveness or 'low').lower()}]"
+                       if chase_eligible else "")
+                    + "."),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        await _ticket_handle_live_place_error(
+            data, account, sym, side, qty, order_type, e, _bk_key,
+        )
 
-            if chase_eligible:
-                order_id = await _start_live_chase(
-                    account=account,
-                    symbol=sym,
-                    exchange=(data.exchange or "NFO"),
-                    transaction_type=side,
-                    quantity=qty,
-                    aggressiveness=(data.chase_aggressiveness or "low"),
-                    algo_order_id=_live_algo_id,
-                )
-                chase_tag = f" CHASE[{(data.chase_aggressiveness or 'low').lower()}]"
-            else:
-                broker = _broker_for(account)
-                _kq_ticket = broker.translate_qty(
-                    data.exchange or "NFO", qty, _ls_for_translate)
-                order_id = broker.place_order(
-                    variety=(data.variety or "regular"),
-                    exchange=(data.exchange or "NFO"),
-                    tradingsymbol=sym,
-                    transaction_type=side,
-                    quantity=_kq_ticket,
-                    product=(data.product or "NRML"),
-                    order_type=order_type,
-                    price=data.price,
-                    trigger_price=data.trigger_price,
-                    validity="DAY",
-                    tag="ramboq-ticket",
-                )
-                chase_tag = ""
 
-            if _live_algo_id is not None and order_id:
-                try:
-                    from sqlalchemy import select as _sel_seed
-                    async with async_session() as _s_seed:
-                        _r = (await _s_seed.execute(
-                            _sel_seed(AlgoOrder).where(
-                                AlgoOrder.id == _live_algo_id
-                            )
-                        )).scalar_one_or_none()
-                        if _r is not None:
-                            _r.broker_order_id = str(order_id)
-                            await _s_seed.commit()
-                except Exception as _e_seed:
-                    logger.debug(
-                        f"[LIVE-TICKET] broker_order_id seed failed: {_e_seed}"
-                    )
+async def _ticket_place_paper(data, request, account: str, sym: str, side: str, qty: int):
+    """PAPER branch orchestrator. Persists the AlgoOrder, registers the
+    chase-loop where applicable, records a manual_event, and (finally)
+    attaches any template attachment before returning."""
+    from backend.api.schemas import TicketOrderResponse
+    from backend.api.algo.paper import get_prod_paper_engine
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    from backend.api.routes.orders_helpers import (
+        _resolve_target_pct, _build_overrides_json,
+    )
+    from backend.shared.helpers.utils import mask_account
 
-            from backend.api.cache import invalidate
-            invalidate("orders")
-            masked = mask_account(account)
-            logger.info(f"Ticket LIVE order: {order_id} [{masked}] "
-                        f"{side} {qty} {sym}{chase_tag}")
-            try:
-                from backend.api.algo.agent_engine import record_manual_event
-                asyncio.create_task(record_manual_event(
-                    outcome="action_success", source=data.source or "ticket",
-                    account=account, symbol=sym,
-                    exchange=(data.exchange or "NFO"), side=side,
-                    qty=qty, mode="live", order_id=str(order_id),
-                ))
-            except Exception:
-                pass
-            _clear_rejections(_bk_key)
-            return TicketOrderResponse(
-                order_id=str(order_id),
-                mode="live",
-                status="OPEN",
-                detail=(f"Live broker order #{order_id} placed at {account}"
-                        + (f" — chasing [{(data.chase_aggressiveness or 'low').lower()}]"
-                           if chase_eligible else "")
-                        + "."),
-            )
-        except HTTPException:
-            raise
-        except Exception as e:
-            from backend.api.algo.actions import diagnose_live_failure
-            masked_acct = mask_account(account)
-            kite_msg = str(e)
-            diag_order = {
-                "exchange": data.exchange or "NFO",
-                "symbol":   sym,
-                "side":     side,
-                "qty":      qty,
-                "order_type": order_type,
-                "product":  data.product or "NRML",
-                "price":    data.price or 0,
-                "variety":  data.variety or "regular",
-            }
-            try:
-                diag = await diagnose_live_failure(_broker_for(account), diag_order, kite_msg)
-            except Exception:
-                diag = "diagnosis unavailable"
-            logger.error(
-                f"[LIVE-TICKET] place_order failed for {masked_acct} "
-                f"{(data.exchange or 'NFO')}/{sym} {(data.product or 'NRML')} "
-                f"{side} {qty} {order_type}"
-                f"{f' @{data.price}' if data.price else ''}: "
-                f"{kite_msg} | diag: {diag}"
-            )
-            try:
-                from backend.shared.helpers.alert_utils import send_order_failure_alert
-                send_order_failure_alert(
-                    account=account, symbol=sym,
-                    exchange=(data.exchange or "NFO"), side=side,
-                    qty=qty, mode="live", source="agent:manual:ticket",
-                    error=kite_msg,
-                )
-            except Exception:
-                pass
-            try:
-                from backend.api.algo.agent_engine import record_manual_event
-                asyncio.create_task(record_manual_event(
-                    outcome="action_failure", source=data.source or "ticket",
-                    account=account, symbol=sym,
-                    exchange=(data.exchange or "NFO"), side=side,
-                    qty=qty, mode="live", error=kite_msg,
-                ))
-            except Exception:
-                pass
-            _new_count = _record_rejection(_bk_key)
-            if _new_count >= _REJECTION_THRESHOLD:
-                _maybe_send_breaker_alert(_bk_key, account, sym, side, qty,
-                                           kite_msg[:200])
-            raise HTTPException(
-                status_code=400,
-                detail=f"{kite_msg} ({diag})"[:400],
-            )
-
-    # ── PAPER / default branch ────────────────────────────────────────────
     algo_order_id = None
     detail = (f"[PAPER-TICKET] manual {side} {qty} {sym} "
               f"@₹{data.price:.2f}" if data.price is not None
@@ -1284,3 +1382,46 @@ async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
         detail=f"Paper order #{algo_order_id} placed — chase loop will fill it on the next bid/ask cross.",
         template_attachment=attachment_dict,
     )
+
+
+async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
+    """
+    Full ticket-order logic extracted from OrdersController.ticket_order.
+
+    Accepts the same (data: TicketOrderRequest, request: Request) signature;
+    returns a TicketOrderResponse.  Delegated to by the thin controller shim.
+    """
+    from backend.shared.helpers.utils import config
+    from backend.shared.helpers.settings import get_bool
+
+    side, sym, qty = await _ticket_validate_input(data, request)
+    account = _ticket_validate_account(data)
+
+    await _ticket_enforce_lot_and_fat_finger(data, account, sym, qty)
+
+    if data.strategy_id:
+        await _enforce_capacity_guard(
+            strategy_id=int(data.strategy_id),
+            account=account,
+            tradingsymbol=sym,
+            side_kite=side,
+            quantity=qty,
+            price_hint=(float(data.price)
+                        if data.price is not None else None),
+        )
+
+    await _ticket_gate_market_hours_and_align_price(data, sym)
+
+    _ptm_now = get_bool("execution.paper_trading_mode", False)
+    _shadow_now = get_bool("execution.shadow_mode", False)
+    logger.info(
+        f"[ticket-mode] requested={data.mode!r} "
+        f"paper_trading_mode={_ptm_now} shadow_mode={_shadow_now} "
+        f"branch={config.get('deploy_branch','?')!r}"
+    )
+
+    if data.mode == "live":
+        return await _ticket_place_live(data, request, account, sym, side, qty)
+
+    # ── PAPER / default branch ────────────────────────────────────────────
+    return await _ticket_place_paper(data, request, account, sym, side, qty)

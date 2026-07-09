@@ -351,11 +351,314 @@ def kick_performance() -> bool:
     return True
 
 
+async def _perf_probe_open_segments(
+    segments: list[dict],
+    holiday_cache: dict,
+    now,
+) -> list[dict]:
+    """Fan out `is_market_open` probes for every segment in parallel.
+    Returns the subset whose exchange is currently open (calendar +
+    live-quote probe). Each probe runs in `asyncio.to_thread` so the
+    blocking Kite check doesn't stall the event loop."""
+    def _probe_open(seg):
+        return is_market_open(
+            now, holiday_cache.get(seg['holiday_exchange'], set()),
+            seg['hours_start'], seg['hours_end'],
+            exchange=seg['holiday_exchange'],
+        )
+    open_results = await asyncio.gather(*(
+        asyncio.to_thread(_probe_open, seg) for seg in segments
+    ))
+    return [seg for seg, ok in zip(segments, open_results) if ok]
+
+
+async def _perf_fetch_all_broker_data() -> tuple:
+    """Serial broker fetches: (df_holdings, sum_holdings, df_positions,
+    sum_positions, df_margins). Serial by design — parallel calls raced
+    the daily Kite token-refresh (each call kicks its own login + 2FA
+    at 23h). Each op capped at 45s so a wedged cycle doesn't wedge the
+    poller forever."""
+    try:
+        (df_holdings, sum_holdings) = await asyncio.wait_for(
+            _run(_fetch_holdings_direct), timeout=45
+        )
+    except asyncio.TimeoutError:
+        logger.warning("[BROKER-TIMEOUT] account=all op=holdings timeout=45s")
+        df_holdings, sum_holdings = pd.DataFrame(), pd.DataFrame()
+
+    try:
+        (df_positions, sum_positions) = await asyncio.wait_for(
+            _run(_fetch_positions_direct), timeout=45
+        )
+    except asyncio.TimeoutError:
+        logger.warning("[BROKER-TIMEOUT] account=all op=positions timeout=45s")
+        df_positions, sum_positions = pd.DataFrame(), pd.DataFrame()
+
+    try:
+        df_margins = await asyncio.wait_for(
+            _run(_fetch_margins_direct), timeout=45
+        )
+    except asyncio.TimeoutError:
+        logger.warning("[BROKER-TIMEOUT] account=all op=margins timeout=45s")
+        df_margins = pd.DataFrame()
+
+    return df_holdings, sum_holdings, df_positions, sum_positions, df_margins
+
+
+def _perf_extract_total_pnl_fields(
+    all_sum_h: pd.DataFrame,
+    all_sum_p: pd.DataFrame,
+) -> tuple[float, float, float, float]:
+    """Pull (h_day, h_pnl, p_pnl, p_day) from the TOTAL row of the
+    per-account summary frames. p_day falls back to p_pnl for pure-MIS
+    books where the lifetime and today's deltas are the same number."""
+    h_total = all_sum_h.loc[all_sum_h['account'] == 'TOTAL']
+    p_total = all_sum_p.loc[all_sum_p['account'] == 'TOTAL']
+
+    h_day  = float(h_total['day_change_val'].iloc[0]) if (
+        not h_total.empty and 'day_change_val' in h_total.columns
+        and pd.notna(h_total['day_change_val'].iloc[0])
+    ) else 0.0
+    h_pnl  = float(h_total['pnl'].iloc[0]) if (
+        not h_total.empty and 'pnl' in h_total.columns
+        and pd.notna(h_total['pnl'].iloc[0])
+    ) else 0.0
+    p_pnl  = float(p_total['pnl'].iloc[0]) if (
+        not p_total.empty and 'pnl' in p_total.columns
+        and pd.notna(p_total['pnl'].iloc[0])
+    ) else 0.0
+    p_day  = float(p_total['day_change_val'].iloc[0]) if (
+        not p_total.empty and 'day_change_val' in p_total.columns
+        and pd.notna(p_total['day_change_val'].iloc[0])
+    ) else p_pnl
+    return h_day, h_pnl, p_pnl, p_day
+
+
+def _perf_append_intraday_equity(
+    all_sum_h: pd.DataFrame,
+    all_sum_p: pd.DataFrame,
+    now,
+    today,
+) -> None:
+    """Append one point to the intraday equity-curve buffer. Wipes on IST
+    date rollover so the chart always reflects the current day only.
+    Mutates the module-level `_intraday_equity` deque and
+    `_intraday_equity_date` marker."""
+    global _intraday_equity, _intraday_equity_date
+    try:
+        if _intraday_equity_date != today:
+            _intraday_equity.clear()
+            _intraday_equity_date = today
+
+        h_day, h_pnl, p_pnl, p_day = _perf_extract_total_pnl_fields(
+            all_sum_h, all_sum_p,
+        )
+        day_pnl = h_day + p_day
+        cum_pnl = h_pnl + p_pnl
+        _intraday_equity.append((
+            now.isoformat(), day_pnl, cum_pnl,
+            h_pnl, h_day, p_pnl, p_day,
+        ))
+        logger.info(
+            f"Equity-curve point: day=₹{day_pnl:.0f} "
+            f"cum=₹{cum_pnl:.0f} (H=₹{h_pnl:.0f} ΔH=₹{h_day:.0f} "
+            f"P=₹{p_pnl:.0f} ΔP=₹{p_day:.0f}, n={len(_intraday_equity)})"
+        )
+    except Exception as _eq_err:
+        logger.warning(f"Background: equity-curve append skipped: {_eq_err}")
+
+
+async def _perf_send_open_summaries(
+    open_segments: list[dict],
+    seg_state: dict,
+    now,
+    today,
+    open_offset: int,
+    all_sum_h: pd.DataFrame,
+    all_sum_p: pd.DataFrame,
+    ist_display: str,
+    df_margins: pd.DataFrame,
+    df_positions: pd.DataFrame,
+) -> None:
+    """Fire the once-per-day open summary per open segment. Uses
+    `seg_state[seg['name']]['last_open']` as the idempotency key."""
+    from backend.shared.helpers.alert_utils import send_summary
+    for seg in open_segments:
+        ss = seg_state[seg['name']]
+        open_trigger = now.replace(
+            hour=seg['hours_start'].hour,
+            minute=seg['hours_start'].minute,
+            second=0, microsecond=0
+        ) + timedelta(minutes=open_offset)
+        if ss['last_open'] != today and now >= open_trigger:
+            _label = seg['name'].capitalize()
+            _dm = df_margins
+            _dp = df_positions
+            try:
+                await _run(lambda: send_summary(all_sum_h, all_sum_p, ist_display,
+                                                'open', label=_label,
+                                                df_margins=_dm, df_positions=_dp))
+                logger.info(f"Background: open summary sent for {seg['name']}")
+            except Exception as e:
+                logger.error(f"Background: open summary failed for {seg['name']}: {e}")
+            ss['last_open'] = today
+
+
+async def _perf_run_agent_engine(
+    sim_active: bool,
+    df_holdings: pd.DataFrame,
+    df_positions: pd.DataFrame,
+    df_margins: pd.DataFrame,
+    sum_holdings: pd.DataFrame,
+    sum_positions: pd.DataFrame,
+    ist_display: str,
+    now,
+    seg_state: dict,
+    alert_state: dict,
+    segments: list[dict],
+) -> None:
+    """Run the v2 agent engine cycle with the just-refreshed portfolio
+    context. Skipped while the simulator is active (sim owns run_cycle);
+    also skipped on non-prod branches (main-only per CLAUDE.md). Alert
+    state dict is threaded through so the grammar evaluator can read
+    rate history and write suppression entries."""
+    from backend.shared.helpers.utils import is_prod_branch
+    if sim_active:
+        logger.info("Background: simulator active — skipping real run_cycle (performance cache still fresh)")
+        return
+    if not is_prod_branch():
+        # Mode 1 (dev) — the live agent engine only runs on main.
+        # Dev's agent testing happens through the simulator, which
+        # owns its own run_cycle invocation. Keeping the live
+        # engine off dev avoids cross-process Kite contention with
+        # prod AND makes "paper trade without fill simulation"
+        # impossible by construction.
+        return
+    try:
+        from backend.api.algo.agent_engine import run_cycle
+        from backend.api.routes.algo import _broadcast_event
+        # Phase 25 — expiry-aware agents need per-symbol position
+        # rows + underlying spots. One broker.ltp covers every
+        # distinct underlying; helpers fall back to {} on
+        # broker failure so the expiry leaves skip silently
+        # rather than 500. Both populate from the same
+        # df_positions fetch above, so no extra Kite hit on
+        # the position side.
+        position_rows = (
+            df_positions.to_dict("records")
+            if (df_positions is not None and not df_positions.empty)
+            else []
+        )
+        spot_prices = await _run(_resolve_spot_prices, df_positions)
+        agent_context = {
+            "sum_holdings": sum_holdings,
+            "sum_positions": sum_positions,
+            "df_margins": df_margins,
+            "df_holdings": df_holdings,
+            "df_positions": df_positions,
+            "position_rows": position_rows,
+            "spot_prices":   spot_prices,
+            "ist_display": ist_display,
+            "now": now,
+            "seg_state": seg_state,
+            # alert_state is the long-lived dict owned here (pnl_history,
+            # session_start, last_alert buckets, funds_*). Passed so the
+            # v2 grammar evaluator in run_cycle can read rate history
+            # and write its own suppression entries without needing a
+            # parallel state store.
+            "alert_state": alert_state,
+            "segments":    segments,
+        }
+        await run_cycle(agent_context, broadcast_fn=_broadcast_event)
+    except Exception as ae:
+        logger.error(f"Background: agent engine failed: {ae}")
+
+
+def _perf_collect_book_pairs(
+    df_holdings: pd.DataFrame,
+    df_positions: pd.DataFrame,
+) -> tuple[list[tuple[str, str]], set[tuple[str, str]]]:
+    """Walk both holdings + positions DataFrames and return unique
+    (tradingsymbol, exchange) pairs found on either book, plus the seen
+    set. Used to seed the KiteTicker subscription universe."""
+    book_pairs: list[tuple[str, str]] = []
+    book_seen: set[tuple[str, str]] = set()
+    for _df, _default_exch in (
+        (df_holdings, "NSE"),
+        (df_positions, "NFO"),
+    ):
+        if _df is not None and not _df.empty:
+            for _row in _df.itertuples(index=False):
+                _sym  = str(getattr(_row, "tradingsymbol", None) or "").strip().upper()
+                _exch = str(getattr(_row, "exchange", None) or _default_exch).strip().upper()
+                if _sym:
+                    _k = (_sym, _exch)
+                    if _k not in book_seen:
+                        book_seen.add(_k)
+                        book_pairs.append(_k)
+    return book_pairs, book_seen
+
+
+async def _perf_subscribe_book_symbols(
+    df_holdings: pd.DataFrame,
+    df_positions: pd.DataFrame,
+) -> None:
+    """Phase 2 — union live positions + holdings + a daily_book DB
+    snapshot backstop, resolve tokens for anything not yet subscribed,
+    and hand the batch to the KiteTicker. Circuit-breaker-safe: the
+    snapshot union keeps subscriptions warm for accounts whose broker
+    is currently down."""
+    try:
+        from backend.brokers.kite_ticker import get_ticker as _get_ticker
+        from backend.api.routes.quote import _resolve_token_for_sym as _rts
+        _ticker = _get_ticker()
+        _book_pairs, _book_seen = _perf_collect_book_pairs(df_holdings, df_positions)
+        # Backstop: union daily_book snapshot for breaker-open accounts.
+        try:
+            _snap = await _snapshot_book_symbols(days=7)
+            for _k in _snap:
+                if _k not in _book_seen:
+                    _book_seen.add(_k)
+                    _book_pairs.append(_k)
+        except Exception as _se:
+            logger.debug(f"Background: snapshot book symbols skipped in perf: {_se}")
+        # Resolve tokens for symbols not yet in the ticker.
+        # Batch into one exchange→instruments call per unique exchange.
+        _need_resolve = [
+            (sym, exch) for sym, exch in _book_pairs
+            # O(1) check via has_sym() — avoids rebuilding the full
+            # {v for v in _token_to_sym.values()} set on every cycle.
+            if not _ticker.has_sym(sym)
+        ]
+        if _need_resolve:
+            # Parallelize the token lookups — each _rts() is a cache
+            # hit (typically <5ms) but the await chain serializes
+            # them. With 50 symbols that was 50 coroutine context
+            # switches in series. asyncio.gather runs them
+            # concurrently and `subscribe_with_sym` is cheap
+            # in-memory so we can apply all subscriptions in one
+            # batch after the gather.
+            capped = _need_resolve[:50]
+            try:
+                toks = await asyncio.gather(
+                    *(_rts(_s, _e) for _s, _e in capped),
+                    return_exceptions=True,
+                )
+                _batch = [(_tok, _sym)
+                          for (_sym, _exch), _tok in zip(capped, toks)
+                          if _tok is not None
+                          and not isinstance(_tok, BaseException)]
+                if _batch:
+                    _ticker.subscribe_with_sym(_batch)
+            except Exception:
+                pass
+    except Exception as _tke:
+        logger.debug(f"Background: ticker book-subscribe skipped: {_tke}")
+
+
 async def _task_performance(state: dict) -> None:
     """Refresh performance data every N minutes during market hours."""
     from backend.brokers.broker_apis import fetch_holidays
-    from backend.shared.helpers.alert_utils import send_summary
-    from backend.shared.helpers.summarise import summarise_holdings as _summarise_holdings, summarise_positions as _summarise_positions
     from backend.api.cache import invalidate
     from backend.api.routes.ws import broadcast
     import json
@@ -438,18 +741,7 @@ async def _task_performance(state: dict) -> None:
         # asyncio main thread. py-spy caught a sample blocked in ssl.send.
         # Cache (60s TTL) usually short-circuits this, but on a cache miss the
         # loop stalls for ~100-200ms (longer on a Kite outage).
-        def _probe_open(seg):
-            return is_market_open(
-                now, holiday_cache.get(seg['holiday_exchange'], set()),
-                seg['hours_start'], seg['hours_end'],
-                exchange=seg['holiday_exchange'],
-            )
-        # asyncio.gather of to_thread calls so each segment's probe runs in
-        # parallel and the event loop stays responsive throughout.
-        open_results = await asyncio.gather(*(
-            asyncio.to_thread(_probe_open, seg) for seg in segments
-        ))
-        open_segments = [seg for seg, ok in zip(segments, open_results) if ok]
+        open_segments = await _perf_probe_open_segments(segments, holiday_cache, now)
 
         if not open_segments:
             continue
@@ -467,41 +759,8 @@ async def _task_performance(state: dict) -> None:
             pass
 
         try:
-            # Serial fetches by design: parallelising them raced the daily
-            # Kite token-refresh. Three concurrent broker calls would each
-            # kick off their own `login()` + 2FA at the 23h boundary, and
-            # Kite invalidates tokens issued in parallel for the same app
-            # — same failure mode the "1 uvicorn worker" rule in CLAUDE.md
-            # prevents. The ~300 ms shaved per cycle wasn't worth locking
-            # the website around the refresh window.
-            # 45s budget per op: generous (Dhan retry ~20s + auth ~15s) but
-            # caps a wedged cycle. NOTE: asyncio.wait_for cancels the coroutine
-            # wrapper but does NOT terminate the underlying executor thread —
-            # hung threads still consume _executor worker slots until they
-            # naturally unblock. Four simultaneous hangs would exhaust the pool.
-            try:
-                (df_holdings, sum_holdings) = await asyncio.wait_for(
-                    _run(_fetch_holdings_direct), timeout=45
-                )
-            except asyncio.TimeoutError:
-                logger.warning("[BROKER-TIMEOUT] account=all op=holdings timeout=45s")
-                df_holdings, sum_holdings = pd.DataFrame(), pd.DataFrame()
-
-            try:
-                (df_positions, sum_positions) = await asyncio.wait_for(
-                    _run(_fetch_positions_direct), timeout=45
-                )
-            except asyncio.TimeoutError:
-                logger.warning("[BROKER-TIMEOUT] account=all op=positions timeout=45s")
-                df_positions, sum_positions = pd.DataFrame(), pd.DataFrame()
-
-            try:
-                df_margins = await asyncio.wait_for(
-                    _run(_fetch_margins_direct), timeout=45
-                )
-            except asyncio.TimeoutError:
-                logger.warning("[BROKER-TIMEOUT] account=all op=margins timeout=45s")
-                df_margins = pd.DataFrame()
+            (df_holdings, sum_holdings, df_positions, sum_positions,
+             df_margins) = await _perf_fetch_all_broker_data()
 
             ist_display = timestamp_display()
             perf_key    = get_nearest_time(interval=interval)
@@ -519,72 +778,12 @@ async def _task_performance(state: dict) -> None:
             # Skipped while the simulator is active so fabricated P&L never
             # pollutes the real intraday history.
             if not sim_active:
-                global _intraday_equity, _intraday_equity_date
-                try:
-                    # Date rollover: wipe the buffer at the start of a new
-                    # IST trading day so the chart always reflects today only.
-                    if _intraday_equity_date != today:
-                        _intraday_equity.clear()
-                        _intraday_equity_date = today
+                _perf_append_intraday_equity(all_sum_h, all_sum_p, now, today)
 
-                    h_total = all_sum_h.loc[all_sum_h['account'] == 'TOTAL']
-                    p_total = all_sum_p.loc[all_sum_p['account'] == 'TOTAL']
-
-                    h_day  = float(h_total['day_change_val'].iloc[0]) if (
-                        not h_total.empty and 'day_change_val' in h_total.columns
-                        and pd.notna(h_total['day_change_val'].iloc[0])
-                    ) else 0.0
-                    h_pnl  = float(h_total['pnl'].iloc[0]) if (
-                        not h_total.empty and 'pnl' in h_total.columns
-                        and pd.notna(h_total['pnl'].iloc[0])
-                    ) else 0.0
-                    p_pnl  = float(p_total['pnl'].iloc[0]) if (
-                        not p_total.empty and 'pnl' in p_total.columns
-                        and pd.notna(p_total['pnl'].iloc[0])
-                    ) else 0.0
-                    # Positions today's-delta — falls back to p_pnl when
-                    # day_change_val isn't populated (pure-MIS book where
-                    # the lifetime and today's deltas are the same number).
-                    p_day  = float(p_total['day_change_val'].iloc[0]) if (
-                        not p_total.empty and 'day_change_val' in p_total.columns
-                        and pd.notna(p_total['day_change_val'].iloc[0])
-                    ) else p_pnl
-
-                    day_pnl = h_day + p_day
-                    cum_pnl = h_pnl + p_pnl
-                    _intraday_equity.append((
-                        now.isoformat(), day_pnl, cum_pnl,
-                        h_pnl, h_day, p_pnl, p_day,
-                    ))
-                    logger.info(
-                        f"Equity-curve point: day=₹{day_pnl:.0f} "
-                        f"cum=₹{cum_pnl:.0f} (H=₹{h_pnl:.0f} ΔH=₹{h_day:.0f} "
-                        f"P=₹{p_pnl:.0f} ΔP=₹{p_day:.0f}, n={len(_intraday_equity)})"
-                    )
-                except Exception as _eq_err:
-                    logger.warning(f"Background: equity-curve append skipped: {_eq_err}")
-
-            for seg in open_segments:
-                ss = seg_state[seg['name']]
-
-                open_trigger = now.replace(
-                    hour=seg['hours_start'].hour,
-                    minute=seg['hours_start'].minute,
-                    second=0, microsecond=0
-                ) + timedelta(minutes=open_offset)
-
-                if ss['last_open'] != today and now >= open_trigger:
-                    _label = seg['name'].capitalize()
-                    _dm = df_margins
-                    _dp = df_positions
-                    try:
-                        await _run(lambda: send_summary(all_sum_h, all_sum_p, ist_display,
-                                                        'open', label=_label,
-                                                        df_margins=_dm, df_positions=_dp))
-                        logger.info(f"Background: open summary sent for {seg['name']}")
-                    except Exception as e:
-                        logger.error(f"Background: open summary failed for {seg['name']}: {e}")
-                    ss['last_open'] = today
+            await _perf_send_open_summaries(
+                open_segments, seg_state, now, today, open_offset,
+                all_sum_h, all_sum_p, ist_display, df_margins, df_positions,
+            )
 
             # Loss alerts are now entirely owned by the v2 agent engine below
             # (loss-* BUILTIN_AGENTS). alert_utils.check_and_alert is retired.
@@ -593,56 +792,11 @@ async def _task_performance(state: dict) -> None:
             # while the simulator is active. The sim driver owns run_cycle
             # while it's running; mixing a live fire with a fabricated one
             # would corrupt rate history and spam the Telegram group.
-            from backend.shared.helpers.utils import is_prod_branch
-            if sim_active:
-                logger.info("Background: simulator active — skipping real run_cycle (performance cache still fresh)")
-            elif not is_prod_branch():
-                # Mode 1 (dev) — the live agent engine only runs on main.
-                # Dev's agent testing happens through the simulator, which
-                # owns its own run_cycle invocation. Keeping the live
-                # engine off dev avoids cross-process Kite contention with
-                # prod AND makes "paper trade without fill simulation"
-                # impossible by construction.
-                pass
-            else:
-                try:
-                    from backend.api.algo.agent_engine import run_cycle
-                    from backend.api.routes.algo import _broadcast_event
-                    # Phase 25 — expiry-aware agents need per-symbol position
-                    # rows + underlying spots. One broker.ltp covers every
-                    # distinct underlying; helpers fall back to {} on
-                    # broker failure so the expiry leaves skip silently
-                    # rather than 500. Both populate from the same
-                    # df_positions fetch above, so no extra Kite hit on
-                    # the position side.
-                    position_rows = (
-                        df_positions.to_dict("records")
-                        if (df_positions is not None and not df_positions.empty)
-                        else []
-                    )
-                    spot_prices = await _run(_resolve_spot_prices, df_positions)
-                    agent_context = {
-                        "sum_holdings": sum_holdings,
-                        "sum_positions": sum_positions,
-                        "df_margins": df_margins,
-                        "df_holdings": df_holdings,
-                        "df_positions": df_positions,
-                        "position_rows": position_rows,
-                        "spot_prices":   spot_prices,
-                        "ist_display": ist_display,
-                        "now": now,
-                        "seg_state": seg_state,
-                        # alert_state is the long-lived dict owned here (pnl_history,
-                        # session_start, last_alert buckets, funds_*). Passed so the
-                        # v2 grammar evaluator in run_cycle can read rate history
-                        # and write its own suppression entries without needing a
-                        # parallel state store.
-                        "alert_state": alert_state,
-                        "segments":    segments,
-                    }
-                    await run_cycle(agent_context, broadcast_fn=_broadcast_event)
-                except Exception as ae:
-                    logger.error(f"Background: agent engine failed: {ae}")
+            await _perf_run_agent_engine(
+                sim_active, df_holdings, df_positions, df_margins,
+                sum_holdings, sum_positions, ist_display, now, seg_state,
+                alert_state, segments,
+            )
 
             # Phase 2 — seed KiteTicker with any newly-discovered symbols
             # from the live positions + holdings book. The sparkline warm
@@ -657,67 +811,7 @@ async def _task_performance(state: dict) -> None:
             # ticker subscriptions are maintained across breaker-open
             # periods.  _snapshot_book_symbols() is DB-backed and survives
             # conn_service restart + any unhealthy broker account.
-            try:
-                from backend.brokers.kite_ticker import get_ticker as _get_ticker
-                from backend.api.routes.quote import _resolve_token_for_sym as _rts
-                _ticker = _get_ticker()
-                # Collect tradingsymbol+exchange pairs from both DataFrames.
-                _book_pairs: list[tuple[str, str]] = []
-                _book_seen: set[tuple[str, str]] = set()
-                for _df, _default_exch in (
-                    (df_holdings, "NSE"),
-                    (df_positions, "NFO"),
-                ):
-                    if _df is not None and not _df.empty:
-                        for _row in _df.itertuples(index=False):
-                            _sym  = str(getattr(_row, "tradingsymbol", None) or "").strip().upper()
-                            _exch = str(getattr(_row, "exchange", None) or _default_exch).strip().upper()
-                            if _sym:
-                                _k = (_sym, _exch)
-                                if _k not in _book_seen:
-                                    _book_seen.add(_k)
-                                    _book_pairs.append(_k)
-                # Backstop: union daily_book snapshot for breaker-open accounts.
-                try:
-                    _snap = await _snapshot_book_symbols(days=7)
-                    for _k in _snap:
-                        if _k not in _book_seen:
-                            _book_seen.add(_k)
-                            _book_pairs.append(_k)
-                except Exception as _se:
-                    logger.debug(f"Background: snapshot book symbols skipped in perf: {_se}")
-                # Resolve tokens for symbols not yet in the ticker.
-                # Batch into one exchange→instruments call per unique exchange.
-                _need_resolve = [
-                    (sym, exch) for sym, exch in _book_pairs
-                    # O(1) check via has_sym() — avoids rebuilding the full
-                    # {v for v in _token_to_sym.values()} set on every cycle.
-                    if not _ticker.has_sym(sym)
-                ]
-                if _need_resolve:
-                    # Parallelize the token lookups — each _rts() is a cache
-                    # hit (typically <5ms) but the await chain serializes
-                    # them. With 50 symbols that was 50 coroutine context
-                    # switches in series. asyncio.gather runs them
-                    # concurrently and `subscribe_with_sym` is cheap
-                    # in-memory so we can apply all subscriptions in one
-                    # batch after the gather.
-                    capped = _need_resolve[:50]
-                    try:
-                        toks = await asyncio.gather(
-                            *(_rts(_s, _e) for _s, _e in capped),
-                            return_exceptions=True,
-                        )
-                        _batch = [(_tok, _sym)
-                                  for (_sym, _exch), _tok in zip(capped, toks)
-                                  if _tok is not None
-                                  and not isinstance(_tok, BaseException)]
-                        if _batch:
-                            _ticker.subscribe_with_sym(_batch)
-                    except Exception:
-                        pass
-            except Exception as _tke:
-                logger.debug(f"Background: ticker book-subscribe skipped: {_tke}")
+            await _perf_subscribe_book_symbols(df_holdings, df_positions)
 
             # Invalidate only the caches this refresh actually renewed.
             # News / market / instruments have their own longer TTLs (days)
@@ -1893,6 +1987,357 @@ async def _task_hedge_proxy_regression() -> None:
         await _run_once()
 
 
+def _collect_trail_keys_by_account(rows) -> dict[str, set[str]]:
+    """Pass 1 — walk trailing-eligible entries and bucket the distinct
+    (exchange:symbol) keys we need broker.ltp for per account."""
+    import json as _json
+    keys_by_account: dict[str, set[str]] = {}
+    for row in rows:
+        try:
+            attached = _json.loads(row.attached_gtts_json or "[]")
+        except Exception:
+            continue
+        if not isinstance(attached, list):
+            continue
+        for entry in attached:
+            if not (isinstance(entry, dict)
+                    and entry.get("kind") == "gtt"
+                    and entry.get("sl_trail_pct") not in (None, "")):
+                continue
+            account = str(entry.get("parent_account") or "")
+            sym     = str(entry.get("parent_symbol") or "")
+            exch    = str(entry.get("parent_exchange") or "NFO")
+            if account and sym:
+                keys_by_account.setdefault(account, set()).add(f"{exch}:{sym}")
+    return keys_by_account
+
+
+async def _batch_ltp_by_account(
+    keys_by_account: dict[str, set[str]],
+) -> dict[tuple[str, str], float]:
+    """Pass 2 — fan out broker.ltp across accounts in parallel and flatten
+    the response into `{(account, key): ltp}`. Silently skips accounts
+    whose broker registry lookup or LTP call fails."""
+    from backend.brokers.registry import get_broker
+
+    ltp_map: dict[tuple[str, str], float] = {}
+    accts = list(keys_by_account.keys())
+
+    async def _ltp_for(acct: str):
+        try:
+            broker = get_broker(acct)
+        except Exception:
+            return None
+        try:
+            return await asyncio.to_thread(
+                broker.ltp, list(keys_by_account[acct])
+            )
+        except Exception as e:
+            logger.debug(f"[TRAIL] batched ltp failed for {acct}: {e}")
+            return None
+
+    results = await asyncio.gather(*(_ltp_for(a) for a in accts))
+    for account, resp in zip(accts, results):
+        if resp is None:
+            continue
+        for k in keys_by_account[account]:
+            try:
+                ltp_v = float((resp.get(k) or {}).get("last_price") or 0)
+            except (TypeError, ValueError):
+                ltp_v = 0.0
+            if ltp_v > 0:
+                ltp_map[(account, k)] = ltp_v
+    return ltp_map
+
+
+def _build_trail_modify_kwargs(
+    entry: dict,
+    proposed: float,
+    parent_side: str,
+    parent_qty: int,
+    parent_product: str,
+    trigger_type: str,
+    row_id: int,
+) -> Optional[tuple[list[float], list[dict]]]:
+    """Assemble `(trigger_values, orders)` for `broker.modify_gtt`.
+
+    Returns `None` when a two-leg OCO entry lacks a tp_trigger snapshot
+    (pre-Sprint-A entries) — caller should skip the modify but persist
+    any watermark advance already made.
+    """
+    exit_side = "SELL" if parent_side == "BUY" else "BUY"
+    if trigger_type == "two-leg":
+        tp_trigger = entry.get("tp_trigger")
+        if tp_trigger is None:
+            # Pre-Sprint-A entries (attached before the
+            # tp_trigger snapshot landed) don't carry
+            # the TP value. Skip — the watermark advance
+            # above still commits so the moment the
+            # operator re-attaches with a freshly-seeded
+            # entry, trailing kicks in. Logged once at
+            # info level so we can spot stragglers.
+            logger.info(
+                f"[TRAIL] #{row_id} skipping legacy "
+                f"two-leg entry without tp_trigger — "
+                f"re-attach to enable trailing"
+            )
+            return None
+        new_triggers = [float(tp_trigger), proposed]
+        # OCO `orders` array parallel-indexes triggers:
+        # [TP order at index 0, SL order at index 1].
+        orders_payload = [
+            {
+                "transaction_type": exit_side,
+                "quantity":         parent_qty,
+                "price":            float(tp_trigger),
+                "order_type":       "LIMIT",
+                "product":          parent_product,
+            },
+            {
+                "transaction_type": exit_side,
+                "quantity":         parent_qty,
+                "price":            proposed,
+                "order_type":       "LIMIT",
+                "product":          parent_product,
+            },
+        ]
+    else:
+        new_triggers = [proposed]
+        orders_payload = [{
+            "transaction_type": exit_side,
+            "quantity":         parent_qty,
+            "price":            proposed,
+            "order_type":       "LIMIT",
+            "product":          parent_product,
+        }]
+    return new_triggers, orders_payload
+
+
+async def _send_trail_partial_modify_alert(
+    entry: dict,
+    row,
+    proposed: float,
+    parent_symbol: str,
+    err: BaseException,
+) -> None:
+    """Persist + alert for Dhan asymmetric GTT (M-2 audit fix)."""
+    entry["partial_modify_error"] = (
+        f"ENTRY_LEG updated, TARGET_LEG rejected "
+        f"({str(err)[:120]})"
+    )
+    entry.pop("sl_trail_pct", None)
+    logger.warning(
+        f"[TRAIL] #{row.id} Dhan asymmetric GTT — "
+        f"entry trigger ratcheted to {proposed:.2f} "
+        f"but target trigger stale. Operator "
+        f"intervention required."
+    )
+    try:
+        from backend.shared.helpers.utils import is_enabled
+        if is_enabled('telegram'):
+            from backend.shared.helpers.alert_utils import _send_telegram
+            await asyncio.to_thread(
+                _send_telegram,
+                f"⚠ Dhan GTT asymmetric: "
+                f"{parent_symbol} on {row.account} — "
+                f"trail ratcheted entry but target "
+                f"leg rejected. Cancel + recreate "
+                f"or verify at broker.",
+            )
+    except Exception:
+        pass
+
+
+def _extract_trail_entry_fields(entry: dict) -> Optional[dict]:
+    """Pull the operator-configured fields from a trailing entry. Returns
+    `None` when the entry is not a valid trailing-eligible GTT dict."""
+    if not isinstance(entry, dict):
+        return None
+    if entry.get("kind") != "gtt":
+        return None
+    if entry.get("sl_trail_pct") in (None, ""):
+        return None
+    fields = {
+        "gtt_id":          entry.get("id"),
+        "trail_pct":       float(entry["sl_trail_pct"]),
+        "current_trigger": float(entry.get("current_trigger") or 0),
+        "parent_side":     str(entry.get("parent_side") or ""),
+        "parent_symbol":   str(entry.get("parent_symbol") or ""),
+        "parent_exchange": str(entry.get("parent_exchange") or "NFO"),
+        "account":         str(entry.get("parent_account") or ""),
+        "parent_qty":      int(entry.get("parent_qty") or 0),
+        "parent_product":  str(entry.get("parent_product") or "NRML"),
+        "trigger_type":    str(entry.get("trigger_type") or "single"),
+    }
+    if not (fields["gtt_id"] and fields["parent_symbol"] and fields["account"]
+            and fields["trail_pct"] > 0 and fields["parent_qty"] > 0):
+        return None
+    return fields
+
+
+def _compute_trail_watermark(
+    entry: dict,
+    ltp: float,
+    parent_side: str,
+    trail_pct: float,
+    current_trigger: float,
+) -> tuple[float, bool, bool]:
+    """Update highest/lowest LTP watermarks in-place on `entry` and return
+    `(proposed_trigger, more_favorable, watermark_changed)`.
+    `more_favorable` = True when the trail should ratchet the broker
+    trigger. `watermark_changed` = True when high/low advanced and the
+    caller needs to persist the mutation."""
+    prior_high = float(entry.get("highest_ltp") or 0)
+    prior_low  = (float(entry["lowest_ltp"])
+                  if entry.get("lowest_ltp") else None)
+    high = max(prior_high, ltp)
+    low  = ltp if prior_low is None else min(prior_low, ltp)
+    if parent_side == "BUY":
+        proposed = high * (1.0 - trail_pct / 100.0)
+        more_favorable = proposed > current_trigger
+    else:
+        proposed = low  * (1.0 + trail_pct / 100.0)
+        more_favorable = (current_trigger > 0
+                          and proposed < current_trigger)
+    watermark_changed = (high != prior_high or low != prior_low)
+    if watermark_changed:
+        entry["highest_ltp"] = high
+        entry["lowest_ltp"]  = low
+    return proposed, more_favorable, watermark_changed
+
+
+async def _process_trail_entry(
+    entry: dict,
+    row,
+    ltp_map: dict[tuple[str, str], float],
+) -> bool:
+    """Full per-entry trailing pipeline: watermark → modify_gtt →
+    persistence book-keeping. Returns True when `entry` was mutated in
+    a way the caller must persist."""
+    from backend.brokers.registry import get_broker
+
+    fields = _extract_trail_entry_fields(entry)
+    if fields is None:
+        return False
+    try:
+        broker = get_broker(fields["account"])
+    except Exception:
+        return False
+    key = f"{fields['parent_exchange']}:{fields['parent_symbol']}"
+    ltp = ltp_map.get((fields["account"], key), 0.0)
+    if ltp <= 0:
+        return False
+    # Phase 3C #3 — persist watermark advances even when
+    # we DON'T issue a modify_gtt (no favorable move, or
+    # two-leg OCO deferred). Previously the in-memory
+    # update was discarded every poll cycle because
+    # `changed` was only set after a successful
+    # modify_gtt call.
+    proposed, more_favorable, watermark_changed = _compute_trail_watermark(
+        entry, ltp,
+        fields["parent_side"], fields["trail_pct"], fields["current_trigger"],
+    )
+    if not more_favorable:
+        return watermark_changed
+    proposed = round(proposed, 4)
+    built = _build_trail_modify_kwargs(
+        entry, proposed,
+        fields["parent_side"], fields["parent_qty"], fields["parent_product"],
+        fields["trigger_type"], row.id,
+    )
+    if built is None:
+        return watermark_changed
+    new_triggers, orders_payload = built
+    try:
+        await asyncio.to_thread(
+            broker.modify_gtt,
+            fields["gtt_id"],
+            trigger_type=fields["trigger_type"],
+            tradingsymbol=fields["parent_symbol"],
+            exchange=fields["parent_exchange"],
+            last_price=ltp,
+            trigger_values=new_triggers,
+            orders=orders_payload,
+        )
+    except NotImplementedError:
+        # Broker has no modify_gtt — Dhan / Groww today.
+        # Drop the trail metadata so we stop retrying
+        # every interval for this row.
+        entry.pop("sl_trail_pct", None)
+        return True
+    except Exception as e:
+        # Audit fix (M-2) — detect Dhan asymmetric GTT
+        # state. When modify_gtt's two-leg dispatch hit
+        # a TARGET_LEG rejection after ENTRY_LEG already
+        # succeeded, the broker's GTT is now half-modified.
+        # Pre-fix this was logged at DEBUG and the
+        # operator never knew. Now persist
+        # `partial_modify_error` in the entry +
+        # WARNING-level log + Telegram alert so the
+        # operator can cancel + recreate or knowingly
+        # accept the asymmetric state. Stop ratcheting
+        # on subsequent polls — re-modify would keep
+        # bumping ENTRY while TARGET drifts.
+        if getattr(e, "dhan_partial_modify", False):
+            await _send_trail_partial_modify_alert(
+                entry, row, proposed, fields["parent_symbol"], e,
+            )
+            return True
+        logger.debug(
+            f"[TRAIL] modify_gtt failed for #{row.id} "
+            f"gtt={fields['gtt_id']}: {e}"
+        )
+        return watermark_changed
+    entry["current_trigger"] = proposed
+    logger.info(
+        f"[TRAIL] #{row.id} {fields['parent_side']} {fields['parent_symbol']} "
+        f"trigger {fields['current_trigger']:.2f} → {proposed:.2f} "
+        f"(LTP {ltp:.2f}, trail {fields['trail_pct']}%)"
+    )
+    return True
+
+
+async def _process_trail_row(
+    row,
+    ltp_map: dict[tuple[str, str], float],
+) -> Optional[tuple[int, str]]:
+    """Walk every attached-GTT entry on `row`, mutate in-place via
+    `_process_trail_entry`, and return a `(id, json_str)` pending-update
+    tuple when at least one entry changed."""
+    import json as _json
+    try:
+        attached = _json.loads(row.attached_gtts_json or "[]")
+    except Exception:
+        return None
+    if not isinstance(attached, list):
+        return None
+    changed = False
+    for entry in attached:
+        entry_changed = await _process_trail_entry(entry, row, ltp_map)
+        if entry_changed:
+            changed = True
+    if changed:
+        return (row.id, _json.dumps(attached))
+    return None
+
+
+async def _flush_trail_updates(pending_updates: list[tuple[int, str]]) -> None:
+    """Batch flush — one session, N UPDATE statements, one commit."""
+    if not pending_updates:
+        return
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    from sqlalchemy import update as _update
+    async with async_session() as s2:
+        for _rid, _json_str in pending_updates:
+            await s2.execute(
+                _update(AlgoOrder)
+                .where(AlgoOrder.id == _rid)
+                .values(attached_gtts_json=_json_str)
+            )
+        await s2.commit()
+
+
 async def _task_trail_stop() -> None:
     """Trailing-stop background poller (Phase 3B).
 
@@ -1921,10 +2366,8 @@ async def _task_trail_stop() -> None:
     """
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
-    from backend.brokers.registry import get_broker
     from backend.shared.helpers.settings import get_int
-    from sqlalchemy import select as _sel, update as _update
-    import json as _json
+    from sqlalchemy import select as _sel
 
     while True:
         try:
@@ -1948,7 +2391,6 @@ async def _task_trail_stop() -> None:
             # sequential DB round-trips per 30s tick — enough to starve
             # the asyncio scheduler and make `/api/positions` (and the
             # Refresh button that drives it) feel sluggish.
-            pending_updates: list[tuple[int, str]] = []
             # Phase 3D #5 — batch broker.ltp per account. Pass 1 collects
             # every (account, exchange:symbol) key referenced by a trailing
             # SL entry, deduped per account. Pass 2 issues one batched
@@ -1956,251 +2398,14 @@ async def _task_trail_stop() -> None:
             # again and uses the pre-fetched LTP map. Prior version did
             # one ltp() call per entry — at 100 trailing rows that was
             # 100 round-trips every poll cycle.
-            keys_by_account: dict[str, set[str]] = {}
+            keys_by_account = _collect_trail_keys_by_account(rows)
+            ltp_map = await _batch_ltp_by_account(keys_by_account)
+            pending_updates: list[tuple[int, str]] = []
             for row in rows:
-                try:
-                    attached = _json.loads(row.attached_gtts_json or "[]")
-                except Exception:
-                    continue
-                if not isinstance(attached, list):
-                    continue
-                for entry in attached:
-                    if not (isinstance(entry, dict)
-                            and entry.get("kind") == "gtt"
-                            and entry.get("sl_trail_pct") not in (None, "")):
-                        continue
-                    account = str(entry.get("parent_account") or "")
-                    sym     = str(entry.get("parent_symbol") or "")
-                    exch    = str(entry.get("parent_exchange") or "NFO")
-                    if account and sym:
-                        keys_by_account.setdefault(account, set()).add(f"{exch}:{sym}")
-            # Parallelize broker.ltp across accounts. Pre-fix the for
-            # loop awaited each account's ltp sequentially, costing
-            # ~200ms × N accounts on the trail-stop hot path. Now all
-            # accounts fan out via asyncio.gather; total wall-time =
-            # max(per-account ltp) ≈ 200ms regardless of account count.
-            ltp_map: dict[tuple[str, str], float] = {}
-            _accts = list(keys_by_account.keys())
-            async def _ltp_for(acct: str):
-                try:
-                    broker = get_broker(acct)
-                except Exception:
-                    return None
-                try:
-                    return await asyncio.to_thread(
-                        broker.ltp, list(keys_by_account[acct])
-                    )
-                except Exception as e:
-                    logger.debug(f"[TRAIL] batched ltp failed for {acct}: {e}")
-                    return None
-            results = await asyncio.gather(*(_ltp_for(a) for a in _accts))
-            for account, resp in zip(_accts, results):
-                if resp is None:
-                    continue
-                for k in keys_by_account[account]:
-                    try:
-                        ltp_v = float((resp.get(k) or {}).get("last_price") or 0)
-                    except (TypeError, ValueError):
-                        ltp_v = 0.0
-                    if ltp_v > 0:
-                        ltp_map[(account, k)] = ltp_v
-            for row in rows:
-                try:
-                    attached = _json.loads(row.attached_gtts_json or "[]")
-                except Exception:
-                    continue
-                if not isinstance(attached, list):
-                    continue
-                changed = False
-                for entry in attached:
-                    if not isinstance(entry, dict):
-                        continue
-                    if entry.get("kind") != "gtt":
-                        continue
-                    if entry.get("sl_trail_pct") in (None, ""):
-                        continue
-                    gtt_id          = entry.get("id")
-                    trail_pct       = float(entry["sl_trail_pct"])
-                    current_trigger = float(entry.get("current_trigger") or 0)
-                    parent_side     = str(entry.get("parent_side") or "")
-                    parent_symbol   = str(entry.get("parent_symbol") or "")
-                    parent_exchange = str(entry.get("parent_exchange") or "NFO")
-                    account         = str(entry.get("parent_account") or "")
-                    parent_qty      = int(entry.get("parent_qty") or 0)
-                    parent_product  = str(entry.get("parent_product") or "NRML")
-                    trigger_type    = str(entry.get("trigger_type") or "single")
-                    if not (gtt_id and parent_symbol and account
-                            and trail_pct > 0 and parent_qty > 0):
-                        continue
-                    try:
-                        broker = get_broker(account)
-                    except Exception:
-                        continue
-                    key = f"{parent_exchange}:{parent_symbol}"
-                    ltp = ltp_map.get((account, key), 0.0)
-                    if ltp <= 0:
-                        continue
-                    # Phase 3C #3 — persist watermark advances even when
-                    # we DON'T issue a modify_gtt (no favorable move, or
-                    # two-leg OCO deferred). Previously the in-memory
-                    # update was discarded every poll cycle because
-                    # `changed` was only set after a successful
-                    # modify_gtt call. Compare against the persisted
-                    # value before mutating so we know when there's a
-                    # real diff to write back.
-                    prior_high = float(entry.get("highest_ltp") or 0)
-                    prior_low  = (float(entry["lowest_ltp"])
-                                  if entry.get("lowest_ltp") else None)
-                    high = max(prior_high, ltp)
-                    low  = ltp if prior_low is None else min(prior_low, ltp)
-                    if parent_side == "BUY":
-                        proposed = high * (1.0 - trail_pct / 100.0)
-                        more_favorable = proposed > current_trigger
-                    else:
-                        proposed = low  * (1.0 + trail_pct / 100.0)
-                        more_favorable = (current_trigger > 0
-                                          and proposed < current_trigger)
-                    if high != prior_high or low != prior_low:
-                        entry["highest_ltp"] = high
-                        entry["lowest_ltp"]  = low
-                        changed = True
-                    if not more_favorable:
-                        continue
-                    proposed = round(proposed, 4)
-                    # Build the modify_gtt kwargs. Single trigger has
-                    # one value; two-leg OCO needs [tp, new_sl] so the
-                    # untouched TP slot rides through unchanged.
-                    exit_side = "SELL" if parent_side == "BUY" else "BUY"
-                    if trigger_type == "two-leg":
-                        tp_trigger = entry.get("tp_trigger")
-                        if tp_trigger is None:
-                            # Pre-Sprint-A entries (attached before the
-                            # tp_trigger snapshot landed) don't carry
-                            # the TP value. Skip — the watermark advance
-                            # above still commits so the moment the
-                            # operator re-attaches with a freshly-seeded
-                            # entry, trailing kicks in. Logged once at
-                            # info level so we can spot stragglers.
-                            logger.info(
-                                f"[TRAIL] #{row.id} skipping legacy "
-                                f"two-leg entry without tp_trigger — "
-                                f"re-attach to enable trailing"
-                            )
-                            continue
-                        new_triggers = [float(tp_trigger), proposed]
-                        # OCO `orders` array parallel-indexes triggers:
-                        # [TP order at index 0, SL order at index 1].
-                        orders_payload = [
-                            {
-                                "transaction_type": exit_side,
-                                "quantity":         parent_qty,
-                                "price":            float(tp_trigger),
-                                "order_type":       "LIMIT",
-                                "product":          parent_product,
-                            },
-                            {
-                                "transaction_type": exit_side,
-                                "quantity":         parent_qty,
-                                "price":            proposed,
-                                "order_type":       "LIMIT",
-                                "product":          parent_product,
-                            },
-                        ]
-                    else:
-                        new_triggers = [proposed]
-                        orders_payload = [{
-                            "transaction_type": exit_side,
-                            "quantity":         parent_qty,
-                            "price":            proposed,
-                            "order_type":       "LIMIT",
-                            "product":          parent_product,
-                        }]
-                    try:
-                        await asyncio.to_thread(
-                            broker.modify_gtt,
-                            gtt_id,
-                            trigger_type=trigger_type,
-                            tradingsymbol=parent_symbol,
-                            exchange=parent_exchange,
-                            last_price=ltp,
-                            trigger_values=new_triggers,
-                            orders=orders_payload,
-                        )
-                    except NotImplementedError:
-                        # Broker has no modify_gtt — Dhan / Groww today.
-                        # Drop the trail metadata so we stop retrying
-                        # every interval for this row.
-                        entry.pop("sl_trail_pct", None)
-                        changed = True
-                        continue
-                    except Exception as e:
-                        # Audit fix (M-2) — detect Dhan asymmetric GTT
-                        # state. When modify_gtt's two-leg dispatch hit
-                        # a TARGET_LEG rejection after ENTRY_LEG already
-                        # succeeded, the broker's GTT is now half-modified.
-                        # Pre-fix this was logged at DEBUG and the
-                        # operator never knew. Now persist
-                        # `partial_modify_error` in the entry +
-                        # WARNING-level log + Telegram alert so the
-                        # operator can cancel + recreate or knowingly
-                        # accept the asymmetric state. Stop ratcheting
-                        # on subsequent polls — re-modify would keep
-                        # bumping ENTRY while TARGET drifts.
-                        if getattr(e, "dhan_partial_modify", False):
-                            entry["partial_modify_error"] = (
-                                f"ENTRY_LEG updated, TARGET_LEG rejected "
-                                f"({str(e)[:120]})"
-                            )
-                            entry.pop("sl_trail_pct", None)
-                            changed = True
-                            logger.warning(
-                                f"[TRAIL] #{row.id} Dhan asymmetric GTT — "
-                                f"entry trigger ratcheted to {proposed:.2f} "
-                                f"but target trigger stale. Operator "
-                                f"intervention required."
-                            )
-                            try:
-                                from backend.shared.helpers.utils import is_enabled
-                                if is_enabled('telegram'):
-                                    from backend.shared.helpers.alert_utils import _send_telegram
-                                    await asyncio.to_thread(
-                                        _send_telegram,
-                                        f"⚠ Dhan GTT asymmetric: "
-                                        f"{parent_symbol} on {row.account} — "
-                                        f"trail ratcheted entry but target "
-                                        f"leg rejected. Cancel + recreate "
-                                        f"or verify at broker.",
-                                    )
-                            except Exception:
-                                pass
-                            continue
-                        logger.debug(
-                            f"[TRAIL] modify_gtt failed for #{row.id} "
-                            f"gtt={gtt_id}: {e}"
-                        )
-                        continue
-                    entry["current_trigger"] = proposed
-                    changed = True
-                    logger.info(
-                        f"[TRAIL] #{row.id} {parent_side} {parent_symbol} "
-                        f"trigger {current_trigger:.2f} → {proposed:.2f} "
-                        f"(LTP {ltp:.2f}, trail {trail_pct}%)"
-                    )
-                if changed:
-                    pending_updates.append((row.id, _json.dumps(attached)))
-            # Batch flush — one session, N UPDATE statements, one commit.
-            # Drops the per-row SELECT (we already have the id from the
-            # outer query; the UPDATE is a no-op if the row was deleted
-            # between the SELECT and now, which is acceptable).
-            if pending_updates:
-                async with async_session() as s2:
-                    for _rid, _json_str in pending_updates:
-                        await s2.execute(
-                            _update(AlgoOrder)
-                            .where(AlgoOrder.id == _rid)
-                            .values(attached_gtts_json=_json_str)
-                        )
-                    await s2.commit()
+                pending = await _process_trail_row(row, ltp_map)
+                if pending is not None:
+                    pending_updates.append(pending)
+            await _flush_trail_updates(pending_updates)
         except Exception as e:
             logger.debug(f"[TRAIL] poll iteration failed: {e}")
 
