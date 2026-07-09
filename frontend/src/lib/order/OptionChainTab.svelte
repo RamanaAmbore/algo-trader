@@ -698,9 +698,17 @@
           basketProgress += 1;
           continue;
         }
+        // v2 API (2026-07-08): send LOTS for F&O (lotSize > 1),
+        // raw shares for equity. Backend multiplies lots × lot_size
+        // to get contracts internally.
+        const _isFO = Number(leg.lotSize) > 1;
+        const _requestQty = _isFO
+          ? Math.max(1, Number(leg.lots) || 1)
+          : Math.max(1, (Number(leg.lots) || 1) * (Number(leg.lotSize) || 1));
         await placeTicketOrder({
           mode: basketMode, side: leg.side, tradingsymbol: leg.sym,
-          quantity: leg.lots * leg.lotSize, exchange: leg.exchange,
+          quantity: _requestQty, exchange: leg.exchange,
+          lot_size_hint: Number(leg.lotSize) > 0 ? Number(leg.lotSize) : null,
           product: leg.product || 'NRML',
           order_type: 'LIMIT',
           price: Number(leg.limit),

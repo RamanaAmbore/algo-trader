@@ -174,6 +174,7 @@ test.describe('Paper order placement', () => {
     // a low value so the basket_margin check is the only gate
     // (PAPER doesn't actually fill against a broker; the prod paper
     // engine fills via the chase loop against live quotes).
+    // v2 API (2026-07-08): qty is LOTS for F&O.
     const payload = {
       mode:             'paper',
       side:             'BUY',
@@ -182,7 +183,8 @@ test.describe('Paper order placement', () => {
       product:          'NRML',
       order_type:       'LIMIT',
       variety:          'regular',
-      quantity:         opt.lot_size,
+      quantity:         1,               // 1 lot
+      lot_size_hint:    opt.lot_size,
       price:            1.0,         // far-below-market LIMIT — won't fill but won't reject either
       trigger_price:    null,
       account:          acct,

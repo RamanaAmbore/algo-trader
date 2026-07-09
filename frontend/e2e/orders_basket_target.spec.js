@@ -250,12 +250,14 @@ test.describe('/orders — basket + target (Phase 1 + 2)', () => {
     const beforeIds = new Set(((snapR.ok() ? await snapR.json() : []) || []).map((o) => o.id));
 
     const basketTag = `ramboq-basket-test-${Date.now()}`;
+    // v2 API (2026-07-08): qty is LOTS for F&O.
     const placeR = await page.request.post('/api/orders/ticket', {
       data: {
         mode: 'paper', side: 'BUY',
         tradingsymbol: opt.s, exchange: opt.e || 'NFO',
         product: 'NRML', order_type: 'LIMIT', variety: 'regular',
-        quantity: opt.ls || 50, price: 1.0, trigger_price: null,
+        quantity: 1, lot_size_hint: opt.ls || 50,
+        price: 1.0, trigger_price: null,
         account: loadedAccts[0], basket_tag: basketTag,
       },
     });

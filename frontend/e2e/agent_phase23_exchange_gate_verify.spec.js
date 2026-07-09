@@ -36,11 +36,11 @@ test(`exchange-open gate behaviour vs wall-clock IST [${BASE}]`, async ({ page }
   const mcxOpen = istHour >= 9 && istHour < 23;
   console.log(`IST hour: ${istHour} — NSE open: ${nseOpen}, MCX open: ${mcxOpen}`);
 
-  // NFO order — gates against nse_open
+  // NFO order — gates against nse_open. v2 API (2026-07-08): qty is LOTS.
   const nfoRes = await page.request.post(`${BASE}/api/orders/ticket`, {
     data: {
       mode: 'paper', side: 'SELL', tradingsymbol: 'NIFTY25APRFUT',
-      quantity: 50, exchange: 'NFO', product: 'NRML',
+      quantity: 1, exchange: 'NFO', product: 'NRML',
       order_type: 'LIMIT', price: 99999.95, account: 'ZG0790',
     }, headers,
   });
@@ -57,11 +57,11 @@ test(`exchange-open gate behaviour vs wall-clock IST [${BASE}]`, async ({ page }
     expect(nfoBody.detail).toMatch(/Exchange NFO is closed/);
   }
 
-  // MCX order
+  // MCX order — v2 API: qty is LOTS
   const mcxRes = await page.request.post(`${BASE}/api/orders/ticket`, {
     data: {
       mode: 'paper', side: 'SELL', tradingsymbol: 'CRUDEOILM25MAY5500CE',
-      quantity: 50, exchange: 'MCX', product: 'NRML',
+      quantity: 1, exchange: 'MCX', product: 'NRML',
       order_type: 'LIMIT', price: 50.0, account: 'ZG0790',
     }, headers,
   });

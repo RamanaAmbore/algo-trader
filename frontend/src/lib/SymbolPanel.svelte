@@ -628,11 +628,16 @@
           const a = legAccountOf(leg);
           if (!a) continue;
           if (!byAcct.has(a)) byAcct.set(a, []);
+          // v2 API (2026-07-08): send LOTS for F&O, raw shares for equity.
+          const _bmIsFO = Number(leg.lotSize || 1) > 1;
+          const _bmQty = _bmIsFO
+            ? Math.max(1, Number(leg.lots) || 1)
+            : Math.max(1, (Number(leg.lots) || 1) * (Number(leg.lotSize) || 1));
           byAcct.get(a)?.push({
             tradingsymbol: leg.sym,
             exchange: leg.exchange || 'NFO',
             transaction_type: leg.side,
-            quantity: (leg.lots || 1) * (leg.lotSize || 1),
+            quantity: _bmQty,
             product: leg.product || 'NRML',
             order_type: 'LIMIT',
             price: Number(leg.limit) || 0,
@@ -1680,7 +1685,12 @@
         tradingsymbol:    leg.sym,
         exchange:         leg.exchange || 'NFO',
         transaction_type: leg.side,
-        quantity:         (leg.lots || 1) * (leg.lotSize || 1),
+        // v2 API (2026-07-08): send LOTS for F&O (lotSize > 1),
+        // raw shares for equity. Backend multiplies lots × lot_size
+        // to derive contracts internally.
+        quantity:         Number(leg.lotSize || 1) > 1
+                            ? Math.max(1, Number(leg.lots) || 1)
+                            : Math.max(1, (Number(leg.lots) || 1) * (Number(leg.lotSize) || 1)),
         product:          leg.product || 'NRML',
         order_type:       'LIMIT',
         variety:          'regular',

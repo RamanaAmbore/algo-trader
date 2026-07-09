@@ -1289,15 +1289,38 @@ class OrdersController(Controller):
         """
         from backend.api.algo.template_attach import apply_template_to_order
 
+        # v2 API (2026-07-08): `data.quantity` is LOTS for F&O and shares
+        # for equity. Convert to contracts here so the template resolver
+        # sizes exit GTTs against the same unit convention it always has.
+        _FO = ("NFO", "MCX", "CDS", "BFO", "BCD", "NCO")
+        _sym = (data.tradingsymbol or "").upper()
+        _exch = (data.exchange or "NFO")
+        _input_qty = int(data.quantity or 0)
+        if _exch in _FO and _input_qty > 0:
+            from backend.brokers.adapters.kite import get_lot_size as _prev_lot
+            try:
+                _lot = int(await _prev_lot(_exch, _sym) or 0)
+            except Exception:
+                _lot = 0
+            if _lot > 0:
+                _parent_qty = _input_qty * _lot
+            else:
+                # Cache cold — preview is best-effort; carry the raw
+                # input through so the resolver still returns a plan
+                # (numeric fields may be off but structure is correct).
+                _parent_qty = _input_qty
+        else:
+            _parent_qty = _input_qty
+
         result = await apply_template_to_order(
             template_id=data.template_id,
             template_slug=None,
             overrides=_ticket_overrides_dict(data),
             parent_account=(data.account or ""),
-            parent_symbol=(data.tradingsymbol or "").upper(),
+            parent_symbol=_sym,
             parent_side=(data.side or "").upper(),
-            parent_qty=int(data.quantity or 0),
-            parent_exchange=(data.exchange or "NFO"),
+            parent_qty=_parent_qty,
+            parent_exchange=_exch,
             parent_fill_price=float(data.reference_price or 0.0),
             parent_product=(data.product or "NRML"),
             apply_path="preview",

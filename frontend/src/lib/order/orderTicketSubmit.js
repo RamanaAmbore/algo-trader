@@ -121,6 +121,12 @@ export function buildOnSubmitPayload(ctx) {
 /**
  * Build the arguments object for placeTicketOrder() (paper / live paths).
  *
+ * v2 API convention (2026-07-08): request `quantity` is LOTS for F&O
+ * (lotSize > 1) and raw shares for equity (lotSize <= 1). Backend
+ * multiplies lots × lot_size to derive contracts internally. This
+ * eliminates the class of qty/lot confusion that caused the CRUDEOIL
+ * 100× oversize incident (2026-07-01).
+ *
  * @param {{
  *   mode:                       string,
  *   side:                       'BUY'|'SELL',
@@ -129,6 +135,7 @@ export function buildOnSubmitPayload(ctx) {
  *   exchange:                   string,
  *   resolvedExchange:           string,
  *   qty:                        number|string,
+ *   lots:                       number,
  *   lotSize:                    number,
  *   currentQty:                 number,
  *   product:                    string,
@@ -153,12 +160,19 @@ export function buildOnSubmitPayload(ctx) {
  * @returns {object}
  */
 export function buildPlacePayload(ctx) {
+  // F&O send LOTS; equity sends raw shares (Qty). lotSize > 1 marks
+  // an F&O contract with a real lot convention. lotSize == 1 (equity)
+  // and lotSize == 0 (cash equity) both fall through to raw qty.
+  const isFO = Number(ctx.lotSize) > 1;
+  const requestQty = isFO
+    ? Math.max(1, Number(ctx.lots) || 1)
+    : Number(ctx.qty);
   return {
     mode:             ctx.mode,
     side:             ctx.side,
     tradingsymbol:    ctx.resolvedSymbol || ctx.symbol,
     exchange:         ctx.exchange || ctx.resolvedExchange || 'NFO',
-    quantity:         Number(ctx.qty),
+    quantity:         requestQty,
     lot_size_hint:    ctx.lotSize > 0 ? Number(ctx.lotSize) : null,
     intent:           classifyIntent(ctx.currentQty, ctx.side),
     product:          ctx.product,

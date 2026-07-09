@@ -559,7 +559,13 @@ async def place_order(
         account:              Broker account code (e.g. ZG0790).
         tradingsymbol:        Kite tradingsymbol (e.g. NIFTY25APRFUT).
         side:                 BUY or SELL.
-        quantity:             Positive integer.
+        quantity:             LOTS for F&O exchanges (NFO/MCX/CDS/BFO/
+                              BCD/NCO); raw shares for equity (NSE/BSE).
+                              v2 API convention (2026-07-08) — inputs
+                              are lots so 1 NIFTY lot = quantity=1
+                              (not 50), 1 CRUDEOIL lot = quantity=1
+                              (not 100). Backend multiplies lots ×
+                              lot_size to derive contracts internally.
         mode:                 paper (default) or live.
         order_type:           LIMIT (default) / MARKET / SL / SL-M.
         price:                Required for LIMIT / SL.

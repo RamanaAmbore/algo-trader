@@ -74,18 +74,30 @@ async def basket_margin_handler(
             broker = _broker_for(account)
             from backend.brokers.adapters.kite import get_lot_size as _bm_get_lot_size
             # Build the payload with broker-translated qty per leg.
-            # MCX/NCO: Kite's basket_order_margins expects qty in LOTS,
-            # not contracts. Sending raw contracts (e.g. 100 for 1 CRUDEOIL
-            # lot) causes Kite to treat it as 100 LOTS, returning a ~100×
-            # inflated or nonsensically negative margin. translate_qty() is
-            # the same helper used by /basket live placement.
+            # v2 API convention (2026-07-08): request `leg.quantity` is
+            # LOTS for F&O, shares for equity. We compute contracts =
+            # lots × lot_size, then call translate_qty to convert to
+            # Kite's basket_order_margins convention (lots for MCX,
+            # contracts everywhere else). For NFO/CDS/BFO translate_qty
+            # is a no-op, so contracts pass through as expected; for
+            # MCX contracts → lots which is what Kite expects here.
+            _FO = ("NFO", "MCX", "CDS", "BFO", "BCD", "NCO")
             orders_payload = []
             for leg in grp.legs:
                 _leg_exch = leg.exchange.upper()
                 _leg_sym  = leg.tradingsymbol.upper()
-                _leg_raw  = int(leg.quantity or 0)
+                _leg_input = int(leg.quantity or 0)   # lots (F&O) or shares (equity)
                 _leg_lot  = await _bm_get_lot_size(_leg_exch, _leg_sym)
-                _leg_bq   = broker.translate_qty(_leg_exch, _leg_raw, _leg_lot)
+                if _leg_exch in _FO:
+                    if _leg_lot <= 0:
+                        # Skip legs with unresolvable lot_size — the
+                        # placement path will 503 anyway; margin preview
+                        # is best-effort.
+                        continue
+                    _leg_contracts = _leg_input * _leg_lot
+                else:
+                    _leg_contracts = _leg_input
+                _leg_bq   = broker.translate_qty(_leg_exch, _leg_contracts, _leg_lot)
                 orders_payload.append({
                     "exchange":         _leg_exch,
                     "tradingsymbol":    _leg_sym,
@@ -97,12 +109,12 @@ async def basket_margin_handler(
                     "price":            float(leg.price or 0),
                     "trigger_price":    float(leg.trigger_price or 0),
                 })
-                if _leg_bq != _leg_raw:
-                    logger.info(
-                        f"[BASKET-MARGIN] qty translated "
-                        f"{_leg_exch}/{_leg_sym}: {_leg_raw} contracts "
-                        f"→ {_leg_bq} lots (lot_size={_leg_lot})"
-                    )
+                logger.info(
+                    f"[BASKET-MARGIN] qty translated "
+                    f"{_leg_exch}/{_leg_sym}: input_lots={_leg_input} "
+                    f"→ contracts={_leg_contracts} → kite_qty={_leg_bq} "
+                    f"(lot_size={_leg_lot})"
+                )
             result = await asyncio.to_thread(broker.basket_order_margins, orders_payload)
             # Kite's basket_order_margins returns a LIST — one entry per
             # input leg. Each entry has {"initial": {...}, "final": {...}}.
@@ -256,54 +268,59 @@ async def basket_order_handler(
         for i, leg in enumerate(grp.legs):
             sym = leg.tradingsymbol.upper().strip()
             side = leg.transaction_type.upper()
-            qty = int(leg.quantity or 0)
+            input_qty = int(leg.quantity or 0)   # LOTS for F&O, shares for equity
             exch = (leg.exchange or "NFO").upper()
 
             # Basic validation per leg.
-            if not sym or qty <= 0 or side not in _TXN_TYPES or exch not in _EXCHANGES:
+            if not sym or input_qty <= 0 or side not in _TXN_TYPES or exch not in _EXCHANGES:
                 leg_results.append(BasketLegResult(
                     leg_index=i, order_id=None, status="error",
-                    error=f"invalid leg: sym={sym} qty={qty} side={side} exch={exch}",
+                    error=f"invalid leg: sym={sym} qty={input_qty} side={side} exch={exch}",
                 ))
                 continue
 
-            # F&O safety guards — same G1 (multiple-of-lot) + G2 (5-lot
-            # cap) as /ticket. Rejections recorded per-leg; other legs
-            # still dispatch.
-            if exch in ("NFO", "MCX", "CDS", "BFO"):
+            # F&O: request qty is LOTS. Resolve lot_size + multiply to
+            # contracts for internal use. Same convention as /ticket.
+            _FO = ("NFO", "MCX", "CDS", "BFO", "BCD", "NCO")
+            if exch in _FO:
                 from backend.brokers.adapters.kite import get_lot_size as _ls_lookup
                 try:
                     _lot = int(await _ls_lookup(exch, sym) or 0)
                 except Exception:
                     _lot = 0
-                if _lot > 1:
-                    if qty % _lot != 0:
-                        _guess = qty / _lot
-                        logger.warning(
-                            "[LOT-MULTIPLE-GUARD] basket leg rejected: "
-                            "acct=%s sym=%s qty=%s lot_size=%s (not multiple)",
-                            account, sym, qty, _lot,
-                        )
-                        leg_results.append(BasketLegResult(
-                            leg_index=i, order_id=None, status="error",
-                            error=(f"qty={qty} not a multiple of lot_size={_lot} "
-                                   f"({_guess:.2f} lots) — 1 lot = qty {_lot}"),
-                        ))
-                        continue
-                    _lots = qty // _lot
-                    _leg_close = (getattr(leg, "intent", None) or "").lower() == "close"
-                    if not _leg_close and _lots > 5:
-                        logger.warning(
-                            "[FAT-FINGER-GUARD] basket leg rejected: "
-                            "acct=%s sym=%s qty=%s lot_size=%s → %d lots",
-                            account, sym, qty, _lot, _lots,
-                        )
-                        leg_results.append(BasketLegResult(
-                            leg_index=i, order_id=None, status="error",
-                            error=(f"{_lots} lots exceeds 5-lot safety cap "
-                                   f"(qty={qty}, lot_size={_lot})"),
-                        ))
-                        continue
+                if _lot <= 0:
+                    logger.error(
+                        "[FO-LOT-GUARD] basket leg rejected: acct=%s sym=%s "
+                        "lots=%s — lot_size unresolvable for %s (instruments "
+                        "cache cold). Refusing to prevent oversize order.",
+                        account, sym, input_qty, exch,
+                    )
+                    leg_results.append(BasketLegResult(
+                        leg_index=i, order_id=None, status="error",
+                        error=(f"lot_size for {sym} on {exch} unavailable "
+                               f"(cache cold) — retry in a moment"),
+                    ))
+                    continue
+                qty = input_qty * _lot   # contracts
+                # G2 fat-finger cap — 5-lot cap for F&O (MCX exempt;
+                # its own 20-lot cap fires in the live path below).
+                _lots = input_qty
+                _leg_close = (getattr(leg, "intent", None) or "").lower() == "close"
+                _is_mcx = exch in ("MCX", "NCO")
+                if not _leg_close and not _is_mcx and _lots > 5:
+                    logger.warning(
+                        "[FAT-FINGER-GUARD] basket leg rejected: "
+                        "acct=%s sym=%s lots=%s lot_size=%s",
+                        account, sym, _lots, _lot,
+                    )
+                    leg_results.append(BasketLegResult(
+                        leg_index=i, order_id=None, status="error",
+                        error=(f"{_lots} lots exceeds 5-lot safety cap "
+                               f"(lot_size={_lot})"),
+                    ))
+                    continue
+            else:
+                qty = input_qty   # equity: raw shares
 
             if eff_mode == "live":
                 try:
@@ -476,15 +493,23 @@ async def basket_order_handler(
             broker = _broker_for(account)
             from backend.brokers.adapters.kite import get_lot_size as _disp_get_lot_size
             # Same qty translation as the /basket-margin endpoint —
-            # MCX qty must be in lots, not contracts. Re-use per-leg
-            # translate_qty so both display paths agree.
+            # v2 API: input is LOTS for F&O; multiply → contracts, then
+            # translate_qty converts to Kite's basket_order_margins
+            # convention (lots for MCX, contracts everywhere else).
+            _FO = ("NFO", "MCX", "CDS", "BFO", "BCD", "NCO")
             _disp_payload = []
             for leg in grp.legs:
                 _d_exch = (leg.exchange or "NFO").upper()
                 _d_sym  = leg.tradingsymbol.upper()
-                _d_raw  = int(leg.quantity or 0)
+                _d_input = int(leg.quantity or 0)   # lots (F&O) or shares (equity)
                 _d_lot  = await _disp_get_lot_size(_d_exch, _d_sym)
-                _d_bq   = broker.translate_qty(_d_exch, _d_raw, _d_lot)
+                if _d_exch in _FO:
+                    if _d_lot <= 0:
+                        continue
+                    _d_contracts = _d_input * _d_lot
+                else:
+                    _d_contracts = _d_input
+                _d_bq   = broker.translate_qty(_d_exch, _d_contracts, _d_lot)
                 _disp_payload.append({
                     "exchange":         _d_exch,
                     "tradingsymbol":    _d_sym,

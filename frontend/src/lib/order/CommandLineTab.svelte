@@ -290,12 +290,22 @@
           // Backend still enforces is_prod_branch() + paper_trading_
           // mode gates even when the frontend asks for 'live'.
           const _mode = /** @type {'paper'|'live'|'shadow'|'sim'|'replay'} */ (getStore(executionMode) || 'paper');
+          // v2 API (2026-07-08): send LOTS for F&O, raw shares for
+          // equity. buildOrderPayload internally multiplies lots×
+          // lot_size to produce `payload.quantity` (contracts) — for
+          // the F&O submit we need to reverse that, so ticket receives
+          // lots.
+          const _isFO = lot > 1;
+          const _requestQty = _isFO
+            ? Math.max(1, Math.round(Number(payload.quantity) / lot))
+            : (Number(payload.quantity) || 0);
           const resp = await placeTicketOrder({
             mode:             _mode,
             side:             payload.transaction_type,
             tradingsymbol:    sym,
             exchange:         payload.exchange || inst?.e || 'NFO',
-            quantity:         Number(payload.quantity) || 0,
+            quantity:         _requestQty,
+            lot_size_hint:    lot > 0 ? lot : null,
             product:          payload.product,
             order_type:       payload.order_type || 'LIMIT',
             variety:          payload.variety || 'regular',
