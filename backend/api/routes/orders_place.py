@@ -692,6 +692,109 @@ async def _arm_take_profit(
 _FO_EXCHANGES = ("NFO", "MCX", "CDS", "BFO", "BCD", "NCO")
 
 
+def _validate_ticket_mode(data, request) -> None:
+    """Reject draft mode and demo-user attempts at live/shadow orders."""
+    if data.mode == "draft":
+        raise HTTPException(status_code=400,
+            detail="Drafts are client-side; the backend doesn't track them.")
+    if data.mode not in ("paper", "live"):
+        raise HTTPException(status_code=400,
+            detail=f"unknown mode '{data.mode}'")
+    if getattr(request.state, "is_demo", False):
+        raise HTTPException(status_code=403,
+            detail="Demo mode — orders cannot be placed. Sign in to trade.")
+
+
+async def _validate_ticket_strategy_scope(data, request) -> None:
+    """RBAC guard: traders may only submit to strategies they are assigned."""
+    if not data.strategy_id:
+        return
+    from backend.api.rbac import (
+        normalise_role, resolve_role_from_connection,
+        user_scope_for_connection,
+    )
+    role = normalise_role(resolve_role_from_connection(request))
+    if role == "trader":
+        _, allowed_strategies = await user_scope_for_connection(request)
+        if int(data.strategy_id) not in (allowed_strategies or []):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Strategy {data.strategy_id} not in your "
+                    f"assigned_strategies list. Ask an admin to "
+                    f"grant access, or pick a strategy you own."
+                ),
+            )
+
+
+def _validate_ticket_enums(data) -> None:
+    """Validate side, symbol, quantity, and all enum fields in the ticket."""
+    from backend.api.routes.orders_helpers import (
+        _TXN_TYPES, _EXCHANGES, _PRODUCTS, _ORDER_TYPES, _VARIETIES,
+    )
+    side = (data.side or "").upper()
+    if side not in _TXN_TYPES:
+        raise HTTPException(status_code=400, detail="side must be BUY or SELL")
+    sym = (data.tradingsymbol or "").upper().strip()
+    input_qty = int(data.quantity or 0)
+    if not sym or input_qty <= 0:
+        raise HTTPException(status_code=400,
+            detail="tradingsymbol and quantity > 0 are required")
+    if data.exchange   and data.exchange   not in _EXCHANGES:
+        raise HTTPException(status_code=400,
+            detail=f"exchange must be one of {sorted(_EXCHANGES)}")
+    if data.product    and data.product    not in _PRODUCTS:
+        raise HTTPException(status_code=400,
+            detail=f"product must be one of {sorted(_PRODUCTS)}")
+    if data.order_type and data.order_type not in _ORDER_TYPES:
+        raise HTTPException(status_code=400,
+            detail=f"order_type must be one of {sorted(_ORDER_TYPES)}")
+    if data.variety    and data.variety    not in _VARIETIES:
+        raise HTTPException(status_code=400,
+            detail=f"variety must be one of {sorted(_VARIETIES)}")
+    if data.order_type in ("LIMIT", "SL") and not data.price:
+        raise HTTPException(status_code=400, detail="price is required for LIMIT/SL")
+    if data.order_type in ("SL", "SL-M") and not data.trigger_price:
+        raise HTTPException(status_code=400, detail="trigger_price is required for SL/SL-M")
+
+
+async def _resolve_fno_qty(data, exch: str, sym: str, input_qty: int) -> tuple[int, int]:
+    """Resolve F&O lot_size and convert input lots to contracts.
+
+    For equity (exch not in _FO_EXCHANGES) returns (input_qty, 1) unchanged.
+    For F&O: fetches lot_size from instruments cache, applies the frontend hint
+    as a cold-cache fallback, raises 503 if lot_size is still unresolvable, then
+    returns (contracts, lot_size) where contracts = input_qty × lot_size.
+    """
+    if exch not in _FO_EXCHANGES:
+        return input_qty, 1
+    from backend.brokers.adapters.kite import get_lot_size as _get_lot_size
+    try:
+        _lot = int(await _get_lot_size(exch, sym) or 0)
+    except Exception:
+        _lot = 0
+    # Fallback to the frontend-supplied hint when the backend cache is cold.
+    _hint = int(data.lot_size_hint or 0)
+    lot_size = _lot if _lot > 0 else _hint
+    if lot_size <= 0:
+        side = (data.side or "").upper()
+        logger.error(
+            f"[FO-LOT-GUARD] lot_size unknown for {exch}/{sym} "
+            f"(cache returned {_lot}, no lot_size_hint in request). "
+            f"Refusing {side} lots={input_qty} to prevent oversize order."
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"lot_size for {sym} on {exch} is not available "
+                f"(instruments cache cold). Retry in a moment — the cache "
+                f"warms automatically at startup and market open."
+            ),
+        )
+    contracts = input_qty * lot_size
+    return contracts, lot_size
+
+
 async def _ticket_validate_input(data, request) -> tuple[str, str, int, int]:
     """Mode/demo gate, RBAC strategy scope, and enum validation for the
     ticket payload.
@@ -713,94 +816,15 @@ async def _ticket_validate_input(data, request) -> tuple[str, str, int, int]:
     surfaced, now applied to every F&O exchange since ALL of them now
     depend on lot_size for the input-lots → contracts multiplication.
     """
-    from backend.api.routes.orders_helpers import (
-        _TXN_TYPES, _EXCHANGES, _PRODUCTS, _ORDER_TYPES, _VARIETIES,
-    )
-
-    if data.mode == "draft":
-        raise HTTPException(status_code=400,
-            detail="Drafts are client-side; the backend doesn't track them.")
-    if data.mode not in ("paper", "live"):
-        raise HTTPException(status_code=400,
-            detail=f"unknown mode '{data.mode}'")
-
-    if getattr(request.state, "is_demo", False):
-        raise HTTPException(status_code=403,
-            detail="Demo mode — orders cannot be placed. Sign in to trade.")
-
-    if data.strategy_id:
-        from backend.api.rbac import (
-            normalise_role, resolve_role_from_connection,
-            user_scope_for_connection,
-        )
-        role = normalise_role(resolve_role_from_connection(request))
-        if role == "trader":
-            _, allowed_strategies = await user_scope_for_connection(request)
-            if int(data.strategy_id) not in (allowed_strategies or []):
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        f"Strategy {data.strategy_id} not in your "
-                        f"assigned_strategies list. Ask an admin to "
-                        f"grant access, or pick a strategy you own."
-                    ),
-                )
+    _validate_ticket_mode(data, request)
+    await _validate_ticket_strategy_scope(data, request)
+    _validate_ticket_enums(data)
 
     side = (data.side or "").upper()
-    if side not in _TXN_TYPES:
-        raise HTTPException(status_code=400, detail="side must be BUY or SELL")
     sym = (data.tradingsymbol or "").upper().strip()
     input_qty = int(data.quantity or 0)
-    if not sym or input_qty <= 0:
-        raise HTTPException(status_code=400,
-            detail="tradingsymbol and quantity > 0 are required")
-    if data.exchange   and data.exchange   not in _EXCHANGES:
-        raise HTTPException(status_code=400,
-            detail=f"exchange must be one of {sorted(_EXCHANGES)}")
-    if data.product    and data.product    not in _PRODUCTS:
-        raise HTTPException(status_code=400,
-            detail=f"product must be one of {sorted(_PRODUCTS)}")
-    if data.order_type and data.order_type not in _ORDER_TYPES:
-        raise HTTPException(status_code=400,
-            detail=f"order_type must be one of {sorted(_ORDER_TYPES)}")
-    if data.variety    and data.variety    not in _VARIETIES:
-        raise HTTPException(status_code=400,
-            detail=f"variety must be one of {sorted(_VARIETIES)}")
-
-    if data.order_type in ("LIMIT", "SL") and not data.price:
-        raise HTTPException(status_code=400, detail="price is required for LIMIT/SL")
-    if data.order_type in ("SL", "SL-M") and not data.trigger_price:
-        raise HTTPException(status_code=400, detail="trigger_price is required for SL/SL-M")
-
-    # ── F&O: request quantity is in LOTS; resolve lot_size + multiply ──
     exch = (data.exchange or "NFO")
-    if exch in _FO_EXCHANGES:
-        from backend.brokers.adapters.kite import get_lot_size as _get_lot_size
-        try:
-            _lot = int(await _get_lot_size(exch, sym) or 0)
-        except Exception:
-            _lot = 0
-        # Fallback to the frontend-supplied hint when the backend cache is cold.
-        _hint = int(data.lot_size_hint or 0)
-        lot_size = _lot if _lot > 0 else _hint
-        if lot_size <= 0:
-            logger.error(
-                f"[FO-LOT-GUARD] lot_size unknown for {exch}/{sym} "
-                f"(cache returned {_lot}, no lot_size_hint in request). "
-                f"Refusing {side} lots={input_qty} to prevent oversize order."
-            )
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    f"lot_size for {sym} on {exch} is not available "
-                    f"(instruments cache cold). Retry in a moment — the cache "
-                    f"warms automatically at startup and market open."
-                ),
-            )
-        contracts = input_qty * lot_size
-    else:
-        lot_size = 1
-        contracts = input_qty
+    contracts, lot_size = await _resolve_fno_qty(data, exch, sym, input_qty)
 
     return side, sym, contracts, lot_size
 
