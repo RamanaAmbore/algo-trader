@@ -359,14 +359,14 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list) -> list:
             "current_price": price if price is not None else broker_ltp,
             "is_animating": animating,
         }
-        # On settled path — overlay last_price + close_price + recompute
-        # cur_val (holdings-specific: cur_val is derived from ltp × qty).
+        # On settled path — overlay last_price + recompute cur_val.
+        # close_price must remain the broker-supplied previous-session close;
+        # overwriting it with the snapshot LTP causes day_pnl = (ltp - ltp) × qty = 0.
         if has_snapshot and price is not None:
             qty = int(
                 getattr(r, "quantity", 0) or getattr(r, "opening_quantity", 0)
             )
             replace_kwargs["last_price"] = float(price)
-            replace_kwargs["close_price"] = float(price)
             replace_kwargs["cur_val"] = float(price) * qty
         out.append(_msc.structs.replace(r, **replace_kwargs))
     return out
