@@ -251,49 +251,17 @@ async def _enrich_with_pnl(session, row: Strategy,
     )
 
 
-async def _enrich_many_with_pnl(
-    session,
-    rows: list[tuple[Strategy, Optional[str]]],
-) -> list[StrategyInfo]:
-    """Batch equivalent of _enrich_with_pnl for list_strategies.
+_OPEN_STATES = ("OPEN", "CHASING", "PENDING")
 
-    Fires at most 2 DB queries (regardless of N) + 1 broker LTP call
-    across all open-lot symbols:
 
-    Q1 (in caller): SELECT Strategy + User.username  [unchanged]
-    Q2 (here): one aggregates query for order counts + AlgoOrder.pnl
-               SUM + lot realised SUM + open lot count, grouped by
-               strategy_id.
-    Q3 (here): SELECT open StrategyLot rows for all strategy_ids so
-               the Python layer can drive the LTP mark.
-    LTP (here): single batched broker.ltp() call across every distinct
-                open-lot symbol in the result set.
+async def _fetch_order_counts_by_strategy(
+    session, ids: list[int]
+) -> dict[int, dict]:
+    """Q2a: batched order counts per strategy (open + closed)."""
+    from backend.api.models import AlgoOrder as _AlgoOrder
 
-    Per-strategy enrichment logic is identical to _enrich_with_pnl:
-    - has_ledger heuristic preserved (open_lots_count > 0 or realised != 0)
-    - Legacy fallback to AlgoOrder.pnl SUM preserved
-    - LTP failure falls back to AlgoOrder.pnl SUM on open orders
-    """
-    if not rows:
-        return []
-
-    _open_states = ("OPEN", "CHASING", "PENDING")
-
-    strategy_rows = [r for r, _ in rows]
-    owner_map: dict[int, Optional[str]] = {r.id: u for r, u in rows}
-    ids = [r.id for r in strategy_rows]
-
-    # ── Q2a: batched order counts across all strategy_ids ─────────────
-    from backend.api.models import StrategyLot, AlgoOrder as _AlgoOrder
-
-    # One pass over algo_orders: count open/closed orders per strategy.
-    # AlgoOrder has no stored `pnl` column — realised P&L is read from the
-    # lot ledger (Q2b). The legacy fallback in _enrich_with_pnl that tried
-    # AlgoOrder.pnl SUM was a latent bug that never fired in practice because
-    # has_ledger is True for all real data post-slice-7a. We omit it here and
-    # return 0.0 for the legacy path, which is equivalent behaviour.
-    open_clause   = _AlgoOrder.status.in_(_open_states)
-    closed_clause = _AlgoOrder.status.notin_(_open_states)
+    open_clause   = _AlgoOrder.status.in_(_OPEN_STATES)
+    closed_clause = _AlgoOrder.status.notin_(_OPEN_STATES)
 
     agg_q = (
         select(
@@ -304,14 +272,21 @@ async def _enrich_many_with_pnl(
         .where(_AlgoOrder.strategy_id.in_(ids))
         .group_by(_AlgoOrder.strategy_id)
     )
-    order_aggs: dict[int, dict] = {}
+    out: dict[int, dict] = {}
     for agg_row in (await session.execute(agg_q)).all():
-        order_aggs[agg_row.strategy_id] = {
+        out[agg_row.strategy_id] = {
             "open_count":  int(agg_row.open_count or 0),
             "closed_count": int(agg_row.closed_count or 0),
         }
+    return out
 
-    # Lot-ledger aggregates: realised SUM + open lots count, per strategy.
+
+async def _fetch_lot_aggregates_by_strategy(
+    session, ids: list[int]
+) -> dict[int, dict]:
+    """Q2b: realised SUM + open lots count per strategy."""
+    from backend.api.models import StrategyLot
+
     lot_agg_q = (
         select(
             StrategyLot.strategy_id,
@@ -323,14 +298,24 @@ async def _enrich_many_with_pnl(
         .where(StrategyLot.strategy_id.in_(ids))
         .group_by(StrategyLot.strategy_id)
     )
-    lot_aggs: dict[int, dict] = {}
+    out: dict[int, dict] = {}
     for lot_row in (await session.execute(lot_agg_q)).all():
-        lot_aggs[lot_row.strategy_id] = {
+        out[lot_row.strategy_id] = {
             "realised":        float(lot_row.realised or 0.0),
             "open_lots_count": int(lot_row.open_lots_count or 0),
         }
+    return out
 
-    # ── Q3: open StrategyLot rows for LTP mark ─────────────────────────
+
+async def _fetch_open_lots_by_strategy(
+    session, ids: list[int]
+) -> tuple[dict[int, list[dict]], dict[str, str]]:
+    """Q3: open StrategyLot rows grouped by strategy_id + symbol→exchange map.
+
+    Returns (open_lots_by_strategy, symbol_exchange).
+    """
+    from backend.api.models import StrategyLot
+
     open_lots_q = (
         select(
             StrategyLot.strategy_id,
@@ -358,96 +343,168 @@ async def _enrich_many_with_pnl(
         })
         if sym:
             symbol_exchange[sym] = (lot_row.exchange or "NFO").upper()
+    return open_lots_by_strategy, symbol_exchange
 
-    # ── Single batched LTP call ─────────────────────────────────────────
+
+async def _fetch_ltp_map_for_symbols(
+    symbol_exchange: dict[str, str],
+) -> dict[str, float]:
+    """Single batched LTP call: KiteTicker first (zero broker quota),
+    then broker.ltp() for gaps.
+    """
     ltp_map: dict[str, float] = {}
-    if symbol_exchange:
-        # Try the KiteTicker first (zero broker quota).
-        try:
-            from backend.brokers.kite_ticker import get_ticker as _get_ticker
-            _ticker = _get_ticker()
-            for sym in symbol_exchange:
-                t = _ticker.get_ltp_by_sym(sym)
-                if t is not None and t > 0:
-                    ltp_map[sym] = float(t)
-        except Exception:
-            pass
+    if not symbol_exchange:
+        return ltp_map
 
-        # Fill gaps via broker.ltp() in one batched call.
-        missing = [s for s in symbol_exchange if s not in ltp_map]
-        if missing:
-            try:
-                from backend.brokers.registry import get_market_data_broker
-                import asyncio as _asyncio
-                broker = get_market_data_broker()
-                keys = [f"{symbol_exchange[s]}:{s}" for s in missing]
-                quote = await _asyncio.to_thread(broker.ltp, keys)
-                for k, v in (quote or {}).items():
-                    sym = k.split(":", 1)[1].upper() if ":" in k else k.upper()
-                    lp = float(v.get("last_price") or 0.0) if isinstance(v, dict) else 0.0
-                    if lp > 0:
-                        ltp_map[sym] = lp
-            except Exception as exc:
-                logger.debug(
-                    f"_enrich_many_with_pnl: broker.ltp() failed: {exc}"
-                )
+    # Try the KiteTicker first (zero broker quota).
+    try:
+        from backend.brokers.kite_ticker import get_ticker as _get_ticker
+        _ticker = _get_ticker()
+        for sym in symbol_exchange:
+            t = _ticker.get_ltp_by_sym(sym)
+            if t is not None and t > 0:
+                ltp_map[sym] = float(t)
+    except Exception:
+        pass
 
-    # ── Merge per strategy ──────────────────────────────────────────────
-    out: list[StrategyInfo] = []
-    for row in strategy_rows:
-        o = order_aggs.get(row.id, {"open_count": 0, "closed_count": 0})
-        la = lot_aggs.get(row.id, {"realised": 0.0, "open_lots_count": 0})
-        lots = open_lots_by_strategy.get(row.id, [])
+    # Fill gaps via broker.ltp() in one batched call.
+    missing = [s for s in symbol_exchange if s not in ltp_map]
+    if not missing:
+        return ltp_map
 
-        has_ledger = (la["open_lots_count"] > 0 or la["realised"] != 0.0)
+    try:
+        from backend.brokers.registry import get_market_data_broker
+        import asyncio as _asyncio
+        broker = get_market_data_broker()
+        keys = [f"{symbol_exchange[s]}:{s}" for s in missing]
+        quote = await _asyncio.to_thread(broker.ltp, keys)
+        for k, v in (quote or {}).items():
+            sym = k.split(":", 1)[1].upper() if ":" in k else k.upper()
+            lp = float(v.get("last_price") or 0.0) if isinstance(v, dict) else 0.0
+            if lp > 0:
+                ltp_map[sym] = lp
+    except Exception as exc:
+        logger.debug(f"_enrich_many_with_pnl: broker.ltp() failed: {exc}")
 
-        # Realised: lot ledger is authoritative when has_ledger. Legacy
-        # strategies with no lot entries fall back to 0.0 (AlgoOrder has
-        # no `pnl` column so the original's SUM fallback was a latent bug;
-        # real data always has ledger entries post-slice-7a).
-        realised: float = la["realised"] if has_ledger else 0.0
+    return ltp_map
 
-        # Unrealised: mark-to-market on open lots when LTP available;
-        # falls back to 0.0 when no lots or LTP unavailable.
-        if la["open_lots_count"] > 0:
-            mtm = 0.0
-            any_ltp = False
-            for lot in lots:
-                ltp = ltp_map.get(lot["symbol"])
-                if ltp is not None and ltp > 0:
-                    any_ltp = True
-                    if lot["side"] == "B":
-                        mtm += (ltp - lot["open_price"]) * lot["remaining_qty"]
-                    else:
-                        mtm += (lot["open_price"] - ltp) * lot["remaining_qty"]
-            unrealised: float = mtm if any_ltp else 0.0
+
+def _compute_unrealised_from_lots(
+    lots: list[dict], ltp_map: dict[str, float]
+) -> float:
+    """Mark-to-market on open lots when LTP available; 0.0 if none."""
+    if not lots:
+        return 0.0
+    mtm = 0.0
+    any_ltp = False
+    for lot in lots:
+        ltp = ltp_map.get(lot["symbol"])
+        if ltp is None or ltp <= 0:
+            continue
+        any_ltp = True
+        if lot["side"] == "B":
+            mtm += (ltp - lot["open_price"]) * lot["remaining_qty"]
         else:
-            unrealised = 0.0
+            mtm += (lot["open_price"] - ltp) * lot["remaining_qty"]
+    return mtm if any_ltp else 0.0
 
-        out.append(StrategyInfo(
-            id=row.id,
-            slug=row.slug,
-            name=row.name,
-            description=row.description,
-            owner_user_id=row.owner_user_id,
-            owner_username=owner_map.get(row.id),
-            capacity_cap_inr=(
-                float(row.capacity_cap_inr)
-                if row.capacity_cap_inr is not None else None
-            ),
-            target_volatility=(
-                float(row.target_volatility)
-                if row.target_volatility is not None else None
-            ),
-            is_active=bool(row.is_active),
-            open_order_count=int(o["open_count"]),
-            closed_order_count=int(o["closed_count"]),
-            realised_pnl=float(realised or 0.0),
-            unrealised_pnl=float(unrealised or 0.0),
-            created_at=row.created_at.isoformat() if row.created_at else "",
-            updated_at=row.updated_at.isoformat() if row.updated_at else "",
-        ))
-    return out
+
+def _build_strategy_info(
+    row: Strategy,
+    owner_username: Optional[str],
+    order_agg: dict,
+    lot_agg: dict,
+    lots: list[dict],
+    ltp_map: dict[str, float],
+) -> StrategyInfo:
+    """Assemble a single StrategyInfo from the four batched inputs.
+
+    Realised: lot ledger is authoritative when has_ledger. Legacy
+    strategies with no lot entries fall back to 0.0 (AlgoOrder has
+    no `pnl` column so the original's SUM fallback was a latent bug;
+    real data always has ledger entries post-slice-7a).
+    """
+    has_ledger = (lot_agg["open_lots_count"] > 0 or lot_agg["realised"] != 0.0)
+    realised: float = lot_agg["realised"] if has_ledger else 0.0
+
+    unrealised = (
+        _compute_unrealised_from_lots(lots, ltp_map)
+        if lot_agg["open_lots_count"] > 0 else 0.0
+    )
+
+    return StrategyInfo(
+        id=row.id,
+        slug=row.slug,
+        name=row.name,
+        description=row.description,
+        owner_user_id=row.owner_user_id,
+        owner_username=owner_username,
+        capacity_cap_inr=(
+            float(row.capacity_cap_inr)
+            if row.capacity_cap_inr is not None else None
+        ),
+        target_volatility=(
+            float(row.target_volatility)
+            if row.target_volatility is not None else None
+        ),
+        is_active=bool(row.is_active),
+        open_order_count=int(order_agg["open_count"]),
+        closed_order_count=int(order_agg["closed_count"]),
+        realised_pnl=float(realised or 0.0),
+        unrealised_pnl=float(unrealised or 0.0),
+        created_at=row.created_at.isoformat() if row.created_at else "",
+        updated_at=row.updated_at.isoformat() if row.updated_at else "",
+    )
+
+
+async def _enrich_many_with_pnl(
+    session,
+    rows: list[tuple[Strategy, Optional[str]]],
+) -> list[StrategyInfo]:
+    """Batch equivalent of _enrich_with_pnl for list_strategies.
+
+    Fires at most 2 DB queries (regardless of N) + 1 broker LTP call
+    across all open-lot symbols:
+
+    Q1 (in caller): SELECT Strategy + User.username  [unchanged]
+    Q2 (here): one aggregates query for order counts + AlgoOrder.pnl
+               SUM + lot realised SUM + open lot count, grouped by
+               strategy_id.
+    Q3 (here): SELECT open StrategyLot rows for all strategy_ids so
+               the Python layer can drive the LTP mark.
+    LTP (here): single batched broker.ltp() call across every distinct
+                open-lot symbol in the result set.
+
+    Per-strategy enrichment logic is identical to _enrich_with_pnl:
+    - has_ledger heuristic preserved (open_lots_count > 0 or realised != 0)
+    - Legacy fallback to AlgoOrder.pnl SUM preserved
+    - LTP failure falls back to AlgoOrder.pnl SUM on open orders
+    """
+    if not rows:
+        return []
+
+    strategy_rows = [r for r, _ in rows]
+    owner_map: dict[int, Optional[str]] = {r.id: u for r, u in rows}
+    ids = [r.id for r in strategy_rows]
+
+    order_aggs = await _fetch_order_counts_by_strategy(session, ids)
+    lot_aggs   = await _fetch_lot_aggregates_by_strategy(session, ids)
+    open_lots_by_strategy, symbol_exchange = await _fetch_open_lots_by_strategy(
+        session, ids
+    )
+    ltp_map = await _fetch_ltp_map_for_symbols(symbol_exchange)
+
+    return [
+        _build_strategy_info(
+            row,
+            owner_map.get(row.id),
+            order_aggs.get(row.id, {"open_count": 0, "closed_count": 0}),
+            lot_aggs.get(row.id, {"realised": 0.0, "open_lots_count": 0}),
+            open_lots_by_strategy.get(row.id, []),
+            ltp_map,
+        )
+        for row in strategy_rows
+    ]
 
 
 def _validate_slug(slug: str) -> str:
