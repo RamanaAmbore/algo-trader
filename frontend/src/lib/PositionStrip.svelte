@@ -13,7 +13,7 @@
   import { cachedRead, cachedWrite, cachedDelete, TTL } from '$lib/data/persistentCache';
   import { getSnapshot, symbolStore, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
   import { isNseOpen, isMcxOpen } from '$lib/marketHours';
-  import { positionsStore, holdingsStore, fundsStore, publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
+  import { navStripPositionsStore, holdingsStore, fundsStore, publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
   import { expiryPnl } from '$lib/data/expiryPnl';
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
@@ -22,7 +22,7 @@
 
   // Reactive views into the three-tier stores. The stores pre-populate from
   // localStorage on module init so these are non-empty on first render.
-  const positions = $derived(positionsStore.value ?? []);
+  const positions = $derived(navStripPositionsStore.value ?? []);
   const holdings  = $derived(holdingsStore.value  ?? []);
   const funds     = $derived(fundsStore.value      ?? []);
   // Market-state tick — flips between 0/1/2/3 (no markets / NSE / MCX /
@@ -60,7 +60,7 @@
   async function _load() {
     try {
       await Promise.allSettled([
-        positionsStore.load(),
+        navStripPositionsStore.load(),
         holdingsStore.load(),
         fundsStore.load(),
       ]);
@@ -92,7 +92,7 @@
     // a separate batchQuote here).
     /** @type {Set<string>} */
     const keys = new Set();
-    const snap = untrack(() => positionsStore.value ?? []);
+    const snap = untrack(() => navStripPositionsStore.value ?? []);
     for (const p of snap) {
       const sym  = String(p?.tradingsymbol || '').toUpperCase();
       const exch = String(p?.exchange || '').toUpperCase();

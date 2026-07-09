@@ -287,6 +287,24 @@ export const positionsStore = createDataStore({
   },
 });
 
+/**
+ * Dedicated positions store for PositionStrip / NavStrip.
+ * Isolated from positionsStore so page-level fetches with different args
+ * (skipLtp, fresh=true, etc.) cannot race with the NavStrip's snapshot.
+ * PositionStrip polls this store on its own 30s marketAwareInterval.
+ */
+export const navStripPositionsStore = createDataStore({
+  key:     'md.positions.strip',
+  fetcher: fetchPositions,
+  ttl:     TTL.minute,
+  /** @param {any} r */
+  parse:   (r) => {
+    const rows = r?.rows ?? [];
+    _publishPositionsRows(rows);
+    return rows;
+  },
+});
+
 // ── Holdings ──────────────────────────────────────────────────────────────
 
 /**
