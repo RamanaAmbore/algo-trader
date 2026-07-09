@@ -2155,6 +2155,68 @@
       };
     });
   });
+
+  /** Client-side intrinsic payoff stub — rendered immediately when legs
+   *  are available but strategy (backend BS response) hasn't arrived yet.
+   *  Uses the same `expiryPnl()` SSOT as the Legs grid's Exp P&L column:
+   *    CE: (max(0, spot − K) − cost) × qty
+   *    PE: (max(0, K − spot) − cost) × qty
+   *    FUT/EQ: (spot − cost) × qty
+   *  Both `today_value` and `expiry_value` are set to the intrinsic sum —
+   *  single curve (no time value) until backend refines with BS.
+   *
+   *  Spot resolution: mirrors liveSpot's 4-tier chain but reads strategy
+   *  as null (strategy hasn't loaded yet), so only tiers 3-4 matter:
+   *    1. _underlyingQuotes batchQuote snapshot (30 s cadence)
+   *    2. getSnapshot SSE tick for selectedUnderlying (sub-second)
+   *  Both reads are wrapped in untrack() so this derived stays at the
+   *  250 ms _throttledTick gate and doesn't bypass it.
+   *
+   *  Returns null when: no non-eq legs (nothing to draw), or spot ≤ 0. */
+  const _clientPayoffStub = $derived.by(() => {
+    void _throttledTick;
+    // Only the non-eq enabled legs (eq contribution needs _includeHoldings).
+    const activeLegs = legs.filter(l => {
+      if (l.kind === 'eq') return _includeHoldings;
+      return true;
+    });
+    if (activeLegs.length === 0) return null;
+
+    // Spot resolution — strategy is null at this point; read the same
+    // sources that liveSpot's tiers 3+4 use.
+    const spot = (() => {
+      const bqLtp = untrack(() => _underlyingQuotes[selectedUnderlying]?.ltp);
+      if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
+      const und = String(selectedUnderlying || '').toUpperCase();
+      if (und) {
+        const v = untrack(() => Number(getSnapshot(und)?.ltp));
+        if (Number.isFinite(v) && v > 0) return v;
+      }
+      return 0;
+    })();
+    if (spot <= 0) return null;
+
+    // 41-point grid from 80 % to 120 % of spot.
+    const lo = spot * 0.80;
+    const hi = spot * 1.20;
+    const n  = 41;
+    const step = (hi - lo) / (n - 1);
+    /** @type {Array<{spot: number, today_value: number, expiry_value: number}>} */
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const s = lo + i * step;
+      let sum = 0;
+      let anyValid = false;
+      for (const l of activeLegs) {
+        const v = expiryPnl({ ...l, kind: l.kind ?? 'fut' }, s);
+        if (v != null) { sum += v; anyValid = true; }
+      }
+      if (!anyValid) return null;
+      out.push({ spot: s, today_value: sum, expiry_value: sum });
+    }
+    return out.length > 0 ? out : null;
+  });
+
   /** Risk overlay values — recomputed from the merged curve when eq
    *  legs are present so MAX P / MAX L / breakevens reflect the
    *  combined position (stock + option) instead of the backend's
@@ -3943,7 +4005,7 @@
      one without). Single source of truth now lives in OptionChainTab. -->
 
 <div class="opt-payoff-legs-row">
-{#if strategy}
+{#if strategy || _clientPayoffStub}
   <div class="opt-payoff opt-payoff-full algo-status-card cmd-surface p-3"
     class:fs-card-on={_fsPayoff}
     class:is-collapsed={_colPayoff}>
@@ -4038,7 +4100,7 @@
     -->
     <div class="card-body" hidden={_colPayoff}>
       <OptionsPayoff
-        payoff={_mergedPayoff}
+        payoff={strategy ? _mergedPayoff : _clientPayoffStub}
         spot={liveSpot}
         prevClose={strategy?.spot_prev_close}
         breakevens={_mergedRisk?.breakevens ?? strategy?.risk?.breakevens}
