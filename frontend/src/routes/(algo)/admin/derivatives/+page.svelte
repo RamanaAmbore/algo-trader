@@ -2053,6 +2053,13 @@
    *  Both `today_value` and `expiry_value` are set to the intrinsic sum —
    *  single curve (no time value) until backend refines with BS.
    *
+   *  Empty-legs case (cold start, no positions yet): returns a flat
+   *  41-point grid at y=0 across the ±20 % spot range. This lets the
+   *  payoff card render its axes + spot marker immediately when the
+   *  operator picks a symbol, before any legs land — a valid and
+   *  useful display (shows what the chart will look like, primes the
+   *  operator to add legs).
+   *
    *  Spot resolution: mirrors liveSpot's 4-tier chain but reads strategy
    *  as null (strategy hasn't loaded yet), so only tiers 3-4 matter:
    *    1. _underlyingQuotes batchQuote snapshot (30 s cadence)
@@ -2060,7 +2067,8 @@
    *  Both reads are wrapped in untrack() so this derived stays at the
    *  250 ms _throttledTick gate and doesn't bypass it.
    *
-   *  Returns null when: no non-eq legs (nothing to draw), or spot ≤ 0. */
+   *  Returns null only when spot ≤ 0 (no price data at all). Empty-
+   *  legs with a valid spot returns a flat grid rather than null. */
   const _clientPayoffStub = $derived.by(() => {
     void _throttledTick;
     // Only the non-eq enabled legs (eq contribution needs _includeHoldings).
@@ -2068,7 +2076,6 @@
       if (l.kind === 'eq') return _includeHoldings;
       return true;
     });
-    if (activeLegs.length === 0) return null;
 
     // Spot resolution — strategy is null at this point; read the same
     // sources that liveSpot's tiers 3+4 use.
@@ -2091,6 +2098,17 @@
     const step = (hi - lo) / (n - 1);
     /** @type {Array<{spot: number, today_value: number, expiry_value: number}>} */
     const out = [];
+
+    // Empty legs → flat line at y=0. Valid + useful display: axes + spot
+    // marker + zero-P&L line. Once legs land the derived recomputes into
+    // the intrinsic curve without a card unmount.
+    if (activeLegs.length === 0) {
+      for (let i = 0; i < n; i++) {
+        out.push({ spot: lo + i * step, today_value: 0, expiry_value: 0 });
+      }
+      return out;
+    }
+
     for (let i = 0; i < n; i++) {
       const s = lo + i * step;
       let sum = 0;
@@ -3899,7 +3917,15 @@
      one without). Single source of truth now lives in OptionChainTab. -->
 
 <div class="opt-payoff-legs-row">
-{#if strategy || _clientPayoffStub}
+<!-- Payoff card visibility is driven off `selectedUnderlying`, not
+     strategy / stub existence. The card mounts as soon as the picker
+     has a symbol pinned (POPULAR_UNDERLYINGS[0]='NIFTY' on cold start)
+     so operators never see a blank workspace while positions +
+     instruments + strategy resolve. When strategy is null and the
+     client stub can't produce a curve (cold-start spot=0, no ticks
+     yet), we pass an empty array and OptionsPayoff renders its
+     "Pick legs to see payoff." placeholder inside the card frame. -->
+{#if selectedUnderlying}
   <div class="opt-payoff opt-payoff-full algo-status-card cmd-surface p-3"
     class:fs-card-on={_fsPayoff}
     class:is-collapsed={_colPayoff}>
@@ -3994,7 +4020,7 @@
     -->
     <div class="card-body" hidden={_colPayoff}>
       <OptionsPayoff
-        payoff={strategy ? _mergedPayoff : _clientPayoffStub}
+        payoff={strategy ? _mergedPayoff : (_clientPayoffStub ?? [])}
         spot={liveSpot}
         prevClose={strategy?.spot_prev_close}
         breakevens={_mergedRisk?.breakevens ?? strategy?.risk?.breakevens}
