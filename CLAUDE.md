@@ -345,7 +345,7 @@ Bucket sort: pinned (1), watchlist (2), positions (3), holdings (4), movers (5).
 Default columns: Symbol · 5d · LTP · Avg · Day % · Close · Qty · Day P&L · P&L % · P&L.
 
 Directional encoding: pos-long/short tint (green/red 10%), holdings tint (up/down/flat), 
-watchlist/underlying tint, Day P&L mini-bar (2px), CE/PE text color (Sensibull), TOTAL row (amber 12% + borders).
+watchlist/underlying tint, Day P&L mini-bar (2px), CE/PE text color (Sensibull), TOTAL row (amber 22% + borders).
 
 PerformancePage: canonical cluster reference, public page (cream) shows real Kite data during sim. 
 Admin `/dashboard`: P&L Analysis + MarketPulse summary + Agent log. Layout: chart LEFT, 

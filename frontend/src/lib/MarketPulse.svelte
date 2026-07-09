@@ -5044,7 +5044,7 @@
      rather than a header strip. */
   /* TOTAL row scheme — bold + amber bg + thin amber top + bottom
      borders to close the bucket. Top border thinned from 2 px → 1 px
-     per operator feedback; combined with the 0.12 amber bg + bold,
+     per operator feedback; combined with the 0.22 amber bg + bold,
      the row reads as a footer without visually shouting. Aggregate
      is direction-agnostic so no green/red variants here (the
      per-cell P&L text inside still uses cell-pos / cell-neg for
