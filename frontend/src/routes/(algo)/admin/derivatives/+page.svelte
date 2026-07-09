@@ -1163,37 +1163,6 @@
     // derived re-fires when fetchBrokerOrder() resolves after cold load).
     return sortAccountsBy(Array.from(accts), _derivOrderMap);
   });
-  /** Long-term usage memory for the Underlying picker. Operator: "It
-   *  also needs to sort on usage count. The most used ones should come
-   *  first in a different color." Persisted to localStorage and
-   *  incremented on every user-driven Select pick (the bump only fires
-   *  via the Select component's onValueChange callback, which doesn't
-   *  fire on programmatic auto-selects — so opening the page never
-   *  inflates the count for whatever underlying happens to be the
-   *  alphabetic first). */
-  const _USAGE_KEY = 'ramboq:options-underlying-usage';
-  const _USAGE_TOP_N = 5;
-  /** @type {Record<string, number>} */
-  let _usageMap = $state(_loadUsage());
-  function _loadUsage() {
-    if (typeof localStorage === 'undefined') return {};
-    try {
-      const v = JSON.parse(localStorage.getItem(_USAGE_KEY) || '{}');
-      return (v && typeof v === 'object') ? v : {};
-    } catch { return {}; }
-  }
-  function _saveUsage() {
-    if (typeof localStorage === 'undefined') return;
-    try { localStorage.setItem(_USAGE_KEY, JSON.stringify(_usageMap)); }
-    catch { /* quota / private mode — silent */ }
-  }
-  function _bumpUnderlyingUsage(sym) {
-    const k = String(sym || '').toUpperCase();
-    if (!k) return;
-    _usageMap = { ..._usageMap, [k]: (_usageMap[k] || 0) + 1 };
-    _saveUsage();
-  }
-
   /** Two roots-with-positions sets so the picker can sort + color them
    *  separately. `_rootsWithOptions` carries underlyings where the
    *  operator holds at least one CE or PE — these are the most
@@ -1247,22 +1216,19 @@
   });
 
   /** F&O-eligible holdings the operator has NO derivative position
-   *  in. Surfaced as a secondary "hedge opportunities" group in the
-   *  underlying picker so the operator can preview covered-call /
-   *  protective-put setups against stocks they hold even before any
-   *  derivative exists on the root.
+   *  in. No longer surfaced as its own picker tier (holdings now feed
+   *  the picker's Tier 3 directly). Retained because the auto-check
+   *  eq-leg $effect below reads it to decide "did the operator just
+   *  pick a hedge stock they hold?" — in which case the matching eq
+   *  row is pre-checked so the covered-call / collar payoff shape
+   *  reflects the underlying position without an extra click.
    *
    *  Excludes anything already in `underlyingChoicesFromBook` so the
-   *  picker doesn't double-list. Gated on `instrumentsReady` because
-   *  getOptionUnderlyingLot requires the instruments cache. */
+   *  auto-check doesn't fire when the same root also has a real
+   *  derivative position (regular flow: eq leg stays default-OFF).
+   *  Gated on `instrumentsReady` because getOptionUnderlyingLot
+   *  requires the instruments cache. */
   const _hedgeOpportunities = $derived.by(() => {
-    // Gate on positions having loaded at least once so the hedge-opp
-    // tier only appears AFTER we know which underlyings have real F&O
-    // positions. Without this, before positions arrive the picker would
-    // show all F&O-eligible holdings as hedge opportunities, then
-    // replace them with proper option-root entries on the first poll —
-    // the operator saw "sometimes all underlyings, sometimes only
-    // underlyings with option positions."
     if (!instrumentsReady || !_positionsLoaded) return [];
     const have = new Set(underlyingChoicesFromBook);
     const set = new Set();
@@ -1332,121 +1298,74 @@
    *  full symbol (e.g. "CRUDEOIL25JUNFUT") in the dropdown label so the
    *  picker reads as a concrete instrument instead of a placeholder
    *  category name. Indices (NIFTY / BANKNIFTY / FINNIFTY) keep the
-   *  bare ticker — that IS the index spot. Same migration the operator
-   *  ran on Pinned watchlist (MCX/CDS root → actual future) for
-   *  consistency across the app.
+   *  bare ticker — that IS the index spot.
    *
-   *  The VALUE stays as the bare root so every downstream filter
-   *  (expiryChoicesForUnderlying, candidatePositions prefix match,
-   *  strategy analytics) continues to match every option / future on
-   *  that root — picking "CRUDEOIL25JUNFUT" still surfaces CRUDEOIL25JUN
-   *  + CRUDEOIL25JUL + CRUDEOIL25AUG option chains under the Expiry
-   *  picker. */
+   *  Four-tier ordering (dedup — first occurrence wins):
+   *    1. Virtual roots with OPTIONS in active positions (cyan 'options')
+   *    2. Virtual roots with FUTURES in active positions ('futures')
+   *    3. Roots in holdings — extracted from the equity symbol ('holdings')
+   *    4. General underlyings — POPULAR_UNDERLYINGS whitelist ('popular')
+   *
+   *  Tiers 1-3 read from `positions` / `holdings` ($state arrays
+   *  initialised to []). Tier 4 is a static hardcoded whitelist. No
+   *  gate on `instrumentsReady` — the list is always available
+   *  immediately on cold start so the picker + payoff card mount
+   *  without waiting for the instruments cache. */
   const underlyingOptionsForPicker = $derived.by(() => {
-    // Dedupe by value. Label is the root (GOLDM, NIFTY, CRUDEOIL
-    // etc.) — same identity the ChartWorkspace title shows.
-    // The previous separate "front-month contract" chip beside the
-    // picker was removed per operator request; the contract month
-    // in scope is now read off the expiry picker + legs grid.
     const seen = new Set();
     const out = [];
-    // Tier 1 — operator's most-used underlyings, by raw pick count.
-    // Restricted to roots with an ACTIVE derivative position
-    // (CE/PE/FUT). Hedge opportunities are intentionally excluded so
-    // a previously-picked hedge stock (e.g. DIXON) doesn't get
-    // promoted to amber "frequent" styling — that misreads as
-    // "actively-traded" when there's no derivative position. Hedge
-    // opps stay in tier 4 with dimmed styling regardless of usage.
-    const _available = new Set([
-      ..._rootsWithOptions,
-      ..._rootsWithFuturesOnly,
-    ]);
-    const _topUsed = Object.entries(_usageMap)
-      .filter(([k, v]) => _available.has(k) && Number(v) > 0)
-      .sort((a, b) => Number(b[1]) - Number(a[1]))
-      .slice(0, _USAGE_TOP_N)
-      .map(([k]) => k);
-    for (const u of _topUsed) {
-      if (!u || seen.has(u)) continue;
-      seen.add(u);
-      out.push({ value: u, label: u, hint: 'frequent' });
-    }
-    // Tier 2 — options positions. Cyan-highlighted label + 'options'
-    // hint chip. Sorted alphabetically inside the tier.
+    // Tier 1 — Options positions on this root. Cyan-highlighted label
+    // + 'options' hint chip. Sorted alphabetically inside the tier.
     for (const u of [..._rootsWithOptions].sort()) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
       out.push({ value: u, label: u, hint: 'options' });
     }
-    // Tier 3 — futures-only positions. No hint suffix, default colour.
+    // Tier 2 — Futures positions on this root (no options). Default
+    // colour, 'futures' hint chip.
     for (const u of [..._rootsWithFuturesOnly].sort()) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
-      out.push({ value: u, label: u });
+      out.push({ value: u, label: u, hint: 'futures' });
     }
-    // Tier 4 — Hedge-opportunity group. F&O-eligible holdings with no
-    // matching derivative position. `hint: 'hedge'` styles the row
-    // dimmer + adds a small suffix so the operator can scan
-    // "positions vs. hedge ideas" at a glance. Picking from this
-    // group auto-checks the eq leg (see effect below) since the
-    // operator's intent is clearly "model a hedge against this
-    // stock I hold".
-    for (const u of _hedgeOpportunities) {
+    // Tier 3 — Roots present in cash-equity holdings. Extract the bare
+    // symbol from each holding row (already uppercased in
+    // buildHoldingRowFromBroker). Same account filter the positions
+    // tiers apply so picking an account narrows this tier too.
+    const _holdingsRoots = new Set();
+    const allow = _accountAllow;
+    for (const h of holdings) {
+      if (allow && !allow.has(String(h.account || ''))) continue;
+      const sym = String(h?.symbol || '').toUpperCase();
+      if (sym) _holdingsRoots.add(sym);
+    }
+    for (const u of [..._holdingsRoots].sort()) {
       if (!u || seen.has(u)) continue;
       seen.add(u);
-      out.push({ value: u, label: u, hint: 'hedge' });
+      out.push({ value: u, label: u, hint: 'holdings' });
     }
-    // Tier 5 — Watchlist underlyings that are F&O-eligible but have
-    // no current derivative position in the book. Shown only when the
-    // book (Tiers 1-4) is empty — i.e., no F&O positions AND no
-    // F&O-eligible holdings. This gives the operator a context-aware
-    // fallback without cluttering the picker when the book is live.
-    const _bookIsEmpty = out.length === 0;
-    if (_bookIsEmpty) {
-      for (const u of _watchlistSyms) {
-        if (!u || seen.has(u)) continue;
-        seen.add(u);
-        out.push({ value: u, label: u, hint: 'watchlist' });
-      }
-    }
-    // Tier 6 — Popular/liquid F&O underlyings (NIFTY, BANKNIFTY,
-    // RELIANCE, …). Only surfaced when both the book AND the watchlist
-    // contribute nothing — ensures the picker never lands on an empty
-    // list. Not gated on instrumentsReady: the list is a static hardcoded
-    // whitelist of valid F&O roots so it's safe to emit before instruments
-    // resolves, giving the auto-select $effect something to pin on cold start.
-    // getOptionUnderlyingLot returns 0 when instruments aren't ready yet,
-    // so those entries are still filtered out once instruments load —
-    // on cold start we skip the lot-size guard so the picker seeds immediately.
-    // Dedupe against everything above.
-    if (out.length === 0) {
-      for (const u of POPULAR_UNDERLYINGS) {
-        if (!u || seen.has(u)) continue;
-        // When instruments aren't loaded yet, lot-size lookup returns 0 for
-        // everything — skip the filter so the static whitelist seeds the
-        // picker on cold start. Once instrumentsReady flips, the derived
-        // recomputes and the lot-size guard re-applies, filtering out any
-        // root that genuinely has no F&O contracts.
-        if (instrumentsReady && getOptionUnderlyingLot(u) === 0) continue;
-        seen.add(u);
-        out.push({ value: u, label: u, hint: 'popular' });
-      }
+    // Tier 4 — Popular/liquid F&O underlyings (NIFTY, BANKNIFTY,
+    // RELIANCE, …). Always emitted — the operator sees the popular
+    // list appended below their own book so switching to any liquid
+    // symbol is one click, even when they already hold positions.
+    // Not gated on instrumentsReady: the list is a static hardcoded
+    // whitelist so the picker + payoff card seed immediately on cold
+    // start (no positions, no holdings, no instruments cache yet).
+    for (const u of POPULAR_UNDERLYINGS) {
+      if (!u || seen.has(u)) continue;
+      seen.add(u);
+      out.push({ value: u, label: u, hint: 'popular' });
     }
     return out;
   });
 
   // Auto-select the best underlying when the page lands without a
-  // cached selection. Three-tier fallback so the picker is never
-  // blank as long as ANY data source is available:
-  //   Tier A — first entry from the operator's live book
-  //             (_rootsWithOptions > _rootsWithFuturesOnly)
-  //   Tier B — first F&O-eligible symbol from the watchlist
-  //   Tier C — NIFTY (first entry from POPULAR_UNDERLYINGS that
-  //             is in the instruments cache)
-  // The effect re-runs whenever underlyingChoicesFromBook /
-  // _watchlistSyms / instrumentsReady change. Untrack the
-  // selectedUnderlying read so operator-driven changes don't re-
-  // trigger the fallback logic.
+  // cached selection. Reads the first entry from the four-tier picker
+  // list (options > futures > holdings > popular). Cold-start with no
+  // book AND no holdings lands on POPULAR_UNDERLYINGS[0] = 'NIFTY';
+  // when the operator has real positions or holdings, those take
+  // precedence. Untracks the selectedUnderlying read so operator-
+  // driven changes don't re-trigger the fallback logic.
   $effect(() => {
     // Auto-select the first entry in the picker whenever the picker
     // has options but selectedUnderlying is empty. Operator: "if symbol
@@ -1461,8 +1380,6 @@
     // picker itself so any of them re-firing wakes the effect.
     void positions;
     void holdings;
-    void _watchlistSyms;
-    void instrumentsReady;
     void _rootsWithOptions;
     void _rootsWithFuturesOnly;
     const opts = underlyingOptionsForPicker;
@@ -3868,16 +3785,11 @@
       <Select id="opt-und"
         bind:value={selectedUnderlying}
         options={underlyingOptionsForPicker}
-        onValueChange={_bumpUnderlyingUsage}
-        placeholder={instrumentsReady ? 'Pick underlying…' : 'Loading underlyings…'} />
+        placeholder={'Pick underlying…'} />
     </div>
-    {#if _positionsLoaded && !underlyingChoicesFromBook.length}
+    {#if _positionsLoaded && !underlyingChoicesFromBook.length && !holdings.length}
       <div class="opt-und-hint">
-        {#if _watchlistSyms.length || instrumentsReady}
-          No F&O positions — showing watchlist + popular.
-        {:else}
-          Loading underlyings…
-        {/if}
+        No F&O positions — showing popular.
       </div>
     {/if}
   </div>
@@ -5056,17 +4968,14 @@
   .opt-und-row :global(.rbq-select-wrap) { flex: 1 1 auto; min-width: 0; }
   /* Underlying-picker tier colour coding. Operator: "only colo coding
      for root. no chips in dropdown in derivatives page." — drop the
-     `frequent` / `options` / `hedge` suffix chips entirely; the label
-     colour alone communicates the tier so the dropdown rows read as
-     clean monosymbol entries instead of label-plus-chip pairs.
+     hint chips entirely; the label colour alone communicates the tier
+     so the dropdown rows read as clean monosymbol entries.
 
-     Six tiers, top → bottom:
-       Tier 1  data-hint='frequent'   amber-400   (operator's top-N picks)
-       Tier 2  data-hint='options'    cyan-400    (has CE/PE position)
-       Tier 3  (no data-hint)         default     (has FUT-only position)
-       Tier 4  data-hint='hedge'      dimmed      (held, no derivative)
-       Tier 5  data-hint='watchlist'  sky-300     (watchlist, book empty)
-       Tier 6  data-hint='popular'    muted       (popular fallback, book + watchlist empty)
+     Four tiers, top → bottom:
+       Tier 1  data-hint='options'    cyan-400    (has CE/PE position)
+       Tier 2  data-hint='futures'    default     (has FUT-only position)
+       Tier 3  data-hint='holdings'   amber-400   (equity holding, F&O overlay)
+       Tier 4  data-hint='popular'    muted       (popular fallback)
 
      The `hint` field still rides on the option object purely as the
      CSS marker that wires up `data-hint` on the label — the
@@ -5075,21 +4984,13 @@
   .opt-und-row :global(.rbq-select-option-hint) {
     display: none;
   }
-  .opt-und-row :global(.rbq-select-option-label[data-hint='frequent']) {
-    color: var(--c-action);         /* amber-400 — operator favourite */
-    font-weight: 700;
-  }
   .opt-und-row :global(.rbq-select-option-label[data-hint='options']) {
     color: var(--c-info);         /* cyan-400 — actionable, matches card controls */
     font-weight: 700;
   }
-  .opt-und-row :global(.rbq-select-option-label[data-hint='hedge']) {
-    opacity: 0.78;
-  }
-  /* Watchlist fallback tier — sky-blue, slightly dimmed vs 'options'
-     cyan to signal "from watchlist, no live position yet". */
-  .opt-und-row :global(.rbq-select-option-label[data-hint='watchlist']) {
-    color: var(--algo-sky);            /* sky-300 */
+  /* Futures tier uses the default label colour — no override. */
+  .opt-und-row :global(.rbq-select-option-label[data-hint='holdings']) {
+    color: var(--c-action);         /* amber-400 — equity holding overlay */
   }
   /* Popular/liquid tier — default colour, muted opacity so they read
      as "generic fallback, not your book". */
