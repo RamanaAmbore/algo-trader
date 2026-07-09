@@ -4427,6 +4427,7 @@ async def _task_perf_snapshot() -> None:
         """
         async with async_session() as session:
             from sqlalchemy import select as _sel, func as _func
+            from backend.api.models import PerfSnapshot
             count = (await session.execute(
                 _sel(_func.count()).select_from(PerfSnapshot)
             )).scalar_one()
