@@ -1116,12 +1116,9 @@
     // First pass — F&O positions. Track the set of roots that carry an
     // active option/future in the snapshot; the holdings pass below only
     // credits equities whose root is in this set.
-    // No frontend day-P&L fallback: backend's broker_apis.fetch_positions
-    // already handles the close-price=0 / fresh-buy edge case (commit
-    // 87c30f39). Adding a second fallback here over-counted closed-
-    // today round trips (day_change_val=0 + non-zero realised pnl)
-    // and de-synced the snapshot TOTAL from the navbar PositionStrip,
-    // which sums `p.day_change_val` faithfully without a fallback.
+    // Use baseDayPnlForPosition for the new-position override (oq=0 + dcv=0
+    // + pnl≠0 → fall back to lifetime pnl). PositionStrip P1 uses the same
+    // helper; this keeps the Snapshot TOTAL in sync with the strip.
     /** @type {Set<string>} */
     const _rootsWithFnO = new Set();
     for (const _p of positions) {
@@ -1132,7 +1129,7 @@
       if (!/FUT$|(CE|PE)$/i.test(sym)) continue;
       const qty = Number(p.quantity ?? p.qty) || 0;
       const pnl = Number(p.pnl) || 0;
-      const day = Number(p.day_change_val) || 0;
+      const day = baseDayPnlForPosition(p);
       t.qty_fno      += qty;
       t.legs_with++;
       t.legs_without++;
@@ -3282,7 +3279,7 @@
           // Equity intraday — excluded from F&O panel; capture for TOTAL reconcile
           bumpExcluded(_excluded, p?.account, {
             pos_pnl: Number(p?.pnl || 0),
-            pos_day: Number(p?.day_change_val || 0),
+            pos_day: baseDayPnlForPosition(p),
           });
           continue;
         }

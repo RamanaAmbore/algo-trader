@@ -41,6 +41,7 @@
   } from '$lib/data/indexConstituents';
   import { readChartPref, writeChartPref } from '$lib/data/chartPrefs';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
+  import { baseDayPnlForPosition } from '$lib/data/nav';
 
   // ag-Grid module registration — idempotent across re-mounts.
   ModuleRegistry.registerModules([AllCommunityModule]);
@@ -115,7 +116,7 @@
     let dayPnl = 0;
     let any = false;
     for (const p of _accountFilter(_positions, _eqAccounts)) {
-      const v = Number(p.day_change_val);
+      const v = baseDayPnlForPosition(p);
       if (Number.isFinite(v)) { dayPnl += v; any = true; }
     }
     for (const h of _accountFilter(_holdings, _eqAccounts)) {
@@ -456,7 +457,7 @@
       const a = String(r.account || '');
       if (!a) continue;
       if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, inv_val: 0, cur_val: 0 };
-      byAcct[a].day_pnl += Number(r.day_change_val) || 0;
+      byAcct[a].day_pnl += baseDayPnlForPosition(r);
       byAcct[a].pnl     += Number(r.pnl) || 0;
     }
     const rows = Object.values(byAcct);
