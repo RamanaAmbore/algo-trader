@@ -1360,7 +1360,7 @@ export function startBrokerHealthPoller() {
   _bhPollerTeardown = visibleInterval(poll, 30_000, 'throttle:60000');
 }
 
-export function stopBrokerHealthPoller() {
+function stopBrokerHealthPoller() {
   if (_bhPollerTeardown) {
     _bhPollerTeardown();
     _bhPollerTeardown = null;
