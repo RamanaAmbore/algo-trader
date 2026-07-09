@@ -391,17 +391,28 @@ if (typeof window !== 'undefined') {
  * @param {string}     [mode] 'pause' (default) | 'throttle:<hiddenMs>'
  * @returns {() => void}      teardown; clears the interval + removes the listener
  */
-export function visibleInterval(fn, ms, mode = 'pause') {
-  // Parse throttle delay from 'throttle:<ms>' string.
-  let hiddenMs = 0;
-  let isThrottle = false;
-  if (typeof mode === 'string' && mode.startsWith('throttle:')) {
-    const parsed = Number(mode.slice(9));
-    if (Number.isFinite(parsed) && parsed > 0) {
-      hiddenMs = parsed;
-      isThrottle = true;
-    }
+/**
+ * Parse the visibleInterval `mode` string. Returns `{ hiddenMs, isThrottle }`.
+ *   'pause'                       → { 0, false }  (default)
+ *   'throttle:30000'              → { 30000, true }
+ *   malformed / non-string / <=0  → { 0, false }  (safe fallback → pause)
+ *
+ * @param {unknown} mode
+ * @returns {{ hiddenMs: number, isThrottle: boolean }}
+ */
+function _parseHibMode(mode) {
+  if (typeof mode !== 'string' || !mode.startsWith('throttle:')) {
+    return { hiddenMs: 0, isThrottle: false };
   }
+  const parsed = Number(mode.slice(9));
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return { hiddenMs: 0, isThrottle: false };
+  }
+  return { hiddenMs: parsed, isThrottle: true };
+}
+
+export function visibleInterval(fn, ms, mode = 'pause') {
+  const { hiddenMs, isThrottle } = _parseHibMode(mode);
 
   let id = /** @type {ReturnType<typeof setInterval> | null} */ (null);
   /** Whether this instance is currently hibernating. */
@@ -420,11 +431,8 @@ export function visibleInterval(fn, ms, mode = 'pause') {
     // Only apply hibernation if the tab is actually hidden right now.
     if (typeof document === 'undefined' || !document.hidden) return;
     _localHibernating = true;
-    if (isThrottle) {
-      _start(hiddenMs);
-    } else {
-      _stop();
-    }
+    if (isThrottle) _start(hiddenMs);
+    else            _stop();
   };
 
   const exitHibernation = () => {
@@ -435,10 +443,14 @@ export function visibleInterval(fn, ms, mode = 'pause') {
     _start(ms);
   };
 
-  const sub = { enterHibernation, exitHibernation };
-  _hibernationSubscribers.add(sub);
-
-  if (typeof document !== 'undefined') {
+  // Boot cadence — three mount states resolve to distinct start behaviours.
+  // Extracted into a nested helper so the constructor tail reads flat.
+  const _boot = () => {
+    if (typeof document === 'undefined') {
+      // SSR / non-browser — run at normal cadence.
+      _start(ms);
+      return;
+    }
     if (!document.hidden) {
       // Tab is visible — start at normal cadence.
       _start(ms);
@@ -446,7 +458,7 @@ export function visibleInterval(fn, ms, mode = 'pause') {
       // Tab starts hidden AND hibernation already active (late mount after
       // a long background period): apply hibernation mode immediately.
       _localHibernating = true;
-      if (isThrottle) { _start(hiddenMs); }
+      if (isThrottle) _start(hiddenMs);
       // else pause mode: don't start
     } else {
       // Tab starts hidden but hibernation not yet active — run at normal
@@ -454,10 +466,11 @@ export function visibleInterval(fn, ms, mode = 'pause') {
       _start(ms);
     }
     _ensureGlobalVisHandler();
-  } else {
-    // SSR / non-browser — run at normal cadence.
-    _start(ms);
-  }
+  };
+
+  const sub = { enterHibernation, exitHibernation };
+  _hibernationSubscribers.add(sub);
+  _boot();
 
   return () => {
     _stop();
