@@ -3269,7 +3269,7 @@
     // caused symbolStore to be written twice per poll (once by positionsStore
     // parse, once by publishPulseQuotes here), which oscillated liveLtp for
     // MCX futures that appear as both a position and an underlying anchor.
-    await positionsStore.load(fresh ? { fresh: true } : undefined, { force: fresh });
+    await positionsStore.load(undefined, { force: fresh });
     positionsLoadErr = positionsStore.error ?? '';
     if (!positionsStore.error) {
       for (const p of (positionsStore.value ?? [])) {
