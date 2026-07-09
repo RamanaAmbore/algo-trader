@@ -241,21 +241,18 @@ export function listUnderlyingsByType(type, prefix = '', limit = 20) {
   if (!_byUnderlyingType || !_underlyingsSorted) return [];
   const t = String(type).toUpperCase();
   const p = String(prefix || '').toUpperCase();
+  // Predicate differs by type: EQ checks the top-level EQ instrument row;
+  // CE/PE/FUT check the `underlying|type` derivative-family index.
+  const has = (t === 'EQ')
+    ? (u) => {
+        const eq = _byTradingsymbol && _byTradingsymbol.get(u);
+        return !!(eq && eq.t === 'EQ');
+      }
+    : (u) => _byUnderlyingType.has(`${u}|${t}`);
   const out = [];
-  if (t === 'EQ') {
-    // Equity: underlyings where the EQ instrument itself exists
-    for (const u of _underlyingsSorted) {
-      if (p && !u.startsWith(p)) continue;
-      const eq = _byTradingsymbol && _byTradingsymbol.get(u);
-      if (eq && eq.t === 'EQ') out.push(u);
-      if (out.length >= limit) break;
-    }
-    return out;
-  }
-  // CE / PE / FUT: underlyings that have at least one contract of this type
   for (const u of _underlyingsSorted) {
     if (p && !u.startsWith(p)) continue;
-    if (_byUnderlyingType.has(`${u}|${t}`)) out.push(u);
+    if (has(u)) out.push(u);
     if (out.length >= limit) break;
   }
   return out;
@@ -288,6 +285,39 @@ export function listExchangesForSymbol(tradingsymbol) {
  * Returns up to `limit` matches. Used by the watchlist add-symbol typeahead
  * and SymbolSearchInput.
  */
+/**
+ * Collect virtual-root symbols (MCX/CDS auto-roll conventions) whose
+ * symbol matches the given uppercase prefix.
+ *
+ * @param {string} p  UPPER-CASE prefix
+ * @returns {Promise<any[]>}
+ */
+async function _collectVirtualRoots(p) {
+  const { getVirtualRoots } = await import('./rootOf.js');
+  const virt = [];
+  for (const exch of ['MCX', 'CDS']) {
+    for (const v of getVirtualRoots(exch)) {
+      if (v.s.startsWith(p)) virt.push(v);
+    }
+  }
+  return virt;
+}
+
+/**
+ * Classify a Kite instrument into one of three search buckets.
+ *   'eq'  — equity, index, ETF (t === 'EQ' or blank)
+ *   'fut' — futures contract (t === 'FUT')
+ *   'ct'  — options contract (CE / PE / anything else)
+ *
+ * @param {any} inst
+ * @returns {'eq' | 'fut' | 'ct'}
+ */
+function _searchBucket(inst) {
+  if (inst.t === 'EQ' || inst.t === '') return 'eq';
+  if (inst.t === 'FUT') return 'fut';
+  return 'ct';
+}
+
 export async function searchByPrefix(prefix, limit = 12) {
   await loadInstruments();
   if (!_byTradingsymbol) return [];
@@ -297,34 +327,21 @@ export async function searchByPrefix(prefix, limit = 12) {
   // Bucket 1: virtual roots from the seeded MCX + CDS root maps.
   // Injected before real instrument rows so the operator can pick
   // GOLD / GOLD_NEXT at the top without scrolling past all contracts.
-  const { getVirtualRoots } = await import('./rootOf.js');
-  const virt = [];
-  for (const exch of ['MCX', 'CDS']) {
-    for (const v of getVirtualRoots(exch)) {
-      if (v.s.startsWith(p)) virt.push(v);
-    }
-  }
+  const virt = await _collectVirtualRoots(p);
 
-  const eq = [];   // equities / indices
-  const fut = [];  // real futures
-  const ct = [];   // options (CE / PE)
+  const buckets = { eq: [], fut: [], ct: [] };
+  const cap = limit * 3;
   for (const [sym, inst] of _byTradingsymbol) {
     if (!sym.startsWith(p)) continue;
-    if (inst.t === 'EQ' || inst.t === '') {
-      eq.push(inst);
-    } else if (inst.t === 'FUT') {
-      fut.push(inst);
-    } else {
-      ct.push(inst);
-    }
-    if (eq.length + fut.length + ct.length >= limit * 3) break;  // bound the walk
+    buckets[_searchBucket(inst)].push(inst);
+    if (buckets.eq.length + buckets.fut.length + buckets.ct.length >= cap) break;
   }
   // Sort real futures by expiry ascending (nearest-month first) so the
   // front-month contract appears at the top of each family group.
-  fut.sort((a, b) => (a.x || '').localeCompare(b.x || ''));
+  buckets.fut.sort((a, b) => (a.x || '').localeCompare(b.x || ''));
   // Order: virtual roots → real futures (nearest first) → equities/ETFs → options.
   // Operator spec (2026-07-03): "virtual root → NEXT → real futures → equity/ETF → options".
-  return [...virt, ...fut, ...eq, ...ct].slice(0, limit);
+  return [...virt, ...buckets.fut, ...buckets.eq, ...buckets.ct].slice(0, limit);
 }
 
 /** List option contracts for an underlying + type (CE/PE). Returns sorted by expiry then strike. */
