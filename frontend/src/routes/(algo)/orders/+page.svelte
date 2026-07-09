@@ -28,6 +28,7 @@
   let orders        = $state([]);
   let loading       = $state(true);
   let error         = $state('');
+  let _orderLoadFails = $state(0);
 
   // Page-level Symbol picker for the Order Entry card. Seeded from
   // the recent-symbol store → settings default → empty. Operator:
@@ -177,8 +178,8 @@
 
   async function loadOrders() {
     loading = true; error = '';
-    try { const d = await fetchOrders(); orders = d.rows || []; }
-    catch (e) { error = e.message; }
+    try { const d = await fetchOrders(); orders = d.rows || []; _orderLoadFails = 0; }
+    catch (e) { error = e.message; _orderLoadFails += 1; }
     finally { loading = false; }
   }
 
@@ -295,7 +296,7 @@
   </span>
 </div>
 
-{#if error}
+{#if error && _orderLoadFails >= 3}
   <!-- Audit fix — short banner per ops convention (<35 chars). Full
        error detail surfaces via the `title=` hover; the raw message
        can carry long stack fragments that wrap the layout. -->

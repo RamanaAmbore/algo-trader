@@ -39,6 +39,16 @@
   // not on the live-LTP-derived sums, so flash animations fire at
   // most once per poll cycle rather than on every SSE tick.
   let _pollCycleStamp = $state(0);
+  // Consecutive poll-error counter for stale-data visual indicator.
+  // Only tint the strip amber after 2+ consecutive failures so transient
+  // errors (brief 502, timeout) don't flash the indicator unnecessarily.
+  let _staleFailCount = $state(0);
+  $effect(() => {
+    const hasErr = !!(positionsStore.error || holdingsStore.error);
+    untrack(() => {
+      _staleFailCount = hasErr ? _staleFailCount + 1 : 0;
+    });
+  });
   // Snapshot of _pollCycleStamp at the moment of the closed→open
   // session transition. _livePositionsToday / _liveHoldingsToday read
   // from positions[].day_change_val which is whatever the LAST poll
@@ -752,7 +762,7 @@
   let _tickBusUnsub = null;
 </script>
 
-<div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_tickBorderClass ? ' ' + _tickBorderClass : '')}>
+<div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_tickBorderClass ? ' ' + _tickBorderClass : '') + (_staleFailCount >= 2 ? ' ps-stale' : '')}>
   <span class="ps-agg" title="Positions: today's MTM move / lifetime P&L / F&O expiry profit at current spot">
     <span class="ps-agg-k">P</span>
     <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
@@ -844,6 +854,13 @@
   .ps-strip.ps-heartbeat {
     border-bottom-color: rgba(251, 191, 36, 0.85);
     background: linear-gradient(180deg, #0a1020 0%, #1a2640 100%);
+  }
+  /* Stale-data indicator — amber tint when positions or holdings have
+     returned 2+ consecutive errors. Color-codes the strip without an
+     intrusive banner message. */
+  .ps-strip.ps-stale {
+    background: linear-gradient(180deg, #1a1200 0%, #1a1500 100%);
+    border-bottom-color: rgba(251, 146, 60, 0.6);
   }
   /* Tick-border shimmer — per-SSE-tick sky-300 border flash driven by
      tickBus. Neutral (no direction). 300ms cubic-bezier(0.4,0,0.2,1)

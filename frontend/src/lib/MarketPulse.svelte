@@ -202,11 +202,6 @@
   let agoTick          = $state(0);
   let refreshedAt = $state('');
   let error       = $state('');
-  // Per-feed broker error (positions / holdings / funds) — surfaced
-  // in a banner above the chrome row so the operator knows when the
-  // strip + grids are stale because the broker layer is down.
-  let brokerErr   = $state('');
-
   // True when the current user is admin or designated — those are the
   // only roles that can mutate the shared global Pinned watchlist
   // (alias edits, item add / remove, rename, item-reorder). The
@@ -2530,10 +2525,6 @@
         }
       }
 
-      // brokerErr: surface any error the last store-load cycle captured.
-      brokerErr = [pulsePositionsStore.error, pulseHoldingsStore.error]
-        .filter(Boolean).join(' · ');
-
       const p_rows = pulsePositionsStore.value ?? [];
       const h_rows = pulseHoldingsStore.value  ?? [];
 
@@ -3840,12 +3831,6 @@
   {#if error}
     <div class="mb-2 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
   {/if}
-  {#if brokerErr}
-    <div class="mb-2 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">
-      Broker feed unavailable — <span class="font-mono">{brokerErr}</span>. Strip + Day P&L stale until recovery.
-    </div>
-  {/if}
-
   <!-- Chrome row retired — Show dropdown removed, + moved into the
        Pinned/Watchlist card header, refresh moved into each card's
        header (after the CollapseButton). -->
