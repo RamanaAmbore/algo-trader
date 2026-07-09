@@ -318,11 +318,11 @@
       const isValid = cur && opts.some(o => o.value === cur);
       if (!isValid) selectedUnderlying = opts[0].value;
       // Picker is populated and selection is confirmed valid (or fixed).
-      // Always force a strategy refresh and stop the poll — the reactive
-      // chain may have already fired with an empty/stale leg set.
+      // Stop the poll — the selectedUnderlying $effect handles the
+      // strategy load immediately (no force needed; the $effect fires
+      // on the same tick as the underlying assignment above).
       _autoSelectPollId?.();
       _autoSelectPollId = null;
-      untrack(() => { loadStrategy({ force: true }); });
     }, 300);
   });
 
@@ -1579,6 +1579,18 @@
       // is far less disruptive than the full-card unmount.
       _lastUnderlyingForChart = u;
     });
+  });
+
+  // Immediately trigger strategy analytics whenever the operator picks
+  // a different underlying. Without this, loadStrategy() only fires on
+  // the 5 s marketAwareInterval tick — so switching symbols causes up
+  // to 5 s of the wrong underlying's payoff being shown.
+  // `untrack` prevents candidatePositions / legs reads inside
+  // loadStrategy from adding reactive deps to this effect (they belong
+  // to the deriveds, not this trigger).
+  $effect(() => {
+    void selectedUnderlying;
+    untrack(() => { try { loadStrategy(); } catch (_) {} });
   });
 
   /** Distinct expiries (YYYY-MM-DD) the operator has positions /
@@ -3686,6 +3698,9 @@
       // bypass the backend 30s TTL cache to surface the new position
       // in the underlying dropdown without waiting for cache expiry.
       loadPositions({ fresh: true });
+      // Refresh the payoff chart immediately after the fill so the new
+      // leg appears in the strategy without waiting for the 5s interval.
+      try { loadStrategy(); } catch (_) {}
     });
   });
   onDestroy(() => {

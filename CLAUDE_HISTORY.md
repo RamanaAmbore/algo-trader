@@ -3,6 +3,10 @@
 Archival content extracted from CLAUDE.md. Load this file only when investigating
 "why a thing was done a particular way" or tracing a past refactor. Not autoloaded.
 
+CLAUDE.md has been compressed (Jul 2026) to focus on active architecture references. 
+This file retains detailed implementation notes, comprehensive subsection prose, and 
+multi-wave refactoring walkthroughs. Cross-link via CLAUDE.md when needing deep-dive context.
+
 ---
 
 ## Index

@@ -105,95 +105,41 @@ connection management, ticker streaming, credential encryption.
 
 ### KiteTicker / SSE live-LTP pipeline
 
-**Architecture**: WebSocket in conn_service. Ticks written to `/dev/shm/ramboq_ticks` 
-(4096 slots, atomic version-word). Main API reads at byte-read latency via MmapTickReader. 
-Background poller (50ms) publishes deltas to local BroadcastBus.
-
-**Failover**: 30s watchdog in conn_service. On failure, retries `_try_start_ticker()`.
-
-**Universe registration invariant** — `MmapTickReader._sym_to_token` MUST be populated 
-before first mmap tick arrives. Implementation: `_task_sparkline_warm._register_universe_with_ticker` 
-runs at startup + segment-open boundaries (00:30 IST, 09:00 MCX, 09:15 NSE).
-
-**Health surface** (`GET /api/admin/health`) — `ticker.stale_count`, `ticker.max_age_seconds`, 
-`ticker.stale_top`.
+WebSocket in conn_service writes ticks to `/dev/shm/ramboq_ticks` (4096 slots, atomic version-word). 
+Main API reads via MmapTickReader at byte-read latency. Background poller (50ms) publishes deltas to BroadcastBus. 
+30s watchdog with auto-retry on failure. Universe registration (`_register_universe_with_ticker`) runs at startup + segment opens. 
+Health surface: `GET /api/admin/health` — `ticker.stale_count`, `max_age_seconds`, `stale_top`.
 
 ---
 
 ## Broker accounts (DB-backed CRUD)
 
-Operators manage via `/admin/brokers`. Credentials encrypted at rest (Fernet, 
-derived from `cookie_secret` via HKDF-SHA256).
-
-**Loading** (`Connections.rebuild_from_db` on startup + post-CRUD):
-1. Query `broker_accounts` (active rows).
-2. If empty AND `secrets.yaml` has `kite_accounts`: seed DB once.
-3. Decrypt in memory, rebuild `self.conn` map.
-
-**API** (`/api/admin/brokers/*`, admin-guarded):
-- `GET` — list / read single (no secrets)
-- `POST` / `PATCH` / `DELETE` — create / update / remove
-- `POST /test` — verify via `broker.profile()`
-
-**Canonical display order** — `broker_accounts.display_order` (INTEGER, default 500) 
-controls sort across all UI surfaces (BrokerHealthBadge, AccountMultiSelect, 
-PerformancePage, MarketPulse, OrderTicket, derivatives). Seeded on first startup.
-
-**Backend sort helper** (`backend/brokers/broker_apis.py`): `sort_accounts()` reads 
-`get_account_order_map()` (60s TTL cache), sorts by `(display_order ASC, account_id ASC)`.
-
-**Frontend** (`frontend/src/lib/data/accountSort.js`): `accountDisplayOrder` singleton. 
-All UI surfaces call `sortAccountsBy(rawList, $orderMap)`. Do NOT sort inline by `localeCompare`.
+Managed via `/admin/brokers`. Credentials encrypted at rest (Fernet, derived from `cookie_secret`). 
+Loaded on startup via `Connections.rebuild_from_db()` — query active rows, decrypt, rebuild conn map. 
+Seeds from `secrets.yaml` once if empty. API: `GET/POST/PATCH/DELETE` + `POST /test` (admin-guarded). 
+Display order via `broker_accounts.display_order` INT (default 500) — used across all UI surfaces via 
+`sortAccountsBy(rawList, $orderMap)` in both backend and frontend (60s TTL cache).
 
 ---
 
 ## Multi-Account IPv6 Source Binding (Kite + Dhan)
 
-**Why**: Kite = one IP per app. Dhan = one token per source IP. Groww = no per-IP rule.
-
-**Current setup**:
-
-| Account | Broker | source_ip |
-|---|---|---|
-| ZG0790 | Kite | `69.62.78.136` (IPv4) |
-| DH6847 | Dhan | `69.62.78.136` (shared) |
-| ZJ6294 | Kite | `2a02:4780:12:9e1d::1` (IPv6) |
-| DH3747 | Dhan | `2a02:4780:12:9e1d::1` (shared) |
-| GR87DF | Groww | default |
-
-**Implementation**: `_IPv6SourceAdapter` extends `requests.HTTPAdapter`. Groww SDK 
-monkey-patched at module-level.
-
-**Per-account stabilizer** — Dhan rows grouped by `source_ip`. If 2+ Dhan on same IP, 
-only lowest-`priority` loaded.
+Kite enforces 1 IP per app; Dhan enforces 1 token per source IP. Groww has no per-IP rule. 
+Implemented via `_IPv6SourceAdapter` (requests.HTTPAdapter) + Groww SDK monkey-patch. 
+Dhan rows grouped by `source_ip` — if 2+ on same IP, only lowest-priority loads.
 
 ---
 
 ## Broker resilience
 
-**Circuit breaker** (Jul 2026, P0 DH6847 fix):
-Per-account opt-in state machine. `circuit_breaker_enabled` column on `broker_accounts` 
-(default FALSE). Currently DH6847 only.
+**Circuit breaker** — per-account state machine (CLOSED → OPEN after 3 failures → HALF-OPEN after cool-off). 
+Short-circuits to empty DataFrame on OPEN; exponential cool-off 5m → 10m → 20m → 30m. 
+Stored in `_FETCH_HEALTH[account]`. Auto-downgrade to 'cold' poll after ≥5 OPEN events in 15min window. 
+Operator restore via `POST /api/admin/brokers/{id}/restore-priority`.
 
-- **CLOSED** (normal) — every fetch runs.
-- **OPEN** (after 3 consecutive failures) — short-circuit; return empty DataFrame. 
-  Cool-off exponential: 5m → 10m → 20m → 30m (cap).
-- **HALF-OPEN** (after cool-off) — next probe runs. Success → CLOSED. Failure → OPEN.
-
-State stored in `_FETCH_HEALTH[account]`: `consecutive_fail_count`, `circuit_open_until`, 
-`circuit_last_opened_at`, `open_cycle_count`.
-
-**Per-account Dhan poll priority**:
-Column `poll_priority VARCHAR(8)` controls cadence for Dhan (Kite + Groww unaffected).
-- `'hot'` (default) — 30s
-- `'warm'` — 120s
-- `'cold'` — 600s
-
-**Auto-downgrade**: When ≥5 breaker-OPEN events within 15-min window, auto-set to 'cold'. 
-Operator restores via `POST /api/admin/brokers/{id}/restore-priority`.
-
-`/api/admin/broker-health` surfaces `circuit_state`, `consecutive_fail_count`, 
-`circuit_open_until`, `circuit_breaker_enabled` per account.
+**Dhan poll priority** — Column `poll_priority` (hot=30s, warm=120s, cold=600s) for Dhan only. 
+Health surface: `GET /api/admin/broker-health` — `circuit_state`, `consecutive_fail_count`, 
+`circuit_open_until`, per account.
 
 ---
 
@@ -201,42 +147,22 @@ Operator restores via `POST /api/admin/brokers/{id}/restore-priority`.
 
 ### File map
 
-**Stack**: Litestar 2.x + msgspec.Struct (10× faster pydantic) · PostgreSQL 17 + 
-SQLAlchemy 2.x async + asyncpg · Polars (routes: positions, holdings, funds, nav) / 
-pandas (broker SDK boundary) · asyncio background tasks · JWT HS256 (24h) · 
-PBKDF2-SHA256 passwords
+**Stack**: Litestar 2.x + msgspec.Struct · PostgreSQL 17 + SQLAlchemy 2.x async · 
+Polars (positions, holdings, funds, nav) / pandas (broker boundary) · asyncio · JWT HS256 · PBKDF2-SHA256.
 
-**Core routes** (`backend/api/`):
-- `app.py` — Litestar app + startup (init_db + tasks)
-- `routes/algo.py` — Agents API + WebSocket
-- `routes/orders.py` — OrdersController (<1500 LOC after split)
-- `routes/orders_place.py` — Ticket handler, guards, template-attach (~1270 LOC)
-- `routes/orders_postback.py` — Kite postback, Dhan/Groww shared (~475 LOC)
-- `routes/orders_basket.py` — Basket dispatch, margin (~530 LOC)
-- `algo/agent_engine.py` — Declarative agent runner + `run_cycle()`
-- `algo/simulator.py` / `sim/driver.py` — Market sim + scenario engine
+**Core routes**: `app.py` (startup), `routes/algo.py` (agents + WS), `routes/orders.py` (controller), 
+`routes/orders_place.py` (ticket), `routes/orders_postback.py` (postback), `routes/orders_basket.py` (basket), 
+`algo/agent_engine.py` (runner), `algo/simulator.py` / `sim/driver.py` (market sim).
 
 ---
 
 ## Alert and Notification System
 
-**Vocabulary**: Agent (rule) → Alert (event) → Notify (delivery) → Action (side-effect).
-
-**Message types**:
-
-| Event | Telegram | Email |
-|---|---|---|
-| Market open | `Open` | (Telegram only) |
-| Agent fire | `Agent` | `RamboQuant Agent: ` |
-| Market close | `Close` | (Telegram only) |
-
-**Timestamp**: `timestamp_display()` produces `Mon 30 Mar 09:30 IST | Mon 30 Mar 10:00 EDT`.
-
-**Global gates** (`backend_config.yaml`):
-- `alert_cooldown_minutes` (30) — min time between refires
-- `alert_baseline_offset_min` (15) — silent after session start
-- `alert_rate_window_min` (10) — P&L window for rate calculation
-- Market hours gate: skip `schedule: market_hours` agents outside segment-open hours
+**Flow**: Agent (rule) → Alert (event) → Notify (delivery) → Action (side-effect). 
+Message types: Market open/close (Telegram only), Agent fire (Telegram + Email: "RamboQuant Agent: "). 
+Dual-timezone display via `timestamp_display()`. Global gates in `backend_config.yaml`: 
+`alert_cooldown_minutes` (30), `alert_baseline_offset_min` (15), `alert_rate_window_min` (10), 
+market-hours gate for `schedule: market_hours` agents.
 
 ---
 
@@ -247,17 +173,9 @@ PBKDF2-SHA256 passwords
 | Equity | NSE, BSE, NFO, CDS | 09:15–15:30 |
 | Commodity | MCX | 09:00–23:30 |
 
-Open/close summaries at `open_summary_offset_minutes` / `close_summary_offset_minutes`. 
-Weekends hardcoded closed; use `market_special_sessions` table for exceptions (e.g. Muhurat).
-
-**Special-session overrides** (`market_special_sessions` table) — highest-precedence 
-rule. Row `(exchange, date, start_time, end_time)` says: on that date, exchange open 
-ONLY during `[start_time, end_time)` IST. Beats holiday check, regular windows, weekend rule.
-
-**Winners/Losers movers gate**:
-- NSE open → NSE equity universe
-- NSE closed + MCX open → Live MCX commodity movers (CRUDEOIL, GOLD, SILVER, …)
-- Both closed → NSE DB snapshot fallback
+Summaries at `open_summary_offset_minutes` / `close_summary_offset_minutes`. 
+Weekends hardcoded closed; `market_special_sessions` table overrides (highest precedence, by date/time). 
+Movers gate: NSE open → NSE equity; NSE closed + MCX open → MCX commodities; both closed → NSE snapshot.
 
 ---
 
@@ -278,80 +196,38 @@ ONLY during `[start_time, end_time)` IST. Beats holiday check, regular windows, 
 | Funds-off-hours refresh | Every 30 min when no segment open |
 
 **Ticker subscription DB backstop**: `_task_sparkline_warm` + `_task_performance` 
-union `daily_book` DB query (past 7 days positions/holdings) into Kite subscription 
-universe. Survives conn_service restart, circuit-breaker open, broker unhealthy at boot.
+union `daily_book` (past 7 days) into Kite universe — survives conn_service restart, circuit-breaker, broker outage.
 
-**Performance refresh Day P&L**: `_task_performance` calls `_fetch_positions_direct` which 
-now sums both `day_change_val` AND `pnl` in position aggregates, then applies 
-`apply_day_change_backstop()` before groupby to rescue edge cases where Kite omits the day 
-value. NavStrip P slot 1 (intraday P&L) now shows accurate daily delta all session.
+**Performance refresh Day P&L**: `_fetch_positions_direct` sums `day_change_val` + `pnl`, 
+applies `apply_day_change_backstop()` to rescue missing-day edge cases. NavStrip P slot 1 accurate all session.
 
 ---
 
 ## Market lifecycle events
 
-Singleton `MarketLifecycle` polled every 30s by `_task_market_lifecycle`.
-
-| Event | Fires |
-|---|---|
-| `<exch>:open` | At session open (calendar-aware) |
-| `<exch>:close` | At session close |
-| `<exch>:close_settled` | 15 min after close (operator-tunable `settled_offset_min`). Captures broker's adjusted close_price. Before firing, re-probes `is_market_open`; if exchange reopened (evening MCX-style), skips to avoid capturing mid-session as "settled". |
-
-**Default handlers** (`backend/api/algo/market_lifecycle_handlers.py`):
-- `nse:close` + `nse:close_settled` → `snapshot_daily_book(settled=…)` + `snapshot_sparkline(settled=…)` + NAV snapshot
-- `mcx:close` + `mcx:close_settled` → same as NSE
-- `cds:close` + `cds:close_settled` → same as NSE
-
-Snapshot idempotent via UPSERT on `(date, account, kind, symbol)`. The `settled` flag 
-lands in `daily_book.payload_json.snapshot_extras.settled` so downstream readers 
-distinguish initial close from settled follow-up.
+Singleton `MarketLifecycle` polled every 30s. Events: `<exch>:open`, `<exch>:close`, 
+`<exch>:close_settled` (15 min after close, operator-tunable). Default handlers fire 
+`snapshot_daily_book` + `snapshot_sparkline` + NAV snapshot. Snapshots idempotent via UPSERT 
+on `(date, account, kind, symbol)`. Settled flag in `daily_book.payload_json.snapshot_extras.settled` 
+distinguishes initial close from settled follow-up.
 
 ---
 
 ## Persistence pipeline (cache → DB → broker)
 
-Three-tier read hierarchy: Tier 1 (in-memory LRU) → Tier 2 (PostgreSQL) → Tier 3 (broker).
-Per-key asyncio.Lock deduplicates concurrent fetches. Broker writes return immediately; 
-persistence runs off-path via worker coroutines.
+Three-tier hierarchy: in-memory LRU → PostgreSQL → broker. Per-key asyncio.Lock deduplicates fetches.
 
-**Stores** (`backend/api/persistence/`):
-- `ohlcv_store` — daily bars, (sym, exch) key
-- `instruments_store` — per-exchange symbol→token map, daily TTL
-- `holidays_store` — per-(exchange, year), immutable once year closes
-- `intraday_store` — 5/15/30/60-min bars, 5-min TTL on today
+**Stores**: `ohlcv_store` (daily bars), `instruments_store` (symbol→token map, daily TTL), 
+`holidays_store` (yearly, immutable post-year), `intraday_store` (5/15/30/60-min, 5-min TTL today).
 
-**Completeness checks**:
-- OHLCV: boundary dates present + gaps ≤4 days (weekends + holidays)
-- Instruments: non-empty map
-- Holidays: non-empty set
-- Intraday: today = any bars OK; historical = must span session close
+**Completeness**: OHLCV (boundary + ≤4d gaps), Instruments (non-empty), Holidays (non-empty), Intraday (today any, hist span close).
 
-**Refresh-cycle modes** (operator can flip via `POST /api/admin/persistence/mode/{off|soft|hard}`):
-- `off` — normal hierarchy (default)
-- `soft` — Tier 1+2 bypass, fetch from broker, write-back heals both
-- `hard` — soft + ticker recycle
+**Modes**: `off` (default), `soft` (Tier 1+2 bypass), `hard` (soft + ticker recycle). Flip via `POST /api/admin/persistence/mode/{off|soft|hard}`.
 
-**Retention** (staggered nightly cron):
-- `ohlcv_daily` → 5 years
-- `instruments_snapshot` → 7 days
-- `intraday_bars` → 90 days
-- `holidays_snapshot` → forever
-- `algo_events` → 30 days (`retention.algo_events_days`)
-- `audit_log` → 365 days (`retention.audit_log_days`)
-- `nav_daily`, `daily_book`, `investor_events`, `monthly_statements` → forever (financial records)
-- All configurable from `/admin/settings` → Retention
+**Retention** (configurable `/admin/settings`): ohlcv_daily=5yr, instruments=7d, intraday=90d, 
+holidays/nav_daily/daily_book/investor_events/monthly_statements=forever, algo_events=30d, audit_log=365d.
 
-**Event queues** (`backend/api/persistence/event_queue.py`):
-Generic `EventQueue` class for high-frequency append-only writers. Uses SQLAlchemy 
-bulk `executemany` INSERT. Re-queues on transient failure.
-
-| Queue | Table | Location |
-|---|---|---|
-| `algo_event_queue` | `algo_events` | `routes/algo.py` |
-| `agent_event_queue` | `agent_events` | `algo/events.py` |
-| `order_event_queue` | `algo_order_events` | `algo/order_events.py` |
-| `mcp_audit_queue` | `mcp_audit` | `routes/research.py` |
+**Event queues**: Generic `EventQueue` (bulk `executemany` INSERT). Four active: algo_events, agent_events, algo_order_events, mcp_audit.
 
 ---
 
@@ -377,127 +253,63 @@ Five modes form a confidence ladder (sim → paper → shadow → live) + parall
 
 ## Agents Framework
 
-**Four words**:
-- **Agent** = rule row (condition + notify + actions). Seeded from `BUILTIN_AGENTS`. 
-  Extensible via `/automation`.
-- **Alert** = runtime event when condition fires. Persisted to `agent_events`.
-- **Notify** = delivery channel (telegram / email / websocket / log).
-- **Action** = side-effect (order placement, modify, cancel, close).
+**Four terms**: Agent (rule), Alert (runtime event), Notify (delivery), Action (side-effect).
 
-**Loss agents** — prefix `loss-*`. Four consolidated alerting agents + one fund-negative, 
-all active by default. Rules editable live from `/automation`.
+Agent row: condition + notify + actions, seeded from `BUILTIN_AGENTS`, extensible via `/automation`. 
+Loss agents (prefix `loss-*`) = 5 builtin + rules editable live. Alerts persisted to `agent_events`. 
+Notify channels: telegram, email, websocket, log. Delivery actions: order place / modify / cancel / close.
 
-**Tokens** — `grammar_tokens` table. System tokens seeded on boot, custom via `/admin/tokens`.
+**Condition tree** (v2): `{all/any/not: [...]}` over leaves `{metric, scope, op, value}`. 
+Metrics: point-in-time (pnl, pnl_pct, day_pct), rate (pnl_rate_abs/_pct), rolling (mean, max_drawdown, stdev, range), 
+expiry-aware (is_itm, is_ntm, days_until_expiry).
 
-**Condition tree** (v2 grammar):
-```
-condition  ::= leaf | {all: [...]}, {any: [...]}, {not: ...}
-leaf       ::= {metric, scope, op, value}
-```
-
-**Metrics**: point-in-time (pnl, pnl_pct, day_pct), rate (pnl_rate_abs, pnl_rate_pct), 
-rolling-window (mean, max_drawdown, stdev, range), expiry-aware (is_itm, is_ntm, days_until_expiry).
-
-**GrammarRegistry** singleton — in-memory dispatch. Reloaded on `/api/admin/grammar/reload`.
+Tokens via `grammar_tokens` table (system on boot, custom via `/admin/tokens`). 
+GrammarRegistry singleton dispatch, reloaded on `/api/admin/grammar/reload`.
 
 ---
 
 ## Symbol resolution + virtual roots (MCX / CDS)
 
-MCX commodity futures and CDS currency futures never expose raw contract names in UI.
-
-| Virtual | Maps to |
-|---|---|
-| `CRUDEOIL` | front-month (current expiry) |
-| `CRUDEOIL_NEXT` | back-month (next expiry) |
-| `CRUDEOIL26AUGFUT` | far-month — passes through raw |
-
-**Canonical module**: `backend/api/algo/symbol_resolver.py` — SSOT:
-- `list_active_futures(root, exchange, limit)` — filters `inst.x > today_iso (IST)`
-- `resolve_symbol(virtual, exchange)` — forward resolver
-- `root_of(contract, exchange)` — reverse resolver
-
-**Supported roots**: MCX: CRUDEOIL, CRUDEOILM, NATURALGAS, NATGASMINI, GOLD, GOLDM, 
-GOLDGUINEA, GOLDPETAL, SILVER, SILVERM, SILVERMIC, COPPER, ZINC, LEAD, ALUMINIUM, 
-NICKEL, MENTHAOIL, COTTON, CPO. CDS: USDINR, EURINR, GBPINR, JPYINR.
-
-**API endpoints**:
-- `GET /api/symbols/resolve?symbol=CRUDEOIL&exchange=MCX`
-- `GET /api/symbols/root_of?contract=CRUDEOIL26JUNFUT&exchange=MCX`
-
-**Frontend** (`frontend/src/lib/data/rootOf.js`):
-- `seedRootMapFromInstruments(items)` — called post-instruments-cache-load
-- `rootOf(contract, exchange)` — sync, no fetch
-- `rootOfLabel(contract, exchange)` — human label
-- `resolveVirtual(virtual, exchange)` — forward direction sync
-
-**Rollover**: `inst.x > today_iso (IST)` rule — settling contracts excluded on expiry day.
+MCX/CDS never expose raw contract names in UI. Virtual symbols map to front-month 
+(CRUDEOIL), back-month (_NEXT), or explicit contract. SSOT: `backend/api/algo/symbol_resolver.py` 
+with functions: `list_active_futures`, `resolve_symbol`, `root_of`. Supported roots: MCX 
+(CRUDEOIL, GOLD, SILVER, etc.), CDS (USDINR, EURINR, etc.). API: 
+`GET /api/symbols/resolve?symbol=CRUDEOIL&exchange=MCX` / `root_of?contract=…`. 
+Frontend (`rootOf.js`): `seedRootMapFromInstruments`, `rootOf`, `rootOfLabel`, `resolveVirtual`. 
+Rollover rule: settling contracts excluded on expiry day (`inst.x > today_iso IST`).
 
 ---
 
 ## Investor portal + NAV
 
-LP-facing token-gated `/investor/<token>` surface. Token IS the credential. 
-Operator mints per-user via `/admin` Portal button (90-day default, cap 10y).
-
-**Units model**:
-```
-units_held = Σ units_delta for events ≤ t
-total_units = Σ units_held across LPs
-nav_per_unit = firm_nav / total_units
-slice = units_held × nav_per_unit
-cost_basis = Σ amount (sub/bootstrap) − Σ amount (redemption)
-pnl = slice − cost_basis
-```
-
-**NAV v4 formula** — firm NAV computed as:
-```
-firm_nav = cash_sod + option_premium + Σ position.unrealised + Σ holdings.cur_val
-```
-
-`option_premium` replaces full `used_margin` to eliminate double-counting. 
-Implemented in: `backend/api/algo/nav.py:compute_firm_nav`, 
-`frontend/src/lib/PerformancePage.svelte:navByAcct`, `scripts/nav_breakdown.py`.
-
-**Three endpoints**:
-- `GET /api/nav/me` — current slice + day delta
-- `GET /api/nav/me/history?days=180` — scaled NAV curve
-- `GET /api/investor/{token}/slice` — same math (no auth, token in URL)
+Token-gated `/investor/<token>` portal. Token IS credential. Operator mints via `/admin` 
+(90-day default, 10y cap). Units model: slice = units_held × nav_per_unit; cost_basis = 
+sub − redemption; pnl = slice − cost_basis. NAV v4 formula: `firm_nav = cash_sod + option_premium + 
+Σ position.unrealised + Σ holdings.cur_val` (option_premium replaces used_margin to eliminate double-count). 
+Three endpoints: `GET /api/nav/me` (slice + day delta), `/nav/me/history?days=180` (curve), 
+`/api/investor/{token}/slice` (public, no auth).
 
 ---
 
 ## Audit log + History
 
-**AuditLog** schema — id, actor_user_id / username / role (snapshotted), action, 
-**category** (nullable), method, path, target_type, target_id, status_code, summary, 
-request_id, client_ip, created_at.
+AuditLog schema: id, actor (user_id / username / role), action, category, method, path, 
+target_type, target_id, status_code, summary, request_id, client_ip, created_at. 
+Two write paths: AuditMiddleware (every HTTP request, skip non-mutating) + `write_audit_event()` 
+(non-HTTP: postback, agent action, tasks). Category routing by path prefix 
+(order.place / order.fill / order.modify / order.cancel / user / config.* / system.* / agent / strategy / http).
 
-**Two write paths**:
-1. **AuditMiddleware** — every HTTP request (skips non-mutating)
-2. **`write_audit_event()`** — non-HTTP (broker postback, agent action, system tasks)
-
-**Category routing** — path prefix matches category (order.place / order.fill / 
-order.modify / order.cancel / user / config / config.broker / config.grammar / 
-config.fragment / config.hedge / system.statement / system.nav / agent / strategy / http).
-
-**`/admin/history`** (cap `view_audit`) — three tabs:
-- **Orders** (30 days, 50/page) — status histogram, mode filter
-- **Trades** (`daily_book[kind='trades']`, 30 days) — summary.total_notional
-- **Funds** (`daily_book[kind='funds']`, 90 days) — per account/segment/day
+`/admin/history` (cap `view_audit`): Orders tab (30d, 50/page, status histogram + mode filter), 
+Trades tab (daily_book trades 30d), Funds tab (daily_book funds 90d, per account/segment/day).
 
 ---
 
 ## Settings (DB-backed tunables)
 
-`/admin/settings` exposes parameters. Reader chain: DB cache → YAML fallback → in-code default.
-
-**Seeded buckets**:
-- `alerts.*` — cooldown_minutes, rate_window_min, baseline_offset_min, suppress_delta_abs/_pct
-- `performance.*` — refresh_interval, open/close_summary_offset_min
-- `simulator.*` — positions_every_n_ticks, auto_stop_minutes, default_rate_ms
-- `notifications.*` — telegram_enabled, email_enabled, notify_on_deploy
-- `logging.*` — file/console/error log levels
-- `hedge_proxies.*` — regression_enabled, regression_window_days, regression_max_age_days
+`/admin/settings` UI. Reader chain: DB cache → YAML → in-code default. 
+Buckets: `alerts.*` (cooldown/rate window/baseline), `performance.*` (refresh/summary offsets), 
+`simulator.*` (ticks/auto_stop/rate), `notifications.*` (telegram/email/deploy), 
+`logging.*` (levels), `hedge_proxies.*` (regression params).
 
 ---
 
@@ -505,247 +317,131 @@ config.fragment / config.hedge / system.statement / system.nav / agent / strateg
 
 ### Persistent cache layer
 
-In-memory Map + localStorage (key prefix `rbq.cache.`) for high-churn surfaces. 
-Module: `frontend/src/lib/data/persistentCache.js`. TTL buckets: `day` (24h) / `hour` (1h) / 
-`minute` (15m) / `short` (2m).
+In-memory Map + localStorage (`rbq.cache.` prefix). Module: `persistentCache.js`. 
+TTL buckets: day (24h), hour (1h), minute (15m), short (2m). Used by MarketPulse, 
+PositionStrip, NavCard. Survives reload + deploy. Live LTP NOT cached.
 
-Used by MarketPulse (positions, holdings, sparklines, watchQuotes, movers), 
-PositionStrip, NavCard. Survives reload + deploy. Live LTP state NOT cached.
-
-**Tick-flash primitive** — `createTickFlash({threshold, durationMs})` from 
-`frontend/src/lib/data/tickFlash.svelte.js`. Canonical 350ms directional pulse 
-(green up / red down) on numeric cell updates.
+Tick-flash: `createTickFlash()` → 350ms green/red directional pulse on cell updates.
 
 ---
 
 ## NavStrip pill cluster
 
-PerformancePage + MarketPulse header shows SSOT snapshot (frozen during closed 
-hours until next market open).
+Header snapshot SSOT (frozen during closed hours). Pill layout P / M / C / H (slash-joined trios):
+- P (P&L): `today / lifetime / expiry` 
+- M (Margin): `available / total` 
+- C (Cash): `available / total` 
+- H (Holdings): `today / value / lifetime`
 
-Pill layout: P / M / C / H (slash-joined trios):
-- **P** (P&L) — `today / lifetime / expiry` (intraday delta / cumulative / F&O expiry profit)
-- **M** (Margin) — `available / total` (used margin fraction of sanctioned total)
-- **C** (Cash) — `available / total` (same framing as Margin)
-- **H** (Holdings) — `today / value / lifetime` (intraday delta / current market value / cumulative cost)
-
-**P expiry value** — computed client-side in `PositionStrip.svelte`. Identical math 
-to `/admin/derivatives` TOTAL row. Futures + options only (exchange in NFO/MCX/CDS/BFO).
-
-Snapshot SSOT replaces localStorage during closed hours; in-session reload via disk cache.
+P expiry value computed in `PositionStrip.svelte` (identical `/admin/derivatives` TOTAL math, 
+F&O only). Snapshot SSOT replaces localStorage when closed; in-session reload via disk cache.
 
 ---
 
 ## MarketPulse + PerformancePage
 
-**Pulse** (symbol grid) — two side-by-side ag-Grid (left: pinned watchlists + movers; 
-right: positions + holdings). Desktop left/right, mobile stacked.
+Pulse: two side-by-side ag-Grid (left: watchlists + movers, right: positions + holdings). 
+Bucket sort: pinned (1), watchlist (2), positions (3), holdings (4), movers (5). 
+Default columns: Symbol · 5d · LTP · Avg · Day % · Close · Qty · Day P&L · P&L % · P&L.
 
-**Bucket sort**: `bucketOf` returns pinned (1), watchlist (2), positions (3), holdings (4), 
-movers (5). `postSortRows` scopes sort within bucket.
+Directional encoding: pos-long/short tint (green/red 10%), holdings tint (up/down/flat), 
+watchlist/underlying tint, Day P&L mini-bar (2px), CE/PE text color (Sensibull), TOTAL row (amber 12% + borders).
 
-**Default-visible cluster**: Symbol · 5d · LTP · Avg · Day % · Close · Qty · Day P&L · P&L % · P&L.
-
-**Directional encoding**:
-- **Background tint**: pos-long green 10%, pos-short red 10%. Holdings: up green 10%, 
-  down red 10%, flat slate 8%. Watchlist amber 10%, underlying violet 10%, position slate 8%.
-- **Day P&L mini-bar**: 2px bar at symbol cell right (4px gap). Positions + Holdings only.
-- **CE/PE**: symbol text green/red (Sensibull convention).
-- **TOTAL row**: amber 12% bg + borders + bold.
-
-**PerformancePage** — canonical-cluster reference. Public page (cream theme) shows 
-real Kite data even during sim. Admin `/dashboard` = P&L Analysis + MarketPulse summary 
-grids (Funds/Positions/Holdings) + Agent activity log.
-
-**Dashboard layout** — chart card LEFT, tabbed NAV / Capital / Equity sidebar RIGHT. 
-NAV is default tab. Renders `NavBreakdown.svelte` which shares NAV arithmetic with 
-PerformancePage + backend `compute_firm_nav`.
+PerformancePage: canonical cluster reference, public page (cream) shows real Kite data during sim. 
+Admin `/dashboard`: P&L Analysis + MarketPulse summary + Agent log. Layout: chart LEFT, 
+tabbed NAV/Capital/Equity sidebar RIGHT (NavBreakdown SSOT with backend `compute_firm_nav`).
 
 ---
 
 ## Activity surface architecture
 
-Unified log viewer with multiple mount points (modal, card, page), sharing 
-components + filter state.
+Unified log viewer (modal, card, page) sharing components + filter state. 
+Components: `ActivityLogSurface.svelte` (wraps LogPanel), `ActivityHeaderFilters.svelte` 
+(select + dropdown), `LogPanel.svelte` (per-tab level parsing, multi-column ≥900px).
 
-**Components**:
-- `ActivityLogSurface.svelte` — wraps LogPanel (multiColumn, hideInlineAccountFilter)
-- `ActivityHeaderFilters.svelte` — bundles ActivityAccountSelect + log-level dropdown
-- `LogPanel.svelte` — per-tab level parsing + multi-column at ≥900px width
+Mount points: ActivityLogModal (navbar Log, all tabs), Activity card (/admin/execution, /orders — Orders tab), 
+Dashboard card (/dashboard — replaces legacy NEWS), /activity page (bookmarkable, Orders default).
 
-**Four mount points**:
-- **ActivityLogModal** — full-screen (from navbar Log icon). All tabs independent.
-- **Activity card** (`/admin/execution`, `/orders`) — single tab (Orders).
-- **Dashboard activity card** (`/dashboard`) — replaces legacy NEWS strip.
-- **`/activity` page** — bookmarkable route. Defaults to Orders tab.
-
-**Log-level parsing**:
-- System/Conn: extract `[LEVEL]` token from message
-- Agent rows: map `event_type` → level
-- Order rows: no level token, all info
+Log-level parsing: System/Conn extract `[LEVEL]`, Agent map `event_type`, Orders no token (all info).
 
 ---
 
 ## Chart Workspace
 
-Unified chart for any symbol kind (underlying / future / option / equity).
+Unified chart (underlying / future / option / equity). Components: `ChartWorkspace.svelte` 
+(OHLCV + tick overlay + underlying-spot + Greeks), `ChartModal.svelte` (wrapper), 
+`/charts` page (URL params sync).
 
-**Components**:
-- `ChartWorkspace.svelte` — OHLCV (line/area/candle, 1D/1W/1M/3M/6M/1Y), intraday tick 
-  overlay (toggleable), underlying-spot overlay (dashed sky-blue), Greeks strip
-- `ChartModal.svelte` — overlay wrapper
-- `/charts` page — reads URL params, syncs via `goto({replaceState: true})`
+Indicators (price panel): SMA 20/50, EMA 20/50 (Wilder), VWAP (cyan, null on zero-volume), 
+Bollinger Bands ±2σ (20-period). Sub-panels: RSI 14 (30/70 lines), MACD 12/26/9 (histogram + line + signal).
 
-**Indicator overlays** (price panel, toggled via MultiSelect):
-- `SMA 20` / `SMA 50` — simple moving averages (sky-blue / violet)
-- `EMA 20` / `EMA 50` — exponential (green / orange), Wilder k=2/(n+1)
-- `VWAP` — cumulative volume-weighted average price (cyan); null for zero-volume
-- `BB` — Bollinger Bands ±2σ, 20-period, population σ
-
-**Indicator sub-panels** (below price, same SVG):
-- `RSI 14` — Wilder-smoothed, 30/70 reference lines
-- `MACD 12/26/9` — histogram + line + signal (dashed)
-
-**Signals toggle** — toolbar chip (default ON). Persisted to `localStorage`.
-
-**Overlay persistence** — `localStorage` key `rbq.cache.chart-overlays.v1` (JSON array).
+Signals toggle (default ON) persisted to localStorage. Overlays persisted to `rbq.cache.chart-overlays.v1`.
 
 ---
 
 ## Keyboard shortcuts
 
-All handling in ONE place: `(algo)/+layout.svelte` `_onGlobalKeydown`. 
-Discovery via `?` (cheatsheet modal).
+Centralized in `(algo)/+layout.svelte` `_onGlobalKeydown`. Discovery: `?` (cheatsheet).
 
-**Rules**:
-- Pause when `document.activeElement` is `INPUT / TEXTAREA / SELECT / contenteditable`
-- `Esc` defocuses input (no navigate)
-- `Cmd+K / Ctrl+K` fires even while typing (command-palette exception)
-- `?` case-sensitive (requires Shift); all letter keys case-insensitive
+Rules: Pause on INPUT/TEXTAREA/SELECT/contenteditable; Esc defocuses; Cmd+K/Ctrl+K bypass; 
+`?` requires Shift (case-sensitive), letters case-insensitive.
 
-**Navigation** (Bloomberg two-key `g`+letter, 800ms window):
+Navigation (Bloomberg `g`+letter, 800ms): `g p` /pulse, `g d` /dashboard, `g o` /orders, 
+`g e` /admin/derivatives, `g c` /charts, `g v` /performance, `g a` /automation, `g h` /admin/history, `g m` /pulse#movers.
 
-| Keys | Destination |
-|---|---|
-| `g p` | /pulse |
-| `g d` | /dashboard |
-| `g o` | /orders |
-| `g e` | /admin/derivatives |
-| `g c` | /charts |
-| `g v` | /performance |
-| `g a` | /automation |
-| `g h` | /admin/history |
-| `g m` | /pulse#movers |
+Actions: `t` order ticket, `h` activity/log, `k` chart, `/` symbol search, `r` refresh-page, 
+`?` cheatsheet toggle, `Esc` close.
 
-**Actions**:
-
-| Key | Effect |
-|---|---|
-| `t` | Open order ticket |
-| `h` | Open activity/log modal |
-| `k` | Open chart modal |
-| `/` | Focus symbol search |
-| `r` | Dispatch `refresh-page` event |
-| `?` | Toggle cheatsheet |
-| `Esc` | Close cheatsheet |
-
-**Grid contextual** (when ag-Grid cell has focus):
-
-| Key | Effect |
-|---|---|
-| `j` | Down arrow |
-| `k` | Up arrow |
-| `Enter` | Context menu |
-| `f` | Fullscreen toggle |
-| `c` | Collapse toggle |
+Grid (ag-Grid cell focus): `j` down, `k` up, `Enter` context menu, `f` fullscreen, `c` collapse.
 
 ---
 
 ## Order placement + multi-account basket
 
-**OrderTicket.svelte** — unified modal. DRAFT/PAPER/LIVE routes. Account required. 
-Qty validated (must be lot multiple). Pre-fills from context. Success feedback inline.
+OrderTicket: unified modal (DRAFT/PAPER/LIVE). Qty in LOTS for F&O (converted to contracts at 
+request boundary via `contracts = lots × lot_size`), raw for equity. Frontend sends `_lots` for F&O. 
+G1 (LOT_MULTIPLE) removed; G2 (5-lot cap, MCX 20-lot) checks lots directly.
 
-**F&O qty convention** — API accepts LOTS for instruments with `lot_size > 1` (futures + options). 
-`backend/api/routes/orders_place.py:_ticket_validate_input` converts lots → contracts 
-(`contracts = lots × lot_size`) at request boundary. Frontend sends `_lots` for F&O; raw qty for equity. 
-G1 (LOT_MULTIPLE guard) removed — input is already in lots. G2 (5-lot cap, MCX 20-lot cap) 
-checks against lots directly.
-
-**Basket orders** — `POST /api/orders/basket` groups by account, `asyncio.gather` 
-per-account place. Shared `basket_tag=ramboq-basket-<uuid>`.
-
-**Target profit** — `AlgoOrder` has `target_pct, target_abs, parent_order_id, basket_tag`. 
-On parent fill, auto-attach TP flip-side order (idempotent via `parent_order_id IS NULL`). 
-Default `algo.default_target_pct` (0.30).
-
-**Preflight parallelized** — 4 sequential awaits → `asyncio.gather`. Wall-time ~300ms (was 800-1200ms).
-
-**`_TICK_INDEX` dict** — O(1) tick lookup (was O(N)). Module-level from instruments cache.
+Basket: `POST /api/orders/basket` groups by account, `asyncio.gather` dispatch per-account. 
+Shared `basket_tag=ramboq-basket-<uuid>`. Target profit: `AlgoOrder.target_pct/target_abs/parent_order_id/basket_tag` 
+auto-attach on parent fill (default 0.30). Preflight: `asyncio.gather` parallel (~300ms). 
+`_TICK_INDEX` dict: O(1) lookup from instruments cache.
 
 ---
 
 ## Key Patterns
 
-**Market-data broker resolution** — `get_market_data_broker()` in 
-`backend/brokers/registry.py` is the SINGLE resolution path for quote / ltp / instruments / 
-historical_data calls. `contextvars.ContextVar` (`_MDB_CTX`) caches `PriceBroker` for 
-request lifetime so every callsite picks same broker.
+**Market-data broker resolution** — SSOT: `get_market_data_broker()` in `registry.py`. 
+Caches via `contextvars.ContextVar` (`_MDB_CTX`) per-request. Selection order: operator pin > 
+`broker_accounts.priority` ASC > insertion. Telemetry: `[MARKET-DATA-BROKER]` / `[MARKET-DATA-FALLBACK]`. 
+Background pollers resolve fresh (separate asyncio context). Intentionally NOT wired: `get_sparkline_broker()`, 
+`get_historical_brokers()` (budget spread). `@for_all_accounts` untouched (per-account fan-out by design).
 
-- `reset_market_data_broker_ctx()` — called in Litestar `before_request` hook
-- Selection order: (1) `connections.price_account` operator pin, (2) `broker_accounts.priority` 
-  ASC, (3) insertion order
-- Telemetry: first call per request logs `[MARKET-DATA-BROKER]`. Failover logs 
-  `[MARKET-DATA-FALLBACK]`.
-- Background pollers have own asyncio context → resolve fresh on every call (correct — 
-  should see healthiest broker)
-- `get_sparkline_broker()` and `get_historical_brokers()` intentionally NOT wired (spread 
-  3 req/sec Kite budget)
-- `@for_all_accounts` untouched — fans out per-account by design
+**Raw broker-DataFrame cache** — `_RAW_CACHE` (30s TTL). `fetch_holdings/positions/margins` 
+memoise returns. One broker round-trip per TTL window shared by routes, nav, investor slice. 
+`?fresh=1` + postbacks call `_raw_cache_invalidate(key)`.
 
-Wired callsites (15 files): quote.py, watchlist.py, options.py, strategies.py, positions.py, 
-orders_place.py, hedge_proxies.py, admin.py, instruments.py, background.py, lot_ledger.py, 
-paper.py, template_attach.py, replay/driver.py, ohlcv_store.py, broker_apis.py.
+**Holiday calendar** — four-tier read: in-process LRU → module-level TTL → PostgreSQL 
+`market_holidays` (daily 04:00 IST refresh, retry 30min until 08:00 IST) → NSE API (cold-boot). 
+Empty sets cached; buster = date rollover Tiers 1+2, UPSERT Tier 3.
 
-**Raw broker-DataFrame cache** (`backend/brokers/broker_apis.py:_RAW_CACHE`, 30s TTL):
-`fetch_holdings()` / `fetch_positions()` / `fetch_margins()` memoise their list[pd.DataFrame] 
-return. Route handlers, `compute_firm_nav`, investor slice, nav_daily writer all share 
-one broker round-trip per TTL window. `?fresh=1` and postbacks call `_raw_cache_invalidate(key)`.
+**Market segments** — blocks carry `sessions: list[{start, end}]` + `evening_open_on_holidays`. 
+`is_market_open()` signature unchanged; keyword-only overrides when passed.
 
-**Holiday calendar** — four-tier read in `fetch_holidays(exchange)`:
-1. `holidays_store._MEM_CACHE` (in-process LRU, year-scoped)
-2. Module-level `_HOLIDAY_CACHE` (daily TTL, sync fallback)
-3. **`market_holidays` PostgreSQL table** (durable). Populated by daily 04:00 IST 
-   `_task_holiday_refresh`. Retry every 30 min until 08:00 IST hard stop.
-4. NSE public API (`nseindia.com/api/holiday-master?type=trading`) — cold-boot fallback only
+**Multi-account calls**: `@for_all_accounts` returns list[DataFrame]. Callers use `pd.concat(..., ignore_index=True)`.
 
-Empty sets cached. Buster = date rollover for Tiers 1+2; PK-idempotent UPSERT keeps Tier 3 accurate.
+**Account masking**: `mask_account(s) → str` (digits → #). Used in all alerts + summaries.
 
-**Market segments — multi-session shape** — every `market_segments.<seg>` block carries 
-`sessions: list[{start, end}]` + `evening_open_on_holidays: bool` flag. Legacy 
-`hours_start`/`hours_end` still parsed. `is_market_open()` positional signature unchanged; 
-new keyword-only `sessions=[…]` + `evening_open_on_holidays=<bool>` override when passed.
+**Singleton Connections** — thread-safe startup init. On `RAMBOQ_USE_CONN_SERVICE=1` populates 
+registry with RemoteBroker stubs.
 
-**Multi-account broker calls**: `@for_all_accounts` iterates accounts, returns 
-list of DataFrames. Callers use `pd.concat(..., ignore_index=True)`.
+**Closed-hours route gate** — `closed_hours_or_broker()` in `snapshot_gate.py` CANONICAL gate. 
+Invariant: `broker_fn` NEVER called when closed. Returns source tags: `'live'` / `'snapshot'` / 
+`'snapshot-fallback'`. Every new data route MUST use. Tests patch `_any_segment_open()`.
 
-**Account masking**: `mask_account(s: str) -> str` replaces digits with `#`. 
-`mask_column(pd.Series)` for DataFrames. Used in all alerts + summaries.
-
-**Singleton Connections**: Thread-safe. Initialized once at startup. On 
-`RAMBOQ_USE_CONN_SERVICE=1`: populates registry with `RemoteBroker` stubs.
-
-**Closed-hours route gate** (`backend/api/helpers/snapshot_gate.py`):
-`closed_hours_or_broker(exchange, snapshot_fn, broker_fn, *, fallback_to_snapshot_on_broker_error=True)`
-is the CANONICAL gate for data routes needing market-closed snapshot fallback.
-Primary invariant: `broker_fn` NEVER called when market closed.
-Source tags returned: `'live'` / `'snapshot'` / `'snapshot-fallback'`.
-Every new data route MUST use this helper. `_any_segment_open()` is what tests patch.
-
-**Broker auth health badge** (`frontend/src/lib/BrokerHealthBadge.svelte`):
-Admin/designated-only navbar badge. Polls `GET /api/admin/broker-health` every 30s via 
-`visibleInterval`. State: `green` (last_good < 5 min ago), `amber` (stale), `red` 
-(last_fail > last_ok). Worst state drives colour. Click opens per-account modal.
+**Broker auth health badge** — `BrokerHealthBadge.svelte` (admin/designated navbar, polls 30s 
+via `visibleInterval`). State: green (last_good < 5min), amber (stale), red (last_fail > last_ok). 
+Worst state drives color. Click opens per-account modal.
 
 ---
 
@@ -753,100 +449,50 @@ Admin/designated-only navbar badge. Polls `GET /api/admin/broker-health` every 3
 
 ### Derivatives Analytics
 
-Options research: underlying-driven re-pricing, Black-Scholes, implied-vol calibrator, 
-greeks (per-share + position-scaled), strategy multi-leg analysis.
+Options: underlying-driven re-pricing, Black-Scholes, implied-vol calibrator, greeks, multi-leg strategy.
 
-**Symbol parser** — `parse_tradingsymbol()` returns `{kind, underlying, strike, opt_type, expiry}` or None.
+Symbol parser: `parse_tradingsymbol()` → `{kind, underlying, strike, opt_type, expiry}`. 
+Re-pricing: futures 1:1 spot, options via BS. Payoff range σ-driven (span 2.5σ, clamp 2%-50%).
 
-**Re-pricing** — `reprice_row(row, spot, sigma)`. Futures track spot 1:1; options via BS.
+Endpoints (admin): `GET /api/options/analytics?mode=live|sim|hypothetical&symbol=…` (Greeks + payoff), 
+`POST /api/options/strategy-analytics` (multi-leg aggregate + R:R), `GET /api/options/historical?symbol=…&days=30` 
+(OHLCV + multi-broker fallback).
 
-**Payoff range** — σ-driven via `span_pct = span_sigmas × σ × √T_years` (default 
-span_sigmas=2.5, clamped [2%, 50%]).
-
-**Endpoints** (admin-guarded):
-- `GET /api/options/analytics?mode=live|sim|hypothetical&symbol=…` — Greeks, pricing, payoff
-- `POST /api/options/strategy-analytics` (legs list) — multi-leg aggregate + R:R
-- `GET /api/options/historical?symbol=…&days=30` — OHLCV with multi-account fallback
-
-**LTP fallback chain**: override → sim positions → live broker → close price → 
-depth midpoint → avg_cost → Black-Scholes-at-default-IV.
-
-**Expected value** — trapezoidal integration of expiry payoff against risk-neutral 
-lognormal. R:R = max_profit / |max_loss|.
+LTP chain: override → sim positions → live broker → close price → depth midpoint → avg_cost → BS-default-IV. 
+Expected value: trapezoidal payoff integration risk-neutral lognormal. R:R = max_profit / |max_loss|.
 
 ---
 
 ### Proxy hedges
 
-DB-backed cross-reference between holdings (GOLDBEES, NIFTYBEES, …) and option roots 
-they hedge (GOLD, NIFTY, …).
+DB-backed cross-reference holdings (GOLDBEES, NIFTYBEES) → hedged roots (GOLD, NIFTY). 
+Schema: `hedge_proxies` (proxy_symbol, target_root, is_active, note, beta, correlation, regression_at).
 
-**Schema**: `hedge_proxies` table — proxy_symbol, target_root, is_active, note, beta 
-(nullable = 1.0 default), correlation, regression_at.
+Math: `effective_qty = β × market_value / target_spot`; `target_lots = effective_qty / target_lot_size`.
 
-**Math**:
-```
-effective_qty = β × market_value / target_spot
-target_lots = effective_qty / target_lot_size
-effective_cost = investment_value / effective_qty
-Δ_extra = effective_qty
-```
+β regression (60-day daily returns): `β = Cov(p,t) / Var(t)`, needs ≥15 bars. 
+Operator-triggered via `POST /api/admin/hedge-proxies/{id}/compute`. Auto-recompute daily 02:30 IST 
+when `regression_at` > `regression_max_age_days`.
 
-**β regression** — 60-day daily-returns: β = Cov(p,t) / Var(t), R² = corr². 
-Operator-triggered via `POST /api/admin/hedge-proxies/{id}/compute`. Needs ≥15 bars.
-
-**Auto-recompute** (`_task_hedge_proxy_regression`, daily 02:30 IST) — per active row 
-where `regression_at` > `regression_max_age_days`.
-
-**UI** — PROXY chip on eq legs (magenta label + lot count + β).
+UI: PROXY chip on eq legs (magenta label + lot + β).
 
 ---
 
 ### MCP server + Lab page
 
-`/admin/research` — thread persistence + audit + token mint. Operator chats; 
-backend serves 17 read-only + 2 persist + 6 gated write tools = 25 total.
-
-**MCP server** (`backend/mcp/kite_server.py`) — FastMCP subprocess. Tools: positions, 
-holdings, quote, ohlcv, news, chain, macro, agents, threads, audit, dry_run, server_info, 
-place/cancel/modify orders, activate/deactivate/update agents, save thread/draft.
-
-**Confirm-token gate** (60s TTL, single-use, purpose-hash bound) — mint token for 
-`place | cancel | modify | activate | deactivate | update`.
-
-**McpAudit table** — tool, user_id, args_redacted, result_status, result_summary, 
-request_id. Daily cleanup (default 90-day retention).
+`/admin/research` — thread persistence + audit + token mint. Operator chats; backend 
+serves 17 read-only + 2 persist + 6 gated write tools (25 total). MCP server (`kite_server.py`): 
+FastMCP subprocess. Confirm-token gate (60s TTL, single-use, purpose-hash bound) for 
+place/cancel/modify/activate/deactivate/update. McpAudit table daily cleanup (90-day default retention).
 
 ---
 
 ### Performance measurement
 
-Four-tool scaffold for iterative perf work. Every result JSON in `.log/`.
-
-**Tools**:
-
-| Tool | Kind | Output |
-|---|---|---|
-| `scripts/perf_baseline.py` | Static grep | `.log/perf_baseline_<utc>.json` |
-| `frontend/e2e/perf_capture.spec.js` | Playwright | `.log/perf_capture_<utc>.json` |
-| `scripts/perf_capture_run.sh` | Wrapper | stdout + capture JSON |
-| `backend/api/middleware/perf_stats.py` | ASGI (opt-in) | `.log/perf_stats.json` |
-| `scripts/perf_diff.py` | Diff reader | stdout + `.log/perf_diff_*.txt` |
-
-**Canonical workflow**:
-```sh
-./venv/bin/python scripts/perf_baseline.py --no-build
-# ... ship changes ...
-./venv/bin/python scripts/perf_baseline.py --no-build
-./venv/bin/python scripts/perf_diff.py
-```
-
-**Full baseline** (static + cyclomatic + runtime):
-```sh
-export PLAYWRIGHT_USER=ambore
-export PLAYWRIGHT_PASS='...'
-./venv/bin/python scripts/perf_baseline.py --no-build --with-cyclomatic --with-runtime
-```
+Four-tool scaffold (results in `.log/`): `perf_baseline.py` (static grep), 
+`perf_capture.spec.js` (Playwright), `perf_capture_run.sh` (wrapper), `perf_stats.py` (ASGI), 
+`perf_diff.py` (diff reader). Workflow: baseline → ship → baseline → diff. 
+Full baseline: `--no-build --with-cyclomatic --with-runtime` (requires `PLAYWRIGHT_USER/PASS`).
 
 ---
 
