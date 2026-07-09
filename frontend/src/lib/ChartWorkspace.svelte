@@ -1619,6 +1619,14 @@
       _suppressTimer = null;
       if (_mounted) _emptyGateSuppressed = false;  // open the gate
     }, 3000);
+    // If the store holds a different symbol's bars (stale 30s TTL cache
+    // from a prior open), wipe them before loading so A's bars are never
+    // rendered under B's symbol label during the ~200-500ms broker fetch.
+    // Same-symbol re-opens are unaffected: lastFetched.symbol === symbol
+    // keeps the instant cache-hit path intact.
+    if (symbol && chartStore.lastFetched?.symbol !== symbol) {
+      chartStore.clearData();
+    }
     await _loadHistorical();
     if (!_isDemo) {
       await _pollStatus();
