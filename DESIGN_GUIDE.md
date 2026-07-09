@@ -115,6 +115,8 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 - §21. [Data refresh — PositionStrip + Dashboard](#21-data-refresh--positionstrip--dashboard)
 - §21.5. [Frontend → broker API — full round-trip](#215-frontend--broker-api--full-round-trip)
 - §21.5.5. [Day P&L backstop — SSOT](#2155-day-pnl-backstop--ssot)
+- §21.6. [Persistence three-tier — cache → DB → broker](#216-persistence-three-tier--cache--db--broker)
+- §21.7. [Stale data semantics — keepStaleOnEmpty and error recovery](#217-stale-data-semantics--keepstaleoneempty-and-error-recovery)
 - §22. [Demo mode](#22-demo-mode)
 - §22.5. [Investor portal — token-as-credential](#225-investor-portal--token-as-credential)
 - §22.6. [Investor portal — units-based NAV math](#226-investor-portal--units-based-nav-math)
@@ -2632,11 +2634,14 @@ gantt
 
 **Stale-better merge** — frontend `_mergeSparkSeries` keeps cached real curve over fresh flat/degenerate series to prevent chart collapse when broker feed lags.
 
+**Mover grace-window** — `loadSparklines()` in MarketPulse carries the previous mover rotation's pairs into each new call via `_prevMoverSparkPairs`. Symbols that just left the winners/losers list get a one-rotation (30s) grace period before sparklines are pruned from cache. Symbols re-entering the top 10 show instantly from cache rather than fetching fresh.
+
 **Files:**
 - `backend/api/background.py::_task_sparkline_warm`
 - `backend/api/routes/sparkline.py::snapshot_sparkline`, `batch_sparkline`
 - `backend/api/algo/symbol_resolver.py::resolve_symbol`
 - `frontend/src/lib/PerformancePage.svelte::_mergeSparkSeries`
+- `frontend/src/lib/MarketPulse.svelte::loadSparklines` — grace-window logic + `_prevMoverSparkPairs`
 
 ---
 
@@ -2898,6 +2903,31 @@ sequenceDiagram
 - `backend/api/persistence/write_queue.py` — `disk_queue` + `db_queue`
 - `backend/api/persistence/cache_worker.py` / `db_worker.py` — background drainers
 - `backend/api/persistence/runtime_state.py` — `is_bypass_on()`, mode toggles
+
+---
+
+## 21.7 Stale data semantics — keepStaleOnEmpty and error recovery
+
+Frontend data stores (`positionsStore`, `holdingsStore`, `fundsStore`, `sparklinesStore`) use **`keepStaleOnEmpty`** semantics: when a broker fetch returns empty or errors, the prior snapshot is retained client-side so grids don't flicker blank. No red banner appears on transient HTTP errors.
+
+**PositionStrip stale-data tint:**
+- Track consecutive fetch failures per store with `_staleFailCount` 
+- When `positionsStore.error || holdingsStore.error` persists for 2+ consecutive polls (`_staleFailCount >= 2`), apply CSS class `ps-stale` to the PositionStrip
+- Visual: amber gradient background tint + orange border (subtle, no modal or text)
+- Resets `_staleFailCount` to 0 on the next successful poll
+
+**Orders page banner gating:**
+- `/orders` page tracks `_orderLoadFails` (incremented per failed fetch)
+- Banner "Orders feed unavailable" only renders when `_orderLoadFails >= 3`
+- Suppresses noise from single transient 502s; alerts operator on sustained feed loss
+- Resets counter on successful reload
+
+**Rationale:** HTTP errors are often transient (network blip, broker throttle for 1-2 seconds). Keeping the stale snapshot visible prevents jarring blanks while the backend retries automatically. The PositionStrip amber tint provides subtle visual feedback that data may be stale (for 2+ polls, real signal) without alarming on every hiccup.
+
+**Files:**
+- `frontend/src/lib/PositionStrip.svelte` — `_staleFailCount` tracking + `ps-stale` CSS class application
+- `frontend/src/routes/(algo)/orders/+page.svelte` — `_orderLoadFails` counter + 3-failure banner gate
+- `frontend/src/lib/data/marketDataStores.svelte.js` — `keepStaleOnEmpty` store config
 
 ---
 
