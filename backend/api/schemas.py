@@ -412,11 +412,15 @@ class PlaceOrderRequest(msgspec.Struct):
 
 
 class BasketLeg(msgspec.Struct):
-    """One leg inside a basket order group."""
+    """One leg inside a basket order group.
+
+    `quantity` follows the v2 convention (2026-07-08): LOTS for F&O
+    exchanges (NFO/MCX/CDS/BFO/BCD/NCO), raw shares for equity. Same
+    unit as TicketOrderRequest."""
     tradingsymbol: str
     exchange: str
     transaction_type: str           # "BUY" | "SELL"
-    quantity: int
+    quantity: int                   # LOTS for F&O; raw shares for equity
     order_type: str = "LIMIT"
     product: str = "NRML"
     price: Optional[float] = None
@@ -509,11 +513,22 @@ class TicketOrderRequest(msgspec.Struct):
         runs through the same chase loop agent fires use.
       - "live"  → real broker order via Kite (phase 3).
     Drafts never reach the backend (handled client-side).
+
+    `quantity` unit convention (v2 API — 2026-07-08):
+      - F&O exchanges (NFO/MCX/CDS/BFO/BCD/NCO): quantity is LOTS. The
+        backend resolves lot_size from the instruments cache and
+        multiplies to get contracts internally. `lot_size_hint` acts
+        as a fallback when the backend cache is cold.
+      - Equity exchanges (NSE/BSE): quantity is raw shares.
+    Sending contracts for an F&O order is a critical bug that was
+    the P0 CRUDEOIL 100× oversize incident (2026-07-01) — the new
+    lots convention eliminates the class of bug entirely by aligning
+    the API unit with the operator's mental model.
     """
     mode: str               # "paper" | "live"
     side: str               # "BUY" | "SELL"
     tradingsymbol: str
-    quantity: int
+    quantity: int           # LOTS for F&O; raw shares for equity
     exchange: str = "NFO"
     product: str = "NRML"
     order_type: str = "LIMIT"
@@ -611,11 +626,16 @@ class TicketPreviewRequest(msgspec.Struct):
     """Same shape as TicketOrderRequest — what would happen if this
     were submitted. No side effects. Returns the resolved TemplatePlan
     so the OrderTicket can show "Will place TP @ ₹X · SL @ ₹Y · Wing
-    -500CE" inline before the operator hits Submit."""
+    -500CE" inline before the operator hits Submit.
+
+    `quantity` follows the same v2 convention as TicketOrderRequest:
+    LOTS for F&O exchanges (NFO/MCX/CDS/BFO/BCD/NCO), raw shares for
+    equity. Backend converts to contracts internally before feeding
+    the template resolver."""
     mode: str
     side: str
     tradingsymbol: str
-    quantity: int
+    quantity: int           # LOTS for F&O; raw shares for equity
     exchange: str = "NFO"
     product: str = "NRML"
     account: str = ""

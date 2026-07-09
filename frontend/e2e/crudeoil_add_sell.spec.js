@@ -399,9 +399,12 @@ test.describe('CRUDEOIL 6500PE SELL — regression guard', () => {
         if (leg.tradingsymbol) {
           expect(leg.tradingsymbol, 'basket leg symbol mismatch').toMatch(/(PE|pe)$/);
         }
-        // MCX CRUDEOIL lot size is 100.
-        if (leg.quantity) {
-          expect(leg.quantity % 100, 'basket qty not a lot multiple of 100').toBe(0);
+        // v2 API (2026-07-08): qty is LOTS. 1 lot = qty=1 (not 100).
+        // Sanity: must be a positive integer within the 20-lot cap.
+        if (leg.quantity !== undefined) {
+          expect(Number.isInteger(leg.quantity), 'basket qty not integer').toBe(true);
+          expect(leg.quantity, 'basket qty out of range').toBeGreaterThan(0);
+          expect(leg.quantity, 'basket qty exceeds 20-lot MCX cap').toBeLessThanOrEqual(20);
         }
       }
     } else {

@@ -1239,15 +1239,14 @@
   const showTrigger = $derived(_type === 'SL' || _type === 'SL-M');
 
   // Validation — applied client-side; backend validates again before
-  // hitting the broker. Lot-size check protects against rejections
-  // for non-multiple quantities (NIFTY lot 50, BANKNIFTY 15, etc.).
+  // hitting the broker. v2 API (2026-07-08): operator inputs LOTS for
+  // F&O, so the G1 multiple-of-lot check is obsolete — qty = lots ×
+  // lotSize is a valid multiple by construction. Only the 5-lot fat-
+  // finger cap remains.
   const validationErr = $derived.by(() => {
     if (!Number(_qty) || Number(_qty) <= 0) {
       if (_lotSize > 0) return `Qty required (1 lot = ${_lotSize} for ${formatSymbol(symbol)})`;
       return 'Qty required';
-    }
-    if (_lotSize > 0 && Number(_qty) % _lotSize !== 0) {
-      return `Qty must be a multiple of lot ${_lotSize}`;
     }
     // Fat-finger 5-lot cap — operator 2026-07-01: "the code by
     // mistake ordered 100 lots instead of 1 lot. qty vs lot issue
@@ -1255,11 +1254,8 @@
     // when lot_size > 1 (F&O). Backend enforces the same limit as a
     // defense-in-depth layer; front here shows a clear message before
     // Submit is attempted.
-    if (_lotSize > 1) {
-      const _lotsCount = Math.floor(Number(_qty) / _lotSize);
-      if (_lotsCount > 5) {
-        return `Refusing ${_lotsCount} lots — the 5-lot safety cap prevents fat-finger errors. Reduce qty to ≤${5 * _lotSize}.`;
-      }
+    if (_lotSize > 1 && Number(_lots) > 5) {
+      return `Refusing ${Number(_lots)} lots — the 5-lot safety cap prevents fat-finger errors. Reduce lots to ≤5.`;
     }
     if (showLimit   && !Number(_price))   return 'Limit price required';
     if (showTrigger && !Number(_trigger)) return 'Trigger price required';
@@ -1643,6 +1639,7 @@
           ...submitCtx,
           resolvedSymbol: _resolvedSymbol,
           resolvedExchange: _resolvedExchange || '',
+          lots: _lots,
           lotSize: _lotSize,
           currentQty,
           templateId,
@@ -2209,7 +2206,7 @@
                     onclick={() => stepLots(1)}
                     disabled={_noSymbol}
                     aria-label="Increase lots">+</button>
-            <span class="ot-meta">× {_lotSize} = {_qty}</span>
+            <span class="ot-meta">× {_lotSize} = {_qty} qty</span>
           </div>
         {:else}
           <label class="ot-label" for="ot-qty">Qty</label>

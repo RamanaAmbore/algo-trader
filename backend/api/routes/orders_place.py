@@ -689,10 +689,30 @@ async def _arm_take_profit(
 
 # ── Ticket order handler ──────────────────────────────────────────────────────
 
-async def _ticket_validate_input(data, request) -> tuple[str, str, int]:
+_FO_EXCHANGES = ("NFO", "MCX", "CDS", "BFO", "BCD", "NCO")
+
+
+async def _ticket_validate_input(data, request) -> tuple[str, str, int, int]:
     """Mode/demo gate, RBAC strategy scope, and enum validation for the
-    ticket payload. Returns `(side, sym, qty)`. Raises HTTPException on
-    any validation failure."""
+    ticket payload.
+
+    Returns `(side, sym, contracts, lot_size)` where:
+      - `contracts` is the internal contract quantity used throughout
+        the downstream pipeline (preflight, AlgoOrder.quantity, broker
+        translate_qty). For F&O the request's `data.quantity` is in
+        LOTS; we resolve `lot_size` and compute `contracts = lots ×
+        lot_size` here. For equity, `contracts = data.quantity` (raw
+        shares).
+      - `lot_size` is the resolved instrument lot_size, or 1 for equity.
+        Returned so the caller can reuse it for translate_qty without
+        a second cache lookup.
+
+    Raises HTTPException on any validation failure. Raises 503 when an
+    F&O request lands with an unresolvable lot_size (instruments cache
+    cold) — same guard pattern the MCX cold-cache incident (2026-07-01)
+    surfaced, now applied to every F&O exchange since ALL of them now
+    depend on lot_size for the input-lots → contracts multiplication.
+    """
     from backend.api.routes.orders_helpers import (
         _TXN_TYPES, _EXCHANGES, _PRODUCTS, _ORDER_TYPES, _VARIETIES,
     )
@@ -730,8 +750,8 @@ async def _ticket_validate_input(data, request) -> tuple[str, str, int]:
     if side not in _TXN_TYPES:
         raise HTTPException(status_code=400, detail="side must be BUY or SELL")
     sym = (data.tradingsymbol or "").upper().strip()
-    qty = int(data.quantity or 0)
-    if not sym or qty <= 0:
+    input_qty = int(data.quantity or 0)
+    if not sym or input_qty <= 0:
         raise HTTPException(status_code=400,
             detail="tradingsymbol and quantity > 0 are required")
     if data.exchange   and data.exchange   not in _EXCHANGES:
@@ -752,7 +772,37 @@ async def _ticket_validate_input(data, request) -> tuple[str, str, int]:
     if data.order_type in ("SL", "SL-M") and not data.trigger_price:
         raise HTTPException(status_code=400, detail="trigger_price is required for SL/SL-M")
 
-    return side, sym, qty
+    # ── F&O: request quantity is in LOTS; resolve lot_size + multiply ──
+    exch = (data.exchange or "NFO")
+    if exch in _FO_EXCHANGES:
+        from backend.brokers.adapters.kite import get_lot_size as _get_lot_size
+        try:
+            _lot = int(await _get_lot_size(exch, sym) or 0)
+        except Exception:
+            _lot = 0
+        # Fallback to the frontend-supplied hint when the backend cache is cold.
+        _hint = int(data.lot_size_hint or 0)
+        lot_size = _lot if _lot > 0 else _hint
+        if lot_size <= 0:
+            logger.error(
+                f"[FO-LOT-GUARD] lot_size unknown for {exch}/{sym} "
+                f"(cache returned {_lot}, no lot_size_hint in request). "
+                f"Refusing {side} lots={input_qty} to prevent oversize order."
+            )
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"lot_size for {sym} on {exch} is not available "
+                    f"(instruments cache cold). Retry in a moment — the cache "
+                    f"warms automatically at startup and market open."
+                ),
+            )
+        contracts = input_qty * lot_size
+    else:
+        lot_size = 1
+        contracts = input_qty
+
+    return side, sym, contracts, lot_size
 
 
 def _ticket_validate_account(data) -> str:
@@ -767,53 +817,34 @@ def _ticket_validate_account(data) -> str:
 
 
 async def _ticket_enforce_lot_and_fat_finger(
-    data, account: str, sym: str, qty: int,
+    data, account: str, sym: str, contracts: int, lot_size: int,
 ) -> None:
-    """G1 (LOT_MULTIPLE) + G2 (FAT_FINGER_5_LOT_CAP) for exchange in
-    NFO/MCX/CDS/BFO. Close intent + MCX exempt from the fat-finger cap
-    (MCX enforces its own 20-lot cap downstream in the live path)."""
-    if data.exchange not in ("NFO", "MCX", "CDS", "BFO"):
+    """G2 (FAT_FINGER_5_LOT_CAP) for F&O exchanges. G1 (LOT_MULTIPLE) is
+    NO LONGER NEEDED because request qty is already in LOTS — the
+    contract quantity is guaranteed to be `lots × lot_size`, a valid
+    multiple by construction.
+
+    Close intent + MCX/NCO exempt from the fat-finger cap (MCX enforces
+    its own 20-lot cap downstream in the live path).
+    """
+    if data.exchange not in _FO_EXCHANGES:
         return
+    if lot_size <= 1:
+        return
+    _lots = contracts // lot_size
     _is_close = (getattr(data, "intent", None) or "").lower() == "close"
-    from backend.brokers.adapters.kite import get_lot_size as _get_lot_size
-    try:
-        _lot = int(await _get_lot_size(data.exchange, sym) or 0)
-    except Exception:
-        _lot = 0
-    if _lot <= 1:
-        return
-    if qty % _lot != 0:
-        _guess_lots = qty / _lot
-        logger.warning(
-            "[LOT-MULTIPLE-GUARD] rejected: acct=%s sym=%s qty=%s "
-            "lot_size=%s (not a multiple) — possible qty/lot confusion",
-            account, sym, qty, _lot,
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Refusing order — qty={qty} is not a multiple of "
-                f"lot_size={_lot} (would be {_guess_lots:.2f} lots). "
-                f"If you meant 1 lot, send qty={_lot}. "
-                f"For N lots, send qty=N×{_lot}."
-            ),
-        )
-    _lots = qty // _lot
-    # MCX/NCO use a 20-lot cap enforced later by the MCX size guard
-    # (raises 422). Exempt here so the live-mode MCX guard is the
-    # authoritative check for MCX orders.
     _is_mcx = data.exchange in ("MCX", "NCO")
     if not _is_close and not _is_mcx and _lots > 5:
         logger.warning(
-            "[FAT-FINGER-GUARD] rejected: acct=%s sym=%s qty=%s "
-            "lot_size=%s → %d lots (cap: 5)",
-            account, sym, qty, _lot, _lots,
+            "[FAT-FINGER-GUARD] rejected: acct=%s sym=%s lots=%s "
+            "lot_size=%s (contracts=%d, cap: 5)",
+            account, sym, _lots, lot_size, contracts,
         )
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Refusing order — {_lots} lots exceeds the "
-                f"5-lot safety cap (qty={qty}, lot_size={_lot}). "
+                f"5-lot safety cap (lot_size={lot_size}). "
                 "Split into ≤5-lot orders or contact ops to raise "
                 "the cap."
             ),
@@ -840,22 +871,27 @@ async def _ticket_gate_market_hours_and_align_price(data, sym: str) -> None:
 
 
 async def _ticket_check_mcx_lot_cache(
-    data, sym: str, side: str, qty: int,
+    data, sym: str, side: str, qty: int, lot_size: int,
 ) -> int:
-    """MCX cold-cache guard. Returns the lot_size to reuse for
-    translate_qty later, or raises 503 when the cache is cold and no
-    hint was provided. Returns 0 for non-MCX exchanges (skipped)."""
+    """MCX cold-cache guard. `lot_size` has already been resolved by
+    `_ticket_validate_input` (which now applies the same guard to ALL
+    F&O exchanges, not just MCX, because the input-lots → contracts
+    multiplication now depends on lot_size everywhere). Kept as a shim
+    for readability + defense-in-depth: raises 503 if lot_size is 0
+    for MCX/NCO specifically (should never happen post-validate but a
+    zero-cost extra check).
+
+    Returns the lot_size unchanged for MCX/NCO, or 0 for non-MCX (the
+    downstream size-cap helper only fires on MCX so 0 is a no-op there).
+    """
     if (data.exchange or "NFO") not in ("MCX", "NCO"):
         return 0
-    from backend.brokers.adapters.kite import get_lot_size as _gls_pre
-    _mcx_ls_check = await _gls_pre((data.exchange or "NFO"), sym)
-    _mcx_ls_hint = int(data.lot_size_hint or 0)
-    _mcx_ls_for_translate = _mcx_ls_check if _mcx_ls_check > 0 else _mcx_ls_hint
-    if _mcx_ls_for_translate <= 0:
+    if lot_size <= 0:
+        # Should be unreachable — validate_input raises 503 first — but
+        # keep the guard for defense-in-depth.
         logger.error(
             f"[MCX-LOT-GUARD] lot_size unknown for {data.exchange}/{sym} "
-            f"(cache returned {_mcx_ls_check}, no lot_size_hint in request). "
-            f"Refusing {side} {qty} to prevent oversize order."
+            f"post-validate (unexpected). Refusing {side} lots={qty}."
         )
         raise HTTPException(
             status_code=503,
@@ -865,7 +901,7 @@ async def _ticket_check_mcx_lot_cache(
                 f"warms automatically at startup and market open."
             ),
         )
-    return _mcx_ls_for_translate
+    return lot_size
 
 
 async def _ticket_run_preflight(data, account: str, sym: str, side: str, qty: int) -> dict:
@@ -946,26 +982,25 @@ async def _ticket_record_preflight_block(
 
 
 def _ticket_check_mcx_size_cap(
-    data, sym: str, qty: int, ls_for_translate: int,
+    data, sym: str, contracts: int, lot_size: int,
 ) -> None:
-    """Hard 20-lot cap for MCX/NCO. `ls_for_translate` must be > 0 (the
-    cold-cache guard upstream already raised 503 otherwise)."""
+    """Hard 20-lot cap for MCX/NCO. Input `contracts = lots × lot_size`
+    (already validated) so lots = contracts // lot_size is exact."""
     _ticket_exch = (data.exchange or "NFO")
     if _ticket_exch not in ("MCX", "NCO"):
         return
     _MCX_MAX_LOTS = 20
-    _translated_lots = max(1, qty // ls_for_translate)
-    if _translated_lots > _MCX_MAX_LOTS:
+    _lots = max(1, contracts // lot_size) if lot_size > 0 else contracts
+    if _lots > _MCX_MAX_LOTS:
         logger.error(
-            f"[MCX-SIZE-GUARD] {_ticket_exch}/{sym}: translated "
-            f"{qty} contracts ÷ lot_size={ls_for_translate} = "
-            f"{_translated_lots} lots — exceeds {_MCX_MAX_LOTS}-lot "
+            f"[MCX-SIZE-GUARD] {_ticket_exch}/{sym}: lots={_lots} "
+            f"lot_size={lot_size} — exceeds {_MCX_MAX_LOTS}-lot "
             f"safety cap. Refusing order."
         )
         raise HTTPException(
             status_code=422,
             detail=(
-                f"Order size {_translated_lots} lots for {sym} exceeds "
+                f"Order size {_lots} lots for {sym} exceeds "
                 f"the {_MCX_MAX_LOTS}-lot safety limit. If intentional, "
                 f"contact support to increase the limit."
             ),
@@ -1153,10 +1188,14 @@ async def _ticket_handle_live_place_error(
     )
 
 
-async def _ticket_place_live(data, request, account: str, sym: str, side: str, qty: int):
+async def _ticket_place_live(data, request, account: str, sym: str, side: str, qty: int, lot_size: int):
     """LIVE branch orchestrator. Runs all live-mode guards, preflight,
     broker place, and success/failure book-keeping. Returns a
-    TicketOrderResponse or raises HTTPException."""
+    TicketOrderResponse or raises HTTPException.
+
+    `qty` is the internal contract quantity (already computed from
+    request lots × lot_size in `_ticket_validate_input`). `lot_size`
+    is the resolved instrument lot_size (1 for equity)."""
     from backend.api.schemas import TicketOrderResponse
     from backend.api.cache import invalidate
     from backend.api.routes.orders_helpers import (
@@ -1194,13 +1233,11 @@ async def _ticket_place_live(data, request, account: str, sym: str, side: str, q
         )
 
     # ── MCX lot_size cold-cache guard ────────────────────────────────────
-    # Must run BEFORE preflight: when the instruments cache is cold,
-    # get_lot_size returns 0 for MCX. Preflight would add LOT_SIZE_UNKNOWN
-    # and return 422 (validation), but this is really a 503 (service
-    # temporarily unavailable — cache will warm in <5s). Check early and
-    # raise 503 so the frontend knows to retry rather than surface a
-    # validation error to the operator.
-    _mcx_ls_for_translate = await _ticket_check_mcx_lot_cache(data, sym, side, qty)
+    # Defense-in-depth — `_ticket_validate_input` already applies the
+    # F&O cold-cache guard for ALL F&O exchanges (raises 503 there
+    # first). This helper re-checks for MCX/NCO specifically and
+    # threads the resolved lot_size through to `_ticket_check_mcx_size_cap`.
+    _mcx_ls_for_translate = await _ticket_check_mcx_lot_cache(data, sym, side, qty, lot_size)
 
     _pf = await _ticket_run_preflight(data, account, sym, side, qty)
     if not _pf["ok"]:
@@ -1217,10 +1254,10 @@ async def _ticket_place_live(data, request, account: str, sym: str, side: str, q
 
     order_type = (data.order_type or "LIMIT")
     _ticket_exch = (data.exchange or "NFO")
-    # For MCX/NCO, lot_size was already resolved and cold-cache-checked
-    # above (pre-preflight). Reuse that value to avoid a second lookup.
-    _ls_for_translate: int = _mcx_ls_for_translate if _ticket_exch in ("MCX", "NCO") else 0
-    _ticket_check_mcx_size_cap(data, sym, qty, _ls_for_translate)
+    # For MCX/NCO, lot_size was already resolved. Reuse for translate_qty
+    # + size cap.
+    _ls_for_translate: int = lot_size if _ticket_exch in ("MCX", "NCO") else 0
+    _ticket_check_mcx_size_cap(data, sym, qty, lot_size)
 
     try:
         _live_algo_id = await _ticket_persist_live_algo_order(
@@ -1390,14 +1427,23 @@ async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
 
     Accepts the same (data: TicketOrderRequest, request: Request) signature;
     returns a TicketOrderResponse.  Delegated to by the thin controller shim.
+
+    Unit convention (v2 API — P0 fix 2026-07-08):
+      - `data.quantity` from the request is LOTS for F&O exchanges
+        (NFO/MCX/CDS/BFO/BCD/NCO). For equity it's raw shares.
+      - Internally we track `qty` in CONTRACTS everywhere (AlgoOrder rows,
+        preflight, chase, broker translate_qty). The conversion from
+        lots → contracts happens in `_ticket_validate_input`.
+      - Downstream helpers keep receiving contracts — no signature
+        changes across the postback / chase / template-attach paths.
     """
     from backend.shared.helpers.utils import config
     from backend.shared.helpers.settings import get_bool
 
-    side, sym, qty = await _ticket_validate_input(data, request)
+    side, sym, qty, lot_size = await _ticket_validate_input(data, request)
     account = _ticket_validate_account(data)
 
-    await _ticket_enforce_lot_and_fat_finger(data, account, sym, qty)
+    await _ticket_enforce_lot_and_fat_finger(data, account, sym, qty, lot_size)
 
     if data.strategy_id:
         await _enforce_capacity_guard(
@@ -1421,7 +1467,7 @@ async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
     )
 
     if data.mode == "live":
-        return await _ticket_place_live(data, request, account, sym, side, qty)
+        return await _ticket_place_live(data, request, account, sym, side, qty, lot_size)
 
     # ── PAPER / default branch ────────────────────────────────────────────
     return await _ticket_place_paper(data, request, account, sym, side, qty)

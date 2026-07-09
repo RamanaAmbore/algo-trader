@@ -111,11 +111,13 @@ test.describe('Order placement from /pulse', () => {
 
     // Submit BUY 1 lot at a far-below-market LIMIT — won't fill,
     // won't reject, just registers with the prod paper engine.
+    // v2 API (2026-07-08): qty is LOTS for F&O.
     const payload = {
       mode: 'paper', side: 'BUY',
       tradingsymbol: opt.tradingsymbol, exchange: opt.exchange,
       product: 'NRML', order_type: 'LIMIT', variety: 'regular',
-      quantity: opt.lot_size, price: 1.0, trigger_price: null,
+      quantity: 1, lot_size_hint: opt.lot_size,
+      price: 1.0, trigger_price: null,
       account: acct,
     };
     const placeR = await page.request.post('/api/orders/ticket', { data: payload });

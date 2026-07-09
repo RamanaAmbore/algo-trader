@@ -197,13 +197,18 @@ def _admin_patches():
 async def test_ticket_mcx_cold_cache_503(async_client, stub_connections):
     """POST /ticket for an MCX symbol when instruments cache is cold (
     get_lot_size returns 0, frontend sent no lot_size_hint) must return
-    503 with a clear message instead of silently placing 100 lots."""
+    503 with a clear message instead of silently placing 100 lots.
+
+    v2 API (2026-07-08): request `quantity` is LOTS (1 = 1 lot). The
+    F&O cold-cache guard in `_ticket_validate_input` fires 503 before
+    the lots→contracts multiplication, so a cold cache never reaches
+    the broker with a mis-scaled qty."""
     payload = {
         "mode": "live",
         "side": "BUY",
         "tradingsymbol": "CRUDEOIL26JULJUL7000CE",
         "exchange": "MCX",
-        "quantity": 100,  # 1 lot × lot_size=100 contracts
+        "quantity": 1,   # v2: 1 lot
         "price": 50.0,
         "order_type": "LIMIT",
         "account": "ZG0790",
@@ -234,16 +239,17 @@ async def test_ticket_mcx_cold_cache_503(async_client, stub_connections):
 
 @pytest.mark.asyncio
 async def test_ticket_mcx_size_guard_422(async_client, stub_connections):
-    """POST /ticket for MCX with translated lots exceeding _MCX_MAX_LOTS
-    (20) must return 422. Catches double-multiplication where 100 lots
-    would slip through (100 > 20 cap)."""
-    # qty=2200 contracts with lot_size=100 → 22 lots > 20 cap
+    """POST /ticket for MCX with lots exceeding _MCX_MAX_LOTS (20)
+    must return 422.
+
+    v2 API (2026-07-08): request `quantity` is LOTS. 22 lots trips
+    the 20-lot MCX safety cap directly."""
     payload = {
         "mode": "live",
         "side": "BUY",
         "tradingsymbol": "CRUDEOIL26JULJUL7000CE",
         "exchange": "MCX",
-        "quantity": 2200,  # 22 lots × 100 → should trip the cap
+        "quantity": 22,   # v2: 22 lots — trips the 20-lot cap
         "price": 50.0,
         "order_type": "LIMIT",
         "account": "ZG0790",
@@ -270,13 +276,15 @@ async def test_ticket_mcx_size_guard_422(async_client, stub_connections):
 @pytest.mark.asyncio
 async def test_ticket_mcx_lot_size_hint_fallback(async_client, stub_connections):
     """When backend cache is cold but frontend sent lot_size_hint=100,
-    the gate uses the hint and proceeds past the 503 guard."""
+    the gate uses the hint and proceeds past the 503 guard.
+
+    v2 API (2026-07-08): request `quantity` is LOTS."""
     payload = {
         "mode": "live",
         "side": "BUY",
         "tradingsymbol": "CRUDEOIL26JULJUL7000CE",
         "exchange": "MCX",
-        "quantity": 100,   # 1 lot × lot_size=100 contracts
+        "quantity": 1,   # v2: 1 lot
         "price": 50.0,
         "order_type": "LIMIT",
         "account": "ZG0790",

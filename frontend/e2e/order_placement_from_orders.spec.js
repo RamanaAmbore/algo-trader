@@ -93,7 +93,9 @@ test.describe('Order placement from /orders', () => {
       mode: 'paper', side: 'BUY',
       tradingsymbol: opt.tradingsymbol, exchange: opt.exchange,
       product: 'NRML', order_type: 'LIMIT', variety: 'regular',
-      quantity: opt.lot_size, price: 1.0, trigger_price: null, account: acct,
+      // v2 API (2026-07-08): qty is LOTS for F&O — 1 lot.
+      quantity: 1, lot_size_hint: opt.lot_size,
+      price: 1.0, trigger_price: null, account: acct,
     };
     const placeR = await page.request.post('/api/orders/ticket', { data: payload });
     expect([200, 201].includes(placeR.status()),
