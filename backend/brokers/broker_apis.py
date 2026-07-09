@@ -1872,6 +1872,76 @@ def _bmd_is_missing_val(value) -> bool:
     return v <= 0
 
 
+def _bmd_patch_one_row(
+    df, idx, k: str, has_close: bool, has_ltp: bool,
+    close_lookup: dict, ltp_lookup: dict,
+) -> tuple[bool, bool]:
+    """Patch close_price + last_price on ONE row where the source broker
+    came back with 0. Never overwrites a non-zero broker value.
+
+    Returns (touched, from_stale_cache):
+      * touched = True when either column was written
+      * from_stale_cache = True when LTP came from the last-known-good
+        in-process cache (row should be marked `last_price_stale=True`)."""
+    touched = False
+    from_stale = False
+    if has_close and _bmd_is_missing_val(df.at[idx, 'close_price']):
+        cls_p = close_lookup.get(k)
+        if cls_p:
+            df.at[idx, 'close_price'] = cls_p
+            touched = True
+    if has_ltp and _bmd_is_missing_val(df.at[idx, 'last_price']):
+        ltp_p = ltp_lookup.get(k)
+        if ltp_p:
+            df.at[idx, 'last_price'] = ltp_p
+            touched = True
+        else:
+            # Last resort: use the last-known-good LTP from the
+            # in-process cache (populated by every previous
+            # successful fetch).  Mark the row as stale so
+            # callers can surface a staleness indicator.
+            sym_only = k.split(":", 1)[-1] if ":" in k else k
+            cached_ltp = get_last_good_ltp(sym_only)
+            if cached_ltp is not None:
+                df.at[idx, 'last_price'] = cached_ltp
+                from_stale = True
+                touched = True
+    return touched, from_stale
+
+
+def _bmd_mark_stale_column(df, stale_indices: set) -> None:
+    """Mark rows whose LTP came from the last-known-good cache so
+    routes can propagate the staleness flag to the response schema."""
+    if not stale_indices:
+        return
+    if 'last_price_stale' not in df.columns:
+        df['last_price_stale'] = False
+    for idx in stale_indices:
+        df.at[idx, 'last_price_stale'] = True
+    logger.info(
+        f"market-data backfill: {len(stale_indices)} rows rescued "
+        f"by last-known-good LTP cache (live sources unavailable)"
+    )
+
+
+def _bmd_log_unresolved(unresolved: list[str], unique_keys) -> None:
+    """Diagnostic: log symbols where PriceBroker.quote() returned
+    neither close nor LTP. These rows stay at 0 → Day P&L = 0
+    downstream — the canonical "Dhan Day P&L shows zero while
+    Kite shows non-zero" symptom. When the operator reports it,
+    this log line names the exact symbols that failed so the
+    next step is deterministic (usually: symbol not in Kite
+    instruments cache, or broker quote returned no ohlc)."""
+    if not unresolved:
+        return
+    logger.warning(
+        f"market-data backfill: {len(unresolved)}/{len(unique_keys)} "
+        f"symbols unresolved by PriceBroker; rows stay at close=0 / "
+        f"ltp=0 → Day P&L=0. Unresolved: {unresolved[:10]}"
+        + (f" (+{len(unresolved)-10} more)" if len(unresolved) > 10 else "")
+    )
+
+
 def _bmd_patch_rows(df, row_indices, key_per_row, close_lookup, ltp_lookup, unique_keys) -> set:
     """Patch close_price + last_price in place, but ONLY on rows
     where the source broker came back with 0. Never overwrite a
@@ -1881,68 +1951,27 @@ def _bmd_patch_rows(df, row_indices, key_per_row, close_lookup, ltp_lookup, uniq
     Rows rescued via last-known-good cache get `last_price_stale=True`.
     Emits a warning log for symbols that resolved neither close nor LTP.
     Returns the set of patched row indices."""
-    _has_close = 'close_price' in df.columns
-    _has_ltp   = 'last_price'  in df.columns
-    _patched_indices: set = set()
-    _stale_patched_indices: set = set()  # rows rescued by last-good cache
-    _unresolved: list[str] = []
-    for _idx, _k in zip(row_indices, key_per_row):
-        if not _k:
+    has_close = 'close_price' in df.columns
+    has_ltp   = 'last_price'  in df.columns
+    patched_indices: set = set()
+    stale_patched_indices: set = set()  # rows rescued by last-good cache
+    unresolved: list[str] = []
+    for idx, k in zip(row_indices, key_per_row):
+        if not k:
             continue
-        _touched = False
-        if _has_close and _bmd_is_missing_val(df.at[_idx, 'close_price']):
-            _cls_p = close_lookup.get(_k)
-            if _cls_p:
-                df.at[_idx, 'close_price'] = _cls_p
-                _touched = True
-        if _has_ltp and _bmd_is_missing_val(df.at[_idx, 'last_price']):
-            _ltp_p = ltp_lookup.get(_k)
-            if _ltp_p:
-                df.at[_idx, 'last_price'] = _ltp_p
-                _touched = True
-            else:
-                # Last resort: use the last-known-good LTP from the
-                # in-process cache (populated by every previous
-                # successful fetch).  Mark the row as stale so
-                # callers can surface a staleness indicator.
-                _sym_only = _k.split(":", 1)[-1] if ":" in _k else _k
-                _cached_ltp = get_last_good_ltp(_sym_only)
-                if _cached_ltp is not None:
-                    df.at[_idx, 'last_price'] = _cached_ltp
-                    _stale_patched_indices.add(_idx)
-                    _touched = True
-        if _touched:
-            _patched_indices.add(_idx)
-        elif _k not in close_lookup and _k not in ltp_lookup:
-            _unresolved.append(_k)
-
-    # Mark rows whose LTP came from the last-known-good cache so routes
-    # can propagate the staleness flag to the response schema.
-    if _stale_patched_indices and 'last_price_stale' not in df.columns:
-        df['last_price_stale'] = False
-    for _idx in _stale_patched_indices:
-        df.at[_idx, 'last_price_stale'] = True
-    if _stale_patched_indices:
-        logger.info(
-            f"market-data backfill: {len(_stale_patched_indices)} rows rescued "
-            f"by last-known-good LTP cache (live sources unavailable)"
+        touched, from_stale = _bmd_patch_one_row(
+            df, idx, k, has_close, has_ltp, close_lookup, ltp_lookup,
         )
+        if from_stale:
+            stale_patched_indices.add(idx)
+        if touched:
+            patched_indices.add(idx)
+        elif k not in close_lookup and k not in ltp_lookup:
+            unresolved.append(k)
 
-    # Diagnostic: log symbols where PriceBroker.quote() returned
-    # neither close nor LTP. These rows stay at 0 → Day P&L = 0
-    # downstream — the canonical "Dhan Day P&L shows zero while
-    # Kite shows non-zero" symptom. When the operator reports it,
-    # this log line names the exact symbols that failed so the
-    # next step is deterministic (usually: symbol not in Kite
-    # instruments cache, or broker quote returned no ohlc).
-    if _unresolved:
-        logger.warning(
-            f"market-data backfill: {len(_unresolved)}/{len(unique_keys)} "
-            f"symbols unresolved by PriceBroker; rows stay at close=0 / "
-            f"ltp=0 → Day P&L=0. Unresolved: {_unresolved[:10]}"
-            + (f" (+{len(_unresolved)-10} more)" if len(_unresolved) > 10 else "")
-        )
-    return _patched_indices
+    _bmd_mark_stale_column(df, stale_patched_indices)
+    _bmd_log_unresolved(unresolved, unique_keys)
+    return patched_indices
 
 
 def _bmd_recompute_derived(df, patched_indices: set) -> None:
