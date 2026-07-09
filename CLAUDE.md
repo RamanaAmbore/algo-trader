@@ -281,6 +281,11 @@ ONLY during `[start_time, end_time)` IST. Beats holiday check, regular windows, 
 union `daily_book` DB query (past 7 days positions/holdings) into Kite subscription 
 universe. Survives conn_service restart, circuit-breaker open, broker unhealthy at boot.
 
+**Performance refresh Day P&L**: `_task_performance` calls `_fetch_positions_direct` which 
+now sums both `day_change_val` AND `pnl` in position aggregates, then applies 
+`apply_day_change_backstop()` before groupby to rescue edge cases where Kite omits the day 
+value. NavStrip P slot 1 (intraday P&L) now shows accurate daily delta all session.
+
 ---
 
 ## Market lifecycle events
@@ -661,6 +666,12 @@ Discovery via `?` (cheatsheet modal).
 **OrderTicket.svelte** — unified modal. DRAFT/PAPER/LIVE routes. Account required. 
 Qty validated (must be lot multiple). Pre-fills from context. Success feedback inline.
 
+**F&O qty convention** — API accepts LOTS for instruments with `lot_size > 1` (futures + options). 
+`backend/api/routes/orders_place.py:_ticket_validate_input` converts lots → contracts 
+(`contracts = lots × lot_size`) at request boundary. Frontend sends `_lots` for F&O; raw qty for equity. 
+G1 (LOT_MULTIPLE guard) removed — input is already in lots. G2 (5-lot cap, MCX 20-lot cap) 
+checks against lots directly.
+
 **Basket orders** — `POST /api/orders/basket` groups by account, `asyncio.gather` 
 per-account place. Shared `basket_tag=ramboq-basket-<uuid>`.
 
@@ -854,6 +865,12 @@ export PLAYWRIGHT_PASS='...'
 
 ## Critical math guards
 
+**F&O order qty convention** — API now accepts LOTS as input for instruments with 
+`lot_size > 1`. `backend/api/routes/orders_place.py:_ticket_validate_input` converts 
+lots → contracts (`contracts = lots × lot_size`) at the request boundary. G2 (5-lot cap, 
+MCX 20-lot cap) checks against lots directly. Frontend sends `_lots` for F&O; raw qty 
+for equity. Applies to `/api/orders/ticket`, `/api/orders/basket`, and preview routes.
+
 **Option qty vs lot_size** — Kite ships MCX intraday fields in lots, NSE in contracts. 
 Double-check every multiplication. Has caused multi-lakh P&L distortion + 20× over-orders.
 
@@ -882,15 +899,21 @@ by `apply_template_to_order` via `await get_lot_size()`.
 **Kite close_price stale overnight** — positions.close_price + quote.ohlc.close lag 
 prior-session EOD between MCX close + next open. Use `daily_book.ltp` instead.
 
-**Day P&L formula** — Decomposed intraday (not naive `(LTP−close)×qty`). Positions: 
-`overnight_qty × (LTP − prev_close) + day_buy/sell legs`. Holdings: `broker.pnl − (close − cost) × opening_qty`. 
-MCX guard: apply lot_size to intraday qty too.
+**Day P&L formula + backstop** — Decomposed intraday (not naive `(LTP−close)×qty`). 
+Positions: `overnight_qty × (LTP − prev_close) + day_buy/sell legs`. Holdings: 
+`broker.pnl − (close − cost) × opening_qty`. MCX guard: apply lot_size to intraday qty too. 
+Backend SSOT: `backend/api/algo/pnl_math.py:apply_day_change_backstop(raw: pd.DataFrame)` 
+rescues two edge cases — Case 1 (new position, `overnight_quantity=0, day_change_val=0, pnl≠0`) 
+and Case 3 (flat intraday, `quantity=0, day_change_val=0, pnl≠0`) where Kite omits the day 
+value. Applied in `routes/positions.py` + `background.py:_fetch_positions_direct` (now sums 
+both `day_change_val` AND `pnl` before applying the backstop).
 
 **Frontend Day P&L SSOT** — `baseDayPnlForPosition(p)` in `frontend/src/lib/data/nav.js` 
 is canonical new-position override: when `overnight_quantity=0 && pnl≠0`, Kite returns 
-`day_change_val=0` and real value is in `pnl`. All 6 frontend Day P&L surfaces (NavStrip P 
-slot 1, MarketPulse position card, MarketPulse TOTAL row, Snapshot rows, Legs grid, 
-Payoff overlay) MUST call this helper — never read `day_change_val` directly.
+`day_change_val=0` and real value is in `pnl`. Used by PerformancePage TOTAL row, 
+derivatives `_byUnderlyingTotal` F&O loop + `bumpExcluded` equity branch, dashboard 
+`_todayPnl` hero + `_positionsSummary`, NavStrip P slot 1, MarketPulse position card, 
+Snapshot rows, Legs grid, Payoff overlay. Never read `day_change_val` directly.
 
 ---
 
@@ -918,6 +941,7 @@ Payoff overlay) MUST call this helper — never read `day_change_val` directly.
 | Tune MCP audit | `/admin/settings` |
 | Update macro data | `backend/config/backend_config.yaml` |
 | Day P&L formula | `backend/api/algo/pnl_math.py` + `frontend/src/lib/data/nav.js` |
+| F&O order qty convention | `backend/api/routes/orders_place.py:_ticket_validate_input` + `frontend/src/lib/order/orderTicketSubmit.js` |
 | NAV breakdown | `frontend/src/lib/data/nav.js` + `backend/api/algo/nav.py:compute_firm_nav` |
 | LTP-override scaffold | `backend/api/helpers/ltp_patch.py` |
 | Mask account in text | `backend/shared/helpers/utils.py:mask_account_in_text` |
