@@ -1179,6 +1179,105 @@ async def _self_heal_empty_bars(
         _self_heal_log_once(s.tradingsymbol, s.exchange, 0, days)
 
 
+async def _fill_from_daily_book_sparkline(
+    miss_syms: list["SparklineSymbol"],
+    past_result: dict[str, list[float]],
+    orig_to_resolved: dict[str, str],
+) -> None:
+    """Tier 4 fallback: read daily_book kind='sparkline' snapshots written by
+    ``snapshot_sparkline`` when ohlcv_store + self-heal are both cold.
+
+    Mutates ``past_result`` in-place for symbols still missing after Tier 1-3.
+    Never raises — failure leaves past_result unchanged so compose_sparkline_series
+    returns [] → symbol omitted from response (not a 500).
+
+    Only called in db_only (market-closed) mode.
+
+    Query: DISTINCT ON (symbol) picks the most recent date per symbol, with a
+    secondary tiebreak on (payload_json->>'settled')::bool DESC so a settled
+    row beats an unsettled row on the same date if they somehow both exist
+    (defense-in-depth; the UPSERT normally collapses to one row per date).
+    """
+    if not miss_syms:
+        return
+
+    # Build candidate symbol set. Include both the normalised (resolved) name
+    # and any original bare names from orig_to_resolved so we can match when
+    # daily_book holds the contract name (CRUDEOIL26JULFUT) but the request
+    # used the bare root (CRUDEOIL).
+    resolved_to_bare: dict[str, str] = {v: k for k, v in orig_to_resolved.items()}
+
+    candidate_syms = list({s.tradingsymbol for s in miss_syms})
+    # Also look up bare/resolved variants
+    extra: list[str] = []
+    for s in miss_syms:
+        bare = resolved_to_bare.get(s.tradingsymbol)
+        if bare and bare not in candidate_syms:
+            extra.append(bare)
+        resolved = orig_to_resolved.get(s.tradingsymbol)
+        if resolved and resolved not in candidate_syms:
+            extra.append(resolved)
+    candidate_syms.extend(extra)
+
+    if not candidate_syms:
+        return
+
+    try:
+        from backend.api.database import async_session
+        from sqlalchemy import text as sa_text
+
+        async with async_session() as sess:
+            q = sa_text("""
+                SELECT DISTINCT ON (symbol)
+                    symbol, payload_json
+                FROM daily_book
+                WHERE kind    = 'sparkline'
+                  AND account = '__firm__'
+                  AND symbol  = ANY(:symbols)
+                ORDER BY symbol,
+                         date DESC,
+                         (CASE WHEN payload_json::jsonb->>'settled' = 'true'
+                               THEN 1 ELSE 0 END) DESC
+            """)
+            db_rows = (await sess.execute(q, {"symbols": candidate_syms})).all()
+
+        for (db_sym, payload_raw) in db_rows:
+            if not payload_raw:
+                continue
+            try:
+                payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
+                points: list[dict] = payload.get("points") or []
+                ltp_series = [float(p["ltp"]) for p in points if p.get("ltp") is not None]
+            except Exception:
+                continue
+            if not ltp_series:
+                continue
+
+            # Map db_sym back to the normalised tradingsymbol used as the key
+            # in past_result.  db_sym may be the resolved contract name; the
+            # request's norm_syms use the same resolved name after Step 1.
+            target_key = db_sym  # direct hit (most common)
+            if target_key not in {s.tradingsymbol for s in miss_syms}:
+                # Try bare→resolved direction
+                resolved = orig_to_resolved.get(db_sym)
+                if resolved and resolved in {s.tradingsymbol for s in miss_syms}:
+                    target_key = resolved
+                else:
+                    # Try resolved→bare direction
+                    bare = resolved_to_bare.get(db_sym)
+                    if bare and bare in {s.tradingsymbol for s in miss_syms}:
+                        target_key = bare
+
+            if not past_result.get(target_key):
+                past_result[target_key] = ltp_series
+                logger.debug(
+                    f"sparkline tier4: daily_book fallback hit "
+                    f"sym={db_sym} → key={target_key} points={len(ltp_series)}"
+                )
+    except Exception as exc:
+        logger.warning(f"sparkline tier4: daily_book fallback failed: {exc}")
+
+
 async def _build_spark_token_map(
     norm_syms: list["SparklineSymbol"],
 ) -> dict[str, int]:
@@ -1429,6 +1528,22 @@ class SparklineController(Controller):
                 norm_syms, past_result, today_result,
                 from_daily, yesterday, today_date, days,
             )
+
+        # ── Step 1c: Tier 4 — daily_book sparkline fallback ───────────────
+        # When ohlcv_store + self-heal are both cold (fresh deploy, persistence
+        # reset, warm task still running), fall back to the persisted
+        # daily_book kind='sparkline' snapshots written at market close.
+        # Only activated in db_only mode — open sessions must serve live data.
+        if db_only:
+            _db_fallback_syms = [
+                s for s in norm_syms
+                if not past_result.get(s.tradingsymbol)
+                and not today_result.get(s.tradingsymbol)
+            ]
+            if _db_fallback_syms:
+                await _fill_from_daily_book_sparkline(
+                    _db_fallback_syms, past_result, orig_to_resolved,
+                )
 
         # ── Steps 2+3: token map + LTP (tick_map → broker.ltp fallback) ───
         req_exchs_spark = {s.exchange.upper() for s in norm_syms}

@@ -759,6 +759,40 @@ async def snapshot_sparkline(*, settled: bool = False) -> dict:
     if not universe:
         return {"symbols": 0, "errors": []}
 
+    # ── Resolve virtual MCX/CDS bare roots to front-month contracts ──────────
+    # ohlcv_store keys data to the actual contract (e.g. CRUDEOIL26JULFUT),
+    # not the virtual root (CRUDEOIL). Without this step symbols like
+    # CRUDEOIL from old position snapshots return bars=None → skipped silently.
+    try:
+        from backend.api.routes.watchlist import (
+            _resolve_mcx_commodity,
+            _resolve_cds_currency,
+        )
+        from backend.api.algo.symbol_resolver import _strip_next
+
+        resolved_universe: list[tuple[str, str]] = []
+        for (sym, exch) in universe:
+            root, _is_next = _strip_next(sym)
+            is_bare_root = root.isalpha() and len(root) <= 12
+            if exch == "MCX" and is_bare_root:
+                try:
+                    actual = await _resolve_mcx_commodity(root)
+                    if actual:
+                        sym = actual.upper()
+                except Exception:
+                    pass
+            elif exch == "CDS" and is_bare_root:
+                try:
+                    actual = await _resolve_cds_currency(root)
+                    if actual:
+                        sym = actual.upper()
+                except Exception:
+                    pass
+            resolved_universe.append((sym, exch))
+        universe = resolved_universe
+    except Exception as e:
+        logger.warning(f"snapshot_sparkline: virtual-root resolution failed: {e}")
+
     # Read close-bar series from ohlcv_store for each symbol (5-day tail).
     from backend.api.persistence import ohlcv_store as _oh
     rows: list[dict] = []
@@ -823,15 +857,15 @@ async def _sparkline_universe_symbols(cap: int = 500) -> list[tuple[str, str]]:
         from backend.api.models import WatchlistItem
         async with async_session() as s:
             rows = (await s.execute(
-                sql_select(distinct(
+                sql_select(
                     WatchlistItem.tradingsymbol,
-                )).where(WatchlistItem.tradingsymbol.isnot(None))
+                    WatchlistItem.exchange,
+                ).where(WatchlistItem.tradingsymbol.isnot(None))
+                .distinct()
             )).all()
-            for (sym,) in rows:
+            for (sym, exch) in rows:
                 if sym:
-                    # Default watchlist to NSE — WatchlistItem doesn't
-                    # store an explicit exchange column.
-                    seen.add((str(sym).upper(), "NSE"))
+                    seen.add((str(sym).upper(), (str(exch).upper() if exch else "NSE")))
     except Exception:
         pass
 
