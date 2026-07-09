@@ -974,6 +974,16 @@
     }
     let moversChanged = false;
     if (enableMovers && _tickCount % _TICK_MOVERS === 0) {
+      // Snapshot BEFORE loadMovers() so _prevMoverSparkPairs holds the
+      // outgoing rotation — the symbols that may be pruned by the next
+      // loadSparklines() call. Reading movers here (pre-update) is safe
+      // because moversStore.value hasn't changed yet.
+      _prevMoverSparkPairs = untrack(() => movers ?? [])
+        .filter(m => m?.tradingsymbol)
+        .map(m => ({
+          tradingsymbol: String(m.tradingsymbol).toUpperCase(),
+          exchange: String(m.exchange || 'NSE').toUpperCase(),
+        }));
       await loadMovers();
       moversChanged = true;
     }
@@ -1245,6 +1255,8 @@
     }
     // Carry the previous mover rotation's pairs forward so their sparklines
     // survive one prune cycle (oscillating symbols show from cache).
+    // _prevMoverSparkPairs is snapshotted in _runTick() before loadMovers(),
+    // so it always holds the outgoing rotation regardless of who calls us.
     for (const p of _prevMoverSparkPairs) {
       const key = `${p.exchange}:${p.tradingsymbol}`;
       if (!seen.has(key)) {
@@ -1252,13 +1264,6 @@
         pairs.push(p);
       }
     }
-    // Snapshot current movers for the next rotation's grace window.
-    _prevMoverSparkPairs = untrack(() => moversStore.value ?? [])
-      .filter(m => m?.tradingsymbol)
-      .map(m => ({
-        tradingsymbol: String(m.tradingsymbol).toUpperCase(),
-        exchange: String(m.exchange || 'NSE').toUpperCase(),
-      }));
     if (!pairs.length) return;
     try {
       await sparklinesStore.load(pairs);

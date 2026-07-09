@@ -40,15 +40,10 @@
   // most once per poll cycle rather than on every SSE tick.
   let _pollCycleStamp = $state(0);
   // Consecutive poll-error counter for stale-data visual indicator.
-  // Only tint the strip amber after 2+ consecutive failures so transient
-  // errors (brief 502, timeout) don't flash the indicator unnecessarily.
+  // Tracked inside _load() after the await, not via $effect, because
+  // dataStore sets _error=null at fetch-start — a $effect would reset
+  // the counter to 0 on every poll start, making the threshold unreachable.
   let _staleFailCount = $state(0);
-  $effect(() => {
-    const hasErr = !!(positionsStore.error || holdingsStore.error);
-    untrack(() => {
-      _staleFailCount = hasErr ? _staleFailCount + 1 : 0;
-    });
-  });
   // Snapshot of _pollCycleStamp at the moment of the closed→open
   // session transition. _livePositionsToday / _liveHoldingsToday read
   // from positions[].day_change_val which is whatever the LAST poll
@@ -74,6 +69,8 @@
         holdingsStore.load(),
         fundsStore.load(),
       ]);
+      _staleFailCount = (positionsStore.error || holdingsStore.error)
+        ? _staleFailCount + 1 : 0;
       // After positions are fresh, refresh underlying spot quotes so
       // _expiryProfit can compute intrinsic values with current spots.
       // Runs fire-and-forget (a batchQuote failure should not delay
