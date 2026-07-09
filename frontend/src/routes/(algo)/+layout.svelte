@@ -116,7 +116,7 @@
       e.preventDefault();
       // TODO: open command palette when built; for now open activity modal
       // as the closest "search all actions" surface.
-      openActivityModal('order');
+      openActivityModal();
       return;
     }
     // Pause when the operator is typing in a field. document.activeElement
@@ -198,7 +198,7 @@
     // `h` = history/log → activity modal.
     if (k.toLowerCase() === 'h') {
       e.preventDefault();
-      openActivityModal('order');
+      openActivityModal();
       return;
     }
 

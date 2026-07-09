@@ -3726,7 +3726,7 @@
     // Open the layout-mounted ActivityLogModal singleton via store
     // instead of mounting a second instance here that races the
     // layout's. Duplication-audit P1 fix.
-    openActivityModal('order');
+    openActivityModal();
   }
 
   // Chart modal state — opened by the "Chart →" context-menu item.

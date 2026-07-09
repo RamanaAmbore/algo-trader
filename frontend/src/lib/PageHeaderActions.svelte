@@ -163,7 +163,7 @@
   function _openLog() {
     _orderOpen = false;
     _chartOpen = false;
-    openActivityModal('order');
+    openActivityModal();
   }
 </script>
 

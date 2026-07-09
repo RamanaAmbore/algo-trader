@@ -1324,7 +1324,7 @@
       // still use local _ctxAction state for their own modal mounts
       // below.
       if (action === 'log') {
-        openActivityModal('order');
+        openActivityModal();
         _ctxAction = null;
       } else {
         _ctxAction = /** @type {any} */ (action);

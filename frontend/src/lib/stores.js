@@ -998,16 +998,23 @@ export const activityModal = writable(
   ({ open: false })
 );
 
-/** Open the activity modal pre-selected on a given LogPanel tab.
+/** Open the activity modal, optionally deep-linking to a specific tab.
  *
- *  Writes the requested tab to activityStore so ActivityLogModal and
- *  the /activity page share the same tab state.
+ *  When `tab` is provided (e.g. 'conn' from BrokerHealthBadge), it
+ *  writes to activityStore so the modal and /activity page land on that
+ *  tab immediately. When omitted (the Log button, keyboard `h`, context
+ *  menus), the store's current tab is preserved — this is the whole point
+ *  of lifting state to activityStore.
  *
- *  @param {ActivityTab} [initialTab] */
-export function openActivityModal(initialTab = 'order') {
-  // Write the tab before opening so the modal renders on the correct
-  // tab from the first frame — no flash from a subsequent async update.
-  _activityStore.activeTab = initialTab;
+ *  @param {ActivityTab} [tab] */
+export function openActivityModal(tab) {
+  // Only override when a specific deep-link tab was requested.
+  // Generic open (no arg) must NOT reset to 'order' or the persistence
+  // goal is defeated: user switches to 'agent', closes modal, presses
+  // Log again → should re-open on 'agent'.
+  if (tab !== undefined) {
+    _activityStore.activeTab = tab;
+  }
   activityModal.set({ open: true });
 }
 

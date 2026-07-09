@@ -1419,7 +1419,7 @@
       _ctxSym  = sym;
       _ctxExch = exch;
       if (action === 'log') {
-        openActivityModal('order');
+        openActivityModal();
         _ctxAction = null;
       } else {
         _ctxAction = /** @type {any} */ (action);
