@@ -424,20 +424,3 @@ export function hardReset() {
   symbolTickCount.update(c => c + 1);
   return n;
 }
-
-/**
- * Diagnostic counts — exposed so a future /admin/health surface can
- * report symbolStore size + age-of-oldest-entry without enumerating
- * every entry on each render.
- */
-export function symbolStoreDiagnostics() {
-  let oldest = 0;
-  for (const snap of symbolStore.values()) {
-    const t = snap?.touched_at || 0;
-    if (oldest === 0 || (t > 0 && t < oldest)) oldest = t;
-  }
-  return {
-    size: symbolStore.size,
-    oldest_touched_at: oldest,
-  };
-}

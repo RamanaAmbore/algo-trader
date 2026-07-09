@@ -103,6 +103,14 @@
   // up stacking duplicate instances. Operator: navbar 5/5 chip should
   // open Activity with the conn tab selected.
 
+  // Prefill payload captured from the store when the ticket opens via
+  // the store path (keyboard `t`, programmatic openOrderTicketModal()).
+  // Null when the ticket was opened by clicking the header button
+  // directly (no prefill — blank ticket). Cleared on modal close so
+  // a subsequent blank-open doesn't inherit a previous surface's values.
+  /** @type {{ symbol?:string|null, exchange?:string|null, side?:'BUY'|'SELL'|null, qty?:number|null, lots?:number|null, price?:number|null, product?:string|null, lotSize?:number|null, currentQty?:number|null, action?:string|null, account?:string|null, accounts?:string[]|null, triggerSource?:string|null } | null} */
+  let _orderPrefill = $state(null);
+
   // ── Global keyboard-shortcut bridge ────────────────────────────────
   // `t` (trade) → order ticket. `k` (kline) → chart modal.
   // Both stores are written by the layout's _onGlobalKeydown; we
@@ -112,7 +120,11 @@
   let _unsubChart = /** @type {(() => void) | null} */ (null);
   onMount(() => {
     _unsubOrder = orderTicketModal.subscribe((v) => {
-      if (v.open) { _openOrder(); closeOrderTicketModal(); }
+      if (v.open) {
+        _orderPrefill = v.prefill ?? null;
+        _openOrder({ fromStore: true });
+        closeOrderTicketModal();
+      }
     });
     _unsubChart = chartModalTrigger.subscribe((v) => {
       if (v.open) { _openChart(); closeChartModalTrigger(); }
@@ -120,8 +132,11 @@
   });
   onDestroy(() => { _unsubOrder?.(); _unsubChart?.(); });
 
-  async function _openOrder() {
+  async function _openOrder(/** @type {{ fromStore?: boolean }} */ opts = {}) {
     _chartOpen = false;
+    // When called directly by the header button (not from the store path),
+    // clear any stale prefill so the modal opens as a blank ticket.
+    if (!opts.fromStore) _orderPrefill = null;
     // If the operator clicks before the default-symbol store has
     // resolved, wait briefly so the modal opens with the right anchor
     // (e.g. CRUDEOIL) rather than the empty fallback that would later
@@ -220,23 +235,27 @@
        bottom"). The × close stays at the top-right of SymbolPanel's
        own header; chart icon hidden since every page already has one
        in its own header. -->
-  <!-- Operator: "on cold start, buy is still active." The navbar Order
-       button is always a "compose new order" affordance — operator
-       picks the side. Even when `_effectiveSymbol` is non-empty (from
-       the recent-symbol store), the SIDE is the operator's choice, not
-       inherited from the recent pick. The symbol-row signal flows
-       through `currentQty != 0` (LogPanel modify/repeat path on
-       /orders), NOT through PageHeaderActions. So always pass null
-       here; SymbolPanel handles the inline-side-toggle from there. -->
+  <!-- When opened via the store path (keyboard `t`, programmatic call)
+       the prefill payload overrides the defaults. When opened by
+       clicking the header button directly (_orderPrefill is null), the
+       symbol resolves from the recent-symbol store and side stays null
+       so the operator picks it. Prefill is cleared on close so a
+       subsequent blank-open doesn't inherit prior values. -->
   <SymbolPanel
-    symbol={_effectiveSymbol}
-    exchange={_effectiveExchange}
-    side={null}
+    symbol={_orderPrefill?.symbol || _effectiveSymbol}
+    exchange={_orderPrefill?.exchange || _effectiveExchange}
+    side={_orderPrefill?.side ?? null}
+    action={_orderPrefill?.action ?? 'open'}
+    qty={_orderPrefill?.qty ?? 0}
+    lotSize={_orderPrefill?.lotSize ?? 0}
+    currentQty={_orderPrefill?.currentQty ?? 0}
+    price={_orderPrefill?.price ?? undefined}
+    product={_orderPrefill?.product ?? undefined}
     defaultTab="ticket"
-    accounts={_accountsList}
-    account={_effectiveAccount}
-    onClose={() => { _orderOpen = false; }}
-    onSubmit={() => { setTimeout(() => { _orderOpen = false; }, 1500); }}
+    accounts={_orderPrefill?.accounts ?? _accountsList}
+    account={_orderPrefill?.account || _effectiveAccount}
+    onClose={() => { _orderOpen = false; _orderPrefill = null; }}
+    onSubmit={() => { setTimeout(() => { _orderOpen = false; _orderPrefill = null; }, 1500); }}
   />
 {/if}
 

@@ -85,6 +85,7 @@
 
   import { onMount, onDestroy, getContext, untrack } from 'svelte';
   import { readChartPref, writeChartPref } from '$lib/data/chartPrefs';
+  import { chartStore } from '$lib/data/chartStore.svelte.js';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
   import {
     fetchOptionsHistorical,
@@ -332,15 +333,28 @@
   const _pulse = createChartRefreshPulse();
 
   // ── Historical OHLCV ──────────────────────────────────────────────
+  // ── OHLCV + loading — backed by chartStore ──────────────────────
+  // _bars and _histLoading are local reactive aliases that mirror the
+  // store so existing template bindings and derived computations work
+  // without modification.  All writes go through the store setters so
+  // ChartModal and the /charts page always see the same data.
   /** @type {Array<{ts:string,open:number,high:number,low:number,close:number,volume:number}>} */
-  let _bars        = $state([]);
+  let _bars        = $state(/** @type {any[]} */(chartStore.ohlcv ?? []));
+  // Sync from store → local (e.g. another surface loaded data).
+  $effect(() => {
+    const storeOhlcv = chartStore.ohlcv;
+    const next = storeOhlcv ?? [];
+    if (_bars !== next) _bars = next;
+  });
   // Fire when _bars changes to a non-empty array (new data landed from
   // broker/cache). Skip on symbol-change blanks (length === 0) and on
   // zoom/pan/overlay changes (those don't touch _bars).
   $effect(() => {
     if (_bars.length) untrack(() => _pulse.notify('chart'));
   });
-  let _histLoading = $state(false);
+  let _histLoading = $state(chartStore.loading);
+  // Sync loading from store.
+  $effect(() => { _histLoading = chartStore.loading; });
   // _histLoadingSlow flips true ~150ms after _histLoading starts so
   // cache-hits (which complete in one frame) don't flash a spinner.
   // When true, the chart shows a "Fetching from broker…" overlay
@@ -383,15 +397,24 @@
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _suppressTimer = null;
   let _chartLoaded = $state(false);
-  // Range — persisted to localStorage so the operator's last-picked range
-  // (1D / 1W / 1M / 3M / 6M / 1Y) survives page navigation. Hydrated in
-  // onMount (SSR-safe). Default 30 (1M) on first visit.
+  // Range — sourced from chartStore.days so modal and page share the same
+  // last-picked range.  The local _chartDays is a reactive alias that stays
+  // in sync with the store; writes go through chartStore.setDays() which
+  // also persists to localStorage via writeChartPref.
   const _RANGE_LS_KEY = 'rbq.cache.chart-range.v1';
-  let _chartDays   = $state(30);
+  let _chartDays   = $state(chartStore.days);  // seed from store (default 30)
   let _rangeHydrated = $state(false);
+  // Bridge: store → local (e.g. /charts page updated the range).
+  $effect(() => {
+    const d = chartStore.days;
+    if (!_rangeHydrated) return;
+    if (d !== _chartDays) _chartDays = d;
+  });
+  // Bridge: local → store + LS (operator clicks a range pill).
   $effect(() => {
     const snap = _chartDays;
     if (!_rangeHydrated) return;
+    if (snap !== chartStore.days) chartStore.setDays(snap);
     writeChartPref(_RANGE_LS_KEY, snap);
   });
   // Default to candle on first visit; persisted to localStorage so the
@@ -414,33 +437,42 @@
       }
     } catch (_) { /* quota — skip silently */ }
   });
-  // Overlays MultiSelect — drives derived booleans below. Volume
-  // is no longer in this list (always-on via _showVol const below).
-  // Persisted to localStorage so toggles survive reload.
+  // Overlays — sourced from chartStore so the selection is shared
+  // between ChartModal and the /charts page.  Hydrated from localStorage
+  // in onMount via chartStore.hydrateOverlays().  Writes go through
+  // chartStore.setOverlays() which persists to LS under the same key
+  // ('rbq.cache.chart-overlays.v1') — no separate persist effect needed.
   //
-  // NOTE: Cannot call localStorage during $state() init because this
-  // module runs on the server during SSR where localStorage is undefined.
-  // Instead, start with [] and hydrate from localStorage in onMount.
-  const _OVERLAY_LS_KEY = 'rbq.cache.chart-overlays.v1';
+  // NOTE: _overlays is a local reactive alias so existing template
+  // bindings (bind:value={_overlays}) continue to work.  When the
+  // MultiSelect writes back via bind: it calls the setter defined in
+  // the object spread below via a $effect watcher.
+  //
+  // Cannot call localStorage during $state() init — SSR guard.
+  // _overlaysHydrated retained so the MultiSelect bind: round-trip
+  // (template writes _overlays → $effect → chartStore.setOverlays)
+  // does not fire before hydration is complete, avoiding a spurious
+  // LS write of [] that would wipe the stored selection.
   let _overlays    = $state(/** @type {string[]} */([]));
-  // `$state` so the gate inside the persist effect re-fires when
-  // hydration completes. A plain `let` would not trigger the effect
-  // to re-evaluate (Svelte 5 only tracks $state reads), and the first
-  // effect run would return early WITHOUT subscribing to _overlays —
-  // so subsequent toggles never wrote to localStorage even though the
-  // array did change. Caught by the multi-select e2e test.
   let _overlaysHydrated = $state(false);
-  // Persist overlay selection whenever it changes (after hydration).
-  // Read _overlays BEFORE the gate so the effect subscribes to it on
-  // first run, independent of the hydration state.
+  // Bridge: keep _overlays in sync when chartStore.overlays changes
+  // (e.g. another surface called setOverlays).
+  $effect(() => {
+    const storeOverlays = chartStore.overlays;
+    if (!_overlaysHydrated) return;
+    // Only update local if the reference differs (avoids loop).
+    if (JSON.stringify(_overlays) !== JSON.stringify(storeOverlays)) {
+      _overlays = storeOverlays.slice();
+    }
+  });
+  // Bridge: write back to store when operator toggles overlays via the
+  // local MultiSelect.  LS persistence happens inside setOverlays().
   $effect(() => {
     const snap = _overlays.slice();
     if (!_overlaysHydrated) return;
-    try {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.setItem(_OVERLAY_LS_KEY, JSON.stringify(snap));
-      }
-    } catch (_) { /* quota exceeded — silently skip */ }
+    if (JSON.stringify(snap) !== JSON.stringify(chartStore.overlays)) {
+      chartStore.setOverlays(snap);
+    }
   });
   // Tracks whether the Overlays MultiSelect dropdown is open — used to
   // suppress both hover popups so they don't clash with the open panel.
@@ -491,7 +523,12 @@
   $effect(() => { loading = _histLoading; });
 
   /** @type {Array<{ts:string,close:number}>} */
-  let _spotBars = $state([]);
+  let _spotBars = $state(/** @type {any[]} */(chartStore.spotBars ?? []));
+  // Sync spotBars from store.
+  $effect(() => {
+    const next = chartStore.spotBars ?? [];
+    if (_spotBars !== next) _spotBars = next;
+  });
 
   // Kite returns the index spot under its quote-key name (e.g.
   // "NIFTY BANK", "NIFTY 50", "NIFTY FIN SERVICE") via /quote, but

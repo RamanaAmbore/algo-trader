@@ -198,10 +198,6 @@ export const authStore = createAuthStore();
 
 export const dataCache = {
   market:    null,   // { content, cycle_date, refreshed_at }
-  holdings:  null,   // { rows, summary, refreshed_at }
-  positions: null,   // { rows, summary, refreshed_at }
-  funds:     null,   // { rows, refreshed_at }
-  insights:  null,   // { content }
 };
 
 /**
@@ -536,61 +532,6 @@ export function marketAwareInterval(fn, ms, hiddenMs = 0) {
   };
 }
 
-/**
- * Per-exchange polling gate.
- *
- * Like `marketAwareInterval` but gated to a SPECIFIC exchange. Use this
- * for pollers whose data only changes during the named exchange's
- * session (e.g. NSE-equity quote subscriptions that should not waste
- * cycles during the MCX-only 15:30-23:30 window).
- *
- * @param {() => void}    fn         callback to fire on each tick
- * @param {number}        ms         foreground interval (ms)
- * @param {'NSE'|'MCX'|null} exchange  gate — when null behaves like marketAwareInterval
- * @returns {() => void}  teardown
- *
- * Semantics:
- *   - `exchange='NSE'` → fn runs only when isNseOpen() === true.
- *   - `exchange='MCX'` → fn runs only when isMcxOpen() === true.
- *   - `exchange=null`  → fn runs while ANY market is open (legacy behaviour).
- *   - On a closed-to-open transition of the gated exchange, fn fires
- *     ONCE immediately so the page-data updates the instant the
- *     session boundary is crossed (rather than waiting for the next
- *     `ms`-cadence tick).
- *
- * The 5s edge-detect clock is shared with `marketAwareInterval` so a
- * stale `_serverStatus` cache cannot miss a closed→open transition.
- */
-export function marketOpenInterval(fn, ms, exchange = null) {
-  // Resolve the gate function once. _isOpen() is called on every tick
-  // and edge-check; keep it cheap (a property read on the cached
-  // _serverStatus, no Date allocation).
-  const _isOpen = exchange === 'NSE' ? isNseOpen
-                : exchange === 'MCX' ? isMcxOpen
-                :                      isMarketOpen;
-  let _prevOpen = _isOpen();
-  let _edgeRunning = false;
-  const mainTeardown = visibleInterval(() => {
-    if (!_isOpen()) return;
-    fn();
-  }, ms, 'pause');
-  const edgeTeardown = visibleInterval(async () => {
-    if (_edgeRunning) return;
-    _edgeRunning = true;
-    try {
-      try { await fetchMarketStatus(); } catch { /* silent */ }
-      const open = _isOpen();
-      if (open && !_prevOpen) fn();
-      _prevOpen = open;
-    } finally {
-      _edgeRunning = false;
-    }
-  }, 5000);
-  return () => {
-    mainTeardown();
-    edgeTeardown();
-  };
-}
 
 /** Display label for a git branch name. The `main` branch is the
  *  prod deployment target — operators think in "prod / dev" terms,
@@ -1070,19 +1011,69 @@ export function closeActivityModal() {
 // Keyboard shortcut `t` (trade) writes to this store; PageHeaderActions
 // subscribes and calls _openOrder(). Pages without PageHeaderActions
 // mounted treat the event as a no-op — consistent with the activity-modal
-// pattern. Shape: { open: bool }
+// pattern.
+//
+// Shape: {
+//   open:    boolean,
+//   prefill: OrderTicketPrefill | null
+// }
+//
+// OrderTicketPrefill fields (all optional):
+//   symbol        — tradingsymbol string
+//   exchange      — 'NSE' | 'NFO' | 'MCX' | 'CDS' | etc.
+//   side          — 'BUY' | 'SELL'
+//   qty           — raw quantity (equity) or contract qty (F&O)
+//   lots          — lot count (F&O); preferred over qty when present
+//   price         — limit price hint
+//   product       — 'CNC' | 'MIS' | 'NRML'
+//   lotSize       — instrument lot size (used by ticket to initialise the lots field)
+//   currentQty    — signed held qty (>0 long, <0 short) — drives ADD/CLOSE label
+//   action        — 'open' | 'close' | 'modify'
+//   account       — account_id hint
+//   accounts      — candidate account list
+//   triggerSource — 'pulse' | 'derivatives' | 'keyboard' | 'positions' | etc. (audit/debug)
+//
+// Surfaces that have their own local SymbolPanel instance (MarketPulse,
+// derivatives page, performance page, orders page) continue using their
+// own local ticketProps — the store path is the global (keyboard / header)
+// instance mounted in PageHeaderActions.
+
+/** @typedef {{
+ *   symbol?:        string | null,
+ *   exchange?:      string | null,
+ *   side?:          'BUY' | 'SELL' | null,
+ *   qty?:           number | null,
+ *   lots?:          number | null,
+ *   price?:         number | null,
+ *   product?:       string | null,
+ *   lotSize?:       number | null,
+ *   currentQty?:    number | null,
+ *   action?:        'open' | 'close' | 'modify' | null,
+ *   account?:       string | null,
+ *   accounts?:      string[] | null,
+ *   triggerSource?: string | null,
+ * }} OrderTicketPrefill */
+
 export const orderTicketModal = writable(
-  /** @type {{ open: boolean }} */
-  ({ open: false })
+  /** @type {{ open: boolean, prefill: OrderTicketPrefill | null }} */
+  ({ open: false, prefill: null })
 );
 
-/** Open the order-ticket modal from any context (e.g. keyboard `t`). */
-export function openOrderTicketModal() {
-  orderTicketModal.set({ open: true });
+/**
+ * Open the order-ticket modal from any context.
+ *
+ * Pass a prefill object to pre-populate the ticket fields.
+ * Passing nothing (or null) opens a blank ticket — same as
+ * the keyboard `t` shortcut behaviour.
+ *
+ * @param {OrderTicketPrefill | null} [prefill]
+ */
+export function openOrderTicketModal(prefill = null) {
+  orderTicketModal.set({ open: true, prefill: prefill ?? null });
 }
 /** Close the order-ticket modal. */
 export function closeOrderTicketModal() {
-  orderTicketModal.set({ open: false });
+  orderTicketModal.set({ open: false, prefill: null });
 }
 
 // ── Chart modal control ──────────────────────────────────────────────
@@ -1272,7 +1263,7 @@ export function refreshConnStatusNow() {
   if (browser && _connPoll) _connPoll();
 }
 
-export function stopConnStatusPoller() {
+function stopConnStatusPoller() {
   if (_connPollerTeardown) {
     _connPollerTeardown();
     _connPollerTeardown = null;
@@ -1300,7 +1291,7 @@ export function startMarketStatusPoller() {
   _mktStatusTeardown = visibleInterval(fetchMarketStatus, 5 * 60 * 1000, 'throttle:300000');
 }
 
-export function stopMarketStatusPoller() {
+function stopMarketStatusPoller() {
   if (_mktStatusTeardown) {
     _mktStatusTeardown();
     _mktStatusTeardown = null;

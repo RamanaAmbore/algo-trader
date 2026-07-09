@@ -27,7 +27,7 @@
  *   nav: number,
  * }}
  */
-export function navRowForAccount(acct, funds, positions, holdings) {
+function navRowForAccount(acct, funds, positions, holdings) {
   const fundsRow    = (funds ?? []).find(r => r.account === acct);
   const cash_sod    = Number(fundsRow?.cash) || 0;
   const opt_premium = Number(fundsRow?.option_premium) || 0;
@@ -177,7 +177,7 @@ export function livePositionDayPnl({ closePx, pollLtp, qty, avg, dcvRow }, liveL
  * @param {Array<{exchange?: string, pnl?: number, day_change_val?: number, overnight_quantity?: number}>} positions
  * @returns {{ pnlTotal: number, dayTotal: number }}
  */
-export function positionsPnlFiltered(positions) {
+function positionsPnlFiltered(positions) {
   let pnlTotal = 0;
   let dayTotal  = 0;
   for (const p of (positions ?? [])) {

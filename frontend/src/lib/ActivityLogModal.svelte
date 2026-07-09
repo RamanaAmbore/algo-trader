@@ -21,31 +21,19 @@
   import BellIcon from '$lib/icons/BellIcon.svelte';
   import { portal } from '$lib/portal';
   import { selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
+  import { activityStore } from '$lib/data/activityStore.svelte.js';
 
   let {
     /** @type {() => void} */
     onClose,
-    /**
-     * Which LogPanel tab to land on. Defaults to 'order' (matches the
-     * historical Activity button behaviour). Navbar broker chip passes
-     * 'conn' to drop the operator directly on the conn_service log.
-     * @type {'order'|'agent'|'terminal'|'simulator'|'system'|'conn'|'news'}
-     */
-    initialTab = 'order',
   } = $props();
 
-  // Account filter — owned by the modal so it sits in the header
-  // (operator: "the account on the tab line should go to activity
-  // header"). LogPanel binds to this prop and skips its own inline
-  // dropdown when hideInlineAccountFilter=true.
-  /** @type {string[]} */
-  let _accountFilter = $state([]);
+  // availableAccounts is per-mount ephemeral — derived from the current
+  // order rows by LogPanel. Not stored globally (different mounts have
+  // different row sets; a stale value from a prior open would bleed
+  // into the dropdown until the first poll completes).
   /** @type {string[]} */
   let _availableAccounts = $state([]);
-  // Log level filter — operator: "the default is error." Persists
-  // across tab changes inside LogPanel because state lives here.
-  /** @type {'all'|'error'|'warning'|'info'} */
-  let _levelFilter = $state('all');
 
   let _modalEl = $state(/** @type {HTMLElement|null} */ (null));
   let _closeBtnEl = $state(/** @type {HTMLButtonElement|null} */ (null));
@@ -113,10 +101,13 @@
       </span>
       <!-- Account + level filters lifted out of LogPanel's tab row.
            Single shared component — same chrome /orders Activity
-           card uses, so all surfaces stay visually identical. -->
+           card uses, so all surfaces stay visually identical.
+           accountFilter + levelFilter bound to activityStore so
+           state persists across modal open/close and is shared with
+           the /activity page. -->
       <ActivityHeaderFilters
-        bind:accountFilter={_accountFilter}
-        bind:levelFilter={_levelFilter}
+        bind:accountFilter={activityStore.accountFilter}
+        bind:levelFilter={activityStore.levelFilter}
         availableAccounts={_availableAccounts} />
       <button type="button" class="alm-close" bind:this={_closeBtnEl}
               aria-label="Close activity log">×</button>
