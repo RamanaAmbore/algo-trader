@@ -245,6 +245,45 @@ _XCHG_TO_GROWW_MARKET_STATUS: dict[str, tuple[str, ...]] = {
     "MCX": ("MCX", "MCX_COMM"),
 }
 
+_GROWW_OPEN_STATUS_STRINGS = frozenset({"OPEN", "TRADING", "ACTIVE", "Y", "YES", "TRUE"})
+
+
+def _extract_groww_status_rows(resp: Any, target_codes: tuple[str, ...]) -> list[dict] | None:
+    """Coerce Groww's market-status response into a flat list of rows.
+
+    Accepts the documented list envelope AND the flat-dict-by-segment
+    alternate observed across SDK versions. Returns None when the shape
+    is unparseable so the caller can fall through to the next probe."""
+    if not isinstance(resp, dict):
+        return None
+    data = resp.get("data") or resp.get("payload") or resp
+    if isinstance(data, list):
+        return [r for r in data if isinstance(r, dict)]
+    if isinstance(data, dict):
+        rows: list[dict] = []
+        for code in target_codes:
+            v = data.get(code) or data.get(code.lower())
+            if isinstance(v, dict):
+                rows.append({"segment": code, **v})
+            elif isinstance(v, (str, bool)):
+                rows.append({"segment": code, "status": v})
+        return rows
+    return None
+
+
+def _groww_row_indicates_open(row: dict, target_codes: tuple[str, ...]) -> bool:
+    """Return True when this row's segment matches AND its status
+    reads as open (boolean True or one of the accepted strings)."""
+    seg = str(row.get("segment") or row.get("exchange") or "").upper()
+    if seg not in target_codes:
+        return False
+    st = row.get("status") or row.get("trading_status")
+    if isinstance(st, bool):
+        return st
+    if isinstance(st, str):
+        return st.upper() in _GROWW_OPEN_STATUS_STRINGS
+    return False
+
 # Kite order_type → Groww order_type. Values match GrowwAPI constants:
 #   GrowwAPI.ORDER_TYPE_MARKET             = "MARKET"
 #   GrowwAPI.ORDER_TYPE_LIMIT              = "LIMIT"
@@ -686,6 +725,23 @@ class GrowwBroker(Broker):
         to Groww's segment vocabulary. Same shape semantics as Dhan:
         ANY mapped segment reporting active means the exchange is
         open."""
+        resp = self._call_market_status_sdk(exchange)
+        if resp is None:
+            return None
+        target_codes = _XCHG_TO_GROWW_MARKET_STATUS.get((exchange or "").upper())
+        if not target_codes:
+            return None
+        rows = _extract_groww_status_rows(resp, target_codes)
+        if rows is None:
+            # SDK returned a shape we can't parse — probe falls through.
+            return None
+        for row in rows:
+            if _groww_row_indicates_open(row, target_codes):
+                return True
+        return False
+
+    def _call_market_status_sdk(self, exchange: str) -> Any | None:
+        """Discover the SDK method + invoke; returns raw response or None on miss/failure."""
         sdk = self.groww
         status_fn = (getattr(sdk, "get_market_status", None)
                      or getattr(sdk, "market_status", None)
@@ -693,45 +749,10 @@ class GrowwBroker(Broker):
         if status_fn is None:
             return None
         try:
-            resp = status_fn()
+            return status_fn()
         except Exception as e:
             logger.debug(f"GrowwBroker.market_status({exchange}) SDK call failed: {e}")
             return None
-
-        target_codes = _XCHG_TO_GROWW_MARKET_STATUS.get((exchange or "").upper())
-        if not target_codes:
-            return None
-
-        rows: list[dict] = []
-        if isinstance(resp, dict):
-            data = resp.get("data") or resp.get("payload") or resp
-            if isinstance(data, list):
-                rows = [r for r in data if isinstance(r, dict)]
-            elif isinstance(data, dict):
-                for code in target_codes:
-                    v = data.get(code) or data.get(code.lower())
-                    if isinstance(v, dict):
-                        rows.append({"segment": code, **v})
-                    elif isinstance(v, (str, bool)):
-                        rows.append({"segment": code, "status": v})
-        elif not rows:
-            # SDK returned a shape we can't parse (bare list, string,
-            # None, …). Return None so the probe falls through to the
-            # next broker / bellwether path instead of claiming closed.
-            return None
-        for row in rows:
-            seg = str(row.get("segment") or row.get("exchange") or "").upper()
-            if seg not in target_codes:
-                continue
-            st = row.get("status") or row.get("trading_status")
-            if isinstance(st, bool):
-                if st:
-                    return True
-                continue
-            if isinstance(st, str):
-                if st.upper() in ("OPEN", "TRADING", "ACTIVE", "Y", "YES", "TRUE"):
-                    return True
-        return False
 
     # ── Order entry ───────────────────────────────────────────────────
 
