@@ -1412,13 +1412,22 @@
     // Tier 6 — Popular/liquid F&O underlyings (NIFTY, BANKNIFTY,
     // RELIANCE, …). Only surfaced when both the book AND the watchlist
     // contribute nothing — ensures the picker never lands on an empty
-    // list. Gated on instrumentsReady so getOptionUnderlyingLot is
-    // available (and we don't emit stale zeroes). Dedupe against
-    // everything above.
-    if (out.length === 0 && instrumentsReady) {
+    // list. Not gated on instrumentsReady: the list is a static hardcoded
+    // whitelist of valid F&O roots so it's safe to emit before instruments
+    // resolves, giving the auto-select $effect something to pin on cold start.
+    // getOptionUnderlyingLot returns 0 when instruments aren't ready yet,
+    // so those entries are still filtered out once instruments load —
+    // on cold start we skip the lot-size guard so the picker seeds immediately.
+    // Dedupe against everything above.
+    if (out.length === 0) {
       for (const u of POPULAR_UNDERLYINGS) {
         if (!u || seen.has(u)) continue;
-        if (getOptionUnderlyingLot(u) === 0) continue;
+        // When instruments aren't loaded yet, lot-size lookup returns 0 for
+        // everything — skip the filter so the static whitelist seeds the
+        // picker on cold start. Once instrumentsReady flips, the derived
+        // recomputes and the lot-size guard re-applies, filtering out any
+        // root that genuinely has no F&O contracts.
+        if (instrumentsReady && getOptionUnderlyingLot(u) === 0) continue;
         seen.add(u);
         out.push({ value: u, label: u, hint: 'popular' });
       }
@@ -3638,6 +3647,15 @@
     // /orders then navigated here). The stale-while-revalidate cache
     // above still provides an instant paint of the previous state.
     loadPositions({ fresh: true });
+    // Cold-start: seed a default so the picker and payoff card mount immediately.
+    // The auto-select $effect overwrites this once real picker data arrives
+    // (positions / watchlist / instruments). Tier 6 of underlyingOptionsForPicker
+    // now emits POPULAR_UNDERLYINGS without requiring instrumentsReady, so this
+    // seed and the $effect's first-pass pick will both resolve to NIFTY on a
+    // clean session with no positions and no sessionStorage.
+    if (!selectedUnderlying) {
+      selectedUnderlying = POPULAR_UNDERLYINGS[0]; // 'NIFTY'
+    }
     // Load the instruments cache so the option-chain picker has data.
     // Already cached in IndexedDB after the first /console autocomplete
     // load — most operators will see this resolve from cache instantly.
@@ -3647,6 +3665,7 @@
     try {
       await loadInstruments();
       instrumentsReady = true;
+      loadUnderlyingQuotes(); // seed spot prices for _clientPayoffStub on cold start
     } catch (_) { /* instruments unreachable — chain picker hides */ }
     // SECONDARY — broker accounts, default watchlist, hedge-proxy table.
     // None of these gate the primary chain / payoff render:
