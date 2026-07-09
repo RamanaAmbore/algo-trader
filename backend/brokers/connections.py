@@ -1463,41 +1463,97 @@ class Connections(SingletonBase):
         if os.environ.get("RAMBOQ_USE_CONN_SERVICE", "").strip().lower() in (
             "1", "true", "yes", "on",
         ):
-            # Cutover flag-on path. Don't touch any broker SDKs in this
-            # process. Pull the account list from conn_service so
-            # registry / mask_account / navbar surfaces still work.
-            from backend.brokers.client.remote_broker import (
-                list_remote_accounts, trigger_rebuild,
-            )
-            try:
-                # Hot-rebuild on the canonical side first (this is the
-                # CRUD-after-write path); if conn_service is unreachable
-                # we still update the local id_map for any cached rows.
-                trigger_rebuild()
-                rows = list_remote_accounts()
-            except Exception as e:
-                logger.warning(
-                    "rebuild_from_db: conn_service delegation failed: %s", e
-                )
-                rows = []
-            self.conn = {}  # canonical: no local broker sessions
-            self._broker_id_map = {
-                r["account"]: r.get("broker_id", "zerodha_kite")
-                for r in rows
-                if r.get("account")
-            }
-            # Mirror to register_accounts so mask_account() / utils
-            # functions that key on the live account list still resolve.
-            try:
-                from backend.shared.helpers.utils import register_accounts
-                register_accounts(list(self._broker_id_map.keys()))
-            except Exception:
-                pass
+            self._rebuild_via_conn_service()
             return
 
+        rows = await self._load_active_broker_rows()
+        if rows is None:
+            return  # DB read failed; keep YAML view
+        if not rows:
+            # Truly empty (no DB rows and YAML seed had nothing). Leave self.conn as-is.
+            return
+
+        _dhan_deferred = self._compute_dhan_deferred_accounts(rows)
+
+        # Build new credentials dict from DB rows + decrypt in-memory.
+        # The connection type branches on broker_id — Dhan rows build a
+        # DhanConnection (client_id + access_token), everything else
+        # (Kite + Kite-legacy) builds a KiteConnection.
+        new_conn: dict[str, Any] = {}
+        for r in rows:
+            broker_id = (r.broker_id or "zerodha_kite").lower()
+            if broker_id == "dhan" and r.account in _dhan_deferred:
+                continue  # Deferred by the multi-account stabilizer above.
+            try:
+                conn_obj = self._build_conn_for_row(r, broker_id)
+                if conn_obj is not None:
+                    new_conn[r.account] = conn_obj
+            except Exception as e:
+                logger.error(f"{broker_id} connection init failed for "
+                             f"{r.account!r}: {e}")
+                continue
+
+        if not new_conn:
+            logger.warning("rebuild_from_db: every broker_accounts row failed to load; "
+                           "leaving self.conn as YAML view.")
+            return
+
+        new_broker_id_map, new_priority_map, new_hist_enabled_map = \
+            self._build_row_lookup_maps(rows, new_conn)
+
+        with Connections._init_lock:
+            self.conn = new_conn
+            self._broker_id_map     = new_broker_id_map
+            self._priority_map      = new_priority_map
+            self._hist_enabled_map  = new_hist_enabled_map
+
+        self._refresh_mask_registry(new_conn)
+        self._refresh_dhan_priority_caches(rows, new_conn)
+        logger.info(f"Connections: rebuilt from DB · accounts={sorted(new_conn.keys())}")
+
+        self._nudge_ticker_on_rebind(new_conn, new_broker_id_map, new_priority_map)
+
+    def _rebuild_via_conn_service(self) -> None:
+        """Cutover flag-on path. Don't touch any broker SDKs in this
+        process. Pull the account list from conn_service so
+        registry / mask_account / navbar surfaces still work.
+        """
+        from backend.brokers.client.remote_broker import (
+            list_remote_accounts, trigger_rebuild,
+        )
+        try:
+            # Hot-rebuild on the canonical side first (this is the
+            # CRUD-after-write path); if conn_service is unreachable
+            # we still update the local id_map for any cached rows.
+            trigger_rebuild()
+            rows = list_remote_accounts()
+        except Exception as e:
+            logger.warning(
+                "rebuild_from_db: conn_service delegation failed: %s", e
+            )
+            rows = []
+        self.conn = {}  # canonical: no local broker sessions
+        self._broker_id_map = {
+            r["account"]: r.get("broker_id", "zerodha_kite")
+            for r in rows
+            if r.get("account")
+        }
+        # Mirror to register_accounts so mask_account() / utils
+        # functions that key on the live account list still resolve.
+        try:
+            from backend.shared.helpers.utils import register_accounts
+            register_accounts(list(self._broker_id_map.keys()))
+        except Exception:
+            pass
+
+    async def _load_active_broker_rows(self):
+        """Return list of active BrokerAccount rows or None on DB error.
+
+        On first run (empty table), attempts to seed from secrets.yaml
+        and re-queries. Empty list = truly empty (no YAML either).
+        """
         from backend.api.database import shared_async_session
         from backend.api.models    import BrokerAccount
-        from backend.shared.helpers.broker_creds import decrypt
         from sqlalchemy            import select
 
         try:
@@ -1507,7 +1563,7 @@ class Connections(SingletonBase):
                 )).scalars().all()
         except Exception as e:
             logger.warning(f"broker_accounts read failed; staying on YAML view: {e}")
-            return
+            return None
 
         if not rows:
             # First-run migration — copy secrets.yaml into the DB.
@@ -1518,30 +1574,31 @@ class Connections(SingletonBase):
                     rows = (await s.execute(
                         select(BrokerAccount).where(BrokerAccount.is_active.is_(True))
                     )).scalars().all()
-            if not rows:
-                # Truly empty (no YAML either). Leave self.conn as-is.
-                return
+        return rows
 
-        # Dhan multi-account stabilizer — permanent fix for the rotation
-        # loop discovered 2026-06-15. Background: Dhan enforces "one
-        # active session per partner app per source IP" at the v2 auth
-        # backend. The documented solution (CLAUDE.md → Multi-Account
-        # IPv6 Source Binding) is to bind each Dhan account to its own
-        # IPv6 in the server's /48. That binding is blocked on this VPS
-        # by Hostinger's upstream — only `::1` actually egresses; binds
-        # to `::2`-`::5` time out on TCP connect (curl --interface diag
-        # confirmed). Until upstream routing is unblocked, multiple
-        # Dhan accounts sharing the OS-default route invalidate each
-        # other's tokens every ~5 min → 'DH-906 Invalid Token' loop.
-        #
-        # Permanent stabilization: when two or more Dhan rows would land
-        # on the same source IP (incl. blank = OS-default), keep only
-        # the highest-priority row in `self.conn`. The deferred rows
-        # stay `is_active=true` in the DB but don't get a connection
-        # built. Operator swaps the active one via the `priority`
-        # column in /admin/brokers (lowest number wins). Eliminates the
-        # rotation cycle at the connection layer so positions/holdings
-        # for the active Dhan account stay stable across every refresh.
+    @staticmethod
+    def _compute_dhan_deferred_accounts(rows) -> set[str]:
+        """Dhan multi-account stabilizer — permanent fix for the rotation
+        loop discovered 2026-06-15. Background: Dhan enforces "one
+        active session per partner app per source IP" at the v2 auth
+        backend. The documented solution (CLAUDE.md → Multi-Account
+        IPv6 Source Binding) is to bind each Dhan account to its own
+        IPv6 in the server's /48. That binding is blocked on this VPS
+        by Hostinger's upstream — only `::1` actually egresses; binds
+        to `::2`-`::5` time out on TCP connect (curl --interface diag
+        confirmed). Until upstream routing is unblocked, multiple
+        Dhan accounts sharing the OS-default route invalidate each
+        other's tokens every ~5 min → 'DH-906 Invalid Token' loop.
+
+        Permanent stabilization: when two or more Dhan rows would land
+        on the same source IP (incl. blank = OS-default), keep only
+        the highest-priority row in `self.conn`. The deferred rows
+        stay `is_active=true` in the DB but don't get a connection
+        built. Operator swaps the active one via the `priority`
+        column in /admin/brokers (lowest number wins). Eliminates the
+        rotation cycle at the connection layer so positions/holdings
+        for the active Dhan account stay stable across every refresh.
+        """
         from collections import defaultdict
         _dhan_by_ip: dict[str, list] = defaultdict(list)
         for r in rows:
@@ -1571,160 +1628,160 @@ class Connections(SingletonBase):
                 getattr(keep, "priority", 100),
                 ", ".join(repr(x.account) for x in group[1:]),
             )
+        return _dhan_deferred
 
-        # Build new credentials dict from DB rows + decrypt in-memory.
-        # The connection type branches on broker_id — Dhan rows build a
-        # DhanConnection (client_id + access_token), everything else
-        # (Kite + Kite-legacy) builds a KiteConnection.
-        new_conn: dict[str, Any] = {}
-        for r in rows:
-            broker_id = (r.broker_id or "zerodha_kite").lower()
-            if broker_id == "dhan" and r.account in _dhan_deferred:
-                continue  # Deferred by the multi-account stabilizer above.
-            try:
-                if broker_id == "dhan":
-                    # Dhan path — Partner-API auto-login.
-                    # broker_accounts columns reused for Dhan:
-                    #   client_id       → Dhan client ID (plaintext)
-                    #   api_key         → Partner-API app key (plaintext)
-                    #   api_secret_enc  → Partner-API app secret
-                    #   password_enc    → Dhan trading PIN (semantic reuse —
-                    #                     "password" is the Kite analogue;
-                    #                     for Dhan rows it stores the PIN)
-                    #   totp_token_enc  → Dhan TOTP seed
-                    # Connection runs the direct REST auth flow
-                    # (POST auth.dhan.co/app/generateAccessToken) on
-                    # first use + every 23 h; no operator paste
-                    # needed after initial setup.
-                    if not r.client_id:
-                        logger.warning(f"Dhan account {r.account!r} missing "
-                                       f"client_id; skipping.")
-                        continue
-                    try:
-                        api_secret = decrypt(r.api_secret_enc) if r.api_secret_enc else ""
-                        pin        = decrypt(r.password_enc)   if r.password_enc   else ""
-                        totp_token = decrypt(r.totp_token_enc) if r.totp_token_enc else ""
-                    except Exception as e:
-                        logger.error(f"Dhan credential decrypt failed for "
-                                     f"{r.account!r}: {e}")
-                        continue
-                    if not (r.api_key and api_secret and pin and totp_token):
-                        logger.warning(
-                            f"Dhan account {r.account!r} is missing one or "
-                            f"more credentials (api_key / api_secret / pin / "
-                            f"totp_token). Fill them in /admin/brokers and "
-                            f"the connection will load on next save."
-                        )
-                        continue
-                    new_conn[r.account] = DhanConnection(
-                        r.account,
-                        client_id=r.client_id,
-                        api_key=r.api_key,
-                        api_secret=api_secret,
-                        pin=pin,
-                        totp_token=totp_token,
-                        source_ip=r.source_ip,
-                    )
-                    continue
+    def _build_conn_for_row(self, r, broker_id: str):
+        """Dispatch to the per-broker connection builder. Returns the
+        connection object or None if the row was skipped for any
+        credential-missing reason (already logged inside the builder)."""
+        if broker_id == "dhan":
+            return self._build_dhan_conn(r)
+        if broker_id == "groww":
+            return self._build_groww_conn(r)
+        # Default — Kite (and "zerodha_kite" alias).
+        return self._build_kite_conn(r)
 
-                if broker_id == "groww":
-                    # Groww path — three auth modes, tried in order:
-                    #   (1) api_key + api_secret  → programmatic refresh
-                    #   (2) api_key + totp_token  → programmatic refresh
-                    #   (3) access_token alone    → manual 24 h paste
-                    # The connection class picks whichever it can, mints
-                    # a token from disk cache if fresh, and falls back to
-                    # mint-on-build otherwise. Approval-secret flow was
-                    # retired; only api_key + totp_seed (TOTP mint) or a
-                    # manually-pasted access_token are accepted. The
-                    # schema reuses the same totp_token_enc / access_token_enc
-                    # columns Kite uses, so /admin/brokers paints them as
-                    # plain text fields.
-                    totp_token  = (decrypt(r.totp_token_enc)
-                                   if r.totp_token_enc else "")
-                    access_token = (decrypt(r.access_token_enc)
-                                    if r.access_token_enc else "")
-                    if not (
-                        (r.api_key and totp_token)
-                        or access_token
-                    ):
-                        logger.warning(
-                            f"Groww account {r.account!r} has no usable "
-                            f"credentials. Provide api_key + totp_seed "
-                            f"(TOTP flow), OR paste a 24 h access_token "
-                            f"from Groww's developer dashboard. Edit in "
-                            f"/admin/brokers."
-                        )
-                        continue
-                    new_conn[r.account] = GrowwConnection(
-                        r.account,
-                        api_key=(r.api_key or None),
-                        totp_seed=(totp_token or None),
-                        access_token=(access_token or None),
-                        source_ip=r.source_ip,
-                    )
-                    continue
+    @staticmethod
+    def _build_dhan_conn(r):
+        """Dhan path — Partner-API auto-login.
+        broker_accounts columns reused for Dhan:
+          client_id       → Dhan client ID (plaintext)
+          api_key         → Partner-API app key (plaintext)
+          api_secret_enc  → Partner-API app secret
+          password_enc    → Dhan trading PIN (semantic reuse —
+                            "password" is the Kite analogue;
+                            for Dhan rows it stores the PIN)
+          totp_token_enc  → Dhan TOTP seed
+        Connection runs the direct REST auth flow
+        (POST auth.dhan.co/app/generateAccessToken) on
+        first use + every 23 h; no operator paste needed
+        after initial setup.
+        """
+        from backend.shared.helpers.broker_creds import decrypt
+        if not r.client_id:
+            logger.warning(f"Dhan account {r.account!r} missing "
+                           f"client_id; skipping.")
+            return None
+        try:
+            api_secret = decrypt(r.api_secret_enc) if r.api_secret_enc else ""
+            pin        = decrypt(r.password_enc)   if r.password_enc   else ""
+            totp_token = decrypt(r.totp_token_enc) if r.totp_token_enc else ""
+        except Exception as e:
+            logger.error(f"Dhan credential decrypt failed for "
+                         f"{r.account!r}: {e}")
+            return None
+        if not (r.api_key and api_secret and pin and totp_token):
+            logger.warning(
+                f"Dhan account {r.account!r} is missing one or "
+                f"more credentials (api_key / api_secret / pin / "
+                f"totp_token). Fill them in /admin/brokers and "
+                f"the connection will load on next save."
+            )
+            return None
+        return DhanConnection(
+            r.account,
+            client_id=r.client_id,
+            api_key=r.api_key,
+            api_secret=api_secret,
+            pin=pin,
+            totp_token=totp_token,
+            source_ip=r.source_ip,
+        )
 
-                # Default — Kite (and "zerodha_kite" alias).
-                creds_blob = {
-                    "api_key":    r.api_key,
-                    "api_secret": decrypt(r.api_secret_enc),
-                    "password":   decrypt(r.password_enc),
-                    "totp_token": decrypt(r.totp_token_enc),
-                    "source_ip":  r.source_ip,
-                }
-                # Build a synthesized "secrets-shaped" dict so KiteConnection's
-                # existing constructor still works without refactoring.
-                synthetic = {
-                    "kite_accounts":  {r.account: creds_blob},
-                    "kite_login_url": secrets.get("kite_login_url"),
-                    "kite_twofa_url": secrets.get("kite_twofa_url"),
-                }
-                new_conn[r.account] = KiteConnection(r.account, synthetic)
-            except Exception as e:
-                logger.error(f"{broker_id} connection init failed for "
-                             f"{r.account!r}: {e}")
-                continue
+    @staticmethod
+    def _build_groww_conn(r):
+        """Groww path — three auth modes, tried in order:
+          (1) api_key + api_secret  → programmatic refresh
+          (2) api_key + totp_token  → programmatic refresh
+          (3) access_token alone    → manual 24 h paste
+        The connection class picks whichever it can, mints
+        a token from disk cache if fresh, and falls back to
+        mint-on-build otherwise. Approval-secret flow was
+        retired; only api_key + totp_seed (TOTP mint) or a
+        manually-pasted access_token are accepted. The
+        schema reuses the same totp_token_enc / access_token_enc
+        columns Kite uses, so /admin/brokers paints them as
+        plain text fields.
+        """
+        from backend.shared.helpers.broker_creds import decrypt
+        totp_token  = (decrypt(r.totp_token_enc)
+                       if r.totp_token_enc else "")
+        access_token = (decrypt(r.access_token_enc)
+                        if r.access_token_enc else "")
+        if not (
+            (r.api_key and totp_token)
+            or access_token
+        ):
+            logger.warning(
+                f"Groww account {r.account!r} has no usable "
+                f"credentials. Provide api_key + totp_seed "
+                f"(TOTP flow), OR paste a 24 h access_token "
+                f"from Groww's developer dashboard. Edit in "
+                f"/admin/brokers."
+            )
+            return None
+        return GrowwConnection(
+            r.account,
+            api_key=(r.api_key or None),
+            totp_seed=(totp_token or None),
+            access_token=(access_token or None),
+            source_ip=r.source_ip,
+        )
 
-        if not new_conn:
-            logger.warning("rebuild_from_db: every broker_accounts row failed to load; "
-                           "leaving self.conn as YAML view.")
-            return
+    @staticmethod
+    def _build_kite_conn(r):
+        """Default — Kite (and "zerodha_kite" alias).
+        Builds a synthesized "secrets-shaped" dict so KiteConnection's
+        existing constructor still works without refactoring."""
+        from backend.shared.helpers.broker_creds import decrypt
+        creds_blob = {
+            "api_key":    r.api_key,
+            "api_secret": decrypt(r.api_secret_enc),
+            "password":   decrypt(r.password_enc),
+            "totp_token": decrypt(r.totp_token_enc),
+            "source_ip":  r.source_ip,
+        }
+        synthetic = {
+            "kite_accounts":  {r.account: creds_blob},
+            "kite_login_url": secrets.get("kite_login_url"),
+            "kite_twofa_url": secrets.get("kite_twofa_url"),
+        }
+        return KiteConnection(r.account, synthetic)
 
-        # Build broker_id lookup cache so registry._broker_id_for() never
-        # needs a DB round-trip on the hot path.
+    @staticmethod
+    def _build_row_lookup_maps(rows, new_conn: dict) -> tuple[dict, dict, dict]:
+        """Build broker_id / priority / hist-enabled lookup caches so
+        registry._broker_id_for() and PriceBroker fallback ordering
+        never need a DB round-trip on the hot path.
+        - broker_id_map: registry lookup (defaults to "zerodha_kite")
+        - priority_map: lower value = tried first (defaults to 100)
+        - hist_enabled_map: /api/options/historical eligibility gate
+          (True by default so all accounts participate unless opted out).
+        """
         new_broker_id_map: dict[str, str] = {
             r.account: (r.broker_id or "zerodha_kite")
             for r in rows
             if r.account in new_conn
         }
-        # Priority cache for PriceBroker fallback ordering — lower
-        # priority value = tried first. Defaults to 100 (the schema
-        # default) for any account where the column is null/missing
-        # (e.g. just after migration, before the operator has tuned).
         new_priority_map: dict[str, int] = {
             r.account: int(getattr(r, "priority", 100) or 100)
             for r in rows
             if r.account in new_conn
         }
-        # historical_data_enabled — per-account eligibility gate for the
-        # /api/options/historical fallback loop. True by default so
-        # all accounts participate unless the operator opts one out.
         new_hist_enabled_map: dict[str, bool] = {
             r.account: bool(getattr(r, "historical_data_enabled", True))
             for r in rows
             if r.account in new_conn
         }
+        return new_broker_id_map, new_priority_map, new_hist_enabled_map
 
-        with Connections._init_lock:
-            self.conn = new_conn
-            self._broker_id_map     = new_broker_id_map
-            self._priority_map      = new_priority_map
-            self._hist_enabled_map  = new_hist_enabled_map
-        # Refresh the masked-account registry so every downstream
-        # surface (funds.py, holdings.py, telegram alerts, audit log)
-        # sees the new ordinal-per-broker masking scheme. Operator:
-        # "update the dhan accounts as d1#### and d2#### …"
+    @staticmethod
+    def _refresh_mask_registry(new_conn: dict) -> None:
+        """Refresh the masked-account registry so every downstream
+        surface (funds.py, holdings.py, telegram alerts, audit log)
+        sees the new ordinal-per-broker masking scheme. Operator:
+        "update the dhan accounts as d1#### and d2#### …"
+        """
         try:
             from backend.shared.helpers.utils import register_accounts
             register_accounts(new_conn.keys())
@@ -1732,11 +1789,16 @@ class Connections(SingletonBase):
             # Mask registry refresh isn't load-critical — fall back to
             # the scalar mask. Log and continue.
             logger.warning(f"mask_account registry refresh failed: {e}")
-        # Populate the in-process poll-priority cache for Dhan accounts.
-        # This replaces the broken async-from-thread DB read that the
-        # interval gate previously used (_get_dhan_poll_priority now does
-        # an O(1) dict lookup instead of an asyncio.run_coroutine_threadsafe
-        # call which fails on Python 3.10+ in ThreadPoolExecutor workers).
+
+    @staticmethod
+    def _refresh_dhan_priority_caches(rows, new_conn: dict) -> None:
+        """Populate the in-process poll-priority cache for Dhan accounts.
+        This replaces the broken async-from-thread DB read that the
+        interval gate previously used (_get_dhan_poll_priority now does
+        an O(1) dict lookup instead of an asyncio.run_coroutine_threadsafe
+        call which fails on Python 3.10+ in ThreadPoolExecutor workers).
+        Also populates the breaker opt-in cache for every broker type.
+        """
         try:
             from backend.brokers.broker_apis import set_dhan_priority_cache, set_breaker_optin_cache
             for r in rows:
@@ -1750,48 +1812,51 @@ class Connections(SingletonBase):
                     set_breaker_optin_cache(r.account, cb_enabled)
         except Exception as _pp_err:
             logger.warning(f"poll_priority cache refresh failed: {_pp_err}")
-        logger.info(f"Connections: rebuilt from DB · accounts={sorted(new_conn.keys())}")
 
-        # Notify the KiteTicker if the account it's currently bound to
-        # disappeared from the rebuilt conn map. Without this nudge the
-        # ticker keeps running against dead credentials, recycle() resolves
-        # nothing, and the WebSocket stays bound until the watchdog's 90s
-        # disconnect threshold (or a manual restart). The new active
-        # account is picked from the rebuilt conn map (lowest-priority
-        # Kite/Dhan account first). Best-effort — Groww / no-Kite-accounts
-        # operators don't trigger this path.
+    @staticmethod
+    def _nudge_ticker_on_rebind(new_conn: dict, new_broker_id_map: dict,
+                                  new_priority_map: dict) -> None:
+        """Notify the KiteTicker if the account it's currently bound to
+        disappeared from the rebuilt conn map. Without this nudge the
+        ticker keeps running against dead credentials, recycle() resolves
+        nothing, and the WebSocket stays bound until the watchdog's 90s
+        disconnect threshold (or a manual restart). The new active
+        account is picked from the rebuilt conn map (lowest-priority
+        Kite/Dhan account first). Best-effort — Groww / no-Kite-accounts
+        operators don't trigger this path.
+        """
         try:
             from backend.brokers.kite_ticker import get_ticker
             ticker = get_ticker()
             current = ticker.current_account()
-            if current and current not in new_conn:
-                # Pick the next eligible account: prefer one with lower
-                # priority value (= operator's preferred order). Restrict
-                # to Kite accounts since restart_with_account is Kite-shaped.
-                kite_accounts = [
-                    acct for acct, br_id in new_broker_id_map.items()
-                    if (br_id or "zerodha_kite") == "zerodha_kite"
-                ]
-                kite_accounts.sort(key=lambda a: new_priority_map.get(a, 100))
-                for acct in kite_accounts:
-                    kc = new_conn[acct].kite
-                    api_key = getattr(kc, "api_key", None)
-                    access_token = (
-                        getattr(kc, "_access_token", None)
-                        or getattr(kc, "access_token", None)
-                    )
-                    if api_key and access_token:
-                        ok = ticker.restart_with_account(api_key, access_token, acct)
-                        logger.warning(
-                            f"Connections: ticker was bound to deleted {current!r}; "
-                            f"restarting on {acct!r} (ok={ok})"
-                        )
-                        break
-                else:
+            if not current or current in new_conn:
+                return
+            # Pick the next eligible account: prefer one with lower
+            # priority value (= operator's preferred order). Restrict
+            # to Kite accounts since restart_with_account is Kite-shaped.
+            kite_accounts = [
+                acct for acct, br_id in new_broker_id_map.items()
+                if (br_id or "zerodha_kite") == "zerodha_kite"
+            ]
+            kite_accounts.sort(key=lambda a: new_priority_map.get(a, 100))
+            for acct in kite_accounts:
+                kc = new_conn[acct].kite
+                api_key = getattr(kc, "api_key", None)
+                access_token = (
+                    getattr(kc, "_access_token", None)
+                    or getattr(kc, "access_token", None)
+                )
+                if api_key and access_token:
+                    ok = ticker.restart_with_account(api_key, access_token, acct)
                     logger.warning(
                         f"Connections: ticker was bound to deleted {current!r}; "
-                        "no eligible Kite account to restart on — ticker will idle"
+                        f"restarting on {acct!r} (ok={ok})"
                     )
+                    return
+            logger.warning(
+                f"Connections: ticker was bound to deleted {current!r}; "
+                "no eligible Kite account to restart on — ticker will idle"
+            )
         except Exception as e:
             logger.warning(f"Connections: ticker rebuild-nudge failed: {e}")
 

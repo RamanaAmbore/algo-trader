@@ -1653,151 +1653,186 @@ def _normalise_positions(resp: Any) -> dict:
     is empty until Dhan exposes intraday-only positions separately."""
     net: list[dict] = []
     for p in _unwrap(resp):
-        try:
-            inst_tok = int(p.get("securityId") or 0)
-        except (TypeError, ValueError):
-            inst_tok = 0
-        # Translate Dhan's F&O tradingsymbol to Kite-style canonical
-        # form via `_dhan_to_kite_symbol` (e.g. "CRUDEOIL-16JUL2026-8500-CE"
-        # → "CRUDEOIL26JUL8500CE"). Without this every downstream parser
-        # (decomposeSymbol on the frontend, parse_tradingsymbol in the
-        # strategy endpoint, the instruments-cache lookup, etc.) rejects
-        # Dhan-format symbols and the Legs grid shows "isn't a recognised
-        # option or futures contract" above the payoff chart.
-        raw_ts = str(p.get("tradingSymbol") or "")
-        ts = _dhan_to_kite_symbol(raw_ts)
-        # Dhan returns netQty / dayBuy/SellQty in LOTS, not contracts.
-        # Kite returns positions already in CONTRACTS — and every
-        # downstream surface (Legs grid display qty, day_change_val
-        # formula in broker_apis.py, options strategy analytics, sim
-        # paper-trade engine, agent rules referring to qty) expects
-        # the CONTRACTS convention. Multiply by Dhan's `multiplier`
-        # (lot size for the contract) to align both adapters before
-        # the row hits broker_apis. Order placement re-divides via
-        # `DhanBroker.translate_qty` (contracts → lots) so the SDK call
-        # still sees Dhan's expected unit. `multiplier=1` in the output
-        # dict because the qty is now already in contracts — the
-        # broker_apis day-PnL formula doesn't need to re-multiply.
-        _mult = int(p.get("multiplier", 1) or 1) or 1
-        # Convert Dhan's lot-based qty fields to contracts.
-        qty_contracts = int(p.get("netQty",      0) or 0) * _mult
-        ovn_contracts = int(p.get("carryFwdQty", 0) or 0) * _mult
-        dbq_contracts = int(p.get("dayBuyQty",   0) or 0) * _mult
-        dsq_contracts = int(p.get("daySellQty",  0) or 0) * _mult
-
-        # Compute P&L ourselves — don't trust Dhan's pre-computed
-        # unrealisedProfit / realisedProfit fields, which have shown a
-        # ~100× off-by-lot-size discrepancy on F&O contracts (Dhan
-        # appears to compute these in LOTS while we display CONTRACTS,
-        # and there's no way to flip the convention from the API).
-        # Operator: "the entry price and current price difference is
-        # P&L. from yesterday's closing price and today's price is day
-        # P&L."
-        # Formulas (signed; long qty>0, short qty<0):
-        #   pnl            = (LTP - avg_price)   × qty   (lifetime / unrealised)
-        #   day_change_val = (LTP - close_price) × qty   (today's change)
-        #
-        # Dhan SDK field names per the v2 positions schema:
-        #   costPrice         — net average across buy + sell legs
-        #   buyAvg / sellAvg  — per-side averages
-        #   lastTradedPrice   — current LTP
-        #   previousClosePrice / closePrice — yesterday's close
-        #
-        # The earlier shape used `netAvgPrice` which is NOT a Dhan
-        # field — every position came back with avg=0, the (ltp>0 AND
-        # avg>0) guard kicked in, and pnl_calc was silently set to 0.
-        # That's why Dhan P&L looked "wrong" on the legs panel even
-        # though qty and ltp were correct. Fall back through three
-        # candidate fields so the adapter works across Dhan API
-        # revisions: costPrice → netAvgPrice (legacy guess) → side-
-        # appropriate buyAvg / sellAvg.
-        avg = float(p.get("costPrice", p.get("netAvgPrice", 0)) or 0)
-        if avg <= 0:
-            # Sided fallback — for a long net position use the buy
-            # average; for a short net position use the sell average.
-            # Neither field is present on a flat (qty=0) row, but we
-            # don't surface P&L for flat rows so the 0 path is safe.
-            avg = float(p.get("buyAvg", 0) or 0) if qty_contracts >= 0 \
-                  else float(p.get("sellAvg", 0) or 0)
-        ltp = float(p.get("lastTradedPrice", p.get("ltp", 0)) or 0)
-        close = float(p.get("previousClosePrice",
-                            p.get("previousClose",
-                                  p.get("closePrice", 0))) or 0)
-        pnl_calc = (ltp - avg)   * qty_contracts if (ltp > 0 and avg > 0) else 0.0
-        dcv_calc = (ltp - close) * qty_contracts if (ltp > 0 and close > 0) else 0.0
-        # Keep Dhan's realisedProfit verbatim — that's a closed-book
-        # figure they're authoritative on.
-        realised = float(p.get("realisedProfit", 0) or 0)
-
-        # Normalise the exchange field the same way holdings do: prefer
-        # the canonical exchangeSegment map ("NSE_FNO" → "NFO", "MCX_COMM"
-        # → "MCX") so CRUDEOIL on Dhan reads as MCX (matching Kite) rather
-        # than the bare "NFO" string Dhan's positions endpoint sometimes
-        # ships for commodity options. Fall through to p.get("exchange")
-        # when no segment is present, defaulting to NFO for derivatives.
-        _seg_p = str(p.get("exchangeSegment") or "").upper()
-        _exch_raw_p = str(p.get("exchange") or "").upper()
-        _kite_exch_p = (
-            _DHAN_SEGMENT_TO_EXCHANGE.get(_seg_p)
-            or (_DHAN_SEGMENT_TO_EXCHANGE.get(_exch_raw_p, _exch_raw_p)
-                if _exch_raw_p and _exch_raw_p != "ALL"
-                else "NFO")
-        )
-        net.append({
-            "tradingsymbol":   ts,
-            "exchange":        _kite_exch_p,
-            "instrument_token": inst_tok,
-            "product":         {"INTRADAY": "MIS",
-                                "MARGIN":   "NRML",
-                                "CNC":      "CNC"}.get(p.get("productType", ""),
-                                                        "NRML"),
-            "quantity":           qty_contracts,
-            "overnight_quantity": ovn_contracts,
-            "day_buy_quantity":   dbq_contracts,
-            "day_sell_quantity":  dsq_contracts,
-            # Day-trade cash values — forwarded to the /admin/derivatives
-            # Candidates panel where `splitClosedReopened` uses them to
-            # split a closed-and-reopened leg into two display rows. The
-            # post-BH6 broker_apis day_change_val formula also reads
-            # these (`_bq × LTP − _bv`), so the units MUST match the
-            # contract-units quantities above.
-            #
-            # Always derive from `dayBuyAvg × dbq_contracts` rather than
-            # trusting Dhan's pre-computed `dayBuyValue` field. Dhan's
-            # docs are ambiguous on whether dayBuyValue is in
-            # `lots × price` or `contracts × price` (= absolute ₹); the
-            # derivation `dayBuyAvg × dbq_contracts` is contract-units
-            # regardless because dbq_contracts is post-multiply. Same
-            # for day_sell. (Audit Jun 26 2026 — risk surfaced when the
-            # broker_apis MCX × multiplier patch landed.)
-            "day_buy_value":      float(p.get("dayBuyAvg",  0) or 0) * dbq_contracts,
-            "day_sell_value":     float(p.get("daySellAvg", 0) or 0) * dsq_contracts,
-            # Multiplier=1 on the normalised row — qty is now in contracts
-            # so the broker_apis day_change_val formula treats it the same
-            # as Kite's contract-qty (no extra multiplication needed).
-            "multiplier":      1,
-            "close_price":     close,
-            "average_price":   avg,
-            "last_price":      ltp,
-            "buy_price":       float(p.get("buyAvg",       0) or 0),
-            "sell_price":      float(p.get("sellAvg",      0) or 0),
-            "buy_quantity":    int(p.get("buyQty",         0) or 0) * _mult,
-            "sell_quantity":   int(p.get("sellQty",        0) or 0) * _mult,
-            # Pre-computed pnl + day_change_val from our own formulas.
-            # broker_apis.fetch_positions recomputes both at the central
-            # chokepoint (universal (LTP-avg)*qty / (LTP-close)*qty rule),
-            # which overwrites these when LTP+avg > 0 and LTP+close > 0.
-            # The pre-computed values survive as the pre-open / cold-LTP
-            # fallback so routes that don't run the recompute (raw-broker
-            # views, demo serialisation) still return a sensible number
-            # rather than 0.
-            "pnl":               pnl_calc,
-            "realised":          realised,
-            "unrealised":        pnl_calc,
-            "day_change_val":    dcv_calc,
-            "_raw":              p,
-        })
+        net.append(_normalise_position_row(p))
     return {"net": net, "day": []}
+
+
+def _normalise_position_row(p: dict) -> dict:
+    """Map one Dhan position row to the Kite-shape dict.
+
+    Split from the loop body to keep _normalise_positions readable;
+    the per-row work is what pushes CC — separates translation from
+    iteration."""
+    try:
+        inst_tok = int(p.get("securityId") or 0)
+    except (TypeError, ValueError):
+        inst_tok = 0
+    # Translate Dhan's F&O tradingsymbol to Kite-style canonical
+    # form via `_dhan_to_kite_symbol` (e.g. "CRUDEOIL-16JUL2026-8500-CE"
+    # → "CRUDEOIL26JUL8500CE"). Without this every downstream parser
+    # (decomposeSymbol on the frontend, parse_tradingsymbol in the
+    # strategy endpoint, the instruments-cache lookup, etc.) rejects
+    # Dhan-format symbols and the Legs grid shows "isn't a recognised
+    # option or futures contract" above the payoff chart.
+    raw_ts = str(p.get("tradingSymbol") or "")
+    ts = _dhan_to_kite_symbol(raw_ts)
+
+    _mult, qty_contracts, ovn_contracts, dbq_contracts, dsq_contracts = \
+        _normalise_position_quantities(p)
+
+    avg, ltp, close, pnl_calc, dcv_calc, realised = \
+        _normalise_position_prices_and_pnl(p, qty_contracts)
+
+    _kite_exch_p = _normalise_position_exchange(p)
+
+    return {
+        "tradingsymbol":   ts,
+        "exchange":        _kite_exch_p,
+        "instrument_token": inst_tok,
+        "product":         {"INTRADAY": "MIS",
+                            "MARGIN":   "NRML",
+                            "CNC":      "CNC"}.get(p.get("productType", ""),
+                                                    "NRML"),
+        "quantity":           qty_contracts,
+        "overnight_quantity": ovn_contracts,
+        "day_buy_quantity":   dbq_contracts,
+        "day_sell_quantity":  dsq_contracts,
+        # Day-trade cash values — forwarded to the /admin/derivatives
+        # Candidates panel where `splitClosedReopened` uses them to
+        # split a closed-and-reopened leg into two display rows. The
+        # post-BH6 broker_apis day_change_val formula also reads
+        # these (`_bq × LTP − _bv`), so the units MUST match the
+        # contract-units quantities above.
+        #
+        # Always derive from `dayBuyAvg × dbq_contracts` rather than
+        # trusting Dhan's pre-computed `dayBuyValue` field. Dhan's
+        # docs are ambiguous on whether dayBuyValue is in
+        # `lots × price` or `contracts × price` (= absolute ₹); the
+        # derivation `dayBuyAvg × dbq_contracts` is contract-units
+        # regardless because dbq_contracts is post-multiply. Same
+        # for day_sell. (Audit Jun 26 2026 — risk surfaced when the
+        # broker_apis MCX × multiplier patch landed.)
+        "day_buy_value":      float(p.get("dayBuyAvg",  0) or 0) * dbq_contracts,
+        "day_sell_value":     float(p.get("daySellAvg", 0) or 0) * dsq_contracts,
+        # Multiplier=1 on the normalised row — qty is now in contracts
+        # so the broker_apis day_change_val formula treats it the same
+        # as Kite's contract-qty (no extra multiplication needed).
+        "multiplier":      1,
+        "close_price":     close,
+        "average_price":   avg,
+        "last_price":      ltp,
+        "buy_price":       float(p.get("buyAvg",       0) or 0),
+        "sell_price":      float(p.get("sellAvg",      0) or 0),
+        "buy_quantity":    int(p.get("buyQty",         0) or 0) * _mult,
+        "sell_quantity":   int(p.get("sellQty",        0) or 0) * _mult,
+        # Pre-computed pnl + day_change_val from our own formulas.
+        # broker_apis.fetch_positions recomputes both at the central
+        # chokepoint (universal (LTP-avg)*qty / (LTP-close)*qty rule),
+        # which overwrites these when LTP+avg > 0 and LTP+close > 0.
+        # The pre-computed values survive as the pre-open / cold-LTP
+        # fallback so routes that don't run the recompute (raw-broker
+        # views, demo serialisation) still return a sensible number
+        # rather than 0.
+        "pnl":               pnl_calc,
+        "realised":          realised,
+        "unrealised":        pnl_calc,
+        "day_change_val":    dcv_calc,
+        "_raw":              p,
+    }
+
+
+def _normalise_position_quantities(p: dict) -> tuple[int, int, int, int, int]:
+    """Convert Dhan's lot-based qty fields to contracts.
+
+    Dhan returns netQty / dayBuy/SellQty in LOTS, not contracts.
+    Kite returns positions already in CONTRACTS — and every
+    downstream surface (Legs grid display qty, day_change_val
+    formula in broker_apis.py, options strategy analytics, sim
+    paper-trade engine, agent rules referring to qty) expects
+    the CONTRACTS convention. Multiply by Dhan's `multiplier`
+    (lot size for the contract) to align both adapters before
+    the row hits broker_apis. Order placement re-divides via
+    `DhanBroker.translate_qty` (contracts → lots) so the SDK call
+    still sees Dhan's expected unit. `multiplier=1` in the output
+    dict because the qty is now already in contracts — the
+    broker_apis day-PnL formula doesn't need to re-multiply.
+
+    Returns (multiplier, qty, overnight_qty, day_buy_qty, day_sell_qty).
+    """
+    _mult = int(p.get("multiplier", 1) or 1) or 1
+    qty_contracts = int(p.get("netQty",      0) or 0) * _mult
+    ovn_contracts = int(p.get("carryFwdQty", 0) or 0) * _mult
+    dbq_contracts = int(p.get("dayBuyQty",   0) or 0) * _mult
+    dsq_contracts = int(p.get("daySellQty",  0) or 0) * _mult
+    return _mult, qty_contracts, ovn_contracts, dbq_contracts, dsq_contracts
+
+
+def _normalise_position_prices_and_pnl(
+    p: dict, qty_contracts: int
+) -> tuple[float, float, float, float, float, float]:
+    """Compute P&L ourselves — don't trust Dhan's pre-computed
+    unrealisedProfit / realisedProfit fields, which have shown a
+    ~100× off-by-lot-size discrepancy on F&O contracts (Dhan
+    appears to compute these in LOTS while we display CONTRACTS,
+    and there's no way to flip the convention from the API).
+    Operator: "the entry price and current price difference is
+    P&L. from yesterday's closing price and today's price is day
+    P&L."
+    Formulas (signed; long qty>0, short qty<0):
+      pnl            = (LTP - avg_price)   × qty   (lifetime / unrealised)
+      day_change_val = (LTP - close_price) × qty   (today's change)
+
+    Dhan SDK field names per the v2 positions schema:
+      costPrice         — net average across buy + sell legs
+      buyAvg / sellAvg  — per-side averages
+      lastTradedPrice   — current LTP
+      previousClosePrice / closePrice — yesterday's close
+
+    The earlier shape used `netAvgPrice` which is NOT a Dhan
+    field — every position came back with avg=0, the (ltp>0 AND
+    avg>0) guard kicked in, and pnl_calc was silently set to 0.
+    That's why Dhan P&L looked "wrong" on the legs panel even
+    though qty and ltp were correct. Fall back through three
+    candidate fields so the adapter works across Dhan API
+    revisions: costPrice → netAvgPrice (legacy guess) → side-
+    appropriate buyAvg / sellAvg.
+
+    Returns (avg, ltp, close, pnl_calc, dcv_calc, realised)."""
+    avg = float(p.get("costPrice", p.get("netAvgPrice", 0)) or 0)
+    if avg <= 0:
+        # Sided fallback — for a long net position use the buy
+        # average; for a short net position use the sell average.
+        # Neither field is present on a flat (qty=0) row, but we
+        # don't surface P&L for flat rows so the 0 path is safe.
+        avg = float(p.get("buyAvg", 0) or 0) if qty_contracts >= 0 \
+              else float(p.get("sellAvg", 0) or 0)
+    ltp = float(p.get("lastTradedPrice", p.get("ltp", 0)) or 0)
+    close = float(p.get("previousClosePrice",
+                        p.get("previousClose",
+                              p.get("closePrice", 0))) or 0)
+    pnl_calc = (ltp - avg)   * qty_contracts if (ltp > 0 and avg > 0) else 0.0
+    dcv_calc = (ltp - close) * qty_contracts if (ltp > 0 and close > 0) else 0.0
+    # Keep Dhan's realisedProfit verbatim — that's a closed-book
+    # figure they're authoritative on.
+    realised = float(p.get("realisedProfit", 0) or 0)
+    return avg, ltp, close, pnl_calc, dcv_calc, realised
+
+
+def _normalise_position_exchange(p: dict) -> str:
+    """Normalise the exchange field the same way holdings do: prefer
+    the canonical exchangeSegment map ("NSE_FNO" → "NFO", "MCX_COMM"
+    → "MCX") so CRUDEOIL on Dhan reads as MCX (matching Kite) rather
+    than the bare "NFO" string Dhan's positions endpoint sometimes
+    ships for commodity options. Fall through to p.get("exchange")
+    when no segment is present, defaulting to NFO for derivatives."""
+    _seg_p = str(p.get("exchangeSegment") or "").upper()
+    _exch_raw_p = str(p.get("exchange") or "").upper()
+    return (
+        _DHAN_SEGMENT_TO_EXCHANGE.get(_seg_p)
+        or (_DHAN_SEGMENT_TO_EXCHANGE.get(_exch_raw_p, _exch_raw_p)
+            if _exch_raw_p and _exch_raw_p != "ALL"
+            else "NFO")
+    )
 
 
 # Set of Dhan accounts whose raw fund_limits response keys have already

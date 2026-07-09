@@ -1715,6 +1715,30 @@ def backfill_market_data(df) -> int:
         return 0
     if 'close_price' not in df.columns and 'last_price' not in df.columns:
         return 0
+
+    _missing, _key_per_row, _unique_keys = _bmd_build_key_index(df)
+    if _missing is None or not _unique_keys:
+        return 0
+
+    _close_lookup, _ltp_lookup = _bmd_fetch_lookups(_unique_keys)
+
+    _row_indices = df.index[_missing].tolist()
+    _patched_indices = _bmd_patch_rows(
+        df, _row_indices, _key_per_row, _close_lookup, _ltp_lookup, _unique_keys
+    )
+    if not _patched_indices:
+        return 0
+
+    _bmd_recompute_derived(df, _patched_indices)
+    return len(_patched_indices)
+
+
+def _bmd_build_key_index(df):
+    """Compute the missing-row mask, the per-row quote key list, and
+    the deduplicated list of quote keys to fetch.
+
+    Returns (mask_series, key_per_row_list, unique_keys_list). When no
+    row needs backfill, returns (None, [], [])."""
     # A row needs backfill if EITHER close_price or last_price is
     # zero / missing. Unions across both criteria so the single
     # batched quote call covers everything.
@@ -1726,9 +1750,8 @@ def backfill_market_data(df) -> int:
                     else pd.Series(False, index=df.index))
     _missing = _cls_missing | _ltp_missing
     if not _missing.any():
-        return 0
+        return None, [], []
 
-    # Build unique quote keys across every missing-field row.
     _missing_rows = df[_missing]
     _key_per_row: list[str] = []
     _seen_keys: set[str] = set()
@@ -1744,19 +1767,36 @@ def backfill_market_data(df) -> int:
                 _unique_keys.append(_k)
         else:
             _key_per_row.append('')
+    return _missing, _key_per_row, _unique_keys
 
-    if not _unique_keys:
-        return 0
 
-    _q: dict = {}
+def _bmd_fetch_lookups(unique_keys: list[str]) -> tuple[dict[str, float], dict[str, float]]:
+    """Fetch quotes for the deduplicated key list and return two
+    lookup dicts keyed by 'EXCHANGE:SYMBOL':
+      - close_lookup: OHLC.close (fallback to top-level close_price)
+      - ltp_lookup: top-level last_price
+
+    Falls back to KiteTicker for LTP on PriceBroker outage. Zeros
+    are treated as "broker didn't have it either" and excluded from
+    both dicts. Also records positive LTPs into the last-known-good
+    cache for downstream stale-rescue."""
+    _q = _bmd_fetch_quotes(unique_keys)
+    return _bmd_extract_lookups(_q)
+
+
+def _bmd_fetch_quotes(unique_keys: list[str]) -> dict:
+    """One batched PriceBroker.quote() with KiteTicker fallback for LTP.
+
+    Returns a dict shaped like Kite's quote response (or a minimal
+    synthesised subset from the ticker on PriceBroker outage)."""
     try:
         from backend.brokers.registry import get_market_data_broker
         _pb = get_market_data_broker()
-        _q = _pb.quote(_unique_keys) or {}
+        return _pb.quote(unique_keys) or {}
     except Exception as _e:
         logger.warning(
             f"PriceBroker market-data backfill failed (1 batched call for "
-            f"{len(_unique_keys)} symbols): {_e}"
+            f"{len(unique_keys)} symbols): {_e}"
         )
         # PriceBroker outage (all brokers rate-limited / token expired).
         # Fall back to KiteTicker for LTP on missing rows so the
@@ -1764,11 +1804,11 @@ def backfill_market_data(df) -> int:
         # close_price cannot come from the ticker (no OHLC there) —
         # only last_price is patched here; the day_change_val recompute
         # below handles the rest.
-        _q = {}  # no REST quotes; ticker fallback below fills _ltp_lookup
+        _q: dict = {}
         try:
             from backend.brokers.kite_ticker import get_ticker as _gt
             _ticker_fb = _gt()
-            for _k in _unique_keys:
+            for _k in unique_keys:
                 # key shape is "EXCHANGE:SYMBOL" — strip exchange prefix.
                 _sym_fb = _k.split(":", 1)[-1] if ":" in _k else _k
                 _ltp_fb = _ticker_fb.get_ltp_by_sym(_sym_fb)
@@ -1782,14 +1822,18 @@ def backfill_market_data(df) -> int:
             # Both PriceBroker and KiteTicker are unavailable.
             # last-good-ltp fallback happens below in the patch loop.
             pass
+        return _q
 
-    # Extract two fields per quote: close (from ohlc.close, fallback
-    # to top-level close_price) and last_price (from top-level
-    # last_price). Only positive values land in the lookup tables —
-    # zeros are treated as "broker didn't have it either".
+
+def _bmd_extract_lookups(quote_resp: dict) -> tuple[dict[str, float], dict[str, float]]:
+    """Extract close-price + last-price lookups from a quote response.
+
+    Only positive values land in the lookup tables — zeros are
+    treated as "broker didn't have it either". Recording into the
+    last-known-good cache happens on positive LTPs."""
     _close_lookup: dict[str, float] = {}
     _ltp_lookup: dict[str, float] = {}
-    for _k, _v in _q.items():
+    for _k, _v in quote_resp.items():
         if not isinstance(_v, dict):
             continue
         _ohlc = _v.get('ohlc') if isinstance(_v.get('ohlc'), dict) else {}
@@ -1814,37 +1858,45 @@ def backfill_market_data(df) -> int:
             # the canonical symbol-only key used by get_last_good_ltp().
             _sym_only = _k.split(":", 1)[-1] if ":" in _k else _k
             record_good_ltp(_sym_only, _f_ltp)
+    return _close_lookup, _ltp_lookup
 
-    # Patch close_price + last_price in place, but ONLY on rows
-    # where the source broker came back with 0. Never overwrite a
-    # non-zero broker value — Dhan/Groww LTP may be a fresher tick
-    # than the snapshot-time Kite quote.
-    def _missing_val(value) -> bool:
-        try:
-            v = float(value)
-        except (TypeError, ValueError):
-            return True
-        if v != v:  # NaN
-            return True
-        return v <= 0
 
+def _bmd_is_missing_val(value) -> bool:
+    """A row's close/last_price is missing when it's NaN, non-numeric, or ≤0."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return True
+    if v != v:  # NaN
+        return True
+    return v <= 0
+
+
+def _bmd_patch_rows(df, row_indices, key_per_row, close_lookup, ltp_lookup, unique_keys) -> set:
+    """Patch close_price + last_price in place, but ONLY on rows
+    where the source broker came back with 0. Never overwrite a
+    non-zero broker value — Dhan/Groww LTP may be a fresher tick
+    than the snapshot-time Kite quote.
+
+    Rows rescued via last-known-good cache get `last_price_stale=True`.
+    Emits a warning log for symbols that resolved neither close nor LTP.
+    Returns the set of patched row indices."""
     _has_close = 'close_price' in df.columns
     _has_ltp   = 'last_price'  in df.columns
-    _row_indices = df.index[_missing].tolist()
     _patched_indices: set = set()
     _stale_patched_indices: set = set()  # rows rescued by last-good cache
     _unresolved: list[str] = []
-    for _idx, _k in zip(_row_indices, _key_per_row):
+    for _idx, _k in zip(row_indices, key_per_row):
         if not _k:
             continue
         _touched = False
-        if _has_close and _missing_val(df.at[_idx, 'close_price']):
-            _cls_p = _close_lookup.get(_k)
+        if _has_close and _bmd_is_missing_val(df.at[_idx, 'close_price']):
+            _cls_p = close_lookup.get(_k)
             if _cls_p:
                 df.at[_idx, 'close_price'] = _cls_p
                 _touched = True
-        if _has_ltp and _missing_val(df.at[_idx, 'last_price']):
-            _ltp_p = _ltp_lookup.get(_k)
+        if _has_ltp and _bmd_is_missing_val(df.at[_idx, 'last_price']):
+            _ltp_p = ltp_lookup.get(_k)
             if _ltp_p:
                 df.at[_idx, 'last_price'] = _ltp_p
                 _touched = True
@@ -1861,7 +1913,7 @@ def backfill_market_data(df) -> int:
                     _touched = True
         if _touched:
             _patched_indices.add(_idx)
-        elif _k not in _close_lookup and _k not in _ltp_lookup:
+        elif _k not in close_lookup and _k not in ltp_lookup:
             _unresolved.append(_k)
 
     # Mark rows whose LTP came from the last-known-good cache so routes
@@ -1885,24 +1937,25 @@ def backfill_market_data(df) -> int:
     # instruments cache, or broker quote returned no ohlc).
     if _unresolved:
         logger.warning(
-            f"market-data backfill: {len(_unresolved)}/{len(_unique_keys)} "
+            f"market-data backfill: {len(_unresolved)}/{len(unique_keys)} "
             f"symbols unresolved by PriceBroker; rows stay at close=0 / "
             f"ltp=0 → Day P&L=0. Unresolved: {_unresolved[:10]}"
             + (f" (+{len(_unresolved)-10} more)" if len(_unresolved) > 10 else "")
         )
+    return _patched_indices
 
-    if not _patched_indices:
-        return 0
 
-    # Re-run the (LTP - close) × qty recompute on patched rows only.
-    # The per-account fetch already wrote a value (0 or broker-
-    # reported) the consumer treats as authoritative — overwrite it
-    # now that we have real market data.
+def _bmd_recompute_derived(df, patched_indices: set) -> None:
+    """Re-run the (LTP - close) × qty recompute on patched rows only.
+    The per-account fetch already wrote a value (0 or broker-
+    reported) the consumer treats as authoritative — overwrite it
+    now that we have real market data. Also recomputes pnl / cur_val /
+    pnl_percentage / day_change / day_change_percentage as available."""
     _qty_col = 'opening_quantity' if 'opening_quantity' in df.columns else 'quantity'
     if _qty_col not in df.columns or 'last_price' not in df.columns:
-        return len(_patched_indices)
+        return
 
-    _idx_array = pd.Index(sorted(_patched_indices))
+    _idx_array = pd.Index(sorted(patched_indices))
     _ltp_p = pd.to_numeric(df.loc[_idx_array, 'last_price'], errors='coerce').fillna(0)
     _cls_p = pd.to_numeric(df.loc[_idx_array, 'close_price'], errors='coerce').fillna(0)
     _qty_p = pd.to_numeric(df.loc[_idx_array, _qty_col], errors='coerce').fillna(0)
@@ -1953,8 +2006,6 @@ def backfill_market_data(df) -> int:
             if 'pnl_percentage' in df.columns:
                 _pp = (df.loc[_idx_array, 'pnl'] / _inv_p.replace(0, pd.NA) * 100).fillna(0)
                 df.loc[_idx_array, 'pnl_percentage'] = _pp
-
-    return len(_patched_indices)
 
 
 # Back-compat alias — the function used to be narrower (close only).
