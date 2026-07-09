@@ -36,110 +36,107 @@ _IST = ZoneInfo("Asia/Kolkata")
 # Closed-hours snapshot helpers
 # ---------------------------------------------------------------------------
 
-async def _holdings_snapshot() -> Optional[HoldingsResponse]:
-    """Read the most-recent pre-today daily_book[kind='holdings'] snapshot
-    and reconstruct a HoldingsResponse from it.
+_HOLDINGS_SNAPSHOT_SQL = """
+    WITH latest_batch AS (
+        SELECT account, MAX(captured_at) AS max_at
+        FROM daily_book
+        WHERE kind = 'holdings' AND ltp IS NOT NULL
+        GROUP BY account
+    )
+    SELECT db.account, db.symbol, db.exchange, db.qty, db.avg_cost,
+           db.ltp, db.day_pnl, db.total_pnl, db.captured_at
+    FROM daily_book db
+    JOIN latest_batch lb
+      ON db.account = lb.account AND db.captured_at = lb.max_at
+    WHERE db.kind = 'holdings'
+      AND db.ltp IS NOT NULL
+      AND NOT (db.ltp = 0 AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
+               AND db.avg_cost IS NOT NULL AND db.avg_cost > 0)
+    ORDER BY db.account, db.symbol
+"""
 
-    Returns None when no snapshot exists or the DB query fails.
+
+async def _query_holdings_snapshot_rows():
+    """Latest snapshot BATCH per account — pull every (account, symbol)
+    row written in the most-recent captured_at for that account.
+    The prior `DISTINCT ON (account, symbol) ORDER BY captured_at DESC`
+    pattern picked the newest non-zero row per symbol regardless of
+    date. For symbols closed weeks ago, that's a months-old row
+    whose day_pnl was real on its capture date but is summed today
+    as nonsense (NavStrip showed ₹14k vs the real ₹30k holdings P∆).
+    Batch-anchoring guarantees we ONLY surface the broker's current
+    book, never carry-over from prior sessions. Zero-payload guard
+    still applies inside the batch in case the writer slipped one
+    through.
     """
     from backend.api.database import async_session
     from sqlalchemy import text as _sql_text
 
     try:
         async with async_session() as session:
-            # Latest snapshot BATCH per account — pull every (account, symbol)
-            # row written in the most-recent captured_at for that account.
-            # The prior `DISTINCT ON (account, symbol) ORDER BY captured_at DESC`
-            # pattern picked the newest non-zero row per symbol regardless of
-            # date. For symbols closed weeks ago, that's a months-old row
-            # whose day_pnl was real on its capture date but is summed today
-            # as nonsense (NavStrip showed ₹14k vs the real ₹30k holdings P∆).
-            # Batch-anchoring guarantees we ONLY surface the broker's current
-            # book, never carry-over from prior sessions. Zero-payload guard
-            # still applies inside the batch in case the writer slipped one
-            # through.
-            result = await session.execute(_sql_text("""
-                WITH latest_batch AS (
-                    SELECT account, MAX(captured_at) AS max_at
-                    FROM daily_book
-                    WHERE kind = 'holdings' AND ltp IS NOT NULL
-                    GROUP BY account
-                )
-                SELECT db.account, db.symbol, db.exchange, db.qty, db.avg_cost,
-                       db.ltp, db.day_pnl, db.total_pnl, db.captured_at
-                FROM daily_book db
-                JOIN latest_batch lb
-                  ON db.account = lb.account AND db.captured_at = lb.max_at
-                WHERE db.kind = 'holdings'
-                  AND db.ltp IS NOT NULL
-                  AND NOT (db.ltp = 0 AND (db.total_pnl = 0 OR db.total_pnl IS NULL)
-                           AND db.avg_cost IS NOT NULL AND db.avg_cost > 0)
-                ORDER BY db.account, db.symbol
-            """))
-            raw_rows = result.all()
+            result = await session.execute(_sql_text(_HOLDINGS_SNAPSHOT_SQL))
+            return result.all()
     except Exception as exc:
         logger.warning(f"holdings snapshot query failed: {exc}")
         return None
 
-    if not raw_rows:
-        return None
 
-    snap_captured_at: str = raw_rows[0][8].isoformat() if raw_rows[0][8] else ""
+def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float, float, float]:
+    """Convert one raw snapshot tuple into a HoldingRow + the four
+    per-account sums (inv, cur, total_pnl, day_pnl) that the caller
+    aggregates into HoldingsSummaryRow.
+    """
+    (account, symbol, exchange, qty, avg_cost, ltp,
+     day_pnl, total_pnl, _captured_at) = raw_row
 
-    inv_by_account: dict[str, float] = {}
-    cur_by_account: dict[str, float] = {}
-    pnl_by_account: dict[str, float] = {}
-    dcv_by_account: dict[str, float] = {}
+    avg_cost_f  = float(avg_cost)  if avg_cost  is not None else 0.0
+    ltp_f       = float(ltp)       if ltp        is not None else 0.0
+    total_pnl_f = float(total_pnl) if total_pnl  is not None else 0.0
+    day_pnl_f   = float(day_pnl)   if day_pnl    is not None else 0.0
+    qty_i       = int(qty)         if qty         is not None else 0
+    inv_val     = avg_cost_f * qty_i
+    cur_val     = ltp_f      * qty_i
 
-    rows: list[HoldingRow] = []
-    for (account, symbol, exchange, qty, avg_cost, ltp,
-         day_pnl, total_pnl, captured_at) in raw_rows:
-        avg_cost_f  = float(avg_cost)  if avg_cost  is not None else 0.0
-        ltp_f       = float(ltp)       if ltp        is not None else 0.0
-        total_pnl_f = float(total_pnl) if total_pnl  is not None else 0.0
-        day_pnl_f   = float(day_pnl)   if day_pnl    is not None else 0.0
-        qty_i       = int(qty)         if qty         is not None else 0
-        inv_val     = avg_cost_f * qty_i
-        cur_val     = ltp_f      * qty_i
+    # pnl_percentage: pnl / |avg × qty| × 100
+    # (inv_val = avg_cost_f × qty_i, so use that directly)
+    pnl_pct = (total_pnl_f / inv_val * 100.0) if inv_val else 0.0
+    # day_change_percentage: day_change_val / |close × qty| × 100
+    # close_price for a holdings snapshot is the last stored LTP.
+    # Use |avg × qty| (inv_val) as the fallback when ltp is zero.
+    close_notional = abs(ltp_f * qty_i)
+    day_pct = (day_pnl_f / close_notional * 100.0) if close_notional else (
+        day_pnl_f / inv_val * 100.0 if inv_val else 0.0
+    )
+    row = HoldingRow(
+        account=str(account),
+        tradingsymbol=str(symbol),
+        exchange=str(exchange or ""),
+        quantity=qty_i,
+        opening_quantity=qty_i,
+        average_price=avg_cost_f,
+        close_price=ltp_f,
+        last_price=ltp_f,
+        inv_val=inv_val,
+        cur_val=cur_val,
+        pnl=total_pnl_f,
+        pnl_percentage=pnl_pct,
+        day_change_val=day_pnl_f,
+        day_change_percentage=day_pct,
+        last_price_stale=True,
+        price_source="snapshot_settled",
+        current_price=ltp_f,
+        is_animating=False,
+    )
+    return row, inv_val, cur_val, total_pnl_f, day_pnl_f
 
-        # pnl_percentage: pnl / |avg × qty| × 100
-        # (inv_val = avg_cost_f × qty_i, so use that directly)
-        pnl_pct = (total_pnl_f / inv_val * 100.0) if inv_val else 0.0
-        # day_change_percentage: day_change_val / |close × qty| × 100
-        # close_price for a holdings snapshot is the last stored LTP.
-        # Use |avg × qty| (inv_val) as the fallback when ltp is zero.
-        close_notional = abs(ltp_f * qty_i)
-        day_pct = (day_pnl_f / close_notional * 100.0) if close_notional else (
-            day_pnl_f / inv_val * 100.0 if inv_val else 0.0
-        )
-        row = HoldingRow(
-            account=str(account),
-            tradingsymbol=str(symbol),
-            exchange=str(exchange or ""),
-            quantity=qty_i,
-            opening_quantity=qty_i,
-            average_price=avg_cost_f,
-            close_price=ltp_f,
-            last_price=ltp_f,
-            inv_val=inv_val,
-            cur_val=cur_val,
-            pnl=total_pnl_f,
-            pnl_percentage=pnl_pct,
-            day_change_val=day_pnl_f,
-            day_change_percentage=day_pct,
-            last_price_stale=True,
-            price_source="snapshot_settled",
-            current_price=ltp_f,
-            is_animating=False,
-        )
-        rows.append(row)
 
-        acct = str(account)
-        inv_by_account[acct] = inv_by_account.get(acct, 0.0) + inv_val
-        cur_by_account[acct] = cur_by_account.get(acct, 0.0) + cur_val
-        pnl_by_account[acct] = pnl_by_account.get(acct, 0.0) + total_pnl_f
-        dcv_by_account[acct] = dcv_by_account.get(acct, 0.0) + day_pnl_f
-
+def _build_holdings_summary(
+    inv_by_account: dict[str, float],
+    cur_by_account: dict[str, float],
+    pnl_by_account: dict[str, float],
+    dcv_by_account: dict[str, float],
+) -> list[HoldingsSummaryRow]:
+    """Per-account HoldingsSummaryRow list + a TOTAL row."""
     summary: list[HoldingsSummaryRow] = []
     total_inv = total_cur = total_pnl_s = total_dcv = 0.0
     for acct in pnl_by_account:
@@ -169,6 +166,42 @@ async def _holdings_snapshot() -> Optional[HoldingsResponse]:
         day_change_val=total_dcv,
         day_change_percentage=total_dcv / total_prev * 100.0 if total_prev else 0.0,
     ))
+    return summary
+
+
+async def _holdings_snapshot() -> Optional[HoldingsResponse]:
+    """Read the most-recent pre-today daily_book[kind='holdings'] snapshot
+    and reconstruct a HoldingsResponse from it.
+
+    Returns None when no snapshot exists or the DB query fails.
+    """
+    raw_rows = await _query_holdings_snapshot_rows()
+    if not raw_rows:
+        return None
+
+    snap_captured_at: str = raw_rows[0][8].isoformat() if raw_rows[0][8] else ""
+
+    inv_by_account: dict[str, float] = {}
+    cur_by_account: dict[str, float] = {}
+    pnl_by_account: dict[str, float] = {}
+    dcv_by_account: dict[str, float] = {}
+
+    rows: list[HoldingRow] = []
+    for raw_row in raw_rows:
+        row, inv_val, cur_val, total_pnl_f, day_pnl_f = (
+            _build_holding_row_from_snapshot(raw_row)
+        )
+        rows.append(row)
+
+        acct = row.account
+        inv_by_account[acct] = inv_by_account.get(acct, 0.0) + inv_val
+        cur_by_account[acct] = cur_by_account.get(acct, 0.0) + cur_val
+        pnl_by_account[acct] = pnl_by_account.get(acct, 0.0) + total_pnl_f
+        dcv_by_account[acct] = dcv_by_account.get(acct, 0.0) + day_pnl_f
+
+    summary = _build_holdings_summary(
+        inv_by_account, cur_by_account, pnl_by_account, dcv_by_account
+    )
 
     return HoldingsResponse(
         rows=rows,
