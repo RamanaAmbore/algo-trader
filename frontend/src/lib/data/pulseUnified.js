@@ -139,6 +139,53 @@ export function makeRowFactory(byKey) {
   };
 }
 
+// ── Internal micro-helpers (reduce duplicated branches across sections) ──────
+
+/**
+ * Copy account-level stale flags + price_source / is_animating propagation
+ * from a raw broker row onto the aggregated pulse row.
+ *
+ * This block appears verbatim in mergePositionRows + mergeHoldingRows so it
+ * lives in one place. Written for behaviour parity — no logic changes.
+ *
+ * @param {Record<string, any>} row  target aggregated pulse row (mutated)
+ * @param {Record<string, any>} r    raw broker input row
+ */
+function _propagateStaleAndSource(row, r) {
+  if (r.account_stale === true) {
+    row.account_stale = true;
+    if (r.account_stale_since) row.account_stale_since = r.account_stale_since;
+  }
+  const _rps = r.price_source ?? r.ltp_source;
+  if (_rps && _rps !== 'live') {
+    row.price_source = row.price_source && row.price_source !== 'live'
+      ? row.price_source : _rps;
+  }
+  if (r.is_animating === false) row.is_animating = false;
+}
+
+/**
+ * Collect the set of UPPER underlyings for every CE/PE row in `rows`.
+ * Empty when `rows` is empty or all rows are non-option.
+ *
+ * Extracted from mergeUnderlyingAnchors where the same walk was inlined
+ * twice (once for positions, once for holdings).
+ *
+ * @param {any[]} rows              broker rows to scan
+ * @param {((s: string) => any) | null} getInst  instruments cache accessor
+ * @returns {Set<string>}
+ */
+function _optUnderlyingSet(rows, getInst) {
+  const out = new Set();
+  for (const r of rows) {
+    const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
+    if (!/(CE|PE)$/i.test(sym)) continue;
+    const p = parseSymbol(sym, getInst);
+    if (p?.underlying) out.add(String(p.underlying).toUpperCase());
+  }
+  return out;
+}
+
 // ── Section helpers ───────────────────────────────────────────────────────────
 
 /**
@@ -272,18 +319,7 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     // Mirror broker raw values for TOTAL footer parity.
     row._broker_pnl     = (row._broker_pnl     ?? 0) + (Number(r.pnl)             || 0);
     row._broker_day_pnl = (row._broker_day_pnl ?? 0) + baseDayPnlForPosition(r);
-    // Account-level staleness propagation.
-    if (r.account_stale === true) {
-      row.account_stale = true;
-      if (r.account_stale_since) row.account_stale_since = r.account_stale_since;
-    }
-    // price_source / is_animating propagation.
-    const _rps = r.price_source ?? r.ltp_source;
-    if (_rps && _rps !== 'live') {
-      row.price_source = row.price_source && row.price_source !== 'live'
-        ? row.price_source : _rps;
-    }
-    if (r.is_animating === false) row.is_animating = false;
+    _propagateStaleAndSource(row, r);
     fillSymbolMeta(row, sym, getInst);
   }
 }
@@ -368,18 +404,7 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
     }
     row._broker_pnl     = (row._broker_pnl     ?? 0) + (Number(r.pnl)             || 0);
     row._broker_day_pnl = (row._broker_day_pnl ?? 0) + (Number(r.day_change_val) || 0);
-    // Account-level staleness propagation.
-    if (r.account_stale === true) {
-      row.account_stale = true;
-      if (r.account_stale_since) row.account_stale_since = r.account_stale_since;
-    }
-    // price_source / is_animating propagation.
-    const _rps = r.price_source ?? r.ltp_source;
-    if (_rps && _rps !== 'live') {
-      row.price_source = row.price_source && row.price_source !== 'live'
-        ? row.price_source : _rps;
-    }
-    if (r.is_animating === false) row.is_animating = false;
+    _propagateStaleAndSource(row, r);
     fillSymbolMeta(row, sym, getInst);
   }
 }
@@ -402,21 +427,10 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
 export function mergeUnderlyingAnchors(byKey, uq, pos, hold, includePos, includeHold, ctx) {
   const get = makeRowFactory(byKey);
   const { getInst } = ctx;
-  // Build scoped option-underlying sets.
-  const posOptUnderlyings = new Set();
-  for (const r of (includePos === false ? [] : pos)) {
-    const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
-    if (!/(CE|PE)$/i.test(sym)) continue;
-    const p = parseSymbol(sym, getInst);
-    if (p?.underlying) posOptUnderlyings.add(String(p.underlying).toUpperCase());
-  }
-  const holdOptUnderlyings = new Set();
-  for (const r of (includeHold === false ? [] : hold)) {
-    const sym = String(r.symbol || r.tradingsymbol || '').toUpperCase();
-    if (!/(CE|PE)$/i.test(sym)) continue;
-    const p = parseSymbol(sym, getInst);
-    if (p?.underlying) holdOptUnderlyings.add(String(p.underlying).toUpperCase());
-  }
+  // Scoped option-underlying sets — anchors are gated on presence of at least
+  // one CE/PE within the enabled major's scoped rows.
+  const posOptUnderlyings  = _optUnderlyingSet(includePos  === false ? [] : pos,  getInst);
+  const holdOptUnderlyings = _optUnderlyingSet(includeHold === false ? [] : hold, getInst);
   for (const [, q] of Object.entries(uq)) {
     const info = q._resolved;
     if (!info) continue;
@@ -596,6 +610,66 @@ export function finalizeRows(byKey, ctx) {
  * @param {string[]} detachedSymbols
  * @returns {any[]}  mutates and returns out
  */
+// Kind → tier rank for sortUnifiedRows. spot before fut before opt.
+const _TIER_RANK = { spot: 0, fut: 1, opt: 2 };
+
+// Opt-type rank within same-strike option pair. CE before PE, else last.
+const _OPT_TYPE_RANK = { CE: 0, PE: 1 };
+
+/**
+ * Compare two rows within the SAME group (same underlying, same bucket).
+ * Ordering: tier ASC → within opt: strike ASC → CE before PE → symbol alpha.
+ *
+ * @param {any} a
+ * @param {any} b
+ * @returns {number}
+ */
+function _compareSameGroup(a, b) {
+  const ta = _TIER_RANK[a.kind] ?? 3;
+  const tb = _TIER_RANK[b.kind] ?? 3;
+  if (ta !== tb) return ta - tb;
+  if (a.kind === 'opt' && b.kind === 'opt') {
+    const sa = a.strike ?? 0, sb = b.strike ?? 0;
+    if (sa !== sb) return sa - sb;
+    const oa = _OPT_TYPE_RANK[a.opt_type] ?? 2;
+    const ob = _OPT_TYPE_RANK[b.opt_type] ?? 2;
+    return oa - ob;
+  }
+  return (a.tradingsymbol || '').localeCompare(b.tradingsymbol || '');
+}
+
+/**
+ * Compare two DIFFERENT groups by operator manual `order` map.
+ * Ordered groups win over unordered ones (which then fall back to alpha).
+ *
+ * @param {string} ga
+ * @param {string} gb
+ * @param {(g: string) => number|null} rankOf
+ * @returns {number}
+ */
+function _compareGroups(ga, gb, rankOf) {
+  const ra = rankOf(ga), rb = rankOf(gb);
+  if (ra != null && rb != null && ra !== rb) return ra - rb;
+  if (ra != null && rb == null) return -1;
+  if (ra == null && rb != null) return  1;
+  return ga.localeCompare(gb);
+}
+
+/**
+ * Assign a src-based bucket rank to a row.
+ *   watchlist:1, positions:2, holdings:3, other:4
+ * Called per-row when building the group→minBucket map.
+ *
+ * @param {any} r
+ * @returns {number}
+ */
+function _srcBucket(r) {
+  if (r.src?.w) return 1;
+  if (r.src?.p) return 2;
+  if (r.src?.h) return 3;
+  return 4;
+}
+
 export function sortUnifiedRows(out, groupOrder, detachedSymbols) {
   const detachedSet = new Set((detachedSymbols || []).map(s => s.toUpperCase()));
   const groupKey = (r) => {
@@ -603,20 +677,12 @@ export function sortUnifiedRows(out, groupOrder, detachedSymbols) {
     if (detachedSet.has(sym)) return `__DETACHED__${sym}`;
     return r.underlying || `~~${r.tradingsymbol || ''}`;
   };
-  const tierRank = (r) => {
-    if (r.kind === 'spot') return 0;
-    if (r.kind === 'fut')  return 1;
-    if (r.kind === 'opt')  return 2;
-    return 3;
-  };
-  const optTypeRank = (r) => (r.opt_type === 'CE' ? 0 : r.opt_type === 'PE' ? 1 : 2);
+  // Group → minimum src-bucket rank. Every group inherits its most-privileged
+  // member's bucket (watchlist beats positions beats holdings beats other).
   const groupBucket = {};
   for (const r of out) {
     const g = String(groupKey(r));
-    const bucket = r.src?.w ? 1
-                 : r.src?.p ? 2
-                 : r.src?.h ? 3
-                 : 4;
+    const bucket = _srcBucket(r);
     if (groupBucket[g] == null || bucket < groupBucket[g]) {
       groupBucket[g] = bucket;
     }
@@ -630,21 +696,8 @@ export function sortUnifiedRows(out, groupOrder, detachedSymbols) {
     const ga = String(groupKey(a)), gb = String(groupKey(b));
     const ba = groupBucket[ga] ?? 2, bb = groupBucket[gb] ?? 2;
     if (ba !== bb) return ba - bb;
-    if (ga !== gb) {
-      const ra = rankOf(ga), rb = rankOf(gb);
-      if (ra != null && rb != null && ra !== rb) return ra - rb;
-      if (ra != null && rb == null) return -1;
-      if (ra == null && rb != null) return  1;
-      return ga.localeCompare(gb);
-    }
-    const ta = tierRank(a), tb = tierRank(b);
-    if (ta !== tb) return ta - tb;
-    if (a.kind === 'opt' && b.kind === 'opt') {
-      const sa = a.strike ?? 0, sb = b.strike ?? 0;
-      if (sa !== sb) return sa - sb;
-      return optTypeRank(a) - optTypeRank(b);
-    }
-    return (a.tradingsymbol || '').localeCompare(b.tradingsymbol || '');
+    if (ga !== gb) return _compareGroups(ga, gb, rankOf);
+    return _compareSameGroup(a, b);
   });
   return out;
 }
