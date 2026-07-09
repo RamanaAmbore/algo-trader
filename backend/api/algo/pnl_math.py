@@ -126,3 +126,56 @@ def naive_day_pnl(ltp: float, cls: float, qty: float) -> float:
     """Naive (LTP − close) × qty — fallback when intraday decomposition
     fields aren't available (Dhan / Groww adapters)."""
     return (ltp - cls) * qty
+
+
+def apply_day_change_backstop(raw: pd.DataFrame) -> pd.DataFrame:
+    """Restore day_change_val for rows where the broker gate zeroed it.
+
+    The polars gate `pl.when(_ltp > 0)` in `_enrich_positions` zeros
+    `day_change_val` whenever Kite ships `last_price = 0`. Two shapes hit
+    this path:
+
+      Case 1 — new position (overnight_quantity == 0, ltp == 0 pre-first-tick):
+        Kite's `pnl` field carries the correct value (Kite computes on their
+        side with their own quote, usually non-zero). Fall back to `pnl`.
+
+      Case 3 — fully closed intraday (quantity == 0, realised != 0):
+        For a flat row `unrealised = 0` and `pnl = realised`. Fall back to
+        `pnl` (covers MCX round-trip quirks where `realised = 0` but
+        `pnl != 0`).
+
+    Both cases share: `overnight_quantity == 0 AND day_change_val == 0
+    AND pnl != 0`. The rescue mirrors the frontend SSOT
+    `baseDayPnlForPosition` in `frontend/src/lib/data/nav.js` so route,
+    background task, NAV math, snapshot writers, and alerts all agree.
+
+    Returns a copy of `raw` with `day_change_val` restored where the mask
+    fires. If `raw` is empty or lacks the required columns, returns it
+    unchanged (safe to call unconditionally).
+    """
+    if raw is None or raw.empty:
+        return raw
+    raw = raw.copy()
+
+    _qty = pd.to_numeric(
+        raw.get('quantity', pd.Series(dtype=float)), errors='coerce'
+    ).fillna(0)
+    _oq = pd.to_numeric(
+        raw.get('overnight_quantity', pd.Series(dtype=float)), errors='coerce'
+    ).fillna(0)
+    _dcv = pd.to_numeric(
+        raw.get('day_change_val', pd.Series(dtype=float)), errors='coerce'
+    ).fillna(0)
+    _pnl = pd.to_numeric(
+        raw.get('pnl', pd.Series(dtype=float)), errors='coerce'
+    ).fillna(0)
+
+    # Case 1: new position (oq=0, dcv zeroed by gate, pnl non-zero)
+    _case1 = (_oq == 0) & (_dcv == 0) & (_pnl != 0)
+    # Case 3: fully closed intraday (qty=0, dcv zeroed by gate, pnl non-zero)
+    _case3 = (_qty == 0) & (_dcv == 0) & (_pnl != 0)
+
+    _mask = _case1 | _case3
+    if _mask.any() and 'day_change_val' in raw.columns:
+        raw.loc[_mask, 'day_change_val'] = _pnl[_mask]
+    return raw

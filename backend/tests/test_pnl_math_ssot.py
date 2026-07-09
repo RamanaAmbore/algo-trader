@@ -28,6 +28,7 @@ import polars as pl
 import pytest
 
 from backend.api.algo.pnl_math import (
+    apply_day_change_backstop,
     decomposed_intraday_pnl,
     naive_day_pnl,
     recompute_row_percentages,
@@ -339,3 +340,120 @@ class TestRecomputeRowPercentages:
         # And must match the formula
         expected = (264.5 - 220) * 10 / (220 * 10) * 100
         assert math.isclose(post_fix_dcp, expected, rel_tol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# apply_day_change_backstop — SSOT for Case 1 (new position) + Case 3 (closed
+# intraday) Day P&L rescue. Both the /api/positions route and the background
+# performance task call this helper so NavStrip P "today" slot agrees with
+# what the route ships to the client.
+# ---------------------------------------------------------------------------
+
+class TestApplyDayChangeBackstop:
+    def test_case1_new_position_ltp_zero(self):
+        """Case 1: overnight_quantity=0, day_change_val=0, pnl=500 →
+        day_change_val becomes 500."""
+        df = pd.DataFrame([{
+            'quantity': 50,
+            'overnight_quantity': 0,
+            'day_change_val': 0.0,
+            'pnl': 500.0,
+        }])
+        out = apply_day_change_backstop(df)
+        assert math.isclose(out.at[0, 'day_change_val'], 500.0, abs_tol=1e-6)
+
+    def test_case3_closed_intraday_ltp_zero(self):
+        """Case 3: quantity=0, day_change_val=0, pnl=-200 →
+        day_change_val becomes -200."""
+        df = pd.DataFrame([{
+            'quantity': 0,
+            'overnight_quantity': 0,
+            'day_change_val': 0.0,
+            'pnl': -200.0,
+        }])
+        out = apply_day_change_backstop(df)
+        assert math.isclose(out.at[0, 'day_change_val'], -200.0, abs_tol=1e-6)
+
+    def test_no_backstop_when_dcv_nonzero(self):
+        """Sanity: overnight_quantity=1, day_change_val=300, pnl=300 →
+        day_change_val unchanged (no backstop fires)."""
+        df = pd.DataFrame([{
+            'quantity': 1,
+            'overnight_quantity': 1,
+            'day_change_val': 300.0,
+            'pnl': 300.0,
+        }])
+        out = apply_day_change_backstop(df)
+        assert math.isclose(out.at[0, 'day_change_val'], 300.0, abs_tol=1e-6)
+
+    def test_no_backstop_when_overnight_carry_and_dcv_zero(self):
+        """Overnight-carry row with dcv=0 must NOT get pnl fallback —
+        pnl is lifetime, not intraday, on carry rows."""
+        df = pd.DataFrame([{
+            'quantity': 50,
+            'overnight_quantity': 50,
+            'day_change_val': 0.0,
+            'pnl': 5000.0,   # lifetime pnl
+        }])
+        out = apply_day_change_backstop(df)
+        assert math.isclose(out.at[0, 'day_change_val'], 0.0, abs_tol=1e-6), (
+            "carry-row dcv must not be rescued from lifetime pnl"
+        )
+
+    def test_no_backstop_when_pnl_zero(self):
+        """pnl=0 rows are untouched (no signal to restore)."""
+        df = pd.DataFrame([{
+            'quantity': 10,
+            'overnight_quantity': 0,
+            'day_change_val': 0.0,
+            'pnl': 0.0,
+        }])
+        out = apply_day_change_backstop(df)
+        assert math.isclose(out.at[0, 'day_change_val'], 0.0, abs_tol=1e-6)
+
+    def test_empty_dataframe(self):
+        """Empty frame passes through unchanged, no raise."""
+        df = pd.DataFrame()
+        out = apply_day_change_backstop(df)
+        assert out.empty
+
+    def test_missing_columns_safe(self):
+        """Missing pnl / day_change_val columns → no-op (safe to call)."""
+        df = pd.DataFrame([{'quantity': 10, 'overnight_quantity': 0}])
+        out = apply_day_change_backstop(df)
+        # Should return a frame, no exception
+        assert len(out) == 1
+
+    def test_does_not_mutate_input(self):
+        """The helper returns a copy — input frame is untouched."""
+        df = pd.DataFrame([{
+            'quantity': 0,
+            'overnight_quantity': 0,
+            'day_change_val': 0.0,
+            'pnl': 400.0,
+        }])
+        df_before = df.copy()
+        _ = apply_day_change_backstop(df)
+        pd.testing.assert_frame_equal(df, df_before)
+
+    def test_mixed_frame_only_masked_rows_rescued(self):
+        """Multiple rows: only Case 1 / Case 3 rows get rescued."""
+        df = pd.DataFrame([
+            # Row 0 — Case 1 (new): rescued
+            {'quantity': 50, 'overnight_quantity': 0,
+             'day_change_val': 0.0, 'pnl': 500.0},
+            # Row 1 — overnight carry: NOT rescued
+            {'quantity': 50, 'overnight_quantity': 50,
+             'day_change_val': 0.0, 'pnl': 1000.0},
+            # Row 2 — Case 3 (closed): rescued
+            {'quantity': 0, 'overnight_quantity': 0,
+             'day_change_val': 0.0, 'pnl': -200.0},
+            # Row 3 — dcv already correct: NOT rewritten
+            {'quantity': 10, 'overnight_quantity': 0,
+             'day_change_val': 75.0, 'pnl': 100.0},
+        ])
+        out = apply_day_change_backstop(df)
+        assert math.isclose(out.at[0, 'day_change_val'], 500.0, abs_tol=1e-6)
+        assert math.isclose(out.at[1, 'day_change_val'], 0.0, abs_tol=1e-6)
+        assert math.isclose(out.at[2, 'day_change_val'], -200.0, abs_tol=1e-6)
+        assert math.isclose(out.at[3, 'day_change_val'], 75.0, abs_tol=1e-6)

@@ -6,7 +6,12 @@ from litestar import Controller, Request, get
 from litestar.exceptions import HTTPException
 from typing import Optional
 
-from backend.api.algo.pnl_math import decomposed_intraday_pnl, naive_day_pnl, recompute_row_percentages
+from backend.api.algo.pnl_math import (
+    apply_day_change_backstop,
+    decomposed_intraday_pnl,
+    naive_day_pnl,
+    recompute_row_percentages,
+)
 from backend.api.cache import get_or_fetch, invalidate
 from backend.api.helpers.ltp_patch import apply_ltp_patch, positions_policy
 from backend.api.helpers.price_resolver import resolve_current_price
@@ -379,51 +384,21 @@ async def _fetch() -> PositionsResponse:
     # 2026-06-19 +1.33L phantom gain incident.
     await _override_stale_close_from_snapshot(raw)
 
-    # Unified Case 1 + Case 3 Day P&L backstop — the polars gate
-    # `pl.when(_ltp > 0)` in `_enrich_positions` zeros `day_change_val`
-    # whenever Kite ships `last_price = 0`. This affects TWO shapes:
-    #
-    #   Case 1 (new position): overnight_quantity == 0, quantity != 0,
-    #     ltp = 0 (broker REST lag pre-first-tick). The decomposed formula
-    #     `(bq × 0 − bv) + (sv − sq × 0) = sv − bv` would compute the
-    #     realised leg correctly if the gate didn't zero it out. Kite's
-    #     `pnl` field carries `unrealised + realised = (0−avg)×qty + realised`
-    #     — but Kite computes pnl on their end with their own quote
-    #     (usually non-zero), so `pnl` is the safest fallback.
-    #
-    #   Case 3 (fully-closed intraday): quantity == 0, realised != 0,
-    #     ltp = 0. For a flat row `unrealised = 0` and `pnl = realised`.
-    #
-    # Both cases share: overnight_quantity == 0, day_change_val == 0,
-    # pnl != 0. Fall back to `pnl` — mirrors the frontend SSOT
-    # `baseDayPnlForPosition` in `frontend/src/lib/data/nav.js` so backend
-    # snapshot writers, NAV math, alerts, and the wire response all agree.
-    #
-    # The prior Case 3 backstop used `realised` as the fallback. For MCX
-    # closed rows Kite occasionally ships `realised = 0` (round-trip
-    # accounting quirk) even when `pnl != 0`; `pnl` covers both shapes.
+    # Unified Case 1 + Case 3 Day P&L backstop — restores day_change_val
+    # for new positions (oq=0, ltp=0 pre-first-tick) and fully-closed
+    # intraday rows (qty=0) where the polars enrichment gate zeroed it.
+    # SSOT: backend.api.algo.pnl_math.apply_day_change_backstop. The
+    # background performance task calls the same helper so NavStrip P
+    # "today" slot agrees with the /api/positions route.
+    raw = apply_day_change_backstop(raw)
+
+    # Flat-row hygiene (route-only): rows with quantity == 0 should not
+    # report a per-share day_change delta (LTP is meaningless for a closed
+    # position). This is separate from the day_change_val backstop above —
+    # the backstop restores the aggregate rupee value; this block zeroes
+    # the per-share delta and the percentage on the same rows.
     if not raw.empty and 'quantity' in raw.columns:
         _qty_all = pd.to_numeric(raw['quantity'], errors='coerce').fillna(0)
-        _oq_all = (
-            pd.to_numeric(raw['overnight_quantity'], errors='coerce').fillna(0)
-            if 'overnight_quantity' in raw.columns
-            else pd.Series(0.0, index=raw.index)
-        )
-        _pnl_all = (
-            pd.to_numeric(raw['pnl'], errors='coerce').fillna(0)
-            if 'pnl' in raw.columns
-            else pd.Series(0.0, index=raw.index)
-        )
-        if 'day_change_val' in raw.columns:
-            _dcv_all = pd.to_numeric(raw['day_change_val'], errors='coerce').fillna(0)
-            # Rescue: no overnight carry, dcv zeroed by enrichment gate,
-            # but broker shipped a non-zero pnl. Covers new positions
-            # (qty != 0) AND fully-closed rows (qty == 0).
-            _rescue = (_oq_all == 0) & (_dcv_all == 0) & (_pnl_all != 0)
-            if _rescue.any():
-                raw.loc[_rescue, 'day_change_val'] = _pnl_all[_rescue]
-        # Flat rows should not report a per-share day_change delta
-        # (LTP is meaningless for a closed position).
         _flat_mask = _qty_all == 0
         if _flat_mask.any():
             if 'day_change' in raw.columns:
