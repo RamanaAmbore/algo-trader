@@ -13,6 +13,7 @@
    * components, so the three surfaces (modal, card, page) can't
    * drift on filter UI or LogPanel config.
    */
+  import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { authStore, nowStamp } from '$lib/stores';
   import { selectedStrategyId, strategyOpenSymbols } from '$lib/stores';
@@ -21,23 +22,26 @@
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import ActivityHeaderFilters from '$lib/ActivityHeaderFilters.svelte';
   import BellIcon from '$lib/icons/BellIcon.svelte';
+  import { activityStore, ACTIVITY_TABS } from '$lib/data/activityStore.svelte.js';
 
   const isDemo = $derived(!$authStore.user);
 
-  /** @type {string[]} */
-  let _accountFilter     = $state([]);
+  // availableAccounts is per-mount ephemeral — populated by LogPanel from
+  // the current order rows. Not in activityStore (different mounts return
+  // different account sets; a stale value from the modal would corrupt
+  // this page's dropdown until the first poll).
   /** @type {string[]} */
   let _availableAccounts = $state([]);
-  /** @type {'all'|'error'|'warning'|'info'} */
-  let _levelFilter       = $state('all');
 
-  // Read ?tab=... so the navbar broker chip and other deep-links can
-  // open this page on a specific tab. Whitelist against the known tab
-  // ids so a typo / hostile URL can't end up showing a broken tab.
-  const _ALLOWED_TABS = ['order','agent','terminal','simulator','system','conn','news'];
-  const _urlTab = $derived.by(() => {
+  // URL ?tab=... seeding: runs once on mount so deep-links (navbar broker
+  // chip, bookmarks) land on the right tab. If no param is present, the
+  // store's last-used tab is preserved — do NOT derive this reactively or
+  // every navigation would reset the tab back to the URL value.
+  onMount(() => {
     const t = page?.url?.searchParams?.get('tab') || '';
-    return _ALLOWED_TABS.includes(t) ? t : 'order';
+    if (t && ACTIVITY_TABS.includes(/** @type {any} */ (t))) {
+      activityStore.activeTab = t;
+    }
   });
 
   // Manual-refresh bump — clicking the page-header Refresh icon
@@ -69,9 +73,11 @@
        Fullscreen + Default-size icons sit RIGHT of ml-auto.
        ActivityHeaderFilters' built-in margin-left:auto is overridden
        in the <style> block below for this page-header context. -->
+  <!-- accountFilter + levelFilter bound to activityStore so state
+       persists across page visits and is shared with ActivityLogModal. -->
   <ActivityHeaderFilters
-    bind:accountFilter={_accountFilter}
-    bind:levelFilter={_levelFilter}
+    bind:accountFilter={activityStore.accountFilter}
+    bind:levelFilter={activityStore.levelFilter}
     availableAccounts={_availableAccounts} />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
@@ -82,14 +88,18 @@
 
 <section class="activity-page-body">
   {#key _refreshKey}
+    <!-- defaultTab + onTabChange wire the active tab through to
+         activityStore so tab selection persists across page visits and
+         is shared with ActivityLogModal. -->
     <ActivityLogSurface
       heightClass="activity-page-rows"
-      defaultTab={_urlTab}
+      defaultTab={activityStore.activeTab}
       context="page"
       symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
-      bind:accountFilter={_accountFilter}
+      bind:accountFilter={activityStore.accountFilter}
       bind:availableAccounts={_availableAccounts}
-      bind:levelFilter={_levelFilter} />
+      bind:levelFilter={activityStore.levelFilter}
+      onTabChange={(id) => { activityStore.activeTab = id; }} />
   {/key}
 </section>
 

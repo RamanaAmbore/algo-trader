@@ -12,6 +12,7 @@
 import { writable, derived, get } from 'svelte/store';
 import { browser } from '$app/environment';
 import { isMarketOpen, isNseOpen, isMcxOpen, fetchMarketStatus } from '$lib/marketHours';
+import { activityStore as _activityStore } from '$lib/data/activityStore.svelte.js';
 
 // ---------------------------------------------------------------------------
 // Post-hibernation refiring state
@@ -985,21 +986,29 @@ if (browser) {
 // navbar broker-status chip, future deep-links) writes to this store
 // instead of mounting a second ActivityLogModal.
 //
-// Shape: { open: bool, initialTab: 'order'|'agent'|'simulator'|'system'|'conn'|'news' }
-//   initialTab — which LogPanel tab to land on. The navbar broker chip
-//                sets 'conn' so the operator drops straight into the
-//                conn_service log; the Log button uses the default 'order'.
+// Shape: { open: bool }
+//   Tab selection lives in activityStore (activityStore.svelte.js) so it
+//   persists across modal open/close and is shared with the /activity page.
+//   initialTab is now written to activityStore.activeTab by openActivityModal;
+//   the modal reads activityStore.activeTab directly instead of this field.
 /** @typedef {'order'|'agent'|'terminal'|'simulator'|'system'|'conn'|'news'} ActivityTab */
 
 export const activityModal = writable(
-  /** @type {{ open: boolean, initialTab: ActivityTab }} */
-  ({ open: false, initialTab: /** @type {ActivityTab} */ ('order') })
+  /** @type {{ open: boolean }} */
+  ({ open: false })
 );
 
 /** Open the activity modal pre-selected on a given LogPanel tab.
+ *
+ *  Writes the requested tab to activityStore so ActivityLogModal and
+ *  the /activity page share the same tab state.
+ *
  *  @param {ActivityTab} [initialTab] */
 export function openActivityModal(initialTab = 'order') {
-  activityModal.set({ open: true, initialTab });
+  // Write the tab before opening so the modal renders on the correct
+  // tab from the first frame — no flash from a subsequent async update.
+  _activityStore.activeTab = initialTab;
+  activityModal.set({ open: true });
 }
 
 /** Close the activity modal. */

@@ -908,11 +908,12 @@
 <!-- Single ActivityLogModal mount for the entire algo surface — driven
      by the activityModal store. PageHeaderActions's Log button and the
      navbar broker-status chip both write to the store; this is the only
-     instance rendered, so they can't stack duplicates. initialTab seeds
-     LogPanel's defaultTab on open. -->
+     instance rendered, so they can't stack duplicates.
+     Tab selection is now owned by activityStore (shared with /activity
+     page); openActivityModal(tab) writes to activityStore before setting
+     open=true so the modal renders on the correct tab from the first frame. -->
 {#if $activityModal.open}
   <ActivityLogModal
-    initialTab={$activityModal.initialTab}
     onClose={closeActivityModal} />
 {/if}
 

@@ -124,14 +124,18 @@
       <!-- ActivityLogSurface is the SAME wrapper /orders renders inside
            its Activity card. Encapsulates the canonical config so the
            two surfaces can't drift on multiColumn / hideInline /
-           bindable shape. -->
+           bindable shape.
+           defaultTab + onTabChange wire the active tab through to
+           activityStore so tab selection persists across open/close
+           and is shared with the /activity page. -->
       <ActivityLogSurface
-        defaultTab={initialTab}
+        defaultTab={activityStore.activeTab}
         context="modal"
         symbolFilter={$selectedStrategyId == null ? null : $strategyOpenSymbols}
-        bind:accountFilter={_accountFilter}
+        bind:accountFilter={activityStore.accountFilter}
         bind:availableAccounts={_availableAccounts}
-        bind:levelFilter={_levelFilter} />
+        bind:levelFilter={activityStore.levelFilter}
+        onTabChange={(id) => { activityStore.activeTab = id; }} />
     </div>
   </div>
 </div>
