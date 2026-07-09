@@ -596,9 +596,21 @@ class AdminController(Controller):
                     # email-token flow — designated only. Admin can
                     # trigger a verification email via the dedicated
                     # /resend-verification endpoint but cannot mark a
-                    # user verified directly. Field is silently dropped
-                    # for non-designated actors.
+                    # user verified directly.
+                    # Raise 403 only when the actor is actually trying to
+                    # change the value — a non-designated actor echoing
+                    # back the current state (common when the frontend
+                    # sends the full form payload) is a no-op and passes
+                    # through silently.
                     if not allowed_role_change:
+                        if bool(val) != bool(user.email_verified):
+                            raise HTTPException(
+                                status_code=403,
+                                detail=(
+                                    "Only designated role can flip email_verified "
+                                    "directly. Use Resend Verification instead."
+                                ),
+                            )
                         continue
                 if field in ('share_pct', 'contribution', 'contribution_date'):
                     # Capital + share split — designated-only. Admin can
@@ -650,9 +662,10 @@ class AdminController(Controller):
                 if user.role in _INTERNAL_ROLES and prior_role not in _INTERNAL_ROLES:
                     user.email_verified = True
             await session.commit()
+        email_verified_after = user.email_verified
         await refresh_alert_recipients()
         logger.info(f"Admin: updated user {username!r}")
-        return {"detail": f"User {username!r} updated"}
+        return {"detail": f"User {username!r} updated", "email_verified": email_verified_after}
 
     @staticmethod
     def _check_action(
