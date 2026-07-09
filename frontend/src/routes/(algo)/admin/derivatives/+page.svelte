@@ -8,7 +8,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
-  import { authStore, nowStamp, marketAwareInterval, visibleInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings } from '$lib/stores';
+  import { authStore, nowStamp, marketAwareInterval, selectedStrategyId, strategyOpenSymbols, includeHoldings } from '$lib/stores';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import { isMarketOpen } from '$lib/marketHours';
@@ -98,14 +98,11 @@
   // either case.
   /** @type {any} */ let strategy   = $state(null);
   let strategyErr   = $state('');
-  /** @type {(() => void) | null} */
-  let _autoSelectPollId = null;
   // Canonical account display order map — subscribed so `accountChoices`
   // re-derives whenever fetchBrokerOrder() resolves after cold load.
   let _derivOrderMap = $state(/** @type {Record<string,number>} */ ({}));
   const _unsubDerivsOrder = accountDisplayOrder.subscribe(m => { _derivOrderMap = m; });
   onDestroy(() => {
-    _autoSelectPollId?.();
     for (const t of _orderToastTimers) clearTimeout(t);
     _orderToastTimers.clear();
   });
@@ -289,41 +286,6 @@
       const e = (sp.get('e') || '').trim();
       if (e) selectedExpiries = e.split(',').map(x => x.trim()).filter(Boolean);
     } catch {}
-
-    // Belt-and-suspenders auto-select: the reactive $effect below
-    // sometimes doesn't fire on the initial hydration transition
-    // (Svelte 5 derived-dep chains through async store loads).
-    // Poll every 300 ms (visibility-aware) until either:
-    //   - the picker populates (opts.length > 0)
-    //   - 200 attempts elapsed (~60 s) — systemic broker outage, give up
-    //   - the component unmounts (poll cleared via _autoSelectPollId)
-    // Also validates the cached selection: if a stale symbol was
-    // restored from sessionStorage but is NOT in the current picker,
-    // swap to the picker's first entry.
-    //
-    // Once opts are populated and the selection is valid (or fixed),
-    // always call loadStrategy({ force: true }) and stop immediately.
-    // This ensures the strategy loads even when the reactive chain fired
-    // before the picker was ready (e.g. late broker response).
-    let _autoSelectAttempts = 0;
-    _autoSelectPollId = visibleInterval(() => {
-      _autoSelectAttempts++;
-      const opts = underlyingOptionsForPicker;
-      if (opts.length === 0) {
-        // Cap: after 200 attempts (~60 s) stop polling regardless.
-        if (_autoSelectAttempts >= 200) { _autoSelectPollId?.(); _autoSelectPollId = null; }
-        return;
-      }
-      const cur  = selectedUnderlying;
-      const isValid = cur && opts.some(o => o.value === cur);
-      if (!isValid) selectedUnderlying = opts[0].value;
-      // Picker is populated and selection is confirmed valid (or fixed).
-      // Stop the poll — the selectedUnderlying $effect handles the
-      // strategy load immediately (no force needed; the $effect fires
-      // on the same tick as the underlying assignment above).
-      _autoSelectPollId?.();
-      _autoSelectPollId = null;
-    }, 300);
   });
 
   // URL sync — debounced 150 ms so a flurry of picks doesn't queue N
