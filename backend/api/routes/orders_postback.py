@@ -164,6 +164,208 @@ async def _process_broker_postback(
 
 # ── Kite postback handler ─────────────────────────────────────────────────────
 
+_KITE_STATUS_MAP = {
+    "COMPLETE":  "FILLED",
+    "CANCELLED": "CANCELLED",
+    "REJECTED":  "REJECTED",
+    "EXPIRED":   "UNFILLED",
+}
+
+
+async def _pb_fallback_lookup_row(
+    _s, *, order_id: str, tradingsymbol: str, txn: str, qty, account: str
+):
+    """Broker webhook may fire before we recorded broker_order_id.
+
+    Attempt an account/symbol/side/qty match on rows created in the
+    last 60s that are still OPEN with no broker_order_id yet. Sets
+    broker_order_id on the match so subsequent postbacks resolve
+    directly.
+    """
+    from sqlalchemy import select as _sql_select
+    from datetime import datetime, timezone, timedelta
+    from backend.api.models import AlgoOrder as _AlgoOrder
+
+    _cutoff = datetime.now(timezone.utc) - timedelta(seconds=60)
+    _fallback_where = [
+        _AlgoOrder.broker_order_id.is_(None),
+        _AlgoOrder.status == "OPEN",
+        _AlgoOrder.mode == "live",
+        _AlgoOrder.symbol == str(tradingsymbol or ""),
+        _AlgoOrder.transaction_type == str(txn or "").upper(),
+        _AlgoOrder.created_at >= _cutoff,
+    ]
+    _pb_account = str(account or "").strip() if account else ""
+    if _pb_account:
+        _fallback_where.append(_AlgoOrder.account == _pb_account)
+    try:
+        _pb_qty = int(qty or 0)
+    except (TypeError, ValueError):
+        _pb_qty = 0
+    if _pb_qty > 0:
+        _fallback_where.append(_AlgoOrder.quantity == _pb_qty)
+    _fallback = (await _s.execute(
+        _sql_select(_AlgoOrder).where(*_fallback_where)
+        .order_by(_AlgoOrder.id.desc()).limit(1)
+    )).scalars().first()
+    if _fallback is not None:
+        _fallback.broker_order_id = str(order_id)
+        logger.info(
+            f"postback fallback matched row #{_fallback.id} "
+            f"to broker_order_id={order_id} via account/symbol/side"
+        )
+    return _fallback
+
+
+def _pb_apply_status_to_row(_r, *, new_status: str | None, price) -> bool:
+    """Mutate an AlgoOrder row per postback status.
+
+    Returns True iff the row transitioned to FILLED (caller uses the
+    list to drive ledger / take-profit / template-attach fan-outs).
+    """
+    if not new_status or _r.status == new_status:
+        return False
+    _r.status = new_status
+    if new_status != "FILLED" or not price:
+        return False
+    try:
+        _r.fill_price = float(price)
+    except (TypeError, ValueError):
+        pass
+    if _r.created_at:
+        from datetime import datetime, timezone
+        _r.filled_at = datetime.now(timezone.utc)
+    return True
+
+
+async def _pb_write_ledger_fills(_s, filled_rows: list) -> None:
+    """Record FIFO ledger entries for every FILLED row with a strategy."""
+    from backend.api.algo.lot_ledger import record_fill as _record_ledger_fill
+
+    for _r in filled_rows:
+        if not (_r.strategy_id and _r.fill_price and _r.quantity > 0):
+            continue
+        try:
+            await _record_ledger_fill(
+                _s,
+                strategy_id=_r.strategy_id,
+                algo_order_id=_r.id,
+                account=str(_r.account or ""),
+                symbol=str(_r.symbol or ""),
+                exchange=str(_r.exchange or "NFO"),
+                side_kite=str(_r.transaction_type or "BUY"),
+                qty=int(_r.quantity or 0),
+                fill_price=float(_r.fill_price or 0),
+            )
+        except Exception as _le:
+            logger.warning(
+                f"postback lot_ledger write failed for "
+                f"order_id={_r.id} strategy={_r.strategy_id}: {_le}"
+            )
+
+
+async def _pb_write_timeline_events(
+    rows: list, *,
+    order_id: str, tradingsymbol: str, txn: str, qty, price,
+    status: str, status_msg: str, new_status: str | None,
+) -> None:
+    """One timeline event per row so the operator UI sees the postback."""
+    from backend.api.algo.order_events import write_event as _write_event
+
+    payload = {
+        "broker_order_id": order_id,
+        "status": status,
+        "new_algo_status": new_status,
+        "tradingsymbol": tradingsymbol,
+        "transaction_type": txn,
+        "quantity": qty,
+        "price": price,
+        "status_message": status_msg,
+    }
+    for _r in rows:
+        await _write_event(
+            _r.id, "postback",
+            f"Kite postback: {status} {txn} {qty} {tradingsymbol} @{price}",
+            payload=payload,
+        )
+
+
+def _pb_wants_take_profit_arm(_r) -> bool:
+    """Parent fill with a TP target and no template attached wants
+    the take-profit arm dispatched.
+    """
+    return bool(
+        (_r.target_pct or _r.target_abs)
+        and _r.parent_order_id is None
+        and _r.template_id is None
+        and _r.fill_price
+    )
+
+
+def _pb_wants_template_attach(_r) -> bool:
+    """Live parent fill with a template_id wants the template attach
+    fan-out dispatched.
+    """
+    return bool(
+        _r.template_id
+        and _r.parent_order_id is None
+        and _r.mode == "live"
+        and _r.fill_price
+    )
+
+
+def _pb_dispatch_take_profit_arm(_r) -> None:
+    from backend.api.routes.orders_place import _arm_take_profit
+    asyncio.create_task(_arm_take_profit(
+        parent_row_id=_r.id,
+        parent_account=str(_r.account or ""),
+        parent_symbol=str(_r.symbol or ""),
+        parent_exchange=str(_r.exchange or "NFO"),
+        parent_side=str(_r.transaction_type or "BUY"),
+        fill_price=float(_r.fill_price),
+        target_pct=float(_r.target_pct or 0.0),
+        target_abs=(_r.target_abs and float(_r.target_abs)),
+        parent_mode=str(_r.mode or "live"),
+    ))
+
+
+def _pb_dispatch_template_attach(_r) -> None:
+    from backend.api.routes.orders_place import _fire_template_attach_on_fill
+
+    _attach_qty = (
+        int(_r.filled_quantity)
+        if int(_r.filled_quantity or 0) > 0
+        else int(_r.quantity or 0)
+    )
+    asyncio.create_task(
+        _fire_template_attach_on_fill(
+            parent_row_id=int(_r.id),
+            parent_account=str(_r.account or ""),
+            parent_symbol=str(_r.symbol or ""),
+            parent_exchange=str(_r.exchange or "NFO"),
+            parent_side=str(_r.transaction_type or "BUY"),
+            parent_qty=_attach_qty,
+            fill_price=float(_r.fill_price),
+            template_id=int(_r.template_id),
+            parent_product=str(_r.product or "NRML"),
+        )
+    )
+
+
+def _pb_dispatch_take_profit_and_template(filled_rows: list) -> None:
+    """Arm TP on parent fills without a template, else fire template
+    attach. Both fan-outs run as detached tasks so postback ack isn't
+    blocked.
+    """
+    for _r in filled_rows:
+        if _pb_wants_take_profit_arm(_r):
+            _pb_dispatch_take_profit_arm(_r)
+
+    for _r in filled_rows:
+        if _pb_wants_template_attach(_r):
+            _pb_dispatch_template_attach(_r)
+
+
 async def _pb_event_kite(
     *,
     order_id: str,
@@ -183,17 +385,7 @@ async def _pb_event_kite(
     from sqlalchemy import select as _sql_select
     from backend.api.database import async_session as _async_session
     from backend.api.models import AlgoOrder as _AlgoOrder
-    from backend.api.algo.order_events import write_event as _write_event
-    from backend.api.routes.orders_place import (
-        _arm_take_profit, _fire_template_attach_on_fill,
-    )
 
-    _KITE_STATUS_MAP = {
-        "COMPLETE":  "FILLED",
-        "CANCELLED": "CANCELLED",
-        "REJECTED":  "REJECTED",
-        "EXPIRED":   "UNFILLED",
-    }
     _new_status = _KITE_STATUS_MAP.get(str(status or "").upper())
 
     try:
@@ -206,129 +398,29 @@ async def _pb_event_kite(
             )).scalars().all()
 
             if not _rows:
-                from datetime import datetime, timezone, timedelta
-                _cutoff = datetime.now(timezone.utc) - timedelta(seconds=60)
-                _fallback_where = [
-                    _AlgoOrder.broker_order_id.is_(None),
-                    _AlgoOrder.status == "OPEN",
-                    _AlgoOrder.mode == "live",
-                    _AlgoOrder.symbol == str(tradingsymbol or ""),
-                    _AlgoOrder.transaction_type == str(txn or "").upper(),
-                    _AlgoOrder.created_at >= _cutoff,
-                ]
-                _pb_account = str(account or "").strip() if account else ""
-                if _pb_account:
-                    _fallback_where.append(_AlgoOrder.account == _pb_account)
-                try:
-                    _pb_qty = int(qty or 0)
-                except (TypeError, ValueError):
-                    _pb_qty = 0
-                if _pb_qty > 0:
-                    _fallback_where.append(_AlgoOrder.quantity == _pb_qty)
-                _fallback = (await _s.execute(
-                    _sql_select(_AlgoOrder).where(*_fallback_where)
-                    .order_by(_AlgoOrder.id.desc()).limit(1)
-                )).scalars().first()
+                _fallback = await _pb_fallback_lookup_row(
+                    _s,
+                    order_id=order_id, tradingsymbol=tradingsymbol,
+                    txn=txn, qty=qty, account=account,
+                )
                 if _fallback is not None:
-                    _fallback.broker_order_id = str(order_id)
                     _rows = [_fallback]
-                    logger.info(
-                        f"postback fallback matched row #{_fallback.id} "
-                        f"to broker_order_id={order_id} via account/symbol/side"
-                    )
 
             for _r in _rows:
-                if _new_status and _r.status != _new_status:
-                    _r.status = _new_status
-                    if _new_status == "FILLED" and price:
-                        try:
-                            _r.fill_price = float(price)
-                        except (TypeError, ValueError):
-                            pass
-                        if _r.created_at:
-                            from datetime import datetime, timezone
-                            _r.filled_at = datetime.now(timezone.utc)
-                        _filled_rows.append(_r)
+                if _pb_apply_status_to_row(_r, new_status=_new_status, price=price):
+                    _filled_rows.append(_r)
             await _s.commit()
 
-            from backend.api.algo.lot_ledger import record_fill as _record_ledger_fill
-            for _r in _filled_rows:
-                if _r.strategy_id and _r.fill_price and _r.quantity > 0:
-                    try:
-                        await _record_ledger_fill(
-                            _s,
-                            strategy_id=_r.strategy_id,
-                            algo_order_id=_r.id,
-                            account=str(_r.account or ""),
-                            symbol=str(_r.symbol or ""),
-                            exchange=str(_r.exchange or "NFO"),
-                            side_kite=str(_r.transaction_type or "BUY"),
-                            qty=int(_r.quantity or 0),
-                            fill_price=float(_r.fill_price or 0),
-                        )
-                    except Exception as _le:
-                        logger.warning(
-                            f"postback lot_ledger write failed for "
-                            f"order_id={_r.id} strategy={_r.strategy_id}: {_le}"
-                        )
+            await _pb_write_ledger_fills(_s, _filled_rows)
             await _s.commit()
 
-        for _r in _rows:
-            await _write_event(
-                _r.id, "postback",
-                f"Kite postback: {status} {txn} {qty} {tradingsymbol} @{price}",
-                payload={
-                    "broker_order_id": order_id,
-                    "status": status,
-                    "new_algo_status": _new_status,
-                    "tradingsymbol": tradingsymbol,
-                    "transaction_type": txn,
-                    "quantity": qty,
-                    "price": price,
-                    "status_message": status_msg,
-                },
-            )
-
-        for _r in _filled_rows:
-            if ((_r.target_pct or _r.target_abs)
-                    and _r.parent_order_id is None
-                    and _r.template_id is None
-                    and _r.fill_price):
-                asyncio.create_task(_arm_take_profit(
-                    parent_row_id=_r.id,
-                    parent_account=str(_r.account or ""),
-                    parent_symbol=str(_r.symbol or ""),
-                    parent_exchange=str(_r.exchange or "NFO"),
-                    parent_side=str(_r.transaction_type or "BUY"),
-                    fill_price=float(_r.fill_price),
-                    target_pct=float(_r.target_pct or 0.0),
-                    target_abs=(_r.target_abs and float(_r.target_abs)),
-                    parent_mode=str(_r.mode or "live"),
-                ))
-
-        for _r in _filled_rows:
-            if (_r.template_id
-                    and _r.parent_order_id is None
-                    and _r.mode == "live"
-                    and _r.fill_price):
-                _attach_qty = (
-                    int(_r.filled_quantity)
-                    if int(_r.filled_quantity or 0) > 0
-                    else int(_r.quantity or 0)
-                )
-                asyncio.create_task(
-                    _fire_template_attach_on_fill(
-                        parent_row_id=int(_r.id),
-                        parent_account=str(_r.account or ""),
-                        parent_symbol=str(_r.symbol or ""),
-                        parent_exchange=str(_r.exchange or "NFO"),
-                        parent_side=str(_r.transaction_type or "BUY"),
-                        parent_qty=_attach_qty,
-                        fill_price=float(_r.fill_price),
-                        template_id=int(_r.template_id),
-                        parent_product=str(_r.product or "NRML"),
-                    )
-                )
+        await _pb_write_timeline_events(
+            _rows,
+            order_id=order_id, tradingsymbol=tradingsymbol, txn=txn,
+            qty=qty, price=price, status=status, status_msg=status_msg,
+            new_status=_new_status,
+        )
+        _pb_dispatch_take_profit_and_template(_filled_rows)
     except Exception as _pe:
         logger.debug(f"postback event write failed: {_pe}")
 
