@@ -287,23 +287,6 @@ export const positionsStore = createDataStore({
   },
 });
 
-/**
- * Dedicated positions store for PositionStrip / NavStrip.
- * Isolated from positionsStore so page-level fetches with different args
- * (skipLtp, fresh=true, etc.) cannot race with the NavStrip's snapshot.
- * PositionStrip polls this store on its own 30s marketAwareInterval.
- */
-export const navStripPositionsStore = createDataStore({
-  key:     'md.positions.strip',
-  fetcher: fetchPositions,
-  ttl:     TTL.minute,
-  /** @param {any} r */
-  parse:   (r) => {
-    const rows = r?.rows ?? [];
-    _publishPositionsRows(rows);
-    return rows;
-  },
-});
 
 /**
  * Dedicated positions store for MarketPulse / Pulse page.
@@ -426,16 +409,6 @@ function _classifyMoverGroups(sym) {
   return groups;
 }
 
-/**
- * Legacy single-group classifier — kept for any consumers that still read
- * `_moverGroup`. Returns the first group from _classifyMoverGroups, or null.
- * @param {string} sym
- * @returns {'smallcap'|'midcap'|'large_cap'|'underlying'|null}
- */
-function _classifyMoverSym(sym) {
-  const groups = _classifyMoverGroups(sym);
-  return /** @type {any} */ (groups[0] ?? null);
-}
 
 /**
  * Top winners/losers fetched from /api/watchlist/movers.
