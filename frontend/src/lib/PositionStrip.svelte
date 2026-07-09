@@ -752,8 +752,7 @@
   let _tickBusUnsub = null;
 </script>
 
-<a class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_tickBorderClass ? ' ' + _tickBorderClass : '')} href="/dashboard"
-   aria-label="Open the dashboard — full positions, holdings, and funds grids">
+<div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_tickBorderClass ? ' ' + _tickBorderClass : '')}>
   <span class="ps-agg" title="Positions: today's MTM move / lifetime P&L / F&O expiry profit at current spot">
     <span class="ps-agg-k">P</span>
     <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
@@ -802,7 +801,7 @@
     ><span class={'ps-agg-v ' + (_liveHoldingsTotal > 0 ? 'ps-pos' : _liveHoldingsTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Hd')}
       >{fmtMoney(_liveHoldingsTotal)}</span>
   </span>
-</a>
+</div>
 
 <style>
   .ps-strip {

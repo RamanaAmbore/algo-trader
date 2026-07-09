@@ -40,7 +40,7 @@ import {
 import { mergeSymbolBatch } from './symbolStore.svelte.js';
 import { cachedDelete } from './persistentCache.js';
 import { browser } from '$app/environment';
-import { marketAwareInterval } from '$lib/stores';
+import { marketAwareInterval, visibleInterval } from '$lib/stores';
 // Hardening: dev-only runtime shape assertions on backend responses.
 // Vite dead-code-eliminates the assertion body in production so the
 // operator's browser pays zero cost.
@@ -752,10 +752,13 @@ export function startBookPollers(intervalMs) {
   // dedups against any page-mounted `.load()` racing this on the same
   // tick.
   _tickBookPollers();
-  // marketAwareInterval handles both the market-hours gate AND the
-  // hibernation throttle (via the inner visibleInterval). hiddenMs=30s
-  // keeps a heartbeat alive after the 5-min hibernation threshold.
-  _bookPollerTeardown = marketAwareInterval(_tickBookPollers, _bookForegroundMs, _BOOK_HIDDEN_MS);
+  // visibleInterval fires regardless of market hours so the book poller
+  // stays alive during premarket / closed hours. Stores return snapshot
+  // data cheaply (no broker calls when closed). hiddenMs throttle
+  // applies only when the tab is backgrounded (hibernation). The
+  // market-hours gate was removed because NavStrip values must stay
+  // current during premarket (operator watching the strip before open).
+  _bookPollerTeardown = visibleInterval(_tickBookPollers, _bookForegroundMs, `throttle:${_BOOK_HIDDEN_MS}`);
 }
 
 /** Update the foreground cadence at runtime. Used by the layout when the
@@ -767,7 +770,7 @@ export function setBookPollerInterval(intervalMs) {
   _bookForegroundMs = /** @type {number} */ (intervalMs);
   if (_bookPollerStarted && _bookPollerTeardown) {
     _bookPollerTeardown();
-    _bookPollerTeardown = marketAwareInterval(_tickBookPollers, _bookForegroundMs, _BOOK_HIDDEN_MS);
+    _bookPollerTeardown = visibleInterval(_tickBookPollers, _bookForegroundMs, `throttle:${_BOOK_HIDDEN_MS}`);
   }
 }
 
