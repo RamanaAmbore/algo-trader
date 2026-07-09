@@ -3467,9 +3467,10 @@
         }
         if (strategy !== _synthCache.value) strategy = _synthCache.value;
       } else {
-        // Blank only when legs is genuinely empty — keeps old chart for
-        // closed-position-only sets (old chart > blank "no legs" state).
-        const _hasEnabledLegs = legs.some(l => l.kind !== 'eq');
+        // Clear when no non-eq leg has a non-zero qty — closed-position-only
+        // sets (all qty=0) must not keep the prior symbol's payoff chart
+        // visible under the new symbol's label.
+        const _hasEnabledLegs = legs.some(l => l.kind !== 'eq' && Number(l.qty) !== 0);
         if (!_hasEnabledLegs && strategy !== null) strategy = null;
         _synthCache = null;
       }
