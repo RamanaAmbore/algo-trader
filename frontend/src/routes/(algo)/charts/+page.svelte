@@ -7,6 +7,7 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import { resolveSymbol, setRecentSymbol } from '$lib/data/accounts';
+  import { chartStore } from '$lib/data/chartStore.svelte.js';
 
   // ── URL params ────────────────────────────────────────────────────
   let _symbol       = $state('');
@@ -39,6 +40,9 @@
   function _onSymbolChange(/** @type {string} */ sym) {
     const s = String(sym || '').toUpperCase();
     _symbol = s;
+    // Keep the store in sync so ChartModal (if open) and any other
+    // surface reading chartStore immediately sees the new symbol.
+    chartStore.setSymbol(s);
     if (s) setRecentSymbol(s);
     const url = new URL(page.url);
     url.searchParams.set('symbol', s);
@@ -47,8 +51,17 @@
 
   onMount(() => {
     _initFromUrl();
+    // If no URL param but the store already has a symbol (e.g. operator
+    // just closed ChartModal), pre-fill from the store so the chart
+    // shows the same symbol instantly — no refetch if data is fresh.
+    if (!_symbol && chartStore.symbol) _symbol = chartStore.symbol;
     if (!_symbol) _symbol = resolveSymbol(_FALLBACK_SYMBOL);
-    if (_symbol) setRecentSymbol(_symbol);
+    if (_symbol) {
+      setRecentSymbol(_symbol);
+      // Seed the store so ChartWorkspace.onMount isFresh() check has
+      // the right key before the first _loadHistorical runs.
+      chartStore.setSymbol(_symbol);
+    }
   });
 </script>
 

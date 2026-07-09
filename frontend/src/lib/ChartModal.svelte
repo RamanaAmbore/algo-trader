@@ -8,6 +8,7 @@
   import { portal } from '$lib/portal';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { rootOfLabel } from '$lib/data/rootOf.js';
+  import { chartStore } from '$lib/data/chartStore.svelte.js';
 
   let {
     /** @type {string} */ symbol = '',
@@ -76,6 +77,15 @@
   }
 
   onMount(() => {
+    // Seed the shared chartStore with this modal's symbol + exchange so
+    // that navigating to /charts while the modal is open (or after
+    // closing it) shows the same chart without a duplicate fetch.
+    // ChartWorkspace.onMount will also call setSymbol/setExchange, but
+    // seeding here first means the store is correct before the workspace
+    // mounts (useful for any consumers that read the store on their own
+    // mount cycle).
+    if (symbol) chartStore.setSymbol(symbol);
+    if (exchange) chartStore.setExchange(exchange);
     window.addEventListener('keydown', _onKey, { capture: true });
     _closeBtnEl?.addEventListener('click', _onCloseClick);
     setTimeout(() => { _focusables()[0]?.focus(); }, 0);
