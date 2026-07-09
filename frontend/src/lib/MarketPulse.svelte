@@ -2202,6 +2202,19 @@
   // field that doesn't exist on `PositionsSummaryRow` — silent null.
   // TOTAL is dropped when an account filter is active because it
   // reflects every account, not the filtered subset.
+  //
+  // WHY `r.day_change_val` is read directly here (not via baseDayPnlForPosition):
+  // `r` is a PositionsSummaryRow — an aggregate with no `overnight_quantity`
+  // field. baseDayPnlForPosition() requires per-position fields to apply its
+  // new-position override (oq=0, dcv=0, pnl≠0) and MUST NOT be called on an
+  // aggregate row. The aggregate is safe because:
+  //   • Live path: apply_day_change_backstop() runs BEFORE build_summary_from_rows()
+  //     in backend/api/routes/positions.py:393, so Σ day_change_val is already
+  //     corrected for every per-position edge case.
+  //   • Snapshot path (_positions_snapshot in positions.py:40): summary rows are
+  //     built from build_snapshot_position_row() which sets overnight_quantity=qty
+  //     (never 0) and resolves day_pnl via resolve_snapshot_day_pnl() before
+  //     aggregation — the override condition cannot fire on snapshot rows.
   const positionsSummaryData = $derived.by(() => {
     if (!showSummary || !selectedSources.includes('positions')) return [];
     const filterActive = positionsAccounts && positionsAccounts.length > 0;
@@ -2230,6 +2243,13 @@
   // (yesterday's value), matching `PerformancePage.makeHoldingsTotals`.
   // The frontend used to divide by `inv_val` instead, which gave a
   // different number for the same column on the same screen.
+  //
+  // WHY `r.day_change_val` is read directly here (not via baseDayPnlForPosition):
+  // `r` is a HoldingsSummaryRow — a per-account aggregate from
+  // _build_holdings_summary() in backend/api/routes/holdings.py. Holdings do
+  // not carry `overnight_quantity` (baseDayPnlForPosition is a positions-only
+  // helper). Holdings Day P&L is broker-computed (pnl − (close − cost) × qty)
+  // and arrives already correct; no backstop override is needed or applicable.
   const holdingsSummaryData = $derived.by(() => {
     if (!showSummary || !selectedSources.includes('holdings')) return [];
     const filterActive = holdingsAccounts && holdingsAccounts.length > 0;
