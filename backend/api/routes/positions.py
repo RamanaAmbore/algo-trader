@@ -183,12 +183,32 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> li
 
     import msgspec as _msc
 
+    # Case 3 helper — a fully-closed intraday row (quantity == 0 with a
+    # non-zero realised P&L) is settled by definition: no live LTP can
+    # move its P&L. Route these rows straight to snapshot_settled +
+    # is_animating=False regardless of exchange-open state so the
+    # frontend's tick-flash cellClass skips them.
+    def _is_settled_flat(row) -> bool:
+        try:
+            _qty = int(getattr(row, "quantity", 0) or 0)
+        except (TypeError, ValueError):
+            _qty = 0
+        return _qty == 0
+
     # Fast path — every row's exchange is currently open. Route through
     # the resolver for uniform tagging (single decision point).
     if not any(_closed(getattr(r, "exchange", "")) for r in rows):
         out: list = []
         for r in rows:
             live_ltp = float(getattr(r, "last_price", 0.0) or 0.0)
+            if _is_settled_flat(r):
+                # Flat row — freeze it, no animation, tag settled.
+                out.append(_msc.structs.replace(
+                    r, price_source="snapshot_settled",
+                    current_price=live_ltp,
+                    is_animating=False,
+                ))
+                continue
             price, source, animating = resolve_current_price(
                 exchange_open=True, live_ltp=live_ltp,
             )
@@ -206,6 +226,14 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> li
     for r in rows:
         exch = getattr(r, "exchange", "")
         broker_ltp = float(getattr(r, "last_price", 0.0) or 0.0)
+        # Case 3 — settled flat row wins regardless of exchange state.
+        if _is_settled_flat(r):
+            out.append(_msc.structs.replace(
+                r, price_source="snapshot_settled",
+                current_price=broker_ltp,
+                is_animating=False,
+            ))
+            continue
         if not _closed(exch):
             price, source, animating = resolve_current_price(
                 exchange_open=True, live_ltp=broker_ltp,
@@ -350,6 +378,39 @@ async def _fetch() -> PositionsResponse:
     # See CLAUDE.md §"Kite close_price stale overnight" and the
     # 2026-06-19 +1.33L phantom gain incident.
     await _override_stale_close_from_snapshot(raw)
+
+    # Case 3 backstop — fully-closed intraday rows (quantity == 0 with a
+    # non-zero realised P&L) can lose their `day_change_val` at the broker
+    # enrichment layer when Kite ships `last_price = 0`. The polars gate
+    # `pl.when(_ltp > 0)` in `_enrich_positions` zeros the value even
+    # though the decomposition would correctly reduce to `sv - bv =
+    # realised` for a round-trip. We restore `day_change_val = realised`
+    # here so the settled realized P&L survives.
+    #
+    # Contract C parallel: `pnl` from Kite already carries `unrealised +
+    # realised`; for a flat row `unrealised = 0` and `pnl = realised`.
+    # We keep pnl untouched (broker-owned) and only backstop the intraday
+    # Day P&L display so Day P&L and P&L agree on flat rows.
+    if not raw.empty and 'quantity' in raw.columns and 'realised' in raw.columns:
+        _qty_all = pd.to_numeric(raw['quantity'],   errors='coerce').fillna(0)
+        _rea_all = pd.to_numeric(raw['realised'],   errors='coerce').fillna(0)
+        _flat_mask = (_qty_all == 0) & (_rea_all != 0)
+        if _flat_mask.any():
+            if 'day_change_val' in raw.columns:
+                _dcv = pd.to_numeric(raw['day_change_val'], errors='coerce').fillna(0)
+                # Only backstop when the enrichment layer zeroed it.
+                _backstop = _flat_mask & (_dcv == 0)
+                raw.loc[_backstop, 'day_change_val'] = _rea_all[_backstop]
+            # Flat rows should not report a per-share day_change delta
+            # (LTP is meaningless for a closed position).
+            if 'day_change' in raw.columns:
+                raw.loc[_flat_mask, 'day_change'] = 0.0
+            # day_change_percentage: with close × qty = 0 the denominator
+            # collapses; keep the row's field at 0.0 (percentage of nothing
+            # is undefined). The absolute rupee value is the operator's
+            # authoritative display.
+            if 'day_change_percentage' in raw.columns:
+                raw.loc[_flat_mask, 'day_change_percentage'] = 0.0
 
     numeric = raw.select_dtypes(include='number').columns
     raw[numeric] = raw[numeric].fillna(0)

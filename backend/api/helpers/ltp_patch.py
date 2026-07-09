@@ -125,11 +125,33 @@ def apply_ltp_patch(raw: pd.DataFrame, policy: PolicyFn) -> Optional[PatchResult
         return None
 
     result = PatchResult()
+    # Detect the qty column once — positions use `quantity`, holdings use
+    # `opening_quantity`. Rows with qty==0 are fully-closed intraday
+    # positions (Kite includes them in `net` when realised != 0). LTP for
+    # a flat position is meaningless — patching would rewrite `last_price`
+    # to a misleading value that doesn't correspond to any held position
+    # and could poison downstream displays that assume LTP moves the row.
+    _qty_col = None
+    if 'quantity' in raw.columns:
+        _qty_col = 'quantity'
+    elif 'opening_quantity' in raw.columns:
+        _qty_col = 'opening_quantity'
+
     for idx in raw.index:
         sym = raw.at[idx, 'tradingsymbol']
         if not sym:
             continue
         sym_s = str(sym)
+
+        # Skip fully-closed rows (qty=0). See rationale above the loop.
+        if _qty_col is not None:
+            try:
+                _qv = raw.at[idx, _qty_col]
+                _qty_row = float(_qv) if pd.notna(_qv) else 0.0
+            except (TypeError, ValueError):
+                _qty_row = 0.0
+            if _qty_row == 0.0:
+                continue
 
         try:
             current = float(raw.at[idx, 'last_price']) \
