@@ -882,11 +882,13 @@ contracts) sent `quantity=100` to GTT → Kite read as 100 lots. Fix: `parent_lo
 baked into `TemplatePlan` at resolve-time; `apply_plan_live` calls `broker.translate_qty` 
 per leg; adapter ceiling in `place_gtt` provides last-line defense.
 
-**G1 fires on ALL close paths** — `run_preflight(account, {..., "intent": "close"})` 
-called before `chase_order` in `_action_live_close_position` AND per-position in 
-`_action_live_chase_close_positions`. G1 (LOT_MULTIPLE) fires even for closes; G2 
-(FAT_FINGER_5_LOT_CAP) bypassed via `intent="close"`. `_arm_take_profit` live path has 
-inline G1 guard (no `run_preflight` — G2 skipped). Blocked close writes REJECTED 
+**G1 guards on close paths** — Ticket handler: G1 (LOT_MULTIPLE) removed from 
+`_ticket_enforce_lot_and_fat_finger` after lots-convention refactor — `lots × lot_size` 
+is always a valid multiple by construction so the check is redundant at the ticket 
+boundary. Remaining G1 defenses: (1) `_arm_take_profit` live path has an inline G1 
+guard before `broker.place_order` (no `run_preflight` — G2 skipped); (2) `apply_plan_live` 
+GTT layer has a synchronous G1 check at the top before any broker call. G2 
+(FAT_FINGER_5_LOT_CAP) bypassed via `intent="close"`. Blocked close writes REJECTED 
 AlgoOrder + alert; chase loop uses `continue` so other positions proceed. 50-lot adapter 
 ceiling in `kite.py:place_order` has NO intent bypass — 51-lot closes hard-blocked.
 

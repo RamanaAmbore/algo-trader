@@ -884,6 +884,11 @@ async def _ticket_check_mcx_lot_cache(
     Returns the lot_size unchanged for MCX/NCO, or 0 for non-MCX (the
     downstream size-cap helper only fires on MCX so 0 is a no-op there).
     """
+    logger.warning(
+        "_ticket_check_mcx_lot_cache: fallback path reached — "
+        "expected _ticket_validate_input to have resolved lot_size. "
+        f"exchange={data.exchange} sym={sym} side={side} lots={qty}."
+    )
     if (data.exchange or "NFO") not in ("MCX", "NCO"):
         return 0
     if lot_size <= 0:
@@ -1254,9 +1259,11 @@ async def _ticket_place_live(data, request, account: str, sym: str, side: str, q
 
     order_type = (data.order_type or "LIMIT")
     _ticket_exch = (data.exchange or "NFO")
-    # For MCX/NCO, lot_size was already resolved. Reuse for translate_qty
-    # + size cap.
-    _ls_for_translate: int = lot_size if _ticket_exch in ("MCX", "NCO") else 0
+    # Pass lot_size for ALL F&O exchanges. translate_qty is a no-op for
+    # non-MCX/NCO (returns raw_qty unchanged per kite.py:to_kite_qty),
+    # but supplying the real lot_size makes the intent explicit and
+    # eliminates the latent trap of ls=0 if Kite ever changes convention.
+    _ls_for_translate: int = lot_size if lot_size > 1 else 0
     _ticket_check_mcx_size_cap(data, sym, qty, lot_size)
 
     try:

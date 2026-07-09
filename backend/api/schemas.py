@@ -459,6 +459,10 @@ class BasketLeg(msgspec.Struct):
     # Intent — "open" | "close". Same semantics as TicketOrderRequest.intent
     # (bypasses G2 5-lot cap for close). None → treat as open.
     intent: Optional[str] = None
+    # Attribution — foreign key to strategies.id. Flows through to the
+    # AlgoOrder row for per-strategy P&L attribution. Same semantics as
+    # TicketOrderRequest.strategy_id. None = unattributed.
+    strategy_id: Optional[int] = None
 
 
 class BasketGroup(msgspec.Struct):
