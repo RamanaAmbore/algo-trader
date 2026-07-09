@@ -101,6 +101,80 @@ class PatchResult:
 PolicyFn = Callable[[float, Optional[float]], Decision]
 
 
+def _detect_qty_col(raw: pd.DataFrame) -> Optional[str]:
+    """Detect the qty column once — positions use `quantity`, holdings
+    use `opening_quantity`. Rows with qty==0 are fully-closed intraday
+    positions (Kite includes them in `net` when realised != 0). LTP for
+    a flat position is meaningless — patching would rewrite `last_price`
+    to a misleading value that doesn't correspond to any held position
+    and could poison downstream displays that assume LTP moves the row.
+    """
+    if 'quantity' in raw.columns:
+        return 'quantity'
+    if 'opening_quantity' in raw.columns:
+        return 'opening_quantity'
+    return None
+
+
+def _row_is_flat(raw: pd.DataFrame, idx, qty_col: Optional[str]) -> bool:
+    """True iff qty=0 (fully-closed intraday row). Missing / bad values
+    treat as 0.
+    """
+    if qty_col is None:
+        return False
+    try:
+        _qv = raw.at[idx, qty_col]
+        _qty_row = float(_qv) if pd.notna(_qv) else 0.0
+    except (TypeError, ValueError):
+        _qty_row = 0.0
+    return _qty_row == 0.0
+
+
+def _read_current_ltp(raw: pd.DataFrame, idx) -> float:
+    try:
+        return float(raw.at[idx, 'last_price']) \
+            if pd.notna(raw.at[idx, 'last_price']) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _maybe_log_ltp_gap(raw: pd.DataFrame, idx, sym_s: str, current: float) -> None:
+    """Ticker has no sample and broker value equals close_price — that's
+    the exact condition that causes LTP/close flicker on the frontend.
+    """
+    if 'close_price' not in raw.columns:
+        return
+    try:
+        _close_val = raw.at[idx, 'close_price']
+        _close_f = float(_close_val) if pd.notna(_close_val) else None
+    except (TypeError, ValueError):
+        _close_f = None
+    if _close_f is not None and _close_f > 0 and abs(current - _close_f) < 0.005:
+        _log_ltp_gap_throttled(sym_s, "policy_no_ticker", _close_f)
+
+
+def _apply_row_decision(
+    raw: pd.DataFrame, idx, sym_s: str, current: float, decision: Decision,
+    result: PatchResult,
+) -> None:
+    """Apply a single Decision to `raw` in place + update bookkeeping."""
+    if decision.new_ltp is not None:
+        raw.at[idx, 'last_price'] = float(decision.new_ltp)
+        result.patched_idx.append(idx)
+        result.patched_old_ltp[idx] = current
+        return
+
+    if not decision.consider_cache:
+        return
+
+    cached = get_last_good_ltp(sym_s)
+    if cached is not None and cached > 0:
+        raw.at[idx, 'last_price'] = float(cached)
+        result.patched_idx.append(idx)
+        result.patched_old_ltp[idx] = current
+        result.stale_idx.append(idx)
+
+
 def apply_ltp_patch(raw: pd.DataFrame, policy: PolicyFn) -> Optional[PatchResult]:
     """Iterate `raw` rows; ask `policy` whether to patch each one;
     apply the patches in place; return a PatchResult so the caller
@@ -125,17 +199,7 @@ def apply_ltp_patch(raw: pd.DataFrame, policy: PolicyFn) -> Optional[PatchResult
         return None
 
     result = PatchResult()
-    # Detect the qty column once — positions use `quantity`, holdings use
-    # `opening_quantity`. Rows with qty==0 are fully-closed intraday
-    # positions (Kite includes them in `net` when realised != 0). LTP for
-    # a flat position is meaningless — patching would rewrite `last_price`
-    # to a misleading value that doesn't correspond to any held position
-    # and could poison downstream displays that assume LTP moves the row.
-    _qty_col = None
-    if 'quantity' in raw.columns:
-        _qty_col = 'quantity'
-    elif 'opening_quantity' in raw.columns:
-        _qty_col = 'opening_quantity'
+    _qty_col = _detect_qty_col(raw)
 
     for idx in raw.index:
         sym = raw.at[idx, 'tradingsymbol']
@@ -143,53 +207,20 @@ def apply_ltp_patch(raw: pd.DataFrame, policy: PolicyFn) -> Optional[PatchResult
             continue
         sym_s = str(sym)
 
-        # Skip fully-closed rows (qty=0). See rationale above the loop.
-        if _qty_col is not None:
-            try:
-                _qv = raw.at[idx, _qty_col]
-                _qty_row = float(_qv) if pd.notna(_qv) else 0.0
-            except (TypeError, ValueError):
-                _qty_row = 0.0
-            if _qty_row == 0.0:
-                continue
+        if _row_is_flat(raw, idx, _qty_col):
+            continue
 
-        try:
-            current = float(raw.at[idx, 'last_price']) \
-                if pd.notna(raw.at[idx, 'last_price']) else 0.0
-        except (TypeError, ValueError):
-            current = 0.0
+        current = _read_current_ltp(raw, idx)
 
         tick_ltp = _ticker.get_ltp_by_sym(sym_s)
         # Keep LKG cache warm independent of policy outcome.
         if tick_ltp is not None and tick_ltp > 0:
             record_good_ltp(sym_s, tick_ltp)
         else:
-            # Ticker has no sample for this symbol — log when the broker
-            # value is indistinguishable from close_price, which is the
-            # exact condition that causes LTP/close flicker on the frontend.
-            if 'close_price' in raw.columns:
-                try:
-                    _close_val = raw.at[idx, 'close_price']
-                    _close_f = float(_close_val) if pd.notna(_close_val) else None
-                except (TypeError, ValueError):
-                    _close_f = None
-                if _close_f is not None and _close_f > 0 and abs(current - _close_f) < 0.005:
-                    _log_ltp_gap_throttled(sym_s, "policy_no_ticker", _close_f)
+            _maybe_log_ltp_gap(raw, idx, sym_s, current)
 
         decision = policy(current, tick_ltp)
-        if decision.new_ltp is not None:
-            raw.at[idx, 'last_price'] = float(decision.new_ltp)
-            result.patched_idx.append(idx)
-            result.patched_old_ltp[idx] = current
-            continue
-
-        if decision.consider_cache:
-            cached = get_last_good_ltp(sym_s)
-            if cached is not None and cached > 0:
-                raw.at[idx, 'last_price'] = float(cached)
-                result.patched_idx.append(idx)
-                result.patched_old_ltp[idx] = current
-                result.stale_idx.append(idx)
+        _apply_row_decision(raw, idx, sym_s, current, decision, result)
 
     if result.stale_idx:
         if 'last_price_stale' not in raw.columns:
