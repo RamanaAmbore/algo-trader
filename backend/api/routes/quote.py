@@ -834,12 +834,22 @@ def _get_today_token_map(broker) -> dict[tuple[str, str], int]:  # type: ignore[
     new_map: dict[tuple[str, str], int] = {}
     for exch in _SPARKLINE_EXCHANGES:
         try:
-            for row in broker.instruments(exch) or []:
+            rows = broker.instruments(exch) or []
+            if not rows:
+                logger.warning(
+                    f"_get_today_token_map: {exch} returned 0 instruments from broker "
+                    "(BSE-only symbols on this exchange will not get live LTP)"
+                )
+                continue
+            for row in rows:
                 ts  = row.get("tradingsymbol")
                 tok = row.get("instrument_token")
                 if ts and tok:
                     new_map[(str(ts).upper(), exch)] = int(tok)
-        except Exception:
+        except Exception as _exc:
+            logger.warning(
+                f"_get_today_token_map: {exch} instruments fetch failed: {_exc}"
+            )
             continue
     with _TOKEN_MAP_LOCK:
         # Drop stale dates (only today's entry is valid).

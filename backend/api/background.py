@@ -648,27 +648,32 @@ async def _perf_subscribe_book_symbols(
             if not _ticker.has_sym(sym)
         ]
         if _need_resolve:
-            # Parallelize the token lookups — each _rts() is a cache
-            # hit (typically <5ms) but the await chain serializes
-            # them. With 50 symbols that was 50 coroutine context
-            # switches in series. asyncio.gather runs them
-            # concurrently and `subscribe_with_sym` is cheap
-            # in-memory so we can apply all subscriptions in one
-            # batch after the gather.
-            capped = _need_resolve[:50]
-            try:
-                toks = await asyncio.gather(
-                    *(_rts(_s, _e) for _s, _e in capped),
-                    return_exceptions=True,
-                )
-                _batch = [(_tok, _sym)
-                          for (_sym, _exch), _tok in zip(capped, toks)
-                          if _tok is not None
-                          and not isinstance(_tok, BaseException)]
-                if _batch:
-                    _ticker.subscribe_with_sym(_batch)
-            except Exception:
-                pass
+            # Parallelize the token lookups in chunks of 50 so the
+            # gather concurrency stays bounded, but process ALL
+            # unresolved symbols — no hard total cap.  Previously a
+            # [:50] slice caused BSE-only symbols that appeared after
+            # the 50th unresolved NSE/NFO entry to be silently dropped
+            # every cycle and never subscribed until the ticker's
+            # _sym_to_token map was cleared (e.g. conn_service restart).
+            CHUNK = 50
+            _all_batch: list[tuple[int, str]] = []
+            for _i in range(0, len(_need_resolve), CHUNK):
+                _chunk = _need_resolve[_i : _i + CHUNK]
+                try:
+                    toks = await asyncio.gather(
+                        *(_rts(_s, _e) for _s, _e in _chunk),
+                        return_exceptions=True,
+                    )
+                    _all_batch.extend(
+                        (_tok, _sym)
+                        for (_sym, _exch), _tok in zip(_chunk, toks)
+                        if _tok is not None
+                        and not isinstance(_tok, BaseException)
+                    )
+                except Exception:
+                    pass
+            if _all_batch:
+                _ticker.subscribe_with_sym(_all_batch)
     except Exception as _tke:
         logger.debug(f"Background: ticker book-subscribe skipped: {_tke}")
 
