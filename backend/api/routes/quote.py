@@ -335,7 +335,13 @@ async def _resolve_token_for_sym(tradingsymbol: str, exchange: str) -> int | Non
 
     sym  = tradingsymbol.upper().strip()
     exch = exchange.upper().strip()
-    order = [exch] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != exch]
+    # For equity (NSE/BSE), pair them immediately so a BSE-only symbol is
+    # found on the first fallback without walking through derivatives exchanges.
+    if exch in ("NSE", "BSE"):
+        _companion = "BSE" if exch == "NSE" else "NSE"
+        order = [exch, _companion] + [e for e in ("MCX", "CDS", "NFO", "BFO") if e not in (exch, _companion)]
+    else:
+        order = [exch] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != exch]
 
     # Fast path: day-cached token map (built once per IST day by batch_sparkline).
     try:
@@ -1308,7 +1314,11 @@ async def _build_spark_token_map(
         for s in norm_syms:
             if s.tradingsymbol in token_map:
                 continue
-            pref = [s.exchange] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != s.exchange]
+            if s.exchange in ("NSE", "BSE"):
+                _c = "BSE" if s.exchange == "NSE" else "NSE"
+                pref = [s.exchange, _c] + [e for e in ("MCX", "CDS", "NFO", "BFO") if e not in (s.exchange, _c)]
+            else:
+                pref = [s.exchange] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != s.exchange]
             for _ex in pref:
                 tok = _full_map.get((s.tradingsymbol, _ex))
                 if tok is not None:
@@ -1750,7 +1760,11 @@ async def warm_sparkline_cache(symbols: list[tuple[str, str]], days: int = 5) ->
         for sym_n, exch_n in norm:
             if sym_n in token_map:
                 continue
-            pref = [exch_n] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != exch_n]
+            if exch_n in ("NSE", "BSE"):
+                _c = "BSE" if exch_n == "NSE" else "NSE"
+                pref = [exch_n, _c] + [e for e in ("MCX", "CDS", "NFO", "BFO") if e not in (exch_n, _c)]
+            else:
+                pref = [exch_n] + [e for e in ("MCX", "CDS", "NFO", "BFO", "NSE", "BSE") if e != exch_n]
             for ex in pref:
                 tok = _full_map.get((sym_n, ex))
                 if tok is not None:
