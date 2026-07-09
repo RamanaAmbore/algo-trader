@@ -584,3 +584,61 @@ def test_tier4_fallback_called_only_in_db_only_mode():
     assert min(db_only_lines) < min(tier4_line_indices), (
         "Tier 4 call appears before the db_only gate — open-session protection broken"
     )
+
+
+# ---------------------------------------------------------------------------
+# TestResolveSparklinesDbKey — unit tests for the extracted pure helper
+# ---------------------------------------------------------------------------
+
+class TestResolveSparklinesDbKey:
+    """Unit tests for _resolve_sparkline_db_key (pure function, no I/O)."""
+
+    def _call(
+        self,
+        db_sym: str,
+        miss_syms_set: set,
+        orig_to_resolved: dict,
+        resolved_to_bare: dict,
+    ):
+        from backend.api.routes.quote import _resolve_sparkline_db_key
+        return _resolve_sparkline_db_key(db_sym, miss_syms_set, orig_to_resolved, resolved_to_bare)
+
+    def test_direct_hit(self):
+        """db_sym is directly in miss_syms_set → returns db_sym unchanged."""
+        result = self._call(
+            db_sym="RELIANCE",
+            miss_syms_set={"RELIANCE", "TCS"},
+            orig_to_resolved={},
+            resolved_to_bare={},
+        )
+        assert result == "RELIANCE"
+
+    def test_bare_to_resolved(self):
+        """db_sym is a bare root; orig_to_resolved maps it to a requested contract."""
+        result = self._call(
+            db_sym="CRUDEOIL",
+            miss_syms_set={"CRUDEOIL26JULFUT"},
+            orig_to_resolved={"CRUDEOIL": "CRUDEOIL26JULFUT"},
+            resolved_to_bare={"CRUDEOIL26JULFUT": "CRUDEOIL"},
+        )
+        assert result == "CRUDEOIL26JULFUT"
+
+    def test_resolved_to_bare(self):
+        """db_sym is a resolved contract; resolved_to_bare maps it to a requested bare root."""
+        result = self._call(
+            db_sym="CRUDEOIL26JULFUT",
+            miss_syms_set={"CRUDEOIL"},
+            orig_to_resolved={"CRUDEOIL": "CRUDEOIL26JULFUT"},
+            resolved_to_bare={"CRUDEOIL26JULFUT": "CRUDEOIL"},
+        )
+        assert result == "CRUDEOIL"
+
+    def test_no_match_returns_none(self):
+        """db_sym has no match in any direction → returns None."""
+        result = self._call(
+            db_sym="UNKNOWN_CONTRACT",
+            miss_syms_set={"RELIANCE"},
+            orig_to_resolved={"CRUDEOIL": "CRUDEOIL26JULFUT"},
+            resolved_to_bare={"CRUDEOIL26JULFUT": "CRUDEOIL"},
+        )
+        assert result is None

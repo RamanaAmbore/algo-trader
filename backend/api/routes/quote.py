@@ -1196,6 +1196,65 @@ async def _self_heal_empty_bars(
         _self_heal_log_once(s.tradingsymbol, s.exchange, 0, days)
 
 
+def _build_sparkline_candidate_syms(
+    miss_tradingsymbols: list[str],
+    orig_to_resolved: dict[str, str],
+) -> set[str]:
+    """Build the set of DB candidate symbols for the Tier 4 daily_book query.
+
+    Includes the normalised (resolved) tradingsymbol for each miss plus any
+    bare-root / contract-name variants so we can match when daily_book holds
+    the contract name (CRUDEOIL26JULFUT) but the request used the virtual
+    bare root (CRUDEOIL), or vice-versa.
+
+    Args:
+        miss_tradingsymbols: tradingsymbol strings for symbols missing after Tiers 1-3.
+        orig_to_resolved:    bare-root → resolved-contract mapping from Step 1.
+
+    Returns a set[str] ready for SQL ``ANY(:symbols)`` (caller wraps in list()).
+    """
+    resolved_to_bare: dict[str, str] = {v: k for k, v in orig_to_resolved.items()}
+    candidates: set[str] = set(miss_tradingsymbols)
+    for sym in miss_tradingsymbols:
+        bare = resolved_to_bare.get(sym)
+        if bare:
+            candidates.add(bare)
+        resolved = orig_to_resolved.get(sym)
+        if resolved:
+            candidates.add(resolved)
+    return candidates
+
+
+def _resolve_sparkline_db_key(
+    db_sym: str,
+    miss_syms_set: set[str],
+    orig_to_resolved: dict[str, str],
+    resolved_to_bare: dict[str, str],
+) -> str | None:
+    """Map a DB row's symbol back to the key used in ``past_result``.
+
+    Three possible directions (in priority order):
+    1. Direct hit   — ``db_sym`` is itself a requested symbol.
+    2. Bare→resolved — ``db_sym`` is a bare root; its resolved contract is requested.
+    3. Resolved→bare — ``db_sym`` is a resolved contract; its bare root is requested.
+
+    Returns the matching key (a tradingsymbol from ``miss_syms_set``), or ``None``
+    if no mapping exists.  In practice ``None`` is unreachable because the SQL
+    ``WHERE symbol = ANY(:symbols)`` constrains ``db_sym`` to be a value derived
+    from ``miss_syms_set`` via ``_build_sparkline_candidate_syms``; ``None`` is
+    returned as a safety net rather than a silent write to an unrecognised key.
+    """
+    if db_sym in miss_syms_set:
+        return db_sym
+    resolved = orig_to_resolved.get(db_sym)
+    if resolved and resolved in miss_syms_set:
+        return resolved
+    bare = resolved_to_bare.get(db_sym)
+    if bare and bare in miss_syms_set:
+        return bare
+    return None
+
+
 async def _fill_from_daily_book_sparkline(
     miss_syms: list["SparklineSymbol"],
     past_result: dict[str, list[float]],
@@ -1218,24 +1277,11 @@ async def _fill_from_daily_book_sparkline(
     if not miss_syms:
         return
 
-    # Build candidate symbol set. Include both the normalised (resolved) name
-    # and any original bare names from orig_to_resolved so we can match when
-    # daily_book holds the contract name (CRUDEOIL26JULFUT) but the request
-    # used the bare root (CRUDEOIL).
+    miss_tradingsymbols = [s.tradingsymbol for s in miss_syms]
+    miss_syms_set = set(miss_tradingsymbols)
     resolved_to_bare: dict[str, str] = {v: k for k, v in orig_to_resolved.items()}
 
-    candidate_syms = list({s.tradingsymbol for s in miss_syms})
-    # Also look up bare/resolved variants
-    extra: list[str] = []
-    for s in miss_syms:
-        bare = resolved_to_bare.get(s.tradingsymbol)
-        if bare and bare not in candidate_syms:
-            extra.append(bare)
-        resolved = orig_to_resolved.get(s.tradingsymbol)
-        if resolved and resolved not in candidate_syms:
-            extra.append(resolved)
-    candidate_syms.extend(extra)
-
+    candidate_syms = list(_build_sparkline_candidate_syms(miss_tradingsymbols, orig_to_resolved))
     if not candidate_syms:
         return
 
@@ -1270,20 +1316,11 @@ async def _fill_from_daily_book_sparkline(
             if not ltp_series:
                 continue
 
-            # Map db_sym back to the normalised tradingsymbol used as the key
-            # in past_result.  db_sym may be the resolved contract name; the
-            # request's norm_syms use the same resolved name after Step 1.
-            target_key = db_sym  # direct hit (most common)
-            if target_key not in {s.tradingsymbol for s in miss_syms}:
-                # Try bare→resolved direction
-                resolved = orig_to_resolved.get(db_sym)
-                if resolved and resolved in {s.tradingsymbol for s in miss_syms}:
-                    target_key = resolved
-                else:
-                    # Try resolved→bare direction
-                    bare = resolved_to_bare.get(db_sym)
-                    if bare and bare in {s.tradingsymbol for s in miss_syms}:
-                        target_key = bare
+            target_key = _resolve_sparkline_db_key(
+                db_sym, miss_syms_set, orig_to_resolved, resolved_to_bare
+            )
+            if target_key is None:
+                continue
 
             if not past_result.get(target_key):
                 past_result[target_key] = ltp_series
