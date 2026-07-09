@@ -580,6 +580,11 @@
   // loadSparklines so it doesn't re-subscribe to whatever stores
   // loadSparklines reads internally.
   let _moverSparkSig = /** @type {string} */ ('');
+  // Previous mover rotation's sparkline pairs — kept for 1 extra cycle so
+  // symbols that just left the movers list aren't immediately pruned.
+  // If they re-enter within one rotation (30s), their cached sparkline
+  // shows instantly without a backend round-trip.
+  let _prevMoverSparkPairs = /** @type {{tradingsymbol: string, exchange: string}[]} */ ([]);
   $effect(() => {
     const sig = movers
       .filter(m => m?.tradingsymbol)
@@ -1238,6 +1243,22 @@
         pairs.push({ tradingsymbol: sym, exchange: exch });
       }
     }
+    // Carry the previous mover rotation's pairs forward so their sparklines
+    // survive one prune cycle (oscillating symbols show from cache).
+    for (const p of _prevMoverSparkPairs) {
+      const key = `${p.exchange}:${p.tradingsymbol}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        pairs.push(p);
+      }
+    }
+    // Snapshot current movers for the next rotation's grace window.
+    _prevMoverSparkPairs = untrack(() => moversStore.value ?? [])
+      .filter(m => m?.tradingsymbol)
+      .map(m => ({
+        tradingsymbol: String(m.tradingsymbol).toUpperCase(),
+        exchange: String(m.exchange || 'NSE').toUpperCase(),
+      }));
     if (!pairs.length) return;
     try {
       await sparklinesStore.load(pairs);
