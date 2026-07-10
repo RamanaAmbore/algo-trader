@@ -104,6 +104,36 @@ def extract_snapshot_extras(payload_json: object) -> dict:
     return {}
 
 
+def extract_snapshot_multiplier(payload_json: object) -> int:
+    """Return the Kite ``multiplier`` (lot_size) embedded in daily_book payload_json.
+
+    Kite ships ``multiplier`` on every positions row (1 for equity/NFO, actual
+    lot_size for MCX/NCO — e.g. 100 for CRUDEOIL).  daily_snapshot stores the
+    full raw broker dict as payload_json, so the field is always present for rows
+    captured from Kite.
+
+    The snapshot write-path (daily_snapshot._positions_rows) stores ``qty`` in
+    LOTS for MCX rows (from raw broker.positions()) while the live path
+    (broker_apis.fetch_positions) multiplies quantity by multiplier before
+    returning to route handlers.  Applying the same multiplier at the snapshot
+    read-seam makes the two paths consistent.
+
+    Returns 1 (no-op) on any parse failure or when the field is absent.
+    """
+    if not payload_json:
+        return 1
+    try:
+        pj = payload_json if isinstance(payload_json, dict) else _json.loads(payload_json)
+        if isinstance(pj, dict):
+            raw = pj.get("multiplier")
+            if raw is not None:
+                v = int(float(raw))
+                return v if v > 1 else 1
+    except Exception:
+        pass
+    return 1
+
+
 def resolve_snapshot_day_pnl(
     day_pnl_col: object,
     day_pnl_f: float,

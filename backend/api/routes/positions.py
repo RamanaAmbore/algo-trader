@@ -23,6 +23,7 @@ from backend.api.routes.positions_helpers import (
     build_snapshot_position_row,
     build_summary_from_rows,
     extract_snapshot_extras,
+    extract_snapshot_multiplier,
     merge_paper_into_live,
 )
 from backend.api.schemas import PositionsResponse, PositionRow, PositionsSummaryRow
@@ -104,8 +105,16 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
         # blanket zero. See test_snapshot_day_change_extras_fallback.
         # ------------------------------------------------------------------
         extras = extract_snapshot_extras(payload_json)
+        # The snapshot writer (daily_snapshot._positions_rows) stores qty
+        # from raw broker.positions() — for MCX/NCO Kite ships quantity in
+        # LOTS (e.g. 1 for 1-lot CRUDEOIL).  The live path (broker_apis.
+        # fetch_positions) multiplies by `multiplier` to produce contracts
+        # before returning rows.  Apply the same factor here so snapshot
+        # and live paths are consistent (qty=100 contracts for 1-lot MCX).
+        multiplier = extract_snapshot_multiplier(payload_json)
+        effective_qty = (qty or 0) * multiplier
         rows.append(build_snapshot_position_row(
-            account, symbol, exchange, qty, avg_cost, ltp,
+            account, symbol, exchange, effective_qty, avg_cost, ltp,
             day_pnl, total_pnl, extras,
         ))
 

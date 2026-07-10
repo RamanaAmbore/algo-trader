@@ -221,3 +221,84 @@ def test_build_snapshot_position_row_fields():
     assert row.price_source == "snapshot_settled"
     assert math.isclose(row.day_change_val, 2500.0, rel_tol=1e-6)
     assert math.isclose(row.pnl, 7500.0, rel_tol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# 6. MCX snapshot multiplier — extract_snapshot_multiplier reads the Kite
+#    multiplier field so the snapshot path returns contracts (not lots)
+# ---------------------------------------------------------------------------
+
+def test_extract_snapshot_multiplier_mcx():
+    """MCX CRUDEOIL: multiplier=100 → returns 100."""
+    import json
+    from backend.api.routes.positions_helpers import extract_snapshot_multiplier
+
+    pj = json.dumps({"multiplier": 100, "tradingsymbol": "CRUDEOIL26JUL7500CE"})
+    assert extract_snapshot_multiplier(pj) == 100
+
+
+def test_extract_snapshot_multiplier_nfo():
+    """NFO NIFTY: multiplier=1 → returns 1 (no-op for contracts)."""
+    import json
+    from backend.api.routes.positions_helpers import extract_snapshot_multiplier
+
+    pj = json.dumps({"multiplier": 1, "tradingsymbol": "NIFTY26JULFUT"})
+    assert extract_snapshot_multiplier(pj) == 1
+
+
+def test_extract_snapshot_multiplier_missing():
+    """Missing multiplier field → returns 1 (safe no-op)."""
+    import json
+    from backend.api.routes.positions_helpers import extract_snapshot_multiplier
+
+    pj = json.dumps({"tradingsymbol": "SOMESTOCK"})
+    assert extract_snapshot_multiplier(pj) == 1
+
+
+def test_extract_snapshot_multiplier_none_payload():
+    """None payload → returns 1 (safe no-op)."""
+    from backend.api.routes.positions_helpers import extract_snapshot_multiplier
+
+    assert extract_snapshot_multiplier(None) == 1
+
+
+def test_snapshot_mcx_qty_contracts_after_multiplier():
+    """Snapshot path: 1-lot CRUDEOIL (daily_book.qty=1, multiplier=100)
+    must produce quantity=100 contracts — the same value the live path
+    (broker_apis.fetch_positions) returns after applying multiplier.
+    """
+    import json
+    from decimal import Decimal
+    from backend.api.routes.positions_helpers import (
+        build_snapshot_position_row,
+        extract_snapshot_multiplier,
+    )
+
+    # Simulates the _positions_snapshot loop for one MCX option row.
+    payload_json = json.dumps({
+        "tradingsymbol": "CRUDEOIL26JUL7500CE",
+        "exchange": "MCX",
+        "multiplier": 100,
+    })
+    qty_from_db = 1          # daily_book.qty is in lots for MCX
+    multiplier  = extract_snapshot_multiplier(payload_json)
+    effective_qty = qty_from_db * multiplier  # → 100 contracts
+
+    row = build_snapshot_position_row(
+        account="ZG0790",
+        symbol="CRUDEOIL26JUL7500CE",
+        exchange="MCX",
+        qty=effective_qty,
+        avg_cost=Decimal("426.30"),
+        ltp=Decimal("180.00"),
+        day_pnl=Decimal("-24630.00"),
+        total_pnl=Decimal("-24630.00"),
+        extras={},
+    )
+    # After multiplier: 100 contracts, not 1 lot
+    assert row.quantity == 100, (
+        f"Expected 100 contracts (1 lot × 100), got {row.quantity}"
+    )
+    assert row.overnight_quantity == 100
+    # pnl and day_change_val are from DB (absolute ₹) — not scaled by qty
+    assert math.isclose(row.pnl, -24630.0, rel_tol=1e-6)
