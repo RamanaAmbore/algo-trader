@@ -33,15 +33,15 @@ test.describe('Mobile strip — single line', () => {
     await loginAsAdmin(page);
   });
 
-  test('PositionStrip 7 chips on one row', async ({ page }) => {
+  test('PositionStrip 4 chips on one row', async ({ page }) => {
     await page.goto('/dashboard');
     // Wait for the strip to mount; it self-fetches /api/positions and
     // /api/holdings, then renders the chip row regardless of data.
     const strip = page.locator('.ps-strip');
     await expect(strip).toBeVisible({ timeout: TIMEOUT });
     const chips = page.locator('.ps-strip .ps-agg');
-    // The strip ships exactly 7 keys: P / M / C / P∆ / HD∆ / H∆ / H.
-    await expect(chips).toHaveCount(7);
+    // The strip ships exactly 4 pills: P / M / C / H.
+    await expect(chips).toHaveCount(4);
     const all = await chips.all();
     await assertSingleRow(all);
   });
