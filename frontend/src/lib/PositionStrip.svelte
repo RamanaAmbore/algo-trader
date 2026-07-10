@@ -406,11 +406,6 @@
   let dispHoldingsToday  = $state(0);
   let _prevMktOpen       = $state(false);
   let _prevExecMode      = $state('idle');
-  // Throttle the strip.frozen localStorage write to 5s — the freeze
-  // effect now runs per SSE tick so P∆ updates live; without the
-  // throttle every tick would synchronously hit disk.
-  let _stripFrozenLastWrite = 0;
-
   // P pill slots 1 + 2: ALL positions (no exchange filter), matching the
   // MarketPulse positions TOTAL row (gold standard SSOT). Includes NSE/BSE
   // equity intraday positions alongside F&O so the P pill stays in sync
@@ -505,20 +500,6 @@
     dispPositionsToday = _livePositionsToday;
     dispHoldingsToday  = _liveHoldingsToday;
     if (!open) return;
-    // localStorage write throttled to 5s — the effect now runs per
-    // SSE tick (so P∆ tracks P live), but persisting every tick would
-    // hammer disk + slow the main thread under bursty load. 5s is
-    // tight enough that a page reload mid-session shows the recent
-    // value and loose enough that 100 ticks/sec doesn't queue 100
-    // synchronous localStorage writes.
-    const _now = Date.now();
-    if (_now - _stripFrozenLastWrite > 5000) {
-      _stripFrozenLastWrite = _now;
-      cachedWrite('strip.frozen', {
-        posToday: dispPositionsToday,
-        hldToday: dispHoldingsToday,
-      }, TTL.day * 7);
-    }
   });
   // Live cash — Kite's `avail.cash` (= live_balance) summed across
   // accounts. Falls back to `cash` if the backend hasn't surfaced

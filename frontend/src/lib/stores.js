@@ -952,15 +952,6 @@ export function parseLogLineDate(line) {
 // loadPulse inside MarketPulse).
 export const lastRefreshAt = writable(0);
 
-// ── Snapshot TOTAL SSOT (published by derivatives page) ─────────────
-// Operator 2026-07-01: "now p three values should match the snapshot
-// total row day p & l, p & l, exp p & l. again no duplicated code ssot."
-// The derivatives page's _perRootReduce is the single implementation.
-// It publishes to this store on every re-compute; NavStrip subscribes
-// so slots 1 / 2 / 3 always match the Snapshot TOTAL row. When the
-// derivatives page isn't mounted the store retains its last-published
-// value (frozen snapshot semantics — same pattern as _stripFrozen).
-
 // ── Include-Holdings toggle (shared with derivatives page) ──────────────
 // Backing localStorage key: 'opt.includeHoldings' (same as the
 // derivatives page's existing key). Both surfaces read/write this store
