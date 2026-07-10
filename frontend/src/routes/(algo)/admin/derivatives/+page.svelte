@@ -2050,8 +2050,9 @@
    *    CE: (max(0, spot − K) − cost) × qty
    *    PE: (max(0, K − spot) − cost) × qty
    *    FUT/EQ: (spot − cost) × qty
-   *  Both `today_value` and `expiry_value` are set to the intrinsic sum —
-   *  single curve (no time value) until backend refines with BS.
+   *  `today_value` is set to null so OptionsPayoff suppresses the amber today
+   *  curve until the backend BS response arrives. `expiry_value` is set to the
+   *  intrinsic sum — the sky-blue dashed expiry curve renders immediately.
    *
    *  Empty-legs case (cold start, no positions yet): returns a flat
    *  41-point grid at y=0 across the ±20 % spot range. This lets the
@@ -2096,7 +2097,7 @@
     const hi = spot * 1.20;
     const n  = 41;
     const step = (hi - lo) / (n - 1);
-    /** @type {Array<{spot: number, today_value: number, expiry_value: number}>} */
+    /** @type {Array<{spot: number, today_value: number|null, expiry_value: number}>} */
     const out = [];
 
     // Empty legs → flat line at y=0. Valid + useful display: axes + spot
@@ -2118,7 +2119,7 @@
         if (v != null) { sum += v; anyValid = true; }
       }
       if (!anyValid) return null;
-      out.push({ spot: s, today_value: sum, expiry_value: sum });
+      out.push({ spot: s, today_value: null, expiry_value: sum });
     }
     return out.length > 0 ? out : null;
   });

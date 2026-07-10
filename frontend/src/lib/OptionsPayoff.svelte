@@ -139,7 +139,7 @@
     if (!realizedPnl || realizedPnl === 0) return payoff;
     return payoff.map(p => ({
       spot:         p.spot,
-      today_value:  p.today_value  + realizedPnl,
+      today_value:  p.today_value != null ? p.today_value + realizedPnl : null,
       expiry_value: p.expiry_value + realizedPnl,
     }));
   });
@@ -298,11 +298,19 @@
   // Y position of zero P&L line — the breakeven horizontal.
   const zeroY = $derived(yOf(0));
 
+  // True when every payoff point carries a real today_value (not null/undefined).
+  // The client-side intrinsic stub sets today_value: null to signal that BS
+  // pricing hasn't arrived yet from the backend. Suppressing the path here
+  // prevents a false flat-line at zero from rendering before real values land.
+  const hasTodayValues = $derived(
+    adjustedPayoff.length > 0 && adjustedPayoff.every(p => p.today_value != null)
+  );
+
   // SVG paths — read from adjustedPayoff so the curve renders WITH
   // the realised-P&L offset applied. At realizedPnl=0 this equals
   // payoff (no-op pass-through).
   const pathToday = $derived.by(() => {
-    if (!adjustedPayoff.length) return '';
+    if (!adjustedPayoff.length || !hasTodayValues) return '';
     return adjustedPayoff.map((p, i) => `${i === 0 ? 'M' : 'L'}${xOf(p.spot).toFixed(1)},${yOf(p.today_value).toFixed(1)}`).join(' ');
   });
   const pathExpiry = $derived.by(() => {
@@ -375,14 +383,14 @@
   // up to the chart bounds. Two filled paths whose top/bottom rides the
   // today curve and whose other edge is the chart's boundary.
   const fillProfit = $derived.by(() => {
-    if (!adjustedPayoff.length) return '';
+    if (!adjustedPayoff.length || !hasTodayValues) return '';
     const top = adjustedPayoff.map(p => `${xOf(p.spot).toFixed(1)},${yOf(Math.max(0, p.today_value)).toFixed(1)}`);
     const lastX  = xOf(adjustedPayoff[adjustedPayoff.length - 1].spot).toFixed(1);
     const firstX = xOf(adjustedPayoff[0].spot).toFixed(1);
     return `M${firstX},${zeroY.toFixed(1)} L${top.join(' L')} L${lastX},${zeroY.toFixed(1)} Z`;
   });
   const fillLoss = $derived.by(() => {
-    if (!adjustedPayoff.length) return '';
+    if (!adjustedPayoff.length || !hasTodayValues) return '';
     const bot = adjustedPayoff.map(p => `${xOf(p.spot).toFixed(1)},${yOf(Math.min(0, p.today_value)).toFixed(1)}`);
     const lastX  = xOf(adjustedPayoff[adjustedPayoff.length - 1].spot).toFixed(1);
     const firstX = xOf(adjustedPayoff[0].spot).toFixed(1);
@@ -441,7 +449,7 @@
       }
       hover = {
         x:      hover.x,
-        y:      yOf(best.today_value),
+        y:      yOf(best.today_value != null ? best.today_value : best.expiry_value),
         spot:   best.spot,
         today:  best.today_value,
         expiry: best.expiry_value,
@@ -471,7 +479,7 @@
       if (d < bestDiff) { best = p; bestDiff = d; }
     }
     hover = {
-      x: xOf(best.spot), y: yOf(best.today_value),
+      x: xOf(best.spot), y: yOf(best.today_value != null ? best.today_value : best.expiry_value),
       spot: best.spot, today: best.today_value, expiry: best.expiry_value,
     };
   }
@@ -714,6 +722,7 @@
         </div>
       {/if}
       {#if curveAtSpot}
+        {#if curveAtSpot.today_value != null}
         <div class="ps-row"
              title={realizedPnl !== 0
                ? `Position lifetime P&L at the current spot (open + closed legs combined). Adjusted to match the dashboard's per-underlying ₹ exactly. ADJ row shows the offset folded in.`
@@ -738,6 +747,7 @@
               {fmtMoney(realizedPnl)}
             </span>
           </div>
+        {/if}
         {/if}
         {@const _expDisplayVal = (legsExpPnlAtSpot != null && Number.isFinite(legsExpPnlAtSpot))
           ? legsExpPnlAtSpot
@@ -1151,12 +1161,14 @@
           <span class="chart-tooltip-label">SPOT</span>
           <span class="chart-tooltip-value payoff-tt-spot">{fmtSpot(hover?.spot)}</span>
         </div>
+        {#if hover?.today != null}
         <div class="chart-tooltip-row">
           <span class="chart-tooltip-label">TDAY</span>
           <span class="chart-tooltip-value" class:up={(hover?.today ?? 0) >= 0} class:down={(hover?.today ?? 0) < 0}>
             {fmtMoney(hover?.today)}
           </span>
         </div>
+        {/if}
         <div class="chart-tooltip-row">
           <span class="chart-tooltip-label">EXP</span>
           <span class="chart-tooltip-value" class:up={(hover?.expiry ?? 0) >= 0} class:down={(hover?.expiry ?? 0) < 0}>
