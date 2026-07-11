@@ -4,55 +4,47 @@
  * Verifies that:
  *   - P pill slot 2 (lifetime P&L) matches the Positions TOTAL row P&L in
  *     the MarketPulse positions grid (ag-Grid pinned-bottom TOTAL row).
- *   - P pill slot 1 (today Day P&L) matches the Positions TOTAL Day P&L.
+ *   - P pill slot 1 (today Day P&L) is within 2% of the Positions TOTAL
+ *     Day P&L (wider tolerance because slot 1 carries an SSE-tick delta
+ *     while the TOTAL row uses the broker snapshot value only).
  *   - H pill slot 2 (holdings value / cur_val) and slot 3 (holdings lifetime
  *     P&L) are consistent with the Holdings grid TOTAL row.
  *
  * Both surfaces source from the same broker snapshot (fetchPositions /
  * fetchHoldings). After the fix that removed the unguarded SSE delta from
  * PositionStrip's lifetime derived values, the sums should match within
- * ±1 rupee (rounding from aggCompact formatting) when read synchronously
+ * 0.1% (rounding from aggCompact formatting) when read synchronously
  * after the first data load.
  *
- * Target: dev.ramboq.com (dev branch). Uses playwright_user / playwright_pass
- * from secrets.yaml (env vars ADMIN_USER / ADMIN_PASS).
+ * Auth strategy: single beforeAll login → shared sessionStorage injected
+ * per test, to avoid burning the 5/min rate-limit with repeated form submits.
  *
  * Run:
- *   ADMIN_USER=rambo ADMIN_PASS=admin1234 \
+ *   PLAYWRIGHT_USER=rambo PLAYWRIGHT_PASS=admin1234 \
  *   PLAYWRIGHT_BASE_URL=https://dev.ramboq.com \
  *   npx playwright test test_navstrip_consistency --project=chromium-desktop
  */
 
 import { test, expect } from '@playwright/test';
+import { loginAsAdmin } from './fixtures/auth.js';
 
-const BASE  = process.env.PLAYWRIGHT_BASE_URL || 'https://dev.ramboq.com';
-const USER  = process.env.ADMIN_USER  || 'rambo';
-const PASS  = process.env.ADMIN_PASS  || 'admin1234';
-const TOKEN = process.env.PLAYWRIGHT_ADMIN_TOKEN || '';
+// ── session injection ─────────────────────────────────────────────────────────
 
-// ── auth helper ───────────────────────────────────────────────────────────────
-
-async function loginViaApi(page) {
-  if (TOKEN) {
-    await page.addInitScript((tok) => {
-      localStorage.setItem('rambo.auth', JSON.stringify({ token: tok, user: { role: 'admin' } }));
-    }, TOKEN);
-    return;
+/**
+ * Inject saved sessionStorage into a page before navigation so the auth
+ * store picks up the token on mount (no repeated form submits).
+ * @param {import('@playwright/test').Page} page
+ * @param {Record<string, string>} items
+ */
+async function injectSession(page, items) {
+  await page.addInitScript((data) => {
+    for (const [k, v] of Object.entries(data)) sessionStorage.setItem(k, v);
+  }, items);
+  if (items.ramboq_token) {
+    await page.context().setExtraHTTPHeaders({
+      Authorization: `Bearer ${items.ramboq_token}`,
+    });
   }
-  if (!USER || !PASS) {
-    test.skip(true, 'no auth — set ADMIN_USER+ADMIN_PASS or PLAYWRIGHT_ADMIN_TOKEN');
-  }
-  const res = await page.request.post(`${BASE}/api/auth/login`, {
-    data: { username: USER, password: PASS },
-    headers: { 'Content-Type': 'application/json' },
-  });
-  expect(res.ok(), `login failed: ${res.status()}`).toBe(true);
-  const body = await res.json();
-  const tok  = body.access_token || body.token;
-  expect(tok, 'no token in login response').toBeTruthy();
-  await page.addInitScript((t) => {
-    localStorage.setItem('rambo.auth', JSON.stringify({ token: t, user: { role: 'admin' } }));
-  }, tok);
 }
 
 // ── parse aggCompact strings back to raw numbers ──────────────────────────────
@@ -105,22 +97,37 @@ async function readGridTotalCell(gridContainer, colId) {
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 test.describe('NavStrip consistency with MarketPulse TOTAL rows', () => {
-  test.beforeEach(async ({ page }) => {
-    await loginViaApi(page);
+  test.describe.configure({ mode: 'serial' });
+
+  /** @type {Record<string, string>} */
+  let _session = {};
+
+  test.beforeAll(async ({ browser }) => {
+    test.setTimeout(60_000);
+    const ctx = await browser.newContext();
+    const setup = await ctx.newPage();
+    await loginAsAdmin(setup);
+    _session = await setup.evaluate(() => {
+      const out = {};
+      for (const k of ['ramboq_token', 'ramboq_user']) {
+        const v = sessionStorage.getItem(k);
+        if (v) out[k] = v;
+      }
+      return out;
+    });
+    await setup.close();
+    await ctx.close();
   });
 
   test('P slot 2 (lifetime P&L) matches Positions grid TOTAL P&L', async ({ page }) => {
-    await page.goto(`${BASE}/pulse`);
+    await injectSession(page, _session);
+    await page.goto('/pulse');
 
     // Wait for the NavStrip to appear and have non-zero data.
-    // The .ps-agg P pill is the first .ps-agg element.
     const pPill = page.locator('.ps-agg').first();
     await expect(pPill).toBeVisible({ timeout: 20_000 });
 
     // Wait for positions grid TOTAL row to appear in the ag-Grid.
-    // MarketPulse wraps the positions grid inside .mp-bucket-positions section;
-    // the ag-Grid root element itself has class .bucket-grid (no unique id).
-    // Target the section and then the pinned-bottom container within it.
     const posGrid = page.locator('.mp-bucket-positions').first();
     await expect(
       posGrid.locator('.ag-floating-bottom-container .ag-row').first()
@@ -137,12 +144,9 @@ test.describe('NavStrip consistency with MarketPulse TOTAL rows', () => {
     const gridTotalPnl = await readGridTotalCell(posGrid, 'pnl');
     expect(gridTotalPnl, 'TOTAL row P&L cell must parse to a number').not.toBeNull();
 
-    // Tolerance: ±1 rupee (aggCompact rounds to 1 decimal in K/L/Cr units,
-    // which is ~100 at L scale; but the number of positions is typically
-    // small so absolute delta rounds to <1 in rupee terms for test purposes).
-    // We use a relative tolerance: abs(diff) / max(abs(a),abs(b),1) < 0.001
-    // which is 0.1% — tight enough to catch divergence, loose enough for
-    // aggCompact rounding of large numbers.
+    // Tolerance: 0.1% relative — tight enough to catch divergence, loose enough
+    // for aggCompact rounding of large numbers. Lifetime P&L has NO SSE delta
+    // so this should be exact within rounding.
     const diff = Math.abs(pLifetime - gridTotalPnl);
     const denom = Math.max(Math.abs(pLifetime), Math.abs(gridTotalPnl), 1);
     expect(
@@ -152,7 +156,8 @@ test.describe('NavStrip consistency with MarketPulse TOTAL rows', () => {
   });
 
   test('P slot 1 (Day P&L) matches Positions grid TOTAL day_pnl', async ({ page }) => {
-    await page.goto(`${BASE}/pulse`);
+    await injectSession(page, _session);
+    await page.goto('/pulse');
 
     const pPill = page.locator('.ps-agg').first();
     await expect(pPill).toBeVisible({ timeout: 20_000 });
@@ -184,7 +189,8 @@ test.describe('NavStrip consistency with MarketPulse TOTAL rows', () => {
   });
 
   test('H pill slot 2 (holdings value) and slot 3 (lifetime P&L) consistent with Holdings TOTAL', async ({ page }) => {
-    await page.goto(`${BASE}/pulse`);
+    await injectSession(page, _session);
+    await page.goto('/pulse');
 
     const hPill = page.locator('.ps-agg').nth(3);  // H is the 4th pill (0-indexed)
     await expect(hPill).toBeVisible({ timeout: 20_000 });
