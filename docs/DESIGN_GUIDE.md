@@ -106,6 +106,9 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 
 - §17. [Frontend modal state](#17-frontend-modal-state)
 - §18. [Frontend state architecture](#18-frontend-state-architecture)
+  - §18.3. [Frontend column factory SSOT](#183-frontend-column-factory-ssot--pulsecolumnsjs)
+  - §18.4. [Pure module extractions — Phase 1](#184-pure-module-extractions--phase-1)
+  - §18.5. [Svelte component extractions — Phase 2 + Phase 3](#185-svelte-component-extractions--phase-2--phase-3)
 - §19. [The preview pipeline](#19-the-preview-pipeline)
 
 **Part VI — Runtime**
@@ -2612,6 +2615,68 @@ factories for MarketPulse and PerformancePage grid definitions.
 - `frontend/src/lib/data/nav.js` — `aggregateDayPnlForPositions()` helper (see §19.1)
 - Callers: PerformancePage, Dashboard, /admin/derivatives, /admin/history
 
+### 18.4 Pure module extractions — Phase 1
+
+Four stateless JavaScript modules ship core logic isolated from component tree:
+
+| Module | Exports | Used by |
+|---|---|---|
+| `riskMath.js` | `normCdf`, `probAbove`, `expectedValueOnCurve`, `multilegPopOnCurve`, `RISK_FREE_R=0.07` | Derivatives page, `/admin/derivatives` |
+| `templateScope.js` | `appliesToFor(side, sym)` → `'sell_option'\|'sell_any'\|'buy_option'\|'buy_any'\|'both'` | OrderTicket, SymbolPanel |
+| `pulseGridSetup.js` | `PULSE_DEFAULT_COL_DEF`, `PULSE_SORTING_ORDER`, `pulseRowId`, `summaryRowId`, `postSortGroups` | MarketPulse (PositionStrip) |
+| `chart/paths.js` | `smaPath`, `emaPath`, `vwapPath`, `bbPaths`, `rsiSeries`, `macdSeries` | ChartWorkspace (overlays + indicators) |
+
+**Design pattern:** each module is a zero-dependency utility collection; no props, no svelte imports, no stores. Enables unit-test coverage + reuse across unrelated surfaces.
+
+**Files:**
+- `frontend/src/lib/data/riskMath.js` — Black-Scholes, normal CDF, payoff integration
+- `frontend/src/lib/data/templateScope.js` — symbol-side decision tree for default-template pickup
+- `frontend/src/lib/data/pulseGridSetup.js` — ag-Grid sorting + row ID scheme + column definitions
+- `frontend/src/lib/chart/paths.js` — SVG path builders for overlays + indicators
+
+---
+
+## 18.5 Svelte component extractions — Phase 2 + Phase 3
+
+**Phase 2** (small, light):
+
+| Component | Props | Used by |
+|---|---|---|
+| `ChaseAggPicker.svelte` | `variant='ticket'\|'panel'` + value/onChange | OrderTicket (variant=ticket, default), SymbolPanel (variant=panel) |
+| `OhlcvTooltip.svelte` | `bar, pxLeft, pxTop, pinned, onClose` | ChartWorkspace (candlestick hover) |
+| `TickTooltip.svelte` | `tick, pxLeft, pxTop, pinned, onClose` | ChartWorkspace (live-tick overlay hover) |
+
+**Phase 3** (large, Playwright-gated):
+
+| Component | Lines | Props | Used by |
+|---|---|---|---|
+| `OrderKnobsRow.svelte` | 320 | order_type, product, variety, validity (all `$bindable()`) | OrderTicket (modal) |
+| `TemplateBar.svelte` | 280 | tp_pct_override, sl_pct_override, wing_qty_override, wing_leg_override (all `$bindable()`) + `sideAwareDefault` prop | SymbolPanel (shell Template row) |
+| `CandidateLegRow.svelte` (derivatives) | 841 | `c`, `legsTab`, `legAnalytics` + 6 callback props | `/admin/derivatives` page, legs grid |
+| `AddToPulseModal.svelte` | 380 | 13 `$bindable()` state vars + 7 async callbacks | MarketPulse (add-to-watchlist) |
+| `CardHeader.svelte` | 200 | `title`, `showControls`, `onDownload`, `variant` props + CSS custom property theming | 9 card header sites (NavBreakdown, performance, derivatives, etc.) |
+
+**Svelte 5 patterns:**
+
+- **`$bindable()` two-way:** Child declares `let { fieldName = $bindable(default) } = $props()`; parent writes `bind:fieldName={parent_var}`. Mutations sync both directions atomically.
+- **Callback forwarding:** Large components expose callback props for state changes; parent wires them to stores or sibling updates. Example: `CandidateLegRow` → `onLegAnalyticsChange(newVal)` → parent `legsTab.analytics[idx] = newVal`.
+
+**Files:**
+- `frontend/src/lib/order/ChaseAggPicker.svelte` — variant-driven L/M/H aggression UI
+- `frontend/src/lib/chart/OhlcvTooltip.svelte` + `TickTooltip.svelte` — anchored chart tooltips
+- `frontend/src/lib/order/OrderKnobsRow.svelte` — extracted from OrderTicket, unified knob layout
+- `frontend/src/lib/TemplateBar.svelte` — extracted from SymbolPanel, override row + Default button state
+- `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte` — 841-line leg table row, internally isolated
+- `frontend/src/lib/AddToPulseModal.svelte` — watchlist add-to modal, async symbol search + confirm
+- `frontend/src/lib/CardHeader.svelte` — unified card title bar, CSS var theming, embedded controls
+
+**CardHeader theming:** Uses CSS custom properties (`--ch-*`) set at layout level (algo-dark in `+layout.svelte`, public-light in public viewport). `showControls` prop gates the right-side icon tray; `onDownload` callback wires to `NavBreakdown.downloadCsv()` via a named method exposed on the component. Embeds `CardControls` component internally.
+
+**Bug fixes bundled:**
+
+- `GridDownloadButton.svelte` — added `autoMargin` prop (default `true`); `CardControls` passes `autoMargin={false}` so fullscreen layout spacer handles alignment instead.
+- `NavBreakdown.svelte` — exposes `downloadCsv()` method; dashboard wires it through `CardHeader.onDownload`.
+
 ---
 
 ## 19. The preview pipeline
@@ -3877,7 +3942,8 @@ Technical indicators (SMA, EMA, VWAP, Bollinger Bands, RSI, MACD) live in a sing
 ### Source files
 
 - `frontend/src/lib/chart/indicators.js` — pure indicator + signal functions
-- `frontend/src/lib/ChartWorkspace.svelte` — imports `calcEma`, `calcVwap`, `calcMacd`, `calcBollinger`, `calcRsi`, + 5 signal helpers; all overlay paths and `_signalMarkers` / `_signalLayout` are `$derived`
+- `frontend/src/lib/chart/paths.js` — SVG path builders extracted from ChartWorkspace: `smaPath`, `emaPath`, `vwapPath`, `bbPaths`, `rsiSeries`, `macdSeries`. Pure functions; zero dependencies.
+- `frontend/src/lib/ChartWorkspace.svelte` — imports `calcEma`, `calcVwap`, `calcMacd`, `calcBollinger`, `calcRsi`, + 5 signal helpers; uses `paths.js` functions to render SVG; all overlay paths and `_signalMarkers` / `_signalLayout` are `$derived`
 - `frontend/scripts/indicators.test.js` — 52-test unit suite (`node --test`) covering indicator math + 5 signal helpers
 - `frontend/e2e/chart_overlays.spec.js` — indicator paths Playwright spec
 - `frontend/e2e/chart_signals.spec.js` — buy/sell markers Playwright spec (chromium-desktop + mobile-portrait)
@@ -3896,6 +3962,7 @@ Three improvements accelerate page load + rendering fidelity on the `/admin/deri
 
 **Files:**
 - `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — picker ordering + cold-start seed
+- `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte` — extracted leg-grid row component (841 lines, 9 props, 6 callbacks)
 - `frontend/src/lib/OptionsPayoff.svelte` — `hasTodayValues` check
 - `backend/api/routes/derivatives.py` — stub today_value change
 
@@ -4880,7 +4947,9 @@ Curated index of the terms that appear repeatedly in this guide. Alphabetized so
 | **Basket order** | Multi-account / multi-leg order dispatched atomically. `POST /api/orders/basket` groups by account and fans out via `asyncio.gather`. §6, §22.10. |
 | **Broker abstraction** | Uniform Python interface (Kite / Dhan / Groww adapters) so route handlers stay broker-agnostic. `backend/brokers/adapters/`. §14. |
 | **Chase loop** | Adaptive limit-order engine that re-quotes toward the touch until filled or capped. Spread-aware. §7, §12. |
+| **CardHeader.svelte** | Unified card title bar using CSS custom properties (`--ch-*`) for theming; embeds `CardControls`; wired to 9 card header sites. §18.5. |
 | **cap_in_dev** | Nested dict of capability flags in `backend_config.yaml`. All True on `main`, per-branch on dev. Gated via `is_enabled('<cap>')`. |
+| **ChaseAggPicker.svelte** | L/M/H aggression picker with `variant='ticket'\|'panel'` prop. Extracted to standalone component. §18.5. |
 | **close_settled** | Second phase of the snapshot lifecycle — fires 15 min after `<exch>:close`. UPSERTs broker's weighted-avg-last-30-min close price. |
 | **conn_service** | Standalone Litestar app on `/tmp/ramboq_conn.sock` that owns broker sessions (Kite WebSocket, Dhan/Groww tokens). Restart independent of the main API. |
 | **Demo mode** | Signed-out + prod branch — read-only + PII-masked. Write paths return 403 or degrade to paper. §22. |
@@ -4904,6 +4973,7 @@ Curated index of the terms that appear repeatedly in this guide. Alphabetized so
 | **Snapshot lifecycle** | Per-exchange event sequence — `open` → `close` (first-cut snapshot) → `close_settled` (broker's settled close). |
 | **SSOT** | Single Source Of Truth. See `baseDayPnlForPosition` (Day P&L), `compute_firm_nav` (NAV), `resolve_current_price` (LTP resolver). |
 | **Template attach** | Post-fill automation — attaches GTT exits and take-profit legs to a filled parent. Idempotent via `parent_order_id`. §9. |
+| **TemplateBar.svelte** | TP/SL/wing override row extracted from SymbolPanel; uses `$bindable()` for all four overrides. §18.5. |
 | **Ticker mmap** | `/dev/shm/ramboq_ticks` — fixed 4096-slot shared-memory buffer, version-word atomic, lock-free reads. Main API tails it via `MmapTickReader`. |
 | **Trail stop** | Stop-loss that ratchets toward the touch on favorable moves. Broker-side (Kite trail_gtt) or emulated. §13. |
 | **Virtual root** | MCX/CDS synthetic symbol (e.g. `CRUDEOIL` = front-month, `CRUDEOIL_NEXT` = back-month). Resolver: `symbol_resolver.py`. |
@@ -4923,6 +4993,7 @@ Quick-jump index by first significant word — useful when you remember a name b
 | Broker abstraction — implementation detail | §14.5 |
 | Broker gotchas | §16 |
 | Chart indicator system | §22.15 |
+| Component + module extractions — Phase 1–3 | §18.4–18.5 |
 | Chase loop invariants | §12 |
 | Chase loop lifecycle | §7 |
 | CSV export: all ag-Grid cards | §22.19 |
