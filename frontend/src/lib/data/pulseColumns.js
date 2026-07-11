@@ -561,6 +561,204 @@ export function mkHoldSummaryCols({ RA, numericHdr, pnlCellClass, aggFmtGrid, pc
   ];
 }
 
+// ─── Holdings Weight % column ────────────────────────────────────────
+
+/**
+ * Holdings "Weight %" column — each row's cur_val as a share of the
+ * visible portfolio total.
+ *
+ * `getTotalCurVal` MUST be passed as a closure returning the current
+ * total so the valueGetter always sees the latest reactive value even
+ * though column definitions are created once at mount.
+ *
+ * @param {{
+ *   RA: string,
+ *   numericHdr: string,
+ *   pctFmtGrid: (p: { value: any }) => string,
+ *   getTotalCurVal: () => number,
+ * }} opts
+ */
+export function mkWeightPctCol({ RA, numericHdr, pctFmtGrid, getTotalCurVal }) {
+  return {
+    field: 'weight_pct', headerName: 'Weight %', width: 70,
+    type: 'numericColumn', headerClass: numericHdr,
+    cellClass: RA,
+    valueGetter: (p) => {
+      const cv = Number(p.data?.cur_val) || 0;
+      const t = getTotalCurVal();
+      return t > 0 ? (cv / t) * 100 : null;
+    },
+    valueFormatter: pctFmtGrid,
+  };
+}
+
+// ─── Options Greeks columns ──────────────────────────────────────────
+
+/**
+ * Position delta column (Δ pos — delta_pos from backend per-row Greeks).
+ * Non-option rows carry 0; formatter renders 0 as em-dash.
+ *
+ * @param {{
+ *   RA: string,
+ *   numericHdr: string,
+ * }} opts
+ */
+export function mkDeltaCol({ RA, numericHdr }) {
+  return {
+    field: 'delta_pos', headerName: 'Δ pos', width: 62,
+    type: 'numericColumn', headerClass: numericHdr,
+    cellClass: RA,
+    valueFormatter: ({ value }) =>
+      value == null || value === 0 ? '—' : value.toFixed(2),
+  };
+}
+
+/**
+ * Position theta column (Θ/day — daily theta in ₹, theta_pos from backend).
+ * Non-option rows carry 0; formatter renders 0 as em-dash.
+ *
+ * @param {{
+ *   RA: string,
+ *   numericHdr: string,
+ *   aggFmtGrid: (p: { value: any }) => string,
+ * }} opts
+ */
+export function mkThetaCol({ RA, numericHdr, aggFmtGrid }) {
+  return {
+    field: 'theta_pos', headerName: 'Θ/day', width: 62,
+    type: 'numericColumn', headerClass: numericHdr,
+    cellClass: RA,
+    valueFormatter: ({ value }) =>
+      value == null || value === 0 ? '—' : aggFmtGrid({ value }),
+  };
+}
+
+// ─── NAV breakdown columns ───────────────────────────────────────────
+
+/**
+ * NAV breakdown column array — [pos_m2m, holdings_mtm, nav].
+ * The account and "Cash" (net) columns are caller-managed so this
+ * factory only covers the three numeric breakdown fields.
+ *
+ * NAV v4 formula (see backend/api/algo/nav.py):
+ *   NAV = (cash_sod + option_premium) + Σ pos.unrealised + Σ hold.cur_val
+ *
+ * @param {{
+ *   RA: string,
+ *   numericHdr: string,
+ *   aggFmtGrid: (p: { value: any }) => string,
+ * }} opts
+ * @returns {any[]}
+ */
+export function mkNavBreakdownCols({ RA, numericHdr, aggFmtGrid }) {
+  return [
+    { field: 'pos_m2m',      headerName: 'Pos M2M',      flex: 1,
+      type: 'numericColumn', headerClass: numericHdr,
+      cellClass: RA, valueFormatter: aggFmtGrid },
+    { field: 'holdings_mtm', headerName: 'Holdings MTM', flex: 1,
+      type: 'numericColumn', headerClass: numericHdr,
+      cellClass: RA, valueFormatter: aggFmtGrid },
+    { field: 'nav',          headerName: 'NAV',          flex: 1,
+      type: 'numericColumn', headerClass: numericHdr,
+      cellClass: RA, valueFormatter: aggFmtGrid },
+  ];
+}
+
+// ─── Margin utilisation column ───────────────────────────────────────
+
+/**
+ * Margin utilisation % column for the Dashboard margin grid.
+ *
+ * Reads the pre-computed `util_pct` field (0-1 fraction) from each row.
+ * Cell class thresholds:
+ *   ≥ 0.85 → pnl-loss (red)
+ *   ≥ 0.70 → util-warn
+ *   ≥ 0.50 → util-mild
+ *    < 0.50 → pnl-gain (green)
+ *
+ * Value formatter: `Math.round(util_pct * 100) + '%'` matching
+ * Dashboard's `_agUtilFmt` convention (0-1 fraction input).
+ *
+ * NOTE: Dashboard's `util_pct` field is pre-computed in `_marginRows`
+ * from `used / (used + avail)`. The factory reads this field directly
+ * rather than recomputing from raw margin fields.
+ *
+ * @param {{ numericHdr: string }} opts
+ */
+export function mkUtilPctCol({ numericHdr }) {
+  return {
+    field: 'util_pct', headerName: 'Util %', minWidth: 62, flex: 0.7,
+    type: 'numericColumn', headerClass: numericHdr,
+    cellClass: (p) => {
+      const v = Number(p.value) || 0;
+      const cls = v >= 0.85 ? 'pnl-loss'
+                : v >= 0.70 ? 'util-warn'
+                : v >= 0.50 ? 'util-mild'
+                : 'pnl-gain';
+      return `ag-right-aligned-cell ${cls}`;
+    },
+    valueFormatter: ({ value }) =>
+      value == null ? '—' : `${Math.round(value * 100)}%`,
+  };
+}
+
+// ─── Funds detail columns ────────────────────────────────────────────
+
+/**
+ * Funds detail column array — [net/cash, live_cash, opt_cash,
+ * avail_margin, used_margin, collateral]. Does NOT include the leading
+ * Account column so callers can supply their own with appropriate
+ * cellRenderer / cellStyle (masked account, colour tint, etc.).
+ *
+ * NOTE: this factory covers the MarketPulse-style funds payload.
+ * PerformancePage's fundsCols and Dashboard's fundsCols differ in
+ * field names and column sets; apply this factory only where the
+ * payload matches exactly.
+ *
+ * @param {{
+ *   RA: string,
+ *   numericHdr: string,
+ *   aggFmtGrid: (p: { value: any }) => string,
+ * }} opts
+ * @returns {any[]}
+ */
+export function mkFundsDetailCols({ RA, numericHdr, aggFmtGrid }) {
+  return [
+    { field: 'cash_total', headerName: 'Cash', width: 78,
+      type: 'numericColumn', headerClass: numericHdr,
+      cellClass: RA, valueFormatter: aggFmtGrid,
+      headerTooltip: 'Live cash + cash debited on currently-held long options',
+      valueGetter: (/** @type {any} */ p) => {
+        const d = p?.data || {};
+        const lc  = Number(d.live_cash ?? 0);
+        const loc = Number(d._long_opt_cash ?? 0);
+        return (lc !== 0 ? lc : Number(d.cash ?? 0)) + loc;
+      } },
+    { field: 'live_cash', headerName: 'Live Cash', width: 78,
+      type: 'numericColumn', headerClass: numericHdr,
+      cellClass: RA, valueFormatter: aggFmtGrid,
+      headerTooltip: 'Current cash — decreases when option premium is debited' },
+    { field: '_long_opt_cash', headerName: 'Opt Cash', width: 78,
+      type: 'numericColumn', headerClass: numericHdr,
+      cellClass: RA, valueFormatter: aggFmtGrid,
+      headerTooltip: 'Cash debited on currently-held long options' },
+    { field: 'avail_margin', headerName: 'Avail Margin', width: 92,
+      type: 'numericColumn', headerClass: numericHdr,
+      cellClass: RA, valueFormatter: aggFmtGrid,
+      headerTooltip: 'Available margin — net trading buffer' },
+    { field: 'used_margin', headerName: 'Used Margin', width: 90,
+      type: 'numericColumn', headerClass: numericHdr,
+      cellClass: RA, valueFormatter: aggFmtGrid,
+      headerTooltip: 'Margin currently locked against open positions' },
+    { field: 'collateral', headerName: 'Collateral', flex: 1, minWidth: 80,
+      type: 'numericColumn', headerClass: numericHdr,
+      cellClass: RA, valueFormatter: aggFmtGrid,
+      headerTooltip: 'Collateral value from pledged holdings' },
+  ];
+}
+
+// ─── Funds grid columns ──────────────────────────────────────────────
+
 /**
  * Funds grid columns (Account | Cash | Live Cash | Opt Cash | Avail Margin |
  * Used Margin | Collateral).
