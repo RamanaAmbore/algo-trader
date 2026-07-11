@@ -21,8 +21,8 @@ Notes:
   - Rate-limit cool-off is respected.  If the price broker is in cool-off,
     affected symbols are skipped and reported; run again after the cool-off
     expires (60 s by default).
-  - Persistent write-back is handled by the write_queue; allow a few seconds
-    after the script exits for the workers to flush remaining batches.
+  - Persistent write-back is handled by the write_queue, which this script
+    starts explicitly and drains before exiting so all rows land in the DB.
 """
 
 from __future__ import annotations
@@ -157,6 +157,13 @@ async def _main(run_daily: bool, run_intraday: bool) -> int:
     from backend.api.database import init_db
     await init_db()
 
+    # Start write-queue workers so enqueue_db() / enqueue_disk() payloads
+    # are actually flushed to PostgreSQL.  Without start(), the workers
+    # (db_worker + cache_worker) are never spawned; the asyncio.Queue fills
+    # but drains when asyncio.run() exits — every row is silently dropped.
+    from backend.api.persistence import write_queue as _wq
+    await _wq.start()
+
     print("\nBuilding symbol universe …", flush=True)
     symbols = await _build_universe()
     print(f"\nFinal universe: {len(symbols)} symbols\n", flush=True)
@@ -185,6 +192,43 @@ async def _main(run_daily: bool, run_intraday: bool) -> int:
                 "       or rely on the startup hook at next session open.",
                 flush=True,
             )
+
+    # Drain the write queues before exiting so all rows land in PostgreSQL.
+    # The db_queue and disk_queue are bounded asyncio.Queues; without an
+    # explicit drain the process exits with unflushed rows.  Use a 120s
+    # ceiling (generous for 300 symbols × ~250 bars = ~75K rows at 500/batch).
+    print("\nDraining write queues …", flush=True)
+    _drain_timeout = 120.0
+    try:
+        await asyncio.wait_for(_wq.db_queue.join(), timeout=_drain_timeout)
+    except asyncio.TimeoutError:
+        print(
+            f"[WARN] db_queue did not drain within {_drain_timeout}s "
+            "— some rows may have been dropped.",
+            flush=True,
+        )
+    try:
+        await asyncio.wait_for(_wq.disk_queue.join(), timeout=_drain_timeout)
+    except asyncio.TimeoutError:
+        print(
+            f"[WARN] disk_queue did not drain within {_drain_timeout}s.",
+            flush=True,
+        )
+    health = _wq.get_health()
+    print(
+        f"  db_queue : depth={health['db_queue']['depth']}  "
+        f"dropped={health['db_queue']['dropped']}  "
+        f"last_batch={health['db_queue']['last_batch_size']}",
+        flush=True,
+    )
+    print(
+        f"  disk_queue: depth={health['disk_queue']['depth']}  "
+        f"dropped={health['disk_queue']['dropped']}  "
+        f"last_batch={health['disk_queue']['last_batch_size']}",
+        flush=True,
+    )
+    await _wq.stop()
+    print("Write queues stopped.\n", flush=True)
 
     return rc
 
