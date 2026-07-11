@@ -70,6 +70,7 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
+  import { mkWeightPctCol, mkDeltaCol, mkThetaCol, mkNavBreakdownCols } from '$lib/data/pulseColumns.js';
 
   // ModuleRegistry is registered inside onMount after the dynamic import.
 
@@ -527,13 +528,7 @@
     // Weight % = this row's cur_val / total cur_val across the visible
     // holdings filter. Computed in valueGetter so it tracks the AG Grid
     // row-filter live (per-account view stays meaningful).
-    { field: 'weight_pct',            headerName: 'Weight %', width: 70, type: 'numericColumn', headerClass: numericHdr,
-      valueGetter: (p) => {
-        const cv = Number(p.data?.cur_val) || 0;
-        const total = _holdingsTotalCurVal;
-        return total > 0 ? (cv / total) * 100 : null;
-      },
-      valueFormatter: pctFmtGrid },
+    mkWeightPctCol({ RA: '', numericHdr, pctFmtGrid, getTotalCurVal: () => _holdingsTotalCurVal }),
     { field: 'cur_val',               headerName: 'Value',  width: 88, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
     { field: 'account',               headerName: 'Account',  width: 76, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
   ];
@@ -642,12 +637,8 @@
     // implied_vol bisection + analytical greeks. Non-option rows show
     // 0 (default); the formatter renders 0 as em-dash to keep cash
     // equity rows from polluting the option column.
-    { field: 'delta_pos',            headerName: 'Δ pos',     width: 62,
-      type: 'numericColumn', headerClass: numericHdr, cellClass: pnlCls,
-      valueFormatter: ({ value }) => value == null || value === 0 ? '—' : value.toFixed(2) },
-    { field: 'theta_pos',            headerName: 'Θ/day',     width: 62,
-      type: 'numericColumn', headerClass: numericHdr, cellClass: pnlCls,
-      valueFormatter: ({ value }) => value == null || value === 0 ? '—' : aggFmtGrid({ value }) },
+    mkDeltaCol({ RA: pnlCls, numericHdr }),
+    mkThetaCol({ RA: pnlCls, numericHdr, aggFmtGrid }),
     { field: 'account',       headerName: 'Account',   width: 76, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
   ]);
 
@@ -704,9 +695,7 @@
   const navCols = [
     { field: 'account',      headerName: 'Account',  width: 76, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'net',          headerName: 'Cash',         flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'pos_m2m',      headerName: 'Pos M2M',      flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'holdings_mtm', headerName: 'Holdings MTM', flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'nav',          headerName: 'NAV',          flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    ...mkNavBreakdownCols({ RA: pnlCls, numericHdr, aggFmtGrid }),
   ];
 
   function makeGrid(el, colDefs, rowData = [], onRowClick = null) {

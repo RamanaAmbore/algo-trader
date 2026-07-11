@@ -2208,7 +2208,8 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
                        f"(agent={agent.slug}, scope={scope})")
         return
 
-    chase_tasks = []
+    chase_tasks: list = []
+    task_rows:   list[dict] = []
     for p in rows:
         acct     = str(p.get("account", ""))
         symbol   = str(p.get("tradingsymbol", ""))
@@ -2268,6 +2269,7 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
                             transaction_type=side, quantity=qty, cfg=cfg)
             )
         )
+        task_rows.append(p)
         logger.info(f"[LIVE] chase_close_positions: queued {side} {qty} {symbol} [{acct}]")
 
     # Await all chase tasks concurrently — each manages its own retry loop.
@@ -2277,7 +2279,11 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
             if isinstance(res, Exception):
                 # Diagnose via basket_margin so the log distinguishes
                 # margin-shortfall from segment-permission for this leg.
-                p = rows[i]
+                # Use task_rows[i] — not rows[i] — because chase_tasks only
+                # contains entries for positions that passed preflight; rows
+                # includes every position (including blocked ones), so rows[i]
+                # would map to the wrong position whenever any row was skipped.
+                p = task_rows[i]
                 acct     = str(p.get("account", ""))
                 symbol   = str(p.get("tradingsymbol", ""))
                 exchange = str(p.get("exchange") or "NFO")
