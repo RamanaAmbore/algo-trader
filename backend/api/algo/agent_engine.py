@@ -1605,94 +1605,102 @@ async def run_cycle(context: dict, broadcast_fn=None,
                         await session.commit()
 
     # ── Post-loop: topic-scoped tier suppression + dispatch survivors ────
-    #
-    # Suppression rule: within each topic, find the highest-priority tier
-    # that fired this tick. Drop every lower-tier fire in that topic — they
-    # get an audit-log entry as `triggered_suppressed` but no push
-    # notification, no action execution. The operator gets ONE alert per
-    # topic per tick instead of N stacked alarms for the same root cause.
     if pending_dispatches:
-        suppressed_ids = _compute_topic_suppression(pending_dispatches)
-        for entry in pending_dispatches:
-            agent       = entry['agent']
-            matches_    = entry['matches']
-            result      = entry['result']
-            sim_mode_p  = entry['sim_mode']
+        await _cycle_dispatch_survivors(pending_dispatches, now, context, broadcast_fn)
 
-            if agent.id in suppressed_ids:
-                # Audit-log only. Channel push + actions skipped.
-                supp_by = suppressed_ids[agent.id]
-                detail_text = (
-                    f"Suppressed by higher-tier agent '{supp_by}' in topic "
-                    f"'{getattr(agent, 'topic', 'general')}'."
-                )
-                try:
-                    await log_event(
-                        agent, 'triggered_suppressed',
-                        f"{result.condition_text} — {detail_text}",
-                        detail={'suppressed_by': supp_by,
-                                'topic': getattr(agent, 'topic', 'general'),
-                                'tier':  getattr(agent, 'tier',  'medium')},
-                        sim_mode=sim_mode_p,
-                    )
-                except Exception as _le:
-                    logger.debug(f"suppressed-event log failed: {_le}")
-                if broadcast_fn:
-                    broadcast_fn('agent_state', {
-                        'slug': agent.slug,
-                        'status': 'suppressed',
-                        'suppressed_by': supp_by,
-                    })
-                continue
 
-            # Survivor path — agent passed topic-tier suppression.
-            # Now safe to commit side-effects that must NOT run for
-            # suppressed agents: latch _v2_record (updates _V2_LAST_ALERT
-            # used by cooldown gate), write trigger_count / status / cooldown
-            # to DB, and emit the final WS status broadcast.
-            _v2_record(agent, matches_, now)
-            _bypass_schedule_p = entry.get('bypass_schedule', False)
-            if not _bypass_schedule_p:
-                _new_status_p = entry['new_status']
-                _debounce_min_p = entry.get('debounce_min', 0)
-                async with async_session() as session:
-                    _db_values: dict = dict(
-                        status=_new_status_p,
-                        last_triggered_at=datetime.now(timezone.utc),
-                        trigger_count=Agent.trigger_count + 1,
-                    )
-                    # Phase 21 — clear the debounce latch after a fire so
-                    # the next true tick starts a fresh window.
-                    if _debounce_min_p > 0:
-                        _db_values["condition_first_true_at"] = None
-                    await session.execute(
-                        update(Agent).where(Agent.id == agent.id).values(**_db_values)
-                    )
-                    await session.commit()
-                if broadcast_fn:
-                    broadcast_fn("agent_state", {"slug": agent.slug, "status": _new_status_p})
+async def _cycle_dispatch_survivors(
+    pending_dispatches: list[dict],
+    now,
+    context: dict,
+    broadcast_fn,
+) -> None:
+    """Post-loop: apply topic-tier suppression, then dispatch survivors.
 
-            # Full dispatch path — same code that used to live inside the
-            # per-agent loop, now driven from the buffer.
-            rich_sent = await _v2_send_rich_alert(
-                agent, matches_, now, sim_mode=sim_mode_p, context=context,
+    Suppressed agents get an audit-log entry only; no push notification and
+    no action execution. Survivor agents commit all side-effects (DB state,
+    WS broadcast, rich alert / dispatch, actions).
+    """
+    suppressed_ids = _compute_topic_suppression(pending_dispatches)
+    for entry in pending_dispatches:
+        agent       = entry['agent']
+        matches_    = entry['matches']
+        result      = entry['result']
+        sim_mode_p  = entry['sim_mode']
+
+        if agent.id in suppressed_ids:
+            # Audit-log only. Channel push + actions skipped.
+            supp_by = suppressed_ids[agent.id]
+            detail_text = (
+                f"Suppressed by higher-tier agent '{supp_by}' in topic "
+                f"'{getattr(agent, 'topic', 'general')}'."
             )
-            if not rich_sent:
-                await dispatch(agent, result, broadcast_fn, sim_mode=sim_mode_p)
-            else:
-                await log_event(agent, 'triggered', result.condition_text, sim_mode=sim_mode_p)
-                if broadcast_fn:
-                    broadcast_fn('agent_alert', {
-                        'slug': agent.slug,
-                        'message': result.condition_text,
-                        'timestamp': now.isoformat(),
-                        'sim_mode': sim_mode_p,
-                    })
-            if agent.actions:
-                action_ctx = dict(context)
-                action_ctx["account"] = "TOTAL"
-                action_ctx["sim_mode"] = sim_mode_p
-                await execute(agent, agent.actions, action_ctx)
+            try:
+                await log_event(
+                    agent, 'triggered_suppressed',
+                    f"{result.condition_text} — {detail_text}",
+                    detail={'suppressed_by': supp_by,
+                            'topic': getattr(agent, 'topic', 'general'),
+                            'tier':  getattr(agent, 'tier',  'medium')},
+                    sim_mode=sim_mode_p,
+                )
+            except Exception as _le:
+                logger.debug(f"suppressed-event log failed: {_le}")
+            if broadcast_fn:
+                broadcast_fn('agent_state', {
+                    'slug': agent.slug,
+                    'status': 'suppressed',
+                    'suppressed_by': supp_by,
+                })
+            continue
+
+        # Survivor path — agent passed topic-tier suppression.
+        # Now safe to commit side-effects that must NOT run for
+        # suppressed agents: latch _v2_record (updates _V2_LAST_ALERT
+        # used by cooldown gate), write trigger_count / status / cooldown
+        # to DB, and emit the final WS status broadcast.
+        _v2_record(agent, matches_, now)
+        _bypass_schedule_p = entry.get('bypass_schedule', False)
+        if not _bypass_schedule_p:
+            _new_status_p = entry['new_status']
+            _debounce_min_p = entry.get('debounce_min', 0)
+            async with async_session() as session:
+                _db_values: dict = dict(
+                    status=_new_status_p,
+                    last_triggered_at=datetime.now(timezone.utc),
+                    trigger_count=Agent.trigger_count + 1,
+                )
+                # Phase 21 — clear the debounce latch after a fire so
+                # the next true tick starts a fresh window.
+                if _debounce_min_p > 0:
+                    _db_values["condition_first_true_at"] = None
+                await session.execute(
+                    update(Agent).where(Agent.id == agent.id).values(**_db_values)
+                )
+                await session.commit()
+            if broadcast_fn:
+                broadcast_fn("agent_state", {"slug": agent.slug, "status": _new_status_p})
+
+        # Full dispatch path.
+        rich_sent = await _v2_send_rich_alert(
+            agent, matches_, now, sim_mode=sim_mode_p, context=context,
+        )
+        if not rich_sent:
+            await dispatch(agent, result, broadcast_fn, sim_mode=sim_mode_p)
+        else:
+            await log_event(agent, 'triggered', result.condition_text, sim_mode=sim_mode_p)
+            if broadcast_fn:
+                broadcast_fn('agent_alert', {
+                    'slug': agent.slug,
+                    'message': result.condition_text,
+                    'timestamp': now.isoformat(),
+                    'sim_mode': sim_mode_p,
+                })
+        if agent.actions:
+            action_ctx = dict(context)
+            action_ctx["account"] = "TOTAL"
+            action_ctx["sim_mode"] = sim_mode_p
+            await execute(agent, agent.actions, action_ctx)
 
 
 # Tier rank for topic-suppression. Lower = higher priority.
