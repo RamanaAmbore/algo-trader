@@ -229,6 +229,10 @@
     // class is visible within one tick of the emit — the 50ms spec assertion
     // continues to pass. No throttle-timer handle needed; only a timestamp.
     _tickBusUnsub = tickBus.subscribe(() => {
+      // Do not animate during closed hours — background pollers still emit
+      // on tickBus (sparkline, snapshot refresh, performance) and would give
+      // a false "live data refreshing" impression.
+      if (!isNseOpen() && !isMcxOpen()) return;
       const _now = performance.now();
       if (_now < _tickBorderThrottleUntil) return;
       _tickBorderThrottleUntil = _now + 1000;  // was 250 (4 Hz) → 1000 (1 Hz)
