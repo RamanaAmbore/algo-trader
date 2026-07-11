@@ -63,6 +63,87 @@ export function startQuoteStream() {
   _open();
 }
 
+/**
+ * Handle an SSE 'snapshot' event. Transforms `{token: {ltp, sym}}` from
+ * the server into per-symbol updates and writes them to symbolStore.
+ * @param {MessageEvent} e
+ */
+function _onSnapshot(e) {
+  try {
+    const snap = JSON.parse(e.data);
+    if (!snap || typeof snap !== 'object') return;
+    /** @type {Array<{sym: string, fields: {ltp: number}, ts: {ltp_ts: number}}>} */
+    const symbolUpdates = [];
+    const ts = Date.now();
+    // Backend ticker.snapshot() returns `{token: {ltp, sym}}` keyed
+    // by integer token. Transform to per-sym updates so the central
+    // store joins on tradingsymbol like every other consumer.
+    for (const v of Object.values(snap)) {
+      if (!v || typeof v !== 'object' || !v.sym || v.ltp == null) continue;
+      // LTP flicker fix (Jun 2026): skip non-positive ltp values
+      // BEFORE they hit symbolStore. The backend's _on_ticks now
+      // filters at the source but this defensive guard protects
+      // against any future SSE payload regression that re-introduces
+      // 0/negative prices. Critical because the ltp_ts arbitration
+      // in symbolStore would otherwise block subsequent positive
+      // polls from overwriting a 0-stamped-fresh entry.
+      const v_ltp = Number(v.ltp);
+      if (!Number.isFinite(v_ltp) || v_ltp <= 0) continue;
+      symbolUpdates.push({ sym: v.sym, fields: { ltp: v_ltp }, ts: { ltp_ts: ts } });
+    }
+    // ltp_ts arbitration means a tick already newer-by-ms can't be
+    // clobbered by a re-snapshot landing later.
+    if (symbolUpdates.length) mergeSymbolBatch(symbolUpdates);
+    if (!get(streamOpen)) streamOpen.set(true);
+    _backoffMs = _BACKOFF_MIN;
+  } catch (_) { /* malformed JSON — ignore */ }
+}
+
+/**
+ * Handle an SSE 'tick' event. Writes a single symbol LTP update to
+ * symbolStore, guarding against non-positive values.
+ * @param {MessageEvent} e
+ */
+function _onTick(e) {
+  try {
+    const t = JSON.parse(e.data);
+    if (!t || !t.sym || t.ltp == null) return;
+    // LTP flicker fix (Jun 2026): same zero-guard as snapshot path.
+    // Skip non-positive LTP at SSE intake; the backend already
+    // filters but the frontend is the last line of defence and cheap to check.
+    const t_ltp = Number(t.ltp);
+    if (!Number.isFinite(t_ltp) || t_ltp <= 0) return;
+    // BH3: writes only land in symbolStore. ltp_ts = Date.now() at
+    // receive time arbitrates correctly against any poll that
+    // lands afterward carrying older broker-side LTP.
+    mergeSymbolUpdate(t.sym, { ltp: t_ltp }, { ltp_ts: Date.now() });
+    if (!get(streamOpen)) streamOpen.set(true);
+    _backoffMs = _BACKOFF_MIN;
+  } catch (_) { /* malformed JSON — ignore */ }
+}
+
+/**
+ * Handle an SSE error event. Closes the broken EventSource and schedules
+ * a manual reopen with exponential backoff capped at _BACKOFF_MAX.
+ * Native EventSource would otherwise retry at ~3s indefinitely, including
+ * on non-retryable 401/403 responses after token expiry.
+ */
+function _onStreamError() {
+  streamOpen.set(false);
+  if (_es) {
+    try { _es.close(); } catch (_) {}
+    _es = null;
+  }
+  if (_stopped) return;
+  if (_reconnectTimer != null) return;
+  const delay = _backoffMs;
+  _backoffMs = Math.min(_backoffMs * 2, _BACKOFF_MAX);
+  _reconnectTimer = setTimeout(() => {
+    _reconnectTimer = null;
+    _open();
+  }, delay);
+}
+
 function _open() {
   if (_stopped) return;
   // withCredentials sends the auth cookie — same auth path as every other
@@ -70,91 +151,12 @@ function _open() {
   // bearer-token auth cannot be used here; cookie auth is the fallback the
   // backend already supports for SSE.
   _es = new EventSource('/api/quotes/stream', { withCredentials: true });
-
-  _es.addEventListener('snapshot', (e) => {
-    try {
-      const snap = JSON.parse(e.data);
-      // Backend ticker.snapshot() returns `{token: {ltp, sym}}` keyed
-      // by integer token. Earlier code assumed the snap was already
-      // `{sym: ltp}` and merged it directly, which polluted liveLtp
-      // with stringified-token keys and the actual sym → ltp pairs
-      // never landed (operator saw stale "—" on every cell until a
-      // later tick caught up). Transform to `{sym: ltp}` so ag-Grid
-      // can read `$liveLtp[sym]` and paint immediately on first load.
-      if (snap && typeof snap === 'object') {
-        /** @type {Array<{sym: string, fields: {ltp: number}, ts: {ltp_ts: number}}>} */
-        const symbolUpdates = [];
-        const ts = Date.now();
-        // Backend ticker.snapshot() returns `{token: {ltp, sym}}` keyed
-        // by integer token. Transform to per-sym updates so the central
-        // store joins on tradingsymbol like every other consumer.
-        for (const v of Object.values(snap)) {
-          if (!v || typeof v !== 'object' || !v.sym || v.ltp == null) continue;
-          // LTP flicker fix (Jun 2026): skip non-positive ltp values
-          // BEFORE they hit symbolStore. The backend's _on_ticks now
-          // filters at the source but this defensive guard protects
-          // against any future SSE payload regression that re-introduces
-          // 0/negative prices. Critical because the ltp_ts arbitration
-          // in symbolStore would otherwise block subsequent positive
-          // polls from overwriting a 0-stamped-fresh entry.
-          const v_ltp = Number(v.ltp);
-          if (!Number.isFinite(v_ltp) || v_ltp <= 0) continue;
-          symbolUpdates.push({
-            sym: v.sym, fields: { ltp: v_ltp }, ts: { ltp_ts: ts },
-          });
-        }
-        // ltp_ts arbitration means a tick already newer-by-ms can't be
-        // clobbered by a re-snapshot landing later.
-        if (symbolUpdates.length) mergeSymbolBatch(symbolUpdates);
-        if (!get(streamOpen)) streamOpen.set(true);
-        _backoffMs = _BACKOFF_MIN;
-      }
-    } catch (_) { /* malformed JSON — ignore */ }
-  });
-
-  _es.addEventListener('tick', (e) => {
-    try {
-      const t = JSON.parse(e.data);
-      if (t && t.sym && t.ltp != null) {
-        // LTP flicker fix (Jun 2026): same zero-guard as snapshot path.
-        // Skip non-positive LTP at SSE intake; the backend already
-        // filters but the frontend is the last line of defence and
-        // cheap to check.
-        const t_ltp = Number(t.ltp);
-        if (!Number.isFinite(t_ltp) || t_ltp <= 0) return;
-        // BH3: writes only land in symbolStore. ltp_ts = Date.now() at
-        // receive time arbitrates correctly against any poll that
-        // lands afterward carrying older broker-side LTP.
-        mergeSymbolUpdate(t.sym, { ltp: t_ltp }, { ltp_ts: Date.now() });
-        if (!get(streamOpen)) streamOpen.set(true);
-        _backoffMs = _BACKOFF_MIN;
-      }
-    } catch (_) { /* malformed JSON — ignore */ }
-  });
-
+  _es.addEventListener('snapshot', _onSnapshot);
+  _es.addEventListener('tick', _onTick);
   // Heartbeat keeps the connection alive through proxies/firewalls that
   // close idle TCP connections. No state update needed.
   _es.addEventListener('heartbeat', () => { /* noop */ });
-
-  _es.onerror = () => {
-    streamOpen.set(false);
-    // Close the broken EventSource and schedule a manual reopen with
-    // exponential backoff. Native EventSource would otherwise retry at
-    // its own ~3s cadence indefinitely, including on non-retryable
-    // 401/403 responses after token expiry.
-    if (_es) {
-      try { _es.close(); } catch (_) {}
-      _es = null;
-    }
-    if (_stopped) return;
-    if (_reconnectTimer != null) return;
-    const delay = _backoffMs;
-    _backoffMs = Math.min(_backoffMs * 2, _BACKOFF_MAX);
-    _reconnectTimer = setTimeout(() => {
-      _reconnectTimer = null;
-      _open();
-    }, delay);
-  };
+  _es.onerror = _onStreamError;
 }
 
 // ---------------------------------------------------------------------------

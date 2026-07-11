@@ -838,88 +838,60 @@ export function dualTsHtml(iso) {
  * @param {any} agent
  * @returns {{ label: string, color: 'sky'|'amber'|'red'|'grey', tooltip: string, expired: boolean } | null}
  */
+/** @param {boolean} isCompleted */
+function _oneShotChip(isCompleted) {
+  if (isCompleted) {
+    return { label: '1-shot · DONE', color: 'grey', tooltip: 'One-shot agent has fired and auto-completed.', expired: true };
+  }
+  return { label: '1-shot', color: 'sky', tooltip: 'Fires once and auto-completes.', expired: false };
+}
+
+/** @param {any} agent @param {boolean} isCompleted */
+function _nFiresChip(agent, isCompleted) {
+  const max = Number(agent.lifespan_max_fires) || 0;
+  const used = Number(agent.trigger_count) || 0;
+  const remaining = Math.max(0, max - used);
+  if (isCompleted || remaining === 0) {
+    return { label: `${used}/${max} · EXHAUSTED`, color: 'grey', tooltip: `Used ${used} of ${max} fires — auto-completed.`, expired: true };
+  }
+  let color = /** @type {'sky'|'amber'|'red'} */ ('sky');
+  if (remaining === 1)           color = 'red';
+  else if (used / max >= 0.5)    color = 'amber';
+  return { label: `${used}/${max} fires`, color, tooltip: `${remaining} of ${max} fires remaining.`, expired: false };
+}
+
+/** @param {any} agent @param {boolean} isCompleted */
+function _untilDateChip(agent, isCompleted) {
+  const expiresAt = agent.lifespan_expires_at;
+  if (!expiresAt) {
+    return { label: 'Until (no date)', color: 'grey', tooltip: 'until_date agent missing lifespan_expires_at — would never expire.', expired: false };
+  }
+  const exp = new Date(expiresAt);
+  const msLeft = exp.getTime() - Date.now();
+  const daysLeft = Math.ceil(msLeft / 86_400_000);
+  const dateStr = exp.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata' });
+  if (isCompleted || msLeft <= 0) {
+    return { label: `EXPIRED ${dateStr}`, color: 'red', tooltip: `Expired on ${exp.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata' })} IST.`, expired: true };
+  }
+  let color = /** @type {'sky'|'amber'|'red'} */ ('sky');
+  if (daysLeft <= 1)         color = 'red';
+  else if (daysLeft <= 7)    color = 'amber';
+  return {
+    label: `Until ${dateStr} · ${daysLeft}d`,
+    color,
+    tooltip: `Expires on ${exp.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata' })} IST (in ${daysLeft} day${daysLeft === 1 ? '' : 's'}).`,
+    expired: false,
+  };
+}
+
 export function lifespanChip(agent) {
   if (!agent) return null;
   const t = agent.lifespan_type;
   if (!t || t === 'persistent') return null;
   const isCompleted = agent.status === 'completed';
-
-  if (t === 'one_shot') {
-    if (isCompleted) {
-      return {
-        label: '1-shot · DONE',
-        color: 'grey',
-        tooltip: 'One-shot agent has fired and auto-completed.',
-        expired: true,
-      };
-    }
-    return {
-      label: '1-shot',
-      color: 'sky',
-      tooltip: 'Fires once and auto-completes.',
-      expired: false,
-    };
-  }
-
-  if (t === 'n_fires') {
-    const max = Number(agent.lifespan_max_fires) || 0;
-    const used = Number(agent.trigger_count) || 0;
-    const remaining = Math.max(0, max - used);
-    if (isCompleted || remaining === 0) {
-      return {
-        label: `${used}/${max} · EXHAUSTED`,
-        color: 'grey',
-        tooltip: `Used ${used} of ${max} fires — auto-completed.`,
-        expired: true,
-      };
-    }
-    let color = /** @type {'sky'|'amber'|'red'} */ ('sky');
-    if (remaining === 1)             color = 'red';
-    else if (used / max >= 0.5)      color = 'amber';
-    return {
-      label: `${used}/${max} fires`,
-      color,
-      tooltip: `${remaining} of ${max} fires remaining.`,
-      expired: false,
-    };
-  }
-
-  if (t === 'until_date') {
-    const expiresAt = agent.lifespan_expires_at;
-    if (!expiresAt) {
-      return {
-        label: 'Until (no date)',
-        color: 'grey',
-        tooltip: 'until_date agent missing lifespan_expires_at — would never expire.',
-        expired: false,
-      };
-    }
-    const exp = new Date(expiresAt);
-    const now = new Date();
-    const msLeft = exp.getTime() - now.getTime();
-    const daysLeft = Math.ceil(msLeft / 86_400_000);
-    const dateStr = exp.toLocaleDateString('en-GB', {
-      day: '2-digit', month: 'short', timeZone: 'Asia/Kolkata',
-    });
-    if (isCompleted || msLeft <= 0) {
-      return {
-        label: `EXPIRED ${dateStr}`,
-        color: 'red',
-        tooltip: `Expired on ${exp.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata' })} IST.`,
-        expired: true,
-      };
-    }
-    let color = /** @type {'sky'|'amber'|'red'} */ ('sky');
-    if (daysLeft <= 1)               color = 'red';
-    else if (daysLeft <= 7)          color = 'amber';
-    return {
-      label: `Until ${dateStr} · ${daysLeft}d`,
-      color,
-      tooltip: `Expires on ${exp.toLocaleString('en-GB', { timeZone: 'Asia/Kolkata' })} IST (in ${daysLeft} day${daysLeft === 1 ? '' : 's'}).`,
-      expired: false,
-    };
-  }
-
+  if (t === 'one_shot')   return _oneShotChip(isCompleted);
+  if (t === 'n_fires')    return _nFiresChip(agent, isCompleted);
+  if (t === 'until_date') return _untilDateChip(agent, isCompleted);
   return null;
 }
 

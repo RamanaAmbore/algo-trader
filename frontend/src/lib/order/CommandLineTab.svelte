@@ -238,6 +238,81 @@
     }
   }
 
+  /**
+   * Build a basket leg object from a validated order payload.
+   * @param {any} payload - result of buildOrderPayload
+   * @param {any} inst - instrument record from getInstrument
+   * @param {number} lot - lot size
+   * @param {string} sym - uppercase tradingsymbol
+   * @returns {any} basket leg
+   */
+  function _buildOrderLeg(payload, inst, lot, sym) {
+    const hasPrice = payload.price > 0;
+    return {
+      key:      `cmd|${payload.transaction_type}|${sym}|${Date.now()}`,
+      side:     /** @type {'BUY'|'SELL'} */ (payload.transaction_type),
+      sym,
+      exchange: payload.exchange || inst?.e || 'NFO',
+      account:  String(payload.account || prefillAccount || ''),
+      lots:     Math.max(1, lot > 0 ? Math.round((Number(payload.quantity) || lot) / lot) : 1),
+      lotSize:  lot,
+      product:  payload.product || 'NRML',
+      limit:    hasPrice ? Number(payload.price) : 0,
+      chaseAgg: /** @type {'low'|'med'|'high'} */ ('low'),
+    };
+  }
+
+  /**
+   * Place a single order via the ticket API and record the result.
+   * Reads executionMode from the store; computes LOTS for F&O.
+   * @param {any} payload - result of buildOrderPayload
+   * @param {any} inst - instrument record from getInstrument
+   * @param {number} lot - lot size
+   * @param {string} sym - uppercase tradingsymbol
+   * @param {string} raw - raw command string for history
+   */
+  async function _submitPlaceOrder(payload, inst, lot, sym, raw) {
+    try {
+      // Read the executionMode store so command-line submits
+      // route through the operator's active mode (paper / live /
+      // shadow / sim / replay) instead of a hardcoded 'live'.
+      // Defaults to 'paper' if the store hasn't been hydrated.
+      // Backend still enforces is_prod_branch() + paper_trading_
+      // mode gates even when the frontend asks for 'live'.
+      const _mode = /** @type {'paper'|'live'|'shadow'|'sim'|'replay'} */ (getStore(executionMode) || 'paper');
+      // v2 API (2026-07-08): send LOTS for F&O, raw shares for equity.
+      // buildOrderPayload internally multiplies lots×lot_size to produce
+      // `payload.quantity` (contracts) — for the F&O submit we reverse
+      // that so ticket receives lots.
+      const _isFO = lot > 1;
+      const _requestQty = _isFO
+        ? Math.max(1, Math.round(Number(payload.quantity) / lot))
+        : (Number(payload.quantity) || 0);
+      const resp = await placeTicketOrder({
+        mode:             _mode,
+        side:             payload.transaction_type,
+        tradingsymbol:    sym,
+        exchange:         payload.exchange || inst?.e || 'NFO',
+        quantity:         _requestQty,
+        lot_size_hint:    lot > 0 ? lot : null,
+        product:          payload.product,
+        order_type:       payload.order_type || 'LIMIT',
+        variety:          payload.variety || 'regular',
+        validity:         'DAY',
+        price:            payload.price > 0 ? payload.price : null,
+        trigger_price:    payload.trigger_price > 0 ? payload.trigger_price : null,
+        account:          String(payload.account || ''),
+      });
+      const oid = resp?.order_id || resp?.id || '';
+      addResult(
+        raw,
+        `✓ ${payload.transaction_type} ${payload.quantity} ${formatSymbol(sym)} placed${oid ? ' · #' + oid : ''}`,
+      );
+    } catch (e) {
+      addResult(raw, `✗ ${/** @type {any} */ (e)?.message || 'place failed'}`);
+    }
+  }
+
   // onsubmit fires only when the grammar validates cleanly (buy/sell/cancel/modify).
   async function runParsed(parsed) {
     running = true;
@@ -246,87 +321,33 @@
       const verb = parsed.verb || '';
 
       // Order command — build props and route
-      if (verb === 'buy' || verb === 'sell') {
-        const payload = buildOrderPayload(parsed);
-        if (!payload) throw new Error(`couldn't build order payload`);
-        const sym  = String(payload.tradingsymbol || '').toUpperCase();
-        const inst = getInstrument(sym);
-        const lot  = Number(inst?.ls || 1);
+      if (verb !== 'buy' && verb !== 'sell') return;
+      const payload = buildOrderPayload(parsed);
+      if (!payload) throw new Error(`couldn't build order payload`);
+      const sym  = String(payload.tradingsymbol || '').toUpperCase();
+      const inst = getInstrument(sym);
+      const lot  = Number(inst?.ls || 1);
 
-        // Basket intent: add a leg directly without switching tabs.
-        if (_intent === 'basket' && onAddToBasket) {
-          _intent = 'place';   // reset for next submit
-          const hasPrice = payload.price > 0;
-          const leg = {
-            key:      `cmd|${payload.transaction_type}|${sym}|${Date.now()}`,
-            side:     /** @type {'BUY'|'SELL'} */ (payload.transaction_type),
-            sym,
-            exchange: payload.exchange || inst?.e || 'NFO',
-            account:  String(payload.account || prefillAccount || ''),
-            lots:     Math.max(1, lot > 0 ? Math.round((Number(payload.quantity) || lot) / lot) : 1),
-            lotSize:  lot,
-            product:  payload.product || 'NRML',
-            limit:    hasPrice ? Number(payload.price) : 0,
-            chaseAgg: /** @type {'low'|'med'|'high'} */ ('low'),
-          };
-          addResult(raw, `Added to basket: ${leg.side} ${leg.lots * leg.lotSize} ${formatSymbol(sym)}`);
-          cmdBar?.clear(); cmdVerb = '';
-          running = false;
-          onAddToBasket(leg);
-          return;
-        }
-
-        // Place intent (Enter / Submit button) — fires the order
-        // directly via placeTicketOrder instead of opening the Ticket
-        // tab for review. Operator already typed everything explicitly;
-        // forcing a second confirmation slows the keyboard-first flow.
-        // The margin chip above the bar surfaces the impact BEFORE
-        // submit so the operator isn't flying blind.
-        try {
-          // Read the executionMode store so command-line submits
-          // route through the operator's active mode (paper / live /
-          // shadow / sim / replay) instead of a hardcoded 'live'.
-          // Defaults to 'paper' if the store hasn't been hydrated.
-          // Backend still enforces is_prod_branch() + paper_trading_
-          // mode gates even when the frontend asks for 'live'.
-          const _mode = /** @type {'paper'|'live'|'shadow'|'sim'|'replay'} */ (getStore(executionMode) || 'paper');
-          // v2 API (2026-07-08): send LOTS for F&O, raw shares for
-          // equity. buildOrderPayload internally multiplies lots×
-          // lot_size to produce `payload.quantity` (contracts) — for
-          // the F&O submit we need to reverse that, so ticket receives
-          // lots.
-          const _isFO = lot > 1;
-          const _requestQty = _isFO
-            ? Math.max(1, Math.round(Number(payload.quantity) / lot))
-            : (Number(payload.quantity) || 0);
-          const resp = await placeTicketOrder({
-            mode:             _mode,
-            side:             payload.transaction_type,
-            tradingsymbol:    sym,
-            exchange:         payload.exchange || inst?.e || 'NFO',
-            quantity:         _requestQty,
-            lot_size_hint:    lot > 0 ? lot : null,
-            product:          payload.product,
-            order_type:       payload.order_type || 'LIMIT',
-            variety:          payload.variety || 'regular',
-            validity:         'DAY',
-            price:            payload.price > 0 ? payload.price : null,
-            trigger_price:    payload.trigger_price > 0 ? payload.trigger_price : null,
-            account:          String(payload.account || ''),
-          });
-          const oid = resp?.order_id || resp?.id || '';
-          addResult(
-            raw,
-            `✓ ${payload.transaction_type} ${payload.quantity} ${formatSymbol(sym)} placed${oid ? ' · #' + oid : ''}`,
-          );
-        } catch (e) {
-          addResult(raw, `✗ ${/** @type {any} */ (e)?.message || 'place failed'}`);
-        }
+      // Basket intent: add a leg directly without switching tabs.
+      if (_intent === 'basket' && onAddToBasket) {
+        _intent = 'place';   // reset for next submit
+        const leg = _buildOrderLeg(payload, inst, lot, sym);
+        addResult(raw, `Added to basket: ${leg.side} ${leg.lots * leg.lotSize} ${formatSymbol(sym)}`);
         cmdBar?.clear(); cmdVerb = '';
-        _marginPreview = null;
         running = false;
+        onAddToBasket(leg);
         return;
       }
+
+      // Place intent (Enter / Submit button) — fires the order
+      // directly via placeTicketOrder instead of opening the Ticket
+      // tab for review. Operator already typed everything explicitly;
+      // forcing a second confirmation slows the keyboard-first flow.
+      // The margin chip above the bar surfaces the impact BEFORE
+      // submit so the operator isn't flying blind.
+      await _submitPlaceOrder(payload, inst, lot, sym, raw);
+      cmdBar?.clear(); cmdVerb = '';
+      _marginPreview = null;
     } catch (e) {
       addResult(raw, /** @type {any} */ (e).message);
     } finally {
