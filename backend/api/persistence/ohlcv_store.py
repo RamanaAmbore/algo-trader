@@ -339,10 +339,23 @@ _MEM_CACHE: "OrderedDict[_MemKey, dict[str, OHLCVBar]]" = _ohlcv_store._mem_cach
 def _broker_fetch_sync(
     symbol: str, exchange: str, from_d: date, to_d: date,
 ) -> list[OHLCVBar]:
-    from backend.brokers.registry import get_market_data_broker
+    # Must use get_historical_brokers() (Kite-only), NOT get_market_data_broker().
+    # get_market_data_broker() may resolve to Dhan/Groww whose historical_data()
+    # returns [] by design — causing every daily bar fetch to silently return
+    # zero bars and leaving ohlcv_daily perpetually stale (incident 2026-07-11).
+    # Mirror the pattern already used by intraday_store._broker_fetch_sync().
+    from backend.brokers.registry import get_historical_brokers
     from backend.api.routes.quote import _get_today_token_map
 
-    broker = get_market_data_broker()
+    try:
+        brokers = get_historical_brokers() or []
+    except Exception:
+        brokers = []
+
+    broker = brokers[0] if brokers else None
+    if broker is None:
+        return []
+
     token_map = _get_today_token_map(broker)
 
     exch_order = [exchange] + [e for e in ("NSE", "NFO", "BSE", "BFO", "MCX", "CDS") if e != exchange]
@@ -356,7 +369,10 @@ def _broker_fetch_sync(
 
     from_dt = datetime(from_d.year, from_d.month, from_d.day)
     to_dt   = datetime(to_d.year, to_d.month, to_d.day, 23, 59, 59)
-    raw = broker.historical_data(token, from_dt, to_dt, "day") or []
+    try:
+        raw = broker.historical_data(token, from_dt, to_dt, "day") or []
+    except Exception:
+        return []
 
     bars: list[OHLCVBar] = []
     for r in raw:
