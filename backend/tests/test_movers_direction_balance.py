@@ -84,7 +84,7 @@ def test_get_movers_calls_combine_movers():
     """get_movers delegates the combine step to _combine_movers."""
     src = _wl_source()
     match = re.search(
-        r"async def get_movers\(self\).*?(?=\n    @|\nclass |\Z)",
+        r"async def get_movers\(self.*?\).*?(?=\n    @|\nclass |\Z)",
         src, re.DOTALL,
     )
     assert match, "get_movers not found in watchlist.py"
@@ -129,7 +129,7 @@ def test_old_single_abs_slice_removed_from_get_movers():
     """
     src = _wl_source()
     match = re.search(
-        r"async def get_movers\(self\).*?(?=\n    @|\nclass |\Z)",
+        r"async def get_movers\(self.*?\).*?(?=\n    @|\nclass |\Z)",
         src, re.DOTALL,
     )
     assert match, "get_movers not found"
