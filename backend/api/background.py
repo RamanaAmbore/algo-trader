@@ -2432,6 +2432,80 @@ async def _task_trail_stop() -> None:
             logger.debug(f"[TRAIL] poll iteration failed: {e}")
 
 
+def _oco_parse_entries(
+    rows: list,
+    json_loads: object,
+) -> tuple[dict, dict]:
+    """Group OCO rows by account and build the attached-entries map.
+
+    Returns:
+        rows_by_account: dict[account_str, list[row]]
+        attached_by_row: dict[row_id, list[dict]]
+    """
+    rows_by_account: dict[str, list] = {}
+    attached_by_row: dict[int, list] = {}
+    for row in rows:
+        try:
+            attached = json_loads(row.attached_gtts_json or "[]")  # type: ignore[operator]
+        except Exception:
+            continue
+        if not isinstance(attached, list):
+            continue
+        has_sibling = any(
+            isinstance(e, dict) and e.get("sibling_id")
+            for e in attached
+        )
+        if not has_sibling:
+            continue
+        acct = None
+        for e in attached:
+            if isinstance(e, dict) and e.get("sibling_id"):
+                acct = e.get("parent_account")
+                if acct:
+                    break
+        if not acct:
+            continue
+        rows_by_account.setdefault(acct, []).append(row)
+        attached_by_row[row.id] = attached
+    return rows_by_account, attached_by_row
+
+
+async def _oco_build_gtts_map(
+    accts: list[str],
+) -> dict[str, dict[str, dict]]:
+    """Fetch GTTs for all accounts in parallel; return id-keyed map per account."""
+    gtts_by_account: dict[str, dict[str, dict]] = {}
+    results = await asyncio.gather(*(_oco_fetch_account_gtts(a) for a in accts))
+    for acct, gtts in zip(accts, results):
+        if gtts is None:
+            continue
+        gtts_by_account[acct] = {
+            str(g.get("id") or g.get("gtt_id")): g
+            for g in (gtts or [])
+            if isinstance(g, dict)
+        }
+    return gtts_by_account
+
+
+async def _oco_flush_updates(
+    pending: list[tuple[int, str]],
+    async_session: object,
+    AlgoOrder: object,
+    update_stmt: object,
+) -> None:
+    """Batch-flush OCO JSON updates in one DB session."""
+    if not pending:
+        return
+    async with async_session() as s2:  # type: ignore[operator]
+        for _rid, _json_str in pending:
+            await s2.execute(
+                update_stmt(AlgoOrder)  # type: ignore[operator]
+                .where(AlgoOrder.id == _rid)  # type: ignore[union-attr]
+                .values(attached_gtts_json=_json_str)
+            )
+        await s2.commit()
+
+
 async def _oco_fetch_account_gtts(acct: str) -> Optional[list]:
     """Fetch GTTs for one account; returns None on any error."""
     from backend.brokers.registry import get_broker
@@ -2618,75 +2692,18 @@ async def _task_oco_pair_watcher() -> None:
         try:
             async with async_session() as s:
                 rows = (await s.execute(_stmt)).scalars().all()
-            # Same batch-flush rationale as _task_trail_stop: collect
-            # per-row updates into a list and flush in one session at
-            # the end of the cycle. Pre-fix the inner s2 session opens
-            # were N round-trips for N changed rows; OCO at 500 rows
-            # behaves the same way as trail-stop under burst load.
-            pending_oco_updates: list[tuple[int, str]] = []
-            # Group by account so we hit broker.get_gtts() once per
-            # account, not once per OCO entry.
-            rows_by_account: dict[str, list] = {}
-            attached_by_row: dict[int, list] = {}
-            for row in rows:
-                try:
-                    attached = _json.loads(row.attached_gtts_json or "[]")
-                except Exception:
-                    continue
-                if not isinstance(attached, list):
-                    continue
-                has_sibling = any(
-                    isinstance(e, dict) and e.get("sibling_id")
-                    for e in attached
-                )
-                if not has_sibling:
-                    continue
-                # Sibling-bearing entries always carry parent_account
-                # (the persistence step stamps it alongside sibling_id).
-                acct = None
-                for e in attached:
-                    if isinstance(e, dict) and e.get("sibling_id"):
-                        acct = e.get("parent_account")
-                        if acct:
-                            break
-                if not acct:
-                    continue
-                rows_by_account.setdefault(acct, []).append(row)
-                attached_by_row[row.id] = attached
+            rows_by_account, attached_by_row = _oco_parse_entries(rows, _json.loads)
             if not rows_by_account:
                 continue
-            # One broker.get_gtts() per account, fired in PARALLEL —
-            # pre-fix the for loop awaited each account's GTT fetch
-            # sequentially, costing ~300ms × N accounts on every OCO
-            # watcher tick. Now wall-time = max(per-account get_gtts).
-            gtts_by_account: dict[str, dict[str, dict]] = {}
-            _accts = list(rows_by_account.keys())
-            results = await asyncio.gather(*(_oco_fetch_account_gtts(a) for a in _accts))
-            for acct, gtts in zip(_accts, results):
-                if gtts is None:
-                    continue
-                gtts_by_account[acct] = {
-                    str(g.get("id") or g.get("gtt_id")): g
-                    for g in (gtts or [])
-                    if isinstance(g, dict)
-                }
-            # Walk each account's rows via the extracted helper.
+            gtts_by_account = await _oco_build_gtts_map(list(rows_by_account.keys()))
+            pending_oco_updates: list[tuple[int, str]] = []
             for acct, acct_rows in rows_by_account.items():
                 broker_gtts = gtts_by_account.get(acct, {})
                 updates = await _oco_process_account_entries(
                     acct, acct_rows, attached_by_row, broker_gtts
                 )
                 pending_oco_updates.extend(updates)
-            # Batch flush — one session, N UPDATE statements, one commit.
-            if pending_oco_updates:
-                async with async_session() as s2:
-                    for _rid, _json_str in pending_oco_updates:
-                        await s2.execute(
-                            _update(AlgoOrder)
-                            .where(AlgoOrder.id == _rid)
-                            .values(attached_gtts_json=_json_str)
-                        )
-                    await s2.commit()
+            await _oco_flush_updates(pending_oco_updates, async_session, AlgoOrder, _update)
         except Exception as e:
             logger.debug(f"[OCO-WATCH] poll iteration failed: {e}")
 
