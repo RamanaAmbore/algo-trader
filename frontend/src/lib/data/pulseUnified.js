@@ -228,6 +228,10 @@ export function mergeWatchlistRows(byKey, actLists, ctx) {
       row.volume     = snap?.volume         ?? row.volume     ?? null;
       row.oi         = snap?.oi             ?? row.oi         ?? null;
       fillSymbolMeta(row, sym, getInst);
+      // Propagate is_animating / price_source from the symbolStore
+      // snapshot (populated by publishWatchQuotes) so watchlist rows
+      // don't default to animating during closed hours.
+      if (snap) _propagateStaleAndSource(row, snap);
     }
   }
 }
@@ -502,6 +506,9 @@ export function mergeMoverRows(byKey, moverRows, includeMovers, includePos, incl
           row.src.m = true;
           row._mover_sticky     = m.sticky ?? row._mover_sticky     ?? false;
           row._mover_change_pct = liveChangePct ?? row._mover_change_pct ?? null;
+          // Propagate animation gate / price_source to non-mover-major
+          // rows that share this symbol (positions, holdings, watchlist).
+          _propagateStaleAndSource(row, m);
         }
       }
     }
@@ -527,6 +534,10 @@ export function mergeMoverRows(byKey, moverRows, includeMovers, includePos, incl
     if (m._moverGroups)    row._moverGroups    = m._moverGroups;
     if (m._moverGroup)     row._moverGroup     = m._moverGroup;
     if (m._moverDirection) row._moverDirection = m._moverDirection;
+    // Propagate is_animating / price_source from the movers API row so
+    // _isAnimating() returns false during closed hours (backend sets
+    // is_animating:false for persisted snapshots).
+    _propagateStaleAndSource(row, m);
   }
   // Strip Movers-major rows when showMovers is off.
   if (!includeMovers) {
