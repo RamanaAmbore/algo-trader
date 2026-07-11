@@ -12,7 +12,7 @@
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { cachedRead, cachedWrite, cachedDelete, TTL } from '$lib/data/persistentCache';
   import { getSnapshot, symbolStore, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
-  import { isNseOpen, isMcxOpen } from '$lib/marketHours';
+  import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { positionsStore, holdingsStore, fundsStore, publishPulseQuotes, bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
   import { expiryPnl } from '$lib/data/expiryPnl';
@@ -162,7 +162,7 @@
     _tickThrottleUnsub = symbolTickCount.subscribe(() => {
       if (_tickThrottleTimer) return;
       _tickThrottleTimer = setTimeout(() => {
-        _throttledTick++;
+        if (isMarketOpen()) _throttledTick++;
         _tickThrottleTimer = null;
       }, 250);
     });

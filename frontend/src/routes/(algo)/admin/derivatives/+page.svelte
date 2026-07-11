@@ -1616,7 +1616,7 @@
     _tickThrottleUnsub = symbolTickCount.subscribe(() => {
       if (_tickThrottleTimer) return;
       _tickThrottleTimer = setTimeout(() => {
-        _throttledTick++;
+        if (isMarketOpen()) _throttledTick++;
         _tickThrottleTimer = null;
       }, 250);
     });
