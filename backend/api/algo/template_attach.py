@@ -303,6 +303,35 @@ def _wing_symbol(parent_symbol: str, offset: int) -> Optional[str]:
     return f"{root}{expiry_token}{wing_strike}{opt}"
 
 
+def _wing_score_candidate(
+    q: dict,
+    target_premium: float,
+) -> Optional[tuple[float, int, float, float]]:
+    """Extract scoring fields from a single broker quote dict *q*.
+
+    Returns ``(ltp, oi, spread_pct, score)`` when the quote has a positive
+    LTP, or ``None`` when the quote is absent / zero (candidate skipped).
+
+    Score formula: ``abs(ltp − target) + (spread_pct / 100) × target``.
+    A lower score is better (closer premium, tighter spread).
+    ``spread_pct`` is ``0.0`` when depth data is absent so thin-book
+    options are not unfairly penalised.
+    """
+    ltp = float(q.get("last_price") or 0)
+    if ltp <= 0:
+        return None
+    oi = int(q.get("oi") or 0)
+    depth = q.get("depth") or {}
+    buys  = depth.get("buy") or []
+    sells = depth.get("sell") or []
+    bid = float(buys[0].get("price") if buys else 0) or 0
+    ask = float(sells[0].get("price") if sells else 0) or 0
+    spread_pct = ((ask - bid) / ltp * 100.0) if (ask > 0 and bid > 0) else 0.0
+    dist  = abs(ltp - target_premium)
+    score = dist + (spread_pct / 100.0) * target_premium
+    return ltp, oi, spread_pct, score
+
+
 def _wing_scan_candidates(
     candidates: list[dict],
     quote_data: dict,
@@ -339,19 +368,11 @@ def _wing_scan_candidates(
     for c in candidates:
         key = f"{c['exch']}:{c['ts']}"
         q = quote_data.get(key) or {}
-        ltp = float(q.get("last_price") or 0)
-        if ltp <= 0:
+        scored = _wing_score_candidate(q, target_premium)
+        if scored is None:
             continue
+        ltp, oi, spread_pct, score = scored
         scanned += 1
-        oi = int(q.get("oi") or 0)
-        depth = q.get("depth") or {}
-        buys = depth.get("buy") or []
-        sells = depth.get("sell") or []
-        bid = float(buys[0].get("price") if buys else 0) or 0
-        ask = float(sells[0].get("price") if sells else 0) or 0
-        spread_pct = ((ask - bid) / ltp * 100.0) if (ask > 0 and bid > 0) else 0.0
-        dist = abs(ltp - target_premium)
-        score = dist + (spread_pct / 100.0) * target_premium
         # Track best-overall (ignoring filters) for the fallback path.
         if score < fallback_score:
             fallback_score = score
