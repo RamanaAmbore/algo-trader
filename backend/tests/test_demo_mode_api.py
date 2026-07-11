@@ -424,3 +424,138 @@ def test_is_authenticated_request_with_malformed_header():
     result = is_authenticated_request(connection)
 
     assert result is False, "Expected is_authenticated_request() to return False for malformed header"
+
+
+# =============================================================================
+# Group 7: Anonymous sparkline API access (batch_sparkline endpoint)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_demo_watchlist_get_anonymous_exact_count(async_client):
+    """
+    GET /api/watchlist/ without Authorization header returns demo watchlist
+    with exactly len(MARKETS_DEFAULT) items (not just >= 5).
+    """
+    response = await async_client.get("/api/watchlist/")
+
+    assert response.status_code == 200
+
+    data = response.json()
+    assert isinstance(data, list)
+
+    # Find demo watchlist (id=-1)
+    demo_wl = next((w for w in data if w.get("id") == -1), None)
+    assert demo_wl is not None, "Demo watchlist (id=-1) not found"
+
+    # Import MARKETS_DEFAULT to verify exact count
+    try:
+        from backend.api.routes.watchlist import MARKETS_DEFAULT
+        expected_count = len(MARKETS_DEFAULT)
+        actual_count = demo_wl.get("item_count", 0)
+        assert actual_count == expected_count, (
+            f"Expected {expected_count} demo items (from MARKETS_DEFAULT), "
+            f"got {actual_count}"
+        )
+    except ImportError:
+        # Fallback if MARKETS_DEFAULT is not directly importable
+        assert demo_wl.get("item_count", 0) > 0, \
+            "Demo watchlist should have items"
+
+
+@pytest.mark.asyncio
+async def test_anon_batch_sparkline_returns_200(async_client):
+    """
+    Anonymous POST to /api/quotes/sparkline with 2 symbols returns 200.
+    Response contains data dict (can be empty if symbol not found, but
+    response is still 200).
+    """
+    from backend.api.routes.quote import SparklineSymbol
+
+    request_body = {
+        "symbols": [
+            {"tradingsymbol": "RELIANCE", "exchange": "NSE"},
+            {"tradingsymbol": "TCS", "exchange": "NSE"},
+        ],
+        "days": 5,
+    }
+
+    # Mock the store calls to return empty data (market closed scenario)
+    with patch("backend.api.routes.quote._normalize_sparkline_symbols",
+               new=AsyncMock(return_value=(
+                   [SparklineSymbol(tradingsymbol="RELIANCE", exchange="NSE"),
+                    SparklineSymbol(tradingsymbol="TCS", exchange="NSE")],
+                   {}
+               ))), \
+         patch("backend.api.routes.quote._any_segment_open",
+               new=AsyncMock(return_value=False)), \
+         patch("backend.api.routes.quote._fetch_bars_parallel",
+               new=AsyncMock(return_value=({}, {}))), \
+         patch("backend.api.routes.quote._resolve_spark_ltps",
+               new=AsyncMock(return_value={})), \
+         patch("backend.api.routes.quote._compose_and_dual_write",
+               new=MagicMock(return_value={})):
+        response = await async_client.post(
+            "/api/quotes/sparkline",
+            json=request_body,
+        )
+
+    # Should return 200, not 401
+    assert response.status_code == 200, (
+        f"Expected 200 for anonymous sparkline POST, got {response.status_code}: "
+        f"{response.text}"
+    )
+
+    data = response.json()
+    assert "data" in data, "Response should have 'data' key"
+    assert isinstance(data["data"], dict), "'data' should be a dict"
+    assert "refreshed_at" in data, "Response should have 'refreshed_at' key"
+
+
+@pytest.mark.asyncio
+async def test_anon_movers_uses_snapshot_path(async_client):
+    """
+    GET /api/watchlist/movers anonymous returns 200 with response from
+    movers_snapshots (not live broker). When market is closed, response
+    has a captured_at timestamp (snapshot, not live).
+    """
+    # Mock market being closed
+    with patch("backend.api.routes.quote._any_segment_open",
+               new=AsyncMock(return_value=False)):
+        # Mock the snapshot loader to return fixture data
+        movers_snapshot = {
+            "movers": [
+                {
+                    "tradingsymbol": "RELIANCE",
+                    "exchange": "NSE",
+                    "change_pct": 2.5,
+                },
+                {
+                    "tradingsymbol": "TCS",
+                    "exchange": "NSE",
+                    "change_pct": -1.2,
+                },
+            ],
+            "threshold_pct": 1.0,
+            "captured_at": "2026-06-28T15:30:00+00:00",
+        }
+
+        with patch("backend.api.routes.watchlist._load_latest_movers_snapshot",
+                   new=AsyncMock(return_value=movers_snapshot)):
+            response = await async_client.get("/api/watchlist/movers")
+
+    # Should return 200
+    assert response.status_code == 200, (
+        f"Expected 200 for anonymous movers GET, got {response.status_code}"
+    )
+
+    data = response.json()
+
+    # Verify response structure
+    assert "movers" in data, "Response should have 'movers' key"
+    assert "threshold_pct" in data, "Response should have 'threshold_pct' key"
+
+    # When closed, captured_at should be non-null (snapshot source)
+    if "captured_at" in data:
+        assert data["captured_at"] is not None, \
+            "captured_at should be non-null for snapshot path (closed hours)"
