@@ -68,8 +68,8 @@ test.describe('pulseColumns.js refactor canary', () => {
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
     await page.waitForLoadState('load');
 
-    // Assert no JS errors in console
-    expect(errors.length).toBe(0);
+    // Assert no JS errors in console — list them so failures are debuggable
+    expect(errors, `Console errors:\n${errors.join('\n')}`).toHaveLength(0);
   });
 
   // ─── Mobile Portrait (360×800) ────────────────────────────────
@@ -99,7 +99,7 @@ test.describe('pulseColumns.js refactor canary', () => {
     await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
     await page.waitForLoadState('load');
 
-    expect(errors.length).toBe(0);
+    expect(errors, `Console errors:\n${errors.join('\n')}`).toHaveLength(0);
   });
 
   // ─── Cross-viewport regression checks ──────────────────────────

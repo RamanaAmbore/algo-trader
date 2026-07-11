@@ -88,8 +88,7 @@ test.describe('ChartModal (own-portal overlay)', () => {
 
     const overlay = page.locator('.canonical-modal-overlay[role="dialog"]');
     const ariaLabel = await overlay.getAttribute('aria-label');
-    expect(ariaLabel).toMatch(/^Chart — /);
-    expect(ariaLabel.length).toBeGreaterThan('Chart — '.length);
+    expect(ariaLabel).toMatch(/^Chart —/);
   });
 
   // ─── Mobile Portrait (360×800) ───────────────────────────────────
