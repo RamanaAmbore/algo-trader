@@ -28,6 +28,7 @@
   import { get } from 'svelte/store';
   import OrderDepth from './OrderDepth.svelte';
   import ChaseAggPicker from './ChaseAggPicker.svelte';
+  import QtyInput from './QtyInput.svelte';
   import Select from '$lib/Select.svelte';
   import OrderKnobsRow from '$lib/order/OrderKnobsRow.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
@@ -597,11 +598,6 @@
       _lots = Math.max(1, Math.round(Math.abs(currentQty) / _lotSize));
     }
   });
-
-  function stepLots(/** @type {number} */ delta) {
-    _lots = Math.max(1, Math.floor((Number(_lots) || 1) + delta));
-    _lotsTouched = true;  // operator owns _lots from here
-  }
 
   /**
    * Reset the ticket form to safe defaults. Replaces the legacy Exit
@@ -2126,47 +2122,14 @@
          own row below when both showLimit AND showTrigger (SL). -->
     <div class="ot-row ot-lots-price-row">
       <div class="ot-label-block ot-lots-cell">
-        {#if _lotSize > 0 && !isEquity}
-          <label class="ot-label" for="ot-lots">Lots</label>
-          <div class="ot-lots-row">
-            <button type="button" class="ot-lots-step"
-                    onclick={() => stepLots(-1)}
-                    disabled={_lots <= 1 || _noSymbol}
-                    aria-label="Decrease lots">−</button>
-            <input id="ot-lots" type="number"
-                   class="ot-input ot-num ot-lots-input"
-                   step="1" min="1"
-                   bind:value={_lots}
-                   disabled={_noSymbol}
-                   oninput={() => { _lotsTouched = true; }}
-                   onblur={() => { _lots = Math.max(1, Number(_lots) || 1); }}
-                   aria-label="Lots" />
-            <button type="button" class="ot-lots-step"
-                    onclick={() => stepLots(1)}
-                    disabled={_noSymbol}
-                    aria-label="Increase lots">+</button>
-            <span class="ot-meta">× {_lotSize} = {_qty} qty</span>
-          </div>
-        {:else}
-          <label class="ot-label" for="ot-qty">Qty</label>
-          <div class="ot-lots-row">
-            <button type="button" class="ot-lots-step"
-                    onclick={() => { _qty = Math.max(1, (Number(_qty) || 1) - 1); }}
-                    disabled={!_qty || _qty <= 1 || _noSymbol}
-                    aria-label="Decrease qty">−</button>
-            <input id="ot-qty" type="number"
-                   class="ot-input ot-num ot-lots-input"
-                   step="1" min="1"
-                   bind:value={_qty}
-                   disabled={_noSymbol}
-                   onblur={() => { _qty = Math.max(1, Number(_qty) || 1); }}
-                   aria-label="Qty" />
-            <button type="button" class="ot-lots-step"
-                    onclick={() => { _qty = (Number(_qty) || 0) + 1; }}
-                    disabled={_noSymbol}
-                    aria-label="Increase qty">+</button>
-          </div>
-        {/if}
+        <QtyInput
+          bind:lots={_lots}
+          bind:qty={_qty}
+          lotSize={_lotSize}
+          {isEquity}
+          disabled={_noSymbol}
+          onTouch={() => { _lotsTouched = true; }}
+        />
       </div>
       {#if showLimit}
         <div class="ot-label-block ot-price-cell">
@@ -2681,11 +2644,6 @@
   }
   .ot-meta { font-size: var(--fs-md); color: var(--text-muted); }
 
-  /* [−] [1 ▼] [+] (× 50 = 50) — lots-driven Qty UI. Sits inline on
-     a single row; nowrap so the +/− and the dropdown can never
-     break onto two lines on narrow viewports. Height pinned to
-     1.7rem to match the .ot-side-toggle so the [−] N [+] glyphs
-     and the BUY/SELL pill share the same y-baseline + y-centre. */
   /* Lots + Limit row — 65 % / 35 % split with NO gap (operator:
      "lots and limit price should not have gap between them. if
      required expand both the elements to fill the gap"). Cells
@@ -2698,82 +2656,6 @@
   .ot-lots-cell:only-child { flex: 1 1 100%; }
   .ot-price-cell { flex: 0 0 35%; min-width: 0; }
   .ot-price-cell .ot-input { width: 100%; }
-
-  .ot-lots-row {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25rem;
-    flex-wrap: nowrap;
-    height: 1.7rem;
-  }
-  /* Editable [−][N][+] input — sits between the two stepper buttons.
-     Narrow but readable; same height as the steppers so the trio
-     reads as one control. */
-  .ot-lots-input {
-    width: 3.2rem;
-    height: 1.7rem;
-    text-align: center;
-    padding: 0 0.25rem;
-    -moz-appearance: textfield;
-    appearance: textfield;
-  }
-  .ot-lots-input::-webkit-outer-spin-button,
-  .ot-lots-input::-webkit-inner-spin-button {
-    -webkit-appearance: none;
-    appearance: none;
-    margin: 0;
-  }
-  .ot-lots-step {
-    width: 1.7rem;
-    height: 1.7rem;
-    padding: 0;
-    border-radius: 3px;
-    border: 1px solid rgba(251,191,36,0.45);
-    background: rgba(251,191,36,0.10);
-    color: var(--c-action);
-    font-family: monospace;
-    font-size: var(--fs-xl);
-    font-weight: 700;
-    line-height: 1;
-    cursor: pointer;
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    /* Rapid taps on iOS Safari otherwise get swallowed by the
-       double-tap-to-zoom gesture — manipulation lets every tap
-       through cleanly. user-select: none prevents accidental text
-       selection between fast taps. */
-    touch-action: manipulation;
-    -webkit-user-select: none;
-    user-select: none;
-  }
-  .ot-lots-step:hover:not(:disabled) {
-    background: var(--c-action-22);
-    border-color: rgba(251,191,36,0.75);
-  }
-  .ot-lots-step:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-  /* Lots count display — replaces the dropdown that spilled out of
-     the row on narrow viewports. Compact pill, amber + bold,
-     matching the chain picker's `.chain-quick-lots-val` style. */
-  .ot-lots-val {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 1.8rem;
-    padding: 0 0.35rem;
-    height: 1.4rem;
-    flex: 0 0 auto;
-    color: var(--c-action);
-    font-family: monospace;
-    font-weight: 700;
-    font-size: var(--fs-xl);
-    font-variant-numeric: tabular-nums;
-    text-align: center;
-  }
 
   .ot-input {
     width: 100%;
