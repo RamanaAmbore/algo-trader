@@ -2552,4 +2552,25 @@
       animation-timing-function: ease-out;
     }
   }
+
+  /* ── CardHeader theming — algo dark scheme ───────────────────────────
+     Matches the canonical .card-header-row / .mp-bucket-head idiom:
+     bare flex row, no bg, no border, no padding — only a gap between
+     items. Title typography follows .algo-card-title exactly (amber
+     #fbbf24, monospace, uppercase, 0.04em tracking, 700 weight, 0.6rem).
+     Timestamp uses the canonical muted secondary color. */
+  :global(body) {
+    --ch-bg: transparent;
+    --ch-border-bottom: none;
+    --ch-padding: 0;
+    --ch-gap: 0.4rem;
+    --ch-title-font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --ch-title-size: 0.6rem;
+    --ch-title-weight: 700;
+    --ch-title-color: #fbbf24;
+    --ch-title-letter-spacing: 0.04em;
+    --ch-title-transform: uppercase;
+    --ch-ts-size: 0.65rem;
+    --ch-ts-color: #7e97b8;
+  }
 </style>
