@@ -3,7 +3,7 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.1 — 2026-07-11  
+**Version**: 1.2 — 2026-07-11  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py`
 
@@ -21,7 +21,20 @@ and data sources. Code, tests, and documentation must stay in sync with this fil
 8. [Demo Mode Rules](#8-demo-mode-rules)
 9. [API Contract](#9-api-contract)
 10. [Test Coverage Map](#10-test-coverage-map)
-11. [Known Defects](#11-known-defects)
+11. [Pulse Unified Pipeline](#11-pulse-unified-pipeline)
+12. [Grid Buckets — Left Column](#12-grid-buckets--left-column)
+13. [Grid Buckets — Right Column](#13-grid-buckets--right-column)
+14. [Column Definitions](#14-column-definitions)
+15. [Row Grouping (postSortGroups)](#15-row-grouping-postsortrgroups)
+16. [LTP Tick Flash](#16-ltp-tick-flash)
+17. [Sparklines](#17-sparklines)
+18. [Symbol Context Menu](#18-symbol-context-menu)
+19. [Watchlist Management](#19-watchlist-management)
+20. [Account Multi-Select](#20-account-multi-select)
+21. [Persistent Cache Layer](#21-persistent-cache-layer)
+22. [Closed-Hours Snapshot Behavior](#22-closed-hours-snapshot-behavior)
+23. [CardControls Cluster](#23-cardcontrols-cluster)
+24. [Known Defects](#24-known-defects)
 
 ---
 
@@ -315,7 +328,510 @@ The system must recover from any single-tier failure without operator interventi
 
 ---
 
-## 11. Known Defects
+## 11. Pulse Unified Pipeline
+
+The `buildUnified()` compositor (in `pulseUnified.js`) merges positions, holdings, watchlist symbols, 
+option underlyings, and movers into a single row array. Every row carries account info, market data 
+(LTP, day P&L), and source badges so the same symbol never appears twice across different majors.
+
+**Pipeline stages** (in order):
+1. **Watchlist rows** — pinned + user-created lists → `major='pinned'` or `major='watchlist'`
+2. **Position rows** — live + intraday-closed; multi-account aggregate; day P&L recompute
+3. **Holding rows** — overnight + long-term; same account aggregation; cost basis tracking
+4. **Option-underlying anchors** — NFO/MCX/CDS roots; keyed by logical underlying name for Greeks
+5. **Mover rows** — top winners/losers; badges existing rows; standalone movers-major rows
+6. **Index tag pass** — watched indices (NIFTY 50 → NIFTY) retag `underlying` field for sort grouping
+7. **Finalize** — weighted averages, combined avg, day %, directional (position tint), account color
+8. **Sort** — major bucket → group order → localeCompare → tier → strike → CE before PE
+
+**Bucket sort order** (controls visible grouping):
+- Bucket 1 (pinned): indices + commodities + USDINR — always visible, operator-curated
+- Bucket 2 (watchlist): user-created lists; each is a separate tab in the UI
+- Bucket 3 (positions): live intraday + overnight positions; account-scoped via multi-select
+- Bucket 4 (holdings): long-term holdings; separate account-scoped filter
+- Bucket 5 (movers): daily top % movers (winners + losers); gated by market segment open state
+
+**Row shape** (unified rows dict):
+```
+{
+  key: "RELIANCE__pos",                    # unique key = symbol + major suffix
+  _majorGroup: "positions",                # pinned|watchlist|positions|holdings|movers
+  _majorOrder: 2,                          # numeric sort-order
+  tradingsymbol: "RELIANCE",               # uppercase NSE/NFO/MCX symbol
+  exchange: "NSE",                         # NSE|BSE|NFO|MCX|CDS|…
+  underlying: "RELIANCE",                  # for options; null for spot/cash
+  kind: "eq",                              # spot|eq|fut|opt
+  strike: null,                            # F&O option strike
+  opt_type: "CE" | "PE" | null,           # option type
+  expiry: "25JUL2026",                     # option/future expiry (Kite format)
+  src: {w: false, h: false, p: true, u: false, m: false},  # source badges (watchlist|holdings|positions|underlying|movers)
+  ltp: 2850.5,                             # latest price (SSE or polled)
+  close: 2847.0,                           # previous session close
+  open: 2842.0,                            # today's opening price
+  high: 2865.0, low: 2840.0,              # today's range
+  volume: 45_000_000,                      # intraday volume
+  oi: null,                                # open interest (F&O)
+  bid: 2850.25, ask: 2850.75,             # live bid/ask
+  change: 3.5,                             # ltp - close
+  change_pct: 0.123,                       # (ltp - close) / close × 100
+  day_pct: 0.123,                          # qty-weighted day % directional
+  qty_pos: 100,                            # net position quantity
+  qty_hold: 50,                            # holdings quantity
+  avg_pos: 2800.0,                         # position entry average
+  avg_hold: 2795.0,                        # holdings entry average
+  avg_combined: 2798.33,                   # weighted average (pos+hold)
+  pnl: 5250.0,                             # lifetime P&L
+  day_pnl: 150.0,                          # today's P&L
+  accounts: Set(["ZG0790", "ZJ6294"]),    # multi-account position (aggregated)
+  _acctColor: "#4f46e5",                   # display color for lead account
+  is_animating: true,                      # SSE live (false = snapshot)
+  price_source: "live",                    # live|snapshot_settled|snapshot_unsettled
+}
+```
+
+**Market-open gate** — LTP and day P&L depend on `isMarketOpen()`:
+- Open: live SSE tick + broker poll LTP used; day P&L via `livePositionDayPnl()` helper
+- Closed: `daily_book` snapshot LTP + zero day P&L (no intraday MTM)
+
+**Throttle** — `_throttledTick` 4 Hz (250ms) max; SSE ticks can fire 100/sec under load
+
+---
+
+## 12. Grid Buckets — Left Column
+
+Three distinct left-panel grids (Pinned, Watchlist, Movers Winners/Losers) share the same 
+column definitions but render different row subsets filtered from `unifiedRows`.
+
+**Pinned grid** (`gridPinned`):
+- Rows: `_majorGroup === 'pinned'` (operator-curated 23-symbol default for demo)
+- Tab: always shown; cannot be hidden or toggled off
+- Add/remove: pencil button (admin/designated only) opens inline editor
+- Watchlist-item link persisted to DB for future pin-set customization
+
+**Watchlist tabs** (dynamic):
+- One tab per activated watchlist + the "Pinned" pinned-list tab
+- Rows: symbols in the currently-active watchlist list (selected via tab click)
+- Show/hide: controlled via unified "Show" MultiSelect (`selectedShow` array)
+- Add symbol: inline SymbolSearchInput + type-picker → `addWatchlistItem()` → `activeListsStore` refresh
+- Remove: row × button (left-click to remove); confirmation guard for delete-list operations
+- Reorder: drag-and-drop or up/down buttons persisted to `watchlist_items.display_order`
+
+**Movers grid** (Winners / Losers tabs):
+- Rows: `_majorGroup === 'movers'` filtered by `_moverDirection === 'winners'` or `'losers'`
+- Source: `/api/watchlist/movers` endpoint; 30s TTL during open hours; persisted snapshot during closed
+- Headers show "Last updated: <time>" when `moversSnapshotAt` is non-null (closed-hours snapshot)
+- Sticky flag: some movers kept visible across refreshes (operator-marked in backend)
+- Segment-aware: NSE open → NSE equity movers; NSE closed + MCX open → MCX movers; both closed → NSE snapshot
+
+**Movers gate** (market-segment-aware):
+- State S1 (both open): NSE equity movers displayed
+- State S2 (MCX only): MCX commodity movers displayed
+- State S3 (both closed): NSE movers snapshot (from last S1 close)
+- State S4 (pre-open): NSE snapshot (from prior day)
+
+All left-grid columns use `mkLeftColDefs()`:
+- Symbol (168px, pinned left) — MCX/CDS virtual label (CRUDEOIL not CRUDEOIL26JUNFUT)
+- 5d sparkline (44px) — mini SVG price curve; blank if broker rate-limited
+- LTP (77px) — live SSE + tick-flash; snapshot frozen during closed hours
+- Day % (64px) — raw symbol change % (no qty weighting); directional (green/red)
+- Close (68px) — previous session EOD price (muted)
+- Open (68px) — today's opening price (muted)
+- Volume (58px) — intraday volume; compacted format (e.g. "45.6M")
+- OI (58px) — open interest for F&O; compacted
+
+---
+
+## 13. Grid Buckets — Right Column
+
+Two distinct right-panel grids (Positions, Holdings) show live account positions and holdings 
+with account-scoped filters and a pinned TOTAL row at bottom.
+
+**Positions grid** (`gridPositions`):
+- Rows: `_majorGroup === 'positions'` + `_includesPosAcct(account)` filter
+- Live: broker + SSE delta during market hours; `daily_book` snapshot when closed
+- Account filter: MultiSelect on `positionsAccounts` (empty = all); persisted to sessionStorage
+- TOTAL row: pinned bottom, shows sum of filtered positions + live F&O-only expiry value
+- Columns: Symbol (right-aligned account tint) · 5d · LTP · Avg · Day % · Close · P&L · P&L % · Day P&L · Qty · Lots · Account
+
+**Holdings grid** (`gridHoldings`):
+- Rows: `_majorGroup === 'holdings'` + `_includesHoldAcct(account)` filter
+- Source: broker holdings + daily_book snapshot; LTP never intraday-split
+- Account filter: separate MultiSelect on `holdingsAccounts`; persisted independently
+- TOTAL row: sum of filtered holdings (cost basis + current value)
+- Columns: Symbol (account tint) · 5d · LTP · Avg · Day % · Close · Day P&L · P&L % · P&L · Qty · Lots · Invested · Value · Account
+
+**Right-grid column order** (via `mkRightColDefs()`):
+- Symbol (168px, pinned) — account-tinted background (color per lead account)
+- 5d sparkline (44px)
+- LTP (77px) — SSE tick + vs-avg/vs-prev heat; snapshot-frozen when is_animating=false
+- Avg (68px) — weighted average entry (directional tint: long green, short red, flat gray)
+- Day P&L (78px) — today's profit/loss; tick-flash on poll cycles (300ms)
+- Day % (64px) — day P&L as % of yesterday's market value (close × qty)
+- Close (68px) — previous close (muted)
+- P&L (78px) — lifetime profit/loss; directional + tick-flash
+- P&L % (64px) — P&L as % of cost basis
+- Qty (56px) — net qty; aggregated across accounts; null hidden
+- Lots (52px) — qty in F&O lot units; via `lotsForRow()` helper
+- Invested (78px) — cost basis (avg × held qty) for holdings
+- Value (78px) — current value (LTP × held qty) for holdings
+- Account (86px) — lead account + "+N" for multi-account rows; STALE@HH:MM badge on circuit-breaker rows
+
+**Day P&L recompute** — via `livePositionDayPnl()` helper (shared with derivatives):
+- When market open: `(liveLtp − closePx) × qty + realisedToday`
+- When market closed: `baseDayPnlForPosition(row)` (broker day_change_val or lifetime pnl if missing)
+- MCX stale-ticker rescue: when broker LTP ≈ close_price (KiteTicker lag), use SSE live tick if available
+
+**TOTAL row** (pinned bottom):
+- Positions: sums all filtered position rows; F&O-only expiry value appended to P pill slot 3
+- Holdings: sums all filtered holdings; day P&L = sum of per-row holdings day change
+- Styling: amber background (22% opacity) + borders to distinguish from data rows
+- P&L %-cell formula: `day_pnl / (close × qty)` per symbol, market-value-weighted for TOTAL
+
+---
+
+## 14. Column Definitions
+
+Every ag-Grid column uses a factory function (e.g. `mkLtpCol`, `mkPrevCol`) that accepts 
+accessor functions for reactive state. Factories are called once at grid mount; closures capture 
+the accessors so cells see current $state values on every redraw (not stale bindings).
+
+**Value formatters** (pure, no leading +, no ₹ prefix, right-aligned for numerics):
+- `numFmt`: price-precision format (2 decimals); null → "—"
+- `aggFmtGrid`: compact format for large numbers (45.6M, 150K); null → "—"
+- `pctFmtGrid`: percentage with % suffix (12.45%); null → "—"
+- `qtyFmt`: quantity format (no decimals for whole shares); null → "—"
+- `fmtLots`: lot format (F&O contract units); null → "—"
+
+**Cell classes** (CSS for color + tick-flash):
+- `dirCls(value)` → `"cell-pos"` (v > 0 green), `"cell-neg"` (v < 0 red), `"cell-flat"` (v = 0 gray)
+- `mkPnlCellClass()` → base + directional + LTP-cascade + poll-diff tick-flash
+  - LTP-cascade takes precedence (tighter feedback loop)
+  - Poll-diff flash waits for broker cycle (slower, less distracting)
+- `mp-pnl-cell` — background tint (light green/red 10%)
+- `ltp-flash-up`, `ltp-flash-down` — directional pulse (350ms)
+- `ltp-vs-avg-up/down/flat` — heat encoding LTP vs entry average
+- `ltp-vs-prev-up/down/flat` — heat encoding LTP vs previous close
+- `ltp-snap` — static styling (no animation) when is_animating=false
+- `ltp-snap-unsettled` — dashed border for pre-settled snapshot rows
+
+**LTP cell resolution** (via `mkResolveCellLtp()`):
+- Priority: live SSE snapshot (`snap[sym]` when > 0) > polled ltp field > null
+- MCX commodity special case: check `quote_symbol` first (resolved contract key) before raw symbol
+- Returns null (renders "—") when no positive price available
+- Poll-time LTP has `ltp_ts=0` so SSE ticks always win despite later poll completion time
+
+**Lot display** (F&O only):
+- `lotsForRow(row)` → returns lot count when `row.kind === 'fut'` or `'opt'`; null for equity/cash
+- Underlying holdings on F&O underlyings use the underlying lot size (not contract)
+- `fmtLots()` formats cleanly (e.g. "2.5" for 2.5 lots) or "—" when null
+
+**CE/PE text color** (Sensibull convention):
+- Green for CE (call, bullish), Red for PE (put, bearish) when visible in symbol display
+- Implemented in symbol cell renderer via `mkSymColRight` / `mkSymColLeft`
+
+**Numeric header style** — `numericHdr` CSS class for right-aligned headers matching data cells
+
+---
+
+## 15. Row Grouping (postSortGroups)
+
+After ag-Grid's per-column sort, the component re-arranges rows so option contracts stay grouped 
+with their underlying (NIFTY + all NIFTY calls + all NIFTY puts in one contiguous block).
+
+**Algorithm**:
+1. Scan `unifiedRows` and identify every underlying (from `row.underlying` field)
+2. For each underlying, collect all CE/PE rows that reference it
+3. Within each group, preserve ag-Grid's sort order (already applied)
+4. Rows without an underlying (cash equity, indices) remain individually sorted
+5. Detached symbols (operator drag-to-separate) sort individually at end of bucket
+
+**Preserve order of** — ag-Grid's per-column sorts (Day P&L, P&L %, volume, etc.) apply BEFORE 
+regrouping; no re-sort happens inside groups. If the operator sorted by P&L descending, 
+the highest-P&L option contract remains highest within its underlying block.
+
+**Pinned-bottom rows** (TOTAL) — outside the sortable body; not affected by regrouping
+
+---
+
+## 16. LTP Tick Flash
+
+Directional 350ms pulse overlay on LTP and P&L cells when prices move. Two sources drive flashes 
+on different schedules:
+- **LTP cascade** (sub-second): SSE tick flashes via `symbolStore` updates; tight feedback loop
+- **Poll-diff** (every 5 s): broker fetch cycle detects change from prior poll; P&L columns flash
+
+**Implementation** (via `createTickFlash.svelte.js`):
+- `_ltpFlashUp` / `_ltpFlashDown`: Set of symbols with active upward/downward flash
+- Reassigned atomically each tick (not mutated in-place) so Svelte reactivity fires
+- Zero-guard: non-positive live values treated as "no live tick" (prevents phantom delta)
+- `_mpFlash` instance: tracks P&L per-symbol-per-field flashes (key = `"SYM:fieldname"`)
+- Threshold: 0.001 (epsilon) prevents false flashes on identical floats due to effect re-runs
+
+**Cell class application** (from `mkPnlCellClass`):
+```
+base classes (RA + dirCls + mp-pnl-cell)
+  + LTP-cascade class if symbol in _ltpFlashUp/_ltpFlashDown
+  + poll-diff flash class (tf-up / tf-down) otherwise
+```
+
+**Visual effect** — app.css defines:
+- `.ltp-flash-up` — green directional pulse (150ms ramp)
+- `.ltp-flash-down` — red directional pulse
+- `.tf-up` / `.tf-down` — subtle tick-flash (13% opacity, 300ms)
+
+---
+
+## 17. Sparklines
+
+5-day sparkline column (present on all six grids) shows intraday price curve as a tiny SVG. 
+Missing data falls back to flat line or blank.
+
+**Renderer** — SVG with linear scale; responsive to container width (44px fixed)
+- Missing data: blank cell (no visual feedback)
+- Single point: flat line (LTP-only during warm-up or broker-empty case)
+- Real curve: ≥2 points with variation
+
+**Fetch schedule**:
+- Startup + 00:30 IST + segment opens → `_task_sparkline_warm` backend task
+- Every 60 s during market hours → `_TICK_SPARK` frontend poller (mover symbols after refresh)
+- Every 5 min closed hours → `_stopClosedSparkPoll` failsafe poller
+- Chunked in 100-symbol batches via `fetchSparklines(pairs, 5)` from backend
+
+**Backend endpoint** — `GET /api/market/sparklines?symbols=...`:
+- Returns `{ data: { "RELIANCE": [2800, 2805, 2820, 2825, 2850], ... }, refreshed_at: "..." }`
+- Implements DB-first ladder (Section 5): ohlcv_daily → daily_book → broker historical → compose fallback
+- Reason field: `'live'` (today's intraday) · `'snapshot'` (EOD close) · `'ltp_only_flat_pad'` · `'single_point_pad'` · `'historical_fetch_fail'`
+
+**Grace-window rotation** (fix for mover churn):
+- When movers rotate every 30 s, new winners/losers get sparklines from prior tick + grace-window holdover
+- `_prevMoverSparkPairs` stashed before `loadMovers()` so pruning doesn't drop symbols mid-render
+- One-cycle grace period lets fast-moving symbols stay visible through rotation
+
+**Merge strategy** — `_mergeSparkSeries(cached, fresh)`:
+- Fresh non-array / empty → keep cached
+- Cached has variation (curve) + fresh is flat → keep cached (prefer real curve)
+- Fresh shorter than cached + fresh flat → keep cached
+- Otherwise → take fresh
+
+Rationale: broker rate-limited calls return `[ltp, ltp]` flat lines; prefer cached real curve 
+rather than flattening the chart on the poll after a rate-limit hit.
+
+**Ticker subscription DB backstop** — `_task_sparkline_warm` unions `daily_book` past 7 days 
+with live positions/holdings to ensure symbols survive conn_service restart or broker outage. 
+No gap in sparkline rendering when the connection recovers.
+
+---
+
+## 18. Symbol Context Menu
+
+Right-click on any grid row (symbol cell or data cell) opens a contextual menu anchored to the 
+click coordinates. Keyboard-dismissible (Esc key) and auto-closes on click-outside.
+
+**Available actions**:
+- **Open Chart** — opens `ChartModal.svelte` with the symbol pre-populated
+- **Open Ticket** — opens `SymbolPanel.svelte` (order entry) pre-filled with symbol + exchange
+- **Add to Watchlist** — SymbolSearchInput popup to pick a list; deduped against positions/holdings
+- **Remove from Watchlist** — removes the row's watchlist-item link (not from positions/holdings)
+- **Detach from Group** — unlinks the symbol from its underlying group (sorts individually)
+- **View Payoff** — derivatives-only; opens analytics overlay (Greeks + P&L curve)
+
+**Visibility gates**:
+- Remove/detach — hidden for movers (read-only, refreshed every 30 s)
+- Add to Watchlist — hidden for demo users (401 backend guard)
+- Symbol-specific — hidden when cell is TOTAL row or `_isTotal = true`
+
+**Deep-link actions**:
+- `openChartModal(symbol, exchange)` — chart module imported, bars pre-fetched
+- `openOrderTicketModal(prefill)` — prefill carries symbol + exchange + side hints
+- `openActivityModal(tab)` — activity surface opened to orders/execution log tab
+
+---
+
+## 19. Watchlist Management
+
+Watchlists are operator-created collections of symbols (indices, stocks, commodities, 
+options chains). Each list appears as a separate tab in the left panel. The Pinned list 
+is system-managed; all others are user-editable.
+
+**CRUD endpoints**:
+- `GET /api/watchlist/` — list all lists for the authenticated user
+- `POST /api/watchlist` → `{ name: string, is_default: boolean }` — create
+- `PATCH /api/watchlist/{id}` → `{ name, display_order }` — rename / reorder
+- `DELETE /api/watchlist/{id}` — delete list + all items
+- `POST /api/watchlist/{id}/items` → `{ tradingsymbol, exchange, alias? }` — add symbol
+- `DELETE /api/watchlist/{id}/items/{item_id}` — remove symbol
+
+**Display order**:
+- `lists[].display_order` INT; default 500
+- `watchlist_items[].display_order` INT within each list
+- Frontend sort via `sortAccountsBy(lists, $orderMap)` (same helper as broker accounts)
+- Persisted to DB; survives reload
+
+**Reorder UI** — drag-and-drop or up/down arrow buttons on rows; calls `PATCH /api/watchlist/{id}/items/{item_id}`
+
+**Add symbol flow**:
+1. Operator clicks + button or types `/` keyboard shortcut
+2. SymbolSearchInput autocompletes tradingsymbol via instruments cache
+3. Optional alias input (display name, persisted as `watchlist_items.alias`)
+4. Typeahead picks instrument → resolves exchange; direct-add defaults EQ → NSE
+5. Option picker (if underlying has chains) — expiry + strike selector before add
+6. `addWatchlistItem(listId, sym, exch, alias)` → refresh `activeListsStore`
+7. New row appears in target watchlist tab on grid
+
+**Watchlist cache** — `activeListsStore` (TTL.week); survives reload + deploy. Built from 
+`/api/watchlist/{id}` per-list fetch; deduped in `loadActive()` via `activeIds` Set. 
+Zero-LTP items rendered with sparkline baseline.
+
+**Real-time sync** — watchlist changes trigger `activeListsStore.load()` to repaint grid 
+(either `loadActive()` or explicit `activeListsStore.set([])`). TOTAL row recalculates.
+
+---
+
+## 20. Account Multi-Select
+
+Per-card independent account filters — operator can scope Positions to one account 
+(e.g. ZG####, intraday-only) while Holdings shows a different account (e.g. ZJ####, 
+long-term holds).
+
+**State variables**:
+- `positionsAccounts: string[]` — empty = all accounts; populated = only these accounts
+- `holdingsAccounts: string[]` — independent filter for holdings grid
+- Both persisted to sessionStorage per-browser
+
+**Options population** — `availableAccounts` derived from:
+- Broker accounts list (from connStatus store every 15 s)
+- Symbols from current pulsePositionsStore + pulseHoldingsStore rows
+- Masked for demo users (ZG#### / ZJ#### instead of real codes)
+- Sorted via `accountDisplayOrder` store (60s TTL cache from `/admin/brokers` priority field)
+
+**Filtering logic**:
+- `_includesPosAcct(acct)` → returns true if `positionsAccounts.length === 0` OR `acct in positionsAccounts`
+- `_includesHoldAcct(acct)` → same pattern for holdings
+- Applied at buildUnified input (scopes position/holding arrays BEFORE merge)
+
+**Funds strip scope** — UNION of both pickers (shows accounts from either card)
+
+**Prune on change** — `availableAccounts` changes trigger pruning stale selections 
+(defence-in-depth for role/mask-mode changes across sessions)
+
+---
+
+## 21. Persistent Cache Layer
+
+`persistentCache.js` three-tier in-memory + localStorage + fetcher pattern. 
+Survives page reload + deploy; critical for instant paint after hot deploy.
+
+**TTL buckets**:
+- `TTL.week` (7 days) — watchlists, sparklines, market data snapshots; closed-hours frozen state
+- `TTL.day` (24h) — past-N-day closes, static sparkline portion; resets at IST midnight
+- `TTL.hour` (1h) — watchlist OHLC reference; natural refresh cadence
+- `TTL.minute` (15m) — positions, holdings, funds; cache is only for instant paint
+- `TTL.short` (2m) — tighter window for live-ish data when freshness critical
+
+**Storage layers**:
+1. In-memory Map (instant ~0ms) — lost on nav; survives within-session navigation
+2. localStorage JSON (1-3ms read, JSON.parse cost) — survives reload + deploy + browser close
+3. Caller fetcher (source of truth) — runs in background, updates both tiers on success
+
+**Debounce on write** — 200ms per key; rapid successive writes coalesce into one fsync 
+(avoids jank on mobile Safari where localStorage writes block the event loop)
+
+**What pulse caches**:
+- `md.watchlist.{id}` — per-list items + quotes
+- `md.positions` — positions row data
+- `md.holdings` — holdings row data
+- `md.movers` — top winners/losers list
+- `md.sparklines` — per-symbol 5-day price curves
+- `md.symbolStore` (large blob) — every symbol's LTP + close + volume snapshot
+- `rbq.cache.pulse:groupOrder` — manual underlying-group sort overrides
+- `rbq.cache.pulse:detached` — symbols pulled out of their group
+
+**Cold-reload behavior** — grid paints instantly from cache; background fetcher updates 
+all tiers while the user reads the cached data. If cache is empty, fetcher runs 
+on first grid mount; latency is visible but not blocking.
+
+---
+
+## 22. Closed-Hours Snapshot Behavior
+
+When the market is closed, all grid data sources switch to `daily_book` snapshots 
+from the last market session. The `closed_hours_or_broker()` gate centralizes this decision.
+
+**Source tags returned by the gate**:
+- `'live'` — open hours, broker data real-time
+- `'snapshot'` — closed hours, from DB daily_book
+- `'snapshot-fallback'` — closed hours + broker fetch failed, using old snapshot
+- `'stale-live'` — market open but broker timed out; serving anti-flicker cache (≤120s old)
+
+**Rows carry frozen state**:
+- `is_animating = false` — suppresses tick-flash on snapshot rows
+- `price_source = 'snapshot_settled'` / `'snapshot_unsettled'` — visual hint via `ltp-snap` CSS
+- `as_of: "<ISO-8601 UTC>"` — timestamp for operator confirmation (shown in card headers)
+
+**Grid rendering**:
+- Snapshot rows render static prices (no green/red pulse, no animation)
+- Card header shows "as of HH:MM IST" when `as_of` is non-null
+- TOTAL rows recalculate from filtered rows (not persisted independently)
+
+**Movers during closed hours**:
+- Snapshot from last NSE close (persisted to `movers_snapshots` table)
+- Both winners and losers rows show; sorted by `peak_pct` rather than live `change_pct`
+- "Last updated: HH:MM" header shows snapshot timestamp
+
+**Holdings LTP behavior** — distinct from positions:
+- Holdings never intraday-split (no overnight_qty / day_buy/sell decomposition)
+- Closed hours use `daily_book.ltp` (same snapshot)
+- NOT frozen like positions (holdings don't carry intraday P&L concept)
+
+**StaleBanner component** — shown when grid data is stale:
+- Stale condition: circuit-breaker account has `last_fail > last_good`
+- Message: "Data may be stale — check connection health" with link to BrokerHealthBadge
+- Auto-dismisses when fresh data arrives
+
+---
+
+## 23. CardControls Cluster
+
+Unified toolbar appearing on every grid (Pinned, Positions, Holdings, Movers, etc.). 
+Buttons stack horizontally or wrap on mobile.
+
+**Button order** (left to right):
+1. Refresh — manual refresh for that card only (RefreshButton spinner)
+2. Search (magnifier) — opens symbol search popup + type/exchange pickers
+3. Download (arrow-down) — immediate CSV export of current filtered view
+4. Collapse (up-arrow) — hide card body, show header only; persisted per session
+5. Default Size — reset column widths + scroll position to defaults
+6. Fullscreen (expand) — maximize card; CSS `fs-card-on` class; card becomes viewport-height
+
+**Visibility rules**:
+- Refresh: only in fullscreen mode (or `refreshAlwaysVisible=true`)
+- Search: always visible (also via `/` keyboard shortcut)
+- Download: always visible for ag-Grid cards (hidden for chart/summary cards)
+- Collapse: always visible; `_effCol*` hidden state persisted to localStorage
+- Default Size: visible in fullscreen
+- Fullscreen: always visible
+
+**Fullscreen behavior**:
+- CSS class `fs-card-on` on `.mp-bucket-wrap` container
+- `--bucket-rows` CSS var drives grid `maxHeight` (viewport height − headers − padding)
+- Card scrolls independently; underlying grids still scroll
+- Esc key exits fullscreen
+
+**Search UI** (in SearchInput wrapper):
+- Symbol typeahead (instruments cache, ≥2 chars)
+- Exchange picker (NSE, NFO, MCX, CDS)
+- Add button fires `addToWatchlistDeduped()` (hidden for demo)
+- Type picker (EQ / FU / CE / PE) shown below typeahead
+
+**CSV export** (via ag-Grid export API):
+- File naming: `watchlist.csv`, `positions.csv`, `holdings.csv`, `winners.csv`, `losers.csv`
+- Content: current filtered + sorted rows (not the hidden ones)
+- Column header: checkbox + all visible column names
+- Format: comma-separated, UTF-8, RFC 4180 compatible
+
+---
+
+## 24. Known Defects
 
 See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1–D4 fixed in `b6e52b2a`).
 
@@ -332,3 +848,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 |---|---|
 | 2026-07-11 | v1.0 initial spec from codebase audit |
 | 2026-07-11 | v1.1 added DB-first policy (§5), snapshot preservation (§6), self-healing cycle (§7); BD1–BD4 + D1–D4 fixed |
+| 2026-07-11 | v1.2 added §11–24 comprehensive component + data-layer expansion (pulseUnified, buckets, columns, context menu, watchlist, account-select, cache, closed-hours, card controls) |
