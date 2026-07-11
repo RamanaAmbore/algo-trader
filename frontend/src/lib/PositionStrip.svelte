@@ -589,6 +589,104 @@
   //
   // Gated by _throttledTick (4 Hz) not per-SSE-tick to avoid scheduler
   // pressure; matches the same throttle already used by _liveDeltaByRow.
+
+  /** Returns true when the exchange is a derivative segment (not equity). */
+  function _isDerivativeExch(/** @type {string} */ exch) {
+    return ['NFO', 'MCX', 'CDS', 'BFO'].includes(exch);
+  }
+
+  /**
+   * Step 1: try the backend-stamped underlying_ltp (SSOT, always preferred).
+   * Step 2: symbolStore snapshot chain for resolved tradingsymbol / root / inst.u.
+   * Step 3: row-scan of positions + holdings for a matching last_price.
+   * Returns the spot price, or 0 when none found.
+   *
+   * @param {any} p - raw position row (for underlying_ltp)
+   * @param {string} root - underlying root name (e.g. "NIFTY", "GOLD")
+   * @param {any} inst - instrument record from instruments cache
+   * @param {any} resolved - result of resolveUnderlying()
+   * @param {any[]} posRows - positions array for row-scan fallback
+   * @param {any[]} holdRows - holdings array for row-scan fallback
+   * @returns {number}
+   */
+  function _resolveOptionSpot(p, root, inst, resolved, posRows, holdRows) {
+    // SSOT: backend stamps underlying_ltp on each option row (positions.py
+    // _enrich_positions Pass 3). Prefer this — it's what Greeks / IV used,
+    // and it's populated even during closed hours via LKG cache.
+    let spot = Number(p?.underlying_ltp || 0);
+    if (spot > 0) return spot;
+
+    // Fallback chain — demo/sim mode + legacy payloads without underlying_ltp.
+    // Same 4 steps as derivatives/+page.svelte:_rootSpot().
+    for (const key of [resolved?.tradingsymbol, root, inst?.u].filter(Boolean)) {
+      const v = untrack(() => getSnapshot(String(key).toUpperCase())?.ltp);
+      if (typeof v === 'number' && v > 0) { spot = v; break; }
+    }
+    if (spot > 0) return spot;
+
+    // Row-scan fallback: check positions then holdings for a matching symbol.
+    const wantKey  = String(resolved?.tradingsymbol || root).toUpperCase();
+    const wantRoot = String(root).toUpperCase();
+    for (const src of [posRows, holdRows]) {
+      if (spot > 0) break;
+      for (const _row of (src ?? [])) {
+        const row = /** @type {any} */ (_row);
+        const rSym = String(row?.symbol || row?.tradingsymbol || '').toUpperCase();
+        if (!rSym) continue;
+        if (rSym === wantKey || rSym === wantRoot) {
+          const lp = Number(row?.last_price || 0);
+          if (lp > 0) { spot = lp; break; }
+        }
+      }
+    }
+    return spot;
+  }
+
+  /**
+   * Compute expiry P&L for one option leg.
+   * Returns the contribution (number) or null when spot cannot be resolved.
+   *
+   * @param {any} p - raw position row
+   * @param {string} sym - tradingsymbol (upper-cased)
+   * @param {number} qty - signed quantity
+   * @param {number} avg - average price
+   * @param {any[]} posRows - positions for spot row-scan fallback
+   * @param {any[]} holdRows - holdings for spot row-scan fallback
+   * @returns {number | null}
+   */
+  function _optionLegExpiryPnl(p, sym, qty, avg, posRows, holdRows) {
+    // Resolve underlying root — regex-first so cold instruments cache
+    // doesn't gate the compute.
+    const decomp = decomposeSymbol(sym);
+    const inst   = getInstrument(sym);
+    const root   = decomp.root || inst?.u || null;
+    if (!root) return null;
+
+    const resolved = resolveUnderlying(root, findNearestFuture);
+    const spot = _resolveOptionSpot(p, root, inst, resolved, posRows, holdRows);
+    if (!(spot > 0)) return null;
+
+    // SHARED SSOT — same helper the derivatives page uses.
+    return expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'opt' }, spot);
+  }
+
+  /**
+   * Compute expiry P&L for one futures leg.
+   * Returns the contribution (number) or null when LTP is unavailable.
+   *
+   * @param {any} p - raw position row
+   * @param {string} sym - tradingsymbol (upper-cased)
+   * @param {number} qty - signed quantity
+   * @param {number} avg - average price
+   * @returns {number | null}
+   */
+  function _futureLegExpiryPnl(p, sym, qty, avg) {
+    // Future spot = its own LTP; use shared helper for parity.
+    const live = untrack(() => getSnapshot(sym)?.ltp) || Number(p?.last_price || 0);
+    if (!(live > 0)) return null;
+    return expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'fut' }, live);
+  }
+
   const _expiryProfit = $derived.by(() => {
     void _throttledTick;
     void _mktTick;
@@ -600,68 +698,19 @@
       if (!qty) continue;
       // Derivative exchanges only (exclude equity CNC holdings in positions)
       const exch = String(p?.exchange || '').toUpperCase();
-      if (!['NFO', 'MCX', 'CDS', 'BFO'].includes(exch)) continue;
+      if (!_isDerivativeExch(exch)) continue;
 
       const isCE  = sym.endsWith('CE');
       const isPE  = sym.endsWith('PE');
       const isFut = sym.endsWith('FUT') || (!isCE && !isPE && exch !== 'CDS');
 
+      let v = null;
       if (isCE || isPE) {
-        // Resolve the underlying root (regex-first so cold instruments cache
-        // doesn't gate the compute).
-        const decomp = decomposeSymbol(sym);
-        const inst   = getInstrument(sym);
-        const root   = decomp.root || inst?.u || null;
-        if (!root) continue;
-        // SSOT: backend now stamps underlying_ltp on the option row
-        // (positions.py _enrich_positions Pass 3). Operator 2026-07-01:
-        // "use ssot." Prefer this over any client-side chain; it's the
-        // exact spot the backend used for Greeks / IV, and it's populated
-        // even during closed hours (via LKG cache in broker.quote).
-        let spot = Number(p?.underlying_ltp || 0);
-        const resolved = resolveUnderlying(root, findNearestFuture);
-        if (!(spot > 0)) {
-          // Fallback chain — for demo/sim mode + legacy payloads without
-          // the underlying_ltp field. Same 4 steps as
-          // derivatives/+page.svelte:_rootSpot().
-          for (const key of [resolved?.tradingsymbol, root, inst?.u].filter(Boolean)) {
-            const v = untrack(() => getSnapshot(String(key).toUpperCase())?.ltp);
-            if (typeof v === 'number' && v > 0) { spot = v; break; }
-          }
-        }
-        if (!(spot > 0)) {
-          const wantKey  = String(resolved?.tradingsymbol || root).toUpperCase();
-          const wantRoot = String(root).toUpperCase();
-          for (const src of [positions, holdings]) {
-            if (spot > 0) break;
-            for (const _row of (src ?? [])) {
-              const row = /** @type {any} */ (_row);
-              const rSym = String(row?.symbol || row?.tradingsymbol || '').toUpperCase();
-              if (!rSym) continue;
-              if (rSym === wantKey || rSym === wantRoot) {
-                const lp = Number(row?.last_price || 0);
-                if (lp > 0) { spot = lp; break; }
-              }
-            }
-          }
-        }
-        if (!(spot > 0)) continue;
-        // SHARED SSOT — same helper the derivatives page uses.
-        const v = expiryPnl(
-          { symbol: sym, qty, avg_cost: avg, kind: 'opt' },
-          spot,
-        );
-        if (v != null) total += v;
+        v = _optionLegExpiryPnl(p, sym, qty, avg, positions, holdings);
       } else if (isFut) {
-        // Future — spot = its own LTP; use shared helper for parity.
-        const live = untrack(() => getSnapshot(sym)?.ltp) || Number(p?.last_price || 0);
-        if (!(live > 0)) continue;
-        const v = expiryPnl(
-          { symbol: sym, qty, avg_cost: avg, kind: 'fut' },
-          live,
-        );
-        if (v != null) total += v;
+        v = _futureLegExpiryPnl(p, sym, qty, avg);
       }
+      if (v != null) total += v;
     }
     return total;
   });
