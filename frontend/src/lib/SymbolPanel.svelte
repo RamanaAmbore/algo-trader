@@ -41,6 +41,7 @@
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
   import ChaseCard       from '$lib/order/ChaseCard.svelte';
+  import ChaseAggPicker  from '$lib/order/ChaseAggPicker.svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
@@ -50,6 +51,7 @@
   // attached per leg in submitBasket. Single source of truth so
   // CRUD on /automation/templates propagates here without a refresh.
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
+  import { appliesToFor as _appliesToFor } from '$lib/data/templateScope.js';
   // resolveUnderlying / findNearestFuture / resolveAnchorToTradeable
   // dynamically imported inside effects only — no static imports needed.
   import { loadAccounts, getDefaultAccount, recentSymbolStore, setRecentSymbol, setRecentAccount } from '$lib/data/accounts';
@@ -823,14 +825,6 @@
   // current direction. Returns 'sell_option' for SELL CE/PE legs (the
   // only scope that wants a protective wing), 'sell_any' / 'buy_any'
   // for the directional defaults, and 'both' as a no-op catch.
-  /** @param {string} sd @param {string} sym */
-  function _appliesToFor(sd, sym) {
-    if (sd === 'SELL' && /\d+(CE|PE)$/i.test(sym || '')) return 'sell_option';
-    if (sd === 'SELL') return 'sell_any';
-    if (sd === 'BUY'  && /\d+(CE|PE)$/i.test(sym || '')) return 'buy_option';
-    if (sd === 'BUY')  return 'buy_any';
-    return 'both';
-  }
   // Shell-level template parameter overrides. Editing these in the
   // "On fill" row updates them; OrderTicket binds them so its own
   // submit carries the values. Operator: "on fill selected, if there
@@ -1977,20 +1971,7 @@
              hides the whole row). -->
         {#if _chaseEnabled}
           <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
-          <div class="oes-common-chase-agg" role="group" aria-label="Chase aggressiveness">
-            <button type="button" class="oes-common-chase-agg-pill"
-                    class:on={_sharedChaseAgg === 'low'}
-                    title="Low — patient. Pegs to your own side; fills only if the market lifts it."
-                    onclick={() => _setSharedChaseAgg('low')}>L</button>
-            <button type="button" class="oes-common-chase-agg-pill"
-                    class:on={_sharedChaseAgg === 'med'}
-                    title="Medium — peg to midpoint of bid+ask."
-                    onclick={() => _setSharedChaseAgg('med')}>M</button>
-            <button type="button" class="oes-common-chase-agg-pill"
-                    class:on={_sharedChaseAgg === 'high'}
-                    title="High — urgent. Crosses the spread to take liquidity on the next tick."
-                    onclick={() => _setSharedChaseAgg('high')}>H</button>
-          </div>
+          <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
         {/if}
         {#if basketLegs.length > 0}
           <button type="button" class="oes-common-clear oes-common-clear-inline"
@@ -4610,30 +4591,6 @@
     letter-spacing: 0.06em;
   }
   .oes-common-chase-label.on { color: var(--c-action); }
-
-  .oes-common-chase-agg {
-    display: inline-flex;
-    border: 1px solid rgba(251,191,36,0.32);
-    border-radius: 3px;
-    overflow: hidden;
-  }
-  .oes-common-chase-agg-pill {
-    padding: 0.14rem 0.4rem;
-    background: transparent;
-    color: rgba(200,216,240,0.65);
-    border: 0;
-    border-right: 1px solid rgba(251,191,36,0.20);
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    font-weight: 700;
-    cursor: pointer;
-  }
-  .oes-common-chase-agg-pill:last-child { border-right: 0; }
-  .oes-common-chase-agg-pill:hover { color: var(--c-action); background: rgba(251,191,36,0.08); }
-  .oes-common-chase-agg-pill.on {
-    color: #0c1830;
-    background: var(--c-action);
-  }
 
   /* Margin strip — sits BELOW the action buttons. MARGIN · Avail ·
      After · (Short) cells in a horizontal row. After is colour-coded

@@ -59,6 +59,7 @@
     bollinger as calcBollinger, rsi as calcRsi,
     emaSignals, vwapSignals, bollingerSignals, rsiSignals, macdSignals,
   } from '$lib/chart/indicators.js';
+  import { smaPath, emaPath, vwapPath, bbPaths, rsiSeries, macdSeries } from '$lib/chart/paths.js';
   import {
     loadInstruments, findNearestFuture,
   } from '$lib/data/instruments';
@@ -1001,20 +1002,7 @@
     return out;
   });
 
-  function _smaPath(/** @type {number} */ window) {
-    if (!_bars.length || _bars.length < window) return '';
-    let d = '';
-    for (let i = window - 1; i < _bars.length; i++) {
-      let sum = 0;
-      for (let j = i - window + 1; j <= i; j++) sum += Number(_bars[j].close);
-      const avg = sum / window;
-      const t   = Date.parse(_bars[i].ts);
-      if (!Number.isFinite(t)) continue;
-      const x = _xOf(t), y = _yOf(avg);
-      d += (d === '' ? `M${x.toFixed(2)},${y.toFixed(2)}` : ` L${x.toFixed(2)},${y.toFixed(2)}`);
-    }
-    return d;
-  }
+  function _smaPath(/** @type {number} */ window) { return smaPath(_bars, window, _xOf, _yOf); }
   const _sma20Path = $derived(_showSma20 ? _smaPath(20) : '');
   const _sma50Path = $derived(_showSma50 ? _smaPath(50) : '');
 
@@ -1072,77 +1060,24 @@
   // ── EMA path helper ───────────────────────────────────────────────
   // Classic EMA: EMA_t = close_t × k + EMA_{t-1} × (1−k), k = 2/(N+1).
   // Seed is the SMA of the first N bars. Returns '' when not enough bars.
-  function _emaPath(/** @type {number} */ n) {
-    if (_bars.length < n) return '';
-    const k = 2 / (n + 1);
-    let ema = _bars.slice(0, n).reduce((s, b) => s + Number(b.close), 0) / n;
-    let d = '';
-    for (let i = n - 1; i < _bars.length; i++) {
-      if (i > n - 1) ema = Number(_bars[i].close) * k + ema * (1 - k);
-      const t = Date.parse(_bars[i].ts);
-      if (!Number.isFinite(t)) continue;
-      const x = _xOf(t), y = _yOf(ema);
-      d += (d ? ` L${x.toFixed(2)},${y.toFixed(2)}` : `M${x.toFixed(2)},${y.toFixed(2)}`);
-    }
-    return d;
-  }
+  function _emaPath(/** @type {number} */ n) { return emaPath(_bars, n, _xOf, _yOf); }
   const _ema20Path = $derived(_showEma20 ? _emaPath(20) : '');
   const _ema50Path = $derived(_showEma50 ? _emaPath(50) : '');
 
   // ── VWAP overlay ─────────────────────────────────────────────────
   // Volume-weighted average price from bar[0] to current bar (cumulative).
-  // Uses the pure calcVwap() from indicators.js. Plotted as a solid cyan
+  // Uses the pure vwapPath() from paths.js. Plotted as a solid cyan
   // line on the price panel — no separate sub-panel needed.
   const _vwapPath = $derived.by(() => {
     if (!_showVwap || !_bars.length) return '';
-    const series = calcVwap(_bars);
-    let d = '';
-    for (const pt of series) {
-      if (pt.value == null) continue;
-      const t = Date.parse(pt.ts);
-      if (!Number.isFinite(t)) continue;
-      const x = _xOf(t), y = _yOf(pt.value);
-      d += (d ? ` L${x.toFixed(2)},${y.toFixed(2)}` : `M${x.toFixed(2)},${y.toFixed(2)}`);
-    }
-    return d;
+    return vwapPath(_bars, _xOf, _yOf);
   });
 
   // ── Bollinger Bands (20-period, ±2σ) ─────────────────────────────
   // Returns mid / upper / lower path strings + a closed fill path.
   const _bbPaths = $derived.by(() => {
     if (!_showBb || _bars.length < 20) return { mid: '', upper: '', lower: '', fill: '' };
-    const N = 20, K = 2;
-    let mid = '', upper = '', lower = '';
-    /** @type {Array<{x:number,yU:number,yL:number}>} */
-    const ribbon = [];
-    for (let i = N - 1; i < _bars.length; i++) {
-      let sum = 0;
-      for (let j = i - N + 1; j <= i; j++) sum += Number(_bars[j].close);
-      const m = sum / N;
-      let v = 0;
-      for (let j = i - N + 1; j <= i; j++) {
-        const diff = Number(_bars[j].close) - m;
-        v += diff * diff;
-      }
-      const sd = Math.sqrt(v / N);
-      const u = m + K * sd, l = m - K * sd;
-      const t = Date.parse(_bars[i].ts);
-      if (!Number.isFinite(t)) continue;
-      const x = _xOf(t);
-      mid   += (mid   ? ` L${x.toFixed(2)},${_yOf(m).toFixed(2)}` : `M${x.toFixed(2)},${_yOf(m).toFixed(2)}`);
-      upper += (upper ? ` L${x.toFixed(2)},${_yOf(u).toFixed(2)}` : `M${x.toFixed(2)},${_yOf(u).toFixed(2)}`);
-      lower += (lower ? ` L${x.toFixed(2)},${_yOf(l).toFixed(2)}` : `M${x.toFixed(2)},${_yOf(l).toFixed(2)}`);
-      ribbon.push({ x, yU: _yOf(u), yL: _yOf(l) });
-    }
-    // Shaded fill — upper line forward, lower reversed, closed.
-    let fill = '';
-    if (ribbon.length) {
-      fill = `M${ribbon[0].x.toFixed(2)},${ribbon[0].yU.toFixed(2)}`;
-      for (let i = 1; i < ribbon.length; i++) fill += ` L${ribbon[i].x.toFixed(2)},${ribbon[i].yU.toFixed(2)}`;
-      for (let i = ribbon.length - 1; i >= 0; i--) fill += ` L${ribbon[i].x.toFixed(2)},${ribbon[i].yL.toFixed(2)}`;
-      fill += ' Z';
-    }
-    return { mid, upper, lower, fill };
+    return bbPaths(_bars, _xOf, _yOf);
   });
 
   // ── RSI 14 (Wilder's smoothed RSI) ───────────────────────────────
@@ -1151,37 +1086,16 @@
   const RSI_N = 14;
   const _rsiSeries = $derived.by(() => {
     if (!_showRsi || _bars.length < RSI_N + 1) return /** @type {Array<{ts:string,rsi:number}>} */ ([]);
-    /** @type {Array<{ts:string,rsi:number}>} */
-    const out = [];
-    let avgGain = 0, avgLoss = 0;
-    // Seed: first RSI_N changes
-    for (let i = 1; i <= RSI_N; i++) {
-      const ch = Number(_bars[i].close) - Number(_bars[i - 1].close);
-      if (ch >= 0) avgGain += ch; else avgLoss -= ch;
-    }
-    avgGain /= RSI_N; avgLoss /= RSI_N;
-    for (let i = RSI_N; i < _bars.length; i++) {
-      if (i > RSI_N) {
-        const ch = Number(_bars[i].close) - Number(_bars[i - 1].close);
-        const g = ch > 0 ? ch : 0;
-        const l = ch < 0 ? -ch : 0;
-        avgGain = (avgGain * (RSI_N - 1) + g) / RSI_N;
-        avgLoss = (avgLoss * (RSI_N - 1) + l) / RSI_N;
-      }
-      const rs  = avgLoss === 0 ? 100 : avgGain / avgLoss;
-      const rsi = 100 - (100 / (1 + rs));
-      out.push({ ts: _bars[i].ts, rsi });
-    }
-    return out;
+    return rsiSeries(_bars, RSI_N);
   });
 
   // ── MACD (12/26/9) ────────────────────────────────────────────────
   // Rendered in a separate sub-panel below RSI (when both active, MACD
-  // sits below RSI). Uses calcMacd() from indicators.js.
+  // sits below RSI). Uses macdSeries() from paths.js.
   const _macdSeries = $derived.by(() => {
     // Need at least 26+9+1 = 36 bars for signal to appear; check minimum
     if (!_showMacd || _bars.length < 27) return /** @type {Array<{ts:string,macd:number|null,signal:number|null,histogram:number|null}>} */ ([]);
-    return calcMacd(_bars, 12, 26, 9);
+    return macdSeries(_bars);
   });
 
   // ── Buy/sell signal markers ──────────────────────────────────────
