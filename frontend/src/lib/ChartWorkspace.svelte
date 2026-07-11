@@ -687,7 +687,11 @@
   }
 
   async function _loadHistorical(/** @type {boolean} */ force = false) {
-    if (!symbol) return;
+    if (!symbol) {
+      _histLoading = false;
+      chartStore.setLoading(false);
+      return;
+    }
     // Single-slot design: no cross-surface TTL cache.
     // chartStore.clearData() is called on every symbol change so old
     // bars never serve as a "fresh" hit for a new symbol.
@@ -1662,6 +1666,7 @@
     void symbol; void exchange;
     if (!_mounted) return;
     if (_firstSymEffect) { _firstSymEffect = false; return; }
+    if (!symbol) return;
     // Single-slot clear: wipe old symbol's bars from the store immediately
     // so no render frame sees stale data under the new symbol.
     // chartStore.clearData() sets ohlcv=null, loading=true, lastFetched=null.
