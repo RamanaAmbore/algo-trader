@@ -34,39 +34,43 @@
   }
 </script>
 
-{@const ch = Number(bar.close) - Number(bar.open)}
-{@const pct = Number(bar.open) ? (ch / Number(bar.open)) * 100 : 0}
-<div class="chart-tooltip" class:chart-tooltip-pinned={pinned}
-     style="left: {pxLeft}px; top: {pxTop}px;">
-  {#if pinned}
-    <button type="button" class="chart-tooltip-close"
-            aria-label="Close pinned popup"
-            title="Close (or click the chart again)"
-            onclick={(e) => { e.stopPropagation(); onClose(); }}>×</button>
-  {/if}
-  <div class="chart-tooltip-ts">{_fmtBarTs(bar.ts)}</div>
-  <div class="chart-tooltip-row">
-    <span class="chart-tooltip-label">O</span>
-    <span class="chart-tooltip-value">₹{priceFmt(bar.open)}</span>
-    <span class="chart-tooltip-label">H</span>
-    <span class="chart-tooltip-value">₹{priceFmt(bar.high)}</span>
-  </div>
-  <div class="chart-tooltip-row">
-    <span class="chart-tooltip-label">L</span>
-    <span class="chart-tooltip-value">₹{priceFmt(bar.low)}</span>
-    <span class="chart-tooltip-label">C</span>
-    <span class="chart-tooltip-value">₹{priceFmt(bar.close)}</span>
-  </div>
-  {#if bar.volume}
+{#snippet _renderTooltip()}
+  {@const ch = Number(bar.close) - Number(bar.open)}
+  {@const pct = Number(bar.open) ? (ch / Number(bar.open)) * 100 : 0}
+  <div class="chart-tooltip" class:chart-tooltip-pinned={pinned}
+       style="left: {pxLeft}px; top: {pxTop}px;">
+    {#if pinned}
+      <button type="button" class="chart-tooltip-close"
+              aria-label="Close pinned popup"
+              title="Close (or click the chart again)"
+              onclick={(e) => { e.stopPropagation(); onClose(); }}>×</button>
+    {/if}
+    <div class="chart-tooltip-ts">{_fmtBarTs(bar.ts)}</div>
     <div class="chart-tooltip-row">
-      <span class="chart-tooltip-label">Vol</span>
-      <span class="chart-tooltip-value">{Number(bar.volume).toLocaleString()}</span>
+      <span class="chart-tooltip-label">O</span>
+      <span class="chart-tooltip-value">₹{priceFmt(bar.open)}</span>
+      <span class="chart-tooltip-label">H</span>
+      <span class="chart-tooltip-value">₹{priceFmt(bar.high)}</span>
     </div>
-  {/if}
-  <div class="chart-tooltip-row">
-    <span class="chart-tooltip-label">Δ</span>
-    <span class="chart-tooltip-value" class:up={ch >= 0} class:down={ch < 0}>
-      {ch >= 0 ? '+' : ''}{ch.toFixed(2)} ({pct.toFixed(2)}%)
-    </span>
+    <div class="chart-tooltip-row">
+      <span class="chart-tooltip-label">L</span>
+      <span class="chart-tooltip-value">₹{priceFmt(bar.low)}</span>
+      <span class="chart-tooltip-label">C</span>
+      <span class="chart-tooltip-value">₹{priceFmt(bar.close)}</span>
+    </div>
+    {#if bar.volume}
+      <div class="chart-tooltip-row">
+        <span class="chart-tooltip-label">Vol</span>
+        <span class="chart-tooltip-value">{Number(bar.volume).toLocaleString()}</span>
+      </div>
+    {/if}
+    <div class="chart-tooltip-row">
+      <span class="chart-tooltip-label">Δ</span>
+      <span class="chart-tooltip-value" class:up={ch >= 0} class:down={ch < 0}>
+        {ch >= 0 ? '+' : ''}{ch.toFixed(2)} ({pct.toFixed(2)}%)
+      </span>
+    </div>
   </div>
-</div>
+{/snippet}
+
+{@render _renderTooltip()}
