@@ -207,7 +207,7 @@ async def test_mcx_virtual_root_resolved_in_snapshot_sparkline():
     bars = _make_bars(5)
     ohlcv_calls: list[tuple] = []
 
-    async def mock_get_daily(sym, exch, days, db_only=False):
+    async def mock_get_daily(sym, exch, from_d=None, to_d=None, db_only=False, bypass_cache=None):
         ohlcv_calls.append((sym, exch))
         # Only return bars for the resolved contract name
         if sym == "CRUDEOIL26JULFUT":
