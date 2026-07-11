@@ -2432,6 +2432,209 @@ async def _task_trail_stop() -> None:
             logger.debug(f"[TRAIL] poll iteration failed: {e}")
 
 
+def _oco_parse_entries(
+    rows: list,
+    json_loads: object,
+) -> tuple[dict, dict]:
+    """Group OCO rows by account and build the attached-entries map.
+
+    Returns:
+        rows_by_account: dict[account_str, list[row]]
+        attached_by_row: dict[row_id, list[dict]]
+    """
+    rows_by_account: dict[str, list] = {}
+    attached_by_row: dict[int, list] = {}
+    for row in rows:
+        try:
+            attached = json_loads(row.attached_gtts_json or "[]")  # type: ignore[operator]
+        except Exception:
+            continue
+        if not isinstance(attached, list):
+            continue
+        has_sibling = any(
+            isinstance(e, dict) and e.get("sibling_id")
+            for e in attached
+        )
+        if not has_sibling:
+            continue
+        acct = None
+        for e in attached:
+            if isinstance(e, dict) and e.get("sibling_id"):
+                acct = e.get("parent_account")
+                if acct:
+                    break
+        if not acct:
+            continue
+        rows_by_account.setdefault(acct, []).append(row)
+        attached_by_row[row.id] = attached
+    return rows_by_account, attached_by_row
+
+
+async def _oco_build_gtts_map(
+    accts: list[str],
+) -> dict[str, dict[str, dict]]:
+    """Fetch GTTs for all accounts in parallel; return id-keyed map per account."""
+    gtts_by_account: dict[str, dict[str, dict]] = {}
+    results = await asyncio.gather(*(_oco_fetch_account_gtts(a) for a in accts))
+    for acct, gtts in zip(accts, results):
+        if gtts is None:
+            continue
+        gtts_by_account[acct] = {
+            str(g.get("id") or g.get("gtt_id")): g
+            for g in (gtts or [])
+            if isinstance(g, dict)
+        }
+    return gtts_by_account
+
+
+async def _oco_flush_updates(
+    pending: list[tuple[int, str]],
+    async_session: object,
+    AlgoOrder: object,
+    update_stmt: object,
+) -> None:
+    """Batch-flush OCO JSON updates in one DB session."""
+    if not pending:
+        return
+    async with async_session() as s2:  # type: ignore[operator]
+        for _rid, _json_str in pending:
+            await s2.execute(
+                update_stmt(AlgoOrder)  # type: ignore[operator]
+                .where(AlgoOrder.id == _rid)  # type: ignore[union-attr]
+                .values(attached_gtts_json=_json_str)
+            )
+        await s2.commit()
+
+
+async def _oco_fetch_account_gtts(acct: str) -> Optional[list]:
+    """Fetch GTTs for one account; returns None on any error."""
+    from backend.brokers.registry import get_broker
+    try:
+        broker = get_broker(acct)
+    except Exception:
+        return None
+    try:
+        return await asyncio.to_thread(broker.get_gtts)
+    except Exception as e:
+        logger.debug(f"[OCO-WATCH] get_gtts failed for {acct}: {e}")
+        return None
+
+
+async def _oco_handle_settled_pair(
+    entry: dict,
+    by_id: dict,
+    row_id: int,
+    my_id: str,
+    sib_id: str,
+) -> None:
+    """Handle the both-settled case: log + optional Telegram + clear pointers."""
+    logger.warning(
+        f"[OCO-WATCH] row={row_id} both legs settled "
+        f"within one poll window (my={my_id} sib={sib_id}). "
+        f"Symbol={entry.get('parent_symbol', '?')} — "
+        f"verify no double-close at the broker."
+    )
+    try:
+        from backend.shared.helpers.utils import is_enabled
+        if is_enabled('telegram'):
+            from backend.shared.helpers.alert_utils import _send_telegram
+            await asyncio.to_thread(
+                _send_telegram,
+                f"⚠ OCO double-fire (emulated): "
+                f"{entry.get('parent_symbol', '?')} on "
+                f"{entry.get('parent_account', '?')} — "
+                f"both legs settled in one 15s poll "
+                f"window. Verify broker position; "
+                f"manual close may be needed.",
+            )
+    except Exception as _alert_err:
+        logger.debug(f"[OCO-WATCH] double-fire alert failed: {_alert_err}")
+    entry.pop("sibling_id", None)
+    sib_entry = by_id.get(sib_id)
+    if sib_entry:
+        sib_entry.pop("sibling_id", None)
+
+
+async def _oco_cancel_survivor(
+    entry: dict,
+    by_id: dict,
+    broker: object,
+    row_id: int,
+    my_id: str,
+    sib_id: str,
+) -> bool:
+    """Cancel the surviving sibling GTT; clears pointers on success. Returns changed flag."""
+    sib_entry = by_id.get(sib_id) or {}
+    sib_exchange = (
+        sib_entry.get("parent_exchange")
+        or entry.get("parent_exchange")
+        or "NFO"
+    )
+    try:
+        await asyncio.to_thread(broker.cancel_gtt, sib_id, exchange=sib_exchange)
+        logger.info(
+            f"[OCO-WATCH] row={row_id} cancelled survivor "
+            f"sibling={sib_id} (my id={my_id} fired)"
+        )
+        entry.pop("sibling_id", None)
+        if sib_entry:
+            sib_entry.pop("sibling_id", None)
+        return True
+    except Exception as e:
+        logger.warning(
+            f"[OCO-WATCH] row={row_id} cancel sibling "
+            f"{sib_id} failed: {e}"
+        )
+        return False
+
+
+async def _oco_process_account_entries(
+    acct: str,
+    acct_rows: list,
+    attached_by_row: dict,
+    broker_gtts: dict,
+) -> list[tuple[int, str]]:
+    """Process all OCO rows for one account; returns (row_id, json_str) update pairs."""
+    import json as _json
+    from backend.brokers.registry import get_broker
+
+    pending: list[tuple[int, str]] = []
+    try:
+        broker = get_broker(acct)
+    except Exception:
+        return pending
+
+    for row in acct_rows:
+        attached = attached_by_row.get(row.id) or []
+        changed = False
+        by_id: dict[str, dict] = {
+            str(e.get("id")): e
+            for e in attached
+            if isinstance(e, dict) and e.get("id")
+        }
+        for entry in attached:
+            if not (isinstance(entry, dict) and entry.get("sibling_id")):
+                continue
+            my_id  = str(entry.get("id") or "")
+            sib_id = str(entry.get("sibling_id") or "")
+            if not (my_id and sib_id):
+                continue
+            my_active  = my_id in broker_gtts
+            sib_active = sib_id in broker_gtts
+            if my_active or not sib_active:
+                if not my_active and not sib_active:
+                    await _oco_handle_settled_pair(entry, by_id, row.id, my_id, sib_id)
+                    changed = True
+                continue
+            # MY leg gone, sibling still alive → cancel it.
+            did_cancel = await _oco_cancel_survivor(entry, by_id, broker, row.id, my_id, sib_id)
+            if did_cancel:
+                changed = True
+        if changed:
+            pending.append((row.id, _json.dumps(attached)))
+    return pending
+
+
 async def _task_oco_pair_watcher() -> None:
     """OCO sibling-watcher for brokers without native OCO (Groww).
 
@@ -2457,7 +2660,6 @@ async def _task_oco_pair_watcher() -> None:
     """
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
-    from backend.brokers.registry import get_broker
     from backend.shared.helpers.settings import get_int
     from sqlalchemy import select as _sel, update as _update
     import json as _json
@@ -2490,184 +2692,18 @@ async def _task_oco_pair_watcher() -> None:
         try:
             async with async_session() as s:
                 rows = (await s.execute(_stmt)).scalars().all()
-            # Same batch-flush rationale as _task_trail_stop: collect
-            # per-row updates into a list and flush in one session at
-            # the end of the cycle. Pre-fix the inner s2 session opens
-            # were N round-trips for N changed rows; OCO at 500 rows
-            # behaves the same way as trail-stop under burst load.
-            pending_oco_updates: list[tuple[int, str]] = []
-            # Group by account so we hit broker.get_gtts() once per
-            # account, not once per OCO entry.
-            rows_by_account: dict[str, list] = {}
-            attached_by_row: dict[int, list] = {}
-            for row in rows:
-                try:
-                    attached = _json.loads(row.attached_gtts_json or "[]")
-                except Exception:
-                    continue
-                if not isinstance(attached, list):
-                    continue
-                has_sibling = any(
-                    isinstance(e, dict) and e.get("sibling_id")
-                    for e in attached
-                )
-                if not has_sibling:
-                    continue
-                # Sibling-bearing entries always carry parent_account
-                # (the persistence step stamps it alongside sibling_id).
-                acct = None
-                for e in attached:
-                    if isinstance(e, dict) and e.get("sibling_id"):
-                        acct = e.get("parent_account")
-                        if acct:
-                            break
-                if not acct:
-                    continue
-                rows_by_account.setdefault(acct, []).append(row)
-                attached_by_row[row.id] = attached
+            rows_by_account, attached_by_row = _oco_parse_entries(rows, _json.loads)
             if not rows_by_account:
                 continue
-            # One broker.get_gtts() per account, fired in PARALLEL —
-            # pre-fix the for loop awaited each account's GTT fetch
-            # sequentially, costing ~300ms × N accounts on every OCO
-            # watcher tick. Now wall-time = max(per-account get_gtts).
-            gtts_by_account: dict[str, dict[str, dict]] = {}
-            _accts = list(rows_by_account.keys())
-            async def _gtts_for(acct: str):
-                try:
-                    broker = get_broker(acct)
-                except Exception:
-                    return None
-                try:
-                    return await asyncio.to_thread(broker.get_gtts)
-                except Exception as e:
-                    logger.debug(f"[OCO-WATCH] get_gtts failed for {acct}: {e}")
-                    return None
-            results = await asyncio.gather(*(_gtts_for(a) for a in _accts))
-            for acct, gtts in zip(_accts, results):
-                if gtts is None:
-                    continue
-                gtts_by_account[acct] = {
-                    str(g.get("id") or g.get("gtt_id")): g
-                    for g in (gtts or [])
-                    if isinstance(g, dict)
-                }
-            # Walk each row, decide if a sibling needs cancelling.
+            gtts_by_account = await _oco_build_gtts_map(list(rows_by_account.keys()))
+            pending_oco_updates: list[tuple[int, str]] = []
             for acct, acct_rows in rows_by_account.items():
                 broker_gtts = gtts_by_account.get(acct, {})
-                try:
-                    broker = get_broker(acct)
-                except Exception:
-                    continue
-                for row in acct_rows:
-                    attached = attached_by_row.get(row.id) or []
-                    changed = False
-                    # Build a quick id→entry map so we can mark siblings
-                    # as cancelled in the same JSON blob.
-                    by_id: dict[str, dict] = {
-                        str(e.get("id")): e
-                        for e in attached
-                        if isinstance(e, dict) and e.get("id")
-                    }
-                    for entry in attached:
-                        if not (isinstance(entry, dict)
-                                and entry.get("sibling_id")):
-                            continue
-                        my_id  = str(entry.get("id") or "")
-                        sib_id = str(entry.get("sibling_id") or "")
-                        if not (my_id and sib_id):
-                            continue
-                        # If MY id is no longer active on the broker
-                        # (fired or already cancelled) AND my sibling
-                        # IS still active → cancel the sibling.
-                        my_active  = my_id in broker_gtts
-                        sib_active = sib_id in broker_gtts
-                        if my_active or not sib_active:
-                            # Either we're still waiting (both active)
-                            # or both already gone — nothing to do.
-                            if not my_active and not sib_active:
-                                # Both legs settled — clear sibling
-                                # pointer so we stop polling this row.
-                                # Audit fix (H-8) — when BOTH legs of
-                                # an emulated OCO settle within one
-                                # 15s poll window, the operator may
-                                # have double-closed the position (TP
-                                # fired AND SL fired before the pair
-                                # watcher could cancel the sibling).
-                                # Pre-fix this branch was silent. Now
-                                # log at WARNING level + fire a
-                                # Telegram alert so the operator can
-                                # verify and manually close any over-
-                                # exit. is_enabled('telegram') gates
-                                # the alert per the platform's notify
-                                # config.
-                                logger.warning(
-                                    f"[OCO-WATCH] row={row.id} both legs settled "
-                                    f"within one poll window (my={my_id} sib={sib_id}). "
-                                    f"Symbol={entry.get('parent_symbol', '?')} — "
-                                    f"verify no double-close at the broker."
-                                )
-                                try:
-                                    from backend.shared.helpers.utils import is_enabled
-                                    if is_enabled('telegram'):
-                                        from backend.shared.helpers.alert_utils import _send_telegram
-                                        await asyncio.to_thread(
-                                            _send_telegram,
-                                            f"⚠ OCO double-fire (emulated): "
-                                            f"{entry.get('parent_symbol', '?')} on "
-                                            f"{entry.get('parent_account', '?')} — "
-                                            f"both legs settled in one 15s poll "
-                                            f"window. Verify broker position; "
-                                            f"manual close may be needed.",
-                                        )
-                                except Exception as _alert_err:
-                                    logger.debug(
-                                        f"[OCO-WATCH] double-fire alert failed: {_alert_err}"
-                                    )
-                                entry.pop("sibling_id", None)
-                                sib_entry = by_id.get(sib_id)
-                                if sib_entry:
-                                    sib_entry.pop("sibling_id", None)
-                                changed = True
-                            continue
-                        # MY leg gone, sibling still alive → cancel it.
-                        sib_entry = by_id.get(sib_id) or {}
-                        sib_exchange = (
-                            sib_entry.get("parent_exchange")
-                            or entry.get("parent_exchange")
-                            or "NFO"
-                        )
-                        try:
-                            await asyncio.to_thread(
-                                broker.cancel_gtt, sib_id, exchange=sib_exchange
-                            )
-                            logger.info(
-                                f"[OCO-WATCH] row={row.id} cancelled survivor "
-                                f"sibling={sib_id} (my id={my_id} fired)"
-                            )
-                            # Drop sibling pointer on both ends — pair
-                            # is fully resolved.
-                            entry.pop("sibling_id", None)
-                            if sib_entry:
-                                sib_entry.pop("sibling_id", None)
-                            changed = True
-                        except Exception as e:
-                            logger.warning(
-                                f"[OCO-WATCH] row={row.id} cancel sibling "
-                                f"{sib_id} failed: {e}"
-                            )
-                    if changed:
-                        pending_oco_updates.append((row.id, _json.dumps(attached)))
-            # Batch flush — one session, N UPDATE statements, one commit.
-            if pending_oco_updates:
-                async with async_session() as s2:
-                    for _rid, _json_str in pending_oco_updates:
-                        await s2.execute(
-                            _update(AlgoOrder)
-                            .where(AlgoOrder.id == _rid)
-                            .values(attached_gtts_json=_json_str)
-                        )
-                    await s2.commit()
+                updates = await _oco_process_account_entries(
+                    acct, acct_rows, attached_by_row, broker_gtts
+                )
+                pending_oco_updates.extend(updates)
+            await _oco_flush_updates(pending_oco_updates, async_session, AlgoOrder, _update)
         except Exception as e:
             logger.debug(f"[OCO-WATCH] poll iteration failed: {e}")
 
@@ -3170,6 +3206,144 @@ _ticker_alert_state: dict = {
 }
 
 
+async def _watchdog_deferred_recycle() -> None:
+    """Execute HARD-mode deferred ticker recycle if the flag is pending."""
+    try:
+        from backend.api.persistence.runtime_state import consume_ticker_reset_pending
+        from backend.brokers.kite_ticker import get_ticker as _get_ticker
+        if consume_ticker_reset_pending():
+            try:
+                _get_ticker().recycle()
+                logger.info("ticker watchdog: ran deferred HARD-mode recycle")
+            except Exception as e:
+                logger.warning(f"ticker watchdog: deferred HARD-mode recycle failed: {e}")
+    except Exception as e:
+        logger.warning(f"ticker watchdog: pending-flag check failed: {e}")
+
+
+async def _watchdog_check_market_open(
+    holiday_cache: dict,
+    holiday_year_ref: list,
+    fetch_holidays: object,
+) -> bool:
+    """Refresh holiday cache if needed and return True if any segment is open."""
+    now = timestamp_indian().replace(tzinfo=None)
+    segments = _build_segments()
+    if holiday_year_ref[0] != now.year:
+        holiday_cache.clear()
+        holiday_year_ref[0] = now.year
+    for seg in segments:
+        exch = seg['holiday_exchange']
+        if exch not in holiday_cache:
+            try:
+                holiday_cache[exch] = await asyncio.to_thread(fetch_holidays, exch)  # type: ignore[operator]
+            except Exception:
+                holiday_cache[exch] = set()
+    return any(
+        is_market_open(
+            now,
+            holiday_cache.get(seg['holiday_exchange'], set()),
+            seg['hours_start'],
+            seg['hours_end'],
+            special_sessions=_fetch_special_sessions_safe(seg['holiday_exchange']),
+        )
+        for seg in segments
+    )
+
+
+async def _watchdog_handle_recovery(ticker: object, status: dict) -> None:
+    """Send a Telegram recovery alert when a previously-degraded ticker reconnects."""
+    from backend.shared.helpers.alert_utils import _send_telegram
+    from backend.shared.helpers.utils import is_enabled
+    _ticker_alert_state["alert_active"] = False
+    now_ts = _time.time()
+    duration_min = int((now_ts - _ticker_alert_state["incident_start"]) / 60)
+    branch = config.get("deploy_branch", "main")
+    branch_tag = f" [{branch}]" if branch != "main" else ""
+    ts = timestamp_display()
+    connected_acct = status.get("account", ticker.current_account() or "?")  # type: ignore[union-attr]
+    msg = (
+        f"TickerWatchdog{branch_tag} — recovered\n"
+        f"Ticker connected on {connected_acct}\n"
+        f"Duration of incident: {duration_min} min\n"
+        f"Time: {ts}"
+    )
+    logger.info(f"ticker watchdog: recovered on {connected_acct} after {duration_min} min")
+    if is_enabled("telegram"):
+        await asyncio.to_thread(_send_telegram, msg)
+
+
+def _watchdog_select_failover(
+    eligible: list,
+    current: Optional[str],
+    ticker: object,
+    failover_cooloff_s: float,
+) -> Optional[tuple[str, str, str]]:
+    """Return (acct, api_key, access_token) for the next eligible failover account, or None."""
+    for b in eligible:
+        acct = getattr(b, "account", "") or ""
+        if not acct or acct == current:
+            continue
+        if ticker.is_account_in_failover_cooloff(acct, failover_cooloff_s):  # type: ignore[union-attr]
+            continue
+        kc = getattr(b, "_conn", None) or getattr(b, "kite", None)
+        api_key = getattr(kc, "api_key", None)
+        access_token = (
+            getattr(kc, "_access_token", None)
+            or getattr(kc, "access_token", None)
+        )
+        if api_key and access_token:
+            return (acct, api_key, access_token)
+    return None
+
+
+async def _watchdog_alert_degraded(
+    ticker: object,
+    eligible: list,
+    current: Optional[str],
+    alert_refire_s: float,
+) -> None:
+    """Fire (or re-fire) the Telegram degraded alert when all accounts are blocked."""
+    from backend.shared.helpers.alert_utils import _send_telegram
+    from backend.shared.helpers.utils import is_enabled
+    now_ts = _time.time()
+    should_alert = (
+        not _ticker_alert_state["alert_active"]
+        or (now_ts - _ticker_alert_state["last_alerted_at"]) > alert_refire_s
+    )
+    if not should_alert:
+        return
+    if not _ticker_alert_state["alert_active"]:
+        _ticker_alert_state["alert_active"] = True
+        _ticker_alert_state["incident_start"] = now_ts
+    _ticker_alert_state["last_alerted_at"] = now_ts
+    branch = config.get("deploy_branch", "main")
+    branch_tag = f" [{branch}]" if branch != "main" else ""
+    ts = timestamp_display()
+    disconnected_s = ticker.seconds_since_disconnect()  # type: ignore[union-attr]
+    acct_list = ", ".join(
+        b_acct for b in eligible
+        if (b_acct := getattr(b, "account", "") or "")
+    ) or "?"
+    is_refire = _ticker_alert_state["last_alerted_at"] != _ticker_alert_state["incident_start"]
+    refire_note = " (re-alert)" if is_refire else ""
+    msg = (
+        f"TickerWatchdog{branch_tag} — degraded{refire_note}\n"
+        f"Both Kite accounts in failover cool-off.\n"
+        f"Disconnect: {current or '?'} → {acct_list} (all blocked)\n"
+        f"Sparkline degrading to broker.ltp() polling.\n"
+        f"Disconnected for: {disconnected_s:.0f}s\n"
+        f"Time: {ts}"
+    )
+    logger.warning(
+        f"ticker watchdog: no eligible failover account "
+        f"(current={current or '?'}, disconnected_s={disconnected_s:.0f}) — "
+        f"continuing to wait for primary to recover"
+    )
+    if is_enabled("telegram"):
+        await asyncio.to_thread(_send_telegram, msg)
+
+
 async def _task_ticker_watchdog(state: dict) -> None:
     CHECK_INTERVAL_S    = 30.0   # how often to poll ticker.status()
     # Raised from 60s in BG to absorb one full Twisted reconnect cycle.
@@ -3189,7 +3363,7 @@ async def _task_ticker_watchdog(state: dict) -> None:
     # Per-watchdog holiday cache keyed by year so off-hours gating doesn't
     # hammer nseindia.com every 30 s. Refreshes naturally at year rollover.
     _wd_holiday_cache: dict = {}
-    _wd_holiday_year: int | None = None
+    _wd_holiday_year_ref: list = [None]  # mutable container for year tracking
 
     # Cutover branch — when KiteTicker lives in conn_service, the WS
     # lifecycle is its job (conn_service has its own ticker_watchdog).
@@ -3208,70 +3382,14 @@ async def _task_ticker_watchdog(state: dict) -> None:
     while True:
         try:
             await asyncio.sleep(CHECK_INTERVAL_S)
-            # HARD-mode deferred recycle — runs BEFORE the dev-idle and
-            # market-hours gates so an operator who flips HARD overnight
-            # or from a sync context still gets the ticker rebuilt on
-            # the next watchdog tick. consume_ticker_reset_pending()
-            # atomically read-and-clears the flag, so two simultaneous
-            # watchdog ticks (impossible in practice) would still only
-            # fire one recycle.
-            try:
-                from backend.api.persistence.runtime_state import (
-                    consume_ticker_reset_pending,
-                )
-                if consume_ticker_reset_pending():
-                    from backend.brokers.kite_ticker import get_ticker
-                    try:
-                        get_ticker().recycle()
-                        logger.info("ticker watchdog: ran deferred HARD-mode recycle")
-                    except Exception as e:
-                        logger.warning(
-                            f"ticker watchdog: deferred HARD-mode recycle failed: {e}"
-                        )
-            except Exception as e:
-                logger.warning(f"ticker watchdog: pending-flag check failed: {e}")
-            # Dev-idle gate — skip ticker watchdog on dev when engine is
-            # idle. The ticker isn't started either (per app.py gate) so
-            # there's nothing to watch; this short-circuit prevents the
-            # alert state machine from misfiring when the operator
-            # toggles dev_active off mid-session.
+            await _watchdog_deferred_recycle()
+
             from backend.shared.helpers.utils import is_engine_idle
             if is_engine_idle():
                 continue
 
-            # Market-hours gate — when no segment is open (overnight,
-            # weekend, holiday) Kite drops the WebSocket as expected:
-            # there are no ticks to deliver. The watchdog has no useful
-            # work in that window. Alerting here was pure noise — the
-            # operator got "TickerWatchdog — degraded" pings at 3 AM
-            # because the WS legitimately closed at 23:30 IST after MCX
-            # session end. Clear any active incident silently on entry
-            # so the next session starts with a clean slate; we don't
-            # ping a recovery because there was no real recovery — the
-            # market just closed.
-            now = timestamp_indian().replace(tzinfo=None)
-            segments = _build_segments()
-            if _wd_holiday_year != now.year:
-                _wd_holiday_cache = {}
-                _wd_holiday_year = now.year
-            for seg in segments:
-                exch = seg['holiday_exchange']
-                if exch not in _wd_holiday_cache:
-                    try:
-                        _wd_holiday_cache[exch] = await asyncio.to_thread(
-                            fetch_holidays, exch
-                        )
-                    except Exception:
-                        _wd_holiday_cache[exch] = set()
-            any_open = any(
-                is_market_open(
-                    now,
-                    _wd_holiday_cache.get(seg['holiday_exchange'], set()),
-                    seg['hours_start'],
-                    seg['hours_end'],
-                    special_sessions=_fetch_special_sessions_safe(seg['holiday_exchange']),
-                )
-                for seg in segments
+            any_open = await _watchdog_check_market_open(
+                _wd_holiday_cache, _wd_holiday_year_ref, fetch_holidays
             )
             if not any_open:
                 if _ticker_alert_state["alert_active"]:
@@ -3288,107 +3406,25 @@ async def _task_ticker_watchdog(state: dict) -> None:
             if not status.get("started"):
                 continue
             if status.get("connected"):
-                # Ticker is healthy — clear any outstanding degraded incident.
                 if _ticker_alert_state["alert_active"]:
-                    from backend.shared.helpers.alert_utils import _send_telegram
-                    from backend.shared.helpers.utils import is_enabled
-                    _ticker_alert_state["alert_active"] = False
-                    now_ts = _time.time()
-                    duration_min = int(
-                        (now_ts - _ticker_alert_state["incident_start"]) / 60
-                    )
-                    branch = config.get("deploy_branch", "main")
-                    branch_tag = f" [{branch}]" if branch != "main" else ""
-                    ts = timestamp_display()
-                    connected_acct = status.get("account", ticker.current_account() or "?")
-                    msg = (
-                        f"TickerWatchdog{branch_tag} — recovered\n"
-                        f"Ticker connected on {connected_acct}\n"
-                        f"Duration of incident: {duration_min} min\n"
-                        f"Time: {ts}"
-                    )
-                    logger.info(
-                        f"ticker watchdog: recovered on {connected_acct} "
-                        f"after {duration_min} min"
-                    )
-                    if is_enabled("telegram"):
-                        await asyncio.to_thread(_send_telegram, msg)
+                    await _watchdog_handle_recovery(ticker, status)
                 continue  # healthy
             if ticker.seconds_since_disconnect() < FAILOVER_THRESHOLD_S:
                 continue  # within KiteTicker's own retry window
 
             # Disconnected for too long — find the next eligible account.
-            # get_historical_brokers() honours the historical_data_enabled
-            # flag in settings and the 30s rate-limit cool-off — exactly
-            # the gating the operator wanted ("if it is enabled for
-            # historical data in settings, we are good").
             try:
                 eligible = get_historical_brokers()
             except Exception as e:
                 logger.warning(f"ticker watchdog: eligible-broker lookup failed: {e}")
                 continue
             current = ticker.current_account()
-            next_kc = None
-            for b in eligible:
-                acct = getattr(b, "account", "") or ""
-                if not acct or acct == current:
-                    continue
-                if ticker.is_account_in_failover_cooloff(acct, FAILOVER_COOLOFF_S):
-                    continue
-                # Extract live api_key + access_token from the broker's
-                # underlying KiteConnection (same pattern app.py uses).
-                kc = getattr(b, "_conn", None) or getattr(b, "kite", None)
-                api_key = getattr(kc, "api_key", None)
-                access_token = (
-                    getattr(kc, "_access_token", None)
-                    or getattr(kc, "access_token", None)
-                )
-                if api_key and access_token:
-                    next_kc = (acct, api_key, access_token)
-                    break
+            next_kc = _watchdog_select_failover(
+                eligible, current, ticker, FAILOVER_COOLOFF_S
+            )
 
             if not next_kc:
-                # All accounts are in failover cool-off (or unavailable).
-                # Alert once on entry, then re-fire every 30 min while degraded.
-                from backend.shared.helpers.alert_utils import _send_telegram
-                from backend.shared.helpers.utils import is_enabled
-                now_ts = _time.time()
-                should_alert = (
-                    not _ticker_alert_state["alert_active"]
-                    or (now_ts - _ticker_alert_state["last_alerted_at"]) > ALERT_REFIRE_S
-                )
-                if should_alert:
-                    if not _ticker_alert_state["alert_active"]:
-                        # First entry into the incident.
-                        _ticker_alert_state["alert_active"] = True
-                        _ticker_alert_state["incident_start"] = now_ts
-                    _ticker_alert_state["last_alerted_at"] = now_ts
-
-                    branch = config.get("deploy_branch", "main")
-                    branch_tag = f" [{branch}]" if branch != "main" else ""
-                    ts = timestamp_display()
-                    disconnected_s = ticker.seconds_since_disconnect()
-                    acct_list = ", ".join(
-                        b_acct for b in eligible
-                        if (b_acct := getattr(b, "account", "") or "")
-                    ) or "?"
-                    is_refire = _ticker_alert_state["last_alerted_at"] != _ticker_alert_state["incident_start"]
-                    refire_note = " (re-alert)" if is_refire else ""
-                    msg = (
-                        f"TickerWatchdog{branch_tag} — degraded{refire_note}\n"
-                        f"Both Kite accounts in failover cool-off.\n"
-                        f"Disconnect: {current or '?'} → {acct_list} (all blocked)\n"
-                        f"Sparkline degrading to broker.ltp() polling.\n"
-                        f"Disconnected for: {disconnected_s:.0f}s\n"
-                        f"Time: {ts}"
-                    )
-                    logger.warning(
-                        f"ticker watchdog: no eligible failover account "
-                        f"(current={current or '?'}, disconnected_s={disconnected_s:.0f}) — "
-                        f"continuing to wait for primary to recover"
-                    )
-                    if is_enabled("telegram"):
-                        await asyncio.to_thread(_send_telegram, msg)
+                await _watchdog_alert_degraded(ticker, eligible, current, ALERT_REFIRE_S)
                 continue
 
             acct, api_key, access_token = next_kc
@@ -3914,44 +3950,11 @@ async def _task_funds_offhours() -> None:
         await asyncio.sleep(30 * 60)
 
 
-async def _task_warm_backfill() -> None:
-    """One-shot startup backfill for ohlcv_daily and intraday_bars.
-
-    Fires 60 s after process start to give the conn_service time to mint
-    fresh broker tokens.  Runs exactly once per process lifetime.
-
-    OHLCV backfill (historical — broker serves even when markets closed):
-    always runs on startup regardless of market hours.  Checks coverage for
-    every symbol in the warm universe (watchlist + holdings + positions +
-    movers, 300-symbol cap) and force-fetches any symbol with fewer than
-    target_days × 0.7 bars.
-
-    Intraday backfill (today's bars — broker only during open hours):
-    deferred when no segment is open because today's intraday bars are still
-    accumulating during the session.  When markets are closed the intraday
-    bars from the prior session are already in intraday_bars via the
-    persistence pipeline's regular write-back.
-    """
-    # Guard: only fire once per process (idempotent against module reloads).
-    if getattr(_task_warm_backfill, "_fired", False):
-        return
-    _task_warm_backfill._fired = True   # type: ignore[attr-defined]
-
-    # Startup settle — wait for conn_service token mint.
-    await asyncio.sleep(60)
-
-    from backend.api.persistence.backfill import backfill_ohlcv_daily, backfill_intraday_today
-    from backend.shared.helpers.date_time_utils import is_any_segment_open
-
-    # Build the same symbol universe as _task_sparkline_warm (300-symbol cap).
-    # We reuse _collect_symbols defined inside _task_sparkline_warm — but that
-    # is a closure; we duplicate the same DB + broker_apis logic here using the
-    # same helpers so there is no hidden coupling.  A future refactor can lift
-    # _collect_symbols to a module-level helper when more callers need it.
-    symbols: list[tuple[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-
-    # 1. Watchlist.
+async def _backfill_collect_watchlist(
+    symbols: list[tuple[str, str]],
+    seen: set[tuple[str, str]],
+) -> None:
+    """Append watchlist symbols (with MCX/CDS resolution) into symbols/seen in place."""
     try:
         from backend.api.database import async_session
         from backend.api.models import WatchlistItem
@@ -3982,7 +3985,12 @@ async def _task_warm_backfill() -> None:
     except Exception as exc:
         logger.warning(f"backfill warm: watchlist collect failed: {exc}")
 
-    # 2. Holdings.
+
+async def _backfill_collect_holdings(
+    symbols: list[tuple[str, str]],
+    seen: set[tuple[str, str]],
+) -> None:
+    """Append holding symbols from broker API into symbols/seen in place."""
     try:
         import pandas as pd
         from backend.brokers import broker_apis
@@ -4002,7 +4010,12 @@ async def _task_warm_backfill() -> None:
     except Exception as exc:
         logger.warning(f"backfill warm: holdings collect failed: {exc}")
 
-    # 3. Positions.
+
+async def _backfill_collect_positions(
+    symbols: list[tuple[str, str]],
+    seen: set[tuple[str, str]],
+) -> None:
+    """Append position symbols from broker API into symbols/seen in place."""
     try:
         import pandas as pd
         from backend.brokers import broker_apis
@@ -4022,7 +4035,12 @@ async def _task_warm_backfill() -> None:
     except Exception as exc:
         logger.warning(f"backfill warm: positions collect failed: {exc}")
 
-    # 4. Mover universe (fills remaining capacity up to 300-symbol cap).
+
+def _backfill_collect_movers(
+    symbols: list[tuple[str, str]],
+    seen: set[tuple[str, str]],
+) -> None:
+    """Append mover-universe symbols into symbols/seen in place."""
     try:
         from backend.shared.helpers.mover_universe import mover_warm_pairs
         for key in mover_warm_pairs():
@@ -4032,7 +4050,9 @@ async def _task_warm_backfill() -> None:
     except Exception as exc:
         logger.warning(f"backfill warm: mover universe collect failed: {exc}")
 
-    # Hard cap — same split logic as _task_sparkline_warm.
+
+def _backfill_apply_cap(symbols: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Apply the 300-symbol cap (book pairs first, then movers)."""
     try:
         from backend.shared.helpers.mover_universe import mover_warm_pairs as _mwp
         _mover_set  = set(_mwp())
@@ -4040,17 +4060,14 @@ async def _task_warm_backfill() -> None:
         mover_pairs = [p for p in symbols if p in _mover_set]
         cap         = 300
         remaining   = max(0, cap - len(book_pairs))
-        symbols     = book_pairs + mover_pairs[:remaining]
+        return book_pairs + mover_pairs[:remaining]
     except Exception:
-        symbols = symbols[:300]
+        return symbols[:300]
 
-    if not symbols:
-        logger.warning("backfill warm: empty symbol universe — nothing to backfill")
-        return
 
-    logger.info(f"backfill warm: universe={len(symbols)} symbols")
-
-    # ── OHLCV daily backfill (historical — runs regardless of market hours) ──
+async def _backfill_run_ohlcv(symbols: list[tuple[str, str]]) -> None:
+    """Run the OHLCV daily backfill and log the result."""
+    from backend.api.persistence.backfill import backfill_ohlcv_daily
     try:
         result = await backfill_ohlcv_daily(symbols, target_days=365, max_concurrent=3)
         logger.info(
@@ -4061,7 +4078,11 @@ async def _task_warm_backfill() -> None:
     except Exception as exc:
         logger.error(f"backfill warm: ohlcv_daily failed: {exc}")
 
-    # ── Intraday today backfill (defer when markets are closed) ──────────────
+
+async def _backfill_run_intraday(symbols: list[tuple[str, str]]) -> None:
+    """Run today's intraday backfill (deferred when no segment is open)."""
+    from backend.api.persistence.backfill import backfill_intraday_today
+    from backend.shared.helpers.date_time_utils import is_any_segment_open
     try:
         now_ist = timestamp_indian()
         if is_any_segment_open(now_ist):
@@ -4078,6 +4099,52 @@ async def _task_warm_backfill() -> None:
             )
     except Exception as exc:
         logger.error(f"backfill warm: intraday_today failed: {exc}")
+
+
+async def _task_warm_backfill() -> None:
+    """One-shot startup backfill for ohlcv_daily and intraday_bars.
+
+    Fires 60 s after process start to give the conn_service time to mint
+    fresh broker tokens.  Runs exactly once per process lifetime.
+
+    OHLCV backfill (historical — broker serves even when markets closed):
+    always runs on startup regardless of market hours.  Checks coverage for
+    every symbol in the warm universe (watchlist + holdings + positions +
+    movers, 300-symbol cap) and force-fetches any symbol with fewer than
+    target_days × 0.7 bars.
+
+    Intraday backfill (today's bars — broker only during open hours):
+    deferred when no segment is open because today's intraday bars are still
+    accumulating during the session.  When markets are closed the intraday
+    bars from the prior session are already in intraday_bars via the
+    persistence pipeline's regular write-back.
+    """
+    # Guard: only fire once per process (idempotent against module reloads).
+    if getattr(_task_warm_backfill, "_fired", False):
+        return
+    _task_warm_backfill._fired = True   # type: ignore[attr-defined]
+
+    # Startup settle — wait for conn_service token mint.
+    await asyncio.sleep(60)
+
+    # Build the same symbol universe as _task_sparkline_warm (300-symbol cap).
+    symbols: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    await _backfill_collect_watchlist(symbols, seen)
+    await _backfill_collect_holdings(symbols, seen)
+    await _backfill_collect_positions(symbols, seen)
+    _backfill_collect_movers(symbols, seen)
+    symbols = _backfill_apply_cap(symbols)
+
+    if not symbols:
+        logger.warning("backfill warm: empty symbol universe — nothing to backfill")
+        return
+
+    logger.info(f"backfill warm: universe={len(symbols)} symbols")
+
+    await _backfill_run_ohlcv(symbols)
+    await _backfill_run_intraday(symbols)
 
 
 def _parse_perf_snapshot_rows(snap: dict) -> list:

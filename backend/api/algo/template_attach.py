@@ -544,6 +544,323 @@ def _close_side(parent_side: str) -> str:
     return "SELL" if parent_side == "BUY" else "BUY"
 
 
+def _parse_tp_scales(tp_scales_raw) -> list[dict]:
+    """Parse the tp_scales_json field (string or list) into a list of
+    validated scale dicts: [{at_pct: float, close_pct: float}, ...].
+    Entries with non-positive or out-of-range values are silently dropped.
+    Returns [] on any parse error."""
+    import json as _json
+    if not tp_scales_raw:
+        return []
+    tp_scales: list[dict] = []
+    try:
+        parsed = _json.loads(tp_scales_raw) if isinstance(tp_scales_raw, str) else tp_scales_raw
+        if isinstance(parsed, list):
+            for e in parsed:
+                if not isinstance(e, dict):
+                    continue
+                try:
+                    ap = float(e.get("at_pct"))
+                    cp = float(e.get("close_pct"))
+                except (TypeError, ValueError):
+                    continue
+                if ap > 0 and 0 < cp <= 100:
+                    tp_scales.append({"at_pct": ap, "close_pct": cp})
+    except Exception:
+        tp_scales = []
+    return tp_scales
+
+
+def _parse_template_overrides(
+    template: dict,
+    overrides: dict,
+) -> tuple[
+    Optional[float],   # tp_pct
+    Optional[float],   # sl_pct
+    Optional[float],   # wing_premium_pct
+    Optional[float],   # sl_trail_pct
+    list[dict],        # tp_scales
+    Optional[int],     # wing_strike_offset
+    str,               # tp_order_type
+    list[str],         # validation_notes
+]:
+    """Extract and normalise all override fields from the operator's
+    inline edits + saved template row. Override > template > None.
+
+    Returns a flat tuple of resolved values + any pre-plan validation
+    notes (e.g. tp_pct / sl_pct non-positive).
+    """
+    _ov = overrides or {}
+
+    def _pick(key: str) -> Optional[float]:
+        v = _ov.get(key)
+        if v is None:
+            v = template.get(key)
+        if v is None:
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    tp_pct           = _pick("tp_pct")
+    sl_pct           = _pick("sl_pct")
+    wing_premium_pct = _pick("wing_premium_pct")
+    sl_trail_pct     = _pick("sl_trail_pct")
+
+    # Audit fix — non-positive % values silently produced an invalid GTT
+    # (trigger == fill price on a BUY, immediately rejected by Kite or
+    # firing instantly on a SELL). Drop to None + surface a note via
+    # `_validation_notes` (appended to `plan.notes` once plan exists).
+    _validation_notes: list[str] = []
+    if tp_pct is not None and tp_pct <= 0:
+        _validation_notes.append(f"tp_pct={tp_pct} is not positive — TP not attached")
+        tp_pct = None
+    if sl_pct is not None and sl_pct <= 0:
+        _validation_notes.append(f"sl_pct={sl_pct} is not positive — SL not attached")
+        sl_pct = None
+
+    # tp_scales_json — Phase 3A scale-out targets. When set, supersedes
+    # tp_pct: a TP ladder of N entries, each placed as a separate
+    # single GTT at fill × (1 + at_pct/100), sized to parent_qty ×
+    # close_pct/100. Sum of close_pct ≤ 100; the remainder stays
+    # open with no auto-exit (operator's call).
+    tp_scales_raw = _ov.get("tp_scales_json")
+    if tp_scales_raw is None:
+        tp_scales_raw = template.get("tp_scales_json")
+    tp_scales = _parse_tp_scales(tp_scales_raw)
+
+    wing_offset_raw = _ov.get("wing_strike_offset")
+    if wing_offset_raw is None:
+        wing_offset_raw = template.get("wing_strike_offset")
+    try:
+        wing_strike_offset: Optional[int] = (
+            int(wing_offset_raw) if wing_offset_raw is not None else None
+        )
+    except (TypeError, ValueError):
+        wing_strike_offset = None
+
+    # tp_order_type — LIMIT (default) or MARKET. Override > template >
+    # 'LIMIT'. SL legs always stay LIMIT (a MARKET SL = stop-market,
+    # different semantics; would be a separate `sl_order_type` field).
+    _tp_ot_raw = _ov.get("tp_order_type")
+    if _tp_ot_raw is None:
+        _tp_ot_raw = template.get("tp_order_type")
+    tp_order_type = str(_tp_ot_raw).upper() if _tp_ot_raw else "LIMIT"
+    if tp_order_type not in ("LIMIT", "MARKET"):
+        tp_order_type = "LIMIT"
+
+    return (
+        tp_pct, sl_pct, wing_premium_pct, sl_trail_pct,
+        tp_scales, wing_strike_offset, tp_order_type,
+        _validation_notes,
+    )
+
+
+def _build_scale_out_gtts(
+    tp_scales:         list[dict],
+    parent_side:       str,
+    parent_fill_price: float,
+    parent_qty:        int,
+    exit_side:         str,
+    parent_product:    str,
+    tp_order_type:     str,
+    sl_trig:           Optional[float],
+    sl_trail_pct:      Optional[float],
+) -> tuple[list[GttSpec], list[str]]:
+    """Build GTT specs + notes for the Phase 3A scale-out path.
+
+    Integer qty allocation: floor each phase, add the leftover to the
+    LAST phase so allocations always sum to parent_qty. Returns
+    (gtts_to_add, notes_to_add).
+    """
+    gtts: list[GttSpec] = []
+    notes: list[str] = []
+
+    # Integer qty allocation across scales — distribute floor
+    # values then add the leftover to the LAST scale so the
+    # numbers always sum to parent_qty (avoids "1 lot lost to
+    # rounding" surprise).
+    allocations: list[int] = []
+    used = 0
+    for i, sc in enumerate(tp_scales):
+        if i == len(tp_scales) - 1:
+            allocations.append(parent_qty - used)
+        else:
+            _q = int((parent_qty * float(sc["close_pct"])) // 100)
+            allocations.append(_q)
+            used += _q
+    for sc, q in zip(tp_scales, allocations):
+        if q <= 0:
+            continue
+        scale_trig = _tp_trigger(parent_side, parent_fill_price, float(sc["at_pct"]))
+        if scale_trig is None:
+            continue
+        label = f"TP+{sc['at_pct']}% × {q}"
+        gtts.append(GttSpec(
+            trigger_type="single",
+            trigger_values=[scale_trig],
+            orders=[_leg(exit_side, q, scale_trig, parent_product, tp_order_type)],
+            label=label,
+        ))
+    if sl_trig is not None:
+        gtts.append(GttSpec(
+            trigger_type="single",
+            trigger_values=[sl_trig],
+            orders=[_leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT")],
+            label="SL",
+            sl_trail_pct=sl_trail_pct,
+        ))
+        # Audit fix (C-5) — explicit operator warning. When the SL
+        # fires AFTER any scale-TP has already executed, the SL
+        # order's full-parent-qty leg can over-sell the residual
+        # position (e.g. scale-0 closed 30% → operator holds 70%;
+        # SL fires for 100% of original → 30% oversell on a SELL
+        # parent that flips long, or vice versa). Most brokers
+        # silently size the GTT execution to available qty for
+        # NRML (Kite does), so the over-sell is rare but real
+        # under fast moves through TP+SL within one tick.
+        notes.append(
+            "⚠ SL is sized for full parent qty. If a scale TP "
+            "fires before SL, the SL may try to close more than "
+            "the residual position — broker's NRML quantity "
+            "behavior typically caps at available, but verify "
+            "on the broker's side. Recommend not pairing scale-"
+            "out with SL unless the broker's GTT supports residual "
+            "sizing."
+        )
+    notes.append(
+        f"Scale-out: {len(tp_scales)} TP step(s) — "
+        + " / ".join(f"+{s['at_pct']:g}% × {s['close_pct']:g}% qty"
+                     for s in tp_scales)
+        + ("; SL at single trigger for full qty" if sl_trig is not None else "")
+    )
+    return gtts, notes
+
+
+def _build_tp_sl_gtts(
+    tp_trig:        float,
+    sl_trig:        float,
+    exit_side:      str,
+    parent_qty:     int,
+    parent_product: str,
+    tp_order_type:  str,
+    sl_trail_pct:   Optional[float],
+    broker_caps:    Optional[BrokerCapabilities],
+) -> tuple[list[GttSpec], list[str]]:
+    """Build GTT specs for the combined TP+SL case.
+
+    On Kite/Dhan (broker_caps.gtt_oco=True or caps=None): one two-leg
+    OCO. On Groww (gtt_oco=False): two singles + a note. Returns
+    (gtts_to_add, notes_to_add).
+    """
+    gtts: list[GttSpec] = []
+    notes: list[str] = []
+    # Operator wants both. On Kite/Dhan we pack as a two-leg OCO.
+    # On Groww (no native OCO) we'd split into two singles — that's
+    # done at the route layer when broker_caps.gtt_oco is False.
+    if broker_caps is None or broker_caps.gtt_oco:
+        gtts.append(GttSpec(
+            trigger_type="two-leg",
+            trigger_values=[tp_trig, sl_trig],
+            orders=[
+                _leg(exit_side, parent_qty, tp_trig, parent_product, tp_order_type),
+                _leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT"),
+            ],
+            label="TP+SL",
+            sl_trail_pct=sl_trail_pct,
+        ))
+    else:
+        # Two singles + a note that the route layer will pair them
+        # via SimGttBook.place(..., pair_with=...).
+        gtts.append(GttSpec(
+            trigger_type="single",
+            trigger_values=[tp_trig],
+            orders=[_leg(exit_side, parent_qty, tp_trig, parent_product, tp_order_type)],
+            label="TP",
+        ))
+        gtts.append(GttSpec(
+            trigger_type="single",
+            trigger_values=[sl_trig],
+            orders=[_leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT")],
+            label="SL",
+            sl_trail_pct=sl_trail_pct,
+        ))
+        notes.append(
+            f"{broker_caps.display_name} has no OCO — TP/SL placed as "
+            f"two singles + paired so either fill cancels the other."
+        )
+    return gtts, notes
+
+
+def _build_wing_spec(
+    parent_side:       str,
+    parent_symbol:     str,
+    overrides:         dict,
+    wing_strike_offset: Optional[int],
+    wing_premium_pct:  Optional[float],
+    parent_qty:        int,
+    parent_exchange:   str,
+    parent_product:    str,
+    parent_fill_price: float,
+) -> tuple[Optional[WingSpec], list[str]]:
+    """Build a WingSpec for a SELL option entry, or return (None, notes).
+
+    Priority: pre-resolved _wing_picked_symbol (set by apply_template_to_order
+    after chain scan) > wing_strike_offset > no wing. Returns
+    (wing_spec_or_none, notes_to_add).
+    """
+    notes: list[str] = []
+    if not _is_sell_option(parent_side, parent_symbol):
+        return None, notes
+
+    _ov = overrides or {}
+    # Phase 1B — apply_template_to_order pre-resolves the wing via
+    # _pick_wing_by_premium when wing_premium_pct is set, and seeds
+    # the picked tradingsymbol back into overrides. Use it first.
+    wing_picked_sym = _ov.get("_wing_picked_symbol")
+    wing_picked_ltp = _ov.get("_wing_picked_ltp")
+    if wing_picked_sym:
+        return WingSpec(
+            tradingsymbol=str(wing_picked_sym),
+            transaction_type="BUY",
+            quantity=parent_qty,
+            exchange=parent_exchange,
+            product=parent_product,
+            order_type="MARKET",
+            estimated_price=(float(wing_picked_ltp)
+                             if wing_picked_ltp is not None else None),
+        ), notes
+
+    if wing_strike_offset is not None:
+        wing_sym = _wing_symbol(parent_symbol, wing_strike_offset)
+        if wing_sym is None:
+            notes.append(
+                f"could not compute wing strike for {parent_symbol} (parsing failed)"
+            )
+            return None, notes
+        # Estimated wing premium — fraction of parent's premium.
+        # Operator's preview shows this; actual fill comes from
+        # paper engine.
+        est = None
+        if wing_premium_pct is not None:
+            est = round(parent_fill_price * float(wing_premium_pct) / 100.0, 2)
+        return WingSpec(
+            tradingsymbol=wing_sym,
+            transaction_type="BUY",
+            quantity=parent_qty,
+            exchange=parent_exchange,
+            product=parent_product,
+            order_type="MARKET",
+            estimated_price=est,
+        ), notes
+
+    # No fallback note here — apply_template_to_order already
+    # appended the chain-scan reason (success or skip) to plan.notes
+    # before this resolver ran.
+    return None, notes
+
+
 def resolve_template_plan(
     template: dict,
     overrides: dict,
@@ -565,83 +882,12 @@ def resolve_template_plan(
     # attach for this slot". Defensive: accept overrides=None from
     # callers like `_attach_basket_leg_template` that don't surface
     # operator overrides (the basket leg carries only template_id).
+    (
+        tp_pct, sl_pct, wing_premium_pct, sl_trail_pct,
+        tp_scales, wing_strike_offset, tp_order_type,
+        _validation_notes,
+    ) = _parse_template_overrides(template, overrides)
     _ov = overrides or {}
-    def _pick(key: str) -> Optional[float]:
-        v = _ov.get(key)
-        if v is None:
-            v = template.get(key)
-        if v is None:
-            return None
-        try:
-            return float(v)
-        except (TypeError, ValueError):
-            return None
-
-    tp_pct          = _pick("tp_pct")
-    sl_pct          = _pick("sl_pct")
-    wing_premium_pct = _pick("wing_premium_pct")
-    # Audit fix — non-positive % values silently produced an invalid GTT
-    # (trigger == fill price on a BUY, immediately rejected by Kite or
-    # firing instantly on a SELL). Drop to None + surface a note via
-    # `_validation_notes` (appended to `plan.notes` once plan exists).
-    _validation_notes: list[str] = []
-    if tp_pct is not None and tp_pct <= 0:
-        _validation_notes.append(f"tp_pct={tp_pct} is not positive — TP not attached")
-        tp_pct = None
-    if sl_pct is not None and sl_pct <= 0:
-        _validation_notes.append(f"sl_pct={sl_pct} is not positive — SL not attached")
-        sl_pct = None
-
-    # tp_scales_json — Phase 3A scale-out targets. When set, supersedes
-    # tp_pct: a TP ladder of N entries, each placed as a separate
-    # single GTT at fill × (1 + at_pct/100), sized to parent_qty ×
-    # close_pct/100. Sum of close_pct ≤ 100; the remainder stays
-    # open with no auto-exit (operator's call).
-    # Trailing stop (Phase 3B). _ov override > template > None. The
-    # poller picks this up from attached_gtts_json so it survives
-    # restarts.
-    sl_trail_pct = _pick("sl_trail_pct")
-
-    tp_scales_raw = _ov.get("tp_scales_json")
-    if tp_scales_raw is None:
-        tp_scales_raw = template.get("tp_scales_json")
-    tp_scales: list[dict] = []
-    if tp_scales_raw:
-        import json as _json
-        try:
-            parsed = _json.loads(tp_scales_raw) if isinstance(tp_scales_raw, str) else tp_scales_raw
-            if isinstance(parsed, list):
-                for e in parsed:
-                    if not isinstance(e, dict):
-                        continue
-                    try:
-                        ap = float(e.get("at_pct"))
-                        cp = float(e.get("close_pct"))
-                    except (TypeError, ValueError):
-                        continue
-                    if ap > 0 and 0 < cp <= 100:
-                        tp_scales.append({"at_pct": ap, "close_pct": cp})
-        except Exception:
-            tp_scales = []
-    wing_offset_raw = _ov.get("wing_strike_offset")
-    if wing_offset_raw is None:
-        wing_offset_raw = template.get("wing_strike_offset")
-    try:
-        wing_strike_offset: Optional[int] = (
-            int(wing_offset_raw) if wing_offset_raw is not None else None
-        )
-    except (TypeError, ValueError):
-        wing_strike_offset = None
-
-    # tp_order_type — LIMIT (default) or MARKET. Override > template >
-    # 'LIMIT'. SL legs always stay LIMIT (a MARKET SL = stop-market,
-    # different semantics; would be a separate `sl_order_type` field).
-    _tp_ot_raw = _ov.get("tp_order_type")
-    if _tp_ot_raw is None:
-        _tp_ot_raw = template.get("tp_order_type")
-    tp_order_type = str(_tp_ot_raw).upper() if _tp_ot_raw else "LIMIT"
-    if tp_order_type not in ("LIMIT", "MARKET"):
-        tp_order_type = "LIMIT"
 
     plan = TemplatePlan(
         template_id=template.get("id"),
@@ -665,110 +911,22 @@ def resolve_template_plan(
     sl_trig = _sl_trigger(parent_side, parent_fill_price, sl_pct)
     exit_side = _close_side(parent_side)
 
-    # Phase 3A — scale-out path supersedes single tp_pct. Place one
-    # single GTT per scale (qty × close_pct/100 each) at fill ×
-    # (1 + at_pct/100). SL still uses the parent_qty SL trigger
-    # (operator's call — if SL fires after a partial TP has already
-    # closed some qty, the SL order may partial-fill against the
-    # remaining position; document this in the seeder).
+    # Phase 3A — scale-out path supersedes single tp_pct.
     if tp_scales:
-        # Integer qty allocation across scales — distribute floor
-        # values then add the leftover to the LAST scale so the
-        # numbers always sum to parent_qty (avoids "1 lot lost to
-        # rounding" surprise).
-        allocations: list[int] = []
-        used = 0
-        for i, sc in enumerate(tp_scales):
-            if i == len(tp_scales) - 1:
-                allocations.append(parent_qty - used)
-            else:
-                _q = int((parent_qty * float(sc["close_pct"])) // 100)
-                allocations.append(_q)
-                used += _q
-        for sc, q in zip(tp_scales, allocations):
-            if q <= 0:
-                continue
-            scale_trig = _tp_trigger(parent_side, parent_fill_price,
-                                     float(sc["at_pct"]))
-            if scale_trig is None:
-                continue
-            label = f"TP+{sc['at_pct']}% × {q}"
-            plan.gtts.append(GttSpec(
-                trigger_type="single",
-                trigger_values=[scale_trig],
-                orders=[_leg(exit_side, q, scale_trig,
-                             parent_product, tp_order_type)],
-                label=label,
-            ))
-        if sl_trig is not None:
-            plan.gtts.append(GttSpec(
-                trigger_type="single",
-                trigger_values=[sl_trig],
-                orders=[_leg(exit_side, parent_qty, sl_trig,
-                             parent_product, "LIMIT")],
-                label="SL",
-                sl_trail_pct=sl_trail_pct,
-            ))
-            # Audit fix (C-5) — explicit operator warning. When the SL
-            # fires AFTER any scale-TP has already executed, the SL
-            # order's full-parent-qty leg can over-sell the residual
-            # position (e.g. scale-0 closed 30% → operator holds 70%;
-            # SL fires for 100% of original → 30% oversell on a SELL
-            # parent that flips long, or vice versa). Most brokers
-            # silently size the GTT execution to available qty for
-            # NRML (Kite does), so the over-sell is rare but real
-            # under fast moves through TP+SL within one tick.
-            plan.notes.append(
-                "⚠ SL is sized for full parent qty. If a scale TP "
-                "fires before SL, the SL may try to close more than "
-                "the residual position — broker's NRML quantity "
-                "behavior typically caps at available, but verify "
-                "on the broker's side. Recommend not pairing scale-"
-                "out with SL unless the broker's GTT supports residual "
-                "sizing."
-            )
-        plan.notes.append(
-            f"Scale-out: {len(tp_scales)} TP step(s) — "
-            + " / ".join(f"+{s['at_pct']:g}% × {s['close_pct']:g}% qty"
-                         for s in tp_scales)
-            + (f"; SL at single trigger for full qty"
-               if sl_trig is not None else "")
+        _gtts, _notes = _build_scale_out_gtts(
+            tp_scales, parent_side, parent_fill_price, parent_qty,
+            exit_side, parent_product, tp_order_type,
+            sl_trig, sl_trail_pct,
         )
+        plan.gtts.extend(_gtts)
+        plan.notes.extend(_notes)
     elif tp_trig is not None and sl_trig is not None:
-        # Operator wants both. On Kite/Dhan we pack as a two-leg OCO.
-        # On Groww (no native OCO) we'd split into two singles — that's
-        # done at the route layer when broker_caps.gtt_oco is False.
-        if broker_caps is None or broker_caps.gtt_oco:
-            plan.gtts.append(GttSpec(
-                trigger_type="two-leg",
-                trigger_values=[tp_trig, sl_trig],
-                orders=[
-                    _leg(exit_side, parent_qty, tp_trig, parent_product, tp_order_type),
-                    _leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT"),
-                ],
-                label="TP+SL",
-                sl_trail_pct=sl_trail_pct,
-            ))
-        else:
-            # Two singles + a note that the route layer will pair them
-            # via SimGttBook.place(..., pair_with=...).
-            plan.gtts.append(GttSpec(
-                trigger_type="single",
-                trigger_values=[tp_trig],
-                orders=[_leg(exit_side, parent_qty, tp_trig, parent_product, tp_order_type)],
-                label="TP",
-            ))
-            plan.gtts.append(GttSpec(
-                trigger_type="single",
-                trigger_values=[sl_trig],
-                orders=[_leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT")],
-                label="SL",
-                sl_trail_pct=sl_trail_pct,
-            ))
-            plan.notes.append(
-                f"{broker_caps.display_name} has no OCO — TP/SL placed as "
-                f"two singles + paired so either fill cancels the other."
-            )
+        _gtts, _notes = _build_tp_sl_gtts(
+            tp_trig, sl_trig, exit_side, parent_qty,
+            parent_product, tp_order_type, sl_trail_pct, broker_caps,
+        )
+        plan.gtts.extend(_gtts)
+        plan.notes.extend(_notes)
     elif tp_trig is not None:
         plan.gtts.append(GttSpec(
             trigger_type="single",
@@ -786,48 +944,12 @@ def resolve_template_plan(
         ))
 
     # ── Wing spec — SELL option only ─────────────────────────────────
-    if _is_sell_option(parent_side, parent_symbol):
-        # Phase 1B — apply_template_to_order pre-resolves the wing via
-        # _pick_wing_by_premium when wing_premium_pct is set, and seeds
-        # the picked tradingsymbol back into overrides. Use it first.
-        wing_picked_sym = _ov.get("_wing_picked_symbol")
-        wing_picked_ltp = _ov.get("_wing_picked_ltp")
-        if wing_picked_sym:
-            plan.wing = WingSpec(
-                tradingsymbol=str(wing_picked_sym),
-                transaction_type="BUY",
-                quantity=parent_qty,
-                exchange=parent_exchange,
-                product=parent_product,
-                order_type="MARKET",
-                estimated_price=(float(wing_picked_ltp)
-                                 if wing_picked_ltp is not None else None),
-            )
-        elif wing_strike_offset is not None:
-            wing_sym = _wing_symbol(parent_symbol, wing_strike_offset)
-            if wing_sym is None:
-                plan.notes.append(
-                    f"could not compute wing strike for {parent_symbol} (parsing failed)"
-                )
-            else:
-                # Estimated wing premium — fraction of parent's premium.
-                # Operator's preview shows this; actual fill comes from
-                # paper engine.
-                est = None
-                if wing_premium_pct is not None:
-                    est = round(parent_fill_price * float(wing_premium_pct) / 100.0, 2)
-                plan.wing = WingSpec(
-                    tradingsymbol=wing_sym,
-                    transaction_type="BUY",
-                    quantity=parent_qty,
-                    exchange=parent_exchange,
-                    product=parent_product,
-                    order_type="MARKET",
-                    estimated_price=est,
-                )
-        # No fallback note here — apply_template_to_order already
-        # appended the chain-scan reason (success or skip) to plan.notes
-        # before this resolver ran.
+    plan.wing, _wing_notes = _build_wing_spec(
+        parent_side, parent_symbol, _ov,
+        wing_strike_offset, wing_premium_pct,
+        parent_qty, parent_exchange, parent_product, parent_fill_price,
+    )
+    plan.notes.extend(_wing_notes)
 
     return plan
 
@@ -1176,6 +1298,243 @@ def has_any_override(overrides: Optional[dict]) -> bool:
     return any(overrides.get(k) is not None for k in keys)
 
 
+def _check_applies_to_guard(
+    template:          dict,
+    parent_side:       str,
+    parent_symbol:     str,
+    parent_account:    str,
+    parent_qty:        int,
+    parent_fill_price: float,
+    parent_order_id:   Optional[int],
+) -> bool:
+    """Enforce the template's applies_to field against the parent order's
+    side and kind (incident 2026-06-22 guard).
+
+    Returns True when the attach must be REFUSED (mismatch detected —
+    caller should return None). Fires Telegram + email alert as a
+    side-effect when refusing. Returns False when the attach is allowed.
+
+    'both' and 'none' are always allowed (no filtering).
+    """
+    applies_to = (template.get("applies_to") or "both").strip().lower()
+    if applies_to in ("both", "none"):
+        return False
+
+    parent_side_u = (parent_side or "").upper().strip()
+    is_option = bool(_OPT_SYM_RE.match((parent_symbol or "").upper()))
+    # buy_any:    BUY anything
+    # sell_any:   SELL anything
+    # buy_option: BUY of CE/PE only
+    # sell_option:SELL of CE/PE only
+    wants_buy          = applies_to in ("buy_any", "buy_option")
+    wants_sell         = applies_to in ("sell_any", "sell_option")
+    wants_option_only  = applies_to in ("buy_option", "sell_option")
+    mismatch_reason: Optional[str] = None
+    if wants_buy and parent_side_u != "BUY":
+        mismatch_reason = (
+            f"side mismatch — template requires BUY parent but got {parent_side_u}"
+        )
+    elif wants_sell and parent_side_u != "SELL":
+        mismatch_reason = (
+            f"side mismatch — template requires SELL parent but got {parent_side_u}"
+        )
+    elif wants_option_only and not is_option:
+        mismatch_reason = (
+            f"kind mismatch — template is option-only but {parent_symbol!r} is not an option"
+        )
+
+    if mismatch_reason:
+        slug = template.get("slug", "?")
+        logger.warning(
+            f"template_attach.applies_to_guard: refusing to attach "
+            f"template slug={slug!r} (applies_to={applies_to}) to "
+            f"{parent_side_u} {parent_symbol!r} parent_order={parent_order_id} — "
+            f"{mismatch_reason}. 2026-06-22 incident pattern; non-destructive skip."
+        )
+        # Fire-and-forget alert so the operator gets immediate
+        # Telegram + email visibility on every guard fire. The
+        # PARENT order already filled successfully; this alert
+        # tells the operator "your exit plan didn't attach —
+        # check + manually arm if needed".
+        _fire_guard_alert(
+            template_slug=slug,
+            applies_to=applies_to,
+            parent_side=parent_side_u,
+            parent_symbol=parent_symbol,
+            parent_account=parent_account,
+            parent_qty=parent_qty,
+            parent_fill_price=parent_fill_price,
+            parent_order_id=parent_order_id,
+            reason=mismatch_reason,
+        )
+        return True
+
+    return False
+
+
+async def _resolve_lot_size_for_order(
+    template:          dict,
+    parent_exchange:   str,
+    parent_symbol:     str,
+    parent_account:    str,
+    parent_side:       str,
+    parent_qty:        int,
+    parent_fill_price: float,
+) -> tuple[int, Optional[AttachResult]]:
+    """Async lot_size resolution for F&O exchanges (MCX/NCO/NFO/BFO/CDS).
+
+    Returns (lot_size, None) on success. Returns (1, AttachResult_with_errors)
+    on failure — caller must return the error result immediately.
+
+    For non-derivative exchanges, returns (1, None) immediately (no-op).
+    """
+    if parent_exchange.upper() not in ("MCX", "NCO", "NFO", "BFO", "CDS"):
+        return 1, None
+
+    def _err_plan() -> TemplatePlan:
+        return TemplatePlan(
+            template_id=template.get("id"),
+            template_name=template.get("name") or "(unnamed)",
+            template_slug=template.get("slug"),
+            parent_account=parent_account,
+            parent_symbol=parent_symbol,
+            parent_side=parent_side,
+            parent_qty=parent_qty,
+            parent_exchange=parent_exchange,
+            parent_fill_price=float(parent_fill_price),
+            parent_lot_size=1,
+        )
+
+    try:
+        from backend.brokers.adapters.kite import get_lot_size
+        _ls = await get_lot_size(parent_exchange, parent_symbol)
+        if _ls > 1:
+            return _ls, None
+        # 0 = cache miss, 1 = equity sentinel — both are dangerous on
+        # F&O exchanges. Surface to caller as a hard failure so no
+        # untranslated qty ever reaches the broker.
+        logger.error(
+            "[GTT-QTY-GUARD] lot_size=%s for %s/%s — "
+            "instruments cache miss or sub-lot. Refusing template attach.",
+            _ls, parent_exchange, parent_symbol,
+        )
+        result_err = AttachResult(plan=_err_plan())
+        result_err.errors.append(
+            f"[GTT-QTY-GUARD] lot_size={_ls} for "
+            f"{parent_exchange}/{parent_symbol} — instruments cache miss. "
+            f"Cannot safely translate qty to lots. Template attach refused."
+        )
+        return 1, result_err
+    except Exception as _e:
+        logger.error(
+            "[GTT-QTY-GUARD] get_lot_size failed for %s/%s: %s — "
+            "refusing F&O template attach.", parent_exchange, parent_symbol, _e,
+        )
+        result_err = AttachResult(plan=_err_plan())
+        result_err.errors.append(
+            f"[GTT-QTY-GUARD] lot_size lookup failed for "
+            f"{parent_exchange}/{parent_symbol}: {_e}. "
+            f"Template attach refused to prevent F&O oversize."
+        )
+        return 1, result_err
+
+
+def _route_apply_path(
+    plan:            TemplatePlan,
+    apply_path:      str,
+    parent_account:  str,
+    parent_order_id: Optional[int],
+) -> AttachResult:
+    """Route the resolved plan into sim, live, or preview path.
+
+    'preview': return AttachResult(plan) with no broker calls.
+    'sim' / 'auto'+SimDriver.active: route to apply_plan_sim.
+    'live' / 'auto'+not sim: resolve broker + route to apply_plan_live.
+    Fallback: return AttachResult(plan) unchanged.
+    """
+    # Preview short-circuit — never apply.
+    if apply_path == "preview":
+        return AttachResult(plan=plan)
+
+    # Resolve sim vs live.
+    sim_active = False
+    if apply_path == "auto":
+        try:
+            from backend.api.algo.sim.driver import SimDriver
+            sim_active = SimDriver.instance().active
+        except Exception:
+            sim_active = False
+
+    if apply_path == "sim" or (apply_path == "auto" and sim_active):
+        from backend.api.algo.sim.driver import SimDriver
+        return apply_plan_sim(plan, SimDriver.instance(),
+                              parent_order_id=parent_order_id)
+
+    if apply_path == "live" or (apply_path == "auto" and not sim_active):
+        try:
+            from backend.brokers.registry import get_broker
+            broker = get_broker(parent_account)
+        except Exception as e:
+            result = AttachResult(plan=plan)
+            result.errors.append(
+                f"could not resolve broker for {parent_account!r}: {e}"
+            )
+            return result
+        return apply_plan_live(plan, broker, parent_order_id=parent_order_id)
+
+    return AttachResult(plan=plan)
+
+
+async def _maybe_scan_wing_by_premium(
+    template:          dict,
+    overrides:         dict,
+    parent_side:       str,
+    parent_symbol:     str,
+    parent_exchange:   str,
+    parent_fill_price: float,
+) -> tuple[dict, Optional[str]]:
+    """Phase 1B — when the template's wing mode is premium% AND the
+    operator has not supplied an explicit wing_strike_offset, run the
+    async chain scan and inject the picked symbol into overrides.
+
+    Returns (overrides_possibly_augmented, wing_scan_note_or_None).
+    On any failure, wing_scan_note carries the reason and overrides is
+    returned unchanged — the parent order is never blocked by a scan
+    error.
+    """
+    wing_offset_pre = (overrides.get("wing_strike_offset") if overrides else None)
+    if wing_offset_pre is None:
+        wing_offset_pre = template.get("wing_strike_offset")
+    wing_pct_pre = (overrides.get("wing_premium_pct") if overrides else None)
+    if wing_pct_pre is None:
+        wing_pct_pre = template.get("wing_premium_pct")
+
+    if not (parent_side == "SELL"
+            and bool(_OPT_SYM_RE.match(parent_symbol.upper()))
+            and wing_pct_pre is not None
+            and wing_offset_pre is None
+            and parent_fill_price > 0):
+        return overrides, None
+
+    try:
+        wsym, wltp, reason = await _pick_wing_by_premium(
+            parent_symbol=parent_symbol,
+            parent_exchange=parent_exchange,
+            parent_fill_price=parent_fill_price,
+            wing_premium_pct=float(wing_pct_pre),
+        )
+    except Exception as e:
+        wsym, wltp, reason = None, None, f"wing_premium_pct scan errored: {e}"
+
+    if wsym:
+        overrides = dict(overrides or {})
+        overrides["_wing_picked_symbol"] = wsym
+        if wltp is not None:
+            overrides["_wing_picked_ltp"] = wltp
+
+    return overrides, reason
+
+
 async def apply_template_to_order(
     *,
     template_id:        Optional[int],
@@ -1234,55 +1593,11 @@ async def apply_template_to_order(
     # leg shape it wasn't built for. Mismatch → log + alert (Telegram
     # + email) + return None. The PARENT order itself already filled;
     # we just don't add exits. Non-destructive failure mode.
-    applies_to = (template.get("applies_to") or "both").strip().lower()
-    if applies_to not in ("both", "none"):
-        parent_side_u = (parent_side or "").upper().strip()
-        is_option = bool(_OPT_SYM_RE.match((parent_symbol or "").upper()))
-        # buy_any:    BUY anything
-        # sell_any:   SELL anything
-        # buy_option: BUY of CE/PE only
-        # sell_option:SELL of CE/PE only
-        wants_buy   = applies_to in ("buy_any", "buy_option")
-        wants_sell  = applies_to in ("sell_any", "sell_option")
-        wants_option_only = applies_to in ("buy_option", "sell_option")
-        mismatch_reason: Optional[str] = None
-        if wants_buy and parent_side_u != "BUY":
-            mismatch_reason = (
-                f"side mismatch — template requires BUY parent but got {parent_side_u}"
-            )
-        elif wants_sell and parent_side_u != "SELL":
-            mismatch_reason = (
-                f"side mismatch — template requires SELL parent but got {parent_side_u}"
-            )
-        elif wants_option_only and not is_option:
-            mismatch_reason = (
-                f"kind mismatch — template is option-only but {parent_symbol!r} is not an option"
-            )
-        if mismatch_reason:
-            slug = template.get("slug", "?")
-            logger.warning(
-                f"template_attach.applies_to_guard: refusing to attach "
-                f"template slug={slug!r} (applies_to={applies_to}) to "
-                f"{parent_side_u} {parent_symbol!r} parent_order={parent_order_id} — "
-                f"{mismatch_reason}. 2026-06-22 incident pattern; non-destructive skip."
-            )
-            # Fire-and-forget alert so the operator gets immediate
-            # Telegram + email visibility on every guard fire. The
-            # PARENT order already filled successfully; this alert
-            # tells the operator "your exit plan didn't attach —
-            # check + manually arm if needed".
-            _fire_guard_alert(
-                template_slug=slug,
-                applies_to=applies_to,
-                parent_side=parent_side_u,
-                parent_symbol=parent_symbol,
-                parent_account=parent_account,
-                parent_qty=parent_qty,
-                parent_fill_price=parent_fill_price,
-                parent_order_id=parent_order_id,
-                reason=mismatch_reason,
-            )
-            return None
+    if _check_applies_to_guard(
+        template, parent_side, parent_symbol,
+        parent_account, parent_qty, parent_fill_price, parent_order_id,
+    ):
+        return None
 
     # Capability lookup — only needed for live path's OCO-vs-singles
     # decision. Sim path uses two-leg unconditionally (SimGttBook
@@ -1300,63 +1615,12 @@ async def apply_template_to_order(
     # is async and we're already in async context here.  For non-derivative
     # exchanges this is always 1 (no-op translation later).
     # Covers MCX/NCO (commodities) + NFO/BFO/CDS (index/currency F&O).
-    parent_lot_size: int = 1
-    if parent_exchange.upper() in ("MCX", "NCO", "NFO", "BFO", "CDS"):
-        try:
-            from backend.brokers.adapters.kite import get_lot_size
-            _ls = await get_lot_size(parent_exchange, parent_symbol)
-            if _ls > 1:
-                parent_lot_size = _ls
-            elif _ls <= 1:
-                # 0 = cache miss, 1 = equity sentinel — both are dangerous on
-                # F&O exchanges. Surface to caller as a hard failure so no
-                # untranslated qty ever reaches the broker.
-                logger.error(
-                    "[GTT-QTY-GUARD] lot_size=%s for %s/%s — "
-                    "instruments cache miss or sub-lot. Refusing template attach.",
-                    _ls, parent_exchange, parent_symbol,
-                )
-                result_err = AttachResult(plan=TemplatePlan(
-                    template_id=template.get("id"),
-                    template_name=template.get("name") or "(unnamed)",
-                    template_slug=template.get("slug"),
-                    parent_account=parent_account,
-                    parent_symbol=parent_symbol,
-                    parent_side=parent_side,
-                    parent_qty=parent_qty,
-                    parent_exchange=parent_exchange,
-                    parent_fill_price=float(parent_fill_price),
-                    parent_lot_size=1,
-                ))
-                result_err.errors.append(
-                    f"[GTT-QTY-GUARD] lot_size={_ls} for "
-                    f"{parent_exchange}/{parent_symbol} — instruments cache miss. "
-                    f"Cannot safely translate qty to lots. Template attach refused."
-                )
-                return result_err
-        except Exception as _e:
-            logger.error(
-                "[GTT-QTY-GUARD] get_lot_size failed for %s/%s: %s — "
-                "refusing F&O template attach.", parent_exchange, parent_symbol, _e,
-            )
-            result_err = AttachResult(plan=TemplatePlan(
-                template_id=template.get("id"),
-                template_name=template.get("name") or "(unnamed)",
-                template_slug=template.get("slug"),
-                parent_account=parent_account,
-                parent_symbol=parent_symbol,
-                parent_side=parent_side,
-                parent_qty=parent_qty,
-                parent_exchange=parent_exchange,
-                parent_fill_price=float(parent_fill_price),
-                parent_lot_size=1,
-            ))
-            result_err.errors.append(
-                f"[GTT-QTY-GUARD] lot_size lookup failed for "
-                f"{parent_exchange}/{parent_symbol}: {_e}. "
-                f"Template attach refused to prevent F&O oversize."
-            )
-            return result_err
+    parent_lot_size, _lot_err = await _resolve_lot_size_for_order(
+        template, parent_exchange, parent_symbol,
+        parent_account, parent_side, parent_qty, parent_fill_price,
+    )
+    if _lot_err is not None:
+        return _lot_err
 
     # Phase 1B — when the template says "pick wing by premium %" AND
     # no explicit wing_strike_offset overrides it, run the chain scan
@@ -1364,36 +1628,10 @@ async def apply_template_to_order(
     # back into the synchronous resolver via the merged overrides dict.
     # Scan failures convert to a plan note + skip wing attach; the
     # parent order is never blocked.
-    wing_scan_note: Optional[str] = None
-    wing_offset_pre = (overrides.get("wing_strike_offset")
-                       if overrides else None)
-    if wing_offset_pre is None:
-        wing_offset_pre = template.get("wing_strike_offset")
-    wing_pct_pre = (overrides.get("wing_premium_pct") if overrides else None)
-    if wing_pct_pre is None:
-        wing_pct_pre = template.get("wing_premium_pct")
-    if (parent_side == "SELL"
-            and bool(_OPT_SYM_RE.match(parent_symbol.upper()))
-            and wing_pct_pre is not None
-            and wing_offset_pre is None
-            and parent_fill_price > 0):
-        try:
-            wsym, wltp, reason = await _pick_wing_by_premium(
-                parent_symbol=parent_symbol,
-                parent_exchange=parent_exchange,
-                parent_fill_price=parent_fill_price,
-                wing_premium_pct=float(wing_pct_pre),
-            )
-        except Exception as e:
-            wsym, wltp, reason = None, None, (
-                f"wing_premium_pct scan errored: {e}"
-            )
-        wing_scan_note = reason
-        if wsym:
-            overrides = dict(overrides or {})
-            overrides["_wing_picked_symbol"] = wsym
-            if wltp is not None:
-                overrides["_wing_picked_ltp"] = wltp
+    overrides, wing_scan_note = await _maybe_scan_wing_by_premium(
+        template, overrides, parent_side, parent_symbol,
+        parent_exchange, parent_fill_price,
+    )
 
     plan = resolve_template_plan(
         template, overrides,
@@ -1410,34 +1648,4 @@ async def apply_template_to_order(
     if wing_scan_note:
         plan.notes.append(wing_scan_note)
 
-    # Preview short-circuit — never apply.
-    if apply_path == "preview":
-        return AttachResult(plan=plan)
-
-    # Resolve sim vs live.
-    sim_active = False
-    if apply_path == "auto":
-        try:
-            from backend.api.algo.sim.driver import SimDriver
-            sim_active = SimDriver.instance().active
-        except Exception:
-            sim_active = False
-
-    if apply_path == "sim" or (apply_path == "auto" and sim_active):
-        from backend.api.algo.sim.driver import SimDriver
-        return apply_plan_sim(plan, SimDriver.instance(),
-                              parent_order_id=parent_order_id)
-
-    if apply_path == "live" or (apply_path == "auto" and not sim_active):
-        try:
-            from backend.brokers.registry import get_broker
-            broker = get_broker(parent_account)
-        except Exception as e:
-            result = AttachResult(plan=plan)
-            result.errors.append(
-                f"could not resolve broker for {parent_account!r}: {e}"
-            )
-            return result
-        return apply_plan_live(plan, broker, parent_order_id=parent_order_id)
-
-    return AttachResult(plan=plan)
+    return _route_apply_path(plan, apply_path, parent_account, parent_order_id)
