@@ -412,45 +412,51 @@
     await Promise.all([loadHot(), loadStatic()]);
   }
 
+  /** Build the opts payload for startSim, closing over current $state. */
+  function _buildSimPayload() {
+    const opts = /** @type {Record<string,any>} */ ({ seed_mode: seedMode });
+    if (agentId) opts.agent_ids = [Number(agentId)];
+    if (positionsEveryN !== '' && positionsEveryN != null) opts.positions_every_n_ticks = Number(positionsEveryN);
+    if (marketStatePreset) opts.market_state_preset = marketStatePreset;
+    if (pctOverrides.some(v => v !== '' && v != null)) {
+      opts.pct_overrides = pctOverrides.map(v =>
+        v === '' || v == null ? null : Number(v) / 100);
+    }
+    if (symbolFilter && symbolFilter.length) opts.symbols = [...symbolFilter];
+    if (spreadPct !== '' && spreadPct != null) opts.spread_pct = Number(spreadPct);
+    // Random-walk overrides — drift / vol entered as percent in the
+    // UI, sent as decimal fractions (the same convention as
+    // pct_overrides). Seed is a plain integer.
+    if (walkDrift !== '' && walkDrift != null) opts.walk_drift = Number(walkDrift) / 100;
+    if (walkVol   !== '' && walkVol   != null) opts.walk_vol   = Number(walkVol)   / 100;
+    if (walkSeed  !== '' && walkSeed  != null) opts.walk_seed  = Number(walkSeed);
+    if (chaseMaxAttempts !== '' && chaseMaxAttempts != null) {
+      opts.chase_max_attempts = Math.max(1, Math.min(50, Number(chaseMaxAttempts)));
+    }
+    const customClean = customRows
+      .map(r => ({
+        tradingsymbol: String(r.tradingsymbol || '').trim().toUpperCase(),
+        quantity:      r.quantity === '' ? null : Number(r.quantity),
+        last_price:    r.last_price === '' ? null : Number(r.last_price),
+        account:       String(r.account || '').trim() || undefined,
+      }))
+      .filter(r => r.tradingsymbol && r.quantity != null && r.last_price != null);
+    if (customClean.length) opts.custom_positions = customClean;
+    // Recording — when the operator ticked Record, capture every
+    // state-mutating event into sim_recordings on stop. The default
+    // label encodes scenario + timestamp; operator can override.
+    if (recordMode) {
+      opts.record_mode     = true;
+      opts.recording_label = (recordingLabel || '').trim()
+                               || `${pickedSlug} @ ${new Date().toISOString().slice(0,16).replace('T', ' ')}`;
+    }
+    return opts;
+  }
+
   async function doStart() {
     error = ''; note = '';
     try {
-      const opts = { seed_mode: seedMode };
-      if (agentId) opts.agent_ids = [Number(agentId)];
-      if (positionsEveryN !== '' && positionsEveryN != null) opts.positions_every_n_ticks = Number(positionsEveryN);
-      if (marketStatePreset) opts.market_state_preset = marketStatePreset;
-      if (pctOverrides.some(v => v !== '' && v != null)) {
-        opts.pct_overrides = pctOverrides.map(v =>
-          v === '' || v == null ? null : Number(v) / 100);
-      }
-      if (symbolFilter && symbolFilter.length) opts.symbols = [...symbolFilter];
-      if (spreadPct !== '' && spreadPct != null) opts.spread_pct = Number(spreadPct);
-      // Random-walk overrides — drift / vol entered as percent in the
-      // UI, sent as decimal fractions (the same convention as
-      // pct_overrides). Seed is a plain integer.
-      if (walkDrift !== '' && walkDrift != null) opts.walk_drift = Number(walkDrift) / 100;
-      if (walkVol   !== '' && walkVol   != null) opts.walk_vol   = Number(walkVol)   / 100;
-      if (walkSeed  !== '' && walkSeed  != null) opts.walk_seed  = Number(walkSeed);
-      if (chaseMaxAttempts !== '' && chaseMaxAttempts != null) {
-        opts.chase_max_attempts = Math.max(1, Math.min(50, Number(chaseMaxAttempts)));
-      }
-      const customClean = customRows
-        .map(r => ({
-          tradingsymbol: String(r.tradingsymbol || '').trim().toUpperCase(),
-          quantity:      r.quantity === '' ? null : Number(r.quantity),
-          last_price:    r.last_price === '' ? null : Number(r.last_price),
-          account:       String(r.account || '').trim() || undefined,
-        }))
-        .filter(r => r.tradingsymbol && r.quantity != null && r.last_price != null);
-      if (customClean.length) opts.custom_positions = customClean;
-      // Recording — when the operator ticked Record, capture every
-      // state-mutating event into sim_recordings on stop. The default
-      // label encodes scenario + timestamp; operator can override.
-      if (recordMode) {
-        opts.record_mode     = true;
-        opts.recording_label = (recordingLabel || '').trim()
-                                 || `${pickedSlug} @ ${new Date().toISOString().slice(0,16).replace('T', ' ')}`;
-      }
+      const opts = _buildSimPayload();
       status = await startSim(pickedSlug, rateMs, opts);
       const tag = agentId ? ` (agent #${agentId} only)` : '';
       const cadTag = ` · P:${status.positions_every_n_ticks}`;
