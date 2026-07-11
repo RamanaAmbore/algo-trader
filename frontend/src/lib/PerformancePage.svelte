@@ -19,6 +19,7 @@
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import GridSearchButton from '$lib/GridSearchButton.svelte';
+  import GridDownloadButton from '$lib/GridDownloadButton.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
   import { rootOfLabel } from '$lib/data/rootOf.js';
@@ -1305,6 +1306,12 @@
     onChange={(id) => { fundsNavTab = /** @type {'nav'|'funds'} */ (id); }}
     compact={true}
   />
+  <GridDownloadButton
+    onClick={fundsNavTab === 'nav'
+      ? () => navGrid?.exportDataAsCsv({ fileName: 'nav.csv' })
+      : () => fundsGrid?.exportDataAsCsv({ fileName: 'funds.csv' })}
+    label={fundsNavTab === 'nav' ? 'NAV' : 'Funds'}
+  />
 </div>
 {#if !_agGridReady}
   <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
@@ -1338,7 +1345,14 @@
 
 <!-- Summary (active tab) -->
 <section class:hidden={activeTab !== 'positions'}>
-  <h2 class="section-heading">Summary</h2>
+  <div class="perf-grid-headrow">
+    <h2 class="section-heading">Summary</h2>
+    <span class="perf-grid-headrow-spacer"></span>
+    <GridDownloadButton
+      onClick={() => positionsSummaryGrid?.exportDataAsCsv({ fileName: 'positions-summary.csv' })}
+      label="Positions Summary"
+    />
+  </div>
   {#if !_agGridReady}
     <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
   {/if}
@@ -1346,7 +1360,14 @@
 </section>
 
 <section class:hidden={activeTab !== 'holdings'}>
-  <h2 class="section-heading">Summary</h2>
+  <div class="perf-grid-headrow">
+    <h2 class="section-heading">Summary</h2>
+    <span class="perf-grid-headrow-spacer"></span>
+    <GridDownloadButton
+      onClick={() => holdingsSummaryGrid?.exportDataAsCsv({ fileName: 'holdings-summary.csv' })}
+      label="Holdings Summary"
+    />
+  </div>
   {#if !_agGridReady}
     <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
   {/if}
@@ -1362,6 +1383,10 @@
     <h2 class="section-heading">Breakdown</h2>
     <span class="perf-grid-headrow-spacer"></span>
     <GridSearchButton bind:filter={_filterPositions} label="Positions" />
+    <GridDownloadButton
+      onClick={() => positionsAllGrid?.exportDataAsCsv({ fileName: 'positions.csv' })}
+      label="Positions"
+    />
   </div>
   <div bind:this={positionsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>
@@ -1371,6 +1396,10 @@
     <h2 class="section-heading">Breakdown</h2>
     <span class="perf-grid-headrow-spacer"></span>
     <GridSearchButton bind:filter={_filterHoldings} label="Holdings" />
+    <GridDownloadButton
+      onClick={() => holdingsAllGrid?.exportDataAsCsv({ fileName: 'holdings.csv' })}
+      label="Holdings"
+    />
   </div>
   <div bind:this={holdingsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>

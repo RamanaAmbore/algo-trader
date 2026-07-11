@@ -29,6 +29,8 @@
   import { fundsStore, holdingsStore, positionsStore } from '$lib/data/marketDataStores.svelte.js';
   import { navByAccount, navTotalRow } from '$lib/data/nav';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
+  import GridDownloadButton from '$lib/GridDownloadButton.svelte';
+  import { exportRowsToCsv } from '$lib/utils/csvExport.js';
 
   /** @type {{
    *   accountFilter?: string[],
@@ -162,6 +164,25 @@
     if (v == null || !Number.isFinite(v)) return '—';
     return aggCompact(v);
   }
+
+  /** Export NAV breakdown rows (including TOTAL) to CSV. */
+  function _downloadCsv() {
+    const rows = [
+      ..._navByAcct,
+      ...(_navTotal ? [{ account: 'TOTAL', ..._navTotal }] : []),
+    ];
+    exportRowsToCsv(
+      rows,
+      [
+        { header: 'Account',  key: 'account' },
+        { header: 'Cash',     key: 'cash',         format: (v) => v == null ? '' : String(v) },
+        { header: 'Pos M2M',  key: 'pos_m2m',      format: (v) => v == null ? '' : String(v) },
+        { header: 'Holdings', key: 'holdings_mtm',  format: (v) => v == null ? '' : String(v) },
+        { header: 'NAV',      key: 'nav',           format: (v) => v == null ? '' : String(v) },
+      ],
+      'nav-breakdown.csv'
+    );
+  }
 </script>
 
 {#if _navByAcct.length > 0}
@@ -201,7 +222,8 @@
          in its column-header tooltip; surfaced here so the operator
          glances and knows what each column means without hovering. -->
     <div class="nav-bd-caption">
-      NAV = Cash (SOD + long-option premium) + Σ position M2M + Σ holdings MTM
+      <span>NAV = Cash (SOD + long-option premium) + Σ position M2M + Σ holdings MTM</span>
+      <GridDownloadButton onClick={_downloadCsv} label="NAV Breakdown" />
     </div>
   </div>
 {:else if _anyError && !_inFlight}
@@ -350,6 +372,9 @@
   }
 
   .nav-bd-caption {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.6rem;
     color: var(--algo-muted);
@@ -357,6 +382,9 @@
     padding: 0.25rem 0.5rem;
     background: #1d2a44;
     border-top: 1px solid rgba(126,151,184,0.10);
+  }
+  .nav-bd-caption span {
+    flex: 1;
   }
 
   .nav-bd-empty {
