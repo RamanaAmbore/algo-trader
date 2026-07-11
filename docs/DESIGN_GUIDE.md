@@ -3946,6 +3946,56 @@ closed-hours snapshot behavior, and CardControls cluster.
 
 ---
 
+## 22.21. Spec files expanded — Orders, Activity, Charts (modal + page coverage)
+
+Three behavioral contract specs rewritten from v1.0 to v2.0 with exhaustive
+coverage of both the modal and bookmarkable-page variants of each surface.
+
+**ORDERS_SPEC.md v2.0** additions:
+- Surface variants: OrderTicket modal (keyboard `t`, context-menu prefill,
+  alert deep-link) vs /orders history page (filter bar, status histogram, CSV export)
+- Full OrderTicket state machine: IDLE → LOADING_PREFLIGHT → PREFLIGHT_OK/FAIL
+  → SUBMITTING → SUBMITTED/ERROR
+- Field-level validation spec (symbol, exchange, product, order type, qty/lots,
+  price, trigger, account)
+- 15 audit checkpoints (G2 cap, DRAFT no-broker, basket partial fail, etc.)
+- Playwright + pytest test coverage map with known gaps
+
+**ACTIVITY_SPEC.md v2.0** additions:
+- 5 mount points: ActivityLogModal, /activity page, Orders card, Dashboard card,
+  Automation inline — with shared vs isolated filter state documented
+- Full `activityStore` API: `$state` variables, getters/setters, `openActivityModal(tab?)`
+- 7-tab catalog with endpoint, level-parsing rule, and column list per tab
+- LogPanel component props (15 configurable props), scroll behavior, lazy polling
+- Deep-link override: `openActivityModal('conn')` from BrokerHealthBadge bypasses
+  persisted tab; no-arg call leaves persisted tab unchanged
+- Filter sharing rules: shared (modal + /activity page); isolated (Orders card,
+  Dashboard card)
+
+**CHART_SPEC.md v2.0** additions:
+- ChartModal (keyboard `k`, optional symbol/exchange prefill) vs /charts page
+  (URL param sync: `?symbol=&exchange=&range=`, replaceState on change, cold-start
+  deep-link)
+- Full `chartStore` SSOT: `clearData()` wipes ohlcv + lastFetched atomically on
+  symbol change; `clearOhlcv()` wipes bars only; `isFresh()` 30s TTL guard
+- All 8 indicators fully specified (SMA 20/50, EMA 20/50 Wilder, VWAP vol-guard,
+  Bollinger ±2σ 20-period, RSI 14, MACD 12/26/9)
+- Known defects:
+  - **P1 — Chart hang on null/unresolved symbol:** modal opens with
+    `chartStore.symbol = null`, `clearData()` runs but fetch fires with null
+    symbol → backend 422 not surfaced to user; chart stays in perpetual loading.
+    Workaround: close and reopen, pick an explicit symbol. Fix: guard fetch with
+    `if (!symbol) return;` + show "Select a symbol" empty state.
+  - **P2 — MCX rollover stale bars:** virtual root may resolve to expiring
+    contract on rollover day; workaround is manual range change to force refetch.
+
+**Files:**
+- `docs/specs/ORDERS_SPEC.md` — v2.0
+- `docs/specs/ACTIVITY_SPEC.md` — v2.0
+- `docs/specs/CHART_SPEC.md` — v2.0
+
+---
+
 # Part VII — Operations
 
 ## 23. How to add a new template field
@@ -4050,6 +4100,7 @@ GitHub push → webhook.ramboq.com → /etc/webhook/dispatch.sh
 | **NavStrip: lifetime slot SSOT fix** | P slot 2 + H slots 2-3 accumulated SSE delta on lifetime values, diverging from MarketPulse TOTAL rows | §22.18; `frontend/src/lib/PositionStrip.svelte` |
 | **CSV export: all ag-Grid cards** | No download button on Dashboard, PerformancePage, NavBreakdown, Derivatives Legs/Snapshot | §22.19; `GridDownloadButton.svelte` + `CardControls.svelte` + `csvExport.js` |
 | **Docs: reorganise + 21 spec files** | All .md docs moved to `docs/`; 21 exhaustive behavioral contract specs added | §22.20; `docs/specs/*.md`, `docs/guides/*.md` |
+| **Specs v2.0: Orders, Activity, Chart** | v1.0 specs lacked modal/page surface split, state machine, audit cases, and test map | §22.21; `docs/specs/ORDERS_SPEC.md`, `ACTIVITY_SPEC.md`, `CHART_SPEC.md` |
 
 ---
 
@@ -4062,7 +4113,7 @@ Previous fixes are documented in-code via comments. Key milestones:
 | Phase 0–3 | Template attach pipeline (resolve → plan → GTT place) | grep `Phase \d` |
 | Sprint A–E | Reconcile paths, partial fills, Dhan/Groww OCO, rate limits | grep `Sprint [A-E]` |
 | Gap closure (B–L) | 28 audit fixes across categories | `git log --grep="audit fix" -i` |
-| Jul 2026 | F&O lots convention, Day P&L SSOT, sparkline + BSE ticker, NavStrip SSOT, CSV export, docs/specs reorganisation | See §26.5 + commit bodies |
+| Jul 2026 | F&O lots convention, Day P&L SSOT, sparkline + BSE ticker, NavStrip SSOT, CSV export, docs/specs reorganisation, spec v2.0 (Orders/Activity/Chart) | See §26.5 + commit bodies |
 
 See commit bodies for specific gap IDs (e.g. B-1 = Dhan status map, C-3 = postback fallback window, H-5 = cap warnings). These are documented in code as defensive comments.
 
