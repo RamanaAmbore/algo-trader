@@ -386,15 +386,15 @@ def _v2_match_to_alertrow(match: dict, *,
 
     rate_val = value if kind in ('rate_abs', 'rate_pct') else None
 
-    # threshold display — format with units appropriate to the kind
+    # threshold display — format with units appropriate to the kind.
+    # kind is exhaustively one of {static_pct, rate_pct, static_abs,
+    # rate_abs, negative_cash, negative_margin}; no else branch needed.
     try:
         thr = float(threshold)
         if kind in ('static_pct', 'rate_pct'):
             thr_str = f"{thr:.2f}%" + ("/min" if kind == 'rate_pct' else "")
-        elif kind in ('static_abs', 'rate_abs', 'negative_cash', 'negative_margin'):
-            thr_str = f"-₹{abs(thr):,.0f}" + ("/min" if kind == 'rate_abs' else "")
         else:
-            thr_str = str(threshold)
+            thr_str = f"-₹{abs(thr):,.0f}" + ("/min" if kind == 'rate_abs' else "")
     except Exception:
         thr_str = str(threshold)
 
