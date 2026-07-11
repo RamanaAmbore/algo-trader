@@ -2625,6 +2625,9 @@ async def _task_oco_pair_watcher() -> None:
                                         f"[OCO-WATCH] double-fire alert failed: {_alert_err}"
                                     )
                                 entry.pop("sibling_id", None)
+                                sib_entry = by_id.get(sib_id)
+                                if sib_entry:
+                                    sib_entry.pop("sibling_id", None)
                                 changed = True
                             continue
                         # MY leg gone, sibling still alive → cancel it.
