@@ -3802,6 +3802,150 @@ Three improvements accelerate page load + rendering fidelity on the `/admin/deri
 
 ---
 
+## 22.18. NavStrip — lifetime slot SSOT aligned with MarketPulse TOTAL
+
+**Problem:** P pill slot 2 (lifetime P&L) and H pill slots 2–3 (holdings value /
+lifetime P&L) all had an SSE tick-delta added on top of the raw broker-snapshot
+sum. MarketPulse positions and holdings grids compute their TOTAL rows as
+`Σ row.pnl` (raw snapshot), producing a different number for the same data.
+
+**Root cause:** `_livePositionsPnl`, `_liveHoldingsTotal`, and `_liveHoldingsValue`
+in `PositionStrip.svelte` each added `_positionsDelta` / `_holdingsDelta` to the
+snapshot sum. Only slot 1 (today Day P&L) should carry the SSE delta; lifetime
+values are broker-snapshot aggregates and must not accumulate intraday ticks.
+
+**Fix:** Removed the delta from all three lifetime derived values. Only
+`_liveDayPnl` (P slot 1) retains the delta so the intraday position
+responds immediately to LTP moves.
+
+**SSOT invariant:** NavStrip lifetime values ≡ `Σ row.pnl` in MarketPulse TOTAL
+row (within aggCompact rounding, ≤ 0.1%). Day P&L (slot 1) may diverge up to 2%
+during open hours due to SSE delta.
+
+**Test coverage:**
+- `frontend/e2e/test_navstrip_consistency.spec.js` — P slot 2 matches TOTAL within 0.1%; slot 1 within 2%
+- `frontend/e2e/test_navstrip_frozen.spec.js` — closed-hours snapshot freeze
+
+**Files:**
+- `frontend/src/lib/PositionStrip.svelte` — lines 415–461, three fixed `$derived.by` blocks
+
+---
+
+## 22.19. CSV export button — all ag-Grid card headers
+
+Every data card across the app now has a one-click CSV download button.
+
+**Component:** `GridDownloadButton.svelte` — 1.4 rem × 1.4 rem, `var(--algo-cyan-bg)`
+palette, down-arrow SVG. Self-hides when `onClick` is null. Sibling CSS eliminates
+the left margin gap produced by `GridSearchButton + GridDownloadButton` adjacency.
+
+**CardControls integration:** `CardControls.svelte` gained an `onDownload = null`
+prop. When non-null, the button renders between Search and Collapse. Canonical
+toolbar order across all cards:
+
+```
+Refresh · Search · Download · Collapse · DefaultSize · Fullscreen
+```
+
+**Coverage by surface:**
+
+| Surface | Card | Export target |
+|---|---|---|
+| Pulse | Pinned/Watchlist | active tab grid |
+| Pulse | Winners / Losers | gridWin / gridLose |
+| Pulse | Positions | gridPositions |
+| Pulse | Holdings | gridHoldings |
+| Dashboard | Capital (Funds + Margins) | _fundsGrid then _marginGrid |
+| Dashboard | Equity (Pos + Hold) | _eqPosGrid then _eqHoldGrid |
+| PerformancePage | NAV/Funds strip | navGrid or fundsGrid (tab-aware) |
+| PerformancePage | Positions Summary | positionsSummaryGrid |
+| PerformancePage | Positions Breakdown | positionsAllGrid |
+| PerformancePage | Holdings Summary | holdingsSummaryGrid |
+| PerformancePage | Holdings Breakdown | holdingsAllGrid |
+| NavBreakdown | NAV breakdown | hand-rolled via exportRowsToCsv |
+| Derivatives | Legs card | hand-rolled via exportRowsToCsv |
+| Derivatives | Snapshot card | hand-rolled via exportRowsToCsv |
+| Derivatives | Payoff card | excluded (SVG chart, no tabular data) |
+
+**Hand-rolled grid utility:** `frontend/src/lib/utils/csvExport.js` exports
+`exportRowsToCsv(rows, columns, filename)`. Accepts a column descriptor array
+`{header, key, format?}`, builds RFC 4180 CSV blob, triggers browser download.
+Used for NavBreakdown, Derivatives Legs, and Derivatives Snapshot (none of which
+use ag-Grid).
+
+**Files:**
+- `frontend/src/lib/GridDownloadButton.svelte` — new component
+- `frontend/src/lib/CardControls.svelte` — `onDownload` prop
+- `frontend/src/lib/utils/csvExport.js` — new hand-rolled export utility
+- `frontend/src/lib/MarketPulse.svelte` — Pulse card wiring
+- `frontend/src/routes/(algo)/dashboard/+page.svelte` — Dashboard wiring
+- `frontend/src/lib/PerformancePage.svelte` — PerformancePage wiring
+- `frontend/src/lib/NavBreakdown.svelte` — NavBreakdown wiring
+- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — Derivatives wiring
+
+---
+
+## 22.20. docs/ folder reorganisation + exhaustive spec files
+
+**Docs structure:** All markdown documentation (except `CLAUDE.md`,
+`CLAUDE_HISTORY.md`, `README.md`) moved to `docs/`:
+
+| Path | Contents |
+|---|---|
+| `docs/specs/` | Feature behavioral contracts — PULSE_SPEC, BROKER_SPEC, NAVSTRIP_SPEC, … |
+| `docs/guides/` | Operator guides — USER_GUIDE, ADMIN_GUIDE, AGENTS_GUIDE, LAB_MCP_GUIDE, SIMULATOR_GUIDE |
+| `docs/audits/` | Point-in-time audit snapshots |
+| `docs/DESIGN_GUIDE.md` | This file |
+| `docs/MIGRATION.md` | DB migration history |
+| `docs/deployment.md` | Ops runbook |
+
+**Spec files (21 total):** Every major surface now has a behavioral contract spec
+in `docs/specs/`. Each spec documents: API endpoint signatures and params, frontend
+store variables (`$state` / `$derived` / `$effect`), explicit SSOT chain for every
+displayed value, edge cases, and test coverage map.
+
+Spec files are **not** auto-loaded — Claude reads them explicitly when working on or
+testing the relevant surface. They are the source of truth for expected behaviour and
+complement `CLAUDE.md` (which describes how to build) with what each surface does.
+
+| Spec | Surface |
+|---|---|
+| ACTIVITY_SPEC | Activity log modal / surface |
+| AGENTS_SPEC | Agent engine — condition tree, actions, grammar |
+| AUDIT_SPEC | Audit log + history page |
+| AUTOMATION_SPEC | Automation page — agents, templates, tokens |
+| BROKER_SPEC | Broker connection layer |
+| CHART_SPEC | Chart workspace — OHLCV, indicators, signals |
+| DASHBOARD_SPEC | Dashboard — hero metrics, grids, agent log |
+| DERIVATIVES_SPEC | Derivatives analytics — Greeks, payoff, strategy |
+| EXECUTION_SPEC | Execution modes 1–5 (sim/paper/live/replay/shadow) |
+| GTT_SPEC | GTT book + template attach pipeline |
+| HEDGE_SPEC | Proxy hedges + beta regression |
+| LAB_SPEC | MCP server + research lab |
+| NAV_SPEC | NAV formula v4 + investor portal |
+| NAVSTRIP_SPEC | NavStrip pill cluster |
+| ORDERS_SPEC | Order placement — ticket + basket |
+| PERSISTENCE_SPEC | Persistence pipeline — stores, modes, retention |
+| PULSE_SPEC | MarketPulse page (expanded to ~840 lines, §11–24) |
+| REPLAY_SPEC | Sim replay driver |
+| SETTINGS_SPEC | DB-backed settings |
+| SIMULATOR_SPEC | Market simulator |
+| SYMBOLS_SPEC | Symbol resolution + virtual roots |
+
+**PULSE_SPEC expansion:** §11–24 added covering the unified pipeline, bucket sort,
+column definitions, row grouping, LTP tick flash, sparkline merge strategy,
+context menu, watchlist management, account multi-select, persistent cache layer,
+closed-hours snapshot behavior, and CardControls cluster.
+
+**Files:**
+- `docs/specs/*.md` — 21 spec files
+- `docs/guides/*.md` — operator guides (moved from repo root)
+- `generate_pdf.py` — updated path to `docs/DESIGN_GUIDE.md`
+- `tools/pdf-gen/README.md` — updated path reference
+- `CLAUDE.md` — docs layout table + Common Tasks doc rows added
+
+---
+
 # Part VII — Operations
 
 ## 23. How to add a new template field
@@ -3903,6 +4047,9 @@ GitHub push → webhook.ramboq.com → /etc/webhook/dispatch.sh
 | **BSE ticker: 50-cap truncation** | BSE holdings after 50th unresolved NSE entry weren't subscribed | §14.5.9.5; `_perf_subscribe_book_symbols` uses chunked loop, not `[:50]` slice |
 | **BSE equity token: NSE→BSE fallback** | Quote/sparkline lookup for equity exchanges didn't check companion immediately | §14.5.9.5; `_resolve_token_for_sym` pairs NSE↔BSE before derivatives walk |
 | **BFO F&O: routing verified** | Confirmed BSE F&O (BFO) wired correctly for subscription + gating | §14.5.9.5; BFO in sparkline exchanges, maps to NSE segment, token at index 0 |
+| **NavStrip: lifetime slot SSOT fix** | P slot 2 + H slots 2-3 accumulated SSE delta on lifetime values, diverging from MarketPulse TOTAL rows | §22.18; `frontend/src/lib/PositionStrip.svelte` |
+| **CSV export: all ag-Grid cards** | No download button on Dashboard, PerformancePage, NavBreakdown, Derivatives Legs/Snapshot | §22.19; `GridDownloadButton.svelte` + `CardControls.svelte` + `csvExport.js` |
+| **Docs: reorganise + 21 spec files** | All .md docs moved to `docs/`; 21 exhaustive behavioral contract specs added | §22.20; `docs/specs/*.md`, `docs/guides/*.md` |
 
 ---
 
@@ -3915,7 +4062,7 @@ Previous fixes are documented in-code via comments. Key milestones:
 | Phase 0–3 | Template attach pipeline (resolve → plan → GTT place) | grep `Phase \d` |
 | Sprint A–E | Reconcile paths, partial fills, Dhan/Groww OCO, rate limits | grep `Sprint [A-E]` |
 | Gap closure (B–L) | 28 audit fixes across categories | `git log --grep="audit fix" -i` |
-| Jul 2026 | F&O lots convention, Day P&L SSOT, sparkline + BSE ticker fixes, auth/startup | See §26.5 + commit bodies |
+| Jul 2026 | F&O lots convention, Day P&L SSOT, sparkline + BSE ticker, NavStrip SSOT, CSV export, docs/specs reorganisation | See §26.5 + commit bodies |
 
 See commit bodies for specific gap IDs (e.g. B-1 = Dhan status map, C-3 = postback fallback window, H-5 = cap warnings). These are documented in code as defensive comments.
 
@@ -3930,6 +4077,7 @@ If you've got a week to onboard:
 **Day 1 — understand the shape:**
 - This doc end-to-end
 - `CLAUDE.md` skim (it's the operator-facing manual; some route URLs may reference `/agents/*` which has been redirected to `/automation/*` — see §29)
+- `docs/specs/<SURFACE>_SPEC.md` — read the spec for the surface you're working on; each one documents API endpoints, frontend stores, and SSOT chains
 - `backend/api/app.py` startup wiring
 - `backend/api/models.py` schema
 
@@ -4510,6 +4658,7 @@ Quick-jump index by first significant word — useful when you remember a name b
 | Chart indicator system | §22.15 |
 | Chase loop invariants | §12 |
 | Chase loop lifecycle | §7 |
+| CSV export: all ag-Grid cards | §22.19 |
 | Concurrency model | §4 |
 | Core architectural principles | §3 |
 | Cross-cutting checklist before every commit | §42 |
@@ -4518,6 +4667,7 @@ Quick-jump index by first significant word — useful when you remember a name b
 | Database schema overview | §4.6 |
 | Demo mode | §22 |
 | Deployment notes | §26 |
+| Docs folder reorganisation + spec files | §22.20 |
 | History — orders / trades / funds | §22.9 |
 | Investor portal — token-as-credential | §22.5 |
 | Investor portal — units-based NAV math | §22.6 |
@@ -4525,6 +4675,7 @@ Quick-jump index by first significant word — useful when you remember a name b
 | Market-status probe | §22.14 |
 | Metrics + performance tracking | §4.9 |
 | Navbar audit — rename + resequence | §22.11 |
+| NavStrip — lifetime slot SSOT fix | §22.18 |
 | Operator's mental model | §30 |
 | Order placement — basket (Chain tab) | §6 |
 | Order placement — single ticket | §5 |
