@@ -369,6 +369,102 @@ def _wing_scan_candidates(
     return best, fallback, scanned, dropped_oi, dropped_spread
 
 
+def _wing_build_chain(
+    insts_resp,
+    root: str,
+    expiry_token: str,
+    opt: str,
+    parent_strike: int,
+    chain_radius: int,
+) -> tuple[list[dict], Optional[str]]:
+    """Filter the instruments cache to the matching option chain and
+    apply the radius slice around *parent_strike*.
+
+    Returns ``(candidates, error_reason)``:
+
+    * On success: ``(non-empty list, None)``
+    * On failure: ``([], reason_string)``
+
+    The reason strings match the substrings asserted by the test suite
+    ("no chain candidates", "chain_radius filter eliminated").
+    """
+    # Filter to (root, expiry_token, opt_type) — match exactly the
+    # parent contract's chain. Use the cached `s` (tradingsymbol)
+    # field's prefix as the discriminator so MCX vs NFO doesn't
+    # matter; the parent's exchange flows through unchanged.
+    parent_prefix = f"{root}{expiry_token}"
+    suffix        = opt   # 'CE' or 'PE'
+    candidates: list[dict] = []
+    for inst in (insts_resp.items if insts_resp else []):
+        ts = str(inst.s).upper()
+        if not ts.startswith(parent_prefix):
+            continue
+        if not ts.endswith(suffix):
+            continue
+        if inst.k is None:
+            continue
+        candidates.append({
+            "ts":     ts,
+            "strike": float(inst.k),
+            "exch":   inst.e,
+        })
+
+    if not candidates:
+        return [], (
+            f"wing_premium_pct skipped — no chain candidates found "
+            f"for {root}{expiry_token}{suffix}"
+        )
+
+    # Slice to within chain_radius strikes of the parent. Sorted by
+    # strike for the slice arithmetic.
+    candidates.sort(key=lambda c: c["strike"])
+    parent_idx = next(
+        (i for i, c in enumerate(candidates) if c["strike"] == parent_strike),
+        None,
+    )
+    if parent_idx is not None:
+        lo = max(0, parent_idx - chain_radius)
+        hi = min(len(candidates), parent_idx + chain_radius + 1)
+        candidates = candidates[lo:hi]
+
+    if not candidates:
+        return [], (
+            "wing_premium_pct skipped — chain_radius filter eliminated "
+            "all candidates"
+        )
+
+    return candidates, None
+
+
+async def _wing_fetch_quotes(
+    candidates: list[dict],
+    parent_exchange: str,
+) -> tuple[dict, Optional[str]]:
+    """Batch-fetch broker quotes for all *candidates* in one round-trip.
+
+    Offloads the synchronous broker call to a thread so the event loop
+    is not blocked during the network round-trip.
+
+    Returns ``(quote_data, error_reason)``:
+
+    * On success: ``(dict keyed by "EXCH:SYMBOL", None)``
+    * On failure: ``({}, reason_string)``
+    """
+    quote_keys = [f"{c['exch']}:{c['ts']}" for c in candidates]
+    try:
+        import asyncio as _aio
+        from backend.brokers.registry import get_market_data_broker
+        broker = get_market_data_broker()
+        quote_data = (
+            await _aio.to_thread(broker.quote, quote_keys)
+        ) or {}
+        return quote_data, None
+    except Exception as e:
+        return {}, (
+            f"wing_premium_pct skipped — broker.quote() failed: {e}"
+        )
+
+
 async def _pick_wing_by_premium(
     parent_symbol:    str,
     parent_exchange:  str,
@@ -444,66 +540,15 @@ async def _pick_wing_by_premium(
             f"failed: {e}"
         )
 
-    # Filter to (root, expiry_token, opt_type) — match exactly the
-    # parent contract's chain. Use the cached `s` (tradingsymbol)
-    # field's prefix as the discriminator so MCX vs NFO doesn't
-    # matter; the parent's exchange flows through unchanged.
-    parent_prefix = f"{root}{expiry_token}"
-    suffix        = opt   # 'CE' or 'PE'
-    candidates: list[dict] = []
-    for inst in (insts_resp.items if insts_resp else []):
-        ts = str(inst.s).upper()
-        if not ts.startswith(parent_prefix):
-            continue
-        if not ts.endswith(suffix):
-            continue
-        if inst.k is None:
-            continue
-        candidates.append({
-            "ts":     ts,
-            "strike": float(inst.k),
-            "exch":   inst.e,
-        })
-
-    if not candidates:
-        return None, None, (
-            f"wing_premium_pct skipped — no chain candidates found "
-            f"for {root}{expiry_token}{suffix}"
-        )
-
-    # Slice to within chain_radius strikes of the parent. Sorted by
-    # strike for the slice arithmetic.
-    candidates.sort(key=lambda c: c["strike"])
-    parent_idx = next(
-        (i for i, c in enumerate(candidates) if c["strike"] == parent_strike),
-        None,
+    candidates, chain_err = _wing_build_chain(
+        insts_resp, root, expiry_token, opt, parent_strike, chain_radius,
     )
-    if parent_idx is not None:
-        lo = max(0, parent_idx - chain_radius)
-        hi = min(len(candidates), parent_idx + chain_radius + 1)
-        candidates = candidates[lo:hi]
+    if chain_err:
+        return None, None, chain_err
 
-    if not candidates:
-        return None, None, (
-            f"wing_premium_pct skipped — chain_radius filter eliminated "
-            f"all candidates"
-        )
-
-    # Batched quote — one round-trip across every candidate. Offload
-    # the sync broker call to a thread so we don't block the event
-    # loop while the round-trip is in flight.
-    quote_keys = [f"{c['exch']}:{c['ts']}" for c in candidates]
-    try:
-        import asyncio as _aio
-        from backend.brokers.registry import get_market_data_broker
-        broker = get_market_data_broker()
-        quote_data = (
-            await _aio.to_thread(broker.quote, quote_keys)
-        ) or {}
-    except Exception as e:
-        return None, None, (
-            f"wing_premium_pct skipped — broker.quote() failed: {e}"
-        )
+    quote_data, quote_err = await _wing_fetch_quotes(candidates, parent_exchange)
+    if quote_err:
+        return None, None, quote_err
 
     best, fallback, scanned, dropped_oi, dropped_spread = _wing_scan_candidates(
         candidates, quote_data, target_premium, min_oi, max_spread_pct,
