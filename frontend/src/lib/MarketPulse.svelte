@@ -83,6 +83,7 @@
   } from '$lib/data/marketDataStores.svelte.js';
   // resolveUnderlying helpers used by loadPulse are imported via pulseLoad.js.
   import CardControls from '$lib/CardControls.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
   import { createPerformanceSocket } from '$lib/ws';
   import { lastRefreshAt, formatDualTz, logTimeIst } from '$lib/stores';
   import { priceFmt, pctFmt, aggCompact, aggFmtGrid, pctFmtGrid, qtyFmt, directional, fmtPctScaled } from '$lib/format';
@@ -3943,7 +3944,16 @@
                  class:is-collapsed={_effColPinWatch}
                  class:fs-card-on={_fsPinWatch}
                  style="--bucket-rows:{_bRowsPinWatch}">
-          <div class="mp-bucket-head">
+          <CardHeader
+            bind:isCollapsed={_colPinWatch}
+            bind:isFullscreen={_fsPinWatch}
+            bind:filter={_filterPinWatch}
+            cardId="pulse-pinwatch"
+            label="Pinned/Watchlist"
+            onRefresh={refreshAllNow}
+            refreshLoading={_refreshing}
+            onDownload={() => (topTab === 'pinned' ? gridPinned : gridWatch)?.exportDataAsCsv({ fileName: 'watchlist.csv' })}
+          >
             <!-- Top-tab strip. Pinned (Default + Markets merged feed)
                  lives on the left; each operator-created watchlist is
                  its own peer tab to the right, labelled with the list
@@ -3958,56 +3968,47 @@
                  string-encoded as `wl:<id>` since AlgoTabs uses string
                  ids; onChange decodes back to the number/'pinned'
                  union the rest of MarketPulse expects. -->
-            <AlgoTabs
-              tabs={[
-                { id: 'pinned', label: 'Pinned', color: /** @type {const} */ ('amber') },
-                /* Operator (2026-07-01): "active tab text color must be
-                   consistent". User-created watchlists previously took
-                   the sky variant to distinguish them from Pinned; now
-                   every tab shares the canonical amber palette so the
-                   active state reads uniform across the platform. */
-                ..._userLists.map(l => ({ id: `wl:${l.id}`, label: l.name, color: /** @type {const} */ ('amber') }))
-              ]}
-              value={topTab === 'pinned' ? 'pinned' : `wl:${topTab}`}
-              onChange={(id) => { topTab = id === 'pinned' ? 'pinned' : Number(id.slice(3)); }}
-              compact={true}
-            />
-            <!-- Watchlist manage button — opens the Add-to-Pulse modal
-                 which handles every list-level operation: add a symbol,
-                 create a new watchlist, rename existing, delete it,
-                 add/remove items. Earlier "+" glyph only conveyed
-                 "add" but the modal does much more — switched to a
-                 pencil-edits-list glyph (horizontal lines + pencil)
-                 which reads as "manage list". Same shortcut (/). -->
-            {#if !isDemo}
-              <button onclick={openSearch}
-                      title="Manage watchlists — add / rename / delete (/)"
-                      aria-label="Manage watchlists"
-                      class="mp-add-btn">
-                <svg width="14" height="14" viewBox="0 0 16 16"
-                     fill="none" stroke="currentColor" stroke-width="1.5"
-                     stroke-linecap="round" stroke-linejoin="round"
-                     aria-hidden="true">
-                  <!-- list lines on the left -->
-                  <path d="M2.5 5h5M2.5 8h5M2.5 11h3.5" />
-                  <!-- pencil overlaid on the right -->
-                  <path d="M11 3l2 2L8 10l-2.3 0.6L6.4 8.3L11 3z" />
-                  <path d="M9.7 4.3l2 2" />
-                </svg>
-              </button>
-            {/if}
-            <span class="mp-bucket-head-spacer"></span>
-            <CardControls
-              bind:isCollapsed={_colPinWatch}
-              bind:isFullscreen={_fsPinWatch}
-              bind:filter={_filterPinWatch}
-              cardId="pulse-pinwatch"
-              label="Pinned/Watchlist"
-              onRefresh={refreshAllNow}
-              refreshLoading={_refreshing}
-              onDownload={() => (topTab === 'pinned' ? gridPinned : gridWatch)?.exportDataAsCsv({ fileName: 'watchlist.csv' })}
-            />
-          </div>
+            <svelte:fragment slot="left">
+              <AlgoTabs
+                tabs={[
+                  { id: 'pinned', label: 'Pinned', color: /** @type {const} */ ('amber') },
+                  /* Operator (2026-07-01): "active tab text color must be
+                     consistent". User-created watchlists previously took
+                     the sky variant to distinguish them from Pinned; now
+                     every tab shares the canonical amber palette so the
+                     active state reads uniform across the platform. */
+                  ..._userLists.map(l => ({ id: `wl:${l.id}`, label: l.name, color: /** @type {const} */ ('amber') }))
+                ]}
+                value={topTab === 'pinned' ? 'pinned' : `wl:${topTab}`}
+                onChange={(id) => { topTab = id === 'pinned' ? 'pinned' : Number(id.slice(3)); }}
+                compact={true}
+              />
+              <!-- Watchlist manage button — opens the Add-to-Pulse modal
+                   which handles every list-level operation: add a symbol,
+                   create a new watchlist, rename existing, delete it,
+                   add/remove items. Earlier "+" glyph only conveyed
+                   "add" but the modal does much more — switched to a
+                   pencil-edits-list glyph (horizontal lines + pencil)
+                   which reads as "manage list". Same shortcut (/). -->
+              {#if !isDemo}
+                <button onclick={openSearch}
+                        title="Manage watchlists — add / rename / delete (/)"
+                        aria-label="Manage watchlists"
+                        class="mp-add-btn">
+                  <svg width="14" height="14" viewBox="0 0 16 16"
+                       fill="none" stroke="currentColor" stroke-width="1.5"
+                       stroke-linecap="round" stroke-linejoin="round"
+                       aria-hidden="true">
+                    <!-- list lines on the left -->
+                    <path d="M2.5 5h5M2.5 8h5M2.5 11h3.5" />
+                    <!-- pencil overlaid on the right -->
+                    <path d="M11 3l2 2L8 10l-2.3 0.6L6.4 8.3L11 3z" />
+                    <path d="M9.7 4.3l2 2" />
+                  </svg>
+                </button>
+              {/if}
+            </svelte:fragment>
+          </CardHeader>
           <!-- Sub-tab strip retired — each user watchlist now lives
                as its own top-tab next to Pinned. -->
 
@@ -4028,31 +4029,33 @@
                    class:is-empty={_winnersTotal === 0}
                    class:fs-card-on={_fsWinners}
                    style="--bucket-rows:{_bRowsWinners}">
-            <div class="mp-bucket-head">
-              <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
-              {#if _moversAsOf}
-                <span class="mp-movers-as-of">Last updated: {_moversAsOf}</span>
-              {/if}
-              <div class="mp-head-tabs">
-                <AlgoTabs
-                  tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t], badge: winnerCounts[t] || undefined }))}
-                  value={_effWinTab}
-                  onChange={(id) => { winTab = /** @type {MoverTab} */ (id); }}
-                  compact={true}
-                />
-              </div>
-              <span class="mp-bucket-head-spacer"></span>
-              <CardControls
-                bind:isCollapsed={_colWinners}
-                bind:isFullscreen={_fsWinners}
-                bind:filter={_filterWinners}
-                cardId="pulse-winners"
-                label="Winners"
-                onRefresh={refreshAllNow}
-                refreshLoading={_refreshing}
-                onDownload={() => gridWin?.exportDataAsCsv({ fileName: 'winners.csv' })}
-              />
-            </div>
+            <CardHeader
+              bind:isCollapsed={_colWinners}
+              bind:isFullscreen={_fsWinners}
+              bind:filter={_filterWinners}
+              cardId="pulse-winners"
+              label="Winners"
+              onRefresh={refreshAllNow}
+              refreshLoading={_refreshing}
+              onDownload={() => gridWin?.exportDataAsCsv({ fileName: 'winners.csv' })}
+            >
+              <svelte:fragment slot="left">
+                <span class="mp-bucket-label mp-bucket-label-winners">Winners</span>
+                {#if _moversAsOf}
+                  <span class="mp-movers-as-of">Last updated: {_moversAsOf}</span>
+                {/if}
+              </svelte:fragment>
+              <svelte:fragment slot="middle">
+                <div class="mp-head-tabs">
+                  <AlgoTabs
+                    tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t], badge: winnerCounts[t] || undefined }))}
+                    value={_effWinTab}
+                    onChange={(id) => { winTab = /** @type {MoverTab} */ (id); }}
+                    compact={true}
+                  />
+                </div>
+              </svelte:fragment>
+            </CardHeader>
             <div bind:this={gridWinEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
           </section>
         {/if}
@@ -4062,31 +4065,33 @@
                    class:is-empty={_losersTotal === 0}
                    class:fs-card-on={_fsLosers}
                    style="--bucket-rows:{_bRowsLosers}">
-            <div class="mp-bucket-head">
-              <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
-              {#if _moversAsOf}
-                <span class="mp-movers-as-of">Last updated: {_moversAsOf}</span>
-              {/if}
-              <div class="mp-head-tabs">
-                <AlgoTabs
-                  tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t], badge: loserCounts[t] || undefined }))}
-                  value={_effLoseTab}
-                  onChange={(id) => { loseTab = /** @type {MoverTab} */ (id); }}
-                  compact={true}
-                />
-              </div>
-              <span class="mp-bucket-head-spacer"></span>
-              <CardControls
-                bind:isCollapsed={_colLosers}
-                bind:isFullscreen={_fsLosers}
-                bind:filter={_filterLosers}
-                cardId="pulse-losers"
-                label="Losers"
-                onRefresh={refreshAllNow}
-                refreshLoading={_refreshing}
-                onDownload={() => gridLose?.exportDataAsCsv({ fileName: 'losers.csv' })}
-              />
-            </div>
+            <CardHeader
+              bind:isCollapsed={_colLosers}
+              bind:isFullscreen={_fsLosers}
+              bind:filter={_filterLosers}
+              cardId="pulse-losers"
+              label="Losers"
+              onRefresh={refreshAllNow}
+              refreshLoading={_refreshing}
+              onDownload={() => gridLose?.exportDataAsCsv({ fileName: 'losers.csv' })}
+            >
+              <svelte:fragment slot="left">
+                <span class="mp-bucket-label mp-bucket-label-losers">Losers</span>
+                {#if _moversAsOf}
+                  <span class="mp-movers-as-of">Last updated: {_moversAsOf}</span>
+                {/if}
+              </svelte:fragment>
+              <svelte:fragment slot="middle">
+                <div class="mp-head-tabs">
+                  <AlgoTabs
+                    tabs={MOVER_TABS.map(t => ({ id: t, label: MOVER_TAB_LABEL[t], badge: loserCounts[t] || undefined }))}
+                    value={_effLoseTab}
+                    onChange={(id) => { loseTab = /** @type {MoverTab} */ (id); }}
+                    compact={true}
+                  />
+                </div>
+              </svelte:fragment>
+            </CardHeader>
             <div bind:this={gridLoseEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
           </section>
         {/if}
@@ -4097,60 +4102,60 @@
                  class:is-collapsed={_effColPositions}
                  class:fs-card-on={_fsPositions}
                  style="--bucket-rows:{_bRowsPositions}">
-          <div class="mp-bucket-head">
-            <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
-            {#if accountPicker && availableAccounts.length > 0}
-              <!-- Per-card Account picker. Positions and Holdings each
-                   carry their own filter so an operator can scope
-                   Positions to ZG#### (intraday) while Holdings
-                   tracks ZJ#### (long-term) independently. Left-anchored
-                   so it reads as part of the card's identity strip
-                   (label + filter), not part of the controls cluster. -->
-              <div class="mp-head-acct">
-                <AccountMultiSelect bind:value={positionsAccounts}
-                  options={availableAccounts.map(a => ({ value: a, label: a }))}
-                  ariaLabel="Filter Positions by broker account" />
-              </div>
-            {/if}
-            <span class="mp-bucket-head-spacer"></span>
-            <CardControls
-              bind:isCollapsed={_colPositions}
-              bind:isFullscreen={_fsPositions}
-              bind:filter={_filterPositions}
-              cardId="pulse-positions"
-              label="Positions"
-              onRefresh={refreshAllNow}
-              refreshLoading={_refreshing}
-              onDownload={() => gridPositions?.exportDataAsCsv({ fileName: 'positions.csv' })}
-            />
-          </div>
+          <CardHeader
+            bind:isCollapsed={_colPositions}
+            bind:isFullscreen={_fsPositions}
+            bind:filter={_filterPositions}
+            cardId="pulse-positions"
+            label="Positions"
+            onRefresh={refreshAllNow}
+            refreshLoading={_refreshing}
+            onDownload={() => gridPositions?.exportDataAsCsv({ fileName: 'positions.csv' })}
+          >
+            <svelte:fragment slot="left">
+              <span class="mp-bucket-label mp-bucket-label-positions">Positions</span>
+              {#if accountPicker && availableAccounts.length > 0}
+                <!-- Per-card Account picker. Positions and Holdings each
+                     carry their own filter so an operator can scope
+                     Positions to ZG#### (intraday) while Holdings
+                     tracks ZJ#### (long-term) independently. Left-anchored
+                     so it reads as part of the card's identity strip
+                     (label + filter), not part of the controls cluster. -->
+                <div class="mp-head-acct">
+                  <AccountMultiSelect bind:value={positionsAccounts}
+                    options={availableAccounts.map(a => ({ value: a, label: a }))}
+                    ariaLabel="Filter Positions by broker account" />
+                </div>
+              {/if}
+            </svelte:fragment>
+          </CardHeader>
           <div bind:this={gridPositionsEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
         </section>
         <section class="mp-bucket-wrap mp-bucket-holdings"
                  class:is-collapsed={_effColHoldings}
                  class:fs-card-on={_fsHoldings}
                  style="--bucket-rows:{_bRowsHoldings}">
-          <div class="mp-bucket-head">
-            <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
-            {#if accountPicker && availableAccounts.length > 0}
-              <div class="mp-head-acct">
-                <AccountMultiSelect bind:value={holdingsAccounts}
-                  options={availableAccounts.map(a => ({ value: a, label: a }))}
-                  ariaLabel="Filter Holdings by broker account" />
-              </div>
-            {/if}
-            <span class="mp-bucket-head-spacer"></span>
-            <CardControls
-              bind:isCollapsed={_colHoldings}
-              bind:isFullscreen={_fsHoldings}
-              bind:filter={_filterHoldings}
-              cardId="pulse-holdings"
-              label="Holdings"
-              onRefresh={refreshAllNow}
-              refreshLoading={_refreshing}
-              onDownload={() => gridHoldings?.exportDataAsCsv({ fileName: 'holdings.csv' })}
-            />
-          </div>
+          <CardHeader
+            bind:isCollapsed={_colHoldings}
+            bind:isFullscreen={_fsHoldings}
+            bind:filter={_filterHoldings}
+            cardId="pulse-holdings"
+            label="Holdings"
+            onRefresh={refreshAllNow}
+            refreshLoading={_refreshing}
+            onDownload={() => gridHoldings?.exportDataAsCsv({ fileName: 'holdings.csv' })}
+          >
+            <svelte:fragment slot="left">
+              <span class="mp-bucket-label mp-bucket-label-holdings">Holdings</span>
+              {#if accountPicker && availableAccounts.length > 0}
+                <div class="mp-head-acct">
+                  <AccountMultiSelect bind:value={holdingsAccounts}
+                    options={availableAccounts.map(a => ({ value: a, label: a }))}
+                    ariaLabel="Filter Holdings by broker account" />
+                </div>
+              {/if}
+            </svelte:fragment>
+          </CardHeader>
           <div bind:this={gridHoldingsEl} class="ag-theme-quartz ag-theme-algo bucket-grid"></div>
         </section>
       </div>
@@ -4937,24 +4942,9 @@
   .mp-bucket-label-winners   { color: rgba(74, 222, 128, 0.85); }
   .mp-bucket-label-losers    { color: rgba(248, 113, 113, 0.85); }
 
-  /* Bucket header — label + universe tabs on the same row above
-     each Winners / Losers grid. The label keeps its left-border
-     accent (inherited from .mp-bucket-label) so the section still
-     reads as part of the 6-bucket family. */
-  .mp-bucket-head {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    margin-bottom: 0.1rem;
-    /* flex-wrap: nowrap so the CollapseButton stays on the same
-       row as the label across every card — uniform vertical
-       offset (operator: "watchlist expand should align with the
-       others"). Tabs moved into a dedicated .mp-bucket-subhead
-       row below so they no longer compete with the button for
-       header-row space. */
-    flex-wrap: nowrap;
-  }
-  .mp-bucket-head .mp-bucket-label { margin-bottom: 0; }
+  /* Label lives inside CardHeader's .ch-left flex row —
+     neutralise the base margin-bottom so it centres correctly. */
+  .mp-bucket-label { margin-bottom: 0; }
   /* Closed-hours snapshot age — shown only when moversSnapshotAt is
      non-null (off-hours persisted snapshot). Sits inline after the
      Winners / Losers label; kept small + muted so it doesn't compete
@@ -4966,14 +4956,6 @@
     margin-left: 0.35rem;
     align-self: center;
     font-variant-numeric: tabular-nums;
-  }
-  /* Spacer pushes the CollapseButton to the FAR RIGHT of the
-     header regardless of card content. Label sits left, spacer
-     absorbs the gap, button locks to the right edge. Card width
-     is set by the parent column flex so collapse doesn't move
-     the button. */
-  .mp-bucket-head-spacer {
-    flex: 1 1 0;
   }
   /* Hidden grid container (inactive tab) — display:none keeps it
      in the DOM so bind:this lands at mount, but ag-Grid won't
