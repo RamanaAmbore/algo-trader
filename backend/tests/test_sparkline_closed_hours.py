@@ -664,3 +664,238 @@ class TestResolveSparklinesDbKey:
             resolved_to_bare={"CRUDEOIL26JULFUT": "CRUDEOIL"},
         )
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Group 1: _fill_from_daily_book_sparkline direct unit tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fill_daily_book_sparkline_parses_payload():
+    """Mock DB row with kind='sparkline' payload → extracts ltp values into past_result."""
+    from backend.api.routes.quote import SparklineSymbol, _fill_from_daily_book_sparkline
+
+    settled_payload = json.dumps({
+        "points": [
+            {"t": "2026-07-01", "ltp": 100.0},
+            {"t": "2026-07-02", "ltp": 101.0},
+            {"t": "2026-07-03", "ltp": 102.0},
+        ],
+        "settled": True,
+        "captured_at": "2026-07-03T15:35:00+05:30",
+    })
+
+    mock_db_rows = [("RELIANCE", settled_payload)]
+
+    class FakeExecuteResult:
+        def all(self):
+            return mock_db_rows
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def execute(self, q, params=None):
+            return FakeExecuteResult()
+
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def fake_async_session():
+        yield FakeSession()
+
+    past_result: dict = {}
+    miss_syms = [SparklineSymbol(tradingsymbol="RELIANCE", exchange="NSE")]
+
+    with patch("backend.api.database.async_session", fake_async_session):
+        await _fill_from_daily_book_sparkline(miss_syms, past_result, {})
+
+    assert "RELIANCE" in past_result, "RELIANCE should be populated from daily_book"
+    assert past_result["RELIANCE"] == [100.0, 101.0, 102.0], (
+        f"Expected [100.0, 101.0, 102.0], got {past_result['RELIANCE']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fill_daily_book_sparkline_empty_when_no_row():
+    """Mock DB returns no rows → past_result stays empty (symbol not in dict)."""
+    from backend.api.routes.quote import SparklineSymbol, _fill_from_daily_book_sparkline
+
+    mock_db_rows = []  # No rows
+
+    class FakeExecuteResult:
+        def all(self):
+            return mock_db_rows
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def execute(self, q, params=None):
+            return FakeExecuteResult()
+
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def fake_async_session():
+        yield FakeSession()
+
+    past_result: dict = {}
+    miss_syms = [SparklineSymbol(tradingsymbol="UNKNOWN", exchange="NSE")]
+
+    with patch("backend.api.database.async_session", fake_async_session):
+        await _fill_from_daily_book_sparkline(miss_syms, past_result, {})
+
+    assert "UNKNOWN" not in past_result, "Symbol should not appear in past_result on DB miss"
+    assert past_result == {}, "past_result should remain empty"
+
+
+@pytest.mark.asyncio
+async def test_fill_daily_book_sparkline_skips_malformed_payload():
+    """Mock DB row with malformed JSON → no exception raised, past_result stays empty."""
+    from backend.api.routes.quote import SparklineSymbol, _fill_from_daily_book_sparkline
+
+    malformed_payload = "not-valid-json-at-all"
+
+    mock_db_rows = [("RELIANCE", malformed_payload)]
+
+    class FakeExecuteResult:
+        def all(self):
+            return mock_db_rows
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def execute(self, q, params=None):
+            return FakeExecuteResult()
+
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def fake_async_session():
+        yield FakeSession()
+
+    past_result: dict = {}
+    miss_syms = [SparklineSymbol(tradingsymbol="RELIANCE", exchange="NSE")]
+
+    with patch("backend.api.database.async_session", fake_async_session):
+        await _fill_from_daily_book_sparkline(miss_syms, past_result, {})
+
+    # Should not raise; past_result stays empty because payload is malformed
+    assert "RELIANCE" not in past_result, (
+        "Malformed payload should be skipped, symbol not added to past_result"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fill_daily_book_sparkline_multi_symbol():
+    """Mock two DB rows: RELIANCE (3 points) and TCS (4 points)."""
+    from backend.api.routes.quote import SparklineSymbol, _fill_from_daily_book_sparkline
+
+    reliance_payload = json.dumps({
+        "points": [
+            {"t": "2026-07-01", "ltp": 2800.0},
+            {"t": "2026-07-02", "ltp": 2820.0},
+            {"t": "2026-07-03", "ltp": 2835.0},
+        ],
+        "settled": True,
+    })
+
+    tcs_payload = json.dumps({
+        "points": [
+            {"t": "2026-07-01", "ltp": 3100.0},
+            {"t": "2026-07-02", "ltp": 3150.0},
+            {"t": "2026-07-03", "ltp": 3200.0},
+            {"t": "2026-07-04", "ltp": 3250.0},
+        ],
+        "settled": True,
+    })
+
+    mock_db_rows = [
+        ("RELIANCE", reliance_payload),
+        ("TCS", tcs_payload),
+    ]
+
+    class FakeExecuteResult:
+        def all(self):
+            return mock_db_rows
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def execute(self, q, params=None):
+            return FakeExecuteResult()
+
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def fake_async_session():
+        yield FakeSession()
+
+    past_result: dict = {}
+    miss_syms = [
+        SparklineSymbol(tradingsymbol="RELIANCE", exchange="NSE"),
+        SparklineSymbol(tradingsymbol="TCS", exchange="NSE"),
+    ]
+
+    with patch("backend.api.database.async_session", fake_async_session):
+        await _fill_from_daily_book_sparkline(miss_syms, past_result, {})
+
+    assert "RELIANCE" in past_result, "RELIANCE should be populated"
+    assert "TCS" in past_result, "TCS should be populated"
+    assert len(past_result["RELIANCE"]) == 3, (
+        f"RELIANCE should have 3 points, got {len(past_result['RELIANCE'])}"
+    )
+    assert len(past_result["TCS"]) == 4, (
+        f"TCS should have 4 points, got {len(past_result['TCS'])}"
+    )
+    assert past_result["RELIANCE"] == [2800.0, 2820.0, 2835.0]
+    assert past_result["TCS"] == [3100.0, 3150.0, 3200.0, 3250.0]
+
+
+@pytest.mark.asyncio
+async def test_fill_daily_book_sparkline_empty_points_skipped():
+    """DB row with empty points array → symbol not added to past_result."""
+    from backend.api.routes.quote import SparklineSymbol, _fill_from_daily_book_sparkline
+
+    empty_payload = json.dumps({
+        "points": [],
+        "settled": True,
+        "captured_at": "2026-07-03T15:35:00+05:30",
+    })
+
+    mock_db_rows = [("RELIANCE", empty_payload)]
+
+    class FakeExecuteResult:
+        def all(self):
+            return mock_db_rows
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+        async def execute(self, q, params=None):
+            return FakeExecuteResult()
+
+    import contextlib
+
+    @contextlib.asynccontextmanager
+    async def fake_async_session():
+        yield FakeSession()
+
+    past_result: dict = {}
+    miss_syms = [SparklineSymbol(tradingsymbol="RELIANCE", exchange="NSE")]
+
+    with patch("backend.api.database.async_session", fake_async_session):
+        await _fill_from_daily_book_sparkline(miss_syms, past_result, {})
+
+    assert "RELIANCE" not in past_result, (
+        "Empty points array should skip the symbol; not add an empty list"
+    )
