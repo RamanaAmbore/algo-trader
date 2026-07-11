@@ -3029,65 +3029,27 @@
 
   // ── Grid setup ────────────────────────────────────────────────────
 
-  function symRenderer(params) {
-    const row = params.data || {};
-    // Two alias sources can light up the cell:
-    //   - row.display_name — operator-supplied nickname on the
-    //     WatchlistItem (e.g. "Crude oil" for CRUDEOIL26JUNFUT). Wins
-    //     over the quote-key alias when present.
-    //   - row.alias — quote-key vs tradingsymbol shim ("NIFTY 50"
-    //     spot keyed off "NIFTY"). Shown as a "→ raw symbol" hint.
-    const opAlias = row.display_name ? String(row.display_name) : '';
-    // When the row's `main` is the raw tradingsymbol (no operator alias,
-    // no quote-key alias), apply the Dhan-style hyphenated transform
-    // so the cell reads as NIFTY-26JUN-22000-CE not NIFTY26JUN22000CE.
-    // Aliases (display_name / quote-key) are operator-visible labels —
-    // those bypass the formatter.
-    const main    = opAlias
-                    || row.alias
-                    || _pulseFmtSym(row.tradingsymbol || '', row.exchange || '');
-    // Always surface the raw tradingsymbol after the main when an alias
-    // is in play so the operator can still see what the row really is.
-    const aliasTail = (opAlias || row.alias)
-      ? `<span class="sym-alias" title="Tradingsymbol"> → ${_pulseFmtSym(row.tradingsymbol || '', row.exchange || '')}</span>`
-      : '';
-    // CE / PE tint on the symbol text — Sensibull / Streak convention.
-    // Green = Call (right to BUY the underlying), red = Put (right to
-    // SELL). Operator scanning their book tells calls from puts at a
-    // glance without reading the strike.
-    const optClass = row.opt_type === 'CE' ? 'sym-ce'
-                    : row.opt_type === 'PE' ? 'sym-pe'
-                    : '';
-    // Lot-viable chip — sits IMMEDIATELY after the symbol text (before
-    // any P/H/W/U/M badge group) so the operator's eye lands on the
-    // actionable "how many covered calls can I write" number first.
-    // Operator: "keep lot chip immediately after the symbol." Shown
-    // only when the holding qty ≥ 1 whole lot of an F&O underlying.
-    //
-    // Colour rule (operator: "color code the lot chip based on if
-    // underlying active positions exist"):
-    //   no derivative position on this underlying → GREEN  (clean,
-    //     covered-call viable; write something new)
-    //   existing derivative position on this underlying → AMBER
-    //     (the operator already has exposure here — covered call /
-    //      hedge / spread in play; double-writing would compound risk)
+  // ── symRenderer helpers ──────────────────────────────────────────
+  // Closes over module-level symbols: _fnoLotFor, _underlyingsWithActivePositions,
+  // lotsForRow, fmtLots, qtyFmt, fmtPctScaled (all defined in scope).
+
+  /**
+   * Build the lot-chip and P/H/W/U/M badge cluster HTML for the symbol cell.
+   * Returns { lotChip, badgeHtml } separately so symRenderer can interleave
+   * aliasTail between them (matching original: sym + lotChip + aliasTail + badgeHtml).
+   */
+  function _symCellBadges(row) {
     let lotChip = '';
     if (row.src?.h) {
       try {
         const symStr = String(row.tradingsymbol || '').toUpperCase();
         const lot = symStr ? _fnoLotFor(symStr) : 0;
         if (lot > 0) {
-          // SSOT: lotsForRow + fmtLots (shared with Position badge, Lots
-          // column, PerformancePage, Dashboard) — same math, one source.
-          // Holdings rows are EQ so lotsForRow routes through the
-          // getOptionUnderlyingLot / qty_hold path (identical to `qHold/lot`).
-          // Threshold ≥ 0.1 hides noise from negligible holdings.
           const lotsRounded = lotsForRow(row) ?? 0;
           if (lotsRounded >= 0.1) {
             const lotsStr = fmtLots(lotsRounded);
             const _hasPos = _underlyingsWithActivePositions.has(symStr);
-            const _cls = _hasPos ? 'badge-fno-lot badge-fno-lot-pos'
-                                 : 'badge-fno-lot';
+            const _cls = _hasPos ? 'badge-fno-lot badge-fno-lot-pos' : 'badge-fno-lot';
             const _plural = lotsRounded === 1 ? '' : 's';
             const _title = _hasPos
               ? `Covered-call viable — ${lotsStr} lot${_plural} (lot size ${lot}). Underlying already has an open derivative position; review exposure before writing more.`
@@ -3100,13 +3062,8 @@
     const badges = [];
     if (row.src?.p) {
       const q = Number(row.qty_pos) || 0;
-      // F&O positions: show lots via SSOT lotsForRow so the badge is
-      // consistent with the Lots column. E.g. CRUDEOIL 100 contracts =
-      // 1 lot → "P 1L". Cash equity shows raw qty (no lot context).
       const _pLots = lotsForRow(row);
-      const _pLabel = (_pLots != null && _pLots > 0)
-        ? `${fmtLots(_pLots)}L`
-        : qtyFmt(q);
+      const _pLabel = (_pLots != null && _pLots > 0) ? `${fmtLots(_pLots)}L` : qtyFmt(q);
       badges.push(`<span class="sym-badge badge-p" title="Position (${qtyFmt(q)} contracts)">P ${_pLabel}</span>`);
     }
     if (row.src?.h) {
@@ -3128,6 +3085,97 @@
       badges.push(`<span class="sym-badge badge-m badge-m-${dir}" title="Top mover ${label}${sticky}">M${arrow}</span>`);
     }
     const badgeHtml = badges.length ? `<span class="sym-badges">${badges.join('')}</span>` : '';
+    return { lotChip, badgeHtml };
+  }
+
+  /**
+   * Return { optClass, symTitle } for the symbol span.
+   * optClass: CE/PE tint class (or empty string).
+   * symTitle: virtual-root title attribute string for MCX/CDS rows (or empty string).
+   */
+  function _symCellClasses(row, main) {
+    const optClass = row.opt_type === 'CE' ? 'sym-ce'
+                   : row.opt_type === 'PE' ? 'sym-pe'
+                   : '';
+    const _exchU = String(row.exchange || '').toUpperCase();
+    const _isMcxCds = _exchU === 'MCX' || _exchU === 'CDS';
+    const _rawSym = String(row.tradingsymbol || '');
+    const _resolvedContract = _isMcxCds ? resolveVirtual(_rawSym, _exchU) : _rawSym;
+    const symTitle = (_isMcxCds && _resolvedContract && _resolvedContract !== main)
+      ? ` title="${_resolvedContract}"`
+      : '';
+    return { optClass, symTitle };
+  }
+
+  // ── getRowClass helpers ──────────────────────────────────────────
+
+  /** Returns CSS classes for Movers direction/group dividers within the movers major-group. */
+  function _moverRowClasses(r) {
+    const out = [];
+    if (r._moverDirectionFirst && !r._majorFirst) out.push('mover-direction-divider');
+    if (r._moverDirection)                        out.push(`mover-dir-row-${r._moverDirection}`);
+    if (r._moverGroupFirst && !r._majorFirst && !r._moverDirectionFirst) out.push('mover-group-divider');
+    if (r._moverGroup)                            out.push(`mover-${r._moverGroup}`);
+    return out;
+  }
+
+  /**
+   * Returns CSS classes driven by row source flags (p/h/w/u).
+   * Preserves the original two-statement structure so that rows with s.p+s.u or
+   * s.h+s.u receive BOTH the position/holding class AND row-und (s.u can co-fire).
+   */
+  function _sourceRowClasses(r, s) {
+    const out = [];
+    if (s.p) {
+      const q = Number(r.qty_pos) || 0;
+      if (q < 0) out.push('pos-short');
+      else if (q > 0) out.push('pos-long');
+      else out.push('row-pos');
+    } else if (s.h) {
+      const pnl = Number(r.pnl);
+      if (Number.isFinite(pnl) && pnl > 0) out.push('row-hold-up');
+      else if (Number.isFinite(pnl) && pnl < 0) out.push('row-hold-down');
+      else out.push('row-hold-flat');
+      try {
+        if (getInstrument) {
+          const sym = String(r.tradingsymbol || '').toUpperCase();
+          if (_fnoLotFor(sym) > 0) out.push('row-hold-fno');
+        }
+      } catch (_) { /* defensive — cache miss shouldn't break row class */ }
+    }
+    if (s.w && !s.p && !s.h) out.push('row-watch');
+    else if (s.u) out.push('row-und');
+    return out;
+  }
+
+  function symRenderer(params) {
+    const row = params.data || {};
+    // Two alias sources can light up the cell:
+    //   - row.display_name — operator-supplied nickname on the
+    //     WatchlistItem (e.g. "Crude oil" for CRUDEOIL26JUNFUT). Wins
+    //     over the quote-key alias when present.
+    //   - row.alias — quote-key vs tradingsymbol shim ("NIFTY 50"
+    //     spot keyed off "NIFTY"). Shown as a "→ raw symbol" hint.
+    const opAlias = row.display_name ? String(row.display_name) : '';
+    // When the row's `main` is the raw tradingsymbol (no operator alias,
+    // no quote-key alias), apply the Dhan-style hyphenated transform
+    // so the cell reads as NIFTY-26JUN-22000-CE not NIFTY26JUN22000CE.
+    // Aliases (display_name / quote-key) are operator-visible labels —
+    // those bypass the formatter.
+    const main = opAlias
+               || row.alias
+               || _pulseFmtSym(row.tradingsymbol || '', row.exchange || '');
+    // Always surface the raw tradingsymbol after the main when an alias
+    // is in play so the operator can still see what the row really is.
+    const aliasTail = (opAlias || row.alias)
+      ? `<span class="sym-alias" title="Tradingsymbol"> → ${_pulseFmtSym(row.tradingsymbol || '', row.exchange || '')}</span>`
+      : '';
+    // CE/PE tint + virtual-root title attribute (MCX/CDS only).
+    const { optClass, symTitle } = _symCellClasses(row, main);
+    // Lot-viable chip + P/H/W/U/M badge cluster.
+    // lotChip sits immediately after the symbol text (before aliasTail + badgeHtml)
+    // so the operator's eye lands on the actionable covered-call count first.
+    const { lotChip, badgeHtml } = _symCellBadges(row);
     // Per-row remove (×) — operator can drop a watchlist row inline.
     // Hidden on the shared global Pinned row for non-admin / non-
     // designated users since the backend would 403 the delete; UI
@@ -3161,19 +3209,7 @@
       if (q > 0) dirLabel = '<span class="sr-only">Long position</span>';
       else if (q < 0) dirLabel = '<span class="sr-only">Short position</span>';
     }
-    // Virtual-root tooltip — MCX/CDS only. When the displayed label is a
-    // short alias (e.g. "GOLDM", "GOLDM.NEXT") the operator can hover to
-    // see the actual contract it resolves to (e.g. "GOLDM26JULFUT").
-    // Gate is exchange-scoped so NFO options (hyphenated display ≠ raw sym)
-    // never get a redundant title attribute.
-    const _exchU = String(row.exchange || '').toUpperCase();
-    const _isMcxCds = _exchU === 'MCX' || _exchU === 'CDS';
-    const _rawSym = String(row.tradingsymbol || '');
-    const _resolvedContract = _isMcxCds ? resolveVirtual(_rawSym, _exchU) : _rawSym;
-    const _symTitle = (_isMcxCds && _resolvedContract && _resolvedContract !== main)
-      ? ` title="${_resolvedContract}"`
-      : '';
-    return `<span class="sym-main ${optClass}"${_symTitle}>${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}`;
+    return `<span class="sym-main ${optClass}"${symTitle}>${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}`;
   }
 
   /**
@@ -3268,98 +3304,15 @@
     const r = params.data || {};
     const s = r.src || {};
     const classes = [];
-    // TOTAL rows on the right grid — bold, slightly-elevated tint
-    // so the operator's eye lands on the consolidated number.
     if (r._isTotal) {
       classes.push('mp-total-row');
       classes.push(`mp-total-${r._majorGroup || 'misc'}`);
     }
-    // Pin-category divider — first row of each pinned sub-group
-    // (indices → forex → commodity) gets a top-border so the three
-    // mini-sections at the very top of the grid feel distinct.
-    if (r._pinFirst && r._pinCategory) {
-      classes.push(`pin-divider pin-cat-${r._pinCategory}`);
-    }
-    // Major-group divider — first row of each major in mainRows
-    // (watchlist → positions → holdings → movers) gets an amber
-    // top-border + section label. Operator sees four visually
-    // distinct blocks below the Pinned strip.
-    if (r._majorFirst && r._majorGroup && r._majorGroup !== 'pinned') {
+    if (r._pinFirst && r._pinCategory) classes.push(`pin-divider pin-cat-${r._pinCategory}`);
+    if (r._majorFirst && r._majorGroup && r._majorGroup !== 'pinned')
       classes.push(`major-divider major-${r._majorGroup}`);
-    }
-    // Within Movers, first row of each direction (Winners / Losers)
-    // carries a stronger top-divider + colour label (green for winners,
-    // red for losers). Suppressed on the major-first row because that
-    // already paints the Movers divider; the operator sees the major
-    // label then the direction label as the body begins.
-    if (r._majorGroup === 'movers' && r._moverDirectionFirst && !r._majorFirst) {
-      // Direction-specific sub-class (`mover-dir-winners` / `-losers`)
-      // was retired with the per-colour divider rules; only the
-      // parent class is consumed by CSS now.
-      classes.push('mover-direction-divider');
-    }
-    if (r._majorGroup === 'movers' && r._moverDirection) {
-      classes.push(`mover-dir-row-${r._moverDirection}`);
-    }
-    // Within each direction, first row of each sub-group (underlying /
-    // midcap / smallcap) gets a thinner divider so operators can scan
-    // the three universes individually. Skip when the row is ALSO the
-    // major-first OR direction-first (those already paint dividers —
-    // stacking three would triple-line).
-    if (r._majorGroup === 'movers' && r._moverGroupFirst
-        && !r._majorFirst && !r._moverDirectionFirst) {
-      // Group-specific sub-class (`mover-grp-underlying` / `-midcap`
-      // / `-smallcap`) was retired with the per-colour divider rules;
-      // only the parent class is consumed by CSS now. The per-group
-      // left-edge accent uses `mover-${r._moverGroup}` (a different
-      // class, pushed below).
-      classes.push('mover-group-divider');
-    }
-    if (r._majorGroup === 'movers' && r._moverGroup) {
-      classes.push(`mover-${r._moverGroup}`);
-    }
-    if (s.p) {
-      const q = Number(r.qty_pos) || 0;
-      if (q < 0) classes.push('pos-short');
-      else if (q > 0) classes.push('pos-long');
-      else classes.push('row-pos');
-    }
-    else if (s.h) {
-      // Differentiate Holdings rows by P&L sign so the symbol-cell
-      // tint border encodes "this holding is up / down / flat" at a
-      // glance, matching the pos-long / pos-short visual idiom on
-      // Positions. Earlier every Holding got the same green tint
-      // regardless of whether the operator was up or down on it —
-      // visually uniform but information-blind.
-      const pnl = Number(r.pnl);
-      if (Number.isFinite(pnl) && pnl > 0) classes.push('row-hold-up');
-      else if (Number.isFinite(pnl) && pnl < 0) classes.push('row-hold-down');
-      else classes.push('row-hold-flat');
-      // F&O-eligibility tagging — one class, one visual treatment:
-      //   row-hold-fno → stock has options listed (green left stripe)
-      // Lot-count viability is communicated via the NL badge appended
-      // to the symbol cell by symRenderer, not by a second row class.
-      try {
-        if (getInstrument) {
-          const sym = String(r.tradingsymbol || '').toUpperCase();
-          if (_fnoLotFor(sym) > 0) classes.push('row-hold-fno');
-        }
-      } catch (_) { /* defensive — cache miss shouldn't break row class */ }
-    }
-    // Day-P&L indicator deprecated — the symbol-cell right border now
-    // encodes POSITION direction (pos-long/pos-short) or HOLDING
-    // direction (row-hold-up/-down) instead of today's P&L sign.
-    // Operator preferred the position-direction encoding so the cell
-    // border tells "am I long or short?" at a glance, without grey
-    // for flat rows. See app.css :: ".ag-row.pos-long .ag-col-sym".
-    if (s.w && !s.p && !s.h) classes.push('row-watch');
-    else if (s.u) classes.push('row-und');
-    // Account-level staleness (Jul 2026) — rows served from broker_apis
-    // LKG cache when the account's circuit breaker was OPEN at fetch
-    // time. Slate row tint + reduced opacity so the operator sees the
-    // rows persist across breaker-open cycles instead of flickering to
-    // empty, but knows they aren't live. Distinct from `last_price_stale`
-    // (LTP-only staleness); this is a whole-row staleness.
+    if (r._majorGroup === 'movers') classes.push(..._moverRowClasses(r));
+    classes.push(..._sourceRowClasses(r, s));
     if (r.account_stale === true) classes.push('row-account-stale');
     return classes.join(' ');
   }
