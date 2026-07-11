@@ -13,6 +13,7 @@ export default defineConfig({
 
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5174',
+    headless: !!process.env.CI,   // headed locally so runs are visible on screen; headless in CI
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
