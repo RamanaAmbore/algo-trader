@@ -106,7 +106,7 @@ async def test_snapshot_sparkline_skips_symbols_without_bars():
 
     universe = [("RELIANCE", "NSE"), ("MISSING", "NSE")]
 
-    async def _fake_bars_for(sym, exch, days, db_only=False):
+    async def _fake_bars_for(sym, exch, from_d, to_d, db_only=False, bypass_cache=None):
         return _fake_bars(3) if sym == "RELIANCE" else None
 
     with patch.object(ds, "_sparkline_universe_symbols",
@@ -186,3 +186,60 @@ async def test_sparkline_payload_points_are_ordered_and_include_ltp():
     for p in points:
         assert "t"   in p
         assert "ltp" in p
+
+
+@pytest.mark.asyncio
+async def test_snapshot_sparkline_uses_correct_call_signature():
+    """Verify get_or_fetch_daily is called with from_d/to_d kwargs,
+    not the invalid days= kwarg. Regression test for call signature bug."""
+    from backend.api.algo import daily_snapshot as ds
+    from datetime import timedelta
+
+    universe = [("NIFTY 50", "NSE")]
+    bars = _fake_bars(5)
+
+    with patch.object(ds, "_sparkline_universe_symbols",
+                      new=AsyncMock(return_value=universe)), \
+         patch("backend.api.persistence.ohlcv_store.get_or_fetch_daily",
+               new=AsyncMock(return_value=bars)) as m_ohlc, \
+         patch.object(ds, "_upsert_rows",
+                      new=AsyncMock(return_value=1)) as m_up:
+        result = await ds.snapshot_sparkline(settled=False)
+
+    # Verify the call was made exactly once
+    m_ohlc.assert_awaited_once()
+
+    # Extract the call arguments
+    call_args, call_kwargs = m_ohlc.call_args
+
+    # Verify positional args: symbol and exchange
+    assert call_args[0] == "NIFTY 50", "First arg should be symbol"
+    assert call_args[1] == "NSE", "Second arg should be exchange"
+
+    # Verify from_d and to_d kwargs exist and are dates
+    assert "from_d" in call_kwargs, "Must call with from_d kwarg, not days="
+    assert "to_d" in call_kwargs, "Must call with to_d kwarg, not days="
+    assert isinstance(call_kwargs["from_d"], date), "from_d must be a date"
+    assert isinstance(call_kwargs["to_d"], date), "to_d must be a date"
+
+    # Verify buffer spans ~10 days (accounting for weekends)
+    from_d = call_kwargs["from_d"]
+    to_d = call_kwargs["to_d"]
+    delta = (to_d - from_d).days
+    assert delta == 10, f"Expected 10-day buffer (weekends), got {delta} days"
+
+    # Verify db_only=True was passed
+    assert call_kwargs.get("db_only") is True, "db_only must be True"
+
+    # Verify no invalid 'days' kwarg was passed
+    assert "days" not in call_kwargs, "Invalid 'days=' kwarg must not be present"
+
+    # Verify sparkline rows were written (row was not silently skipped)
+    assert result["symbols"] == 1, "One symbol should be written"
+    rows = m_up.call_args[0][0]
+    assert len(rows) == 1, "One row should be upserted"
+    assert rows[0]["symbol"] == "NIFTY 50"
+    assert rows[0]["kind"] == "sparkline"
+    payload = json.loads(rows[0]["payload_json"])
+    assert "points" in payload
+    assert len(payload["points"]) == 5

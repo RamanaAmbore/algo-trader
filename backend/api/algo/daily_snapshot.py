@@ -16,7 +16,7 @@ import asyncio
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, time as _dt_time, timezone
+from datetime import date, datetime, timedelta, time as _dt_time, timezone
 from typing import Optional
 
 from sqlalchemy import text
@@ -799,7 +799,10 @@ async def snapshot_sparkline(*, settled: bool = False) -> dict:
     for (sym, exch) in universe:
         try:
             bars = await _oh.get_or_fetch_daily(
-                sym, exch, days=5, db_only=True,
+                sym, exch,
+                from_d=target_date - timedelta(days=10),
+                to_d=target_date,
+                db_only=True,
             )
         except Exception:
             bars = None
