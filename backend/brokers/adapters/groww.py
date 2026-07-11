@@ -156,7 +156,7 @@ def _retry_groww_auth(fn: Callable) -> Callable:
                     f"{self.account!r} timed out — retrying once: {e}"
                 )
                 try:
-                    self._conn.refresh_session()
+                    self._conn.refresh()
                 except Exception:
                     pass  # refresh_session is best-effort; proceed regardless
                 return fn(self, *args, **kwargs)

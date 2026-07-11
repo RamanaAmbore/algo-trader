@@ -161,7 +161,7 @@ def apply_day_change_backstop(raw: pd.DataFrame) -> pd.DataFrame:
         raw.get('quantity', pd.Series(dtype=float)), errors='coerce'
     ).fillna(0)
     _oq = pd.to_numeric(
-        raw.get('overnight_quantity', pd.Series(dtype=float)), errors='coerce'
+        raw.get('overnight_quantity', pd.Series(0.0, index=raw.index)), errors='coerce'
     ).fillna(0)
     _dcv = pd.to_numeric(
         raw.get('day_change_val', pd.Series(dtype=float)), errors='coerce'

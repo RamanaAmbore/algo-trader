@@ -1588,16 +1588,10 @@ class SparklineController(Controller):
             norm_syms, from_daily, yesterday, today_date, days, db_only,
         )
 
-        # ── Step 1b: Self-heal — db_only guard, empty on both tiers ───────
-        if db_only:
-            await _self_heal_empty_bars(
-                norm_syms, past_result, today_result,
-                from_daily, yesterday, today_date, days,
-            )
-
-        # ── Step 1c: Tier 4 — daily_book sparkline fallback ───────────────
-        # When ohlcv_store + self-heal are both cold (fresh deploy, persistence
-        # reset, warm task still running), fall back to the persisted
+        # ── Step 1b: Tier 4 — daily_book sparkline fallback ──────────────
+        # Per PULSE_SPEC.md §5: check daily_book BEFORE broker fallback.
+        # When ohlcv_store DB is cold (fresh deploy, persistence reset,
+        # warm task still running), fall back to the persisted
         # daily_book kind='sparkline' snapshots written at market close.
         # Only activated in db_only mode — open sessions must serve live data.
         if db_only:
@@ -1610,6 +1604,15 @@ class SparklineController(Controller):
                 await _fill_from_daily_book_sparkline(
                     _db_fallback_syms, past_result, orig_to_resolved,
                 )
+
+        # ── Step 1c: Self-heal — db_only guard, empty on both tiers ──────
+        # Broker fallback only fires if Tier 1 (ohlcv_store) AND Tier 4
+        # (daily_book) both miss — avoids unnecessary broker calls.
+        if db_only:
+            await _self_heal_empty_bars(
+                norm_syms, past_result, today_result,
+                from_daily, yesterday, today_date, days,
+            )
 
         # ── Steps 2+3: token map + LTP (tick_map → broker.ltp fallback) ───
         req_exchs_spark = {s.exchange.upper() for s in norm_syms}
