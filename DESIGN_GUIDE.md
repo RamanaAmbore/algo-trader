@@ -34,7 +34,7 @@ FRM (GARP, 2022) · CFA Level 3 · Master's, Computer Science · Six Sigma Green
 - **Website**: [ramboq.com](https://ramboq.com)
 - **Profile**: [ramanaambore.me](https://ramanaambore.me)
 - **Contact**: through the ramboq.com contact page
-- **Repo**: private; access via RamboQuant LLP
+- **Repo**: [github.com/RamanaAmbore/algo-trader](https://github.com/RamanaAmbore/algo-trader)
 
 ### RamboQuant platform scope
 
