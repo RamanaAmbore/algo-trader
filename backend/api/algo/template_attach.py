@@ -964,7 +964,8 @@ def apply_plan_live(
     # G1 lot-multiple guard — fire before any broker call so sub-lot GTT
     # legs are caught here, not by the adapter ceiling after wire cost.
     # plan.parent_lot_size is set by apply_template_to_order via get_lot_size()
-    # so it is already resolved; this is a synchronous check only.
+    # for MCX/NCO/NFO/BFO/CDS so it is already resolved; this is a synchronous
+    # check only.
     _g1_ls = int(plan.parent_lot_size or 1)
     if _g1_ls > 1:
         for _spec in plan.gtts:
@@ -1294,12 +1295,13 @@ async def apply_template_to_order(
         except Exception:
             caps = None
 
-    # MCX qty translation — look up lot_size BEFORE resolving the plan so
+    # F&O lot_size resolution — look up lot_size BEFORE resolving the plan so
     # apply_plan_live has what it needs without an async call.  get_lot_size
-    # is async and we're already in async context here.  For non-MCX/NCO
+    # is async and we're already in async context here.  For non-derivative
     # exchanges this is always 1 (no-op translation later).
+    # Covers MCX/NCO (commodities) + NFO/BFO/CDS (index/currency F&O).
     parent_lot_size: int = 1
-    if parent_exchange.upper() in ("MCX", "NCO"):
+    if parent_exchange.upper() in ("MCX", "NCO", "NFO", "BFO", "CDS"):
         try:
             from backend.brokers.adapters.kite import get_lot_size
             _ls = await get_lot_size(parent_exchange, parent_symbol)
@@ -1307,10 +1309,10 @@ async def apply_template_to_order(
                 parent_lot_size = _ls
             elif _ls <= 1:
                 # 0 = cache miss, 1 = equity sentinel — both are dangerous on
-                # MCX. Surface to caller as a hard failure so no untranslated
-                # qty ever reaches the broker.
+                # F&O exchanges. Surface to caller as a hard failure so no
+                # untranslated qty ever reaches the broker.
                 logger.error(
-                    "[GTT-QTY-GUARD] lot_size=%s for MCX/NCO %s/%s — "
+                    "[GTT-QTY-GUARD] lot_size=%s for %s/%s — "
                     "instruments cache miss or sub-lot. Refusing template attach.",
                     _ls, parent_exchange, parent_symbol,
                 )
@@ -1335,7 +1337,7 @@ async def apply_template_to_order(
         except Exception as _e:
             logger.error(
                 "[GTT-QTY-GUARD] get_lot_size failed for %s/%s: %s — "
-                "refusing MCX template attach.", parent_exchange, parent_symbol, _e,
+                "refusing F&O template attach.", parent_exchange, parent_symbol, _e,
             )
             result_err = AttachResult(plan=TemplatePlan(
                 template_id=template.get("id"),
@@ -1352,7 +1354,7 @@ async def apply_template_to_order(
             result_err.errors.append(
                 f"[GTT-QTY-GUARD] lot_size lookup failed for "
                 f"{parent_exchange}/{parent_symbol}: {_e}. "
-                f"Template attach refused to prevent MCX oversize."
+                f"Template attach refused to prevent F&O oversize."
             )
             return result_err
 
