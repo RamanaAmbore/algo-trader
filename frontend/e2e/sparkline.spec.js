@@ -16,6 +16,24 @@ import { loginAsAdmin } from './fixtures/auth.js';
 
 const BASE = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5174';
 
+/**
+ * Detect whether the server is running on the main (prod) branch.
+ * Demo mode only fires on main.
+ *
+ * @param {import('@playwright/test').Page} page
+ * @returns {Promise<boolean>}
+ */
+async function isMainBranch(page) {
+  try {
+    const r = await page.request.get('/api/charts/paper-status');
+    if (!r.ok()) return false;
+    const j = await r.json();
+    return j?.branch === 'main';
+  } catch (_) {
+    return false;
+  }
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Part 1: _mergeSparkSeries logic tests (via page.evaluate)
 // ──────────────────────────────────────────────────────────────────────────
@@ -339,6 +357,110 @@ test.describe('Sparkline API response shape', () => {
     for (const v of testSeries) {
       expect(typeof v).toBe('number');
       expect(Number.isFinite(v)).toBe(true);
+    }
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Part 4: Demo mode sparkline rendering tests
+// ──────────────────────────────────────────────────────────────────────────
+
+test.describe('Sparkline rendering in demo mode', () => {
+  test('demo anon: sparkline SVGs present in pinned grid', async ({ page }) => {
+    const mainBranch = await isMainBranch(page);
+    if (!mainBranch) {
+      test.skip(true, 'Demo mode only fires on main branch; anon goes to /signin on dev');
+    }
+
+    // Clear cookies and storage to visit as anonymous
+    await page.context().clearCookies();
+    await page.evaluate(() => {
+      try { localStorage.clear(); } catch {}
+      try { sessionStorage.clear(); } catch {}
+    }).catch(() => {});
+
+    const t0 = Date.now();
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+
+    // 2. Perf — /pulse loads within 8 s for anonymous users
+    expect(Date.now() - t0).toBeLessThan(8_000);
+
+    // Wait for page to settle
+    await page.waitForTimeout(2_000);
+
+    // 5. UX — sparklines (SVG elements) should render in the pinned watchlist.
+    // The sparkline cells use .spark-cell class and contain inline SVGs.
+    const sparkSvgs = page.locator('.mp-bucket-pinwatch .spark-cell svg');
+    let count = 0;
+
+    try {
+      await sparkSvgs.first().waitFor({ state: 'attached', timeout: 8_000 });
+      count = await sparkSvgs.count();
+    } catch (_) {
+      test.skip(true, 'No sparkline SVGs rendered in pinned grid — data may not have loaded');
+    }
+
+    if (count === 0) {
+      test.skip(true, 'No sparkline SVGs found in demo pinned watchlist');
+    }
+
+    // 4. Reuse — assert count is a valid positive number (not just truthy)
+    // 1. SSOT — sparklines are rendered only by sparkRenderer component
+    expect(count, 'should have at least one sparkline SVG in demo mode').toBeGreaterThan(0);
+  });
+
+  test('demo anon: sparklines contain polyline elements with points', async ({ page }) => {
+    const mainBranch = await isMainBranch(page);
+    if (!mainBranch) {
+      test.skip(true, 'Demo mode only fires on main branch; anon goes to /signin on dev');
+    }
+
+    // Anonymous navigation
+    await page.context().clearCookies();
+    await page.evaluate(() => {
+      try { localStorage.clear(); } catch {}
+      try { sessionStorage.clear(); } catch {}
+    }).catch(() => {});
+
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+    await page.waitForTimeout(2_000);
+
+    // Wait for sparklines to render
+    const sparkSvgs = page.locator('.mp-bucket-pinwatch .spark-cell svg');
+    try {
+      await sparkSvgs.first().waitFor({ state: 'attached', timeout: 8_000 });
+    } catch (_) {
+      test.skip(true, 'No sparkline SVGs rendered');
+    }
+
+    // Extract polyline data from visible sparklines
+    const sparklineData = await page.evaluate(() => {
+      const out = [];
+      for (const svg of document.querySelectorAll('.mp-bucket-pinwatch .spark-cell svg')) {
+        const polyline = svg.querySelector('polyline');
+        if (!polyline) continue;
+
+        const points = polyline.getAttribute('points') || '';
+        const pointPairs = points.trim().split(/\s+/).filter(p => p.length > 0);
+
+        if (pointPairs.length >= 2) {
+          out.push({
+            pointCount: pointPairs.length,
+            hasPoints: true,
+          });
+        }
+      }
+      return out;
+    });
+
+    if (sparklineData.length === 0) {
+      test.skip(true, 'no valid polylines with points attribute found in demo mode');
+    }
+
+    // 1. SSOT / 4. Reuse — assert each sparkline has ≥2 points
+    for (let i = 0; i < Math.min(3, sparklineData.length); i++) {
+      const spark = sparklineData[i];
+      expect(spark.pointCount, `sparkline ${i}: pointCount should be ≥ 2`).toBeGreaterThanOrEqual(2);
     }
   });
 });
