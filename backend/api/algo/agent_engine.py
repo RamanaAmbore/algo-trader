@@ -1213,6 +1213,63 @@ def _build_context(now, sim_overrides: dict | None = None) -> dict:
     return ctx
 
 
+# ─── run_cycle gate helpers ────────────────────────────────────────────────
+# Pure-boolean helpers extracted from run_cycle to reduce its cyclomatic
+# complexity. Each returns True when the agent SHOULD be skipped on the
+# current tick. No mutation of agent state; no DB calls.
+
+def _cycle_should_skip_schedule(agent, *, any_market_open: bool,
+                                bypass_schedule: bool) -> bool:
+    """True when the agent should be skipped due to its schedule setting.
+
+    schedule='never' → always skip.
+    schedule='market_hours' → skip when no market is open (unless bypassed).
+    """
+    if agent.schedule == "never":
+        return True
+    if (not bypass_schedule
+            and agent.schedule == "market_hours"
+            and not any_market_open):
+        return True
+    return False
+
+
+def _cycle_in_cooldown(agent, *, bypass_schedule: bool) -> bool:
+    """True when the agent is in cooldown and the window has not elapsed."""
+    if agent.status != "cooldown" or bypass_schedule:
+        return False
+    if not agent.last_triggered_at:
+        return False
+    elapsed = (datetime.now(timezone.utc) - agent.last_triggered_at).total_seconds() / 60
+    return elapsed < agent.cooldown_minutes
+
+
+def _cycle_outside_fire_at(agent, now, *, bypass_schedule: bool) -> bool:
+    """True when fire_at_time is set and the current time is outside its window."""
+    if bypass_schedule or not getattr(agent, "fire_at_time", None):
+        return False
+    window_sec = int(get_int('alerts.fire_at_window_sec', 360))
+    return not _fire_at_window_active(agent.fire_at_time, now, window_sec=window_sec)
+
+
+def _cycle_in_blackout(agent, now, *, bypass_schedule: bool) -> bool:
+    """True when the current time falls inside a configured blackout window."""
+    if bypass_schedule:
+        return False
+    blackouts = getattr(agent, "blackout_windows", None) or []
+    return bool(blackouts and _in_blackout_window(now, blackouts))
+
+
+def _cycle_baseline_not_ready(agent, alert_state: dict, now, cfg: dict, *,
+                              bypass_schedule: bool) -> bool:
+    """True when a rate-metric agent should be suppressed during the baseline window."""
+    return (
+        not bypass_schedule
+        and _v2_has_rate_metric(agent.conditions)
+        and not _v2_baseline_live(alert_state, now, cfg['baseline_offset_min'])
+    )
+
+
 async def run_cycle(context: dict, broadcast_fn=None,
                     only_agent_ids: list[int] | None = None,
                     bypass_schedule: bool = False,
@@ -1325,46 +1382,16 @@ async def run_cycle(context: dict, broadcast_fn=None,
                 broadcast_fn("agent_state", {"slug": agent.slug, "status": "completed"})
             continue
 
-        # schedule="never" agents (e.g. the "manual" audit agent) must
-        # never be evaluated by run_cycle — they only receive events written
-        # explicitly via record_manual_event.
-        if agent.schedule == "never":
+        # schedule / cooldown / fire_at_time / blackout gates
+        if _cycle_should_skip_schedule(agent, any_market_open=any_market_open,
+                                       bypass_schedule=bypass_schedule):
             continue
-
-        # Enforce schedule: "market_hours" agents only run while some market
-        # is open — unless the caller asked to bypass (isolated sim test).
-        if (not bypass_schedule
-                and agent.schedule == "market_hours" and not any_market_open):
+        if _cycle_in_cooldown(agent, bypass_schedule=bypass_schedule):
             continue
-        # Check cooldown (also skippable during isolated sim runs)
-        if agent.status == "cooldown" and not bypass_schedule:
-            if agent.last_triggered_at:
-                elapsed = (datetime.now(timezone.utc) - agent.last_triggered_at).total_seconds() / 60
-                if elapsed < agent.cooldown_minutes:
-                    continue
-
-        # fire_at_time gate — when set ("HH:MM" IST), the agent only
-        # evaluates if the current IST wall-clock falls inside a small
-        # window around that time. The window is the run_cycle poll
-        # interval + 60 s slack so a 5-minute poll cadence still
-        # reliably catches the slot. Bypass on sim runs so the
-        # "Run in Simulator" button never has to wait for wall-clock.
-        if not bypass_schedule and getattr(agent, "fire_at_time", None):
-            if not _fire_at_window_active(agent.fire_at_time, now,
-                                          window_sec=int(get_int('alerts.fire_at_window_sec', 360))):
-                continue
-
-        # ── Phase 22 — blackout windows ─────────────────────────────────
-        # When the current IST wall-clock falls INSIDE any configured
-        # blackout window, skip this agent entirely. Operators use this
-        # for "no alerts during 12:00-13:00 lunch" or "muted during
-        # scheduled deploy window". Sim bypasses so operators can test
-        # against any time. Industry analogue: Datadog `mute_until`,
-        # PagerDuty maintenance windows.
-        if not bypass_schedule:
-            blackouts = getattr(agent, "blackout_windows", None) or []
-            if blackouts and _in_blackout_window(now, blackouts):
-                continue
+        if _cycle_outside_fire_at(agent, now, bypass_schedule=bypass_schedule):
+            continue
+        if _cycle_in_blackout(agent, now, bypass_schedule=bypass_schedule):
+            continue
 
         # v2 grammar dispatch: metric/scope leaves or all/any/not composites
         # go through backend.api.algo.agent_evaluator. Baseline gate and
@@ -1379,13 +1406,9 @@ async def run_cycle(context: dict, broadcast_fn=None,
         _maybe_reset_v2_state(now.date() if hasattr(now, 'date') else None)
         triggered = False
 
-        # Baseline gate: skip every rate-based agent for the first N min
-        # of the session to avoid the opening-gap firing rate alerts. The
-        # isolated-sim path bypasses this so operators can test rate rules
-        # without waiting 15 minutes of simulated time.
-        if (not bypass_schedule
-                and _v2_has_rate_metric(agent.conditions)
-                and not _v2_baseline_live(alert_state, now, cfg['baseline_offset_min'])):
+        # Baseline gate: skip rate-based agents during the opening offset window.
+        if _cycle_baseline_not_ready(agent, alert_state, now, cfg,
+                                     bypass_schedule=bypass_schedule):
             continue
 
         v2_ctx = V2Context(
