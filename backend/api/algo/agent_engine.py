@@ -1270,6 +1270,117 @@ def _cycle_baseline_not_ready(agent, alert_state: dict, now, cfg: dict, *,
     )
 
 
+def _cycle_apply_debounce(
+    agent,
+    matches: list,
+    now,
+    *,
+    sim_mode: bool,
+) -> tuple[list, object, bool]:
+    """Apply the debounce state machine and return updated latch state.
+
+    Returns (matches_after, new_first_true_at, latch_changed).
+
+    State machine (runs only when debounce_minutes > 0 and not sim_mode):
+      match=False + latch set  → clear latch (re-arm); matches unchanged
+      match=True  + latch None → set latch to now, suppress (matches=[])
+      match=True  + latch set, elapsed < window → suppress (matches=[])
+      match=True  + latch set, elapsed >= window → fire normally
+    """
+    debounce_min = int(getattr(agent, "debounce_minutes", 0) or 0)
+    new_first_true_at = agent.condition_first_true_at
+    changed = False
+
+    if debounce_min <= 0 or sim_mode:
+        # Sim runs bypass debounce; zero window = no gate.
+        return matches, new_first_true_at, changed
+
+    if not matches:
+        if agent.condition_first_true_at is not None:
+            new_first_true_at = None
+            changed = True
+    else:
+        if agent.condition_first_true_at is None:
+            new_first_true_at = now
+            changed = True
+            logger.info(
+                f"Agent [{agent.slug}] debounce armed "
+                f"({debounce_min}m); waiting for sustained condition"
+            )
+            matches = []
+        else:
+            elapsed_min = (now - agent.condition_first_true_at).total_seconds() / 60.0
+            if elapsed_min < debounce_min:
+                matches = []
+            # else: window crossed — let matches through; latch cleared
+            # naturally after the fire commit.
+
+    return matches, new_first_true_at, changed
+
+
+def _cycle_shadow_lifespan_exhausted(agent, alert_state: dict) -> bool:
+    """Check (and initialise if needed) the sim shadow-lifespan quota.
+
+    Returns True when the agent's shadow quota is exhausted for this sim
+    iteration.  Mutates alert_state to initialise the shadow slot and to mark
+    exhaustion so the simulator report doesn't double-count.
+    """
+    ls_state = alert_state.setdefault('shadow_lifespan', {})
+    shadow = ls_state.get(agent.id)
+    if shadow is None:
+        shadow = {
+            'remaining': _initial_shadow_remaining(agent),
+            'exhausted': False,
+        }
+        ls_state[agent.id] = shadow
+    if shadow.get('exhausted') or (shadow['remaining'] is not None
+                                   and shadow['remaining'] <= 0):
+        exh = alert_state.setdefault('lifespan_exhausted_agents', [])
+        if agent.id not in exh:
+            exh.append(agent.id)
+        shadow['exhausted'] = True
+        return True
+    return False
+
+
+def _cycle_shadow_lifespan_decrement(agent, alert_state: dict) -> None:
+    """Decrement the sim shadow-lifespan counter after a fire.
+
+    Marks exhaustion when remaining hits 0 so the next tick's skip check
+    fires correctly.
+    """
+    ls_state = alert_state.setdefault('shadow_lifespan', {})
+    shadow = ls_state.get(agent.id)
+    if shadow is not None and shadow.get('remaining') is not None:
+        shadow['remaining'] -= 1
+        if shadow['remaining'] <= 0:
+            shadow['exhausted'] = True
+            exh = alert_state.setdefault('lifespan_exhausted_agents', [])
+            if agent.id not in exh:
+                exh.append(agent.id)
+
+
+def _cycle_compute_post_fire_status(agent, *, bypass_schedule: bool) -> tuple[str, int]:
+    """Compute (new_status, new_trigger_count) for an agent that just fired.
+
+    When bypass_schedule is True (sim mode) the agent's DB row must not be
+    mutated, so we return the current values unchanged.
+    """
+    if bypass_schedule:
+        return agent.status, (agent.trigger_count or 0)
+    new_trigger_count = (agent.trigger_count or 0) + 1
+    lifespan = getattr(agent, "lifespan_type", "persistent") or "persistent"
+    if lifespan == "one_shot":
+        new_status: str = "completed"
+    elif (lifespan == "n_fires"
+          and agent.lifespan_max_fires is not None
+          and new_trigger_count >= agent.lifespan_max_fires):
+        new_status = "completed"
+    else:
+        new_status = "cooldown"
+    return new_status, new_trigger_count
+
+
 async def run_cycle(context: dict, broadcast_fn=None,
                     only_agent_ids: list[int] | None = None,
                     bypass_schedule: bool = False,
@@ -1442,71 +1553,15 @@ async def run_cycle(context: dict, broadcast_fn=None,
             _v2_unlatch(agent)
 
         # ── Phase 21 — debounce gate ("for N minutes" clauses) ─────────────
-        # If debounce_minutes > 0, the condition must hold for that many
-        # consecutive minutes before the agent fires. Eliminates spike-
-        # driven false positives (a single quote glitch no longer trips
-        # a 30-min cooldown). Industry pattern: Datadog `For:`, Grafana
-        # `For:`, CloudWatch `EvaluationPeriods`.
-        #
-        # State machine on agent.condition_first_true_at:
-        #   match=False              → reset to NULL (re-arm)
-        #   match=True + ts=NULL     → set to `now`, suppress this fire
-        #   match=True + ts<window   → still inside the window, suppress
-        #   match=True + ts≥window   → window crossed, fire normally
+        # State machine on agent.condition_first_true_at — see _cycle_apply_debounce.
+        matches, debounce_new_first_true_at, debounce_first_true_changed = (
+            _cycle_apply_debounce(agent, matches, now, sim_mode=sim_mode)
+        )
         debounce_min = int(getattr(agent, "debounce_minutes", 0) or 0)
-        debounce_first_true_changed = False
-        debounce_new_first_true_at = agent.condition_first_true_at
-        if debounce_min > 0 and not sim_mode:
-            # Sim runs bypass debounce — operators iterating in the
-            # simulator shouldn't wait N minutes of fake time per fire.
-            if not matches:
-                if agent.condition_first_true_at is not None:
-                    debounce_new_first_true_at = None
-                    debounce_first_true_changed = True
-            else:
-                if agent.condition_first_true_at is None:
-                    # First true tick — start the clock, don't fire yet.
-                    debounce_new_first_true_at = now
-                    debounce_first_true_changed = True
-                    logger.info(
-                        f"Agent [{agent.slug}] debounce armed "
-                        f"({debounce_min}m); waiting for sustained condition"
-                    )
-                    matches = []
-                else:
-                    elapsed_min = (now - agent.condition_first_true_at).total_seconds() / 60.0
-                    if elapsed_min < debounce_min:
-                        # Still inside the window — suppress.
-                        matches = []
-                    # else: window crossed; condition_first_true_at stays
-                    # set (the cooldown latch / suppression will clear it
-                    # naturally after the fire commit).
 
-        # Shadow-lifespan gate (sim mode only): every iteration the
-        # simulator seeds a per-agent shadow `trigger_count` from the
-        # agent's REAL DB row. Each sim fire decrements the shadow;
-        # when it hits 0 (or until_date passes in sim's simulated clock)
-        # the agent stops firing for the rest of this iteration. The
-        # real DB row is never mutated — this is purely a "what-if"
-        # preview so the operator sees how a one-shot / n-fires agent
-        # would behave under the regime.
+        # Shadow-lifespan gate (sim mode only) — see _cycle_shadow_lifespan_exhausted.
         if matches and sim_mode:
-            ls_state = alert_state.setdefault('shadow_lifespan', {})
-            shadow = ls_state.get(agent.id)
-            if shadow is None:
-                shadow = {
-                    'remaining': _initial_shadow_remaining(agent),
-                    'exhausted': False,
-                }
-                ls_state[agent.id] = shadow
-            if shadow.get('exhausted') or (shadow['remaining'] is not None
-                                            and shadow['remaining'] <= 0):
-                # Record the agent as exhausted this iteration (only once
-                # per iteration so the report doesn't double-count).
-                exh = alert_state.setdefault('lifespan_exhausted_agents', [])
-                if agent.id not in exh:
-                    exh.append(agent.id)
-                shadow['exhausted'] = True
+            if _cycle_shadow_lifespan_exhausted(agent, alert_state):
                 continue   # skip the suppression + fire decision below
 
         # Suppression gate: general sim runs and the live path BOTH go
@@ -1516,41 +1571,17 @@ async def run_cycle(context: dict, broadcast_fn=None,
             triggered = True
             result = _v2_build_evalresult(matches, agent.name)
 
-            # Shadow-lifespan decrement — sim mode only. Records this
-            # iteration's "would have exhausted" state for the report.
+            # Shadow-lifespan decrement — sim mode only.
             if sim_mode:
-                ls_state = alert_state.setdefault('shadow_lifespan', {})
-                shadow = ls_state.get(agent.id)
-                if shadow is not None and shadow.get('remaining') is not None:
-                    shadow['remaining'] -= 1
-                    if shadow['remaining'] <= 0:
-                        shadow['exhausted'] = True
-                        exh = alert_state.setdefault('lifespan_exhausted_agents', [])
-                        if agent.id not in exh:
-                            exh.append(agent.id)
+                _cycle_shadow_lifespan_decrement(agent, alert_state)
 
             if broadcast_fn:
                 broadcast_fn("agent_state", {"slug": agent.slug, "status": "triggered"})
 
-            # Compute the post-fire status now so it can be stored on the
-            # dispatch entry and used by the survivor loop after topic-tier
-            # suppression is resolved. DB mutation and _v2_record are
-            # intentionally deferred: a suppressed agent must NOT consume
-            # its lifespan quota or start its cooldown timer.
-            if not bypass_schedule:
-                _new_trigger_count = (agent.trigger_count or 0) + 1
-                _lifespan = getattr(agent, "lifespan_type", "persistent") or "persistent"
-                if _lifespan == "one_shot":
-                    _new_status: str = "completed"
-                elif (_lifespan == "n_fires"
-                      and agent.lifespan_max_fires is not None
-                      and _new_trigger_count >= agent.lifespan_max_fires):
-                    _new_status = "completed"
-                else:
-                    _new_status = "cooldown"
-            else:
-                _new_status = agent.status
-                _new_trigger_count = agent.trigger_count or 0
+            # Compute post-fire status (deferred DB write to post-loop survivor path).
+            _new_status, _new_trigger_count = _cycle_compute_post_fire_status(
+                agent, bypass_schedule=bypass_schedule
+            )
 
             # Buffer dispatch + actions for the post-loop suppression pass.
             # _v2_record, DB mutation (trigger_count, status, cooldown_until,
