@@ -102,19 +102,41 @@ def test_recording_events_preserve_order(driver):
 
 
 def test_buffer_is_per_instance():
-    """Two SimDriver instances must have independent buffers — we don't
-    rely on class-level state for recording."""
+    """_recording_events is instance-level state, not a class variable.
+
+    SimDriver is a singleton — SimDriver() always returns the same object,
+    so two calls can't produce independent in-memory instances. The real
+    invariant is:
+      1. _recording_events must NOT be at the class level (that would make
+         it shared across the singleton's whole lifetime, regardless of reset).
+      2. Each recording session isolates its events by assigning a fresh list
+         (self._recording_events = [] in start()), so snapshots taken before
+         the reset are unaffected by subsequent records.
+    """
     from backend.api.algo.sim.driver import SimDriver
     from datetime import datetime
-    a = SimDriver()
-    b = SimDriver()
-    a._recording_active = True
-    a._recording_started_at = datetime.now()
-    a._recording_events = []
-    b._recording_active = True
-    b._recording_started_at = datetime.now()
-    b._recording_events = []
-    a._record("from_a", {})
-    b._record("from_b", {})
-    assert [e["kind"] for e in a._recording_events] == ["from_a"]
-    assert [e["kind"] for e in b._recording_events] == ["from_b"]
+
+    assert "_recording_events" not in SimDriver.__dict__, (
+        "_recording_events must be initialised in __init__, not at class level — "
+        "a class-level list would share state across recording sessions"
+    )
+
+    sim = SimDriver.instance()
+    sim._recording_active = True
+    sim._recording_started_at = datetime.now()
+
+    # Session A: record one event, take a copy before session reset.
+    sim._recording_events = []
+    sim._record("from_a", {})
+    session_a = list(sim._recording_events)
+
+    # Session B: start() reinitialises the buffer — old snapshot unaffected.
+    sim._recording_events = []
+    sim._record("from_b", {})
+
+    assert [e["kind"] for e in session_a] == ["from_a"]
+    assert [e["kind"] for e in sim._recording_events] == ["from_b"]
+
+    # cleanup
+    sim._recording_active = False
+    sim._recording_events = []
