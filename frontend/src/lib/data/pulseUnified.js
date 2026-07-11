@@ -186,6 +186,47 @@ function _optUnderlyingSet(rows, getInst) {
   return out;
 }
 
+/**
+ * Apply quote fields from snap/liveQ priority chain onto a row object.
+ * Returns true if ltp was written from snap or liveQ; false if neither
+ * source had an ltp value and the caller must handle its own fallback.
+ *
+ * Module-private — not exported.
+ *
+ * @param {Record<string, any>} row   target aggregated pulse row (mutated)
+ * @param {any}  snap                 symbolStore snapshot (may be null/undefined)
+ * @param {any}  liveQ                contracts quote-bag entry (may be null/undefined)
+ * @returns {boolean}
+ */
+function _applyQuoteFields(row, snap, liveQ) {
+  const snapLtp = snap?.ltp;
+  if (snapLtp != null) {
+    row.ltp        = snapLtp;
+    row.bid        = snap.bid        ?? liveQ?.bid        ?? row.bid        ?? null;
+    row.ask        = snap.ask        ?? liveQ?.ask        ?? row.ask        ?? null;
+    row.open       = snap.open       ?? liveQ?.open       ?? row.open       ?? null;
+    row.close      = snap.close      ?? liveQ?.close      ?? row.close      ?? null;
+    row.change     = snap.day_change     ?? liveQ?.change     ?? row.change     ?? null;
+    row.change_pct = snap.day_change_pct ?? liveQ?.change_pct ?? row.change_pct ?? null;
+    row.volume     = snap.volume ?? liveQ?.volume ?? row.volume ?? null;
+    row.oi         = snap.oi     ?? liveQ?.oi     ?? row.oi     ?? null;
+    return true;
+  }
+  if (liveQ?.ltp) {
+    row.ltp        = liveQ.ltp;
+    row.bid        = liveQ.bid        ?? row.bid        ?? null;
+    row.ask        = liveQ.ask        ?? row.ask        ?? null;
+    row.open       = liveQ.open       ?? row.open       ?? null;
+    row.close      = liveQ.close      ?? row.close      ?? null;
+    row.change     = liveQ.change     ?? row.change     ?? null;
+    row.change_pct = liveQ.change_pct ?? row.change_pct ?? null;
+    row.volume     = liveQ.volume     ?? row.volume     ?? null;
+    row.oi         = liveQ.oi         ?? row.oi         ?? null;
+    return true;
+  }
+  return false; // caller handles its own no-data fallback
+}
+
 // ── Section helpers ───────────────────────────────────────────────────────────
 
 /**
@@ -274,28 +315,8 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     // Market fields — symbolStore first, then contracts quote bag fallback.
     const snap  = snapOf(sym);
     const liveQ = cq?.[`${exch}:${sym}`];
-    const snapLtp = snap?.ltp;
-    if (snapLtp != null) {
-      row.ltp        = snapLtp;
-      row.bid        = snap.bid    ?? liveQ?.bid    ?? row.bid    ?? null;
-      row.ask        = snap.ask    ?? liveQ?.ask    ?? row.ask    ?? null;
-      row.open       = snap.open   ?? liveQ?.open   ?? row.open   ?? null;
-      row.close      = snap.close  ?? liveQ?.close  ?? row.close  ?? null;
-      row.change     = snap.day_change     ?? liveQ?.change     ?? row.change     ?? null;
-      row.change_pct = snap.day_change_pct ?? liveQ?.change_pct ?? row.change_pct ?? null;
-      row.volume     = snap.volume ?? liveQ?.volume ?? row.volume ?? null;
-      row.oi         = snap.oi     ?? liveQ?.oi     ?? row.oi     ?? null;
-    } else if (liveQ?.ltp) {
-      row.ltp        = liveQ.ltp;
-      row.bid        = liveQ.bid ?? row.bid ?? null;
-      row.ask        = liveQ.ask ?? row.ask ?? null;
-      row.open       = liveQ.open  ?? row.open  ?? null;
-      row.close      = liveQ.close ?? row.close ?? null;
-      row.change     = liveQ.change     ?? row.change     ?? null;
-      row.change_pct = liveQ.change_pct ?? row.change_pct ?? null;
-      row.volume     = liveQ.volume ?? row.volume ?? null;
-      row.oi         = liveQ.oi     ?? row.oi     ?? null;
-    } else if (row.ltp == null) {
+    const _hadLtp = _applyQuoteFields(row, snap, liveQ);
+    if (!_hadLtp && row.ltp == null) {
       row.ltp = r.last_price ?? null;
     }
     // Day P&L recompute — delegates to livePositionDayPnl (nav.js SSOT).
@@ -360,26 +381,15 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
     // Market fields — symbolStore first, then contracts quote bag fallback.
     const snap  = snapOf(sym);
     const liveQ = cq?.[`${exch}:${sym}`];
-    const snapLtp = snap?.ltp;
-    if (snapLtp != null) {
-      row.ltp        = snapLtp;
-      row.bid        = snap.bid    ?? liveQ?.bid    ?? row.bid    ?? null;
-      row.ask        = snap.ask    ?? liveQ?.ask    ?? row.ask    ?? null;
-      row.open       = snap.open   ?? liveQ?.open   ?? row.open   ?? null;
-      row.close      = snap.close  ?? liveQ?.close  ?? row.close  ?? Number(r.close_price) ?? null;
-      row.change     = snap.day_change     ?? liveQ?.change     ?? row.change     ?? null;
-      row.change_pct = snap.day_change_pct ?? liveQ?.change_pct ?? row.change_pct ?? null;
-      if (snap.volume != null) row.volume = snap.volume;
-      if (snap.oi     != null) row.oi     = snap.oi;
-    } else if (liveQ?.ltp) {
-      row.ltp        = liveQ.ltp;
-      row.bid        = liveQ.bid ?? row.bid ?? null;
-      row.ask        = liveQ.ask ?? row.ask ?? null;
-      row.open       = liveQ.open  ?? row.open  ?? null;
-      row.close      = liveQ.close ?? row.close ?? null;
-      row.change     = liveQ.change     ?? row.change     ?? null;
-      row.change_pct = liveQ.change_pct ?? row.change_pct ?? null;
-    } else {
+    const _snapLtp = snap?.ltp;
+    const _hadLtp  = _applyQuoteFields(row, snap, liveQ);
+    // Holdings snap-branch: close falls back to broker r.close_price when
+    // snap.close / liveQ.close / row.close are all null (position branch
+    // does NOT have this extra tail — holdings-specific).
+    if (_snapLtp != null && row.close == null) {
+      row.close = Number(r.close_price) ?? null;
+    }
+    if (!_hadLtp) {
       if (row.ltp == null) row.ltp = r.last_price ?? null;
       if (r.day_change != null && row.change == null)
         row.change = Number(r.day_change);
@@ -391,7 +401,7 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
     if (liveQ?.volume != null) row.volume = liveQ.volume;
     if (liveQ?.oi     != null) row.oi     = liveQ.oi;
     // Day P&L and total P&L — use snapshot LTP regardless of market-open state.
-    const liveHold = (snapLtp != null && Number(snapLtp) > 0) ? Number(snapLtp)
+    const liveHold = (_snapLtp != null && Number(_snapLtp) > 0) ? Number(_snapLtp)
                    : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null);
     const holdClose = Number(r.close_price) || 0;
     const holdAvg   = Number(r.average_price) || 0;
