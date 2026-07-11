@@ -1072,6 +1072,135 @@ def _preflight_check_qty_freeze(
     return None
 
 
+def _preflight_resolve_available_margin(
+    margins_res: tuple,
+    segment: str,
+    account: str,
+) -> tuple[bool | None, float | None]:
+    """
+    Parse the (segment_dict, err_str_or_None) tuple from _fetch_account_margins
+    into ``(m_enabled, available)``.
+
+    Returns (None, None) on error or when the margin call failed.
+    """
+    import math
+    m, _m_err = (margins_res or (None, None))
+    m = m or {}
+    if _m_err:
+        logger.warning(f"[PREFLIGHT] margins({segment}) failed for {account}: {_m_err}")
+        return None, None
+    m_enabled = bool(m.get("enabled"))
+    net = m.get("net")
+    if isinstance(net, (int, float)) and not math.isnan(float(net)):
+        return m_enabled, float(net)
+    return m_enabled, None
+
+
+def _preflight_margin_shortfall_fix_qty(
+    required: float,
+    available: float | None,
+    qty: int,
+) -> str:
+    """
+    Compute the ``fix_qty`` suffix for MARGIN_SHORTFALL blockers.
+
+    Returns a string like " or reduce qty to 25" when per-unit margin
+    can be inferred, or an empty string when the calculation is not
+    possible (required=0, available=0, qty=0).
+    """
+    if not (required > 0 and available is not None and available > 0):
+        return ""
+    per_unit = required / qty if qty > 0 else 0
+    if per_unit <= 0:
+        return ""
+    try:
+        max_qty_fit = max(0, int(available / per_unit))
+        return f" or reduce qty to {max_qty_fit:,}" if max_qty_fit > 0 else ""
+    except Exception:
+        return ""
+
+
+def _preflight_handle_positive_margin(
+    required: float,
+    margins_res: tuple,
+    segment: str,
+    account: str,
+    qty: int,
+) -> tuple[list[dict], dict]:
+    """
+    Handle the ``required >= 0`` branch of the margin gate.
+
+    Parses available margin, emits INSUFFICIENT_FUNDS when available=0,
+    computes shortfall, and builds MARGIN_SHORTFALL blockers.
+
+    Returns ``(new_blockers, diag_partial)``.
+    """
+    import math
+    new_blockers: list[dict] = []
+    diag: dict = {}
+    shortfall: float = 0.0
+
+    m_enabled, available = _preflight_resolve_available_margin(margins_res, segment, account)
+
+    diag["basket_margin_used"] = required
+    diag["available_margin"]   = available
+    diag["margin_shortfall"]   = None
+
+    # ── Available-is-zero gate ────────────────────────────────────
+    # When available=0 AND required>0 AND segment is enabled, the
+    # order has zero chance of going through — block immediately.
+    if m_enabled and available == 0.0 and required > 0:
+        logger.warning(
+            f"[PREFLIGHT] available_margin=0 with required={required:.2f} "
+            f"for {account} — blocking as INSUFFICIENT_FUNDS."
+        )
+        new_blockers.append({
+            "code":   "INSUFFICIENT_FUNDS",
+            "reason": (
+                f"Available margin is ₹0 but order requires "
+                f"₹{required:,.0f}. Account has no usable balance "
+                f"in the {segment} segment."
+            ),
+            "fix": (
+                f"Add at least ₹{required:,.0f} to the {segment} wallet "
+                f"before placing this order."
+            ),
+            "data": {"required": required, "available": 0.0},
+        })
+        diag["margin_shortfall"] = required
+
+    # Four states for the margin gate:
+    #   1. enabled=False (or margins call failed): DO NOT block.
+    #   2. enabled=True + net = 0: blocked above as INSUFFICIENT_FUNDS.
+    #   3. enabled=True + net < required: real shortfall — block.
+    #   4. enabled=True + net >= required: pass.
+    if m_enabled and available is not None and available != 0.0:
+        shortfall = max(0.0, required - available)
+        diag["margin_shortfall"] = shortfall if shortfall > 0 else None
+    elif required > 0 and not (m_enabled and available == 0.0):
+        logger.info(
+            f"[PREFLIGHT] margin check SKIPPED for {account} "
+            f"(segment={segment} enabled={m_enabled} available={available}); "
+            f"required={required:.2f} — relying on Kite place_order for the real verdict"
+        )
+
+    if shortfall > 0 and not math.isnan(shortfall):
+        fix_qty = _preflight_margin_shortfall_fix_qty(required, available, qty)
+        new_blockers.append({
+            "code":   "MARGIN_SHORTFALL",
+            "reason": (f"Required margin ₹{required:,.0f} exceeds available "
+                       f"₹{available:,.0f} (shortfall ₹{shortfall:,.0f})"),
+            "fix":    (f"Add ₹{shortfall:,.0f} more margin to the account" + fix_qty),
+            "data":   {
+                "required":   required,
+                "available":  available,
+                "shortfall":  shortfall,
+            },
+        })
+
+    return new_blockers, diag
+
+
 async def _preflight_check_margin(
     bm_res: object,
     margins_res: tuple,
@@ -1088,8 +1217,6 @@ async def _preflight_check_margin(
     partial diagnostics dict that the caller should merge into its own.
     Never raises — broker-call failures are handled internally.
     """
-    import math
-
     new_blockers: list[dict] = []
     diag: dict = {}
 
@@ -1105,9 +1232,6 @@ async def _preflight_check_margin(
             raise bm_exception
 
         required = _preflight_parse_basket_margin(bm_result)
-
-        available: float | None = None
-        shortfall: float = 0.0
 
         # ── Negative-margin sanity check ────────────────────────────────
         # Kite's basket_order_margins can return a negative `required` value
@@ -1144,122 +1268,11 @@ async def _preflight_check_margin(
             )
 
         else:
-            # Available margin came from `_fetch_account_margins` in the
-            # earlier gather. `margins_res` is `(seg_dict, err_str_or_None)`.
-            # Segment routing: MCX/NCO → commodity wallet, everything else
-            # (NSE/BSE/NFO/BFO/CDS/BCD) → equity wallet. Zerodha keeps the
-            # two wallets separate.
-            m, _m_err = (margins_res or (None, None))
-            m = m or {}
-            available = None
-            m_enabled = None
-            if _m_err:
-                logger.warning(f"[PREFLIGHT] margins({segment}) failed for {account}: {_m_err}")
-            else:
-                m_enabled = bool(m.get("enabled"))
-                net = m.get("net")
-                if isinstance(net, (int, float)) and not math.isnan(float(net)):
-                    available = float(net)
-
-            diag["basket_margin_used"] = required
-            diag["available_margin"]   = available
-            diag["margin_shortfall"]   = None
-
-            # ── Available-is-zero gate ────────────────────────────────────
-            # When available=0 AND required>0 AND segment is enabled, the
-            # order has zero chance of going through — block immediately.
-            # Pre-fix: shortfall = max(0, required − 0) = required > 0 would
-            # have blocked. This path is a belt-and-suspenders guard for the
-            # edge case where `net` parses as 0.0 when the real balance is
-            # non-zero due to a Kite API quirk (unreachable margins endpoint
-            # returns {} → available stays None, not 0). Explicit 0.0 check
-            # only fires when we DID get a numeric 0, not when we skipped.
-            if m_enabled and available == 0.0 and required > 0:
-                logger.warning(
-                    f"[PREFLIGHT] available_margin=0 with required={required:.2f} "
-                    f"for {account} — blocking as INSUFFICIENT_FUNDS."
-                )
-                new_blockers.append({
-                    "code":   "INSUFFICIENT_FUNDS",
-                    "reason": (
-                        f"Available margin is ₹0 but order requires "
-                        f"₹{required:,.0f}. Account has no usable balance "
-                        f"in the {segment} segment."
-                    ),
-                    "fix": (
-                        f"Add at least ₹{required:,.0f} to the {segment} wallet "
-                        f"before placing this order."
-                    ),
-                    "data": {"required": required, "available": 0.0},
-                })
-                diag["margin_shortfall"] = required
-
-            # Four states for the margin gate:
-            #   1. enabled=False (or margins call failed): API key likely
-            #      lacks the "Read Margin" permission, or the segment is
-            #      not subscribed. We can't reliably know available — DO
-            #      NOT block. Let Kite's place_order reject if needed. This
-            #      mirrors what happens when the operator places the same
-            #      order through kite.zerodha.com directly (Kite's web app
-            #      uses cookie auth which has full permissions and lets
-            #      the order through).
-            #   2. enabled=True + net = 0: blocked above as INSUFFICIENT_FUNDS.
-            #   3. enabled=True + net < required: real shortfall — block.
-            #   4. enabled=True + net >= required: pass.
-            # (shortfall initialised to 0.0 before the if/else above)
-            if m_enabled and available is not None and available != 0.0:
-                shortfall = max(0.0, required - available)
-                diag["margin_shortfall"] = shortfall if shortfall > 0 else None
-            elif required > 0 and not (m_enabled and available == 0.0):
-                # Segment-permission gap: log + skip the block.
-                logger.info(
-                    f"[PREFLIGHT] margin check SKIPPED for {account} "
-                    f"(segment={segment} enabled={m_enabled} available={available}); "
-                    f"required={required:.2f} — relying on Kite place_order for the real verdict"
-                )
-
-        if shortfall > 0 and not math.isnan(shortfall):
-            # Estimate the reduced qty that would fit within available margin.
-            if required > 0 and available > 0:
-                # Infer per-unit margin and solve for max fillable qty aligned
-                # to lot_size.
-                per_unit = required / qty if qty > 0 else 0
-                if per_unit > 0:
-                    max_qty_fit = int(available / per_unit)
-                    # Round down to nearest lot boundary (if we know lot_size).
-                    try:
-                        lot_size_hint = 1
-                        try:
-                            from backend.api.routes.instruments import _fetch_instruments
-                            await loop.run_in_executor(
-                                None, lambda: None  # avoid re-fetching; use cached
-                            )
-                        except Exception:
-                            pass
-                        if lot_size_hint > 0:
-                            max_qty_fit = (max_qty_fit // lot_size_hint) * lot_size_hint
-                        max_qty_fit = max(0, max_qty_fit)
-                        fix_qty = (f" or reduce qty to {max_qty_fit:,}" if max_qty_fit > 0
-                                   else "")
-                    except Exception:
-                        fix_qty = ""
-                else:
-                    fix_qty = ""
-            else:
-                fix_qty = ""
-
-            new_blockers.append({
-                "code":   "MARGIN_SHORTFALL",
-                "reason": (f"Required margin ₹{required:,.0f} exceeds available "
-                           f"₹{available:,.0f} (shortfall ₹{shortfall:,.0f})"),
-                "fix":    (f"Add ₹{shortfall:,.0f} more margin to the account"
-                           + fix_qty),
-                "data":   {
-                    "required":   required,
-                    "available":  available,
-                    "shortfall":  shortfall,
-                },
-            })
+            _pm_blockers, _pm_diag = _preflight_handle_positive_margin(
+                required, margins_res, segment, account, qty
+            )
+            new_blockers.extend(_pm_blockers)
+            diag.update(_pm_diag)
     except Exception as e:
         bm_msg = str(e).lower()
         # basket_margin raised — interpret the error signal.
