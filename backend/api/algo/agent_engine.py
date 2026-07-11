@@ -1453,7 +1453,6 @@ async def run_cycle(context: dict, broadcast_fn=None,
         if matches and (bypass_suppression or not _v2_should_suppress(agent, matches, now, cfg)):
             triggered = True
             result = _v2_build_evalresult(matches, agent.name)
-            _v2_record(agent, matches, now)
 
             # Shadow-lifespan decrement — sim mode only. Records this
             # iteration's "would have exhausted" state for the report.
@@ -1471,83 +1470,77 @@ async def run_cycle(context: dict, broadcast_fn=None,
             if broadcast_fn:
                 broadcast_fn("agent_state", {"slug": agent.slug, "status": "triggered"})
 
+            # Compute the post-fire status now so it can be stored on the
+            # dispatch entry and used by the survivor loop after topic-tier
+            # suppression is resolved. DB mutation and _v2_record are
+            # intentionally deferred: a suppressed agent must NOT consume
+            # its lifespan quota or start its cooldown timer.
+            if not bypass_schedule:
+                _new_trigger_count = (agent.trigger_count or 0) + 1
+                _lifespan = getattr(agent, "lifespan_type", "persistent") or "persistent"
+                if _lifespan == "one_shot":
+                    _new_status: str = "completed"
+                elif (_lifespan == "n_fires"
+                      and agent.lifespan_max_fires is not None
+                      and _new_trigger_count >= agent.lifespan_max_fires):
+                    _new_status = "completed"
+                else:
+                    _new_status = "cooldown"
+            else:
+                _new_status = agent.status
+                _new_trigger_count = agent.trigger_count or 0
+
             # Buffer dispatch + actions for the post-loop suppression pass.
-            # State mutations above (cooldown latch, lifespan shadow) and
-            # the agent_state broadcast already ran inline so the cross-
-            # tick semantics are unchanged; only the push notification
-            # and action execution defer until we know which fires win
-            # tier suppression.
+            # _v2_record, DB mutation (trigger_count, status, cooldown_until,
+            # condition_first_true_at), and the post-fire WS broadcast are
+            # deferred to the survivor loop so that suppressed agents never
+            # have their state mutated.
             pending_dispatches.append({
-                'agent':       agent,
-                'matches':     matches,
-                'result':      result,
-                'sim_mode':    sim_mode,
-                'alert_state': alert_state,
+                'agent':            agent,
+                'matches':          matches,
+                'result':           result,
+                'sim_mode':         sim_mode,
+                'alert_state':      alert_state,
+                'bypass_schedule':  bypass_schedule,
+                'new_status':       _new_status,
+                'debounce_min':     debounce_min,
             })
 
-        # Update state. For any sim run (schedule-bypassed) we never mutate
-        # the agent row — the whole point of the simulator is to exercise the
-        # pipeline without leaking cooldown / trigger count into real-market
-        # state. The real path runs with bypass_schedule=False and does
-        # update the row.
+        # Update state for the non-triggered paths only. For any sim run
+        # (schedule-bypassed) we never mutate the agent row — the whole
+        # point of the simulator is to exercise the pipeline without leaking
+        # cooldown / trigger count into real-market state. The real path
+        # runs with bypass_schedule=False and does update the row.
+        #
+        # NOTE: the `if triggered` branch that previously lived here has
+        # been moved into the post-loop survivor section so that topic-tier
+        # suppressed agents do NOT have their DB state mutated.
         if not bypass_schedule:
-            # Compute the post-fire status once and reuse it for the DB
-            # write and the WS broadcast. Earlier this was computed twice
-            # in parallel branches — any future tweak risked drift between
-            # the persisted row and the broadcast payload.
-            new_status: str
-            if triggered:
-                # Lifespan check — one_shot or capped n_fires transition
-                # straight to 'completed' instead of 'cooldown'. Engine
-                # won't pick up `completed` rows on subsequent cycles.
-                # Operator can re-arm by editing status back to
-                # active/inactive.
-                new_trigger_count = (agent.trigger_count or 0) + 1
-                lifespan = getattr(agent, "lifespan_type", "persistent") or "persistent"
-                if lifespan == "one_shot":
-                    new_status = "completed"
-                elif (lifespan == "n_fires"
-                      and agent.lifespan_max_fires is not None
-                      and new_trigger_count >= agent.lifespan_max_fires):
-                    new_status = "completed"
-                else:
-                    new_status = "cooldown"
-            elif agent.status == "cooldown":
-                new_status = "active"
-            else:
-                new_status = agent.status
-
-            async with async_session() as session:
-                if triggered:
-                    values = dict(
-                        status=new_status,
-                        last_triggered_at=datetime.now(timezone.utc),
-                        trigger_count=Agent.trigger_count + 1,
-                    )
-                    # Phase 21 — clear the debounce latch after a fire so
-                    # the next true tick starts a fresh window.
-                    if debounce_min > 0:
-                        values["condition_first_true_at"] = None
-                    await session.execute(
-                        update(Agent).where(Agent.id == agent.id).values(**values)
-                    )
-                elif agent.status == "cooldown":
-                    await session.execute(
-                        update(Agent).where(Agent.id == agent.id).values(status=new_status)
-                    )
+            if not triggered:
+                if agent.status == "cooldown":
+                    _untriggered_status = "active"
+                    async with async_session() as session:
+                        await session.execute(
+                            update(Agent).where(Agent.id == agent.id).values(
+                                status=_untriggered_status
+                            )
+                        )
+                        await session.commit()
+                    if broadcast_fn:
+                        broadcast_fn("agent_state", {
+                            "slug": agent.slug, "status": _untriggered_status
+                        })
                 elif debounce_first_true_changed:
                     # Phase 21 — persist the debounce latch transitions
                     # even when we don't fire (else the latch lives only
                     # in process memory and a restart resets it).
-                    await session.execute(
-                        update(Agent).where(Agent.id == agent.id).values(
-                            condition_first_true_at=debounce_new_first_true_at
+                    async with async_session() as session:
+                        await session.execute(
+                            update(Agent).where(Agent.id == agent.id).values(
+                                condition_first_true_at=debounce_new_first_true_at
+                            )
                         )
-                    )
-                await session.commit()
-
-            if broadcast_fn:
-                broadcast_fn("agent_state", {"slug": agent.slug, "status": new_status})
+                        await session.commit()
 
     # ── Post-loop: topic-scoped tier suppression + dispatch survivors ────
     #
@@ -1589,6 +1582,33 @@ async def run_cycle(context: dict, broadcast_fn=None,
                         'suppressed_by': supp_by,
                     })
                 continue
+
+            # Survivor path — agent passed topic-tier suppression.
+            # Now safe to commit side-effects that must NOT run for
+            # suppressed agents: latch _v2_record (updates _V2_LAST_ALERT
+            # used by cooldown gate), write trigger_count / status / cooldown
+            # to DB, and emit the final WS status broadcast.
+            _v2_record(agent, matches_, now)
+            _bypass_schedule_p = entry.get('bypass_schedule', False)
+            if not _bypass_schedule_p:
+                _new_status_p = entry['new_status']
+                _debounce_min_p = entry.get('debounce_min', 0)
+                async with async_session() as session:
+                    _db_values: dict = dict(
+                        status=_new_status_p,
+                        last_triggered_at=datetime.now(timezone.utc),
+                        trigger_count=Agent.trigger_count + 1,
+                    )
+                    # Phase 21 — clear the debounce latch after a fire so
+                    # the next true tick starts a fresh window.
+                    if _debounce_min_p > 0:
+                        _db_values["condition_first_true_at"] = None
+                    await session.execute(
+                        update(Agent).where(Agent.id == agent.id).values(**_db_values)
+                    )
+                    await session.commit()
+                if broadcast_fn:
+                    broadcast_fn("agent_state", {"slug": agent.slug, "status": _new_status_p})
 
             # Full dispatch path — same code that used to live inside the
             # per-agent loop, now driven from the buffer.
