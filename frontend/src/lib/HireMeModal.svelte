@@ -55,7 +55,7 @@
   };
 </script>
 
-<ModalShell open={true} {onClose} zIndex={100} clickOutside={true}>
+<ModalShell open={true} {onClose} zIndex={100} clickOutside={true} ariaLabel="Hire me — recruiter info">
   <div class="hm-modal algo-modal" role="dialog" aria-modal="true" aria-labelledby="hm-title" tabindex="-1"
        onclick={(e) => e.stopPropagation()}
        onkeydown={(e) => e.stopPropagation()}>
@@ -163,7 +163,8 @@
          .algo-modal is wrong for prose). */
     position: relative;
     max-width: 38rem;
-    width: 100%;
+    width: calc(100% - 2rem);
+    margin: 1rem;
     max-height: 90vh;
     overflow-y: auto;
     background: linear-gradient(180deg, #0f172a 0%, #131c33 100%);

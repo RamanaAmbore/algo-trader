@@ -83,7 +83,7 @@
   });
 </script>
 
-<ModalShell open={true} {onClose} zIndex={10500} dim={false} passthrough={true} clickOutside={false}>
+<ModalShell open={true} {onClose} zIndex={10500} dim={false} passthrough={true} clickOutside={false} ariaLabel="Activity log">
   <div class="canonical-modal-panel alm-panel" bind:this={_modalEl}>
     <!-- Modal chrome — title + close button. Tabs live inside LogPanel
          so the tab strip is consistent with every other LogPanel mount. -->

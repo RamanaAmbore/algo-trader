@@ -52,7 +52,7 @@
   }
 </script>
 
-<ModalShell open={true} {onClose} zIndex={9998} clickOutside={true}>
+<ModalShell open={true} {onClose} zIndex={9998} clickOutside={true} ariaLabel="Agent fire details">
   <div class="afm-modal algo-modal" role="document"
        style="border-color: {palette.border}">
     <div class="afm-header">
