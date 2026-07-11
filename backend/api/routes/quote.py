@@ -1535,7 +1535,7 @@ class SparklineController(Controller):
     path = "/api/quotes"
     guards = [auth_or_demo_guard]
 
-    @post("/sparkline")
+    @post("/sparkline", status_code=200)
     async def batch_sparkline(self, data: SparklineRequest) -> SparklineResponse:
         """
         POST /api/quotes/sparkline

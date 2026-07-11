@@ -488,7 +488,7 @@ async def test_anon_batch_sparkline_returns_200(async_client):
                    {}
                ))), \
          patch("backend.api.routes.quote._any_segment_open",
-               new=AsyncMock(return_value=False)), \
+               new=MagicMock(return_value=False)), \
          patch("backend.api.routes.quote._fetch_bars_parallel",
                new=AsyncMock(return_value=({}, {}))), \
          patch("backend.api.routes.quote._resolve_spark_ltps",
@@ -519,29 +519,37 @@ async def test_anon_movers_uses_snapshot_path(async_client):
     movers_snapshots (not live broker). When market is closed, response
     has a captured_at timestamp (snapshot, not live).
     """
+    from datetime import datetime, timezone
+    import json
+
     # Mock market being closed
     with patch("backend.api.routes.quote._any_segment_open",
-               new=AsyncMock(return_value=False)):
-        # Mock the snapshot loader to return fixture data
-        movers_snapshot = {
-            "movers": [
-                {
-                    "tradingsymbol": "RELIANCE",
-                    "exchange": "NSE",
-                    "change_pct": 2.5,
-                },
-                {
-                    "tradingsymbol": "TCS",
-                    "exchange": "NSE",
-                    "change_pct": -1.2,
-                },
-            ],
-            "threshold_pct": 1.0,
-            "captured_at": "2026-06-28T15:30:00+00:00",
-        }
+               new=MagicMock(return_value=False)):
+        # Create a mock ORM object for MoversSnapshot with required attributes
+        movers_snapshot_obj = MagicMock()
+        movers_snapshot_obj.captured_at = datetime(2026, 6, 28, 15, 30, 0, tzinfo=timezone.utc)
+        movers_snapshot_obj.date = "2026-06-28"
+        movers_snapshot_obj.payload_json = json.dumps([
+            {
+                "tradingsymbol": "RELIANCE",
+                "exchange": "NSE",
+                "change_pct": 2.5,
+                "last_price": 2800.0,
+                "previous_close": 2730.0,
+                "peak_pct": 3.0,
+            },
+            {
+                "tradingsymbol": "TCS",
+                "exchange": "NSE",
+                "change_pct": -1.2,
+                "last_price": 3200.0,
+                "previous_close": 3240.0,
+                "peak_pct": 0.5,
+            },
+        ])
 
         with patch("backend.api.routes.watchlist._load_latest_movers_snapshot",
-                   new=AsyncMock(return_value=movers_snapshot)):
+                   new=AsyncMock(return_value=movers_snapshot_obj)):
             response = await async_client.get("/api/watchlist/movers")
 
     # Should return 200
