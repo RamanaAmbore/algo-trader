@@ -373,6 +373,46 @@ def _v2_extract_pnl_fields(row: dict, section: str, metric: str,
     return pnl, pct
 
 
+def _v2_underlying_breakdown(df_positions, scope_label: str) -> list[dict]:
+    """Compute per-underlying P&L breakdown for a position alert row.
+
+    Returns empty list when the breakdown feature flag is off, when imports
+    fail, or when df_positions is None (caller guards that before calling).
+    """
+    from backend.shared.helpers.settings import get_bool, get_int
+    from backend.shared.helpers.summarise import breakdown_positions_by_underlying
+    if not get_bool('alerts.show_underlying_breakdown', True):
+        return []
+    top_n = get_int('alerts.max_underlyings_per_alert', 5)
+    return breakdown_positions_by_underlying(df_positions, account=scope_label, top_n=top_n)
+
+
+def _v2_static_rate_enrichment(alert_state: dict, kind: str, scope_label: str,
+                               rate_window_min: int) -> float | None:
+    """Compute ΔP&L/min from pnl_history for static position alerts.
+
+    Returns the rate value (float ₹/min) when at least 2 history samples
+    span a non-zero time window, otherwise None.  Reads the same history
+    bucket that rate-metric evaluators use so the numbers are consistent.
+    """
+    from backend.shared.helpers.settings import get_bool
+    if not get_bool('alerts.show_rate_in_static_alerts', True):
+        return None
+    hist = (alert_state.get('pnl_history') or {}).get(('positions', scope_label), []) or []
+    if len(hist) < 2:
+        return None
+    cutoff_window = hist[-1][0] - timedelta(minutes=rate_window_min)
+    window = [s for s in hist if s[0] >= cutoff_window]
+    if len(window) < 2:
+        return None
+    oldest, latest = window[0], window[-1]
+    mins = (latest[0] - oldest[0]).total_seconds() / 60.0
+    if mins <= 0:
+        return None
+    # field_idx=1 → pnl ₹/min, matching rate_abs metric
+    return (latest[1] - oldest[1]) / mins
+
+
 def _v2_match_to_alertrow(match: dict, *,
                           df_positions=None,
                           alert_state: dict | None = None,
@@ -435,38 +475,14 @@ def _v2_match_to_alertrow(match: dict, *,
     underlyings_breakdown: list[dict] = []
     if section == 'Positions' and df_positions is not None:
         try:
-            from backend.shared.helpers.settings import get_bool, get_int
-            from backend.shared.helpers.summarise import (
-                breakdown_positions_by_underlying,
-            )
-            if get_bool('alerts.show_underlying_breakdown', True):
-                top_n = get_int('alerts.max_underlyings_per_alert', 5)
-                underlyings_breakdown = breakdown_positions_by_underlying(
-                    df_positions, account=scope_label, top_n=top_n,
-                )
+            underlyings_breakdown = _v2_underlying_breakdown(df_positions, scope_label)
         except Exception as e:
             logger.warning(f"underlying breakdown failed: {e}")
 
-    # Compute rate for static position alerts on the same (section, scope)
-    # bucket the rate metrics use. alert_state is keyed by ('positions',
-    # scope) tuple per agent_evaluator.Context._compute_rate.
     if (section == 'Positions' and rate_val is None and alert_state
             and kind in ('static_pct', 'static_abs')):
         try:
-            from backend.shared.helpers.settings import get_bool
-            if get_bool('alerts.show_rate_in_static_alerts', True):
-                hist = (alert_state.get('pnl_history') or {}).get(
-                    ('positions', scope_label), []
-                ) or []
-                if len(hist) >= 2:
-                    cutoff_window = hist[-1][0] - timedelta(minutes=rate_window_min)
-                    window = [s for s in hist if s[0] >= cutoff_window]
-                    if len(window) >= 2:
-                        oldest, latest = window[0], window[-1]
-                        mins = (latest[0] - oldest[0]).total_seconds() / 60.0
-                        if mins > 0:
-                            # field_idx=1 → pnl ₹/min, matching rate_abs metric
-                            rate_val = (latest[1] - oldest[1]) / mins
+            rate_val = _v2_static_rate_enrichment(alert_state, kind, scope_label, rate_window_min)
         except Exception as e:
             logger.warning(f"static-alert rate enrichment failed: {e}")
 
